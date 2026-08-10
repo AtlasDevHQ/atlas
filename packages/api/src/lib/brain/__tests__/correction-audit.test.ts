@@ -219,6 +219,23 @@ function fakeTransaction(
                   predicate: "leads",
                   object: "Platform",
                   status: "published",
+                  // The STORED keys (#5037), which the replacement now INHERITS
+                  // rather than re-deriving from the surfaces above. Written out
+                  // as the values ingest would have produced for this claim, so
+                  // this fixture stands for an ordinary keyed row; the
+                  // divergence case — stored keys that a MOVED vocabulary no
+                  // longer derives — is `correction.test.ts`'s to exercise, and
+                  // pinning it here too would duplicate it without the harness
+                  // that can move a vocabulary.
+                  //
+                  // `readTargetRow` refuses an ABSENT key column rather than
+                  // defaulting it, for `window_closed`'s reason one column down:
+                  // a missing key defaulted to `null` lands the replacement in
+                  // the `(NULL, NULL)` slot while the id-based stamp retires the
+                  // target regardless.
+                  subject_key: "ana",
+                  predicate_key: "leads",
+                  object_key: "platform",
                   // No `predicate_cardinality`: `correctionTargetSql` stopped
                   // selecting it in #5027 and `readTargetRow` no longer narrows
                   // it, so a fixture still supplying it would read as though the

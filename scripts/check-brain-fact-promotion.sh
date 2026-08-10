@@ -148,6 +148,31 @@
 #     on rows the retraction undermined — see `DEPENDENT_FACTS_SQL`'s
 #     rationale in the module), and none of those flag writes touches a gated
 #     column.
+#     SINCE #5037 IT ALSO HANDLES THE IDENTITY KEYS — recorded here because the
+#     entry is whole-file and therefore already covers what follows, which is
+#     exactly why it has to be written down rather than left to the scan.
+#     WHAT IT DOES WITH THEM: reads all three off the target row and passes the
+#     SUBJECT and PREDICATE back down through `reconcileFacts` on
+#     `FactCandidate.inheritedSlot`, so the replacement lands in the slot the
+#     corrected fact is already in. It executes NO statement that writes a key:
+#     the INSERT is still `reconcile.ts`'s, bound with values this module
+#     copied rather than composed. So this is not a fourth key writer, and the
+#     IDENTITY arm has nothing to fire on today.
+#     WHY IT IS A ROW-COPY AND NOT A SECOND CANONICALIZER: ADR-0037 §8 — *a
+#     row-copy path carries keys verbatim; a claim-supply path never supplies
+#     them*. §1 prohibits a producer COMPUTING identity; this copies it, which
+#     is the distinction that made `correction.ts` the immune producer before
+#     keys existed. The OBJECT key is deliberately not carried: the replacement
+#     object is new, human-authored text and canonicalizes at the seam like any
+#     other claim.
+#     ⚠️ WHAT THIS ENTRY THEREFORE COSTS, stated because it is newly load-
+#     bearing: a future `UPDATE brain_facts SET subject_key = …` added to THIS
+#     module would be exempt, silently — the file was allowlisted for `status`
+#     long before it had any business near a key. The compensating pin is
+#     `correction.test.ts`'s "the identity keys never leave the target read
+#     (#5037)", which reads the projection span of every statement the module
+#     exports; it is also what replaces the whole-file exemption this slice
+#     needed from `keys-not-on-the-wire.test.ts`.
 #
 #   packages/api/src/lib/brain/vocabulary-decide.ts
 #     The alias decide transaction (#5023, ADR-0037 §6/§7) — the IDENTITY arm's

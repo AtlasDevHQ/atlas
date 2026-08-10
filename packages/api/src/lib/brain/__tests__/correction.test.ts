@@ -18,6 +18,7 @@
  *   - a correction is admin-authority, ACL-gated, and episode-recorded.
  */
 
+import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, mock, test } from "bun:test";
@@ -124,9 +125,12 @@ import {
 } from "@atlas/api/lib/content-mode/adapters/brain-facts";
 import {
   identityAlias,
+  identityKey,
   identityVocabulary,
+  inheritSlotFromFactRow,
   slotKey,
   type ClaimVocabulary,
+  type InheritedSlot,
 } from "@atlas/api/lib/brain/identity";
 import {
   CORRECTION_EVENT_PRODUCER,
@@ -621,6 +625,13 @@ class FakeCorrectionStore {
       subject: fact.subject,
       predicate: fact.predicate,
       object: fact.object,
+      // The STORED keys (#5037). The whole point of the slice is that these are
+      // read rather than re-derived, so the fake must serve what the row HOLDS —
+      // serving `slotKey(fact.subject, vocabulary)` here would make every test
+      // below agree by construction and the falsification vacuous.
+      subject_key: fact.slot.subject,
+      predicate_key: fact.slot.predicate,
+      object_key: fact.slot.object,
       status: fact.status,
       provenance: fact.provenance,
       visible_to: fact.visibleTo,
@@ -1321,6 +1332,162 @@ describe("supersede", () => {
     expect(outcome.kind).toBe("corrected");
   });
 
+  test("'restates' is judged against the target's STORED object key (#5037)", async () => {
+    // The module's SECOND re-derivation site, and the one whose divergence falls
+    // on the guard deciding whether an irreversible write happens at all.
+    //
+    // The scenario is ADR-0037 §8's alias REMOVAL, the one vocabulary operation
+    // that is not a rewrite. The fact was written while `ana` aliased to
+    // `ana torres`, so that is what its `object_key` HOLDS. A reviewer has since
+    // removed the alias, so the surface `Ana` now derives `ana` — and the stored
+    // key and the derived key have come apart.
+    //
+    // A human now supersedes the fact with `Ana Torres`, which keys to
+    // `ana torres`: the value the corpus already records this fact as asserting.
+    // Read against the STORED key the guard sees the restatement and refuses.
+    // Re-derived, it compares `ana torres` against `ana`, sees a difference that
+    // exists only in the vocabulary's history, and passes the correction through
+    // to `SUPERSEDE_STAMP_EXPLICIT_SQL` — closing a published belief to stand up
+    // a successor asserting the same value in the same slot, with a `supersedes`
+    // edge recording an arbitration that settled nothing.
+    //
+    // ⚠️ Not covered by the two inherit tests: they assert on the keys the
+    // reconcile INSERT bound, and this guard runs BEFORE reconcile is reached at
+    // all — a supersede it wrongly permits still binds a perfectly consistent
+    // slot. The refusal is the only observable.
+    const store = new FakeCorrectionStore();
+    store.seedFact({
+      id: "old",
+      object: "Ana",
+      slot: { subject: "billing", predicate: "is owned by", object: "ana torres" },
+    });
+
+    const target = store.fact("old");
+    // The anti-vacuity precondition. With an unmoved vocabulary the stored and
+    // derived keys agree and the mutant is indistinguishable from the fix.
+    expect(
+      slotKey(target.object, identityVocabulary.object),
+      "the object vocabulary did not move — re-deriving would give the same answer",
+    ).not.toBe(target.slot.object);
+
+    const outcome = await run(store, {
+      factId: "old",
+      verb: "supersede",
+      replacement: { object: "Ana Torres" },
+    });
+
+    expect(outcome).toMatchObject({
+      kind: "refused",
+      reason: CORRECTION_REFUSAL_REASONS.replacementIdentical,
+    });
+    // Nothing was retired, and no episode was written for a correction that
+    // never happened.
+    expect(store.fact("old").validTo).toBeNull();
+    expect(store.episodes).toHaveLength(0);
+  });
+
+  test("an UNKEYED target still refuses a restatement — the guard does not switch off (#5037)", async () => {
+    // ⚠️ THE REGRESSION THE FIRST CUT OF #5037 SHIPPED, and the reason this test
+    // exists rather than the reasoning that said it could not happen.
+    //
+    // Reading the target's key instead of deriving it is right whenever there IS
+    // a stored key. When there is not — a region-imported corpus, every fact
+    // unkeyed — a derived replacement key can never equal a stored NULL, so the
+    // comparison stops being a comparison: the refusal cannot fire for ANY
+    // input, and a byte-identical restatement reaches
+    // `SUPERSEDE_STAMP_EXPLICIT_SQL`. A published belief is retired in favour of
+    // a successor asserting the same value, with a `supersedes` edge recording an
+    // arbitration that settled nothing, and there is no inverse verb.
+    //
+    // The near-miss is the instructive part: "an UNKEYED target inherits its null
+    // slot" (below) seeds the identical fixture and supersedes with a DIFFERENT
+    // object, so it passes over this defect without touching it. The two tests
+    // differ only in whether the replacement restates — which is the whole of
+    // what the guard decides.
+    const store = new FakeCorrectionStore();
+    store.seedFact({
+      id: "unkeyed",
+      object: "Ana",
+      slot: { subject: null, predicate: null, object: null },
+    });
+
+    // The precondition that makes this the unkeyed case rather than a duplicate
+    // of the stored-key test above: nothing to read, and a surface that keys
+    // perfectly well.
+    expect(store.fact("unkeyed").slot.object).toBeNull();
+    expect(slotKey("Ana", identityVocabulary.object)).toBe("ana");
+
+    const outcome = await run(store, {
+      factId: "unkeyed",
+      verb: "supersede",
+      replacement: { object: "Ana" },
+    });
+
+    expect(outcome).toMatchObject({
+      kind: "refused",
+      reason: CORRECTION_REFUSAL_REASONS.replacementIdentical,
+    });
+    // The load-bearing half: nothing was retired, and no successor was minted.
+    expect(store.fact("unkeyed").validTo).toBeNull();
+    expect(store.facts).toHaveLength(1);
+    expect(store.episodes).toHaveLength(0);
+  });
+
+  test("a DIVERGED stored key still refuses a byte-identical restatement (#5037)", async () => {
+    // ⚠️ THE SECOND REGRESSION THIS GUARD SHIPPED, and the reason it is now a
+    // UNION rather than a precedence.
+    //
+    // The first cut compared the derived replacement key against the stored
+    // target key alone, which failed open for a stored NULL. The repair —
+    // `stored ?? derived` — closed that and opened the member next door: a stored
+    // key that is NON-NULL but DIVERGED from what this workspace now derives.
+    // `??` short-circuits on non-null, so the derivation never runs, and a human
+    // re-typing the fact's own object text is compared against a key computed by
+    // a different vocabulary. They differ, the guard stays silent, and a
+    // published belief is retired for a successor asserting the same words.
+    //
+    // The population is #5035's region import: keys travel verbatim, so a fact's
+    // stored key is a fixpoint of the SOURCE region's vocabulary and not
+    // necessarily of this one. `correction.ts` documents that state as existing
+    // by construction.
+    //
+    // Both regressions were REPLACEMENTS of the comparison — each closed the
+    // reported input class and opened its neighbour, because replacing moves
+    // behaviour in both directions. The union only ever adds refusals.
+    const store = new FakeCorrectionStore();
+    store.seedFact({
+      id: "imported",
+      object: "Alice",
+      // Carried verbatim from a region whose vocabulary unified `alice` with
+      // `alicia`. This one does not.
+      slot: { subject: "billing", predicate: "is owned by", object: "alicia" },
+    });
+
+    const target = store.fact("imported");
+    // The anti-vacuity precondition, and here it is doing double duty: it proves
+    // the stored key DIVERGES (so the second arm alone cannot fire) while the
+    // surfaces are byte-identical (so the first arm must).
+    expect(
+      slotKey(target.object, identityVocabulary.object),
+      "the stored key does not diverge — this test would pass against the ?? version",
+    ).not.toBe(target.slot.object);
+
+    const outcome = await run(store, {
+      factId: "imported",
+      verb: "supersede",
+      // The exact text the fact already carries.
+      replacement: { object: "Alice" },
+    });
+
+    expect(outcome).toMatchObject({
+      kind: "refused",
+      reason: CORRECTION_REFUSAL_REASONS.replacementIdentical,
+    });
+    expect(store.fact("imported").validTo).toBeNull();
+    expect(store.facts).toHaveLength(1);
+    expect(store.episodes).toHaveLength(0);
+  });
+
   test("the replacement claim lands keyed under the workspace's vocabulary (#5022)", async () => {
     // The OTHER half of the threading, and the one the guard tests cannot see:
     // `applySupersede` passes the vocabulary through to `reconcileFacts`, and
@@ -1346,6 +1513,130 @@ describe("supersede", () => {
     expect(outcome.kind).toBe("corrected");
     const replacement = store.facts.find((f) => f.object === "Ana Torres");
     expect(replacement?.slot.object).toBe("ana torres (crm)");
+  });
+
+  test("the replacement INHERITS the target's slot when the vocabulary has MOVED (#5037)", async () => {
+    // ADR-0037 §8: *a row-copy path carries keys verbatim; a claim-supply path
+    // never supplies them.* `correction.ts` was called the immune producer
+    // because it carries identity from the target row — true only while identity
+    // == surface. Once keys are computed at the reconcile seam, passing the
+    // target's SURFACES down is a RE-DERIVATION, and it agrees with the stored
+    // key only until the vocabulary moves.
+    //
+    // The failure it prohibits is silent and irreversible. The stamp is id-based
+    // (`SUPERSEDE_STAMP_EXPLICIT_SQL`), so it fires whatever the vocabulary says:
+    // the target's belief is retired, `supersedes` records new→old, and the
+    // replacement lands in a DIFFERENT slot — unreachable from the slot every
+    // future collision joins on. The audit trail says "superseded by X"; the slot
+    // says empty.
+    //
+    // ⚠️ **THE VOCABULARY MUST ACTUALLY MOVE BETWEEN THE WRITE AND THE
+    // CORRECTION, and the assertions below prove it did before they prove
+    // anything else.** Written the natural way — seed a fact, correct it, check
+    // the keys match — this test passes against the DEFECT, because an unmoved
+    // vocabulary derives exactly the key it would have inherited. Every
+    // assertion would be green and nothing would be tested. The stored keys here
+    // are therefore seeded as what ingest wrote under the OLD vocabulary, and
+    // `movedVocabulary` is a different function from the one that produced them.
+    const store = new FakeCorrectionStore();
+    // Written under the vocabulary of the day: no aliases, so the keys are the
+    // bare norms of the surfaces.
+    store.seedFact({
+      id: "old",
+      subject: "Billing",
+      predicate: "is owned by",
+      object: "Ana",
+      slot: { subject: "billing", predicate: "is owned by", object: "ana" },
+    });
+
+    // ...and then a human approved two alias edges, at the subject and the
+    // predicate. `vocabulary-decide-pg.test.ts` owns the real seam (#5023); what
+    // matters here is only that the lookup is no longer identity.
+    const movedVocabulary: ClaimVocabulary = {
+      ...identityVocabulary,
+      subject: (norm) => (norm === "billing" ? "billing department" : norm),
+      predicate: (norm) => (norm === "is owned by" ? "is led by" : norm),
+      object: (norm) => (norm === "bo" ? "bob" : norm),
+    };
+
+    // ── The anti-vacuity precondition ──────────────────────────────────────
+    // If either of these ever holds, the test below is asserting that two equal
+    // things are equal. They are assertions rather than a comment because a
+    // future edit to `movedVocabulary` that quietly restores identity at one
+    // position must fail HERE, loudly, rather than turn the real assertions into
+    // tautologies that stay green.
+    const target = store.fact("old");
+    expect(
+      slotKey(target.subject, movedVocabulary.subject),
+      "the subject vocabulary did not move — the inherit assertion below would be vacuous",
+    ).not.toBe(target.slot.subject);
+    expect(
+      slotKey(target.predicate, movedVocabulary.predicate),
+      "the predicate vocabulary did not move — the inherit assertion below would be vacuous",
+    ).not.toBe(target.slot.predicate);
+
+    const outcome = await run(store, {
+      factId: "old",
+      verb: "supersede",
+      replacement: { object: "Bo" },
+      vocabulary: movedVocabulary,
+    });
+
+    expect(outcome.kind).toBe("corrected");
+    const replacement = store.facts.find((f) => f.object === "Bo");
+    expect(replacement).toBeDefined();
+
+    // ── The slot is INHERITED ──────────────────────────────────────────────
+    // The stored keys, verbatim — NOT `billing department` / `is led by`, which
+    // is what re-deriving under the moved vocabulary produces. These are values
+    // the reconcile INSERT actually bound; the fake records `slot` off the
+    // statement's binds rather than from anything this test wrote.
+    expect(replacement?.slot.subject).toBe("billing");
+    expect(replacement?.slot.predicate).toBe("is owned by");
+
+    // ── ...and the OBJECT is derived FRESH ─────────────────────────────────
+    // The other half of the rule, and the one an over-broad fix breaks: a
+    // correction is *about this claim*, so the slot is the target's — but the
+    // object is new, human-authored text and keys on its own terms. `Bo` norms
+    // to `bo`, which the CURRENT vocabulary maps to `bob`. Inheriting here
+    // instead would make the replacement identical to the target at every
+    // identity position, which is the one thing a supersession cannot be.
+    expect(replacement?.slot.object).toBe("bob");
+  });
+
+  test("an UNKEYED target inherits its null slot rather than acquiring one (#5037)", async () => {
+    // The other arm of the inherit, and the one that says what "verbatim" means
+    // when there is nothing to copy. A region import leaves rows whose keys came
+    // from a foreign vocabulary, and rows written before #5020 have none at all.
+    //
+    // Deriving a key to fill the hole is the tempting repair and it is the wrong
+    // one: it would invent identity for a row that has none and move its
+    // successor into a LIVE slot, where it can collide with — and at the publish
+    // gate supersede — claims the unkeyed row never had any relationship to.
+    // Carrying the nulls keeps the successor exactly as un-collidable as the
+    // fact it replaces, which is today's behaviour for that row and the
+    // recoverable direction.
+    const store = new FakeCorrectionStore();
+    store.seedFact({
+      id: "unkeyed",
+      object: "Ana",
+      slot: { subject: null, predicate: null, object: null },
+    });
+
+    const outcome = await run(store, {
+      factId: "unkeyed",
+      verb: "supersede",
+      replacement: { object: "Bo" },
+    });
+
+    expect(outcome.kind).toBe("corrected");
+    const replacement = store.facts.find((f) => f.object === "Bo");
+    expect(replacement?.slot.subject).toBeNull();
+    expect(replacement?.slot.predicate).toBeNull();
+    // The object still keys — it is derived, not inherited, so an unkeyed TARGET
+    // does not make an unkeyed successor at every position. This is what
+    // distinguishes "the slot was copied" from "the candidate lost its keys".
+    expect(replacement?.slot.object).toBe("bo");
   });
 
   test("refuses a replacement that restates the object in a DIFFERENT SPELLING (#5020)", async () => {
@@ -1501,6 +1792,123 @@ describe("cardinality proposer", () => {
         proposedBy: CORRECTION_EVENT_PRODUCER,
       },
     ]);
+  });
+
+  test("the proposal keys on the TARGET'S STORED predicate, not a re-derivation (#5037)", async () => {
+    // The module's THIRD re-derivation site, and the one with the longest fuse:
+    // `supersededKey` leaves the transaction entirely, so a wrong value here
+    // shows up as a cardinality proposal filed against a slot no correction ever
+    // touched — while the slot that WAS corrected accretes no evidence at all.
+    // Nothing downstream can detect the mismatch, because a proposal carries no
+    // pointer back to the fact that produced it.
+    //
+    // ⚠️ This case exists because the two inherit tests above do NOT cover it.
+    // They assert on the keys the reconcile INSERT bound; `supersededKey` is a
+    // separate read that reaches a separate consumer, and re-deriving it left
+    // them both green. The class was fixed at three sites and only two had a
+    // falsifier — which is exactly the gap a sibling sweep is supposed to close.
+    const store = new FakeCorrectionStore();
+    store.priorCorrectedSubjects = CORRECTION_REPEAT_THRESHOLD - 1;
+    store.seedFact({
+      id: "old",
+      object: "Ana",
+      status: "published",
+      // Written under the old vocabulary: the bare norm.
+      slot: { subject: "billing", predicate: "is owned by", object: "ana" },
+    });
+
+    const movedVocabulary: ClaimVocabulary = {
+      ...identityVocabulary,
+      predicate: (norm) => (norm === "is owned by" ? "is led by" : norm),
+    };
+    // The anti-vacuity precondition, for the reason the inherit test states at
+    // length: under an UNMOVED vocabulary the derived key equals the stored one
+    // and this test cannot fail.
+    expect(
+      slotKey("is owned by", movedVocabulary.predicate),
+      "the predicate vocabulary did not move — the assertion below would be vacuous",
+    ).not.toBe("is owned by");
+
+    const outcome = await run(store, {
+      factId: "old",
+      verb: "supersede",
+      replacement: { object: "Bo" },
+      vocabulary: movedVocabulary,
+    });
+
+    expect(outcome.kind).toBe("corrected");
+    // `is owned by` — the key the corrected row actually sits under. NOT
+    // `is led by`, which is what re-deriving the target's surface produces.
+    expect(store.cardinalityProposals).toEqual([
+      {
+        predicateKey: "is owned by",
+        cardinality: "single",
+        sourceClass: "correction_event",
+        proposedBy: CORRECTION_EVENT_PRODUCER,
+      },
+    ]);
+  });
+
+  test("an UNKEYED target reports a CORPUS gap, not a degenerate surface (#5037)", async () => {
+    // The round-2 fix split one `log.debug` into two arms because a null
+    // `supersededKey` acquired a second cause — and shipped with nothing holding
+    // it. Deleting the whole `unkeyed-target` arm, or collapsing the discriminant
+    // to a constant, left every gate green.
+    //
+    // The severity is why it matters: `debug` is off in production, so before the
+    // split "this corpus has no identity and the cardinality proposer has gone
+    // silent" was indistinguishable from "healthy". A revert restores exactly
+    // that silence, invisibly.
+    //
+    // Keyed on the structured `cause` field rather than message prose, so a
+    // reworded message does not fail this but a re-collapsed one does.
+    const store = new FakeCorrectionStore();
+    store.seedFact({
+      id: "unkeyed",
+      object: "Ana",
+      status: "published",
+      slot: { subject: null, predicate: null, object: null },
+    });
+    // The discriminator's premise: the surface itself keys perfectly well, so
+    // "normalizes away" would be a false diagnosis of this row.
+    expect(identityKey("is owned by")).not.toBeNull();
+
+    await run(store, { factId: "unkeyed", verb: "supersede", replacement: { object: "Bo" } });
+
+    const unkeyedWarns = warns().filter(
+      (c) => (c.payload as { cause?: string }).cause === "unkeyed-target",
+    );
+    expect(
+      unkeyedWarns,
+      "an unkeyed TARGET must WARN — debug is off in production, so the corpus-wide silence would be invisible",
+    ).toHaveLength(1);
+    // …and it must name both remaining causes rather than asserting one. The
+    // round-2 fix removed a prescription ("re-key the workspace") that provably
+    // cannot work when the vocabulary is what maps the norm away.
+    expect(unkeyedWarns[0]!.message).toContain("vocabulary");
+    expect(unkeyedWarns[0]!.message).toContain("never keyed");
+    // The prohibition arm: this row must NOT be reported as a degenerate surface.
+    expect(
+      logCalls.filter((c) => c.level === "debug" && c.message.includes("normalizes away")),
+    ).toEqual([]);
+  });
+
+  test("a DEGENERATE predicate surface still reports as such, not as a corpus gap (#5037)", async () => {
+    // The control. Without it the assertion above is satisfied by an
+    // implementation that reports EVERY null key as `unkeyed-target`, which is
+    // the collapse in the other direction.
+    const store = new FakeCorrectionStore();
+    store.seedFact({ id: "degenerate", predicate: "-", object: "Ana", status: "published" });
+    expect(identityKey("-")).toBeNull();
+
+    await run(store, { factId: "degenerate", verb: "supersede", replacement: { object: "Bo" } });
+
+    expect(warns().filter((c) => (c.payload as { cause?: string }).cause === "unkeyed-target")).toEqual(
+      [],
+    );
+    expect(
+      logCalls.filter((c) => c.level === "debug" && c.message.includes("normalizes away")),
+    ).toHaveLength(1);
   });
 
   test("stays silent below the repeat threshold", async () => {
@@ -2004,9 +2412,22 @@ describe("re-authority and pin", () => {
   // a requestId), which is the posture its own header states for every other
   // column. Asserted per column so a narrowing that covers only one is a
   // failure, not a coincidence.
+  //
+  // The three identity keys (#5037) join the same table for a parallel reason,
+  // stated because it is NOT the temporal one above. They do not fail open into
+  // a permitted write; they fail open into a WRONG SLOT. An absent
+  // `subject_key` defaulted to `null` hands `InheritedSlot` a `(NULL, NULL)`
+  // slot for a row that has a real one, so the replacement lands un-collidable
+  // while the id-based stamp retires the target regardless — #5037's exact
+  // defect, reintroduced through the narrowing instead of through the
+  // derivation. `null` itself stays legal: that is an unkeyed legacy row, and
+  // only `undefined` (the column absent from the SELECT) is drift.
   for (const [column, fragment] of [
     ["window_closed", "window_closed"],
     ["valid_to", "valid_to absent"],
+    ["subject_key", "subject_key absent"],
+    ["predicate_key", "predicate_key absent"],
+    ["object_key", "object_key absent"],
   ] as const) {
     test(`a target projection missing \`${column}\` THROWS rather than admitting the vouch`, async () => {
       const store = new FakeCorrectionStore();
@@ -2027,6 +2448,27 @@ describe("re-authority and pin", () => {
   // rather than flow on to `iso()` and render a refusal with no date in it.
   // (The compile side is held separately — `TargetRow.validTo` is
   // `Date | string | null`, so the assignment itself would not type-check.)
+  // The same second arm for the three key columns (#5037). Dropping a column can
+  // only ever produce `undefined`, so the loop above exercises the ABSENT arm and
+  // leaves the TYPE arm untouched — the reason this file already carries a
+  // wrong-type test for `valid_to` one test down. The mutant it catches is
+  // `typeof value !== "string" ? null : value`, which compiles, keeps every
+  // absent-column test green, and lands the replacement in the `(NULL, NULL)`
+  // slot while the id-based stamp retires the target: #5037's exact defect,
+  // reached through the narrowing instead of through the derivation.
+  for (const column of ["subject_key", "predicate_key", "object_key"] as const) {
+    test(`a target projection whose \`${column}\` decodes to the wrong type THROWS`, async () => {
+      const store = new FakeCorrectionStore();
+      store.overrideTargetColumns = { [column]: 12345 };
+      store.seedFact({ id: "old", object: "Ana", status: "published" });
+
+      await expect(
+        run(store, { factId: "old", verb: "supersede", replacement: { object: "Bo" } }),
+      ).rejects.toThrow(`unreadable ${column}`);
+      expect(store.episodes).toHaveLength(0);
+    });
+  }
+
   test("a target projection whose `valid_to` decodes to the wrong type THROWS", async () => {
     const store = new FakeCorrectionStore();
     store.overrideTargetColumns = { valid_to: 1735689600000 };
@@ -2278,5 +2720,457 @@ describe("shared gates", () => {
     expect(isWarehouseDerived({ source: SLACK_SOURCE })).toBe(false);
     expect(isWarehouseDerived(null)).toBe(false);
     expect(isWarehouseDerived([])).toBe(false);
+  });
+});
+
+/**
+ * The identity keys leave this module's SQL only through the target read
+ * (#5037).
+ *
+ * ## Why this block exists
+ *
+ * `keys-not-on-the-wire.test.ts` bans projecting `subject_key` / `predicate_key`
+ * / `object_key` from any file that speaks about `brain_facts`. #5037 puts
+ * `correction.ts` in that guard's `ROW_COPY_SITES`, because inheriting the
+ * target's slot requires reading it — and a whole-file exemption switches BOTH of
+ * that guard's arms off for a module holding four statements over `brain_facts`
+ * where the region bundle's exporter holds one.
+ *
+ * This is the compensating pin the exemption promises: per-STATEMENT where the
+ * exemption is per-file, so a key added to `REPLACEMENT_ROW_SQL` or
+ * `DEPENDENT_FACTS_SQL` for an unrelated read is caught here even though the
+ * global guard no longer looks.
+ *
+ * ## It reads the STATEMENTS, not the source
+ *
+ * Every assertion below runs against the exported statement strings and against
+ * `correctionTargetSql`'s actual return value — not against the text of
+ * `correction.ts`. A source-text pin cannot falsify a change in what that text
+ * MEANS, which is the defect #5077 recorded one loop over: a grep for
+ * `subject_key` would pass just as happily if the column moved from the target
+ * read into the replacement read, since both spellings are the same bytes.
+ *
+ * ## What it deliberately does NOT cover
+ *
+ * The wire. `packages/schemas/src/brain.ts` and `packages/types/src/brain.ts` are
+ * still scanned by the global guard — neither is exempt — so a key reaching a
+ * REST response or a fact-shaped wire type is still caught there, and pinning it
+ * a second time here would claim a coverage this file cannot honestly provide.
+ */
+describe("the identity keys never leave the target read (#5037)", () => {
+  /**
+   * ALL FIVE gated columns, not the three this slice reads.
+   *
+   * ⚠️ The exemption this block compensates for switches off `subject_cmp` and
+   * `object_cmp` too (`keys-not-on-the-wire.test.ts`'s `KEY_COLUMNS`), and a pin
+   * that replaces a five-column guard with a three-column one has quietly
+   * narrowed the prohibition while claiming to preserve it. `object_cmp` in
+   * particular is the arm that proves DIFFERENCE at the publish gate, so a
+   * `SELECT f.object_cmp` added to `REPLACEMENT_ROW_SQL` is exactly the leak
+   * worth catching.
+   */
+  const KEY_COLUMNS = [
+    "subject_key",
+    "predicate_key",
+    "object_key",
+    "subject_cmp",
+    "object_cmp",
+  ] as const;
+
+  /** The three THIS module legitimately reads. Everything else is a leak. */
+  const INHERITED_COLUMNS = ["subject_key", "predicate_key", "object_key"] as const;
+
+  /** The ACL clause shape `correctFact` passes in — any true predicate will do. */
+  const TARGET_READ = correctionTargetSql("f.workspace_id = $1", 2);
+
+  /**
+   * Every statement this module can execute, by name.
+   *
+   * Enumerated from the module's own exports rather than listed by hand, so a
+   * NEW statement is covered the day it is added — which is the failure mode a
+   * hand-written list has and the whole reason the global guard discovers its
+   * files instead of naming them.
+   */
+  const statements = async (): Promise<[string, string][]> => {
+    // NOT named `module`: `next(no-assign-module-variable)` is a CI-blocking
+    // error on that identifier, and the whole repo lints under one config.
+    const exports: Record<string, unknown> = await import("@atlas/api/lib/brain/correction");
+    const found: [string, string][] = [];
+    for (const [name, value] of Object.entries(exports)) {
+      if (typeof value !== "string") continue;
+      if (!/\b(SELECT|INSERT|UPDATE|DELETE)\b/i.test(value)) continue;
+      found.push([name, value]);
+    }
+    found.push(["correctionTargetSql", TARGET_READ]);
+    return found;
+  };
+
+  /** Projection spans — `SELECT … FROM` and `RETURNING …`, the guard's two shapes. */
+  const projectionsOf = (sql: string): string[] => [
+    ...[...sql.matchAll(/\bSELECT\b([\s\S]*?)\bFROM\b/gi)].map((m) => m[1]!),
+    ...[...sql.matchAll(/\bRETURNING\b([^;]*)/gi)].map((m) => m[1]!),
+  ];
+
+  /**
+   * WRITE spans — an `UPDATE … SET …` clause and an `INSERT INTO … (columns)`
+   * list.
+   *
+   * ⚠️ Without this the block is blind to the failure THREE separate places name
+   * it as the guard against. `correction.ts` is whole-file allowlisted in
+   * `check-brain-fact-promotion.sh` (covering all five gated columns) AND
+   * whole-file exempt in `keys-not-on-the-wire.test.ts`, and a projection scan
+   * cannot see a `SET`. A future `UPDATE brain_facts SET subject_key = …` added
+   * to this module — the plausible "re-key the target while we're here" edit —
+   * was therefore caught by NOTHING, while three rationales asserted it was
+   * caught here. A hole with a stop sign pointing the wrong way is worse than an
+   * open one.
+   */
+  const writesOf = (sql: string): string[] => [
+    ...[...sql.matchAll(/\bSET\b([\s\S]*?)(?=\bWHERE\b|\bRETURNING\b|$)/gi)].map((m) => m[1]!),
+    ...[...sql.matchAll(/\bINSERT\s+INTO\b[^(]*\(([^)]*)\)/gi)].map((m) => m[1]!),
+  ];
+
+  /** `*` or `f.*` in projection position — the arm the exemption also switched off. */
+  const STAR_PROJECTION = /(^|[\s,(])(?:"?[\w$]+"?\.)?\*(?!\s*\))/;
+
+  test("finds the module's statements at all", async () => {
+    // Everything below is vacuous if the export scan breaks — a renamed constant
+    // or a statement built at runtime would turn the two tests into green
+    // no-ops, which is precisely the shape this block replaces.
+    const found = await statements();
+    expect(
+      found.length,
+      "the statement scan found nothing — every assertion in this block would pass vacuously",
+    ).toBeGreaterThanOrEqual(6);
+    expect(found.map(([name]) => name)).toContain("REPLACEMENT_ROW_SQL");
+  });
+
+  test("the scan's matchers detect planted violations", () => {
+    // Every assertion in this block is of the `toEqual([])` shape, which passes
+    // just as happily when a matcher matches nothing at all. So each matcher
+    // proves itself on planted SQL first. `keys-not-on-the-wire.test.ts` carries
+    // the same control and records that its star matcher's FIRST CUT read green
+    // over a planted violation — the failure is real, not hypothetical.
+    expect(projectionsOf("SELECT f.subject_key FROM brain_facts f").join(" ")).toContain(
+      "subject_key",
+    );
+    expect(projectionsOf("UPDATE brain_facts SET x = 1 RETURNING object_cmp").join(" ")).toContain(
+      "object_cmp",
+    );
+    expect(writesOf("UPDATE brain_facts SET subject_key = $1 WHERE id = $2").join(" ")).toContain(
+      "subject_key",
+    );
+    expect(
+      writesOf("INSERT INTO brain_facts (subject, predicate_key) VALUES ($1, $2)").join(" "),
+    ).toContain("predicate_key");
+    expect(STAR_PROJECTION.test(" f.* ")).toBe(true);
+    // …and does NOT fire on an aggregate's star, which is what makes the arm
+    // usable on real statements rather than a source of false alarms.
+    expect(STAR_PROJECTION.test("COUNT(*)")).toBe(false);
+  });
+
+  test("every executed statement is one the scan can see", async () => {
+    // The scan reads EXPORTED string constants. A module-private const, or a SQL
+    // literal inlined at a `tx.query(…)` call site, is invisible to it — and the
+    // whole-file exemption is precisely the incentive to add one. This turns the
+    // docstring's claim ("a NEW statement is covered the day it is added") into
+    // something enforced rather than asserted.
+    const source = readFileSync(join(import.meta.dir, "..", "correction.ts"), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
+      .replace(/\/\/[^\n]*/g, " ");
+    const known = new Set((await statements()).map(([name]) => name));
+    // Statements IMPORTED from another module are fine and must not be flagged:
+    // they are that module's to guard, and none of the modules this file imports
+    // SQL from (`content-mode/adapters/brain-facts.ts`, `reconcile.ts`) carries
+    // an exemption — the global scan still reads them. What this arm is for is a
+    // statement declared HERE and not exported, which the whole-file exemption
+    // makes invisible to everything.
+    for (const [, names] of source.matchAll(/\bimport\s*\{([^}]*)\}\s*from/g)) {
+      for (const raw of names!.split(",")) {
+        const name = raw.trim().replace(/^type\s+/, "").split(/\s+as\s+/).pop()?.trim();
+        if (name) known.add(name);
+      }
+    }
+    const args = [...source.matchAll(/\btx\.query\(\s*([A-Za-z_$][\w$]*)/g)].map((m) => m[1]!);
+    expect(args.length, "found no tx.query call sites — the scan below is vacuous").toBeGreaterThan(
+      5,
+    );
+    const unknown = args.filter((name) => !known.has(name) && name !== "correctionTargetSql");
+    expect(
+      unknown,
+      "this module executes a statement declared here but not exported, so the key scan cannot see " +
+        "it. Export it, so the projection and write arms above cover it — `correction.ts` is exempt " +
+        "from keys-not-on-the-wire.test.ts whole-file, so a module-private statement is guarded by " +
+        "nothing at all.",
+    ).toEqual([]);
+  });
+
+  test("the target read projects all three keys", async () => {
+    // The POSITIVE control. Without it the prohibition below is satisfied by a
+    // module that reads no key at all — which is the pre-#5037 code, whose whole
+    // defect was re-deriving what it should have read.
+    const spans = projectionsOf(TARGET_READ).join(" ");
+    for (const column of INHERITED_COLUMNS) {
+      expect(spans, `the target read must project ${column} — the slot is INHERITED`).toContain(
+        column,
+      );
+    }
+  });
+
+  test("an inherited slot can be neither spread nor rebuilt (#5037)", () => {
+    // The round-2 fix made `InheritedSlot` nominal (a class with a `#private`
+    // field) and then module-private (only the TYPE is exported). Both halves
+    // were argued at length in docstrings and pinned by NOTHING: re-exporting the
+    // class, or swapping back to a phantom-symbol brand, left every gate green.
+    //
+    // `@ts-expect-error` is the mechanism — an UNUSED one is itself an error, so
+    // each line below fails the moment its forge starts compiling.
+    // `packages/api/tsconfig.json` includes `src/**/*.ts`, so `bun run type`
+    // covers this file and the pin is CI-enforced.
+    const slot = inheritSlotFromFactRow({
+      id: "f1",
+      subject_key: "billing",
+      predicate_key: "is owned by",
+    });
+    void ((): InheritedSlot => slot);
+    // ⚠️ LEXICAL, not `@ts-expect-error`, and that was measured rather than
+    // assumed: this repo type-checks with `tsgo`, which does NOT report an unused
+    // `@ts-expect-error` directive. A pin written that way passes identically
+    // whether the forge compiles or not — the always-green shape, in the guard
+    // written to stop an always-green shape. Reverting the class to
+    // `export class InheritedSlot` produced ZERO type errors with the directive
+    // form in place, which is how this was caught.
+    //
+    // So the two properties are asserted against the source instead. Both are
+    // one-line reverts and neither has any other detector:
+    //
+    //   - the class must stay MODULE-PRIVATE. Exporting it restores
+    //     `InheritedSlot.fromRow(…)` as a second mint — carrying the marker for
+    //     the caller — which the call-site grep below cannot see, because it
+    //     greps the other name.
+    //   - the marker must stay a `#private` FIELD. A `unique symbol` brand
+    //     survives object spread, so `{ ...slot, subject: computed }` type-checks
+    //     and reintroduces the defect at the likeliest future edit.
+    const identitySrc = readFileSync(join(import.meta.dir, "..", "identity.ts"), "utf8").replace(
+      /\/\*[\s\S]*?\*\//g,
+      " ",
+    );
+    expect(
+      /^\s*class InheritedSlotValue\b/m.test(identitySrc),
+      "the InheritedSlot class must stay module-private — only `export type` may leave this module, " +
+        "or `InheritedSlot.fromRow` becomes a second, unpinned mint",
+    ).toBe(true);
+    expect(
+      /export\s+class\s+InheritedSlot/.test(identitySrc),
+      "the InheritedSlot class is exported again — that is the round-1 defect, restored",
+    ).toBe(false);
+    expect(
+      /readonly\s+#\w+\s*=/.test(identitySrc),
+      "the nominal marker must be a `#private` field — a `unique symbol` brand survives object spread, " +
+        "so copy-but-recompute-one-position would type-check",
+    ).toBe(true);
+    // The runtime half, so the test still asserts something if the type ever
+    // becomes structurally satisfiable.
+    expect(slot.fromFactId).toBe("f1");
+    expect(slot.subject).toBe("billing");
+  });
+
+  test("the inherit channel is reachable from the row-copy path and nowhere else", () => {
+    // ⚠️ The type stops a slot being FORGED; it does not stop one being MINTED.
+    // `slotKey` is exported, so any producer can COMPUTE two keys and hand them
+    // to `inheritSlotFromFactRow({ id, subject_key: computed, … })` — no
+    // projection required, and invisible to both arms of
+    // `keys-not-on-the-wire.test.ts` (its SQL arm reads only SELECT/RETURNING
+    // spans; its identifier arm matches the camelCase spellings, not
+    // `subject_key`). That call reintroduces exactly the defect #5037 removes,
+    // in a file nobody is watching.
+    //
+    // So the doorway is pinned by CALL SITE, mirroring `ROW_COPY_SITES` itself:
+    // ADR-0037 §8 grants the row-copy path an exception, and a row-copy path is
+    // a specific, short list of files rather than a shape any producer can adopt.
+    const ALLOWED = new Set([
+      // Declares it.
+      "packages/api/src/lib/brain/identity.ts",
+      // The row-copy path — reads the keys off the target it is correcting.
+      "packages/api/src/lib/brain/correction.ts",
+    ]);
+    const found = execFileSync(
+      "grep",
+      [
+        "-rl",
+        "inheritSlotFromFactRow",
+        "packages",
+        "ee",
+        "plugins",
+        "apps",
+        "--include=*.ts",
+        "--exclude=*.test.ts",
+        "--exclude-dir=__tests__",
+        "--exclude-dir=node_modules",
+        "--exclude-dir=dist",
+      ],
+      { cwd: join(import.meta.dir, "..", "..", "..", "..", "..", ".."), encoding: "utf8" },
+    )
+      .split("\n")
+      .filter(Boolean);
+    // Vacuity guard: a renamed export or a moved directory would empty this list
+    // and the assertion below would pass having checked nothing.
+    expect(found, "the inherit-channel grep found no files — this assertion is vacuous").toContain(
+      "packages/api/src/lib/brain/identity.ts",
+    );
+    expect(
+      found.filter((f) => !ALLOWED.has(f)),
+      "a new caller is minting an inherited slot. ADR-0037 §1 forbids a producer COMPUTING identity; " +
+        "the doorway exists only for a path that COPIES it off a row it already holds. If this really " +
+        "is a row-copy path, add it here AND to ROW_COPY_SITES in keys-not-on-the-wire.test.ts, with " +
+        "the rationale both places ask for.",
+    ).toEqual([]);
+  });
+
+  test("the module never re-derives a key it could read off the target", () => {
+    // ⚠️ THE RATCHET. The "re-derive what you could have read" defect appeared at
+    // THREE sites in this one module — the reconcile candidate, the
+    // `replacementIdentical` guard, and `supersededKey` — and two of the three
+    // survived the falsifiers written for the first. A principle violated three
+    // times in one file has outgrown prose, so this is the mechanical check that
+    // makes a fourth impossible rather than a fourth comment asking for care.
+    //
+    // The rule is exact and needs no judgement: `slotKey(target.…)` re-derives
+    // the TARGET's identity from a surface, and the target's identity is stored.
+    // `slotKey(replacement.…)` is untouched and must stay — the replacement's
+    // object is new text with no stored key to read, so deriving is the only
+    // thing available there.
+    //
+    // This is a SOURCE-TEXT pin, which cannot falsify a change in what the text
+    // MEANS — so it is a belt beside the four behavioural falsifiers (the two
+    // inherit tests, the stored-object-key guard test, and the proposer's
+    // stored-predicate test), never a replacement for them. What it adds is
+    // coverage of the site that does not exist yet.
+    // ⚠️ SCOPED TO THE INHERITED POSITIONS. The rule is not "never derive from the
+    // target" — it is "never derive what is INHERITED". Those are different, and
+    // an earlier cut conflated them.
+    //
+    //   - `target.subject` / `target.predicate` — the SLOT, which is copied off
+    //     the row. Deriving either is always the #5037 defect, so both are banned
+    //     outright with no exemption to spell.
+    //   - `target.object` — NOT inherited. The replacement's object is new text
+    //     that keys on its own terms, and the `replacementIdentical` guard
+    //     legitimately needs BOTH readings of the target's object (the derived
+    //     one, which is `main`'s question about the text, and the stored one,
+    //     which is #5037's question about identity). Permitted, and the union
+    //     there is pinned behaviourally by two tests rather than lexically here.
+    //
+    // The previous cut banned all three and carved out `?? slotKey(target.…)`.
+    // That exemption encoded a SPECIFIC FIX — the precedence form — and so the
+    // ratchet mechanically enforced the incomplete version of it: writing the
+    // correct union tripped the guard, and the first repair anyone reaches for is
+    // hoisting the surface into a local, which is the evasion this pin exists to
+    // refuse. A guard that blocks the right fix is worse than one scoped honestly.
+    const offendersIn = (text: string): string[] =>
+      [...text.matchAll(/slotKey\(\s*target\.(subject|predicate)\b/g)].map((m) => m[0]);
+
+    // ── The positive control ───────────────────────────────────────────────
+    // `expect(offenders).toEqual([])` is the always-green shape: weaken the
+    // regex to match nothing and this test passes forever with no signal. So the
+    // matcher proves itself on planted source first — one violation it must
+    // catch, and one permitted fallback it must not — before it is trusted on
+    // the real file. `keys-not-on-the-wire.test.ts` carries the same control for
+    // the same reason, and records that its star matcher's FIRST CUT read green
+    // over a planted violation.
+    expect(
+      offendersIn("const k = slotKey(target.subject, vocabulary.subject);"),
+      "the matcher does not detect a planted subject re-derivation — every assertion below is vacuous",
+    ).toEqual(["slotKey(target.subject"]);
+    expect(
+      offendersIn("const k = slotKey(target.predicate, vocabulary.predicate);"),
+      "the matcher does not detect a planted predicate re-derivation — the two slot positions are a pair",
+    ).toEqual(["slotKey(target.predicate"]);
+    expect(
+      offendersIn("const k = slotKey(target.object, vocabulary.object);"),
+      "the matcher flags the OBJECT position, which is not inherited — this would block the union guard",
+    ).toEqual([]);
+
+    // BOTH comment forms are stripped. Stripping only `/* */` leaves a `//` line
+    // mentioning `slotKey(target.subject, …)` — prose that already exists in this
+    // repo — to false-fire the ratchet, and the repair anyone reaches for first
+    // is weakening the regex, which disarms it silently.
+    const source = readFileSync(join(import.meta.dir, "..", "correction.ts"), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
+      .replace(/\/\/[^\n]*/g, " ");
+    expect(
+      offendersIn(source),
+      "the target's SLOT keys are STORED — read them off the row instead of re-deriving them from its " +
+        "surfaces. A derived key equals the stored one only until the vocabulary moves (ADR-0037 §8), and " +
+        "every divergence lands in the irreversible direction. This covers the subject and predicate only: " +
+        "the object is not inherited, and the `replacementIdentical` guard reads it both ways on purpose.",
+    ).toEqual([]);
+  });
+
+  test("no other statement projects a key, and none STARS brain_facts", async () => {
+    for (const [name, sql] of await statements()) {
+      const spans = projectionsOf(sql);
+      // The star arm, for EVERY statement including the target read: `SELECT f.*`
+      // projects all five keys without naming one, so the column loop below
+      // cannot see it. This is the arm `keys-not-on-the-wire.test.ts` documents
+      // as the reason a star check exists at all, and the exemption turned it off.
+      for (const span of spans) {
+        expect(
+          STAR_PROJECTION.test(span),
+          `${name} star-projects. A \`*\` over brain_facts carries all five identity columns ` +
+            `without naming one, which every name-based arm here is blind to.`,
+        ).toBe(false);
+      }
+      // ⚠️ The target read is exempt from the KEY loop below for the three
+      // columns it legitimately inherits — and for NOTHING else. An earlier cut
+      // skipped this statement wholesale, which meant the `subject_cmp` /
+      // `object_cmp` coverage added right above was exactly zero for the one
+      // statement the whole exemption exists to permit. The plausible edit is
+      // not hypothetical: `TargetRow` already grew `objectKey` for the
+      // `replacementIdentical` guard, and "read `object_cmp` too so the guard
+      // can compare comparables" is the next edit of precisely that shape.
+      //
+      // Bounded from ABOVE rather than merely below, which is the form the
+      // sibling row-copy pin (`bundle-identity-v3.test.ts`) already takes: the
+      // target read carries EXACTLY the inherited three.
+      const joined = spans.join(" ");
+      if (name === "correctionTargetSql") {
+        for (const column of KEY_COLUMNS) {
+          if ((INHERITED_COLUMNS as readonly string[]).includes(column)) continue;
+          expect(
+            joined.includes(column),
+            `the target read projects \`${column}\`. It may carry the three slot keys it INHERITS and ` +
+              `nothing else — a comparable value is not a slot, and ADR-0037 §8's row-copy exception ` +
+              `covers the keys the replacement is given, not every identity column on the row.`,
+          ).toBe(false);
+        }
+        continue;
+      }
+      for (const column of KEY_COLUMNS) {
+        expect(
+          joined.includes(column),
+          `${name} projects \`${column}\`. Only the target read may, and only so the replacement can ` +
+            `INHERIT the target's slot (ADR-0037 §8). \`correction.ts\` is exempt from ` +
+            `keys-not-on-the-wire.test.ts whole-file, so this is the only thing looking.`,
+        ).toBe(false);
+      }
+    }
+  });
+
+  test("NO statement writes a key — not even the target read's own module", async () => {
+    // The arm the promotion guard's rationale names and the projection scan
+    // could not provide. `correction.ts` copies keys; it must never author one.
+    // The single sanctioned key writer is `vocabulary-decide.ts`'s re-key, and
+    // `reconcile.ts` binds them on INSERT — neither is this module.
+    for (const [name, sql] of await statements()) {
+      const spans = writesOf(sql).join(" ");
+      for (const column of KEY_COLUMNS) {
+        expect(
+          spans.includes(column),
+          `${name} WRITES \`${column}\`. This module is a row-copy path: it inherits keys and never ` +
+            `authors them. Whole-file allowlisted in check-brain-fact-promotion.sh, so its identity ` +
+            `arm will not catch this — which is why the rationale there points here.`,
+        ).toBe(false);
+      }
+    }
   });
 });

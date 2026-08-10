@@ -229,7 +229,7 @@ import { isUsableGrant } from "@atlas/api/lib/brain/ingest/grant";
 // ONE place `alias(lexicalNorm(surface))` is assembled, and a second assembly
 // site is how the write side and a future re-key start disagreeing about what a
 // claim's slot IS.
-import { slotKey, type ClaimVocabulary } from "@atlas/api/lib/brain/identity";
+import { slotKey, type ClaimVocabulary, type InheritedSlot } from "@atlas/api/lib/brain/identity";
 // The comparable value, on the same terms: `comparableValue` is the ONE place a
 // surface becomes a typed canonical form, and `comparableSameSql` the ONE place
 // *provably same* is spelled — the two statements below negate each other and
@@ -374,6 +374,31 @@ export interface FactCandidate {
    * claim came from.
    */
   readonly detail?: Record<string, unknown>;
+  /**
+   * ADR-0037 §8's row-copy doorway (#5037) — the SLOT this claim belongs to,
+   * copied off an existing fact row instead of derived from this candidate's
+   * surfaces.
+   *
+   * ⚠️ **This is the ONE exception to *producers supply claims, never matching
+   * rules*, and it is an exception the rule always had.** §1 prohibits a producer
+   * COMPUTING identity; a row-copy path COPIES it, which is why `correction.ts`
+   * was called the immune producer in the first place. The doorway is explicit
+   * rather than implicit because the immunity was only ever true while identity
+   * == surface: the instant keys are computed at this seam, a correction passing
+   * the target's SURFACES down here stops carrying identity and starts
+   * re-deriving it, which is the operation §1 rules out for everyone.
+   *
+   * Unforgeable by construction — {@link InheritedSlot} is nominal (a class with
+   * a `#private` field, exported as a TYPE only) and has one exported mint — so a
+   * producer can forward a slot it read off a row but cannot author one. See that
+   * type for why neither the nominality nor the single mint is the whole guard on
+   * its own, and for what a second mint would cost.
+   *
+   * ⚠️ Omit it. The absence is the correct answer for every claim-supply
+   * producer, and a producer reaching for this field is almost certainly
+   * answering the question §1 answers instead.
+   */
+  readonly inheritedSlot?: InheritedSlot;
 }
 
 /**
@@ -1124,11 +1149,45 @@ export async function reconcileFacts(
     // it cannot put an id in a key; its answers reach the row at the two `_cmp`
     // columns and nowhere else. A store's slot-side contribution travels as
     // vocabulary instead, which is what makes it re-keyable in place.
-    const keys: SlotKeys = {
-      subject: slotKey(subject, vocabulary.subject),
-      predicate: slotKey(predicate, vocabulary.predicate),
-      object: slotKey(object, vocabulary.object),
-    };
+    // ⚠️ The SLOT may be INHERITED (#5037, ADR-0037 §8) — the object never is.
+    //
+    // A row-copy producer hands down the slot it read off the row it is
+    // correcting, and copying beats re-deriving for the reason §8 gives: the two
+    // agree only while the vocabulary has not moved, and where they diverge,
+    // re-deriving lands the claim in a slot the target is not in. The failure is
+    // silent and one-directional — the target's belief is retired by an id-based
+    // stamp regardless, so the successor goes missing from the slot every future
+    // collision joins on.
+    //
+    // The OBJECT is derived here unconditionally, and the asymmetry is the whole
+    // design: the correction is *about this claim* (so the slot is the target's)
+    // while the object is new, human-authored text (so it keys on its own terms).
+    // Inheriting it too would make the replacement identical to the target at
+    // every identity position, which is precisely what a supersession is not.
+    //
+    // `null` travels as `null`. An unkeyed row's slot is `(NULL, NULL)` and joins
+    // nothing; deriving a key to fill the hole would invent identity for a row
+    // that has none and move it into a live slot.
+    //
+    // ONE ternary over the whole slot, not one per position. Two independent
+    // ternaries let a future edit inherit the subject and derive the predicate
+    // with nothing objecting — a half-inherited slot, which is neither the
+    // target's nor the candidate's and joins whatever it happens to land on.
+    // "The slot is copied whole" is the invariant; this spelling is what makes
+    // it structural instead of conventional.
+    const inherited = candidate.inheritedSlot;
+    const keys: SlotKeys =
+      inherited !== undefined
+        ? {
+            subject: inherited.subject,
+            predicate: inherited.predicate,
+            object: slotKey(object, vocabulary.object),
+          }
+        : {
+            subject: slotKey(subject, vocabulary.subject),
+            predicate: slotKey(predicate, vocabulary.predicate),
+            object: slotKey(object, vocabulary.object),
+          };
     // The comparable value, materialized beside the keys and for the same
     // reason: computing it per statement is how the corroboration lookup and
     // the INSERT would start disagreeing about what a claim's value IS.
@@ -2114,13 +2173,42 @@ async function writeCandidate(
         producer: ctx.producer,
         factId,
         unkeyed,
+        // The row-copy provenance (#5037), and the positions it actually
+        // explains.
+        //
+        // ⚠️ `inheritedFrom` alone is NOT the discriminator, and reporting it as
+        // one blames the wrong party. It is set for EVERY correction-produced
+        // candidate, but only the SUBJECT and PREDICATE are inherited — the
+        // object is always derived from the replacement's own text. So a human
+        // superseding with `"-"` lands here with `unkeyed: ["object"]` and a
+        // non-null `inheritedFrom`, and a message keyed on that field alone
+        // would send the operator to inspect a target row that is perfectly
+        // healthy while the replacement text is what asserts nothing.
+        inheritedFrom: item.candidate.inheritedSlot?.fromFactId ?? null,
+        // The intersection: unkeyed positions that were actually COPIED. Empty
+        // means the target explains none of this, whatever `inheritedFrom` says.
+        inheritedUnkeyed:
+          item.candidate.inheritedSlot === undefined
+            ? []
+            : unkeyed.filter((role) => role !== "object"),
       },
-      // Two causes, and the message names both because it cannot distinguish
-      // them once the vocabulary is real: the SURFACE norms away (`-`, `___`,
-      // and the only reachable cause today), or an alias entry maps a real slot
-      // to something that does. Naming only the producer would send an operator
-      // after the wrong subsystem the day #5016 lands.
-      "brain reconcile: stored a claim with no identity for one or more slots — it will never corroborate, earn a tension edge, or be superseded at publish. Either the producer emitted a surface that norms away (fix the producer, or tighten the MALFORMED_CLAIM guard — migration 0187's header, item 3) or a vocabulary entry maps that slot to nothing",
+      // THREE causes now, and the message names all three because it cannot
+      // distinguish the first two once the vocabulary is real: the SURFACE norms
+      // away (`-`, `___`), or an alias entry maps a real slot to something that
+      // does. Naming only the producer would send an operator after the wrong
+      // subsystem the day #5016 lands.
+      //
+      // ⚠️ The third arrived with #5037's row-copy path and inverts the advice.
+      // An inherited slot is copied off the TARGET row, so a correction whose
+      // target is unkeyed lands here with surfaces that are perfectly fine —
+      // and an operator following the first two causes would inspect
+      // `Billing / is owned by`, find nothing wrong, and conclude the log is
+      // lying.
+      //
+      // The discriminator is `inheritedUnkeyed`, NOT `inheritedFrom`: only the
+      // copied positions are the target's to answer for, and the object is never
+      // one of them.
+      "brain reconcile: stored a claim with no identity for one or more slots — it will never corroborate, earn a tension edge, or be superseded at publish. Three causes: the producer emitted a surface that norms away (fix the producer, or tighten the MALFORMED_CLAIM guard — migration 0187's header, item 3); a vocabulary entry maps that slot to nothing; or — for the positions listed in `inheritedUnkeyed` — a row-copy path copied a null slot off the fact named by `inheritedFrom`, in which case those positions' surfaces are fine here and the TARGET row is what has no identity. Any position NOT in `inheritedUnkeyed` was derived from this claim's own text (the object always is), so the first two causes are the ones to follow for it",
     );
   }
 

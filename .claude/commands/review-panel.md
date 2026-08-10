@@ -103,7 +103,9 @@ For every must-fix, say which of two things it is:
 - **(a) Local defect** — the fix corrects existing behaviour: a missing null check, an unhandled rejection, a wrong type, a test that cannot fail. **Fix it inline. This is the overwhelming majority and it is not a decision** — it is the repo's standing rule (*fix inline, don't farm follow-ups*), and this step does not soften it.
 - **(b) New machinery** — the fix cannot be made without introducing something that did not exist: a new primitive, a new statement, a new field threaded through a report and its audit trail. Then make the in-PR-vs-follow-up call **explicitly** and **record it in the PR body** with one line of reasoning, whichever way it goes.
 
-  ⚠️ **On a round AFTER the first, (b) defaults to a FOLLOW-UP.** Not a ban — a default, overridable in one line, and the override is the interesting case rather than the exception. The reason is arithmetic: machinery introduced by a round-N fix is unreviewed code entering the diff at the exact moment the loop is trying to converge, so it arrives with no round left to review it except the one it will itself cause. #5077's round 1 added ~600 lines of new machinery (a refusal path, a cell marker, a gate script, a fixture suite) and **round 2's rise was almost entirely defects inside it** — including two fixtures that asserted nothing and a cell that certified itself green forever.
+  ⚠️ **(b) defaults to a FOLLOW-UP from ROUND ONE, not from round two.** Not a ban — a default, overridable in one line, and the override is the interesting case rather than the exception. The reason is arithmetic: machinery introduced by a fix is unreviewed code entering the diff, and it arrives with no round left to review it except the one it will itself cause.
+
+  ⚠️ **This rule used to exempt round 1, and the exemption was backwards.** #5077's ROUND 1 added ~600 lines of new machinery (a refusal path, a cell marker, a gate script, a fixture suite) and round 2's rise was almost entirely defects inside it — two fixtures that asserted nothing, a cell that certified itself green forever. #5037 repeated it exactly: round 1 added a branded type, three guards and a statement-scanning test block; round 2 returned ~26 findings, ~20 of them defects inside that machinery. **Round 1 is where the machinery lands, so exempting round 1 exempted the precise thing this rule exists to catch.**
 
   Override when the defect is live and the machinery is what makes it safe — #5033's savepoint is the standing example, and deferring it would have shipped a diagnostic capable of rolling back a customer's publish. Do **not** override to avoid the bookkeeping of filing an issue.
 
@@ -113,12 +115,54 @@ The test for (b) is *"does the smallest correct fix add a new thing?"* — not *
 
 So the point is not fewer rounds. It is that a fix which triples the diff should be a **visible decision with a recorded reason**, made when the growth is proposed rather than discovered three rounds later — and a PR that grew that way should say so, because the reviewer's read of it changes.
 
-**Step 5b: SWEEP FOR SIBLINGS before you write the fix**
+**Step 5b: BEFORE writing the fix — the behaviour delta, then the sibling sweep**
 
-⚠️ **A finding names a CLASS. Fixing only the reported instance is what makes a
-round cap bind.** Before writing each fix, spend one grep asking *"where else does
-this exact shape appear?"* — the same file first, then the module, then the twin
-half of whatever pair you are in. Fix every instance in the same commit.
+⚠️ **A finding names a CLASS, and a class has members in TWO directions. Miss
+either and the fix breeds the next round's work.**
+
+**5b(1) — THE BEHAVIOUR DELTA. Mandatory for any fix to a conditional: a guard,
+a refusal, a branch, a comparison, a gate.**
+
+Before writing the code, enumerate the INPUT CLASSES at that site and state, for
+each, what the old code did and what the new code does. Four rows, two minutes,
+pasted into the commit message:
+
+```
+                              old        new
+stored key absent             refuse     PERMIT   ← changed
+stored == derived             refuse     refuse
+stored != derived             refuse     PERMIT   ← changed
+both degenerate               refuse     refuse
+```
+
+Then answer one question per changed row: **is the new behaviour more
+conservative?** If any row moves toward the irreversible direction, the fix is
+wrong however well it closes the reported symptom.
+
+⚠️ **This is the step that was missing, and its absence is measured.** #5037's
+`replacementIdentical` guard was edited three times. Each edit fixed the symptom
+a reviewer reported and silently opened the input class beside it — the second
+one regressing the exact scenario the ticket was written for (a key carried from
+a foreign vocabulary). The table above is that issue's, written after the fact;
+written before, it shows both defects on the FIRST edit, because the changed rows
+are visible the moment you list them.
+
+**Prefer an ADDITIVE edit over a REPLACEMENT.** Adding a disjunct to a refusal
+can only ever refuse more, so it cannot regress in the permitting direction *by
+construction*. Replacing a comparison moves behaviour in both directions at once.
+Where the two are available, take the additive one and say so — that is a
+guarantee rather than an argument, and argument is what fails here.
+
+**5b(2) — THE SIBLING SWEEP,** for everything else. One grep asking *"where else
+does this exact shape appear?"* — the same file first, then the module, then the
+twin half of whatever pair you are in. Fix every instance in the same commit.
+
+⚠️ **The two halves find different things and neither substitutes for the other.**
+The grep finds siblings in SPACE: the same shape in another file, another call
+site, the adjacent field. The table finds siblings in the INPUT DOMAIN at ONE
+site — same line, different input class. #5037 spent three rounds on the second
+kind while sweeping diligently for the first, and no amount of grepping the tree
+can see them.
 
 The shapes worth sweeping for, because they are what actually recurred:
 
@@ -208,26 +252,27 @@ For each must-fix you resolved, name one of three:
 - an explicit *"this is unfalsifiable, and here is the measurement instead"* —
   carried in the docstring, not in your head.
 
-⚠️ **NAMING is every round. BUILDING and RUNNING is the closing round only.**
-The split is not a softening — it is where the cost actually falls, measured.
-Naming is the cheap tell this step already calls *"one question, and it is
-cheap"*: if you cannot say what would go red, you have not closed the finding,
-and that is the check #5027's rounds 1–2 failed. Building is the expensive half
-— write the test, apply the mutant, run it, revert — and on a non-final round
-you are paying it for code the next round may rewrite. #5088's yield went
-30 → 18 → 11 → **21**: the rise means round 3's fixes were themselves defective,
-so every falsifier built for them was built for code round 4 replaced.
+⚠️ **BUILD IT IN THE ROUND THAT WRITES THE FIX. Do not defer it to the closing
+round.**
 
-So: rounds 1..N−1 carry a **named** falsifier per must-fix, in the fix's
-docstring or the round report. The closing round builds and runs every one that
-is still standing, and the round is not clean until it has. **Nothing merges
-unfalsified** — which is the whole of what the rule protects — but nothing is
-falsified twice.
+This rule previously said *name every round, build in the closing one*, on the
+argument that building for a fix a later round may rewrite is throwaway work.
+**That argument was wrong in the measurable direction and the split has been
+retired.** A round only knows it was the closing round afterwards, so the deferral
+is a bet on which round is last — and when the loop exits on a yield stop or a
+cap, as it usually does, the bet loses and the fixes ship with nothing.
 
-⚠️ This is the same move `aa6ec839a` made for the comment sweep, for the same
-reason, and it is the one to check first if rounds start rising again: if the
-named-but-unbuilt falsifiers are what later rounds keep tripping over, the split
-is wrong and this paragraph is the evidence to revisit.
+Measured on #5037: two of three fixes written in the second round shipped with no
+falsifier of any kind. Five separate mutations — deleting a whole warn arm,
+collapsing a discriminant to a constant, re-exporting a class the round had just
+made private — were all green against the suite. The deferred cost did not
+vanish; it came back as the next round's findings, which is strictly more
+expensive than paying it once.
+
+So: **every must-fix gets its falsifier built and run in the same commit as the
+fix**, shown red against the defect and green with it. Apply the mutant, watch it
+fail, revert. If that is expensive, that is the honest price of the fix — and it
+is the arm nothing else can see.
 
 ⚠️ **Its absence entirely is what made #5027 take four rounds.** Rounds 1 and 2
 there shipped ~500 lines of fixes

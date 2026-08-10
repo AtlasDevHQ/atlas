@@ -442,6 +442,195 @@ export function slotKey(surface: string, alias: AliasLookup): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// The inherit channel (#5037)
+// ---------------------------------------------------------------------------
+
+/**
+ * Slot keys COPIED off an existing fact row — the row-copy half of ADR-0037 §8's
+ * *a row-copy path carries keys verbatim; a claim-supply path never supplies
+ * them.*
+ *
+ * ## Why this exists at all
+ *
+ * ADR-0037 §1 forbids a producer supplying identity, and that prohibition is what
+ * keeps canonicalization at the one seam. `correction.ts` is the one caller that
+ * needs a doorway through it, and the distinction that earns the doorway is
+ * narrow: it does not COMPUTE a key, it COPIES one off the row it is correcting.
+ * ADR-0037 §8 calls region import and `correction.ts`'s inherit-identity-from-
+ * target the same operation for that reason.
+ *
+ * Without the doorway `correction.ts` re-derives `alias_now(lexicalNorm(
+ * target.subject))` and gets the target's stored key only while the vocabulary
+ * has not moved. Three ways it has — an alias removal, a correction racing the
+ * drift rewrite, and a row whose keys a region import carried from a FOREIGN
+ * vocabulary (#5035) — and on any of them the id-based stamp still fires, so the
+ * target is retired and its replacement lands in a DIFFERENT slot: unreachable
+ * from the slot every future collision joins on. The audit trail says
+ * "superseded by X"; the slot says empty.
+ *
+ * ## Why it is a CLASS with a private field, and not a phantom-symbol brand
+ *
+ * ADR-0037's accepted cost for the doorway is that it *"must be typed so it
+ * cannot be filled from thin air — inherited-from-a-row-id, not free strings"*.
+ *
+ * ⚠️ A `unique symbol` phantom brand — the repo's usual shape, and what this
+ * type carried first — does NOT deliver that, because **a symbol-keyed brand
+ * survives object spread**. This compiles, with no assertion and without
+ * importing the constructor:
+ *
+ * ```ts
+ * const forged: InheritedSlot = { ...target.slot, subject: slotKey(surface, vocab) };
+ * ```
+ *
+ * That is not an exotic bypass. *"Copy the slot but recompute one position"* is
+ * the single most likely future edit at this seam, it reintroduces exactly the
+ * defect #5037 removes, and it slips past a `slotKey(target.…)` lexical ratchet
+ * because the argument is a surface rather than the target. A `#private` field
+ * is not spreadable, so the same line fails to type-check — the guarantee is the
+ * compiler's rather than a reviewer's.
+ *
+ * A single `as InheritedSlot` still forges either shape. That is inherent to
+ * nominal typing in TypeScript and is acceptable: an assertion is visible in
+ * review, and Atlas already treats one as something to justify.
+ *
+ * ⚠️ The type alone would still admit a caller that COMPUTED two keys and handed
+ * them to the mint — `slotKey` is exported, so no projection is needed to hold a
+ * key. The compensating pin is `correction.test.ts`'s call-site assertion, which
+ * keeps {@link inheritSlotFromFactRow} reachable from this file and
+ * `correction.ts` only. The type stops a slot being FORGED; that pin stops one
+ * being MINTED somewhere it has no business being.
+ *
+ * ⚠️ That pin is a grep on ONE identifier, so the number of exported mints is
+ * load-bearing and not an implementation detail. An earlier cut of this fix
+ * exported the class, which made `InheritedSlot.fromRow(…)` a second, unpinned
+ * mint — the same forge the `#private` field had just closed, returning as
+ * destructure-and-rebuild, with the marker attached by the constructor for the
+ * caller. Exporting only the type is what keeps "one mint" true rather than
+ * merely intended. **Adding a second construction path means adding it to that
+ * grep in the same commit.**
+ *
+ * ## What travels, and what does not
+ *
+ * The SLOT — subject and predicate. Not the object: a correction is *about this
+ * claim*, so its slot is the target's, but the replacement's object is new and
+ * human-authored and keys on its own terms. Inheriting the object key would make
+ * the replacement byte-identical to the target at every identity position, which
+ * is the one thing a supersession must not be.
+ *
+ * ## Named by ROLE, constructed from the COLUMNS
+ *
+ * The two exposed keys are `subject` / `predicate`, not `subjectKey` /
+ * `predicateKey`, for the reason `reconcile.ts`'s `SlotKeys` already gives:
+ * `keys-not-on-the-wire.test.ts` bans those three identifiers outright in any
+ * file that speaks about `brain_facts`, because a fact-shaped TYPE growing a key
+ * field is the leak it exists to catch and it cannot tell one from a local. This
+ * type never reaches a row type or a wire type, so it takes the same naming
+ * rather than a fourth exemption.
+ *
+ * Role names on a KEYS type would normally be a footgun — `{ subject, predicate }`
+ * is also the shape of a claim's SURFACES, and handing the surfaces to a function
+ * that wanted keys is a silent, exactly-wrong call. {@link inheritSlotFromFactRow}
+ * closes that by taking the raw `pg` row and its SQL column spellings
+ * (`subject_key`), which no surface-shaped object satisfies. The disambiguation
+ * lives at the one place a value can be built, so the ergonomic names are safe
+ * everywhere they are read.
+ */
+class InheritedSlotValue {
+  /**
+   * The nominal marker. `#private`, so the type cannot be satisfied by an object
+   * literal or by spreading an existing instance — see the docstring above for
+   * why the phantom-symbol spelling was not enough.
+   */
+  readonly #inherited = true;
+
+  private constructor(
+    /**
+     * The `brain_facts.id` these keys were read from.
+     *
+     * Carried rather than dropped so the value names its own provenance, and
+     * READ rather than merely stored: `applySupersede` asserts it against the
+     * target it is correcting. A slot built from one row and attached to a
+     * candidate about another has no other detector, and a field nothing checks
+     * would be documentation with a runtime cost.
+     */
+    readonly fromFactId: string,
+    /** The target's stored subject key, verbatim. `null` is a legal stored value. */
+    readonly subject: string | null,
+    /** The target's stored predicate key, verbatim. `null` is a legal stored value. */
+    readonly predicate: string | null,
+  ) {}
+
+  /**
+   * ⚠️ NOT REACHABLE OUTSIDE THIS MODULE, and that is the whole point.
+   *
+   * Only the TYPE is exported (`export type InheritedSlot = InheritedSlotValue`),
+   * so there is no exported VALUE named `InheritedSlot` and this static cannot be
+   * addressed from another file. An earlier cut exported the class, which made
+   * `InheritedSlot.fromRow({ id: slot.fromFactId, subject_key: computed, … })` a
+   * second mint — the same forge the `#private` field had just closed, returning
+   * as destructure-and-rebuild through the fix's own constructor, with the marker
+   * attached for the caller. One exported mint, one name to pin.
+   */
+  static fromRow(row: {
+    readonly id: string;
+    readonly subject_key: string | null;
+    readonly predicate_key: string | null;
+  }): InheritedSlotValue {
+    return new InheritedSlotValue(row.id, row.subject_key, row.predicate_key);
+  }
+
+  /** Silences the unused-private-member reading; the field exists to be nominal. */
+  get inherited(): boolean {
+    return this.#inherited;
+  }
+}
+
+/**
+ * The nominal type. The CLASS is deliberately not exported — see
+ * {@link InheritedSlotValue.fromRow} — so {@link inheritSlotFromFactRow} is the
+ * only way to obtain one from outside this module.
+ */
+export type InheritedSlot = InheritedSlotValue;
+
+/**
+ * The one constructor for {@link InheritedSlot}.
+ *
+ * Takes the RAW ROW — `pg`'s snake_case column keys, exactly as the driver hands
+ * them back — rather than three strings. Two things follow from that, and both
+ * are the point:
+ *
+ *   - The call site reads as a copy, and the fact id travels with the keys it
+ *     belongs to, so nothing can quietly attach one row's slot to another row's
+ *     correction.
+ *   - The parameter cannot be satisfied by a claim's surfaces. `{ subject,
+ *     predicate }` would type-check against a role-named parameter and mean the
+ *     opposite of what it says; `{ subject_key, predicate_key }` is a shape only
+ *     a fact row has.
+ *
+ * `null` keys pass through unchanged and deliberately: an unkeyed legacy row's
+ * slot is `(NULL, NULL)`, which joins nothing — and re-deriving a key for it here
+ * would invent identity for a row that has none, silently moving it into a live
+ * slot. Carrying the nulls preserves today's behaviour for that row, which is the
+ * conservative direction (#5035's null-at-import rule makes the same call for the
+ * same reason).
+ *
+ * ⚠️ That preservation is not PERMANENT, and saying so matters because the
+ * conservative argument above reads as if it were. `REKEY_DRIFTED_FACTS_SQL`
+ * (`vocabulary-decide.ts`, #5024) rewrites every key in the workspace that is not
+ * a fixpoint of the local vocabulary at the next alias decision — inherited nulls
+ * included. Nothing breaks: the target is rewritten by the same statement, so the
+ * pair moves together and stays in one slot. What expires is the *unkeyedness*,
+ * not the inheritance.
+ */
+export function inheritSlotFromFactRow(row: {
+  readonly id: string;
+  readonly subject_key: string | null;
+  readonly predicate_key: string | null;
+}): InheritedSlot {
+  return InheritedSlotValue.fromRow(row);
+}
+
+// ---------------------------------------------------------------------------
 // The SQL twin (#5024)
 // ---------------------------------------------------------------------------
 

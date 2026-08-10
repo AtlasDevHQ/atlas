@@ -56,7 +56,9 @@ Use `cd packages/api && bun run scripts/test-isolated.ts --affected` for the fas
 ```
 /review-panel
 ```
-- Verdict **CHANGES REQUESTED** → **triage the must-fix findings first** (`/review-panel` Step 5: local defect → fix inline; new machinery → decide in-PR vs follow-up explicitly and record the reason in the PR body), then **sweep for siblings** (Step 5b — a finding names a class, and fixing only the reported instance is the main reason rounds multiply), then fix, then re-run `/review-panel` on the new diff.
+- Verdict **CHANGES REQUESTED** → **triage the must-fix findings first** (`/review-panel` Step 5: local defect → fix inline; new machinery → follow-up by default, from round one), then **Step 5b before writing each fix** — for a guard/branch/comparison, the BEHAVIOUR DELTA table (input classes × old vs new, in the commit); for everything else, the sibling grep. Then fix, build the falsifier in the same commit, then re-run `/review-panel` on the new diff.
+
+  ⚠️ **Fixing the reported instance and not the class is THE reason rounds multiply, and the class has members in two directions.** The grep finds siblings in space; the delta table finds siblings in the input domain at one site. #5037 swept diligently for the first and lost three rounds to the second — one guard, edited three times, each edit closing the symptom a reviewer named and opening the input class beside it.
 - **Re-runs are not fresh rounds.** Pass the previous round's fix commits into the panel and name them the primary audit target (`/review-panel` Step 2). Reviewers keep fresh context; what they must not have is fresh *ignorance of what you just changed*.
 - Repeat until **CLEAN**, capped at **3 rounds**. If it can't converge in 3 (usually a spec ambiguity), STOP and ask the human.
 - The cap is on ROUNDS, not on scope. A round-2 fix that adds real machinery *should* earn a round 3 — don't skip the re-review to stay under the cap. If the work genuinely needs a fourth round, that is the STOP-and-ask case, not a reason to merge unreviewed.
@@ -67,18 +69,34 @@ Use `cd packages/api && bun run scripts/test-isolated.ts --affected` for the fas
 
   Report both numbers, always: *"round 2: 22 findings — 6 new surface, 16 defect-in-prior-fix."* **The stop decision keys on the SECOND number.** A total that rose on new surface is a reason to continue; a total that rose on defect-in-prior-fix is a reason to stop and change how the fixes are being written, not to buy another round of the same.
 
+  ⚠️ **THE HARD STOP IS THE RATIO, NOT THE ROUND COUNT: if defect-in-prior-fix EXCEEDS new-surface in any round, stop that round.** The 3-round cap is the wrong instrument and always was — it bounds how long you spend, not whether you are making things better, and a loop can burn all three rounds cleaning up after itself. When the majority of a round's findings are defects the previous round's fixes introduced, more review cannot help: the fixes are the defect source, so another round adds work faster than it removes it.
+
+  Measured on #5037: round 1 returned 21 findings, all new surface; round 2 returned ~26, of which ~20 were defects inside round 1's own fixes. The raw total *and* the ratio both said stop, one round before the cap would have. Under the old rule the cap allowed a third round, which would have been spent on the second round's fixes.
+
   ⚠️ This split exists because the raw rule shipped without it and gave the wrong reading first time out. #5077 ran 17 → ~22 and the rise looked like a loop failing; decomposed, it was almost entirely defects in round 1's own fixes — three of them reproducing the very defect being fixed, one layer over. Those two diagnoses point at different remedies and the total cannot tell them apart.
 - **When you do stop, report the CURVE, not just the count.** A declining count (30 → 18 → 11) is a loop converging and the cap is a formality; a flat or rising one is a loop that is not, and the human needs to know which they are approving another round of.
 - ⚠️ **A STOP IS A CLOSING ROUND. Do not stop without paying the closing round's costs.** Whichever way you leave the loop — CLEAN, the yield stop, or the 3-round cap — that round is the last one the diff gets, so it owes everything a final round owes: `comment-analyzer` run on this diff (`/review-panel` Step 2), and every named falsifier BUILT and RUN (Step 6). Stopping early is correct; stopping cheaply is not.
 
   Measured: #5077 stopped on the yield rule and **merged with no comment sweep at all**, because the sweep is gated on "a round with no must-fix" and that round never arrived. Two rules that did not know about each other, and a comment-heavy diff went out unreviewed on the one axis dedicated to it.
 
-**Step 4 — CI gate**
+**Step 4 — CI gate: PUSH FIRST, and let REMOTE CI be the gate**
 
+```bash
+cd packages/api && bun run scripts/test-isolated.ts --affected   # + bun run lint, bun run type
 ```
-/ci
-```
-All gates must pass. Fix anything red (these are usually small). Run full `bun run test` once here even if `--affected` was green.
+
+Then open the PR (Step 5) and let remote CI run. **Do NOT run `/ci` locally before every PR.**
+
+⚠️ **This is a change, and the arithmetic is the whole argument.** `scripts/ci-local.sh` is ~25 minutes, largely serial, and the mutation gate inside it rewrites source files in place — so nothing else can touch the tree while it runs. Remote CI on the PR covers the same gates in **~4 minutes**, in parallel, on hardware that is not yours, while you do something else. Running both means paying the slow one first for a result the fast one is about to produce anyway. Measured across `/ship-issue` runs, local `/ci` was one of the largest single blocks of wall clock in the loop and caught nothing remote CI did not.
+
+So the local pre-flight is the cheap subset — `--affected`, `lint`, `type` — which is seconds to a couple of minutes and catches the errors that would waste a remote round-trip. A red remote check is then serviced exactly like any other: fix, `git commit -o <files>`, push, which re-runs CI.
+
+**Run the full `/ci` only when:**
+- remote CI is itself broken or unavailable, and you need a local answer;
+- you are touching `scripts/mutations/**` or the mutation gate itself, which remote CI does not exercise the same way;
+- you are about to `/release`, where the mutation gate and the full serial battery are the point.
+
+⚠️ **Never kill `ci-local.sh` mid-run.** `mutate.ts` rewrites source files in place and reverts them at the end, so an interrupted run leaves a MUTATED source file in the tree — silently, and it will be committed by the next `git commit -o` that names it. If you must stop one, `git status` afterwards and restore anything it left behind.
 
 `/ci` uses a **launch-and-watch protocol** (see `ci.md`): the wrapper runs in the background and YOU poll `.ci-local/RESULT` on a loop — never end the turn "waiting for the CI report". A lost subagent hand-off here used to stall the whole ship loop until a human poked it; `.ci-local/RESULT` on disk is the completion signal, not any agent's reply.
 

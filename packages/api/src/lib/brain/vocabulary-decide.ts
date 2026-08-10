@@ -2021,14 +2021,19 @@ async function lockIdentityMutation(tx: VocabularyExecutor, workspaceId: string)
  * NULL-safe on both sides, unlike `<>`. Every row is still EVALUATED, which is
  * what the paragraph above requires; what this avoids is a dead tuple per row
  * per approval on a table the review queue reads constantly. It also makes
- * `moved` mean "rows re-keyed" exactly, which is one of the two numbers the
+ * `moved` mean "rows re-keyed" exactly, which is one of the three numbers the
  * statement reports.
  *
- * ⚠️ TWO numbers, since #5109 — see the block inside the builder. `rekeyed`
- * counts the rows whose key moved; `skipped_unkeyable` counts the rows the
- * `IS NOT NULL` arm declined. An earlier cut of this paragraph said the
- * `UPDATE`'s ROW COUNT was "the number worth logging", singular, and that
- * stopped being true the moment #5047 gave a low count two meanings.
+ * ⚠️ THREE numbers, since #5109 — see the two blocks inside the builder.
+ * `rekeyed` counts the rows whose key moved; `skipped_degenerate_surface` and
+ * `skipped_vocabulary_target` split the rows the `IS NOT NULL` arm declined, by
+ * WHY it declined them. Two earlier cuts of this paragraph are worth recording
+ * because each was true when written and stopped being true one slice later:
+ * the first called the `UPDATE`'s ROW COUNT "the number worth logging",
+ * singular, which #5047 ended by giving a low count two meanings; the second
+ * said TWO numbers, which round 2 of #5109 ended by splitting the declined
+ * rows — a single `skipped` re-collapsed the very distinction the slice was
+ * filed to draw.
  */
 function rekeyDriftedFactsSql(position: SlotPosition): string {
   const { surface, key } = SLOT_COLUMNS[position];
@@ -2068,26 +2073,37 @@ function rekeyDriftedFactsSql(position: SlotPosition): string {
   // `degenerate-norm` targets at authoring, so that path is closed today, and
   // testing the composed expression is what keeps this arm correct if it ever
   // reopens rather than relying on the other guard staying put.
-  // ── ONE SCAN, TWO NUMBERS (#5109) ─────────────────────────────────────
+  // ── ONE SCAN, THREE NUMBERS (#5109) ───────────────────────────────────
   //
   // The `IS NOT NULL` arm above made `rekeyed` ambiguous: it can no longer
   // distinguish *nothing drifted* — the ordinary case, and healthy — from
-  // *N rows hold `-unkeyable:` placeholders and were declined*, which is a
-  // corpus carrying legacy degenerate rows and is worth knowing about. Both
-  // read as a low or zero count, and an `UPDATE` cannot report the rows it
-  // did not touch.
+  // *N rows were declined*, which is worth knowing about. Both read as a low
+  // or zero count, and an `UPDATE` cannot report the rows it did not touch.
+  // The declined rows are then split again by CAUSE — see the ⚠️ below, which
+  // is the argument for why this is three numbers and not two.
   //
-  // So the scan is LIFTED into a CTE and both numbers come off it. The
+  // So the scan is LIFTED into a CTE and every number comes off it. The
   // alternative — a second `SELECT count(*) … WHERE <expr> IS NULL` — is a
   // second workspace-wide sequential scan on a statement whose cost is
-  // already argued paragraph by paragraph above, for a diagnostic. `AS
-  // MATERIALIZED` is what makes that a promise rather than a hope: without it
-  // PG 12+ may inline the CTE and re-plan the scan per reference.
+  // already argued paragraph by paragraph above, for a diagnostic.
   //
-  // It is also cheaper than what it replaces. The old shape spelled
-  // `identityKeySql(aliased)` THREE times — once in `SET`, once in each of two
-  // `WHERE` arms — so the closure subquery was evaluated three times per row.
-  // Here it is computed once per row and read by name.
+  // `AS MATERIALIZED` is BELT-AND-BRACES, not the thing that makes the single
+  // scan true, and an earlier cut of this line claimed otherwise. PG folds a
+  // non-recursive, side-effect-free CTE into the parent only when the parent
+  // references it EXACTLY ONCE; `recomputed` is referenced twice (`moved`'s
+  // `FROM`, and the count subqueries), so PG 12+ materializes it by default
+  // and the hazard that cut described cannot arise. What the keyword actually
+  // buys is a future edit that drops one of those references — which would
+  // silently restore per-reference re-planning with nothing objecting.
+  //
+  // On cost against the old shape: the closure subquery is now evaluated once
+  // per row rather than up to three times (`SET` plus two `WHERE` arms —
+  // though the `SET` occurrence only ever ran for rows that passed, i.e. the
+  // rows actually moving). That is not a pure win and should not be read as
+  // one: the CTE materializes one `(id, surface_norm, new_key)` tuple per
+  // workspace fact where the old shape streamed. A workspace-scoped scan on a
+  // rare, human-gated act is the same budget §7 already argued for; the
+  // memory is the new line item.
   //
   // ⚠️ THE REFUSAL ARM IS THE SAME ARM. It reads `r.new_key IS NOT NULL`
   // rather than repeating the expression, and `r.new_key` IS that expression —
@@ -2104,11 +2120,62 @@ function rekeyDriftedFactsSql(position: SlotPosition): string {
   // ⚠️ The CTE's own `WHERE` is deliberately UNQUALIFIED (`workspace_id`, not
   // `f.workspace_id`). `vocabulary-decide-pg.test.ts` finds this statement's
   // SET clause by slicing to the single `WHERE f.` — the one on the updated
-  // alias — and a second qualified `WHERE f.` would break that parse rather
-  // than fail an assertion, which is the worse failure. Unqualified resolves
-  // to the same column.
+  // alias — so a second qualified `WHERE f.` would move that boundary and make
+  // the slice read a clause it was not measuring. It FAILS LOUDLY rather than
+  // silently: that test asserts `matchAll(/WHERE f\./g)` has length exactly 1,
+  // and the `WHERE f.` would also precede `SET `, tripping its ordering
+  // assertion too. (An earlier cut of this note claimed the parse would break
+  // silently, which undersold the guard the test already has.) Unqualified
+  // resolves to the same column, so the convention costs nothing.
+  // ⚠️ THE DECLINED ROWS ARE SPLIT BY CAUSE, NOT COUNTED AS ONE (#5109 round 2).
+  //
+  // `new_key` is NULL for two reasons, and they are not one problem — which is
+  // the distinction the ⚠️ two blocks up is already emphatic about, and which a
+  // single `skipped` count re-collapses one layer above the arm that draws it:
+  //
+  //   * `surface_norm IS NULL` — the SURFACE asserts nothing (`-`, `___`).
+  //     0194's tombstoned population: `invalidated_at` is set, the row is
+  //     outside every slot consumer, the placeholder it keeps joins nothing,
+  //     and there is no key to compute at any vocabulary. NOTHING TO DO. The
+  //     population is closed and shrinks only, so a flat number is health.
+  //   * `surface_norm IS NOT NULL` — the surface keys perfectly well and THIS
+  //     WORKSPACE'S VOCABULARY maps its norm to something that normalizes away.
+  //     Such a row was silently left on its OLD key while the vocabulary says
+  //     something else — a committed disagreement between the closure and the
+  //     corpus, and typically a live one, since the entry is authored against
+  //     text somebody is using. ACT ON IT: the defect is the
+  //     `brain_vocabulary_target` entry, and no re-key repairs it.
+  //
+  // Two counts and two remedies, which is exactly the split `admin-migrate.ts`
+  // makes between `RegionImportUnkeyableError` and
+  // `RegionImportVocabularyTargetError` over this same NULL, and exactly the
+  // split `reconcile.ts`'s `MALFORMED_CLAIM` `cause` makes over it a third
+  // time — `degenerate-surface` vs `vocabulary-target`, whose spellings these
+  // column names deliberately reuse. A count that merged them would send an
+  // operator to inspect a tombstoned population that needs nothing, or say
+  // nothing at all about a live row that needs an edit.
+  //
+  // `vocabulary-decide.ts` refuses `degenerate-norm` targets at AUTHORING, so
+  // the second population is empty today. That is the same argument the
+  // refusal arm above declines to rest on, for the same reason: the arm tests
+  // the composed expression rather than trusting the other guard to stay put,
+  // and a count that assumed the guard holds would be the one thing that does
+  // not say so when it stops holding.
+  //
+  // ⚠️ NEITHER COUNT IS SCOPED BY `invalidated_at` OR `valid_to`, because this
+  // statement deliberately is not (see "Scope: EVERY row, and no index"). So
+  // `skipped_vocabulary_target` counts a tombstoned or superseded row too, if
+  // its surface keys fine and the vocabulary maps its norm away. That is rare —
+  // the population is created by an entry authored against live text — but it
+  // means the number is "rows the vocabulary now disagrees with", not "live
+  // rows". Adding a temporal arm to this ONE count would make it disagree with
+  // the statement it is a report about, which is the worse trade.
+  //
+  // It reuses `norm` — the same expression the closure lookup already keys on,
+  // bound once at the top of this function. A second binding for the same
+  // expression is the shape #5000 was.
   return `WITH recomputed AS MATERIALIZED (
-            SELECT f.id AS id, ${identityKeySql(aliased)} AS new_key
+            SELECT f.id AS id, ${norm} AS surface_norm, ${identityKeySql(aliased)} AS new_key
               FROM brain_facts f
              WHERE workspace_id = $1
           ),
@@ -2122,7 +2189,10 @@ function rekeyDriftedFactsSql(position: SlotPosition): string {
          RETURNING f.id::text AS id
           )
           SELECT (SELECT count(*) FROM moved)::int AS rekeyed,
-                 (SELECT count(*) FROM recomputed WHERE new_key IS NULL)::int AS skipped_unkeyable`;
+                 (SELECT count(*) FROM recomputed
+                   WHERE new_key IS NULL AND surface_norm IS NULL)::int AS skipped_degenerate_surface,
+                 (SELECT count(*) FROM recomputed
+                   WHERE new_key IS NULL AND surface_norm IS NOT NULL)::int AS skipped_vocabulary_target`;
 }
 
 export const REKEY_DRIFTED_FACTS_SQL: Readonly<Record<SlotPosition, string>> = Object.freeze({
@@ -2169,7 +2239,11 @@ async function rekeyDriftedFacts(
   position: SlotPosition,
   proposalId: string,
 ): Promise<void> {
-  let counts: { readonly rekeyed: number; readonly skippedUnkeyable: number };
+  let counts: {
+    readonly rekeyed: number;
+    readonly skippedDegenerateSurface: number;
+    readonly skippedVocabularyTarget: number;
+  };
   try {
     // REFUSED, not defaulted. `VocabularyExecutor` is deliberately satisfiable
     // by any `{ query }`, and the earlier `?? []` turned an executor that is not
@@ -2188,24 +2262,38 @@ async function rekeyDriftedFacts(
           "committing an approval that may not have moved a single key.",
       );
     }
-    // ONE row, always — the statement's final `SELECT` is two scalar
+    // ONE row, always — the statement's final `SELECT` is three scalar
     // subqueries over the CTEs and has no `FROM`, so it produces exactly one
     // row even when the workspace holds no facts at all. An EMPTY array here
     // therefore means the same thing the guard above catches: an executor that
     // is not answering as a Postgres client. Refused for the same reason, and
-    // not defaulted to zeroes — `rekeyed: 0, skippedUnkeyable: 0` is a
-    // perfectly ordinary reading, so a default would be indistinguishable from
-    // the healthy case rather than obviously wrong.
-    const row = result.rows[0] as { rekeyed?: unknown; skipped_unkeyable?: unknown } | undefined;
-    if (typeof row?.rekeyed !== "number" || typeof row.skipped_unkeyable !== "number") {
+    // not defaulted to zeroes — all-zero is a perfectly ordinary reading, so a
+    // default would be indistinguishable from the healthy case rather than
+    // obviously wrong.
+    const row = result.rows[0] as
+      | {
+          rekeyed?: unknown;
+          skipped_degenerate_surface?: unknown;
+          skipped_vocabulary_target?: unknown;
+        }
+      | undefined;
+    if (
+      typeof row?.rekeyed !== "number" ||
+      typeof row.skipped_degenerate_surface !== "number" ||
+      typeof row.skipped_vocabulary_target !== "number"
+    ) {
       throw new Error(
-        `rekeyDriftedFacts: the executor answered the ${position} re-key without the two counts ` +
+        `rekeyDriftedFacts: the executor answered the ${position} re-key without the three counts ` +
           `(workspace ${workspaceId}, proposal ${proposalId}). The statement's result was never ` +
           "observed, so whether the corpus was re-keyed is unknown — refusing rather than " +
           "committing an approval that may not have moved a single key.",
       );
     }
-    counts = { rekeyed: row.rekeyed, skippedUnkeyable: row.skipped_unkeyable };
+    counts = {
+      rekeyed: row.rekeyed,
+      skippedDegenerateSurface: row.skipped_degenerate_surface,
+      skippedVocabularyTarget: row.skipped_vocabulary_target,
+    };
   } catch (err) {
     // LOGGED before it propagates. `decideAliasProposal`'s outer catch narrows
     // on `AliasApplyRefusedError` and re-throws everything else WITHOUT a log
@@ -2237,14 +2325,20 @@ async function rekeyDriftedFacts(
   // approves. They are the operator's only signal that the re-key ran and how
   // wide it reached.
   //
-  // ⚠️ `skippedUnkeyable` EXISTS BECAUSE `rekeyed` ALONE LOST A DISTINCTION
-  // (#5109). Since #5047's `IS NOT NULL` arm, a low `rekeyed` covers two very
+  // ⚠️ THE TWO SKIP COUNTS EXIST BECAUSE `rekeyed` ALONE LOST A DISTINCTION
+  // (#5109). Since #5047's `IS NOT NULL` arm, a low `rekeyed` covered two very
   // different states: *nothing drifted*, which is ordinary and healthy, and
-  // *N rows hold `-unkeyable:` placeholders and were declined*, which says the
-  // corpus still carries the legacy degenerate population migration 0194
-  // tombstoned. The second is worth knowing about — that population is closed
-  // and shrinks only, so a number that stays flat across approvals is the
-  // signal — and it was indistinguishable from the first.
+  // *N rows were declined*, which is not. They are reported separately, and the
+  // declined rows are split again by CAUSE — see the builder's ⚠️ for why one
+  // merged `skipped` re-collapsed the distinction this line exists to draw.
+  //
+  //   `skippedDegenerateSurface` — 0194's tombstoned population. Nothing to do;
+  //     the set is closed and shrinks only, so a flat number is health.
+  //   `skippedVocabularyTarget` — ⚠️ THE ONE TO ACT ON. Live, un-tombstoned
+  //     rows whose surface keys fine, left on their old key because this
+  //     workspace's `brain_vocabulary_target` maps their norm to something that
+  //     normalizes away. The closure and the corpus now disagree, and no
+  //     re-key repairs it — the entry does.
   //
   // Counted against the EXPRESSION being NULL rather than by testing the key
   // column for the placeholder prefix, which is the rule migration 0187's
@@ -2252,15 +2346,36 @@ async function rekeyDriftedFacts(
   // put there, while the expression is what this vocabulary decides now. A row
   // whose placeholder was written by 0194 and whose surface has since been
   // corrected is keyable again, and the column would still call it unkeyable.
+  //
+  // ⚠️ THE MESSAGE IS CONDITIONAL, and that is not cosmetic. *"existing facts
+  // now carry the keys this vocabulary decides"* is false of the
+  // `skippedVocabularyTarget` rows — they carry the keys the PREVIOUS
+  // vocabulary decided — so emitting it unconditionally would be a success
+  // sentence about the one population that needs a human. That is the same
+  // defect the `?? []` removal above describes, reached by a different road.
+  //
+  // It is strictly speaking false of the `skippedDegenerateSurface` rows too:
+  // they carry `-unkeyable:<id>`, which no vocabulary decided. The message
+  // does not branch on them ON PURPOSE — there is no key to decide for a
+  // surface that asserts nothing, nothing for a human to do, and a line that
+  // sounded an alarm on a closed self-healing population is the alert fatigue
+  // that makes the real one unreadable. The count is there for whoever wants
+  // the number.
   log.info(
     {
       workspaceId,
       proposalId,
       position,
       rekeyed: counts.rekeyed,
-      skippedUnkeyable: counts.skippedUnkeyable,
+      skippedDegenerateSurface: counts.skippedDegenerateSurface,
+      skippedVocabularyTarget: counts.skippedVocabularyTarget,
     },
-    "Drift re-key complete — existing facts now carry the keys this vocabulary decides",
+    counts.skippedVocabularyTarget > 0
+      ? "Drift re-key complete, but NOT total — some facts keep the keys the previous vocabulary " +
+        "decided because this workspace's vocabulary maps their norm to something that normalizes " +
+        "away. Their surfaces key fine, they are live, and no re-key repairs them: fix the " +
+        "`brain_vocabulary_target` entry at this position"
+      : "Drift re-key complete — existing facts now carry the keys this vocabulary decides",
   );
 }
 

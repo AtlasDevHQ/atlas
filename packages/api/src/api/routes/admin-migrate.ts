@@ -906,8 +906,8 @@ const importRoute = createRoute({
  *
  * ⚠️ NOT routed through `audit/error-scrub.ts`'s `errorMessage`. That helper is
  * for `admin_action_log.metadata` — a JSONB column compliance reviewers read —
- * and its own docstring rules itself out for a pino `err` field, which the
- * serializer handles with full stack preservation. Scrubbing userinfo out of a
+ * and its own docstring carves out an `Error` instance handed to pino, whose
+ * `err` serializer preserves the message and the stack. Scrubbing userinfo out of a
  * message that is not going to a caller at all would only cost the operator
  * detail.
  *

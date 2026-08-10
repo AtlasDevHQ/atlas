@@ -34,16 +34,23 @@
  *
  * ## Mutation table
  *
- * Twenty-seven mutations, all twenty-seven caught. Rows 1-25 were regenerated in
+ * Twenty-nine mutations, all twenty-nine caught. Rows 1-25 were regenerated in
  * ONE pass against the tree that shipped them, rather than edited row by row —
  * #5022's review found numbers carried forward under a header claiming they had
  * been re-measured, twice.
  *
- * ⚠️ ROWS 26 AND 27 ARE THE EXCEPTIONS AND ARE SAID OUT LOUD, because a header
+ * ⚠️ ROWS 26-29 ARE THE EXCEPTIONS AND ARE SAID OUT LOUD, because a header
  * whose whole point is that carried-forward numbers are worthless cannot quietly
- * carry one. Both were added by hand and measured INDIVIDUALLY rather than by a
- * table-wide regeneration; their "first test to die" cells are those
+ * carry one. All four were added by hand and measured INDIVIDUALLY rather than by
+ * a table-wide regeneration; their "first test to die" cells are those
  * measurements.
+ *
+ * ⚠️ ROW 28 IS #5109'S OWN FIRST CUT, kept as a row rather than quietly fixed.
+ * That cut reported the declined rows as ONE number, which re-collapsed the very
+ * distinction #5109 was filed to draw: a tombstoned row needing nothing and a
+ * LIVE row whose vocabulary entry is the defect have different remedies. The
+ * review that caught it asked one question — *does this fix exhibit the defect it
+ * fixes, one layer over?* — and the answer was yes.
  *
  * ⚠️ ROWS 6 AND 26 WERE RE-MEASURED FOR #5109, not carried. That slice lifted
  * this statement's scan into a `MATERIALIZED` CTE so the declined rows could be
@@ -101,7 +108,9 @@
  * | 24 | `chr(11)` dropped from the separator class | `lexicalNormSql` agrees with `lexicalNorm` on every corpus row |
  * | 25 | `identityKeySql`'s `NULLIF(..., '')` dropped | SKIPS a row whose surface norms away, leaving 0194's placeholder untouched |
  * | 26 | the `IS NOT NULL` arm on the recomputed key dropped (#5047) | SKIPS a row whose surface norms away, leaving 0194's placeholder untouched |
- * | 27 | `skippedUnkeyable` dropped from the completion line (#5109) | carries BOTH counts — the declined rows beside the moved ones (`vocabulary-rekey-logging.test.ts`) |
+ * | 27 | a skip count dropped from the completion line (#5109) | carries BOTH counts — the declined rows beside the moved ones (`vocabulary-rekey-logging.test.ts`) |
+ * | 28 | the two skip causes MERGED into one count (#5109 round 1's own defect) | splits the declined rows BY CAUSE — a vocabulary target that norms away is not a tombstone |
+ * | 29 | the completion message stops being conditional on `skippedVocabularyTarget` | says so IN THE MESSAGE when a live row was declined by a vocabulary target (`vocabulary-rekey-logging.test.ts`) |
  *
  * ## Three rounds, and what each one caught that the previous missed
  *
@@ -704,7 +713,8 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
 
   interface RekeyCounts {
     readonly rekeyed: number;
-    readonly skipped_unkeyable: number;
+    readonly skipped_degenerate_surface: number;
+    readonly skipped_vocabulary_target: number;
   }
 
   /** Run one position's statement directly and read the counts it reports. */
@@ -727,9 +737,9 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
     // which, and the second is the one worth acting on.
     //
     // The fixture holds BOTH populations at once, which is the only shape that
-    // falsifies a count wired to the wrong one: a `skipped_unkeyable` reading
-    // the moved rows, or a `rekeyed` reading the scan, both agree with a
-    // fixture that has only one kind of row.
+    // falsifies a count wired to the wrong one: a skip count reading the moved
+    // rows, or a `rekeyed` reading the scan, both agree with a fixture that has
+    // only one kind of row.
     const healthy = await land(WS, { subject: "widget", predicate: "is", object: "friday" });
     const alsoHealthy = await land(WS, { subject: "gadget", predicate: "is", object: "friday" });
     const episode = await seedEpisode(WS);
@@ -763,10 +773,11 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
 
     expect(
       counts,
-      "the two numbers disagree with the corpus — `rekeyed` counts rows whose key MOVED and " +
-        "`skipped_unkeyable` counts rows the `IS NOT NULL` arm declined, and a fixture holding " +
-        "two of each is what stops one being wired to the other's population",
-    ).toEqual({ rekeyed: 2, skipped_unkeyable: 2 });
+      "the counts disagree with the corpus — `rekeyed` counts rows whose key MOVED and " +
+        "`skipped_degenerate_surface` counts rows the `IS NOT NULL` arm declined because their " +
+        "SURFACE asserts nothing, and a fixture holding two of each is what stops one being " +
+        "wired to the other's population",
+    ).toEqual({ rekeyed: 2, skipped_degenerate_surface: 2, skipped_vocabulary_target: 0 });
     // The moved rows really moved, and the declined rows really did not — the
     // counts are a report ABOUT the corpus, so a test that only read them back
     // would pass against a statement that wrote nothing at all.
@@ -786,10 +797,10 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
   it("a second run reports nothing moved and the SAME rows still declined", async () => {
     // The distinction, exercised. On the second pass `rekeyed` falls to zero
     // because nothing drifts any more — the ordinary, healthy reading — while
-    // `skipped_unkeyable` holds, because that population is closed and shrinks
-    // only. Two runs is the only way to show the numbers are independent: in a
-    // single run a `skipped_unkeyable` that secretly counted "rows I did not
-    // update" would give the same answer.
+    // the skip count holds, because that population is closed and shrinks only.
+    // Two runs is the only way to show the numbers are independent: in a single
+    // run a skip count that secretly counted "rows I did not update" would give
+    // the same answer.
     await land(WS, { subject: "widget", predicate: "is", object: "friday" });
     const episode = await seedEpisode(WS);
     await pool.query(
@@ -813,12 +824,20 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
       [WS],
     );
 
-    expect(await rekeyCounts("object")).toEqual({ rekeyed: 1, skipped_unkeyable: 1 });
-    // ⚠️ `rekeyed` drops, `skipped_unkeyable` does not. A count wired to "rows
+    expect(await rekeyCounts("object")).toEqual({
+      rekeyed: 1,
+      skipped_degenerate_surface: 1,
+      skipped_vocabulary_target: 0,
+    });
+    // ⚠️ `rekeyed` drops, the skip count does not. A count wired to "rows
     // this statement did not touch" would report 2 here (the placeholder AND
     // the now-fixpoint healthy row), which is the reading that would send an
     // operator hunting a degenerate population twice its real size.
-    expect(await rekeyCounts("object")).toEqual({ rekeyed: 0, skipped_unkeyable: 1 });
+    expect(await rekeyCounts("object")).toEqual({
+      rekeyed: 0,
+      skipped_degenerate_surface: 1,
+      skipped_vocabulary_target: 0,
+    });
   });
 
   it("counts against the EXPRESSION, not against the placeholder in the column", async () => {
@@ -845,7 +864,7 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
       "a row still HOLDING a placeholder but whose surface keys fine was counted as skipped — " +
         "the column is what the last writer put there, the expression is what this vocabulary " +
         "decides now, and only the second is the question being asked",
-    ).toEqual({ rekeyed: 1, skipped_unkeyable: 0 });
+    ).toEqual({ rekeyed: 1, skipped_degenerate_surface: 0, skipped_vocabulary_target: 0 });
     const { rows } = await pool.query<{ object_key: string }>(
       `SELECT object_key FROM brain_facts WHERE workspace_id = $1`,
       [WS],
@@ -853,13 +872,80 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
     expect(rows[0]?.object_key).toBe("friday");
   });
 
-  it("an empty workspace reports two zeroes rather than no row", async () => {
-    // The statement's final `SELECT` is two scalar subqueries with no `FROM`,
-    // so it yields one row even against a workspace with no facts. That is what
+  it("⭐ splits the declined rows BY CAUSE — a vocabulary target that norms away is not a tombstone", async () => {
+    // ⚠️ THE assertion the split exists for, and the defect the first cut of
+    // #5109 shipped: ONE `skipped` count merged two states with two different
+    // remedies, which is the exact collapse #5109 was filed to undo, one layer
+    // up from the arm that draws it.
+    //
+    //   - the DEGENERATE row: surface `-`, tombstoned by 0194, holding a
+    //     placeholder. Nothing to do, ever — there is no key to compute at any
+    //     vocabulary, and the population shrinks only.
+    //   - the VOCABULARY-TARGET row: surface `platform team`, which keys
+    //     perfectly well. LIVE, un-tombstoned, and declined only because this
+    //     workspace's closure maps its norm to ` - `. It keeps the key the
+    //     PREVIOUS vocabulary decided, so the closure and the corpus now
+    //     disagree — and the fix is the `brain_vocabulary_target` entry, not
+    //     another re-key.
+    //
+    // Both rows are declined by the same `IS NOT NULL` arm and are
+    // indistinguishable in `rekeyed`. Merged into one skip count they are
+    // indistinguishable there too, and the operator is told a closed
+    // self-healing population and a live disagreement are the same number.
+    //
+    // The closure is written DIRECTLY: `vocabulary-decide.ts` refuses a
+    // `degenerate-norm` target at authoring, which is what keeps this
+    // population empty in practice and exactly what makes the seam unable to
+    // build the fixture. The refusal arm deliberately does not rest on that
+    // guard holding, and neither does this count.
+    const live = await land(WS, { subject: "billing", predicate: "is", object: "platform team" });
+    const episode = await seedEpisode(WS);
+    await pool.query(
+      `INSERT INTO brain_facts
+         (workspace_id, subject, predicate, object,
+          subject_key, predicate_key, object_key,
+          source_episode_id, provenance, visible_to, invalidated_at)
+       VALUES ($1, 'widget', 'is', '-', 'widget', 'is', '-unkeyable:seed-a', $2,
+               '{"actor":"u1"}'::jsonb, ARRAY['org'], now())`,
+      [WS, episode.id],
+    );
+    await pool.query(
+      `INSERT INTO brain_vocabulary_edge
+         (workspace_id, slot_position, from_norm, to_norm, approved_by)
+       VALUES ($1, 'object', 'platform team', ' - ', 'hand-written')`,
+      [WS],
+    );
+    await pool.query(
+      `INSERT INTO brain_vocabulary_target (workspace_id, slot_position, norm, effective_target)
+       VALUES ($1, 'object', 'platform team', ' - ')`,
+      [WS],
+    );
+
+    expect(
+      await rekeyCounts("object"),
+      "the two declined rows were reported as one population — a tombstoned row needing nothing " +
+        "and a live row whose vocabulary entry is the defect have different remedies, which is " +
+        "the same split `MALFORMED_CLAIM`'s `cause` and the region import's two refusal types " +
+        "both make over this identical NULL",
+    ).toEqual({ rekeyed: 0, skipped_degenerate_surface: 1, skipped_vocabulary_target: 1 });
+
+    // The live row really did keep its old key — the count is a report ABOUT
+    // the corpus, and this is the disagreement it is reporting.
+    expect((await readFact(live)).object_key).toBe("platform team");
+    expect((await readFact(live)).invalidated_at).toBeNull();
+  });
+
+  it("an empty workspace reports zeroes rather than no row", async () => {
+    // The statement's final `SELECT` is three scalar subqueries with no
+    // `FROM`, so it yields one row even against a workspace with no facts. That is what
     // lets `rekeyDriftedFacts` treat an EMPTY result as "the executor is not
     // answering as a Postgres client" and refuse — the guard it already applies
     // to a missing `rows` array, extended to the shape.
-    expect(await rekeyCounts("predicate")).toEqual({ rekeyed: 0, skipped_unkeyable: 0 });
+    expect(await rekeyCounts("predicate")).toEqual({
+      rekeyed: 0,
+      skipped_degenerate_surface: 0,
+      skipped_vocabulary_target: 0,
+    });
   });
 
   // ── 2. the undo, on removal ─────────────────────────────────────────────

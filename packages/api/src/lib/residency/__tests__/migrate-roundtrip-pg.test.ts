@@ -2073,7 +2073,7 @@ describeIfPg("region import: a fact whose key cannot be supplied (#5047)", () =>
       // LANDED, not refused — which is the arm's whole behaviour and the thing
       // `ImportResult` can see. The COUNTERS (`unkeyableFacts` / `nullKeyFacts`)
       // are not on `ImportResult`; they travel on the aggregate identity warn,
-      // and are asserted on this exact fixture in `migrate-identity-logging.ts`
+      // and are asserted on this exact fixture in `migrate-identity-logging.test.ts`
       // where the log is observable.
       expect(result.brainFacts.imported).toBe(1);
 

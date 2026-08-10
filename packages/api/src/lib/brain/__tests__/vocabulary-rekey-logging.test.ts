@@ -4,21 +4,36 @@
  * `rekeyDriftedFacts`' own docstring calls this line *"the operator's only
  * signal that the re-key ran and how wide it reached"*, and since #5047 added
  * the `IS NOT NULL` arm the single number it carried stopped being able to say
- * that. `rekeyed: 0` covers two states an operator would act on differently:
+ * that. `rekeyed: 0` covers THREE states an operator would act on differently:
  *
  *   - **nothing drifted** — ordinary, healthy, and what a workspace reports on
- *     every approval once its corpus is a fixpoint of its vocabulary; and
- *   - **N rows hold `-unkeyable:` placeholders and were declined** — a corpus
- *     still carrying the legacy degenerate population migration 0194
- *     tombstoned. That population is closed and shrinks only, so a number that
- *     stays flat across approvals is the signal.
+ *     every approval once its corpus is a fixpoint of its vocabulary;
+ *   - **N rows hold `-unkeyable:` placeholders and were declined**
+ *     (`skippedDegenerateSurface`) — a corpus still carrying the legacy
+ *     degenerate population migration 0194 tombstoned. Nothing to do: the set
+ *     is closed and shrinks only, so a flat number is health; and
+ *   - **N rows were declined because this workspace's vocabulary maps their
+ *     norm to something that normalizes away** (`skippedVocabularyTarget`) —
+ *     ⚠️ the one to act on. Their surfaces key fine and they keep the key the
+ *     PREVIOUS vocabulary decided, so the closure and the corpus disagree. No
+ *     re-key repairs it; the `brain_vocabulary_target` entry is the defect.
+ *     (The count is not scoped by `invalidated_at` — this statement
+ *     deliberately is not — so it reads as "rows the vocabulary now disagrees
+ *     with" rather than strictly "live rows".)
  *
- * `skipped_unkeyable` is computed in SQL and pinned against real Postgres in
- * `vocabulary-rekey-pg.test.ts`. What is pinned HERE is the last hop: that the
- * number reaches the LINE. Nothing else in the repo reads it — the value is
- * never returned, never stored and never branched on — so a `log.info` that
- * quietly stopped carrying it would leave four green SQL tests measuring a
- * number no human is shown.
+ * ⚠️ The third state is why there are two skip counts and not one. The first
+ * cut of #5109 merged them, which re-collapsed the exact distinction the slice
+ * was filed to undo — one layer above the arm that draws it, and against the
+ * same three-way `cause` that `reconcile.ts`'s `MALFORMED_CLAIM` and the region
+ * import's two refusal types both draw over this identical NULL.
+ *
+ * The counts are computed in SQL and pinned against real Postgres in
+ * `vocabulary-rekey-pg.test.ts`. What is pinned HERE is the last hop: that they
+ * reach the LINE, and that the line's MESSAGE changes when the actionable one
+ * is non-zero. Nothing else in the repo reads them — the values are never
+ * returned, never stored, never branched on except for that message — so a
+ * `log.info` that quietly stopped carrying one would leave every SQL test green
+ * while measuring a number no human is shown.
  *
  * That gap is precisely #5105's, one module over, and this file exists so this
  * slice does not reopen it while closing it.
@@ -45,7 +60,15 @@ interface Captured {
 
 const infos: Captured[] = [];
 
-/** Every value export of `lib/logger`, replaced — a partial mock link-fails. */
+/**
+ * Every value export of `lib/logger`, replaced.
+ *
+ * ⚠️ A PARTIAL mock is the trap this repo has recorded: `mock.module` replaces
+ * the whole module, so any export left out becomes `undefined` and the module
+ * under test throws on first use — which reads as a broken test rather than a
+ * missing mock. The factory is SYNCHRONOUS, because an async one deadlocks
+ * `bun:test`.
+ */
 void mock.module("@atlas/api/lib/logger", () => {
   const capture = {
     info: (payload: unknown, message?: unknown) =>
@@ -238,9 +261,9 @@ describeIfPg("the drift re-key's info line (#5109)", () => {
     expect(
       payload,
       "the info line stopped distinguishing `nothing drifted` from `N rows were declined` — " +
-        "`skippedUnkeyable` is not read anywhere else in the product, so dropping it from this " +
+        "the skip counts are not read anywhere else in the product, so dropping one from this " +
         "line deletes the signal outright while every SQL-level test stays green",
-    ).toMatchObject({ rekeyed: 2, skippedUnkeyable: 1 });
+    ).toMatchObject({ rekeyed: 2, skippedDegenerateSurface: 1, skippedVocabularyTarget: 0 });
     // The correlation fields, without which the counts name no decision.
     expect(payload).toMatchObject({ workspaceId: WS, position: "object" });
     expect(payload.proposalId).toBeTruthy();
@@ -248,7 +271,7 @@ describeIfPg("the drift re-key's info line (#5109)", () => {
 
   it("reports zero declined on a corpus with no degenerate rows", async () => {
     // The control, and the half that makes the number readable: on a healthy
-    // corpus `skippedUnkeyable` is 0, so a non-zero reading is the exception an
+    // corpus both skip counts are 0, so a non-zero reading is the exception an
     // operator can act on rather than background noise. A line that hardcoded
     // the count, or wired it to the same expression as `rekeyed`, passes the
     // case above and fails here.
@@ -256,7 +279,11 @@ describeIfPg("the drift re-key's info line (#5109)", () => {
 
     await approveObjectAlias("friday", "fri");
 
-    expect(theLine().payload).toMatchObject({ rekeyed: 1, skippedUnkeyable: 0 });
+    expect(theLine().payload).toMatchObject({
+      rekeyed: 1,
+      skippedDegenerateSurface: 0,
+      skippedVocabularyTarget: 0,
+    });
   });
 
   it("distinguishes `nothing drifted` from `everything was declined`", async () => {
@@ -271,6 +298,51 @@ describeIfPg("the drift re-key's info line (#5109)", () => {
     expect(
       theLine().payload,
       "`rekeyed: 0` with two declined rows read identically to `rekeyed: 0` on a clean corpus",
-    ).toMatchObject({ rekeyed: 0, skippedUnkeyable: 2 });
+    ).toMatchObject({ rekeyed: 0, skippedDegenerateSurface: 2, skippedVocabularyTarget: 0 });
+    // …and the message stays the ordinary one: a tombstoned population needs no
+    // human, so an alarming line here would be the alert fatigue that makes the
+    // real one unreadable.
+    expect(theLine().message).toContain("existing facts now carry the keys this vocabulary decides");
+  });
+
+  it("⭐ says so IN THE MESSAGE when a live row was declined by a vocabulary target", async () => {
+    // ⚠️ The line's MESSAGE is the assertion, not just its payload. *"existing
+    // facts now carry the keys this vocabulary decides"* is FALSE of exactly
+    // these rows — they carry the keys the PREVIOUS vocabulary decided — so
+    // emitting it here would be a success sentence about the one population
+    // that needs a human, and an operator scanning messages rather than fields
+    // would never look.
+    //
+    // The closure is written DIRECTLY because `vocabulary-decide.ts` refuses a
+    // `degenerate-norm` target at authoring; that guard is what keeps this
+    // population empty in practice and exactly what makes the seam unable to
+    // build the fixture. Neither this line nor the `IS NOT NULL` arm rests on
+    // the guard staying put.
+    await land("billing", "is", "platform team");
+    await pool.query(
+      `INSERT INTO brain_vocabulary_edge
+         (workspace_id, slot_position, from_norm, to_norm, approved_by)
+       VALUES ($1, 'object', 'platform team', ' - ', '5109-test')`,
+      [WS],
+    );
+    await pool.query(
+      `INSERT INTO brain_vocabulary_target (workspace_id, slot_position, norm, effective_target)
+       VALUES ($1, 'object', 'platform team', ' - ')`,
+      [WS],
+    );
+
+    // An unrelated real approval, so the re-key runs at the object position.
+    await approveObjectAlias("friday", "fri");
+
+    const line = theLine();
+    expect(line.payload).toMatchObject({ skippedVocabularyTarget: 1, skippedDegenerateSurface: 0 });
+    expect(
+      line.message,
+      "the line reported a clean completion over a live row whose key the vocabulary now " +
+        "disagrees with — the count alone is not the signal if the sentence beside it says the " +
+        "opposite",
+    ).not.toContain("existing facts now carry the keys this vocabulary decides");
+    // It names the remedy: the entry, not another re-key.
+    expect(line.message).toContain("brain_vocabulary_target");
   });
 });

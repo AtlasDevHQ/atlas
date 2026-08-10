@@ -2020,8 +2020,15 @@ async function lockIdentityMutation(tx: VocabularyExecutor, workspaceId: string)
  * `IS DISTINCT FROM` restricts the WRITE to rows whose key actually moves —
  * NULL-safe on both sides, unlike `<>`. Every row is still EVALUATED, which is
  * what the paragraph above requires; what this avoids is a dead tuple per row
- * per approval on a table the review queue reads constantly. It also makes the
- * `UPDATE`'s row count mean "rows re-keyed", which is the number worth logging.
+ * per approval on a table the review queue reads constantly. It also makes
+ * `moved` mean "rows re-keyed" exactly, which is one of the two numbers the
+ * statement reports.
+ *
+ * ⚠️ TWO numbers, since #5109 — see the block inside the builder. `rekeyed`
+ * counts the rows whose key moved; `skipped_unkeyable` counts the rows the
+ * `IS NOT NULL` arm declined. An earlier cut of this paragraph said the
+ * `UPDATE`'s ROW COUNT was "the number worth logging", singular, and that
+ * stopped being true the moment #5047 gave a low count two meanings.
  */
 function rekeyDriftedFactsSql(position: SlotPosition): string {
   const { surface, key } = SLOT_COLUMNS[position];

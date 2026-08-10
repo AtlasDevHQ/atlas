@@ -1127,9 +1127,31 @@ describe("source guard: the machinery is the ONLY audit-writing layer for correc
     const files: string[] = [];
     for (const root of ROOTS) walk(join(REPO_ROOT, root), files);
 
+    // ⚠️ The domain is swept, MINUS one recorded member — not the two
+    // correction verbs by name, which is the narrowing a reader will reach for
+    // first and which would be strictly weaker: a future `brainFact.supersede`
+    // emitted from a route is exactly the second metadata shape this guard
+    // exists to catch, and naming `correct|retract` would let it through.
+    //
+    // The one member that is NOT a correction is `tensionSweep` (#5029), whose
+    // row legitimately belongs to its route rather than to this machinery:
+    // `sweepTensionEdges` is a store primitive with ONE entry point and no
+    // request context to attribute from, so the two-entry-points argument that
+    // put `correct`/`retract` inside `correctFact` simply does not apply to it.
+    // A file may therefore name `ADMIN_ACTIONS.brainFact.tensionSweep` and
+    // nothing else in the domain — which is checked per OCCURRENCE, so a file
+    // that emitted both would still offend on the second.
+    const NON_CORRECTION_MEMBERS = new Set(["tensionSweep"]);
     const offenders = files
       .filter((file) => file !== MACHINERY)
-      .filter((file) => /\bADMIN_ACTIONS\.brainFact\b/.test(readFileSync(file, "utf8")))
+      .filter((file) => {
+        const source = readFileSync(file, "utf8");
+        const hits = [...source.matchAll(/\bADMIN_ACTIONS\.brainFact\b(?:\.(\w+))?/g)];
+        // A bare `ADMIN_ACTIONS.brainFact` with NO member — a spread, an
+        // `Object.values`, a destructure — reaches the correction verbs too, so
+        // `undefined` is never exempt.
+        return hits.some((h) => !NON_CORRECTION_MEMBERS.has(h[1] ?? ""));
+      })
       .map((f) => f.slice(REPO_ROOT.length + 1))
       // The catalog defines the vocabulary; it is not an emitter.
       .filter((f) => f !== "packages/api/src/lib/audit/actions.ts");
@@ -1141,6 +1163,41 @@ describe("source guard: the machinery is the ONLY audit-writing layer for correc
         "lib/brain/correction.ts. If it only READS the vocabulary (an audit-log filter, a console label " +
         "map), add it to this test's exemption list beside lib/audit/actions.ts. Do not delete the sweep",
     ).toEqual([]);
+  });
+
+  test("…and the member exemption is narrow — a correction verb beside it still offends", () => {
+    // THE positive control for the filter above, which is otherwise a green
+    // no-op the moment its regex stops matching: an exemption that quietly
+    // matched everything would leave the sweep passing over the whole tree.
+    //
+    // Proven on planted sources rather than on the real ones, because the real
+    // tree holds exactly one exempt file today and cannot exercise the arms
+    // that matter — a bare reference, and an exempt member sitting beside a
+    // correction verb in one file.
+    const offends = (source: string) => {
+      const hits = [...source.matchAll(/\bADMIN_ACTIONS\.brainFact\b(?:\.(\w+))?/g)];
+      return hits.some((h) => !new Set(["tensionSweep"]).has(h[1] ?? ""));
+    };
+
+    expect(offends("logAdminAction({ actionType: ADMIN_ACTIONS.brainFact.tensionSweep })")).toBe(
+      false,
+    );
+    expect(offends("logAdminAction({ actionType: ADMIN_ACTIONS.brainFact.correct })")).toBe(true);
+    expect(offends("logAdminAction({ actionType: ADMIN_ACTIONS.brainFact.retract })")).toBe(true);
+    // A verb nobody has written yet — the case naming `correct|retract` would
+    // have missed, and the reason the sweep is domain-wide.
+    expect(offends("logAdminAction({ actionType: ADMIN_ACTIONS.brainFact.supersede })")).toBe(true);
+    // A BARE reference reaches every verb in the domain, exempt or not.
+    expect(offends("const verbs = Object.values(ADMIN_ACTIONS.brainFact);")).toBe(true);
+    // Both in ONE file: the exempt member must not launder the correction verb
+    // beside it.
+    expect(
+      offends(
+        "a(ADMIN_ACTIONS.brainFact.tensionSweep);\nb(ADMIN_ACTIONS.brainFact.correct);",
+      ),
+    ).toBe(true);
+    // …and the exempt member is a real one, not a string this test invented.
+    expect(REAL_ADMIN_ACTIONS.brainFact).toHaveProperty("tensionSweep");
   });
 
   test("the machinery reaches for the AWAITED audit helper, never the fire-and-forget one", () => {

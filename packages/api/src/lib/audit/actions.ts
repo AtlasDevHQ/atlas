@@ -1024,6 +1024,21 @@ export const ADMIN_ACTIONS = {
      * trail's copy.
      */
     correct: "brain_fact.correct",
+    /**
+     * One run of the admin-triggered tension sweep (#5029, ADR-0037 §7).
+     *
+     * Audited even though the write is ADDITIVE and advisory — no `valid_to`, no
+     * tombstone, nothing a verb has to undo — because the sweep is an autonomous
+     * writer of `brain_edges` and the row is the only record of who armed it.
+     * `metadata` carries `minted`, `truncated`, and `workspaceId`; a `minted: 0`
+     * row is emitted too, since "an admin swept and found nothing" is the
+     * observation that makes a later non-zero run interpretable.
+     *
+     * ⚠️ `targetId` is the WORKSPACE, not a fact — the only entry in this domain
+     * where that is true. The sweep has no single target: it is scoped to the
+     * workspace and picks its own pairs, which is precisely why it needs a row.
+     */
+    tensionSweep: "brain_fact.tension_sweep",
   },
 } as const;
 

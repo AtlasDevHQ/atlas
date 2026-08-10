@@ -1183,6 +1183,37 @@ export interface BrainFactRetractResponse {
 }
 
 /**
+ * What one run of the admin-triggered tension sweep did (#5029, ADR-0037 §7).
+ *
+ * Two numbers and nothing else, and the omissions are the design. It carries no
+ * fact ids, no claims, and no predicate — a reviewer who wants to SEE what was
+ * flagged reads the review queue with `?tension=true`, which is ACL-gated per
+ * reader, where this response is workspace-wide and therefore would be
+ * disclosing rows the caller may not hold. It is `/oversight`'s numbers-only
+ * contract applied to a write.
+ *
+ * ⚠️ `minted` is edges WRITTEN, never pairs considered. A second run over an
+ * already-swept corpus reports `0` — that is convergence, not a failure, and a
+ * client that renders it as "nothing found" is describing the wrong thing.
+ */
+export interface BrainFactTensionSweepResponse {
+  /**
+   * Advisory `in-tension-with` edges this run created. Additive: the sweep
+   * supersedes, retracts and reorders nothing.
+   */
+  readonly minted: number;
+  /**
+   * The per-run bound bit, so more unswept pairs may remain. Run it again — the
+   * next run resumes rather than repeating, and a run with nothing left answers
+   * `{ minted: 0, truncated: false }`.
+   *
+   * ⚠️ Conservative by one run: a sweep that mints exactly the cap and had
+   * nothing left still reports `true`. See `TensionSweepReport.truncated`.
+   */
+  readonly truncated: boolean;
+}
+
+/**
  * The four correction verbs (#4915, ADR-0036 §Temporal, conflict &
  * provenance) — T4's second human-authoritative entry point beside the review
  * gate. `retract` is the ONLY tombstone path (and the GDPR-erasure verb);

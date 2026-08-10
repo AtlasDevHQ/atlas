@@ -9,6 +9,7 @@
  *   GET  /oversight — per-audience counts, workspace-wide, with no content
  *   POST /:id/retract — reject a candidate (the `retract` correction verb)
  *   POST /:id/correct — apply a `correct_fact` verb (#4915)
+ *   POST /tension-sweep — mint advisory tension edges over EXISTING rows (#5029)
  *
  * `/retract` and `/correct {verb: "retract"}` are the SAME code path
  * (`correctFact` in `lib/brain/correction.ts`) — one retract semantics, not
@@ -51,10 +52,29 @@
  * `lib/brain/oversight.ts` rules disclosable. That module's header states the
  * rule; `z.strictObject` on its wire schema plus `checked()` below are what
  * make a producer that broke it fail here rather than at the browser.
+ *
+ * ## `/tension-sweep` is the one WRITE here that is not about a single fact
+ *
+ * Every other verb on this router names a fact in its path and acts on that row.
+ * The sweep (#5029, ADR-0037 §7) is workspace-scoped and picks its own pairs: it
+ * mints the advisory `in-tension-with` edges the corpus earned but was never
+ * offered, because approving an alias or a `single` cardinality entry changes
+ * what WOULD collide for rows nothing will ever look at again — and replaying
+ * reconcile cannot reach the tension pass at all (`lib/brain/tension-sweep.ts`
+ * carries the structural argument).
+ *
+ * It is the second explicitly-authorized autonomous writer of `brain_edges`, and
+ * everything that makes that acceptable is enforced rather than asserted: the
+ * write is additive and advisory (nothing is superseded, retracted, or
+ * reordered), it is admin-TRIGGERED rather than scheduled or on the boot path,
+ * it is bounded twice, and it is audited. Its response carries COUNTS only —
+ * see `BrainFactTensionSweepResponse` for why listing the pairs would be a
+ * workspace-wide disclosure on a router whose every other read is reader-scoped.
  */
 
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
+import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext, RequestContext } from "@atlas/api/lib/effect/services";
 import { getInternalDB } from "@atlas/api/lib/db/internal";
@@ -75,8 +95,22 @@ import {
   loadSupersessionPreview,
   loadWideningPreview,
 } from "@atlas/api/lib/brain/oversight";
+// Both caps come from the sweep module, including `TENSION_EDGE_CAP`, which it
+// RE-EXPORTS from `reconcile.ts`. Reaching past it to the declaration site would
+// give this route a direct edge onto the reconcile stage for a integer it only
+// prints, and would leave the route tests mocking two modules to stub one seam.
+import {
+  TENSION_EDGE_CAP,
+  TENSION_SWEEP_RUN_CAP,
+  sweepTensionEdges,
+} from "@atlas/api/lib/brain/tension-sweep";
+import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
+// The BARREL, like `admin-publish.ts` — not the two leaf modules. The route
+// tests `mock.module` `@atlas/api/lib/audit`, so a leaf import walks past the
+// double and writes a real row.
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
-import type { AuthMode } from "@useatlas/types";
+import type { AuthMode, BrainFactTensionSweepResponse } from "@useatlas/types";
 import {
   BRAIN_FACT_STATUS_FILTERS,
   BrainFactCandidateListResponseSchema,
@@ -85,11 +119,14 @@ import {
   BrainFactCorrectionResponseSchema,
   BrainFactOversightSchema,
   BrainFactRetractResponseSchema,
+  BrainFactTensionSweepResponseSchema,
   isBrainFactStatusFilter,
 } from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
 import { createAdminRouter, noActiveOrgBody, requireOrgContext } from "./admin-router";
 import { loadWorkspaceVocabulary } from "@atlas/api/lib/brain/vocabulary";
+
+const log = createLogger("admin-brain-facts");
 
 const DEFAULT_LIMIT = 50;
 
@@ -330,6 +367,44 @@ const correctRoute = createRoute({
     409: {
       description:
         "The verb cannot apply to this target — a warehouse-derived (tier-1) fact, a fact whose source kind this deployment does not recognise or whose recorded source is malformed (so its tier cannot be determined), a supersede on an unpublished or already-superseded fact, or an unpublishable replacement. The message says which and what to do instead.",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const tensionSweepRoute = createRoute({
+  method: "post",
+  path: "/tension-sweep",
+  tags: ["Admin — Brain Facts"],
+  summary: "Mint advisory tension edges over existing rows",
+  description:
+    "Sweeps this workspace's live facts and mints the advisory `in-tension-with` edges the corpus has earned but was never offered (#5029, ADR-0037 §7). " +
+    "The ingest path only ever wires a tension edge for a claim it is CREATING, so approving an alias or a `single` cardinality entry changes what would collide for rows nothing looks at again — and replaying reconciliation cannot help, because it corroborates an existing claim and returns before the tension pass. This is the operation that looks again. " +
+    "A pair is flagged when both facts are live (not retracted, not superseded), occupy the same subject+predicate slot under TODAY's vocabulary, are not provably about different subjects, are not provably the same object, and the canonical predicate is curated `single` and approved today. Absent curation nothing is minted — `single` requires positive evidence, so a workspace that has never authored a cardinality entry gets `{minted: 0}`. " +
+    "The write is ADDITIVE and advisory: nothing is superseded, retracted, invalidated, or reordered, and no fact row is touched. Running it twice does not duplicate edges — an existing edge between two facts suppresses the pair in either direction. " +
+    // INTERPOLATED, never spelled. Two numbers in prose is two more places to
+    // forget when a cap moves, and this one is published: the description is
+    // extracted into `apps/docs/openapi.json` and rendered as the API
+    // reference, so a stale literal here is a documented promise Atlas no
+    // longer keeps. The openapi-drift gate re-extracts on every PR, so a
+    // changed constant shows up as a docs diff rather than as a lie.
+    `Bounded twice: each fact gains at most ${TENSION_EDGE_CAP} edges (the same per-fact fan-out bound the ingest path applies), and one run mints at most ${TENSION_SWEEP_RUN_CAP} edges in total. \`truncated\` reports the second bound biting; run it again to resume, which picks up where it stopped rather than repeating. ` +
+    "Needs the owner or admin entitlement, re-resolved against this workspace rather than read off the session. The response carries counts only, never the pairs — this operation is workspace-wide where every read on this router is scoped to the caller's own grants; to SEE what was flagged, read the queue with `?tension=true`.",
+  responses: {
+    200: {
+      description:
+        "The sweep ran. `minted` is edges actually written — `0` means the corpus had nothing left to flag, which is the steady state after a first run",
+      content: { "application/json": { schema: BrainFactTensionSweepResponseSchema } },
+    },
+    ...commonResponses,
+    403: {
+      description:
+        "Forbidden — the sweep is an autonomous writer of `brain_edges` and needs the owner or admin entitlement (ADR-0037 §6), re-resolved against the workspace being swept rather than read off the session",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    409: {
+      description:
+        "An ingest pass holds this workspace's reconcile lock, and the sweep writes the same advisory edges that pass does. Nothing was changed; retry in a few seconds",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
@@ -670,5 +745,134 @@ adminBrainFacts.openapi(correctRoute, async (c) => {
     { label: "apply brain fact correction verb" },
   );
 });
+
+adminBrainFacts.openapi(tensionSweepRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
+      const { mode, user, orgId } = yield* AuthContext;
+      if (!orgId) return c.json(noActiveOrgBody(requestId), 400);
+
+      const ctx = yield* reviewerContext(mode, user, orgId, requestId);
+
+      // ADR-0037 §6's owner/admin bar, applied HERE for the reason
+      // `admin-brain-vocabulary.ts` applies it at its own routes: `adminAuth`
+      // gates the router on the SESSION's role, which does not know which
+      // workspace is being written, so an admin of another org clears it. The
+      // re-resolved context does not.
+      //
+      // Same bar as curating a predicate, and that is the point rather than a
+      // convenience: this sweep is the *consequence* of a curation — it is what
+      // makes an approved `single` entry reach rows that already exist — so a
+      // reader who may not arm the entry may not fire it either. A lower bar
+      // here would be a way around the higher one.
+      if (!sweepEntitled(ctx)) {
+        // LOGGED, like every other denial at this bar. The sweep is an
+        // autonomous writer of `brain_edges`, and an attempt to run one without
+        // the entitlement is exactly the event `acl.ts` says you want in the
+        // log; the message travels out in the response, which is the caller's
+        // copy rather than a server-side record.
+        log.warn(
+          { workspaceId: orgId, origin: ctx.origin, role: ctx.role, requestId },
+          "Brain tension sweep refused — the reader does not clear the owner/admin bar",
+        );
+        return c.json(
+          {
+            error: "forbidden",
+            message: sweepDenialMessage(ctx),
+            requestId,
+          },
+          403,
+        );
+      }
+
+      const outcome = yield* Effect.tryPromise({
+        try: () => sweepTensionEdges(orgId),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      });
+
+      if (outcome.kind === "contended") {
+        // 409, on `refusalStatus`' own semantics: a target-state mismatch the
+        // client can retry past. Not a 503 — nothing is unavailable, and not a
+        // 500 — nothing failed. The seam's prose travels verbatim.
+        return c.json({ error: "sweep_contended", message: outcome.message, requestId }, 409);
+      }
+
+      // The audit row is THIS route's, unlike `/retract` and `/correct` where
+      // the machinery owns it (#4934). `sweepTensionEdges` is a store primitive
+      // with no request context and one entry point; a row emitted from inside
+      // it would have to invent the actor. Emitted for a `minted: 0` run too —
+      // "an admin swept and found nothing" is what makes a later non-zero run
+      // interpretable, and its absence would read as "nobody has swept".
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.brainFact.tensionSweep,
+        targetType: "brainFact",
+        // The WORKSPACE, not a fact — the sweep has no single target. See the
+        // catalog entry, which is where that irregularity is recorded.
+        targetId: orgId,
+        metadata: {
+          workspaceId: orgId,
+          minted: outcome.report.minted,
+          truncated: outcome.report.truncated,
+        },
+      });
+
+      // `checked`, not a `checkedWrite` equivalent, and the difference from
+      // `admin-brain-vocabulary.ts`'s three write routes is real rather than an
+      // oversight: this response is two numbers built from a value the seam just
+      // returned, so a schema mismatch means the SHAPE drifted, not that a
+      // committed write cannot be described. There is also nothing for an
+      // approver to act on — the write is additive and re-running is a no-op —
+      // so "it landed, reload" would be advice about nothing.
+      return c.json(
+        checked(BrainFactTensionSweepResponseSchema, {
+          minted: outcome.report.minted,
+          truncated: outcome.report.truncated,
+        } satisfies BrainFactTensionSweepResponse),
+        200,
+      );
+    }),
+    { label: "sweep brain fact tension edges" },
+  );
+});
+
+/**
+ * ADR-0037 §6's owner/admin bar, as this route needs it.
+ *
+ * Switched on the ORIGIN rather than written as a role test with a null guard,
+ * on `recordedAuthor`'s precedent in `admin-brain-vocabulary.ts`: an arm added to
+ * `BrainPrincipalContext` should have to be considered here rather than
+ * inheriting whichever answer a `??` chain happens to give it.
+ *
+ * ⚠️ It does NOT require `ctx.userId`, where `recordedAuthor` does — and the
+ * asymmetry is the reason that function exists. `recordedAuthor` returns an
+ * AUTHOR to store in `proposed_by`, so an entitled reader with no id would write
+ * an unattributed row. Nothing here is attributed to a person on the row: the
+ * edges carry no author column, and the actor reaches `admin_action_log` through
+ * the ambient request context rather than through this value. Copying the id
+ * requirement across would deny a reader who is entitled, to protect a column
+ * this path does not write.
+ */
+function sweepEntitled(ctx: BrainPrincipalContext): boolean {
+  switch (ctx.origin) {
+    case "authenticated":
+      return ctx.role === "owner" || ctx.role === "admin";
+    case "unauthenticated-local":
+      return true;
+    case "unresolved":
+      return false;
+  }
+}
+
+/** Why a reader may not sweep — the `cardinalityDenialMessage` shape, one bar over. */
+function sweepDenialMessage(ctx: BrainPrincipalContext): string {
+  return ctx.origin === "authenticated"
+    ? `Sweeping for tension edges needs the owner or admin entitlement; this reader is ` +
+        `"${ctx.role ?? "no org role"}". The sweep is an autonomous writer of advisory ` +
+        "contradiction edges over every live fact in the workspace, and it is the operation that " +
+        "makes an approved `single` cardinality entry reach rows that already exist."
+    : `Sweeping for tension edges needs a resolved reader identity; this one is "${ctx.origin}".`;
+}
 
 export { adminBrainFacts };

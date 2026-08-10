@@ -26182,6 +26182,164 @@
         "operationId": "postAdminBrainFactsByIdCorrect"
       }
     },
+    "/api/v1/admin/brain-facts/tension-sweep": {
+      "post": {
+        "tags": [
+          "Admin — Brain Facts"
+        ],
+        "summary": "Mint advisory tension edges over existing rows",
+        "description": "Sweeps this workspace's live facts and mints the advisory `in-tension-with` edges the corpus has earned but was never offered (#5029, ADR-0037 §7). The ingest path only ever wires a tension edge for a claim it is CREATING, so approving an alias or a `single` cardinality entry changes what would collide for rows nothing looks at again — and replaying reconciliation cannot help, because it corroborates an existing claim and returns before the tension pass. This is the operation that looks again. A pair is flagged when both facts are live (not retracted, not superseded), occupy the same subject+predicate slot under TODAY's vocabulary, are not provably about different subjects, are not provably the same object, and the canonical predicate is curated `single` and approved today. Absent curation nothing is minted — `single` requires positive evidence, so a workspace that has never authored a cardinality entry gets `{minted: 0}`. The write is ADDITIVE and advisory: nothing is superseded, retracted, invalidated, or reordered, and no fact row is touched. Running it twice does not duplicate edges — an existing edge between two facts suppresses the pair in either direction. Bounded twice: each fact gains at most 10 edges (the same per-fact fan-out bound the ingest path applies), and one run mints at most 1000 edges in total. `truncated` reports the second bound biting; run it again to resume, which picks up where it stopped rather than repeating. Needs the owner or admin entitlement, re-resolved against this workspace rather than read off the session. The response carries counts only, never the pairs — this operation is workspace-wide where every read on this router is scoped to the caller's own grants; to SEE what was flagged, read the queue with `?tension=true`.",
+        "responses": {
+          "200": {
+            "description": "The sweep ran. `minted` is edges actually written — `0` means the corpus had nothing left to flag, which is the steady state after a first run",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "minted": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "truncated": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "minted",
+                    "truncated"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request — bad filter value or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — the sweep is an autonomous writer of `brain_edges` and needs the owner or admin entitlement (ADR-0037 §6), re-resolved against the workspace being swept rather than read off the session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An ingest pass holds this workspace's reconcile lock, and the sweep writes the same advisory edges that pass does. Nothing was changed; retry in a few seconds",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminBrainFactsTensionSweep"
+      }
+    },
     "/api/v1/admin/brain-vocabulary/surfaces": {
       "get": {
         "tags": [

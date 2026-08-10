@@ -3,15 +3,22 @@
  *
  * The read model's behaviour is pinned in `lib/brain/__tests__/candidates.test.ts`;
  * here the assertions are about THIS router — the filter guard, the deliberately
- * ambiguous retract 404, the ABSENCE of a router-level audit row (#4934 moved it
- * into `correctFact` so both entry points get one), and the two seams that would
- * be silent if they broke:
+ * ambiguous retract 404, the ABSENCE of a router-level audit row ON THE
+ * CORRECTION VERBS (#4934 moved it into `correctFact` so both entry points get
+ * one), and the two seams that would be silent if they broke:
  *
  *   - the reviewer's principal context is built from `resolveEffectiveRole`,
  *     never a back-filled auth-mode default (which mints `role:admin` for every
  *     holder of a shared API key);
  *   - no audit override is ever requested, so a review queue can never become a
  *     routine workspace-wide grant bypass.
+ *
+ * ⚠️ `/tension-sweep` (#5029) is the ONE route here that DOES emit its own audit
+ * row, and it is not an exception to #4934 so much as a case that rule never
+ * covered: `correctFact` owns the row because it has two entry points,
+ * `sweepTensionEdges` has one and no request context to attribute from. The
+ * no-router-row sweep below is therefore scoped to the correction verbs by
+ * name rather than to "this router", which it used to claim.
  */
 
 import { beforeEach, describe, expect, it, mock } from "bun:test";
@@ -291,6 +298,47 @@ void mock.module("@atlas/api/lib/brain/oversight", () => ({
   },
 }));
 
+/**
+ * The sweep (#5029), stubbed on the same terms as everything else here: what
+ * this file owns is the ROUTE's obligations — the §6 entitlement bar, the
+ * outcome→HTTP mapping, the audit row, the wire parse. Whether the sweep mints
+ * the right edges is `lib/brain/__tests__/tension-sweep-pg.test.ts`' question
+ * and cannot be answered by a double at all.
+ *
+ * EVERY named export, not just the function the route calls: `mock.module` is
+ * file-global, so a partial factory link-fails the moment anything in the graph
+ * imports one of the omitted names.
+ */
+let sweepCalls: string[] = [];
+let sweepOutcome: Record<string, unknown> = {
+  kind: "swept",
+  report: { minted: 3, truncated: false },
+};
+/**
+ * SENTINEL cap values, deliberately not the shipped ones.
+ *
+ * The route renders both into its OpenAPI `description`, which is extracted to
+ * `apps/docs/openapi.json` and published as the API reference — so a hard-coded
+ * "10"/"1000" in that prose is a promise Atlas stops keeping the moment a cap
+ * moves. Feeding the mock the REAL values could not detect that: the literal and
+ * the constant would agree, which is the fixtures-agree-by-construction trap.
+ * Values nothing else in the tree produces make the interpolation falsifiable.
+ *
+ * The real numbers reaching the real spec is the openapi-drift gate's job, and
+ * it extracts against the unmocked modules.
+ */
+const SENTINEL_EDGE_CAP = 7;
+const SENTINEL_RUN_CAP = 4242;
+void mock.module("@atlas/api/lib/brain/tension-sweep", () => ({
+  TENSION_EDGE_CAP: SENTINEL_EDGE_CAP,
+  TENSION_SWEEP_RUN_CAP: SENTINEL_RUN_CAP,
+  TENSION_SWEEP_SQL: "INSERT INTO brain_edges",
+  sweepTensionEdges: async (workspaceId: string) => {
+    sweepCalls.push(workspaceId);
+    return sweepOutcome;
+  },
+}));
+
 void mock.module("../admin-router", () => ({
   createAdminRouter: () => new OpenAPIHono(),
   // The real constant + body shape, so the canonical-message assertion tests
@@ -361,6 +409,8 @@ beforeEach(() => {
   };
   AUTH_USER = { id: "user-1", role: "member" };
   ORG_ID = CURRENT_ORG;
+  sweepCalls = [];
+  sweepOutcome = { kind: "swept", report: { minted: 3, truncated: false } };
   oversightCalls = 0;
   oversightCtx = undefined;
   supersessionPreviewCalls = 0;
@@ -997,12 +1047,18 @@ describe("POST /{id}/correct", () => {
     expect(auditRows).toHaveLength(0);
   });
 
-  it("emits NO audit row on ANY path of EITHER route — the machinery owns it (#4934)", async () => {
-    // The double-logging guard, swept rather than enumerated: whatever this
-    // router does, it must not write an `admin_action_log` row, because
-    // `correctFact` already writes exactly one for every entry point. Re-adding
-    // either audit helper to either handler turns one human decision into two
-    // forensic rows, and this fails — both are captured into `auditRows`.
+  it("emits NO audit row on ANY path of EITHER CORRECTION route — the machinery owns it (#4934)", async () => {
+    // The double-logging guard, swept rather than enumerated: whatever the two
+    // correction handlers do, neither may write an `admin_action_log` row,
+    // because `correctFact` already writes exactly one for every entry point.
+    // Re-adding either audit helper to either handler turns one human decision
+    // into two forensic rows, and this fails — both are captured into
+    // `auditRows`.
+    //
+    // ⚠️ Scoped to the two CORRECTION routes, and it always was — the loop below
+    // reaches `/retract` and `/correct` and nothing else. The old title claimed
+    // "this router", which #5029's `/tension-sweep` (which owns its own row, and
+    // must) turned into a false statement about a sweep that never covered it.
     //
     // Deliberately reaches `/retract` as well as `/correct` despite living in
     // the `/correct` block: the two handlers are the pair that has to stay in
@@ -1168,5 +1224,193 @@ describe("POST /{id}/correct", () => {
     const res = await correct({ verb: "pin" });
     expect(res.status).toBe(500);
     expect(await res.text()).not.toContain("ep-corr-3");
+  });
+});
+
+describe("POST /tension-sweep (#5029)", () => {
+  const sweep = () => adminBrainFacts.request("/tension-sweep", { method: "POST" });
+
+  it("runs the sweep for the ACTIVE org and returns its counts", async () => {
+    sweepOutcome = { kind: "swept", report: { minted: 4, truncated: true } };
+    const res = await sweep();
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ minted: 4, truncated: true });
+    // The workspace, asserted rather than assumed: this is a workspace-scoped
+    // autonomous writer, and the one argument that decides whose corpus it
+    // walks is the one a route is most able to get wrong.
+    expect(sweepCalls).toEqual([CURRENT_ORG]);
+  });
+
+  it("renders BOTH caps into its published description rather than spelling them", async () => {
+    // The description is extracted into `apps/docs/openapi.json` and rendered
+    // as the API reference, so a literal there is a customer-facing promise
+    // detached from the constant that decides the behaviour. Asserted against
+    // SENTINEL values, which is the only way this can fail: with the real caps
+    // in the mock, a hard-coded "10 … 1000" passes.
+    const doc = adminBrainFacts.getOpenAPIDocument({ openapi: "3.0.0", info: { title: "t", version: "1" } });
+    const description = (
+      doc.paths?.["/tension-sweep"] as { post?: { description?: string } } | undefined
+    )?.post?.description;
+
+    expect(description, "the sweep route is not in the generated document").toBeDefined();
+    expect(description).toContain(`at most ${SENTINEL_EDGE_CAP} edges`);
+    expect(description).toContain(`at most ${SENTINEL_RUN_CAP} edges in total`);
+    // Non-vacuity: the sentinels must not be the shipped numbers, or the two
+    // assertions above would also pass against hard-coded prose.
+    expect([SENTINEL_EDGE_CAP, SENTINEL_RUN_CAP]).not.toContain(10);
+    expect([SENTINEL_EDGE_CAP, SENTINEL_RUN_CAP]).not.toContain(1000);
+  });
+
+  it("audits the run — including one that minted nothing", async () => {
+    // The `minted: 0` case is the one worth pinning. An audit call placed
+    // inside an `if (minted > 0)` reads as tidy and leaves "an admin swept and
+    // found nothing" unrecorded, which is indistinguishable from nobody having
+    // swept — precisely the reading a later non-zero run has to be interpreted
+    // against.
+    sweepOutcome = { kind: "swept", report: { minted: 0, truncated: false } };
+    const res = await sweep();
+
+    expect(res.status).toBe(200);
+    expect(auditRows).toHaveLength(1);
+    expect(auditRows[0]).toMatchObject({
+      // The REAL catalog constant, not a hand-typed string: a rename that
+      // missed this file would otherwise pass.
+      actionType: REAL_ADMIN_ACTIONS.brainFact.tensionSweep,
+      targetType: "brainFact",
+      // The WORKSPACE, which is the irregularity the catalog entry records.
+      targetId: CURRENT_ORG,
+      metadata: { workspaceId: CURRENT_ORG, minted: 0, truncated: false },
+    });
+  });
+
+  it("carries the real counts into the audit row, not the response's", async () => {
+    // Two numbers, both non-default and DIFFERENT from each other, so a row
+    // built from the wrong field or from a hard-coded literal cannot coincide
+    // with the truth.
+    sweepOutcome = { kind: "swept", report: { minted: 12, truncated: true } };
+    await sweep();
+    expect(auditRows[0]?.metadata).toEqual({
+      workspaceId: CURRENT_ORG,
+      minted: 12,
+      truncated: true,
+    });
+  });
+
+  it("409s on lock contention, audits nothing, and passes the seam's prose through", async () => {
+    sweepOutcome = { kind: "contended", message: "an ingest pass is running; retry" };
+    const res = await sweep();
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; message: string; requestId: string };
+    expect(body.error).toBe("sweep_contended");
+    // Verbatim: the seam owns the sentence, and a route that mapped a code to
+    // its own copy would be a second spelling of a rule the library states.
+    expect(body.message).toBe("an ingest pass is running; retry");
+    expect(body.requestId).toBe("test-req");
+    // Nothing happened, so nothing may be audited as having happened.
+    expect(auditRows).toHaveLength(0);
+  });
+
+  it("403s a reader below the owner/admin bar, and never reaches the sweep", async () => {
+    // ADR-0037 §6, re-resolved against THIS workspace. `adminAuth` is stubbed
+    // out of this harness entirely, so what is being measured is the route's
+    // own bar rather than the router's.
+    memberRoleResult = "member";
+    const res = await sweep();
+
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("forbidden");
+    // The message names the role AND the consequence — a denial that says only
+    // "forbidden" leaves an admin unable to tell a missing entitlement from a
+    // bug.
+    expect(body.message).toContain("member");
+    expect(body.message).toContain("owner or admin");
+    expect(
+      sweepCalls,
+      "the sweep ran for a reader who may not run it — the bar is after the write",
+    ).toEqual([]);
+    expect(auditRows).toHaveLength(0);
+  });
+
+  it("403s a reader whose identity could not be resolved at all", async () => {
+    // The fail-closed arm of `sweepEntitled`. An authenticated request with no
+    // user id resolves `origin: "unresolved"` (`acl.ts` treats it as a
+    // middleware bug rather than a routine branch), and a bare
+    // `role === "owner" || role === "admin"` test answers `false` here by
+    // ACCIDENT — the role is null. Pinned so the accident is a decision, which
+    // is the whole reason `sweepEntitled` switches on the origin.
+    AUTH_USER = undefined;
+    const res = await sweep();
+
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { message: string };
+    // The message says WHICH thing is missing. "you are not an admin" would be
+    // a confident, specific, wrong explanation for a request that carried no
+    // identity at all.
+    expect(body.message).toContain("resolved reader identity");
+    expect(sweepCalls).toEqual([]);
+  });
+
+  it("500s — not 403 — when the member lookup BREAKS", async () => {
+    // The distinction the sibling routes already draw and this one inherits:
+    // "this user is not an owner here" is an answer; "the lookup broke" is not.
+    // Degrading a broken lookup into the 403 above would tell an admin they
+    // lack an entitlement they hold, during exactly the incident where they are
+    // trying to work out what is wrong.
+    memberLookupFails = true;
+    const res = await sweep();
+
+    expect(res.status).toBe(500);
+    expect(sweepCalls).toEqual([]);
+    expect(auditRows).toHaveLength(0);
+  });
+
+  it("admits an owner, not only an admin", async () => {
+    // Without this, the bar is satisfied by a build that hard-codes `=== "admin"`
+    // — which locks the workspace's owner out of an operation the same section
+    // grants them.
+    memberRoleResult = "owner";
+    const res = await sweep();
+
+    expect(res.status).toBe(200);
+    expect(sweepCalls).toEqual([CURRENT_ORG]);
+  });
+
+  it("400s with no active organization, before the sweep runs", async () => {
+    ORG_ID = undefined;
+    const res = await sweep();
+
+    expect(res.status).toBe(400);
+    expect((await res.json()) as { error: string }).toMatchObject({ error: "no_active_org" });
+    expect(sweepCalls).toEqual([]);
+  });
+
+  it("PROJECTS the two fields it declares rather than spreading the report", async () => {
+    // The disclosure pin, and the projection is what carries it — not
+    // `checked()`. The field a future seam would grow is the LIST OF PAIRS, and
+    // this route is workspace-wide where every read on this router is scoped to
+    // the caller's own grants, so those pairs would be claim text from every
+    // audience at once.
+    //
+    // ⚠️ `checked()` alone would NOT stop it. `z.strictObject` refuses an
+    // unknown key, so a spread would 500 — after the sweep had already
+    // committed, and reporting a landed write as a failure. Projecting means
+    // the widened field never reaches the parse, and this asserts the 200 to say
+    // so: a build that spread the report fails here with a 500, which is the
+    // right alarm for the wrong reason and the reason this test names both.
+    sweepOutcome = {
+      kind: "swept",
+      report: { minted: 1, truncated: false, pairs: [["fact-a", "fact-b"]] },
+    };
+    const res = await sweep();
+
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(JSON.parse(text)).toEqual({ minted: 1, truncated: false });
+    expect(text, "a claim id reached the wire on a workspace-wide response").not.toContain(
+      "fact-a",
+    );
   });
 });

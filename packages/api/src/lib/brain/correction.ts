@@ -509,9 +509,17 @@ export const CORRECTION_EPISODE_INSERT_SQL = `INSERT INTO brain_episodes
  * The tombstone — the only tombstone DECISION path, now that the review
  * surface's retract routes through this module (#4915 unification of #4772's
  * negative verb). The one other statement writing the column is the region
- * import's INSERT (`admin-migrate.ts`), which restores an existing
- * `invalidated_at` verbatim — a restore, not a new arbitration, the same
- * distinction the promotion guard's allowlist draws. It never names `status`:
+ * import's INSERT (`admin-migrate.ts`).
+ *
+ * ⚠️ That statement used to only RESTORE an existing `invalidated_at` verbatim —
+ * a restore, not a new arbitration, the same distinction the promotion guard's
+ * allowlist draws. Since #5047 it can also MINT one: a fact whose surface
+ * normalizes away lands tombstoned with a placeholder key, matching what
+ * migration 0194 does to the identical state. Still not an arbitration — it
+ * retires a claim that asserts nothing at some position, which no reader could
+ * ever have acted on — but the plain "restore, never mint" reading is no longer
+ * true, and this module is not the only tombstone WRITER even though it remains
+ * the only tombstone DECISION about a claim that says something. It never names `status`:
  * withdrawal is a tombstone, not a demotion — and the tombstone hides the row
  * from every fact-serving read, `asOf` included (#4916); only the tension
  * surfaces still list it, labelled, as a withdrawn rival. The ACL already ran
@@ -1508,7 +1516,26 @@ export async function correctFact(
   // human decision. Same deadline and same knob as the audit write above, so
   // the two post-commit writes cannot drift into having different answers to
   // one hazard.
-  if (supersededPredicate !== null) {
+  if (supersededPredicate === null && verb === "supersede") {
+    // ⚠️ UNREACHABLE, and logged anyway — which is the point (#5047).
+    //
+    // A committed `supersede` cannot carry a null canonical predicate: the
+    // replacement inherits the target's slot, `reconcile.ts` refuses a null slot
+    // key, and the target row's keys are `NOT NULL` since migration 0194. That
+    // argument rests on three facts in three modules, and if any of them moves,
+    // the failure is a supersede that silently stops feeding the ADR-0037 §3(d)2
+    // cardinality proposer — the subsystem goes quiet with nothing to grep.
+    //
+    // Deleting `logDegeneratePredicate` removed the arm that used to say so. It
+    // was right to delete: it reported two CAUSES that no longer exist and its
+    // message described states that cannot occur. What was wrong was leaving no
+    // arm at all, so the one state that must never be silent became the only one
+    // that was. This says exactly what is known and claims nothing about why.
+    log.error(
+      { workspaceId: ctx.workspaceId, factId: result.factId, requestId },
+      "brain correction: a supersede COMMITTED with no canonical predicate key — this should be impossible since #5047 (the ingest guard refuses a null slot key and `brain_facts` key columns are NOT NULL), so one of those invariants has moved. The correction itself is committed and correct; what is lost is the cardinality proposal for this predicate, silently, for every correction on this slot until it is fixed",
+    );
+  } else if (supersededPredicate !== null) {
     await proposeUnderDeadline(
       () => withTransaction((tx) => proposeFromCorrectionEvents(tx, ctx.workspaceId, supersededPredicate)),
       resolveAuditDeadline(deps.auditWriteTimeoutMs),
@@ -2039,7 +2066,24 @@ async function applySupersede(
     { withTransaction: (fn) => fn(tx), now: () => at },
   );
   const outcome = report.outcomes[0];
-  if (outcome?.kind === "blocked" && outcome.reason === RECONCILE_BLOCK_REASONS.malformedClaim) {
+  if (
+    outcome?.kind === "blocked" &&
+    outcome.reason === RECONCILE_BLOCK_REASONS.malformedClaim &&
+    // ⚠️ ONLY when the OBJECT is what has no identity. `MALFORMED_CLAIM` covers
+    // four states — a blank surface, a degenerate one, a vocabulary target that
+    // normalizes away, and an INHERITED null slot — and only the object position
+    // is the human's own text here: the subject and predicate are copied off the
+    // target row (#5037).
+    //
+    // Telling a human their replacement "has no identity" when the target's slot
+    // or this workspace's vocabulary is the defect sends them to fix input that
+    // is already correct, and no retry they can make will succeed. That is the
+    // same wrong-subsystem blame `inheritedUnkeyed` exists to prevent in the
+    // reconcile log, arriving on the user-facing side; the other positions fall
+    // through to the throw below, which is a 500 with a requestId — the right
+    // shape for a defect that is ours or the corpus's.
+    (outcome.unkeyed ?? []).includes("object")
+  ) {
     // ⚠️ THE ONE BLOCK REASON THAT IS REACHABLE FROM A WELL-FORMED REQUEST, and
     // it became reachable with #5047. Every other arm of the seam's gate is
     // about the EPISODE — provenance, grant, principal — and this function just
@@ -2071,10 +2115,26 @@ async function applySupersede(
     );
   }
   if (!outcome || outcome.kind === "blocked") {
-    // Unreachable by construction — the episode was just written with the
-    // target's own usable grant and an explicit principal — so a block here
-    // means the seam's contract changed underneath this caller. The one
-    // candidate-level reason that IS reachable is handled above.
+    // Every EPISODE-level reason is unreachable by construction — the episode was
+    // just written with the target's own usable grant and an explicit principal —
+    // so those mean the seam's contract changed underneath this caller.
+    //
+    // `MALFORMED_CLAIM` at a NON-object position also lands here, and it is a
+    // different animal: it means the target's inherited slot or this workspace's
+    // vocabulary produced no identity, which is a corpus or configuration defect
+    // rather than a request defect. A 500 with a `requestId` is the honest shape
+    // — the caller can do nothing about it and must not be told to retype their
+    // replacement. Logged with the positions so the operator does not have to
+    // reconstruct which slot failed from the message.
+    log.error(
+      {
+        workspaceId,
+        factId: target.id,
+        reason: outcome?.kind === "blocked" ? outcome.reason : "no outcome",
+        unkeyed: outcome?.kind === "blocked" ? (outcome.unkeyed ?? []) : [],
+      },
+      "brain correction: reconcile blocked the replacement claim at a position the caller does not control — the correction rolled back whole, including the supersede stamp. A MALFORMED_CLAIM here names the TARGET's inherited slot or this workspace's vocabulary, not the replacement text; see the reconcile warn for the same episode, whose `cause` field says which",
+    );
     throw new Error(
       `brain correction: reconcile blocked the replacement claim (${outcome ? outcome.reason : "no outcome"}) — ` +
         "the correction episode should satisfy every episode-level gate by construction",

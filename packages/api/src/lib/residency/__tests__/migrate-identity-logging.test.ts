@@ -79,10 +79,18 @@ void mock.module("@atlas/api/lib/logger", () => {
 });
 
 type ImportBundle = typeof import("@atlas/api/api/routes/admin-migrate")["importBundle"];
+type UnkeyableError =
+  typeof import("@atlas/api/api/routes/admin-migrate")["RegionImportUnkeyableError"];
 let importBundle: ImportBundle;
+// Loaded through the same dynamic import as `importBundle`, not a static one:
+// this file mocks the logger module, so a static import would bind the real one
+// before the mock is installed.
+let RegionImportUnkeyableError: UnkeyableError;
 
 beforeAll(async () => {
-  ({ importBundle } = await import("@atlas/api/api/routes/admin-migrate"));
+  ({ importBundle, RegionImportUnkeyableError } = await import(
+    "@atlas/api/api/routes/admin-migrate"
+  ));
 });
 
 afterEach(() => {
@@ -220,21 +228,49 @@ describe("the identity-loss line (#5035)", () => {
     expect(warn!.message).toContain("DRIFT");
   });
 
-  it("reports a v3 fact that ARRIVED unkeyed — the exporter's own drift shape", async () => {
-    // The destination-side half of `textOrNull`'s failure. Region A's projection
-    // drops `f.subject_key`; every fact exports `null`; this region accepts it
-    // (null is legitimate at all five positions) and lands the whole corpus
-    // unkeyed. Without this counter the only signal lives in the OTHER region's
-    // log stream, and nobody watching the cutover reads it.
+  it("REFUSES a v3 fact that arrived unkeyed while its surface keys — the drift shape", async () => {
+    // The destination-side half of `textOrNull`'s failure, and #5047 changed the
+    // answer rather than the question. Region A's projection drops
+    // `f.subject_key`; every fact exports `null`; this region used to accept it
+    // and land the whole corpus unkeyed, with a counter as the only local
+    // signal.
+    //
+    // It now REFUSES, because the row is REPAIRABLE — `acme` keys perfectly well,
+    // so the next drift re-key would restore it — and the two ways of landing it
+    // are not. Tombstoning retires a healthy belief that no verb restores;
+    // re-deriving the key under THIS region's vocabulary is the over-match
+    // ADR-0037 §8 forbids. Refusing is the only outcome that writes nothing, and
+    // it is a louder signal than any counter.
+    const { client } = captureClient();
+    await expect(
+      importBundle(
+        client,
+        bundleWith([fact("f-1", { subjectKey: null }), fact("f-2", {})]),
+        "org-log",
+      ),
+    ).rejects.toBeInstanceOf(RegionImportUnkeyableError);
+  });
+
+  it("COUNTS a v3 fact that arrived unkeyed because its surface asserts nothing", async () => {
+    // The other cause, and the one that still lands. `-` has no identity in any
+    // region under any vocabulary, so there is nothing for the source to have
+    // carried and nothing to repair. It lands tombstoned with a placeholder key
+    // (migration 0194's treatment of the same state), and the counters are what
+    // an operator reads — `tombstonedFacts` being the one to act on, since those
+    // rows are invisible to searchBrain and the review queue.
     const { client } = captureClient();
     await importBundle(
       client,
-      bundleWith([fact("f-1", { subjectKey: null }), fact("f-2", {})]),
-      "org-log",
+      bundleWith([fact("f-1", { object: "-", objectKey: null }), fact("f-2", {})]),
+      "org-log-degenerate",
     );
     const warn = identityWarn();
     expect(warn, "a v3 fact arriving with no key is silent").toBeDefined();
-    expect(warn!.payload).toMatchObject({ nullKeyFacts: 1, unkeyableFacts: 0 });
+    expect(warn!.payload).toMatchObject({
+      nullKeyFacts: 1,
+      unkeyableFacts: 0,
+      tombstonedFacts: 1,
+    });
   });
 
   it("says nothing when nothing was lost", async () => {

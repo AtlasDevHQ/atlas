@@ -62,6 +62,14 @@ function createMockPool(
           release.called = true;
           release.arg = err;
         },
+        // The `notice` listener surface (#5047). No-ops: a mock pool raises no
+        // server notices, and what this fake is here to prove is the statement
+        // sequence. `migrate-pg.test.ts` is where a real `RAISE NOTICE` is
+        // observed. Declared because `MigrationClient` requires them — a double
+        // that silently lacked `on` would drop every migration breadcrumb, which
+        // is exactly the gap the listener was added to close.
+        on() {},
+        off() {},
       };
     },
   };

@@ -295,6 +295,17 @@ export interface InternalPoolClient {
     params?: unknown[],
   ): Promise<{ rows: Record<string, unknown>[]; rowCount?: number | null }>;
   release(err?: Error): void;
+  /**
+   * `node-postgres`' `EventEmitter` surface for server notices (#5047).
+   *
+   * OPTIONAL so the lightweight mocks that satisfy this interface elsewhere keep
+   * doing so — the same reason `rowCount` is. `runMigrations` is the one consumer
+   * and requires them on its own client type, so a caller passing a pool whose
+   * client lacks them is a compile error THERE, where the notices would be lost,
+   * rather than everywhere a `{ query, release }` double is built.
+   */
+  on?(event: "notice", listener: (notice: { readonly message?: string }) => void): unknown;
+  off?(event: "notice", listener: (notice: { readonly message?: string }) => void): unknown;
 }
 
 export interface InternalPool {

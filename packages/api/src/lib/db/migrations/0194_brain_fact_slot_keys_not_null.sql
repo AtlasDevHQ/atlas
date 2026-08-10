@@ -35,14 +35,32 @@
 --     own backfill re-run is what sweeps the residue. That is the `UPDATE`s
 --     below.
 --   * **Landed by a region import.** #5035 closed the systematic case. What can
---     still arrive is a null on the wire, which `admin-migrate.ts` now handles on
---     this file's terms rather than writing it.
+--     still arrive is a null on the wire, and `admin-migrate.ts` now splits it by
+--     the SURFACE: a fact whose surface also normalizes away is tombstoned on this
+--     file's terms, while one whose surface keys perfectly well REFUSES the import
+--     — that row is repairable by the next drift re-key, and both ways of landing
+--     it (tombstoning a healthy belief, or re-deriving its key under this region's
+--     vocabulary) are irreversible.
 --   * **A surface that normalizes away.** `-`, `___`, `  ` key to NULL
 --     permanently and LEGALLY (`identityKey`'s ⚠️, and 0188's "What this does
 --     NOT fix"). No backfill has ever been able to repair these — 0187 and 0188
 --     both re-visit them on every run and both write the same NULL — because
 --     there is no key to compute. They are the only population that needed a
 --     policy, and the section below is it.
+--
+-- ## The reverse deploy-overlap window, which this migration OPENS
+--
+-- The first bullet above covers an N-1 instance writing UNKEYED rows BEFORE the
+-- constraint. The reverse is worth stating because it is the one an operator
+-- sees: once this file commits on the new instance, an N-1 instance — which has
+-- #5020's keyed `INSERT_FACT_SQL` but NOT #5047's tightened guard — that ingests
+-- `-` or `___` binds NULL and takes a `23502`, failing the WHOLE reconcile
+-- transaction, i.e. every candidate in that episode rather than the one offender.
+-- On the `correct_fact` path it surfaces as a 500.
+--
+-- Bounded and self-healing: the episode stays on the queue and is retried, and
+-- the window closes when the rollout completes. Recorded so `23502` spikes during
+-- a deploy read as expected rather than as a new defect.
 --
 -- ## Why the re-run is not 0188's statement, character for character
 --
@@ -226,14 +244,36 @@ UPDATE brain_facts f
 -- The parenthesized `OR` group is 0187's and 0188's, kept for their reason: the
 -- arms are all `OR`, so the group is redundant TODAY and `AND` binds tighter, so
 -- a fourth arm that scopes the statement reads as unscoped and is not.
-UPDATE brain_facts f
-   SET subject_key    = COALESCE(f.subject_key,   '-unkeyable:' || f.id::text),
-       predicate_key  = COALESCE(f.predicate_key, '-unkeyable:' || f.id::text),
-       object_key     = COALESCE(f.object_key,    '-unkeyable:' || f.id::text),
-       invalidated_at = COALESCE(f.invalidated_at, now())
- WHERE (f.subject_key IS NULL
-     OR f.predicate_key IS NULL
-     OR f.object_key IS NULL);
+--
+-- Wrapped in a `DO` block for the ROW COUNT, which is this statement's one
+-- operator breadcrumb. It retires beliefs — they leave `searchBrain` and the
+-- review queue at boot — and an operator who notices a smaller review queue
+-- afterwards has no other way to correlate it with this deploy. 0032's header
+-- names the mistake this repeats otherwise: *"Emit a RAISE NOTICE with the
+-- coerced row count so operators have a post-mortem breadcrumb instead of silent
+-- rewrites (0031 shipped without this — don't repeat that gap)."* 0034, 0055,
+-- 0072 and 0085 all follow it.
+--
+-- ⚠️ Those five breadcrumbs were being DISCARDED until #5047: `migrate.ts` ran
+-- each file with no `notice` listener on the client, and `node-postgres` drops a
+-- server notice when nothing is listening. The listener was added in this same
+-- PR, which is the only reason this block is a signal rather than a decoration.
+DO $$
+DECLARE tombstoned_count INTEGER;
+BEGIN
+  UPDATE brain_facts f
+     SET subject_key    = COALESCE(f.subject_key,   '-unkeyable:' || f.id::text),
+         predicate_key  = COALESCE(f.predicate_key, '-unkeyable:' || f.id::text),
+         object_key     = COALESCE(f.object_key,    '-unkeyable:' || f.id::text),
+         invalidated_at = COALESCE(f.invalidated_at, now())
+   WHERE (f.subject_key IS NULL
+       OR f.predicate_key IS NULL
+       OR f.object_key IS NULL);
+  GET DIAGNOSTICS tombstoned_count = ROW_COUNT;
+  IF tombstoned_count > 0 THEN
+    RAISE NOTICE '[0194] tombstoned % brain_facts row(s) whose surface normalizes away, each with a per-row placeholder key. They leave searchBrain and the review queue; their surfaces are retained verbatim and only clearing invalidated_at by hand restores them', tombstoned_count;
+  END IF;
+END $$;
 
 -- ── 3. The constraint ───────────────────────────────────────────────────────
 --

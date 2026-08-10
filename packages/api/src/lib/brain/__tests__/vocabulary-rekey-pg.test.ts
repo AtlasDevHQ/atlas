@@ -34,9 +34,17 @@
  *
  * ## Mutation table
  *
- * Twenty-five mutations, all twenty-five caught. Regenerated in ONE pass against
- * the final tree rather than edited row by row — #5022's review found numbers
- * carried forward under a header claiming they had been re-measured, twice. The
+ * Twenty-six mutations, all twenty-six caught. Rows 1-25 were regenerated in ONE
+ * pass against the tree that shipped them, rather than edited row by row —
+ * #5022's review found numbers carried forward under a header claiming they had
+ * been re-measured, twice.
+ *
+ * ⚠️ ROW 26 IS THE EXCEPTION AND IS SAID OUT LOUD, because a header whose whole
+ * point is that carried-forward numbers are worthless cannot quietly carry one.
+ * It was added by hand for #5047 and measured INDIVIDUALLY — drop the
+ * `IS NOT NULL` arm, watch the two named tests fail with a `23502` — not by a
+ * table-wide regeneration. Its "first test to die" cell is that measurement.
+ * The
  * harness applies each mutation, runs all three suites, records the first
  * failing test, and reverts; the "first test to die" column is that recorded
  * name, not an author's guess about which test ought to have caught it.

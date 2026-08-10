@@ -1624,16 +1624,20 @@ describe("supersede", () => {
       slot: { subject: null, predicate: null, object: null },
     });
 
-    const outcome = await run(store, {
+    const outcome = run(store, {
       factId: "unkeyed",
       verb: "supersede",
       replacement: { object: "Bo" },
     });
 
-    expect(outcome).toMatchObject({
-      kind: "refused",
-      reason: CORRECTION_REFUSAL_REASONS.replacementMalformed,
-    });
+    // A THROW, not a refusal — and which one it is, is the point. The unkeyed
+    // position here is the INHERITED slot, copied off the target row; the
+    // replacement's own text is fine. `REPLACEMENT_MALFORMED` would tell the
+    // human to retype input that is already correct, and no retry could ever
+    // succeed. A 500 with a `requestId` is the honest shape for a corpus state
+    // that #5047 makes impossible (target keys are `NOT NULL`, and 0194
+    // tombstoned the legacy rows, which `correctionTargetSql` then excludes).
+    await expect(outcome).rejects.toThrow(/reconcile blocked the replacement claim/);
     // No successor was installed. That the target's `valid_to` STAMP is rolled
     // back with the refusal is the other half and is pinned in
     // `candidates-pg.test.ts` — this fake applies its statements to in-memory
@@ -1925,17 +1929,13 @@ describe("cardinality proposer", () => {
     // only its stored identity is missing.
     expect(identityKey("is owned by")).not.toBeNull();
 
-    const outcome = await run(store, {
-      factId: "unkeyed",
-      verb: "supersede",
-      replacement: { object: "Bo" },
-    });
-
-    expect(outcome).toMatchObject({
-      kind: "refused",
-      reason: CORRECTION_REFUSAL_REASONS.replacementMalformed,
-    });
-    // The proposer is downstream of the commit, so a refusal must not reach it.
+    // A THROW rather than a refusal: the unkeyed position is the TARGET's
+    // inherited slot, not the human's replacement text. See the supersede suite
+    // for why that distinction decides the status code.
+    await expect(
+      run(store, { factId: "unkeyed", verb: "supersede", replacement: { object: "Bo" } }),
+    ).rejects.toThrow(/reconcile blocked the replacement claim/);
+    // The proposer is downstream of the commit, so a failure must not reach it.
     // Asserted on the statement rather than on the proposal list, because a
     // proposer that RAN and found nothing would leave the same empty list.
     expect(store.executed).not.toContain(CORRECTION_REPEAT_COUNT_SQL);
@@ -1952,16 +1952,9 @@ describe("cardinality proposer", () => {
     store.seedFact({ id: "degenerate", predicate: "-", object: "Ana", status: "published" });
     expect(identityKey("-")).toBeNull();
 
-    const outcome = await run(store, {
-      factId: "degenerate",
-      verb: "supersede",
-      replacement: { object: "Bo" },
-    });
-
-    expect(outcome).toMatchObject({
-      kind: "refused",
-      reason: CORRECTION_REFUSAL_REASONS.replacementMalformed,
-    });
+    await expect(
+      run(store, { factId: "degenerate", verb: "supersede", replacement: { object: "Bo" } }),
+    ).rejects.toThrow(/reconcile blocked the replacement claim/);
     expect(store.executed).not.toContain(CORRECTION_REPEAT_COUNT_SQL);
   });
 
@@ -2257,16 +2250,9 @@ describe("cardinality proposer", () => {
     const store = new FakeCorrectionStore();
     store.seedFact({ id: "old", predicate: "---", object: "Ana", status: "published" });
 
-    const outcome = await run(store, {
-      factId: "old",
-      verb: "supersede",
-      replacement: { object: "Bo" },
-    });
-
-    expect(outcome).toMatchObject({
-      kind: "refused",
-      reason: CORRECTION_REFUSAL_REASONS.replacementMalformed,
-    });
+    await expect(
+      run(store, { factId: "old", verb: "supersede", replacement: { object: "Bo" } }),
+    ).rejects.toThrow(/reconcile blocked the replacement claim/);
     expect(store.executed).not.toContain(CORRECTION_REPEAT_COUNT_SQL);
   });
 

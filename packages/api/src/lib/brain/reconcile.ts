@@ -238,7 +238,12 @@ import { isUsableGrant } from "@atlas/api/lib/brain/ingest/grant";
 // ONE place `alias(lexicalNorm(surface))` is assembled, and a second assembly
 // site is how the write side and a future re-key start disagreeing about what a
 // claim's slot IS.
-import { slotKey, type ClaimVocabulary, type InheritedSlot } from "@atlas/api/lib/brain/identity";
+import {
+  identityKey,
+  slotKey,
+  type ClaimVocabulary,
+  type InheritedSlot,
+} from "@atlas/api/lib/brain/identity";
 // The comparable value, on the same terms: `comparableValue` is the ONE place a
 // surface becomes a typed canonical form, and `comparableSameSql` the ONE place
 // *provably same* is spelled — the two statements below negate each other and
@@ -635,7 +640,16 @@ export type ReconcileOutcome =
       /** False when this episode had already been recorded as evidence. */
       readonly evidenceAdded: boolean;
     }
-  | { readonly kind: "blocked"; readonly reason: ReconcileBlockReason };
+  | {
+      readonly kind: "blocked";
+      readonly reason: ReconcileBlockReason;
+      /**
+       * For `MALFORMED_CLAIM` only: which slots had no identity (#5047). See
+       * {@link BlockedEntry.unkeyed} — this is the same detail, on the wire the
+       * caller actually reads.
+       */
+      readonly unkeyed?: readonly SlotRole[];
+    };
 
 export interface ReconcileReport {
   /**
@@ -1232,14 +1246,51 @@ export async function reconcileFacts(
     // this guard was the fix. The signal it carried is preserved verbatim
     // below — including #5037's `inheritedUnkeyed` discriminator — because
     // blocking makes this line the only one such a claim ever produces.
-    const unkeyed = SLOT_ROLES.filter((role) => keys[role] === null);
-    if (unkeyed.length > 0) {
+    // Named for the ROLE and not `subjectKey`/`predicateKey`/`objectKey`:
+    // `keys-not-on-the-wire.test.ts` bans those three identifiers outright in any
+    // file that speaks about `brain_facts`, because it cannot tell a local from a
+    // fact-shaped type growing a key field — which is the leak it exists to
+    // catch. `SlotKeys` takes role names for the same reason.
+    const { subject: subjectSlot, predicate: predicateSlot, object: objectSlot } = keys;
+    if (subjectSlot === null || predicateSlot === null || objectSlot === null) {
+      const unkeyed = SLOT_ROLES.filter((role) => keys[role] === null);
+      const surfaces = { subject, predicate, object } as const;
+      // WHICH subsystem to fix, per position — decided here, where the surface,
+      // the vocabulary and the inherited slot are all still in hand.
+      //
+      // ⚠️ An earlier cut of this line said the first two causes "cannot be
+      // distinguished once the vocabulary is real". THAT WAS FALSE, and it is
+      // the kind of false that sends an operator to the wrong subsystem: a null
+      // `identityKey` is a fact about the TEXT alone, so a surface that norms
+      // away and a vocabulary entry that maps a real norm to nothing are one
+      // call apart. `correction.ts` made exactly this distinction for exactly
+      // this reason until #5047 made its version unreachable; the distinction
+      // is not unreachable here.
+      const cause = Object.fromEntries(
+        unkeyed.map((role) => [
+          role,
+          candidate.inheritedSlot !== undefined && role !== "object"
+            ? "inherited"
+            : identityKey(surfaces[role]) === null
+              ? "degenerate-surface"
+              : "vocabulary-target",
+        ]),
+      );
       log.warn(
         {
           workspaceId: episode.workspaceId,
           episodeId: episode.id,
           producer,
           unkeyed,
+          cause,
+          // Logged ONLY where the cause is `degenerate-surface`, and that
+          // restriction is the point: by construction such a surface is
+          // separators and whitespace and carries no claim content. A
+          // `vocabulary-target` surface is real text and stays out, matching the
+          // blank-trim guard above, which logs booleans rather than surfaces.
+          degenerateSurfaces: unkeyed
+            .filter((role) => cause[role] === "degenerate-surface")
+            .map((role) => ({ role, surface: surfaces[role] })),
           // ⚠️ `inheritedFrom` alone is NOT the discriminator, and reporting it
           // as one blames the wrong party. It is set for EVERY
           // correction-produced candidate, but only the SUBJECT and PREDICATE
@@ -1265,12 +1316,36 @@ export async function reconcileFacts(
         // norms away (`-`, `___`), or an alias entry maps a real slot to
         // something that does. Naming only the producer would send an operator
         // after the wrong subsystem.
-        "brain reconcile: blocked a candidate with no identity for one or more slots — such a claim could never corroborate, earn a tension edge, or be superseded at publish, and the slot keys are NOT NULL since #5047. Three causes: the producer emitted a surface that normalizes away (`-`, `___`, `  ` — fix the producer); a vocabulary entry maps that slot to something that normalizes away; or — for the positions listed in `inheritedUnkeyed` — a row-copy path copied a null slot off the fact named by `inheritedFrom`, in which case those positions' surfaces are fine here and the TARGET row is what has no identity. Any position NOT in `inheritedUnkeyed` was derived from this claim's own text (the object always is), so the first two causes are the ones to follow for it",
+        "brain reconcile: blocked a candidate with no identity for one or more slots — such a claim could never corroborate, earn a tension edge, or be superseded at publish, and the slot keys are NOT NULL since #5047. `cause` names the subsystem to fix, per position: `degenerate-surface` = the producer emitted separators only, and the offending text is in `degenerateSurfaces` (fix the producer); `vocabulary-target` = this workspace's vocabulary maps that slot to something that normalizes away, so the surface is fine and the ENTRY is the defect (no re-key repairs it); `inherited` = a row-copy path copied a null slot off the fact named by `inheritedFrom`, so this claim's own text is fine at that position and the TARGET row is what has no identity. The object is never inherited — it is always derived from this claim's own text",
       );
       blocked.MALFORMED_CLAIM++;
-      prepared.push({ kind: "blocked", reason: RECONCILE_BLOCK_REASONS.malformedClaim });
+      // The POSITIONS travel with the block (#5047). `MALFORMED_CLAIM` covers a
+      // blank surface, a degenerate one, a vocabulary target that norms away and
+      // an inherited null, and one caller — `correction.ts`'s supersede — turns
+      // this verdict into a message for a human. Without the positions it can
+      // only guess which slot failed, and guessing "the object" blames the
+      // replacement text for a defect in the target's slot or in the vocabulary.
+      // The REASON stays single, which is what keeps one producer bug on one
+      // counter; this is the detail beside it.
+      prepared.push({
+        kind: "blocked",
+        reason: RECONCILE_BLOCK_REASONS.malformedClaim,
+        unkeyed,
+      });
       continue;
     }
+    // Narrowed ONCE, here, so everything downstream of the guard carries three
+    // non-null keys in its TYPE rather than by position in this loop. The
+    // database stopped admitting a null key at migration 0194; this is the same
+    // statement made where the compiler can check it, and it is what stops a
+    // future edit that adds a second `prepared.push` above the guard from
+    // reaching `INSERT_FACT_SQL` with a null — which is a `23502` that fails the
+    // whole reconcile transaction, retried every cycle until quarantine.
+    const resolvedKeys: ResolvedSlotKeys = {
+      subject: subjectSlot,
+      predicate: predicateSlot,
+      object: objectSlot,
+    };
 
     // The comparable value, materialized beside the keys and for the same
     // reason: computing it per statement is how the corroboration lookup and
@@ -1400,7 +1475,7 @@ export async function reconcileFacts(
       subject,
       predicate,
       object,
-      keys,
+      keys: resolvedKeys,
       comparableAtRest,
       comparableForLookups,
       resolutionFailed: resolution.kind === "failed",
@@ -1441,7 +1516,14 @@ export async function reconcileFacts(
     const results: ReconcileOutcome[] = [];
     for (const item of prepared) {
       if (item.kind === "blocked") {
-        results.push({ kind: "blocked", reason: item.reason });
+        // SPREAD, not rebuilt field by field. `BlockedEntry` and the blocked
+        // `ReconcileOutcome` are the same shape by design, and re-listing the
+        // fields here is how `unkeyed` was silently dropped on its first cut —
+        // the detail was attached in the preparation loop, discarded at this
+        // line, and `correction.ts` then saw `undefined` and 500'd on a request
+        // that should have been a 400. A spread cannot lose a field a future
+        // edit adds.
+        results.push({ ...item });
         continue;
       }
       results.push(
@@ -1538,6 +1620,30 @@ interface SlotKeys {
  */
 const SLOT_ROLES = ["subject", "predicate", "object"] as const satisfies readonly (keyof SlotKeys)[];
 
+/** One of the three claim slots, for the block detail and the log payload. */
+type SlotRole = (typeof SLOT_ROLES)[number];
+
+/**
+ * {@link SlotKeys} AFTER the `MALFORMED_CLAIM` guard — three keys, none null.
+ *
+ * The two types are deliberately both here rather than one nullable shape with a
+ * runtime check. `SlotKeys` is what the composition PRODUCES: `slotKey` returns
+ * null for a surface that norms away, and an {@link InheritedSlot} copies a
+ * stored row whose columns the type still describes as nullable. This is what
+ * survives the guard, and it is what every consumer downstream of the guard
+ * takes — so "no null key reaches `INSERT_FACT_SQL`" is a property of the types
+ * rather than of the order of statements in a 200-line loop body.
+ *
+ * That matters because `brain_facts`' three key columns are `NOT NULL` as of
+ * migration 0194: the failure mode a lost guard produces is no longer a row that
+ * joins nothing, it is a `23502` that rolls back the whole episode.
+ */
+interface ResolvedSlotKeys {
+  readonly subject: string;
+  readonly predicate: string;
+  readonly object: string;
+}
+
 /**
  * The five agreement values, in the order all three statements bind them: the
  * three slot keys, the OBJECT's comparable value (#5030), then the SUBJECT's
@@ -1609,16 +1715,13 @@ const SLOT_ROLES = ["subject", "predicate", "object"] as const satisfies readonl
  * the two positionally.
  */
 function agreementBinds(
-  keys: SlotKeys,
+  // {@link ResolvedSlotKeys}, so the three key binds are `string` and the
+  // compiler's view of `INSERT_FACT_SQL` matches the column's `NOT NULL` (#5047).
+  // Every caller is downstream of the `MALFORMED_CLAIM` guard.
+  keys: ResolvedSlotKeys,
   objectComparable: ComparableValue,
   subjectComparable: SubjectComparable,
-): readonly [
-  string | null,
-  string | null,
-  string | null,
-  ComparableValue,
-  SubjectComparable,
-] {
+): readonly [string, string, string, ComparableValue, SubjectComparable] {
   return [keys.subject, keys.predicate, keys.object, objectComparable, subjectComparable];
 }
 
@@ -1627,8 +1730,13 @@ interface PreparedCandidate {
   readonly subject: string;
   readonly predicate: string;
   readonly object: string;
-  /** The identity of the claim above — what the two lookups below match on. */
-  readonly keys: SlotKeys;
+  /**
+   * The identity of the claim above — what the two lookups below match on.
+   *
+   * {@link ResolvedSlotKeys} and not {@link SlotKeys}: this shape only exists
+   * past the `MALFORMED_CLAIM` guard, which refuses a null at any position.
+   */
+  readonly keys: ResolvedSlotKeys;
   /**
    * The object's typed canonical value, or `null` for *unknown* (#5030). Not
    * folded into {@link SlotKeys}: a key proves sameness and is a JOIN arm, this
@@ -1711,6 +1819,16 @@ interface TrimmedCandidate {
 interface BlockedEntry {
   readonly kind: "blocked";
   readonly reason: ReconcileBlockReason;
+  /**
+   * For `MALFORMED_CLAIM` only: WHICH slots had no identity (#5047).
+   *
+   * Optional because the other three reasons refuse the whole EPISODE and the
+   * blank-trim guard refuses before any key exists. Present, it is what lets a
+   * caller translating this verdict for a human name the right slot — see
+   * `correction.ts`'s supersede arm, which must not blame a replacement's text
+   * for an inherited or vocabulary-caused failure.
+   */
+  readonly unkeyed?: readonly SlotRole[];
 }
 
 type TrimmedEntry = TrimmedCandidate | BlockedEntry;

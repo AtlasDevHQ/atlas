@@ -36,10 +36,13 @@
  *      migration text.
  *   6. **Was the slot index REPOINTED rather than added?** Zero net new
  *      indexes is a result, and a result nobody checks is a wish.
- *   7. **Are the columns still NULLABLE?** The constraint has THREE
- *      prerequisites, enumerated in 0187's header — landing it before them
- *      refuses every brain-fact write, every region import, or every claim
- *      whose surface norms away.
+ *   7. **Are the columns NOT NULL?** All three of 0187's prerequisites landed
+ *      (#5047, migration 0194), so this is now asserted rather than refused —
+ *      in a SEPARATE suite at the foot of this file, on a pristine migrated
+ *      schema. It cannot live in the suite above: that one DROPs the constraint
+ *      in its own scratch schema so it can replay 0187, which predates it, and a
+ *      nullability assertion made there would read the relaxed column and pass
+ *      whatever 0194 does.
  *
  * The migration is executed by READING THE FILE and running it, so there is no
  * copy of its SQL here to drift from it. `WHERE … IS NULL` is what makes that

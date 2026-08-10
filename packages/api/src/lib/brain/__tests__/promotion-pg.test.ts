@@ -2067,6 +2067,15 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
         });
 
         const report = await publish(ws);
+        // The positive control, and its VALUE is the interesting part. Two
+        // drafts were seeded; exactly ONE is promoted, because
+        // `draftPlaceholder` is tombstoned and `DRAFT_FACTS_SQL` requires
+        // `invalidated_at IS NULL`. So this single number pins both halves: the
+        // keyed draft really did traverse the collision join (against a
+        // tombstoned incumbent, matching nothing — arm (a)), and the placeholder
+        // draft never entered the candidate set at all (arm (b)). Without it,
+        // `superseded: []` is equally satisfied by publish selecting nothing.
+        expect(report.promoted).toBe(1);
         expect(report.superseded).toEqual([]);
         for (const id of [oldPlaceholder, draftKeyed, oldKeyed, draftPlaceholder]) {
           expect((await factState(id)).valid_to).toBeNull();
@@ -2128,6 +2137,17 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
         });
 
         const report = await publish(ws);
+        // ⚠️ THE POSITIVE CONTROL, and without it this test passes vacuously.
+        // A tombstoned draft is excluded by `DRAFT_FACTS_SQL`'s
+        // `invalidated_at IS NULL`, so publish never selects it and `superseded:
+        // []` plus two null `valid_to`s are satisfied by a run that did NOTHING.
+        // Measured: `promoted` is 0 here, and asserting it is what distinguishes
+        // "the placeholder was excluded" from "publish is broken".
+        expect(report.promoted).toBe(0);
+        expect(
+          (await factState(placeholder)).status,
+          "the tombstoned placeholder was promoted — it must stay a draft, out of the publish candidate set entirely",
+        ).toBe("draft");
         expect(report.superseded).toEqual([]);
         expect((await factState(published)).valid_to).toBeNull();
         expect((await factState(placeholder)).valid_to).toBeNull();

@@ -27,7 +27,7 @@ function createTrackingPool(opts: { shouldThrow?: boolean } = {}) {
     pool: {
       query: queryFn,
       async connect() {
-        return { query: queryFn, release() {} };
+        return { query: queryFn, release() {}, on() {}, off() {} };
       },
       async end() {},
       on() {},
@@ -590,7 +590,7 @@ describe("migrateAuthTables", () => {
     const pool = {
       query: queryFn,
       async connect() {
-        return { query: queryFn, release() {} };
+        return { query: queryFn, release() {}, on() {}, off() {} };
       },
       async end() {},
       on() {},
@@ -630,7 +630,7 @@ describe("migrateAuthTables", () => {
     const pool = {
       query: queryFn,
       async connect() {
-        return { query: queryFn, release() {} };
+        return { query: queryFn, release() {}, on() {}, off() {} };
       },
       async end() {},
       on() {},
@@ -669,7 +669,7 @@ describe("migrateAuthTables", () => {
     const pool = {
       query: queryFn,
       async connect() {
-        return { query: queryFn, release() {} };
+        return { query: queryFn, release() {}, on() {}, off() {} };
       },
       async end() {},
       on() {},
@@ -706,7 +706,7 @@ describe("migrateAuthTables", () => {
     const pool = {
       query: queryFn,
       async connect() {
-        return { query: queryFn, release() {} };
+        return { query: queryFn, release() {}, on() {}, off() {} };
       },
       async end() {},
       on() {},
@@ -751,7 +751,7 @@ describe("migrateAuthTables", () => {
       return {
         query: queryFn,
         async connect() {
-          return { query: queryFn, release() {} };
+          return { query: queryFn, release() {}, on() {}, off() {} };
         },
       };
     }

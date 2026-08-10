@@ -1923,8 +1923,19 @@ describe("the draft candidate", () => {
     const report = await run(store, { candidates: [candidate({ object: "-" })] });
 
     expect(report.blocked.MALFORMED_CLAIM).toBe(1);
+    // The POSITIONS travel with the block, and asserting them here is what keeps
+    // `correction.ts`'s supersede arm honest: it reads `unkeyed` to decide
+    // whether the human's replacement text is at fault (a 400) or the target's
+    // inherited slot is (a 500). Dropped anywhere between the preparation loop
+    // and this outcome, that arm silently blames the wrong party — which is
+    // exactly what happened when the detail was rebuilt field-by-field in the
+    // transaction loop instead of spread.
     expect(report.outcomes).toEqual([
-      { kind: "blocked", reason: RECONCILE_BLOCK_REASONS.malformedClaim },
+      {
+        kind: "blocked",
+        reason: RECONCILE_BLOCK_REASONS.malformedClaim,
+        unkeyed: ["object"],
+      },
     ]);
     // NOTHING was stored, and no statement ran for it. Asserted on the fact set
     // AND on the statement log, because a guard placed one line too late would
@@ -1933,6 +1944,12 @@ describe("the draft candidate", () => {
     // in the preparation loop.
     expect(store.facts).toHaveLength(0);
     expect(store.keyBindsFor("insertFact")).toHaveLength(0);
+    // The statement the comment above is actually about: `writeCandidate` issues
+    // `CORROBORATION_LOOKUP_SQL` before the insert, so a guard placed one line
+    // too late shows up HERE and nowhere else — the insert assertion alone
+    // cannot tell "refused in the preparation loop" from "refused in the
+    // transaction after a lookup was already spent on it".
+    expect(store.keyBindsFor("corroboration")).toHaveLength(0);
     expect(report.created).toBe(0);
   });
 
@@ -1954,6 +1971,7 @@ describe("the draft candidate", () => {
     expect(report.outcomes[0]).toEqual({
       kind: "blocked",
       reason: RECONCILE_BLOCK_REASONS.malformedClaim,
+      unkeyed: ["object"],
     });
     expect(report.outcomes[1]).toMatchObject({ kind: "created" });
     // The surviving claim is stored with its surface VERBATIM and its key

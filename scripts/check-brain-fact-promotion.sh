@@ -226,6 +226,25 @@
 # `db/migrations/scripts/*.ts` (where CLAUDE.md says they live) write this
 # column with no gate at all.
 #
+# ⚠️ THAT `.sql` EXEMPTION IS A REAL HOLE, and #5047 is the first migration to
+# walk through it, so it is recorded here rather than only in the migration:
+# `0194_brain_fact_slot_keys_not_null.sql` writes `invalidated_at` on rows whose
+# surfaces normalize away — a second, non-`promoteBrainFacts` retirement of
+# beliefs, including published ones. It passes this gate by EXCLUSION, not by
+# review, because `--include` cannot see it.
+#
+# The carve-out, per CLAUDE.md § Content Mode: those rows assert nothing at some
+# position. No reader could ever have acted on them, no vocabulary or re-key can
+# produce a key for them, and the ingest guard now refuses to create more. The
+# tombstone is what lets the slot keys be `NOT NULL` without inventing identity
+# for a row that has none. 0194's header carries the full argument.
+#
+# A future `.sql` migration writing `status`, `visible_to`, `valid_to` or
+# `invalidated_at` on `brain_facts` gets the same treatment: it is unguarded, so
+# it needs a reviewer who knows that. Widening `--include` to `.sql` is the real
+# fix and is not free — every historical migration would have to be allowlisted —
+# so this note is the interim, and the fact that it is an interim is the point.
+#
 # A regression here means a new promotion path appeared. Route it through
 # `promoteBrainFacts` (or, if it is genuinely a restore-not-a-decision like the
 # region import, add it to ALLOWLIST below WITH the rationale).

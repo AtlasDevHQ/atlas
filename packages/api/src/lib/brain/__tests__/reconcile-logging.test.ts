@@ -193,7 +193,9 @@ function run(
       vocabulary,
     },
     {
-      withTransaction: noopRunner as Parameters<typeof reconcileFacts>[1]["withTransaction"],
+      withTransaction: noopRunner as NonNullable<
+        Parameters<typeof reconcileFacts>[1]
+      >["withTransaction"],
       now: () => new Date("2026-06-21T10:00:01.000Z"),
     },
   );

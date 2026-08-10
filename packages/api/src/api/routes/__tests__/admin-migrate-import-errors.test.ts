@@ -162,10 +162,15 @@ interface ErrorBody {
  * Every assertion runs over this list — which is what makes "both handlers" a
  * property of the suite rather than a discipline someone has to remember.
  */
-const HANDLERS = [
+interface Handler {
+  readonly name: string;
+  readonly post: (body: unknown) => Promise<Response>;
+}
+
+const HANDLERS: Handler[] = [
   {
     name: "admin",
-    post: (body: unknown) =>
+    post: async (body: unknown) =>
       adminMigrate.request("/import", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -174,7 +179,7 @@ const HANDLERS = [
   },
   {
     name: "internal (service-to-service)",
-    post: (body: unknown) =>
+    post: async (body: unknown) =>
       internalMigrate.request("/import", {
         method: "POST",
         headers: {
@@ -184,7 +189,7 @@ const HANDLERS = [
         body: JSON.stringify({ orgId: CURRENT_ORG, ...(body as Record<string, unknown>) }),
       }),
   },
-] as const;
+];
 
 describe("the import's error responses — both handlers", () => {
   beforeEach(() => {

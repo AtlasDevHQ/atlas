@@ -2061,12 +2061,61 @@ function rekeyDriftedFactsSql(position: SlotPosition): string {
   // `degenerate-norm` targets at authoring, so that path is closed today, and
   // testing the composed expression is what keeps this arm correct if it ever
   // reopens rather than relying on the other guard staying put.
-  return `UPDATE brain_facts f
-            SET ${key} = ${identityKeySql(aliased)}
-          WHERE f.workspace_id = $1
-            AND ${identityKeySql(aliased)} IS NOT NULL
-            AND f.${key} IS DISTINCT FROM ${identityKeySql(aliased)}
-      RETURNING f.id::text AS id`;
+  // ── ONE SCAN, TWO NUMBERS (#5109) ─────────────────────────────────────
+  //
+  // The `IS NOT NULL` arm above made `rekeyed` ambiguous: it can no longer
+  // distinguish *nothing drifted* — the ordinary case, and healthy — from
+  // *N rows hold `-unkeyable:` placeholders and were declined*, which is a
+  // corpus carrying legacy degenerate rows and is worth knowing about. Both
+  // read as a low or zero count, and an `UPDATE` cannot report the rows it
+  // did not touch.
+  //
+  // So the scan is LIFTED into a CTE and both numbers come off it. The
+  // alternative — a second `SELECT count(*) … WHERE <expr> IS NULL` — is a
+  // second workspace-wide sequential scan on a statement whose cost is
+  // already argued paragraph by paragraph above, for a diagnostic. `AS
+  // MATERIALIZED` is what makes that a promise rather than a hope: without it
+  // PG 12+ may inline the CTE and re-plan the scan per reference.
+  //
+  // It is also cheaper than what it replaces. The old shape spelled
+  // `identityKeySql(aliased)` THREE times — once in `SET`, once in each of two
+  // `WHERE` arms — so the closure subquery was evaluated three times per row.
+  // Here it is computed once per row and read by name.
+  //
+  // ⚠️ THE REFUSAL ARM IS THE SAME ARM. It reads `r.new_key IS NOT NULL`
+  // rather than repeating the expression, and `r.new_key` IS that expression —
+  // the projection above is `${identityKeySql(aliased)} AS new_key`, unchanged
+  // character for character. Dropping this arm still writes NULL into a
+  // `NOT NULL` column and still raises `23502`, which is what row 26 of this
+  // module's mutation table measures.
+  //
+  // ⚠️ The workspace scope MOVED to the CTE and did not weaken. `f.id = r.id`
+  // joins on the primary key against a set already scoped to `$1`, so no
+  // foreign row is reachable; the mutation that weakens the scope is caught in
+  // the CTE exactly as it was on the `UPDATE` (row 6).
+  //
+  // ⚠️ The CTE's own `WHERE` is deliberately UNQUALIFIED (`workspace_id`, not
+  // `f.workspace_id`). `vocabulary-decide-pg.test.ts` finds this statement's
+  // SET clause by slicing to the single `WHERE f.` — the one on the updated
+  // alias — and a second qualified `WHERE f.` would break that parse rather
+  // than fail an assertion, which is the worse failure. Unqualified resolves
+  // to the same column.
+  return `WITH recomputed AS MATERIALIZED (
+            SELECT f.id AS id, ${identityKeySql(aliased)} AS new_key
+              FROM brain_facts f
+             WHERE workspace_id = $1
+          ),
+          moved AS (
+            UPDATE brain_facts f
+               SET ${key} = r.new_key
+              FROM recomputed r
+             WHERE f.id = r.id
+               AND r.new_key IS NOT NULL
+               AND f.${key} IS DISTINCT FROM r.new_key
+         RETURNING f.id::text AS id
+          )
+          SELECT (SELECT count(*) FROM moved)::int AS rekeyed,
+                 (SELECT count(*) FROM recomputed WHERE new_key IS NULL)::int AS skipped_unkeyable`;
 }
 
 export const REKEY_DRIFTED_FACTS_SQL: Readonly<Record<SlotPosition, string>> = Object.freeze({
@@ -2113,7 +2162,7 @@ async function rekeyDriftedFacts(
   position: SlotPosition,
   proposalId: string,
 ): Promise<void> {
-  let rows: readonly unknown[];
+  let counts: { readonly rekeyed: number; readonly skippedUnkeyable: number };
   try {
     // REFUSED, not defaulted. `VocabularyExecutor` is deliberately satisfiable
     // by any `{ query }`, and the earlier `?? []` turned an executor that is not
@@ -2132,7 +2181,24 @@ async function rekeyDriftedFacts(
           "committing an approval that may not have moved a single key.",
       );
     }
-    rows = result.rows;
+    // ONE row, always — the statement's final `SELECT` is two scalar
+    // subqueries over the CTEs and has no `FROM`, so it produces exactly one
+    // row even when the workspace holds no facts at all. An EMPTY array here
+    // therefore means the same thing the guard above catches: an executor that
+    // is not answering as a Postgres client. Refused for the same reason, and
+    // not defaulted to zeroes — `rekeyed: 0, skippedUnkeyable: 0` is a
+    // perfectly ordinary reading, so a default would be indistinguishable from
+    // the healthy case rather than obviously wrong.
+    const row = result.rows[0] as { rekeyed?: unknown; skipped_unkeyable?: unknown } | undefined;
+    if (typeof row?.rekeyed !== "number" || typeof row.skipped_unkeyable !== "number") {
+      throw new Error(
+        `rekeyDriftedFacts: the executor answered the ${position} re-key without the two counts ` +
+          `(workspace ${workspaceId}, proposal ${proposalId}). The statement's result was never ` +
+          "observed, so whether the corpus was re-keyed is unknown — refusing rather than " +
+          "committing an approval that may not have moved a single key.",
+      );
+    }
+    counts = { rekeyed: row.rekeyed, skippedUnkeyable: row.skipped_unkeyable };
   } catch (err) {
     // LOGGED before it propagates. `decideAliasProposal`'s outer catch narrows
     // on `AliasApplyRefusedError` and re-throws everything else WITHOUT a log
@@ -2152,19 +2218,41 @@ async function rekeyDriftedFacts(
     );
     throw err;
   }
-  // COUNTED from `RETURNING`, not from `pg`'s `rowCount`. `VocabularyExecutor`
-  // and `ReconcileExecutor` both declare `{ rows }` and `withBrainTransaction`'s
+  // COUNTED IN SQL, not from `pg`'s `rowCount`. `VocabularyExecutor` and
+  // `ReconcileExecutor` both declare `{ rows }` and `withBrainTransaction`'s
   // wrapper projects exactly that, so `rowCount` does not survive the seam at
   // all — reading it yields `undefined` and logs a re-key that moved thousands
-  // of rows as having moved none. `RETURNING` is only as expensive as the rows
-  // that actually changed, which the `IS DISTINCT FROM` guard already narrows.
+  // of rows as having moved none.
   //
-  // Nothing branches on the number. An approval whose re-key moved zero rows is
-  // the ordinary case — the workspace may have no facts at that slot yet — and
-  // treating it as a failure would refuse the first alias a workspace approves.
-  // It is the operator's only signal that the re-key ran and how wide it reached.
+  // Nothing branches on either number. An approval whose re-key moved zero rows
+  // is the ordinary case — the workspace may have no facts at that slot yet —
+  // and treating it as a failure would refuse the first alias a workspace
+  // approves. They are the operator's only signal that the re-key ran and how
+  // wide it reached.
+  //
+  // ⚠️ `skippedUnkeyable` EXISTS BECAUSE `rekeyed` ALONE LOST A DISTINCTION
+  // (#5109). Since #5047's `IS NOT NULL` arm, a low `rekeyed` covers two very
+  // different states: *nothing drifted*, which is ordinary and healthy, and
+  // *N rows hold `-unkeyable:` placeholders and were declined*, which says the
+  // corpus still carries the legacy degenerate population migration 0194
+  // tombstoned. The second is worth knowing about — that population is closed
+  // and shrinks only, so a number that stays flat across approvals is the
+  // signal — and it was indistinguishable from the first.
+  //
+  // Counted against the EXPRESSION being NULL rather than by testing the key
+  // column for the placeholder prefix, which is the rule migration 0187's
+  // header sets for counting unkeyed rows: the column is what the last writer
+  // put there, while the expression is what this vocabulary decides now. A row
+  // whose placeholder was written by 0194 and whose surface has since been
+  // corrected is keyable again, and the column would still call it unkeyable.
   log.info(
-    { workspaceId, proposalId, position, rekeyed: rows.length },
+    {
+      workspaceId,
+      proposalId,
+      position,
+      rekeyed: counts.rekeyed,
+      skippedUnkeyable: counts.skippedUnkeyable,
+    },
     "Drift re-key complete — existing facts now carry the keys this vocabulary decides",
   );
 }

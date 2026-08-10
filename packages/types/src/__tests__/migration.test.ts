@@ -261,7 +261,15 @@ describe("migration types", () => {
     expect(result.knowledgeDocuments.skipped).toBe(1);
     expect(result.brainFacts.imported).toBe(8);
     expect(result.factAudienceMembers.skipped).toBe(1);
-    expect(result.brainVocabularyEdges.refused).toBe(4);
+    // The counter SET rather than a literal read back — reading `refused: 4` out
+    // of the object this test just wrote cannot go red for any type change,
+    // while the key set goes red if a counter is added or renamed. (The type
+    // itself is enforced by `bun run type`; this is the runtime half.)
+    expect(Object.keys(result.brainVocabularyEdges).toSorted()).toEqual([
+      "imported",
+      "refused",
+      "skipped",
+    ]);
   });
 
   it("ExportManifest includes optional apiUrl", () => {

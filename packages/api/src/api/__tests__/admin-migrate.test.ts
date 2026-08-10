@@ -278,14 +278,18 @@ describe("bundle round-trip shape", () => {
     expect(total(result.brainFacts)).toBe(12);
     expect(total(result.brainEdges)).toBe(4);
     expect(total(result.factAudienceMembers)).toBe(7);
-    // The vocabulary's own total is a THREE-way sum, and `migrate.ts` reconciles
-    // it against the manifest count before cutover — an arriving edge that fell
-    // through all three counters would abort a whole migration.
-    expect(
-      result.brainVocabularyEdges.imported +
-        result.brainVocabularyEdges.skipped +
-        result.brainVocabularyEdges.refused,
-    ).toBe(11);
+    // ⚠️ THE COUNTER SET, not a sum of literals this test just wrote. Summing
+    // `1 + 4 + 6 === 11` cannot go red for any production change — it is
+    // arithmetic over its own fixture — whereas the key set goes red the day a
+    // FOURTH counter is added, which is the change that would need
+    // `migrate.ts`'s reconciliation sum revisited in the same breath. (The
+    // reconciliation behaviour itself is pinned in `migrate.test.ts`; this file
+    // pins the shape, and the real enforcement of the shape is `bun run type`.)
+    expect(Object.keys(result.brainVocabularyEdges).toSorted()).toEqual([
+      "imported",
+      "refused",
+      "skipped",
+    ]);
   });
 });
 

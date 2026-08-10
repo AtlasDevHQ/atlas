@@ -254,12 +254,9 @@ async function transferBundleToTarget(
   // Deployment reality that makes this a live hazard rather than a theoretical
   // one: regions deploy independently, so a window where US has #4767 and EU
   // does not is routine, not exceptional.
-  // `refused` is #5036's third vocabulary counter, and it is declared for EVERY
-  // section rather than only the one that emits it. That is the shape this
-  // parse already takes for `imported`/`skipped` — the response is another
-  // region's JSON, so every field is optional here regardless of what the local
-  // `ImportResult` requires — and narrowing it to one key would make the sum
-  // below have to know which section it was reading.
+  // `refused` is #5036's third vocabulary counter. Every field is optional here
+  // regardless of what the local `ImportResult` requires, because this is
+  // another region's JSON and possibly another region's BUILD.
   let acknowledged: Partial<
     Record<
       (typeof RECONCILED_SECTIONS)[number],
@@ -312,32 +309,81 @@ async function transferBundleToTarget(
     }
     if (expected === 0) continue; // nothing exported ⇒ nothing to reconcile
     const got = acknowledged[section];
-    // ⚠️ `refused` IS ACCOUNTING, NOT LOSS, and leaving it out of this sum was
-    // the live regression #5036 had to fix in the same change (ADR-0037 §8 §4).
+
+    // ⚠️ `refused` IS ACCOUNTING, NOT LOSS — but ONLY for the one section that
+    // can produce it, and the scoping is the whole point (ADR-0037 §8 §4).
     //
     // This guard asks one question: did the target ACCOUNT for every row the
     // bundle carried, or did it silently drop a section it does not understand?
     // A refused vocabulary edge is accounted for — the target looked at it,
     // decided applying it would close a cycle or take a second parent, logged
-    // enough to re-author it, and carried on. Excluded from the sum, the FIRST
-    // genuinely conflicting alias edge in a workspace would abort an entire
-    // cutover, which is the opposite of the graceful merge the slice exists to
-    // provide, and it would do so with an error message blaming an old build.
+    // enough to re-author it by hand, and carried on. Left out of the sum
+    // entirely, the FIRST genuinely conflicting alias edge in a workspace would
+    // abort an entire cutover and blame an old target build.
     //
-    // `?? 0` on all three: a target predating #5036 sends no `refused` and
-    // refuses nothing — it skips instead — so the sum is unchanged there.
-    const total = (got?.imported ?? 0) + (got?.skipped ?? 0) + (got?.refused ?? 0);
+    // ⚠️ ADDING IT FOR EVERY SECTION IS THE WRONG FIX, and it was this slice's
+    // own first cut. `brainVocabularyEdges` is the only section whose import can
+    // refuse anything. A blanket `+ (got?.refused ?? 0)` means a target that
+    // answers `brainFacts: {imported: 0, skipped: 0, refused: 40}` — through a
+    // bug, a proxy, or a future section half-implemented in one region —
+    // reconciles CLEAN, cuts over, and the source cleanup then deletes 40 facts
+    // that were never imported. That is exactly the silently-dropped-a-section
+    // event this block exists to prevent, re-opened by one key.
+    //
+    // So the term is section-scoped, and an unexpected `refused` elsewhere is
+    // surfaced rather than ignored: it is either a target bug or a section that
+    // grew a refusal without anyone revisiting whether ITS refusal is also
+    // accounting rather than loss. Both are worth a human's attention, and
+    // neither is worth failing a cutover over on its own — the count still has
+    // to reconcile without it, which is the conservative reading.
+    const refused = got?.refused ?? 0;
+    const refusalIsAccounting = section === "brainVocabularyEdges";
+    if (refused > 0 && !refusalIsAccounting) {
+      log.warn(
+        { migrationId, section, refused },
+        "Target region reported REFUSED rows for a section that cannot refuse any — not counted " +
+          "toward reconciliation. Either the target is buggy or this section grew a refusal " +
+          "outcome whose accounting nobody has reviewed.",
+      );
+    }
+    const total = (got?.imported ?? 0) + (got?.skipped ?? 0) + (refusalIsAccounting ? refused : 0);
     if (total !== expected) {
       return {
         ok: false,
         error:
           `Target region accounted for ${got ? total : 0}/${expected} '${section}' rows. ` +
-          `The target is most likely running an older build that does not understand this ` +
-          `bundle section. Migration ${migrationId} aborted BEFORE cutover — no source data ` +
-          `has been deleted and the workspace is still served from its current region. ` +
+          `The most likely cause is a version skew between this region and the target — ` +
+          `EITHER an older target that does not understand this bundle section and dropped it, ` +
+          `OR an older SOURCE (this region) that does not understand a counter the target ` +
+          `reported. Check both builds before upgrading either. Migration ${migrationId} ` +
+          `aborted BEFORE cutover — no source data has been deleted and the workspace is still ` +
+          `served from its current region. ` +
           `NOTE: the target has already COMMITTED a partial import; the import is idempotent, ` +
-          `so upgrade the target and re-run, or tear down the partial copy if abandoning.`,
+          `so align the builds and re-run, or tear down the partial copy if abandoning.`,
       };
+    }
+
+    // ⚠️ THE SOURCE SIDE HAS TO SAY THIS OUT LOUD, and until #5036's review it
+    // did not. `refused` was consumed by the sum above and discarded — the only
+    // record of a dropped human decision was a `log.warn` in the TARGET
+    // region's process, which the operator driving the cutover is not watching.
+    // Meanwhile THIS region schedules the source cleanup (`cleanupAfter`), and
+    // after the grace period the source's own `brain_vocabulary_edge` rows are
+    // DELETED. So the durable record of N approved review decisions would have
+    // been log lines in another region, outliving the data by only as long as
+    // that region's retention.
+    //
+    // Pre-#5036 the same input failed the import outright and nothing was ever
+    // scheduled for deletion. Refusing gracefully is the right call; doing it
+    // without telling the side that owns the delete timer is not.
+    if (refusalIsAccounting && refused > 0) {
+      log.warn(
+        { migrationId, section, refused },
+        "Target region REFUSED curated alias edges during import — approved human review " +
+          "decisions were NOT applied in the destination. They are logged in the TARGET region " +
+          "against this workspace, and the SOURCE copy is deleted after the cleanup grace " +
+          "period. Retrieve them from the target's logs and re-author them there before then.",
+      );
     }
   }
 

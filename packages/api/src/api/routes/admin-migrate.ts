@@ -784,6 +784,29 @@ const ImportResultSchema = z.object({
   }),
 });
 
+/**
+ * Compile-time pin: the response SCHEMA and the published wire TYPE agree.
+ *
+ * All thirteen sections are spelled twice — once as Zod here, once as
+ * `ImportResult` in `@useatlas/types` — with nothing tying them together, so the
+ * OpenAPI contract this route publishes could silently stop describing what it
+ * returns. #5036 had to update both by hand and nothing would have caught
+ * missing one; a section added to the schema alone would document a field no
+ * client receives, and one added to the type alone would return a field the
+ * spec denies exists.
+ *
+ * Both directions, deliberately: assignability alone is satisfied by a schema
+ * that dropped a field. `migrate.ts`'s `_everySectionReconciled` is the same
+ * idiom two modules over, which is why this is a pin rather than a comment.
+ */
+type _SchemaMatchesWireType = z.infer<typeof ImportResultSchema> extends ImportResult
+  ? ImportResult extends z.infer<typeof ImportResultSchema>
+    ? true
+    : never
+  : never;
+const _importResultSchemaMatchesWireType: _SchemaMatchesWireType = true;
+void _importResultSchemaMatchesWireType;
+
 const importRoute = createRoute({
   method: "post",
   path: "/import",

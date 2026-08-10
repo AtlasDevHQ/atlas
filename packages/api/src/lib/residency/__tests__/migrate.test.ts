@@ -61,10 +61,24 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   getPendingAmendmentCount: async () => 0,
 }));
 
+/**
+ * Captured `log.warn` payloads.
+ *
+ * Its own sink rather than one array with the level in the payload: the LEVEL is
+ * part of what the refusal disclosure claims, and a helper that merged the
+ * levels would pass a mutation demoting `log.warn` to `log.debug` — this repo's
+ * recorded "helper that merges what the test asserts" shape.
+ */
+const capturedWarns: Array<{ payload: Record<string, unknown>; message: string }> = [];
+
 void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
-    warn: () => {},
+    warn: (payload: unknown, message?: unknown) =>
+      capturedWarns.push({
+        payload: (payload ?? {}) as Record<string, unknown>,
+        message: typeof message === "string" ? message : String(payload),
+      }),
     error: () => {},
     debug: () => {},
   }),
@@ -185,6 +199,7 @@ function resetMocks() {
   mockFetchResponse = { ok: true, status: 200, body: undefined };
   mockFetchError = null;
   reshapeAck = null;
+  capturedWarns.length = 0;
   capturedFetchCalls = [];
   mockConfig = { ...DEFAULT_MOCK_CONFIG };
   process.env.ATLAS_INTERNAL_SECRET = "test-secret";
@@ -345,8 +360,16 @@ describe("executeRegionMigration", () => {
     if (!result.success) {
       // Actionable: names the section, the shortfall, and that nothing was
       // deleted — an operator must not have to guess whether to panic.
-      expect(result.error).toContain("older build");
+      expect(result.error).toContain("dashboards");
+      expect(result.error).toContain("0/1");
       expect(result.error).toContain("no source data");
+      // ⚠️ BOTH skew directions, since #5036. The message used to say the target
+      // "is most likely running an older build" — but a new target reporting a
+      // counter an OLD SOURCE cannot sum produces this same shortfall, and that
+      // wording sent the operator to upgrade the one build that was already
+      // current. Regions deploy independently, which is this test's own premise.
+      expect(result.error).toContain("older target");
+      expect(result.error).toContain("older SOURCE");
     }
 
     // The cutover must NOT have run. `region_updated` is what flips the
@@ -375,12 +398,22 @@ describe("executeRegionMigration", () => {
     mockQueryResults["UPDATE region_migrations"] = [];
 
     let vocabularyExpected = -1;
+    let dashboardsExpected = -1;
     reshapeAck = (ack) => {
       const vocabulary = ack.brainVocabularyEdges;
       vocabularyExpected = vocabulary?.imported ?? 0;
       // Every arriving edge refused, none imported — the extreme of the case,
       // and the shape under which an excluded `refused` reads as 0/n.
       if (vocabulary) ack.brainVocabularyEdges = { imported: 0, skipped: 0, refused: vocabularyExpected };
+      // ⚠️ A SECOND section answering entirely in `skipped`, because otherwise
+      // the `skipped` TERM of the sum is dead in every fixture in this file —
+      // the generator, the explicit body above, and this hook all set
+      // `skipped: 0`, so deleting `+ (got?.skipped ?? 0)` passes the whole
+      // suite. Three terms are only distinguishable when at least two of them
+      // are nonzero, which is this repo's recorded accidental-equality shape.
+      const dashboards = ack.dashboards;
+      dashboardsExpected = dashboards?.imported ?? 0;
+      if (dashboards) ack.dashboards = { imported: 0, skipped: dashboardsExpected };
       return ack;
     };
 
@@ -390,6 +423,7 @@ describe("executeRegionMigration", () => {
     // a section whose manifest count is 0, so a fixture that stopped exporting
     // any vocabulary edge would make this pass while testing nothing.
     expect(vocabularyExpected).toBeGreaterThan(0);
+    expect(dashboardsExpected).toBeGreaterThan(0);
     expect(result.success).toBe(true);
 
     // The positive control the assertion above cannot give on its own: the
@@ -399,6 +433,63 @@ describe("executeRegionMigration", () => {
       (q) => q.sql.includes("UPDATE organization") || q.sql.includes("region_updated = TRUE"),
     );
     expect(cutover).toBeDefined();
+
+    // ⚠️ AND THE SOURCE SIDE SAYS SO. Proceeding quietly is the defect, not the
+    // feature: THIS region schedules the cleanup that deletes the source's own
+    // `brain_vocabulary_edge` rows after the grace period, while the only other
+    // record of the dropped decisions is a warn in the TARGET region's process.
+    // Without this assertion the entire disclosure can be deleted and the suite
+    // stays green — measured, which is why the assertion exists.
+    const disclosure = capturedWarns.find((w) => w.message.includes("REFUSED curated alias edges"));
+    expect(disclosure).toBeDefined();
+    expect(disclosure?.payload).toMatchObject({
+      migrationId: "mig-1",
+      section: "brainVocabularyEdges",
+      refused: vocabularyExpected,
+    });
+    // Names the delete timer, because that is what makes it urgent rather than
+    // merely informational.
+    expect(disclosure?.message).toContain("grace period");
+  });
+
+  it("still ABORTS when a section that cannot refuse reports `refused` (#5036)", async () => {
+    // The regression the FIRST cut of #5036's reconciliation fix introduced, and
+    // the reason `refused` is section-scoped rather than added for every section.
+    //
+    // `brainVocabularyEdges` is the only section whose import can refuse
+    // anything. Summed blanketly, a target answering
+    // `brainFacts: {imported: 0, skipped: 0, refused: N}` — through a bug, a
+    // proxy, or a future section half-implemented in one region — reconciles
+    // CLEAN, the migration cuts over, and the source cleanup then DELETES N
+    // facts that were never imported. That is exactly the silently-dropped-a-
+    // section event this whole block exists to prevent, re-opened by one key.
+    mockQueryResults["SELECT id, workspace_id"] = [
+      { id: "mig-1", workspace_id: "org-1", source_region: "us-east", target_region: "eu-west", status: "pending" },
+    ];
+    mockQueryResults["UPDATE region_migrations"] = [];
+
+    let dashboardsExpected = -1;
+    reshapeAck = (ack) => {
+      const dashboards = ack.dashboards;
+      dashboardsExpected = dashboards?.imported ?? 0;
+      // A section with no refusal semantics claiming its whole count as refused.
+      if (dashboards) ack.dashboards = { imported: 0, skipped: 0, refused: dashboardsExpected };
+      return ack;
+    };
+
+    const result = await executeRegionMigration("mig-1");
+
+    // Vacuity guard, as above: a 0-count section short-circuits before the sum.
+    expect(dashboardsExpected).toBeGreaterThan(0);
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toContain("dashboards");
+
+    // The cutover must NOT have run — that is what stops the source cleanup
+    // deleting rows the target never imported.
+    const cutover = capturedQueries.find(
+      (q) => q.sql.includes("UPDATE organization") || q.sql.includes("region_updated = TRUE"),
+    );
+    expect(cutover).toBeUndefined();
   });
 
   it("fails when transfer HTTP call returns error", async () => {

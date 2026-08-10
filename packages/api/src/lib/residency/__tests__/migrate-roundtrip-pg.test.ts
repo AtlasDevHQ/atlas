@@ -996,6 +996,142 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
   );
 
   it(
+    "keys a legacy corpus against the DESTINATION's decision when the source's edge is refused (#5036)",
+    async () => {
+      // The arm #5036 newly makes reachable, and the one place its two halves
+      // meet. Before this slice the same input either aborted the whole import
+      // (a cycle) or was a documented silent skip; now it COMMITS, and the
+      // consequence lands on facts rather than on edges.
+      //
+      // Source curated `price → priced at`; this region had already curated
+      // `price → cost`. The arriving edge takes a second parent, so it is
+      // refused — and the legacy bundle's facts are then keyed, in the same
+      // transaction, through the vocabulary that survived the merge. So the
+      // imported claim keys onto THIS region's canonical predicate, not the
+      // source's, which is exactly the accepted cost of destination-wins and is
+      // worth pinning so a future reader sees it was decided rather than missed.
+      const REFUSED_ORG = "org-migrate-legacy-refused";
+      const EPISODE_ID = "bbbbbbbb-5036-4000-8000-000000000001";
+      const FACT_ID = "bbbbbbbb-5036-4000-8000-000000000002";
+
+      const seedClient = await pool.connect();
+      try {
+        await seedClient.query("BEGIN");
+        expect(
+          (
+            await approveAliasEdge(seedClient, REFUSED_ORG, {
+              position: "predicate",
+              fromNorm: "price",
+              toNorm: "cost",
+              approvedBy: "target-admin",
+            })
+          ).ok,
+        ).toBe(true);
+        await seedClient.query("COMMIT");
+      } finally {
+        seedClient.release();
+      }
+
+      const legacy = {
+        manifest: {
+          version: 2 as const,
+          exportedAt: "2026-06-01T00:00:00Z",
+          source: { label: "legacy-refused-test" },
+          counts: {
+            conversations: 0, messages: 0, semanticEntities: 0,
+            learnedPatterns: 0, settings: 0,
+            brainEpisodes: 1, brainFacts: 1, brainVocabularyEdges: 1,
+          },
+        },
+        conversations: [],
+        semanticEntities: [],
+        learnedPatterns: [],
+        settings: [],
+        brainEpisodes: [
+          {
+            id: EPISODE_ID,
+            source: "slack",
+            sourceId: "C-refused/1700000000.1",
+            sourceActor: "U-alice",
+            body: "Price is $49/seat.",
+            locator: null,
+            occurredAt: "2026-06-01T00:00:00Z",
+            ingestedAt: "2026-06-01T00:00:00Z",
+            extractedAt: "2026-06-01T00:05:00Z",
+            visibleTo: ["org"],
+            createdAt: "2026-06-01T00:00:00Z",
+            facts: [
+              {
+                id: FACT_ID,
+                subject: "acme pro",
+                // Norms to `price` — the very norm both regions curated, in
+                // opposite directions.
+                predicate: "Price",
+                object: "49",
+                validFrom: "2026-06-01T00:00:00Z",
+                validTo: null,
+                ingestedAt: "2026-06-01T00:05:00Z",
+                invalidatedAt: null,
+                extractedAt: "2026-06-01T00:05:00Z",
+                provenance: { actor: "U-alice", episode: "C-refused/1700000000.1" },
+                status: "published" as const,
+                visibleTo: ["org"],
+                preWideningVisibleTo: null,
+                predicateCardinality: "single" as const,
+                createdAt: "2026-06-01T00:05:00Z",
+                updatedAt: "2026-06-01T00:05:00Z",
+              },
+            ],
+          },
+        ],
+        brainVocabularyEdges: [
+          {
+            slotPosition: "predicate" as const,
+            fromNorm: "price",
+            toNorm: "priced at",
+            approvedBy: "source-admin",
+            approvedAt: "2026-06-01T00:00:00Z",
+          },
+        ],
+      };
+
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const result = await importBundle(
+          client,
+          legacy as unknown as Parameters<typeof importBundle>[1],
+          REFUSED_ORG,
+        );
+        await client.query("COMMIT");
+        // The import COMMITS — one refusal, and the fact still lands.
+        expect(result.brainVocabularyEdges).toEqual({ imported: 0, skipped: 0, refused: 1 });
+        expect(result.brainFacts).toEqual({ imported: 1, skipped: 0 });
+      } finally {
+        client.release();
+      }
+
+      const keyed = await pool.query<{ predicate_key: string | null }>(
+        `SELECT predicate_key FROM brain_facts WHERE id = $1 AND workspace_id = $2`,
+        [FACT_ID, REFUSED_ORG],
+      );
+      expect(keyed.rows).toHaveLength(1);
+      // `cost`, not `priced at` and not the bare norm `price`. Each of those
+      // three is a different bug: `priced at` means the refusal did not hold,
+      // `price` means the keying ran against no vocabulary at all.
+      expect(keyed.rows[0].predicate_key).toBe("cost");
+
+      // The destination's edge is untouched and still the only one.
+      const edges = await pool.query<{ from_norm: string; to_norm: string }>(
+        `SELECT from_norm, to_norm FROM brain_vocabulary_edge WHERE workspace_id = $1`,
+        [REFUSED_ORG],
+      );
+      expect(edges.rows).toEqual([{ from_norm: "price", to_norm: "cost" }]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
     "positive control: this region's OWN writer does fill both _cmp columns (#5035)",
     async () => {
       // Without this, every `toBeNull()` above is satisfied by a build in which

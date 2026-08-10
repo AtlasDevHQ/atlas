@@ -156,25 +156,49 @@ describe("bundle-scope drift tripwire (#4460)", () => {
    * shared implementation lives in `lib/brain/vocabulary.ts` and the route calls
    * `mergeApprovedEdges`.
    *
-   * The tripwire keeps its full strength either way: it still asks "is this
-   * exported table actually written back somewhere on the import path", and
-   * deleting that INSERT still fails here. What it stops asserting is the
-   * incidental part — which FILE the statement happens to sit in.
+   * ⚠️ A DELEGATED WRITER NAMES ITS FUNCTION, and the scoping is load-bearing
+   * rather than tidiness. `vocabulary.ts` contains TWO
+   * `INSERT INTO brain_vocabulary_edge` statements — `approveAliasEdge`'s and
+   * `mergeApprovedEdges`' — so a whole-file search stays true after the IMPORT
+   * path's write is deleted outright, which is precisely the drift this arm
+   * exists to catch. The single-file form never had that problem, because
+   * `admin-migrate.ts` held exactly one. Searching only the delegated function's
+   * own body restores the original strength.
    */
-  const IMPORT_WRITER_FILE: Readonly<Record<string, readonly string[]>> = {
-    brain_vocabulary_edge: ["..", "..", "brain", "vocabulary.ts"],
+  const IMPORT_WRITER: Readonly<
+    Partial<Record<string, { readonly path: readonly string[]; readonly symbol: string }>>
+  > = {
+    brain_vocabulary_edge: {
+      path: ["..", "..", "brain", "vocabulary.ts"],
+      symbol: "export async function mergeApprovedEdges",
+    },
   };
   const DEFAULT_IMPORT_WRITER = ["..", "..", "..", "api", "routes", "admin-migrate.ts"] as const;
 
+  /**
+   * The source of the declaration `symbol` opens, up to the next top-level
+   * declaration. Deliberately crude — it only has to be tight enough that a
+   * sibling function's statement cannot satisfy the search.
+   */
+  const declarationBody = (source: string, symbol: string): string => {
+    const start = source.indexOf(symbol);
+    expect(start, `delegated writer '${symbol}' no longer exists`).toBeGreaterThanOrEqual(0);
+    const rest = source.slice(start + symbol.length);
+    const end = rest.search(/\nexport (?:async function|function|const|interface|type|class) /);
+    return end === -1 ? rest : rest.slice(0, end);
+  };
+
   it("every exported table is actually written by the import implementation", () => {
     for (const table of EXPORTED_TABLES) {
-      const relative = IMPORT_WRITER_FILE[table] ?? DEFAULT_IMPORT_WRITER;
-      const writerPath = join(import.meta.dir, ...relative);
-      const importSource = readFileSync(writerPath, "utf8");
+      const delegated = IMPORT_WRITER[table];
+      const relative = delegated?.path ?? DEFAULT_IMPORT_WRITER;
+      const source = readFileSync(join(import.meta.dir, ...relative), "utf8");
       const writer = relative[relative.length - 1];
+      const haystack = delegated ? declarationBody(source, delegated.symbol) : source;
+      const where = delegated ? `${writer}'s ${delegated.symbol.split(" ").pop()}` : writer;
       expect(
-        importSource.includes(`INSERT INTO ${table}`),
-        `bundle-scope.ts says '${table}' is exported, but ${writer} has no ` +
+        haystack.includes(`INSERT INTO ${table}`),
+        `bundle-scope.ts says '${table}' is exported, but ${where} has no ` +
           `'INSERT INTO ${table}' — the bundle would be produced but never restored.`,
       ).toBe(true);
     }
@@ -189,7 +213,7 @@ describe("bundle-scope drift tripwire (#4460)", () => {
     // single-file assertion was strong against, handed back the moment the
     // indirection was allowed.
     const routeSource = readFileSync(join(import.meta.dir, ...DEFAULT_IMPORT_WRITER), "utf8");
-    expect(Object.keys(IMPORT_WRITER_FILE)).toEqual(["brain_vocabulary_edge"]);
+    expect(Object.keys(IMPORT_WRITER)).toEqual(["brain_vocabulary_edge"]);
     expect(routeSource).toContain("mergeApprovedEdges(");
   });
 

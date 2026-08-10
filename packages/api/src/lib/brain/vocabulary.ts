@@ -560,7 +560,16 @@ async function admitAliasEdge(
 export async function approveAliasEdge(
   tx: VocabularyExecutor,
   workspaceId: string,
-  input: AliasEdgeInput,
+  // ⚠️ `approvedAt?: never` is a BARRIER against {@link ArrivingAliasEdge}, not
+  // a field. That type extends this one, so without it
+  // `approveAliasEdge(tx, ws, arrivingEdge)` type-checks perfectly — and then
+  // silently does the one thing a row-copy must never do: the INSERT below omits
+  // `approved_at`, so the column falls to its `now()` default and a decision
+  // made in another region a year ago is re-dated to the migration. The subtype
+  // relation is what makes the mistake reachable, so the barrier belongs here
+  // rather than in a comment on the caller. Every existing caller passes an
+  // object literal with no `approvedAt` and is unaffected.
+  input: AliasEdgeInput & { readonly approvedAt?: never },
 ): Promise<AliasApprovalResult> {
   const { position } = input;
   // Re-normed, never trusted. `alias` composes over `lexicalNorm`, and an
@@ -603,9 +612,29 @@ export async function approveAliasEdge(
  * migration.
  */
 export interface ArrivingAliasEdge extends AliasEdgeInput {
-  /** The SOURCE region's approval timestamp, carried verbatim. */
+  /**
+   * The SOURCE region's approval timestamp, carried verbatim.
+   *
+   * ⚠️ Callers must have validated this parses — it is bound straight into a
+   * `timestamptz`, so an unparseable string is a Postgres THROW that aborts the
+   * whole import, which is the failure mode this module exists to replace with
+   * typed refusals. The one caller validates it in `validateBundle`'s
+   * `missingTimestamps` at the wire boundary.
+   */
   readonly approvedAt: string;
 }
+
+/**
+ * ⚠️ {@link ArrivingAliasEdge} is a SUBTYPE of {@link AliasEdgeInput}, which
+ * pins the field names together deliberately — but the two have OPPOSITE
+ * contracts on one axis, and the inheritance cannot express that.
+ * `AliasEdgeInput`'s norms are re-normed before they are written; an arriving
+ * edge's are written verbatim (ADR-0037 §8). The barrier on
+ * {@link approveAliasEdge}'s parameter is what stops the subtype relation from
+ * making the wrong one callable. Branding the norms so "already normed" is a
+ * type rather than a comment is the deeper fix and is deliberately not taken
+ * here: it needs a mint point in `validateBundle` and is its own slice.
+ */
 
 /**
  * One arriving edge the merge would not write, and everything needed to
@@ -754,6 +783,28 @@ export async function mergeApprovedEdges(
   for (const edge of edges) {
     const { position, fromNorm, toNorm } = edge;
 
+    // ⚠️ The verbatim-write contract is enforced TWO MODULES AWAY, and violating
+    // it is silently lossy — so make it audible here without changing it.
+    // `validateBundle` refuses a non-norm at the wire boundary, which is why the
+    // raw and normed arguments below are the same value; but `lib/` must not
+    // import from `api/routes/`, this function is exported, and
+    // `screenAliasNorms` cannot catch it — `"Priced At"` is neither empty nor
+    // self-equal, so it sails through and lands an alias that can never match
+    // anything, which is exactly the silent under-match this module exists to
+    // prevent. Not refused, because ADR-0037 §8 forbids rewriting another
+    // region's decision on a row-copy path and a refusal here would be this
+    // module second-guessing a validated wire contract; logged, because a
+    // caller that skipped the check should not find out from a lookup that
+    // quietly never fires. Costs nothing on the route path, where the predicate
+    // is false by construction.
+    if (lexicalNorm(fromNorm) !== fromNorm || lexicalNorm(toNorm) !== toNorm) {
+      log.warn(
+        { workspaceId, position, fromNorm, toNorm },
+        "Arriving alias edge is not in lexical-norm form — writing it verbatim per ADR-0037 §8, " +
+          "but it can never match a lookup. The caller skipped validateBundle's norm check.",
+      );
+    }
+
     // Raw and normed are the same value on purpose — see `screenAliasNorms`.
     const screened = screenAliasNorms(fromNorm, toNorm, fromNorm, toNorm);
     if (screened !== null) {
@@ -772,7 +823,17 @@ export async function mergeApprovedEdges(
         duplicate++;
         continue;
       }
-      refusals.push({ edge, ...admission });
+      // `ok` is stripped, NOT spread through. `{ edge, ...admission }` compiles
+      // — object-literal SPREAD is exempt from excess-property checking, unlike
+      // the equivalent inline literal — and pushes a runtime `ok: false` that
+      // `VocabularyMergeRefusal` does not declare. The twin four lines up does
+      // not, because `screenAliasNorms` returns no discriminant, so the two arms
+      // of one union would carry structurally different shapes: a `toEqual` or a
+      // `JSON.stringify` of the recovery payload sees `ok` on `would-cycle` and
+      // not on `self-edge`. Destructuring is what makes the declared type and
+      // the constructed value the same thing.
+      const { ok: _admitted, ...detail } = admission;
+      refusals.push({ edge, ...detail });
       continue;
     }
 
@@ -813,7 +874,17 @@ export async function mergeApprovedEdges(
         total: refusals.length,
         reason: refusal.message,
       },
-      "Vocabulary merge REFUSED an arriving alias edge — a source region's approved decision was not applied here",
+      // ⚠️ FUTURE TENSE, and it is not a stylistic choice. This runs inside the
+      // caller's transaction, which is section 9 of ~13 in `importBundle` — the
+      // closure rebuild below, the brain's identity refusal, or any driver error
+      // can still roll the whole thing back, and then NO edge was dropped
+      // because none was applied. Stated in the past tense, a rolled-back import
+      // tells an operator to go re-author decisions that are still there, and
+      // the retry emits an identical line set with nothing to tell the attempts
+      // apart. `admin-migrate.ts`'s identity-loss warn solved the same problem
+      // one module over with the same tense — "WILL land ... when this
+      // transaction commits" — and this matches it deliberately.
+      "Vocabulary merge WILL DROP an arriving alias edge when this transaction commits — a source region's approved decision is not being applied here",
     );
   });
 

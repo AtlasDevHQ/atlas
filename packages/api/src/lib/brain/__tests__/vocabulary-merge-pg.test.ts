@@ -287,7 +287,13 @@ describeIfPg("merging two vocabularies (#5036)", () => {
         total: 1,
       });
       expect(String(warns[0].payload.reason)).toContain("would close a cycle");
-      expect(warns[0].message).toContain("REFUSED");
+      // ⚠️ FUTURE TENSE. This log is emitted INSIDE the import transaction —
+      // section 9 of ~13 — so a later section throwing rolls it all back and no
+      // edge was dropped at all. A past-tense line on a rolled-back import sends
+      // an operator to re-author decisions that are still there. Matches
+      // `admin-migrate.ts`'s identity-loss warn, which solved this one module over.
+      expect(warns[0].message).toContain("WILL DROP");
+      expect(warns[0].message).toContain("when this transaction commits");
     },
     PG_TEST_TIMEOUT_MS,
   );
@@ -418,6 +424,16 @@ describeIfPg("merging two vocabularies (#5036)", () => {
       // source's decision can be re-authored.
       expect(refusal.refusal === "already-aliased" && refusal.existingTarget).toBe("cost");
       expect(warns[0].payload).toMatchObject({ refusal: "already-aliased", existingTarget: "cost" });
+      // The STORE-decided arm's whole shape — the twin of the norm-decided
+      // assertion in the group above. No `ok`: the discriminant is stripped
+      // before the push, so both arms of `VocabularyMergeRefusal` are the same
+      // shape at runtime as well as in the type.
+      expect(refusal).toEqual({
+        edge: arriving("price", "unit price"),
+        refusal: "already-aliased",
+        existingTarget: "cost",
+        message: refusal.message,
+      });
 
       expect(await closureOf(ws)).toEqual([{ norm: "price", effective_target: "cost" }]);
     },
@@ -440,6 +456,19 @@ describeIfPg("merging two vocabularies (#5036)", () => {
       expect(merge.applied).toBe(0);
       expect(merge.refusals.map((r) => r.refusal)).toEqual(["degenerate-norm", "self-edge"]);
       expect(await edgesOf(ws)).toEqual([]);
+      // ⚠️ WHOLE-OBJECT equality, not `toMatchObject`, and it is the norm-decided
+      // arm of a union whose other arm is built by a DIFFERENT spread. The two
+      // must be structurally identical: `{ edge, ...admission }` on the
+      // store-decided side would carry a stray `ok: false` that
+      // `VocabularyMergeRefusal` does not declare, while this side never has
+      // one — so an operator dumping the recovery payload as JSON would see the
+      // key on `would-cycle` and not on `self-edge`. Object-literal SPREAD is
+      // exempt from excess-property checking, so only an assertion catches it.
+      expect(merge.refusals[1]).toEqual({
+        edge: arriving("price", "price"),
+        refusal: "self-edge",
+        message: merge.refusals[1].message,
+      });
       expect(warns.map((w) => w.payload.refusal)).toEqual(["degenerate-norm", "self-edge"]);
       // Index and total let an operator tell a truncated log from a complete one.
       expect(warns.map((w) => [w.payload.index, w.payload.total])).toEqual([
@@ -526,6 +555,11 @@ describeIfPg("merging two vocabularies (#5036)", () => {
       expect(merge.applied).toBe(0);
       expect(merge.refusals).toEqual([]);
       expect(warns).toEqual([]);
+      // Nothing was written, so nothing is rebuilt. Without this, moving
+      // `positionsTouched.add(position)` above the duplicate `continue` survives
+      // the suite — harmless in effect, since the rebuild is idempotent, but the
+      // returned value would then claim work that did not happen.
+      expect(merge.positionsRecomputed).toEqual([]);
       // Whole-row equality: the destination's approver and timestamp are its own.
       expect(await edgesOf(ws)).toEqual(before);
     },
@@ -576,7 +610,137 @@ describeIfPg("merging two vocabularies (#5036)", () => {
     PG_TEST_TIMEOUT_MS,
   );
 
-  // ── 6. The transaction contract ─────────────────────────────────────────────
+  it(
+    "rebuilds EVERY position that gained an edge, not just the first",
+    async () => {
+      // ⚠️ Until this case existed, no test in the tree ever put two positions
+      // into the recompute set — so `for (const p of [...touched].slice(0, 1))`,
+      // or a `break` at the end of that loop body, survived the entire suite.
+      //
+      // The consequence is not cosmetic. An applied edge whose position was
+      // never rebuilt leaves a norm with an approved edge and NO closure row,
+      // which is the half-rebuilt state `loadClaimVocabulary` refuses — it
+      // throws `VocabularyClosureError` for the whole workspace, permanently,
+      // and only at the next read: the extraction fiber, every `correctFact`
+      // entry point, and the legacy import-keying arm all stop working.
+      //
+      // Each position gets a destination edge the arrival composes ONTO, so a
+      // skipped rebuild is visible rather than coincidentally correct: `a` must
+      // move to `c` and `p` must move to `r`, and neither is a row the arriving
+      // edge mentions.
+      const ws = freshWorkspace();
+      await seedDestination(ws, [
+        ["b", "c", "predicate"],
+        ["q", "r", "subject"],
+      ]);
+
+      const merge = await inTx((tx) =>
+        mergeApprovedEdges(tx, ws, [
+          arriving("a", "b", { position: "predicate" }),
+          arriving("p", "q", { position: "subject" }),
+        ]),
+      );
+
+      expect(merge.applied).toBe(2);
+      expect(merge.refusals).toEqual([]);
+      expect([...merge.positionsRecomputed].toSorted()).toEqual(["predicate", "subject"]);
+      expect(await closureOf(ws, "predicate")).toEqual([
+        { norm: "a", effective_target: "c" },
+        { norm: "b", effective_target: "c" },
+      ]);
+      expect(await closureOf(ws, "subject")).toEqual([
+        { norm: "p", effective_target: "r" },
+        { norm: "q", effective_target: "r" },
+      ]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  // ── 6. Intra-bundle conflicts — the input class nothing upstream screens ────
+
+  it.each([
+    {
+      label: "two arrivals claiming the same `fromNorm`",
+      edges: () => [arriving("a", "b"), arriving("a", "c")],
+      expected: { applied: 1, duplicate: 0, refused: ["already-aliased"] },
+      existingTarget: "b",
+    },
+    {
+      label: "two arrivals that cycle against each other",
+      edges: () => [arriving("a", "b"), arriving("b", "a")],
+      expected: { applied: 1, duplicate: 0, refused: ["would-cycle"] },
+      existingTarget: null,
+    },
+    {
+      label: "the identical edge twice",
+      edges: () => [arriving("a", "b"), arriving("a", "b")],
+      expected: { applied: 1, duplicate: 1, refused: [] },
+      existingTarget: null,
+    },
+  ])(
+    "accounts for $label against an EMPTY destination",
+    async ({ edges, expected, existingTarget }) => {
+      // `mergeApprovedEdges`' docstring asserts the arriving set is itself a
+      // valid forest, so no two arrivals can conflict. That holds for a bundle
+      // this product exported — and `validateBundle` checks each edge
+      // INDEPENDENTLY, with no duplicate-`fromNorm` and no intra-bundle cycle
+      // check, so a hand-built or corrupted bundle reaches here anyway.
+      //
+      // The destination is EMPTY on purpose: every refusal below is therefore
+      // purely intra-bundle, decided against a row the same transaction wrote
+      // and has not committed. That is the arm the accounting contract — which
+      // `migrate.ts` aborts a cutover on — depends on and nothing else covers.
+      const ws = freshWorkspace();
+      const bundle = edges();
+
+      const merge = await inTx((tx) => mergeApprovedEdges(tx, ws, bundle));
+
+      expect(merge.applied).toBe(expected.applied);
+      expect(merge.duplicate).toBe(expected.duplicate);
+      expect(merge.refusals.map((r) => r.refusal)).toEqual([...expected.refused]);
+      expect(merge.applied + merge.duplicate + merge.refusals.length).toBe(bundle.length);
+      if (existingTarget !== null) {
+        const [refusal] = merge.refusals;
+        expect(refusal.refusal === "already-aliased" && refusal.existingTarget).toBe(existingTarget);
+      }
+      // Whatever was refused, the destination is still a forest: exactly the
+      // applied edges are present.
+      expect(await edgesOf(ws)).toHaveLength(expected.applied);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "refuses the OTHER edge when the same conflicting bundle arrives in the opposite order",
+    async () => {
+      // The docstring states the order-dependence outright — *"which of them is
+      // refused depends on which is seen first"* — and a prose claim nothing
+      // pins is the same defect class as a comment that has drifted. Both
+      // orders must leave a forest and a well-formed closure; only WHICH human
+      // decision is dropped differs, which is why the refusal is logged.
+      const ws = freshWorkspace();
+      await seedDestination(ws, [["x", "y"]]);
+
+      const merge = await inTx((tx) =>
+        // Reversed against group 1's `[y→z, z→x]`, which refuses `z→x`.
+        mergeApprovedEdges(tx, ws, [arriving("z", "x"), arriving("y", "z")]),
+      );
+
+      expect(merge.applied).toBe(1);
+      expect(merge.refusals).toHaveLength(1);
+      expect(merge.refusals[0].refusal).toBe("would-cycle");
+      // The OTHER edge, and this is the whole assertion: same bundle, same
+      // destination, different victim.
+      expect(merge.refusals[0].edge.fromNorm).toBe("y");
+      expect(await closureOf(ws)).toEqual([
+        { norm: "x", effective_target: "y" },
+        { norm: "z", effective_target: "y" },
+      ]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  // ── 7. The transaction contract ─────────────────────────────────────────────
 
   it(
     "REFUSES to merge outside a transaction",

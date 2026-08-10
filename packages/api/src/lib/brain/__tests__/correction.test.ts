@@ -1430,6 +1430,61 @@ describe("supersede", () => {
     expect(store.episodes).toHaveLength(0);
   });
 
+  test("a DIVERGED stored key still refuses a byte-identical restatement (#5037)", async () => {
+    // ⚠️ THE SECOND REGRESSION THIS GUARD SHIPPED, and the reason it is now a
+    // UNION rather than a precedence.
+    //
+    // The first cut compared the derived replacement key against the stored
+    // target key alone, which failed open for a stored NULL. The repair —
+    // `stored ?? derived` — closed that and opened the member next door: a stored
+    // key that is NON-NULL but DIVERGED from what this workspace now derives.
+    // `??` short-circuits on non-null, so the derivation never runs, and a human
+    // re-typing the fact's own object text is compared against a key computed by
+    // a different vocabulary. They differ, the guard stays silent, and a
+    // published belief is retired for a successor asserting the same words.
+    //
+    // The population is #5035's region import: keys travel verbatim, so a fact's
+    // stored key is a fixpoint of the SOURCE region's vocabulary and not
+    // necessarily of this one. `correction.ts` documents that state as existing
+    // by construction.
+    //
+    // Both regressions were REPLACEMENTS of the comparison — each closed the
+    // reported input class and opened its neighbour, because replacing moves
+    // behaviour in both directions. The union only ever adds refusals.
+    const store = new FakeCorrectionStore();
+    store.seedFact({
+      id: "imported",
+      object: "Alice",
+      // Carried verbatim from a region whose vocabulary unified `alice` with
+      // `alicia`. This one does not.
+      slot: { subject: "billing", predicate: "is owned by", object: "alicia" },
+    });
+
+    const target = store.fact("imported");
+    // The anti-vacuity precondition, and here it is doing double duty: it proves
+    // the stored key DIVERGES (so the second arm alone cannot fire) while the
+    // surfaces are byte-identical (so the first arm must).
+    expect(
+      slotKey(target.object, identityVocabulary.object),
+      "the stored key does not diverge — this test would pass against the ?? version",
+    ).not.toBe(target.slot.object);
+
+    const outcome = await run(store, {
+      factId: "imported",
+      verb: "supersede",
+      // The exact text the fact already carries.
+      replacement: { object: "Alice" },
+    });
+
+    expect(outcome).toMatchObject({
+      kind: "refused",
+      reason: CORRECTION_REFUSAL_REASONS.replacementIdentical,
+    });
+    expect(store.fact("imported").validTo).toBeNull();
+    expect(store.facts).toHaveLength(1);
+    expect(store.episodes).toHaveLength(0);
+  });
+
   test("the replacement claim lands keyed under the workspace's vocabulary (#5022)", async () => {
     // The OTHER half of the threading, and the one the guard tests cannot see:
     // `applySupersede` passes the vocabulary through to `reconcileFacts`, and
@@ -2868,20 +2923,28 @@ describe("the identity keys never leave the target read (#5037)", () => {
     // inherit tests, the stored-object-key guard test, and the proposer's
     // stored-predicate test), never a replacement for them. What it adds is
     // coverage of the site that does not exist yet.
-    // ⚠️ ONE SPELLING IS PERMITTED: `<stored> ?? slotKey(target.…)`. A stored NULL
-    // means the row has no identity to inherit, and there the derivation is the
-    // only honest answer — it is what `main` did for those rows, and removing it
-    // is what switched the `replacementIdentical` guard off for an imported
-    // corpus. The exemption is the `??` itself, so a BARE re-derivation is still
-    // refused and the fallback cannot be spelled without admitting it is one.
+    // ⚠️ SCOPED TO THE INHERITED POSITIONS. The rule is not "never derive from the
+    // target" — it is "never derive what is INHERITED". Those are different, and
+    // an earlier cut conflated them.
     //
-    // Written as a lookbehind on the operator rather than by hoisting the surface
-    // into a local: hoisting would satisfy this matcher while changing nothing
-    // about the code, and a guard a rename defeats is worse than no guard.
+    //   - `target.subject` / `target.predicate` — the SLOT, which is copied off
+    //     the row. Deriving either is always the #5037 defect, so both are banned
+    //     outright with no exemption to spell.
+    //   - `target.object` — NOT inherited. The replacement's object is new text
+    //     that keys on its own terms, and the `replacementIdentical` guard
+    //     legitimately needs BOTH readings of the target's object (the derived
+    //     one, which is `main`'s question about the text, and the stored one,
+    //     which is #5037's question about identity). Permitted, and the union
+    //     there is pinned behaviourally by two tests rather than lexically here.
+    //
+    // The previous cut banned all three and carved out `?? slotKey(target.…)`.
+    // That exemption encoded a SPECIFIC FIX — the precedence form — and so the
+    // ratchet mechanically enforced the incomplete version of it: writing the
+    // correct union tripped the guard, and the first repair anyone reaches for is
+    // hoisting the surface into a local, which is the evasion this pin exists to
+    // refuse. A guard that blocks the right fix is worse than one scoped honestly.
     const offendersIn = (text: string): string[] =>
-      [...text.matchAll(/(\?\?\s*)?slotKey\(\s*target\.\w+/g)]
-        .filter((m) => m[1] === undefined)
-        .map((m) => m[0]);
+      [...text.matchAll(/slotKey\(\s*target\.(subject|predicate)\b/g)].map((m) => m[0]);
 
     // ── The positive control ───────────────────────────────────────────────
     // `expect(offenders).toEqual([])` is the always-green shape: weaken the
@@ -2893,11 +2956,15 @@ describe("the identity keys never leave the target read (#5037)", () => {
     // over a planted violation.
     expect(
       offendersIn("const k = slotKey(target.subject, vocabulary.subject);"),
-      "the matcher does not detect a planted re-derivation — every assertion below is vacuous",
+      "the matcher does not detect a planted subject re-derivation — every assertion below is vacuous",
     ).toEqual(["slotKey(target.subject"]);
     expect(
-      offendersIn("const k = target.objectKey ?? slotKey(target.object, vocabulary.object);"),
-      "the matcher rejects the permitted `??` fallback — it would force the hoist it exists to prevent",
+      offendersIn("const k = slotKey(target.predicate, vocabulary.predicate);"),
+      "the matcher does not detect a planted predicate re-derivation — the two slot positions are a pair",
+    ).toEqual(["slotKey(target.predicate"]);
+    expect(
+      offendersIn("const k = slotKey(target.object, vocabulary.object);"),
+      "the matcher flags the OBJECT position, which is not inherited — this would block the union guard",
     ).toEqual([]);
 
     // BOTH comment forms are stripped. Stripping only `/* */` leaves a `//` line
@@ -2909,10 +2976,10 @@ describe("the identity keys never leave the target read (#5037)", () => {
       .replace(/\/\/[^\n]*/g, " ");
     expect(
       offendersIn(source),
-      "the target's keys are STORED — read them off the row instead of re-deriving them from its surfaces. " +
-        "A derived key equals the stored one only until the vocabulary moves (ADR-0037 §8), and every " +
-        "divergence lands in the irreversible direction. The one permitted spelling is " +
-        "`<stored> ?? slotKey(target.…)`, for a row that has no stored key to read.",
+      "the target's SLOT keys are STORED — read them off the row instead of re-deriving them from its " +
+        "surfaces. A derived key equals the stored one only until the vocabulary moves (ADR-0037 §8), and " +
+        "every divergence lands in the irreversible direction. This covers the subject and predicate only: " +
+        "the object is not inherited, and the `replacementIdentical` guard reads it both ways on purpose.",
     ).toEqual([]);
   });
 

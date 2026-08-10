@@ -1260,32 +1260,52 @@ export async function correctFact(
         // anywhere in the product, so the tidier spelling is the unrecoverable
         // one.
         //
-        // ⚠️ THE STORED KEY WINS WHEN THERE IS ONE; OTHERWISE THE DERIVATION DOES.
+        // ⚠️ EITHER READING REFUSES. THE ARMS ARE A UNION, NOT A PRECEDENCE.
         //
-        // The `??` is not defensive tidiness, and an earlier cut of this slice
-        // omitted it and inverted the guard. A row can hold a NULL `object_key`
-        // beside a perfectly keyable surface — that is a region-imported corpus
-        // (`admin-migrate.ts` documents an exporter drift landing every fact
-        // unkeyed with a green 200 at both ends), and it is the very population
-        // #5037 exists for. Compare a DERIVED replacement key against a stored
-        // NULL and the two can never be equal, so the refusal cannot fire at all:
-        // a byte-identical restatement walks through to
-        // `SUPERSEDE_STAMP_EXPLICIT_SQL` and retires a published belief in favour
-        // of a successor asserting the same thing. `main` refused that input.
+        // This guard is a REFUSAL, so its two failure directions are not
+        // symmetric: refusing wrongly costs a human one retry through
+        // `re-authority`/`pin` (the message says so), while permitting wrongly
+        // retires a published belief with no inverse verb anywhere in the
+        // product. When two readings of "identical" disagree, the recoverable
+        // move is to honour both, not to rank them.
         //
-        // A stored NULL means "this row has no identity", NOT "this row differs
-        // from everything". Reading it as the latter turns the guard off for a
-        // whole corpus, in the direction that has no inverse verb.
+        // ⚠️ **Written as a union DELIBERATELY, and the shape is the point.** Two
+        // earlier cuts of this slice each REPLACED the comparison — first with
+        // the stored key alone, then with `stored ?? derived` — and each closed
+        // the reported input class while opening the one next to it, because a
+        // replacement moves behaviour in BOTH directions at once. A disjunct
+        // added to a refusal can only ever refuse MORE. That makes this edit
+        // incapable of the failure mode by construction rather than by argument,
+        // and argument is what failed twice here.
         //
-        // So: read the key when the corpus has one, derive when it does not —
-        // which is exactly the pre-#5037 behaviour for exactly the rows that
-        // still have nothing to inherit. The two-nulls-match arm survives
-        // unchanged (a degenerate surface derives NULL, so the fallback is NULL
-        // too), and every row with a real stored key is judged against it.
-        const targetObjectKey = target.objectKey ?? slotKey(target.object, vocabulary.object);
+        // The two readings, and why neither alone is enough:
+        //
+        //   - `replacementKey === derivedTargetKey` — *does the replacement
+        //     restate the TEXT?* This is `main`'s question verbatim and it is
+        //     what the refusal MESSAGE claims. Keeping it unchanged is what
+        //     makes this a strict superset of `main`'s refusals. It needs no
+        //     null fallback: an unkeyed row derives just as well as a keyed one.
+        //   - `replacementKey === target.objectKey` — *will the two rows be
+        //     IDENTITY-identical?* This is #5037's question, and it is the one
+        //     that catches an alias REMOVAL, where the stored key records a
+        //     unification the current vocabulary no longer performs.
+        //
+        // They come apart in both directions, which is why the union is not
+        // redundant. A stored NULL beside a keyable surface (an unkeyed import)
+        // defeats the second arm alone. A stored key that DIVERGED from the local
+        // derivation — a key carried verbatim from a foreign vocabulary by
+        // #5035's import — defeats the first arm alone: object `Alice`, stored
+        // `alicia`, a human re-typing `Alice` derives `alice`, and only the
+        // first arm sees the restatement.
+        //
+        // Two nulls still match, on both arms, so the degenerate-surface refusal
+        // is unchanged.
+        const replacementKey =
+          replacement === null ? null : slotKey(replacement.object, vocabulary.object);
         if (
           replacement !== null &&
-          slotKey(replacement.object, vocabulary.object) === targetObjectKey
+          (replacementKey === slotKey(target.object, vocabulary.object) ||
+            replacementKey === target.objectKey)
         ) {
           throw new CorrectionRefusedError(
             CORRECTION_REFUSAL_REASONS.replacementIdentical,

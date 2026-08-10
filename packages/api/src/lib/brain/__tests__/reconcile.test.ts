@@ -1934,7 +1934,11 @@ describe("the draft candidate", () => {
       {
         kind: "blocked",
         reason: RECONCILE_BLOCK_REASONS.malformedClaim,
-        unkeyed: ["object"],
+        // The CAUSE travels with the position, and asserting it is what stops
+        // the 400-vs-500 split in `correction.ts` from regressing: gating on the
+        // position alone blames the caller for a vocabulary defect they cannot
+        // fix, which is exactly what the first cut of that gate did.
+        unkeyed: [{ role: "object", cause: "degenerate-surface" }],
       },
     ]);
     // NOTHING was stored, and no statement ran for it. Asserted on the fact set
@@ -1971,7 +1975,7 @@ describe("the draft candidate", () => {
     expect(report.outcomes[0]).toEqual({
       kind: "blocked",
       reason: RECONCILE_BLOCK_REASONS.malformedClaim,
-      unkeyed: ["object"],
+      unkeyed: [{ role: "object", cause: "degenerate-surface" }],
     });
     expect(report.outcomes[1]).toMatchObject({ kind: "created" });
     // The surviving claim is stored with its surface VERBATIM and its key

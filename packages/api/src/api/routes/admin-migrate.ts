@@ -1070,6 +1070,41 @@ export class RegionImportUnkeyableError extends Error {
 }
 
 /**
+ * Raised when a LEGACY (v1/v2) bundle's fact keys to nothing because THIS
+ * region's vocabulary maps its norm away (#5047).
+ *
+ * Split from {@link RegionImportUnkeyableError} because the two name different
+ * subsystems, different regions and different remedies, and a shared message
+ * sends the operator somewhere they can do nothing. A v1/v2 bundle carries no
+ * key columns at all, so "re-export from the source" is unfollowable advice for
+ * this cause — the defect is a local alias entry.
+ *
+ * Reachable only through a hand-written or imported `brain_vocabulary_target`
+ * row: `vocabulary-decide.ts` refuses a `degenerate-norm` target at authoring
+ * and `validateBundle` refuses a non-norm edge at import. Raised anyway rather
+ * than assumed unreachable, for the reason `REKEY_DRIFTED_FACTS_SQL`'s own
+ * `IS NOT NULL` arm gives: testing the composed expression is what keeps this
+ * correct if that guard ever reopens, and the failure mode here is a permanent
+ * 409 on a whole tenant migration.
+ */
+export class RegionImportVocabularyTargetError extends Error {
+  constructor(
+    readonly factId: string,
+    readonly positions: readonly string[],
+  ) {
+    super(
+      `Region import refused: fact ${factId} could not be keyed at ${positions.join(", ")} — its ` +
+        "surface normalizes to a real key, but THIS region's vocabulary maps that norm to " +
+        "something that normalizes away, so the fact would have no identity. This is a " +
+        "destination-side configuration defect and re-exporting will not change it: inspect this " +
+        "workspace's `brain_vocabulary_target` rows for the positions named above, remove or " +
+        "correct the offending alias entry, then re-run the import.",
+    );
+    this.name = "RegionImportVocabularyTargetError";
+  }
+}
+
+/**
  * The `NOT NULL` landing for a key this import could not supply (#5047).
  *
  * `brain_facts`' key columns are `NOT NULL` since migration 0194, so this writer
@@ -1121,6 +1156,7 @@ export class RegionImportUnkeyableError extends Error {
  */
 function tombstonePlaceholder(
   fact: ExportedBrainFact,
+  source: IdentitySource,
   keys: {
     readonly subjectKey: string | null;
     readonly predicateKey: string | null;
@@ -1139,10 +1175,24 @@ function tombstonePlaceholder(
   ).filter(([, key]) => key === null);
   const repairable = absent.filter(([, , surface]) => identityKey(surface) !== null);
   if (repairable.length > 0) {
-    throw new RegionImportUnkeyableError(
-      fact.id,
-      repairable.map(([position]) => position),
-    );
+    // ⚠️ WHICH SUBSYSTEM IS AT FAULT DEPENDS ON WHICH ARM CALLED, and the first
+    // cut raised the source-region error from both — so a v1/v2 bundle, which
+    // carries no key columns on the wire AT ALL, told the operator to "re-export
+    // from the source region and check it has applied 0194". Re-exporting cannot
+    // change anything on that arm, and 0194 at the source is irrelevant: the
+    // whole migration wedges behind an instruction nobody can follow.
+    //
+    // On the CARRIED arm a repairable null means the key was supposed to arrive
+    // and did not — source-side. On the COMPUTED arm the key was derived right
+    // here by `slotKey(surface, vocabulary[position])`, and `slotKey` reaches
+    // null a second way: this region's own alias entry maps a real norm to
+    // something that normalizes away. That is a destination-side configuration
+    // defect and names a different table, a different region, and a different
+    // remedy.
+    const positions = repairable.map(([position]) => position);
+    throw source.carried
+      ? new RegionImportUnkeyableError(fact.id, positions)
+      : new RegionImportVocabularyTargetError(fact.id, positions);
   }
   const placeholder = `${UNKEYABLE_KEY_PREFIX}${fact.id}`;
   return {
@@ -1166,7 +1216,7 @@ function importedIdentity(fact: ExportedBrainFact, source: IdentitySource): Impo
       objectKey: slotKey(fact.object, vocabulary.object),
     };
     return {
-      ...tombstonePlaceholder(fact, keys),
+      ...tombstonePlaceholder(fact, source, keys),
       subjectCmp: null,
       objectCmp: null,
       comparableDropped: false,
@@ -1194,7 +1244,7 @@ function importedIdentity(fact: ExportedBrainFact, source: IdentitySource): Impo
     // that survives that is landed by {@link tombstonePlaceholder} — the keys
     // are `NOT NULL` since #5047, and this arm CARRIES rather than computes, so
     // it has nothing better to write.
-    ...tombstonePlaceholder(fact, {
+    ...tombstonePlaceholder(fact, source, {
       subjectKey: fact.subjectKey ?? null,
       predicateKey: fact.predicateKey ?? null,
       objectKey: fact.objectKey ?? null,
@@ -1982,7 +2032,13 @@ export async function importBundle(
       }
       if (identity.unkeyable) identityLoss.unkeyableFacts++;
       if (identity.nullKeys) identityLoss.nullKeyFacts++;
-      if (identity.tombstoned) identityLoss.tombstonedFacts++;
+      // NEWLY tombstoned only. `identity.tombstoned` drives the WRITE, which
+      // `COALESCE`s so a fact that arrived already tombstoned keeps the source
+      // region's timestamp — for that row this import retired nothing, and
+      // counting it would raise a false alarm pointing at manual DB surgery.
+      if (identity.tombstoned && (fact.invalidatedAt ?? null) === null) {
+        identityLoss.tombstonedFacts++;
+      }
 
       await client.query(
         // `pre_widening_visible_to` travels or the target region re-opens the
@@ -2217,7 +2273,10 @@ adminMigrate.openapi(importRoute, async (c) => {
     // and re-run. 409 rather than 400 because the request itself is well-formed
     // — `validateBundle` passed — and rather than 500 because retrying THIS body
     // can never succeed and nothing here is broken.
-    if (err instanceof RegionImportUnkeyableError) {
+    if (
+      err instanceof RegionImportUnkeyableError ||
+      err instanceof RegionImportVocabularyTargetError
+    ) {
       return c.json({ error: "import_refused", message: detail, requestId }, 409);
     }
     return c.json({ error: "import_failed", message: `Import failed — all changes rolled back. ${detail}`, requestId }, 500);
@@ -2304,7 +2363,10 @@ internalMigrate.post("/import", async (c) => {
     // and re-run. 409 rather than 400 because the request itself is well-formed
     // — `validateBundle` passed — and rather than 500 because retrying THIS body
     // can never succeed and nothing here is broken.
-    if (err instanceof RegionImportUnkeyableError) {
+    if (
+      err instanceof RegionImportUnkeyableError ||
+      err instanceof RegionImportVocabularyTargetError
+    ) {
       return c.json({ error: "import_refused", message: detail, requestId }, 409);
     }
     return c.json({ error: "import_failed", message: `Import failed — all changes rolled back. ${detail}`, requestId }, 500);

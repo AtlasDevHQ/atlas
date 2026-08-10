@@ -119,6 +119,17 @@
 #     would re-queue a human's completed review work at every region cutover.
 #     It is a restore of a prior gate decision, not a new one; the import's own
 #     `grantProblem` validation is paired with the 0180 CHECK.
+#     ⚠️ THAT "RESTORE, NEVER MINT" READING NO LONGER COVERS THE WHOLE FILE
+#     (#5047). `tombstonePlaceholder` now MINTS an `invalidated_at` for a fact
+#     whose surface normalizes away, matching what migration 0194 does to the
+#     same population — the row has no identity at some position, cannot be
+#     keyed by any vocabulary or re-key, and the slot keys are NOT NULL. It is
+#     still not an ARBITRATION (nothing decided that a meaningful claim is
+#     false; the claim asserts nothing), which is the distinction this allowlist
+#     draws — but the plain reading above would tell a reader the file never
+#     writes a tombstone of its own, and it does. A fact whose key merely failed
+#     to ARRIVE while its surface keys fine is refused outright rather than
+#     tombstoned, because that row is repairable and retiring it would not be.
 #     It also restores `pre_widening_visible_to` (#4836) — necessarily, since
 #     the column cannot be re-derived in the target region (the import writes
 #     `status` verbatim, so the fact never re-publishes and the widening UPDATE

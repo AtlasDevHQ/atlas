@@ -644,11 +644,11 @@ export type ReconcileOutcome =
       readonly kind: "blocked";
       readonly reason: ReconcileBlockReason;
       /**
-       * For `MALFORMED_CLAIM` only: which slots had no identity (#5047). See
-       * {@link BlockedEntry.unkeyed} — this is the same detail, on the wire the
-       * caller actually reads.
+       * For `MALFORMED_CLAIM` only: which slots had no identity, and WHY (#5047).
+       * See {@link BlockedEntry.unkeyed} — this is the same detail, on the wire
+       * the caller actually reads.
        */
-      readonly unkeyed?: readonly SlotRole[];
+      readonly unkeyed?: readonly UnkeyedSlot[];
     };
 
 export interface ReconcileReport {
@@ -1253,7 +1253,6 @@ export async function reconcileFacts(
     // catch. `SlotKeys` takes role names for the same reason.
     const { subject: subjectSlot, predicate: predicateSlot, object: objectSlot } = keys;
     if (subjectSlot === null || predicateSlot === null || objectSlot === null) {
-      const unkeyed = SLOT_ROLES.filter((role) => keys[role] === null);
       const surfaces = { subject, predicate, object } as const;
       // WHICH subsystem to fix, per position — decided here, where the surface,
       // the vocabulary and the inherited slot are all still in hand.
@@ -1266,31 +1265,31 @@ export async function reconcileFacts(
       // call apart. `correction.ts` made exactly this distinction for exactly
       // this reason until #5047 made its version unreachable; the distinction
       // is not unreachable here.
-      const cause = Object.fromEntries(
-        unkeyed.map((role) => [
-          role,
+      const unkeyed: readonly UnkeyedSlot[] = SLOT_ROLES.filter(
+        (role) => keys[role] === null,
+      ).map((role) => ({
+        role,
+        cause:
           candidate.inheritedSlot !== undefined && role !== "object"
             ? "inherited"
             : identityKey(surfaces[role]) === null
               ? "degenerate-surface"
               : "vocabulary-target",
-        ]),
-      );
+      }));
       log.warn(
         {
           workspaceId: episode.workspaceId,
           episodeId: episode.id,
           producer,
           unkeyed,
-          cause,
           // Logged ONLY where the cause is `degenerate-surface`, and that
           // restriction is the point: by construction such a surface is
           // separators and whitespace and carries no claim content. A
           // `vocabulary-target` surface is real text and stays out, matching the
           // blank-trim guard above, which logs booleans rather than surfaces.
           degenerateSurfaces: unkeyed
-            .filter((role) => cause[role] === "degenerate-surface")
-            .map((role) => ({ role, surface: surfaces[role] })),
+            .filter((slot) => slot.cause === "degenerate-surface")
+            .map((slot) => ({ role: slot.role, surface: surfaces[slot.role] })),
           // ⚠️ `inheritedFrom` alone is NOT the discriminator, and reporting it
           // as one blames the wrong party. It is set for EVERY
           // correction-produced candidate, but only the SUBJECT and PREDICATE
@@ -1306,16 +1305,13 @@ export async function reconcileFacts(
           // is unreachable through the database — it survives as a diagnostic
           // for a hand-built slot and for the deploy overlap, not as an expected
           // state.
-          inheritedUnkeyed:
-            candidate.inheritedSlot === undefined
-              ? []
-              : unkeyed.filter((role) => role !== "object"),
+          inheritedUnkeyed: unkeyed
+            .filter((slot) => slot.cause === "inherited")
+            .map((slot) => slot.role),
         },
-        // THREE causes, and the message names all three because it cannot
-        // distinguish the first two once the vocabulary is real: the SURFACE
-        // norms away (`-`, `___`), or an alias entry maps a real slot to
-        // something that does. Naming only the producer would send an operator
-        // after the wrong subsystem.
+        // The message renders `cause` rather than listing possibilities — see
+        // the ⚠️ above, which records why the claim that these are
+        // indistinguishable was false.
         "brain reconcile: blocked a candidate with no identity for one or more slots — such a claim could never corroborate, earn a tension edge, or be superseded at publish, and the slot keys are NOT NULL since #5047. `cause` names the subsystem to fix, per position: `degenerate-surface` = the producer emitted separators only, and the offending text is in `degenerateSurfaces` (fix the producer); `vocabulary-target` = this workspace's vocabulary maps that slot to something that normalizes away, so the surface is fine and the ENTRY is the defect (no re-key repairs it); `inherited` = a row-copy path copied a null slot off the fact named by `inheritedFrom`, so this claim's own text is fine at that position and the TARGET row is what has no identity. The object is never inherited — it is always derived from this claim's own text",
       );
       blocked.MALFORMED_CLAIM++;
@@ -1624,6 +1620,34 @@ const SLOT_ROLES = ["subject", "predicate", "object"] as const satisfies readonl
 type SlotRole = (typeof SLOT_ROLES)[number];
 
 /**
+ * WHY a slot has no key — the discriminator a consumer needs to blame the right
+ * party (#5047).
+ *
+ * ⚠️ The POSITION is not the cause, and conflating them is a defect this type
+ * exists to have already made once. `applySupersede` first gated its user-facing
+ * 400 on "the object position failed", reasoning that the object is the
+ * caller's own text. It is not always: `slotKey` is
+ * `identityKey(alias(identityKey(surface)))`, so an object key is ALSO null when
+ * the workspace's object-position vocabulary maps a real norm to something that
+ * normalizes away — and the human is then told to retype text that is already
+ * correct, on a request no retry can fix.
+ *
+ *   - `degenerate-surface` — the producer's own text asserts nothing (`-`,
+ *     `___`). The one cause the SUPPLIER of the claim can fix.
+ *   - `vocabulary-target` — the surface keys fine and this workspace's alias
+ *     entry for it maps to nothing. A configuration defect; no re-key repairs it.
+ *   - `inherited` — a row-copy path copied a null slot off the target row, so
+ *     this claim's own text is fine at that position.
+ */
+export type SlotKeyFailureCause = "degenerate-surface" | "vocabulary-target" | "inherited";
+
+/** One slot that had no key, and why. */
+export interface UnkeyedSlot {
+  readonly role: SlotRole;
+  readonly cause: SlotKeyFailureCause;
+}
+
+/**
  * {@link SlotKeys} AFTER the `MALFORMED_CLAIM` guard — three keys, none null.
  *
  * The two types are deliberately both here rather than one nullable shape with a
@@ -1828,7 +1852,7 @@ interface BlockedEntry {
    * `correction.ts`'s supersede arm, which must not blame a replacement's text
    * for an inherited or vocabulary-caused failure.
    */
-  readonly unkeyed?: readonly SlotRole[];
+  readonly unkeyed?: readonly UnkeyedSlot[];
 }
 
 type TrimmedEntry = TrimmedCandidate | BlockedEntry;

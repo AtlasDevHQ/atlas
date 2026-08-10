@@ -41,18 +41,20 @@ interface MigrationClient extends Queryable {
    * `node-postgres`' `EventEmitter` surface, narrowed to the one event this
    * module listens for (#5047).
    *
-   * OPTIONAL, and the absence is REPORTED rather than ignored — see where it is
-   * attached. Requiring it would be the stronger design and it is not available:
-   * the real client reaches here through `InternalPoolClient`, which a dozen
-   * lightweight `{ query, release }` doubles satisfy across the tree, and making
-   * this mandatory cascades into every one of them for a signal none of them
-   * raises. So the type stays permissive and the CALL SITE says out loud when
-   * notices cannot be heard, which is the property that actually matters: the
-   * gap this listener closes was five migrations' breadcrumbs going nowhere with
-   * nothing anywhere saying so.
+   * REQUIRED, and the first cut of this had them optional with a `debug` line
+   * when absent — which reinstated the exact gap the listener closes, below the
+   * production log level, under two docstrings claiming it could not happen.
+   * A future pool wrapper or driver swap would have silently discarded every
+   * migration breadcrumb again.
+   *
+   * Requiring them costs nothing now: every in-repo double was updated when the
+   * listener landed. `InternalPoolClient` keeps them optional so the dozen
+   * lightweight `{ query, release }` doubles elsewhere still satisfy it — which
+   * means a pool whose client lacks them fails to compile HERE, at the one
+   * consumer, which is where the notices would be lost.
    */
-  on?(event: "notice", listener: (notice: { readonly message?: string }) => void): unknown;
-  off?(event: "notice", listener: (notice: { readonly message?: string }) => void): unknown;
+  on(event: "notice", listener: (notice: { readonly message?: string }) => void): unknown;
+  off(event: "notice", listener: (notice: { readonly message?: string }) => void): unknown;
 }
 
 /**
@@ -156,18 +158,7 @@ export async function runMigrations(pool: MigrationPool, options: RunMigrationsO
       "Migration notice",
     );
   };
-  if (typeof client.on === "function") {
-    client.on("notice", onNotice);
-  } else {
-    // Not silent: a client with no notice surface means every `RAISE NOTICE` in
-    // every migration this run applies is discarded, which is precisely the
-    // condition that went unnoticed for five migrations. `debug` rather than
-    // `warn` because every in-repo mock pool legitimately lands here.
-    log.debug(
-      {},
-      "Migration client exposes no `notice` event — RAISE NOTICE breadcrumbs from migrations will be discarded for this run",
-    );
-  }
+  client.on("notice", onNotice);
 
   // A failed per-migration ROLLBACK propagates here via the callback so
   // the client gets destroyed on release instead of pooled dirty.
@@ -213,10 +204,18 @@ export async function runMigrations(pool: MigrationPool, options: RunMigrationsO
       });
     }
   } finally {
+    // Anything raised after the loop — `ADVISORY_UNLOCK_SQL` — is not the last
+    // migration's doing, and attributing it there would be a small lie in the
+    // one field this line exists to get right.
+    noticeFrom.migration = "(after the last migration)";
     // Same reference, so the client goes back to the pool with no more listeners
     // than it arrived with. `off` and not `removeAllListeners`: the pool's own
     // internals may have their own.
-    client.off?.("notice", onNotice);
+    //
+    // ⚠️ `runSeeds` runs on a DIFFERENT connection, after this returns, so seed
+    // notices are still discarded. Out of scope here and stated so the next
+    // reader does not assume coverage.
+    client.off("notice", onNotice);
     client.release(rollbackErr ?? undefined);
   }
 }

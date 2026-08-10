@@ -1422,6 +1422,7 @@ export async function correctFact(
               correctionSourceId,
               grantTokens: target.grantTokens,
               vocabulary,
+              requestId,
             }),
           );
         case "re-authority":
@@ -1935,6 +1936,15 @@ interface SupersedeInputs {
   readonly grantTokens: readonly string[];
   /** The workspace's vocabulary, so the replacement keys the way ingest does. */
   readonly vocabulary: ClaimVocabulary;
+  /**
+   * The caller's request id, threaded for ONE consumer: the `log.error` beside
+   * the 500 this function can throw (#5047).
+   *
+   * CLAUDE.md's rule is that every 500 carries one for log correlation, and the
+   * line is otherwise the single place in this module that drops it — a user
+   * reporting "I got a 500, requestId abc" could not be matched to it.
+   */
+  readonly requestId: string | undefined;
 }
 
 async function applySupersede(
@@ -2069,20 +2079,27 @@ async function applySupersede(
   if (
     outcome?.kind === "blocked" &&
     outcome.reason === RECONCILE_BLOCK_REASONS.malformedClaim &&
-    // ⚠️ ONLY when the OBJECT is what has no identity. `MALFORMED_CLAIM` covers
-    // four states — a blank surface, a degenerate one, a vocabulary target that
-    // normalizes away, and an INHERITED null slot — and only the object position
-    // is the human's own text here: the subject and predicate are copied off the
-    // target row (#5037).
+    // ⚠️ THE OBJECT POSITION **WITH A DEGENERATE-SURFACE CAUSE**, and the second
+    // half of that is not a refinement — it is the whole correctness of this arm.
     //
-    // Telling a human their replacement "has no identity" when the target's slot
-    // or this workspace's vocabulary is the defect sends them to fix input that
-    // is already correct, and no retry they can make will succeed. That is the
-    // same wrong-subsystem blame `inheritedUnkeyed` exists to prevent in the
-    // reconcile log, arriving on the user-facing side; the other positions fall
-    // through to the throw below, which is a 500 with a requestId — the right
-    // shape for a defect that is ours or the corpus's.
-    (outcome.unkeyed ?? []).includes("object")
+    // The first cut gated on the POSITION alone, reasoning that the object is
+    // the caller's own text where the subject and predicate are copied off the
+    // target row (#5037). That reasoning is incomplete, and a review caught it
+    // reproducing the very defect it fixes one layer over: `slotKey` is
+    // `identityKey(alias(identityKey(surface)))`, so an object key is ALSO null
+    // when this workspace's object-position vocabulary maps a real norm to
+    // something that normalizes away. A human superseding with perfectly good
+    // text, in a workspace with one bad alias entry, was told their replacement
+    // "normalizes away to nothing" — fix-your-correct-input, on a request no
+    // retry could ever satisfy.
+    //
+    // So the discriminator is the CAUSE, which `reconcile.ts` already computes
+    // at the one place all three inputs are readable. Only `degenerate-surface`
+    // is the supplier's fault; `vocabulary-target` and `inherited` are the
+    // corpus's or the configuration's and fall through to the 500 below.
+    (outcome.unkeyed ?? []).some(
+      (slot) => slot.role === "object" && slot.cause === "degenerate-surface",
+    )
   ) {
     // ⚠️ THE ONE BLOCK REASON THAT IS REACHABLE FROM A WELL-FORMED REQUEST, and
     // it became reachable with #5047. Every other arm of the seam's gate is
@@ -2130,6 +2147,14 @@ async function applySupersede(
       {
         workspaceId,
         factId: target.id,
+        // The two correlation handles this line is useless without. `requestId`
+        // is CLAUDE.md's rule for every 500 — the caller is handed one and every
+        // other log line in this module carries it. `episodeId` is what the
+        // message below tells the operator to join on: the reconcile warn logs
+        // the episode and NOT the fact, so without it the two lines share only
+        // `workspaceId`.
+        requestId: inputs.requestId,
+        episodeId,
         reason: outcome?.kind === "blocked" ? outcome.reason : "no outcome",
         unkeyed: outcome?.kind === "blocked" ? (outcome.unkeyed ?? []) : [],
       },

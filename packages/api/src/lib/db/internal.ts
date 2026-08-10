@@ -298,14 +298,31 @@ export interface InternalPoolClient {
   /**
    * `node-postgres`' `EventEmitter` surface for server notices (#5047).
    *
-   * OPTIONAL so the lightweight mocks that satisfy this interface elsewhere keep
-   * doing so — the same reason `rowCount` is. `runMigrations` is the one consumer
-   * and requires them on its own client type, so a caller passing a pool whose
-   * client lacks them is a compile error THERE, where the notices would be lost,
-   * rather than everywhere a `{ query, release }` double is built.
+   * OPTIONAL HERE, and REQUIRED on `MigrationClient` — the asymmetry is
+   * deliberate and was measured. Requiring them on this interface cascades into
+   * 105 hand-built `{ query, release }` doubles across the tree, none of which
+   * raises a notice; requiring them only where they are USED costs nothing and
+   * puts the compile error at the seam that would lose the notices.
+   *
+   * The seam is `runMigrations`' one production caller below, which asserts them
+   * at runtime rather than degrading quietly — see `migrationPool`.
    */
   on?(event: "notice", listener: (notice: { readonly message?: string }) => void): unknown;
   off?(event: "notice", listener: (notice: { readonly message?: string }) => void): unknown;
+}
+
+/**
+ * The internal pool's client cannot carry a migration's server notices (#5047).
+ *
+ * Named rather than a bare `Error` for one reason: `migrateInternalDB` retries
+ * migration failures with backoff for cold-starting serverless Postgres, and
+ * this is not that — it is a contract defect that will hold on every attempt.
+ */
+export class MigrationClientContractError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MigrationClientContractError";
+  }
 }
 
 export interface InternalPool {
@@ -1072,14 +1089,56 @@ export async function migrateInternalDB(): Promise<void> {
   const { detectAuthMode } = await import("@atlas/api/lib/auth/detect");
   const skip = detectAuthMode() === "managed" ? [] : MANAGED_AUTH_MIGRATIONS;
 
+  // The `notice`-listener seam (#5047). `MigrationClient` REQUIRES `on`/`off`
+  // because `runMigrations` attaches a listener to hear a migration's
+  // `RAISE NOTICE` — five migrations' operator breadcrumbs were being discarded
+  // before it existed. `InternalPoolClient` leaves them optional so the tree's
+  // hand-built doubles still satisfy it, so this is where the two meet.
+  //
+  // ⚠️ ASSERTED, not defaulted. The alternative — a guard in `runMigrations`
+  // that logs and carries on — is what the first cut did, and it silently
+  // reinstates the whole bug for any future pool wrapper or driver swap, below
+  // the production log level. The real `pg.PoolClient` is an `EventEmitter` and
+  // has always had both, so this throws only if that stops being true, and a
+  // boot that cannot hear its migrations should fail loudly rather than run
+  // deaf.
+  const migrationPool = {
+    query: (sql: string, params?: unknown[]) => pool.query(sql, params),
+    connect: async () => {
+      const client = await pool.connect();
+      if (typeof client.on !== "function" || typeof client.off !== "function") {
+        client.release();
+        throw new MigrationClientContractError(
+          "Internal DB client exposes no `notice` event surface, so every RAISE NOTICE " +
+            "raised by a migration would be discarded — including the row counts 0032, 0034, " +
+            "0055, 0072, 0085 and 0194 emit as post-mortem breadcrumbs. Refusing to migrate " +
+            "deaf; the driver or pool wrapper changed.",
+        );
+      }
+      // Narrowed by the check above, which TypeScript cannot carry across the
+      // optional-method boundary — the two interfaces differ only in whether
+      // these are optional, and the `typeof` guards are what make the assertion
+      // true rather than hopeful.
+      return client as InternalPoolClient & {
+        on: NonNullable<InternalPoolClient["on"]>;
+        off: NonNullable<InternalPoolClient["off"]>;
+      };
+    },
+  };
+
   // Retry with backoff for serverless Postgres cold starts (Railway).
   // Set ATLAS_MIGRATION_RETRIES=0 to disable retries (e.g. in tests).
   const maxRetries = parseInt(process.env.ATLAS_MIGRATION_RETRIES ?? "5", 10);
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      await runMigrations(pool, { skip });
+      await runMigrations(migrationPool, { skip });
       break;
     } catch (err) {
+      // NOT retryable. The retry loop exists for a serverless DB cold-starting;
+      // a client that structurally cannot deliver notices will be exactly as
+      // unable on the fifth attempt, and retrying it burns 31s of boot backoff
+      // before reporting a defect that was decided at compile time.
+      if (err instanceof MigrationClientContractError) throw err;
       if (attempt === maxRetries) throw err;
       const delayMs = 1000 * 2 ** (attempt - 1); // 1s, 2s, 4s, 8s, 16s
       log.warn(

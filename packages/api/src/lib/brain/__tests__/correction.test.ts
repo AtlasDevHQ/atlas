@@ -1676,6 +1676,42 @@ describe("supersede", () => {
     }
   });
 
+  test("a VOCABULARY-caused object failure is a 500, not a 400 blaming the caller (#5047)", async () => {
+    // ⚠️ THE FALSIFIER FOR GATING ON THE POSITION INSTEAD OF THE CAUSE, which is
+    // what the first cut of this split did — and a fresh-context check caught it
+    // reproducing the defect it was written to fix.
+    //
+    // `slotKey` is `identityKey(alias(identityKey(surface)))`, so an object key
+    // is null for TWO reasons: the caller's text asserts nothing, or this
+    // workspace's object-position vocabulary maps a real norm to something that
+    // does. Only the first is the caller's to fix. Told "your replacement
+    // normalizes away to nothing" about the second, a human retypes correct text
+    // forever and no retry can succeed.
+    const store = new FakeCorrectionStore();
+    store.seedFact({ id: "f1", object: "Ana" });
+
+    await expect(
+      run(store, {
+        factId: "f1",
+        verb: "supersede",
+        replacement: { object: "Bo" },
+        // A vocabulary whose OBJECT position maps the norm `bo` to a string that
+        // normalizes away. Authoring refuses this today; a hand-written or
+        // imported closure row reaches it, which is why the guard tests the
+        // composed expression rather than trusting the authoring gate.
+        vocabulary: {
+          ...identityVocabulary,
+          object: (norm: string) => (norm === "bo" ? " - " : norm),
+        },
+      }),
+    ).rejects.toThrow(/reconcile blocked the replacement claim \(MALFORMED_CLAIM\)/);
+
+    // No successor was stored. The `valid_to` ROLLBACK is `candidates-pg.test.ts`'s
+    // — this fake applies its statements to in-memory state and models no
+    // rollback, so asserting it here would assert the fake.
+    expect(store.facts.find((f) => f.object === "Bo")).toBeUndefined();
+  });
+
   test("a replacement that merely CONTAINS separators is not degenerate", async () => {
     // The falsifier for the guard over-reaching. `-` is a separator, so a
     // refusal written on "contains a separator" rather than on "normalizes away"

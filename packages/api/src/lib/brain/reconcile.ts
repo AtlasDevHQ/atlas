@@ -284,8 +284,25 @@ const log = createLogger("brain.reconcile");
  * 3158, demo-seed 3683, knowledge-install 4235) so a reconcile never serializes
  * behind an unrelated guard on the same workspace; a `hashtext` collision
  * INSIDE this namespace costs extra serialization, never correctness.
+ *
+ * ⚠️ **A SECOND taker since #5029** — `lib/brain/tension-sweep.ts`, which writes
+ * the same `in-tension-with` edges this stage does and so has to serialize
+ * against it or race the `WHERE NOT EXISTS` guard below. Exported for that
+ * caller and no other; publish deliberately takes 5024 instead
+ * (`content-mode/adapters/brain-facts.ts`), because sharing this namespace is
+ * exactly the wedged-by-ingest outcome that file refuses. Both takers hold no
+ * OTHER ADVISORY lock, which is what keeps them out of a wait-for cycle with
+ * 5022/5024 — see `identity.ts`'s lock-order note.
+ *
+ * ⚠️ **That is a claim about ADVISORY locks only. An earlier draft of this line
+ * dropped the qualifier and asserted both takers hold no other lock of any kind,
+ * which is false and reads as a proof that `40P01` cannot happen.** The sweep's INSERT takes ROW locks — `FOR KEY SHARE`
+ * on both endpoint rows via `brain_edges`' composite FKs, in plan order — while
+ * a concurrent publish takes `FOR UPDATE` across every live draft in its own
+ * order and does not take this namespace. A deadlock is reachable, and
+ * `tension-sweep.ts` has an arm for it.
  */
-const RECONCILE_LOCK_NAMESPACE = 4771;
+export const RECONCILE_LOCK_NAMESPACE = 4771;
 
 /**
  * Bound how many existing facts one new `single`-cardinality claim may be put
@@ -294,8 +311,13 @@ const RECONCILE_LOCK_NAMESPACE = 4771;
  * gate — so a subject/predicate that somehow accumulated hundreds of live
  * objects should surface the newest few for a reviewer rather than write a fan
  * of edges nobody reads.
+ *
+ * Exported since #5029 so `lib/brain/tension-sweep.ts` applies THIS bound rather
+ * than declaring its own. Two constants would let the ingest path and the sweep
+ * disagree about how wide a star one claim may sit at the centre of, and the
+ * sweep's whole contract is that it mints the edge set ingest would have.
  */
-const TENSION_EDGE_CAP = 10;
+export const TENSION_EDGE_CAP = 10;
 
 // ---------------------------------------------------------------------------
 // Vocabulary

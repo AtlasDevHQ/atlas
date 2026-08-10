@@ -1024,6 +1024,38 @@ export const ADMIN_ACTIONS = {
      * trail's copy.
      */
     correct: "brain_fact.correct",
+    /**
+     * One run of the admin-triggered tension sweep (#5029, ADR-0037 §7).
+     *
+     * Audited even though the write is ADDITIVE and advisory — no `valid_to`, no
+     * tombstone, nothing a verb has to undo — because the sweep is an autonomous
+     * writer of `brain_edges` and this row is where the human who armed it is
+     * recorded. `metadata` carries `minted`, `truncated`, and `workspaceId`; a
+     * `minted: 0` row is emitted too, since "an admin swept and found nothing" is
+     * the observation that makes a later non-zero run interpretable.
+     *
+     * ⚠️ **Emitted FIRE-AND-FORGET (`logAdminAction`), unlike the correction
+     * verbs above** — which `correction-audit.test.ts` pins to
+     * `logAdminActionAwait` with a dedicated source guard. The asymmetry is
+     * deliberate and this line used to overstate it by calling this row *"the
+     * only record"*, which would have argued for the awaited helper.
+     *
+     * It is not the only record: `logAdminAction` emits the pino line
+     * unconditionally before it ever reaches the database, so an open circuit
+     * breaker costs the durable row and not the trail. And
+     * `logAdminActionAwait`'s contract is *"treat a rejection as: surface an
+     * error so the admin retries"* — which on this route would report a sweep
+     * that COMMITTED as a failure, the misreport `checkedWrite` exists one
+     * router over to prevent. The correction verbs earn the awaited helper
+     * because a correction is irreversible; a sweep is additive and re-running
+     * is a no-op, so the weaker helper costs strictly less than the wrong
+     * report. Revisit if the sweep ever gains a destructive arm.
+     *
+     * ⚠️ `targetId` is the WORKSPACE, not a fact — the only entry in this domain
+     * where that is true. The sweep has no single target: it is scoped to the
+     * workspace and picks its own pairs, which is precisely why it needs a row.
+     */
+    tensionSweep: "brain_fact.tension_sweep",
   },
 } as const;
 

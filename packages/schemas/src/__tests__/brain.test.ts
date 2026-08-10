@@ -15,6 +15,7 @@ import { describe, expect, test } from "bun:test";
 import {
   BrainFactOversightClientSchema,
   BrainFactOversightSchema,
+  BrainFactTensionSweepResponseSchema,
   BrainFactTensionViewSchema,
   BrainFactWillWidenSchema,
   BrainSearchTensionViewSchema,
@@ -232,5 +233,68 @@ describe("the will-widen envelope is REQUIRED server-side and OPTIONAL client-si
         willWiden: { ...willWiden, leaked: "audience:private" },
       }),
     ).toThrow();
+  });
+});
+
+/**
+ * The tension sweep's report (#5029) — the ONE `z.strictObject` on a
+ * WORKSPACE-WIDE write.
+ *
+ * Its neighbours on `/api/v1/admin/brain-facts` are `z.object`, which strips.
+ * That is right for them: every one is reader-scoped, so an extra field is
+ * noise. This response is not scoped to anybody, so the field a future producer
+ * would attach — the pairs it minted, which is the obvious answer to *"in
+ * tension with what?"* — would be claim text from every audience in the
+ * workspace at once.
+ *
+ * Tested as NEGATIVES for this file's stated reason: a green "the valid shape
+ * parses" proves nothing about the refusal the strictness exists for.
+ */
+describe("BrainFactTensionSweepResponseSchema (#5029)", () => {
+  const report = { minted: 4, truncated: true };
+
+  test("parses the two counts", () => {
+    expect(BrainFactTensionSweepResponseSchema.parse(report)).toEqual(report);
+  });
+
+  test("REFUSES a report that attaches the pairs it minted — the strictObject is the boundary", () => {
+    // The disclosure this schema exists to stop, spelled as the thing somebody
+    // would actually add.
+    expect(() =>
+      BrainFactTensionSweepResponseSchema.parse({
+        ...report,
+        pairs: [{ from: "fact-a", to: "fact-b", subject: "acme", predicate: "priced at" }],
+      }),
+    ).toThrow();
+  });
+
+  test("REFUSES any extra field at all, including a harmless-looking one", () => {
+    // `z.object` would STRIP this and pass, so a relaxation to the neighbours'
+    // spelling is invisible without a field that carries nothing: the pairs
+    // case above would also be caught by a reviewer reading the diff, and this
+    // one is what makes the keyword itself load-bearing.
+    expect(() =>
+      BrainFactTensionSweepResponseSchema.parse({ ...report, sweptAt: "2026-08-10T00:00:00Z" }),
+    ).toThrow();
+  });
+
+  test("REFUSES a fractional `minted` — it is a row count", () => {
+    // `.int()` was the one keyword in this schema with no falsifier. `minted` is
+    // `rows.length` off a `RETURNING`, so a fraction means the producer computed
+    // it rather than counted it.
+    expect(() =>
+      BrainFactTensionSweepResponseSchema.parse({ minted: 1.5, truncated: false }),
+    ).toThrow();
+  });
+
+  test("REFUSES a negative `minted`, and a missing `truncated`", () => {
+    // `minted` is a count of rows written; a negative one is a producer that
+    // subtracted something. And `truncated` absent — rather than `false` —
+    // reads to a client as "not truncated", which is the reassuring direction
+    // and therefore the wrong one to allow by omission.
+    expect(() =>
+      BrainFactTensionSweepResponseSchema.parse({ minted: -1, truncated: false }),
+    ).toThrow();
+    expect(() => BrainFactTensionSweepResponseSchema.parse({ minted: 4 })).toThrow();
   });
 });

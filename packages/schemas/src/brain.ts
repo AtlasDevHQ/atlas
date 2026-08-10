@@ -44,6 +44,7 @@ import type {
   BrainFactProvenanceView,
   BrainFactRetractResponse,
   BrainFactReviewStatus,
+  BrainFactTensionSweepResponse,
   BrainFactTensionView,
   BrainFactWillSupersede,
   BrainFactWillSupersedePair,
@@ -433,6 +434,23 @@ export const BrainFactRetractResponseSchema = z.object({
   correctionEpisodeId: z.string(),
   flaggedForReReview: z.array(z.string()),
 }) satisfies z.ZodType<BrainFactRetractResponse, unknown>;
+
+/**
+ * The tension sweep's report (#5029).
+ *
+ * `z.strictObject`, unlike its neighbours above: this response is
+ * WORKSPACE-WIDE, so the reader-scoping every other write on this router relies
+ * on does not apply to it. A future producer attaching the pairs it minted —
+ * the obvious next feature request, and the obvious way to answer *"in tension
+ * with what?"* — would be disclosing claims across every grant in the
+ * workspace. Strict makes that fail here, at the ACL boundary, rather than in a
+ * browser. The `/oversight` route's `z.strictObject` withholds are the
+ * precedent.
+ */
+export const BrainFactTensionSweepResponseSchema = z.strictObject({
+  minted: z.number().int().nonnegative(),
+  truncated: z.boolean(),
+}) satisfies z.ZodType<BrainFactTensionSweepResponse, unknown>;
 
 // ---------------------------------------------------------------------------
 // Correction verbs — `correct_fact` (#4915)

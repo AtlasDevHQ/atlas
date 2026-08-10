@@ -79,12 +79,24 @@ Use `cd packages/api && bun run scripts/test-isolated.ts --affected` for the fas
 
   Measured: #5077 stopped on the yield rule and **merged with no comment sweep at all**, because the sweep is gated on "a round with no must-fix" and that round never arrived. Two rules that did not know about each other, and a comment-heavy diff went out unreviewed on the one axis dedicated to it.
 
-**Step 4 — CI gate**
+**Step 4 — CI gate: PUSH FIRST, and let REMOTE CI be the gate**
 
+```bash
+cd packages/api && bun run scripts/test-isolated.ts --affected   # + bun run lint, bun run type
 ```
-/ci
-```
-All gates must pass. Fix anything red (these are usually small). Run full `bun run test` once here even if `--affected` was green.
+
+Then open the PR (Step 5) and let remote CI run. **Do NOT run `/ci` locally before every PR.**
+
+⚠️ **This is a change, and the arithmetic is the whole argument.** `scripts/ci-local.sh` is ~25 minutes, largely serial, and the mutation gate inside it rewrites source files in place — so nothing else can touch the tree while it runs. Remote CI on the PR covers the same gates in **~4 minutes**, in parallel, on hardware that is not yours, while you do something else. Running both means paying the slow one first for a result the fast one is about to produce anyway. Measured across `/ship-issue` runs, local `/ci` was one of the largest single blocks of wall clock in the loop and caught nothing remote CI did not.
+
+So the local pre-flight is the cheap subset — `--affected`, `lint`, `type` — which is seconds to a couple of minutes and catches the errors that would waste a remote round-trip. A red remote check is then serviced exactly like any other: fix, `git commit -o <files>`, push, which re-runs CI.
+
+**Run the full `/ci` only when:**
+- remote CI is itself broken or unavailable, and you need a local answer;
+- you are touching `scripts/mutations/**` or the mutation gate itself, which remote CI does not exercise the same way;
+- you are about to `/release`, where the mutation gate and the full serial battery are the point.
+
+⚠️ **Never kill `ci-local.sh` mid-run.** `mutate.ts` rewrites source files in place and reverts them at the end, so an interrupted run leaves a MUTATED source file in the tree — silently, and it will be committed by the next `git commit -o` that names it. If you must stop one, `git status` afterwards and restore anything it left behind.
 
 `/ci` uses a **launch-and-watch protocol** (see `ci.md`): the wrapper runs in the background and YOU poll `.ci-local/RESULT` on a loop — never end the turn "waiting for the CI report". A lost subagent hand-off here used to stall the whole ship loop until a human poked it; `.ci-local/RESULT` on disk is the completion signal, not any agent's reply.
 

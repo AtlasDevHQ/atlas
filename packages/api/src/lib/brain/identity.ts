@@ -657,13 +657,22 @@ export type InheritedSlot = InheritedSlotValue;
  * conservative direction (#5035's null-at-import rule makes the same call for the
  * same reason).
  *
- * ⚠️ That preservation is not PERMANENT, and saying so matters because the
- * conservative argument above reads as if it were. `REKEY_DRIFTED_FACTS_SQL`
- * (`vocabulary-decide.ts`, #5024) rewrites every key in the workspace that is not
- * a fixpoint of the local vocabulary at the next alias decision — inherited nulls
- * included. Nothing breaks: the target is rewritten by the same statement, so the
- * pair moves together and stays in one slot. What expires is the *unkeyedness*,
- * not the inheritance.
+ * ⚠️ That preservation is not PERMANENT — but since #5047 it is not
+ * unconditional either, and the difference matters because the conservative
+ * argument above reads as if the repair were guaranteed.
+ * `REKEY_DRIFTED_FACTS_SQL` (`vocabulary-decide.ts`, #5024) rewrites every key in
+ * the workspace that is not a fixpoint of the local vocabulary at the next alias
+ * decision. Nothing breaks: the target is rewritten by the same statement, so the
+ * pair moves together and stays in one slot.
+ *
+ * What that statement can no longer do is repair a row whose RECOMPUTED key is
+ * null. #5047 added an `IS NOT NULL` arm — the key columns are `NOT NULL` since
+ * migration 0194, so writing one would raise `23502` and abort a human-gated
+ * approval — and #5109 counts the declined rows precisely because their
+ * unkeyedness does NOT expire. So: an inherited null over a surface that KEYS
+ * loses its unkeyedness at the next decision; an inherited null over a surface
+ * that norms away keeps it forever, and the re-key reports it rather than fixing
+ * it. In both cases what survives is the inheritance, not the unkeyedness.
  */
 export function inheritSlotFromFactRow(row: {
   readonly id: string;

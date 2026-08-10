@@ -30,6 +30,7 @@ import { identityVocabulary } from "@atlas/api/lib/brain/identity";
 import { reconcileFacts } from "@atlas/api/lib/brain/reconcile";
 import {
   RegionImportUnkeyableError,
+  RegionImportVocabularyTargetError,
   importBundle,
   validateBundle,
 } from "../../../api/routes/admin-migrate";
@@ -1938,6 +1939,63 @@ describeIfPg("region import: a fact whose key cannot be supplied (#5047)", () =>
         ),
       ).rejects.toBeInstanceOf(RegionImportUnkeyableError);
 
+      // ⚠️ THE POSITION AND THE ROW, not just the type (#5108). `positions` is
+      // how an operator finds the offending slot in a bundle of thousands, and
+      // without asserting it a mutant that refuses on the WRONG position — the
+      // subject, say, which here is `billing` and keys perfectly well —
+      // survives every other assertion in this test. `factId` is the same
+      // argument for the row.
+      await expect(
+        runImport(
+          bundleWith(
+            {
+              ...baseFact,
+              id: "aaaaaaaa-0000-4000-8000-0000000000f8",
+              object: "platform team",
+              objectKey: null,
+              sourceEpisodeId: "aaaaaaaa-0000-4000-8000-0000000000e8",
+            },
+            "aaaaaaaa-0000-4000-8000-0000000000e8",
+          ),
+          "org-unkeyed-refuse-positions",
+        ),
+      ).rejects.toMatchObject({
+        factId: "aaaaaaaa-0000-4000-8000-0000000000f8",
+        positions: ["object"],
+      });
+
+      // ⚠️ `positions` names the REPAIRABLE positions, not every null one, and
+      // this fixture is the only shape that can tell the two apart: the
+      // predicate is null AND degenerate (`-` has no key in any region, so
+      // nothing to fix), while the object is null and KEYABLE (`platform team`
+      // is real text the source region should have carried). `absent` is both;
+      // `repairable` is the object alone.
+      //
+      // Reporting `absent` sends the operator to hunt a predicate key that
+      // cannot exist — and the earlier one-null fixture cannot see it, because
+      // there the two sets are equal. Measured: that mutation SURVIVED until
+      // this case existed.
+      await expect(
+        runImport(
+          bundleWith(
+            {
+              ...baseFact,
+              id: "aaaaaaaa-0000-4000-8000-0000000000fa",
+              predicate: "-",
+              predicateKey: null,
+              object: "platform team",
+              objectKey: null,
+              sourceEpisodeId: "aaaaaaaa-0000-4000-8000-0000000000ea",
+            },
+            "aaaaaaaa-0000-4000-8000-0000000000ea",
+          ),
+          "org-unkeyed-refuse-mixed",
+        ),
+      ).rejects.toMatchObject({
+        factId: "aaaaaaaa-0000-4000-8000-0000000000fa",
+        positions: ["object"],
+      });
+
       // Nothing landed — the refusal rolled the whole transaction back, so the
       // episode is gone too rather than left orphaned.
       const { rows: facts } = await pool.query(
@@ -1950,6 +2008,216 @@ describeIfPg("region import: a fact whose key cannot be supplied (#5047)", () =>
         [REFUSE_ORG],
       );
       expect(episodes).toHaveLength(0);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  // ── The COMPUTED (v1/v2) arm (#5108) ───────────────────────────────────
+  //
+  // Everything above drives the CARRIED (v3) arm. The legacy arm computes its
+  // keys here via `slotKey(surface, vocabulary[position])` and sets
+  // `unkeyable: true` — a distinct path, with its own counter and its own
+  // refusal type, that nothing exercised.
+
+  /** The same bundle at version 2: no identity fields on the wire at all. */
+  function legacyBundleWith(
+    fact: Record<string, unknown>,
+    episodeId: string,
+  ): Record<string, unknown> {
+    const v3 = bundleWith(fact, episodeId) as Record<string, unknown>;
+    const manifest = { ...(v3.manifest as Record<string, unknown>), version: 2 };
+    const episodes = (v3.brainEpisodes as Record<string, unknown>[]).map((episode) => ({
+      ...episode,
+      facts: (episode.facts as Record<string, unknown>[]).map((f) => {
+        // The five identity fields do not exist before v3 — stripped rather
+        // than nulled, because a v2 fact that CARRIED them would be a shape no
+        // exporter produces and would not exercise the computed arm.
+        const {
+          subjectKey: _s,
+          predicateKey: _p,
+          objectKey: _o,
+          subjectCmp: _sc,
+          objectCmp: _oc,
+          ...rest
+        } = f;
+        return rest;
+      }),
+    }));
+    return { ...v3, manifest, brainEpisodes: episodes };
+  }
+
+  it(
+    "COMPUTED arm: a degenerate object is tombstoned with a placeholder, and counted as unkeyable",
+    async () => {
+      // The legacy arm's tombstone, which had no case at all. The distinction
+      // from the carried arm is the COUNTER: `unkeyableFacts` says the key was
+      // computed HERE and came out null, while `nullKeyFacts` says one arrived
+      // null on the wire. A v1/v2 bundle carries no key columns, so the second
+      // must be zero — and a counter wired to the wrong arm is invisible
+      // without both numbers asserted together.
+      const LEGACY_ORG = "org-legacy-tombstone";
+      const result = await runImport(
+        legacyBundleWith(
+          {
+            ...baseFact,
+            id: "aaaaaaaa-0000-4000-8000-0000000000f5",
+            subject: "billing",
+            predicate: "is owned by",
+            object: "-",
+            sourceEpisodeId: "aaaaaaaa-0000-4000-8000-0000000000e5",
+          },
+          "aaaaaaaa-0000-4000-8000-0000000000e5",
+        ),
+        LEGACY_ORG,
+      );
+      // LANDED, not refused — which is the arm's whole behaviour and the thing
+      // `ImportResult` can see. The COUNTERS (`unkeyableFacts` / `nullKeyFacts`)
+      // are not on `ImportResult`; they travel on the aggregate identity warn,
+      // and are asserted on this exact fixture in `migrate-identity-logging.test.ts`
+      // where the log is observable.
+      expect(result.brainFacts.imported).toBe(1);
+
+      const { rows } = await pool.query<{
+        subject_key: string;
+        predicate_key: string;
+        object_key: string;
+        invalidated_at: Date | null;
+      }>(
+        `SELECT subject_key, predicate_key, object_key, invalidated_at
+           FROM brain_facts WHERE workspace_id = $1`,
+        [LEGACY_ORG],
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.object_key).toBe("-unkeyable:aaaaaaaa-0000-4000-8000-0000000000f5");
+      // The other two were COMPUTED, not carried — the surfaces key fine, so
+      // they hold real keys and the row is not unreachable at all three slots.
+      expect([rows[0]!.subject_key, rows[0]!.predicate_key]).toEqual(["billing", "is owned by"]);
+      expect(rows[0]!.invalidated_at).not.toBeNull();
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "COMPUTED arm: under an EMPTY vocabulary a null key always implies a degenerate surface, so it cannot refuse",
+    async () => {
+      // The asymmetry #5108 asks to assert rather than assume. With no
+      // vocabulary entry at the position, `slotKey` reduces to
+      // `identityKey(surface)` — so a computed null and a degenerate surface
+      // are the same condition, `repairable` is empty, and the arm tombstones
+      // instead of throwing.
+      //
+      // Two surfaces that reach null by different spellings, because the guard
+      // tests the KEY and not the text: `String#trim` strips whitespace but
+      // neither `_` nor `-`.
+      const NO_REFUSE_ORG = "org-legacy-no-refuse";
+      const result = await runImport(
+        legacyBundleWith(
+          {
+            ...baseFact,
+            id: "aaaaaaaa-0000-4000-8000-0000000000f6",
+            subject: "___",
+            predicate: "is owned by",
+            object: "-",
+            sourceEpisodeId: "aaaaaaaa-0000-4000-8000-0000000000e6",
+          },
+          "aaaaaaaa-0000-4000-8000-0000000000e6",
+        ),
+        NO_REFUSE_ORG,
+      );
+      // Landed, not refused — the assertion this case exists for.
+      expect(result.brainFacts.imported).toBe(1);
+      const { rows } = await pool.query<{ subject_key: string; object_key: string }>(
+        `SELECT subject_key, object_key FROM brain_facts WHERE workspace_id = $1`,
+        [NO_REFUSE_ORG],
+      );
+      const placeholder = "-unkeyable:aaaaaaaa-0000-4000-8000-0000000000f6";
+      // ONE placeholder value across both degenerate positions of the SAME row,
+      // which is what makes it per-row rather than per-slot.
+      expect([rows[0]!.subject_key, rows[0]!.object_key]).toEqual([placeholder, placeholder]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "COMPUTED arm: a VOCABULARY whose target normalizes away DOES refuse, as RegionImportVocabularyTargetError",
+    async () => {
+      // ⚠️ #5108's parenthetical says the computed arm "can never REFUSE:
+      // a computed null implies a degenerate surface". That holds only under an
+      // EMPTY vocabulary (the case above). `slotKey` is
+      // `identityKey(alias(identityKey(surface)))`, so it reaches null a SECOND
+      // way — this region's own closure maps a real norm to something that
+      // normalizes away — and on that road the surface keys perfectly well, so
+      // `repairable` is non-empty and the arm throws.
+      //
+      // Far from being unreachable, this is the ONLY arm that can raise
+      // `RegionImportVocabularyTargetError`: `tombstonePlaceholder` picks the
+      // type off `source.carried`, and `carried: false` IS the legacy arm. The
+      // type would be dead code if the claim were true.
+      //
+      // Written directly to both relations rather than through the authoring
+      // seam, because `vocabulary-decide.ts` refuses a `degenerate-norm` target
+      // at authoring — which is what keeps this path closed in practice, and
+      // exactly what makes the seam unable to build the fixture.
+      const VOCAB_ORG = "org-legacy-vocab-refuse";
+      await pool.query(
+        `INSERT INTO brain_vocabulary_edge
+           (workspace_id, slot_position, from_norm, to_norm, approved_by)
+         VALUES ($1, 'object', 'platform team', ' - ', '5108-test')`,
+        [VOCAB_ORG],
+      );
+      await pool.query(
+        `INSERT INTO brain_vocabulary_target (workspace_id, slot_position, norm, effective_target)
+         VALUES ($1, 'object', 'platform team', ' - ')`,
+        [VOCAB_ORG],
+      );
+
+      await expect(
+        runImport(
+          legacyBundleWith(
+            {
+              ...baseFact,
+              id: "aaaaaaaa-0000-4000-8000-0000000000f7",
+              subject: "billing",
+              predicate: "is owned by",
+              object: "platform team",
+              sourceEpisodeId: "aaaaaaaa-0000-4000-8000-0000000000e7",
+            },
+            "aaaaaaaa-0000-4000-8000-0000000000e7",
+          ),
+          VOCAB_ORG,
+        ),
+      ).rejects.toBeInstanceOf(RegionImportVocabularyTargetError);
+
+      // ⚠️ The TYPE is the whole point, and it is not interchangeable with the
+      // carried arm's. `RegionImportUnkeyableError` tells the operator to
+      // re-export from the source region and check it has applied 0194 — advice
+      // nobody can follow here, because a v1/v2 bundle carries no key columns
+      // and re-exporting changes nothing. The defect is a local
+      // `brain_vocabulary_target` row. #5047's first cut raised the source-side
+      // error from both arms and wedged the migration behind that instruction.
+      await expect(
+        runImport(
+          legacyBundleWith(
+            {
+              ...baseFact,
+              id: "aaaaaaaa-0000-4000-8000-0000000000f9",
+              subject: "billing",
+              predicate: "is owned by",
+              object: "platform team",
+              sourceEpisodeId: "aaaaaaaa-0000-4000-8000-0000000000e9",
+            },
+            "aaaaaaaa-0000-4000-8000-0000000000e9",
+          ),
+          VOCAB_ORG,
+        ),
+      ).rejects.not.toBeInstanceOf(RegionImportUnkeyableError);
+
+      // Nothing landed — the refusal writes nothing, which is the only outcome
+      // that is reversible.
+      const { rows } = await pool.query(`SELECT 1 FROM brain_facts WHERE workspace_id = $1`, [
+        VOCAB_ORG,
+      ]);
+      expect(rows).toHaveLength(0);
     },
     PG_TEST_TIMEOUT_MS,
   );

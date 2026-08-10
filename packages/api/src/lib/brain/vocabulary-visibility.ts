@@ -134,9 +134,11 @@ const SAFE_ALIAS = /^[A-Za-z_][A-Za-z0-9_]*$/;
  *
  * ⚠️ Deliberately NARROWER than the drift re-key's scope, and the asymmetry is
  * load-bearing rather than an inconsistency. `REKEY_DRIFTED_FACTS_SQL` applies
- * no TEMPORAL arm at all (it scopes by workspace and by key disagreement, and
- * nothing else), because a tombstoned row left on a stale key is a row whose
- * surface and key disagree forever. This clause answers a different question —
+ * no TEMPORAL arm at all, because a tombstoned row left on a stale key is a row
+ * whose surface and key disagree forever. (It does apply other arms — a
+ * workspace scope, the key disagreement, and since #5047 a refusal on a null
+ * recomputed key. An earlier cut of this line said "and nothing else", which
+ * was true when written and went stale twice over.) This clause answers a different question —
  * *is there a live claim a human could be looking at?* — and counting retracted
  * claims toward a population would let an alias be authored for a spelling the
  * corpus has already withdrawn, which is the "unfalsifiable and rots silently"

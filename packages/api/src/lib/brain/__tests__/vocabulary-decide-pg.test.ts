@@ -360,20 +360,25 @@ describe("the decide seam's allowlist carve-out is column-scoped (#5024)", () =>
     // for them would pass while writing anything at all.
     for (const position of SLOT_POSITIONS) {
       const statement = REKEY_DRIFTED_FACTS_SQL[position];
-      // Everything between `SET` and the statement's OWN `WHERE`, and neither
-      // boundary can be found positionally. The assignment embeds a closure
-      // subquery, so `indexOf("WHERE ")` lands inside it (clause cut short — the
-      // forbidden check would then pass by truncation rather than by absence)
-      // and `lastIndexOf("WHERE ")` lands inside the second copy in the
-      // `IS DISTINCT FROM` guard (clause overruns into the WHERE — the scoping
-      // is gone). The statement's own `WHERE` is the only one on the `f` alias;
-      // the subqueries are all on `t`.
+      // Everything between `SET` and the `UPDATE`'s OWN `WHERE`, and neither
+      // boundary can be found positionally — the statement carries four
+      // `WHERE`s since #5109 lifted its scan into a CTE. `indexOf("WHERE ")`
+      // lands in the CTE's projection, BEFORE `SET ` entirely (clause cut short
+      // — the forbidden check would then pass by truncation rather than by
+      // absence), and `lastIndexOf("WHERE ")` lands in the final counting
+      // `SELECT`, past the end of the UPDATE (clause overruns — the scoping is
+      // gone). `WHERE f.` is the discriminator: the CTE's own scope is written
+      // UNQUALIFIED and the closure subqueries are all on `t`, so the only
+      // `WHERE` on the updated alias is the `UPDATE`'s.
       const setAt = statement.indexOf("SET ");
       const whereAt = statement.indexOf("WHERE f.");
       expect(setAt).toBeGreaterThanOrEqual(0);
       expect(whereAt).toBeGreaterThan(setAt);
-      // Unambiguous: exactly one `WHERE` on the updated alias, so the slice above
-      // is the whole SET clause and nothing else.
+      // Unambiguous: exactly one `WHERE` on the updated alias, so the slice
+      // above is the whole SET clause plus the `FROM recomputed r` that feeds
+      // it — and nothing beyond the UPDATE. This length assertion is also what
+      // makes a future qualified `WHERE f.` in the CTE fail loudly here rather
+      // than quietly move the boundary.
       expect([...statement.matchAll(/WHERE f\./g)]).toHaveLength(1);
       const written = statement.slice(setAt, whereAt);
 

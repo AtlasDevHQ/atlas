@@ -871,15 +871,108 @@ const importRoute = createRoute({
         "was supposed to travel and did not — re-export from the source region, checking it for " +
         "identity drift and that it has applied migration 0194 — while on a v1/v2 bundle the key " +
         "is computed at import, so a refusal means THIS region's vocabulary maps that norm away " +
-        "and the fix is a local `brain_vocabulary_target` entry, which re-exporting cannot change.",
+        "and the fix is a local `brain_vocabulary_target` entry, which re-exporting cannot change. " +
+        "NOTHING WAS WRITTEN is a claim about the ROLLBACK, so a refusal whose rollback ALSO " +
+        "failed is reported as `import_rollback_uncertain` (500) instead of this status — this " +
+        "409 is only returned when the rollback is known to have completed.",
       content: { "application/json": { schema: ErrorSchema } },
     },
     500: {
-      description: "Internal server error",
+      description:
+        "Import failed. TWO codes, and they mean opposite things for a retry. `import_failed`: the " +
+        "transaction rolled back, nothing was written, and re-sending the same bundle is safe once " +
+        "the cause is resolved. `import_rollback_uncertain`: the ROLLBACK itself did not complete, " +
+        "so whether any of it committed is UNKNOWN — do NOT re-send; inspect the destination " +
+        "workspace first, because a retry over a partially-committed import can duplicate or " +
+        "interleave rows (the connection is discarded rather than pooled). In both cases the " +
+        "`message` is deliberately GENERIC and the `requestId` is the handle: the underlying " +
+        "driver error is recorded server-side against that id and is not echoed here, because a " +
+        "`pg` message routinely embeds row content, constraint and column names, and — on a " +
+        "connection failure — the internal host and port (#5106).",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
 });
+
+/**
+ * The 500 body's entire `message` — the driver's own text NEVER reaches it (#5106).
+ *
+ * A `pg` error message is not a description of what went wrong, it is a fragment
+ * of the database: `duplicate key value violates unique constraint "…" Key
+ * (id)=(…)` carries ROW CONTENT, every constraint violation names internal
+ * constraint and column spellings, and a connection failure carries the internal
+ * host and port. CLAUDE.md § Product invariants: *never expose connection
+ * strings, API keys, or stack traces to the user or agent.*
+ *
+ * ⚠️ THE DETAIL IS NOT DROPPED, it is MOVED. The `log.error` at each call site
+ * records the real error — as an `Error` instance, so pino's `err` serializer
+ * keeps the message AND the stack — beside the same `requestId` this body
+ * carries. That pairing is the whole design: the operator loses nothing and the
+ * caller learns nothing they should not. A fix that scrubbed the response and
+ * also stopped logging would close the leak by destroying the evidence, which is
+ * the failure this note exists to prevent.
+ *
+ * ⚠️ NOT routed through `audit/error-scrub.ts`'s `errorMessage`. That helper is
+ * for `admin_action_log.metadata` — a JSONB column compliance reviewers read —
+ * and its own docstring carves out an `Error` instance handed to pino, whose
+ * `err` serializer preserves the message and the stack. Scrubbing userinfo out of a
+ * message that is not going to a caller at all would only cost the operator
+ * detail.
+ *
+ * ONE constant, read by BOTH handlers. The admin route and the internal
+ * service-to-service route are copies of each other, and #5106 exists because a
+ * leak lived in both; a second string literal is how the next fix reaches one and
+ * misses the other. EXPORTED for a third reader: the route test anchors
+ * `expect(body.message).not.toBe(IMPORT_FAILED_MESSAGE)` on it, after a
+ * hand-typed lowercase substring made that assertion silently inert.
+ */
+export const IMPORT_FAILED_MESSAGE =
+  "Import failed — all changes rolled back, so nothing was written and the source region is " +
+  "unchanged. The failure detail is recorded server-side against this response's `requestId`; " +
+  "quote it when reporting this. Re-sending the same bundle is safe once the cause is resolved.";
+
+/**
+ * The 500 body when the ROLLBACK ITSELF failed AND a transaction was open — a
+ * state the handler cannot describe with {@link IMPORT_FAILED_MESSAGE} (#5106
+ * round 2). The `begun` half of that gate is load-bearing, not redundant: a
+ * BEGIN that never resolved leaves nothing to be uncertain about.
+ *
+ * That message promises *"nothing was written … re-sending the same bundle is
+ * safe"*. On this path the process has established neither. It issued a
+ * `ROLLBACK` and the request failed, so whether the transaction aborted, is
+ * still open, or committed is unknown to it. Returning the confident sentence
+ * here would be a claim about a state nobody observed — the same defect #5106
+ * fixed one layer up, where the 500 asserted things it had read off a driver
+ * error rather than established.
+ *
+ * ⚠️ A DISTINCT `error` CODE, not just distinct prose — so that a caller CAN
+ * branch, which is not the same as saying one does. Stated precisely because an
+ * earlier cut of this line claimed `lib/residency/migrate.ts` branches on it and
+ * that is false: `transferBundleToTarget` flattens the body to
+ * `body.message ?? body.error` and returns one opaque string, so today the
+ * warning reaches a human as PROSE and the code has no machine reader. A
+ * comment asserting a consumer that does not exist is how the next maintainer
+ * concludes the hazard is already handled.
+ *
+ * The gap is real and is left as a follow-up rather than widened here:
+ * `resetMigrationForRetry` gates on `status`/`region_updated` alone, so the
+ * retry affordance will happily re-send the identical bundle — which is what
+ * this message forbids. Making it refuse an uncertain migration is new
+ * machinery across a second module.
+ *
+ * Same 500 status, because the request was well-formed and the fault is ours.
+ *
+ * The remedy is deliberately concrete: the destination workspace has to be
+ * inspected, because the honest answer to *did anything land?* is that nobody
+ * knows. The connection is destroyed rather than pooled at the same time, which
+ * is what stops the uncertainty spreading to the next borrower.
+ */
+const IMPORT_ROLLBACK_UNCERTAIN_MESSAGE =
+  "Import failed AND the rollback did not complete — whether any of it committed is UNKNOWN. Do " +
+  "NOT re-send this bundle: inspect the destination workspace first, because a retry over a " +
+  "partially-committed import can duplicate or interleave rows. The connection has been " +
+  "discarded rather than returned to the pool. Both failures are recorded server-side against " +
+  "this response's `requestId`; quote it when reporting this.";
 
 // ---------------------------------------------------------------------------
 // Import logic (runs inside a transaction)
@@ -2276,19 +2369,84 @@ adminMigrate.openapi(importRoute, async (c) => {
   // Run entire import inside a transaction for atomicity
   const pool = getInternalDB();
   const client = await pool.connect();
+  // Set ONLY when the ROLLBACK itself failed. FOUR readers: the client release,
+  // the `uncertain` derivation below (which the response arm and the log message
+  // both consume) and the log payload's `rolledBack`. See
+  // {@link IMPORT_ROLLBACK_UNCERTAIN_MESSAGE} for why the release's question is
+  // narrower than the body's.
+  let rollbackErr: Error | undefined;
+  // ⚠️ Set only once BEGIN has RESOLVED. Without it, a `pool.connect()` that
+  // handed back a dead socket fails at BEGIN, the catch's ROLLBACK fails on the
+  // same dead socket, `rollbackErr` is set — and the caller is told to
+  // hand-inspect a workspace for an import that provably never started. The
+  // uncertain body is expensive advice; it should only be given where the
+  // uncertainty is real.
+  let begun = false;
   try {
     await client.query("BEGIN");
+    begun = true;
     const result = await importBundle(client, bundle, orgId);
     await client.query("COMMIT");
 
     log.info({ requestId, orgId, result }, "Migration import complete");
     return c.json(result, 200);
   } catch (err) {
-    await client.query("ROLLBACK").catch((rollbackErr) => {
-      log.warn({ err: rollbackErr instanceof Error ? rollbackErr : new Error(String(rollbackErr)), requestId }, "Rollback failed");
+    // ROLLBACK can itself fail (a TCP reset between BEGIN and ROLLBACK, `57P01`
+    // admin shutdown, a statement timeout on the rollback, a pgbouncer-side
+    // kill). `pg` destroys the socket when `release(err)` is called with a
+    // truthy arg, so a poisoned client does not return to the pool to corrupt
+    // the next borrower's transaction — `admin-revoke.ts`, `admin-mfa-reset.ts`,
+    // `me-trusted-devices.ts` and `oauth-workspace-grants.ts` all do this and
+    // this handler was the outlier.
+    //
+    // ⚠️ `log.error`, not `warn`: this line says a pooled connection may be
+    // poisoned AND that a partial import's fate is unknown. It carries `orgId`
+    // because it is the one line that names a possibly-corrupted workspace.
+    await client.query("ROLLBACK").catch((rbErr: unknown) => {
+      rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
+      log.error(
+        { err: rollbackErr, requestId, orgId },
+        "ROLLBACK failed after import error — the client will be DESTROYED rather than pooled, and whether the transaction committed is UNKNOWN",
+      );
     });
-    const detail = err instanceof Error ? err.message : String(err);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Migration import failed, rolled back");
+    // ⚠️ ONE derived answer, read by the log AND the body. Round 3 keyed the log
+    // on `rollbackErr` alone while the body used `rollbackErr && begun`, so a
+    // BEGIN that never resolved produced a log saying "the transaction's fate is
+    // unknown" beside a body saying "all changes rolled back, nothing was
+    // written" — the very contradiction the conditional message was added to
+    // remove, reproduced between the two surfaces instead of between two lines.
+    const uncertain = rollbackErr !== undefined && begun;
+    log.error(
+      {
+        err: err instanceof Error ? err : new Error(String(err)),
+        requestId,
+        orgId,
+        rolledBack: !uncertain,
+      },
+      // ⚠️ CONDITIONAL, because the unconditional wording contradicted the line
+      // seven lines above it. An operator grepping one `requestId` would get two
+      // `error` lines making opposite claims about the same transaction, and the
+      // one that named the actual cause was the one that lied.
+      uncertain
+        ? "Migration import failed AND the ROLLBACK did not complete — see the line above; the transaction's fate is unknown"
+        : "Migration import failed, rolled back",
+    );
+    // ⚠️ A FAILED ROLLBACK OUTRANKS THE DIAGNOSIS, and this check sits ABOVE the
+    // 409 arm for that reason (round 3). The refusal's message ends "re-export
+    // and re-run" and its OpenAPI description says NOTHING WAS WRITTEN — both
+    // claims about the ROLLBACK, not about the error that triggered it. And the
+    // refusals are raised in `importBundle`'s brain-facts section, AFTER
+    // EVERY earlier section has already inserted into the open transaction. So a refusal
+    // whose rollback failed is the uncertain state exactly, and answering it
+    // with a confident 409 tells the operator to re-send over a possibly
+    // committed partial import — the defect this arm exists to prevent, left
+    // standing on the arm #5047 exists to serve.
+    if (uncertain) {
+      return c.json(
+        { error: "import_rollback_uncertain", message: IMPORT_ROLLBACK_UNCERTAIN_MESSAGE, requestId },
+        500,
+      );
+    }
     // A refused bundle is not a server fault (#5047). TWO causes with two
     // different remedies, and the `message` carries the right one: a v3 bundle
     // that supplied no identity for a keyable surface (source-side — re-export),
@@ -2304,11 +2462,30 @@ adminMigrate.openapi(importRoute, async (c) => {
       err instanceof RegionImportUnkeyableError ||
       err instanceof RegionImportVocabularyTargetError
     ) {
-      return c.json({ error: "import_refused", message: detail, requestId }, 409);
+      // ⚠️ `err.message` is read HERE, inside the narrowed branch, and nowhere
+      // else (#5106 round 2). An outer `const detail = …` in the catch's scope
+      // was visible to the 500 return one line below — the exact leak #5106
+      // closed, sitting in scope and guarded only by a comment. Narrowing the
+      // read to the arm makes it unreachable rather than merely un-taken.
+      //
+      // Safe because BOTH constructors interpolate only a fact UUID and
+      // position names — no surfaces, no row content, no connection detail.
+      // That is a property of those constructors, not of this line: if either
+      // ever interpolates a `cause`, the leak returns here silently.
+      return c.json({ error: "import_refused", message: err.message, requestId }, 409);
     }
-    return c.json({ error: "import_failed", message: `Import failed — all changes rolled back. ${detail}`, requestId }, 500);
+    // Reached TWO ways, and "nothing was written" is established on both: the
+    // ROLLBACK completed, or it failed before BEGIN ever resolved — in which
+    // case no statement ran at all and `begun === false` is the evidence, not
+    // the rollback. An earlier cut of this line said simply "the rollback
+    // SUCCEEDED", which is false on exactly the path `begun` was added to
+    // create.
+    return c.json({ error: "import_failed", message: IMPORT_FAILED_MESSAGE, requestId }, 500);
   } finally {
-    client.release();
+    // Truthy arg ⇒ `pg` destroys the socket instead of pooling it. No
+    // `?? undefined`: this variable is already `Error | undefined`. (Contrast
+    // `admin-archive.ts`, whose own is `Error | null` and genuinely needs it.)
+    client.release(rollbackErr);
   }
 });
 
@@ -2372,19 +2549,84 @@ internalMigrate.post("/import", async (c) => {
 
   const pool = getInternalDB();
   const client = await pool.connect();
+  // Set ONLY when the ROLLBACK itself failed. FOUR readers: the client release,
+  // the `uncertain` derivation below (which the response arm and the log message
+  // both consume) and the log payload's `rolledBack`. See
+  // {@link IMPORT_ROLLBACK_UNCERTAIN_MESSAGE} for why the release's question is
+  // narrower than the body's.
+  let rollbackErr: Error | undefined;
+  // ⚠️ Set only once BEGIN has RESOLVED. Without it, a `pool.connect()` that
+  // handed back a dead socket fails at BEGIN, the catch's ROLLBACK fails on the
+  // same dead socket, `rollbackErr` is set — and the caller is told to
+  // hand-inspect a workspace for an import that provably never started. The
+  // uncertain body is expensive advice; it should only be given where the
+  // uncertainty is real.
+  let begun = false;
   try {
     await client.query("BEGIN");
+    begun = true;
     const result = await importBundle(client, bundle, orgId);
     await client.query("COMMIT");
 
     log.info({ requestId, orgId, result }, "Internal cross-region import complete");
     return c.json(result, 200);
   } catch (err) {
-    await client.query("ROLLBACK").catch((rollbackErr) => {
-      log.warn({ err: rollbackErr instanceof Error ? rollbackErr : new Error(String(rollbackErr)), requestId }, "Rollback failed");
+    // ROLLBACK can itself fail (a TCP reset between BEGIN and ROLLBACK, `57P01`
+    // admin shutdown, a statement timeout on the rollback, a pgbouncer-side
+    // kill). `pg` destroys the socket when `release(err)` is called with a
+    // truthy arg, so a poisoned client does not return to the pool to corrupt
+    // the next borrower's transaction — `admin-revoke.ts`, `admin-mfa-reset.ts`,
+    // `me-trusted-devices.ts` and `oauth-workspace-grants.ts` all do this and
+    // this handler was the outlier.
+    //
+    // ⚠️ `log.error`, not `warn`: this line says a pooled connection may be
+    // poisoned AND that a partial import's fate is unknown. It carries `orgId`
+    // because it is the one line that names a possibly-corrupted workspace.
+    await client.query("ROLLBACK").catch((rbErr: unknown) => {
+      rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
+      log.error(
+        { err: rollbackErr, requestId, orgId },
+        "ROLLBACK failed after import error — the client will be DESTROYED rather than pooled, and whether the transaction committed is UNKNOWN",
+      );
     });
-    const detail = err instanceof Error ? err.message : String(err);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Internal import failed, rolled back");
+    // ⚠️ ONE derived answer, read by the log AND the body. Round 3 keyed the log
+    // on `rollbackErr` alone while the body used `rollbackErr && begun`, so a
+    // BEGIN that never resolved produced a log saying "the transaction's fate is
+    // unknown" beside a body saying "all changes rolled back, nothing was
+    // written" — the very contradiction the conditional message was added to
+    // remove, reproduced between the two surfaces instead of between two lines.
+    const uncertain = rollbackErr !== undefined && begun;
+    log.error(
+      {
+        err: err instanceof Error ? err : new Error(String(err)),
+        requestId,
+        orgId,
+        rolledBack: !uncertain,
+      },
+      // ⚠️ CONDITIONAL, because the unconditional wording contradicted the line
+      // seven lines above it. An operator grepping one `requestId` would get two
+      // `error` lines making opposite claims about the same transaction, and the
+      // one that named the actual cause was the one that lied.
+      uncertain
+        ? "Internal import failed AND the ROLLBACK did not complete — see the line above; the transaction's fate is unknown"
+        : "Internal import failed, rolled back",
+    );
+    // ⚠️ A FAILED ROLLBACK OUTRANKS THE DIAGNOSIS, and this check sits ABOVE the
+    // 409 arm for that reason (round 3). The refusal's message ends "re-export
+    // and re-run" and its OpenAPI description says NOTHING WAS WRITTEN — both
+    // claims about the ROLLBACK, not about the error that triggered it. And the
+    // refusals are raised in `importBundle`'s brain-facts section, AFTER
+    // EVERY earlier section has already inserted into the open transaction. So a refusal
+    // whose rollback failed is the uncertain state exactly, and answering it
+    // with a confident 409 tells the operator to re-send over a possibly
+    // committed partial import — the defect this arm exists to prevent, left
+    // standing on the arm #5047 exists to serve.
+    if (uncertain) {
+      return c.json(
+        { error: "import_rollback_uncertain", message: IMPORT_ROLLBACK_UNCERTAIN_MESSAGE, requestId },
+        500,
+      );
+    }
     // A refused bundle is not a server fault (#5047). TWO causes with two
     // different remedies, and the `message` carries the right one: a v3 bundle
     // that supplied no identity for a keyable surface (source-side — re-export),
@@ -2400,10 +2642,29 @@ internalMigrate.post("/import", async (c) => {
       err instanceof RegionImportUnkeyableError ||
       err instanceof RegionImportVocabularyTargetError
     ) {
-      return c.json({ error: "import_refused", message: detail, requestId }, 409);
+      // ⚠️ `err.message` is read HERE, inside the narrowed branch, and nowhere
+      // else (#5106 round 2). An outer `const detail = …` in the catch's scope
+      // was visible to the 500 return one line below — the exact leak #5106
+      // closed, sitting in scope and guarded only by a comment. Narrowing the
+      // read to the arm makes it unreachable rather than merely un-taken.
+      //
+      // Safe because BOTH constructors interpolate only a fact UUID and
+      // position names — no surfaces, no row content, no connection detail.
+      // That is a property of those constructors, not of this line: if either
+      // ever interpolates a `cause`, the leak returns here silently.
+      return c.json({ error: "import_refused", message: err.message, requestId }, 409);
     }
-    return c.json({ error: "import_failed", message: `Import failed — all changes rolled back. ${detail}`, requestId }, 500);
+    // Reached TWO ways, and "nothing was written" is established on both: the
+    // ROLLBACK completed, or it failed before BEGIN ever resolved — in which
+    // case no statement ran at all and `begun === false` is the evidence, not
+    // the rollback. An earlier cut of this line said simply "the rollback
+    // SUCCEEDED", which is false on exactly the path `begun` was added to
+    // create.
+    return c.json({ error: "import_failed", message: IMPORT_FAILED_MESSAGE, requestId }, 500);
   } finally {
-    client.release();
+    // Truthy arg ⇒ `pg` destroys the socket instead of pooling it. No
+    // `?? undefined`: this variable is already `Error | undefined`. (Contrast
+    // `admin-archive.ts`, whose own is `Error | null` and genuinely needs it.)
+    client.release(rollbackErr);
   }
 });

@@ -322,6 +322,49 @@ describe("the identity-loss line (#5035)", () => {
     });
   });
 
+  it("splits the two counters on the COMPUTED arm — `unkeyable`, never `nullKey` (#5108)", async () => {
+    // ⚠️ The pairing, which the case above asserts only half of. The two
+    // counters answer different questions and a v1/v2 bundle can only ever
+    // reach one of them: `unkeyableFacts` says the key was COMPUTED here and
+    // came out null, `nullKeyFacts` says one ARRIVED null on a v3 wire. A
+    // legacy bundle carries no key columns at all, so `nullKeyFacts: 0` is a
+    // structural property of the arm rather than a property of this fixture —
+    // and asserting `unkeyableFacts` alone leaves a counter wired to the wrong
+    // arm completely invisible.
+    //
+    // `tombstonedFacts` beside them because it is the number the aggregate
+    // warn tells an operator to act on FIRST: those rows are invisible to
+    // searchBrain and to the review queue, and no verb in the product restores
+    // them.
+    const { client } = captureClient();
+    const legacy = bundleWith(
+      [
+        {
+          ...fact("f-1", {}),
+          subject: "billing",
+          predicate: "is owned by",
+          object: "-",
+          subjectKey: undefined,
+          predicateKey: undefined,
+          objectKey: undefined,
+          subjectCmp: undefined,
+          objectCmp: undefined,
+        },
+      ],
+      2,
+    );
+    await importBundle(client, legacy, "org-log");
+
+    const warn = identityWarn();
+    expect(warn, "a legacy fact that tombstoned is now silent").toBeDefined();
+    expect(warn!.payload).toMatchObject({
+      unkeyableFacts: 1,
+      // ⚠️ Zero, and load-bearing: this arm has nothing to arrive null.
+      nullKeyFacts: 0,
+      tombstonedFacts: 1,
+    });
+  });
+
   it("merges the vocabulary BEFORE it reads one to key legacy facts", async () => {
     // The section reorder, pinned as an ORDER rather than as an outcome. The
     // `-pg` test proves the effect (a fact keys through an edge that arrived in

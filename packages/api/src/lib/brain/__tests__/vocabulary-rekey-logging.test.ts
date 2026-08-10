@@ -106,12 +106,47 @@ const WS = "ws-rekey-log-5109";
 // DYNAMIC, after the mock above is installed.
 const { runMigrations } = await import("@atlas/api/lib/db/migrate");
 const { MANAGED_AUTH_MIGRATIONS, _resetPool } = await import("@atlas/api/lib/db/internal");
-const { decideAliasProposal, proposeAliasEdge } = await import(
+const { decideAliasProposal, proposeAliasEdge, isCount } = await import(
   "@atlas/api/lib/brain/vocabulary-decide"
 );
 const { reconcileFacts } = await import("@atlas/api/lib/brain/reconcile");
 const { identityVocabulary } = await import("@atlas/api/lib/brain/identity");
 type BrainPrincipalContext = import("@atlas/api/lib/brain/acl").BrainPrincipalContext;
+
+/**
+ * `isCount`, exhaustively and WITHOUT Postgres.
+ *
+ * ⚠️ Deliberately outside `describeIfPg`. The predicate is the guard that stops
+ * an unreadable count selecting the clean-run message, and its only other
+ * coverage is one `NaN` case on one field inside a `-pg` suite — so on a local
+ * gate run with no `TEST_DATABASE_URL`, the whole of it silently skipped.
+ * A pure function deserves a pure test, and this one runs everywhere.
+ */
+describe("isCount — the deny polarity, per shape (#5109)", () => {
+  it.each([
+    { label: "NaN (what `parseInt` returns on non-numeric text)", value: Number.NaN },
+    { label: "a numeric STRING (an int8 or ::text column)", value: "3" },
+    { label: "negative", value: -1 },
+    { label: "fractional", value: 1.5 },
+    { label: "Infinity", value: Number.POSITIVE_INFINITY },
+    { label: "undefined (the column absent)", value: undefined },
+    { label: "null", value: null },
+    { label: "a boxed number", value: new Number(3) },
+  ])("REFUSES $label", ({ value }) => {
+    expect(isCount(value)).toBe(false);
+  });
+
+  it.each([
+    { label: "zero — the ordinary healthy reading", value: 0 },
+    { label: "a positive whole number", value: 7 },
+    { label: "a large count", value: 4_000_000 },
+  ])("ACCEPTS $label", ({ value }) => {
+    // The other direction, and it is not decoration: a guard tightened to
+    // `value > 0` would refuse every healthy approval on a workspace whose
+    // corpus is already a fixpoint — the commonest outcome there is.
+    expect(isCount(value)).toBe(true);
+  });
+});
 
 describeIfPg("the drift re-key's info line (#5109)", () => {
   let pool: Pool;

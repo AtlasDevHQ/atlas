@@ -56607,7 +56607,7 @@
             }
           },
           "409": {
-            "description": "Bundle refused — a fact has no identity key at a position whose surface normalizes to a real one, so landing it would either retire a healthy belief or re-derive its key under this region's vocabulary, and neither is reversible (#5047). NOTHING WAS WRITTEN. Two causes with two different remedies, and the `message` says which: on a v3 bundle the key was supposed to travel and did not — re-export from the source region, checking it for identity drift and that it has applied migration 0194 — while on a v1/v2 bundle the key is computed at import, so a refusal means THIS region's vocabulary maps that norm away and the fix is a local `brain_vocabulary_target` entry, which re-exporting cannot change.",
+            "description": "Bundle refused — a fact has no identity key at a position whose surface normalizes to a real one, so landing it would either retire a healthy belief or re-derive its key under this region's vocabulary, and neither is reversible (#5047). NOTHING WAS WRITTEN. Two causes with two different remedies, and the `message` says which: on a v3 bundle the key was supposed to travel and did not — re-export from the source region, checking it for identity drift and that it has applied migration 0194 — while on a v1/v2 bundle the key is computed at import, so a refusal means THIS region's vocabulary maps that norm away and the fix is a local `brain_vocabulary_target` entry, which re-exporting cannot change. NOTHING WAS WRITTEN is a claim about the ROLLBACK, so a refusal whose rollback ALSO failed is reported as `import_rollback_uncertain` (500) instead of this status — this 409 is only returned when the rollback is known to have completed.",
             "content": {
               "application/json": {
                 "schema": {
@@ -56632,7 +56632,7 @@
             }
           },
           "500": {
-            "description": "Import failed and the transaction rolled back — nothing was written. The `message` is deliberately GENERIC and the `requestId` is the handle: the underlying driver error is recorded server-side against that id and is not echoed here, because a `pg` message routinely embeds row content, constraint and column names, and — on a connection failure — the internal host and port (#5106).",
+            "description": "Import failed. TWO codes, and they mean opposite things for a retry. `import_failed`: the transaction rolled back, nothing was written, and re-sending the same bundle is safe once the cause is resolved. `import_rollback_uncertain`: the ROLLBACK itself did not complete, so whether any of it committed is UNKNOWN — do NOT re-send; inspect the destination workspace first, because a retry over a partially-committed import can duplicate or interleave rows (the connection is discarded rather than pooled). In both cases the `message` is deliberately GENERIC and the `requestId` is the handle: the underlying driver error is recorded server-side against that id and is not echoed here, because a `pg` message routinely embeds row content, constraint and column names, and — on a connection failure — the internal host and port (#5106).",
             "content": {
               "application/json": {
                 "schema": {

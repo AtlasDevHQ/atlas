@@ -336,6 +336,11 @@ describe("the identity-loss line (#5035)", () => {
     // warn tells an operator to act on FIRST: those rows are invisible to
     // searchBrain and to the review queue, and no verb in the product restores
     // them.
+    // ⚠️ TWO facts, only ONE degenerate, so `unkeyableFacts` and
+    // `tombstonedFacts` cannot be equal by accident. Measured: with a
+    // single-fact fixture both were 1, and rewiring `tombstonedFacts++` to
+    // `identity.unkeyable` — which also deletes the NEWLY-tombstoned-only arm —
+    // left this test green.
     const { client } = captureClient();
     const legacy = bundleWith(
       [
@@ -344,6 +349,17 @@ describe("the identity-loss line (#5035)", () => {
           subject: "billing",
           predicate: "is owned by",
           object: "-",
+          subjectKey: undefined,
+          predicateKey: undefined,
+          objectKey: undefined,
+          subjectCmp: undefined,
+          objectCmp: undefined,
+        },
+        {
+          ...fact("f-2", {}),
+          subject: "billing",
+          predicate: "is owned by",
+          object: "platform team",
           subjectKey: undefined,
           predicateKey: undefined,
           objectKey: undefined,

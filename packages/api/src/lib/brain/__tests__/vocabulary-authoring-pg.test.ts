@@ -445,6 +445,61 @@ describeIfPg("direct authoring and the In-force pane (#5087)", () => {
       expect(rows.map((r) => r.predicate_key).toSorted()).toEqual(["is priced at", "priced at"]);
     });
 
+    it.each([
+      {
+        label: "no usable `rows` array at all (an executor that is not a pg client)",
+        answer: { rowCount: 1 } as unknown,
+        expected: /no usable `rows`/,
+      },
+      {
+        label: "an EMPTY rows array (the statement's one-row SELECT answered nothing)",
+        answer: { rows: [] },
+        expected: /without the three counts/,
+      },
+      {
+        label: "counts as pg TEXT rather than numbers",
+        answer: { rows: [{ rekeyed: "2", skipped_degenerate_surface: "0", skipped_vocabulary_target: "0" }] },
+        expected: /without the three counts/,
+      },
+    ])("⭐ REFUSES rather than defaults when the re-key answers with $label", async ({ answer, expected }) => {
+      // ⚠️ THE GUARDS' OWN COVERAGE, and it was measured at ZERO. Replacing both
+      // throws with `?? 0` defaults left 225 tests green across six suites —
+      // which restores exactly the `?? []` behaviour `rekeyDriftedFacts`'
+      // docstring calls "the exact shape this slice exists to eliminate": an
+      // executor that is not answering as a Postgres client commits a
+      // human-gated approval and logs "Drift re-key complete" with `rekeyed: 0`.
+      //
+      // `VocabularyExecutor` is deliberately satisfiable by any `{ query }`, so
+      // these three shapes are what a pool, a partial mock and a driver whose
+      // int parser handed back text actually look like from here.
+      await seedBothSides();
+
+      const answeringRunner: ReconcileTransactionRunner = async (fn) =>
+        runner(async (tx) => {
+          const guarded = {
+            query: async (sql: string, params?: unknown[]) => {
+              if (sql === REKEY_DRIFTED_FACTS_SQL.predicate) return answer;
+              return tx.query(sql, params);
+            },
+          };
+          return fn(guarded as unknown as PoolClient);
+        });
+
+      await expect(
+        authorAliasEdge(
+          WS,
+          { position: "predicate", fromNorm: "is priced at", toNorm: "priced at" },
+          owner(),
+          { withTransaction: answeringRunner },
+        ),
+        "the re-key's result was never observed and the approval committed anyway",
+      ).rejects.toThrow(expected);
+
+      // The refusal names WHERE, so an operator holding the error can find it.
+      expect(await proposals()).toEqual([]);
+      expect(await storedEdges()).toEqual([]);
+    });
+
     it("⭐ REFUSES a re-key count that is not a whole number — the alarm must not fail open", async () => {
       // ⚠️ `typeof v === "number"` admits `NaN`, and `NaN > 0` is FALSE — so a
       // `NaN` in `skipped_vocabulary_target` would sail past a `typeof` guard and

@@ -406,8 +406,16 @@ describe("the MALFORMED_CLAIM warn payload (#5105)", () => {
     // The control. Every assertion above is about the CONTENT of a line, so a
     // guard that fired on everything would satisfy all of them — this is the
     // only test that says the line is conditional.
-    await run([{}]);
+    const report = await run([{}]);
 
+    // ⚠️ THE CLAIM IS CREATED, asserted before the absence. Measured: forcing
+    // the grant screen — which sits ABOVE the identity guard — to refuse every
+    // candidate kills 7 of this file's 8 tests, and this control was the
+    // survivor. An absence assertion alone cannot tell "the warn is
+    // conditional" from "the pipeline never reached the guard", so any future
+    // change that blocks the healthy claim earlier would leave this green while
+    // deleting the file's premise.
+    expect(report.outcomes[0]).toMatchObject({ kind: "created" });
     expect(warns.filter((w) => w.message.includes("no identity for one or more slots"))).toHaveLength(0);
   });
 });

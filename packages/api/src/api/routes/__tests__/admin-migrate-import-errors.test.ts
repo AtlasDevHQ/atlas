@@ -39,7 +39,7 @@
  * `lib/residency/__tests__/migrate-roundtrip-pg.test.ts`.
  */
 
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
 import type { ExportBundle } from "@useatlas/types";
@@ -64,6 +64,8 @@ let statements: string[] = [];
 let rollbackFailure: Error | null = null;
 /** What `release()` was called WITH. `undefined` = pooled; an Error = destroyed. */
 let releasedWith: unknown[] = [];
+/** Saved so the suite leaves the environment as it found it. */
+let priorInternalSecret: string | undefined;
 
 const FAKE_CLIENT = {
   query: async (sql: string) => {
@@ -89,14 +91,18 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
 // `undefined`, and the failure lands as `undefined is not a function` in an
 // unrelated module one import away — the trap `alias-proposal-logging.test.ts`
 // records at length.
-const logged: { payload: unknown; message: string }[] = [];
+const logged: { payload: unknown; message: string; level: "warn" | "error" }[] = [];
 void mock.module("@atlas/api/lib/logger", () => {
-  const record = (payload: unknown, message?: unknown) =>
-    logged.push({ payload, message: typeof message === "string" ? message : String(payload) });
+  // ⚠️ THE LEVEL IS RECORDED, not merged. Two sinks bound to one array that
+  // dropped the level is the same defect this branch fixed twice already
+  // (`vocabulary-rekey-logging.test.ts`): the ROLLBACK line was deliberately
+  // promoted warn -> error, and reverting it killed ZERO tests until this.
+  const record = (level: "warn" | "error") => (payload: unknown, message?: unknown) =>
+    logged.push({ payload, message: typeof message === "string" ? message : String(payload), level });
   const logger = {
     info: () => {},
-    warn: record,
-    error: record,
+    warn: record("warn"),
+    error: record("error"),
     debug: () => {},
     level: "info",
     child: () => logger,
@@ -115,9 +121,20 @@ void mock.module("@atlas/api/lib/logger", () => {
   };
 });
 
+// Mock-ALL-exports again, and this file had been supplying 4 of the 8 — the
+// same partial-factory trap its logger mock above is emphatic about. Harmless
+// today only because `admin-migrate.ts` imports two of them; the day it reaches
+// for `requirePermission`, the failure is `undefined is not a function` in a
+// file with nothing to do with this one.
 void mock.module("../admin-router", () => ({
   createAdminRouter: () => new OpenAPIHono(),
+  createPlatformRouter: () => new OpenAPIHono(),
   NO_ACTIVE_ORG_MESSAGE: "No active organization. Set an active org first.",
+  NO_INTERNAL_DB_MESSAGE: "No internal database configured.",
+  requirePermission: () => async (_c: unknown, next: () => Promise<void>) => {
+    await next();
+  },
+  enforcePermission: async () => {},
   noActiveOrgBody: (requestId: string) => ({
     error: "no_active_org",
     message: "No active organization. Set an active org first.",
@@ -135,8 +152,13 @@ void mock.module("../admin-router", () => ({
     },
 }));
 
-const { adminMigrate, internalMigrate, RegionImportUnkeyableError, RegionImportVocabularyTargetError } =
-  await import("../admin-migrate");
+const {
+  adminMigrate,
+  internalMigrate,
+  RegionImportUnkeyableError,
+  RegionImportVocabularyTargetError,
+  IMPORT_FAILED_MESSAGE,
+} = await import("../admin-migrate");
 
 /**
  * A bundle `validateBundle` accepts that makes the importer ISSUE A STATEMENT.
@@ -216,7 +238,16 @@ describe("the import's error responses — both handlers", () => {
     releasedWith = [];
     statements = [];
     logged.length = 0;
+    priorInternalSecret = process.env.ATLAS_INTERNAL_SECRET;
     process.env.ATLAS_INTERNAL_SECRET = INTERNAL_SECRET;
+  });
+
+  // Restored rather than left set: the isolated runner contains the blast
+  // radius, but every `-pg` sibling save/restores and a leaked secret env var
+  // is the kind of cross-file coupling that is only ever debugged once.
+  afterEach(() => {
+    if (priorInternalSecret === undefined) delete process.env.ATLAS_INTERNAL_SECRET;
+    else process.env.ATLAS_INTERNAL_SECRET = priorInternalSecret;
   });
 
   describe.each(HANDLERS)("$name handler", ({ post }) => {
@@ -283,6 +314,9 @@ describe("the import's error responses — both handlers", () => {
       queryFailure = new Error(leak);
 
       const res = await post(minimalBundle());
+      // Pinned, for the reason this file's own header records: the first cut
+      // passed every body assertion against a 200.
+      expect(res.status).toBe(500);
       const body = (await res.json()) as ErrorBody;
 
       const recorded = logged.find(
@@ -379,7 +413,13 @@ describe("the import's error responses — both handlers", () => {
       ).toBe("import_rollback_uncertain");
       expect(body.message).toContain("UNKNOWN");
       expect(body.message).toContain("Do NOT re-send");
-      expect(body.message).not.toContain("re-sending the same bundle is safe");
+      // ⚠️ Compared against the CONSTANT, not a lowercase substring. The first
+      // cut asserted `.not.toContain("re-sending the same bundle is safe")`
+      // while the real text reads "Re-sending …" at a sentence start — so the
+      // one assertion guarding "never promise retry-safety here" was inert
+      // against the exact message it forbids.
+      expect(body.message).not.toBe(IMPORT_FAILED_MESSAGE);
+      expect(body.message.toLowerCase()).not.toContain("re-sending the same bundle is safe");
       // …and still no driver text, at either status.
       expect(body.message).not.toContain("duplicate key");
       expect(body.message).not.toContain("Connection terminated");
@@ -442,6 +482,61 @@ describe("the import's error responses — both handlers", () => {
         CURRENT_ORG,
       );
       expect(payload.requestId).toBeTruthy();
+      // ⚠️ `error`, not `warn`. This line says a pooled connection may be
+      // poisoned and a transaction's fate is unknown; at `warn` it sits beside
+      // routine noise. Unasserted, reverting the promotion killed no test.
+      expect(
+        rollbackLine?.level,
+        "the rollback failure was logged below `error` — it reports a possibly-poisoned pooled " +
+          "connection and an unknown transaction outcome",
+      ).toBe("error");
+    });
+
+    it("⭐ a REFUSAL whose rollback also failed is uncertain, NOT a confident 409", async () => {
+      // ⚠️ The arm all three round-3 reviewers found, and the fifth appearance
+      // of this branch's recurring shape. The refusal's own message ends
+      // "re-export and re-run" and its OpenAPI description says NOTHING WAS
+      // WRITTEN — both claims about the ROLLBACK, not about the error that
+      // triggered it. And these refusals are raised in the brain-facts section,
+      // AFTER conversations, entities, settings, dashboards, knowledge, tasks
+      // and episodes have already inserted into the open transaction.
+      //
+      // So a refusal whose rollback failed is the uncertain state exactly, and
+      // a confident 409 tells the operator to re-send over a possibly-committed
+      // partial import. The uncertainty check therefore sits ABOVE the 409 arm.
+      queryFailure = new RegionImportUnkeyableError("0f8c4a2e-5555-4000-8000-000000000005", [
+        "object",
+      ]);
+      rollbackFailure = new Error("Connection terminated unexpectedly");
+
+      const res = await post(minimalBundle());
+      const body = (await res.json()) as ErrorBody;
+
+      expect(
+        res.status,
+        "a refusal whose ROLLBACK failed was answered 409 — that status's contract says nothing " +
+          "was written, which is a claim about the rollback the process just failed to make",
+      ).toBe(500);
+      expect(body.error).toBe("import_rollback_uncertain");
+      expect(body.message).toContain("Do NOT re-send");
+      // The client is destroyed here too — the session is untrustworthy
+      // regardless of which error diagnosed the failure.
+      expect(releasedWith[0]).toBeInstanceOf(Error);
+    });
+
+    it("…and a refusal whose rollback SUCCEEDED is still a clean 409", async () => {
+      // The control for the hoist. Checking `rollbackErr` first is correct only
+      // if it does not swallow the ordinary refusal — the whole point of #5047's
+      // 409 is that a well-diagnosed refusal keeps its actionable message.
+      queryFailure = new RegionImportUnkeyableError("0f8c4a2e-6666-4000-8000-000000000006", [
+        "object",
+      ]);
+
+      const res = await post(minimalBundle());
+      expect(res.status).toBe(409);
+      const body = (await res.json()) as ErrorBody;
+      expect(body.error).toBe("import_refused");
+      expect(body.message).toContain("0f8c4a2e-6666-4000-8000-000000000006");
     });
 
     it("a refusal and a driver error do not converge on one body", async () => {
@@ -472,7 +567,11 @@ describe("the import's error responses — both handlers", () => {
     // test is what says the sharing is still in force.
     queryFailure = new Error("duplicate key value violates unique constraint");
     const [admin, internal] = await Promise.all(
-      HANDLERS.map(async ({ post }) => ((await (await post(minimalBundle())).json()) as ErrorBody).message),
+      HANDLERS.map(async ({ post }) => {
+        const res = await post(minimalBundle());
+        expect(res.status).toBe(500);
+        return ((await res.json()) as ErrorBody).message;
+      }),
     );
 
     expect(admin).toBe(internal);

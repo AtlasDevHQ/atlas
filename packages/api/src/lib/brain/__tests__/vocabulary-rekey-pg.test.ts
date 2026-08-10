@@ -898,6 +898,13 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
     // population empty in practice and exactly what makes the seam unable to
     // build the fixture. The refusal arm deliberately does not rest on that
     // guard holding, and neither does this count.
+    // ⚠️ TWO degenerate rows and ONE vocabulary-target row, so the counts are
+    // {0, 2, 1} and not {0, 1, 1}. Measured: with both at 1, swapping the two
+    // SQL predicates — or pointing `skipped_vocabulary_target` at
+    // `surface_norm IS NULL` so it silently duplicates the other count — passed
+    // this test, the one test whose entire subject is telling them apart. The
+    // sibling in `vocabulary-rekey-logging.test.ts` records the same lesson and
+    // this case had not applied it.
     const live = await land(WS, { subject: "billing", predicate: "is", object: "platform team" });
     const episode = await seedEpisode(WS);
     await pool.query(
@@ -906,6 +913,8 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
           subject_key, predicate_key, object_key,
           source_episode_id, provenance, visible_to, invalidated_at)
        VALUES ($1, 'widget', 'is', '-', 'widget', 'is', '-unkeyable:seed-a', $2,
+               '{"actor":"u1"}'::jsonb, ARRAY['org'], now()),
+              ($1, 'gadget', 'is', '___', 'gadget', 'is', '-unkeyable:seed-b', $2,
                '{"actor":"u1"}'::jsonb, ARRAY['org'], now())`,
       [WS, episode.id],
     );
@@ -927,7 +936,7 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
         "and a live row whose vocabulary entry is the defect have different remedies, which is " +
         "the same split `MALFORMED_CLAIM`'s `cause` and the region import's two refusal types " +
         "both make over this identical NULL",
-    ).toEqual({ rekeyed: 0, skipped_degenerate_surface: 1, skipped_vocabulary_target: 1 });
+    ).toEqual({ rekeyed: 0, skipped_degenerate_surface: 2, skipped_vocabulary_target: 1 });
 
     // The live row really did keep its old key — the count is a report ABOUT
     // the corpus, and this is the disagreement it is reporting.

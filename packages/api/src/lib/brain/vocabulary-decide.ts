@@ -2253,7 +2253,7 @@ export const REKEY_DRIFTED_FACTS_SQL: Readonly<Record<SlotPosition, string>> = O
  * polarity is how the fix becomes the defect."* `Number.isInteger` also encodes
  * what `count(*)` can return and the type cannot: a non-negative whole number.
  */
-function isCount(value: unknown): value is number {
+export function isCount(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
@@ -2394,7 +2394,17 @@ async function rekeyDriftedFacts(
   // the number.
   //
   // ⚠️ THE LEVEL SPLITS WITH THE MESSAGE, and a conditional message at a flat
-  // `info` would have been the same defect one layer out. The comment above
+  // `info` would have been the same defect one layer out.
+  //
+  // ⚠️ The alert-fatigue cost is REAL and accepted rather than overlooked: this
+  // count is not temporally scoped, so a workspace holding one old tombstoned
+  // row in that population warns on every approval at that position until
+  // someone fixes the entry. Kept at `warn` because the alternative — scoping
+  // the count for the level decision alone — would make the number the line
+  // reports disagree with the number the statement computed, and a count that
+  // means one thing in the payload and another in the severity is worse than a
+  // repeated warning. The MESSAGE says the population may include retired rows,
+  // so the line is actionable rather than merely loud. The comment above
   // calls `skippedVocabularyTarget` "THE ONE TO ACT ON" — a data-integrity
   // divergence a human must repair by hand — and a deployment filtering `info`,
   // which is the ordinary posture for a path this chatty, would drop the only
@@ -2415,7 +2425,9 @@ async function rekeyDriftedFacts(
       "Drift re-key complete, but NOT total — some facts keep the keys the previous vocabulary " +
         "decided because this workspace's vocabulary maps their norm to something that normalizes " +
         "away. Their surfaces key fine and no re-key repairs them: fix the " +
-        "`brain_vocabulary_target` entry at this position",
+        "`brain_vocabulary_target` entry at this position. NOTE this count is not scoped by " +
+        "`invalidated_at`/`valid_to` (the statement deliberately is not), so it may include " +
+        "tombstoned or superseded rows — check before treating the number as live claims",
     );
   } else {
     log.info(payload, "Drift re-key complete — existing facts now carry the keys this vocabulary decides");

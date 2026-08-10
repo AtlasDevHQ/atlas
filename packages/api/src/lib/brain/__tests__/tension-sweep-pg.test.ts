@@ -75,6 +75,7 @@ import {
 import {
   TENSION_SWEEP_RUN_CAP,
   TENSION_SWEEP_SQL,
+  contentionMessage,
   sweepTensionEdges,
 } from "@atlas/api/lib/brain/tension-sweep";
 
@@ -1158,7 +1159,7 @@ describeIfPg("the admin-triggered tension sweep (#5029)", () => {
               "the sweep ran while another session held namespace 4771 — either it takes a different lock, or the lock is not taken at all, and its `NOT EXISTS` dedupe is correct only by coincidence",
             ).toBe("contended");
             if (outcome.kind !== "contended") throw new Error("unreachable");
-            expect(outcome.message).toContain("Nothing was changed");
+            expect(contentionMessage(outcome.reason)).toContain("Nothing was changed");
 
             // …and it waited at all, rather than the acquisition failing for
             // some reason that has nothing to do with contention. The shipped

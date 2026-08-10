@@ -33,6 +33,11 @@ import type {
   CorrectionRefusalReason,
 } from "@atlas/api/lib/brain/correction";
 import type { TensionSweepOutcome } from "@atlas/api/lib/brain/tension-sweep";
+// The REAL renderer, reached past the mocked module into its declaration site —
+// `ADMIN_ACTIONS`' precedent. A hand-copied sentence here would let the route and
+// the seam drift into two spellings of one refusal, which is the thing the
+// library owning the prose is supposed to prevent.
+import { contentionMessage as REAL_CONTENTION_MESSAGE } from "@atlas/api/lib/brain/tension-sweep";
 
 const CURRENT_ORG = "org-1";
 
@@ -346,6 +351,7 @@ void mock.module("@atlas/api/lib/brain/tension-sweep", () => ({
   TENSION_EDGE_CAP: SENTINEL_EDGE_CAP,
   TENSION_SWEEP_RUN_CAP: SENTINEL_RUN_CAP,
   TENSION_SWEEP_SQL: "INSERT INTO brain_edges",
+  contentionMessage: REAL_CONTENTION_MESSAGE,
   sweepTensionEdges: async (workspaceId: string) => {
     sweepCalls.push(workspaceId);
     if (sweepThrows !== null) throw sweepThrows;
@@ -1323,19 +1329,18 @@ describe("POST /tension-sweep (#5029)", () => {
   });
 
   it("409s on lock contention, audits nothing, and passes the seam's prose through", async () => {
-    sweepOutcome = {
-      kind: "contended",
-      reason: "reconcile-lock",
-      message: "another operation holds the reconcile lock; retry",
-    } as TensionSweepOutcome;
+    sweepOutcome = { kind: "contended", reason: "reconcile-lock" };
     const res = await sweep();
 
     expect(res.status).toBe(409);
     const body = (await res.json()) as { error: string; message: string; requestId: string };
-    expect(body.error).toBe("sweep_contended");
-    // Verbatim: the seam owns the sentence, and a route that mapped a code to
-    // its own copy would be a second spelling of a rule the library states.
-    expect(body.message).toBe("another operation holds the reconcile lock; retry");
+    // The DISCRIMINANT travels in `error` — the one field `ErrorSchema`
+    // declares, so it reaches the published spec and survives a conforming
+    // reader. A sibling `reason` did neither.
+    expect(body.error).toBe("reconcile-lock");
+    // Verbatim from the seam: a route that re-spelled the sentence would be a
+    // second copy of a rule the library owns.
+    expect(body.message).toBe(REAL_CONTENTION_MESSAGE("reconcile-lock"));
     expect(body.requestId).toBe("test-req");
     // Nothing happened, so nothing may be audited as having happened.
     expect(auditRows).toHaveLength(0);
@@ -1489,13 +1494,20 @@ describe("POST /tension-sweep — the arms the double could not reach (#5029)", 
     // rule the seam owns.
     for (const reason of ["reconcile-lock", "conflicting-lock", "unfinished"] as const) {
       auditRows.length = 0;
-      sweepOutcome = { kind: "contended", reason, message: `refused: ${reason}` } as TensionSweepOutcome;
+      sweepOutcome = { kind: "contended", reason };
       const res = await sweep();
       expect(res.status, `${reason} did not 409`).toBe(409);
-      const body = (await res.json()) as { error: string; reason: string; message: string };
-      expect(body.error).toBe("sweep_contended");
-      expect(body.reason, "the machine-readable reason did not reach the client").toBe(reason);
-      expect(body.message).toBe(`refused: ${reason}`);
+      const body = (await res.json()) as { error: string; message: string };
+      // ⚠️ The discriminant is `error`, not a `reason` field beside it.
+      // `ErrorSchema` declares `error` and is a `z.object`, so a separate
+      // `reason` reached the wire, was absent from the published schema, and was
+      // STRIPPED by any conforming reader — a field the 409's own prose told a
+      // client to branch on and no generated client could see.
+      expect(body.error, "the discriminant did not reach the client in `error`").toBe(reason);
+      // …and the prose is the seam's, rendered from the reason rather than
+      // re-spelled here.
+      expect(body.message).toBe(REAL_CONTENTION_MESSAGE(reason));
+      expect(body.message).toContain("Nothing was changed");
       expect(auditRows).toHaveLength(0);
     }
   });

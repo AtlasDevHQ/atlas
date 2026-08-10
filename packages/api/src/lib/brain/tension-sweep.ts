@@ -481,20 +481,28 @@ export type TensionSweepOutcome =
   | { readonly kind: "swept"; readonly report: TensionSweepReport }
   | {
       readonly kind: "contended";
-      readonly reason: TensionSweepContention;
       /**
-       * ⚠️ Operator-safe copy from {@link CONTENTION_MESSAGE}, never derived
-       * from the caught error.
+       * ⚠️ The ONLY thing this arm carries. There is deliberately no `message`
+       * field — a caller renders one with {@link contentionMessage}.
        *
-       * It travels verbatim into an HTTP body. The type is the literal union of
-       * {@link CONTENTION_MESSAGE}'s three values rather than `string`, and that
-       * is what makes the obvious "be more helpful" edit — `message:
-       * errorMessage(err)` — fail to COMPILE. `withBrainTransaction` scrubs its
-       * own log line precisely because a pg error can carry a credentialed
-       * connection URL, and a bare `string` here would have let that value reach
-       * a client. `reason` is the field a caller should branch on.
+       * It used to carry one, typed
+       * `(typeof CONTENTION_MESSAGE)[TensionSweepContention]` on the theory that
+       * a literal union would make `message: errorMessage(err)` fail to compile.
+       * **MEASURED: it does not.** All three messages are built with `+`, and a
+       * concatenated initializer has type `string` under `as const` — only a
+       * bare literal keeps its literal type. So the field was `string`, the
+       * guarantee was fictional, and the docstring asserting it was written by a
+       * comment sweep that replaced an ACCURATE description of the hole with a
+       * claim of a guard nobody had built (#5068's class: an annotation derived
+       * from the object it guards collapses).
+       *
+       * Removing the field is simpler than repairing the type and strictly
+       * stronger: the slot that could have carried a pg error message — which
+       * `withBrainTransaction` scrubs from its own logs precisely because it can
+       * echo a credentialed connection URL — no longer exists, and `reason` and
+       * its prose can no longer be cross-wired.
        */
-      readonly message: (typeof CONTENTION_MESSAGE)[TensionSweepContention];
+      readonly reason: TensionSweepContention;
     };
 
 /**
@@ -507,6 +515,17 @@ export type TensionSweepOutcome =
  * keeps its denial prose at the route for the opposite reason (there the ROUTE
  * knows the entitlement and the store does not).
  */
+/**
+ * The operator-facing sentence for a refusal.
+ *
+ * A FUNCTION rather than a field on {@link TensionSweepOutcome}, so the message
+ * is always the one that belongs to the reason — see that arm's ⚠️ for why the
+ * field was removed.
+ */
+export function contentionMessage(reason: TensionSweepContention): string {
+  return CONTENTION_MESSAGE[reason];
+}
+
 const CONTENTION_MESSAGE = {
   // True of BOTH holders of namespace 4771 — the extraction fiber and another
   // sweep — because the SQLSTATE names neither. The remedy holds for both: an
@@ -571,9 +590,9 @@ export interface TensionSweepDeps {
  * `identity.ts` applies to reconcile: this transaction takes 4771 and no other
  * advisory lock, so it cannot participate in a cycle with 5022 or 5024.
  *
- * ⚠️ **That is a claim about advisory locks ONLY, and an earlier draft stated it
- * as "takes 4771 and nothing else, ever" — which is false and was used to argue
- * that `40P01` could not happen here.** The INSERT takes ROW locks:
+ * ⚠️ **That is a claim about ADVISORY locks only. An earlier draft dropped the
+ * qualifier and asserted the transaction holds no other lock of any kind, which
+ * is false and was used to argue that `40P01` could not happen here.** The INSERT takes ROW locks:
  * `FOR KEY SHARE` on both endpoint rows in `brain_facts`, in plan order, while a
  * concurrent publish takes `FOR UPDATE` across every live draft in its own order
  * and deliberately does not take 4771. A deadlock is therefore reachable, and
@@ -748,7 +767,7 @@ export async function sweepTensionEdges(
   });
 
   if (outcome.kind === "contended") {
-    return { kind: "contended", reason: outcome.reason, message: CONTENTION_MESSAGE[outcome.reason] };
+    return { kind: "contended", reason: outcome.reason };
   }
 
   const report = tensionSweepReport(outcome.minted);
@@ -825,8 +844,14 @@ export function pgCode(err: unknown): string | undefined {
  * Server-generated and safe to log: it names a relation and echoes the
  * referential-integrity statement, neither of which can carry a credential the
  * way a connection string can.
+ *
+ * EXPORTED for its test, like {@link pgCode} — and for the same lesson, which
+ * this helper reproduced one round later: `pgCode` shipped unfalsified in round
+ * 1, was given a direct assertion in round 2, and round 3 then added this
+ * same-shape sibling with no test at all. Instance closed, class reopened one
+ * helper over.
  */
-function pgWhere(err: unknown): string | undefined {
+export function pgWhere(err: unknown): string | undefined {
   if (typeof err !== "object" || err === null || !("where" in err)) return undefined;
   const where = (err as { where?: unknown }).where;
   return typeof where === "string" ? where : undefined;

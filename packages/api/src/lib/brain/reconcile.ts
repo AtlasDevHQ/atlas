@@ -290,9 +290,17 @@ const log = createLogger("brain.reconcile");
  * against it or race the `WHERE NOT EXISTS` guard below. Exported for that
  * caller and no other; publish deliberately takes 5024 instead
  * (`content-mode/adapters/brain-facts.ts`), because sharing this namespace is
- * exactly the wedged-by-ingest outcome that file refuses. Both takers hold ONLY
- * this lock, which is what keeps them out of any wait-for cycle with 5022/5024
- * — see `identity.ts`'s lock-order note.
+ * exactly the wedged-by-ingest outcome that file refuses. Both takers hold no
+ * OTHER ADVISORY lock, which is what keeps them out of a wait-for cycle with
+ * 5022/5024 — see `identity.ts`'s lock-order note.
+ *
+ * ⚠️ **That is a claim about ADVISORY locks only. An earlier draft of this line
+ * dropped the qualifier and asserted both takers hold no other lock of any kind,
+ * which is false and reads as a proof that `40P01` cannot happen.** The sweep's INSERT takes ROW locks — `FOR KEY SHARE`
+ * on both endpoint rows via `brain_edges`' composite FKs, in plan order — while
+ * a concurrent publish takes `FOR UPDATE` across every live draft in its own
+ * order and does not take this namespace. A deadlock is reachable, and
+ * `tension-sweep.ts` has an arm for it.
  */
 export const RECONCILE_LOCK_NAMESPACE = 4771;
 

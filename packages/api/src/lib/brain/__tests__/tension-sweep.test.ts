@@ -45,7 +45,9 @@ import { IDENTITY_MUTATION_LOCK_NAMESPACE, LOCK_NOT_AVAILABLE } from "@atlas/api
 import {
   TENSION_SWEEP_RUN_CAP,
   TENSION_SWEEP_SQL,
+  contentionMessage,
   pgCode,
+  pgWhere,
   sweepTensionEdges,
 } from "@atlas/api/lib/brain/tension-sweep";
 
@@ -226,8 +228,8 @@ describe("the tension sweep under lock contention (#5029)", () => {
     if (outcome.kind !== "contended") throw new Error("unreachable");
     // The message is the caller's only copy of what happened, so it has to carry
     // both halves: nothing changed, and retrying is the fix.
-    expect(outcome.message).toContain("Nothing was changed");
-    expect(outcome.message.toLowerCase()).toContain("retry");
+    expect(contentionMessage(outcome.reason)).toContain("Nothing was changed");
+    expect(contentionMessage(outcome.reason).toLowerCase()).toContain("retry");
 
     // `mintedRows: 5` is the trap: a build that swallowed the lock failure and
     // carried on would report a successful sweep of five edges, which is the one
@@ -303,7 +305,7 @@ describe("the tension sweep's STATEMENT bounds (#5029)", () => {
     // The REASON, not just the refusal: the ingest copy is actively wrong here.
     // "Retry in a few seconds" is false advice for a migration holding a lock.
     expect(outcome.reason).toBe("conflicting-lock");
-    expect(outcome.message).not.toContain("reconcile lock");
+    expect(contentionMessage(outcome.reason)).not.toContain("reconcile lock");
     // ⚠️ It must not send the admin to wait for MAINTENANCE as the headline.
     // MEASURED against this repo's PG 16: `brain_edges`' composite FKs make this
     // INSERT run `SELECT 1 FROM ONLY brain_facts … FOR KEY SHARE` on both
@@ -312,9 +314,9 @@ describe("the tension sweep's STATEMENT bounds (#5029)", () => {
     // NEITHER of which takes namespace 4771. So the common case is a colleague
     // pressing Publish, and "retry once maintenance has finished" was advice to
     // wait for an event that never arrives.
-    expect(outcome.message).toContain("publish or a correction");
-    expect(outcome.message).toContain("Retry in a few seconds");
-    expect(outcome.message).toContain("Nothing was changed");
+    expect(contentionMessage(outcome.reason)).toContain("publish or a correction");
+    expect(contentionMessage(outcome.reason)).toContain("Retry in a few seconds");
+    expect(contentionMessage(outcome.reason)).toContain("Nothing was changed");
   });
 
   it("reports an `unfinished` refusal whose remedy is true for BOTH members of 57014", async () => {
@@ -336,16 +338,16 @@ describe("the tension sweep's STATEMENT bounds (#5029)", () => {
     // conflation on the ground that "retrying is the remedy". Two statements in
     // one commit, disagreeing, with the wrong one published in the OpenAPI
     // description.
-    expect(outcome.message).toContain("Retry once");
+    expect(contentionMessage(outcome.reason)).toContain("Retry once");
     expect(
-      outcome.message,
+      contentionMessage(outcome.reason),
       "the refusal rules out the remedy that is correct for a cancelled statement",
     ).not.toContain("rather than retrying");
     // …and a REPEAT is not a discriminator either — a supervisor that cancels
     // once cancels twice — so the escalation clause may not name the corpus.
-    expect(outcome.message).toContain("operator");
+    expect(contentionMessage(outcome.reason)).toContain("operator");
     expect(
-      outcome.message,
+      contentionMessage(outcome.reason),
       "the escalation clause asserts the timeout member, which a repeat does not establish",
     ).not.toContain("too large");
   });
@@ -364,7 +366,7 @@ describe("the tension sweep's STATEMENT bounds (#5029)", () => {
       expect(outcome.kind, `${reason} did not refuse`).toBe("contended");
       if (outcome.kind !== "contended") throw new Error("unreachable");
       expect(outcome.reason).toBe(reason);
-      byReason.set(reason, outcome.message);
+      byReason.set(reason, contentionMessage(outcome.reason));
     }
 
     // Three DISTINCT messages. Sharing one would make `reason` a label over
@@ -514,6 +516,12 @@ describe("no contention arm asserts a cause the SQLSTATE cannot establish (#5029
     // while the 200 description asserted that `minted: 0` meant "the corpus had
     // nothing left to flag", the least likely of that value's three producers.
     "packages/api/src/api/routes/admin-brain-facts.ts",
+    // ⚠️ And the LOCK's declaration site, which is the most authoritative copy
+    // and the one a future third taker reads first. Round 3 corrected the
+    // deadlock-impossible premise in this module and in ADR-0037 and left it
+    // standing here — instance closed in two files, class open in the third,
+    // precisely because this file was not scanned.
+    "packages/api/src/lib/brain/reconcile.ts",
   ];
 
   /**
@@ -556,6 +564,11 @@ describe("no contention arm asserts a cause the SQLSTATE cannot establish (#5029
     // sentence-pinned matcher walked straight past it. A near-miss is how a
     // lexical guard fails; widen on the noun phrase, not the whole sentence.
     { pattern: /an ingest pass is (?:running|reconciling)/i, planted: "an ingest pass is reconciling this workspace" },
+    // A DIFFERENT class from the three above — not "asserts a cause" but
+    // "asserts a deadlock is impossible", which is the premise that left `40P01`
+    // with no arm for two rounds. Included here because the guard's file list is
+    // the only place that reaches all three copies of it.
+    { pattern: /hold(?:s)? ONLY this lock|takes 4771 and nothing else/i, planted: "Both takers hold ONLY this lock, so no cycle can form" },
   ];
 
   it("proves each matcher on its own planted case before trusting it", () => {
@@ -603,10 +616,18 @@ describe("no contention arm asserts a cause the SQLSTATE cannot establish (#5029
       // IMPORTS if the messages were ever extracted to their own module — the
       // guard would then scan a file with no message prose in it and pass
       // forever.
+      // Non-vacuity on TEXT each file must carry, not on identifiers that
+      // survive as bare imports. Per file, because they hold different halves:
+      // the two sweep files carry the refusal prose, `reconcile.ts` carries the
+      // lock namespace whose ordering claim is what it is scanned for.
+      const sentinel =
+        relative === "packages/api/src/lib/brain/reconcile.ts"
+          ? "RECONCILE_LOCK_NAMESPACE"
+          : "Nothing was changed";
       expect(
         source,
-        `${relative} no longer carries the refusal prose this guard exists to scan — it moved, and the guard is now vacuous`,
-      ).toContain("Nothing was changed");
+        `${relative} no longer carries the prose this guard exists to scan — it moved, and the guard is now vacuous`,
+      ).toContain(sentinel);
 
       for (const { pattern } of DEFEATED) {
         const hit = pattern.exec(source);
@@ -744,5 +765,49 @@ describe("the arms round 2 found missing (#5029)", () => {
         `refusal log ${i} omits \`err\`, so the only field that discriminates its hedged holders never reaches the operator it tells to read the logs:\n${payload.slice(0, 200)}`,
       ).toBe(true);
     }
+  });
+});
+
+describe("`pgWhere` — the round-3 helper that repeated round 1's mistake (#5029)", () => {
+  it("extracts the CONTEXT field, which is the only 55P03 discriminator", () => {
+    // ⚠️ `pgCode` shipped unfalsified in round 1 and was given a direct
+    // assertion in round 2 — and round 3 then added this same-shape sibling with
+    // no test at all. Instance closed, class reopened one helper over, in the
+    // round whose whole subject was that pattern.
+    //
+    // MEASURED against this repo's PG 16: for a `55P03` raised by the INSERT's
+    // FK check, `.message` is the bare `canceling statement due to lock timeout`
+    // — identical to a relation-level wait — and the discriminator lives in the
+    // server's CONTEXT, which `pg` surfaces as `DatabaseError.where`.
+    const rowLock = {
+      code: "55P03",
+      message: "canceling statement due to lock timeout",
+      where: 'while locking tuple (0,1) in relation "brain_facts"',
+    };
+    expect(pgWhere(rowLock)).toContain('relation "brain_facts"');
+    // A relation-level wait carries no CONTEXT — the other half of the
+    // distinction, and the reason `.message` alone cannot make it.
+    expect(pgWhere({ code: "55P03", message: "canceling statement due to lock timeout" })).toBeUndefined();
+    // …and every shape that must not produce one.
+    expect(pgWhere("a bare string")).toBeUndefined();
+    expect(pgWhere(null)).toBeUndefined();
+    expect(pgWhere(new Error("no where"))).toBeUndefined();
+    expect(pgWhere({ where: 42 })).toBeUndefined();
+  });
+
+  it("reaches the conflicting-lock log, where the message promises the logs carry it", () => {
+    // Lexical, like its siblings: this file installs no logger double. The
+    // `conflicting-lock` refusal tells the admin to check whether maintenance is
+    // running, which is a diagnosis only `where` supports — `err` alone is
+    // byte-identical for the two holders that message hedges between.
+    const source = readFileSync(join(REPO_ROOT, "packages/api/src/lib/brain/tension-sweep.ts"), "utf8");
+    const armAt = source.indexOf("conflicting-lock\" };");
+    expect(armAt, "the conflicting-lock return moved").toBeGreaterThan(-1);
+    const warnAt = source.lastIndexOf("log.warn(", armAt);
+    expect(warnAt, "no log.warn precedes the conflicting-lock return").toBeGreaterThan(-1);
+    expect(
+      source.slice(warnAt, armAt),
+      "the conflicting-lock log dropped `where` — `.message` is identical for a row-lock and a relation-level wait, so without it the message's 'check for maintenance' advice rests on nothing",
+    ).toContain("where: pgWhere(err)");
   });
 });

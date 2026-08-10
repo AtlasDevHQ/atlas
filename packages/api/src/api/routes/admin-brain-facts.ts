@@ -104,6 +104,7 @@ import {
 import {
   TENSION_EDGE_CAP,
   TENSION_SWEEP_RUN_CAP,
+  contentionMessage,
   sweepTensionEdges,
 } from "@atlas/api/lib/brain/tension-sweep";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
@@ -406,7 +407,7 @@ const tensionSweepRoute = createRoute({
     },
     409: {
       description:
-        "The sweep could not run, and `reason` says which of three. `reconcile-lock` — another operation holds this workspace's reconcile lock, which is either an ingest pass or a sweep already running (the two cannot overlap, since both write these edges); retry in a few seconds. `conflicting-lock` — another operation holds a conflicting lock on this workspace's facts, most often a publish or a correction (the sweep deliberately does not queue behind either) and less often a migration; retry in a few seconds, and check for maintenance if it persists. `unfinished` — the statement did not complete, which is either a time-bound expiry or a cancellation, and Postgres does not distinguish them; retry once and escalate to an operator if it repeats. Every reason names what is KNOWN rather than a cause the server could not establish. Nothing was changed in any of the three",
+        "The sweep could not run, and `error` is one of three values naming WHICH bound it hit. `reconcile-lock` — another operation holds this workspace's reconcile lock, either an ingest pass or a sweep already running (the two cannot overlap, since both write these edges); retry in a few seconds. `conflicting-lock` — a conflicting lock on this workspace's facts, most often a concurrent publish or correction (the sweep deliberately does not queue behind either) and less often a migration or an index build; retry in a few seconds, and check for maintenance if it persists. `unfinished` — the statement did not complete, which is either a time-bound expiry or a cancellation, and Postgres does not distinguish them; retry once and escalate to an operator if it repeats. Every value names what is KNOWN rather than a cause the server could not establish, because none of these SQLSTATEs carries one. Nothing was changed in any of the three",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
@@ -802,16 +803,18 @@ adminBrainFacts.openapi(tensionSweepRoute, async (c) => {
       if (outcome.kind === "contended") {
         // 409, on `refusalStatus`' own semantics: a target-state mismatch the
         // client can retry past. Not a 503 — nothing is unavailable, and not a
-        // 500 — nothing failed. The seam's prose travels verbatim, and the
-        // machine-readable `reason` travels beside it so a client is not parsing
-        // English to tell "retry in seconds" from "stop pressing this button".
+        // 500 — nothing failed.
+        //
+        // ⚠️ The discriminant travels in `error`, NOT in a `reason` field beside
+        // it — `refusalBody`'s shape on the sibling vocabulary router, and for
+        // its reason. `ErrorSchema` declares `error`, so the three values reach
+        // the published spec for free. A separate `reason` was documented in the
+        // 409's own prose, sent at runtime, absent from the schema, and STRIPPED
+        // by any conforming reader (`ErrorSchema` is `z.object`, which drops
+        // unknown keys) — a field a client is told to branch on and cannot see
+        // is worse than no field at all.
         return c.json(
-          {
-            error: "sweep_contended",
-            reason: outcome.reason,
-            message: outcome.message,
-            requestId,
-          },
+          { error: outcome.reason, message: contentionMessage(outcome.reason), requestId },
           409,
         );
       }

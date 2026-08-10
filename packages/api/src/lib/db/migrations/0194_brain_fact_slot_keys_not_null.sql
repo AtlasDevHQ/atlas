@@ -269,9 +269,25 @@ BEGIN
    WHERE (f.subject_key IS NULL
        OR f.predicate_key IS NULL
        OR f.object_key IS NULL);
+  -- ⚠️ THIS SELECTS ON THE COMPOSED EXPRESSION'S RESULT, WHICH IS TWO
+  -- POPULATIONS, NOT ONE. Statement 1 wrote `alias(lexicalNorm(surface))`, so a
+  -- key is still NULL here when the SURFACE normalizes away (permanent, and the
+  -- case this section's argument is written for) OR when this workspace's
+  -- vocabulary maps a real norm to something that does (repairable — remove the
+  -- alias entry and the drift re-key restores the key).
+  --
+  -- The second is closed today by the authoring guards (`vocabulary-decide.ts`
+  -- refuses a `degenerate-norm` target, `validateBundle` refuses a non-norm
+  -- edge), so it should reach this statement only through a hand-written or
+  -- restored `brain_vocabulary_target` row. It is named anyway, for the reason
+  -- `REKEY_DRIFTED_FACTS_SQL` gives for not leaning on those guards either — and
+  -- because the cost is asymmetric: a repairable row tombstoned here comes back
+  -- keyed but permanently invisible, since nothing in the product clears
+  -- `invalidated_at`. The notice below says both causes rather than asserting
+  -- the one this file would prefer.
   GET DIAGNOSTICS tombstoned_count = ROW_COUNT;
   IF tombstoned_count > 0 THEN
-    RAISE NOTICE '[0194] tombstoned % brain_facts row(s) whose surface normalizes away, each with a per-row placeholder key. They leave searchBrain and the review queue; their surfaces are retained verbatim and only clearing invalidated_at by hand restores them', tombstoned_count;
+    RAISE NOTICE '[0194] tombstoned % brain_facts row(s) that could not be keyed, each with a per-row placeholder key. TWO causes reach this: the surface normalizes away (permanent — no vocabulary can ever key it), or this workspace''s vocabulary maps that norm to something that does (repairable — fix the alias entry, though the tombstone stays until cleared by hand). They leave searchBrain and the review queue; their surfaces are retained verbatim and only clearing invalidated_at restores them', tombstoned_count;
   END IF;
 END $$;
 

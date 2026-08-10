@@ -47,11 +47,13 @@ interface MigrationClient extends Queryable {
    * A future pool wrapper or driver swap would have silently discarded every
    * migration breadcrumb again.
    *
-   * Requiring them costs nothing now: every in-repo double was updated when the
-   * listener landed. `InternalPoolClient` keeps them optional so the dozen
-   * lightweight `{ query, release }` doubles elsewhere still satisfy it — which
-   * means a pool whose client lacks them fails to compile HERE, at the one
-   * consumer, which is where the notices would be lost.
+   * `InternalPoolClient` keeps them OPTIONAL so the tree's hand-built
+   * `{ query, release }` doubles still satisfy it (the count and the reason live
+   * there, in the file that pays it). Passing such a pool straight to
+   * `runMigrations` therefore fails to compile — which is why `migrateInternalDB`
+   * builds a wrapper, and why that wrapper's `typeof` check plus
+   * `MigrationClientContractError` is what turns a future driver swap into a loud
+   * boot failure rather than a silently deaf migration.
    */
   on(event: "notice", listener: (notice: { readonly message?: string }) => void): unknown;
   off(event: "notice", listener: (notice: { readonly message?: string }) => void): unknown;

@@ -14,9 +14,12 @@
  *     releases produce exactly this, and nothing else in the system would ever
  *     mention it.
  *   - **`unkeyable`** — a legacy surface that normalizes away, so no key exists.
- *     Legal and permanent; the ingest path warns about it and calls that "the
- *     only signal such a claim ever produces", and this is the second key
- *     writer.
+ *     Permanent, and since #5047 this importer is the ONLY writer that still
+ *     lands such a row: the ingest path refuses the claim outright
+ *     (`MALFORMED_CLAIM`), and a region migration cannot refuse a row the source
+ *     region already holds. It lands tombstoned behind a per-row placeholder
+ *     key, so nothing else in the product will ever mention it again — this
+ *     count is the whole record that it happened.
  *
  * A `200` with healthy `imported` counts is the same response in all three
  * cases. The line is the difference, and a line nothing checks is deletable
@@ -288,10 +291,11 @@ describe("the identity-loss line (#5035)", () => {
   });
 
   it("counts a legacy surface that normalizes away as `unkeyable`", async () => {
-    // The second key writer's parity with the ingest path, which warns about
-    // exactly this and calls it "the only signal such a claim ever produces".
-    // `___` and `-` normalize to the empty string, and `identityKey` returns
-    // null rather than storing a key every other unkeyed row would join.
+    // The second key writer's counterpart to the ingest path, which since #5047
+    // refuses this claim shape outright (`MALFORMED_CLAIM`) — so the count here
+    // is the only record that one arrived. `___` and `-` normalize to the empty
+    // string, and `identityKey` returns null rather than storing a key every
+    // other unkeyed row would join.
     const { client } = captureClient();
     const legacy = bundleWith(
       [

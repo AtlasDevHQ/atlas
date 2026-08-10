@@ -611,12 +611,18 @@ export const RECONCILE_BLOCK_REASONS = {
   /** Neither the caller nor the episode yields a principal to attribute to. */
   sourcePrincipalUnresolved: "SOURCE_PRINCIPAL_UNRESOLVED",
   /**
-   * The candidate itself is not a claim — a blank subject, predicate, or
-   * object. Not in the issue's list because it is not a resolution failure: it
-   * is a malformed proposal, and unlike an unresolved entity there is nothing
-   * for a reviewer to repair (`brain_facts` would happily store `''`, and a
-   * three-column claim with an empty column says nothing). The producer's bug
-   * is logged with the reason.
+   * The candidate itself is not a claim. TWO halves under one reason: a BLANK
+   * subject, predicate or object (`trim() === ""`), and — since #5047 — a
+   * surface with no IDENTITY, i.e. any slot whose `slotKey` is null (a
+   * degenerate surface, a vocabulary target that normalizes away, or an
+   * inherited null).
+   *
+   * Both say the same thing: the proposal asserts nothing and there is nothing
+   * for a reviewer to repair, which is what separates it from an unresolved
+   * entity. The REASON stays single so one producer bug lands on one counter;
+   * the positions and their causes travel beside it on
+   * {@link BlockedEntry.unkeyed}, because one caller renders this for a human
+   * and must not blame the wrong party. The producer's bug is logged with it.
    */
   malformedClaim: "MALFORMED_CLAIM",
 } as const;
@@ -840,8 +846,11 @@ export const CORROBORATION_LOOKUP_SQL = `SELECT id
  * Derived at ingest exactly as the grant is — which is why
  * `check-brain-fact-promotion.sh` gates the key columns on UPDATE only, and says
  * in as many words that OMITTING them is not a fix. They travel as three more
- * JSON scalars, `null` included: a surface that norms away has no key, and a
- * sentinel would file every such claim under one slot.
+ * JSON scalars, and since #5047 NEVER as `null`: the `MALFORMED_CLAIM` guard
+ * refuses a candidate whose `slotKey` is null, `ResolvedSlotKeys` carries that
+ * in the type, and the columns are `NOT NULL` as of migration 0194. A surface
+ * that norms away has no key and no longer becomes a row; a sentinel was the
+ * other repair and would file every such claim under one slot.
  *
  * `object_cmp` (#5030) is derived here on the same terms, and this is the only
  * path that DERIVES one — migration 0191 deliberately does not backfill, so a
@@ -1498,9 +1507,12 @@ export async function reconcileFacts(
       // entity-valued object would be a line per claim forever under the shipped
       // default resolver.
       //
-      // Emitted BEFORE the transaction, unlike the `unkeyed` warn below, and the
-      // prose is written to survive that: it claims a property of the BATCH,
-      // which is settled here, rather than of rows that may still roll back.
+      // Emitted BEFORE the transaction, and the prose is written to survive
+      // that: it claims a property of the BATCH, which is settled here, rather
+      // than of rows that may still roll back. (This used to contrast itself
+      // with the `unkeyed` warn "below" — #5047 deleted that one and its
+      // replacement sits ABOVE, also pre-transaction, so the contrast was dead
+      // twice over.)
       "brain reconcile: the entity store did not answer this episode's batch, so these candidates were reconciled with no object comparison (`object_cmp`) — worth recomputing once it does. Their identity keys are unaffected under the same vocabulary: no resolver reaches a slot key. The ones that CREATED a row carry `provenance.provisional`; the ones that corroborated get no provenance payload FROM THIS EPISODE — the existing row is untouched, keeping its own — so this count is the only place they are counted, and their `provenance` edges to this episode are how they are found",
     );
   }

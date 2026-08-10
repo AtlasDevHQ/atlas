@@ -1000,7 +1000,12 @@ interface ImportedIdentity {
   readonly carryReasons: readonly RegionCarryOutcome["reason"][];
   /** A key this import COMPUTED came out null — the surface norms away. */
   readonly unkeyable: boolean;
-  /** A key this import CARRIED arrived null — the cause is the source region's. */
+  /**
+   * A key this import CARRIED arrived null AND that position's surface
+   * normalizes away — the only carried null that still LANDS, since #5047 makes
+   * the repairable kind refuse the bundle. The cause is the claim's own text,
+   * not the source region's.
+   */
   readonly nullKeys: boolean;
 }
 
@@ -1147,10 +1152,18 @@ export class RegionImportVocabularyTargetError extends Error {
  * belonged to, and publish then stamps `valid_to` across the merge — the
  * irreversible direction.
  *
- * So neither landing is safe, and the honest move is not to land. The cause is
- * source-side — export drift that nulls the column for the whole corpus is the
- * documented shape (see `importedIdentity`'s `nullKeys` note), or a source region
- * that has not yet applied 0194 — and both are fixed at the source and re-run.
+ * So neither landing is safe, and the honest move is not to land. WHICH
+ * subsystem to blame depends on the arm, and the two are not interchangeable:
+ *
+ *   - CARRIED (v3): the key was supposed to travel and did not. Source-side —
+ *     export drift that nulls the column for the whole corpus is the documented
+ *     shape, or a source region that has not yet applied 0194. Fixed at the
+ *     source and re-run. {@link RegionImportUnkeyableError}.
+ *   - COMPUTED (v1/v2): the key was derived HERE, so a null means this region's
+ *     own vocabulary maps a real norm to something that normalizes away.
+ *     Destination-side, fixed in `brain_vocabulary_target`, and re-exporting
+ *     cannot change it. {@link RegionImportVocabularyTargetError}.
+ *
  * Refusing is the only outcome here that writes nothing.
  *
  * That a single such row refuses a whole region migration is deliberate: at this
@@ -1264,12 +1277,15 @@ function importedIdentity(fact: ExportedBrainFact, source: IdentitySource): Impo
     comparableDropped: [subject.reason, object.reason].some(isLoss),
     carryReasons: [subject.reason, object.reason],
     // A carried key is never recomputed here, so this import cannot make one
-    // NULL — but it can LAND one, and that is the state an operator needs
-    // reported. The exporter's own drift path produces exactly it: a projection
-    // that stops returning `f.subject_key` exports `null` for every fact, this
-    // region accepts it (null is legitimate at all five positions), and the
-    // whole corpus lands unkeyed with a green 200 at both ends. Region A's log
-    // carries the only other signal, and nobody watching the CUTOVER reads it.
+    // NULL — it can only LAND one, and since #5047 it lands only the kind whose
+    // SURFACE also normalizes away. A null beside a KEYABLE surface refuses the
+    // whole bundle (`RegionImportUnkeyableError`, 409), because that row is
+    // repairable by the next drift re-key and both ways of landing it are not.
+    //
+    // So the exporter's drift path — a projection that stops returning
+    // `f.subject_key`, exporting `null` for every fact — no longer lands quietly
+    // with a green 200 at both ends; it IS the 409. What this counter is left
+    // reporting is the residue: rows that arrived null legitimately.
     unkeyable: false,
     nullKeys: [fact.subjectKey, fact.predicateKey, fact.objectKey].some((k) => (k ?? null) === null),
   };
@@ -2273,10 +2289,16 @@ adminMigrate.openapi(importRoute, async (c) => {
     });
     const detail = err instanceof Error ? err.message : String(err);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Migration import failed, rolled back");
-    // A refused bundle is not a server fault (#5047): the source region supplied
-    // no identity for a fact whose surface has one, which is fixed at the source
-    // and re-run. 409 rather than 400 because the request itself is well-formed
-    // — `validateBundle` passed — and rather than 500 because retrying THIS body
+    // A refused bundle is not a server fault (#5047). TWO causes with two
+    // different remedies, and the `message` carries the right one: a v3 bundle
+    // that supplied no identity for a keyable surface (source-side — re-export),
+    // or a v1/v2 bundle this region's own vocabulary cannot key (destination-side
+    // — fix the alias entry; re-exporting changes nothing). Naming only the first
+    // here is the unfollowable advice #5047 removed from the error message and
+    // from the OpenAPI description.
+    //
+    // 409 rather than 400 because the request itself is well-formed —
+    // `validateBundle` passed — and rather than 500 because retrying THIS body
     // can never succeed and nothing here is broken.
     if (
       err instanceof RegionImportUnkeyableError ||
@@ -2363,10 +2385,16 @@ internalMigrate.post("/import", async (c) => {
     });
     const detail = err instanceof Error ? err.message : String(err);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Internal import failed, rolled back");
-    // A refused bundle is not a server fault (#5047): the source region supplied
-    // no identity for a fact whose surface has one, which is fixed at the source
-    // and re-run. 409 rather than 400 because the request itself is well-formed
-    // — `validateBundle` passed — and rather than 500 because retrying THIS body
+    // A refused bundle is not a server fault (#5047). TWO causes with two
+    // different remedies, and the `message` carries the right one: a v3 bundle
+    // that supplied no identity for a keyable surface (source-side — re-export),
+    // or a v1/v2 bundle this region's own vocabulary cannot key (destination-side
+    // — fix the alias entry; re-exporting changes nothing). Naming only the first
+    // here is the unfollowable advice #5047 removed from the error message and
+    // from the OpenAPI description.
+    //
+    // 409 rather than 400 because the request itself is well-formed —
+    // `validateBundle` passed — and rather than 500 because retrying THIS body
     // can never succeed and nothing here is broken.
     if (
       err instanceof RegionImportUnkeyableError ||

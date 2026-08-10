@@ -157,14 +157,16 @@ export function lexicalNorm(surface: string): string {
  * reached from the one input class the lexical layer cannot distinguish. `null`
  * joins nothing, which is the honest answer for a surface that asserts nothing.
  *
- * ⚠️ It does OVERLOAD the column, though, and the overload has a consequence
- * worth carrying forward: a NULL key now means either "no writer has keyed this
- * row yet" (transient) or "this surface norms away" (permanent, and legal). So
- * `SET NOT NULL` cannot land on the keys until `reconcile.ts`'s
- * `MALFORMED_CLAIM` guard also refuses a candidate whose `identityKey` is null
- * — otherwise the constraint turns a claim that is storable today into a
- * transaction-killing not-null violation. Migration 0187's header records this
- * as the third prerequisite; no issue owns it yet.
+ * ⚠️ NULL used to OVERLOAD the column — "no writer has keyed this row yet"
+ * (transient) and "this surface norms away" (permanent, and legal) — and
+ * `SET NOT NULL` could not land while the second was a storable state. #5047
+ * closed it at the ingest guard: `reconcile.ts`'s `MALFORMED_CLAIM` now refuses
+ * a candidate whose `slotKey` is null, and migration 0194 flipped all three
+ * columns to `NOT NULL`.
+ *
+ * So this function's `null` is a REFUSAL signal now, never a stored value. 0194's
+ * header carries the argument, including what became of the legacy rows that
+ * held the second meaning.
  *
  * Migration 0187 mirrors this with `NULLIF(…, '')`; the two are pinned against
  * each other row by row in `identity-pg.test.ts`.

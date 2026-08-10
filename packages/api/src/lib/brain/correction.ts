@@ -281,8 +281,11 @@ export const CORRECTION_REFUSAL_REASONS = {
   /** The replacement restates the target's own object — nothing to supersede. */
   replacementIdentical: "REPLACEMENT_IDENTICAL",
   /**
-   * The replacement has no IDENTITY — its object normalizes away (`-`, `___`,
-   * `  `), so the successor would occupy no slot (#5047).
+   * The replacement has no IDENTITY — its object normalizes away (`-`, `___`),
+   * so the successor would occupy no slot (#5047). NOT a whitespace-only
+   * object: `normalizeReplacement` trims that to `""` and it is refused as
+   * {@link replacementMissing} at the pure-validation gate, long before
+   * reconcile.
    *
    * ⚠️ NOT a second spelling of the ingest guard, and the distinction is what
    * keeps it legitimate. `reconcile.ts`'s `MALFORMED_CLAIM` is the one place
@@ -295,8 +298,9 @@ export const CORRECTION_REFUSAL_REASONS = {
    * Reachable only through `supersede`: the other three verbs supply no claim.
    * Before #5047 the same input passed every gate and installed a successor
    * nothing could ever corroborate, contradict, or supersede — the case
-   * {@link replacementIdentical}'s docstring records as deliberately uncovered
-   * there, on the argument that the ingest seam would close it.
+   * the identical-guard's own comment (in `correctFact`'s supersede arm)
+   * records as deliberately uncovered, on the argument that the ingest seam
+   * would close it — which is what #5047 did.
    */
   replacementMalformed: "REPLACEMENT_MALFORMED",
   /** The replacement could not become a published fact (structural refusal). */

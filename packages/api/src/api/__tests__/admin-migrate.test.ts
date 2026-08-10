@@ -260,8 +260,7 @@ describe("bundle round-trip shape", () => {
       brainFacts: { imported: 9, skipped: 3 },
       brainEdges: { imported: 4, skipped: 0 },
       factAudienceMembers: { imported: 2, skipped: 5 },
-      // Three counters here alone (#5036), and three DISTINCT values so the
-      // accounting assertion below cannot pass on two of them being confused.
+      // Three counters here alone (#5036).
       brainVocabularyEdges: { imported: 1, skipped: 4, refused: 6 },
     };
 
@@ -279,12 +278,15 @@ describe("bundle round-trip shape", () => {
     expect(total(result.brainEdges)).toBe(4);
     expect(total(result.factAudienceMembers)).toBe(7);
     // ⚠️ THE COUNTER SET, not a sum of literals this test just wrote. Summing
-    // `1 + 4 + 6 === 11` cannot go red for any production change — it is
-    // arithmetic over its own fixture — whereas the key set goes red the day a
-    // FOURTH counter is added, which is the change that would need
-    // `migrate.ts`'s reconciliation sum revisited in the same breath. (The
-    // reconciliation behaviour itself is pinned in `migrate.test.ts`; this file
-    // pins the shape, and the real enforcement of the shape is `bun run type`.)
+    // `1 + 4 + 6 === 11` is arithmetic over its own fixture and cannot go red
+    // for any production change.
+    //
+    // What the key set adds, stated at its real strength: it catches a counter
+    // RENAMED or REMOVED, and it catches a REQUIRED fourth one (which stops the
+    // literal above type-checking, so someone has to edit it). An OPTIONAL
+    // fourth counter slips past both. The reconciliation behaviour that would
+    // need revisiting is pinned in `migrate.test.ts`; this file pins shape, and
+    // `bun run type` is what enforces it.
     expect(Object.keys(result.brainVocabularyEdges).toSorted()).toEqual([
       "imported",
       "refused",

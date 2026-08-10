@@ -432,6 +432,8 @@ describeIfPg("merging two vocabularies (#5036)", () => {
         edge: arriving("price", "unit price"),
         refusal: "already-aliased",
         existingTarget: "cost",
+        // Deliberately self-referential: this assertion pins the SHAPE, and the
+        // message's content is pinned separately above via `payload.reason`.
         message: refusal.message,
       });
 
@@ -651,6 +653,71 @@ describeIfPg("merging two vocabularies (#5036)", () => {
       expect(await closureOf(ws, "subject")).toEqual([
         { norm: "p", effective_target: "r" },
         { norm: "q", effective_target: "r" },
+      ]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "writes a NON-NORM arriving edge verbatim and says so, rather than re-norming it",
+    async () => {
+      // Two claims in one, and the module's comment defends both. ADR-0037 §8
+      // makes a row-copy path carry values verbatim, so this must NOT rewrite
+      // another region's decision — but a non-norm `from` side can never match a
+      // lookup, so writing it silently is the under-match this module exists to
+      // prevent. `validateBundle` refuses these at the wire boundary; the
+      // primitive is exported, so a caller that skipped it is reachable.
+      //
+      // Untestable through `arriving("")` — `lexicalNorm("") === ""`, so the
+      // degenerate-norm arm catches that one first and this branch never runs.
+      const ws = freshWorkspace();
+
+      const merge = await inTx((tx) => mergeApprovedEdges(tx, ws, [arriving("Priced At", "cost")]));
+
+      expect(merge.applied).toBe(1);
+      // VERBATIM — the row keeps the bytes that arrived. A module that "helpfully"
+      // re-normed would pass the warn assertion below and still be wrong.
+      expect((await edgesOf(ws)).map((e) => e.from_norm)).toEqual(["Priced At"]);
+      expect(warns.map((w) => w.message)).toEqual([
+        expect.stringContaining("not in lexical-norm form"),
+      ]);
+      expect(warns[0].payload).toMatchObject({ workspaceId: ws, fromNorm: "Priced At", toNorm: "cost" });
+      // Future tense, for the same reason as the refusal warn: this runs inside
+      // an uncommitted transaction.
+      expect(warns[0].message).toContain("WILL be written");
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "does NOT claim a verbatim write for a non-norm edge that is then refused",
+    async () => {
+      // The warn used to sit at the top of the loop, so it fired for edges the
+      // merge went on to refuse — announcing a dead alias row that was never
+      // written and sending an operator hunting rows that do not exist, in the
+      // same log stream where the refusal lines are the recovery path.
+      //
+      // TWO non-norm arrivals sharing a `fromNorm`: the first is written, the
+      // second takes a second parent and is refused. A warn at the top of the
+      // loop emits the verbatim-write line TWICE; correctly placed it emits it
+      // once, for the edge that actually landed. Note a non-norm cannot be
+      // refused by a CYCLE — `"Price"` never matches the stored `price`, which
+      // is precisely the dead-alias problem the warn exists to announce — so
+      // at-most-one-parent is the only reachable refusal here.
+      const ws = freshWorkspace();
+
+      const merge = await inTx((tx) =>
+        mergeApprovedEdges(tx, ws, [arriving("Priced At", "cost"), arriving("Priced At", "other")]),
+      );
+
+      expect(merge.applied).toBe(1);
+      expect(merge.refusals).toHaveLength(1);
+      expect(merge.refusals[0].refusal).toBe("already-aliased");
+      // Exactly ONE verbatim-write claim, and it is the applied edge's.
+      expect(warns.filter((w) => w.message.includes("WILL be written"))).toHaveLength(1);
+      expect(warns.map((w) => w.message)).toEqual([
+        expect.stringContaining("WILL be written"),
+        expect.stringContaining("WILL DROP an arriving alias edge"),
       ]);
     },
     PG_TEST_TIMEOUT_MS,

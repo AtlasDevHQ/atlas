@@ -33,6 +33,17 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
           sql.includes("FROM settings")) {
         return Promise.resolve({ rows: [] });
       }
+      // ⚠️ THREE rows for the vocabulary, where every other section gets one.
+      // Systemic accidental equality otherwise: with every manifest count equal
+      // to 1, a section's `refused`, its `imported`, its `expected` and every
+      // OTHER section's count are all the literal 1, so an assertion pinning one
+      // of them pins all of them. Measured — rewriting the refusal disclosure's
+      // payload from `refused` to the section TOTAL passed the whole suite,
+      // which is precisely the count the disclosure exists to carry. Three makes
+      // the numbers separable: expected 3 = imported 2 + refused 1.
+      if (sql.includes("FROM brain_vocabulary_edge")) {
+        return Promise.resolve({ rows: [{ id: "e1" }, { id: "e2" }, { id: "e3" }] });
+      }
       return Promise.resolve(mockPoolQueryResult);
     },
     end: async () => {},
@@ -268,6 +279,15 @@ describe("executeRegionMigration", () => {
     // whole region — a co-tenant on this process keeps its warm entries.
     expect(mockFlushCacheByOrg).toHaveBeenCalledWith("org-1");
     expect(mockFlushCache).not.toHaveBeenCalled();
+
+    // ⚠️ THE NEGATIVE CONTROL for #5036's refusal disclosure, and it is the arm
+    // that had none: dropping `&& refused > 0` from its guard was green. Every
+    // clean migration would then announce that approved human review decisions
+    // were not applied, with `refused: 0` — alarm fatigue that destroys the
+    // value of the one line an operator has to act on within the grace period.
+    expect(
+      capturedWarns.filter((w) => w.message.includes("REFUSED curated alias edges")),
+    ).toEqual([]);
   });
 
   it("includes internal token in transfer request", async () => {
@@ -402,9 +422,13 @@ describe("executeRegionMigration", () => {
     reshapeAck = (ack) => {
       const vocabulary = ack.brainVocabularyEdges;
       vocabularyExpected = vocabulary?.imported ?? 0;
-      // Every arriving edge refused, none imported — the extreme of the case,
-      // and the shape under which an excluded `refused` reads as 0/n.
-      if (vocabulary) ack.brainVocabularyEdges = { imported: 0, skipped: 0, refused: vocabularyExpected };
+      // ⚠️ A MIXED answer, not the all-refused extreme, and the three numbers are
+      // deliberately DISTINCT: expected 3 = imported 2 + refused 1. All-refused
+      // made `refused` equal to the section total, so an implementation that
+      // reported the total instead of the refusal count satisfied every
+      // assertion here — measured, and it survived. Mixed also keeps the
+      // `imported` term live for the one section that has three counters.
+      if (vocabulary) ack.brainVocabularyEdges = { imported: 2, skipped: 0, refused: 1 };
       // ⚠️ A SECOND section answering entirely in `skipped`, because otherwise
       // the `skipped` TERM of the sum is dead in every fixture in this file —
       // the generator, the explicit body above, and this hook all set
@@ -422,7 +446,10 @@ describe("executeRegionMigration", () => {
     // ⚠️ Guards the test against becoming vacuous: reconciliation `continue`s on
     // a section whose manifest count is 0, so a fixture that stopped exporting
     // any vocabulary edge would make this pass while testing nothing.
-    expect(vocabularyExpected).toBeGreaterThan(0);
+    // Exactly 3, not merely nonzero: the split above is only meaningful if the
+    // section really carries three rows, and a fixture change that collapsed it
+    // back to 1 would silently restore the accidental equality.
+    expect(vocabularyExpected).toBe(3);
     expect(dashboardsExpected).toBeGreaterThan(0);
     expect(result.success).toBe(true);
 
@@ -442,14 +469,59 @@ describe("executeRegionMigration", () => {
     // stays green — measured, which is why the assertion exists.
     const disclosure = capturedWarns.find((w) => w.message.includes("REFUSED curated alias edges"));
     expect(disclosure).toBeDefined();
+    // `1`, which is NOT the section total (3) and NOT the imported count (2) —
+    // the whole point of the mixed fixture above.
     expect(disclosure?.payload).toMatchObject({
       migrationId: "mig-1",
       section: "brainVocabularyEdges",
-      refused: vocabularyExpected,
+      refused: 1,
     });
     // Names the delete timer, because that is what makes it urgent rather than
     // merely informational.
     expect(disclosure?.message).toContain("grace period");
+  });
+
+  it("ABORTS on a NEGATIVE counter, which would otherwise mask an over-import (#5036)", async () => {
+    // The fail-OPEN direction, and the one an arithmetic guard cannot see on its
+    // own. `acknowledged` is `as`-cast from another region's JSON and only its
+    // top level is shape-checked, so a counter can be negative — and a negative
+    // one balances the sum: `{imported: expected + 2, refused: -2}` totals
+    // exactly `expected`, reconciles CLEAN, and cuts over having imported two
+    // rows more than the bundle carried. `refused > 0` is false too, so the
+    // disclosure stays silent. Every other malformed counter (NaN, fractional)
+    // fails closed and is benign; this one does not.
+    mockQueryResults["SELECT id, workspace_id"] = [
+      { id: "mig-1", workspace_id: "org-1", source_region: "us-east", target_region: "eu-west", status: "pending" },
+    ];
+    mockQueryResults["UPDATE region_migrations"] = [];
+
+    let vocabularyExpected = -1;
+    reshapeAck = (ack) => {
+      const vocabulary = ack.brainVocabularyEdges;
+      vocabularyExpected = vocabulary?.imported ?? 0;
+      // Sums to exactly `expected`, so a guard that only checks the arithmetic
+      // passes this.
+      if (vocabulary) {
+        ack.brainVocabularyEdges = { imported: vocabularyExpected + 2, skipped: 0, refused: -2 };
+      }
+      return ack;
+    };
+
+    const result = await executeRegionMigration("mig-1");
+
+    expect(vocabularyExpected).toBe(3);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain("unusable 'refused' counter");
+      expect(result.error).toContain("no source data has been deleted");
+    }
+
+    // No cutover — which is what stops the source cleanup running against a
+    // target whose own accounting is incoherent.
+    const cutover = capturedQueries.find(
+      (q) => q.sql.includes("UPDATE organization") || q.sql.includes("region_updated = TRUE"),
+    );
+    expect(cutover).toBeUndefined();
   });
 
   it("still ABORTS when a section that cannot refuse reports `refused` (#5036)", async () => {
@@ -482,7 +554,24 @@ describe("executeRegionMigration", () => {
     // Vacuity guard, as above: a 0-count section short-circuits before the sum.
     expect(dashboardsExpected).toBeGreaterThan(0);
     expect(result.success).toBe(false);
-    if (!result.success) expect(result.error).toContain("dashboards");
+    if (!result.success) {
+      expect(result.error).toContain("dashboards");
+      // ⚠️ The DIAGNOSIS has to reach the durable surface. This string lands in
+      // `region_migrations.error_message` and is what the API and CLI render;
+      // the warn below is an ephemeral log line. Without this the one channel an
+      // operator is guaranteed to read carries only the version-skew GUESS.
+      expect(result.error).toContain("refused=");
+      expect(result.error).toContain("no refusal outcome in this build");
+    }
+
+    // The warn is the other half, and it had NO falsifier — deleting the whole
+    // block was green when this test only pinned the abort.
+    const unexpected = capturedWarns.find((w) => w.message.includes("cannot refuse any"));
+    expect(unexpected).toBeDefined();
+    expect(unexpected?.payload).toMatchObject({
+      section: "dashboards",
+      refused: dashboardsExpected,
+    });
 
     // The cutover must NOT have run — that is what stops the source cleanup
     // deleting rows the target never imported.

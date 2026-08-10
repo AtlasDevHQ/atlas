@@ -177,16 +177,66 @@ describe("bundle-scope drift tripwire (#4460)", () => {
 
   /**
    * The source of the declaration `symbol` opens, up to the next top-level
-   * declaration. Deliberately crude — it only has to be tight enough that a
-   * sibling function's statement cannot satisfy the search.
+   * declaration, with COMMENTS STRIPPED.
+   *
+   * ⚠️ Both halves are load-bearing and the first cut of this helper had neither.
+   *
+   * Comments, because the terminator matches a DECLARATION line and every
+   * declaration in this repo is preceded by a docblock — so the slice ran to the
+   * end of the NEXT function's documentation. Measured: `mergeApprovedEdges`'
+   * slice was 9,278 bytes and its tail was the whole of `removeAliasEdge`'s
+   * 40-line docblock. In a codebase whose docblocks routinely quote SQL, a
+   * tripwire that a COMMENT can satisfy is not a tripwire: deleting the real
+   * INSERT and mentioning the statement in nearby prose left this suite green.
+   *
+   * The wider terminator, because `export enum` / `export default` /
+   * `export abstract class` / `export function*` were all unmatched — and an
+   * unmatched terminator runs the slice to EOF, re-admitting `approveAliasEdge`'s
+   * INSERT and reopening the exact hole. That would be reintroduced by nothing
+   * more than reordering the file.
    */
+  const stripComments = (source: string): string =>
+    source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+
   const declarationBody = (source: string, symbol: string): string => {
-    const start = source.indexOf(symbol);
+    const src = stripComments(source);
+    const start = src.indexOf(symbol);
     expect(start, `delegated writer '${symbol}' no longer exists`).toBeGreaterThanOrEqual(0);
-    const rest = source.slice(start + symbol.length);
-    const end = rest.search(/\nexport (?:async function|function|const|interface|type|class) /);
+    const rest = src.slice(start + symbol.length);
+    const end = rest.search(
+      /\nexport (?:default |declare |abstract )?(?:async function|function\*?|const|interface|type|class|enum) /,
+    );
     return end === -1 ? rest : rest.slice(0, end);
   };
+
+  it("declarationBody isolates the delegated writer — the tripwire's own falsifier", () => {
+    // ⚠️ `declarationBody` is machinery INSIDE a guard, so it needs its own
+    // guard: a slicer that quietly returned the whole file would make the arm
+    // below pass for every possible edit, which is worse than no arm at all.
+    // Both assertions were RED against this helper's first cut.
+    const vocabularySource = readFileSync(
+      join(import.meta.dir, "..", "..", "brain", "vocabulary.ts"),
+      "utf8",
+    );
+    const mergeBody = declarationBody(vocabularySource, "export async function mergeApprovedEdges");
+
+    // It stops before the neighbours in both directions — `approveAliasEdge`
+    // above it holds the OTHER `INSERT INTO brain_vocabulary_edge`, which is the
+    // statement that made a whole-file search useless.
+    expect(mergeBody).not.toContain("export async function approveAliasEdge");
+    expect(mergeBody).not.toContain("export async function removeAliasEdge");
+
+    // And a COMMENT cannot satisfy it. `removeAliasEdge`'s docblock follows the
+    // merge in the file, so an un-stripped slice swept it up — and any docblock
+    // quoting the statement would then stand in for the code.
+    const withPretendComment = declarationBody(
+      `export async function mergeApprovedEdges() { return 1; }\n` +
+        `/** INSERT INTO brain_vocabulary_edge — prose, not code */\n` +
+        `export async function next() {}\n`,
+      "export async function mergeApprovedEdges",
+    );
+    expect(withPretendComment).not.toContain("INSERT INTO brain_vocabulary_edge");
+  });
 
   it("every exported table is actually written by the import implementation", () => {
     for (const table of EXPORTED_TABLES) {

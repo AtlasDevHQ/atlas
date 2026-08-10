@@ -799,9 +799,21 @@ const ImportResultSchema = z.object({
  * that dropped a field. `migrate.ts`'s `_everySectionReconciled` is the same
  * idiom two modules over, which is why this is a pin rather than a comment.
  */
+/**
+ * ⚠️ The assignability pair alone does NOT cover an OPTIONAL field, which is the
+ * pin's own motivating case: `{a} extends {a, b?}` is `true` in both directions,
+ * so a `refused?: number` added to one spelling and not the other would satisfy
+ * it. The key-set check is what closes that, and it is why there are two halves.
+ */
+type _MissingKeys =
+  | Exclude<keyof z.infer<typeof ImportResultSchema>, keyof ImportResult>
+  | Exclude<keyof ImportResult, keyof z.infer<typeof ImportResultSchema>>;
+
 type _SchemaMatchesWireType = z.infer<typeof ImportResultSchema> extends ImportResult
   ? ImportResult extends z.infer<typeof ImportResultSchema>
-    ? true
+    ? [_MissingKeys] extends [never]
+      ? true
+      : never
     : never
   : never;
 const _importResultSchemaMatchesWireType: _SchemaMatchesWireType = true;

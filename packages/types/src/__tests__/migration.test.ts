@@ -251,8 +251,7 @@ describe("migration types", () => {
       brainFacts: { imported: 8, skipped: 2 },
       brainEdges: { imported: 5, skipped: 0 },
       factAudienceMembers: { imported: 3, skipped: 1 },
-      // The one section with a THIRD counter (#5036). Three DISTINCT values, so
-      // a shape that mixed two of them up cannot satisfy the assertion below.
+      // The one section with a THIRD counter (#5036).
       brainVocabularyEdges: { imported: 2, skipped: 1, refused: 4 },
     };
 
@@ -261,10 +260,14 @@ describe("migration types", () => {
     expect(result.knowledgeDocuments.skipped).toBe(1);
     expect(result.brainFacts.imported).toBe(8);
     expect(result.factAudienceMembers.skipped).toBe(1);
-    // The counter SET rather than a literal read back — reading `refused: 4` out
-    // of the object this test just wrote cannot go red for any type change,
-    // while the key set goes red if a counter is added or renamed. (The type
-    // itself is enforced by `bun run type`; this is the runtime half.)
+    // The counter SET rather than a literal read back: reading `refused: 4` out
+    // of the object this test itself just wrote cannot go red for any change.
+    //
+    // ⚠️ Its reach is narrower than "catches a fourth counter", and the limit is
+    // worth stating: a REQUIRED addition stops this literal type-checking, so
+    // someone edits it and this fires — but an OPTIONAL one changes nothing
+    // here. `bun run type` is the real enforcement of the shape; this is the
+    // runtime half, and it catches a rename or a removal.
     expect(Object.keys(result.brainVocabularyEdges).toSorted()).toEqual([
       "imported",
       "refused",

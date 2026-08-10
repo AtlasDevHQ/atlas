@@ -783,28 +783,6 @@ export async function mergeApprovedEdges(
   for (const edge of edges) {
     const { position, fromNorm, toNorm } = edge;
 
-    // ⚠️ The verbatim-write contract is enforced TWO MODULES AWAY, and violating
-    // it is silently lossy — so make it audible here without changing it.
-    // `validateBundle` refuses a non-norm at the wire boundary, which is why the
-    // raw and normed arguments below are the same value; but `lib/` must not
-    // import from `api/routes/`, this function is exported, and
-    // `screenAliasNorms` cannot catch it — `"Priced At"` is neither empty nor
-    // self-equal, so it sails through and lands an alias that can never match
-    // anything, which is exactly the silent under-match this module exists to
-    // prevent. Not refused, because ADR-0037 §8 forbids rewriting another
-    // region's decision on a row-copy path and a refusal here would be this
-    // module second-guessing a validated wire contract; logged, because a
-    // caller that skipped the check should not find out from a lookup that
-    // quietly never fires. Costs nothing on the route path, where the predicate
-    // is false by construction.
-    if (lexicalNorm(fromNorm) !== fromNorm || lexicalNorm(toNorm) !== toNorm) {
-      log.warn(
-        { workspaceId, position, fromNorm, toNorm },
-        "Arriving alias edge is not in lexical-norm form — writing it verbatim per ADR-0037 §8, " +
-          "but it can never match a lookup. The caller skipped validateBundle's norm check.",
-      );
-    }
-
     // Raw and normed are the same value on purpose — see `screenAliasNorms`.
     const screened = screenAliasNorms(fromNorm, toNorm, fromNorm, toNorm);
     if (screened !== null) {
@@ -835,6 +813,39 @@ export async function mergeApprovedEdges(
       const { ok: _admitted, ...detail } = admission;
       refusals.push({ edge, ...detail });
       continue;
+    }
+
+    // ⚠️ The verbatim-write contract is enforced TWO MODULES AWAY, and violating
+    // it is silently lossy — so make it audible here without changing it.
+    // `validateBundle` refuses a non-norm at the wire boundary, which is why the
+    // raw and normed arguments passed to `screenAliasNorms` are the same value;
+    // but `lib/` must not import from `api/routes/`, this function is exported,
+    // and `screenAliasNorms` cannot catch it — `"Priced At"` is neither empty
+    // nor self-equal, so it sails through and lands an alias that can never
+    // match anything, which is exactly the silent under-match this module exists
+    // to prevent. Not REFUSED, because ADR-0037 §8 forbids rewriting another
+    // region's decision on a row-copy path and refusing here would be this
+    // module second-guessing a validated wire contract; logged, because a caller
+    // that skipped the check should not find out from a lookup that quietly
+    // never fires. Costs nothing on the route path, where the predicate is false
+    // by construction.
+    //
+    // ⚠️ POSITIONED AFTER THE ADMISSION CHECKS AND IMMEDIATELY BEFORE THE
+    // INSERT, and phrased in the FUTURE TENSE — both for the same reason as the
+    // refusal warn below, which this originally contradicted from forty lines
+    // above it in the same commit. Emitted at the top of the loop it fired for
+    // edges that were then REFUSED or counted as duplicates, claiming a write
+    // that never happened and sending an operator hunting rows that do not
+    // exist — in the very log stream where the refusal lines are the recovery
+    // path, so both lose the same credibility. Here it fires only on the path
+    // that actually writes, and only commits to what a COMMIT would make true.
+    if (lexicalNorm(fromNorm) !== fromNorm || lexicalNorm(toNorm) !== toNorm) {
+      log.warn(
+        { workspaceId, position, fromNorm, toNorm },
+        "Arriving alias edge is not in lexical-norm form — it WILL be written verbatim per " +
+          "ADR-0037 §8 when this transaction commits, and can never match a lookup. The caller " +
+          "skipped validateBundle's norm check.",
+      );
     }
 
     await tx.query(

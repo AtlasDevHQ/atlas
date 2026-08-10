@@ -60,6 +60,16 @@ const RECONCILED_SECTIONS = [
   "brainVocabularyEdges",
 ] as const satisfies readonly (keyof ExportManifest["counts"] & keyof ImportResult)[];
 
+type RefusalCapableSection = {
+  [K in keyof ImportResult]: ImportResult[K] extends { refused: number } ? K : never;
+}[keyof ImportResult];
+
+const REFUSAL_ACCOUNTING = [
+  "brainVocabularyEdges",
+] as const satisfies readonly RefusalCapableSection[];
+
+const REFUSAL_ACCOUNTING_SECTIONS: ReadonlySet<string> = new Set(REFUSAL_ACCOUNTING);
+
 /**
  * Completeness half of the bound above: every section that HAS both a manifest
  * count and an ImportResult counter must be listed.
@@ -81,7 +91,10 @@ const RECONCILED_SECTIONS = [
  * The sections whose import can legitimately REFUSE a row (#5036).
  *
  * Derived from the wire type rather than asserted: a section is refusal-capable
- * exactly when `ImportResult` gives it a `refused` counter. Only
+ * exactly when `ImportResult` gives it a REQUIRED `refused: number`. An OPTIONAL
+ * one falls out of the conditional below and would be missed — which is the
+ * argument for declaring the counter required on the wire type in the first
+ * place. Only
  * `brainVocabularyEdges` does — an alias edge is a human review decision and two
  * regions can hold contradictory ones, so the destination refuses one and logs
  * it. Everywhere else `imported + skipped` accounts for every row and a
@@ -89,18 +102,12 @@ const RECONCILED_SECTIONS = [
  *
  * The distinction decides whether a shortfall ABORTS a cutover, so a second
  * section growing the counter has to be a deliberate decision rather than a
- * discovery: the pin below turns it into a compile error.
+ * discovery. Two halves do that, and only the second is the completeness claim:
+ * the `satisfies` below proves every LISTED member is genuinely refusal-capable,
+ * while `_refusalSectionsReviewed` — inside `transferBundleToTarget`, where the
+ * decision is consumed — proves none is MISSING. That split mirrors
+ * `RECONCILED_SECTIONS`' own two-sided pin.
  */
-type RefusalCapableSection = {
-  [K in keyof ImportResult]: ImportResult[K] extends { refused: number } ? K : never;
-}[keyof ImportResult];
-
-const REFUSAL_ACCOUNTING = [
-  "brainVocabularyEdges",
-] as const satisfies readonly RefusalCapableSection[];
-
-const REFUSAL_ACCOUNTING_SECTIONS: ReadonlySet<string> = new Set(REFUSAL_ACCOUNTING);
-
 type UnreconciledSection = Exclude<keyof ImportResult, (typeof RECONCILED_SECTIONS)[number]>;
 const _everySectionReconciled: [UnreconciledSection] extends [never] ? true : never = true;
 void _everySectionReconciled;

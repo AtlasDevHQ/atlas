@@ -183,17 +183,23 @@ describe("bundle-scope drift tripwire (#4460)", () => {
    *
    * Comments, because the terminator matches a DECLARATION line and every
    * declaration in this repo is preceded by a docblock — so the slice ran to the
-   * end of the NEXT function's documentation. Measured: `mergeApprovedEdges`'
-   * slice was 9,278 bytes and its tail was the whole of `removeAliasEdge`'s
-   * 40-line docblock. In a codebase whose docblocks routinely quote SQL, a
-   * tripwire that a COMMENT can satisfy is not a tripwire: deleting the real
-   * INSERT and mentioning the statement in nearby prose left this suite green.
+   * end of the NEXT function's documentation, roughly 10 KB whose tail was the
+   * whole of `removeAliasEdge`'s docblock. Nothing in that tail quotes the
+   * statement TODAY; the hazard is that in a codebase whose docblocks routinely
+   * quote SQL, a tripwire a COMMENT can satisfy is not a tripwire. Delete the
+   * real INSERT, mention it in the next function's prose, and the suite goes
+   * green. The falsifier below pins that directly rather than resting on a
+   * measurement that drifts with every comment edit in `vocabulary.ts`.
    *
    * The wider terminator, because `export enum` / `export default` /
    * `export abstract class` / `export function*` were all unmatched — and an
-   * unmatched terminator runs the slice to EOF, re-admitting `approveAliasEdge`'s
-   * INSERT and reopening the exact hole. That would be reintroduced by nothing
-   * more than reordering the file.
+   * unmatched terminator runs the slice to EOF, so everything BELOW
+   * `mergeApprovedEdges` counts as its body. No statement down there satisfies
+   * the tripwire today, which is exactly why that failure would be silent: the
+   * first `INSERT INTO brain_vocabulary_edge` added below this function would
+   * stand in for the merge's own. (`approveAliasEdge`'s INSERT sits ABOVE the
+   * start point and is structurally out of reach either way — the slice only
+   * extends forward.)
    */
   const stripComments = (source: string): string =>
     source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
@@ -213,18 +219,23 @@ describe("bundle-scope drift tripwire (#4460)", () => {
     // ⚠️ `declarationBody` is machinery INSIDE a guard, so it needs its own
     // guard: a slicer that quietly returned the whole file would make the arm
     // below pass for every possible edit, which is worse than no arm at all.
-    // Both assertions were RED against this helper's first cut.
+    // The `removeAliasEdge` bound and the comment-stripping case were both RED
+    // against this helper's first cut.
     const vocabularySource = readFileSync(
       join(import.meta.dir, "..", "..", "brain", "vocabulary.ts"),
       "utf8",
     );
     const mergeBody = declarationBody(vocabularySource, "export async function mergeApprovedEdges");
 
-    // It stops before the neighbours in both directions — `approveAliasEdge`
-    // above it holds the OTHER `INSERT INTO brain_vocabulary_edge`, which is the
-    // statement that made a whole-file search useless.
-    expect(mergeBody).not.toContain("export async function approveAliasEdge");
+    // It stops before the neighbour BELOW it. `removeAliasEdge` is the one whose
+    // docblock the un-stripped slice swept up, so that bound is the assertion
+    // that was actually red.
     expect(mergeBody).not.toContain("export async function removeAliasEdge");
+    // `approveAliasEdge` holds the OTHER `INSERT INTO brain_vocabulary_edge` and
+    // sits ABOVE the start point, so it can never appear in a forward-only
+    // slice. Kept as a readability marker naming the statement this arm exists
+    // to exclude — NOT a falsifier: it is vacuously true for any implementation.
+    expect(mergeBody).not.toContain("export async function approveAliasEdge");
 
     // And a COMMENT cannot satisfy it. `removeAliasEdge`'s docblock follows the
     // merge in the file, so an un-stripped slice swept it up — and any docblock

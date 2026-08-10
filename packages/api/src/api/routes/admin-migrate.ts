@@ -800,10 +800,19 @@ const ImportResultSchema = z.object({
  * idiom two modules over, which is why this is a pin rather than a comment.
  */
 /**
- * ⚠️ The assignability pair alone does NOT cover an OPTIONAL field, which is the
- * pin's own motivating case: `{a} extends {a, b?}` is `true` in both directions,
- * so a `refused?: number` added to one spelling and not the other would satisfy
- * it. The key-set check is what closes that, and it is why there are two halves.
+ * ⚠️ ITS REACH, STATED EXACTLY — because the first version of this comment
+ * overclaimed in precisely the way this whole pin exists to prevent.
+ *
+ * The assignability pair catches a REQUIRED field added or dropped on either
+ * side, nested counters included. The key-set arm adds one thing the pair cannot
+ * see: an OPTIONAL top-level SECTION, since `{a} extends {a, b?}` holds in both
+ * directions.
+ *
+ * NEITHER arm sees an optional NESTED counter — a `refused?: number` added to
+ * one spelling and not the other still compiles, because the top-level key sets
+ * are unchanged and assignability tolerates the optional. Declaring a counter
+ * REQUIRED is what keeps it pinned, which is the reason `refused` is required on
+ * `ImportResult`.
  */
 type _MissingKeys =
   | Exclude<keyof z.infer<typeof ImportResultSchema>, keyof ImportResult>

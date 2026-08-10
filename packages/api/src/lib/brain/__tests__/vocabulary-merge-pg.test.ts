@@ -27,8 +27,13 @@
  *   4. **The row-copy** — values are written verbatim, `approved_at` included,
  *      and an identical arriving edge does NOT rewrite the destination's row.
  *   5. **The scoping** — positions are independent forests, and only a position
- *      that gained an edge is recomputed.
- *   6. **The transaction** — the merge refuses to run outside one, and takes no
+ *      that gained an edge is recomputed. Also the verbatim non-norm write,
+ *      whose warn must fire ONLY on the edge that actually lands.
+ *   6. **Intra-bundle conflicts** — the input class nothing upstream screens.
+ *      `validateBundle` checks each edge independently, so a duplicate
+ *      `fromNorm`, a self-cycling pair, or the identical edge twice reaches the
+ *      merge and must still account three ways.
+ *   7. **The transaction** — the merge refuses to run outside one, and takes no
  *      lock when there is nothing to merge.
  *
  * ## Why the logger is mocked here
@@ -425,7 +430,7 @@ describeIfPg("merging two vocabularies (#5036)", () => {
       expect(refusal.refusal === "already-aliased" && refusal.existingTarget).toBe("cost");
       expect(warns[0].payload).toMatchObject({ refusal: "already-aliased", existingTarget: "cost" });
       // The STORE-decided arm's whole shape — the twin of the norm-decided
-      // assertion in the group above. No `ok`: the discriminant is stripped
+      // assertion in the next case of this group. No `ok`: the discriminant is stripped
       // before the push, so both arms of `VocabularyMergeRefusal` are the same
       // shape at runtime as well as in the type.
       expect(refusal).toEqual({
@@ -700,10 +705,12 @@ describeIfPg("merging two vocabularies (#5036)", () => {
       // TWO non-norm arrivals sharing a `fromNorm`: the first is written, the
       // second takes a second parent and is refused. A warn at the top of the
       // loop emits the verbatim-write line TWICE; correctly placed it emits it
-      // once, for the edge that actually landed. Note a non-norm cannot be
-      // refused by a CYCLE — `"Price"` never matches the stored `price`, which
-      // is precisely the dead-alias problem the warn exists to announce — so
-      // at-most-one-parent is the only reachable refusal here.
+      // once, for the edge that actually landed. Note a non-norm cannot cycle
+      // against this destination's NORMED edges — `"Price"` never matches the
+      // stored `price`, which is precisely the dead-alias problem the warn
+      // exists to announce — so at-most-one-parent is the only reachable refusal
+      // here. (Two non-norm edges CAN cycle against each other; that is a
+      // different fixture.)
       const ws = freshWorkspace();
 
       const merge = await inTx((tx) =>
@@ -831,7 +838,7 @@ describeIfPg("merging two vocabularies (#5036)", () => {
       // vocabulary must not serialize against every open approval in the
       // workspace — and it reaches this function on a POOL from the importer's
       // perspective only in tests, which is exactly why the check is worth
-      // making here. If the early return were removed, the line above would throw.
+      // making here. If the early return were removed, the call below would throw.
       const ws = freshWorkspace();
       const merge = await mergeApprovedEdges(pool, ws, []);
       expect(merge).toEqual({ applied: 0, duplicate: 0, refusals: [], positionsRecomputed: [] });

@@ -1116,9 +1116,9 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         [FACT_ID, REFUSED_ORG],
       );
       expect(keyed.rows).toHaveLength(1);
-      // `cost`, not `priced at` and not the bare norm `price`. Each of those
-      // three is a different bug: `priced at` means the refusal did not hold,
-      // `price` means the keying ran against no vocabulary at all.
+      // `cost` — and each of the two alternatives would be a different bug:
+      // `priced at` means the refusal did not hold, `price` means the keying ran
+      // against no vocabulary at all.
       expect(keyed.rows[0].predicate_key).toBe("cost");
 
       // The destination's edge is untouched and still the only one.
@@ -1386,10 +1386,12 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       // logs enough of the source row to re-author it, and lets everything else
       // land.
       //
-      // THREE nodes, for `vocabulary-pg.test.ts`'s reason: at an even
-      // MAX_CHAIN_DEPTH a 2-cycle lands every norm back on itself and dies on
-      // `ck_..._not_self` rather than in the cycle walk, so a two-node fixture
-      // would not exercise the guard this test is named for.
+      // THREE nodes, kept from the pre-#5036 version of this test where a
+      // 2-cycle died on `ck_brain_vocabulary_target_not_self` during the closure
+      // REBUILD rather than in the cycle walk. That no longer applies — the
+      // merge refuses before it writes, so the rebuild never runs and a two-node
+      // fixture now takes the same path. Three still buy the stronger claim:
+      // that the walk COMPOSES a chain rather than comparing endpoints.
       const CYCLE_ORG = "org-migrate-vocab-cycle";
       await pool.query(
         `INSERT INTO brain_vocabulary_edge (workspace_id, slot_position, from_norm, to_norm, approved_by)

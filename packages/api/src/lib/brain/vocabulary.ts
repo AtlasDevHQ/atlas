@@ -393,14 +393,16 @@ export class VocabularyClosureError extends Error {
  *
  * Split out so {@link mergeApprovedEdges} enforces them from the SAME source
  * rather than from a second copy. That matters more here than the usual DRY
- * argument: the import path and the approval path disagree about almost
- * everything else (one re-norms, the other must not; one recomputes per edge,
- * the other once per position), and the rules they DO share are exactly the ones
- * a reader would assume had drifted.
+ * argument: the two paths disagree about almost everything else —
+ * `approveAliasEdge` re-norms and `mergeApprovedEdges` must not; the approval
+ * recomputes the closure per edge and the merge once per position — and the
+ * rules they DO share are exactly the ones a reader would assume had drifted.
  *
- * Called OUTSIDE the lock by both callers, which is not an optimization: a
- * caller refused here has touched no row, so there is nothing for the lock to
- * make atomic.
+ * Lock position differs between the callers, and either is safe.
+ * `approveAliasEdge` screens BEFORE taking the lock; `mergeApprovedEdges` takes
+ * it once for the whole batch before its first insert, so this runs under it.
+ * Neither ordering matters here: a caller refused at this point has touched no
+ * row, so there is nothing for the lock to make atomic.
  *
  * Takes the raw inputs beside the normed ones purely for the MESSAGE — an
  * approver who typed `Priced At` needs to see what they typed, not only what it
@@ -625,17 +627,6 @@ export interface ArrivingAliasEdge extends AliasEdgeInput {
 }
 
 /**
- * ⚠️ {@link ArrivingAliasEdge} is a SUBTYPE of {@link AliasEdgeInput}, which
- * pins the field names together deliberately — but the two have OPPOSITE
- * contracts on one axis, and the inheritance cannot express that.
- * `AliasEdgeInput`'s norms are re-normed before they are written; an arriving
- * edge's are written verbatim (ADR-0037 §8). The barrier on
- * {@link approveAliasEdge}'s parameter is what stops the subtype relation from
- * making the wrong one callable. Branding the norms so "already normed" is a
- * type rather than a comment is the deeper fix and is deliberately not taken
- * here: it needs a mint point in `validateBundle` and is its own slice.
- */
-
 /**
  * One arriving edge the merge would not write, and everything needed to
  * re-author it by hand.
@@ -724,12 +715,18 @@ export interface VocabularyMergeResult {
  *
  * Edges are applied in the order supplied, and that is deterministic in
  * practice: `export.ts` orders them `slot_position, from_norm ASC`. Order still
- * MATTERS, and the honest statement of it is narrow — the arriving set is itself
- * a valid forest, so no two arriving edges can conflict with each other, but a
- * cycle formed jointly with destination edges can be closable by more than one
- * arrival, and which of them is refused depends on which is seen first. Both
- * outcomes leave a forest, both are logged; a hand-built bundle in another order
- * may pick the other edge.
+ * MATTERS. For any bundle this product exported the arriving set is itself a
+ * valid forest, so in practice no two arrivals conflict — but NOTHING UPSTREAM
+ * ENFORCES THAT: `validateBundle` screens each edge independently, with no
+ * duplicate-`fromNorm` and no intra-bundle cycle check, so a hand-built or
+ * corrupted bundle can conflict with itself, and the merge decides those against
+ * rows this same transaction has already written. Group 6 of
+ * `vocabulary-merge-pg.test.ts` pins that arm.
+ *
+ * Separately, a cycle formed jointly with destination edges can be closable by
+ * more than one arrival, and which of them is refused depends on which is seen
+ * first. Both outcomes leave a forest, both are logged; a bundle in another
+ * order may pick the other edge.
  *
  * ## No re-norming, and no version stamp
  *
@@ -804,8 +801,9 @@ export async function mergeApprovedEdges(
       // `ok` is stripped, NOT spread through. `{ edge, ...admission }` compiles
       // — object-literal SPREAD is exempt from excess-property checking, unlike
       // the equivalent inline literal — and pushes a runtime `ok: false` that
-      // `VocabularyMergeRefusal` does not declare. The twin four lines up does
-      // not, because `screenAliasNorms` returns no discriminant, so the two arms
+      // `VocabularyMergeRefusal` does not declare. The twin in the
+      // `screenAliasNorms` branch above does not, because that helper returns no
+      // discriminant — so the two arms
       // of one union would carry structurally different shapes: a `toEqual` or a
       // `JSON.stringify` of the recovery payload sees `ok` on `would-cycle` and
       // not on `self-edge`. Destructuring is what makes the declared type and

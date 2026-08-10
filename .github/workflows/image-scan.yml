@@ -188,11 +188,39 @@ jobs:
             exit 0
           fi
 
-          # Deliberately broad. A false positive costs ~10 min of parallel CI; a
-          # false negative ships an unscanned image. bun.lock and package.json
-          # are included because the resolved production dependency tree is part
-          # of the image, and Trivy scans it.
-          if echo "$CHANGED" | grep -qE '^(deploy/|packages/|plugins/|ee/|apps/docs/|create-atlas/templates/docker/|examples/docker/|bun\.lock$|package\.json$|\.trivyignore$|scripts/(scan-image|list-runtime-base-images)\.sh$|\.github/workflows/image-scan\.yml$)'; then
+          # Broad, but no longer "everything". ⚠️ This filter opened with
+          # `^packages/`, which matches essentially every code PR in the repo —
+          # so the ~10-min build+scan of three images ran on a one-line edit to
+          # a test file under packages/api/src. That is not a broad filter, it
+          # is an absent one, and it is what put this job on every PR's critical
+          # path.
+          #
+          # What this gate detects is a vulnerable OS package in a runtime
+          # layer, plus library findings in the image's resolved node_modules.
+          # A TypeScript edit under packages/ changes NEITHER: it is compiled
+          # into a layer above the base, and the dependency closure Trivy reads
+          # is decided by the lockfile and the manifests. So the trigger set is
+          # the things that can actually move those two surfaces —
+          #
+          #   any Dockerfile        base image pin, layer contents, apt/apk installs
+          #   any package.json      a manifest anywhere in the workspace graph
+          #   bun.lock              the resolved closure that ships
+          #   deploy/               the three images that are actually built here
+          #   the scanner itself    scripts + baseline + this file
+          #
+          # ⚠️ `(^|/)` on the file-name patterns, not `^`: the old `package\.json$`
+          # was anchored to the ROOT manifest alone, so a workspace package
+          # gaining a dependency was matched only by the `^packages/` blanket
+          # this narrowing removes. Dropping the blanket without widening these
+          # would have opened a real hole.
+          #
+          # The residual is bounded by design, and by two backstops already in
+          # this file: `push: main` scans unconditionally (the early return
+          # above) — the last chance before an artifact reaches Railway — and
+          # the Monday cron scans an unchanged tree, which is the only thing
+          # that ever catches a CVE disclosed against a digest-pinned base.
+          # PR-time scanning is early warning, not the gate of record.
+          if echo "$CHANGED" | grep -qE '^(deploy/|create-atlas/templates/docker/|examples/docker/|\.trivyignore$|scripts/(scan-image|list-runtime-base-images)\.sh$|\.github/workflows/image-scan\.yml$)|(^|/)Dockerfile|(^|/)package\.json$|(^|/)bun\.lock$'; then
             echo "built-images=true" >> "$GITHUB_OUTPUT"
             echo "Image-relevant paths changed — scanning built images"
           else

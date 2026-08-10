@@ -355,6 +355,23 @@ Verified against the offending PR itself — `gh pr view 5116 … --jq '…[].nu
 `5000` and `5029`, where only `5029` was intended. The check is not theoretical and it
 is one command.
 
+⚠️ **It then caught the PR that ADDED it, twice — once in the body and once in a commit
+message — because both quoted the offending sentence in order to explain it.** That is
+the quotation trap `/review-panel`'s ratchet section describes, arriving through
+GitHub's parser: a parser is a lexical guard, and a lexical guard cannot tell a
+quotation from an assertion. The resolution is the same one — **reword, never exempt.**
+
+Two things follow, and both are cheap:
+
+- **Put the keyword AFTER the number.** *"#5000 is not fixed by this"* is safe;
+  *"does not fix #5000"* is not, and neither is any tense (`fixed`, `closed`,
+  `resolved`) nor a cross-repo form (`owner/repo#N` still closes). Backticks are not a
+  reliable escape — do not rely on them.
+- **Re-run the query after your LAST push, not just after opening the PR.** Commit
+  messages are parsed too, so an amend or a fresh commit can reintroduce it under a
+  green earlier check. On this PR the body was fixed first and the query still answered
+  `5000`, because the commit still carried it.
+
 Run it at Step 5, not Step 7: here the body is still editable. Safe phrasings keep the
 verb away from the number (*"#5000 is not fixed by this"*); a cross-repo reference does
 **not** help, since `owner/repo#N` still closes.

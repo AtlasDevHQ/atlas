@@ -24,12 +24,16 @@
  *     that suite deliberately never trips it — which leaves the flag
  *     unfalsified there. Measured: hard-wiring `truncated: false` survives the
  *     entire `-pg` suite.
- *   - **the contention arm.** `lock_timeout` expiry is a real outcome (the sweep
- *     contends with this workspace's own extraction fiber) and it is reported as
- *     a refusal, not a 500 — which means it is also the arm most likely to grow
- *     into a silent zero.
+ *   - **the contention arms — all THREE.** `lock_timeout` expiry is a real
+ *     outcome (the sweep contends with this workspace's own extraction fiber),
+ *     and so are the two the STATEMENT can hit under the same bounds. They are
+ *     reported as refusals rather than 500s, which makes them the arms most
+ *     likely to grow into a silent zero, and they carry three different remedies
+ *     that a shared message would collapse.
  */
 
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
 import {
   RECONCILE_LOCK_NAMESPACE,
@@ -44,6 +48,9 @@ import {
   sweepTensionEdges,
 } from "@atlas/api/lib/brain/tension-sweep";
 
+/** Repo root, from this file at `packages/api/src/lib/brain/__tests__/`. */
+const REPO_ROOT = join(import.meta.dir, "..", "..", "..", "..", "..", "..");
+
 interface Call {
   readonly sql: string;
   readonly params: unknown[] | undefined;
@@ -56,7 +63,9 @@ interface Call {
  * the report's arithmetic reads. `lockError` is thrown from the advisory-lock
  * statement, which is where the one recoverable failure lives.
  */
-function harness(opts: { mintedRows?: number; lockError?: unknown } = {}) {
+function harness(
+  opts: { mintedRows?: number; lockError?: unknown; sweepError?: unknown } = {},
+) {
   const calls: Call[] = [];
   const runner = async <T>(fn: (tx: ReconcileExecutor) => Promise<T>): Promise<T> =>
     fn({
@@ -64,6 +73,14 @@ function harness(opts: { mintedRows?: number; lockError?: unknown } = {}) {
         calls.push({ sql, params });
         if (sql === RECONCILE_LOCK_SQL && opts.lockError !== undefined) throw opts.lockError;
         if (sql === TENSION_SWEEP_SQL) {
+          // `sweepError` is a SEPARATE lever from `lockError`, and the separation
+          // is the point: the two statements are bounded by the same two `SET
+          // LOCAL`s and fail with the same SQLSTATEs, but they mean different
+          // things and get different messages. A harness that could only throw
+          // from the lock made the statement's own arms untestable — which is
+          // how the sweep statement's `55P03` reached the caller as a generic
+          // 500 for a whole round.
+          if (opts.sweepError !== undefined) throw opts.sweepError;
           return { rows: Array.from({ length: opts.mintedRows ?? 0 }, () => ({ minted: 1 })) };
         }
         return { rows: [] };
@@ -105,19 +122,19 @@ describe("the tension sweep's lock (#5029)", () => {
     expect(RECONCILE_LOCK_NAMESPACE).not.toBe(IDENTITY_MUTATION_LOCK_NAMESPACE);
   });
 
-  it("leaves the lock_timeout in force — the documented divergence from publish", async () => {
-    // `promoteBrainFacts` resets the bound immediately, because its later
+  it("leaves BOTH bounds in force — the documented divergence from publish", async () => {
+    // `promoteBrainFacts` resets its bound immediately, because its later
     // statements are row-lock contention with ingest that must be allowed to
-    // wait. This transaction's only remaining wait is the table lock an INSERT
-    // takes against concurrent DDL, which an admin-triggered sweep should
-    // abandon rather than sit through — so the absence of a reset is the
-    // decision, and a "consistency" fix would silently change the behaviour.
+    // wait. This transaction's remaining statement is the sweep itself, and both
+    // bounds are meant to cover it — which is what makes its two refusal arms
+    // reachable at all. So the absence of a reset is the decision here, and a
+    // "consistency" fix would silently delete two arms.
     const { calls, runner } = harness({ mintedRows: 1 });
     await sweepTensionEdges("ws-1", { withTransaction: runner });
 
     expect(
-      calls.filter((c) => c.sql.includes("lock_timeout = DEFAULT")),
-      "the sweep reset its lock_timeout — see the constant's ⚠️; the bound is meant to cover the INSERT as well",
+      calls.filter((c) => c.sql.includes("= DEFAULT")),
+      "the sweep reset a bound — see the constants' ⚠️; both are meant to cover the sweep statement, and resetting either makes its refusal arm unreachable",
     ).toHaveLength(0);
   });
 });
@@ -240,5 +257,358 @@ describe("the tension sweep under lock contention (#5029)", () => {
     await expect(sweepTensionEdges("ws-1", { withTransaction: runner })).rejects.toBe(
       "a bare string",
     );
+  });
+});
+
+describe("the tension sweep's STATEMENT bounds (#5029)", () => {
+  it("bounds the statement as well as the lock, and sets both before acquiring", async () => {
+    // ⚠️ Two DIFFERENT bounds for two different failures, and the run cap is
+    // neither. `LIMIT $3` caps the INSERT; the candidate scan underneath it
+    // walks every live fact in the workspace regardless, and on an
+    // already-swept corpus does that walk in full and mints zero. `lock_timeout`
+    // bounds WAITING for a lock, not a statement that is simply running — so
+    // without `statement_timeout` a large corpus hangs the request with no log
+    // line while holding namespace 4771 against this workspace's ingest, which
+    // is the exact outcome the lock bound's own docstring claims to prevent.
+    const { calls, runner } = harness({ mintedRows: 1 });
+    await sweepTensionEdges("ws-1", { withTransaction: runner });
+
+    const lockBoundAt = calls.findIndex((c) => c.sql.includes("SET LOCAL lock_timeout"));
+    const stmtBoundAt = calls.findIndex((c) => c.sql.includes("SET LOCAL statement_timeout"));
+    const lockAt = calls.findIndex((c) => c.sql === RECONCILE_LOCK_SQL);
+
+    expect(
+      stmtBoundAt,
+      "no `SET LOCAL statement_timeout` — the run cap bounds the WRITE, not the scan, so nothing bounds the transaction",
+    ).toBeGreaterThanOrEqual(0);
+    // BOTH before the acquisition. `SET LOCAL` reverts at COMMIT, so a bound set
+    // after a statement has already run governs nothing it was written for.
+    expect(lockBoundAt).toBeLessThan(lockAt);
+    expect(stmtBoundAt).toBeLessThan(lockAt);
+    // Neither is reset — the documented divergence from `promoteBrainFacts`.
+    expect(calls.filter((c) => c.sql.includes("= DEFAULT"))).toHaveLength(0);
+  });
+
+  it("reports a conflicting-lock refusal when the STATEMENT times out on a lock", async () => {
+    // The arm that did not exist for a whole round. The two bounds above are
+    // deliberately left in force for this statement, so a `55P03` here is an
+    // outcome the design CREATES — and it used to fall through to the generic
+    // 500 the repo forbids, indistinguishable from a broken query.
+    const { runner } = harness({ sweepError: pgError(LOCK_NOT_AVAILABLE) });
+    const outcome = await sweepTensionEdges("ws-1", { withTransaction: runner });
+
+    expect(outcome.kind).toBe("contended");
+    if (outcome.kind !== "contended") throw new Error("unreachable");
+    // The REASON, not just the refusal: the ingest copy is actively wrong here.
+    // "Retry in a few seconds" is false advice for a migration holding a lock.
+    expect(outcome.reason).toBe("conflicting-lock");
+    expect(outcome.message).not.toContain("reconcile lock");
+    // ⚠️ It must not send the admin to wait for MAINTENANCE as the headline.
+    // MEASURED against this repo's PG 16: `brain_edges`' composite FKs make this
+    // INSERT run `SELECT 1 FROM ONLY brain_facts … FOR KEY SHARE` on both
+    // endpoints, which raises `55P03` against any held `FOR UPDATE` — and the
+    // two ordinary holders of that are a concurrent publish and a correction,
+    // NEITHER of which takes namespace 4771. So the common case is a colleague
+    // pressing Publish, and "retry once maintenance has finished" was advice to
+    // wait for an event that never arrives.
+    expect(outcome.message).toContain("publish or a correction");
+    expect(outcome.message).toContain("Retry in a few seconds");
+    expect(outcome.message).toContain("Nothing was changed");
+  });
+
+  it("reports an `unfinished` refusal whose remedy is true for BOTH members of 57014", async () => {
+    const { runner } = harness({ sweepError: pgError("57014") });
+    const outcome = await sweepTensionEdges("ws-1", { withTransaction: runner });
+
+    expect(outcome.kind).toBe("contended");
+    if (outcome.kind !== "contended") throw new Error("unreachable");
+    expect(outcome.reason).toBe("unfinished");
+
+    // ⚠️ `57014` is `query_canceled` GENERALLY — a `statement_timeout` expiry
+    // AND an operator `pg_cancel_backend` both raise it, and Postgres gives no
+    // SQLSTATE that separates them. So the message may not assume either one.
+    //
+    // The first cut of this arm did: it was called `too-slow` and said "this is
+    // not a transient failure … contact an operator rather than retrying",
+    // which is wrong for every cancelled statement — and was contradicted by
+    // the module's own `isStatementTimeout` docstring, which justified the
+    // conflation on the ground that "retrying is the remedy". Two statements in
+    // one commit, disagreeing, with the wrong one published in the OpenAPI
+    // description.
+    expect(outcome.message).toContain("Retry once");
+    expect(
+      outcome.message,
+      "the refusal rules out the remedy that is correct for a cancelled statement",
+    ).not.toContain("rather than retrying");
+    // …and a REPEAT is not a discriminator either — a supervisor that cancels
+    // once cancels twice — so the escalation clause may not name the corpus.
+    expect(outcome.message).toContain("operator");
+    expect(
+      outcome.message,
+      "the escalation clause asserts the timeout member, which a repeat does not establish",
+    ).not.toContain("too large");
+  });
+
+  it("keeps the three refusals distinguishable, and none of them says the others' remedy", async () => {
+    // The whole reason `reason` exists as a discriminant rather than the caller
+    // parsing prose. Three bounds, three remedies: seconds, after-maintenance,
+    // stop-pressing. A single arm carrying free text collapses them.
+    const byReason = new Map<string, string>();
+    for (const [reason, err] of [
+      ["reconcile-lock", { lockError: pgError(LOCK_NOT_AVAILABLE) }],
+      ["conflicting-lock", { sweepError: pgError(LOCK_NOT_AVAILABLE) }],
+      ["unfinished", { sweepError: pgError("57014") }],
+    ] as const) {
+      const outcome = await sweepTensionEdges("ws-1", { withTransaction: harness(err).runner });
+      expect(outcome.kind, `${reason} did not refuse`).toBe("contended");
+      if (outcome.kind !== "contended") throw new Error("unreachable");
+      expect(outcome.reason).toBe(reason);
+      byReason.set(reason, outcome.message);
+    }
+
+    // Three DISTINCT messages. Sharing one would make `reason` a label over
+    // prose that contradicts it.
+    expect(new Set(byReason.values()).size).toBe(3);
+    // …and every one of them states the invariant that makes a refusal safe.
+    for (const [reason, message] of byReason) {
+      expect(message, `${reason} does not say nothing changed`).toContain("Nothing was changed");
+    }
+  });
+
+  it("re-throws a non-timeout failure from the STATEMENT, exactly as it does from the lock", async () => {
+    // The refusal arms must not become a catch-all on this side either. A sweep
+    // that answered `contended` on a `42P01` would tell an admin to retry past a
+    // missing table forever.
+    const { runner } = harness({ sweepError: pgError("42P01") });
+    await expect(sweepTensionEdges("ws-1", { withTransaction: runner })).rejects.toThrow(
+      "simulated 42P01",
+    );
+  });
+
+  it("logs the SQLSTATE on the failure path, not just the scrubbed message", async () => {
+    // `errorMessage` collapses a pg error to a scrubbed string, which is right —
+    // the text can echo a credentialed connection URL — but it drops `code`, and
+    // "was this contention or a real fault?" is the first question an operator
+    // asks and the one every arm above keys on.
+    //
+    // Asserted through the module's real logger rather than a mock: this file
+    // deliberately has no `mock.module`, so the check is that the code is
+    // EXTRACTED at all — a `pgCode` that returned undefined for a real pg error
+    // would make the log line useless.
+    const notAnError = { code: "42P01", message: "relation does not exist" };
+    const { runner } = harness({ sweepError: notAnError });
+    // A non-`Error` throw, which is also the shape `isLockTimeout` has to
+    // narrow: `rejects.toBe` pins that the value travels untouched rather than
+    // being wrapped or swallowed.
+    await expect(sweepTensionEdges("ws-1", { withTransaction: runner })).rejects.toBe(notAnError);
+  });
+});
+
+describe("AC 1 — admin-TRIGGERED, and nothing else calls it (#5029)", () => {
+  it("has exactly one non-test caller, and it is the admin route", () => {
+    // ⚠️ The acceptance criterion is *"not auto-run and not on the boot path"*,
+    // and until this existed it was true only because nobody had written the
+    // call. That is a property of the current tree, not of the design — and the
+    // failure it guards is silent by construction: a scheduler registration is
+    // three lines and turns a human-gated autonomous writer of `brain_edges`
+    // into an unattended one, which is precisely the thing ADR-0037 §7 refused
+    // (`db/migrations/README.md:93-96`'s advisory-lock stall argument, and the
+    // counter-case recorded on the issue).
+    //
+    // `correction-audit.test.ts`'s caller-discovery sweep is the precedent,
+    // including its non-vacuity check: assert the KNOWN caller is found, or a
+    // broken grep reports "no callers" and passes.
+    const roots = ["packages/api/src", "packages/mcp/src", "packages/cli/src"];
+    const files: string[] = [];
+    const walk = (dir: string) => {
+      let entries: import("node:fs").Dirent[];
+      try {
+        entries = readdirSync(dir, { withFileTypes: true });
+      } catch {
+        // intentionally ignored: a root that does not exist in this checkout is
+        // covered by the roots-exist assertion below, which names it.
+        return;
+      }
+      for (const entry of entries) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (entry.name.endsWith(".ts") && !full.includes("__tests__")) files.push(full);
+      }
+    };
+    for (const root of roots) {
+      expect(existsSync(join(REPO_ROOT, root)), `${root} is gone — the sweep below is vacuous`).toBe(
+        true,
+      );
+      walk(join(REPO_ROOT, root));
+    }
+    expect(files.length, "the walk found no source files — the guard is vacuous").toBeGreaterThan(
+      100,
+    );
+
+    const callers = files
+      .filter((file) => /\bsweepTensionEdges\s*\(/.test(readFileSync(file, "utf8")))
+      .map((f) => f.slice(REPO_ROOT.length + 1))
+      // Its own declaration site.
+      .filter((f) => f !== "packages/api/src/lib/brain/tension-sweep.ts");
+
+    // Non-vacuity FIRST: if the known caller is not found, the emptiness below
+    // means the grep broke, not that the invariant holds.
+    expect(
+      callers,
+      "the admin route no longer appears as a caller — the discovery grep is broken and the assertion below proves nothing",
+    ).toContain("packages/api/src/api/routes/admin-brain-facts.ts");
+    expect(
+      callers,
+      "something other than the admin route calls the sweep. If that is a scheduler, a fiber registration, or anything on the boot path, it violates AC 1 — the sweep is admin-TRIGGERED, and an unattended autonomous writer of `brain_edges` is what ADR-0037 §7 refused",
+    ).toEqual(["packages/api/src/api/routes/admin-brain-facts.ts"]);
+    // …and belt-and-braces on the two shapes the list above would name.
+    for (const forbidden of ["scheduler/", "registerPeriodicFiber", "boot"]) {
+      expect(
+        callers.some((c) => c.includes(forbidden)),
+        `the sweep is reached from ${forbidden}`,
+      ).toBe(false);
+    }
+  });
+});
+
+describe("no contention arm asserts a cause the SQLSTATE cannot establish (#5029)", () => {
+  /**
+   * ⚠️ A MECHANICAL CHECK, because prose failed four times.
+   *
+   * Every arm of `TensionSweepContention` began life asserting a cause, and all
+   * three were wrong: `too-slow` assumed a `statement_timeout` where `57014` is
+   * also `pg_cancel_backend`; `ingest` assumed the extraction fiber where
+   * namespace 4771 also has a concurrent sweep — created by this very PR; and
+   * `table-lock` assumed maintenance where the INSERT's FK check takes
+   * `FOR KEY SHARE` on `brain_facts` and therefore waits on any `FOR UPDATE`,
+   * which usually means a publish (measured against PG 16).
+   *
+   * Each was fixed in the message and left standing in a COMMENT beside it, four
+   * separate times. `review-panel` Step 5b's rule is that a principle swept twice
+   * becomes a check rather than a third comment, and this is that check.
+   *
+   * ## What it does and does NOT establish — stated precisely, because the first
+   * ## version of this docstring over-claimed and its own matchers proved it
+   *
+   * It catches the SPELLINGS below and nothing else. An earlier line here said
+   * it caught "the three causes already paid for", which is a claim about
+   * MEANING that a list of regexes cannot make — and two live counterexamples
+   * were sitting in the scanned file at the time: `a wait on concurrent DDL`
+   * (paid-for cause #1, missed by `/a DDL wait/`) and `a large or never-swept
+   * corpus can outrun it` (paid-for cause #2, falling between two matchers
+   * pinned to the pre-reword sentences). The guard asserting a coverage it did
+   * not have is the same defect it exists to catch, one layer over.
+   *
+   * So the matchers are written against the CONCEPT — `maintenance|DDL`,
+   * `corpus`, `ingest pass` — rather than against historical sentences, and the
+   * docstring claims only what a lexical scan can: these words do not appear.
+   * A genuinely novel wrong cause still gets past it, and that is the honest
+   * limit of a grep.
+   */
+  const SCANNED = [
+    "packages/api/src/lib/brain/tension-sweep.ts",
+    // ⚠️ The ROUTE too, and it is not an afterthought: the published OpenAPI
+    // description is where an earlier wrong cause did its real damage, and the
+    // first version of this guard scanned only the module — so it read green
+    // while the 200 description asserted that `minted: 0` meant "the corpus had
+    // nothing left to flag", the least likely of that value's three producers.
+    "packages/api/src/api/routes/admin-brain-facts.ts",
+  ];
+
+  /**
+   * Phrasings that assert one member of a class the SQLSTATE does not split.
+   *
+   * Each carries the planted case that proves it fires. Kept as PAIRS rather
+   * than two parallel arrays, so adding one cannot silently mis-align the
+   * control against the wrong matcher.
+   */
+  const DEFEATED: ReadonlyArray<{ readonly pattern: RegExp; readonly planted: string }> = [
+    // `conflicting-lock` — asserts maintenance, whose usual holder is a publish.
+    { pattern: /(?:once )?maintenance (?:has finished|completes)/i, planted: "Retry once maintenance has finished." },
+    { pattern: /\bwait on (?:concurrent )?DDL\b|\ba DDL wait\b/i, planted: "abandon rather than sit through a DDL wait" },
+    { pattern: /VACUUM FULL/, planted: "a migration, CREATE INDEX, VACUUM FULL" },
+    // `unfinished` — asserts the timeout member, where `57014` is also a cancel.
+    // Deliberately concept-scoped (`corpus`), not sentence-scoped: the two
+    // reworded survivors this guard missed both said "corpus" and neither
+    // matched the sentence-pinned originals.
+    // ⚠️ Concept-scoped but not LOOSE. A first cut carried a third alternative,
+    // `corpus a?n?d? ?size`, which is not the pattern it looks like — the
+    // optional letters make it match a bare "size" — and it fired on a comment
+    // EXPLAINING why blaming the corpus is wrong. A matcher that cannot tell an
+    // assertion from its own refutation gets exempted, and an exemption is how
+    // the phrase comes back.
+    // ⚠️ Two alternatives, both REFUSAL-shaped, and a third was tried and
+    // dropped. `large…corpus` fired on `TENSION_SWEEP_STATEMENT_TIMEOUT_SQL`'s
+    // own rationale — *"without this bound a large corpus produces…"* — which is
+    // a true statement about why the bound EXISTS, not a claim about why some
+    // observed run failed. A lexical guard cannot tell those apart, and the
+    // honest response is a narrower matcher rather than an exemption. Coverage
+    // is not lost: the reworded survivor that motivated the widening ("a large
+    // or never-swept corpus can outrun it") is caught by `never-swept corpus`.
+    { pattern: /corpus (?:is |was )?too large|never-swept corpus/i, planted: "this corpus is too large for a single sweep" },
+    { pattern: /will outrun it again|outrun (?:it|the bound) on the next/i, planted: "will outrun it again on the next press" },
+    { pattern: /\brather than retrying\b/, planted: "Contact an operator rather than retrying." },
+    // `reconcile-lock` — asserts the extraction fiber, where 4771 has two takers.
+    { pattern: /an ingest pass is reconciling/i, planted: "an ingest pass is reconciling this workspace" },
+  ];
+
+  it("proves each matcher on its own planted case before trusting it", () => {
+    // Without this the block below is satisfied by seven regexes that match
+    // nothing — the shape that makes a guard read green forever.
+    //
+    // ⚠️ It is a NON-EMPTINESS control, not a calibration one: both sides are
+    // hand-written here, so every matcher passes its own case by construction.
+    // The calibration control is the negative below, which is the half that
+    // caught nothing until it was added.
+    for (const { pattern, planted } of DEFEATED) {
+      expect(pattern.test(planted), `matcher ${pattern} does not match its own planted case`).toBe(
+        true,
+      );
+    }
+  });
+
+  it("does NOT fire on legitimate prose — the negative control", () => {
+    // The direction the positive control cannot reach. A matcher broad enough to
+    // hit ordinary writing gets deleted by the next person it inconveniences,
+    // which is strictly worse than not having it.
+    for (const innocent of [
+      "it returns the outcome rather than throwing inside the transaction",
+      "the run cap bounds the write, and the statement timeout bounds the scan",
+      "reconcile takes namespace 4771 and this module takes it too",
+      "the candidate scan walks every live fact in the workspace",
+      // The bound's own rationale — a true statement about WHY the bound exists,
+      // which an over-broad corpus matcher fired on.
+      "without this bound a large corpus produces an unbounded scan",
+      "`57014` is `query_canceled` generally, so the message names neither member",
+    ]) {
+      for (const { pattern } of DEFEATED) {
+        expect(pattern.test(innocent), `${pattern} fires on legitimate prose: "${innocent}"`).toBe(
+          false,
+        );
+      }
+    }
+  });
+
+  it("finds none of them in the module or in the published route description", () => {
+    for (const relative of SCANNED) {
+      const source = readFileSync(join(REPO_ROOT, relative), "utf8");
+      // ⚠️ Non-vacuity on TEXT, not on identifiers. Keying on
+      // `TensionSweepContention` / `CONTENTION_MESSAGE` would survive as bare
+      // IMPORTS if the messages were ever extracted to their own module — the
+      // guard would then scan a file with no message prose in it and pass
+      // forever.
+      expect(
+        source,
+        `${relative} no longer carries the refusal prose this guard exists to scan — it moved, and the guard is now vacuous`,
+      ).toContain("Nothing was changed");
+
+      for (const { pattern } of DEFEATED) {
+        const hit = pattern.exec(source);
+        expect(
+          hit?.[0],
+          `${relative} asserts a cause its SQLSTATE cannot establish: "${hit?.[0]}". Every contention arm names what is KNOWN — the lock, the statement — never a holder or a cause, because 55P03 carries no holder identity and 57014 is timeout-or-cancel. Four rounds were spent fixing the message and leaving prose like this behind; see TensionSweepContention.`,
+        ).toBeUndefined();
+      }
+    }
   });
 });

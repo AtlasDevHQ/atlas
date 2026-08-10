@@ -1203,12 +1203,20 @@ export interface BrainFactTensionSweepResponse {
    */
   readonly minted: number;
   /**
-   * The per-run bound bit, so more unswept pairs may remain. Run it again — the
-   * next run resumes rather than repeating, and a run with nothing left answers
-   * `{ minted: 0, truncated: false }`.
+   * The per-RUN bound bit, so more unswept pairs may remain. Run it again — the
+   * next run resumes rather than repeating.
    *
-   * ⚠️ Conservative by one run: a sweep that mints exactly the cap and had
-   * nothing left still reports `true`. See `TensionSweepReport.truncated`.
+   * ⚠️ **`false` does NOT mean the corpus is fully wired**, and the field name
+   * invites that reading. There are two bounds and this flag reports one: the
+   * per-FACT fan-out cap also drops pairs, and those no number of re-runs will
+   * ever mint. A slot with more live rivals than the fan-out cap admits is
+   * permanently, deliberately under-wired — the same bound the ingest path
+   * applies — and answers `{ minted: 0, truncated: false }` exactly like a
+   * converged one.
+   *
+   * ⚠️ Conservative by one run in the other direction: a sweep that mints
+   * exactly the run cap and had nothing left still reports `true`. See
+   * `TensionSweepReport.truncated`.
    */
   readonly truncated: boolean;
 }

@@ -22,13 +22,25 @@
  * "what is in tension" is how the sweep and the ingest path drift into flagging
  * different pairs, and a reviewer has no way to tell which one is right.
  *
- * The one structural difference is the DIRECTION arm. `reconcile.ts` runs at
- * write time, so "the rivals" are exactly the rows that already existed —
- * `newer → incumbent` falls out of when the statement runs. A sweep sees the
- * whole slot at once and has to say so: `(ingested_at, id) <` is the total order
- * that makes this statement generate the same edge set the ingest path would
- * have, one edge per unordered pair, with the per-fact fan-out cap biting on the
- * same side.
+ * TWO structural differences, and both are about ORDER rather than about which
+ * pairs qualify:
+ *
+ *   - **The DIRECTION arm.** `reconcile.ts` runs at write time, so "the rivals"
+ *     are exactly the rows that already existed — `newer → incumbent` falls out
+ *     of when the statement runs. A sweep sees the whole slot at once and has to
+ *     say so: `(ingested_at, id) <` is the total order that makes this statement
+ *     generate the same edge set the ingest path would have, one edge per
+ *     unordered pair, with the per-fact fan-out cap biting on the same side.
+ *   - **The id TIEBREAK in the `ORDER BY`.** `TENSION_CANDIDATES_SQL` orders
+ *     `ingested_at DESC` alone; this orders `ingested_at DESC, id DESC`. Under
+ *     tied timestamps — a batch insert, a region import carrying one window —
+ *     the two can therefore select DIFFERENT rivals inside the per-fact cap, so
+ *     the "same edge set" claim above is exact only up to the cap's tail. This
+ *     statement's version is the better one (an unordered tie makes the ingest
+ *     path's own cap non-deterministic), and the honest fix is to add the
+ *     tiebreak there rather than to remove it here — deliberately NOT done in
+ *     this PR, because it changes which edges the ingest path mints and belongs
+ *     in a change that can falsify that.
  *
  * ## TODAY's cardinality, not the value at write time (the AC-4 decision)
  *
@@ -69,9 +81,16 @@
  *   - {@link TENSION_EDGE_CAP} — reconcile's own per-fact fan-out bound, reused
  *     rather than re-declared, so a slot with a hundred live rivals cannot make
  *     one claim the centre of a hundred-edge star.
- *   - {@link TENSION_SWEEP_RUN_CAP} — how many edges ONE invocation may mint,
- *     which is what keeps the transaction (and therefore the advisory lock it
- *     holds against ingest) short on a corpus that has never been swept.
+ *   - {@link TENSION_SWEEP_RUN_CAP} — how many edges ONE invocation may WRITE.
+ *
+ * ⚠️ **Neither cap bounds the transaction, and an earlier draft of this header
+ * claimed the run cap did.** `LIMIT $3` sits on `fresh`, so it caps the INSERT;
+ * the `candidate` scan underneath it walks every live fact in the workspace
+ * regardless, and on an already-swept corpus it does that walk in full and mints
+ * zero. What bounds the transaction — and therefore how long namespace 4771 is
+ * held against this workspace's ingest — is
+ * `TENSION_SWEEP_STATEMENT_TIMEOUT_SQL`, and it is a separate mechanism for a
+ * separate failure.
  *
  * ⚠️ The run cap is applied AFTER the already-exists filter, not before, and the
  * ordering is what makes a truncated sweep converge. Capping the candidate pairs
@@ -133,10 +152,13 @@ const log = createLogger("brain-tension-sweep");
  * substitutes for the other — a corpus of ten thousand two-row slots trips this
  * one without ever approaching that one.
  *
- * Sized for the transaction rather than for the corpus: a sweep that hits the
- * cap reports {@link TensionSweepReport.truncated}, and the next run picks up
- * exactly where it stopped, so the cost of it being too small is another button
- * press and the cost of it being too large is an ingest stall.
+ * Sized for the WRITE: a sweep that hits the cap reports
+ * {@link TensionSweepReport.truncated}, and the next run picks up exactly where
+ * it stopped, so the cost of it being too small is another button press.
+ *
+ * ⚠️ It does NOT bound how long the transaction runs — the candidate scan
+ * underneath it is unbounded by this number. `TENSION_SWEEP_STATEMENT_TIMEOUT_SQL`
+ * is what holds that line.
  */
 export const TENSION_SWEEP_RUN_CAP = 1000;
 
@@ -150,13 +172,20 @@ export const TENSION_SWEEP_RUN_CAP = 1000;
  * diverges from that precedent. The reset exists there because `SET LOCAL`
  * reverts at COMMIT rather than at the next statement, and publish's later
  * statements are row-lock contention with ingest that must be allowed to wait.
- * This transaction has exactly one more statement, and its only remaining lock
- * wait is the `RowExclusiveLock` an INSERT takes on `brain_edges` — i.e. a wait
- * on concurrent DDL, which is a wait an admin-triggered sweep SHOULD abandon
- * rather than sit through. Leaving the bound in force is the behaviour we want,
- * not an omission of the reset. Pinned by `tension-sweep.test.ts`, so a
- * "consistency" fix that adds the reset is a failing test rather than a silent
- * behaviour change.
+ * This transaction has exactly one more statement, and every lock it waits on is
+ * one an admin-triggered sweep SHOULD abandon rather than sit through. Leaving
+ * the bound in force is the behaviour we want, not an omission of the reset.
+ * Pinned by `tension-sweep.test.ts`, so a "consistency" fix that adds the reset
+ * is a failing test rather than a silent behaviour change.
+ *
+ * ⚠️ **An earlier draft justified this with "its only remaining lock wait is the
+ * `RowExclusiveLock` an INSERT takes on `brain_edges` — i.e. a wait on concurrent
+ * DDL", and that premise is FALSE.** It omits the referential check: the INSERT
+ * takes `FOR KEY SHARE` on both endpoint rows in `brain_facts`, so it also waits
+ * on any `FOR UPDATE` held there — a concurrent publish or correction, neither
+ * of which takes namespace 4771. The decision survives its bad premise (those
+ * waits are exactly as worth abandoning), but the REFUSAL that reports them had
+ * to change; see {@link TensionSweepContention}'s `conflicting-lock`.
  *
  * ## MEASURED, because the whole contention arm rests on it
  *
@@ -174,6 +203,37 @@ export const TENSION_SWEEP_RUN_CAP = 1000;
  * measuring; this is that measurement.)
  */
 const TENSION_SWEEP_LOCK_TIMEOUT_SQL = `SET LOCAL lock_timeout = '5s'`;
+
+/**
+ * Bounds the STATEMENT, which `lock_timeout` above does not and
+ * {@link TENSION_SWEEP_RUN_CAP} does not either.
+ *
+ * ⚠️ **The run cap bounds the WRITE, not the SCAN, and reading it as "the
+ * transaction is short" is the mistake this constant exists to correct.**
+ * `LIMIT $3` sits on `fresh`, so it caps how many edges are INSERTed — while the
+ * `candidate` CTE cross-joins laterally over every live fact in the workspace
+ * and evaluates an `EXISTS` against `brain_predicate_cardinality` per row. On an
+ * already-swept corpus that full scan runs every time and mints zero: maximum
+ * work, minimum output, and the cap never engages.
+ *
+ * `lock_timeout` cannot help — it bounds WAITING for a lock, not a statement
+ * that is simply running. So without this bound a large corpus produces the
+ * exact outcome the lock bound's own docstring says it prevents: a request that
+ * hangs with no log line and no `requestId`, holding one of five internal-pool
+ * connections, **and holding namespace 4771 against this workspace's extraction
+ * fiber for the whole duration**. The blast radius is wider than the alias
+ * producer's, which is otherwise the closest precedent
+ * (`alias-proposal.ts`'s `ALIAS_PROPOSAL_STATEMENT_TIMEOUT_SQL`, whose header
+ * makes the same argument: *"a JS deadline alone abandons a statement that goes
+ * on holding one of five pooled connections. `statement_timeout` cancels it."*)
+ *
+ * 30s rather than that module's 10s: this scan is unindexed by construction at
+ * the `predicate_key` position (ADR-0037 §7 — PG 16 has no skip scan) and is a
+ * human-triggered one-off rather than a fiber tick, so the tolerance for a slow
+ * honest answer is higher. It is still a bound, and exceeding it is reported as
+ * a refusal naming what to do — see {@link TensionSweepContention}.
+ */
+const TENSION_SWEEP_STATEMENT_TIMEOUT_SQL = `SET LOCAL statement_timeout = '30s'`;
 
 /**
  * The whole sweep, as one statement.
@@ -293,9 +353,155 @@ export interface TensionSweepReport {
  * refusal arm that swallowed a broken statement would report "nothing to do" on
  * a sweep that could not run.
  */
+/**
+ * WHY the sweep could not run — three lock/time bounds, three different remedies.
+ *
+ * A single `contended` arm carrying free prose was the first cut, and it was
+ * wrong in the way a shared refusal usually is: one copy cannot state three
+ * different recoveries, so it states the one its author had in mind.
+ *
+ * ⚠️ **Every arm names what is KNOWN — the lock, the statement — and never a
+ * holder or a cause**, because in all three cases the SQLSTATE carries neither.
+ * That rule was learned the expensive way: the first cut of each arm asserted a
+ * cause, and all three were wrong. `too-slow` assumed a timeout where `57014` is
+ * also a cancel; `ingest` assumed the extraction fiber where namespace 4771 also
+ * has the sweep itself; `table-lock` assumed maintenance where the INSERT's FK
+ * check waits on any `FOR UPDATE`, which usually means a publish. Each arm's own
+ * docstring records its measurement. **Do not reintroduce a cause into any of
+ * them, including into the prose around them** — `tension-sweep.test.ts` greps
+ * for the defeated phrasings, because three rounds of fixing the message and
+ * leaving a comment behind is what made that guard necessary.
+ */
+export type TensionSweepContention =
+  /**
+   * Somebody else holds this workspace's reconcile lock — `55P03` on the
+   * acquisition.
+   *
+   * ⚠️ Named for the LOCK, not for a holder, because `pg_advisory_xact_lock`'s
+   * `55P03` carries no holder identity and nothing here queries one. Namespace
+   * 4771 has TWO takers as of this module (`reconcile.ts`'s own docstring says
+   * so): the extraction fiber, and a concurrent SWEEP — a second admin, or a
+   * double-press inside the first run's window. An earlier spelling called this
+   * `ingest` and its message asserted an extraction fiber, which sends the
+   * second presser to look for an ingest pass that may not exist. Same defect
+   * class as the `unfinished` arm below, one arm over, introduced by the very
+   * change that created the second taker.
+   */
+  | "reconcile-lock"
+  /**
+   * Something holds a conflicting lock on a row or table the statement touches —
+   * `55P03` from the sweep statement itself.
+   *
+   * ⚠️ Named for the LOCK rather than for a holder, and the holder set is much
+   * wider than "maintenance" — MEASURED, not reasoned. `brain_edges` carries
+   * composite FKs to `brain_facts` (0180's `fk_brain_edges_from_fact` /
+   * `fk_brain_edges_to_fact`), so this INSERT's referential check runs
+   * `SELECT 1 FROM ONLY brain_facts … FOR KEY SHARE` on BOTH endpoint rows —
+   * verified against this repo's PG 16, which reports exactly
+   * `55P03 … while locking tuple in relation "parent"` when the parent row is
+   * `FOR UPDATE`-held.
+   *
+   * `FOR KEY SHARE` conflicts with `FOR UPDATE`, and two ordinary operations
+   * hold that on live `brain_facts` rows without taking namespace 4771 —
+   * DELIBERATELY, in both cases:
+   *
+   *   - **publish**, whose `DRAFT_FACTS_SQL` takes `FOR UPDATE` on every live
+   *     draft in the workspace and holds it to COMMIT. It takes 5024 and must
+   *     never take 4771 (`identity.ts`' lock-order note), so it runs
+   *     concurrently with the sweep on purpose — and the sweep does not filter
+   *     on `status`, so drafts are in scope at both endpoints.
+   *   - **a correction**, whose `correctionTargetSql` ends `FOR UPDATE` on its
+   *     target and which takes no advisory lock at all.
+   *
+   * An earlier spelling called this `table-lock` and made the remedy conditional
+   * on maintenance completing — advice to wait for an event that will never
+   * happen, for what is usually a colleague pressing Publish. Third instance of
+   * the assume-the-cause defect in this union, one arm over from the other two.
+   *
+   * ⚠️ Described rather than QUOTED, deliberately. The lexical guard in
+   * `tension-sweep.test.ts` cannot tell a quotation of a defeated phrase from an
+   * assertion of it, and it caught this docstring the first time it ran. An
+   * exemption for quotations is exactly the seam through which the phrase comes
+   * back, so the rule is that the words do not appear in this file at all — the
+   * defeated wording lives in the test's own matcher list, which is where a
+   * reader can see it without the module carrying it.
+   */
+  | "conflicting-lock"
+  /**
+   * The statement did not FINISH — `57014`.
+   *
+   * ⚠️ Named for what is known rather than for a cause, because `57014` is
+   * `query_canceled` generally: a `statement_timeout` expiry AND an operator or
+   * pooler `pg_cancel_backend` both raise it, and Postgres offers no SQLSTATE
+   * that separates them. An earlier spelling (`too-slow`) asserted the cause,
+   * and its message then told the admin not to retry — which is wrong for every
+   * cancelled statement, and was contradicted by this module's own
+   * `isStatementTimeout` docstring two hundred lines away.
+   */
+  | "unfinished";
+
 export type TensionSweepOutcome =
   | { readonly kind: "swept"; readonly report: TensionSweepReport }
-  | { readonly kind: "contended"; readonly message: string };
+  | {
+      readonly kind: "contended";
+      readonly reason: TensionSweepContention;
+      /**
+       * ⚠️ Operator-safe copy from {@link CONTENTION_MESSAGE}, never derived
+       * from the caught error.
+       *
+       * It travels verbatim into an HTTP body, and the obvious "be more helpful"
+       * edit — `message: errorMessage(err)` — type-checks. `withBrainTransaction`
+       * scrubs its own log line precisely because a pg error can carry a
+       * credentialed connection URL; nothing in a bare `string` stops that value
+       * reaching a client instead. `reason` is the field a caller should branch
+       * on.
+       */
+      readonly message: (typeof CONTENTION_MESSAGE)[TensionSweepContention];
+    };
+
+/**
+ * The refusal an admin reads, per reason.
+ *
+ * Held here rather than at the route because all three say the same two
+ * load-bearing things — *nothing was changed* and *what would make a retry
+ * work* — and the seam is what knows which happened. A route re-spelling them
+ * would be a second copy of a rule this module owns; `admin-brain-vocabulary.ts`
+ * keeps its denial prose at the route for the opposite reason (there the ROUTE
+ * knows the entitlement and the store does not).
+ */
+const CONTENTION_MESSAGE = {
+  // True of BOTH holders of namespace 4771 — the extraction fiber and another
+  // sweep — because the SQLSTATE names neither. The remedy holds for both: an
+  // ingest pass is short, and a sweep is bounded by its own statement timeout.
+  "reconcile-lock":
+    "The tension sweep could not start: another operation holds this workspace's reconcile lock " +
+    "— an ingest pass, or a sweep already running. Both write the same advisory edges, so they " +
+    "cannot overlap. Nothing was changed. Retry in a few seconds.",
+  // True of every holder, and ordered by what an admin will actually have hit:
+  // a concurrent publish or correction first, maintenance second. The remedy
+  // that works for the common case is given first, with the rarer one as an
+  // escalation rather than as the headline.
+  "conflicting-lock":
+    "The tension sweep could not finish: another operation holds a conflicting lock on this " +
+    "workspace's facts. Most often that is a publish or a correction, which the sweep " +
+    "deliberately does not queue behind; less often a migration or an index build. " +
+    "Nothing was changed. Retry in a few seconds, and check whether maintenance is running if " +
+    "it persists.",
+  // ⚠️ True of BOTH members of the `57014` class — a timeout and a cancel — and
+  // that is the constraint this string is written under. A message that assumes
+  // the timeout — blaming how much data there is, and ruling out a retry — sends an admin whose
+  // statement was merely cancelled to hunt a problem that does not exist, with
+  // the one correct remedy explicitly ruled out.
+  //
+  // ⚠️ Nor does a REPEAT discriminate — a supervisor that cancels once cancels
+  // twice — so the escalation clause may not name the corpus either. It says
+  // where the answer lives (the logs, which DO carry the distinction) instead of
+  // guessing which member repeated.
+  unfinished:
+    "The tension sweep did not finish — it either exceeded its time bound or was cancelled. " +
+    "Nothing was changed. Retry once, and escalate to an operator if it repeats — a repeat is not " +
+    "proof of either cause, so diagnosing it needs the server logs rather than another press.",
+} as const satisfies Record<TensionSweepContention, string>;
 
 /** {@link sweepTensionEdges}' seams. */
 export interface TensionSweepDeps {
@@ -340,9 +546,11 @@ export async function sweepTensionEdges(
   // one call site and is wrong the moment a retry loop is added around this: the
   // flag survives the attempt that set it.
   const outcome = await withTransaction<
-    { readonly kind: "swept"; readonly minted: number } | { readonly kind: "contended" }
+    | { readonly kind: "swept"; readonly minted: number }
+    | { readonly kind: "contended"; readonly reason: TensionSweepContention }
   >(async (tx) => {
     await tx.query(TENSION_SWEEP_LOCK_TIMEOUT_SQL);
+    await tx.query(TENSION_SWEEP_STATEMENT_TIMEOUT_SQL);
     try {
       await tx.query(RECONCILE_LOCK_SQL, [RECONCILE_LOCK_NAMESPACE, workspaceId]);
     } catch (err: unknown) {
@@ -353,8 +561,8 @@ export async function sweepTensionEdges(
       // server-side record.
       if (!isLockTimeout(err)) throw err;
       log.warn(
-        { workspaceId, namespace: RECONCILE_LOCK_NAMESPACE },
-        "brain tension sweep: timed out taking the reconcile lock — an ingest pass is reconciling this workspace",
+        { workspaceId, namespace: RECONCILE_LOCK_NAMESPACE, code: pgCode(err) },
+        "brain tension sweep: timed out taking the reconcile lock — an ingest pass or another sweep holds namespace 4771 for this workspace; the SQLSTATE does not say which",
       );
       // Returning (rather than re-throwing) leaves `withBrainTransaction` to
       // COMMIT a transaction Postgres has already put in `25P02`. Safe and
@@ -364,52 +572,165 @@ export async function sweepTensionEdges(
       // nothing to lose either way: the failed statement was the lock
       // acquisition, so no row was ever written. Throwing instead would make
       // contention indistinguishable from a real fault at every layer above.
-      return { kind: "contended" };
+      return { kind: "contended", reason: "reconcile-lock" };
     }
-    const { rows } = await tx.query(TENSION_SWEEP_SQL, [
-      workspaceId,
-      TENSION_EDGE_CAP,
-      TENSION_SWEEP_RUN_CAP,
-    ]);
-    return { kind: "swept", minted: rows.length };
+    try {
+      const { rows } = await tx.query(TENSION_SWEEP_SQL, [
+        workspaceId,
+        TENSION_EDGE_CAP,
+        TENSION_SWEEP_RUN_CAP,
+      ]);
+      return { kind: "swept", minted: rows.length };
+    } catch (err: unknown) {
+      // ⚠️ THE STATEMENT'S OWN BOUNDS, and this arm exists because the two above
+      // it are deliberately left in force for exactly this statement. Without it
+      // the one outcome the design creates ON PURPOSE — abandon a wait rather
+      // than sit through it — arrives at the caller as an unmapped 500 reading
+      // "Failed to sweep brain fact tension edges", which is the generic message
+      // this repo forbids and is indistinguishable from a broken query.
+      //
+      // The two are separate arms because the RECOVERY differs, and the
+      // reconcile-lock copy is wrong for both. Neither arm names a cause: a
+      // `55P03` here is some conflicting lock on `brain_edges` or on a
+      // `brain_facts` row this INSERT must `FOR KEY SHARE`, and a `57014` is the
+      // statement not finishing. Which one, in each case, is something the
+      // SQLSTATE does not say — see each arm on `TensionSweepContention`.
+      if (isLockTimeout(err)) {
+        log.warn(
+          { workspaceId, code: pgCode(err) },
+          "brain tension sweep: the sweep statement hit its lock bound — something holds a conflicting lock on brain_edges or on a brain_facts row this INSERT must FOR KEY SHARE (a publish, a correction, or DDL); the SQLSTATE does not say which",
+        );
+        return { kind: "contended", reason: "conflicting-lock" };
+      }
+      if (isStatementTimeout(err)) {
+        log.warn(
+          {
+            workspaceId,
+            code: pgCode(err),
+            bound: TENSION_SWEEP_STATEMENT_TIMEOUT_SQL,
+            // ⚠️ THE DISCRIMINATOR, and the reason this line carries a scrubbed
+            // message where the two sibling refusal logs do not. `57014` is
+            // identical for both members; the only thing that separates them is
+            // the message text (`canceling statement due to statement timeout`
+            // vs `… due to user request`). The `unfinished` refusal tells the
+            // admin the answer is in the server logs — so the logs have to
+            // actually carry it, or that is a reassurance nothing establishes.
+            err: errorMessage(err),
+          },
+          "brain tension sweep: the sweep statement did not finish (57014 — a time-bound expiry or a cancel; Postgres does not distinguish them, so read `err` for which)",
+        );
+        return { kind: "contended", reason: "unfinished" };
+      }
+      throw err;
+    }
   }).catch((err: unknown) => {
     // Re-thrown, not degraded. A sweep that failed and reported zero is
     // indistinguishable from a corpus with nothing to mint, and the admin would
-    // read a broken statement as a clean bill of health. The line names the
-    // workspace because the message alone will not.
+    // read a broken statement as a clean bill of health.
+    //
+    // ⚠️ The wording claims only what this site can KNOW. It used to say "no
+    // edges were written", which this catch cannot establish: it wraps the whole
+    // runner including `withBrainTransaction`'s COMMIT, so a connection reset
+    // between the server committing and the client seeing the ack lands here
+    // with the edges durably written. An operator reading the old line during an
+    // incident would conclude the corpus was untouched.
+    //
+    // `code` is carried BESIDE the scrubbed message rather than instead of it.
+    // Scrubbing is right — a pg error can echo a credentialed connection URL —
+    // but `errorMessage` collapses the error to a string, which drops the
+    // SQLSTATE, and "was this contention or a real fault?" is the first question
+    // an operator asks and the one the arms above key on.
     log.error(
-      { workspaceId, err: errorMessage(err) },
-      "brain tension sweep: the sweep failed — no edges were written",
+      { workspaceId, code: pgCode(err), err: errorMessage(err) },
+      "brain tension sweep: the run failed — any edges it wrote were rolled back, unless the failure was at COMMIT, in which case they may have landed. Re-running is a no-op either way",
     );
     throw err;
   });
 
   if (outcome.kind === "contended") {
-    return {
-      kind: "contended",
-      message:
-        "The tension sweep could not start: an ingest pass is reconciling this workspace's facts, " +
-        "and the sweep writes the same advisory edges that pass does. Nothing was changed. " +
-        "Retry in a few seconds.",
-    };
+    return { kind: "contended", reason: outcome.reason, message: CONTENTION_MESSAGE[outcome.reason] };
   }
 
-  const { minted } = outcome;
-  const report: TensionSweepReport = {
-    minted,
-    truncated: minted >= TENSION_SWEEP_RUN_CAP,
-  };
-  if (minted > 0) {
-    log.info(
-      {
-        workspaceId,
-        minted,
-        truncated: report.truncated,
-        perFactCap: TENSION_EDGE_CAP,
-        runCap: TENSION_SWEEP_RUN_CAP,
-      },
-      "brain tension sweep: minted advisory in-tension-with edges over existing rows for predicates curated `single` — nothing was superseded, retracted, or reordered",
-    );
-  }
+  const report = tensionSweepReport(outcome.minted);
+  // UNCONDITIONAL, and the `minted === 0` case is the one that needed it. Three
+  // materially different situations produce a byte-identical `{0, false}`: the
+  // corpus has converged, the workspace has never had a predicate APPROVED
+  // `single` (so `cardinalitySingleSql` matches nothing and the sweep is
+  // structurally incapable of minting), or there are no live facts at all. An
+  // admin who curates, sweeps, and sees `0` most often hit the second — a
+  // `pending` proposal is not an approval — and behind an `if (minted > 0)`
+  // there was no server-side line to debug that from.
+  log.info(
+    {
+      workspaceId,
+      minted: report.minted,
+      truncated: report.truncated,
+      perFactCap: TENSION_EDGE_CAP,
+      runCap: TENSION_SWEEP_RUN_CAP,
+    },
+    report.minted > 0
+      ? "brain tension sweep: minted advisory in-tension-with edges over existing rows for predicates curated `single` — nothing was superseded, retracted, or reordered"
+      : "brain tension sweep: nothing to mint — either the corpus has converged, or no predicate in this workspace is APPROVED `single` (a pending proposal does not arm the sweep)",
+  );
   return { kind: "swept", report };
+}
+
+/**
+ * The one construction point for a {@link TensionSweepReport}.
+ *
+ * `truncated` is DERIVED, never passed in. It is a pure function of `minted` and
+ * the run cap, and a record that stores both admits `{minted: 0, truncated:
+ * true}` and `{minted: RUN_CAP, truncated: false}` — states the producer cannot
+ * emit and a reader cannot interpret. Routing every construction through here
+ * means a second truncation source (a time budget, a second cap) has one place
+ * to be taught rather than a grep to find.
+ */
+function tensionSweepReport(minted: number): TensionSweepReport {
+  return { minted, truncated: minted >= TENSION_SWEEP_RUN_CAP };
+}
+
+/**
+ * Postgres' SQLSTATE off an unknown thrown value, or `undefined`.
+ *
+ * Narrowed rather than cast, on `isLockTimeout`'s shape — the value reaching
+ * these handlers is whatever the driver threw, which is not necessarily an
+ * `Error` and not necessarily an object.
+ */
+function pgCode(err: unknown): string | undefined {
+  if (typeof err !== "object" || err === null || !("code" in err)) return undefined;
+  const code = (err as { code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
+}
+
+/**
+ * Postgres' SQLSTATE for a cancelled statement.
+ *
+ * ⚠️ NOT "a `statement_timeout` expiry", which is what this said first and is
+ * one member of the class. `pg_cancel_backend` raises it too. The name is the
+ * honest one; see {@link isStatementTimeout}.
+ */
+const QUERY_CANCELED = "57014";
+
+/**
+ * Whether an unknown error is a cancelled statement — `57014`.
+ *
+ * ⚠️ The NAME says timeout and the class is wider, which is a wart kept
+ * deliberately: it reads at the call site as the bound it pairs with
+ * (`TENSION_SWEEP_STATEMENT_TIMEOUT_SQL`), and renaming it to
+ * `isQueryCanceled` would suggest a discrimination the function does not make
+ * either. The summary line no longer claims one.
+ *
+ * ⚠️ `57014` is `query_canceled` GENERALLY — `pg_cancel_backend` raises it too,
+ * and Postgres offers no SQLSTATE that separates them. Both mean the same thing
+ * to THIS caller — the statement did not finish and nothing was written — which
+ * is why the conflation is safe here.
+ *
+ * ⚠️ It is only safe as long as the REFUSAL says the same thing. The
+ * `unfinished` message is written to be true of both members precisely because
+ * this predicate cannot tell them apart; a message that assumed the timeout
+ * would be wrong for every cancel, and that mismatch is what a reviewer caught
+ * in this function's first cut.
+ */
+function isStatementTimeout(err: unknown): boolean {
+  return pgCode(err) === QUERY_CANCELED;
 }

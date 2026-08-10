@@ -278,6 +278,15 @@ describe("BrainFactTensionSweepResponseSchema (#5029)", () => {
     ).toThrow();
   });
 
+  test("REFUSES a fractional `minted` — it is a row count", () => {
+    // `.int()` was the one keyword in this schema with no falsifier. `minted` is
+    // `rows.length` off a `RETURNING`, so a fraction means the producer computed
+    // it rather than counted it.
+    expect(() =>
+      BrainFactTensionSweepResponseSchema.parse({ minted: 1.5, truncated: false }),
+    ).toThrow();
+  });
+
   test("REFUSES a negative `minted`, and a missing `truncated`", () => {
     // `minted` is a count of rows written; a negative one is a producer that
     // subtracted something. And `truncated` absent — rather than `false` —

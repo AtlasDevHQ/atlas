@@ -40,6 +40,21 @@
  * Opt in locally with the same scratch database as its sibling brain suites —
  * every one of them creates and drops its OWN schema, so they share it safely:
  *   bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5433/brain_4771_scratch
+ *
+ * ⚠️ **Two things this file needs that per-schema isolation does NOT give it.**
+ *
+ * **Advisory locks are DATABASE-wide, not schema-wide.** The contention test
+ * holds namespace 4771 on `hashtext('ws-5029-contended')` for a few seconds, and
+ * a sibling suite sharing this scratch database would block on it if it used the
+ * same workspace id. Every workspace name here is prefixed `ws-5029-`, which is
+ * what keeps that true; do not drop the prefix.
+ *
+ * **`seedFact` writes `brain_facts.predicate_cardinality`, which
+ * [#5028](https://github.com/AtlasDevHQ/atlas/issues/5028) DROPS.** It is
+ * load-bearing rather than incidental — it is the AC-4 falsifier's opposite
+ * value, the whole point being that the sweep must ignore it — so #5028 has to
+ * update this fixture in the same PR or CI fails with `column
+ * "predicate_cardinality" does not exist` while every local gate is green.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -306,11 +321,18 @@ describeIfPg("the admin-triggered tension sweep (#5029)", () => {
         );
         await curate(ws, "led by", "single");
 
+        // EVERY column, via `to_jsonb`, rather than the seven a hand-written list
+        // remembered. The list version claimed "every mutable column" and omitted
+        // `visible_to` — an ACL widening, which is the silent write that would
+        // matter most here — along with both `_cmp` columns, all three keys,
+        // `valid_from`, and `pre_widening_visible_to`. `- 'fts'` drops the
+        // generated tsvector, whose `pg` text rendering is not stable enough to
+        // diff.
         const snapshot = async () =>
           (
             await pool.query(
-              `SELECT id::text, status, updated_at, valid_to, invalidated_at, object, provenance
-                 FROM brain_facts WHERE workspace_id = $1 ORDER BY id`,
+              `SELECT id::text AS id, to_jsonb(f) - 'fts' AS row
+                 FROM brain_facts f WHERE workspace_id = $1 ORDER BY id`,
               [ws],
             )
           ).rows;
@@ -321,6 +343,88 @@ describeIfPg("the admin-triggered tension sweep (#5029)", () => {
           await snapshot(),
           "the sweep changed a fact row — it is licensed to write `brain_edges` and nothing else",
         ).toEqual(before);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "pairs only rows in the SAME slot — two subjects and two predicates, interleaved",
+      async () => {
+        // ⚠️ THE SLOT JOIN, and until this fixture existed BOTH of its arms were
+        // inert: deleting `b.subject_key = a.subject_key` or
+        // `b.predicate_key = a.predicate_key` left all 19 tests green. Measured,
+        // not suspected.
+        //
+        // Why the rest of this file cannot see it. Every other workspace here
+        // holds exactly ONE predicate, so the predicate arm can never bite. And
+        // the only other two-subject fixture (`ws-5029-per-fact`) gives its two
+        // subjects DISJOINT time windows, so the direction arm
+        // `(b.ingested_at, b.id) < (a.ingested_at, a.id)` hides the missing
+        // subject arm by itself — the older subject's rows are never "older" than
+        // the newer subject's in a way that changes either outbound count.
+        //
+        // So this fixture does the two things that break both hiding mechanisms:
+        // two subjects AND two predicates, with the four rows' timestamps
+        // INTERLEAVED across both axes, and it asserts the COMPLETE edge set
+        // rather than per-fact outbound counts. Without the arms the sweep wires
+        // `acme priced at` to `acme hq in` — an advisory contradiction between
+        // two claims that are not about the same thing, surfaced to every
+        // reviewer by `loadTensionClusters`.
+        // ⚠️ THE GRID IS FULL, and a partial one does not work — measured. A
+        // first cut gave `acme` the predicate `priced at` and `globex` the
+        // predicate `hq in`, so dropping the SUBJECT arm changed nothing: the
+        // predicate arm still excluded every cross pair on its own, and the
+        // mutant survived. Each arm can only be falsified by pairs the OTHER arm
+        // would admit, so both subjects must carry both predicates.
+        //
+        // 2 subjects × 2 predicates × 2 rows = 8 rows, interleaved so every
+        // cross pair is direction-eligible and only the slot arms exclude it.
+        const ws = "ws-5029-slot-join";
+        const ep = await seedEpisode(ws, "slot-join");
+        const id: Record<string, string> = {};
+        let tick = 0;
+        for (const object of ["first", "second"]) {
+          for (const subject of ["acme", "globex"]) {
+            for (const predicate of ["priced at", "hq in"]) {
+              tick += 1;
+              id[`${subject}|${predicate}|${object}`] = await seedFact(
+                ws,
+                ep,
+                { subject, predicate, object: `${subject} ${predicate} ${object}` },
+                { ingestedAt: `2026-05-01T00:00:${String(tick).padStart(2, "0")}Z` },
+              );
+            }
+          }
+        }
+        // BOTH predicates curated, so neither arm is doing the excluding by
+        // being uncurated — the slot join is the only thing left.
+        await curate(ws, "priced at", "single");
+        await curate(ws, "hq in", "single");
+
+        // Exactly FOUR edges — one per (subject, predicate) slot. Of the 28
+        // ordered pairs among 8 rows, 4 are same-slot and the other 24 cross a
+        // subject, a predicate, or both. `4` is not the row count (8), not the
+        // eligible-pair count (28), and not the count of either axis (2), so no
+        // arithmetic coincidence produces it.
+        const report = await sweep(ws);
+        expect(
+          report.minted,
+          "the sweep did not mint exactly one edge per slot — with a full 2x2 subject x predicate grid, a count above 4 means the subject arm, the predicate arm, or both are gone, and unrelated claims are being wired as contradictions",
+        ).toBe(4);
+
+        // …and WHICH pairs, because a build that dropped one real edge and added
+        // one cross-slot edge also totals 4.
+        const pairs = await edgePairs(ws);
+        expect(pairs.map((p) => `${p.from}->${p.to}`).sort()).toEqual(
+          ["acme", "globex"]
+            .flatMap((subject) =>
+              ["priced at", "hq in"].map(
+                (predicate) =>
+                  `${id[`${subject}|${predicate}|second`]}->${id[`${subject}|${predicate}|first`]}`,
+              ),
+            )
+            .sort(),
+        );
       },
       PG_TEST_TIMEOUT_MS,
     );
@@ -647,11 +751,45 @@ describeIfPg("the admin-triggered tension sweep (#5029)", () => {
         );
         await curate(ws, "ships on", "single");
 
+        // A THIRD pair carrying a `derives-from` edge instead, which must NOT
+        // suppress anything. Measured inert before this: replacing
+        // `e.edge_type = 'in-tension-with'` with `e.edge_type IS NOT NULL` left
+        // the whole suite green, because no fixture ever put a second edge type
+        // in `brain_edges`. `derives-from` is fact→fact and is written by the
+        // correction path, so it genuinely co-occurs with these rows.
+        const derivedFrom = await seedFact(
+          ws,
+          ep,
+          { subject: "acme", predicate: "ships to", object: "berlin" },
+          { ingestedAt: T0 },
+        );
+        const derivedTo = await seedFact(
+          ws,
+          ep,
+          { subject: "acme", predicate: "ships to", object: "lisbon" },
+          { ingestedAt: T1 },
+        );
+        await pool.query(
+          `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_fact_id)
+           VALUES ($1, 'derives-from', $2, $3)`,
+          [ws, derivedTo, derivedFrom],
+        );
+        await curate(ws, "ships to", "single");
+
+        // ONE edge minted — the `derives-from` pair — and zero for the pair that
+        // already has a reciprocal. A count of 0 would mean the `edge_type` arm
+        // is gone (the `derives-from` edge suppressed a real tension); a count of
+        // 2 would mean the existence guard is direction-ORDERED.
         expect(
           await sweep(ws),
-          "the sweep minted the reciprocal of an edge that already exists — the existence guard is direction-ORDERED, so this pair now appears twice in every tension cluster",
-        ).toEqual({ minted: 0, truncated: false });
-        expect(await edgePairs(ws)).toEqual([{ from: older, to: newer }]);
+          "expected exactly the `derives-from` pair to be minted: 0 means an unrelated edge type suppressed a real tension, 2 means the existence guard is direction-ORDERED and this pair now appears twice in every tension cluster",
+        ).toEqual({ minted: 1, truncated: false });
+        expect(await edgePairs(ws)).toEqual(
+          [
+            { from: older, to: newer },
+            { from: derivedTo, to: derivedFrom },
+          ].sort((a, b) => (a.from < b.from ? -1 : a.from > b.from ? 1 : 0)),
+        );
       },
       PG_TEST_TIMEOUT_MS,
     );
@@ -703,6 +841,73 @@ describeIfPg("the admin-triggered tension sweep (#5029)", () => {
 
         expect(await sweep(ws)).toEqual({ minted: 1, truncated: false });
         expect(await edgePairs(ws)).toEqual([{ from: newest, to: live }]);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "pairs DRAFTS as readily as published rows — status is not a filter",
+      async () => {
+        // ⚠️ Measured inert before this test existed: adding
+        // `AND a.status = 'published'` (or the `b` twin) left all 19 tests green,
+        // because every fixture in this file was published and `seedFact`'s
+        // `status` knob had no call site — a parameter documenting coverage that
+        // did not exist.
+        //
+        // Drafts are not an edge case here, they are the PRIMARY audience: the
+        // route's own description sends a reviewer to the queue with
+        // `?tension=true`, which is the DRAFT queue. A future "safety" narrowing
+        // to published rows would delete the feature's main population and
+        // nothing would go red.
+        //
+        // ⚠️ BOTH ORDERINGS, and one is not enough — measured. A first cut had
+        // only `published@T0` + `draft@T1`, i.e. the draft on the `a` side and
+        // the published row on the `b` side. Narrowing `b.status = 'published'`
+        // then changed nothing and the mutant survived: the rival it kept was
+        // already published. A status arm can only be falsified from the side it
+        // sits on, so each side needs a slot where the DRAFT is the row that arm
+        // would drop.
+        const ws = "ws-5029-drafts";
+        const ep = await seedEpisode(ws, "drafts");
+        // Slot 1 — draft is NEWER (the `a` side).
+        const pubOld = await seedFact(
+          ws,
+          ep,
+          { subject: "acme", predicate: "rated at", object: "3" },
+          { ingestedAt: T0, status: "published" },
+        );
+        const draftNew = await seedFact(
+          ws,
+          ep,
+          { subject: "acme", predicate: "rated at", object: "4" },
+          { ingestedAt: T1, status: "draft" },
+        );
+        // Slot 2 — draft is OLDER (the `b` side, the rival).
+        const draftOld = await seedFact(
+          ws,
+          ep,
+          { subject: "acme", predicate: "scored at", object: "7" },
+          { ingestedAt: T0, status: "draft" },
+        );
+        const pubNew = await seedFact(
+          ws,
+          ep,
+          { subject: "acme", predicate: "scored at", object: "8" },
+          { ingestedAt: T1, status: "published" },
+        );
+        await curate(ws, "rated at", "single");
+        await curate(ws, "scored at", "single");
+
+        expect(
+          await sweep(ws),
+          "a draft/published pair earned no edge — a status filter crept into the scan on one side or the other, and the draft queue is exactly where these edges are read",
+        ).toEqual({ minted: 2, truncated: false });
+        expect(await edgePairs(ws)).toEqual(
+          [
+            { from: draftNew, to: pubOld },
+            { from: pubNew, to: draftOld },
+          ].sort((x, y) => (x.from < y.from ? -1 : x.from > y.from ? 1 : 0)),
+        );
       },
       PG_TEST_TIMEOUT_MS,
     );
@@ -964,11 +1169,16 @@ describeIfPg("the admin-triggered tension sweep (#5029)", () => {
               `the refusal arrived in ${elapsedMs}ms — faster than the 5s bound, so the sweep did not wait on the held lock at all`,
             ).toBeGreaterThan(1_000);
 
-            // …and the connection survived the aborted transaction. A COMMIT
-            // that threw over the refusal would surface as a rejected promise
-            // above; this checks the pool is not poisoned for the NEXT caller,
-            // which is the failure that would show up one test later.
-            await holder.query("SELECT 1");
+            // …and the INTERNAL pool — the one `sweepTensionEdges` borrowed from
+            // and returned a `25P02` connection to — is still usable.
+            //
+            // ⚠️ This used to query `holder`, which is a different `Pool`
+            // entirely and says nothing about the sweep's connection: it was an
+            // assertion that could not fail, under a comment claiming it checked
+            // the pool was not poisoned for the next caller. `pool` IS that pool
+            // (`_resetPool(pool)` in `beforeAll`), so this is the claim the line
+            // was making all along.
+            await pool.query("SELECT 1");
           } finally {
             await held.query("ROLLBACK").catch((err: unknown) => {
               // intentionally ignored: the holder is torn down on the next line
@@ -1063,13 +1273,20 @@ describeIfPg("the admin-triggered tension sweep (#5029)", () => {
     );
 
     it(
-      "reports `truncated` when the shipped run cap bites, and not otherwise",
+      "the statement's own LIMIT is what the flag reports — driven at a cap that BITES",
       async () => {
-        // The flag's arithmetic is `tension-sweep.test.ts`' to pin; what this
-        // asserts is that the SHIPPED cap is the one bound into `$3`. A sweep
-        // that bound a different number would report `truncated: false` on a run
-        // it had actually cut short — the one direction that reads as "you are
-        // done" when you are not.
+        // ⚠️ This test used to assert `{minted: 1, truncated: false}` on a
+        // two-row fixture under a message claiming it pinned `$3`'s binding. It
+        // could not: bind `$3` to 1, or to `TENSION_EDGE_CAP`, and `minted` is
+        // still 1 while `1 >= 1000` is still `false`. The assertion passed for
+        // every possible binding, which makes it a restatement of the motivating
+        // case wearing a different name.
+        //
+        // What IS checkable here is the statement's LIMIT actually cutting a run
+        // short, driven at a cap small enough to bite — three available pairs, a
+        // cap of 2, so the run stops at 2 with one left. The shipped cap reaching
+        // `$3` is `tension-sweep.test.ts`' bind-list assertion, and the flag's
+        // arithmetic is its three-point boundary test; neither is restated here.
         expect(
           TENSION_SWEEP_RUN_CAP,
           "the run cap is not larger than the per-fact cap — one bound is shadowing the other",
@@ -1077,26 +1294,29 @@ describeIfPg("the admin-triggered tension sweep (#5029)", () => {
 
         const ws = "ws-5029-truncated-flag";
         const ep = await seedEpisode(ws, "truncated-flag");
-        await seedFact(
-          ws,
-          ep,
-          { subject: "acme", predicate: "staffed at", object: "40" },
-          { ingestedAt: T0 },
-        );
-        await seedFact(
-          ws,
-          ep,
-          { subject: "acme", predicate: "staffed at", object: "50" },
-          { ingestedAt: T1 },
-        );
+        for (const [i, headcount] of ["40", "50", "60"].entries()) {
+          await seedFact(
+            ws,
+            ep,
+            { subject: "acme", predicate: "staffed at", object: headcount },
+            { ingestedAt: `2026-06-01T00:00:0${i}Z` },
+          );
+        }
         await curate(ws, "staffed at", "single");
 
-        const report = await sweep(ws);
-        expect(report.minted).toBe(1);
+        const runWithCap = async (cap: number) =>
+          (await pool.query(TENSION_SWEEP_SQL, [ws, TENSION_EDGE_CAP, cap])).rows.length;
+
+        // Three pairs available (newest→2, middle→1). A cap of 2 must cut it.
         expect(
-          report.truncated,
-          `one edge tripped the run cap — \`$3\` is not bound to TENSION_SWEEP_RUN_CAP (${TENSION_SWEEP_RUN_CAP})`,
-        ).toBe(false);
+          await runWithCap(2),
+          "the statement minted a number other than its own LIMIT with more pairs available — `$3` is not the run bound",
+        ).toBe(2);
+        // …and the remaining pair is still reachable, which is the convergence
+        // half stated at a different cap from the resume test above.
+        expect(await runWithCap(2)).toBe(1);
+        expect(await runWithCap(2)).toBe(0);
+        expect(await edgePairs(ws)).toHaveLength(3);
       },
       PG_TEST_TIMEOUT_MS,
     );

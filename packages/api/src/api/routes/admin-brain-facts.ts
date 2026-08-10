@@ -393,7 +393,7 @@ const tensionSweepRoute = createRoute({
   responses: {
     200: {
       description:
-        "The sweep ran. `minted` is edges actually written — `0` means the corpus had nothing left to flag, which is the steady state after a first run",
+        "The sweep ran. `minted` is edges actually WRITTEN, never pairs considered. `0` does not identify a cause: it is returned when the corpus has converged, when there are no live facts, AND when no predicate in this workspace is curated `single` and approved — which is the commonest reason on a workspace that has just started curating, since a pending proposal does not arm the sweep. Check the vocabulary before reading `0` as done",
       content: { "application/json": { schema: BrainFactTensionSweepResponseSchema } },
     },
     ...commonResponses,
@@ -404,7 +404,7 @@ const tensionSweepRoute = createRoute({
     },
     409: {
       description:
-        "An ingest pass holds this workspace's reconcile lock, and the sweep writes the same advisory edges that pass does. Nothing was changed; retry in a few seconds",
+        "The sweep could not run, and `reason` says which of three. `reconcile-lock` — another operation holds this workspace's reconcile lock, which is either an ingest pass or a sweep already running (the two cannot overlap, since both write these edges); retry in a few seconds. `conflicting-lock` — another operation holds a conflicting lock on this workspace's facts, most often a publish or a correction (the sweep deliberately does not queue behind either) and less often a migration; retry in a few seconds, and check for maintenance if it persists. `unfinished` — the statement did not complete, which is either a time-bound expiry or a cancellation, and Postgres does not distinguish them; retry once and escalate to an operator if it repeats. Every reason names what is KNOWN rather than a cause the server could not establish. Nothing was changed in any of the three",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
@@ -767,7 +767,8 @@ adminBrainFacts.openapi(tensionSweepRoute, async (c) => {
       // makes an approved `single` entry reach rows that already exist — so a
       // reader who may not arm the entry may not fire it either. A lower bar
       // here would be a way around the higher one.
-      if (!sweepEntitled(ctx)) {
+      const target = sweepTarget(ctx);
+      if (target === null) {
         // LOGGED, like every other denial at this bar. The sweep is an
         // autonomous writer of `brain_edges`, and an attempt to run one without
         // the entitlement is exactly the event `acl.ts` says you want in the
@@ -788,15 +789,29 @@ adminBrainFacts.openapi(tensionSweepRoute, async (c) => {
       }
 
       const outcome = yield* Effect.tryPromise({
-        try: () => sweepTensionEdges(orgId),
+        // `target`, not `orgId` — the value the entitlement was CHECKED
+        // against, so "the workspace I verified" and "the workspace I swept"
+        // are literally the same binding rather than two reads that happen to
+        // agree.
+        try: () => sweepTensionEdges(target),
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });
 
       if (outcome.kind === "contended") {
         // 409, on `refusalStatus`' own semantics: a target-state mismatch the
         // client can retry past. Not a 503 — nothing is unavailable, and not a
-        // 500 — nothing failed. The seam's prose travels verbatim.
-        return c.json({ error: "sweep_contended", message: outcome.message, requestId }, 409);
+        // 500 — nothing failed. The seam's prose travels verbatim, and the
+        // machine-readable `reason` travels beside it so a client is not parsing
+        // English to tell "retry in seconds" from "stop pressing this button".
+        return c.json(
+          {
+            error: "sweep_contended",
+            reason: outcome.reason,
+            message: outcome.message,
+            requestId,
+          },
+          409,
+        );
       }
 
       // The audit row is THIS route's, unlike `/retract` and `/correct` where
@@ -838,30 +853,41 @@ adminBrainFacts.openapi(tensionSweepRoute, async (c) => {
 });
 
 /**
- * ADR-0037 §6's owner/admin bar, as this route needs it.
+ * ADR-0037 §6's owner/admin bar — returning the WORKSPACE to sweep, or `null`.
+ *
+ * ⚠️ **It returns the target rather than a boolean, and that is the point.**
+ * `recordedAuthor` in `admin-brain-vocabulary.ts` — the precedent this follows —
+ * returns the author id you then store, so you cannot proceed past it without
+ * consuming it. A `boolean` is discardable, and the call it guards took a
+ * SEPARATE variable (`orgId`) that agreed with the checked context only by both
+ * happening to read the same thing: the remember-to-call-it shape. Handing back
+ * `ctx.workspaceId` makes "the workspace I verified" and "the workspace I swept"
+ * one binding.
  *
  * Switched on the ORIGIN rather than written as a role test with a null guard,
- * on `recordedAuthor`'s precedent in `admin-brain-vocabulary.ts`: an arm added to
- * `BrainPrincipalContext` should have to be considered here rather than
- * inheriting whichever answer a `??` chain happens to give it.
+ * for `recordedAuthor`'s other reason: an arm added to `BrainPrincipalContext`
+ * has to be considered here rather than inheriting whichever answer a `??` chain
+ * happens to give it. Verified, not assumed — a fourth arm fails to compile
+ * against the declared return type.
  *
- * ⚠️ It does NOT require `ctx.userId`, where `recordedAuthor` does — and the
- * asymmetry is the reason that function exists. `recordedAuthor` returns an
- * AUTHOR to store in `proposed_by`, so an entitled reader with no id would write
- * an unattributed row. Nothing here is attributed to a person on the row: the
- * edges carry no author column, and the actor reaches `admin_action_log` through
- * the ambient request context rather than through this value. Copying the id
- * requirement across would deny a reader who is entitled, to protect a column
- * this path does not write.
+ * ⚠️ It does NOT require `ctx.userId`, where `recordedAuthor` does. That is not
+ * a live divergence: `BrainPrincipalContext`'s `authenticated` arm declares
+ * `userId: string`, and `resolveBrainReaderContext` answers `unresolved` when
+ * there is no user, so the two bars agree in every representable state. The
+ * reason to keep it absent here anyway is that nothing on this path is
+ * attributed to a person on a ROW — the edges carry no author column, and the
+ * actor reaches `admin_action_log` through the ambient request context — so
+ * copying the requirement across would deny an entitled reader to protect a
+ * column this path does not write.
  */
-function sweepEntitled(ctx: BrainPrincipalContext): boolean {
+function sweepTarget(ctx: BrainPrincipalContext): string | null {
   switch (ctx.origin) {
     case "authenticated":
-      return ctx.role === "owner" || ctx.role === "admin";
+      return ctx.role === "owner" || ctx.role === "admin" ? ctx.workspaceId : null;
     case "unauthenticated-local":
-      return true;
+      return ctx.workspaceId;
     case "unresolved":
-      return false;
+      return null;
   }
 }
 

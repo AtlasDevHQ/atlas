@@ -32,6 +32,7 @@ import type {
   CorrectionOutcome,
   CorrectionRefusalReason,
 } from "@atlas/api/lib/brain/correction";
+import type { TensionSweepOutcome } from "@atlas/api/lib/brain/tension-sweep";
 
 const CURRENT_ORG = "org-1";
 
@@ -310,10 +311,22 @@ void mock.module("@atlas/api/lib/brain/oversight", () => ({
  * imports one of the omitted names.
  */
 let sweepCalls: string[] = [];
-let sweepOutcome: Record<string, unknown> = {
+/**
+ * Typed as the REAL union, on `correctionOutcome`'s precedent above: a reshape of
+ * the seam's contract breaks these fixtures at compile time instead of leaving
+ * hand-written literals asserting against a shape that moved. A type-only import
+ * is erased before `mock.module` runs, so it borrows the shape without
+ * un-stubbing anything.
+ *
+ * The one deliberate violation (the widened report in the projection test) casts
+ * at its own site and says so there.
+ */
+let sweepOutcome: TensionSweepOutcome = {
   kind: "swept",
   report: { minted: 3, truncated: false },
 };
+/** Set to make the sweep seam THROW — the arm the double could not reach. */
+let sweepThrows: Error | null = null;
 /**
  * SENTINEL cap values, deliberately not the shipped ones.
  *
@@ -335,6 +348,7 @@ void mock.module("@atlas/api/lib/brain/tension-sweep", () => ({
   TENSION_SWEEP_SQL: "INSERT INTO brain_edges",
   sweepTensionEdges: async (workspaceId: string) => {
     sweepCalls.push(workspaceId);
+    if (sweepThrows !== null) throw sweepThrows;
     return sweepOutcome;
   },
 }));
@@ -363,6 +377,15 @@ let AUTH_USER: { id: string; role?: string } | undefined = { id: "user-1", role:
 // Mutable so the org-less arm each handler guards is reachable under test —
 // otherwise the guard is dead code that inverting would break nothing.
 let ORG_ID: string | undefined = CURRENT_ORG;
+/**
+ * Mutable so `sweepEntitled`'s `unauthenticated-local` arm is reachable.
+ *
+ * `unauthenticated-local` is the DEFAULT self-hosted deploy mode — the same
+ * reason `admin-brain-vocabulary.test.ts` carries this lever. With the mode
+ * hard-coded to `managed` the arm is unreachable, so inverting it locks every
+ * self-hosted install out of the sweep and nothing goes red.
+ */
+let AUTH_MODE: "managed" | "none" = "managed";
 void mock.module("@atlas/api/lib/effect/hono", () => ({
   runEffect: (_c: unknown, program: Effect.Effect<unknown, unknown, never>) =>
     Effect.runPromise(
@@ -375,7 +398,7 @@ void mock.module("@atlas/api/lib/effect/hono", () => ({
             atlasMode: "published" as const,
           }),
           Layer.succeed(AuthContext, {
-            mode: "managed" as const,
+            mode: AUTH_MODE,
             user: AUTH_USER as never,
             orgId: ORG_ID,
             trustDeviceIdentifier: undefined,
@@ -411,6 +434,8 @@ beforeEach(() => {
   ORG_ID = CURRENT_ORG;
   sweepCalls = [];
   sweepOutcome = { kind: "swept", report: { minted: 3, truncated: false } };
+  sweepThrows = null;
+  AUTH_MODE = "managed";
   oversightCalls = 0;
   oversightCtx = undefined;
   supersessionPreviewCalls = 0;
@@ -1298,7 +1323,11 @@ describe("POST /tension-sweep (#5029)", () => {
   });
 
   it("409s on lock contention, audits nothing, and passes the seam's prose through", async () => {
-    sweepOutcome = { kind: "contended", message: "an ingest pass is running; retry" };
+    sweepOutcome = {
+      kind: "contended",
+      reason: "reconcile-lock",
+      message: "another operation holds the reconcile lock; retry",
+    } as TensionSweepOutcome;
     const res = await sweep();
 
     expect(res.status).toBe(409);
@@ -1306,7 +1335,7 @@ describe("POST /tension-sweep (#5029)", () => {
     expect(body.error).toBe("sweep_contended");
     // Verbatim: the seam owns the sentence, and a route that mapped a code to
     // its own copy would be a second spelling of a rule the library states.
-    expect(body.message).toBe("an ingest pass is running; retry");
+    expect(body.message).toBe("another operation holds the reconcile lock; retry");
     expect(body.requestId).toBe("test-req");
     // Nothing happened, so nothing may be audited as having happened.
     expect(auditRows).toHaveLength(0);
@@ -1400,10 +1429,13 @@ describe("POST /tension-sweep (#5029)", () => {
     // the widened field never reaches the parse, and this asserts the 200 to say
     // so: a build that spread the report fails here with a 500, which is the
     // right alarm for the wrong reason and the reason this test names both.
+    // DELIBERATE contract violation, cast at this site only so every other
+    // fixture in this file stays compile-checked against the real union. The
+    // whole point is a producer that grew a field the wire must not carry.
     sweepOutcome = {
       kind: "swept",
       report: { minted: 1, truncated: false, pairs: [["fact-a", "fact-b"]] },
-    };
+    } as unknown as TensionSweepOutcome;
     const res = await sweep();
 
     expect(res.status).toBe(200);
@@ -1412,5 +1444,77 @@ describe("POST /tension-sweep (#5029)", () => {
     expect(text, "a claim id reached the wire on a workspace-wide response").not.toContain(
       "fact-a",
     );
+  });
+});
+
+describe("POST /tension-sweep — the arms the double could not reach (#5029)", () => {
+  const sweep = () => adminBrainFacts.request("/tension-sweep", { method: "POST" });
+
+  it("500s when the sweep THROWS, audits nothing, and leaks no pg text", async () => {
+    // Until `sweepThrows` existed the double could only resolve, so the route's
+    // `Effect.tryPromise` catch was unreached and a refactor to the forbidden
+    // `catch: (err) => err` would have passed every test in the diff.
+    //
+    // The message is a real pg-shaped one because the assertion that matters is
+    // that it does NOT reach the client: `withBrainTransaction` scrubs its own
+    // log line precisely because pg text can carry a credentialed URL.
+    sweepThrows = new Error(
+      'relation "brain_edges" does not exist — postgresql://atlas:hunter2@db:5432/atlas',
+    );
+    const res = await sweep();
+
+    expect(res.status).toBe(500);
+    const text = await res.text();
+    expect(text, "the pg error text reached the client").not.toContain("hunter2");
+    expect(text).not.toContain("brain_edges");
+    // A failed run is not a run. Auditing one would put a row in the forensic
+    // trail for a sweep that wrote nothing.
+    expect(auditRows).toHaveLength(0);
+  });
+
+  it("500s — not 409 — on a throw, so a real fault is never dressed as contention", async () => {
+    // The direction that matters: `contended` tells an admin to retry. A broken
+    // statement dressed as contention is a retry loop against a fault no retry
+    // clears, and the 409's own description promises "nothing was changed",
+    // which a partial failure cannot guarantee.
+    sweepThrows = new Error("boom");
+    const res = await sweep();
+    expect(res.status).not.toBe(409);
+    expect(res.status).toBe(500);
+  });
+
+  it("carries the contention REASON to the client, not just the prose", async () => {
+    // Three reasons, three remedies — seconds, after-maintenance, stop-pressing.
+    // A client that had to parse English to tell them apart would re-spell a
+    // rule the seam owns.
+    for (const reason of ["reconcile-lock", "conflicting-lock", "unfinished"] as const) {
+      auditRows.length = 0;
+      sweepOutcome = { kind: "contended", reason, message: `refused: ${reason}` } as TensionSweepOutcome;
+      const res = await sweep();
+      expect(res.status, `${reason} did not 409`).toBe(409);
+      const body = (await res.json()) as { error: string; reason: string; message: string };
+      expect(body.error).toBe("sweep_contended");
+      expect(body.reason, "the machine-readable reason did not reach the client").toBe(reason);
+      expect(body.message).toBe(`refused: ${reason}`);
+      expect(auditRows).toHaveLength(0);
+    }
+  });
+
+  it("admits the self-hosted operator — the DEFAULT deploy mode", async () => {
+    // `unauthenticated-local` is the origin every self-hosted install runs as,
+    // and with the harness hard-coded to `managed` the arm was unreachable:
+    // inverting it locks the flagship deploy mode out of the sweep with nothing
+    // going red. `admin-brain-vocabulary.test.ts` carries this lever for the
+    // same reason.
+    AUTH_MODE = "none";
+    AUTH_USER = undefined;
+    const res = await sweep();
+
+    expect(
+      res.status,
+      "the self-hosted operator was refused — `sweepEntitled`'s `unauthenticated-local` arm is inverted, and predicate curation is impossible on every self-hosted install",
+    ).toBe(200);
+    expect(sweepCalls).toEqual([CURRENT_ORG]);
+    expect(auditRows).toHaveLength(1);
   });
 });

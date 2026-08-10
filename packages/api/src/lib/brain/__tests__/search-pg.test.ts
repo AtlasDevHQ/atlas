@@ -51,6 +51,7 @@ import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
 import { searchBrainCore } from "@atlas/api/lib/brain/search";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 import type { BrainFactResult, BrainSearchResult } from "@useatlas/types";
+import { identityAlias, slotKey } from "@atlas/api/lib/brain/identity";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -148,8 +149,9 @@ describeIfPg("searchBrain against the live schema", () => {
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_facts
          (workspace_id, subject, predicate, object, source_episode_id, provenance,
-          status, visible_to, invalidated_at, valid_from, valid_to)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::text[], $9, $10, $11)
+          status, visible_to, invalidated_at, valid_from, valid_to,
+          subject_key, predicate_key, object_key)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::text[], $9, $10, $11, $12, $13, $14)
        RETURNING id`,
       [
         WS,
@@ -163,6 +165,13 @@ describeIfPg("searchBrain against the live schema", () => {
         opts.invalidated ? new Date() : null,
         opts.validFrom ?? null,
         opts.validTo ?? null,
+        // The slot keys, `NOT NULL` since migration 0194 (#5047). Computed with
+        // the same function the ingest path uses — this suite's surfaces include
+        // `owned_by`, which `lexicalNorm` unifies to `owned by` and a hand-
+        // written literal would get wrong.
+        slotKey(opts.subject, identityAlias),
+        slotKey(opts.predicate ?? "owned_by", identityAlias),
+        slotKey(opts.object ?? "platform team", identityAlias),
       ],
     );
     return rows[0]!.id;

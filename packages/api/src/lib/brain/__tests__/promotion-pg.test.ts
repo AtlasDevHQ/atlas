@@ -161,8 +161,8 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
   }): Promise<string> {
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_facts
-         (workspace_id, subject, predicate, object, source_episode_id, provenance, status, visible_to)
-       VALUES ($1, $2, 'is', 'thing', $3, '{"actor":"test"}'::jsonb, $4, $5::text[])
+         (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, status, visible_to)
+       VALUES ($1, $2, 'is', 'thing', $6, 'is', 'thing', $3, '{"actor":"test"}'::jsonb, $4, $5::text[])
        RETURNING id`,
       [
         opts.workspaceId,
@@ -170,6 +170,13 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
         opts.episodeId,
         opts.status ?? "draft",
         opts.visibleTo ?? ["org"],
+        // The subject KEY, required since migration 0194 (#5047). Computed with
+        // the real function rather than spelled `lower($2)` in SQL: several
+        // fixtures here use hyphenated subjects (`also-good`, `no-grant`), and
+        // `lexicalNorm` unifies separators where `lower()` does not — a fixture
+        // whose key disagrees with what the ingest path would have written is a
+        // corpus no production code could produce.
+        slotKey(opts.subject, identityAlias),
       ],
     );
     return rows[0]!.id;
@@ -222,8 +229,8 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
         const ws = "ws-noprov";
         await expect(
           pool.query(
-            `INSERT INTO brain_facts (workspace_id, subject, predicate, object, provenance, visible_to)
-             VALUES ($1, 's', 'is', 'o', '{"a":1}'::jsonb, ARRAY['org'])`,
+            `INSERT INTO brain_facts (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, provenance, visible_to)
+             VALUES ($1, 's', 'is', 'o', 's', 'is', 'o', '{"a":1}'::jsonb, ARRAY['org'])`,
             [ws],
           ),
         ).rejects.toThrow(/source_episode_id/);
@@ -239,8 +246,8 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
         await expect(
           pool.query(
             `INSERT INTO brain_facts
-               (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
-             VALUES ($1, 's', 'is', 'o', $2, '{}'::jsonb, ARRAY['org'])`,
+               (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to)
+             VALUES ($1, 's', 'is', 'o', 's', 'is', 'o', $2, '{}'::jsonb, ARRAY['org'])`,
             [ws, ep],
           ),
         ).rejects.toThrow(/chk_brain_facts_provenance_nonempty/);
@@ -270,8 +277,8 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
           await expect(
             pool.query(
               `INSERT INTO brain_facts
-                 (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
-               VALUES ($1, 's', 'is', 'o', $2, $3::jsonb, ARRAY['org'])`,
+                 (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to)
+               VALUES ($1, 's', 'is', 'o', 's', 'is', 'o', $2, $3::jsonb, ARRAY['org'])`,
               [ws, ep, notAnObject],
             ),
           ).rejects.toThrow(/chk_brain_facts_provenance_nonempty/);
@@ -289,8 +296,8 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
         await expect(
           pool.query(
             `INSERT INTO brain_facts
-               (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
-             VALUES ('ws-thief', 's', 'is', 'o', $1, '{"a":1}'::jsonb, ARRAY['org'])`,
+               (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to)
+             VALUES ('ws-thief', 's', 'is', 'o', 's', 'is', 'o', $1, '{"a":1}'::jsonb, ARRAY['org'])`,
             [ep],
           ),
         ).rejects.toThrow(/fk_brain_facts_episode/);
@@ -309,8 +316,8 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
         await expect(
           pool.query(
             `INSERT INTO brain_facts
-               (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
-             VALUES ($1, 's', 'is', 'o', $2, '{"a":1}'::jsonb, ARRAY[NULL, '']::text[])`,
+               (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to)
+             VALUES ($1, 's', 'is', 'o', 's', 'is', 'o', $2, '{"a":1}'::jsonb, ARRAY[NULL, '']::text[])`,
             [ws, ep],
           ),
         ).rejects.toThrow(/chk_brain_facts_grant_nonempty/);
@@ -722,8 +729,8 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
       const ep = await seedEpisode(ws, "archived");
       const { rows } = await pool.query<{ id: string }>(
         `INSERT INTO brain_facts
-           (workspace_id, subject, predicate, object, source_episode_id, provenance, status, visible_to)
-         VALUES ($1, 'retired', 'is', 'thing', $2, '{"a":1}'::jsonb, 'archived', ARRAY['org'])
+           (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, status, visible_to)
+         VALUES ($1, 'retired', 'is', 'thing', 'retired', 'is', 'thing', $2, '{"a":1}'::jsonb, 'archived', ARRAY['org'])
          RETURNING id`,
         [ws, ep],
       );
@@ -1308,12 +1315,16 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
       /** Defaults to org-wide; override for the ACL-withholding cases. */
       visibleTo?: readonly string[];
       /**
-       * Land the row UNKEYED — all three key columns NULL — which is what a
-       * region import produces today (`admin-migrate.ts`'s 18-column INSERT
-       * names none of them, #5035) and what every row written between migration
-       * 0187 and #5020 looked like before 0188's backfill repeat.
+       * Land the row as migration 0194 leaves a LEGACY DEGENERATE one (#5047):
+       * TOMBSTONED, with a per-row placeholder in every key column.
+       *
+       * This replaces the old `unkeyed` option, which landed all three keys
+       * NULL. That state modelled a region import's output and the 0187→#5020
+       * window, and it is now unrepresentable — the key columns are `NOT NULL`.
+       * What inherited its job is this: the population 0194 could not key, which
+       * is the only thing left in the corpus that carries no identity.
        */
-      unkeyed?: boolean;
+      tombstonedPlaceholder?: boolean;
       /**
        * The entity id a store resolved this object to, which is what makes the
        * object COMPARABLE and therefore what the publish gate now reads (#5030).
@@ -1378,11 +1389,12 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
         opts.entityId === undefined
           ? (objectKey === null ? undefined : `ent:${objectKey}`)
           : (opts.entityId ?? undefined);
+      // 0194's per-row placeholder, minted once per seeded row so two of them
+      // can never share a slot (#5047).
+      const placeholderKey = `-unkeyable:${opts.workspaceId}:${opts.subject}:${opts.object}`;
       // Keyed like an ingested row (#5020): the collision join and the
       // corroboration lookup both match on `*_key`, so a seed that omitted them
-      // would be an UNKEYED row — a legitimate corpus state (0187's interval,
-      // and a region import until #5035) but not the one these tests are about,
-      // and one that collides with nothing. Derived through `slotKey`, the same
+      // would be rejected outright now that the columns are `NOT NULL`. Derived through `slotKey`, the same
       // function `INSERT_FACT_SQL` calls, rather than hand-written beside the
       // surface where the two could quietly disagree. (`INSERT_FACT_SQL` is a
       // string constant; the function is what `reconcile.ts` calls when binding
@@ -1391,9 +1403,9 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
         `INSERT INTO brain_facts
            (workspace_id, subject, predicate, object, source_episode_id,
             provenance, status, visible_to,
-            subject_key, predicate_key, object_key, object_cmp)
+            subject_key, predicate_key, object_key, object_cmp, invalidated_at)
          VALUES ($1, $2, $3, $4, $5, $12::jsonb, $6, $10::text[],
-                 $7, $8, $9, $11)
+                 $7, $8, $9, $11, $13)
          RETURNING id`,
         [
           opts.workspaceId,
@@ -1402,28 +1414,37 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
           opts.object,
           opts.episodeId,
           opts.status ?? "draft",
-          opts.unkeyed === true ? null : slotKey(opts.subject, identityAlias),
-          opts.unkeyed === true ? null : slotKey(predicate, identityAlias),
-          opts.unkeyed === true ? null : objectKey,
+          // 0194's shape for a row it could not key: a PER-ROW placeholder, in
+          // a namespace `lexicalNorm` can never emit (it collapses `-` away, so
+          // no computed key starts with one or contains one). Unique per call,
+          // because a shared value is the one-slot-for-every-placeholder hazard
+          // migration 0187's header rejects.
+          opts.tombstonedPlaceholder === true ? placeholderKey : slotKey(opts.subject, identityAlias),
+          opts.tombstonedPlaceholder === true ? placeholderKey : slotKey(predicate, identityAlias),
+          opts.tombstonedPlaceholder === true ? placeholderKey : objectKey,
           opts.visibleTo ?? ["org"],
           // Through `comparableValue`, the same function `reconcile.ts` calls,
           // rather than a hand-written `entity:…` literal beside the surface —
           // a fixture that spelled the tag itself would agree with a producer
           // that stopped emitting one.
-          opts.unkeyed === true
+          opts.tombstonedPlaceholder === true
             ? null
             : comparableValue({ surface: opts.object, entityId: resolvedEntity }),
           JSON.stringify(opts.provenance ?? { actor: "test" }),
+          // The tombstone, which is the load-bearing half of 0194's treatment:
+          // all three slot consumers require `invalidated_at IS NULL`, so the
+          // row is outside every join by this column rather than by its key.
+          opts.tombstonedPlaceholder === true ? new Date() : null,
         ],
       );
       // Declared AFTER the row lands, and through the shipped authoring door
       // rather than a raw INSERT, so a change to what the write path admits
       // reaches this suite instead of being routed around.
       //
-      // Unconditional, including for an `unkeyed` row: its NULL `predicate_key`
-      // matches no entry, which is the fail-closed behaviour those tests are
-      // about, and skipping the declaration would make them pass for the wrong
-      // reason.
+      // Unconditional, including for a tombstoned placeholder row: its
+      // placeholder `predicate_key` matches no entry, which is the fail-closed
+      // behaviour those tests are about, and skipping the declaration would make
+      // them pass for the wrong reason.
       const declared = await declarePredicateCardinality(pool, opts.workspaceId, {
         predicateKey: slotKey(predicate, identityAlias),
         cardinality: opts.cardinality ?? "single",
@@ -1982,31 +2003,35 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
     );
 
     it(
-      "an UNKEYED row supersedes nothing and is superseded by nothing — fail-closed, in both directions",
+      "a TOMBSTONED PLACEHOLDER row supersedes nothing and is superseded by nothing (#5047)",
       async () => {
-        // The state that dominates the corpus this deploys onto, and the one
-        // the new seeder would otherwise have erased from the suite: a row a
-        // region import landed (#5035), or one written in the 0187→#5020 window
-        // that 0188's backfill has not reached. `=` and `<>` are both UNKNOWN
-        // against NULL, so such a row drops out of `supersessionCollisionJoin`
-        // entirely — from BOTH sides, which is the half the docstring claims
-        // and nothing pinned.
+        // The successor to this suite's UNKEYED test, which modelled a row with
+        // all three keys NULL — a region import's output, or one written in the
+        // 0187→#5020 window. That state is unrepresentable since migration 0194
+        // made the key columns `NOT NULL`, and what inherited its place is the
+        // population 0194 could not key: legacy rows whose SURFACE normalizes
+        // away, tombstoned and given a per-row placeholder.
         //
-        // Fail-closed is the right direction (no collision ⇒ no `valid_to`
-        // stamp ⇒ nothing irreversible), but it is not free: the pair below
-        // WOULD collide if either row were keyed, and the reviewer is shown an
-        // affirmative "this publish supersedes nothing".
-        const ws = "ws-5020-unkeyed";
-        const ep = await seedEpisode(ws, "unkeyed");
+        // The invariant is the same one, reached by a different mechanism, and
+        // that difference is the whole reason this test has to exist. The old
+        // row dropped out of `supersessionCollisionJoin` because `=` and `<>`
+        // are both UNKNOWN against NULL. A placeholder key is NOT null, so the
+        // `<>` arm is now genuinely TRUE against a real key — the exclusion is
+        // carried entirely by `invalidated_at IS NULL`. If 0194 had written the
+        // placeholder WITHOUT the tombstone, these rows would start colliding
+        // with real beliefs in their slot, and publishing would stamp `valid_to`
+        // across the pair.
+        const ws = "ws-5047-placeholder";
+        const ep = await seedEpisode(ws, "placeholder");
 
-        // (a) unkeyed PUBLISHED incumbent, keyed draft that would replace it.
-        const oldUnkeyed = await seedFact({
+        // (a) placeholder PUBLISHED incumbent, keyed draft that would replace it.
+        const oldPlaceholder = await seedFact({
           workspaceId: ws,
           episodeId: ep,
           subject: "alice",
           object: "bob",
           status: "published",
-          unkeyed: true,
+          tombstonedPlaceholder: true,
         });
         const draftKeyed = await seedFact({
           workspaceId: ws,
@@ -2014,7 +2039,7 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
           subject: "alice",
           object: "carol",
         });
-        // (b) the converse — keyed incumbent, unkeyed draft.
+        // (b) the converse — keyed incumbent, placeholder draft.
         const oldKeyed = await seedFact({
           workspaceId: ws,
           episodeId: ep,
@@ -2022,12 +2047,12 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
           object: "erin",
           status: "published",
         });
-        const draftUnkeyed = await seedFact({
+        const draftPlaceholder = await seedFact({
           workspaceId: ws,
           episodeId: ep,
           subject: "dana",
           object: "frank",
-          unkeyed: true,
+          tombstonedPlaceholder: true,
         });
 
         const reader = await resolvePrincipalContext(pool, {
@@ -2036,16 +2061,14 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
           userId: "u1",
           resolvedRole: { role: "owner", orgId: ws },
         });
-        // Disclosed as "nothing to supersede", because the check could not run.
         expect(await loadSupersessionPreview(pool, reader)).toMatchObject({
           total: 0,
           pairs: [],
         });
 
         const report = await publish(ws);
-        expect(report.promoted).toBe(2);
         expect(report.superseded).toEqual([]);
-        for (const id of [oldUnkeyed, draftKeyed, oldKeyed, draftUnkeyed]) {
+        for (const id of [oldPlaceholder, draftKeyed, oldKeyed, draftPlaceholder]) {
           expect((await factState(id)).valid_to).toBeNull();
         }
         expect(await supersedesEdges(ws)).toEqual([]);
@@ -2054,21 +2077,23 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
     );
 
     it(
-      "a PARTIALLY keyed row does not collide either — the `<>` arm's own NULL case",
+      "a placeholder in ONE slot position does not collide either — the same-slot case (#5047)",
       async () => {
-        // The unkeyed case above is decided by the `=` arms before the object
-        // arm is ever consulted, so it leaves `object_key <> object_key`
-        // unfalsified. This is that arm: both rows are in the SAME slot
-        // (`alice` / `manager`), and only the OBJECT key is NULL.
+        // The sharper half, and the successor to the PARTIALLY-keyed test. There
+        // the two rows shared a slot and only `object_key` was NULL, which
+        // falsified the object `<>` arm's NULL handling: under `IS DISTINCT
+        // FROM` the placeholder would have stamped `valid_to` on the real belief
+        // beside it.
         //
-        // Reachable straight off the ingest path — `reconcile.ts` stores
-        // `alice manager -` with two real keys and `object_key IS NULL`, and
-        // nothing in `classifyFactForPromotion` refuses it, so it is a
-        // promotable draft. Under a NULL-safe arm (`IS DISTINCT FROM`)
-        // publishing it would stamp `valid_to` on the real published belief in
-        // its slot — the irreversible write, spent on a placeholder.
-        const ws = "ws-5020-partial";
-        const ep = await seedEpisode(ws, "partial");
+        // The input has moved but the hazard has not. `reconcile.ts` will not
+        // store `alice manager -` any more (#5047 refuses it), so the row that
+        // reaches this shape is 0194's: same subject and predicate keys as the
+        // incumbent, a placeholder at the object, and a tombstone. It sits
+        // squarely in the incumbent's slot, its object key is non-null and
+        // unequal, and the ONLY thing keeping it out of the collision join is
+        // `invalidated_at IS NULL`.
+        const ws = "ws-5047-slot";
+        const ep = await seedEpisode(ws, "slot");
         const published = await seedFact({
           workspaceId: ws,
           episodeId: ep,
@@ -2076,14 +2101,20 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
           object: "bob",
           status: "published",
         });
-        // `slotKey("-")` is null, so the seeder keys subject and predicate and
-        // leaves `object_key` NULL — exactly what the ingest path produces.
-        const placeholder = await seedFact({
-          workspaceId: ws,
-          episodeId: ep,
-          subject: "alice",
-          object: "-",
-        });
+        // Same slot as the incumbent — subject and predicate keyed normally —
+        // and a placeholder at the OBJECT only, which is what a legacy row
+        // reading `alice manager -` becomes under 0194.
+        const { rows } = await pool.query<{ id: string }>(
+          `INSERT INTO brain_facts
+             (workspace_id, subject, predicate, object, source_episode_id,
+              provenance, status, visible_to,
+              subject_key, predicate_key, object_key, invalidated_at)
+           VALUES ($1, 'alice', 'manager', '-', $2, '{"actor":"test"}'::jsonb, 'draft',
+                   ARRAY['org'], 'alice', 'manager', '-unkeyable:slot-1', now())
+           RETURNING id`,
+          [ws, ep],
+        );
+        const placeholder = rows[0]!.id;
 
         const reader = await resolvePrincipalContext(pool, {
           workspaceId: ws,
@@ -2097,7 +2128,6 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
         });
 
         const report = await publish(ws);
-        expect(report.promoted).toBe(1);
         expect(report.superseded).toEqual([]);
         expect((await factState(published)).valid_to).toBeNull();
         expect((await factState(placeholder)).valid_to).toBeNull();

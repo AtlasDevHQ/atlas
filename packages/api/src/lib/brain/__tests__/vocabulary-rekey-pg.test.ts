@@ -80,7 +80,8 @@
  * | 22 | decide's lock_timeout RESET deleted (bound leaks past 5024) | decide locks first |
  * | 23 | `lexicalNormSql`'s `translate()` -> `lower()` | `lexicalNormSql` agrees with `lexicalNorm` on every corpus row |
  * | 24 | `chr(11)` dropped from the separator class | `lexicalNormSql` agrees with `lexicalNorm` on every corpus row |
- * | 25 | `identityKeySql`'s `NULLIF(..., '')` dropped | a re-keyed POSITION whose surface norms away reaches NULL, never the empty string |
+ * | 25 | `identityKeySql`'s `NULLIF(..., '')` dropped | SKIPS a row whose surface norms away, leaving 0194's placeholder untouched |
+ * | 26 | the `IS NOT NULL` arm on the recomputed key dropped (#5047) | SKIPS a row whose surface norms away, leaving 0194's placeholder untouched |
  *
  * ## Three rounds, and what each one caught that the previous missed
  *
@@ -581,29 +582,52 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
     ).toBe("ships on");
   });
 
-  it("a re-keyed POSITION whose surface norms away reaches NULL, never the empty string", async () => {
-    // `identityKeySql`'s `NULLIF(…, '')`. A stored `''` is the ONE key value that
-    // joins every other degenerate row, so two unrelated placeholder claims would
-    // occupy one slot and publishing either would stamp `valid_to` on the other.
+  it("SKIPS a row whose surface norms away, leaving 0194's placeholder untouched", async () => {
+    // Two guards in one fixture, both of which the constraint made load-bearing.
     //
-    // The approval is at the OBJECT position, and that is the point rather than
-    // an arbitrary choice: an earlier cut approved at `predicate` and asserted on
-    // `object_key`, so the object statement never ran and the NULL it checked was
-    // the one `identityKey` wrote at ingest — a no-op with respect to the re-key.
-    // The degenerate surface has to be at the position being re-keyed.
-    const id = await land(WS, { subject: "widget", predicate: "ships on", object: "-" });
-    expect((await readFact(id)).object_key).toBeNull();
-
-    // A real object alias in the same workspace, so the object statement has
-    // something to do and cannot pass by moving nothing.
+    // `identityKeySql`'s `NULLIF(…, '')` — a stored `''` is the ONE key value
+    // that joins every other degenerate row, so two unrelated placeholder claims
+    // would occupy one slot and publishing either would stamp `valid_to` on the
+    // other. Dropping it makes this expression yield `''`, which now sails past
+    // the `IS NOT NULL` arm and is WRITTEN.
+    //
+    // …and that `IS NOT NULL` arm itself (#5047). The expression is still NULL
+    // for a surface that normalizes away, and `brain_facts`' key columns are
+    // `NOT NULL` since migration 0194 — so without the arm this statement raises
+    // `23502` and aborts a human-gated alias approval that has nothing to do
+    // with the row.
+    //
+    // The fixture is the population 0194 leaves behind, built the way 0194
+    // builds it, because `reconcileFacts` will not land such a claim any more:
+    // TOMBSTONED, with a per-row placeholder in the degenerate column. It is
+    // exactly the row this statement meets and must leave alone.
     const other = await land(WS, { subject: "widget", predicate: "ships on", object: "friday" });
+    const episode = await seedEpisode(WS);
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO brain_facts
+         (workspace_id, subject, predicate, object,
+          subject_key, predicate_key, object_key,
+          source_episode_id, provenance, visible_to, invalidated_at)
+       VALUES ($1, 'widget', 'ships on', '-', 'widget', 'ships on', '-unkeyable:seed', $2,
+               '{"actor":"u1"}'::jsonb, ARRAY['org'], now())
+       RETURNING id::text AS id`,
+      [WS, episode.id],
+    );
+    const degenerate = rows[0]!.id;
+
+    // The approval is at the OBJECT position, and that is the point rather than
+    // an arbitrary choice: an earlier cut approved at `predicate` and asserted
+    // on `object_key`, so the object statement never ran. The degenerate surface
+    // has to be at the position being re-keyed. The real alias beside it is what
+    // stops the test passing by moving nothing.
     await approve("friday", "fri", "object");
 
     expect((await readFact(other)).object_key).toBe("fri");
     expect(
-      (await readFact(id)).object_key,
-      "a surface that norms away was keyed to the empty string by the re-key",
-    ).toBeNull();
+      (await readFact(degenerate)).object_key,
+      "the re-key rewrote a row whose surface normalizes away — either to the empty string (which " +
+        "joins every other degenerate row) or to a recomputed key it has no basis for",
+    ).toBe("-unkeyable:seed");
   });
 
   it("re-norms the vocabulary's answer rather than trusting it", async () => {
@@ -650,9 +674,10 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
     ).toBe("priced at");
     expect(
       (await readFact(degenerate)).predicate_key,
-      "a vocabulary answer that norms AWAY must reach NULL, not the empty string — a stored `''` is " +
-        "the one key value that joins every other degenerate row",
-    ).toBeNull();
+      "a vocabulary answer that norms AWAY must leave the stored key alone. It must NOT become the " +
+        "empty string — the one key value that joins every other degenerate row — and it can no " +
+        "longer become NULL either, which since #5047 would be a `23502` aborting the approval",
+    ).toBe("ships on");
   });
 
   // ── 2. the undo, on removal ─────────────────────────────────────────────

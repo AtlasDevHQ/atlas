@@ -2031,9 +2031,40 @@ function rekeyDriftedFactsSql(position: SlotPosition): string {
                               WHERE t.workspace_id = f.workspace_id
                                 AND t.slot_position = '${position}'
                                 AND t.norm = ${norm}), ${norm})`;
+  // ⚠️ THE RECOMPUTED KEY IS REFUSED WHEN IT IS NULL (#5047), and this arm is
+  // load-bearing rather than defensive.
+  //
+  // `brain_facts`' three key columns are `NOT NULL` as of migration 0194, and
+  // this expression can still evaluate to NULL for a row whose SURFACE norms
+  // away — the inner `identityKeySql` yields NULL, the closure lookup matches
+  // nothing, and the COALESCE stays NULL. Without this arm such a row is
+  // `IS DISTINCT FROM` its stored key, the UPDATE tries to write NULL, and
+  // Postgres raises `23502` — aborting the whole decide transaction, which is a
+  // human-gated alias approval that has nothing to do with that row.
+  //
+  // Those rows exist: 0194 could not key the legacy degenerate population, so it
+  // TOMBSTONED them and left a per-row placeholder in the key columns. They are
+  // out of every slot consumer by `invalidated_at`, and this statement is
+  // deliberately unscoped by it (the tombstoned and superseded rows must be
+  // re-keyed too, or the re-derive-from-surface undo silently stops working), so
+  // it is this statement that meets them.
+  //
+  // Skipping them loses nothing. Their surface asserts nothing, so there is no
+  // key to re-derive at any vocabulary — the value this arm declines to write is
+  // NULL, not a better key — and the placeholder they keep joins nothing, which
+  // is what the NULL it replaced did. The ingest guard refuses to make more of
+  // them, so the population is closed and shrinks only.
+  //
+  // ⚠️ It is `${expr} IS NOT NULL`, NOT `f.${surface}` — the vocabulary is part
+  // of the composition. An entry whose target normalizes away would reach the
+  // same NULL from a perfectly keyable surface; `vocabulary-decide.ts` refuses
+  // `degenerate-norm` targets at authoring, so that path is closed today, and
+  // testing the composed expression is what keeps this arm correct if it ever
+  // reopens rather than relying on the other guard staying put.
   return `UPDATE brain_facts f
             SET ${key} = ${identityKeySql(aliased)}
           WHERE f.workspace_id = $1
+            AND ${identityKeySql(aliased)} IS NOT NULL
             AND f.${key} IS DISTINCT FROM ${identityKeySql(aliased)}
       RETURNING f.id::text AS id`;
 }

@@ -3308,8 +3308,8 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     await expectRejected(
       "chk_brain_facts_grant_nonempty",
       `INSERT INTO brain_facts
-         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
-       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY[NULL, '']::text[])`,
+         (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to)
+       VALUES ($1, 's', 'p', 'o', 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY[NULL, '']::text[])`,
       [ws, episodeId],
     );
   }, PG_TEST_TIMEOUT_MS);
@@ -3321,8 +3321,8 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
 
     const { rows } = await pool.query<{ status: string; predicate_cardinality: string }>(
       `INSERT INTO brain_facts
-         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
-       VALUES ($1, 'acme', 'uses', 'postgres', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
+         (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to)
+       VALUES ($1, 'acme', 'uses', 'postgres', 'acme', 'uses', 'postgres', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
        RETURNING status, predicate_cardinality`,
       [ws, episodeId],
     );
@@ -3334,8 +3334,8 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     await expectRejected(
       "chk_brain_facts_status",
       `INSERT INTO brain_facts
-         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to, status)
-       VALUES ($1, 'acme', 'uses', 'mysql', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'], 'live')`,
+         (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to, status)
+       VALUES ($1, 'acme', 'uses', 'mysql', 'acme', 'uses', 'mysql', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'], 'live')`,
       [ws, episodeId],
     );
   }, PG_TEST_TIMEOUT_MS);
@@ -3346,13 +3346,13 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     const episodeId = await insertEpisode(ws, `ep-${stamp}`);
 
     const base = `INSERT INTO brain_facts
-        (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)`;
+        (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to)`;
 
     // An EMPTY grant is the dangerous case, and the one NOT NULL alone misses:
     // it denies everyone, which reads as "hidden" but behaves as "unreviewed".
     await expectRejected(
       "chk_brain_facts_grant_nonempty",
-      `${base} VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY[]::text[])`,
+      `${base} VALUES ($1, 's', 'p', 'o', 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY[]::text[])`,
       [ws, episodeId],
     );
 
@@ -3360,7 +3360,7 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     // shape of a real one.
     await expectRejected(
       "chk_brain_facts_provenance_nonempty",
-      `${base} VALUES ($1, 's', 'p', 'o', $2, '{}'::jsonb, ARRAY['org'])`,
+      `${base} VALUES ($1, 's', 'p', 'o', 's', 'p', 'o', $2, '{}'::jsonb, ARRAY['org'])`,
       [ws, episodeId],
     );
 
@@ -3368,7 +3368,7 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     // has no constraint name, so this one matches on the message.
     let nullErr: (Error & { column?: string }) | null = null;
     try {
-      await pool.query(`${base} VALUES ($1, 's', 'p', 'o', NULL, '{"actor":"u1"}'::jsonb, ARRAY['org'])`, [ws]);
+      await pool.query(`${base} VALUES ($1, 's', 'p', 'o', 's', 'p', 'o', NULL, '{"actor":"u1"}'::jsonb, ARRAY['org'])`, [ws]);
     } catch (e) {
       nullErr = e instanceof Error ? e : new Error(String(e));
     }
@@ -3398,8 +3398,8 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     await expectRejected(
       "fk_brain_facts_episode",
       `INSERT INTO brain_facts
-         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
-       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])`,
+         (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to)
+       VALUES ($1, 's', 'p', 'o', 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])`,
       [wsA, episodeB],
     );
   }, PG_TEST_TIMEOUT_MS);
@@ -3413,18 +3413,18 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     // a human promotion stamps one.
     await pool.query(
       `INSERT INTO brain_facts
-         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to,
+         (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to,
           valid_from)
-       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'], now())`,
+       VALUES ($1, 's', 'p', 'o', 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'], now())`,
       [ws, episodeId],
     );
 
     await expectRejected(
       "chk_brain_facts_valid_interval",
       `INSERT INTO brain_facts
-         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to,
+         (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to,
           valid_from, valid_to)
-       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'],
+       VALUES ($1, 's', 'p', 'o', 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'],
                now(), now() - interval '1 day')`,
       [ws, episodeId],
     );
@@ -3436,9 +3436,9 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     const episodeId = await insertEpisode(ws, `ep-${stamp}`);
     const { rows: factRows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_facts
-         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
-       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org']),
-              ($1, 's', 'p', 'o2', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
+         (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to)
+       VALUES ($1, 's', 'p', 'o', 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org']),
+              ($1, 's', 'p', 'o2', 's', 'p', 'o2', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
        RETURNING id`,
       [ws, episodeId],
     );
@@ -3480,8 +3480,8 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     const episodeId = await insertEpisode(ws, `ep-${stamp}`);
     const { rows: factRows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_facts
-         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
-       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
+         (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to)
+       VALUES ($1, 's', 'p', 'o', 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
        RETURNING id`,
       [ws, episodeId],
     );
@@ -3525,8 +3525,8 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     const episodeId = await insertEpisode(ws, `ep-${stamp}`);
     const { rows: factRows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_facts
-         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
-       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
+         (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to)
+       VALUES ($1, 's', 'p', 'o', 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
        RETURNING id`,
       [ws, episodeId],
     );
@@ -3570,8 +3570,8 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     const episodeA = await insertEpisode(wsA, `ep-a-${stamp}`);
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_facts
-         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
-       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
+         (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to)
+       VALUES ($1, 's', 'p', 'o', 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
        RETURNING id`,
       [wsA, episodeA],
     );
@@ -3592,8 +3592,8 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     const episodeId = await insertEpisode(ws, `ep-${stamp}`);
     await pool.query(
       `INSERT INTO brain_facts
-         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
-       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])`,
+         (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to)
+       VALUES ($1, 's', 'p', 'o', 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])`,
       [ws, episodeId],
     );
 
@@ -3612,8 +3612,8 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     const episodeId = await insertEpisode(ws, `ep-${stamp}`);
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_facts
-         (workspace_id, subject, predicate, object, source_episode_id, provenance, visible_to)
-       VALUES ($1, 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
+         (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to)
+       VALUES ($1, 's', 'p', 'o', 's', 'p', 'o', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
        RETURNING id`,
       [ws, episodeId],
     );

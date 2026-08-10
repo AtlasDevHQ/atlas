@@ -306,7 +306,15 @@ describe("runMigrations", () => {
     //   overwrites `visible_to` with the union of evidence grants, so the
     //   private claim's body reaches the public audience. Only a
     //   warehouse-backed subject can ever supply one, #5032 / ADR-0037 §5) = 194.
-    expect(count).toBe(194);
+    //   Plus 0194 (brain_fact_slot_keys_not_null — the third and last step of
+    //   ADR-0037 §1's identity key: the backfill re-run, vocabulary-aware and
+    //   per-column this time, the tombstone-plus-placeholder for the legacy rows
+    //   whose surfaces normalize away, and `SET NOT NULL` on all three slot key
+    //   columns. What it buys is that a NULL key stops meaning two things —
+    //   "no writer has keyed this row yet" and "this surface asserts nothing" —
+    //   by making the first unrepresentable and the second refused at ingest,
+    //   #5047) = 195.
+    expect(count).toBe(195);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -529,6 +537,7 @@ describe("runMigrations", () => {
         "0191_brain_fact_object_cmp.sql",
         "0192_brain_predicate_cardinality.sql",
         "0193_brain_fact_subject_cmp.sql",
+        "0194_brain_fact_slot_keys_not_null.sql",
       ],
     });
 

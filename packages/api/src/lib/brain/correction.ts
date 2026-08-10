@@ -155,7 +155,6 @@ import {
   type BrainPrincipalContext,
 } from "@atlas/api/lib/brain/acl";
 import {
-  identityKey,
   inheritSlotFromFactRow,
   slotKey,
   type ClaimVocabulary,
@@ -168,6 +167,7 @@ import { proposeFromCorrectionEvents } from "@atlas/api/lib/brain/cardinality";
 import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context";
 import {
   INSERT_PROVENANCE_EDGE_SQL,
+  RECONCILE_BLOCK_REASONS,
   reconcileFacts,
   withBrainTransaction,
   type ReconcileExecutor,
@@ -280,6 +280,25 @@ export const CORRECTION_REFUSAL_REASONS = {
   replacementMissing: "REPLACEMENT_MISSING",
   /** The replacement restates the target's own object — nothing to supersede. */
   replacementIdentical: "REPLACEMENT_IDENTICAL",
+  /**
+   * The replacement has no IDENTITY — its object normalizes away (`-`, `___`,
+   * `  `), so the successor would occupy no slot (#5047).
+   *
+   * ⚠️ NOT a second spelling of the ingest guard, and the distinction is what
+   * keeps it legitimate. `reconcile.ts`'s `MALFORMED_CLAIM` is the one place
+   * that DECIDES this — the check is not repeated here and this module never
+   * calls `slotKey` to ask. What this member does is TRANSLATE that seam's
+   * verdict into the module's own error type, so a human who typed `-` gets a
+   * 400 naming what is wrong with their text instead of the 500 a raw throw
+   * produced. `applySupersede`'s block arm is the only site that raises it.
+   *
+   * Reachable only through `supersede`: the other three verbs supply no claim.
+   * Before #5047 the same input passed every gate and installed a successor
+   * nothing could ever corroborate, contradict, or supersede — the case
+   * {@link replacementIdentical}'s docstring records as deliberately uncovered
+   * there, on the argument that the ingest seam would close it.
+   */
+  replacementMalformed: "REPLACEMENT_MALFORMED",
   /** The replacement could not become a published fact (structural refusal). */
   replacementUnpublishable: "REPLACEMENT_UNPUBLISHABLE",
 } as const;
@@ -781,77 +800,27 @@ async function proposeUnderDeadline(
   }
 }
 
-/**
- * Report a `supersede` whose predicate has no canonical form — the one case the
- * proposer's call-site guard would otherwise swallow.
+/*
+ * (`logDegeneratePredicate` and `DegeneratePredicateCause` lived here until
+ * #5047 and are gone because the state they reported cannot occur.
  *
- * Separate from the proposer's own degenerate-key arm because the two know
- * different things: `proposeFromCorrectionEvents` knows a key is unusable but
- * not which verb sent it, while the post-commit site receives the same `null`
- * for "not a supersede".
+ * They existed for a `supersede` that committed while closing no canonical
+ * predicate slot — reachable in two ways, a predicate SURFACE that normalizes
+ * away and an unkeyed TARGET row, which #5037 taught them to tell apart. Both
+ * are now unrepresentable at a COMMITTED supersede: the replacement inherits the
+ * target's slot, and `reconcile.ts`'s `MALFORMED_CLAIM` guard refuses a
+ * candidate whose slot key is null — so the verb is REFUSED
+ * (`REPLACEMENT_MALFORMED`) and the transaction rolls back instead of reaching
+ * the post-commit reporter. The target row itself cannot carry a null key at
+ * all: `brain_facts`' three key columns are `NOT NULL` as of migration 0194, and
+ * the legacy rows that could are tombstoned, which puts them outside what
+ * `readTargetRow` will correct.
  *
- * Called POST-COMMIT, not from the dispatch. The first cut called it inside the
- * transaction, where `applySupersede` can still raise a
- * `CorrectionRefusedError` — so the line asserting "the correction is
- * committed" was emitted BEFORE the commit and was false on every rollback. The
- * dispatch is not the only place that knows the verb: `verb` is in scope
- * post-commit too, which is where this can say what it says and be true.
+ * So `supersededPredicate` is non-null on every committed `supersede`, and the
+ * only `null` left is the honest one the other three verbs send: *this verb is
+ * not evidence about cardinality*. Kept as a note rather than dead code with a
+ * comment explaining why nothing reaches it.)
  */
-/**
- * Why a `supersede` produced no canonical predicate key (#5037).
- *
- * Two states, deliberately not collapsed. Before the key was READ off the target
- * there was only one — a predicate surface that norms away — and the reporter's
- * message says exactly that. Reading the key added a second cause with an
- * entirely different meaning and remedy, and a shared message would state the
- * first one's diagnosis about the second one's event.
- */
-type DegeneratePredicateCause = "degenerate-surface" | "unkeyed-target";
-
-function logDegeneratePredicate(meta: {
-  readonly workspaceId: string;
-  readonly factId: string;
-  readonly requestId: string | undefined;
-  /**
-   * WHY there is no key (#5037). Two states reach here and they are not the same
-   * event, so they are not the same line — collapsing them is how the second one
-   * hid.
-   */
-  readonly cause: "degenerate-surface" | "unkeyed-target";
-}): void {
-  if (meta.cause === "unkeyed-target") {
-    // ⚠️ `warn`, not `debug`, and the severity is the point. This is not one odd
-    // claim — it says the TARGET row carries no identity while its predicate
-    // surface reads perfectly well, which is a corpus-level gap (a region import
-    // that landed unkeyed is the documented cause). Every correction against such
-    // a corpus silently stops feeding the ADR-0037 §3(d)2 cardinality proposer,
-    // so the subsystem goes quiet with no other signal — and `debug` is off in
-    // production, which would make "quiet" and "healthy" indistinguishable.
-    log.warn(
-      meta,
-      // ⚠️ NAMES BOTH CAUSES AND ASSERTS NEITHER. An earlier cut of this line
-      // claimed the row "was written before the keys existed or imported from
-      // another region unkeyed" and told the operator to re-key the workspace.
-      // Neither is established here: a stored NULL beside a keyable surface also
-      // arises when the VOCABULARY maps that norm to nothing, and on that cause
-      // the prescribed remedy provably cannot work — `REKEY_DRIFTED_FACTS_SQL`
-      // recomputes `identityKey(alias(norm))`, the same composition, and gets the
-      // same NULL. A remedy that cannot work is the false promise this module
-      // refuses by name at `malformedSourceKind`.
-      //
-      // Distinguishing the two would mean re-deriving the target's key here,
-      // which is the operation this whole slice removes. Naming both is the
-      // honest answer available, and it is what the sibling warn in
-      // `reconcile.ts` already does for the identical ambiguity.
-      "brain correction: superseded a claim whose TARGET ROW has no stored predicate key, so there is no canonical predicate to propose a cardinality against — the predicate surface itself normalizes fine. Either the row was never keyed (written before the keys existed, or imported from another region unkeyed), or this workspace's vocabulary maps that predicate to something that normalizes away. Check the vocabulary entry for this predicate first: if it is clean, a re-key restores cardinality proposals; if it is not, no re-key will. The correction is committed and nothing else is affected",
-    );
-    return;
-  }
-  log.debug(
-    meta,
-    "brain correction: superseded a claim whose predicate normalizes away, so there is no canonical predicate to propose a cardinality against — the correction is committed and nothing else is affected",
-  );
-}
 
 /**
  * Tag a verb's response with the canonical predicate it closed, or with nothing.
@@ -873,23 +842,19 @@ function logDegeneratePredicate(meta: {
  * worth doing when a fifth verb arrives, not before.
  */
 async function withSupersededPredicate(
-  supersededPredicate: string | null,
   /**
-   * WHY the key is absent, when it is (#5037). A `null` key has two causes now
-   * that it is READ rather than derived — a predicate surface that norms away,
-   * and a target row that carries no stored key — and the post-commit reporter
-   * cannot tell them apart from the key alone. Decided here, where the surface,
-   * the vocabulary and the stored key are all still in hand; irrelevant and
-   * ignored when the key is non-null.
+   * The canonical predicate the verb closed. NON-NULL on every path that
+   * commits (#5047) — the type stays `string | null` only because it shares a
+   * shape with {@link noSupersededPredicate}, whose `null` means something
+   * different and is the one a reader must not confuse it with.
    */
-  cause: DegeneratePredicateCause,
+  supersededPredicate: string | null,
   response: Promise<BrainFactCorrectionResponse>,
 ): Promise<{
   response: BrainFactCorrectionResponse;
   supersededPredicate: string | null;
-  supersededPredicateCause: DegeneratePredicateCause;
 }> {
-  return { response: await response, supersededPredicate, supersededPredicateCause: cause };
+  return { response: await response, supersededPredicate };
 }
 
 async function noSupersededPredicate(
@@ -897,15 +862,10 @@ async function noSupersededPredicate(
 ): Promise<{
   response: BrainFactCorrectionResponse;
   supersededPredicate: null;
-  supersededPredicateCause: DegeneratePredicateCause;
 }> {
-  // The three non-supersede verbs never reach the proposer at all, so the cause
-  // is never read; `degenerate-surface` is the inert value rather than a claim.
-  return {
-    response: await response,
-    supersededPredicate: null,
-    supersededPredicateCause: "degenerate-surface",
-  };
+  // `null` here is a caller SAYING this verb is not evidence about cardinality
+  // — the only meaning the value still carries since #5047 removed the other.
+  return { response: await response, supersededPredicate: null };
 }
 
 interface TargetRow {
@@ -1056,7 +1016,6 @@ export async function correctFact(
   let outcome: {
     readonly response: BrainFactCorrectionResponse;
     readonly supersededPredicate: string | null;
-    readonly supersededPredicateCause: DegeneratePredicateCause;
   } | null;
   try {
     outcome = await withTransaction(async (tx) => {
@@ -1175,13 +1134,20 @@ export async function correctFact(
         //
         // ONE case it deliberately does NOT cover: a degenerate replacement
         // against a REAL target (`-` superseding `bob`) is `null !== "bob"`, so
-        // it passes here and installs a successor with no identity — a row that
-        // can never corroborate, contradict, or be superseded. It needs no
-        // refusal of its own: the `MALFORMED_CLAIM` tightening that 0187's
-        // header item 3 requires for `SET NOT NULL` blocks exactly this
-        // candidate at the ingest seam, and the replacement below goes through
-        // that seam, so the block rolls this verb's stamp back with it. Adding
-        // a second refusal here would be a second spelling of that guard.
+        // it passes here. ✅ CLOSED BY #5047, and closed where this comment said
+        // it would be rather than by a second test added here: the
+        // `MALFORMED_CLAIM` guard — 0187's header item 3, and the last
+        // prerequisite of `SET NOT NULL` — now refuses a candidate whose
+        // `slotKey` is null at the INGEST seam, and `applySupersede`'s
+        // replacement goes through that seam, so the block rolls this verb's
+        // `valid_to` stamp back with it. What `applySupersede` adds is a
+        // TRANSLATION of that verdict into {@link replacementMalformed}, not a
+        // second decision: the check still happens once, at reconcile.
+        //
+        // So this guard is still not the place to test for a degenerate
+        // replacement, and adding one here would be the second spelling of that
+        // guard the earlier note warned about. `correction.test.ts` pins the
+        // rollback rather than assuming it.
         //
         // The keys are RE-DERIVED from the surfaces rather than read: the
         // target read cannot project a key (`keys-not-on-the-wire.test.ts`), so
@@ -1425,31 +1391,22 @@ export async function correctFact(
           // the proposal accretes evidence against a slot no correction ever
           // touched, and the slot that WAS corrected accretes none.
           //
-          // A NULL answer is legal and permanent (`identityKey`'s ⚠️) and is
-          // reported POST-COMMIT — see `logDegeneratePredicate`, which cannot
-          // truthfully say "the correction is committed" from in here. Under the
-          // read it is also reachable a second way — a stored NULL on an unkeyed
-          // legacy row — and both mean the same thing to the proposer: there is
-          // no slot to propose against.
-          // WHICH null this is, decided where both halves are readable (#5037).
-          // A stored key that is absent while the surface keys perfectly well is
-          // an unkeyed TARGET — a corpus-level gap — and not the degenerate
-          // surface the reporter's original message describes.
+          // ⚠️ NON-NULL on every path that reaches the proposer, since #5047.
+          // `applySupersede` below hands this same slot to `reconcileFacts`,
+          // whose `MALFORMED_CLAIM` guard refuses a candidate with a null slot
+          // key — so a null here does not travel out with a committed response,
+          // it REFUSES the verb and rolls the transaction back. The target row
+          // cannot carry one either: the key columns are `NOT NULL` as of
+          // migration 0194.
           //
-          // `identityKey`, NOT `slotKey`: the question is whether the SURFACE
-          // itself asserts anything, which is a lexical fact about the text and
-          // needs no vocabulary. Reaching for `slotKey(target.predicate, …)`
-          // here would be a re-derivation of the very key just read — the thing
-          // this slice removes, and the ratchet in `correction.test.ts` refuses
-          // it. That the honest spelling is also the permitted one is the
-          // ratchet working rather than a coincidence.
-          const supersededCause: DegeneratePredicateCause =
-            supersededKey === null && identityKey(target.predicate) !== null
-              ? "unkeyed-target"
-              : "degenerate-surface";
+          // That is why there is no longer a cause to decide here. Until #5047
+          // this site classified the null two ways — a predicate SURFACE that
+          // normalizes away versus an unkeyed TARGET row — for a post-commit
+          // reporter that could not tell them apart from the key alone. Both
+          // states are now unrepresentable at a committed supersede; see the
+          // note where that reporter used to live.
           return withSupersededPredicate(
             supersededKey,
-            supersededCause,
             applySupersede(tx, ctx.workspaceId, target, episodeId, at, base, {
               replacement,
               sourcePrincipal,
@@ -1492,7 +1449,7 @@ export async function correctFact(
     );
     return { kind: "not-found" };
   }
-  const { response: result, supersededPredicate, supersededPredicateCause } = outcome;
+  const { response: result, supersededPredicate } = outcome;
 
   log.info(
     {
@@ -1532,11 +1489,15 @@ export async function correctFact(
   // It PROPOSES. Nothing is superseded by this write, now or ever: the row
   // lands `pending`, and `cardinalitySingleSql` reads only `approved` ones.
   // Guarded, so the three verbs that are not evidence about cardinality do not
-  // pay a pool checkout for a call that returns immediately. The case the guard
-  // used to HIDE — a `supersede` whose predicate surface norms away, which
-  // arrives as the same `null` — is reported in the other arm below: `verb` is
-  // in scope here, so this site CAN tell the two apart, and only a post-commit
-  // line can truthfully say the correction is committed.
+  // pay a pool checkout for a call that returns immediately.
+  //
+  // The guard used to have a second job — a `supersede` that committed while
+  // closing no canonical slot arrived as the same `null`, and hiding it was how
+  // that case went unreported. Since #5047 the two are no longer confusable
+  // because only one of them exists: a null slot key refuses the verb at the
+  // ingest seam, so a committed `supersede` always carries a canonical
+  // predicate, and `null` here means *this verb is not evidence about
+  // cardinality* and nothing else.
   //
   // BOUNDED, because `internalQuery` bypasses the circuit breaker and the
   // internal pool sets no `statement_timeout`: a DEGRADED internal DB —
@@ -1547,21 +1508,7 @@ export async function correctFact(
   // human decision. Same deadline and same knob as the audit write above, so
   // the two post-commit writes cannot drift into having different answers to
   // one hazard.
-  if (supersededPredicate === null) {
-    // A `supersede` that closed no canonical slot — the one case the proposer
-    // guard's `null` arm would otherwise swallow. Reported here rather than at
-    // the dispatch because only a post-commit line can say the correction is
-    // committed, and only `verb` distinguishes this from the three verbs that
-    // legitimately send `null`.
-    if (verb === "supersede") {
-      logDegeneratePredicate({
-        workspaceId: ctx.workspaceId,
-        factId: result.factId,
-        requestId,
-        cause: supersededPredicateCause,
-      });
-    }
-  } else {
+  if (supersededPredicate !== null) {
     await proposeUnderDeadline(
       () => withTransaction((tx) => proposeFromCorrectionEvents(tx, ctx.workspaceId, supersededPredicate)),
       resolveAuditDeadline(deps.auditWriteTimeoutMs),
@@ -2092,10 +2039,42 @@ async function applySupersede(
     { withTransaction: (fn) => fn(tx), now: () => at },
   );
   const outcome = report.outcomes[0];
+  if (outcome?.kind === "blocked" && outcome.reason === RECONCILE_BLOCK_REASONS.malformedClaim) {
+    // ⚠️ THE ONE BLOCK REASON THAT IS REACHABLE FROM A WELL-FORMED REQUEST, and
+    // it became reachable with #5047. Every other arm of the seam's gate is
+    // about the EPISODE — provenance, grant, principal — and this function just
+    // wrote that episode from the target's own row, so those really are
+    // unreachable by construction. `MALFORMED_CLAIM` is about the CANDIDATE, and
+    // the candidate carries a human's free text: a replacement object of `-` or
+    // `___` normalizes away, keys to null at the object position, and the ingest
+    // guard refuses it.
+    //
+    // Raised as a REFUSAL rather than left to the throw below, because the two
+    // produce the same rollback and opposite diagnoses. The throw is a 500 whose
+    // message says the seam's contract changed underneath this caller — an
+    // incident report, aimed at us, about a request that is simply wrong. A
+    // refusal is a 400 that tells the human their replacement asserts nothing,
+    // which is the true and actionable version of the same event.
+    //
+    // The SAFETY property either way is the one #5047's acceptance criteria
+    // name: `SUPERSEDE_STAMP_EXPLICIT_SQL` already ran at the top of this
+    // function, and leaving here — by throw or by refusal — rolls that stamp
+    // back with the whole transaction, so the target's `valid_to` is not closed
+    // in favour of a successor that was never stored. `correction.test.ts` pins
+    // it rather than assuming it.
+    throw new CorrectionRefusedError(
+      CORRECTION_REFUSAL_REASONS.replacementMalformed,
+      `The replacement "${inputs.replacement.object}" has no identity — it normalizes away to nothing, so ` +
+        "it would occupy no slot and could never be corroborated, contradicted, or superseded in turn. " +
+        "Supersede with the value the claim should now hold; to record that it holds no value, use " +
+        "`retract` instead.",
+    );
+  }
   if (!outcome || outcome.kind === "blocked") {
     // Unreachable by construction — the episode was just written with the
     // target's own usable grant and an explicit principal — so a block here
-    // means the seam's contract changed underneath this caller.
+    // means the seam's contract changed underneath this caller. The one
+    // candidate-level reason that IS reachable is handled above.
     throw new Error(
       `brain correction: reconcile blocked the replacement claim (${outcome ? outcome.reason : "no outcome"}) — ` +
         "the correction episode should satisfy every episode-level gate by construction",

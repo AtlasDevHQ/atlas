@@ -928,9 +928,31 @@ function isLoss(reason: RegionCarryOutcome["reason"]): boolean {
 
 /** The identity columns an imported fact lands with (#5035). */
 interface ImportedIdentity {
-  readonly subjectKey: string | null;
-  readonly predicateKey: string | null;
-  readonly objectKey: string | null;
+  /**
+   * NON-NULL since #5047 — `brain_facts`' three key columns are `NOT NULL` as of
+   * migration 0194, and this is the second key writer, so the type is what keeps
+   * that true here rather than a `23502` on the first offending row of an
+   * admin-triggered region import (ADR-0024, a production path).
+   *
+   * A null at any position is landed by {@link tombstonePlaceholder}, which is
+   * 0194's own policy for the same state. The type narrows AFTER that call and
+   * nowhere before it, so the two arms of {@link importedIdentity} cannot
+   * accidentally skip it.
+   */
+  readonly subjectKey: string;
+  readonly predicateKey: string;
+  readonly objectKey: string;
+  /**
+   * A key was replaced by a placeholder, so the row lands TOMBSTONED (#5047).
+   *
+   * Read at the INSERT, where it is `OR`ed into `invalidated_at`. Separate from
+   * {@link unkeyable} / {@link nullKeys} on purpose: those two are OPERATOR
+   * counters that say WHY the key was absent (computed here vs. arrived null),
+   * and this one says what the row DID about it. Collapsing them would make the
+   * import's log line and its write disagree the first time a fourth cause
+   * appears.
+   */
+  readonly tombstoned: boolean;
   /**
    * ⚠️ {@link RegionPortableComparable}, NOT `string | null` and not the wider
    * `ComparableValue`, and the narrowing is the whole guarantee this slice
@@ -1012,6 +1034,54 @@ interface ImportedIdentity {
  * imported"* rather than *"is worth recomputing"*, and #4772's review filter
  * reads it as the latter.
  */
+/**
+ * The `NOT NULL` landing for a key this import could not supply (#5047).
+ *
+ * Migration 0194's policy, applied at the second key writer so the two agree:
+ * a fact with no identity at some position is TOMBSTONED and the affected
+ * columns take a PER-ROW placeholder. Read 0194's header for the argument; the
+ * three points that matter at this call site:
+ *
+ *   - The tombstone is the load-bearing half. All three slot consumers require
+ *     `invalidated_at IS NULL`, so the row is outside every join by the
+ *     tombstone rather than by its key — which is exactly where a NULL key left
+ *     it before the constraint. The import's behaviour for these rows is
+ *     unchanged.
+ *   - The placeholder is per-row, which is what separates it from the shared
+ *     sentinel migration 0187's header rejects: under a shared value every
+ *     degenerate row joins every other one. `'-unkeyable:' || id` equals itself
+ *     and nothing else, and no computed key can collide with it because
+ *     `lexicalNorm` collapses `-` away and can neither start with nor contain
+ *     one.
+ *   - It is applied PER POSITION. A fact can be degenerate at one slot and
+ *     perfectly keyed at the other two, and replacing the good keys would take a
+ *     row that is merely valueless at one position and make it unreachable at
+ *     all three.
+ *
+ * Refusing the import instead was the alternative and is worse in both
+ * directions: a single degenerate legacy row would block a whole region
+ * migration, and the operator has no in-product verb to repair one. The counters
+ * this does not touch (`unkeyableFacts`, `nullKeyFacts`) are the signal, and
+ * `importBundle` already logs them with both readings.
+ */
+function tombstonePlaceholder(
+  factId: string,
+  keys: {
+    readonly subjectKey: string | null;
+    readonly predicateKey: string | null;
+    readonly objectKey: string | null;
+  },
+): Pick<ImportedIdentity, "subjectKey" | "predicateKey" | "objectKey" | "tombstoned"> {
+  const placeholder = `-unkeyable:${factId}`;
+  return {
+    subjectKey: keys.subjectKey ?? placeholder,
+    predicateKey: keys.predicateKey ?? placeholder,
+    objectKey: keys.objectKey ?? placeholder,
+    tombstoned:
+      keys.subjectKey === null || keys.predicateKey === null || keys.objectKey === null,
+  };
+}
+
 function importedIdentity(fact: ExportedBrainFact, source: IdentitySource): ImportedIdentity {
   if (!source.carried) {
     // A pre-#5035 bundle has no `_cmp` on the wire at all, so there is nothing
@@ -1025,7 +1095,7 @@ function importedIdentity(fact: ExportedBrainFact, source: IdentitySource): Impo
       objectKey: slotKey(fact.object, vocabulary.object),
     };
     return {
-      ...keys,
+      ...tombstonePlaceholder(fact.id, keys),
       subjectCmp: null,
       objectCmp: null,
       comparableDropped: false,
@@ -1047,10 +1117,15 @@ function importedIdentity(fact: ExportedBrainFact, source: IdentitySource): Impo
   return {
     // `?? null` normalizes ABSENT to NULL and is not a permissive fallback:
     // validation refuses a v3 fact missing any of the five, so the only shape
-    // that reaches here is the `string | null` the wire type declares.
-    subjectKey: fact.subjectKey ?? null,
-    predicateKey: fact.predicateKey ?? null,
-    objectKey: fact.objectKey ?? null,
+    // that reaches here is the `string | null` the wire type declares. A null
+    // that survives that is landed by {@link tombstonePlaceholder} — the keys
+    // are `NOT NULL` since #5047, and this arm CARRIES rather than computes, so
+    // it has nothing better to write.
+    ...tombstonePlaceholder(fact.id, {
+      subjectKey: fact.subjectKey ?? null,
+      predicateKey: fact.predicateKey ?? null,
+      objectKey: fact.objectKey ?? null,
+    }),
     subjectCmp: subject.value,
     objectCmp: object.value,
     // Derived from the REASONS through {@link isLoss}, not from the null-ness of
@@ -1856,7 +1931,24 @@ export async function importBundle(
         // the null-out is merely safe; with it, it is recoverable, and
         // `PROVISIONAL_PREDICATE` is the query that finds the rows.
         `INSERT INTO brain_facts (id, workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, subject_cmp, object_cmp, valid_from, valid_to, ingested_at, invalidated_at, extracted_at, source_episode_id, provenance, status, visible_to, pre_widening_visible_to, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                 -- invalidated_at is the one other column with a CASE, and for
+                 -- #5047's reason rather than #5035's. A fact whose key this
+                 -- import could not supply lands TOMBSTONED, matching migration
+                 -- 0194's treatment of the same state; the placeholder key beside
+                 -- it only satisfies the constraint, and the tombstone is what
+                 -- keeps the row out of all three slot consumers.
+                 --
+                 -- COALESCE and not an overwrite: a fact that arrived ALREADY
+                 -- tombstoned keeps the source region's timestamp, because when
+                 -- it stopped being a belief is a fact about the corpus and not
+                 -- about this import. now() and not a bind, so the stamp comes
+                 -- from the same clock the migration's does.
+                 -- (No backticks in this comment: the statement is a template
+                 -- literal, and one would end it.)
+                 CASE WHEN $24::boolean THEN COALESCE($14::timestamptz, now())
+                      ELSE $14::timestamptz END,
+                 $15, $16,
                  CASE WHEN $17::boolean
                       THEN jsonb_set($18::jsonb, '{provisional}', 'true'::jsonb, true)
                       ELSE $18::jsonb END,
@@ -1890,6 +1982,12 @@ export async function importBundle(
           fact.preWideningVisibleTo ?? null,
           fact.createdAt,
           fact.updatedAt,
+          // $24 — appended rather than inserted beside `invalidated_at`'s $14,
+          // which the CASE above reads. Renumbering the binds to put it there
+          // would move every placeholder after it, and this statement's column
+          // list and bind array are already the pair most exposed to that class
+          // of slip.
+          identity.tombstoned,
         ],
       );
       result.brainFacts.imported++;

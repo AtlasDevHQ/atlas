@@ -346,6 +346,11 @@ function refusalStatus(reason: CorrectionRefusalReason): 400 | 403 | 409 {
       return 403;
     case CORRECTION_REFUSAL_REASONS.replacementMissing:
     case CORRECTION_REFUSAL_REASONS.replacementIdentical:
+    // `replacementMalformed` is a request-shape mistake and not a target-state
+    // one (#5047): the target is fine, the replacement TEXT asserts nothing.
+    // Retrying the identical request can never succeed, which is what separates
+    // it from every 409 below — those describe a target that can change.
+    case CORRECTION_REFUSAL_REASONS.replacementMalformed:
       return 400;
     // 409 and not 501/503: the client-observable contract is this arm's — "the
     // verb cannot apply to this target". For `unrecognizedSourceKind` it is not

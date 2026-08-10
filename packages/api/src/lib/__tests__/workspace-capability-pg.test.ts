@@ -131,8 +131,9 @@ describeIfPg("CAPABILITY_SQL against real Postgres", () => {
       // NOT NULL alone would admit `'{}'`, an empty claim wearing the shape of
       // a real one. `visible_to` is likewise gated non-empty.
       `INSERT INTO brain_facts
-         (workspace_id, subject, predicate, object, source_episode_id, provenance, status, visible_to)
-       VALUES ($1, 'atlas', 'ships', 'brain', $2, $3::jsonb, $4, ARRAY['org']::text[])`,
+         (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key,
+          source_episode_id, provenance, status, visible_to)
+       VALUES ($1, 'atlas', 'ships', 'brain', 'atlas', 'ships', 'brain', $2, $3::jsonb, $4, ARRAY['org']::text[])`,
       [workspaceId, episodeId, JSON.stringify({ extractor: "workspace-capability-pg-test" }), status],
     );
   }

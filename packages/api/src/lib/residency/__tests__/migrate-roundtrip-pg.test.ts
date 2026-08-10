@@ -1545,8 +1545,9 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       );
       await pool.query(
         `INSERT INTO brain_facts (id, workspace_id, subject, predicate, object,
+                                  subject_key, predicate_key, object_key,
                                   source_episode_id, provenance, visible_to)
-         VALUES ($1, $2, 's', 'p', 'o', $3, '{"actor":"u"}'::jsonb, ARRAY['org'])`,
+         VALUES ($1, $2, 's', 'p', 'o', 's', 'p', 'o', $3, '{"actor":"u"}'::jsonb, ARRAY['org'])`,
         [cleanFact, CLEAN_ORG, cleanEpisode],
       );
       await pool.query(
@@ -1633,8 +1634,9 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         );
         await pool.query(
           `INSERT INTO brain_facts (id, workspace_id, subject, predicate, object, ingested_at,
+                                    subject_key, predicate_key, object_key,
                                     source_episode_id, provenance, status, visible_to)
-           VALUES ($1, $2, 's', 'p', 'o', now(), $3, '{"actor":"u"}'::jsonb, 'draft', ARRAY['org'])`,
+           VALUES ($1, $2, 's', 'p', 'o', now(), 's', 'p', 'o', $3, '{"actor":"u"}'::jsonb, 'draft', ARRAY['org'])`,
           [SPARED_FACT, SPARED_ORG, SPARED_EPISODE],
         );
 

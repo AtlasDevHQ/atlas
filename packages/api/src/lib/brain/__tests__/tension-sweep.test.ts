@@ -388,16 +388,16 @@ describe("the tension sweep's STATEMENT bounds (#5029)", () => {
     );
   });
 
-  it("logs the SQLSTATE on the failure path, not just the scrubbed message", async () => {
-    // `errorMessage` collapses a pg error to a scrubbed string, which is right —
-    // the text can echo a credentialed connection URL — but it drops `code`, and
-    // "was this contention or a real fault?" is the first question an operator
-    // asks and the one every arm above keys on.
+  it("propagates a non-Error throw untouched — the shape the narrowers must handle", async () => {
+    // ⚠️ RETITLED. It used to be called "logs the SQLSTATE on the failure path"
+    // and its comment claimed to check that `pgCode` extracted anything — which
+    // it never did: the only assertion is that the thrown value propagates. That
+    // mislabelling is how `pgCode` shipped unfalsified in the first place, and
+    // leaving it beside the real assertion would let the next auditor land here
+    // and get the wrong answer. `pgCode`/`pgWhere` are pinned directly below.
     //
-    // Asserted through the module's real logger rather than a mock: this file
-    // deliberately has no `mock.module`, so the check is that the code is
-    // EXTRACTED at all — a `pgCode` that returned undefined for a real pg error
-    // would make the log line useless.
+    // What this DOES pin is real and nothing else covers it: a driver can throw
+    // a plain object, and every narrower in the module takes `unknown`.
     const notAnError = { code: "42P01", message: "relation does not exist" };
     const { runner } = harness({ sweepError: notAnError });
     // A non-`Error` throw, which is also the shape `isLockTimeout` has to
@@ -448,8 +448,18 @@ describe("AC 1 — admin-TRIGGERED, and nothing else calls it (#5029)", () => {
       100,
     );
 
+    // ⚠️ The BARE identifier, not `sweepTensionEdges(`. Measured evasions of the
+    // call-shaped form: `workspaceIds.map(sweepTensionEdges)`, which is the
+    // natural way to write a per-workspace scheduler tick and therefore the
+    // precise failure AC 1 forbids; `{ run: sweepTensionEdges }`; and
+    // `const run = sweepTensionEdges`. The import line is excluded rather than
+    // the call shape required.
     const callers = files
-      .filter((file) => /\bsweepTensionEdges\s*\(/.test(readFileSync(file, "utf8")))
+      .filter((file) =>
+        readFileSync(file, "utf8")
+          .split("\n")
+          .some((line) => /\bsweepTensionEdges\b/.test(line) && !/^\s*(?:import|\})/.test(line)),
+      )
       .map((f) => f.slice(REPO_ROOT.length + 1))
       // Its own declaration site.
       .filter((f) => f !== "packages/api/src/lib/brain/tension-sweep.ts");
@@ -522,6 +532,12 @@ describe("no contention arm asserts a cause the SQLSTATE cannot establish (#5029
     // standing here — instance closed in two files, class open in the third,
     // precisely because this file was not scanned.
     "packages/api/src/lib/brain/reconcile.ts",
+    // ⚠️ And the ADR — which the rationale directly above NAMES as one of the two
+    // files that carried the deadlock-impossible premise, while leaving it out of
+    // this list. It is the most durable copy of the argument and the one a future
+    // third taker of 4771 reads before any docstring. Same shape, one file over,
+    // a fourth time.
+    "docs/adr/0037-claim-identity-in-the-brain.md",
   ];
 
   /**
@@ -568,7 +584,16 @@ describe("no contention arm asserts a cause the SQLSTATE cannot establish (#5029
     // "asserts a deadlock is impossible", which is the premise that left `40P01`
     // with no arm for two rounds. Included here because the guard's file list is
     // the only place that reaches all three copies of it.
-    { pattern: /hold(?:s)? ONLY this lock|takes 4771 and nothing else/i, planted: "Both takers hold ONLY this lock, so no cycle can form" },
+    // ⚠️ Concept-scoped, and the negative control below carries the QUALIFIED
+    // form. Pinned to the historical sentence this missed every natural reword —
+    // "no other lock", "neither taker acquires any further lock" — which is the
+    // same near-miss failure this file diagnoses two matchers up. The shipped
+    // text says "no other ADVISORY lock", so dropping one word is the regression.
+    {
+      pattern:
+        /(?<!advisory )(?:hold(?:s)? ONLY this lock|no other lock(?!\s+of any kind)|nothing else,? ever|acquires? any further lock)/i,
+      planted: "Both takers hold ONLY this lock, so no cycle can form",
+    },
   ];
 
   it("proves each matcher on its own planted case before trusting it", () => {
@@ -598,6 +623,9 @@ describe("no contention arm asserts a cause the SQLSTATE cannot establish (#5029
       // The bound's own rationale — a true statement about WHY the bound exists,
       // which an over-broad corpus matcher fired on.
       "without this bound a large corpus produces an unbounded scan",
+      // The QUALIFIED deadlock claim — true, shipped, and the thing the
+      // concept-scoped matcher above must not fire on.
+      "both takers hold no other advisory lock, so no cycle with 5022 can form",
       "`57014` is `query_canceled` generally, so the message names neither member",
     ]) {
       for (const { pattern } of DEFEATED) {
@@ -623,7 +651,9 @@ describe("no contention arm asserts a cause the SQLSTATE cannot establish (#5029
       const sentinel =
         relative === "packages/api/src/lib/brain/reconcile.ts"
           ? "RECONCILE_LOCK_NAMESPACE"
-          : "Nothing was changed";
+          : relative.endsWith(".md")
+            ? "#5029"
+            : "Nothing was changed";
       expect(
         source,
         `${relative} no longer carries the prose this guard exists to scan — it moved, and the guard is now vacuous`,
@@ -690,7 +720,15 @@ describe("the two round-1 fixes that shipped unfalsified (#5029)", () => {
     expect(reportAt, "the report construction moved").toBeGreaterThan(-1);
     expect(logAt, "the info log moved").toBeGreaterThan(reportAt);
     const between = source.slice(reportAt, logAt);
-    for (const gate of [/minted\s*>\s*0/, /minted\s*>=\s*1/, /minted\s*!==\s*0/]) {
+    // ⚠️ Including the BARE TRUTHINESS gate, which is the idiomatic spelling and
+    // was the one form the first cut of this list missed — measured:
+    // `if (report.minted) log.info(…)` evaded it entirely.
+    for (const gate of [
+      /minted\s*>\s*0/,
+      /minted\s*>=\s*1/,
+      /minted\s*!==?\s*0/,
+      /if\s*\(\s*(?:\w+\.)?minted\s*\)/,
+    ]) {
       expect(
         gate.test(between),
         `the info log is gated on ${gate} — a run that minted nothing emits no line, which is the regression this pins`,
@@ -756,9 +794,16 @@ describe("the arms round 2 found missing (#5029)", () => {
     const warns = [...source.matchAll(/log\.warn\(\s*(?:\/\/[^\n]*\n\s*)*\{[\s\S]*?\},/g)].map(
       (m) => m[0],
     );
-    expect(warns.length, "no log.warn payloads found — the scan is vacuous").toBeGreaterThanOrEqual(
-      4,
-    );
+    // DERIVED from the file rather than a floor. `>= 4` against a population of
+    // five let one refusal log be deleted with the guard still green, and a
+    // payload-shape change (a hoisted variable, a string-only warn) would have
+    // shrunk the matched set silently instead of failing.
+    const warnCalls = (source.match(/log\.warn\(/g) ?? []).length;
+    expect(warnCalls, "no log.warn calls found — the scan is vacuous").toBeGreaterThan(0);
+    expect(
+      warns.length,
+      `the payload matcher found ${warns.length} of ${warnCalls} log.warn calls — a warn whose payload it cannot see is a warn it cannot check`,
+    ).toBe(warnCalls);
     for (const [i, payload] of warns.entries()) {
       expect(
         /\berr:/.test(payload),

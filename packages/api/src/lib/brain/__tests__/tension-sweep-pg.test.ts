@@ -949,6 +949,100 @@ describeIfPg("the admin-triggered tension sweep (#5029)", () => {
     );
 
     it(
+      "mints nothing when the KEYS differ but the comparable values prove sameness",
+      async () => {
+        // ⚠️ THE VETO CORNER, and no fixture reached it: every other pair in this
+        // file is either key-equal with both `object_cmp` NULL, or key-different
+        // with the values also differing. So `objectNotSameSql` could be replaced
+        // by the naive `b.object_key <> a.object_key` — the obvious
+        // "simplification", and exactly the second-spelling drift the module
+        // header calls the property to preserve — and all 21 tests passed.
+        // Deleting the builder is caught; REPLACING it was not.
+        //
+        // `499 USD` and `USD 499` key differently (`499 usd` / `usd 499`) and
+        // parse to the SAME `money:USD:499`. Two live claims spelled two ways are
+        // not a contradiction, and this is the sweep's highest-volume exposure:
+        // it runs corpus-wide over rows the ingest path already declined to look
+        // at, so "the same number spelled differently" is precisely the
+        // population it meets at scale — each false hit a permanent advisory
+        // contradiction a reviewer has to dismiss.
+        const ws = "ws-5029-veto";
+        const ep = await seedEpisode(ws, "veto");
+        await seedFact(
+          ws,
+          ep,
+          { subject: "acme", predicate: "invoiced at", object: "499 USD" },
+          { ingestedAt: T0 },
+        );
+        await seedFact(
+          ws,
+          ep,
+          { subject: "acme", predicate: "invoiced at", object: "USD 499" },
+          { ingestedAt: T1 },
+        );
+        await curate(ws, "invoiced at", "single");
+
+        // Non-vacuity: the corner only exists if the fixture really has
+        // different keys and equal comparables. Asserted, because a change to
+        // `lexicalNorm` or to the money parser would quietly collapse it into an
+        // ordinary same-key pair and this test would keep passing for the wrong
+        // reason.
+        const { rows } = await pool.query<{ keys: string; cmps: string }>(
+          `SELECT count(DISTINCT object_key)::text AS keys,
+                  count(DISTINCT object_cmp)::text AS cmps
+             FROM brain_facts WHERE workspace_id = $1`,
+          [ws],
+        );
+        expect(
+          { keys: rows[0]!.keys, cmps: rows[0]!.cmps },
+          "the fixture is no longer different-key/same-comparable, so it does not reach the veto arm",
+        ).toEqual({ keys: "2", cmps: "1" });
+
+        expect(
+          await sweep(ws),
+          "two spellings of the same amount earned a contradiction edge — the object arm has been reduced to a key comparison, which the module header names as the drift to prevent",
+        ).toEqual({ minted: 0, truncated: false });
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "still pairs a rival whose subject the resolver answered for on ONE side only",
+      async () => {
+        // `subjectNotDifferentSql` is `comparableDifferentSql(...) IS NOT TRUE`,
+        // so one side resolved and the other abstaining must be ADMITTED — a
+        // partially-resolved corpus is the common state, not an edge case.
+        //
+        // Unreached before this: every fixture was both-NULL or both-non-null.
+        // The natural mis-spelling — `(both NULL) OR a = b` — passes the whole
+        // suite while silently deleting every mixed pair, in the under-match
+        // direction that reports nothing.
+        const ws = "ws-5029-subject-mixed";
+        const ep = await seedEpisode(ws, "subject-mixed");
+        const resolved = await seedFact(
+          ws,
+          ep,
+          { subject: "acme", predicate: "audited by", object: "firm a" },
+          { ingestedAt: T0, subjectCmp: "entity:01J0000000000000000000ACME1" },
+        );
+        const abstained = await seedFact(
+          ws,
+          ep,
+          { subject: "acme", predicate: "audited by", object: "firm b" },
+          { ingestedAt: T1, subjectCmp: null },
+        );
+        await curate(ws, "audited by", "single");
+
+        expect(
+          await sweep(ws),
+          "a pair whose subject was resolved on one side and abstained on the other earned no edge — the suppression arm has become an equality test, and a partially-resolved corpus loses every mixed pair silently",
+        ).toEqual({ minted: 1, truncated: false });
+        expect(await edgePairs(ws)).toEqual([{ from: abstained, to: resolved }]);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
       "mints for the abstain band — a pair whose objects cannot be compared",
       async () => {
         // Where the whole `unknown` band lands (ADR-0037 §2): corroboration

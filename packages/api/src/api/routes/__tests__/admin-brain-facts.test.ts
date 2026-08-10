@@ -32,12 +32,33 @@ import type {
   CorrectionOutcome,
   CorrectionRefusalReason,
 } from "@atlas/api/lib/brain/correction";
-import type { TensionSweepOutcome } from "@atlas/api/lib/brain/tension-sweep";
-// The REAL renderer, reached past the mocked module into its declaration site —
-// `ADMIN_ACTIONS`' precedent. A hand-copied sentence here would let the route and
-// the seam drift into two spellings of one refusal, which is the thing the
-// library owning the prose is supposed to prevent.
-import { contentionMessage as REAL_CONTENTION_MESSAGE } from "@atlas/api/lib/brain/tension-sweep";
+import type {
+  TensionSweepContention,
+  TensionSweepOutcome,
+} from "@atlas/api/lib/brain/tension-sweep";
+
+/**
+ * The refusal prose, as this file's double renders it.
+ *
+ * ⚠️ A LOCAL table, not a value import of the module below. A static
+ * `import { contentionMessage } from "…/tension-sweep"` is hoisted above every
+ * `mock.module` call, so it eagerly evaluates the real module and its whole
+ * transitive graph — `reconcile.ts`, `identity.ts`, `cardinality.ts`,
+ * `lib/db/internal` — BEFORE any double is installed. The `import type` above
+ * carries a comment saying exactly that, and the value import broke the rule on
+ * the next line. It also is not the `ADMIN_ACTIONS` precedent, which reaches
+ * past a mocked BARREL into a different zero-import module.
+ *
+ * The cost is that this table can drift from `CONTENTION_MESSAGE`. That is
+ * bounded by asserting a CONTENT ANCHOR rather than string equality below: what
+ * the route owes is that it renders the seam's sentence rather than inventing
+ * one, and every real message ends with the same two obligations.
+ */
+const CONTENTION_PROSE: Record<TensionSweepContention, string> = {
+  "reconcile-lock": "another operation holds this workspace's reconcile lock",
+  "conflicting-lock": "a conflicting lock on this workspace's facts",
+  unfinished: "the sweep did not finish",
+};
 
 const CURRENT_ORG = "org-1";
 
@@ -351,7 +372,15 @@ void mock.module("@atlas/api/lib/brain/tension-sweep", () => ({
   TENSION_EDGE_CAP: SENTINEL_EDGE_CAP,
   TENSION_SWEEP_RUN_CAP: SENTINEL_RUN_CAP,
   TENSION_SWEEP_SQL: "INSERT INTO brain_edges",
-  contentionMessage: REAL_CONTENTION_MESSAGE,
+  contentionMessage: (reason: TensionSweepContention) => CONTENTION_PROSE[reason] + " Nothing was changed. Retry in a few seconds.",
+  // The two narrowing helpers. Nothing in the route's graph imports them today,
+  // which is exactly the condition the rule above exists for — a partial factory
+  // link-fails the moment one does, and the sibling factories in this file each
+  // list names nobody currently uses for the same reason.
+  pgCode: (err: unknown) =>
+    typeof err === "object" && err !== null && "code" in err ? (err as { code?: string }).code : undefined,
+  pgWhere: (err: unknown) =>
+    typeof err === "object" && err !== null && "where" in err ? (err as { where?: string }).where : undefined,
   sweepTensionEdges: async (workspaceId: string) => {
     sweepCalls.push(workspaceId);
     if (sweepThrows !== null) throw sweepThrows;
@@ -1338,9 +1367,10 @@ describe("POST /tension-sweep (#5029)", () => {
     // declares, so it reaches the published spec and survives a conforming
     // reader. A sibling `reason` did neither.
     expect(body.error).toBe("reconcile-lock");
-    // Verbatim from the seam: a route that re-spelled the sentence would be a
-    // second copy of a rule the library owns.
-    expect(body.message).toBe(REAL_CONTENTION_MESSAGE("reconcile-lock"));
+    // The seam's sentence, anchored on content rather than on a function the
+    // mock also supplies.
+    expect(body.message).toContain("reconcile lock");
+    expect(body.message).toContain("Nothing was changed");
     expect(body.requestId).toBe("test-req");
     // Nothing happened, so nothing may be audited as having happened.
     expect(auditRows).toHaveLength(0);
@@ -1506,8 +1536,15 @@ describe("POST /tension-sweep — the arms the double could not reach (#5029)", 
       expect(body.error, "the discriminant did not reach the client in `error`").toBe(reason);
       // …and the prose is the seam's, rendered from the reason rather than
       // re-spelled here.
-      expect(body.message).toBe(REAL_CONTENTION_MESSAGE(reason));
+      // A CONTENT anchor, not equality against a function the mock also
+      // supplies — that would compare the route's output with itself. Every
+      // shipped message states both obligations, and none of the three shares
+      // another's opening clause, so this pins "the seam's sentence for THIS
+      // reason" without re-spelling it.
       expect(body.message).toContain("Nothing was changed");
+      expect(body.message.toLowerCase()).toContain(
+        CONTENTION_PROSE[reason].slice(0, 24).toLowerCase(),
+      );
       expect(auditRows).toHaveLength(0);
     }
   });

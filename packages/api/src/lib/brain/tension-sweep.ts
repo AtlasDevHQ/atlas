@@ -702,9 +702,9 @@ export async function sweepTensionEdges(
         return { kind: "contended", reason: "conflicting-lock" };
       }
       // ⚠️ DEADLOCK, and its absence was argued away by a premise this PR itself
-      // falsified. `sweepTensionEdges`' docstring said the transaction "takes
-      // 4771 and nothing else, ever" — true of ADVISORY locks and false of row
-      // locks: the INSERT's FK check takes `FOR KEY SHARE` on both endpoint rows
+      // falsified. `sweepTensionEdges`' docstring claimed the transaction holds
+      // 4771 and no lock of any other kind — true of ADVISORY locks and false of
+      // row locks: the INSERT's FK check takes `FOR KEY SHARE` on both endpoint rows
       // in `brain_facts`, acquired in plan order, while a concurrent publish
       // takes `FOR UPDATE` over every live draft in its own order and does not
       // take 4771. Two writers taking overlapping row locks in independent

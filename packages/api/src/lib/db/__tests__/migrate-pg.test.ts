@@ -3743,7 +3743,33 @@ describeIfPg("migrate-pg: 0194 replayed against a pre-0194 corpus (#5047)", () =
     //       and its OTHER positions keep their real keys;
     //   (d) an already-tombstoned row keeps its ORIGINAL timestamp — the
     //       `COALESCE` — because when it stopped being a belief is a fact about
-    //       the corpus, not about this migration.
+    //       the corpus, not about this migration;
+    //   (e)+(f) the SUBJECT and OBJECT statements are pinned INDEPENDENTLY
+    //       (#5107). Fixtures (a)-(d) covered the predicate position only —
+    //       `curated` was the sole row whose stored key disagreed with the
+    //       expression, and it disagreed at the predicate — so the other two
+    //       statements' `slot_position` literals and `IS NULL` scopes were held
+    //       by nothing.
+    //
+    // ## Measured, not reasoned (#5107)
+    //
+    // Six mutations, applied to `0194_brain_fact_slot_keys_not_null.sql` one at
+    // a time and reverted, each re-running this suite. ALL SIX now fail it; on
+    // the tree before (e)+(f) the four subject/object rows all SURVIVED.
+    //
+    // | Mutation | Before | After |
+    // |---|---|---|
+    // | `WHERE f.subject_key IS NULL` dropped | SURVIVED | fails |
+    // | `WHERE f.predicate_key IS NULL` dropped | fails | fails |
+    // | `WHERE f.object_key IS NULL` dropped | SURVIVED | fails |
+    // | subject statement's literal → `'predicate'` | SURVIVED | fails |
+    // | predicate statement's literal → `'subject'` | fails | fails |
+    // | object statement's literal → `'predicate'` | SURVIVED | fails |
+    //
+    // The two `IS NULL` rows are the ones with teeth: dropping a scope turns
+    // 0194's KEYING operation into a RE-KEY, which is the distinction its own
+    // header calls load-bearing and which ADR-0037 §7 reserves for the decide
+    // transaction.
     const allFiles = readdirSync(migrationsDir)
       .filter((f) => f.endsWith(".sql"))
       .sort();
@@ -3769,15 +3795,28 @@ describeIfPg("migrate-pg: 0194 replayed against a pre-0194 corpus (#5047)", () =
     // The vocabulary the backfill must consult. Written directly to both
     // relations: the closure table has an FK onto the edge, and going through
     // the authoring seam here would need the whole approval path for one row.
+    //
+    // ⚠️ ONE ENTRY PER POSITION, AND THE THREE `from_norm`s ARE DISTINCT (#5107).
+    // Statement 1 is three near-identical six-line copy-pastes differing in two
+    // column names and a `slot_position` literal, and **a wrong literal is the
+    // single most likely edit defect there**. It is detectable only if the norm
+    // each statement looks up is absent from the OTHER positions' closures — a
+    // norm entered at two positions makes a flipped literal find an entry anyway
+    // and the mutation survives. `acme co`, `priced at` and `monday` share
+    // nothing.
     await pool.query(
       `INSERT INTO brain_vocabulary_edge
          (workspace_id, slot_position, from_norm, to_norm, approved_by)
-       VALUES ($1, 'predicate', 'priced at', 'unit price', '0194-test')`,
+       VALUES ($1, 'predicate', 'priced at', 'unit price', '0194-test'),
+              ($1, 'subject', 'acme co', 'acme corp', '0194-test'),
+              ($1, 'object', 'monday', 'mon', '0194-test')`,
       [WS],
     );
     await pool.query(
       `INSERT INTO brain_vocabulary_target (workspace_id, slot_position, norm, effective_target)
-       VALUES ($1, 'predicate', 'priced at', 'unit price')`,
+       VALUES ($1, 'predicate', 'priced at', 'unit price'),
+              ($1, 'subject', 'acme co', 'acme corp'),
+              ($1, 'object', 'monday', 'mon')`,
       [WS],
     );
 
@@ -3812,6 +3851,42 @@ describeIfPg("migrate-pg: 0194 replayed against a pre-0194 corpus (#5047)", () =
     });
     const alreadyDead = new Date("2026-01-02T03:04:05.000Z");
     const tombstoned = await seed("legacy", "is", "___", { s: null, p: null, o: null }, alreadyDead);
+
+    // ── (e)+(f) the SUBJECT and OBJECT statements, independently (#5107) ────
+    //
+    // Before these, only `curated` held a stored key that disagreed with what
+    // the expression would compute, and it held it at the PREDICATE. So the
+    // subject and object statements were pinned by nothing of their own: their
+    // `slot_position` literals could be flipped and their `IS NULL` scopes
+    // dropped with every assertion above still green.
+    //
+    // Each position needs TWO rows, and both are load-bearing:
+    //
+    //   - an ALIASED row (keys null) whose norm has an entry at THIS position
+    //     and at no other, so a flipped literal reads the wrong closure, finds
+    //     nothing, and the COALESCE falls back to the raw norm;
+    //   - a CURATED row whose stored key at this position is non-null and
+    //     DISAGREES with the vocabulary's answer, so dropping the `IS NULL`
+    //     scope turns the KEYING operation into a RE-KEY and overwrites it.
+    //
+    // ⚠️ The disagreement is the whole point. A fixture whose stale key happened
+    // to EQUAL the vocabulary's answer passes either way and falsifies nothing.
+    const subjectAliased = await seed("Acme Co", "delivers", "goods", {
+      s: null,
+      p: null,
+      o: null,
+    });
+    const subjectCurated = await seed("acme co", "ships", "friday", {
+      s: "curated subject",
+      p: null,
+      o: null,
+    });
+    const objectAliased = await seed("release", "lands", "Monday", { s: null, p: null, o: null });
+    const objectCurated = await seed("standup", "happens", "monday", {
+      s: null,
+      p: null,
+      o: "curated object",
+    });
 
     const before = await pool.query<{ id: string; updated_at: Date }>(
       `SELECT id::text AS id, updated_at FROM brain_facts WHERE workspace_id = $1`,
@@ -3880,6 +3955,46 @@ describeIfPg("migrate-pg: 0194 replayed against a pre-0194 corpus (#5047)", () =
       d.invalidated_at?.toISOString(),
       "0194 restamped a row that was already tombstoned — when it stopped being a belief is a fact about the corpus, not about this migration",
     ).toBe(alreadyDead.toISOString());
+
+    // (e) the SUBJECT statement reads the SUBJECT closure, and only it.
+    const e1 = await read(subjectAliased);
+    expect(
+      e1.subject_key,
+      "the subject backfill did not compose the SUBJECT vocabulary — either its `slot_position` " +
+        "literal names another position (so it read a closure `acme co` is not in and fell back " +
+        "to the raw norm) or it stopped consulting the closure at all",
+    ).toBe("acme corp");
+    // Its other two positions take the plain norm: no entry exists for them,
+    // which is also what keeps this row from being tombstoned.
+    expect([e1.predicate_key, e1.object_key]).toEqual(["delivers", "goods"]);
+    expect(e1.invalidated_at).toBeNull();
+
+    const e2 = await read(subjectCurated);
+    expect(
+      e2.subject_key,
+      "a curated `subject_key` was overwritten — dropping `WHERE f.subject_key IS NULL` turns " +
+        "0194's KEYING operation into a RE-KEY, which is the distinction its header calls " +
+        "load-bearing and which ADR-0037 §7 reserves for the decide transaction",
+    ).toBe("curated subject");
+    expect([e2.predicate_key, e2.object_key]).toEqual(["ships", "friday"]);
+
+    // (f) the OBJECT statement, the same two ways.
+    const f1 = await read(objectAliased);
+    expect(
+      f1.object_key,
+      "the object backfill did not compose the OBJECT vocabulary — `Monday` norms to `monday`, " +
+        "which the object closure maps to `mon`",
+    ).toBe("mon");
+    expect([f1.subject_key, f1.predicate_key]).toEqual(["release", "lands"]);
+    expect(f1.invalidated_at).toBeNull();
+
+    const f2 = await read(objectCurated);
+    expect(
+      f2.object_key,
+      "a curated `object_key` was overwritten — the object statement's `IS NULL` scope is what " +
+        "keeps it a keying operation",
+    ).toBe("curated object");
+    expect([f2.subject_key, f2.predicate_key]).toEqual(["standup", "happens"]);
 
     // `updated_at` is untouched on every row: it sorts the publish preview, and
     // a workspace-wide stamp reshuffles every reviewer's draft queue into

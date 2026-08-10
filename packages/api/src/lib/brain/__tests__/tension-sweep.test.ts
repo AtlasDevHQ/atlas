@@ -45,6 +45,7 @@ import { IDENTITY_MUTATION_LOCK_NAMESPACE, LOCK_NOT_AVAILABLE } from "@atlas/api
 import {
   TENSION_SWEEP_RUN_CAP,
   TENSION_SWEEP_SQL,
+  pgCode,
   sweepTensionEdges,
 } from "@atlas/api/lib/brain/tension-sweep";
 
@@ -609,6 +610,134 @@ describe("no contention arm asserts a cause the SQLSTATE cannot establish (#5029
           `${relative} asserts a cause its SQLSTATE cannot establish: "${hit?.[0]}". Every contention arm names what is KNOWN — the lock, the statement — never a holder or a cause, because 55P03 carries no holder identity and 57014 is timeout-or-cancel. Four rounds were spent fixing the message and leaving prose like this behind; see TensionSweepContention.`,
         ).toBeUndefined();
       }
+    }
+  });
+});
+
+describe("the two round-1 fixes that shipped unfalsified (#5029)", () => {
+  it("extracts the SQLSTATE from every shape the driver can throw", () => {
+    // ⚠️ Round 1 added `code: pgCode(err)` to four log sites so an operator
+    // could tell contention from a real fault — the first question anyone asks
+    // about a failed sweep — and the test that claimed to cover it asserted only
+    // that the thrown value propagated untouched. Deleting every `code:` field,
+    // or making `pgCode` return `undefined` always, survived the whole suite.
+    //
+    // Asserted DIRECTLY rather than through a logger double, because this file
+    // deliberately installs no `mock.module` (see its header) and a double would
+    // pin the call rather than the extraction.
+    expect(pgCode(Object.assign(new Error("boom"), { code: "42P01" }))).toBe("42P01");
+    expect(pgCode({ code: "55P03", message: "not an Error at all" })).toBe("55P03");
+    // …and every shape that must NOT produce a code, because a `pgCode` that
+    // threw or invented one would do so from inside an error handler.
+    expect(pgCode("a bare string")).toBeUndefined();
+    expect(pgCode(null)).toBeUndefined();
+    expect(pgCode(undefined)).toBeUndefined();
+    expect(pgCode(new Error("no code"))).toBeUndefined();
+    // A NUMERIC `code` — the shape a non-pg error (a Node `SystemError`) carries.
+    // Returning it would put a number where a SQLSTATE is expected.
+    expect(pgCode({ code: 42 })).toBeUndefined();
+  });
+
+  it("logs the outcome even when it minted nothing", () => {
+    // ⚠️ The other round-1 fix with no falsifier: re-adding `if (minted > 0)`
+    // around the info log passed every test in the diff. That log is what
+    // separates "the corpus converged" from "no predicate is approved `single`"
+    // — the commonest reason for a `0` on a workspace that has just started
+    // curating, and unrecoverable from the response, which is two numbers.
+    //
+    // A LEXICAL check, alongside the `DEFEATED` scan and for the same reason:
+    // the unit file has no logger double by design, and the property is "this
+    // call is not nested under a count test" rather than "this call happened".
+    const source = readFileSync(join(REPO_ROOT, "packages/api/src/lib/brain/tension-sweep.ts"), "utf8");
+
+    // Non-vacuity: the zero-branch prose must actually be in the file, or the
+    // structural assertion below is about nothing.
+    expect(
+      source,
+      "the zero-minted log line is gone — an admin who sweeps and sees 0 has no server-side line telling them whether the vocabulary is the reason",
+    ).toContain("nothing to mint");
+
+    // The structural half: no `minted > 0` (or `>= 1`, or `!== 0`) conditional
+    // anywhere between the report and the log call.
+    const reportAt = source.indexOf("const report = tensionSweepReport(");
+    const logAt = source.indexOf("log.info(", reportAt);
+    expect(reportAt, "the report construction moved").toBeGreaterThan(-1);
+    expect(logAt, "the info log moved").toBeGreaterThan(reportAt);
+    const between = source.slice(reportAt, logAt);
+    for (const gate of [/minted\s*>\s*0/, /minted\s*>=\s*1/, /minted\s*!==\s*0/]) {
+      expect(
+        gate.test(between),
+        `the info log is gated on ${gate} — a run that minted nothing emits no line, which is the regression this pins`,
+      ).toBe(false);
+    }
+  });
+});
+
+describe("the arms round 2 found missing (#5029)", () => {
+  it("refuses a DEADLOCK rather than 500ing — the arm an advisory-lock argument argued away", () => {
+    // ⚠️ `40P01` had no arm because the docstring claimed the transaction "takes
+    // 4771 and nothing else, ever" — true of ADVISORY locks, false of row locks.
+    // The INSERT takes `FOR KEY SHARE` on both endpoint rows via `brain_edges`'
+    // composite FKs, in plan order, while a concurrent publish takes `FOR UPDATE`
+    // over every live draft in its own order and deliberately does not take 4771.
+    // Overlapping row locks in independent orders is the textbook deadlock, and
+    // `identity.ts` records that this repo has already had one from exactly this
+    // reasoning gap.
+    //
+    // Routed to `conflicting-lock` because the remedy is identical; a fourth wire
+    // value for one recovery would be a distinction with no consequence.
+    return sweepTensionEdges("ws-1", {
+      withTransaction: harness({ sweepError: pgError("40P01") }).runner,
+    }).then((outcome) => {
+      expect(
+        outcome.kind,
+        "a deadlock victim reached the caller as a generic 500 — retryable, near-certain to succeed on retry, and indistinguishable from a broken statement",
+      ).toBe("contended");
+      if (outcome.kind !== "contended") throw new Error("unreachable");
+      expect(outcome.reason).toBe("conflicting-lock");
+    });
+  });
+
+  it("refuses a CANCELLED acquisition — the arm the statement got and the lock did not", async () => {
+    // Round 1 gave the sweep statement both arms and left the acquisition with
+    // one, which is the reported instance closed and the class open one statement
+    // over. The bounds are issued ABOVE the acquisition, so `57014` there is an
+    // outcome this design creates; `lock_timeout` (5s) beats `statement_timeout`
+    // (30s) on a pure lock wait, so the reachable member is a cancel.
+    const outcome = await sweepTensionEdges("ws-1", {
+      withTransaction: harness({ lockError: pgError("57014") }).runner,
+    });
+
+    expect(outcome.kind).toBe("contended");
+    if (outcome.kind !== "contended") throw new Error("unreachable");
+    expect(outcome.reason).toBe("unfinished");
+  });
+
+  it("carries `err` on EVERY refusal log that hedges between holders", () => {
+    // ⚠️ A log that says "the SQLSTATE does not say which" and then withholds the
+    // field that does is the reassurance-without-a-discriminator defect, and
+    // round 1 fixed it on one arm and left the sibling. `55P03`'s detail says
+    // `… while locking tuple in relation "brain_facts"` for a ROW-lock wait and
+    // nothing for a relation-level one — exactly the difference between "a
+    // colleague pressed Publish" and "someone is running DDL", which are the two
+    // ends of that message's own hedge and have different remedies.
+    //
+    // Lexical, for the reason the other guards here are: the file installs no
+    // logger double by design.
+    const source = readFileSync(join(REPO_ROOT, "packages/api/src/lib/brain/tension-sweep.ts"), "utf8");
+    // Every `log.warn(` in the refusal arms must carry `err:`. `reconcile-lock`
+    // is included: it hedges between two holders too.
+    const warns = [...source.matchAll(/log\.warn\(\s*(?:\/\/[^\n]*\n\s*)*\{[\s\S]*?\},/g)].map(
+      (m) => m[0],
+    );
+    expect(warns.length, "no log.warn payloads found — the scan is vacuous").toBeGreaterThanOrEqual(
+      4,
+    );
+    for (const [i, payload] of warns.entries()) {
+      expect(
+        /\berr:/.test(payload),
+        `refusal log ${i} omits \`err\`, so the only field that discriminates its hedged holders never reaches the operator it tells to read the logs:\n${payload.slice(0, 200)}`,
+      ).toBe(true);
     }
   });
 });

@@ -360,8 +360,15 @@ export interface TensionSweepReport {
  * wrong in the way a shared refusal usually is: one copy cannot state three
  * different recoveries, so it states the one its author had in mind.
  *
- * ⚠️ **Every arm names what is KNOWN — the lock, the statement — and never a
- * holder or a cause**, because in all three cases the SQLSTATE carries neither.
+ * ⚠️ **No arm may assert a single holder or cause as ESTABLISHED**, because in
+ * all three cases the SQLSTATE carries neither.
+ *
+ * Naming the candidate holders is fine and encouraged — hedged, exhaustive, and
+ * ordered by likelihood — which is what all three shipped messages do. The rule
+ * is about certainty, not about vocabulary; an earlier draft said "never a holder
+ * or a cause", which the file's own messages then contradicted, leaving a reader
+ * either to strip useful hedged text or to read the shipped text as licence to
+ * re-add an unhedged one.
  * That rule was learned the expensive way: the first cut of each arm asserted a
  * cause, and all three were wrong. `too-slow` assumed a timeout where `57014` is
  * also a cancel; `ingest` assumed the extraction fiber where namespace 4771 also
@@ -529,9 +536,17 @@ export interface TensionSweepDeps {
  * run. Being queued behind an extraction pass is the correct answer for it — and
  * the wait is bounded, so the answer arrives either way.
  *
- * Lock ORDER is safe by the same reasoning `identity.ts` applies to reconcile:
- * this transaction takes 4771 and nothing else, ever, so it cannot participate
- * in a cycle with 5022 or 5024.
+ * Lock ORDER is safe against the other ADVISORY namespaces by the same reasoning
+ * `identity.ts` applies to reconcile: this transaction takes 4771 and no other
+ * advisory lock, so it cannot participate in a cycle with 5022 or 5024.
+ *
+ * ⚠️ **That is a claim about advisory locks ONLY, and an earlier draft stated it
+ * as "takes 4771 and nothing else, ever" — which is false and was used to argue
+ * that `40P01` could not happen here.** The INSERT takes ROW locks:
+ * `FOR KEY SHARE` on both endpoint rows in `brain_facts`, in plan order, while a
+ * concurrent publish takes `FOR UPDATE` across every live draft in its own order
+ * and deliberately does not take 4771. A deadlock is therefore reachable, and
+ * the catch below has an arm for it.
  *
  * @throws on any database failure that is not lock contention.
  */
@@ -554,6 +569,21 @@ export async function sweepTensionEdges(
     try {
       await tx.query(RECONCILE_LOCK_SQL, [RECONCILE_LOCK_NAMESPACE, workspaceId]);
     } catch (err: unknown) {
+      // ⚠️ `57014` FIRST, and on this statement too — round 1 gave the sweep
+      // statement both arms and left the acquisition with one, which is the
+      // reported instance closed and the class left open one statement over.
+      // The bounds are issued ABOVE this line, so a cancelled acquisition is an
+      // outcome this design creates; `lock_timeout` (5s) beats
+      // `statement_timeout` (30s) on a pure lock wait, so the reachable member
+      // here is a `pg_cancel_backend` from an operator, a supervisor, or a
+      // pooler during the wait.
+      if (isStatementTimeout(err)) {
+        log.warn(
+          { workspaceId, namespace: RECONCILE_LOCK_NAMESPACE, code: pgCode(err), err: errorMessage(err) },
+          "brain tension sweep: the reconcile-lock acquisition did not finish (57014 — a time-bound expiry or a cancel; Postgres does not distinguish them, so read `err` for which)",
+        );
+        return { kind: "contended", reason: "unfinished" };
+      }
       // Named rather than passed through as a raw `55P03`, on
       // `promoteBrainFacts`' precedent: an operator reading "lock_not_available"
       // has no way to know an ingest pass is what they are queued behind. Logged
@@ -561,7 +591,13 @@ export async function sweepTensionEdges(
       // server-side record.
       if (!isLockTimeout(err)) throw err;
       log.warn(
-        { workspaceId, namespace: RECONCILE_LOCK_NAMESPACE, code: pgCode(err) },
+        // `err` on this arm too. Its detail is usually uninformative for an
+        // advisory-lock wait — which is exactly why the field should be there
+        // rather than reasoned about: this message hedges between two holders,
+        // and "the log carries whatever the driver said" is a property worth
+        // holding uniformly instead of re-deciding per arm. The sibling arms
+        // were each fixed one round apart for want of it.
+        { workspaceId, namespace: RECONCILE_LOCK_NAMESPACE, code: pgCode(err), err: errorMessage(err) },
         "brain tension sweep: timed out taking the reconcile lock — an ingest pass or another sweep holds namespace 4771 for this workspace; the SQLSTATE does not say which",
       );
       // Returning (rather than re-throwing) leaves `withBrainTransaction` to
@@ -597,8 +633,36 @@ export async function sweepTensionEdges(
       // SQLSTATE does not say — see each arm on `TensionSweepContention`.
       if (isLockTimeout(err)) {
         log.warn(
-          { workspaceId, code: pgCode(err) },
+          // `err` for the same reason the `unfinished` arm carries it: `55P03`'s
+          // detail says `… while locking tuple in relation "brain_facts"` for a
+          // ROW-lock wait and nothing for a relation-level one, which is exactly
+          // the difference between "a colleague pressed Publish" and "someone is
+          // running DDL" — the two ends of this message's own hedge, with
+          // different remedies. Round 1 added the field to one arm and left the
+          // sibling that also needs it.
+          { workspaceId, code: pgCode(err), err: errorMessage(err) },
           "brain tension sweep: the sweep statement hit its lock bound — something holds a conflicting lock on brain_edges or on a brain_facts row this INSERT must FOR KEY SHARE (a publish, a correction, or DDL); the SQLSTATE does not say which",
+        );
+        return { kind: "contended", reason: "conflicting-lock" };
+      }
+      // ⚠️ DEADLOCK, and its absence was argued away by a premise this PR itself
+      // falsified. `sweepTensionEdges`' docstring said the transaction "takes
+      // 4771 and nothing else, ever" — true of ADVISORY locks and false of row
+      // locks: the INSERT's FK check takes `FOR KEY SHARE` on both endpoint rows
+      // in `brain_facts`, acquired in plan order, while a concurrent publish
+      // takes `FOR UPDATE` over every live draft in its own order and does not
+      // take 4771. Two writers taking overlapping row locks in independent
+      // orders is the textbook `40P01`, and `identity.ts` records that this repo
+      // has already been bitten by one produced by exactly this reasoning gap.
+      //
+      // Routed to `conflicting-lock` rather than given a fourth arm: the remedy
+      // is identical (retry in seconds, nothing was changed) and the message
+      // already names the whole holder set. A separate arm would be a fourth
+      // wire value for one recovery.
+      if (pgCode(err) === DEADLOCK_DETECTED) {
+        log.warn(
+          { workspaceId, code: pgCode(err), err: errorMessage(err) },
+          "brain tension sweep: the sweep statement was chosen as a deadlock victim — the INSERT's FK check takes FOR KEY SHARE on both endpoint rows in brain_facts, which can cycle with a concurrent publish's FOR UPDATE; the SQLSTATE does not name the other party",
         );
         return { kind: "contended", reason: "conflicting-lock" };
       }
@@ -658,8 +722,13 @@ export async function sweepTensionEdges(
   // `single` (so `cardinalitySingleSql` matches nothing and the sweep is
   // structurally incapable of minting), or there are no live facts at all. An
   // admin who curates, sweeps, and sees `0` most often hit the second — a
-  // `pending` proposal is not an approval — and behind an `if (minted > 0)`
-  // there was no server-side line to debug that from.
+  // `pending` proposal is not an approval — and while this call was gated on a
+  // positive count there was no server-side line to debug that from.
+  //
+  // ⚠️ Described rather than QUOTED: `tension-sweep.test.ts` asserts
+  // structurally that no count test sits between the report and this call, and
+  // that scan cannot tell a quotation from a gate. Same rule as the refusal
+  // guard — the words do not appear, because an exemption is how they return.
   log.info(
     {
       workspaceId,
@@ -695,12 +764,28 @@ function tensionSweepReport(minted: number): TensionSweepReport {
  * Narrowed rather than cast, on `isLockTimeout`'s shape — the value reaching
  * these handlers is whatever the driver threw, which is not necessarily an
  * `Error` and not necessarily an object.
+ *
+ * EXPORTED for its test and nothing else. Round 1 added it to four log sites and
+ * shipped it with no falsifier: the test that claimed to cover it asserted only
+ * that a thrown value propagated, so deleting every `code:` field, or making
+ * this return `undefined` always, stayed green. A direct assertion is cheaper
+ * than a logger double and kills all three mutations.
  */
-function pgCode(err: unknown): string | undefined {
+export function pgCode(err: unknown): string | undefined {
   if (typeof err !== "object" || err === null || !("code" in err)) return undefined;
   const code = (err as { code?: unknown }).code;
   return typeof code === "string" ? code : undefined;
 }
+
+/**
+ * Postgres' SQLSTATE for a transaction chosen as a deadlock victim.
+ *
+ * Reachable here because the INSERT takes ROW locks (`FOR KEY SHARE` on both
+ * endpoint rows, via `brain_edges`' composite FKs) that can cycle with a
+ * concurrent publish's `FOR UPDATE` — see `sweepTensionEdges`' ⚠️ on why the
+ * advisory-lock ordering argument does not cover this.
+ */
+const DEADLOCK_DETECTED = "40P01";
 
 /**
  * Postgres' SQLSTATE for a cancelled statement.

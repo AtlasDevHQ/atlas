@@ -825,9 +825,16 @@ adminBrainFacts.openapi(tensionSweepRoute, async (c) => {
         targetType: "brainFact",
         // The WORKSPACE, not a fact — the sweep has no single target. See the
         // catalog entry, which is where that irregularity is recorded.
-        targetId: orgId,
+        // `target`, not `orgId` — the SAME binding the sweep ran on. Round 1
+        // threaded `target` into the call and left both audit fields reading the
+        // other variable, which is precisely the agree-by-construction shape
+        // `sweepTarget`'s docstring refuses: they match today only because
+        // `reviewerContext` was handed `orgId`. `actions.ts` calls this the one
+        // `targetId` in the domain that is a workspace rather than a fact, so it
+        // is the field an auditor reads.
+        targetId: target,
         metadata: {
-          workspaceId: orgId,
+          workspaceId: target,
           minted: outcome.report.minted,
           truncated: outcome.report.truncated,
         },

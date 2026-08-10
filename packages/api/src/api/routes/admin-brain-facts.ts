@@ -63,7 +63,9 @@
  * reconcile cannot reach the tension pass at all (`lib/brain/tension-sweep.ts`
  * carries the structural argument).
  *
- * It is the second explicitly-authorized autonomous writer of `brain_edges`, and
+ * It is the second explicitly-authorized autonomous writer of `in-tension-with`
+ * edges — scoped to that edge type, not to `brain_edges`, which reconcile,
+ * correction, publish and the region importer all write too — and
  * everything that makes that acceptable is enforced rather than asserted: the
  * write is additive and advisory (nothing is superseded, retracted, or
  * reordered), it is admin-TRIGGERED rather than scheduled or on the boot path,
@@ -97,7 +99,7 @@ import {
 } from "@atlas/api/lib/brain/oversight";
 // Both caps come from the sweep module, including `TENSION_EDGE_CAP`, which it
 // RE-EXPORTS from `reconcile.ts`. Reaching past it to the declaration site would
-// give this route a direct edge onto the reconcile stage for a integer it only
+// give this route a direct edge onto the reconcile stage for an integer it only
 // prints, and would leave the route tests mocking two modules to stub one seam.
 import {
   TENSION_EDGE_CAP,

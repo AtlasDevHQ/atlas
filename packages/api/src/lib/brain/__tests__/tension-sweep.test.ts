@@ -550,7 +550,12 @@ describe("no contention arm asserts a cause the SQLSTATE cannot establish (#5029
     { pattern: /will outrun it again|outrun (?:it|the bound) on the next/i, planted: "will outrun it again on the next press" },
     { pattern: /\brather than retrying\b/, planted: "Contact an operator rather than retrying." },
     // `reconcile-lock` — asserts the extraction fiber, where 4771 has two takers.
-    { pattern: /an ingest pass is reconciling/i, planted: "an ingest pass is reconciling this workspace" },
+    // ⚠️ `is (running|reconciling)`, not just `reconciling`. The orphaned
+    // `TensionSweepOutcome` docstring survived three rounds carrying "an ingest
+    // pass is running" — the same defeated claim, one verb over, and the
+    // sentence-pinned matcher walked straight past it. A near-miss is how a
+    // lexical guard fails; widen on the noun phrase, not the whole sentence.
+    { pattern: /an ingest pass is (?:running|reconciling)/i, planted: "an ingest pass is reconciling this workspace" },
   ];
 
   it("proves each matcher on its own planted case before trusting it", () => {

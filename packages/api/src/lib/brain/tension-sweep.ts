@@ -22,8 +22,12 @@
  * "what is in tension" is how the sweep and the ingest path drift into flagging
  * different pairs, and a reviewer has no way to tell which one is right.
  *
- * TWO structural differences, and both are about ORDER rather than about which
- * pairs qualify:
+ * TWO structural differences in the rival SCAN, both about ORDER rather than
+ * about which pairs qualify. (The CARDINALITY gate differs too, and that one DOES
+ * change which pairs qualify — the ingest path reads the extractor's per-claim
+ * guess, this reads the curated vocabulary — which is the entire point of the
+ * module; see §"TODAY's cardinality". So "the same edge set the ingest path
+ * would have", below, means: among the pairs it would have considered at all.)
  *
  *   - **The DIRECTION arm.** `reconcile.ts` runs at write time, so "the rivals"
  *     are exactly the rows that already existed — `newer → incumbent` falls out
@@ -52,12 +56,17 @@
  *     property of the canonical predicate and stopped reading
  *     `brain_facts.predicate_cardinality`, whose stored values are the
  *     EXTRACTOR's per-claim guesses against a prompt that says *"When unsure
- *     answer 'multi'"*. #5028 drops the column. Sweeping on it would resurrect
+ *     answer 'multi'"*. Sweeping on it would resurrect
  *     the stochastic input #5027 made unrepresentable, at the one moment a human
  *     has just curated the deterministic one.
  *   - **A second reader is the seam `cardinality.ts` argues does not exist.**
- *     Its header keeps the value un-materialized precisely because there is ONE
- *     consumer, so two rows in a slot can never disagree. A sweep reading a
+ *     Its header makes two arguments that are easy to run together: the value is
+ *     un-materialized because there is one CONSUMER and therefore no seam, and
+ *     two facts in a slot cannot disagree because there is one cardinality ROW
+ *     for them to disagree about. This module falsifies the first — it is a
+ *     second live consumer — and leaves the second untouched, which is what
+ *     keeps the seam closed anyway: both consumers read the same BUILDER rather
+ *     than a second spelling of it. A sweep reading a
  *     different answer than the publish gate would make the disclosure and the
  *     transaction describe different sets — the failure this arc has now hit
  *     twice.
@@ -145,10 +154,10 @@ const log = createLogger("brain-tension-sweep");
 /**
  * How many edges ONE invocation may mint.
  *
- * A SECOND bound beside {@link TENSION_EDGE_CAP}, which they are often confused
- * for: that one caps a single claim's fan-out (and so bounds how misleading one
- * row's cluster can get), this one caps the whole run (and so bounds how long
- * the transaction holds namespace 4771 against this workspace's ingest). Neither
+ * A SECOND bound beside {@link TENSION_EDGE_CAP}, and the two are easily
+ * confused: that one caps a single claim's fan-out (and so bounds how misleading
+ * one row's cluster can get), this one caps the whole run (and so bounds how many
+ * edges a single press can write). Neither
  * substitutes for the other — a corpus of ten thousand two-row slots trips this
  * one without ever approaching that one.
  *
@@ -199,6 +208,9 @@ export const TENSION_SWEEP_RUN_CAP = 1000;
  * `pg_advisory_xact_lock(4771, hashtext('ws'))`: a second session under
  * `SET LOCAL lock_timeout = '400ms'` aborts with **`55P03` canceling statement
  * due to lock timeout** — exactly the SQLSTATE {@link isLockTimeout} matches.
+ * Pinned IN-TREE at the shipped 5s bound by `tension-sweep-pg.test.ts`'s
+ * deadline-raced contention test, so the property survives without anyone
+ * re-running the 400ms probe.
  * (`promoteBrainFacts` depends on the same property and states it without
  * measuring; this is that measurement.)
  */
@@ -223,14 +235,20 @@ const TENSION_SWEEP_LOCK_TIMEOUT_SQL = `SET LOCAL lock_timeout = '5s'`;
  * connections, **and holding namespace 4771 against this workspace's extraction
  * fiber for the whole duration**. The blast radius is wider than the alias
  * producer's, which is otherwise the closest precedent
- * (`alias-proposal.ts`'s `ALIAS_PROPOSAL_STATEMENT_TIMEOUT_SQL`, whose header
+ * (`alias-proposal.ts`'s `boundedTransaction`, whose docstring
  * makes the same argument: *"a JS deadline alone abandons a statement that goes
  * on holding one of five pooled connections. `statement_timeout` cancels it."*)
  *
- * 30s rather than that module's 10s: this scan is unindexed by construction at
- * the `predicate_key` position (ADR-0037 §7 — PG 16 has no skip scan) and is a
- * human-triggered one-off rather than a fiber tick, so the tolerance for a slow
- * honest answer is higher. It is still a bound, and exceeding it is reported as
+ * 30s rather than that module's 10s, and the reason is the shape of the work
+ * rather than a missing index — an earlier draft cited ADR-0037 §7's
+ * no-skip-scan argument, which is about the drift RE-KEY (it filters
+ * `predicate_key` without `subject_key` and must reach tombstoned rows the
+ * partial index excludes) and does NOT apply here: the rival scan supplies all
+ * three key columns and both partial-predicate arms, so `idx_brain_facts_subject`
+ * is an exact match for it. What actually costs is the outer walk over every live
+ * fact plus the per-row cardinality `EXISTS`, named two paragraphs above. That,
+ * and this being a human-triggered one-off rather than a fiber tick, is why the
+ * tolerance for a slow honest answer is higher. It is still a bound, and exceeding it is reported as
  * a refusal naming what to do — see {@link TensionSweepContention}.
  */
 const TENSION_SWEEP_STATEMENT_TIMEOUT_SQL = `SET LOCAL statement_timeout = '30s'`;
@@ -338,21 +356,16 @@ export interface TensionSweepReport {
    * makes the statement do work it throws away to sharpen a flag whose only
    * consequence is "press it again" — and pressing it again answers the question
    * definitively, as a no-op.
+   *
+   * ⚠️ A DELIBERATE divergence from `loadTensionClusters`, cited above as the
+   * `ORDER BY`-determinism precedent: that one DOES bind `cap + 1` and discard
+   * the extra. It is a READ whose caller renders a badge off the flag, where
+   * this is a WRITE whose caller can simply run again. Named so the
+   * inconsistency is not "fixed" into an extra row on every sweep.
    */
   readonly truncated: boolean;
 }
 
-/**
- * The sweep's outcome — swept, or refused because ingest holds the lock.
- *
- * Contention is a REFUSAL arm rather than a thrown error because it is neither
- * rare nor a fault: the sweep contends with this workspace's own extraction
- * fiber, which runs unattended, and an admin who pressed a button deserves *"an
- * ingest pass is running, nothing was changed, retry"* rather than the generic
- * 500 an unrecognized throw becomes. Every OTHER failure still throws — a
- * refusal arm that swallowed a broken statement would report "nothing to do" on
- * a sweep that could not run.
- */
 /**
  * WHY the sweep could not run — three lock/time bounds, three different remedies.
  *
@@ -447,6 +460,23 @@ export type TensionSweepContention =
    */
   | "unfinished";
 
+/**
+ * The sweep's outcome — swept, or refused without running.
+ *
+ * ⚠️ This docstring was ORPHANED for two rounds: the union moved below it while
+ * the block stayed put, so tooling attached it to the neighbour and this type
+ * had none. Its old text also asserted one holder and one of three reasons —
+ * the exact thing {@link TensionSweepContention} forbids — while sitting
+ * directly above the ⚠️ that says so.
+ *
+ * Contention is a REFUSAL arm rather than a thrown error because it is neither
+ * rare nor a fault: the sweep is bounded on purpose and every bound it can hit
+ * is somebody else's ordinary work. An admin who pressed a button deserves
+ * *"nothing was changed, here is what to try"* rather than the generic 500 an
+ * unrecognized throw becomes. Every OTHER failure still throws — a refusal arm
+ * that swallowed a broken statement would report "nothing to do" on a sweep
+ * that could not run.
+ */
 export type TensionSweepOutcome =
   | { readonly kind: "swept"; readonly report: TensionSweepReport }
   | {
@@ -456,12 +486,13 @@ export type TensionSweepOutcome =
        * ⚠️ Operator-safe copy from {@link CONTENTION_MESSAGE}, never derived
        * from the caught error.
        *
-       * It travels verbatim into an HTTP body, and the obvious "be more helpful"
-       * edit — `message: errorMessage(err)` — type-checks. `withBrainTransaction`
-       * scrubs its own log line precisely because a pg error can carry a
-       * credentialed connection URL; nothing in a bare `string` stops that value
-       * reaching a client instead. `reason` is the field a caller should branch
-       * on.
+       * It travels verbatim into an HTTP body. The type is the literal union of
+       * {@link CONTENTION_MESSAGE}'s three values rather than `string`, and that
+       * is what makes the obvious "be more helpful" edit — `message:
+       * errorMessage(err)` — fail to COMPILE. `withBrainTransaction` scrubs its
+       * own log line precisely because a pg error can carry a credentialed
+       * connection URL, and a bare `string` here would have let that value reach
+       * a client. `reason` is the field a caller should branch on.
        */
       readonly message: (typeof CONTENTION_MESSAGE)[TensionSweepContention];
     };
@@ -633,14 +664,20 @@ export async function sweepTensionEdges(
       // SQLSTATE does not say — see each arm on `TensionSweepContention`.
       if (isLockTimeout(err)) {
         log.warn(
-          // `err` for the same reason the `unfinished` arm carries it: `55P03`'s
-          // detail says `… while locking tuple in relation "brain_facts"` for a
-          // ROW-lock wait and nothing for a relation-level one, which is exactly
-          // the difference between "a colleague pressed Publish" and "someone is
-          // running DDL" — the two ends of this message's own hedge, with
-          // different remedies. Round 1 added the field to one arm and left the
-          // sibling that also needs it.
-          { workspaceId, code: pgCode(err), err: errorMessage(err) },
+          // ⚠️ `where`, NOT just `err`, and the distinction is MEASURED. This
+          // arm's discriminator is `… while locking tuple in relation
+          // "brain_facts"` — the difference between "a colleague pressed
+          // Publish" (a row lock, via the FK's `FOR KEY SHARE`) and "someone is
+          // running DDL" (a relation lock), which are the two ends of this
+          // message's own hedge and have different remedies.
+          //
+          // That clause is the server's CONTEXT, surfaced by `pg` as
+          // `DatabaseError.where`. `errorMessage` returns `.message`, which is
+          // the bare `canceling statement due to lock timeout` in BOTH cases —
+          // verified against this repo's PG 16. Logging `err` alone would have
+          // been the promise-without-a-discriminator defect one more time, in
+          // the fix written to close it.
+          { workspaceId, code: pgCode(err), where: pgWhere(err), err: errorMessage(err) },
           "brain tension sweep: the sweep statement hit its lock bound — something holds a conflicting lock on brain_edges or on a brain_facts row this INSERT must FOR KEY SHARE (a publish, a correction, or DDL); the SQLSTATE does not say which",
         );
         return { kind: "contended", reason: "conflicting-lock" };
@@ -672,8 +709,7 @@ export async function sweepTensionEdges(
             workspaceId,
             code: pgCode(err),
             bound: TENSION_SWEEP_STATEMENT_TIMEOUT_SQL,
-            // ⚠️ THE DISCRIMINATOR, and the reason this line carries a scrubbed
-            // message where the two sibling refusal logs do not. `57014` is
+            // ⚠️ THE DISCRIMINATOR for this arm. `57014` is
             // identical for both members; the only thing that separates them is
             // the message text (`canceling statement due to statement timeout`
             // vs `… due to user request`). The `unfinished` refusal tells the
@@ -775,6 +811,25 @@ export function pgCode(err: unknown): string | undefined {
   if (typeof err !== "object" || err === null || !("code" in err)) return undefined;
   const code = (err as { code?: unknown }).code;
   return typeof code === "string" ? code : undefined;
+}
+
+/**
+ * Postgres' CONTEXT field off an unknown thrown value, or `undefined`.
+ *
+ * `pg` surfaces the server's CONTEXT as `DatabaseError.where`, and for a `55P03`
+ * it is the ONLY thing separating a row-lock wait (`… while locking tuple in
+ * relation "brain_facts"`) from a relation-level one — `.message` is the bare
+ * `canceling statement due to lock timeout` in both, measured against this
+ * repo's PG 16. Narrowed rather than cast, on {@link pgCode}'s shape.
+ *
+ * Server-generated and safe to log: it names a relation and echoes the
+ * referential-integrity statement, neither of which can carry a credential the
+ * way a connection string can.
+ */
+function pgWhere(err: unknown): string | undefined {
+  if (typeof err !== "object" || err === null || !("where" in err)) return undefined;
+  const where = (err as { where?: unknown }).where;
+  return typeof where === "string" ? where : undefined;
 }
 
 /**

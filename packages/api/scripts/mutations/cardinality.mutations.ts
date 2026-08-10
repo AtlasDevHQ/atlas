@@ -315,8 +315,19 @@ human behind it.
       edits: [
         {
           file: CORRECTION,
+          // ⚠️ Re-anchored by #5037, which threaded a `cause` discriminant through
+          // this call and turned it from one line into an object literal. The old
+          // anchor then matched nothing and the mutation MEASURED NOTHING —
+          // caught by `--check`'s dead-anchor arm rather than by anyone reading
+          // the diff, which is the arm #5077 added for exactly this and the
+          // reason it refuses to write a table it cannot measure.
           oldString: `    if (verb === "supersede") {
-      logDegeneratePredicate({ workspaceId: ctx.workspaceId, factId: result.factId, requestId });
+      logDegeneratePredicate({
+        workspaceId: ctx.workspaceId,
+        factId: result.factId,
+        requestId,
+        cause: supersededPredicateCause,
+      });
     }`,
           newString: "    void verb;",
         },

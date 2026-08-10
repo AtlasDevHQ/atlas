@@ -260,7 +260,9 @@ describe("bundle round-trip shape", () => {
       brainFacts: { imported: 9, skipped: 3 },
       brainEdges: { imported: 4, skipped: 0 },
       factAudienceMembers: { imported: 2, skipped: 5 },
-      brainVocabularyEdges: { imported: 1, skipped: 4 },
+      // Three counters here alone (#5036), and three DISTINCT values so the
+      // accounting assertion below cannot pass on two of them being confused.
+      brainVocabularyEdges: { imported: 1, skipped: 4, refused: 6 },
     };
 
     const total = (r: { imported: number; skipped: number }) => r.imported + r.skipped;
@@ -276,6 +278,14 @@ describe("bundle round-trip shape", () => {
     expect(total(result.brainFacts)).toBe(12);
     expect(total(result.brainEdges)).toBe(4);
     expect(total(result.factAudienceMembers)).toBe(7);
+    // The vocabulary's own total is a THREE-way sum, and `migrate.ts` reconciles
+    // it against the manifest count before cutover — an arriving edge that fell
+    // through all three counters would abort a whole migration.
+    expect(
+      result.brainVocabularyEdges.imported +
+        result.brainVocabularyEdges.skipped +
+        result.brainVocabularyEdges.refused,
+    ).toBe(11);
   });
 });
 

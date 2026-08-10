@@ -385,7 +385,7 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       expect(result.brainFacts).toEqual({ imported: 3, skipped: 0 });
       expect(result.brainEdges).toEqual({ imported: 2, skipped: 0 });
       expect(result.factAudienceMembers).toEqual({ imported: 1, skipped: 0 });
-      expect(result.brainVocabularyEdges).toEqual({ imported: 2, skipped: 0 });
+      expect(result.brainVocabularyEdges).toEqual({ imported: 2, skipped: 0, refused: 0 });
 
       // The vocabulary's closure is REBUILT in the target, not carried. Nothing
       // in the bundle says `is priced at` resolves to `unit price` — the export
@@ -733,10 +733,15 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         brainFacts: { imported: 0, skipped: 3 },
         brainEdges: { imported: 0, skipped: 2 },
         factAudienceMembers: { imported: 0, skipped: 1 },
-        // Skipped on the at-most-one-parent key. A re-import must never apply
-        // an arriving edge over a target-region decision — that is the rewrite
-        // ADR-0037 §6 forbids, reached through the import door.
-        brainVocabularyEdges: { imported: 0, skipped: 2 },
+        // ⚠️ `skipped`, NOT `refused`, and the distinction is the whole of
+        // #5036. Both edges are already approved here onto the SAME target —
+        // they are this region's own rows, arriving back — so nothing is lost
+        // and nothing is logged. `refused: 0` is the load-bearing half of this
+        // assertion: it says an idempotent re-import reports NO discarded human
+        // decision, which is what an operator reads the counter to find out.
+        // A merge that counted every conflict as a refusal would report two
+        // dropped approvals on the most routine path there is.
+        brainVocabularyEdges: { imported: 0, skipped: 2, refused: 0 },
       });
 
       // ── Catch-up import: an episode the target already has, carrying a
@@ -939,7 +944,7 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         );
         await client.query("COMMIT");
         expect(result.brainFacts).toEqual({ imported: 1, skipped: 0 });
-        expect(result.brainVocabularyEdges).toEqual({ imported: 2, skipped: 0 });
+        expect(result.brainVocabularyEdges).toEqual({ imported: 2, skipped: 0, refused: 0 });
       } finally {
         client.release();
       }
@@ -1112,7 +1117,7 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
 
         await holder.query("COMMIT");
         const result = await blocked;
-        expect(result.brainVocabularyEdges).toEqual({ imported: 1, skipped: 0 });
+        expect(result.brainVocabularyEdges).toEqual({ imported: 1, skipped: 0, refused: 0 });
         await importer.query("COMMIT");
       } catch (err) {
         // intentionally ignored: the assertion failure below is the real
@@ -1228,23 +1233,27 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
   );
 
   it(
-    "aborts the import when an arriving alias edge would close a cycle with the target's own (#5022)",
+    "REFUSES only the arriving alias edge that would close a cycle, and imports the rest (#5036)",
     async () => {
-      // The importer's documented residual #2, which was documented and never
-      // tested. `ON CONFLICT DO NOTHING` deduplicates on the at-most-one-parent
-      // key and does NOT look for cycles, so an arriving edge can close one
-      // against a decision the destination region already holds.
+      // The importer's residual #2, inverted by #5036. Until this slice the
+      // block was `ON CONFLICT DO NOTHING`: it deduplicated on the
+      // at-most-one-parent key and did not look for cycles at all, so an
+      // arriving edge could close one against a decision the destination region
+      // already held — and the closure rebuild then aborted the ENTIRE import
+      // transaction. That was "loud and recoverable beats silent and not", and
+      // it was the right call while the merge did not exist.
       //
-      // The claim under test is "loud and recoverable beats silent and not":
-      // the closure rebuild refuses, and because the whole import is one
-      // transaction NOTHING lands — not the edge, and not the pillars imported
-      // before it. Refusing the single offending edge instead is #5036's merge
-      // semantics, deliberately not implemented here.
+      // It is the wrong outcome now, and the reason is the failure MODE rather
+      // than the noise: a cross-region cutover is not a retryable unit of work
+      // an operator can fix and re-run cheaply, and the edge that killed it is
+      // one alias out of a whole workspace. The merge refuses the single edge,
+      // logs enough of the source row to re-author it, and lets everything else
+      // land.
       //
       // THREE nodes, for `vocabulary-pg.test.ts`'s reason: at an even
       // MAX_CHAIN_DEPTH a 2-cycle lands every norm back on itself and dies on
-      // `ck_..._not_self` instead of the convergence check. Both abort, but only
-      // one exercises the guard this test is named for.
+      // `ck_..._not_self` rather than in the cycle walk, so a two-node fixture
+      // would not exercise the guard this test is named for.
       const CYCLE_ORG = "org-migrate-vocab-cycle";
       await pool.query(
         `INSERT INTO brain_vocabulary_edge (workspace_id, slot_position, from_norm, to_norm, approved_by)
@@ -1261,24 +1270,52 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         seedClient.release();
       }
 
+      // `c → a` closes the cycle; `d → a` beside it does not, and is what proves
+      // the refusal is scoped to the offending edge rather than to the section.
       const cyclic = vocabularyOnlyBundle("c", "a");
+      cyclic.brainVocabularyEdges.push({
+        slotPosition: "predicate" as const,
+        fromNorm: "d",
+        toNorm: "a",
+        approvedBy: "source-admin",
+        approvedAt: "2026-06-01T00:00:00Z",
+      });
 
       const client = await pool.connect();
+      let result: Awaited<ReturnType<typeof importBundle>>;
       try {
         await client.query("BEGIN");
-        await expect(importBundle(client, cyclic, CYCLE_ORG)).rejects.toThrow(/did not converge/);
-        await client.query("ROLLBACK");
+        // No longer throws. The import COMMITS.
+        result = await importBundle(client, cyclic, CYCLE_ORG);
+        await client.query("COMMIT");
+      } catch (err) {
+        await client.query("ROLLBACK").catch((rollbackErr: unknown) => {
+          // intentionally logged rather than rethrown: the original error is the
+          // real outcome, and a rollback failure on a dead connection would mask it
+          console.debug(
+            "rollback after a failed import:",
+            rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr),
+          );
+        });
+        throw err;
       } finally {
         client.release();
       }
 
-      // The target's own vocabulary is exactly as it was — the arriving edge is
-      // absent and the closure still resolves to the root it always did.
+      // One applied, one refused, nothing duplicated — three distinct values, so
+      // a merge that mixed two counters up cannot satisfy this.
+      expect(result.brainVocabularyEdges).toEqual({ imported: 1, skipped: 0, refused: 1 });
+
+      // The target keeps its own two decisions, GAINS the non-cycling arrival,
+      // and never receives `c → a`.
       const edges = await pool.query<{ from_norm: string }>(
         `SELECT from_norm FROM brain_vocabulary_edge WHERE workspace_id = $1 ORDER BY from_norm`,
         [CYCLE_ORG],
       );
-      expect(edges.rows.map((r) => r.from_norm)).toEqual(["a", "b"]);
+      expect(edges.rows.map((r) => r.from_norm)).toEqual(["a", "b", "d"]);
+
+      // The closure is recomputed over the union: `d` joins the chain and lands
+      // on the same root, and `c` is still nobody's child.
       const closure = await pool.query<{ norm: string; effective_target: string }>(
         `SELECT norm, effective_target FROM brain_vocabulary_target
           WHERE workspace_id = $1 ORDER BY norm`,
@@ -1287,6 +1324,7 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       expect(closure.rows).toEqual([
         { norm: "a", effective_target: "c" },
         { norm: "b", effective_target: "c" },
+        { norm: "d", effective_target: "c" },
       ]);
     },
     PG_TEST_TIMEOUT_MS,

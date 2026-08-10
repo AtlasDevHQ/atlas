@@ -112,15 +112,33 @@ let capturedFetchCalls: Array<{ url: string; options: RequestInit }> = [];
  * mock has to answer like a CURRENT target; a test that wants the
  * older-target behaviour sets `mockFetchResponse.body` explicitly.
  */
-function acknowledgeAll(options?: RequestInit): Record<string, { imported: number; skipped: number }> {
+interface SectionAck {
+  imported: number;
+  skipped: number;
+  /** #5036's third vocabulary counter. Absent from every other section. */
+  refused?: number;
+}
+
+function acknowledgeAll(options?: RequestInit): Record<string, SectionAck> {
   const raw = typeof options?.body === "string" ? options.body : "{}";
   const counts = (JSON.parse(raw) as { manifest?: { counts?: Record<string, number> } }).manifest?.counts ?? {};
-  const ack: Record<string, { imported: number; skipped: number }> = {};
+  const ack: Record<string, SectionAck> = {};
   for (const [section, n] of Object.entries(counts)) {
     ack[section] = { imported: n, skipped: 0 };
   }
-  return ack;
+  return reshapeAck ? reshapeAck(ack) : ack;
 }
+
+/**
+ * Rewrite the derived acknowledgement before the mock answers with it.
+ *
+ * A hook rather than a static `mockFetchResponse.body`, because what a test
+ * needs to answer depends on the bundle the exporter actually built from the
+ * mocked DB — which the test cannot know in advance. Hard-coding it would make
+ * the reconciliation pass for the wrong reason the day a fixture's row count
+ * changed, which is the failure mode this whole guard exists to catch.
+ */
+let reshapeAck: ((ack: Record<string, SectionAck>) => Record<string, SectionAck>) | null = null;
 
 const _originalFetch = globalThis.fetch;
 globalThis.fetch = ((url: string | URL | Request, options?: RequestInit) => {
@@ -166,6 +184,7 @@ function resetMocks() {
   // dropped sections sets `body` explicitly.
   mockFetchResponse = { ok: true, status: 200, body: undefined };
   mockFetchError = null;
+  reshapeAck = null;
   capturedFetchCalls = [];
   mockConfig = { ...DEFAULT_MOCK_CONFIG };
   process.env.ATLAS_INTERNAL_SECRET = "test-secret";
@@ -337,6 +356,49 @@ describe("executeRegionMigration", () => {
       (q) => q.sql.includes("UPDATE organization") || q.sql.includes("region_updated = TRUE"),
     );
     expect(cutover).toBeUndefined();
+  });
+
+  it("PROCEEDS with cutover when the target REFUSED a vocabulary edge (#5036)", async () => {
+    // The regression this pins is the one #5036 created and had to fix in the
+    // same change. The merge gained a third outcome — an arriving alias edge
+    // that would close a cycle or take a second parent is refused, logged and
+    // skipped — and this reconciliation summed only `imported + skipped`. Left
+    // that way, the FIRST genuinely conflicting alias edge in a workspace fails
+    // the whole cutover, with an error message blaming an old target build.
+    //
+    // A refusal is ACCOUNTING, not loss: the target looked at the row, decided,
+    // and logged enough to re-author it. What this guard exists to catch is a
+    // target that silently DROPPED a section, which is a different event.
+    mockQueryResults["SELECT id, workspace_id"] = [
+      { id: "mig-1", workspace_id: "org-1", source_region: "us-east", target_region: "eu-west", status: "pending" },
+    ];
+    mockQueryResults["UPDATE region_migrations"] = [];
+
+    let vocabularyExpected = -1;
+    reshapeAck = (ack) => {
+      const vocabulary = ack.brainVocabularyEdges;
+      vocabularyExpected = vocabulary?.imported ?? 0;
+      // Every arriving edge refused, none imported — the extreme of the case,
+      // and the shape under which an excluded `refused` reads as 0/n.
+      if (vocabulary) ack.brainVocabularyEdges = { imported: 0, skipped: 0, refused: vocabularyExpected };
+      return ack;
+    };
+
+    const result = await executeRegionMigration("mig-1");
+
+    // ⚠️ Guards the test against becoming vacuous: reconciliation `continue`s on
+    // a section whose manifest count is 0, so a fixture that stopped exporting
+    // any vocabulary edge would make this pass while testing nothing.
+    expect(vocabularyExpected).toBeGreaterThan(0);
+    expect(result.success).toBe(true);
+
+    // The positive control the assertion above cannot give on its own: the
+    // cutover actually RAN. `success` with no region flip would be the same
+    // symptom as the abort this test rules out.
+    const cutover = capturedQueries.find(
+      (q) => q.sql.includes("UPDATE organization") || q.sql.includes("region_updated = TRUE"),
+    );
+    expect(cutover).toBeDefined();
   });
 
   it("fails when transfer HTTP call returns error", async () => {

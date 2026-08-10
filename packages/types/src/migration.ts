@@ -634,8 +634,33 @@ export interface ImportResult {
    * The curated identity vocabulary (#5022). Counted on the EDGES — the
    * decisions — because the closure is recomputed rather than imported, so a
    * count of its rows would report work the bundle did not carry.
+   *
+   * THE ONLY SECTION WITH A THIRD COUNTER, and the asymmetry is the point
+   * (#5036, ADR-0037 §8 §4). Everywhere else `skipped` means "the destination
+   * already holds this row", because a conversation present in both regions is
+   * the same conversation. An alias edge is a HUMAN REVIEW DECISION, and two
+   * regions can hold contradictory ones legitimately — so the import has two
+   * outcomes here that are not the same event at all:
+   *
+   *   - `skipped` — already approved in this region onto the SAME target.
+   *     Benign, and exactly what an idempotent re-import looks like from the
+   *     inside.
+   *   - `refused` — the arriving edge would have closed a cycle or taken a
+   *     second parent, so a source-region human's approved decision was NOT
+   *     applied. Every one is logged with enough of the source row to re-author
+   *     it by hand, and that log is the entire recovery path.
+   *
+   * Reporting them as one number would restore the conflation the slice exists
+   * to remove: `skipped: 2` cannot distinguish a clean re-import from two
+   * discarded approvals, and only one of those is something to act on.
+   *
+   * REQUIRED, like every other counter, on the established reading that this
+   * type describes what THIS region answers. A target predating #5036 omits it
+   * and refuses nothing (it skips instead); consumers that read a foreign
+   * region's response model that with their own cross-version type, as
+   * `migrate.ts` and `cli/migrate-import.ts` already do for whole sections.
    */
-  brainVocabularyEdges: { imported: number; skipped: number };
+  brainVocabularyEdges: { imported: number; skipped: number; refused: number };
 }
 
 // ---------------------------------------------------------------------------

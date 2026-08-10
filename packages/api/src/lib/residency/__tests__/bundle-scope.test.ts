@@ -141,18 +141,56 @@ describe("bundle-scope drift tripwire (#4460)", () => {
     }
   });
 
+  /**
+   * Where each exported table's RESTORING statement lives.
+   *
+   * `admin-migrate.ts` for everything by default — it is the import path, and
+   * for an ordinary section the INSERT is spelled there inline.
+   *
+   * ⚠️ `brain_vocabulary_edge` is the one delegation, and it is a delegation
+   * rather than a loophole (#5036). Restoring an alias edge is a MERGE, not an
+   * insert: the arriving edge has to be screened against this region's own
+   * approved edges for at-most-one-parent and for cycles, which are the exact
+   * four rules `approveAliasEdge` applies. Spelled a second time in the route
+   * they would drift, and `lib/` must not import from `api/routes/` — so the
+   * shared implementation lives in `lib/brain/vocabulary.ts` and the route calls
+   * `mergeApprovedEdges`.
+   *
+   * The tripwire keeps its full strength either way: it still asks "is this
+   * exported table actually written back somewhere on the import path", and
+   * deleting that INSERT still fails here. What it stops asserting is the
+   * incidental part — which FILE the statement happens to sit in.
+   */
+  const IMPORT_WRITER_FILE: Readonly<Record<string, readonly string[]>> = {
+    brain_vocabulary_edge: ["..", "..", "brain", "vocabulary.ts"],
+  };
+  const DEFAULT_IMPORT_WRITER = ["..", "..", "..", "api", "routes", "admin-migrate.ts"] as const;
+
   it("every exported table is actually written by the import implementation", () => {
-    const importSource = readFileSync(
-      join(import.meta.dir, "..", "..", "..", "api", "routes", "admin-migrate.ts"),
-      "utf8",
-    );
     for (const table of EXPORTED_TABLES) {
+      const relative = IMPORT_WRITER_FILE[table] ?? DEFAULT_IMPORT_WRITER;
+      const writerPath = join(import.meta.dir, ...relative);
+      const importSource = readFileSync(writerPath, "utf8");
+      const writer = relative[relative.length - 1];
       expect(
         importSource.includes(`INSERT INTO ${table}`),
-        `bundle-scope.ts says '${table}' is exported, but admin-migrate.ts has no ` +
+        `bundle-scope.ts says '${table}' is exported, but ${writer} has no ` +
           `'INSERT INTO ${table}' — the bundle would be produced but never restored.`,
       ).toBe(true);
     }
+  });
+
+  it("the import path still REACHES every delegated writer", () => {
+    // The half the lookup above cannot check on its own. Pointing the tripwire
+    // at another file proves a statement exists there; it does not prove the
+    // route still calls it. Without this, deleting the `mergeApprovedEdges` call
+    // from `admin-migrate.ts` would leave the vocabulary silently unrestored
+    // with every drift test green — which is precisely the failure the original
+    // single-file assertion was strong against, handed back the moment the
+    // indirection was allowed.
+    const routeSource = readFileSync(join(import.meta.dir, ...DEFAULT_IMPORT_WRITER), "utf8");
+    expect(Object.keys(IMPORT_WRITER_FILE)).toEqual(["brain_vocabulary_edge"]);
+    expect(routeSource).toContain("mergeApprovedEdges(");
   });
 
   it("org-scoped tables classified 'platform' stay a pinned, deliberate exemption set", () => {

@@ -56532,11 +56532,15 @@
                         },
                         "skipped": {
                           "type": "number"
+                        },
+                        "refused": {
+                          "type": "number"
                         }
                       },
                       "required": [
                         "imported",
-                        "skipped"
+                        "skipped",
+                        "refused"
                       ]
                     }
                   },

@@ -254,7 +254,18 @@ async function transferBundleToTarget(
   // Deployment reality that makes this a live hazard rather than a theoretical
   // one: regions deploy independently, so a window where US has #4767 and EU
   // does not is routine, not exceptional.
-  let acknowledged: Partial<Record<(typeof RECONCILED_SECTIONS)[number], { imported?: number; skipped?: number }>>;
+  // `refused` is #5036's third vocabulary counter, and it is declared for EVERY
+  // section rather than only the one that emits it. That is the shape this
+  // parse already takes for `imported`/`skipped` — the response is another
+  // region's JSON, so every field is optional here regardless of what the local
+  // `ImportResult` requires — and narrowing it to one key would make the sum
+  // below have to know which section it was reading.
+  let acknowledged: Partial<
+    Record<
+      (typeof RECONCILED_SECTIONS)[number],
+      { imported?: number; skipped?: number; refused?: number }
+    >
+  >;
   try {
     acknowledged = await response.json() as typeof acknowledged;
   } catch (err) {
@@ -301,7 +312,21 @@ async function transferBundleToTarget(
     }
     if (expected === 0) continue; // nothing exported ⇒ nothing to reconcile
     const got = acknowledged[section];
-    const total = (got?.imported ?? 0) + (got?.skipped ?? 0);
+    // ⚠️ `refused` IS ACCOUNTING, NOT LOSS, and leaving it out of this sum was
+    // the live regression #5036 had to fix in the same change (ADR-0037 §8 §4).
+    //
+    // This guard asks one question: did the target ACCOUNT for every row the
+    // bundle carried, or did it silently drop a section it does not understand?
+    // A refused vocabulary edge is accounted for — the target looked at it,
+    // decided applying it would close a cycle or take a second parent, logged
+    // enough to re-author it, and carried on. Excluded from the sum, the FIRST
+    // genuinely conflicting alias edge in a workspace would abort an entire
+    // cutover, which is the opposite of the graceful merge the slice exists to
+    // provide, and it would do so with an error message blaming an old build.
+    //
+    // `?? 0` on all three: a target predating #5036 sends no `refused` and
+    // refuses nothing — it skips instead — so the sum is unchanged there.
+    const total = (got?.imported ?? 0) + (got?.skipped ?? 0) + (got?.refused ?? 0);
     if (total !== expected) {
       return {
         ok: false,

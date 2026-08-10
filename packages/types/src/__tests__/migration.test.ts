@@ -251,7 +251,9 @@ describe("migration types", () => {
       brainFacts: { imported: 8, skipped: 2 },
       brainEdges: { imported: 5, skipped: 0 },
       factAudienceMembers: { imported: 3, skipped: 1 },
-      brainVocabularyEdges: { imported: 2, skipped: 1 },
+      // The one section with a THIRD counter (#5036). Three DISTINCT values, so
+      // a shape that mixed two of them up cannot satisfy the assertion below.
+      brainVocabularyEdges: { imported: 2, skipped: 1, refused: 4 },
     };
 
     expect(result.conversations.imported + result.conversations.skipped).toBe(7);
@@ -259,6 +261,7 @@ describe("migration types", () => {
     expect(result.knowledgeDocuments.skipped).toBe(1);
     expect(result.brainFacts.imported).toBe(8);
     expect(result.factAudienceMembers.skipped).toBe(1);
+    expect(result.brainVocabularyEdges.refused).toBe(4);
   });
 
   it("ExportManifest includes optional apiUrl", () => {

@@ -56,7 +56,9 @@ Use `cd packages/api && bun run scripts/test-isolated.ts --affected` for the fas
 ```
 /review-panel
 ```
-- Verdict **CHANGES REQUESTED** → **triage the must-fix findings first** (`/review-panel` Step 5: local defect → fix inline; new machinery → decide in-PR vs follow-up explicitly and record the reason in the PR body), then **sweep for siblings** (Step 5b — a finding names a class, and fixing only the reported instance is the main reason rounds multiply), then fix, then re-run `/review-panel` on the new diff.
+- Verdict **CHANGES REQUESTED** → **triage the must-fix findings first** (`/review-panel` Step 5: local defect → fix inline; new machinery → follow-up by default, from round one), then **Step 5b before writing each fix** — for a guard/branch/comparison, the BEHAVIOUR DELTA table (input classes × old vs new, in the commit); for everything else, the sibling grep. Then fix, build the falsifier in the same commit, then re-run `/review-panel` on the new diff.
+
+  ⚠️ **Fixing the reported instance and not the class is THE reason rounds multiply, and the class has members in two directions.** The grep finds siblings in space; the delta table finds siblings in the input domain at one site. #5037 swept diligently for the first and lost three rounds to the second — one guard, edited three times, each edit closing the symptom a reviewer named and opening the input class beside it.
 - **Re-runs are not fresh rounds.** Pass the previous round's fix commits into the panel and name them the primary audit target (`/review-panel` Step 2). Reviewers keep fresh context; what they must not have is fresh *ignorance of what you just changed*.
 - Repeat until **CLEAN**, capped at **3 rounds**. If it can't converge in 3 (usually a spec ambiguity), STOP and ask the human.
 - The cap is on ROUNDS, not on scope. A round-2 fix that adds real machinery *should* earn a round 3 — don't skip the re-review to stay under the cap. If the work genuinely needs a fourth round, that is the STOP-and-ask case, not a reason to merge unreviewed.
@@ -66,6 +68,10 @@ Use `cd packages/api && bun run scripts/test-isolated.ts --affected` for the fas
   - **DEFECT-IN-PRIOR-FIX** — the previous round's fix broke it, or failed to close the class it claimed to. Rising here means **the loop is eating itself**: each round manufactures the next one's work, and another round adds more than it removes.
 
   Report both numbers, always: *"round 2: 22 findings — 6 new surface, 16 defect-in-prior-fix."* **The stop decision keys on the SECOND number.** A total that rose on new surface is a reason to continue; a total that rose on defect-in-prior-fix is a reason to stop and change how the fixes are being written, not to buy another round of the same.
+
+  ⚠️ **THE HARD STOP IS THE RATIO, NOT THE ROUND COUNT: if defect-in-prior-fix EXCEEDS new-surface in any round, stop that round.** The 3-round cap is the wrong instrument and always was — it bounds how long you spend, not whether you are making things better, and a loop can burn all three rounds cleaning up after itself. When the majority of a round's findings are defects the previous round's fixes introduced, more review cannot help: the fixes are the defect source, so another round adds work faster than it removes it.
+
+  Measured on #5037: round 1 returned 21 findings, all new surface; round 2 returned ~26, of which ~20 were defects inside round 1's own fixes. The raw total *and* the ratio both said stop, one round before the cap would have. Under the old rule the cap allowed a third round, which would have been spent on the second round's fixes.
 
   ⚠️ This split exists because the raw rule shipped without it and gave the wrong reading first time out. #5077 ran 17 → ~22 and the rise looked like a loop failing; decomposed, it was almost entirely defects in round 1's own fixes — three of them reproducing the very defect being fixed, one layer over. Those two diagnoses point at different remedies and the total cannot tell them apart.
 - **When you do stop, report the CURVE, not just the count.** A declining count (30 → 18 → 11) is a loop converging and the cap is a formality; a flat or rising one is a loop that is not, and the human needs to know which they are approving another round of.

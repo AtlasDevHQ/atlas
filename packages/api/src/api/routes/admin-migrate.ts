@@ -814,14 +814,17 @@ const ImportResultSchema = z.object({
  * REQUIRED is what keeps it pinned, which is the reason `refused` is required on
  * `ImportResult`.
  */
-type _MissingKeys =
-  | Exclude<keyof z.infer<typeof ImportResultSchema>, keyof ImportResult>
-  | Exclude<keyof ImportResult, keyof z.infer<typeof ImportResultSchema>>;
-
+// ⚠️ The two key-set directions are checked as SEPARATE nested conditions, not
+// unioned. While the spellings agree both `Exclude`s are `never`, and a union of
+// nevers trips `no-duplicate-type-constituents` + `no-redundant-type-constituents`
+// in `lint:type-aware` — a CI-blocking gate. Nesting keeps the pin lint-clean and
+// keeps each direction separately falsifiable.
 type _SchemaMatchesWireType = z.infer<typeof ImportResultSchema> extends ImportResult
   ? ImportResult extends z.infer<typeof ImportResultSchema>
-    ? [_MissingKeys] extends [never]
-      ? true
+    ? [Exclude<keyof z.infer<typeof ImportResultSchema>, keyof ImportResult>] extends [never]
+      ? [Exclude<keyof ImportResult, keyof z.infer<typeof ImportResultSchema>>] extends [never]
+        ? true
+        : never
       : never
     : never
   : never;

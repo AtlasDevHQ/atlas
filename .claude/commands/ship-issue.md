@@ -10,6 +10,28 @@ L0 — the inner ship loop. Take ONE issue from nothing to a merged PR, autonomo
 
 ---
 
+**DONE MEANS MERGED.**
+
+Not "PR opened". Not "CI green". Not "green and awaiting review". The run is over
+when the PR is **merged** and Step 6 has reconciled — or when you have hit one of
+Step 5's named HARD HALTS and said which one. Anything else is an unfinished run,
+however good the branch looks.
+
+⚠️ **Measured on #5110, and it is the second time this loop has ended early at a
+different boundary.** That run delivered nine commits, 37/37 remote checks green,
+labels, and a written PR body — then reported *"PR opened — want me to watch it?"*
+and stopped. The human had to say **work it to merge**. Every individual step had
+been followed; what was missing was the sentence above.
+
+#5047 is the same failure one step earlier: the Step-3 yield stop read as a halt
+and the run parked with no PR at all. Two different steps, one pattern — **any
+step that produces a shippable-looking artifact reads as a finish line.** A PR is
+the most convincing artifact in the loop, which is exactly why it is the most
+dangerous place to stop. If you are about to hand the user a URL and a question,
+the question is the bug.
+
+---
+
 **Base branch — `main` by default, a milestone branch when named**
 
 Everything below says "`main`". If a second argument names a `milestone/**` branch, that branch is the base for the whole run: branch off it, PR into it, merge into it. This is **milestone-branch mode** — a whole milestone accumulates on one long-running integration branch and reaches `main` as a single reviewed merge, so `main` stays releasable while a multi-issue arc is half-built.
@@ -22,6 +44,43 @@ What changes, and nothing else:
 - **Drift** — before each new issue, re-merge `main` into the milestone branch (`git merge origin/main`) so the stack never diverges far. Landing last among parallel streams is where migration-number collisions bite.
 
 Everything else — the craft loop, `/review-panel`, `/ci`, the fork-PR halt — is unchanged.
+
+**⚠️ `gh` MAY NOT EXIST. Resolve the GitHub interface ONCE, at Step 0.**
+
+Every command in this file is written in `gh`. On Claude Code for the web — and
+any remote/GitHub-Action runner — `gh` is **absent by design** and the GitHub
+surface is the MCP tool set (`mcp__github__*`, schemas loaded via `ToolSearch`).
+
+```bash
+command -v gh >/dev/null && echo "gh present — commands as written" \
+                         || echo "gh ABSENT — use mcp__github__* for every GitHub step"
+```
+
+The failure is not subtle, but it arrives **late and in the worst place**:
+`scripts/pr-review-status.sh` — the Step 5 snapshot that decides whether you may
+merge — dies with `gh: command not found` **and exits 0**. A run that trusts its
+exit status reads SETTLED from a script that checked nothing. Resolve this at
+Step 0 and the whole drive-to-merge loop stays available; discover it at Step 5
+and you are improvising the merge gate.
+
+| Step | `gh` | MCP equivalent |
+|---|---|---|
+| 1 | `gh issue view <N>` | `issue_read` · `method: "get"` |
+| 5 | `gh pr create` | `create_pull_request` |
+| 5(1) | `gh pr checks <N> --watch` | `pull_request_read` · `method: "get_check_runs"` — **poll it; there is no `--watch`** |
+| 5(2) | `pr-review-status.sh <N>` | three sweeps: `get_reviews`, `get_review_comments`, `get_comments`. **All three empty ⇒ the script's `SETTLED — CI-gated only` verdict** |
+| 5(2) | `gh pr view --json isCrossRepository` | `pull_request_read` · `method: "get"` → `head.repo.full_name` ≠ `AtlasDevHQ/atlas` **is** the fork halt; the same call gives `mergeable_state` |
+| 5 merge | `gh pr merge` | `merge_pull_request` |
+| 5 labels | `gh pr edit --add-label` | `issue_write` · `method: "update"` (a PR is an issue) |
+| 6 | `gh issue close` | `issue_write` · `method: "update"`, `state: "closed"` |
+
+⚠️ **`--admin` has no MCP equivalent, and that is correct.** It is for a
+genuinely broken gate only; a run that cannot express it cannot reach for it out
+of habit. If you believe you need it and cannot express it, that is the halt.
+
+Measured on #5110: the run reached a green PR and then had no way to take the
+Step 5 snapshot at all, because the script and every command around it assume a
+CLI the environment does not ship.
 
 **Step 0 — Worktree isolation (MANDATORY, before anything else)**
 
@@ -56,6 +115,27 @@ Use `cd packages/api && bun run scripts/test-isolated.ts --affected` for the fas
 ```
 /review-panel
 ```
+
+⚠️ **INVOKE THE COMMAND. Hand-picking agents is not a panel, and the ordering you
+will invent is the one `/review-panel` explicitly argues against.** Its roster and
+sequence are load-bearing: the THREE code reviewers (`silent-failure-hunter`,
+`type-design-analyzer`, `pr-test-analyzer`) run **every** round, and
+`comment-analyzer` runs **only on the round that turns out to be final** — because
+comment findings are mostly consequences of code findings, so a comment sweep in
+round 1 describes code that round 1's own fixes are about to change.
+
+Measured on #5110: the run picked `comment-analyzer` and `fix-vs-finding` first —
+comment-analyzer in what was effectively round 1, the inversion that file names
+outright — and ran the three code reviewers **after the PR was already open and
+CI green**. That is Step 3 executed at Step 5. `silent-failure-hunter` then
+returned a CRITICAL finding (a poisoned pooled client returned via
+`client.release()` with no argument, under a 500 body asserting *"nothing was
+written … re-sending is safe"*) on code the PR had been declared ready to merge
+with. Nothing was lost because the merge had not happened — but the gate had been
+reported as passed, which is the failure.
+
+**Step 3 is BEFORE Step 5. If you are reading review findings after a PR URL
+exists, you are recovering, not reviewing.**
 - Verdict **CHANGES REQUESTED** → **triage the must-fix findings first** (`/review-panel` Step 5: local defect → fix inline; new machinery → follow-up by default, from round one), then **Step 5b before writing each fix** — for a guard/branch/comparison, the BEHAVIOUR DELTA table (input classes × old vs new, in the commit); for everything else, the sibling grep. Then fix, build the falsifier in the same commit, then re-run `/review-panel` on the new diff.
 
   ⚠️ **Fixing the reported instance and not the class is THE reason rounds multiply, and the class has members in two directions.** The grep finds siblings in space; the delta table finds siblings in the input domain at one site. #5037 swept diligently for the first and lost three rounds to the second — one guard, edited three times, each edit closing the symptom a reviewer named and opening the input class beside it.
@@ -146,6 +226,15 @@ it re-runs whole `-pg` suites once per mutation, tens of minutes — so run it i
 the BACKGROUND and carry on; do not block the loop on it, and do not put it in
 the default pre-flight.
 
+⚠️ **RUN IT AFTER YOUR LAST TEST EDIT, NOT ONCE AT THE START — a clean result is
+a statement about the tree you had then.** The generated tables record a per-suite
+test COUNT, so every test ADDED to a suite a spec targets makes them stale again,
+and Step 3's panel rounds are precisely when new tests get written. Measured on
+#5110: the check ran clean early, then the panel's fixes added three tests to
+`migrate-roundtrip-pg` and one to `migrate-identity-logging`, and `mutation-tables`
+failed as the very last gate — on a table that had already been verified. Re-run
+it once more when the diff stops moving.
+
 Measured on #5047: the branch renamed tests across five suites and deleted one
 function. `mutation-tables` failed remote CI **twice**, and the second failure
 cost a full CI round-trip that a background `--affected` run started at PR time
@@ -174,6 +263,18 @@ ps -o pid=,args= -C bun | grep 'mutate\.ts' && echo "MUTATION RUN LIVE — do no
 ```
 
 (`ps -C` is procps — Linux. On BSD/macOS use `ps -eo comm=,args= | awk '$1=="bun"'`.)
+
+⚠️ **THE SAME HOOK FIRES FOR SUBAGENT SCRATCH FILES, AND COMMITTING THOSE IS THE
+SAME MISTAKE IN A DIFFERENT WINDOW.** A reviewer subagent that needs to type-check
+a hypothesis writes a probe into the tree — on #5110,
+`packages/api/src/lib/__scratch__/probe.ts`, a throwaway testing whether one
+`as unknown as` cast was load-bearing. It is untracked, so the stop hook asks for
+it, and committing it ships dead code into `src/` that `lint` and `type` then
+police forever. DELETE it once the agent finishes. If the hook needs settling
+before then, `.git/info/exclude` is local-only and leaves no diff — never
+`.gitignore`, which is itself a change someone has to review. The rule
+generalises: **when a hook asks you to commit something you did not write, find
+out what wrote it before you obey.**
 
 ⚠️ **`pgrep -f` is the obvious spelling and it FALSE-POSITIVES, including on the
 bracket trick (`[m]utate.ts`).** `-f` matches other processes' full command
@@ -261,6 +362,22 @@ After merge:
 /tidy            # check off ROADMAP, close the issue if Closes didn't, prune
 git worktree remove ../atlas-wt-<slug>
 ```
+
+**Step 7 — The close-out check (run it; do not recall it)**
+
+Confirm each of these is TRUE by checking, and say so in the report. Every box is
+one this loop has actually failed:
+
+- [ ] PR **MERGED** — or a named HARD HALT, quoted (#5110, #5047)
+- [ ] `/review-panel` invoked as a command, all three code reviewers on the FINAL
+      diff, `comment-analyzer` on the closing round (#5110)
+- [ ] every must-fix fixed, every named falsifier BUILT, RUN, and its measurement
+      in the PR body
+- [ ] every `Closes #N` issue actually closed — **verify**; GitHub only fires on
+      merge into the DEFAULT branch, so milestone-branch mode never closes them
+- [ ] `git status` clean — no mutant from an interrupted run, no subagent probe
+- [ ] `mutation-tables` re-checked AFTER the last test edit (#5110)
+- [ ] worktree removed
 
 **Step 7 — Report**
 

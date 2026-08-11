@@ -284,7 +284,20 @@ export async function runQueryCommand(
     io.err(
       "Error: Unexpected API response -- the server may be running a different version.",
     );
-    if (data.answer) io.out(`\n${data.answer}`);
+    // ⚠️ fd 2 IN A MACHINE MODE, AND THIS IS THE WRITER READING THE SUCCESS PATH
+    // DOES NOT FIND (#5146). Under `--json` or `--csv` stdout is a machine
+    // channel, and this branch returns BEFORE either body runs — so a
+    // version-skewed server made `atlas query --json` emit bare prose on fd 1
+    // and nothing else, which parses as neither JSON nor CSV. An earlier note
+    // recorded the logger as this command's ONLY fd-1 polluter; it was arrived
+    // at by reading the happy path, and error paths write to fd 1 too.
+    //
+    // Still on fd 1 in human mode: the answer is the useful part of a failed
+    // response there, and piping is not what a human run is for.
+    if (data.answer) {
+      const echo = jsonOutput || csvOutput ? io.err : io.out;
+      echo(`\n${data.answer}`);
+    }
     return 1;
   }
   if (!Array.isArray(data.sql)) data.sql = [];

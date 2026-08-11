@@ -552,20 +552,39 @@ async function runStagedCanonicalEval(
  * to carry.
  *
  * `fs.writeSync` returns only once the bytes are handed to the fd, so there is
- * nothing left to discard. Reserved for the unbounded payloads (the `--json`
- * bodies and the failure-artifact bundle); the fixed-size progress lines have
- * no headroom problem and stay on the stream.
+ * nothing left to discard. Reserved for the payloads whose size scales with the
+ * MODEL'S OUTPUT — the three `--json` bodies and the failure-artifact bundle.
+ * Everything else stays on the buffered stream.
+ *
+ * ⚠️ MIXING THE TWO IS ORDER-SAFE ONLY BECAUSE OF THAT SPLIT, so keep it. A
+ * `writeSync` bypasses `process.stdout`'s queue, so it would print ahead of an
+ * earlier buffered write that was still pending. A buffered write is only ever
+ * still pending once the pipe is full — 65_536 bytes — and every write left on
+ * the stream in this file is bounded by the question count (a handful of header
+ * lines, one ~100-char line per question, a few `note:` lines): a few KB against
+ * a 20-question corpus, cumulatively far under one pipe buffer. They are
+ * therefore never pending when a `writeStdoutSync` runs. Move an unbounded
+ * payload onto the stream, or a bounded one onto `writeStdoutSync`, and that
+ * argument stops holding.
  */
 export function writeStdoutSync(text: string): void {
   const buf = Buffer.from(text, "utf-8");
+  // A one-word cell purely to get a blocking sleep on the EAGAIN path below;
+  // there is no synchronous `sleep` and a bare retry loop would spin at 100%.
+  const idle = new Int32Array(new SharedArrayBuffer(4));
   let offset = 0;
   while (offset < buf.length) {
     try {
       offset += fs.writeSync(1, buf, offset, buf.length - offset);
     } catch (err) {
-      // EAGAIN is a retry, not a failure: it means the reader has not drained
-      // the pipe yet. Anything else is a real write error and propagates.
+      // EAGAIN drives a RETRY; it is not discarded. A `write(2)` that returns
+      // EAGAIN wrote nothing, so re-driving the same offset loses no bytes, and
+      // waiting for the reader is exactly what a blocking fd would have done —
+      // this branch only exists because fd 1 may arrive with O_NONBLOCK set.
+      // Every other errno (EPIPE, ENOSPC, EBADF) is a real write failure and
+      // propagates to `runStagedCanonicalEval`'s catch.
       if ((err as NodeJS.ErrnoException).code !== "EAGAIN") throw err;
+      Atomics.wait(idle, 0, 0, 1);
     }
   }
 }

@@ -471,79 +471,41 @@ export async function handleCanonicalEval(args: string[]): Promise<void> {
     `Atlas canonical-question eval — schema=${options.schema} mode=${options.mode}\n`,
   );
 
+  const exitCode = await runStagedCanonicalEval(options, connStr);
+  process.exit(exitCode);
+}
+
+/**
+ * Stage the semantic layer, run the eval, restore, and reduce the whole run to
+ * ONE exit code for {@link handleCanonicalEval} to hand the shell.
+ *
+ * ⚠️ THE EXIT MUST LIVE OUTSIDE THIS FUNCTION, AND THE `return` MUST LIVE
+ * OUTSIDE THE `try`. Both halves were wrong until #5130 and each one silently
+ * discards a failure:
+ *
+ *   - The exit used to sit after the `try`/`finally` in the same function as
+ *     the eval body, so every `return` inside that body ran `finally` and then
+ *     left the function — skipping `process.exit(exitCode)` entirely and ending
+ *     the process on its natural code, 0. `--mcp-llm` computed its acceptance
+ *     floor, printed `FAIL: 12/20 below acceptance floor 18`, and exited 0; the
+ *     demo-seed catch did the same for BOTH modes. Splitting the body into
+ *     {@link runInstalledCanonicalEval}, whose declared `Promise<number>` makes
+ *     the compiler reject any path that fails to produce a code, is what keeps
+ *     a future early return from re-opening it.
+ *   - `return exitCode` INSIDE the `try` would capture the value at return time,
+ *     so the `finally`'s restore-failure bump to 2 would be computed and thrown
+ *     away — the same defect one layer over. The `return` below is deliberately
+ *     after the block.
+ */
+async function runStagedCanonicalEval(
+  options: CanonicalEvalOptions,
+  connStr: string,
+): Promise<number> {
   // Stage the semantic layer for the chosen schema, identical to bin/eval.ts.
   backupSemanticLayer();
   let exitCode = 0;
   try {
-    installSchemaSemanticLayer(options.schema);
-
-    // Seed the demo Postgres before running so the harness is self-contained
-    // — same hook used by bin/eval.ts. seedDemoPostgres takes a connection
-    // string, not a schema; only `ecommerce` ships today (#2021).
-    try {
-      await seedDemoPostgres(connStr);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      process.stderr.write(
-        `\nError: failed to seed demo Postgres: ${msg}\n` +
-          `Tip: bun run db:up && export ATLAS_DATASOURCE_URL=postgres://atlas:atlas@localhost:5433/atlas_demo\n`,
-      );
-      exitCode = 1;
-      return;
-    }
-
-    // Reset cached connection / whitelist / explore-backend state so the
-    // freshly installed semantic layer is re-resolved. `connections._reset()`
-    // is intentionally synchronous — it queues async pool closes via
-    // `.catch()` handlers (verified in lib/db/connection.ts).
-    const { connections } = await import("@atlas/api/lib/db/connection");
-    const { _resetWhitelists } = await import("@atlas/api/lib/semantic");
-    const { invalidateExploreBackend } = await import(
-      "@atlas/api/lib/tools/explore"
-    );
-    connections._reset();
-    _resetWhitelists();
-    invalidateExploreBackend();
-
-    if (options.mode === "mcp-llm") {
-      const mcpExitCode = await runMcpLlmMode(options);
-      exitCode = mcpExitCode;
-      return;
-    }
-
-    const results =
-      options.mode === "llm"
-        ? await runWithAgent(options)
-        : await runDeterministic(options);
-
-    if (options.json) {
-      process.stdout.write(
-        `${JSON.stringify(
-          {
-            schema: options.schema,
-            mode: options.mode,
-            total: results.length,
-            passing: results.filter((r) => r.status === "pass").length,
-            warning: results.filter((r) => r.status === "warn").length,
-            failing: results.filter((r) => r.status === "fail").length,
-            results: results.map((r) => ({
-              id: r.question.id,
-              category: r.question.category,
-              question: r.question.question,
-              status: r.status,
-              detail: r.detail,
-              sql: r.sql,
-            })),
-          },
-          null,
-          2,
-        )}\n`,
-      );
-    } else {
-      process.stdout.write(`\n${formatSummary(results)}\n`);
-    }
-
-    if (results.some((r) => r.status === "fail")) exitCode = 1;
+    exitCode = await runInstalledCanonicalEval(options, connStr);
   } finally {
     // Surface restore failure via the exit code — silently swallowing it
     // would let a developer see an "all green" run while their original
@@ -552,7 +514,85 @@ export async function handleCanonicalEval(args: string[]): Promise<void> {
     const restored = restoreSemanticLayer();
     if (!restored) exitCode = Math.max(exitCode, 2);
   }
-  process.exit(exitCode);
+  return exitCode;
+}
+
+/**
+ * Run the eval against the freshly installed semantic layer and return the exit
+ * code it earns: 1 for a seed failure or any failing question, otherwise
+ * whatever the selected mode reports. Restoring the caller's semantic layer is
+ * {@link runStagedCanonicalEval}'s job, not this one's.
+ */
+async function runInstalledCanonicalEval(
+  options: CanonicalEvalOptions,
+  connStr: string,
+): Promise<number> {
+  installSchemaSemanticLayer(options.schema);
+
+  // Seed the demo Postgres before running so the harness is self-contained
+  // — same hook used by bin/eval.ts. seedDemoPostgres takes a connection
+  // string, not a schema; only `ecommerce` ships today (#2021).
+  try {
+    await seedDemoPostgres(connStr);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(
+      `\nError: failed to seed demo Postgres: ${msg}\n` +
+        `Tip: bun run db:up && export ATLAS_DATASOURCE_URL=postgres://atlas:atlas@localhost:5433/atlas_demo\n`,
+    );
+    return 1;
+  }
+
+  // Reset cached connection / whitelist / explore-backend state so the
+  // freshly installed semantic layer is re-resolved. `connections._reset()`
+  // is intentionally synchronous — it queues async pool closes via
+  // `.catch()` handlers (verified in lib/db/connection.ts).
+  const { connections } = await import("@atlas/api/lib/db/connection");
+  const { _resetWhitelists } = await import("@atlas/api/lib/semantic");
+  const { invalidateExploreBackend } = await import(
+    "@atlas/api/lib/tools/explore"
+  );
+  connections._reset();
+  _resetWhitelists();
+  invalidateExploreBackend();
+
+  if (options.mode === "mcp-llm") {
+    return runMcpLlmMode(options);
+  }
+
+  const results =
+    options.mode === "llm"
+      ? await runWithAgent(options)
+      : await runDeterministic(options);
+
+  if (options.json) {
+    process.stdout.write(
+      `${JSON.stringify(
+        {
+          schema: options.schema,
+          mode: options.mode,
+          total: results.length,
+          passing: results.filter((r) => r.status === "pass").length,
+          warning: results.filter((r) => r.status === "warn").length,
+          failing: results.filter((r) => r.status === "fail").length,
+          results: results.map((r) => ({
+            id: r.question.id,
+            category: r.question.category,
+            question: r.question.question,
+            status: r.status,
+            detail: r.detail,
+            sql: r.sql,
+          })),
+        },
+        null,
+        2,
+      )}\n`,
+    );
+  } else {
+    process.stdout.write(`\n${formatSummary(results)}\n`);
+  }
+
+  return results.some((r) => r.status === "fail") ? 1 : 0;
 }
 
 // ── Wiring (--mcp-llm mode, #2119 Part B) ───────────────────────────────

@@ -205,67 +205,75 @@ export type McpLlmOutcome =
  * strictly stronger: a spelling check passes canonical-looking SQL with a wrong
  * filter, and a value check does not.
  */
+/**
+ * One group of the authoritative grouped result — its display label and the
+ * numbers it computed, kept TOGETHER.
+ *
+ * ⚠️ ONE RECORD PER GROUP, NOT TWO PARALLEL ARRAYS. The label and its measures
+ * are two projections of one row; storing them as `labels[]` + `measures[]`
+ * lets them desync, and every consumer below cares which measure belongs to
+ * which group — {@link keyedResultMatches} grades PER GROUP.
+ */
+export interface AuthoritativeGroup {
+  /**
+   * The grouping key cell VERBATIM — or `null` when the authoritative SQL
+   * grouped on a NULL key. Case/whitespace folding happens at comparison time
+   * ({@link authoritativeLabels}) so the operator-facing note can print the
+   * label the SQL actually wrote.
+   *
+   * ⚠️ `null` IS NOT THE STRING `"null"`, AND THE DIFFERENCE WAS A LIVE FALSE
+   * NEGATIVE. An earlier cut harvested this as `String(cell)`, so a NULL group
+   * became the label `"null"` and counted toward the cardinality — while
+   * {@link columnValueSets} skips nullish cells on the observed side. A model
+   * returning the byte-identical authoritative result then graded FAIL, which
+   * is precisely the defect class #5128 exists to remove, one layer down. Both
+   * sides now reduce a cell through {@link cellKey} and neither counts a NULL
+   * as a distinct value.
+   */
+  readonly label: string | null;
+  /**
+   * The numeric cells this group's row produced OUTSIDE the key column — the
+   * measures, never the grouping key (excluded even when the key is itself
+   * numeric, as `month` is).
+   */
+  readonly measures: readonly number[];
+}
+
+/**
+ * Grouped metric — compared on SUBSTANCE (what each group computed, and how
+ * many groups there were), never on what the groups are CALLED.
+ *
+ * ⚠️ THE PREVIOUS ARM CARRIED `keys: string[]` AND WAS THE THIRD PRESENTATION
+ * CHECK IN A ROW (#5128). The value grader was tightened three times and each
+ * tightening caught a *display* difference rather than a substantive one:
+ *
+ *   original   SQL text        `AVG(total_cents / 100.0)` vs `AVG(total_cents)`
+ *   fix 1      exact numbers   `11.22` vs a metric publishing `ROUND(…,1)` = `11.2`
+ *   fix 2      group labels    `'With Promotion'` vs `'With Promo'`
+ *
+ * Fix 2 is this arm's old shape. `orders_with_promotions` labels its groups
+ * with a hand-written `CASE … THEN 'With Promo'`; a model that computed the
+ * identical categorisation, filter and measures but wrote `'With Promotion'`
+ * was graded wrong. Nobody chose to make display text load-bearing — ground
+ * truth was harvested from the first column because that is what came back
+ * first, and the first column of a grouped query is a presentation column.
+ *
+ * So the labels stay, DIAGNOSTIC ONLY (see {@link labelDriftNote}), and the
+ * verdict keys on what a relabel cannot touch.
+ *
+ * The grouping CARDINALITY is derived from `groups` rather than stored beside
+ * it ({@link authoritativeLabels}) — a count kept next to the thing it counts
+ * is a state that is only ever consistent by construction.
+ */
+export interface KeyedExpectation {
+  readonly kind: "keyed";
+  readonly groups: readonly AuthoritativeGroup[];
+}
+
 export type MetricExpectation =
   /** Single-row, single-number metric — compare the number. */
   | { readonly kind: "scalar"; readonly value: number }
-  /**
-   * Grouped metric — compared on SUBSTANCE (the measures it computed and how
-   * many groups it split into), never on what the groups are CALLED.
-   *
-   * ⚠️ THE PREVIOUS ARM CARRIED `keys: string[]` AND WAS THE THIRD PRESENTATION
-   * CHECK IN A ROW (#5128). The value grader was tightened three times and each
-   * tightening caught a *display* difference rather than a substantive one:
-   *
-   *   original   SQL text        `AVG(total_cents / 100.0)` vs `AVG(total_cents)`
-   *   fix 1      exact numbers   `11.22` vs a metric publishing `ROUND(…,1)` = `11.2`
-   *   fix 2      group labels    `'With Promotion'` vs `'With Promo'`
-   *
-   * Fix 2 is this arm's old shape. `orders_with_promotions` labels its groups
-   * with a hand-written `CASE … THEN 'With Promo'`; a model that computed the
-   * identical categorisation, filter and measures but wrote `'With Promotion'`
-   * was graded wrong. Nobody chose to make display text load-bearing — ground
-   * truth was harvested from the first column because that is what came back
-   * first, and the first column of a grouped query is a presentation column.
-   *
-   * So the labels stay, DIAGNOSTIC ONLY (see {@link labelDriftNote}), and the
-   * verdict keys on the two things a relabel cannot touch.
-   */
-  | {
-      readonly kind: "keyed";
-      /**
-       * Distinct grouping cardinality of the authoritative result — matched
-       * against the DISTINCT-VALUE COUNT of some column of the observed result,
-       * never against its row count.
-       *
-       * ⚠️ ROW COUNT IS THE TEMPTING SPELLING AND IT REGRESSES THE VERY CASE
-       * THIS ARM EXISTS FOR. cq-016's reproducing answer was *richer* than
-       * ground truth — the model added a per-promotion-type breakdown, so it
-       * returned more rows than the authoritative two. Per-column distinct
-       * cardinality survives extra rows; a row count does not.
-       */
-      readonly groupCount: number;
-      /**
-       * Every numeric cell the authoritative SQL produced OUTSIDE its first
-       * column — i.e. the measures, not the grouping key (which is excluded
-       * even when it is itself numeric, as `month` is).
-       *
-       * Matched as a SUBSET of the observed numbers, so a richer answer passes
-       * and a dropped filter does not. Empty when the authoritative result has
-       * no numeric measures at all — see {@link keyedResultMatches} for what
-       * happens then.
-       */
-      readonly measures: readonly number[];
-      /**
-       * The authoritative result's first-column values.
-       *
-       * ⚠️ NOT PART OF THE VERDICT while `measures` is non-empty. Kept for two
-       * reasons: {@link labelDriftNote} reports a relabel so the drift is
-       * visible without gating on it, and when `measures` is EMPTY these values
-       * are the only substance the authoritative result carries, so the
-       * comparison falls back to them.
-       */
-      readonly labels: readonly string[];
-    };
+  | KeyedExpectation;
 
 export interface McpLlmEvalOptions {
   readonly questionsPath?: string;
@@ -432,11 +440,26 @@ export async function runMcpLlmEval(
         // Reporting only — computed AFTER the verdict and incapable of changing
         // it (#5128). Goes to stderr rather than the outcome so the run's JSON
         // shape is untouched.
-        const drift = labelDriftNote(
-          outcome,
-          expectationForQuestion(q, opts.metricExpectations, opts.answerExpectations),
-        );
-        if (drift) process.stderr.write(`  note: ${drift}\n`);
+        //
+        // ⚠️ WRAPPED BECAUSE THE ONLY `return` IS AFTER THIS LOOP. A throw here
+        // unwinds past every outcome accumulated so far, so a reporting fault
+        // would cost a 20-question paid run its entire score and surface as a
+        // harness stack instead of a grade. Nothing on this path throws today;
+        // that is exactly why the assertion is enforced rather than trusted.
+        try {
+          const drift = labelDriftNote(
+            outcome,
+            expectationForQuestion(q, opts.metricExpectations, opts.answerExpectations),
+          );
+          if (drift) process.stderr.write(`  note: ${drift}\n`);
+        } catch (err) {
+          // Logged, never re-thrown: grading is the run's product and a
+          // diagnostic must not be able to discard it.
+          process.stderr.write(
+            `[mcp-llm-eval] drift note failed for ${q.id}: ` +
+              `${err instanceof Error ? err.message : String(err)}\n`,
+          );
+        }
       }
       return { outcomes, artifacts };
     } finally {
@@ -989,7 +1012,7 @@ function gradeByMode(
       return gradeVirtual(q, toolCalls, finalText, latencyMs, expectation);
     default: {
       const _exhaustive: never = q;
-      throw new Error(`unreachable mode: ${String(_exhaustive)}`);
+      throw new Error(unreachableModeMessage(_exhaustive));
     }
   }
 }
@@ -1108,8 +1131,10 @@ function gradeMetric(
           ? "no expectation resolved"
           : expectation.kind === "scalar"
             ? `scalar ${expectation.value}`
-            : `${expectation.groupCount} group(s) carrying measures [${expectation.measures.join(", ")}]` +
-              ` — labels [${expectation.labels.join(", ")}] are NOT compared`
+            : `${expectation.groups.length} group(s), each needing one of its own measures ` +
+              `— ${expectation.groups
+                .map((g) => `${g.label ?? "<null>"}: [${g.measures.join(", ")}]`)
+                .join(" · ")} — labels are NOT compared`
       })`,
   });
 }
@@ -1241,60 +1266,111 @@ function resultMatchesExpectation(data: unknown, expectation: MetricExpectation)
 /**
  * Does this grouped result carry the authoritative SUBSTANCE?
  *
- * Two conditions, both of which move under a wrong grouping or a dropped
- * filter and neither of which moves under a relabel (#5128):
+ * Two conditions, neither of which moves under a relabel (#5128):
  *
- *  1. **every** authoritative measure has an approximate match among the
- *     observed numbers, modulo {@link UNIT_SCALINGS}. SUBSET, not equality —
- *     equality would fail the richer-than-ground-truth answer that is this
- *     issue's actual reproducing case; and
+ *  1. **every authoritative GROUP is represented** — for each group, at least
+ *     one of the numbers it computed has an approximate match among the
+ *     observed numbers, modulo {@link UNIT_SCALINGS}. Subset, not equality; and
  *  2. **some** column's distinct-value count equals the authoritative group
  *     count. Per-column and distinct, so extra breakdown rows don't move it.
  *
- * ⚠️ TWO TRADE-OFFS, STATED RATHER THAN HIDDEN — this is the fourth cut of this
- * comparison and the previous three each shipped a false negative that looked
- * obviously correct in review:
+ * ⚠️ CONDITION 1 IS PER GROUP, NOT PER CELL, AND THE DIFFERENCE IS INSTANCE #4
+ * OF THIS ISSUE'S OWN TABLE. The obvious spelling — *every authoritative
+ * measure CELL must appear* — was written first and flips currently-PASSING
+ * questions to fail, because the corpus's metrics publish auxiliary columns no
+ * natural answer includes:
  *
- * - Condition 1 is `every`, so an answer that computes the right split but
- *   publishes only SOME of the authoritative measures fails. Deliberate:
- *   omitting a measure is not a presentation difference, it is a smaller
- *   answer, and for a metric question the metric's own SQL is what "the answer"
- *   means. The looser `some` reading would pass a result sharing one number out
- *   of six, which is close to no check at all on a corpus where `COUNT(*)`
- *   recurs.
- * - Condition 2 wants ROWS. A model that answers a two-group question with one
- *   pivoted row (`COUNT(*) FILTER (WHERE …) AS with_promo, … AS no_promo`) has
- *   answered correctly and is failed here, because no column of a single row
- *   has two distinct values. That shape is rare from a model writing `GROUP BY`
- *   SQL, and the alternative — dropping the shape check — leaves the subset
- *   rule alone to grade, which the wrong-grouping test shows is not enough.
- *   Recorded as a known limit, not defended as ideal.
+ *   revenue_by_category   revenue, order_count, units_sold  · cq-004 asks for revenue
+ *   monthly_gmv_trend     order_count, gmv, aov             · cq-009 asks for GMV
+ *   customers_by_…        customer_count, active_count, active_pct
+ *
+ * A model answering "revenue by category" with `SELECT category, SUM(revenue)`
+ * has answered the question. Failing it for omitting `units_sold` is the same
+ * "rejected a correct answer over presentation" mistake as the three before it,
+ * reintroduced as an EXHAUSTIVENESS difference. Per-group keeps what matters —
+ * a dropped filter moves every number in every group, so no group is
+ * represented; a missing group is exactly a group with nothing matched.
+ *
+ * ⚠️ CONDITION 2 IS WEAKER THAN IT READS, and that is stated rather than
+ * implied. It accepts if ANY column — including a bystander the model happened
+ * to select — carries the right number of distinct values, so at a group count
+ * of 2 a stray boolean-ish column satisfies it for free, and at a group count
+ * of 1 any constant column does. It is a shape guard against an answer with the
+ * right numbers and no grouping at all, not a second correctness check;
+ * condition 1 does the grading. `keyed comparison … > a bystander column can
+ * satisfy the shape check` pins the honest behaviour rather than a hoped-for one.
+ *
+ * ⚠️ KNOWN LIMIT: condition 2 wants ROWS. A model that answers a two-group
+ * question with one pivoted row (`COUNT(*) FILTER (WHERE …) AS with_promo, …`)
+ * has answered correctly and is failed here, because no column of a single row
+ * has two distinct values. Rare from a model writing `GROUP BY` SQL. Recorded
+ * as a known limit, not defended as ideal.
+ *
+ * Throws rather than returning `false` on an empty `groups` — that means ground
+ * truth was never established, and charging it to the model would print a
+ * `tool_selection` artifact blaming the model for a harness fault. Same
+ * disposition as {@link gradeMetric}'s missing-expectation throw.
  */
 function keyedResultMatches(
   rows: ReadonlyArray<Record<string, unknown>>,
-  expectation: Extract<MetricExpectation, { kind: "keyed" }>,
+  expectation: KeyedExpectation,
 ): boolean {
-  if (expectation.groupCount === 0) return false;
+  if (expectation.groups.length === 0) {
+    throw new Error(
+      "[harness] keyed expectation has no groups — ground truth was not established, " +
+        "so no answer can be adjudicated. A harvested expectation always has ≥1 group; " +
+        "check keyedExpectationFrom's caller.",
+    );
+  }
 
-  // No numeric measures at all — a `SELECT DISTINCT status`-shaped result. The
+  const labels = authoritativeLabels(expectation);
+
+  // No numeric measures anywhere — a `SELECT DISTINCT status`-shaped result. The
   // key column is then the DATA rather than a display label, and cardinality
   // alone would pass any result with the right number of distinct values, so
   // compare the values themselves. This is the old label-set rule, kept exactly
   // where it is still the strongest thing available.
-  if (expectation.measures.length === 0) return labelSetMatches(rows, expectation.labels);
+  if (!expectation.groups.some((g) => g.measures.length > 0)) {
+    return labelSetMatches(rows, labels);
+  }
 
   const observed = numericValues(rows);
-  const everyMeasurePresent = expectation.measures.every((measure) =>
-    observed.some((candidate) =>
-      UNIT_SCALINGS.some((s) => approximatelyEqual(candidate * s, measure)),
-    ),
+  const everyGroupRepresented = expectation.groups.every(
+    (g) =>
+      // A group the authoritative SQL gave no numbers for has nothing to match;
+      // it is carried by the cardinality check alone.
+      g.measures.length === 0 ||
+      g.measures.some((measure) =>
+        observed.some((candidate) =>
+          UNIT_SCALINGS.some((s) => approximatelyEqual(candidate * s, measure)),
+        ),
+      ),
   );
-  if (!everyMeasurePresent) return false;
+  if (!everyGroupRepresented) return false;
+
+  // Every authoritative label was NULL, so there is no cardinality to check
+  // against — `columnValueSets` cannot produce a nullish value on the observed
+  // side either. Condition 1 stands alone rather than failing by default.
+  if (labels.size === 0) return true;
 
   for (const set of columnValueSets(rows).values()) {
-    if (set.size === expectation.groupCount) return true;
+    if (set.size === labels.size) return true;
   }
   return false;
+}
+
+/**
+ * The authoritative grouping keys, normalized and de-duplicated. NULL keys are
+ * excluded, because {@link columnValueSets} cannot produce one on the observed
+ * side — counting them here would make an identical answer un-passable.
+ *
+ * `.size` is the grouping cardinality. Derived on demand rather than stored:
+ * a count kept beside the thing it counts can disagree with it.
+ */
+function authoritativeLabels(expectation: KeyedExpectation): ReadonlySet<string> {
+  const out = new Set<string>();
+  for (const g of expectation.groups) if (g.label !== null) out.add(normalizeKey(g.label));
+  return out;
 }
 
 /**
@@ -1304,9 +1380,8 @@ function keyedResultMatches(
  */
 function labelSetMatches(
   rows: ReadonlyArray<Record<string, unknown>>,
-  labels: readonly string[],
+  expected: ReadonlySet<string>,
 ): boolean {
-  const expected = new Set(labels.map(normalizeKey));
   if (expected.size === 0) return false;
   for (const set of columnValueSets(rows).values()) {
     if (set.size !== expected.size) continue;
@@ -1322,23 +1397,49 @@ function labelSetMatches(
   return false;
 }
 
-/** `columnName → set of its normalized non-null cell values`. */
+/** `columnName → set of its {@link cellKey}s. Nullish cells are not values. */
 function columnValueSets(
   rows: ReadonlyArray<Record<string, unknown>>,
 ): Map<string, Set<string>> {
   const byColumn = new Map<string, Set<string>>();
   for (const row of rows) {
     for (const [col, cell] of Object.entries(row)) {
-      if (cell === null || cell === undefined) continue;
+      const key = cellKey(cell);
+      if (key === null) continue;
       let set = byColumn.get(col);
       if (!set) {
         set = new Set();
         byColumn.set(col, set);
       }
-      set.add(normalizeKey(String(cell)));
+      set.add(key);
     }
   }
   return byColumn;
+}
+
+/**
+ * The ONE "is this cell a group at all, and what does it read as" rule, called
+ * from both sides of the comparison.
+ *
+ * ⚠️ TWO SPELLINGS OF THIS IS A FALSE NEGATIVE, MEASURED. The harvester used to
+ * do `String(cell)` while the observed side skipped nullish cells, so a NULL
+ * group harvested as the label `"null"` and counted toward a cardinality no
+ * observed result could ever reach — a model returning the byte-identical
+ * authoritative rows graded FAIL. One function, both callers.
+ *
+ * Returns the cell VERBATIM rather than normalized: {@link labelDriftNote}
+ * prints these back to an operator, and `with promo` is harder to find in a
+ * `query_patterns` block than the `'With Promo'` the SQL actually wrote.
+ * Normalization is {@link normalizeKey}'s job, applied at comparison time.
+ */
+function cellLabel(cell: unknown): string | null {
+  return cell === null || cell === undefined ? null : String(cell);
+}
+
+/** `cellLabel` + case/whitespace folding — the form the two sides compare in. */
+function cellKey(cell: unknown): string | null {
+  const label = cellLabel(cell);
+  return label === null ? null : normalizeKey(label);
 }
 
 function normalizeKey(raw: string): string {
@@ -1346,37 +1447,33 @@ function normalizeKey(raw: string): string {
 }
 
 /**
- * Reduce one authoritative grouped result to its {@link MetricExpectation}.
+ * Reduce one authoritative grouped result to its {@link KeyedExpectation}.
  *
  * Lives beside the comparison rather than beside the SQL execution in
  * `canonical-eval-run.ts` on purpose: harvesting and comparison are two halves
  * of one rule, and #5128 is what a split between them looks like — ground truth
  * was harvested from a display column while the comparison assumed it was data.
  *
- * `columns[0]` is the grouping key by convention across the corpus (`channel`,
- * `carrier`, `stock_status`, `month`, `promo_status`); everything after it is a
- * measure. The key column is excluded from `measures` even when it is numeric,
- * so a `month` label never doubles as a value the model must reproduce.
+ * `keyColumn` is the grouping key — `columns[0]` by convention across the
+ * corpus (`channel`, `carrier`, `stock_status`, `month`, `promo_status`) — and
+ * `measureColumns` is everything after it. Taking them as two parameters rather
+ * than one `columns` array consumes the non-emptiness the caller has already
+ * proved, instead of re-checking it with a throw.
  */
 export function keyedExpectationFrom(
-  columns: readonly string[],
+  keyColumn: string,
+  measureColumns: readonly string[],
   rows: ReadonlyArray<Record<string, unknown>>,
-): Extract<MetricExpectation, { kind: "keyed" }> {
-  const [keyColumn, ...measureColumns] = columns;
-  if (keyColumn === undefined) {
-    throw new Error("keyedExpectationFrom: a keyed result needs at least one column");
-  }
-  const labels = rows.map((r) => String(r[keyColumn]));
-  const measureRows = rows.map((r) => {
-    const out: Record<string, unknown> = {};
-    for (const c of measureColumns) out[c] = r[c];
-    return out;
-  });
+): KeyedExpectation {
   return {
     kind: "keyed",
-    labels,
-    groupCount: new Set(labels.map(normalizeKey)).size,
-    measures: numericValues(measureRows),
+    groups: rows.map((r) => ({
+      label: cellLabel(r[keyColumn]),
+      // Reuses `numericValues`' row shape so Postgres `numeric`-as-a-string is
+      // parsed identically on both sides. The key column is never included,
+      // so a numeric `month` label is not a value the model must reproduce.
+      measures: numericValues([Object.fromEntries(measureColumns.map((c) => [c, r[c]]))]),
+    })),
   };
 }
 
@@ -1390,10 +1487,20 @@ export function keyedExpectationFrom(
  * entity's `query_patterns` drift apart, or a model starts inventing its own
  * vocabulary wholesale, the run says so instead of silently absorbing it.
  *
- * Returns `null` when there is nothing to report — a non-keyed or absent
- * expectation, a fail, a measure-less expectation (where labels ARE the
- * verdict, so a mismatch already failed), or a matching result that did carry
- * the labels.
+ * Returns `null` when there is nothing to report: a non-keyed or absent
+ * expectation, a `fail`, no matching result, or a matching result that did
+ * carry the labels.
+ *
+ * ⚠️ SUPPRESSED ON A FAIL, AND THE GUARD IS LOAD-BEARING FOR THREE BRANCHES,
+ * NOT ONE. {@link grade} can return `fail` with a substance-matching answer via
+ * `latency`, `protocol` (unparseable) and `protocol` (transport) — in all three
+ * the artifact already carries the expectation, and a "matched but relabelled"
+ * line beside a failure verdict reads as a second, contrary verdict.
+ *
+ * A MEASURE-LESS expectation needs no guard of its own: `keyedResultMatches` is
+ * then exactly `labelSetMatches`, so anything in `matching` necessarily
+ * satisfies the label suppression below. An explicit early return for it looked
+ * like a fourth case and was dead code — a mutation deleting it changed nothing.
  */
 function labelDriftNote(
   outcome: McpLlmOutcome,
@@ -1401,20 +1508,26 @@ function labelDriftNote(
 ): string | null {
   if (outcome.status !== "pass") return null;
   if (expectation === undefined || expectation.kind !== "keyed") return null;
-  if (expectation.measures.length === 0) return null;
 
-  const matching = outcome.toolCalls
-    .filter((c) => isAnsweringCall(c) && c.result.kind === "ok")
-    .map((c) => (c.result.kind === "ok" ? collectRows(c.result.data) : []))
-    .filter((rows) => rows.length > 0 && keyedResultMatches(rows, expectation));
+  const labels = authoritativeLabels(expectation);
+  const matching = outcome.toolCalls.flatMap((c) => {
+    if (!isAnsweringCall(c) || c.result.kind !== "ok") return [];
+    const rows = collectRows(c.result.data);
+    return rows.length > 0 && keyedResultMatches(rows, expectation) ? [rows] : [];
+  });
 
   if (matching.length === 0) return null;
-  if (matching.some((rows) => labelSetMatches(rows, expectation.labels))) return null;
+  if (matching.some((rows) => labelSetMatches(rows, labels))) return null;
 
+  // Printed VERBATIM, not from the normalized `labels` set — an operator greps
+  // the entity's `query_patterns` for this string.
+  const written = expectation.groups
+    .map((g) => (g.label === null ? "<null>" : g.label))
+    .join(", ");
   return (
     `${outcome.questionId}: grouped answer matched the authoritative measures and ` +
-    `${expectation.groupCount} group(s), but relabelled them — none of ` +
-    `[${expectation.labels.join(", ")}] appears in any result column. ` +
+    `${labels.size} group(s), but relabelled them — none of ` +
+    `[${written}] appears in any result column. ` +
     `Not a verdict: those are display labels from the authoritative SQL, not data.`
   );
 }
@@ -1441,9 +1554,24 @@ function expectationForQuestion(
       return undefined;
     default: {
       const _exhaustive: never = q;
-      throw new Error(`unreachable mode: ${String(_exhaustive)}`);
+      throw new Error(unreachableModeMessage(_exhaustive));
     }
   }
+}
+
+/**
+ * ⚠️ `String(question)` RENDERS `[object Object]` — no id, no mode, nothing to
+ * grep the corpus with, on a message whose whole job is to say which row of
+ * `questions.yml` is malformed. Both exhaustive guards in this file used that
+ * spelling; this is the one place that phrases it.
+ */
+function unreachableModeMessage(q: never): string {
+  const { id, mode } = q as { id?: unknown; mode?: unknown };
+  return (
+    `unreachable question mode ${JSON.stringify(mode)} on question ` +
+    `${JSON.stringify(id) ?? "<no id>"} — loadQuestions validates \`mode\` against ` +
+    `VALID_MODES, so reaching here means the corpus and this switch disagree.`
+  );
 }
 
 function gradeGlossary(

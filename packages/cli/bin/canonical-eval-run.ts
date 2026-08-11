@@ -994,10 +994,14 @@ async function resolveExpectations(questionsPath: string): Promise<{
     // The old line was `keys: rows.map(r => String(r[firstColumn]))` — ground
     // truth read straight off a DISPLAY column, which is how a hand-written
     // `CASE … THEN 'With Promo'` became load-bearing for a correctness check
-    // that has nothing to do with labels. `keyedExpectationFrom` takes the
-    // measures too, and lives next to the code that compares them so the two
-    // cannot drift apart again.
-    return keyedExpectationFrom(columns, rows);
+    // that has nothing to do with labels. `keyedExpectationFrom` takes each
+    // group's measures too, and lives next to the code that compares them so
+    // the two cannot drift apart again.
+    //
+    // `firstColumn` is passed as its own argument because the guard above has
+    // already proved it non-undefined; the factory consumes that proof rather
+    // than re-checking it.
+    return keyedExpectationFrom(firstColumn, columns.slice(1), rows);
   }
 
   const questions = loadQuestions(questionsPath);

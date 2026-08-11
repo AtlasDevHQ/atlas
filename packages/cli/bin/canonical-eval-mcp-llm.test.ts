@@ -21,7 +21,6 @@ import * as path from "path";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   __forTesting__,
-  classifyToolContract,
   keyedExpectationFrom,
   readBaseline,
   writeBaseline,
@@ -29,6 +28,7 @@ import {
   type McpLlmOutcome,
   type RecordedToolCall,
 } from "./canonical-eval-mcp-llm";
+import { classifyToolContract } from "@atlas/mcp/eval/tool-contract";
 import { parseCanonicalEvalOptions } from "./canonical-eval-run";
 import type { Question } from "./canonical-eval";
 
@@ -985,20 +985,22 @@ describe("keyed comparison — substance over labels (#5128)", () => {
     expect(gradePattern(q, calls, "", 8, PROMO_GROUND_TRUTH).status).toBe("fail");
   });
 
-  it("⚠️ a BYSTANDER column satisfies the shape check — pinning the honest weakness", () => {
-    // ⚠️ THIS TEST ASSERTS A LIMITATION, NOT A GUARANTEE, AND THAT IS THE POINT.
-    // Condition 2 accepts if ANY column has the authoritative distinct count —
-    // including a column that has nothing to do with the grouping. The
-    // wrong-grouping fixture above fails only because none of ITS columns
-    // happens to carry two distinct values; add one plausible bystander and the
-    // same wrong grouping passes.
+  it("a BYSTANDER column no longer satisfies the shape check (#5143)", () => {
+    // ⚠️ THIS TEST WAS INVERTED BY #5143 — it asserted the opposite, as a pinned
+    // limitation, and the fix was required to make it go red deliberately.
     //
-    // Recorded rather than fixed (#5143) because the alternative — tying condition 2 to
-    // a specific column — needs to know which column is the grouping key on the
-    // OBSERVED side, which is exactly the presentation-level guess this issue
-    // exists to stop making. Condition 1 is the grading; condition 2 is a shape
-    // guard against an ungrouped answer, and it is weak on purpose. Anyone
-    // strengthening it should make this test go red deliberately.
+    // The old condition 2 accepted if ANY column carried the authoritative
+    // distinct count, including a column with nothing to do with the grouping.
+    // The wrong-grouping fixture above failed ONLY because none of its columns
+    // happened to carry two distinct values — so this is the same wrong grouping
+    // with one plausible bystander (`domestic: yes/no`) added, and it used to
+    // pass.
+    //
+    // What closes it is not a guess about which column is the key — that is the
+    // presentation-level move #5128 exists to stop making. `domestic` gives BOTH
+    // represented rows (`us-east`, `us-west`) the value `"yes"`, so it cannot
+    // tell the two authoritative groups apart, and separating them is the whole
+    // job of a grouping key. The column earns the role or it does not count.
     const calls = [
       sqlAnswer(
         "SELECT region, domestic, COUNT(*) AS orders, AVG(total_cents)/100.0 AS aov, " +
@@ -1013,7 +1015,7 @@ describe("keyed comparison — substance over labels (#5128)", () => {
         ],
       ),
     ];
-    expect(gradePattern(q, calls, "", 8, PROMO_GROUND_TRUTH).status).toBe("pass");
+    expect(gradePattern(q, calls, "", 8, PROMO_GROUND_TRUTH).status).toBe("fail");
   });
 
   const NO_MEASURES = {
@@ -1095,19 +1097,21 @@ describe("keyed comparison — substance over labels (#5128)", () => {
     expect(gradePattern(pq, identical, "", 8, withNullGroup).status).toBe("pass");
   });
 
-  it("⚠️ a COALESCE-rendered NULL group still fails the shape check — the NULL fix does NOT cover it", () => {
-    // ⚠️ ASSERTS A LIMITATION, and specifically the one a reader will assume the
-    // NULL fix closed. Dropping NULL labels from the cardinality makes the
-    // BYTE-IDENTICAL answer pass (pinned above). It does NOT make
-    // `COALESCE(promotion_type, 'unknown')` pass: the model renders the null
-    // group as a value, so the observed column carries 3 distinct values against
-    // an authoritative 2.
+  it("a COALESCE-rendered NULL group now passes the shape check (#5143)", () => {
+    // ⚠️ THE SECOND TEST #5143 INVERTED. It asserted the opposite as a pinned
+    // limitation — specifically the one a reader assumes the NULL fix closed and
+    // it did not.
     //
-    // Recorded rather than fixed because it failed under the rule this PR
-    // replaces too — set equality on labels implies equality of cardinality, so
-    // `{percent_off, free_shipping, "null"}` never matched
-    // `{percent_off, free_shipping, unknown}` either. Not a regression; a
-    // pre-existing class, tracked in #5143.
+    // The disagreement is manufactured by the two sides' own conventions rather
+    // than by anything the model did wrong: `authoritativeLabels` DROPS the NULL
+    // group (the observed side cannot produce a nullish cell), while
+    // `COALESCE(promotion_type, 'unknown')` RENDERS it as an ordinary value. So
+    // ground truth counts 2 and a byte-correct answer shows 3.
+    //
+    // The fix says exactly that and nothing more: an expectation carrying a NULL
+    // group accepts N−1 or N. It is licensed by a fact about the AUTHORITATIVE
+    // side, so it is unavailable to an expectation with no NULL group — pinned
+    // directly below.
     const withNullGroup = {
       kind: "keyed",
       groups: [
@@ -1129,9 +1133,275 @@ describe("keyed comparison — substance over labels (#5128)", () => {
     ];
     const pq = patternQuestion("cq-022", "Orders", "promo_types", ["nothing-matches-this"]);
     // Condition 1 is satisfied — all three groups are represented — so this is
-    // condition 2 alone, which is what makes it a shape limitation rather than a
-    // grading disagreement.
-    expect(gradePattern(pq, coalesced, "", 8, withNullGroup).status).toBe("fail");
+    // condition 2 alone, which is what made it a shape disagreement rather than
+    // a grading one.
+    expect(gradePattern(pq, coalesced, "", 8, withNullGroup).status).toBe("pass");
+  });
+
+  it("does NOT extend the same tolerance to an expectation with no NULL group", () => {
+    // ⚠️ THE OTHER HALF OF THE COALESCE FIX, AND THE ONLY TEST THAT CAN FALSIFY
+    // ITS CONDITION. Ground truth here is the same two labelled groups with the
+    // NULL group REMOVED, against the identical three-row answer — so a blanket
+    // `N + 1` tolerance passes it, and one licensed by a NULL group on the
+    // authoritative side does not. Without this, deleting the `hasNullGroup`
+    // guard is an equivalent mutation: every currently-green test still passes.
+    //
+    // The verdict is also the right one on its own terms: nothing in ground
+    // truth explains the third group, so the answer is grouped more finely than
+    // the question was asked.
+    const noNullGroup = {
+      kind: "keyed",
+      groups: [
+        { label: "percent_off", measures: [800] },
+        { label: "free_shipping", measures: [300] },
+      ],
+    } as const satisfies MetricExpectation;
+    const threeGroups = [
+      sqlAnswer(
+        "SELECT COALESCE(promotion_type, 'unknown') AS t, COUNT(*) AS orders FROM orders GROUP BY 1",
+        ["t", "orders"],
+        [
+          { t: "percent_off", orders: 800 },
+          { t: "free_shipping", orders: 300 },
+          { t: "unknown", orders: 3105 },
+        ],
+      ),
+    ];
+    const pq = patternQuestion("cq-022", "Orders", "promo_types", ["nothing-matches-this"]);
+    expect(gradePattern(pq, threeGroups, "", 8, noNullGroup).status).toBe("fail");
+  });
+
+  it("passes a correct answer when SOME authoritative groups have no measures", () => {
+    // ⚠️ REGRESSION PIN, AND THE REGRESSION WAS THIS PR'S OWN. Condition 1
+    // exempts a measure-less group — "nothing to match; carried by the
+    // cardinality check alone" — and the first cut of the separation rule did
+    // not, so `rowsRepresenting` handed it an empty candidate set, no column
+    // could ever be assigned a representative for it, and condition 2 became
+    // UNSATISFIABLE. A byte-correct answer graded FAIL, which `origin/main`
+    // passed. Two reviewers measured it independently.
+    //
+    // Reachable from real ground truth: `keyedExpectationFrom` builds `measures`
+    // through `numericValues`, which drops NULL and non-numeric cells, so an
+    // `AVG` over an all-NULL subset produces exactly this. The ALL-measure-less
+    // case is caught upstream by `labelSetMatches`; only the MIXED case lands
+    // here, and no fixture in this file had one.
+    const mixed = {
+      kind: "keyed",
+      groups: [
+        { label: "north", measures: [10, 100] },
+        { label: "south", measures: [20, 200] },
+        { label: "west", measures: [] },
+      ],
+    } as const satisfies MetricExpectation;
+    const correct = [
+      sqlAnswer("SELECT region, SUM(a) AS a, SUM(b) AS b FROM t GROUP BY 1", ["region", "a", "b"], [
+        { region: "north", a: 10, b: 100 },
+        { region: "south", a: 20, b: 200 },
+        { region: "west", a: null, b: null },
+      ]),
+    ];
+    const mq = patternQuestion("cq-030", "Orders", "mixed_measures", ["nothing-matches-this"]);
+    expect(gradePattern(mq, correct, "", 8, mixed).status).toBe("pass");
+
+    // ⚠️ THE OTHER DIRECTION, so the fix cannot be "stop checking condition 2 on
+    // a mixed expectation". `region` still has to carry THREE distinct values —
+    // the measure-less group is exempt from being SEPARATED, not from being
+    // COUNTED — so a two-group answer with both measured groups right still
+    // fails on shape.
+    const undersplit = [
+      sqlAnswer("SELECT region, SUM(a) AS a, SUM(b) AS b FROM t GROUP BY 1", ["region", "a", "b"], [
+        { region: "north", a: 10, b: 100 },
+        { region: "south", a: 20, b: 200 },
+      ]),
+    ];
+    expect(gradePattern(mq, undersplit, "", 8, mixed).status).toBe("fail");
+  });
+
+  it("THROWS when too few groups both carry a label and carry measures", () => {
+    // ⚠️ THE ROUND-1 FIX'S OWN DEFECT, INVERTED. Skipping measure-less groups
+    // stopped condition 2 being unsatisfiable — and when the skips remove ALL
+    // groups, `hasDistinctRepresentatives([])` is VACUOUSLY TRUE on a
+    // zero-iteration loop, so condition 2 collapsed to the bystander rule it
+    // replaced. Measured: this exact expectation PASSED the ungrouped one-row
+    // answer below, a false POSITIVE created by the fix for a false negative.
+    //
+    // An empty candidate SET cannot be assigned; an empty candidate LIST is
+    // satisfied by having nothing to ask. That asymmetry is the whole bug.
+    const nothingAdjudicable = {
+      kind: "keyed",
+      groups: [
+        { label: null, measures: [412] },
+        { label: "ups", measures: [] },
+      ],
+    } as const satisfies MetricExpectation;
+    const ungrouped = [
+      sqlAnswer("SELECT COUNT(*) AS n FROM orders", ["n"], [{ n: 412 }]),
+    ];
+    const nq = patternQuestion("cq-031", "Orders", "unadjudicable", ["nothing-matches-this"]);
+    // A THROW, not a `fail`: this is ground truth that cannot adjudicate, which
+    // gets the same disposition as the empty-groups and all-NULL-key cases.
+    // Grading it `fail` would blame the model for a harness fault; grading it
+    // `pass` — what the round-1 fix did — accepts an answer that never grouped.
+    expect(() => gradePattern(nq, ungrouped, "", 8, nothingAdjudicable)).toThrow(
+      /no pair left for a column to tell apart/,
+    );
+
+    // ⚠️ AND THE THRESHOLD IS TWO, NOT ONE — the first cut of this guard used
+    // `size === 0` and a fix-vs-finding pass REPRODUCED the defect against it.
+    // This is a PAIRWISE-distinctness gate: one surviving label forms no pair,
+    // so `hasDistinctRepresentatives` imposes nothing and condition 2 collapses
+    // to bare cardinality just as completely as at zero.
+    //
+    // The fixture is this file's own bystander case — the five-region wrong
+    // grouping with a `domestic: yes/no` bystander — with ONE authoritative
+    // group made measure-less. Under `size === 0` the guard stayed quiet,
+    // `domestic` satisfied a candidate list of length 1, and the wrong grouping
+    // PASSED again.
+    const oneSeparableLabel = {
+      kind: "keyed",
+      groups: [
+        { label: "With Promo", measures: [1240, 118.4, 146816] },
+        { label: "No Promo", measures: [] },
+      ],
+    } as const satisfies MetricExpectation;
+    const bystanderAnswer = [
+      sqlAnswer(
+        "SELECT region, domestic, COUNT(*) AS orders, AVG(total_cents)/100.0 AS aov, " +
+          "SUM(total_cents)/100.0 AS revenue FROM orders WHERE status <> 'cancelled' GROUP BY 1, 2",
+        ["region", "domestic", "orders", "aov", "revenue"],
+        [
+          { region: "us-east", domestic: "yes", orders: 1240, aov: 118.4, revenue: 146816 },
+          { region: "us-west", domestic: "yes", orders: 3105, aov: 92.7, revenue: 287833.5 },
+          { region: "emea", domestic: "no", orders: 610, aov: 101.3, revenue: 61793 },
+        ],
+      ),
+    ];
+    expect(() => gradePattern(q, bystanderAnswer, "", 8, oneSeparableLabel)).toThrow(
+      /only 1 authoritative group\(s\) both carry a label and carry measures/,
+    );
+  });
+
+  it("does NOT throw on a genuine ONE-label expectation — there is no pair to want", () => {
+    // ⚠️ THE FALSIFIER FOR `Math.min(2, labelCount)` RATHER THAN A FLAT 2, and
+    // without it the `min` is decoration: replacing it with `2` left every other
+    // test green. A grouped metric whose grouping key takes ONE value in the data
+    // — `GROUP BY status` on a table where every row is `shipped` — is a
+    // legitimate run, and aborting it would be a harness fault invented by the
+    // guard rather than found by it.
+    //
+    // This is the weak case the doc block already admits: at one group there is
+    // no partition to disagree about, so bare cardinality is the honest answer.
+    // Pinned so the admission stays true.
+    const single = {
+      kind: "keyed",
+      groups: [{ label: "shipped", measures: [4345] }],
+    } as const satisfies MetricExpectation;
+    const answer = [
+      sqlAnswer("SELECT status, COUNT(*) AS n FROM orders GROUP BY 1", ["status", "n"], [
+        { status: "shipped", n: 4345 },
+      ]),
+    ];
+    const sq = patternQuestion("cq-032", "Orders", "single_group", ["nothing-matches-this"]);
+    expect(gradePattern(sq, answer, "", 8, single).status).toBe("pass");
+  });
+
+  it("still grades a NULL-labelled group's MEASURES on condition 1 alone", () => {
+    // ⚠️ THE ONE PLACE CONDITION 1 IS INDEPENDENTLY LOAD-BEARING, and without
+    // this test it is unfalsifiable: `if (false && !everyGroupRepresented)` left
+    // the whole file green, because for every non-null label an unrepresented
+    // group also produces an empty candidate set and condition 2 rejects it
+    // anyway. `separatesAuthoritativeGroups` SKIPS null-labelled groups, which is
+    // what lets the two conditions disagree here.
+    //
+    // NOT the only such shape — a case-folded label PAIR is another, since the
+    // folded class inherits its represented sibling's rows, so condition 2
+    // accepts while condition 1 rejects the unrepresented member. Said because an
+    // earlier version of this comment claimed "the only shape", which is a stated
+    // absolute and was false. This is the shape PINNED; it is not the shape space.
+    //
+    // Same fixture as the COALESCE case above with the null group's number made
+    // wrong. Condition 2 is satisfied outright — `t` carries three distinct
+    // values against a target of {2, 3} and separates both labelled groups — so
+    // the only thing that can fail it is the missing 3105.
+    const withNullGroup = {
+      kind: "keyed",
+      groups: [
+        { label: "percent_off", measures: [800] },
+        { label: "free_shipping", measures: [300] },
+        { label: null, measures: [3105] },
+      ],
+    } as const satisfies MetricExpectation;
+    const wrongNullGroup = [
+      sqlAnswer(
+        "SELECT COALESCE(promotion_type, 'unknown') AS t, COUNT(*) AS orders FROM orders GROUP BY 1",
+        ["t", "orders"],
+        [
+          { t: "percent_off", orders: 800 },
+          { t: "free_shipping", orders: 300 },
+          { t: "unknown", orders: 99999 },
+        ],
+      ),
+    ];
+    const pq = patternQuestion("cq-022", "Orders", "promo_types", ["nothing-matches-this"]);
+    expect(gradePattern(pq, wrongNullGroup, "", 8, withNullGroup).status).toBe("fail");
+  });
+
+  it("finds a valid assignment the group ORDER would have hidden from a greedy walk", () => {
+    // ⚠️ THIS IS THE ONLY TEST THAT DISTINGUISHES THE MATCHING FROM A GREEDY
+    // WALK, and the distinction is not academic: the two disagree on this exact
+    // family, and which one you get depends on the order the expectation happens
+    // to list its groups in.
+    //
+    // `beta`'s measures are carried by BOTH rows; `alpha`'s only by the first.
+    // Listed beta-first, a greedy walk hands row 0 to beta and then has nothing
+    // left for alpha — even though beta could have taken row 1. Augmenting
+    // re-homes it. Reverse the two groups and greedy succeeds, which is what
+    // makes an order-dependent rule indefensible rather than merely weaker.
+    //
+    // Both candidate columns (`k` and `m`) present the same family, so a greedy
+    // implementation fails this in every column and the whole grade goes red.
+    const overlapping = {
+      kind: "keyed",
+      groups: [
+        { label: "beta", measures: [10, 20] },
+        { label: "alpha", measures: [10] },
+      ],
+    } as const satisfies MetricExpectation;
+    const answer = [
+      sqlAnswer("SELECT k, SUM(v) AS m FROM t GROUP BY 1", ["k", "m"], [
+        { k: "a", m: 10 },
+        { k: "b", m: 20 },
+      ]),
+    ];
+    const oq = patternQuestion("cq-026", "Orders", "overlapping", ["nothing-matches-this"]);
+    expect(gradePattern(oq, answer, "", 8, overlapping).status).toBe("pass");
+  });
+
+  it("a label whose rows are NULL in the candidate column is not separated by it", () => {
+    // `cellKeysAt` drops nullish cells, so `alpha` — represented only by the row
+    // whose key is NULL — offers no value to be assigned and the column fails to
+    // separate. A `String(cell)` spelling would hand it the value `"null"`,
+    // which separates cleanly and passes: the same two-spellings defect
+    // `cellKey` exists to prevent, one layer over.
+    //
+    // `k` is the only column at the target cardinality (`m` carries three
+    // distinct values), so nothing else can rescue the answer.
+    const twoGroups = {
+      kind: "keyed",
+      groups: [
+        { label: "alpha", measures: [100] },
+        { label: "beta", measures: [200] },
+      ],
+    } as const satisfies MetricExpectation;
+    const nullKeyed = [
+      sqlAnswer("SELECT k, SUM(v) AS m FROM t GROUP BY 1", ["k", "m"], [
+        { k: null, m: 100 },
+        { k: "b", m: 200 },
+        { k: "c", m: 999 },
+      ]),
+    ];
+    const nq = patternQuestion("cq-027", "Orders", "null_key_column", ["nothing-matches-this"]);
+    expect(gradePattern(nq, nullKeyed, "", 8, twoGroups).status).toBe("fail");
   });
 
   it("throws rather than failing the model when ground truth has no groups", () => {
@@ -1198,6 +1468,106 @@ describe("keyed comparison — substance over labels (#5128)", () => {
     const invQ = patternQuestion("cq-025", "Products", "stock_health", ["nothing-matches-this"]);
     // Column distinct counts are s:2, a:2, b:2 — nothing is 3.
     expect(gradePattern(invQ, answer, "", 8, collapsing).status).toBe("pass");
+  });
+});
+
+/**
+ * The three shapes #5143 listed that this fix does NOT close, pinned so the
+ * claim in `keyedResultMatches`' doc block is falsifiable rather than asserted.
+ *
+ * ⚠️ WITHOUT THESE, "we chose not to fix pivoted / rollup / top-N" and "we
+ * accidentally fixed them and never noticed" are the same green suite. Each
+ * says WHY it is not closed, and each is a test that should be DELETED — not
+ * edited — by whoever closes it.
+ */
+describe("keyed comparison — the shapes #5143 leaves open", () => {
+  const pq = patternQuestion("cq-016", "Orders", "orders_with_promotions", [
+    "nothing-matches-this",
+  ]);
+
+  it("still fails a PIVOTED answer, and could not accept one without deleting condition 2", () => {
+    // The grouping key became the COLUMN NAMES, so every column of the single
+    // row has exactly one distinct value and none can separate anything. That is
+    // indistinguishable from the ungrouped answer condition 2 exists to reject:
+    // `SELECT COUNT(*) a, COUNT(*) b` whose two numbers happen to hit both
+    // groups presents the identical shape. A rule that admits one admits both.
+    const pivoted = [
+      sqlAnswer(
+        "SELECT COUNT(*) FILTER (WHERE promotion_id IS NOT NULL) AS with_promo, " +
+          "COUNT(*) FILTER (WHERE promotion_id IS NULL) AS no_promo, " +
+          "AVG(total_cents) FILTER (WHERE promotion_id IS NOT NULL)/100.0 AS aov_promo, " +
+          "AVG(total_cents) FILTER (WHERE promotion_id IS NULL)/100.0 AS aov_none " +
+          "FROM orders WHERE status != 'cancelled'",
+        ["with_promo", "no_promo", "aov_promo", "aov_none"],
+        [{ with_promo: 1240, no_promo: 3105, aov_promo: 118.4, aov_none: 92.7 }],
+      ),
+    ];
+    // Condition 1 is satisfied — both groups' numbers are present — so this is
+    // condition 2 alone, which is what makes it a shape limit and not a grading
+    // disagreement.
+    expect(gradePattern(pq, pivoted, "", 8, PROMO_GROUND_TRUTH).status).toBe("fail");
+  });
+
+  it("still fails a ROLLUP answer, whose extra Total row reads as an extra group", () => {
+    // Telling `Total` apart from a genuinely finer grouping means recognising
+    // the extra row as a SUM of the others — new machinery, and a sixth
+    // heuristic on a comparison whose first five were all wrong. The NULL-group
+    // tolerance deliberately cannot be borrowed for it: ground truth here has no
+    // NULL group, so the target stays exactly 2.
+    const rolledUp = {
+      kind: "keyed",
+      groups: [
+        { label: "percent_off", measures: [100] },
+        { label: "free_shipping", measures: [200] },
+      ],
+    } as const satisfies MetricExpectation;
+    const answer = [
+      sqlAnswer("SELECT t, SUM(v) AS m FROM promos GROUP BY ROLLUP(t)", ["t", "m"], [
+        { t: "percent_off", m: 100 },
+        { t: "free_shipping", m: 200 },
+        { t: "Total", m: 300 },
+      ]),
+    ];
+    const rq = patternQuestion("cq-028", "Orders", "promo_rollup", ["nothing-matches-this"]);
+    expect(gradePattern(rq, answer, "", 8, rolledUp).status).toBe("fail");
+  });
+
+  it("rejects a TRUNCATED top-N, and NOT on the cardinality #5143 blamed", () => {
+    // ⚠️ #5143's table blames the cardinality: "10 distinct ≠ 20". That is not
+    // what rejects this. `k` carries THREE distinct values here — exactly the
+    // authoritative count — so the cardinality is satisfied and the answer still
+    // fails, because `gamma`'s number appears nowhere.
+    //
+    // ⚠️ AN EARLIER VERSION OF THIS COMMENT SAID CONDITION 2 WAS SATISFIED
+    // OUTRIGHT AND ONLY CONDITION 1 REJECTED IT. That was wrong, and the test
+    // cannot tell the difference — it asserts `status === "fail"` and both
+    // conditions reject. `gamma` has measures and no representing row, so it
+    // reaches `separatesAuthoritativeGroups` with an empty candidate set, which
+    // no column can be assigned; condition 1 short-circuits first, but deleting
+    // it leaves this red anyway. The two conditions are separable ONLY for a
+    // NULL-labelled group, which `separatesAuthoritativeGroups` skips — that is
+    // the case pinned above, and it is the only falsifier condition 1 has.
+    //
+    // What survives from #5143's entry is the useful half: a truncated top-N is
+    // rejected for MISSING GROUPS, not for counting wrong, so no amount of
+    // loosening the cardinality could have unblocked it.
+    const topN = {
+      kind: "keyed",
+      groups: [
+        { label: "alpha", measures: [100] },
+        { label: "beta", measures: [200] },
+        { label: "gamma", measures: [300] },
+      ],
+    } as const satisfies MetricExpectation;
+    const truncated = [
+      sqlAnswer("SELECT k, SUM(v) AS m FROM t GROUP BY 1 ORDER BY 2 DESC LIMIT 3", ["k", "m"], [
+        { k: "alpha", m: 100 },
+        { k: "beta", m: 200 },
+        { k: "beta-runner-up", m: 201 },
+      ]),
+    ];
+    const tq = patternQuestion("cq-029", "Orders", "top_n", ["nothing-matches-this"]);
+    expect(gradePattern(tq, truncated, "", 8, topN).status).toBe("fail");
   });
 });
 
@@ -2531,3 +2901,192 @@ describe("readBaseline / writeBaseline", () => {
 // lives inside `bindMcpToolsForLlm` rather than in a wrapper around it:
 // anything the loop must not be able to skip has to be unskippable by
 // construction, because nothing here would notice the skip.
+
+// ── Token usage (#5123) ───────────────────────────────────────────────
+
+/**
+ * Every spend figure this lane has ever quoted was a guess — including the
+ * workflow's own *"under $0.05 per run"*, which was never measured, and
+ * order-of-magnitude arithmetic on a 20-question / 124-tool-call run that puts
+ * it nearer $0.50–$2.00 and is also not a measurement.
+ *
+ * These pin the two properties that keep the recorded number from becoming
+ * another one of those: totals are DERIVED from the per-question records, and a
+ * question the provider did not measure is NAMED rather than counted as free.
+ */
+const { summarizeTokenUsage } = __forTesting__;
+
+describe("summarizeTokenUsage", () => {
+  const u = (i: number, o: number, t: number) => ({
+    inputTokens: i,
+    outputTokens: o,
+    totalTokens: t,
+  });
+
+  it("sums each field independently", () => {
+    // ⚠️ NINE DISTINCT NUMBERS, NO TWO SUMS EQUAL. With `{100,100,200}` twice,
+    // swapping `inputTokens` for `outputTokens` in the reducer passes. Here
+    // every field's total is unique, so any cross-wiring is visible.
+    const out = summarizeTokenUsage([
+      { questionId: "cq-001", usage: u(100, 20, 130) },
+      { questionId: "cq-002", usage: u(3000, 400, 3450) },
+    ]);
+    expect(out.totals).toEqual({
+      inputTokens: 3100,
+      outputTokens: 420,
+      totalTokens: 3580,
+    });
+  });
+
+  it("keeps a provider totalTokens that EXCEEDS input + output", () => {
+    // The provider's own total is authoritative and need not equal the sum, so
+    // an always-derive implementation loses it. 130 ≠ 120 is the whole assertion.
+    // (An earlier version of this comment explained the gap as reasoning tokens
+    // "counted in totalTokens and in neither of the others" — false for the
+    // pinned SDK, where they sit inside `outputTokens`. Same correction as
+    // `toTokenUsage`'s docstring; this copy was missed the first time.)
+    const out = summarizeTokenUsage([{ questionId: "cq-001", usage: u(100, 20, 130) }]);
+    expect(out.totals.totalTokens).toBe(130);
+    expect(out.totals.inputTokens + out.totals.outputTokens).toBe(120);
+  });
+
+  it("EXCLUDES an unmeasured question from the totals and names it", () => {
+    // The failure this prevents is a total that is quietly short. A `null`
+    // treated as `{0,0,0}` produces the same totals with no signal at all —
+    // which is why the ids are asserted beside them.
+    const out = summarizeTokenUsage([
+      { questionId: "cq-001", usage: u(100, 20, 130) },
+      { questionId: "cq-002", usage: null },
+      { questionId: "cq-003", usage: null },
+    ]);
+    expect(out.totals).toEqual({ inputTokens: 100, outputTokens: 20, totalTokens: 130 });
+    expect(out.unreported).toEqual(["cq-002", "cq-003"]);
+  });
+
+  it("reports zero totals and every id when NOTHING was measured", () => {
+    // The shape a provider that reports no usage at all produces. Zeros here are
+    // honest only because `unreported` says all three questions are missing —
+    // asserted together for that reason.
+    const out = summarizeTokenUsage([
+      { questionId: "cq-001", usage: null },
+      { questionId: "cq-002", usage: null },
+    ]);
+    expect(out.totals).toEqual({ inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+    expect(out.unreported).toEqual(["cq-001", "cq-002"]);
+  });
+
+  it("carries the per-question records through unchanged", () => {
+    // `byQuestion` is what makes the totals auditable — and what answers *which*
+    // question was expensive. A summarizer that returned only totals would pass
+    // every test above.
+    const byQuestion = [
+      { questionId: "cq-001", usage: u(100, 20, 130) },
+      { questionId: "cq-002", usage: null },
+    ];
+    expect(summarizeTokenUsage(byQuestion).byQuestion).toEqual(byQuestion);
+  });
+
+  it("is empty, not undefined, for a run that graded no questions", () => {
+    const out = summarizeTokenUsage([]);
+    expect(out.totals).toEqual({ inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+    expect(out.unreported).toEqual([]);
+    expect(out.byQuestion).toEqual([]);
+  });
+});
+
+/**
+ * The boundary narrow. The AI SDK types every field of `LanguageModelUsage` as
+ * `number | undefined`, so a provider may report all, some or none of them.
+ */
+describe("toTokenUsage", () => {
+  const { toTokenUsage } = __forTesting__;
+
+  it("passes a fully reported usage through, keeping the provider's total", () => {
+    expect(toTokenUsage({ inputTokens: 100, outputTokens: 20, totalTokens: 130 })).toEqual({
+      inputTokens: 100,
+      outputTokens: 20,
+      totalTokens: 130,
+    });
+  });
+
+  it("derives totalTokens ONLY when the provider omitted it", () => {
+    // 130 above vs 120 here — the two branches produce different numbers on
+    // deliberately-chosen inputs, so an implementation that always derived (or
+    // always trusted) fails one of them.
+    expect(
+      toTokenUsage({ inputTokens: 100, outputTokens: 20, totalTokens: undefined }),
+    ).toEqual({ inputTokens: 100, outputTokens: 20, totalTokens: 120 });
+  });
+
+  it("returns null for a PARTIAL report rather than zero-filling it", () => {
+    // ⚠️ THE RULE THAT KEEPS THIS A MEASUREMENT. `{inputTokens: 5000,
+    // outputTokens: 0}` reads as a very cheap question; `null` reads as an
+    // unmeasured one, and `summarizeTokenUsage` then NAMES it. Input and output
+    // are priced differently by roughly 5x, so a half-report cannot be costed.
+    expect(toTokenUsage({ inputTokens: 5000, outputTokens: undefined, totalTokens: 5000 })).toBeNull();
+    expect(toTokenUsage({ inputTokens: undefined, outputTokens: 20, totalTokens: 20 })).toBeNull();
+  });
+
+  it("returns null when the provider reported no usage object at all", () => {
+    expect(toTokenUsage(undefined)).toBeNull();
+  });
+
+  it("keeps a genuine ZERO, which is not the same as unreported", () => {
+    // A question that dispatched nothing can legitimately cost 0 output tokens.
+    // A truthiness check (`if (!outputTokens) return null`) passes every case
+    // above and fails here — which is why this case exists.
+    // `totalTokens: 55` rather than `40 + 0`, so the trust-vs-derive branch
+    // stays live in this fixture too — with the provider's total equal to the
+    // derived one, an always-derive mutant passes here as well.
+    expect(toTokenUsage({ inputTokens: 40, outputTokens: 0, totalTokens: 55 })).toEqual({
+      inputTokens: 40,
+      outputTokens: 0,
+      totalTokens: 55,
+    });
+  });
+});
+
+/**
+ * #5123 — which SDK field the run's cost is read from.
+ *
+ * ⚠️ THE PRIMARY GUARD IS THE PARAMETER TYPE, NOT THIS TEST. `result.usage` and
+ * `result.totalUsage` are both `LanguageModelUsage`, so the first cut read the
+ * LAST STEP of a ~7-step tool loop and reported a run cost roughly 7x low —
+ * green against every test here, because they pin the narrowing rather than the
+ * source. `runTokenUsage`'s parameter names only `totalUsage`, so `await
+ * result.usage` no longer compiles; `bun run type` is what fails.
+ *
+ * These add the runtime half: given an object carrying BOTH, which is read.
+ */
+describe("runTokenUsage", () => {
+  const { runTokenUsage } = __forTesting__;
+
+  it("reads totalUsage when both fields are present and DIFFER", () => {
+    // ⚠️ THE TWO MUST BE DIFFERENT AND MUST NOT BE MULTIPLES OF EACH OTHER, or
+    // a fixture where the last step happens to equal the sum makes the whole
+    // assertion inert — which is the real-world shape of a ONE-step question.
+    const result = {
+      totalUsage: Promise.resolve({ inputTokens: 9000, outputTokens: 700, totalTokens: 9700 }),
+      // Present on purpose: the shape the SDK actually hands us. The parameter
+      // type does not mention it, so reaching for it is a compile error.
+      usage: Promise.resolve({ inputTokens: 1200, outputTokens: 90, totalTokens: 1290 }),
+    };
+    return runTokenUsage(result).then((usage) => {
+      expect(usage).toEqual({ inputTokens: 9000, outputTokens: 700, totalTokens: 9700 });
+    });
+  });
+
+  it("still returns null for a partial report", () => {
+    // The narrowing rule survives the extraction — `runTokenUsage` must not
+    // become a second place where a half-measurement is accepted.
+    return runTokenUsage({
+      totalUsage: Promise.resolve({
+        inputTokens: 9000,
+        outputTokens: undefined,
+        totalTokens: 9000,
+      }),
+    }).then((usage) => {
+      expect(usage).toBeNull();
+    });
+  });
+});

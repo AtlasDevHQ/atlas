@@ -54,6 +54,7 @@ import {
   streamText,
   type JSONSchema7,
   type LanguageModel,
+  type LanguageModelUsage,
   type Tool,
   type ToolSet,
 } from "ai";
@@ -64,15 +65,23 @@ import {
   startEvalAuthServer,
   type EvalAuthFixture,
 } from "@atlas/mcp/eval/auth";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   EvalMcpClient,
-  extractToolJson,
-  joinTextContent,
   type ExtractedToolJson,
   type ToolErrorEnvelope,
   type ToolListEntry,
 } from "@atlas/mcp/eval/client";
+import {
+  assertTextContractToolsPresent,
+  classifyToolContract,
+  interpretResult,
+  TEXT_CONTRACT_TOOL_NAMES,
+  type ToolContract,
+} from "@atlas/mcp/eval/tool-contract";
+import {
+  isRateLimitedEnvelope,
+  throttleAbortError,
+} from "@atlas/mcp/eval/throttle";
 import {
   type FailureCategory,
   type McpFailureArtifact,
@@ -87,23 +96,17 @@ import {
 // ── Public types ──────────────────────────────────────────────────────
 
 /**
- * What a tool's result is CONTRACTED to look like.
+ * Re-exported from `@atlas/mcp/eval/tool-contract`, where the contract now lives
+ * (#5135), because {@link RecordedToolCall} — this module's shape — is typed by
+ * it, so a consumer narrowing a recorded call can reach the type without a
+ * second import.
  *
- * - `"json"` — the tool answers with a JSON body (success) or an
- *   `AtlasMcpToolError` envelope (failure). Non-JSON from one of these is an
- *   MCP protocol regression and the grader fails the question for it.
- * - `"text"` — the tool's declared output is free-form text. `explore` is a
- *   sandboxed **shell**: `ls -la` answering with a directory listing is the
- *   contract being honoured, not broken.
- *
- * Resolved once per tool at bind time by {@link classifyToolContract} and
- * applied by {@link interpretResult}, which is where #5131 is actually closed.
- * The stamp on {@link RecordedToolCall} is the RECORD of that decision, not the
- * mechanism: `grade()`'s VERDICT is contract-blind ({@link isUnparseable} never
- * sees the field), and it reads `contract` only to choose which remedy an
- * artifact prints.
+ * No such consumer exists today: everything that needs `ToolContract` takes it
+ * from the owning module. Said plainly, because an earlier version of this note
+ * justified the re-export by "every consumer … reads it from this file", which
+ * is true only vacuously and reads as if call sites exist.
  */
-export type ToolContract = "json" | "text";
+export type { ToolContract };
 
 /**
  * Captured shape of one tool dispatch the LLM fired through MCP. The
@@ -346,9 +349,76 @@ export interface McpLlmEvalOptions {
   readonly systemPrompt?: string;
 }
 
+/**
+ * Tokens one `streamText` round-trip consumed.
+ *
+ * ⚠️ TOTAL, NOT PARTIAL. The AI SDK types every field of `LanguageModelUsage` as
+ * `number | undefined`, so a provider may report all, some, or none. A value of
+ * this type means the reported figures were complete AT THE FIELD LEVEL — see
+ * {@link toTokenUsage}, which returns `null` rather than filling a gap.
+ *
+ * ⚠️ IT DOES NOT MEAN EVERY STEP REPORTED. The source is `totalUsage`, which the
+ * SDK sums with `addTokenCounts` — a step that reports nothing contributes 0 and
+ * is indistinguishable from a step that genuinely used none. So `unreported`
+ * means "no step reported anything for this question", not "this question was
+ * fully measured". Stated rather than tightened: distinguishing them means
+ * walking `result.steps`, which is real machinery for a case the Gateway
+ * providers do not currently produce. Half a measurement recorded as a
+ * whole one is a guess wearing a measurement's formatting, which is the exact
+ * thing #5123 exists to remove: the workflow's own *"under $0.05 per run"* was
+ * never measured, and order-of-magnitude arithmetic on a 20-question /
+ * 124-tool-call run puts it nearer $0.50–$2.00, which is also not a measurement.
+ */
+export interface TokenUsage {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly totalTokens: number;
+}
+
+/** One question's token measurement, or the fact that there wasn't one. */
+export interface QuestionTokenUsage {
+  readonly questionId: string;
+  readonly usage: TokenUsage | null;
+}
+
+/**
+ * What a run cost, in tokens.
+ *
+ * ── The shape was decided, not defaulted (#5123) ──
+ *
+ * **Both** per-question and accumulated, because they answer different
+ * questions and are not in tension: `totals` answers #5039's spend criterion,
+ * `byQuestion` answers *which* questions are expensive. `totals` is DERIVED from
+ * `byQuestion` by summation rather than accumulated beside it — a count kept
+ * next to the thing it counts is only ever consistent by construction, the same
+ * reason {@link authoritativeLabels} derives its cardinality.
+ *
+ * **On the RESULT, not on {@link McpLlmOutcome}.** That union is the GRADER's
+ * vocabulary: `grade()` is pure and synchronously unit-testable, and putting
+ * usage on its arms would make `failOutcome`, `passOutcome`, all four per-mode
+ * graders (`gradeMetric`, `gradeGlossary`, `gradePattern`, `gradeVirtual`) and
+ * every test call site carry a field no verdict reads. Token usage
+ * is a measurement OF the run, not an input TO a verdict. Adding it as an
+ * OPTIONAL field on both arms — the shape #5123 warned against — would also
+ * hand every consumer an `undefined` to narrow.
+ *
+ * **`unreported` is named, not implied.** A total silently short by however many
+ * questions the provider declined to measure is the same class of unmeasured
+ * number this field exists to replace, so the ids travel with it.
+ */
+export interface EvalTokenUsage {
+  /** Summed over every question in {@link byQuestion} with a non-null `usage`. */
+  readonly totals: TokenUsage;
+  /** Every question the run graded, in order. */
+  readonly byQuestion: readonly QuestionTokenUsage[];
+  /** Ids whose usage the provider did not report — excluded from {@link totals}. */
+  readonly unreported: readonly string[];
+}
+
 export interface McpLlmEvalResult {
   readonly outcomes: readonly McpLlmOutcome[];
   readonly artifacts: readonly McpFailureArtifact[];
+  readonly usage: EvalTokenUsage;
 }
 
 // ── System prompt ─────────────────────────────────────────────────────
@@ -383,13 +453,17 @@ export async function runMcpLlmEval(
   const ownsFixture = !opts.fixture;
   const fixture = opts.fixture ?? (await bootDefaultFixture());
 
-  // A full run out-dispatches the default hosted-MCP quota (#5122) — see
-  // `liftEvalClientRateLimit`. Applied whether or not we own the fixture: the
-  // OAuth client is the same either way, and a shared fixture across several
-  // runs accumulates MORE load against the same bucket, not less.
-  liftEvalClientRateLimit(fixture);
-
   try {
+    // A full run out-dispatches the default hosted-MCP quota (#5122) — see
+    // `liftEvalClientRateLimit`. Applied whether or not we own the fixture: the
+    // OAuth client is the same either way, and a shared fixture across several
+    // runs accumulates MORE load against the same bucket, not less.
+    //
+    // INSIDE the `try` that owns the fixture, not before it: `setClientRateLimit`
+    // is an in-memory map write and unlikely to throw, but a throw from outside
+    // would leak the booted auth server — `close()` never runs and the process
+    // hangs on an open handle instead of reporting the fault.
+    liftEvalClientRateLimit(fixture);
     const client = new EvalMcpClient({
       baseUrl: fixture.baseUrl,
       workspaceId: fixture.workspaceId,
@@ -430,6 +504,10 @@ export async function runMcpLlmEval(
       const limit = opts.maxQuestions ?? questions.length;
       const outcomes: McpLlmOutcome[] = [];
       const artifacts: McpFailureArtifact[] = [];
+      // Self-identifying (each entry carries its `questionId`) rather than
+      // positional against `outcomes`, so the two lists cannot desync into a
+      // question being charged another question's tokens.
+      const tokenUsage: QuestionTokenUsage[] = [];
 
       const systemPrompt = opts.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
       for (const q of questions.slice(0, limit)) {
@@ -438,7 +516,7 @@ export async function runMcpLlmEval(
         // (rather than passing a fresh array per call) keeps the bound
         // tool closures pointing at the same recorder instance.
         recorded.length = 0;
-        const outcome = await runOneQuestion({
+        const { outcome, usage } = await runOneQuestion({
           model: opts.model,
           tools: aiTools,
           systemPrompt,
@@ -449,6 +527,7 @@ export async function runMcpLlmEval(
           answerExpectations: opts.answerExpectations,
         });
         outcomes.push(outcome);
+        tokenUsage.push({ questionId: q.id, usage });
         if (outcome.status === "fail") artifacts.push(outcome.artifact);
 
         // Reporting only — computed AFTER the verdict and incapable of changing
@@ -478,7 +557,7 @@ export async function runMcpLlmEval(
           );
         }
       }
-      return { outcomes, artifacts };
+      return { outcomes, artifacts, usage: summarizeTokenUsage(tokenUsage) };
     } finally {
       await client.close();
     }
@@ -494,56 +573,15 @@ async function bootDefaultFixture(): Promise<EvalAuthFixture> {
 }
 
 // ── Tool output contracts ────────────────────────────────────────────
-
-/**
- * MCP tools whose declared output is free-form TEXT rather than JSON.
- *
- * ⚠️ THIS IS A NAME LIST, DELIBERATELY, AND THE ALTERNATIVES WERE MEASURED
- * RATHER THAN ASSUMED (#5131).
- *
- * 1. There is nothing on the wire to derive it from. `bindMcpToolsForLlm`
- *    classifies from `ToolListEntry`, which is `{ name, description?,
- *    inputSchema? }` — the `tools/list` response carries no statement about
- *    the shape of a tool's OUTPUT. Any "marker set at bind time" is therefore
- *    still computed from the name; a marker relocates this list, it cannot
- *    replace it.
- * 2. The one machine-readable candidate — MCP `outputSchema` — is provably
- *    unfaithful here. In `packages/mcp/src/semantic-tools.ts`, `listEntities`,
- *    `describeEntity` and `searchGlossary` all answer JSON and declare NO
- *    `outputSchema`; `runMetric` is the only one in that file that does.
- *    Exempting "no outputSchema" would exempt three of the four typed tools the
- *    protocol check exists to protect — it would disable the detector rather
- *    than sharpen it. `explore` declares none either, so the signal does not
- *    discriminate in EITHER direction. (Grep the registrations rather than
- *    trusting line numbers; an earlier draft of this note cited four and every
- *    one had drifted before the PR merged.)
- *
- * What a name list genuinely gets wrong is ROT: rename or drop `explore` and
- * the exemption silently stops matching, restoring the bug with no signal.
- * That is closed by {@link assertTextContractToolsPresent}, which anchors every
- * name here against the live discovered surface — not by a type, since both
- * spellings of the type carry the same string.
- *
- * ── Backend dependence: what the fix removes, and what it does not ───
- *
- * `explore` resolves to a different sandbox backend locally than on the CI
- * runner (`packages/api/src/lib/tools/backends/selection.ts`), which is how
- * #5131 stayed invisible across four local runs. The fix removes the dependence
- * on output SHAPE only. Three backend-sensitive paths remain, recorded rather
- * than papered over — each reaches the right verdict, but the backend has not
- * stopped mattering:
- *
- *   - **Latency.** The GRADER's `latencyMs` (`GradeInput`, not the per-dispatch
- *     {@link RecordedToolCall} field) is whole-question wall clock, so a slow
- *     sandbox cold start can trip the `baseline * 1.25` ceiling.
- *   - **Throttling.** `rate_limited` on `explore` can come from the sandbox
- *     backend OR the hosted quota; see {@link assertNotRateLimited}.
- *   - **Content.** A backend that lists the semantic layer and one that fails
- *     to start give the model different information to answer from. No grader
- *     change can remove this — the honest fix is pinning the eval's backend.
- */
-const TEXT_CONTRACT_TOOL_NAMES = ["explore"] as const;
-const TEXT_CONTRACT_TOOLS: ReadonlySet<string> = new Set(TEXT_CONTRACT_TOOL_NAMES);
+//
+// The contract itself — `TEXT_CONTRACT_TOOLS`, `classifyToolContract`,
+// `interpretResult`, `assertTextContractToolsPresent` — moved to
+// `@atlas/mcp/eval/tool-contract` in #5135. It is a property of the MCP
+// surface rather than of either eval, and living in `packages/mcp` is what
+// lets the REQUIRED `tools.test.ts` pin the name list against a real
+// `tools/list`. The one piece that stays here is the disjointness assertion
+// below, because the list it must not overlap (`ANSWERING_TOOLS`) is this
+// file's grading vocabulary and means nothing to the MCP package.
 
 /**
  * Tools whose successful `data` is read as parsed JSON somewhere in grading:
@@ -571,87 +609,6 @@ type _AssertContractsDisjoint =
  * reference, since `ANSWERING_TOOLS` is declared further down the file.
  */
 const _contractsAreDisjoint: _AssertContractsDisjoint = true;
-
-/** Resolve a discovered tool's output contract. See {@link TEXT_CONTRACT_TOOLS}. */
-export function classifyToolContract(name: string): ToolContract {
-  return TEXT_CONTRACT_TOOLS.has(name) ? "text" : "json";
-}
-
-/**
- * Read one `tools/call` result according to the calling tool's contract.
- *
- * ⚠️ THE CONTRACT IS APPLIED HERE, AT THE RECORDING SEAM — NOT IN THE GRADER.
- * `grade()`'s protocol branch stays a plain `result.kind === "unparseable"`
- * test, so a future branch that reads `kind` directly cannot reopen #5131, and
- * a successful `ls` never wears the word "unparseable" in a failure artifact.
- *
- * For a `"json"` contract this is exactly {@link extractToolJson}. For a
- * `"text"` contract the tool's product IS its text, so a successful call is
- * recorded as `ok` carrying that text verbatim — including when the text
- * happens to parse as JSON (`wc -l` printing `3`), which otherwise makes the
- * SAME tool record under two different arms depending on what the directory
- * contained.
- *
- * Two cases stay in the `unparseable` (→ `protocol`) lane, and both are
- * regressions rather than shell output:
- *
- *   - **`isError` was flagged.** `extractToolJson` reaches its `unparseable`
- *     arm from the `JSON.parse` catch, BEFORE it consults `isError`, so a
- *     server-flagged error with a prose body — what the MCP SDK's own
- *     `createToolError` emits for an uncaught throw — is indistinguishable
- *     from shell output by shape alone. Exempting it would turn #5131's loud
- *     false FAIL into a silent false PASS, with the model reading an internal
- *     error message as directory contents.
- *   - **No text content at all.** `explore` cannot produce this: it normalises
- *     a silent command to `"(no output)"`
- *     (`packages/api/src/lib/tools/explore.ts`), and every failure path returns
- *     an `Error:`-prefixed string. An empty `content` array is a protocol
- *     anomaly for every tool, whatever its output contract.
- */
-export function interpretResult(
-  result: CallToolResult,
-  contract: ToolContract,
-): ExtractedToolJson {
-  if (contract !== "text") return extractToolJson(result);
-  const text = joinTextContent(result);
-  if (result.isError === true || text === "") {
-    // Not shell output — fall back to the JSON reading so a typed envelope is
-    // still recorded as `error`, and anything else stays `unparseable`.
-    return extractToolJson(result);
-  }
-  return { kind: "ok", data: text };
-}
-
-/**
- * Fail the run when a declared text-contract tool is absent from the surface
- * the eval actually discovered.
- *
- * This is the anchor that makes {@link TEXT_CONTRACT_TOOLS} safe to spell as
- * names. Without it, renaming `explore` (or dropping it from the hosted
- * registration) turns the exemption into a no-op and every successful shell
- * call starts failing its question as `protocol` again — the #5131 defect,
- * back, with no diagnostic. Called against the real `tools/list` result, so a
- * rename is a loud stop at boot rather than five silent mis-graded questions.
- */
-export function assertTextContractToolsPresent(tools: readonly ToolListEntry[]): void {
-  const discovered = new Set(tools.map((t) => t.name));
-  const missing = [...TEXT_CONTRACT_TOOLS].filter((n) => !discovered.has(n));
-  if (missing.length === 0) return;
-  throw new Error(
-    `[harness] text-contract tool(s) not on the MCP surface: ${missing.join(", ")}. ` +
-      `TEXT_CONTRACT_TOOLS exempts these from the JSON/protocol check because their ` +
-      `declared output is free-form text; a name that no longer resolves means the ` +
-      `exemption is dead and successful text output would be graded as a protocol ` +
-      `regression (#5131). If the tool was RENAMED, point TEXT_CONTRACT_TOOLS at the ` +
-      `new name. If it was deliberately REMOVED from this surface, delete the name — ` +
-      `re-adding a dead one is the wrong repair. ` +
-      `Discovered: ${
-        discovered.size === 0
-          ? "(empty — tools/list returned no tools)"
-          : [...discovered].sort().join(", ")
-      }`,
-  );
-}
 
 /**
  * Translate the MCP tool surface to a Vercel AI SDK `ToolSet`. Every
@@ -759,12 +716,19 @@ interface OneQuestionInput {
   readonly answerExpectations: McpLlmEvalOptions["answerExpectations"];
 }
 
+/** {@link runOneQuestion}'s product: the verdict, and what it cost to reach. */
+interface OneQuestionResult {
+  readonly outcome: McpLlmOutcome;
+  readonly usage: TokenUsage | null;
+}
+
 async function runOneQuestion(
   input: OneQuestionInput,
-): Promise<McpLlmOutcome> {
+): Promise<OneQuestionResult> {
   const { question, recorded, baseline } = input;
   const start = Date.now();
   let finalText = "";
+  let usage: TokenUsage | null = null;
   // Capture stream-level errors via the AI SDK `onError` callback. The
   // SDK does NOT reject `result.text` on tool-execute failures or
   // provider-side errors — those surface here. Without this hook a
@@ -776,7 +740,23 @@ async function runOneQuestion(
   // hook for the same reason.
   let streamErr: unknown = null;
   try {
-    const result = streamText({
+    // ⚠️ THE ANNOTATION IS THE GUARD, AND IT HAS TO BE HERE — ON THE LOCAL — NOT
+    // ONLY ON `runTokenUsage`'S PARAMETER. Round 1 put it on the parameter and
+    // measured TS2339 on reverting the helper's BODY; that measured a mutation
+    // nobody makes. The mutation that shipped #5123's defect was at THIS line's
+    // consumer — `toTokenUsage(await result.usage)` — and it recompiled clean and
+    // green, because `result` was still the full `StreamTextResult` carrying both
+    // fields. Inlining a one-line private helper is a routine refactor and it was
+    // all that stood between here and the defect.
+    //
+    // Narrowing the binding closes the class: `result.usage` is now TS2339 at
+    // every read in this function, so neither inlining the helper nor passing
+    // `{ totalUsage: result.usage }` into it compiles. `PromiseLike`, not
+    // `Promise` — `StreamTextResult` declares both fields as `PromiseLike`.
+    const result: {
+      readonly text: PromiseLike<string>;
+      readonly totalUsage: PromiseLike<ReportedUsage>;
+    } = streamText({
       model: input.model,
       tools: input.tools,
       system: input.systemPrompt,
@@ -790,13 +770,46 @@ async function runOneQuestion(
     // executed by the time the promise resolves, so `recorded` is the
     // complete dispatch sequence the grader walks below.
     finalText = await result.text;
+    // ⚠️ `totalUsage`, NOT `usage` — THE TWO ARE THE SAME TYPE AND DIFFER BY A
+    // FACTOR OF SEVEN HERE. The AI SDK documents `result.usage` as "the token
+    // usage of the LAST STEP" (`ai/dist/index.d.ts`; the getter resolves
+    // `finalStep.then(step => step.usage)`), while `totalUsage` is the sum over
+    // every step. This is a multi-step tool loop — `stopWhen:
+    // stepCountIs(getAgentMaxSteps())` — and the corpus runs ~124 tool calls
+    // across 20 questions, so `usage` measures one step of roughly seven.
+    //
+    // Both are `LanguageModelUsage`, so TypeScript cannot tell them apart and
+    // the narrowing tests below pass identically on either. Reading the wrong
+    // one ships a number that is systematically low in the REASSURING direction
+    // — a guess wearing a measurement's formatting, which is the exact failure
+    // `TokenUsage`'s own docstring names and #5123 exists to end.
+    //
+    // ⚠️ INSIDE THE `try`: a provider-side rejection belongs in the catch below
+    // rather than unwinding the run, and a question whose stream REJECTED then
+    // keeps `usage: null` — an honest "not measured" rather than a zero that
+    // would silently deflate the run total.
+    //
+    // Ordering after `.text` is for the RECORDER, not the promise: `recorded`
+    // must be the complete dispatch sequence before the grader walks it. An
+    // earlier version of this comment claimed awaiting `totalUsage` first would
+    // "block on a stream that has not been drained" — false, the SDK's getter
+    // calls `consumeStream()` itself.
+    //
+    // ⚠️ AND `usage: null` IS NOT WHAT EVERY FAILED QUESTION CARRIES. This line
+    // runs BEFORE the `streamErr` re-throw below, so a question that failed via
+    // `onError` — the path tool-execute and provider-side errors take — reaches
+    // the catch with a REAL measurement. That is correct (the tokens were spent)
+    // and it is not what "a question whose stream threw keeps null" implied.
+    usage = await runTokenUsage(result);
     if (streamErr !== null) throw streamErr;
   } catch (err) {
     const latencyMs = Date.now() - start;
     const message = err instanceof Error ? err.message : String(err);
     const errorName = err instanceof Error ? err.name : "Unknown";
     const stack = err instanceof Error ? err.stack : undefined;
-    return failOutcome({
+    return {
+      usage,
+      outcome: failOutcome({
       question,
       latencyMs,
       finalText,
@@ -811,18 +824,124 @@ async function runOneQuestion(
       response: { error: message, errorName, stack },
       expected: "successful streamText round-trip",
       summary: `streamText threw (${errorName}): ${message}`,
-    });
+      }),
+    };
   }
   const latencyMs = Date.now() - start;
-  return grade({
-    question,
-    toolCalls: [...recorded],
-    finalText,
-    latencyMs,
-    baseline,
-    metricExpectations: input.metricExpectations,
-    answerExpectations: input.answerExpectations,
-  });
+  return {
+    usage,
+    outcome: grade({
+      question,
+      toolCalls: [...recorded],
+      finalText,
+      latencyMs,
+      baseline,
+      metricExpectations: input.metricExpectations,
+      answerExpectations: input.answerExpectations,
+    }),
+  };
+}
+
+/**
+ * The run's token usage: EVERY step, summed.
+ *
+ * ⚠️ THE TYPE IS THE FALSIFIER — AND THE LOAD-BEARING HALF IS THE ANNOTATION ON
+ * THE CALLER'S LOCAL, not this parameter. See the note at the `streamText` call.
+ * A runtime falsifier is not impossible, only expensive: a two-step
+ * `MockLanguageModelV3` driven through `runOneQuestion` would do it, and needs
+ * the MCP auth fixture that `runMcpLlmEval` has never had a test for.
+ * `result.usage` and `result.totalUsage` are BOTH `LanguageModelUsage`, so
+ * reading the wrong one is invisible to the type checker at the call site,
+ * invisible to `toTokenUsage`'s tests (which pin the narrowing, not the source),
+ * and invisible to every runtime assertion short of a live multi-step run. It is
+ * a wrong number in the reassuring direction — precisely the thing #5123 exists
+ * to stop shipping.
+ *
+ * Naming ONLY `totalUsage` in the parameter type makes `await result.usage` a
+ * COMPILE ERROR inside this function. `bun run type` is the gate; `bun test`
+ * cannot see it, which is why the property is expressed as a type rather than
+ * asserted in a test.
+ *
+ * Structural, not `StreamTextResult`, so the unit test can hand it a plain
+ * object carrying BOTH fields with different values and pin which one is read.
+ */
+async function runTokenUsage(result: {
+  readonly totalUsage: PromiseLike<ReportedUsage>;
+}): Promise<TokenUsage | null> {
+  return toTokenUsage(await result.totalUsage);
+}
+
+/**
+ * The three fields {@link toTokenUsage} reads, projected off the SDK's own type
+ * rather than restated.
+ *
+ * `Pick`, not a hand-written triple: a rename upstream (`inputTokens` →
+ * something else) then breaks the build here instead of silently narrowing every
+ * usage to `null` and reporting a run that cost nothing. The SDK's real shape
+ * also carries `inputTokenDetails` / `outputTokenDetails`, which this function
+ * does not read and a test fixture should not have to fabricate.
+ */
+type ReportedUsage = Pick<
+  LanguageModelUsage,
+  "inputTokens" | "outputTokens" | "totalTokens"
+>;
+
+/**
+ * Narrow the AI SDK's reported usage — every field `number | undefined` — to a
+ * {@link TokenUsage}, or `null` when it cannot be one.
+ *
+ * ⚠️ A PARTIAL REPORT BECOMES `null`, NOT A ZERO-FILLED RECORD. `inputTokens`
+ * and `outputTokens` are both required because cost needs both (they are priced
+ * differently by roughly 5x), and a record with one of them zeroed reads as a
+ * cheap question rather than an unmeasured one. `totalTokens` is taken when the
+ * provider gives it and derived only when it is absent — the provider's own
+ * figure is authoritative and may not equal the sum.
+ *
+ * ⚠️ AN EARLIER VERSION OF THIS COMMENT EXPLAINED THE MISMATCH AS REASONING
+ * TOKENS "counted there and in neither of the other two". False for the pinned
+ * SDK: reasoning tokens live in `outputTokenDetails.reasoningTokens`, i.e.
+ * INSIDE `outputTokens`. Trusting the provider's total remains right; the reason
+ * given for it was not.
+ */
+function toTokenUsage(usage: ReportedUsage | undefined): TokenUsage | null {
+  if (!usage) return null;
+  const { inputTokens, outputTokens, totalTokens } = usage;
+  if (typeof inputTokens !== "number" || typeof outputTokens !== "number") {
+    return null;
+  }
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens:
+      typeof totalTokens === "number" ? totalTokens : inputTokens + outputTokens,
+  };
+}
+
+/**
+ * Sum the per-question measurements into the run's {@link EvalTokenUsage}.
+ *
+ * Derived rather than accumulated as the loop runs: the totals and the
+ * per-question records are then two views of one list and cannot disagree.
+ */
+function summarizeTokenUsage(
+  byQuestion: readonly QuestionTokenUsage[],
+): EvalTokenUsage {
+  const totals = byQuestion.reduce<TokenUsage>(
+    (acc, q) =>
+      q.usage === null
+        ? acc
+        : {
+            inputTokens: acc.inputTokens + q.usage.inputTokens,
+            outputTokens: acc.outputTokens + q.usage.outputTokens,
+            totalTokens: acc.totalTokens + q.usage.totalTokens,
+          },
+    { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+  );
+  return {
+    totals,
+    byQuestion,
+    unreported: byQuestion.filter((q) => q.usage === null).map((q) => q.questionId),
+  };
 }
 
 // ── Grading ──────────────────────────────────────────────────────────
@@ -853,46 +972,24 @@ function assertNotRateLimited(
   q: Question,
   toolCalls: readonly RecordedToolCall[],
 ): void {
-  const throttled = toolCalls.find(
-    (c) => c.result.kind === "error" && c.result.envelope.code === "rate_limited",
-  );
+  // `.filter(isErrorResult)` first, so the arm is narrowed by the file's own
+  // type predicate rather than re-checked. An earlier cut wrote `find(...)` and
+  // then `if (!throttled || throttled.result.kind !== "error") return;` — whose
+  // second clause is unreachable and whose disposition is a SILENT return, from
+  // the one function whose entire job is to be loud.
+  const throttled = toolCalls
+    .filter(isErrorResult)
+    .find((c) => isRateLimitedEnvelope(c.result.envelope));
   if (!throttled) return;
-  const envelope =
-    throttled.result.kind === "error" ? throttled.result.envelope : null;
-  // ⚠️ THE REMEDY BRANCHES ON THE ENVELOPE, NOT ON THE TOOL'S CONTRACT — an
-  // earlier cut keyed it on `contract === "text"` and asserted that a throttled
-  // `explore` could only be the sandbox's limiter. That is false, and false in
-  // the dominant direction: the hosted per-OAuth-client quota runs ahead of
-  // EVERY tool body (`rateLimitOrNull` in mcp-dispatch), and `explore` is
-  // charged weight 5 there — tied with `executeSQL` for the second-priciest
-  // tool, so it is one of the largest contributors to the exhaustion
-  // `liftEvalClientRateLimit` exists to prevent. Output shape simply does not
-  // encode which limiter fired.
-  //
-  // The envelope does. The hosted limiter always sets `retry_after` + `hint`
-  // (rate-limit/middleware.ts); the sandbox path builds its envelope with no
-  // extras for `rate_limited` (tools.ts → classifyExploreError), so the field
-  // is absent there.
-  const retryAfter = (envelope as { retry_after?: unknown } | null)?.retry_after;
-  const message = typeof envelope?.message === "string" ? envelope.message : "";
-  const isHostedQuota =
-    typeof retryAfter === "number" || /hosted-MCP quota/.test(message);
-  const remedy = isHostedQuota
-    ? `This is the eval throttling ITSELF, not a model failure: the run's own dispatch ` +
-      `volume exceeded the eval client's hosted-MCP quota (${throttled.name} is just the ` +
-      `dispatch that happened to hit it). Raise it via liftEvalClientRateLimit ` +
-      `(EVAL_CLIENT_REQUESTS_PER_MINUTE).`
-    : `The envelope carries no hosted-quota markers, so a limiter DOWNSTREAM of the eval ` +
-      `client fired — for a text-contract tool that is the sandbox backend ` +
-      `(classifyExploreError); for a JSON one, the datasource QPM/pool or the billing ` +
-      `throttle. Raising EVAL_CLIENT_REQUESTS_PER_MINUTE will not help; read the message ` +
-      `above and check that limiter.`;
-  throw new Error(
-    `[harness] ${q.id}: MCP dispatch was rate limited on ${throttled.name} ` +
-      `(contract: ${throttled.contract}) — ${message || "no message"} ${remedy} ` +
-      `Either way the run stops rather than letting the throttle be graded as a ` +
-      `recovery regression.`,
-  );
+  // ⚠️ CALLS the shared builder rather than restating the remedy. The
+  // hosted-vs-downstream branch is the part #5133 measured wrong, and
+  // `--tool-selection` grew the same abort in #5136 — two copies of a rule that
+  // subtle is two chances to reintroduce it, with only one under test at a time.
+  throw throttleAbortError(q.id, {
+    toolName: throttled.name,
+    contract: throttled.contract,
+    envelope: throttled.result.envelope,
+  });
 }
 
 function grade(input: GradeInput): McpLlmOutcome {
@@ -1297,10 +1394,11 @@ function resultMatchesExpectation(data: unknown, expectation: MetricExpectation)
  *  1. **every authoritative GROUP is represented** — for each group, at least
  *     one of the numbers it computed has an approximate match among the
  *     observed numbers, modulo {@link UNIT_SCALINGS}. Subset, not equality; and
- *  2. **some** column's distinct-value count equals the number of DISTINCT
- *     NON-NULL authoritative labels — {@link authoritativeLabels}, **not**
- *     `groups.length`. Per-column and distinct, so extra breakdown rows on an
- *     existing group don't move it.
+ *  2. **one column SEPARATES the authoritative groups at the expected
+ *     cardinality** — some observed column whose distinct-value count matches
+ *     the authoritative one AND which gives a DIFFERENT value to each
+ *     authoritative label ({@link separatesAuthoritativeGroups}). Per-column and
+ *     distinct, so extra breakdown rows on an existing group don't move it.
  *
  * ⚠️ CONDITION 1 IS PER GROUP, NOT PER CELL, AND THE DIFFERENCE IS INSTANCE #4
  * OF THIS ISSUE'S OWN TABLE. The obvious spelling — *every authoritative
@@ -1319,15 +1417,27 @@ function resultMatchesExpectation(data: unknown, expectation: MetricExpectation)
  * a dropped filter moves every number in every group, so no group is
  * represented; a missing group is exactly a group with nothing matched.
  *
- * ⚠️ CONDITION 2 IS WEAKER THAN IT READS, and that is stated rather than
- * implied. It accepts if ANY column — including a bystander the model happened
- * to select — carries the right number of distinct values, so at a group count
- * of 2 a stray boolean-ish column satisfies it for free, and at a group count
- * of 1 any constant column does. It is a shape guard against an answer with the
- * right numbers and no grouping at all, not a second correctness check;
- * condition 1 does the grading. The bystander-column test in
- * `canonical-eval-mcp-llm.test.ts` pins that honest behaviour rather than a
- * hoped-for one.
+ * ⚠️ CONDITION 2 REQUIRES THE COLUMN TO SEPARATE THE GROUPS, NOT MERELY TO COUNT
+ * TO THE RIGHT NUMBER (#5143). The earlier spelling accepted if ANY column
+ * carried the authoritative distinct count, which is nearly vacuous in the
+ * permitting direction: a bystander does it for free. Measured — the
+ * *wrong grouping whose numbers happen to CONTAIN the authoritative ones*
+ * fixture (five shipping regions against a two-group ground truth) failed ONLY
+ * because none of its columns happened to carry two distinct values. Adding one
+ * plausible `domestic: yes/no` column passed the same wrong grouping, and that
+ * was pinned as a limitation rather than fixed.
+ *
+ * Separation closes it without guessing which observed column is the grouping
+ * key — the guess #5128 exists to stop making. The candidate column is not
+ * named or positioned; it EARNS the role by being able to tell the
+ * authoritative groups apart, which is what a grouping key does and what a
+ * bystander cannot. `domestic` gives both represented rows `"yes"`, so it
+ * separates nothing and no longer counts.
+ *
+ * It stays a shape guard, not a second correctness check — condition 1 does the
+ * grading. And it stays weak in one place, stated rather than implied: at a
+ * group count of 1 there is no partition to disagree about, so any column with
+ * one distinct value satisfies it.
  *
  * ⚠️ CONDITION 1 HAS ITS OWN WEAKNESS, AND IT IS A FALSE **POSITIVE** — the one
  * direction this issue was not about. The observed numbers are one flat pool,
@@ -1341,41 +1451,45 @@ function resultMatchesExpectation(data: unknown, expectation: MetricExpectation)
  * need not. Tracked in #5143; not fixed here because a multiset/consume-on-match
  * rule is new grading machinery arriving with no round left to review it.
  *
- * ⚠️ KNOWN LIMITS, ALL SHAPE-RELATED, NONE OF THEM NEW. Four
- * correct-but-differently-shaped answers fail:
+ * ⚠️ KNOWN LIMITS. Of the four correct-but-differently-shaped answers #5143
+ * listed, ONE is closed here and three are not — and which is which is a
+ * statement about what condition 2 can express, not about how much effort was
+ * spent:
  *
- *   pivoted     one row of `COUNT(*) FILTER (WHERE …) AS with_promo, …` — no
- *               column of a single row has two distinct values
- *   top-N       `top_customers_by_spend` ends `LIMIT 20`, so a model that lists
- *               its top 10 is short 10 groups on condition 2 — AND on condition
- *               1, unless the omitted customers' `order_count`s collide with a
- *               listed one's. The only `LIMIT` among the statements
- *               `resolveExpectations` executes; four entity `query_patterns`
- *               carry one too, but no question reaches them
- *   rollup      an appended `Total` row makes the key column N+1 distinct
- *   COALESCE    `COALESCE(channel, 'unknown')` renders a NULL group as a value,
- *               so the observed count is N where the authoritative is N−1
+ *   COALESCE    CLOSED. `COALESCE(channel, 'unknown')` renders a NULL group as
+ *               a value, so the observed count is N where {@link
+ *               authoritativeLabels} counts N−1. The two sides now disagree by
+ *               construction, and the fix is to say so: an expectation carrying
+ *               a NULL group accepts N−1 OR N ({@link expectedCardinalities}).
+ *   pivoted     NOT CLOSED, AND NOT CLOSEABLE HERE. One row of `COUNT(*) FILTER
+ *               (WHERE …) AS with_promo, …` puts the grouping key in the COLUMN
+ *               NAMES, so no column separates anything — which is the same shape
+ *               as the ungrouped answer condition 2 exists to reject. A rule
+ *               that admits the pivot admits `SELECT COUNT(*) a, COUNT(*) b`
+ *               whose two numbers happen to hit both groups. Accepting pivots
+ *               means DELETING condition 2, not refining it.
+ *   rollup      NOT CLOSED. An appended `Total` row makes the key column N+1
+ *               distinct. Separable from a genuinely wrong grouping only by
+ *               recognising the extra row as a TOTAL of the others — real new
+ *               machinery, and a sixth heuristic on a comparison whose first
+ *               five were all wrong.
+ *   top-N       NOT A CONDITION-2 QUESTION AT ALL. `top_customers_by_spend` ends
+ *               `LIMIT 20`, so a top-10 answer is short ten groups on CONDITION
+ *               1 — every one of those groups' measures is absent. Fixing
+ *               condition 2 could never have unblocked it, and #5143's table
+ *               cites only the cardinality half.
  *
- * Three are condition 2 alone; top-N is both, which matters because fixing
- * condition 2 in #5143 would NOT unblock it.
+ * ⚠️ THE THREE THAT REMAIN FAILED UNDER THE RULE THIS ONE REPLACES TOO —
+ * verified row by row against `origin/main`, and the claim to re-check before
+ * "fixing" one. The old rule was set equality on labels, i.e. cardinality
+ * **and** membership: pivoted, top-N and rollup failed it on cardinality, and
+ * COALESCE failed it on membership (`{…, "null"}` vs `{…, unknown}` — same size,
+ * different members).
  *
- * ⚠️ EACH OF THESE FAILED UNDER THE RULE THIS ONE REPLACES TOO — verified row by
- * row against `origin/main`, and the claim to re-check before "fixing" one. The
- * old rule was set equality on labels, i.e. cardinality **and** membership:
- * pivoted, top-N and rollup failed it on cardinality, and COALESCE failed it on
- * membership (`{…, "null"}` vs `{…, unknown}` — same size, different members).
- *
- * So against its predecessor this comparison is stricter on VALUES and looser on
- * LABELS. On cardinality it is **almost** identical: the one flip is that NULL
- * labels no longer count toward the target, which is what lets a byte-identical
- * answer to a NULL-grouped question pass — pinned by *passes an identical answer
- * when the authoritative grouping has a NULL key*.
- *
- * The four are not fixed here because the fix needs to know WHICH observed column
- * is the grouping key, and guessing that from the result's presentation is the
- * class of move #5128 exists to stop making. Tracked in #5143 together with
- * condition 2's opposite weakness; the honest behaviour on both sides is pinned
- * by tests.
+ * So against its predecessor this comparison is stricter on VALUES, looser on
+ * LABELS, and — since #5143 — stricter on SHAPE in the permitting direction
+ * while accepting the one rendering difference that made ground truth and the
+ * answer disagree about how many groups there were.
  *
  * Throws rather than returning `false` on ground truth that cannot adjudicate
  * anything — empty `groups`, or every grouping key NULL. That means ground truth
@@ -1430,24 +1544,242 @@ function keyedResultMatches(
     return labelSetMatches(rows, labels);
   }
 
-  const observed = numericValues(rows);
+  // Row-indexed rather than one flat pool, because condition 2 needs to know
+  // WHICH rows carry a group's numbers, not merely that some row does. Condition
+  // 1's verdict is unchanged by the indexing: "some row carries a match" and
+  // "the flat pool carries a match" are the same predicate over the same cells.
+  const byRow = rows.map((row) => numericValues([row]));
+
+  const representingRows = expectation.groups.map((g) =>
+    rowsRepresenting(g, byRow),
+  );
   const everyGroupRepresented = expectation.groups.every(
-    (g) =>
+    (g, i) =>
       // A group the authoritative SQL gave no numbers for has nothing to match;
       // it is carried by the cardinality check alone.
-      g.measures.length === 0 ||
-      g.measures.some((measure) =>
-        observed.some((candidate) =>
-          UNIT_SCALINGS.some((s) => approximatelyEqual(candidate * s, measure)),
-        ),
-      ),
+      g.measures.length === 0 || (representingRows[i]?.size ?? 0) > 0,
   );
   if (!everyGroupRepresented) return false;
 
-  for (const set of columnValueSets(rows).values()) {
-    if (set.size === labels.size) return true;
+  return separatesAuthoritativeGroups(rows, expectation, representingRows);
+}
+
+/**
+ * The rows whose numbers include one of this group's measures, modulo
+ * {@link UNIT_SCALINGS}.
+ *
+ * A group can legitimately land on more than one row — the *overlapping* fixture
+ * has `beta`'s measures on both rows — so this is a SET, and
+ * {@link separatesAuthoritativeGroups} picks a representative from it rather than
+ * assuming there is only one. (The *stock health* fixture shows the converse, one
+ * row carrying two groups' measures; an earlier version of this note cited it for
+ * this claim, which it does not support.)
+ */
+function rowsRepresenting(
+  group: AuthoritativeGroup,
+  byRow: ReadonlyArray<readonly number[]>,
+): ReadonlySet<number> {
+  const out = new Set<number>();
+  byRow.forEach((values, index) => {
+    const hit = group.measures.some((measure) =>
+      values.some((candidate) =>
+        UNIT_SCALINGS.some((s) => approximatelyEqual(candidate * s, measure)),
+      ),
+    );
+    if (hit) out.add(index);
+  });
+  return out;
+}
+
+/**
+ * Condition 2: some observed column both counts to the authoritative grouping
+ * cardinality AND gives a different value to each authoritative label.
+ *
+ * ⚠️ SEPARATION IS WHAT MAKES THE COLUMN A GROUPING KEY, and it is deliberately
+ * not a guess about which column that is. The old rule was cardinality alone, so
+ * a bystander column with the right number of distinct values satisfied it for
+ * free — measured on the *bystander column* fixture, where a plausible
+ * `domestic: yes/no` beside a wrong five-region grouping turned a FAIL into a
+ * PASS. Here `domestic` gives both represented rows `"yes"`, so it separates
+ * nothing and cannot stand in for the key.
+ *
+ * ⚠️ LABELS, NOT GROUPS, ARE WHAT MUST BE SEPARATED. Two authoritative groups
+ * whose labels case-fold together (`'In Stock'` / `'in stock '`) are ONE group
+ * as far as the observed result can tell — {@link authoritativeLabels} already
+ * collapses them for the count — so requiring them to land on different values
+ * would fail a byte-correct answer. They are collapsed here through the same
+ * {@link cellKey}, from the same expectation, so the two cannot drift apart.
+ *
+ * ⚠️ A MATCHING, NOT A GREEDY WALK. A label class may be carried by several rows
+ * and two classes' candidate rows may overlap, so "assign each class a row and
+ * hope" can fail on an assignment order while a valid one exists. The augmenting
+ * search below answers the question the rule actually asks — *does a system of
+ * distinct representatives exist* — rather than an order-dependent approximation
+ * of it.
+ */
+function separatesAuthoritativeGroups(
+  rows: ReadonlyArray<Record<string, unknown>>,
+  expectation: KeyedExpectation,
+  representingRows: ReadonlyArray<ReadonlySet<number>>,
+): boolean {
+  // label key → the rows any of its groups is represented by.
+  const rowsByLabel = new Map<string, Set<number>>();
+  expectation.groups.forEach((g, i) => {
+    const key = cellKey(g.label);
+    // A NULL-labelled group is excluded from the cardinality target
+    // (`authoritativeLabels`) because the observed side cannot produce one, so
+    // it has no label to be separated BY either. It is still graded — condition
+    // 1 covers it — it just does not constrain the shape.
+    if (key === null) return;
+    // ⚠️ AND NEITHER DOES A MEASURE-LESS GROUP. Condition 1 exempts one
+    // explicitly — "nothing to match; carried by the cardinality check alone" —
+    // and this function has to honour the same exemption or the two conditions
+    // CONTRADICT: `rowsRepresenting` returns the empty set for it, an empty
+    // candidate set can never be assigned a representative, and condition 2
+    // becomes unsatisfiable for EVERY column. A byte-correct answer then grades
+    // FAIL, which is the false-negative class this comparison exists to remove.
+    //
+    // Reachable, not hypothetical: `keyedExpectationFrom` builds `measures`
+    // through `numericValues`, which drops NULL and non-numeric cells — so an
+    // `AVG` over an all-NULL subset, or a LEFT-JOINed measure, produces exactly
+    // this. The ALL-measure-less case is caught upstream by the `labelSetMatches`
+    // branch; the MIXED case falls through to here and had no test.
+    if (g.measures.length === 0) return;
+    let set = rowsByLabel.get(key);
+    if (!set) {
+      set = new Set();
+      rowsByLabel.set(key, set);
+    }
+    for (const r of representingRows[i] ?? []) set.add(r);
+  });
+
+  // ⚠️ AN EMPTY CANDIDATE **SET** CANNOT BE ASSIGNED; AN EMPTY CANDIDATE **LIST**
+  // IS VACUOUSLY SATISFIED, AND THAT ASYMMETRY IS A LIVE FALSE POSITIVE.
+  //
+  // Both skips above — NULL-labelled and measure-less — remove a group from
+  // `rowsByLabel`. When they remove ALL of them, `hasDistinctRepresentatives([])`
+  // returns `true` on a zero-iteration loop, and condition 2 collapses to "some
+  // column has the right number of distinct values": exactly the bystander rule
+  // this condition was written to replace. Measured on the round-1 fix:
+  // `groups: [{label: null, measures: [412]}, {label: "ups", measures: []}]`
+  // PASSED an ungrouped one-row answer `SELECT COUNT(*)` — a false POSITIVE
+  // introduced by the fix for a false negative.
+  //
+  // Reachable from the same ground truth the measure-less skip cites: a NULL key
+  // row carrying the only numbers, beside a labelled row whose measure came back
+  // NULL. Unadjudicable, so it gets this function's standing disposition for
+  // unadjudicable ground truth — the loud one, like the two throws above — and
+  // NOT a permissive default on the gate.
+  // ⚠️ THE THRESHOLD IS TWO, NOT ONE, AND `=== 0` WAS THE FIRST CUT'S OWN
+  // UNDER-FIRE. This is a PAIRWISE-distinctness gate: with a single surviving
+  // label there is no pair, `hasDistinctRepresentatives` imposes nothing, and
+  // condition 2 collapses to bare cardinality just as completely as it does at
+  // zero. Measured on that cut — take this file's own bystander fixture (five
+  // shipping regions, a `domestic: yes/no` column) and make ONE authoritative
+  // group measure-less: `rowsByLabel.size` is 1, the guard stays quiet, and the
+  // wrong grouping that `a BYSTANDER column no longer satisfies the shape check`
+  // pins as a FAIL passes again.
+  //
+  // `min(2, labelCount)` rather than a flat 2, because a genuine one-label
+  // expectation has no pair to form and is the documented weak case above —
+  // there the honest answer is bare cardinality, not a throw.
+  const labelCount = authoritativeLabels(expectation).size;
+  if (rowsByLabel.size < Math.min(2, labelCount)) {
+    throw new Error(
+      `[harness] only ${rowsByLabel.size} authoritative group(s) both carry a label ` +
+        `and carry measures, against ${labelCount} distinct label(s) — so there is no ` +
+        `pair left for a column to tell apart and the grouping shape cannot be ` +
+        `adjudicated. Every other group was skipped as NULL-labelled or measure-less. ` +
+        `Passing here would accept an UNGROUPED answer, which is what this check exists ` +
+        `to reject. Look at the key column and the measure columns in the authoritative ` +
+        `SQL — an all-NULL key row, or a measure that came back NULL for every row of a ` +
+        `group, produces exactly this.`,
+    );
+  }
+
+  const targets = expectedCardinalities(expectation);
+  for (const [column, values] of columnValueSets(rows)) {
+    if (!targets.has(values.size)) continue;
+    const candidates = [...rowsByLabel.values()].map(
+      (rowIndices) => cellKeysAt(rows, rowIndices, column),
+    );
+    if (hasDistinctRepresentatives(candidates)) return true;
   }
   return false;
+}
+
+/**
+ * The distinct-value counts an observed column may carry and still be the
+ * grouping key.
+ *
+ * `authoritativeLabels().size` is the base — the NON-NULL, case-folded label
+ * count. The `+ 1` arm exists for exactly one rendering difference, and it is
+ * #5143's COALESCE case: a NULL authoritative group is dropped from the base
+ * because {@link columnValueSets} cannot produce a nullish cell on the observed
+ * side, but `COALESCE(channel, 'unknown')` renders that same group as an
+ * ordinary VALUE — so the model's key column carries one more distinct value
+ * than ground truth counts, for an answer that is byte-correct.
+ *
+ * ⚠️ CONDITIONAL ON GROUND TRUTH HAVING A NULL GROUP, not a blanket tolerance.
+ * A free `N+1` would also admit an appended `Total` row and a genuinely-finer
+ * grouping that happens to be one wider, on every expectation — including the
+ * ones with no NULL group to explain it. The widening is licensed by a fact
+ * about the AUTHORITATIVE side, so it is available only where that fact holds.
+ */
+function expectedCardinalities(expectation: KeyedExpectation): ReadonlySet<number> {
+  const base = authoritativeLabels(expectation).size;
+  const hasNullGroup = expectation.groups.some((g) => cellKey(g.label) === null);
+  return hasNullGroup ? new Set([base, base + 1]) : new Set([base]);
+}
+
+/** The {@link cellKey}s `column` takes across the given rows, nullish cells dropped. */
+function cellKeysAt(
+  rows: ReadonlyArray<Record<string, unknown>>,
+  rowIndices: ReadonlySet<number>,
+  column: string,
+): ReadonlySet<string> {
+  const out = new Set<string>();
+  for (const i of rowIndices) {
+    const key = cellKey(rows[i]?.[column]);
+    if (key !== null) out.add(key);
+  }
+  return out;
+}
+
+/**
+ * Can each candidate set be assigned a value no other set takes — a system of
+ * distinct representatives?
+ *
+ * Kuhn's augmenting-path matching. Exact rather than greedy: with candidate sets
+ * `[{a}, {a, b}]` a left-to-right walk assigns `a` to the first and then finds
+ * `b` for the second, but `[{a, b}, {a}]` assigns `a` to the first and fails —
+ * same family, opposite verdict. Augmenting re-homes the earlier assignment
+ * instead of giving up, so the answer does not depend on the order the
+ * expectation happened to list its groups in.
+ *
+ * An EMPTY candidate set can never be assigned, which is the right answer: a
+ * label whose rows all carry a null cell in this column is not separated by it.
+ */
+function hasDistinctRepresentatives(
+  candidates: ReadonlyArray<ReadonlySet<string>>,
+): boolean {
+  const takenBy = new Map<string, number>();
+  const assign = (index: number, seen: Set<string>): boolean => {
+    for (const value of candidates[index] ?? []) {
+      if (seen.has(value)) continue;
+      seen.add(value);
+      const holder = takenBy.get(value);
+      if (holder === undefined || assign(holder, seen)) {
+        takenBy.set(value, index);
+        return true;
+      }
+    }
+    return false;
+  };
+  for (let i = 0; i < candidates.length; i++) {
+    if (!assign(i, new Set())) return false;
+  }
+  return true;
 }
 
 /**
@@ -2136,9 +2468,9 @@ function isTransportFail(c: RecordedToolCall): c is ErrorCall {
  * are the only intended consumers.
  *
  * `classifyToolContract`, `interpretResult` and `assertTextContractToolsPresent`
- * are deliberately NOT here: `canonical-eval-tool-selection.ts` consumes them as
- * real dependencies, so they are ordinary top-level exports. Listing them here
- * as well would imply a test-only surface they do not have.
+ * are not here for a stronger reason since #5135: they are no longer this
+ * module's at all. They live in `@atlas/mcp/eval/tool-contract`, which both
+ * evals import as an ordinary dependency.
  */
 export const __forTesting__ = {
   grade: (input: GradeInput) => grade(input),
@@ -2148,6 +2480,13 @@ export const __forTesting__ = {
   gradeVirtual,
   bindMcpToolsForLlm,
   labelDriftNote,
+  // #5123 — the boundary narrow. Every field of the AI SDK's usage shape is
+  // `number | undefined`, so this is where "the provider reported nothing
+  // usable" becomes a value rather than a zero, and it needs its own tests.
+  toTokenUsage,
+  // #5123 — reads `totalUsage`, and its PARAMETER TYPE is what enforces that.
+  runTokenUsage,
+  summarizeTokenUsage,
 } as const;
 
 // ── Baseline I/O ────────────────────────────────────────────────────

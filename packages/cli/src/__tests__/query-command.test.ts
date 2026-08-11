@@ -288,3 +288,63 @@ describe("runQueryCommand — HTTP error handling", () => {
     expect(text).toContain("atlas login");
   });
 });
+
+/**
+ * `atlas query --json` / `--csv`: stdout parses, on EVERY path (#5146).
+ *
+ * ⚠️ THE WRITER FIXED HERE IS ON AN ERROR PATH, AND THAT IS WHY READING THE
+ * DRIVER MISSED IT. A note in `bin/eval-log-destination.ts` recorded — as a
+ * verified fact — that the logger was this command's ONLY fd-1 polluter. It was
+ * arrived at by reading the success path, where the claim holds. The
+ * unexpected-response branch returns BEFORE the `--json` body runs and echoed
+ * `data.answer` to `io.out`, so a version-skewed server made
+ * `atlas query --json` emit bare prose on fd 1 and nothing else.
+ *
+ * #5126's own defect was a third writer nobody counted. Count them by
+ * EXECUTION — which is what driving the real core with a stub response does.
+ */
+describe("runQueryCommand — stdout is a machine channel under --json/--csv", () => {
+  // `data` is not an array, so the runtime shape check rejects it. `answer` is
+  // present because that is the field the branch echoes; without it the branch
+  // is reached and writes nothing, and the test would pass against the defect.
+  const SKEWED_RESPONSE = {
+    answer: "I found 42 users.",
+    sql: [],
+    data: { columns: [], rows: [] },
+    steps: 1,
+    usage: { totalTokens: 10 },
+  };
+
+  for (const flag of ["--json", "--csv"] as const) {
+    it(`keeps the unexpected-response answer OFF stdout under ${flag}`, async () => {
+      const { fetchImpl } = stubFetch(200, SKEWED_RESPONSE);
+      const { io, out, err } = capture();
+      const code = await runQueryCommand(
+        ["query", "how many users?", flag],
+        deps(fetchImpl),
+        io,
+      );
+      expect(code).toBe(1);
+      // Empty, not "parses" — nothing at all is the only stdout a failed run can
+      // put in a pipe without corrupting it, since neither JSON nor CSV has a
+      // representation for "this went wrong".
+      expect(out).toEqual([]);
+      // ⚠️ ASSERTED, NOT ASSUMED: redirecting must not DROP the answer. A fix
+      // that deleted the echo passes the line above and loses the one piece of
+      // diagnostic the failed response carried.
+      expect(err.join("\n")).toContain("I found 42 users.");
+    });
+  }
+
+  it("still echoes the answer on STDOUT in human mode", () => {
+    // The other direction. Human mode is not piped, the answer is the useful
+    // part of a failed response, and a fix that sent everything to fd 2
+    // unconditionally would pass every assertion above.
+    const { fetchImpl } = stubFetch(200, SKEWED_RESPONSE);
+    const { io, out } = capture();
+    return runQueryCommand(["query", "how many users?"], deps(fetchImpl), io).then((code) => {
+      expect(code).toBe(1);
+      expect(out.join("\n")).toContain("I found 42 users.");
+    });
+  });
+});

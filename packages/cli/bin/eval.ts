@@ -573,36 +573,47 @@ export function detectRegressions(
   return { regressions, newPasses, newCases, stable };
 }
 
-function printRegressionReport(report: RegressionReport): void {
-  console.log("\n" + "=".repeat(60));
-  console.log("Regression Report");
-  console.log("=".repeat(60));
+/**
+ * ⚠️ EXPORTED FOR ITS TEST, like {@link evalSeedSink} beside it. Inline and
+ * private it was untestable, and `handleEval` has no test at all — so the fact
+ * that it wrote to fd 1 survived #5126 unnoticed.
+ *
+ * ⚠️ TAKES ITS SINK (#5146). This printed ANSI-coloured prose with `console.log`
+ * — on fd 1, AFTER the JSON body, so `atlas eval --compare --json` emitted a
+ * payload followed by an escape-laden report and was not even a prefix a `tail`
+ * could strip. It is the loudest of this command's three fd-1 writers and the
+ * only one that runs last.
+ */
+export function printRegressionReport(report: RegressionReport, out: (line: string) => void): void {
+  out("\n" + "=".repeat(60));
+  out("Regression Report");
+  out("=".repeat(60));
 
   if (report.regressions.length > 0) {
-    console.log(`\n\x1b[31mREGRESSIONS (${report.regressions.length}):\x1b[0m`);
+    out(`\n\x1b[31mREGRESSIONS (${report.regressions.length}):\x1b[0m`);
     for (const r of report.regressions) {
-      console.log(`  FAIL ${r.id} [${r.schema}/${r.category}] ${r.question.slice(0, 60)}`);
-      if (r.error) console.log(`       Error: ${r.error}`);
+      out(`  FAIL ${r.id} [${r.schema}/${r.category}] ${r.question.slice(0, 60)}`);
+      if (r.error) out(`       Error: ${r.error}`);
     }
   }
 
   if (report.newPasses.length > 0) {
-    console.log(`\n\x1b[32mNEW PASSES (${report.newPasses.length}):\x1b[0m`);
+    out(`\n\x1b[32mNEW PASSES (${report.newPasses.length}):\x1b[0m`);
     for (const r of report.newPasses) {
-      console.log(`  PASS ${r.id} [${r.schema}/${r.category}] ${r.question.slice(0, 60)}`);
+      out(`  PASS ${r.id} [${r.schema}/${r.category}] ${r.question.slice(0, 60)}`);
     }
   }
 
   if (report.newCases.length > 0) {
-    console.log(`\nNEW CASES (${report.newCases.length}):`);
+    out(`\nNEW CASES (${report.newCases.length}):`);
     for (const r of report.newCases) {
       const status = r.match ? "PASS" : "FAIL";
-      console.log(`  ${status} ${r.id} [${r.schema}/${r.category}] ${r.question.slice(0, 60)}`);
+      out(`  ${status} ${r.id} [${r.schema}/${r.category}] ${r.question.slice(0, 60)}`);
     }
   }
 
-  console.log(`\nStable: ${report.stable}`);
-  console.log("=".repeat(60));
+  out(`\nStable: ${report.stable}`);
+  out("=".repeat(60));
 }
 
 function loadBaseline(filePath: string): EvalResult[] {
@@ -652,15 +663,16 @@ function loadBaseline(filePath: string): EvalResult[] {
  * or forget `csvOutput` — and `handleEval` has no test at all, so all three
  * survived. See `__tests__/eval-seed-sink.test.ts`.
  *
- * ⚠️ THIS CALL SITE IS CORRECT; THE COMMAND AROUND IT IS NOT. `atlas eval
- * --json` still writes prose to fd 1 — and the writers are NOT `printSummary`,
- * which sits behind the `else` of the same `jsonOutput` check and never runs in
- * that mode. The live ones are the `Resuming: …` line under `--resume`, the
- * `Baseline saved to: …` line, and `printRegressionReport` under `--compare`,
- * which prints ANSI *after* the JSON body. Same defect as #5126, one command
- * over, out of that issue's scope. (Named precisely because the first draft of
- * this comment pointed at the wrong function, and a wrong cause in a comment is
- * what stops the next person looking.)
+ * ⚠️ NOW THE COMMAND'S ONE RULE, NOT JUST THIS CALL SITE'S (#5146). The three
+ * fd-1 writers this comment used to NAME as still-broken — the `Resuming: …`
+ * line under `--resume`, the `Baseline saved to: …` line, and
+ * `printRegressionReport` under `--compare`, which printed ANSI *after* the JSON
+ * body — all route through `handleEval`'s `humanOut`, which appends a newline to
+ * the sink THIS function returns.
+ * `printSummary` never needed it: it sits behind the `else` of the same
+ * `jsonOutput` check and does not run in a machine mode. (That distinction is
+ * kept because the first draft of this comment pointed at the wrong function,
+ * and a wrong cause in a comment is what stops the next person looking.)
  */
 export function evalSeedSink(options: {
   readonly csvOutput: boolean;
@@ -689,6 +701,49 @@ export async function handleEval(args: string[]): Promise<void> {
   const saveBaseline = args.includes("--baseline");
   const csvOutput = args.includes("--csv");
   const jsonOutput = args.includes("--json");
+  // ⚠️ EVERY PROSE LINE THIS COMMAND WRITES TO fd 1 GOES THROUGH HERE (#5146).
+  // The fd-1 scoping is load-bearing and was missing from the first two attempts
+  // at this sentence: `handleEval` has a dozen `console.error` / stderr writers
+  // that are prose and do not route through here, correctly, because fd 2 is
+  // never the machine channel. Under
+  // `--json` or `--csv` stdout is a MACHINE channel and nothing human may touch
+  // it; `printJSON` / `printCSV` own fd 1 in those modes. Three writers used
+  // `console.log` directly and so ignored the mode entirely — see
+  // `evalSeedSink`, which is the same rule for the one writer that lives in
+  // another package.
+  //
+  // ⚠️ "EVERY" IS LOAD-BEARING AND WAS FALSE WHEN FIRST WRITTEN. Two more lines
+  // — the run header and the per-schema banner — were bare `console.log`s behind
+  // their own hand-written `if (!csvOutput && !jsonOutput)`. Correct output, but
+  // TWO SPELLINGS OF ONE RULE, which is the argument this PR makes against
+  // itself elsewhere: only one of them is under test at a time, and the
+  // duplicated guard is the one a future edit forgets. Both route through here
+  // now, so the claim is true and a mutation to this sink is visible in all of
+  // them.
+  //
+  // ⚠️ TWO EXEMPTIONS, BOTH DELIBERATE, AND THE LIST WAS INCOMPLETE THE FIRST
+  // TIME THIS CLAIM WAS CORRECTED — which is why it is spelled out rather than
+  // summarised:
+  //   - `printSummary` and the `Results saved to:` line stay on `console.log`.
+  //     They sit inside the `else` of the mode check and cannot run in a machine
+  //     mode at all.
+  //   - the two per-case PROGRESS writers below keep their own
+  //     `if (!csvOutput && !jsonOutput)` and write to `process.stderr`. They are
+  //     SUPPRESSED in a machine mode, not redirected — a different rule, and
+  //     routing them through `humanOut` would MOVE them to fd 1 in human mode,
+  //     which is a behaviour change rather than a fix. Same for every
+  //     `console.error` in this function: fd 2 is not the channel under guard.
+  //
+  // ⚠️ AND THE REDIRECTION IS NOT BEHAVIOUR-FREE IN A MACHINE MODE. The two
+  // lines routed here previously emitted NOTHING under `--json`/`--csv`; they
+  // now appear on fd 2. That is the wanted behaviour — progress belongs on
+  // stderr — but it is a change, and this PR's own thesis is that a stated
+  // property must be true.
+  const humanWrite = evalSeedSink({ csvOutput, jsonOutput });
+  // Appends the newline `console.log` used to, so every call site below is a
+  // pure redirection rather than a redirection PLUS a formatting change — the
+  // human output of a non-machine run is byte-identical to before.
+  const humanOut = (line: string): void => humanWrite(`${line}\n`);
 
   // Load and filter cases
   let allCases: EvalCase[];
@@ -741,7 +796,9 @@ export async function handleEval(args: string[]): Promise<void> {
     if (skippedLines > 0) {
       process.stderr.write(`WARNING: ${skippedLines} malformed line(s) skipped in resume file\n`);
     }
-    console.log(`Resuming: ${completedIds.size} cases already completed`);
+    // fd 2 in a machine mode — this line is prose and it lands BEFORE the JSON
+    // body, which is exactly the shape #5126's first cut mistook for strippable.
+    humanOut(`Resuming: ${completedIds.size} cases already completed`);
   }
 
   // Group remaining cases by schema to minimize re-seeding
@@ -757,12 +814,10 @@ export async function handleEval(args: string[]): Promise<void> {
   const remainingCount = cases.length - completedInScope;
   const schemaCount = bySchema.size;
 
-  if (!csvOutput && !jsonOutput) {
-    console.log(
-      `Atlas Eval: ${cases.length} cases across ${schemaCount} schema(s)` +
-      (completedIds.size > 0 ? ` (${remainingCount} remaining)` : ""),
-    );
-  }
+  humanOut(
+    `Atlas Eval: ${cases.length} cases across ${schemaCount} schema(s)` +
+    (completedIds.size > 0 ? ` (${remainingCount} remaining)` : ""),
+  );
 
   // Get connection string
   const connStr = process.env.ATLAS_DATASOURCE_URL;
@@ -778,9 +833,7 @@ export async function handleEval(args: string[]): Promise<void> {
     let caseIdx = 0;
 
     for (const [schema, schemaCases] of bySchema) {
-      if (!csvOutput && !jsonOutput) {
-        console.log(`\n--- Schema: ${schema} (${schemaCases.length} cases) ---`);
-      }
+      humanOut(`\n--- Schema: ${schema} (${schemaCases.length} cases) ---`);
 
       // Setup phase — errors here affect all cases in this schema
       try {
@@ -861,14 +914,14 @@ export async function handleEval(args: string[]): Promise<void> {
     fs.mkdirSync(BASELINES_DIR, { recursive: true });
     const content = allResults.map(r => JSON.stringify(r)).join("\n") + "\n";
     fs.writeFileSync(baselineFile, content);
-    console.log(`\nBaseline saved to: ${baselineFile}`);
+    humanOut(`\nBaseline saved to: ${baselineFile}`);
   }
 
   // Regression comparison
   if (compareFile) {
     const baseline = loadBaseline(compareFile);
     const report = detectRegressions(allResults, baseline);
-    printRegressionReport(report);
+    printRegressionReport(report, humanOut);
 
     if (report.regressions.length > 0) {
       console.error(`\n${report.regressions.length} regression(s) detected — exiting with code 1`);

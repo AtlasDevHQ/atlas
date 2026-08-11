@@ -18,9 +18,11 @@ import {
   __forTesting__,
   gradeToolSelection,
   loadToolSelectionFixture,
+  type RecordedDispatch,
   type ToolSelectionFixture,
   type ToolSelectionFixtureItem,
 } from "./canonical-eval-tool-selection";
+import { throttleAbortError } from "@atlas/mcp/eval/throttle";
 
 const tmpFiles: string[] = [];
 
@@ -38,6 +40,15 @@ function tmp(name: string, body: string): string {
   return p;
 }
 
+/**
+ * Name-only dispatches — the shape every grader case below uses, since none of
+ * them is about throttling. Spelled through a helper so a future field on
+ * `RecordedDispatch` lands in one place rather than in every fixture.
+ */
+function dispatched(...names: string[]): RecordedDispatch[] {
+  return names.map((name) => ({ name, throttle: null }));
+}
+
 const ITEM: ToolSelectionFixtureItem = {
   id: "list-tables",
   prompt: "Show me what tables exist.",
@@ -46,7 +57,7 @@ const ITEM: ToolSelectionFixtureItem = {
 
 describe("gradeToolSelection", () => {
   it("passes when the first tool call equals expected_tool", () => {
-    const out = gradeToolSelection(ITEM, ["listEntities"], 123);
+    const out = gradeToolSelection(ITEM, dispatched("listEntities"), 123);
     expect(out.passed).toBe(true);
     expect(out.firstTool).toBe("listEntities");
     expect(out.expected).toEqual(["listEntities"]);
@@ -60,28 +71,76 @@ describe("gradeToolSelection", () => {
       expected_tool: "runMetric",
       expected_alternates: ["executeSQL"],
     };
-    const out = gradeToolSelection(item, ["executeSQL"], 50);
+    const out = gradeToolSelection(item, dispatched("executeSQL"), 50);
     expect(out.passed).toBe(true);
     expect(out.expected).toEqual(["runMetric", "executeSQL"]);
   });
 
   it("fails when the LLM picks a different tool first", () => {
-    const out = gradeToolSelection(ITEM, ["explore"], 88);
+    const out = gradeToolSelection(ITEM, dispatched("explore"), 88);
     expect(out.passed).toBe(false);
     expect(out.firstTool).toBe("explore");
     expect(out.toolSequence).toEqual(["explore"]);
   });
 
   it("fails when the LLM never called any tool", () => {
-    const out = gradeToolSelection(ITEM, [], 12);
+    const out = gradeToolSelection(ITEM, dispatched(), 12);
     expect(out.passed).toBe(false);
     expect(out.firstTool).toBeNull();
   });
 
   it("only looks at the first tool, even when later tools are correct", () => {
-    const out = gradeToolSelection(ITEM, ["explore", "listEntities"], 200);
+    const out = gradeToolSelection(ITEM, dispatched("explore", "listEntities"), 200);
     expect(out.passed).toBe(false);
     expect(out.firstTool).toBe("explore");
+  });
+
+  /**
+   * #5136 — a throttle is a harness fault and must not become a number.
+   *
+   * `runMcpLlmEval` got this in #5122; this eval never did, so a `rate_limited`
+   * envelope was simply whatever the model did next. Because the verdict is the
+   * FIRST tool call, a throttle that pushes the model to retry or switch tools
+   * is scored as a tool-selection MISS — moving the accuracy floor with dispatch
+   * volume rather than with tool choice.
+   */
+  describe("throttle abort (#5136)", () => {
+    function throttled(name: string): RecordedDispatch {
+      return {
+        name,
+        throttle: {
+          toolName: name,
+          contract: "json",
+          envelope: { code: "rate_limited", message: "slow down", retry_after: 30 },
+        },
+      };
+    }
+
+    it("throws instead of scoring when any dispatch was throttled", () => {
+      expect(() =>
+        gradeToolSelection(ITEM, [...dispatched("listEntities"), throttled("runMetric")], 300),
+      ).toThrow(/rate limited on runMetric/);
+    });
+
+    it("throws even when the FIRST tool was correct — the item would have PASSED", () => {
+      // ⚠️ THE CASE A NAIVE FIX MISSES, AND THE ONE THAT MAKES THIS A HARNESS
+      // RULE RATHER THAN A SCORING TWEAK. The throttle here cannot lower the
+      // score — `listEntities` was picked first and is the expected tool — so a
+      // check that only fired on failing items would leave this green and would
+      // still be wrong: the run has been throttled, and the REST of its items
+      // are the ones whose numbers are now unsafe.
+      const dispatches = [...dispatched("listEntities"), throttled("explore")];
+      expect(gradeToolSelection(ITEM, dispatched("listEntities"), 300).passed).toBe(true);
+      expect(() => gradeToolSelection(ITEM, dispatches, 300)).toThrow(/\[harness\] list-tables/);
+    });
+
+    it("scores normally when no dispatch was throttled", () => {
+      // The negative direction: an abort that fired on every item would pass the
+      // two tests above and break the entire eval.
+      expect(gradeToolSelection(ITEM, dispatched("listEntities", "explore"), 300).passed).toBe(
+        true,
+      );
+    });
   });
 });
 
@@ -187,7 +246,7 @@ describe("bindToolsForRecording", () => {
   }
 
   it("records the tool name and returns ok data when callTool succeeds", async () => {
-    const recorder: string[] = [];
+    const recorder: RecordedDispatch[] = [];
     const fakeClient = {
       callTool: async () =>
         fakeResult(JSON.stringify({ count: 3, entities: [] })),
@@ -202,11 +261,11 @@ describe("bindToolsForRecording", () => {
       count?: number;
     };
     expect(result.count).toBe(3);
-    expect(recorder).toEqual(["listEntities"]);
+    expect(recorder.map((d) => d.name)).toEqual(["listEntities"]);
   });
 
   it("returns the error envelope (does NOT throw) when callTool returns an MCP error", async () => {
-    const recorder: string[] = [];
+    const recorder: RecordedDispatch[] = [];
     const fakeClient = {
       callTool: async () =>
         fakeResult(
@@ -224,11 +283,11 @@ describe("bindToolsForRecording", () => {
       code?: string;
     };
     expect(result.code).toBe("unknown_metric");
-    expect(recorder).toEqual(["runMetric"]);
+    expect(recorder.map((d) => d.name)).toEqual(["runMetric"]);
   });
 
   it("returns an unparseable shape when a JSON-contract tool's content isn't JSON", async () => {
-    const recorder: string[] = [];
+    const recorder: RecordedDispatch[] = [];
     const fakeClient = {
       callTool: async () => fakeResult("not-json", false),
     };
@@ -244,7 +303,7 @@ describe("bindToolsForRecording", () => {
     )) as { error?: string; raw?: string };
     expect(result.error).toBe("unparseable");
     expect(result.raw).toBe("not-json");
-    expect(recorder).toEqual(["describeEntity"]);
+    expect(recorder.map((d) => d.name)).toEqual(["describeEntity"]);
   });
 
   it("hands a TEXT-contract tool's output back verbatim rather than fabricating an error (#5131)", async () => {
@@ -252,7 +311,7 @@ describe("bindToolsForRecording", () => {
     // pinned `{ error: "unparseable" }` for a successful `explore` — the
     // model-facing half of #5131. Same body as the JSON case above, so the tool
     // name is the only differentiator.
-    const recorder: string[] = [];
+    const recorder: RecordedDispatch[] = [];
     const fakeClient = {
       callTool: async () => fakeResult("not-json", false),
     };
@@ -264,11 +323,11 @@ describe("bindToolsForRecording", () => {
     const runner = getRunner(tools as Record<string, Tool>, "explore");
     const result = await runner({ command: "ls" }, { toolCallId: "t1", messages: [] });
     expect(result).toBe("not-json");
-    expect(recorder).toEqual(["explore"]);
+    expect(recorder.map((d) => d.name)).toEqual(["explore"]);
   });
 
   it("keeps a server-FLAGGED error on a text-contract tool as an error, not shell output", async () => {
-    const recorder: string[] = [];
+    const recorder: RecordedDispatch[] = [];
     const fakeClient = {
       callTool: async () => fakeResult("Error: sandbox failed to start", true),
     };
@@ -283,11 +342,11 @@ describe("bindToolsForRecording", () => {
       { toolCallId: "t1", messages: [] },
     )) as { error?: string };
     expect(result.error).toBe("unparseable");
-    expect(recorder).toEqual(["explore"]);
+    expect(recorder.map((d) => d.name)).toEqual(["explore"]);
   });
 
   it("keeps an EMPTY result on a text-contract tool as an error, not shell output", async () => {
-    const recorder: string[] = [];
+    const recorder: RecordedDispatch[] = [];
     const fakeClient = { callTool: async () => ({ content: [] }) };
     const tools = __forTesting__.bindToolsForRecording(
       fakeClient,
@@ -322,7 +381,7 @@ describe("bindToolsForRecording", () => {
     // future refactor moved `recorder.push` after `await client.callTool`,
     // a transport throw would silently drop the name from the recorder
     // and the grader would mis-score the item as `firstTool: null`.
-    const recorder: string[] = [];
+    const recorder: RecordedDispatch[] = [];
     const fakeClient = {
       callTool: async () => {
         throw new Error("socket hang up");
@@ -341,6 +400,194 @@ describe("bindToolsForRecording", () => {
       threw = true;
     }
     expect(threw).toBe(true);
-    expect(recorder).toEqual(["describeEntity"]);
+    expect(recorder.map((d) => d.name)).toEqual(["describeEntity"]);
+  });
+
+  /**
+   * #5136 — a throttle is a harness fault and must not become a score.
+   *
+   * `runMcpLlmEval` got `assertNotRateLimited` in #5122; this eval never got the
+   * equivalent, so a `rate_limited` envelope was simply whatever the model did
+   * next. Because the grader scores the FIRST tool call, a throttled dispatch
+   * that pushes the model to retry or switch tools is a tool-selection MISS —
+   * so the accuracy floor moved with dispatch volume rather than with tool
+   * choice, which is exactly the defect #5122 removed from the other eval.
+   *
+   * Reachable on the same runs: the two evals share one OAuth client and one
+   * surface, and the hosted per-OAuth-client quota runs ahead of every tool
+   * body.
+   */
+  describe("throttle capture (#5136)", () => {
+    function throttledClient(extras: Record<string, unknown> = {}) {
+      return {
+        callTool: async () =>
+          fakeResult(
+            JSON.stringify({ code: "rate_limited", message: "slow down", ...extras }),
+            true,
+          ),
+      };
+    }
+
+    function bind(client: { callTool: () => Promise<CallToolResult> }) {
+      const recorder: RecordedDispatch[] = [];
+      const tools = __forTesting__.bindToolsForRecording(
+        client,
+        [
+          { name: "explore", description: "Explore." },
+          { name: "runMetric", description: "Run a metric." },
+        ],
+        recorder,
+      );
+      return { tools: tools as Record<string, Tool>, recorder };
+    }
+
+    it("captures a rate_limited envelope AND still returns it to the model", async () => {
+      // Both halves matter. Capturing is what lets the run loop abort; returning
+      // is what keeps the abort OUT of `execute`, where the AI SDK would turn it
+      // into a tool-error part indistinguishable from a transport failure — and
+      // the run loop's `catch` then grades whatever was recorded before it, with
+      // no throttle among it. (Not "an empty sequence": names are pushed BEFORE
+      // dispatch, so the sequence carries every call that started. Third copy of
+      // that wrong premise; the two in the source were corrected first.)
+      const { tools, recorder } = bind(throttledClient({ retry_after: 30 }));
+      const result = (await getRunner(tools, "runMetric")(
+        {},
+        { toolCallId: "t1", messages: [] },
+      )) as { code?: string };
+      expect(result.code).toBe("rate_limited");
+      expect(recorder).toHaveLength(1);
+      expect(recorder[0]?.throttle?.toolName).toBe("runMetric");
+      expect(recorder[0]?.throttle?.contract).toBe("json");
+    });
+
+    it("does NOT capture an ordinary error envelope", () => {
+      // The sink must stay empty for every other envelope, or the run aborts on
+      // the recovery cases this eval exists to observe. Deliberately a DIFFERENT
+      // code rather than a missing one — `code: undefined` would also pass a
+      // truthiness test on the wrong field.
+      const { tools, recorder } = bind({
+        callTool: async () =>
+          fakeResult(JSON.stringify({ code: "unknown_metric", message: "nope" }), true),
+      });
+      return getRunner(tools, "runMetric")({}, { toolCallId: "t1", messages: [] }).then(() => {
+        expect(recorder).toHaveLength(1);
+        expect(recorder[0]?.throttle).toBeNull();
+      });
+    });
+
+    it("captures a throttled TEXT-contract tool, and stamps its contract as text", async () => {
+      // ⚠️ THE CONTRACT IS RECORDED, NOT CONSULTED. An earlier cut of the
+      // sibling abort keyed the remedy on `contract === "text"` and asserted a
+      // throttled `explore` could only be the sandbox's limiter — measured wrong
+      // in #5133. `explore` is charged weight 5 by the hosted quota, tied with
+      // `executeSQL` for the second-priciest tool, so it is one of the LARGEST
+      // contributors to the exhaustion the lift exists to prevent.
+      //
+      // `interpretResult` routes a flagged error back through the JSON reading
+      // even for a text contract, so the envelope is still typed here — which is
+      // the only reason a text-contract throttle is catchable at all.
+      const { tools, recorder } = bind(throttledClient());
+      await getRunner(tools, "explore")({}, { toolCallId: "t1", messages: [] });
+      expect(recorder[0]?.throttle?.contract).toBe("text");
+    });
+  });
+});
+
+/**
+ * The abort message itself, shared by both evals since #5136.
+ *
+ * ⚠️ THE BRANCH IS ON THE ENVELOPE, NOT THE CONTRACT (#5133). Each case below
+ * pairs a contract with the OPPOSITE limiter's markers, so an implementation
+ * that read `contract` would get every one of them backwards rather than half
+ * of them right by coincidence.
+ */
+describe("throttleAbortError (#5136 / #5133)", () => {
+  it("names the eval's own quota for a hosted envelope on a TEXT-contract tool", () => {
+    // TEXT contract with HOSTED markers — the pairing #5133 got wrong, which is
+    // why the contract here is the opposite of what the remedy says.
+    //
+    // ⚠️ THE MARKER IS THE MESSAGE. An earlier version of this test used
+    // `{ message: "slow down", retry_after: 30 }` and expected the hosted arm,
+    // which encoded the defect the review found: `retry_after` is set by the
+    // DATASOURCE limiter too (`mcp/tools.ts`), so it cannot be the evidence.
+    const err = throttleAbortError("ts-004", {
+      toolName: "explore",
+      contract: "text",
+      envelope: {
+        code: "rate_limited",
+        message: 'OAuth client "eval" exceeded its hosted-MCP quota (250 weighted requests/min).',
+        retry_after: 30,
+      },
+    });
+    expect(err.message).toContain("ts-004");
+    expect(err.message).toContain("Raise it via liftEvalClientRateLimit");
+    expect(err.message).not.toContain("Raising EVAL_CLIENT_REQUESTS_PER_MINUTE will not help");
+  });
+
+  it("names a DOWNSTREAM limiter when the envelope carries no hosted markers", () => {
+    const err = throttleAbortError("ts-005", {
+      // JSON contract with NO hosted markers — the other half of the pairing.
+      toolName: "executeSQL",
+      contract: "json",
+      envelope: { code: "rate_limited", message: "pool exhausted" },
+    });
+    expect(err.message).toContain("Raising EVAL_CLIENT_REQUESTS_PER_MINUTE will not help");
+    expect(err.message).not.toContain("Raise it via liftEvalClientRateLimit");
+  });
+
+  it("recognises the hosted quota by its message when retry_after is absent", () => {
+    const err = throttleAbortError("ts-006", {
+      toolName: "runMetric",
+      contract: "json",
+      envelope: { code: "rate_limited", message: "hosted-MCP quota exceeded" },
+    });
+    expect(err.message).toContain("Raise it via liftEvalClientRateLimit");
+  });
+
+  it("does NOT read retry_after as proof of the hosted quota (#5133, second spelling)", () => {
+    // ⚠️ THE FIRST CUT OF THIS FUNCTION ACCEPTED `typeof retry_after ===
+    // "number"` AS PROOF, on the stated ground that only the hosted limiter sets
+    // it. Measured false: `packages/mcp/src/tools.ts` sets `extras.retry_after`
+    // from the DATASOURCE limiter's `retryAfterMs` on a throttled `executeSQL` —
+    // the exact case this function's own `else` arm calls downstream. So the
+    // envelope below, which is what a datasource throttle really looks like, was
+    // routed to the hosted arm and told an operator to raise a quota that had
+    // not fired. On a weekly paid run the only response is to re-run and abort
+    // identically.
+    //
+    // The message is the exact discriminator: both hosted denial paths build it
+    // with `rateLimitedMessage()` (`rate-limit/middleware.ts`), and nothing else
+    // produces the phrase.
+    const err = throttleAbortError("ts-007", {
+      toolName: "executeSQL",
+      contract: "json",
+      envelope: {
+        code: "rate_limited",
+        message: "Datasource query rate limit exceeded.",
+        retry_after: 12,
+      },
+    });
+    expect(err.message).toContain("Raising EVAL_CLIENT_REQUESTS_PER_MINUTE will not help");
+    expect(err.message).not.toContain("Raise it via liftEvalClientRateLimit");
+    // ⚠️ AND THE FIELD IS STILL REPORTED. Demoting it from evidence must not
+    // delete it from the diagnostic — an operator reading the abort still wants
+    // to know the envelope carried one, and why it proves nothing.
+    expect(err.message).toContain("retry_after=12s");
+  });
+
+  it("keeps the hosted arm for an envelope carrying BOTH the phrase and retry_after", () => {
+    // The real hosted envelope has both. Without this, deleting the message test
+    // and keeping only `retry_after` would still pass the negative above.
+    const err = throttleAbortError("ts-008", {
+      toolName: "explore",
+      contract: "text",
+      envelope: {
+        code: "rate_limited",
+        message: 'OAuth client "c1" exceeded its hosted-MCP quota (250 weighted requests/min).',
+        retry_after: 7,
+      },
+    });
+    expect(err.message).toContain("Raise it via liftEvalClientRateLimit");
+    expect(err.message).not.toContain("retry_after=7s");
   });
 });

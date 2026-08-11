@@ -44,12 +44,15 @@ name: Canonical Eval (LLM)
 #   gateway) was 20 questions / 124 tool calls / 429s of model wall-clock: an
 #   order of magnitude more work than $0.05 of Haiku buys.
 #
-#   ⚠️ The true figure is STILL UNKNOWN, and the reason is worth naming rather
-#   than papering over: the eval records latency per question and does not
-#   record token usage at all, so a job whose only open question is spend
-#   cannot answer it. #5123 adds that. Until then, treat any dollar figure —
-#   including the arithmetic in #5123 — as an estimate, and make #5039's spend
-#   decision against a measured run.
+#   ⚠️ #5123 CLOSED THE MEASUREMENT GAP THIS BLOCK USED TO DESCRIBE. The eval now
+#   records token usage per question and for the run — `usage.{inputTokens,
+#   outputTokens,totalTokens}` plus `usage.unreported` in the `--json` payload,
+#   and an `N in + M out = T total` line on stderr. So the figure is no longer
+#   unknown in principle; it is unknown until a real run publishes one.
+#
+#   Read it OFF A RUN, not off arithmetic. Every dollar figure quoted for this
+#   job before #5123 — including "under $0.05" above — was an estimate, and
+#   #5039's spend decision wants the measured number from the artifact.
 #
 # POLICY — identical to eval.yml's, and the gate script is shared:
 #   - Pull requests: informational but VISIBLE (green check + PR comment).
@@ -368,7 +371,22 @@ jobs:
             head -c 400 eval-mcp-llm-output.json
             exit 1
           fi
-          echo "eval-mcp-llm-output.json parses ($(wc -c < eval-mcp-llm-output.json) bytes)"
+          bytes=$(wc -c < eval-mcp-llm-output.json)
+          echo "eval-mcp-llm-output.json parses ($bytes bytes)"
+          # ⚠️ THE CLIFF IS NOT HYPOTHETICAL AND `jq empty` ABOVE ONLY SEES IT
+          # ONCE IT HAS ALREADY BITTEN. #5134 measured stdout truncation just
+          # above 65536 bytes through a real shell pipe, and the payload was
+          # 63024 — 2.5 KB of headroom that #5123 then spent some of on token
+          # usage. A payload that truncates does not arrive short, it arrives
+          # UNPARSEABLE, so the only useful signal is one that fires BEFORE.
+          #
+          # 61440 (60 KiB) is a warn, not a failure: a run with more failing
+          # questions legitimately carries more artifacts, and turning that into
+          # a red gate would block the eval for succeeding at its job. The point
+          # is that the margin stops being a number someone measured once.
+          if [ "$bytes" -gt 61440 ]; then
+            echo "::warning::the --json payload is $bytes bytes, within 4 KB of the ~65536 stdout truncation cliff (#5134). It parses TODAY; a slightly larger run will not. Shrink what the payload carries per outcome before adding to it."
+          fi
 
       - name: Upload eval artifacts on failure
         # Captured regardless of pass/fail so a baseline drift on a

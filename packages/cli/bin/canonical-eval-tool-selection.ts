@@ -34,6 +34,7 @@ import { Hono } from "hono";
 
 import { getAgentMaxSteps } from "@atlas/api/lib/agent";
 import {
+  liftEvalClientRateLimit,
   startEvalAuthServer,
   type EvalAuthFixture,
 } from "@atlas/mcp/eval/auth";
@@ -43,7 +44,12 @@ import {
   assertTextContractToolsPresent,
   classifyToolContract,
   interpretResult,
-} from "./canonical-eval-mcp-llm";
+} from "@atlas/mcp/eval/tool-contract";
+import {
+  isRateLimitedEnvelope,
+  throttleAbortError,
+  type ThrottledDispatch,
+} from "@atlas/mcp/eval/throttle";
 
 // ── Public types ──────────────────────────────────────────────────────
 
@@ -62,6 +68,26 @@ export interface ToolSelectionFixture {
     readonly acceptance_floor?: number;
   };
   readonly items: readonly ToolSelectionFixtureItem[];
+}
+
+/**
+ * One dispatch the model fired, as the recorder captures it.
+ *
+ * ⚠️ ONE RECORD PER DISPATCH, NOT A NAME ARRAY BESIDE A THROTTLE ARRAY (#5136).
+ * The throttle abort needs both the ORDER (the grader scores the first tool) and
+ * the ENVELOPE, and two parallel arrays reset independently — forget one
+ * `length = 0` between fixture items and a throttle leaks into the next item's
+ * verdict, which is a worse bug than the one the abort was added to fix.
+ *
+ * `throttle` is mutable and starts `null` because the NAME is recorded BEFORE
+ * the dispatch awaits — the grader needs it even when the call never resolves —
+ * while the envelope only exists afterwards. Written once, at the one seam that
+ * knows the result.
+ */
+export interface RecordedDispatch {
+  readonly name: string;
+  /** The throttle envelope this dispatch came back with, or `null` for every other result. */
+  throttle: ThrottledDispatch | null;
 }
 
 export interface ToolSelectionOutcome {
@@ -164,12 +190,27 @@ export function loadToolSelectionFixture(
  * Grade a recorded tool-call sequence against one fixture item. Pure —
  * exposed so the unit test surface can pin grader behavior without
  * booting an LLM or MCP transport.
+ *
+ * ⚠️ ABORTS ON A THROTTLE BEFORE IT SCORES ANYTHING (#5136), which is where
+ * `runMcpLlmEval` puts the same check and for the same reason: a throttle is a
+ * HARNESS fault and must not produce a number. This grader scores the FIRST tool
+ * call, so a throttled dispatch that pushes the model to retry or switch tools
+ * reads as a tool-selection MISS — and the accuracy floor then moves with
+ * dispatch volume rather than with tool-selection quality, which is exactly the
+ * defect #5122 removed from the sibling eval.
+ *
+ * Inside the grader rather than in the run loop so the abort is unit-testable
+ * without a live MCP transport, and so it cannot be skipped by a future caller
+ * that grades an item without going through the loop.
  */
 export function gradeToolSelection(
   item: ToolSelectionFixtureItem,
-  toolSequence: readonly string[],
+  dispatches: readonly RecordedDispatch[],
   latencyMs: number,
 ): ToolSelectionOutcome {
+  const throttled = dispatches.find((d) => d.throttle !== null);
+  if (throttled?.throttle) throw throttleAbortError(item.id, throttled.throttle);
+  const toolSequence = dispatches.map((d) => d.name);
   const expected = [item.expected_tool, ...(item.expected_alternates ?? [])];
   const firstTool = toolSequence[0] ?? null;
   const passed = firstTool !== null && expected.includes(firstTool);
@@ -217,6 +258,19 @@ export async function runToolSelectionEval(
   const authFixture = opts.fixture ?? (await bootDefaultFixture());
 
   try {
+    // ⚠️ THIS EVAL SHARES THE OAUTH CLIENT AND THE TOOL SURFACE WITH `--mcp-llm`,
+    // AND IT NEVER CALLED THIS (#5136). `runMcpLlmEval` lifts the quota precisely
+    // because a full run out-dispatches the 60/min default (#5122); the hosted
+    // per-OAuth-client limiter runs ahead of every tool body, so nothing about
+    // this eval's smaller corpus makes it exempt — and the two evals run back to
+    // back against the same bucket. Applied whether or not we own the fixture: a
+    // shared fixture accumulates MORE load against that bucket, not less.
+    //
+    // INSIDE the `try` that owns the fixture, not before it: `setClientRateLimit`
+    // is an in-memory map write and unlikely to throw, but a throw from outside
+    // would leak the booted auth server — `close()` never runs and the process
+    // hangs on an open handle instead of reporting the fault.
+    liftEvalClientRateLimit(authFixture);
     const client = new EvalMcpClient({
       baseUrl: authFixture.baseUrl,
       workspaceId: authFixture.workspaceId,
@@ -241,7 +295,7 @@ export async function runToolSelectionEval(
 
     try {
       const tools = await client.listTools();
-      const recorded: string[] = [];
+      const recorded: RecordedDispatch[] = [];
       const aiTools = bindToolsForRecording(client, tools, recorded);
 
       const items = fixture.items.slice(0, opts.maxItems ?? fixture.items.length);
@@ -266,13 +320,24 @@ export async function runToolSelectionEval(
           await result.text;
           if (streamErr !== null) throw streamErr;
         } catch (err) {
-          // streamText throwing here counts as "didn't pick the right
-          // tool" — record an empty sequence and let the grader fail it.
+          // streamText throwing here counts as "didn't pick the right tool" —
+          // let the grader judge whatever was recorded before the failure. NOT
+          // necessarily empty: `execute` pushes the name BEFORE dispatching, so a
+          // stream that died after two calls leaves two records.
           process.stderr.write(
             `[tool-selection-eval] streamText threw on "${item.id}": ${err instanceof Error ? err.message : String(err)}\n`,
           );
         }
         const latencyMs = Date.now() - start;
+        // ⚠️ REACHED AFTER THE `catch` ABOVE, AND THAT IS LOAD-BEARING. The catch
+        // deliberately swallows a `streamText` failure and grades WHATEVER WAS
+        // RECORDED before it — possibly empty, but not necessarily, since names
+        // are pushed before dispatch. (An earlier version of this comment said
+        // "into an empty sequence", which is the premise a future reader would
+        // reason from and it is wrong.) Either way a throttle severe enough to
+        // abort the stream would be absorbed there and graded as a miss, so
+        // `gradeToolSelection` reads the recorded dispatches and aborts on one
+        // before it scores anything (#5136).
         outcomes.push(gradeToolSelection(item, [...recorded], latencyMs));
       }
 
@@ -311,7 +376,7 @@ async function bootDefaultFixture(): Promise<EvalAuthFixture> {
 function bindToolsForRecording(
   client: { callTool: EvalMcpClient["callTool"] },
   tools: readonly ToolListEntry[],
-  recorder: string[],
+  recorder: RecordedDispatch[],
 ): ToolSet {
   assertTextContractToolsPresent(tools);
   const set: Record<string, Tool> = {};
@@ -322,6 +387,7 @@ function bindToolsForRecording(
         properties: {},
         additionalProperties: true,
       };
+    const contract = classifyToolContract(t.name);
     set[t.name] = dynamicTool({
       description: t.description ?? `MCP tool ${t.name}`,
       inputSchema: jsonSchema(schema),
@@ -330,8 +396,10 @@ function bindToolsForRecording(
         // Push BEFORE the dispatch so a transport-level throw still
         // shows up in the recorded sequence — the grader needs the
         // `name` for first-tool-match scoring even when the underlying
-        // call fails.
-        recorder.push(t.name);
+        // call fails. `throttle` is filled in below, on the one record this
+        // dispatch owns.
+        const record: RecordedDispatch = { name: t.name, throttle: null };
+        recorder.push(record);
         const result = await client.callTool(t.name, args);
         // A text-contract tool's product IS its text (#5131). This eval does
         // not grade `protocol`, so the mis-grading half of that bug never
@@ -342,8 +410,23 @@ function bindToolsForRecording(
         // An earlier cut spelled the same three-way decision out inline here,
         // with a comment promising it matched — an invariant enforced by prose,
         // which a third carve-out added on the other side would silently break.
-        const parsed = interpretResult(result, classifyToolContract(t.name));
-        if (parsed.kind === "error") return parsed.envelope;
+        const parsed = interpretResult(result, contract);
+        if (parsed.kind === "error") {
+          // ⚠️ RECORDED HERE AND RETURNED ANYWAY (#5136). The envelope still
+          // goes back to the model, because aborting from inside `execute` is
+          // indistinguishable to the AI SDK from a transport failure and lands
+          // in the run loop's `catch`, which grades whatever was recorded before
+          // the failure. `gradeToolSelection` reads the throttle after the stream
+          // drains instead — the one place the abort can be loud.
+          if (isRateLimitedEnvelope(parsed.envelope)) {
+            record.throttle = {
+              toolName: t.name,
+              contract,
+              envelope: parsed.envelope,
+            };
+          }
+          return parsed.envelope;
+        }
         if (parsed.kind === "unparseable") {
           return { error: "unparseable", raw: parsed.raw };
         }
@@ -368,6 +451,6 @@ export const __forTesting__ = {
   bindToolsForRecording: (
     client: { callTool: EvalMcpClient["callTool"] },
     tools: readonly ToolListEntry[],
-    recorder: string[],
+    recorder: RecordedDispatch[],
   ): ToolSet => bindToolsForRecording(client, tools, recorder),
 } as const;

@@ -551,10 +551,15 @@ describe("canonical-eval --json keeps stdout machine-readable", () => {
     async () => {
       // ⚠️ THE `canonical-eval` HALF WAS UNFALSIFIABLE. Every other spawn in
       // this file passes that token, so narrowing the condition to just
-      // `--json` — which would stamp `atlas query --json`, `atlas eval --json`
-      // and every other command — survived the whole suite. The module header
-      // claims the scan "is narrow on purpose: both tokens must be present, so
-      // no other subcommand is affected"; this is that claim, tested.
+      // `--json` — which would stamp every command — survived the whole suite.
+      // The module claims the scan is narrow on purpose: both tokens must be
+      // present. This is that claim, tested, for THIS command's row.
+      //
+      // ⚠️ THE TABLE GREW IN #5146 and `atlas query --json` moved from the
+      // negatives to the positives — deliberately, with the rest of that
+      // command's fd-1 writers fixed alongside it. The full matrix, both
+      // directions, lives in `eval-query-json-stdout.test.ts`; what stays here
+      // is the pair that keeps the `canonical-eval` row honest.
       const driver = path.join(
         import.meta.dir, "fixtures", "eval-log-destination-driver.ts",
       );
@@ -581,10 +586,10 @@ describe("canonical-eval --json keeps stdout machine-readable", () => {
       // check the subcommand".
       expect(await stampFor(["--json"])).toBe("ATLAS_LOG_STDERR=<unset>");
       expect(await stampFor(["canonical-eval"])).toBe("ATLAS_LOG_STDERR=<unset>");
-      // `query --json` is the real sibling command. Its own stdout is already
-      // clean (verified — see `eval-log-destination.ts`), so this pins that the
-      // stamp stays narrow rather than that the sibling is unfixable.
-      expect(await stampFor(["query", "--json"])).toBe("ATLAS_LOG_STDERR=<unset>");
+      // A command that is NOT in the table, carrying the flag — the negative
+      // that keeps "stamp on `--json` alone" dead now that more than one
+      // command is stamped.
+      expect(await stampFor(["init", "--json"])).toBe("ATLAS_LOG_STDERR=<unset>");
     },
     60_000,
   );

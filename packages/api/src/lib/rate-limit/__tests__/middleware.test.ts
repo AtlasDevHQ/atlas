@@ -407,3 +407,39 @@ describe("enforceClientRateLimit", () => {
     ).rejects.toThrow(/synthetic audit failure/);
   });
 });
+
+/**
+ * The denial message is a CROSS-PACKAGE DISCRIMINATOR, not just prose.
+ *
+ * ⚠️ `packages/mcp/src/eval/throttle.ts` decides whether a throttled eval run
+ * blames the eval's own hosted quota or a downstream limiter by testing this
+ * message for `hosted-MCP quota` (#5136). It picked the message precisely
+ * BECAUSE `retry_after` turned out not to be hosted-exclusive — the datasource
+ * limiter sets that too (#5133's class, second spelling).
+ *
+ * Nothing else held the wording in place. Every fixture on the consumer side
+ * hand-writes the phrase, so both halves of that match were written by the same
+ * author: reword this template — "hosted MCP quota", "the client quota" — and
+ * the whole eval suite stays green while `isHostedQuota` silently goes false,
+ * sending an operator on a weekly PAID run to chase a limiter that did not fire.
+ *
+ * This test is the one thing that makes such a reword red on the PR that lands
+ * it. It asserts against the REAL denial envelope rather than restating the
+ * template, so a change to `rateLimitedMessage` reaches it.
+ */
+describe("hosted-quota denial message (consumer: packages/mcp/src/eval/throttle.ts)", () => {
+  it("carries the `hosted-MCP quota` marker the eval harness discriminates on", async () => {
+    _resetClientRateLimitsForTests();
+    const { enforceClientRateLimit } = await import("../middleware");
+    const input = { ...baseInput, toolName: "listEntities" };
+    const tightLoader = async () => 1;
+    expect((await enforceClientRateLimit(input, tightLoader)).kind).toBe("ok");
+    const denied = await enforceClientRateLimit(input, tightLoader);
+    expect(denied.kind).toBe("denied");
+    if (denied.kind !== "denied") return;
+    expect(denied.envelope.code).toBe("rate_limited");
+    // The exact substring `throttle.ts` matches. Spelled once here, deliberately
+    // — this is the producer, and the consumer's regex is the copy.
+    expect(denied.envelope.message).toContain("hosted-MCP quota");
+  });
+});

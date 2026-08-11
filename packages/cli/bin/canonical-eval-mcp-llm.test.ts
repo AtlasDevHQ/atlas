@@ -31,7 +31,7 @@ import {
 import { parseCanonicalEvalOptions } from "./canonical-eval-run";
 import type { Question } from "./canonical-eval";
 
-const { gradeMetric, gradeGlossary, gradePattern, gradeVirtual, labelDriftNote } =
+const { grade, gradeMetric, gradeGlossary, gradePattern, gradeVirtual, labelDriftNote } =
   __forTesting__;
 
 // ── Fixture helpers ──────────────────────────────────────────────────
@@ -878,20 +878,28 @@ describe("labelDriftNote — reports a relabel without gating it (#5128)", () =>
     expect(labelDriftNote(out, PROMO_GROUND_TRUTH)).toBeNull();
   });
 
-  it("says nothing on a FAIL — a note is a report, not a second verdict", () => {
-    const wrong = [
-      sqlAnswer(
-        "SELECT CASE WHEN promotion_id IS NOT NULL THEN 'With Promotion' ELSE 'No Promotion' END AS promo_status, " +
-          "COUNT(*) AS orders FROM orders GROUP BY 1",
-        ["promo_status", "orders"],
-        [
-          { promo_status: "With Promotion", orders: 9999 },
-          { promo_status: "No Promotion", orders: 8888 },
-        ],
-      ),
-    ];
-    const out = gradePattern(q, wrong, "", 8, PROMO_GROUND_TRUTH);
+  it("says nothing on a FAIL whose answer WOULD have matched — a note is a report, not a second verdict", () => {
+    // ⚠️ THE FIXTURE HAS TO FAIL FOR A REASON OTHER THAN THE COMPARISON, or it
+    // proves nothing: an answer whose measures are simply wrong returns `null`
+    // from the substance check and would satisfy this assertion with the
+    // pass-only guard deleted. A mutation confirmed exactly that.
+    //
+    // The LATENCY branch is the only place a keyed answer can match on
+    // substance and still be graded `fail`, so the note is suppressed there —
+    // the artifact already carries the expectation, and a "matched but
+    // relabelled" line beside a failure verdict reads as a second, contrary
+    // verdict.
+    const out = grade({
+      question: q,
+      toolCalls: relabelled,
+      finalText: "",
+      latencyMs: 9_000,
+      baseline: { "cq-016": 1_000 },
+      metricExpectations: undefined,
+      answerExpectations: { "cq-016": PROMO_GROUND_TRUTH },
+    });
     expect(out.status).toBe("fail");
+    if (out.status === "fail") expect(out.artifact.category).toBe("latency");
     expect(labelDriftNote(out, PROMO_GROUND_TRUTH)).toBeNull();
   });
 });

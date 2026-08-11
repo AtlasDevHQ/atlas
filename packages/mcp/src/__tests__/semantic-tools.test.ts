@@ -26,6 +26,19 @@ const TEST_ACTOR = createAtlasUser("u_sem", "managed", "sem@test", {
 const mockListEntities = mock<(...args: unknown[]) => unknown>(async () => [
   { name: "User", table: "users", description: "Users", source: "default" },
   { name: "orders", table: "orders", description: "Orders", source: "default" },
+  // #5122 — a display `name` WITH A SPACE. Not a contrived edge case: the
+  // seeded demo layer ships four (`Order Items`, `Email Campaigns`,
+  // `Inventory Levels`, `Product Reviews`) and `generate/yaml.ts` produces the
+  // same shape, so this is the ordinary entity, not the exotic one. Both
+  // `listEntities` branches emit this field verbatim (`scanDiskEntities` reads
+  // `raw.name`, `rowToEntry` reads the parsed YAML `name`), and the
+  // round-trip test below feeds it back into `describeEntity`.
+  {
+    name: "Order Items",
+    table: "order_items",
+    description: "Line items",
+    source: "default",
+  },
 ]);
 const mockGetEntityByName = mock<(...args: unknown[]) => unknown>(
   (name: unknown) => {
@@ -145,6 +158,11 @@ const ENTITY_FIXTURE: readonly EntityFixture[] = [
   { column: "user", name: "User", table: "users", group: null },
   { column: "orders", name: "orders", table: "orders", group: null },
   { column: "conversation", name: "Conversation", table: "conversations", group: "g_prod" },
+  // #5122 — the spaced display name `listEntities` advertises above. Column
+  // stem and table are the underscored identifier; only the YAML `name` has
+  // the space, which is precisely the identifier a client reads off
+  // `listEntities` and hands back to `describeEntity`.
+  { column: "order_items", name: "Order Items", table: "order_items", group: null },
 ];
 
 function fixtureEntity(f: EntityFixture) {
@@ -493,7 +511,7 @@ describe("MCP semantic tools", () => {
     expect(mockListEntities).toHaveBeenCalledTimes(1);
     expect(result.isError).toBeFalsy();
     const parsed = JSON.parse(getContentText(result.content));
-    expect(parsed.count).toBe(2);
+    expect(parsed.count).toBe(3);
     expect(parsed.entities[0].table).toBe("users");
   });
 
@@ -632,6 +650,122 @@ describe("MCP semantic tools", () => {
     expect(envelope!.code).toBe("unknown_entity");
     expect(envelope!.message).toContain("ghost");
     expect(envelope!.hint).toContain("listEntities");
+  });
+
+  // --- #5122: the listEntities → describeEntity round trip ---
+  //
+  // ⚠️ THE INPUTS ARE READ OFF `listEntities`'s RESPONSE, never restated as
+  // literals here. That is the whole point: the defect was a boundary that
+  // refused identifiers its own sibling tool advertises, so a test that
+  // hand-writes both sides could not have caught it. Deriving the argument
+  // from the advertised catalog means any future re-narrowing of the input
+  // guard — or any new entity shape `listEntities` starts emitting — fails
+  // here instead of silently in a paid LLM eval.
+  //
+  // Falsifier check (run before shipping): restoring the old
+  // `/^[A-Za-z0-9_.-]+$/` guard makes `Order Items` fail at the MCP boundary
+  // with `-32602` and this test goes red.
+  it("describeEntity accepts every name listEntities advertises, spaces included", async () => {
+    const { client } = await createTestClient();
+
+    const listed = await client.callTool({ name: "listEntities", arguments: {} });
+    expect(listed.isError).toBeFalsy();
+    const advertised: string[] = JSON.parse(getContentText(listed.content)).entities.map(
+      (e: { name: string }) => e.name,
+    );
+    // Guard the guard: if the catalog fixture ever stops carrying a spaced
+    // display name this test silently stops exercising the regression.
+    expect(advertised.some((n) => n.includes(" "))).toBe(true);
+
+    // Both arms carry the guard, and the eval's failing calls used `names`.
+    for (const name of advertised) {
+      const single = await client.callTool({
+        name: "describeEntity",
+        arguments: { name },
+      });
+      // A rejection at the Zod boundary surfaces as an MCP `-32602` protocol
+      // error, NOT a typed `unknown_entity` envelope — the dispatch never
+      // runs. Assert on the resolved entity so neither failure mode passes.
+      expect(single.isError).toBeFalsy();
+      // The single-`name` arm answers `{ found, entity }`; the batch arm below
+      // answers `{ entities, notFound }`.
+      const parsedSingle = JSON.parse(getContentText(single.content));
+      expect(parsedSingle.found).toBe(true);
+      expect(typeof parsedSingle.entity.table).toBe("string");
+    }
+
+    const batch = await client.callTool({
+      name: "describeEntity",
+      arguments: { names: advertised },
+    });
+    expect(batch.isError).toBeFalsy();
+    const parsedBatch = JSON.parse(getContentText(batch.content));
+    expect(parsedBatch.notFound).toEqual([]);
+    expect(parsedBatch.entities).toHaveLength(advertised.length);
+  });
+
+  it("describeEntity still rejects path-traversal names at the boundary", async () => {
+    const { client } = await createTestClient();
+    // The guard exists because the disk resolver joins the name into a path
+    // (`findEntityFile`). Widening it to admit spaces must not admit these.
+    // A boundary rejection REJECTS the callTool promise (MCP `-32602`) rather
+    // than resolving with an error result — asserting the throw is what
+    // distinguishes "refused before dispatch" from "dispatched and not found".
+    for (const bad of ["../secrets", "a/b", "a\\b", "..", "nul\0byte"]) {
+      for (const args of [{ name: bad }, { names: [bad] }]) {
+        const result = await client.callTool({ name: "describeEntity", arguments: args });
+        expect(result.isError).toBe(true);
+        // `-32602` is the JSON-RPC invalid-params code: refused at the schema
+        // boundary BEFORE dispatch. A typed `unknown_entity` envelope here
+        // would mean the name reached `resolveEntity` and merely missed —
+        // a materially weaker guarantee, so assert on the code.
+        expect(getContentText(result.content)).toContain("-32602");
+      }
+    }
+  });
+
+  // The boundary regex is a SECOND SPELLING of `isValidEntityName` — required,
+  // because only a regex survives the JSON Schema conversion `registerTool`
+  // performs (see ENTITY_NAME_PATTERN's header). A second spelling can drift,
+  // so pin the two against one corpus. The corpus deliberately mixes the shapes
+  // that motivated the change (spaces, unicode, punctuation) with every
+  // traversal form the authority denies.
+  it("the describeEntity boundary regex agrees with isValidEntityName", async () => {
+    const { ENTITY_NAME_PATTERN } = await import("../semantic-tools.js");
+    const { isValidEntityName } = await import("@atlas/api/lib/semantic/files");
+
+    const corpus = [
+      // Accepted by the authority — must be accepted at the boundary.
+      "Order Items",
+      "Email Campaigns",
+      "order_items",
+      "orders",
+      "public.orders",
+      "Ventas Netas",
+      "売上",
+      "a-b.c_d",
+      "name (with parens)",
+      "'quoted'",
+      // Denied by the authority — must be denied at the boundary.
+      "../secrets",
+      "..",
+      "a/b",
+      "a\\b",
+      "/etc/passwd",
+      "x\0y",
+      "entities/../../etc/passwd",
+    ];
+
+    for (const candidate of corpus) {
+      expect({ candidate, accepted: ENTITY_NAME_PATTERN.test(candidate) }).toEqual({
+        candidate,
+        accepted: isValidEntityName(candidate),
+      });
+    }
+    // Guard the guard: a corpus that drifted to all-accept or all-deny would
+    // pass the loop above while proving nothing.
+    expect(corpus.some(isValidEntityName)).toBe(true);
+    expect(corpus.some((c) => !isValidEntityName(c))).toBe(true);
   });
 
   it("describeEntity batches multiple entities in one call via `names`", async () => {

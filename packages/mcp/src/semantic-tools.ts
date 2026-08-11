@@ -81,11 +81,45 @@ const MAX_FREE_TEXT_LEN = 1024;
 // one round-trip.
 const MAX_DESCRIBE_BATCH = 50;
 
-// Mirrors the entity-name shape `isValidEntityName` accepts in
-// `lib/semantic/files.ts` (no `/`, `\`, `..`, `\0`). Surfacing the
-// constraint at the Zod boundary gives the MCP client an immediate
-// error instead of an indistinguishable `{ found: false }`.
-const ENTITY_NAME_PATTERN = /^[A-Za-z0-9_.-]+$/;
+/**
+ * Names `describeEntity` will accept: a DENYLIST of the path-traversal forms,
+ * matching `isValidEntityName` in `lib/semantic/files.ts` (no `/`, `\`, `..`,
+ * `\0`). Surfacing it at the Zod boundary gives the MCP client an immediate
+ * error instead of an indistinguishable `{ found: false }`.
+ *
+ *   (?!.*\.\.)  no `..` anywhere
+ *   [^/\\\0]+   no path separator, no NUL
+ *
+ * ⚠️ IT IS A DENYLIST BECAUSE THE ALLOWLIST BROKE THE SURFACE (#5122). This was
+ * `/^[A-Za-z0-9_.-]+$/`, whose comment claimed it mirrored `isValidEntityName`.
+ * It did not — it additionally forbade spaces and every non-ASCII character.
+ * Entity YAML carries a human display `name:`, the seeded demo layer alone ships
+ * four with a space (`Order Items`, `Email Campaigns`, `Inventory Levels`,
+ * `Product Reviews`), `generate/yaml.ts` produces the same shape, and BOTH
+ * `listEntities` branches advertise that field verbatim (`scanDiskEntities`
+ * reads `raw.name`; `rowToEntry` reads the parsed YAML `name`). So the catalog
+ * advertised `"Order Items"` and its sibling tool refused it with an MCP
+ * `-32602` before dispatch — which meant the name/table/file-stem resolution
+ * #2142 and #4733 built for exactly this round-trip could never run.
+ * `resolveEntity` below resolves the spaced name correctly the moment the
+ * boundary lets it through.
+ *
+ * ⚠️ AND IT IS A REGEX, NOT A `.refine()`. `registerTool` advertises this shape
+ * as JSON Schema and the MCP SDK validates incoming arguments against THAT; a
+ * `.refine()` predicate has no JSON Schema representation, so it is dropped on
+ * the wire and the boundary stops rejecting anything at all. The first cut of
+ * this fix used `.refine(isValidEntityName)` and silently removed the
+ * path-traversal guard — the "still rejects path-traversal names at the
+ * boundary" test is what caught it, which is why that test exists rather than
+ * being assumed.
+ *
+ * The cost of a second spelling is drift from `isValidEntityName`, which is the
+ * authority. `semantic-tools.test.ts` pins the two against a shared corpus
+ * ("agrees with isValidEntityName") so they cannot part company again.
+ */
+export const ENTITY_NAME_PATTERN = /^(?!.*\.\.)[^/\\\0]+$/;
+const ENTITY_NAME_CONSTRAINT =
+  "must not contain a path separator (`/`, `\\`), `..`, or a NUL byte";
 
 // The flat-root semantic group, mirroring the `group: "default"` the scanner
 // stamps for the default layout (`lib/semantic/scanner.ts:getGroupDirs`). A
@@ -299,20 +333,24 @@ export function registerSemanticTools(
           .string()
           .min(1)
           .max(MAX_IDENTIFIER_LEN)
-          .regex(ENTITY_NAME_PATTERN)
+          .regex(ENTITY_NAME_PATTERN, ENTITY_NAME_CONSTRAINT)
           .optional()
           .describe(
-            "Single entity name (`name` field) or table name. Alphanumerics, `_`, `-`, `.` only — no path separators. Mutually exclusive with `names`.",
+            "Single entity name (the `name` field exactly as `listEntities` reports it, spaces included) or table name. No path separators. Mutually exclusive with `names`.",
           ),
         names: z
           .array(
-            z.string().min(1).max(MAX_IDENTIFIER_LEN).regex(ENTITY_NAME_PATTERN),
+            z
+              .string()
+              .min(1)
+              .max(MAX_IDENTIFIER_LEN)
+              .regex(ENTITY_NAME_PATTERN, ENTITY_NAME_CONSTRAINT),
           )
           .min(1)
           .max(MAX_DESCRIBE_BATCH)
           .optional()
           .describe(
-            `Batch of entity/table names to describe in a single call (up to ${MAX_DESCRIBE_BATCH}). Prefer this over repeated single calls when a query spans multiple entities. Duplicate names are de-duplicated, so \`count\` may be smaller than the number of names sent. Mutually exclusive with \`name\`.`,
+            `Batch of entity/table names to describe in a single call (up to ${MAX_DESCRIBE_BATCH}), each exactly as \`listEntities\` reports it (spaces included). Prefer this over repeated single calls when a query spans multiple entities. Duplicate names are de-duplicated, so \`count\` may be smaller than the number of names sent. Mutually exclusive with \`name\`.`,
           ),
       },
       // Read-only over the local semantic catalog (closed world).

@@ -27,6 +27,7 @@ import {
   _getRateLimitMapSizesForTests,
   _hasCachedLimitForTests,
 } from "../oauth-client";
+import { SEMANTIC_TOOL_NAMES } from "@atlas/api/lib/tools/descriptions";
 
 afterEach(() => {
   _resetClientRateLimitsForTests();
@@ -73,6 +74,32 @@ describe("toolWeight", () => {
     expect(TOOL_WEIGHTS.explore).toBeDefined();
     expect(TOOL_WEIGHTS.listEntities).toBeDefined();
     expect(TOOL_WEIGHTS.runMetric).toBeDefined();
+  });
+
+  // ⚠️ #5122 — `query` had NO entry here, so the single most expensive tool on
+  // the surface rate-limited at the DEFAULT weight of 1: cheaper than the
+  // `executeSQL` it wraps, and level with a `listEntities` metadata read. A
+  // hosted client optimising for spend rather than row count was therefore
+  // policed at the cheapest rate available.
+  //
+  // Asserted RELATIONALLY, not as a literal. `toBe(10)` would restate the
+  // constant and pass for any future value; the property that actually has to
+  // hold is that a tool which wraps another — running a second server-side LLM
+  // and then issuing that tool's work itself — can never cost less than what it
+  // wraps.
+  it("weights `query` at least as heavily as the executeSQL it wraps", () => {
+    expect(toolWeight("query")).toBeGreaterThanOrEqual(toolWeight("executeSQL"));
+    expect(toolWeight("query")).toBeGreaterThan(toolWeight("listEntities"));
+  });
+
+  it("gives every typed semantic tool an explicit weight rather than the default", () => {
+    // Derived from SEMANTIC_TOOL_NAMES rather than a second hand-written list,
+    // so registering a new typed tool without pricing it fails HERE instead of
+    // silently entering the cheapest bucket — which is precisely how `query`
+    // went unweighted.
+    for (const name of SEMANTIC_TOOL_NAMES) {
+      expect({ name, weighted: name in TOOL_WEIGHTS }).toEqual({ name, weighted: true });
+    }
   });
 });
 

@@ -421,8 +421,7 @@ export async function getYAMLSnapshotsFromDB(
  */
 // Extends AllowedTablesScope so the diff's whitelist scope stays in lockstep
 // with the shared resolver: a new required scoping axis surfaces here as a
-// compile error rather than silently going unpassed (the diff supplies its own
-// `onMissingOrgDB` at the call site, so it isn't part of this public shape).
+// compile error rather than silently going unpassed.
 export interface DiffOptions extends Pick<AllowedTablesScope, "orgId" | "atlasMode"> {
   /** Organization ID for org-scoped semantic whitelist. */
   orgId?: string;
@@ -466,11 +465,10 @@ export async function runDiff(
   connectionId: string = "default",
   options: DiffOptions = {},
 ): Promise<SemanticDiffResponse> {
-  // The diff opts into the file-whitelist fallback for an org-without-internal-DB
-  // (a self-hosted admin who set an org but hand-edits YAML still gets a
-  // meaningful diff); the enforcement-parity surfaces (/api/v1/tables) use the
-  // default "empty" so they match validateSQL exactly.
-  const allowedTables = await resolveAllowedTables(connectionId, { ...options, onMissingOrgDB: "file" });
+  // The file-whitelist fallback for an org-without-internal-DB used to be an
+  // opt-in only the diff took; it is now the shared behaviour of every surface
+  // (#5122), so there is no longer a knob to pass here.
+  const allowedTables = await resolveAllowedTables(connectionId, options);
   // Scope introspection to the querying workspace (#3109) so a shared
   // install_id reads the correct tenant's schema, not a sibling's.
   const dbSnapshots = await getDBSchema(connectionId, allowedTables, options.orgId);
@@ -517,11 +515,10 @@ export async function runDriftDiff(
   introspectedTableCount: number;
   warnings: string[];
 }> {
-  // The diff opts into the file-whitelist fallback for an org-without-internal-DB
-  // (a self-hosted admin who set an org but hand-edits YAML still gets a
-  // meaningful diff); the enforcement-parity surfaces (/api/v1/tables) use the
-  // default "empty" so they match validateSQL exactly.
-  const allowedTables = await resolveAllowedTables(connectionId, { ...options, onMissingOrgDB: "file" });
+  // The file-whitelist fallback for an org-without-internal-DB used to be an
+  // opt-in only the diff took; it is now the shared behaviour of every surface
+  // (#5122), so there is no longer a knob to pass here.
+  const allowedTables = await resolveAllowedTables(connectionId, options);
   // Scope introspection to the querying workspace (#3109) so a shared
   // install_id reads the correct tenant's schema, not a sibling's.
   const rawDBSnapshots = await getDBSchemaRaw(connectionId, options.orgId);

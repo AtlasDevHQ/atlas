@@ -17,7 +17,7 @@
  * internal DB.
  */
 
-import { describe, expect, it, beforeEach, mock, type Mock } from "bun:test";
+import { describe, expect, it, beforeEach, afterEach, mock, type Mock } from "bun:test";
 import { createConnectionMock } from "@atlas/api/testing/connection";
 
 // Capture every org-whitelist lookup: which connection bucket + widening flag.
@@ -139,9 +139,22 @@ const executeTool = executeSQL.execute as unknown as (
 ) => Promise<ToolResult>;
 
 describe("executeSQL fanout — per-leg execution target (SSOT)", () => {
+  // The per-leg buckets under test are the ORG whitelist's, and `validateSQL`
+  // only reaches it when `orgId && hasInternalDB()` (#5122) — so state the
+  // internal DB rather than inheriting whichever value the runner happened to
+  // have. Without this the legs resolve through the file whitelist,
+  // `whitelistCalls` stays empty, and the test fails for a reason that has
+  // nothing to do with per-leg target resolution.
+  const previousDatabaseUrl = process.env.DATABASE_URL;
+  afterEach(() => {
+    if (previousDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = previousDatabaseUrl;
+  });
+
   beforeEach(() => {
     whitelistCalls.length = 0;
     mockQuery.mockClear();
+    process.env.DATABASE_URL = "postgres://sql-fanout-per-leg-test/db";
     // All-sources reach (groupReach null) + the conversation's own connection
     // is `us-int` — so the `us-int` leg is the self leg, `eu` is a sibling.
     mockRequestContext = {

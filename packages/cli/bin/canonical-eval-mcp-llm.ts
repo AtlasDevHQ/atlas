@@ -58,6 +58,7 @@ import {
 
 import { getAgentMaxSteps } from "@atlas/api/lib/agent";
 import {
+  liftEvalClientRateLimit,
   startEvalAuthServer,
   type EvalAuthFixture,
 } from "@atlas/mcp/eval/auth";
@@ -138,9 +139,73 @@ export type McpLlmOutcome =
       readonly artifact: McpFailureArtifact;
     };
 
+/**
+ * Ground truth for one metric question, derived by EXECUTING the metric's own
+ * authoritative SQL (`findMetricById(id).sql`) against the same datasource the
+ * model queries — never hand-written.
+ *
+ * ⚠️ THIS REPLACES `expect.sql_pattern` MATCHING IN LLM METRIC MODE, AND THE
+ * REASON IS THAT THE NEEDLES COULD NEVER FAIL WHERE THEY WERE WRITTEN (#5122).
+ * `total_customers`' authoritative SQL is
+ * `SELECT COUNT(DISTINCT id) AS total_customers FROM customers`, and its needle
+ * is `["COUNT(DISTINCT id)", "FROM customers"]` — a verbatim substring of the
+ * SQL the DETERMINISTIC eval executes, so there it matches by construction and
+ * tests nothing. The LLM grader then reused the identical needle to judge SQL
+ * the model wrote from scratch, which turns it into a spelling test:
+ *
+ *   cq-002  model ran `SELECT COUNT(*) FROM customers` — correct on a primary
+ *           key, and marked wrong for not saying `COUNT(DISTINCT id)`.
+ *   cq-003  model ran `AVG(total_cents / 100.0)` — the same metric in dollars,
+ *           and marked wrong because the needle `AVG(total_cents)` carries the
+ *           closing paren. cq-001 passed only because ITS conversion happened
+ *           to land outside the parens.
+ *
+ * Comparing values instead grades whether the question was answered. It is also
+ * strictly stronger: a spelling check passes canonical-looking SQL with a wrong
+ * filter, and a value check does not.
+ */
+export type MetricExpectation =
+  /** Single-row, single-number metric — compare the number. */
+  | { readonly kind: "scalar"; readonly value: number }
+  /**
+   * Grouped metric — compare the SET of grouping keys (the authoritative SQL's
+   * first column). Robust to the extra columns, aliases, and orderings a model
+   * legitimately adds, while still failing a wrong grouping or a wrong filter.
+   */
+  | { readonly kind: "keyed"; readonly keys: readonly string[] };
+
 export interface McpLlmEvalOptions {
   readonly questionsPath?: string;
   readonly model: LanguageModel;
+  /**
+   * `metricId → expectation`, precomputed by the caller before the question
+   * loop so {@link grade} stays pure and synchronously unit-testable.
+   *
+   * A metric question with no entry FAILS THE RUN rather than passing — a
+   * missing expectation means the harness could not establish ground truth,
+   * and a gate that silently stops checking is worse than one that stops.
+   */
+  readonly metricExpectations?: Readonly<Record<string, MetricExpectation>>;
+  /**
+   * `questionId → expectation` for PATTERN and VIRTUAL questions, derived the
+   * same way metric ground truth is: by executing the question's own
+   * authoritative SQL (the entity's `query_patterns[*].sql`, or the inline
+   * `sql:` a virtual-dimension question carries).
+   *
+   * ⚠️ ADDITIVE, unlike metric mode. Here the value check is an EXTRA accept
+   * path layered over the existing `sql_pattern` / structural checks rather
+   * than a replacement, so it can only ever turn a false negative into a pass —
+   * it cannot introduce one. Metric mode could be replaced outright because its
+   * needles were provably vacuous where they were authored; the pattern needles
+   * are not obviously so, and widening was the change that could be made
+   * without a second round of measurement to justify it.
+   *
+   * cq-016 is why it exists: it PASSED on 2026-08-10 and FAILED on the next
+   * run, on the same corpus and the same model, because the model phrased the
+   * promotion filter differently the second time. A gate that flips on SQL
+   * phrasing is not measuring what it claims to.
+   */
+  readonly answerExpectations?: Readonly<Record<string, MetricExpectation>>;
   /**
    * Map of `questionId → baselineMs`. When present, the grader emits a
    * `latency` artifact for any question whose total dispatch exceeded
@@ -203,6 +268,12 @@ export async function runMcpLlmEval(
   const ownsFixture = !opts.fixture;
   const fixture = opts.fixture ?? (await bootDefaultFixture());
 
+  // A full run out-dispatches the default hosted-MCP quota (#5122) — see
+  // `liftEvalClientRateLimit`. Applied whether or not we own the fixture: the
+  // OAuth client is the same either way, and a shared fixture across several
+  // runs accumulates MORE load against the same bucket, not less.
+  liftEvalClientRateLimit(fixture);
+
   try {
     const client = new EvalMcpClient({
       baseUrl: fixture.baseUrl,
@@ -259,6 +330,8 @@ export async function runMcpLlmEval(
           question: q,
           recorded,
           baseline: opts.baseline,
+          metricExpectations: opts.metricExpectations,
+          answerExpectations: opts.answerExpectations,
         });
         outcomes.push(outcome);
         if (outcome.status === "fail") artifacts.push(outcome.artifact);
@@ -370,6 +443,8 @@ interface OneQuestionInput {
   readonly question: Question;
   readonly recorded: RecordedToolCall[];
   readonly baseline: McpLlmEvalOptions["baseline"];
+  readonly metricExpectations: McpLlmEvalOptions["metricExpectations"];
+  readonly answerExpectations: McpLlmEvalOptions["answerExpectations"];
 }
 
 async function runOneQuestion(
@@ -433,6 +508,8 @@ async function runOneQuestion(
     finalText,
     latencyMs,
     baseline,
+    metricExpectations: input.metricExpectations,
+    answerExpectations: input.answerExpectations,
   });
 }
 
@@ -444,6 +521,8 @@ interface GradeInput {
   readonly finalText: string;
   readonly latencyMs: number;
   readonly baseline: McpLlmEvalOptions["baseline"];
+  readonly metricExpectations: McpLlmEvalOptions["metricExpectations"];
+  readonly answerExpectations: McpLlmEvalOptions["answerExpectations"];
 }
 
 /**
@@ -454,8 +533,43 @@ interface GradeInput {
  * `--mcp-llm` is a regression gate on tool-selection quality, not a
  * style guide for the model.
  */
+/**
+ * Abort the run when any dispatch came back `rate_limited`.
+ *
+ * ⚠️ A THROTTLE IS A HARNESS FAULT, NOT A MODEL FAULT, AND MUST NOT BE GRADED
+ * (#5122). Before this, the per-mode graders saw the quota envelope as "the LLM
+ * saw an error envelope and did not recover" and charged it to `recovery` — so
+ * two questions lost points for a limit the model would have kept hitting
+ * however it behaved, and the score moved with dispatch timing rather than with
+ * tool-selection quality. `liftEvalClientRateLimit` raises the ceiling so this
+ * should not fire; if it does, the run's dispatch volume has outgrown the
+ * override and the honest outcome is a loud stop, not a quieter score.
+ */
+function assertNotRateLimited(
+  q: Question,
+  toolCalls: readonly RecordedToolCall[],
+): void {
+  const throttled = toolCalls.find(
+    (c) => c.result.kind === "error" && c.result.envelope.code === "rate_limited",
+  );
+  if (!throttled) return;
+  const envelope =
+    throttled.result.kind === "error" ? throttled.result.envelope : null;
+  throw new Error(
+    `[harness] ${q.id}: MCP dispatch was rate limited on ${throttled.name} — ` +
+      `${envelope?.message ?? "no message"} ` +
+      `This is the eval throttling ITSELF, not a model failure: the run's own ` +
+      `dispatch volume exceeded the eval client's hosted-MCP quota. Raise it via ` +
+      `liftEvalClientRateLimit (EVAL_CLIENT_REQUESTS_PER_MINUTE) rather than ` +
+      `letting the throttle be graded as a recovery regression.`,
+  );
+}
+
 function grade(input: GradeInput): McpLlmOutcome {
   const { question: q, toolCalls, finalText, latencyMs, baseline } = input;
+
+  // Before ANY per-mode grading — a throttled run must not produce a score.
+  assertNotRateLimited(q, toolCalls);
 
   // Surface unparseable tool results immediately — those are MCP-layer
   // protocol regressions and would mask any per-mode grading the call
@@ -498,7 +612,14 @@ function grade(input: GradeInput): McpLlmOutcome {
     });
   }
 
-  const modeOutcome = gradeByMode(q, toolCalls, finalText, latencyMs);
+  const modeOutcome = gradeByMode(
+    q,
+    toolCalls,
+    finalText,
+    latencyMs,
+    input.metricExpectations,
+    input.answerExpectations,
+  );
   if (modeOutcome.status === "fail") return modeOutcome;
 
   // Latency check is layered on top of a successful answer — a slow
@@ -531,16 +652,24 @@ function gradeByMode(
   toolCalls: readonly RecordedToolCall[],
   finalText: string,
   latencyMs: number,
+  metricExpectations: McpLlmEvalOptions["metricExpectations"],
+  answerExpectations: McpLlmEvalOptions["answerExpectations"],
 ): McpLlmOutcome {
   switch (q.mode) {
     case "metric":
-      return gradeMetric(q, toolCalls, finalText, latencyMs);
+      return gradeMetric(
+        q,
+        toolCalls,
+        finalText,
+        latencyMs,
+        metricExpectations?.[q.metric_id],
+      );
     case "glossary":
       return gradeGlossary(q, toolCalls, finalText, latencyMs);
     case "pattern":
-      return gradePattern(q, toolCalls, finalText, latencyMs);
+      return gradePattern(q, toolCalls, finalText, latencyMs, answerExpectations?.[q.id]);
     case "virtual":
-      return gradeVirtual(q, toolCalls, finalText, latencyMs);
+      return gradeVirtual(q, toolCalls, finalText, latencyMs, answerExpectations?.[q.id]);
     default: {
       const _exhaustive: never = q;
       throw new Error(`unreachable mode: ${String(_exhaustive)}`);
@@ -548,16 +677,33 @@ function gradeByMode(
   }
 }
 
+/**
+ * Tools that can legitimately ANSWER a data question.
+ *
+ * ⚠️ `query` BELONGS HERE BECAUSE THE TOOL SURFACE SAYS SO (#5122).
+ * `QUERY_TOOL_DESCRIPTION` tells the client in as many words: *"This is the
+ * recommended path for question-answering… prefer it when answer quality
+ * matters."* The grader counted only `runMetric` / `executeSQL`, so a model
+ * that followed the surface's own recommendation was scored as a
+ * `tool_selection` failure (cq-008). An eval whose rubric contradicts the
+ * descriptions it is grading measures the disagreement, not the model.
+ */
+const ANSWERING_TOOLS = ["runMetric", "executeSQL", "query"] as const;
+
+function isAnsweringCall(c: RecordedToolCall): boolean {
+  return (ANSWERING_TOOLS as readonly string[]).includes(c.name);
+}
+
 function gradeMetric(
   q: Extract<Question, { mode: "metric" }>,
   toolCalls: readonly RecordedToolCall[],
   finalText: string,
   latencyMs: number,
+  expectation: MetricExpectation | undefined,
 ): McpLlmOutcome {
-  const metricCalls = toolCalls.filter((c) => c.name === "runMetric");
-  const sqlCalls = toolCalls.filter((c) => c.name === "executeSQL");
+  const answering = toolCalls.filter(isAnsweringCall);
 
-  if (metricCalls.length === 0 && sqlCalls.length === 0) {
+  if (answering.length === 0) {
     return failOutcome({
       question: q,
       latencyMs,
@@ -567,26 +713,45 @@ function gradeMetric(
       tool: null,
       args: {},
       response: { calledTools: toolCalls.map((c) => c.name) },
-      expected: { firstChoice: "runMetric", fallback: "executeSQL" },
-      summary: `LLM never called runMetric or executeSQL for metric ${q.metric_id}`,
+      expected: { firstChoice: "runMetric", alsoAccepted: ANSWERING_TOOLS },
+      summary: `LLM never called an answering tool (${ANSWERING_TOOLS.join(" / ")}) for metric ${q.metric_id}`,
     });
   }
 
-  const metricSuccess = metricCalls.find(
-    (c) => c.args.id === q.metric_id && c.result.kind === "ok",
+  // `runMetric` with the right id runs the semantic layer's own SQL, so it is
+  // correct by construction — no value comparison needed or possible to fail.
+  const metricSuccess = answering.find(
+    (c) => c.name === "runMetric" && c.args.id === q.metric_id && c.result.kind === "ok",
   );
   if (metricSuccess) return passOutcome(q, toolCalls, finalText, latencyMs);
 
-  const sqlPatterns = q.expect.sql_pattern ?? [];
-  const sqlSuccess = findSqlMatch(sqlCalls, sqlPatterns);
-  if (sqlSuccess) return passOutcome(q, toolCalls, finalText, latencyMs);
+  // Ground truth is needed ONLY to adjudicate a successful answer. A run that
+  // produced no successful answering call is classified below from the call
+  // sequence alone, so requiring an expectation there would turn a legitimate
+  // `recovery` verdict into a harness crash.
+  const succeeded = answering.filter((c) => c.result.kind === "ok");
+  if (succeeded.length > 0) {
+    // Missing it means the harness never established what the right answer is —
+    // fail loudly rather than fall through to a weaker check and report a
+    // number nobody verified.
+    if (!expectation) {
+      throw new Error(
+        `[harness] ${q.id}: no MetricExpectation for "${q.metric_id}". ` +
+          `Ground truth is derived by executing the metric's authoritative SQL; ` +
+          `without it a successful answer cannot be adjudicated. Check that ` +
+          `findMetricById resolves "${q.metric_id}" in the installed semantic layer.`,
+      );
+    }
+    const matched = succeeded.some(
+      (c) => c.result.kind === "ok" && resultMatchesExpectation(c.result.data, expectation),
+    );
+    if (matched) return passOutcome(q, toolCalls, finalText, latencyMs);
+  }
 
   // Recovery vs tool_selection: scope to mode-relevant tools so a
   // bystander `searchGlossary` returning `ambiguous_term` doesn't get
-  // blamed on a metric question. Mirrors `gradeVirtual`'s scoped
-  // filter — `gradeMetric` previously caught any error envelope from
-  // any tool which made the artifact actively misleading.
-  const errorCalls = [...metricCalls, ...sqlCalls].filter(isErrorResult);
+  // blamed on a metric question.
+  const errorCalls = answering.filter(isErrorResult);
   if (errorCalls.length > 0) {
     const last = errorCalls[errorCalls.length - 1]!;
     return failOutcome({
@@ -599,7 +764,7 @@ function gradeMetric(
       args: last.args,
       response: last.result.envelope,
       expected: { metric_id: q.metric_id, success: true },
-      summary: `LLM saw ${errorCalls.length} error envelope(s) on runMetric/executeSQL for metric ${q.metric_id} and did not produce a successful answer`,
+      summary: `LLM saw ${errorCalls.length} error envelope(s) on ${ANSWERING_TOOLS.join("/")} for metric ${q.metric_id} and did not produce a successful answer`,
     });
   }
 
@@ -611,10 +776,181 @@ function gradeMetric(
     category: "tool_selection",
     tool: null,
     args: {},
-    response: { calledTools: toolCalls.map((c) => c.name) },
-    expected: { metric_id: q.metric_id, sql_pattern: sqlPatterns },
-    summary: `LLM dispatched runMetric/executeSQL but neither produced a matching successful answer for metric ${q.metric_id}`,
+    response: {
+      calledTools: toolCalls.map((c) => c.name),
+      observedValues: answering
+        .filter((c) => c.result.kind === "ok")
+        .flatMap((c) => (c.result.kind === "ok" ? numericValues(collectRows(c.result.data)) : []))
+        .slice(0, 12),
+    },
+    expected: { metric_id: q.metric_id, expectation: expectation ?? null },
+    summary:
+      `LLM answered metric ${q.metric_id} but no result matched the authoritative value ` +
+      `(${
+        expectation === undefined
+          ? "no expectation resolved"
+          : expectation.kind === "scalar"
+            ? `scalar ${expectation.value}`
+            : `keys [${expectation.keys.join(", ")}]`
+      })`,
   });
+}
+
+/**
+ * True when ANY answering call's result matches the expectation. Shared by the
+ * pattern / virtual graders, which use it as an extra accept path.
+ */
+function matchesAnyAnsweringResult(
+  toolCalls: readonly RecordedToolCall[],
+  expectation: MetricExpectation,
+): boolean {
+  return toolCalls
+    .filter(isAnsweringCall)
+    .some((c) => c.result.kind === "ok" && resultMatchesExpectation(c.result.data, expectation));
+}
+
+// ── Answer comparison ────────────────────────────────────────────────
+
+/**
+ * Pull result rows out of whichever answering tool produced them.
+ * `runMetric` / `executeSQL` answer `{ columns, rows }`; `query` answers
+ * `{ answer, sql, data }` where `data` is one entry per SELECT its agent ran.
+ */
+function collectRows(data: unknown): ReadonlyArray<Record<string, unknown>> {
+  if (!data || typeof data !== "object") return [];
+  const obj = data as { rows?: unknown; data?: unknown };
+  const out: Record<string, unknown>[] = [];
+  if (Array.isArray(obj.rows)) {
+    for (const r of obj.rows) if (r && typeof r === "object") out.push(r as Record<string, unknown>);
+  }
+  if (Array.isArray(obj.data)) {
+    for (const entry of obj.data) out.push(...collectRows(entry));
+  }
+  return out;
+}
+
+/**
+ * Every finite number appearing in the rows. Postgres returns `numeric` as a
+ * STRING over the wire, so string cells that parse as numbers count — without
+ * that, every `SUM`/`AVG`/`COUNT` answer would look non-numeric.
+ */
+function numericValues(rows: ReadonlyArray<Record<string, unknown>>): number[] {
+  const out: number[] = [];
+  for (const row of rows) {
+    for (const cell of Object.values(row)) {
+      if (typeof cell === "number" && Number.isFinite(cell)) out.push(cell);
+      else if (typeof cell === "string" && cell.trim() !== "") {
+        const n = Number(cell);
+        if (Number.isFinite(n)) out.push(n);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Unit scalings accepted when comparing a scalar.
+ *
+ * The demo layer stores money in CENTS and several metrics divide by 100 to
+ * present dollars, so cents-vs-dollars is a presentation choice the model makes
+ * freely (cq-003 answered AOV in dollars against a cents-denominated metric).
+ * Accepting the two conversions is deliberate and bounded — it is NOT a
+ * tolerance on correctness: a wrong total is still wrong at every scaling.
+ */
+const UNIT_SCALINGS = [1, 100, 0.01] as const;
+
+/** Decimal places carried by a number's shortest exact representation. */
+function decimalPlaces(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  const s = String(n);
+  const dot = s.indexOf(".");
+  if (dot === -1) return 0;
+  const exp = s.indexOf("e");
+  if (exp !== -1) return Math.min(20, Math.max(0, exp - dot - 1));
+  return Math.min(20, s.length - dot - 1);
+}
+
+/**
+ * Equal to the precision the LESS precise of the two actually expresses.
+ *
+ * ⚠️ THIS EXISTS BECAUSE THE FIRST CUT OF THE VALUE GRADER REPRODUCED THE VERY
+ * DEFECT IT REPLACED. A plain 1e-6 relative tolerance failed cq-019: the
+ * `return_rate` metric ends in `ROUND(…, 1)` and publishes `11.2`, the model
+ * rounded the identical ratio to two places and answered `11.22`, and the
+ * grader called it wrong. That is the same "rejected a correct answer over
+ * presentation" mistake as the `AVG(total_cents)` needle — reintroduced one
+ * layer down, by the fix, and caught only because cq-019 had passed the run
+ * before and regressed.
+ *
+ * Rounding BOTH sides to `min(dp(a), dp(b))` accepts a difference in displayed
+ * precision and nothing else:
+ *
+ *   expected 11.2  (1dp)  vs 11.22 (2dp) → 11.2 vs 11.2   → equal
+ *   expected 11.2  (1dp)  vs 11.9  (1dp) → 11.2 vs 11.9   → NOT equal
+ *   expected 180.194362   vs 180.19      → 180.19 both    → equal
+ *   expected 8000  (0dp)  vs 7999        → 8000 vs 7999   → NOT equal
+ *
+ * The trade-off, stated rather than hidden: an answer coarser than the
+ * authoritative value is accepted at its own precision (a model answering
+ * "about $180" for 180.194362 passes). That is the right call — the metric
+ * publishes no claim finer than what it prints, so the eval cannot assert one
+ * — but it does mean this check grades magnitude, not significant figures.
+ */
+function approximatelyEqual(a: number, b: number): boolean {
+  if (a === b) return true;
+  const dp = Math.min(decimalPlaces(a), decimalPlaces(b));
+  if (a.toFixed(dp) === b.toFixed(dp)) return true;
+  // Float artifacts below the compared precision (0.1 + 0.2 ≠ 0.3) still need a
+  // relative epsilon; without it two values that ARE equal to `dp` places can
+  // straddle a rounding boundary and miss.
+  const scale = Math.max(Math.abs(a), Math.abs(b));
+  return Math.abs(a - b) <= (scale > 1 ? scale * 1e-9 : 1e-12);
+}
+
+function resultMatchesExpectation(data: unknown, expectation: MetricExpectation): boolean {
+  const rows = collectRows(data);
+  if (rows.length === 0) return false;
+
+  if (expectation.kind === "scalar") {
+    return numericValues(rows).some((candidate) =>
+      UNIT_SCALINGS.some((s) => approximatelyEqual(candidate * s, expectation.value)),
+    );
+  }
+
+  // Keyed: some column of the model's result must carry exactly the
+  // authoritative grouping keys. Compared as a SET so column aliasing, extra
+  // measure columns, and ORDER BY differences don't matter, while a missing or
+  // spurious group does.
+  const expected = new Set(expectation.keys.map(normalizeKey));
+  if (expected.size === 0) return false;
+  const byColumn = new Map<string, Set<string>>();
+  for (const row of rows) {
+    for (const [col, cell] of Object.entries(row)) {
+      if (cell === null || cell === undefined) continue;
+      let set = byColumn.get(col);
+      if (!set) {
+        set = new Set();
+        byColumn.set(col, set);
+      }
+      set.add(normalizeKey(String(cell)));
+    }
+  }
+  for (const set of byColumn.values()) {
+    if (set.size !== expected.size) continue;
+    let allPresent = true;
+    for (const k of expected) {
+      if (!set.has(k)) {
+        allPresent = false;
+        break;
+      }
+    }
+    if (allPresent) return true;
+  }
+  return false;
+}
+
+function normalizeKey(raw: string): string {
+  return raw.trim().toLowerCase();
 }
 
 function gradeGlossary(
@@ -624,6 +960,47 @@ function gradeGlossary(
   latencyMs: number,
 ): McpLlmOutcome {
   const glossaryCalls = toolCalls.filter((c) => c.name === "searchGlossary");
+
+  // ── The contract is "ASK, never silently pick" (#5122) ──────────────
+  //
+  // questions.yml states it in as many words above the glossary block:
+  // *"`status: ambiguous` terms — agent must ASK, never silently pick."* The
+  // grader instead demanded a literal `searchGlossary({term})` DISPATCH, which
+  // is a different claim, and the corpus was never authored to support it: the
+  // deterministic harness does not invoke the agent for glossary mode at all
+  // (`runWithAgent` returns semantic-layer state directly), so these three
+  // questions assert glossary STATE and the LLM grader repurposed them as
+  // tool-selection tests — the same category error as the `sql_pattern` needles.
+  //
+  // Both accept paths below are evidenced by captured answers, not assumed:
+  //
+  //   cq-013  dispatched `query` (which consults the glossary server-side) and
+  //           answered "the glossary shows there are MULTIPLE ways to measure
+  //           revenue… Which type would you like to see?" — the contract,
+  //           performed exactly, and graded a tool_selection failure.
+  //   cq-014  "Filter by status" → "I need more context. Could you please
+  //           clarify: what data are you looking at?" with NO tool dispatched.
+  //   cq-015  "What's the price?" → the same shape.
+  //
+  // ⚠️ The second path requires that NO answering tool ran. That is what keeps
+  // it from being a loophole: the regression this eval exists to catch is an
+  // agent that guesses a mapping and returns a number, and an answer that
+  // dispatched nothing cannot have done that.
+  if (q.expect.status === "ambiguous") {
+    const envelopeForTerm =
+      glossaryCalls.find((c) => c.result.kind === "error")?.result.kind === "error"
+        ? (glossaryCalls.find((c) => c.result.kind === "error")!
+            .result as { envelope: ToolErrorEnvelope }).envelope
+        : null;
+    if (surfacedAmbiguity(finalText, q.term, envelopeForTerm)) {
+      return passOutcome(q, toolCalls, finalText, latencyMs);
+    }
+    const answered = toolCalls.some(isAnsweringCall);
+    if (!answered && asksForClarification(finalText)) {
+      return passOutcome(q, toolCalls, finalText, latencyMs);
+    }
+  }
+
   if (glossaryCalls.length === 0) {
     return failOutcome({
       question: q,
@@ -711,6 +1088,21 @@ function gradeGlossary(
   return passOutcome(q, toolCalls, finalText, latencyMs);
 }
 
+/**
+ * True when the answer is a request for disambiguation rather than an answer.
+ *
+ * Requires an actual question plus a clarification cue, so a confident wrong
+ * answer that merely happens to contain "what" does not qualify. Paired with
+ * the "no answering tool ran" guard at the call site, which is what makes this
+ * safe: together they say "the agent returned no figure and asked instead".
+ */
+function asksForClarification(text: string): boolean {
+  if (!text.includes("?")) return false;
+  return /\bclarif|more context|could you|can you|which (one|type|of these)|what (specific|data|are you|exactly)/i.test(
+    text,
+  );
+}
+
 function surfacedAmbiguity(
   text: string,
   term: string,
@@ -736,6 +1128,7 @@ function gradePattern(
   toolCalls: readonly RecordedToolCall[],
   finalText: string,
   latencyMs: number,
+  expectation: MetricExpectation | undefined,
 ): McpLlmOutcome {
   // Pattern questions accept either the introspection path (describeEntity
   // → executeSQL with the pattern's SQL) or a direct executeSQL whose
@@ -743,6 +1136,13 @@ function gradePattern(
   // the regression class we care about is "neither happened".
   const describeCalls = toolCalls.filter((c) => c.name === "describeEntity");
   const sqlCalls = toolCalls.filter((c) => c.name === "executeSQL");
+
+  // Value match against the pattern's OWN SQL — the accept path that makes a
+  // correctly-answered question pass regardless of how the model phrased the
+  // filter (#5122; cq-016 flipped pass→fail across two runs on phrasing alone).
+  if (expectation && matchesAnyAnsweringResult(toolCalls, expectation)) {
+    return passOutcome(q, toolCalls, finalText, latencyMs);
+  }
 
   if (describeCalls.length === 0 && sqlCalls.length === 0) {
     return failOutcome({
@@ -806,8 +1206,15 @@ function gradeVirtual(
   toolCalls: readonly RecordedToolCall[],
   finalText: string,
   latencyMs: number,
+  expectation: MetricExpectation | undefined,
 ): McpLlmOutcome {
   const sqlCalls = toolCalls.filter((c) => c.name === "executeSQL");
+
+  // Same additive value-match accept path as `gradePattern`.
+  if (expectation && matchesAnyAnsweringResult(toolCalls, expectation)) {
+    return passOutcome(q, toolCalls, finalText, latencyMs);
+  }
+
   if (sqlCalls.length === 0) {
     return failOutcome({
       question: q,

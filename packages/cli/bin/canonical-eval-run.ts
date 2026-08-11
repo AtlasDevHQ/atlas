@@ -29,6 +29,9 @@ import * as fs from "fs";
 import * as path from "path";
 import * as yaml from "js-yaml";
 import { getFlag, seedDemoPostgres } from "./atlas";
+// Type-only — carries no runtime graph, so the `--help` / `--llm` paths still
+// avoid pulling the MCP eval module (which the value import below defers).
+import type { MetricExpectation } from "./canonical-eval-mcp-llm";
 import {
   loadQuestions,
   formatSummary,
@@ -658,10 +661,23 @@ async function runMcpLlmMode(
     );
   }
 
+  // Ground truth for every metric question, established BEFORE any LLM call by
+  // executing each metric's own authoritative SQL. See `MetricExpectation` —
+  // LLM metric mode grades the ANSWER now, not the SQL's spelling (#5122).
+  const { metricExpectations, answerExpectations } = await resolveExpectations(
+    options.questionsPath,
+  );
+  process.stdout.write(
+    `  resolved ${Object.keys(metricExpectations).length} metric + ` +
+      `${Object.keys(answerExpectations).length} pattern/virtual expectations from the semantic layer\n`,
+  );
+
   const result = await runMcpLlmEval({
     questionsPath: options.questionsPath,
     model,
     baseline,
+    metricExpectations,
+    answerExpectations,
   });
 
   const passing = result.outcomes.filter((o) => o.status === "pass").length;
@@ -693,6 +709,22 @@ async function runMcpLlmMode(
             status: o.status,
             latencyMs: o.latencyMs,
             tools: o.toolCalls.map((c) => c.name),
+            // ⚠️ `finalText` WAS NEVER ACTUALLY SERIALIZED (#5122). The
+            // workflow's own comment claims this JSON "captures full
+            // per-question artifacts (toolCalls, finalText, response payloads)"
+            // and explains that the human summary "truncates finalText and
+            // would lose the recovery-class diagnostic data" — but the mapping
+            // here only ever emitted id/status/latency/tools/artifact, so the
+            // field the comment names as the reason for the JSON mode's
+            // existence was dropped on the floor.
+            //
+            // It is load-bearing for exactly the adjudication this issue
+            // demands: a glossary question passes when the model SURFACES the
+            // ambiguity, which lives in the answer text and nowhere else — so
+            // without this you cannot tell "asked the user which revenue they
+            // meant" (correct) from "silently picked one" (the regression the
+            // eval exists to catch) from the tool sequence alone.
+            finalText: o.finalText,
             artifact: o.status === "fail" ? o.artifact : undefined,
           })),
         },
@@ -726,6 +758,111 @@ async function runMcpLlmMode(
     return 1;
   }
   return 0;
+}
+
+/**
+ * Execute every metric question's authoritative SQL and reduce each result to a
+ * {@link MetricExpectation} the LLM grader compares answers against.
+ *
+ * ⚠️ GROUND TRUTH IS DERIVED, NEVER WRITTEN DOWN. The expectation comes from
+ * `findMetricById(id).sql` executed against the same datasource the model
+ * queries, so it cannot drift from the semantic layer and cannot be quietly
+ * tuned to make a run pass. The `expect.sql_pattern` needles it replaces were
+ * the opposite: copies of the metric SQL, which made the deterministic eval's
+ * check vacuous and the LLM eval's check a spelling test (#5122).
+ *
+ * Shape classification is structural, not configured: a 1×1 numeric result is a
+ * scalar metric; anything else is a grouped metric keyed on the FIRST column,
+ * which is the grouping key by convention across the corpus (`channel`,
+ * `carrier`, `stock_status`, `month`).
+ *
+ * A metric that cannot be resolved or executed THROWS. A missing expectation
+ * would otherwise silently downgrade that question's grading, and a gate that
+ * stops checking without saying so is the failure mode this whole issue is about.
+ */
+async function resolveExpectations(questionsPath: string): Promise<{
+  metricExpectations: Record<string, MetricExpectation>;
+  answerExpectations: Record<string, MetricExpectation>;
+}> {
+  const lookups = await import("@atlas/api/lib/semantic/lookups");
+  const { connections } = await import("@atlas/api/lib/db/connection");
+
+  /** Execute one authoritative statement and reduce it to an expectation. */
+  async function expectationFor(label: string, sql: string): Promise<MetricExpectation> {
+    let columns: string[];
+    let rows: Array<Record<string, unknown>>;
+    try {
+      const db = connections.getDefault();
+      ({ columns, rows } = await db.query(sql, 60_000));
+    } catch (err) {
+      throw new Error(
+        `Cannot establish ground truth for ${label}: its authoritative SQL failed: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+        { cause: err },
+      );
+    }
+    const firstColumn = columns[0];
+    if (rows.length === 1 && columns.length === 1 && firstColumn !== undefined) {
+      const cell = rows[0]?.[firstColumn];
+      const value = typeof cell === "number" ? cell : Number(cell);
+      if (Number.isFinite(value)) return { kind: "scalar", value };
+    }
+    if (firstColumn === undefined || rows.length === 0) {
+      throw new Error(
+        `Cannot establish ground truth for ${label}: its authoritative SQL returned ` +
+          `${rows.length} row(s) / ${columns.length} column(s), which is neither a scalar nor a ` +
+          `keyed result. Ground truth must be one or the other for the answer comparison to mean anything.`,
+      );
+    }
+    return { kind: "keyed", keys: rows.map((r) => String(r[firstColumn])) };
+  }
+
+  const questions = loadQuestions(questionsPath);
+  const metricExpectations: Record<string, MetricExpectation> = {};
+  const answerExpectations: Record<string, MetricExpectation> = {};
+
+  for (const id of new Set(
+    questions
+      .filter((q): q is Extract<Question, { mode: "metric" }> => q.mode === "metric")
+      .map((q) => q.metric_id),
+  )) {
+    const sql = lookups.findMetricById(id)?.sql;
+    if (!sql) {
+      throw new Error(
+        `Cannot establish ground truth for metric "${id}": findMetricById returned no SQL. ` +
+          `The installed semantic layer does not define it — check the schema fixture.`,
+      );
+    }
+    metricExpectations[id] = await expectationFor(`metric "${id}"`, sql);
+  }
+
+  // Pattern + virtual ground truth. Failures here are NON-FATAL, unlike the
+  // metric branch: this expectation is an additive accept path over checks that
+  // still stand on their own, so a pattern whose SQL cannot be resolved leaves
+  // the question graded exactly as it was before rather than aborting the run.
+  for (const q of questions) {
+    if (q.mode !== "pattern" && q.mode !== "virtual") continue;
+    const sql =
+      q.mode === "pattern"
+        ? findPatternSqlFromDisk(q.entity, q.pattern, SEMANTIC_DIR)
+        : q.sql;
+    if (!sql) {
+      process.stdout.write(
+        `  note: no authoritative SQL for ${q.id} — value accept path disabled for it\n`,
+      );
+      continue;
+    }
+    try {
+      answerExpectations[q.id] = await expectationFor(`${q.mode} question ${q.id}`, sql);
+    } catch (err) {
+      process.stdout.write(
+        `  note: ${q.id} ground truth unavailable (${err instanceof Error ? err.message : String(err)}) — ` +
+          `value accept path disabled for it\n`,
+      );
+    }
+  }
+
+  return { metricExpectations, answerExpectations };
 }
 
 // ── Wiring (--tool-selection mode, #2075) ───────────────────────────────

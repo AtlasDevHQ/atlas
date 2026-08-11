@@ -54,27 +54,25 @@ describe("resolveAllowedTables", () => {
     expect(mockGetWhitelistedTables).not.toHaveBeenCalled();
   });
 
-  it("org, no internal DB, default (empty): takes the org branch like validateSQL (no file widening)", async () => {
-    // validateSQL branches on `orgId` alone; with no DB the org whitelist is
-    // empty (deny-all). The enforcement-parity default MUST do the same so
-    // /tables never advertises on-disk tables executeSQL would reject (#3898).
+  it("org, no internal DB: falls back to the file whitelist (#5122)", async () => {
+    // ⚠️ THIS EXPECTATION IS INVERTED FROM WHAT IT WAS, DELIBERATELY. It used
+    // to assert the empty set, on the reasoning that `validateSQL` branched on
+    // `orgId` alone so the advertised set had to match it (#3898). The parity
+    // argument was right; the shared behaviour it was pinned to was wrong.
+    //
+    // With no internal DB there is no `semantic_entities` table, so the org
+    // branch can only ever resolve empty — deny-all for every table, forever.
+    // That withholds nothing (orgs live in the same DB, so there are no other
+    // tenants) and simply reads the wrong source: the authored layer is on
+    // disk, which is where `listEntities` / `describeEntity` already read under
+    // this exact gate. `validateSQL` now branches on `orgId && hasInternalDB()`
+    // too, so parity holds — at the file whitelist rather than at deny-all.
     mockHasInternalDB.mockReturnValue(false);
-    mockGetOrgWhitelistedTables.mockReturnValue(new Set());
     const result = await resolveAllowedTables("ch", { orgId: "org_1", atlasMode: "published" });
-    expect([...result]).toEqual([]);
-    expect(mockLoadOrgWhitelist).toHaveBeenCalledWith("org_1", "published");
-    expect(mockGetWhitelistedTables).not.toHaveBeenCalled();
-  });
-
-  it("org, no internal DB, onMissingOrgDB=file: opts into the file whitelist (diff back-compat)", async () => {
-    mockHasInternalDB.mockReturnValue(false);
-    const result = await resolveAllowedTables("ch", {
-      orgId: "org_1",
-      atlasMode: "published",
-      onMissingOrgDB: "file",
-    });
     expect([...result]).toEqual(["file_table"]);
     expect(mockGetWhitelistedTables).toHaveBeenCalledWith("ch");
+    // The org whitelist must not even be consulted — loading it would populate
+    // a cache keyed to a source that cannot exist.
     expect(mockLoadOrgWhitelist).not.toHaveBeenCalled();
   });
 

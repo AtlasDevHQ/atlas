@@ -92,6 +92,7 @@ import {
   type OpenBrowserImpl,
 } from "@useatlas/mcp/init";
 import { ATLAS_OAUTH_WORKSPACE_CLAIM, readActiveOrgId } from "@atlas/api/lib/auth/oauth-claims";
+import { setClientRateLimit } from "@atlas/api/lib/rate-limit/oauth-client";
 
 // ── Public API ──────────────────────────────────────────────────────
 
@@ -110,6 +111,12 @@ export interface EvalAuthFixture {
   readonly workspaceId: string;
   readonly mcpUrl: string;
   readonly userId: string;
+  /**
+   * The DCR-registered OAuth client id (the bearer's `azp` claim) — the key the
+   * hosted-MCP rate limiter buckets on, alongside `workspaceId`. Exposed so a
+   * caller can raise its own quota; see {@link liftEvalClientRateLimit}.
+   */
+  readonly clientId: string;
   readonly close: () => void;
 }
 
@@ -241,6 +248,7 @@ export async function startEvalAuthServer(
       workspaceId: flow.workspaceId,
       mcpUrl: flow.mcpUrl,
       userId: provisioned.userId,
+      clientId: readAzpClaim(flow.accessToken),
       // Idempotent — `restoreEnv` reads the captured "previous" env
       // values, so calling it twice would treat the first restoration
       // as the new baseline and silently shift the env state on the
@@ -259,6 +267,81 @@ export async function startEvalAuthServer(
     throw err;
   }
 }
+
+/**
+ * Read the `azp` (authorized party) claim out of the issued bearer — the OAuth
+ * client id the MCP edge stamps onto every dispatch and the hosted rate limiter
+ * buckets on. Decodes the JWT payload directly rather than re-deriving the id
+ * from the DCR response, so this is the SAME value the route reads back
+ * (`hosted.ts` narrows on `azp`); a divergence would silently point a quota
+ * override at a client that never makes a request.
+ *
+ * No signature verification here on purpose: the token was just minted by the
+ * in-process issuer and the MCP route verifies it for real on every call. This
+ * is a claim read, not a trust boundary.
+ */
+function readAzpClaim(accessToken: string): string {
+  const payloadSegment = accessToken.split(".")[1];
+  if (!payloadSegment) {
+    throw new Error(
+      "eval bearer is not a JWT (no payload segment) — the token request likely lost its `resource` parameter, which makes Better Auth mint an opaque token.",
+    );
+  }
+  let payload: unknown;
+  try {
+    payload = JSON.parse(Buffer.from(payloadSegment, "base64url").toString("utf-8"));
+  } catch (err) {
+    throw new Error(
+      `eval bearer payload is not decodable JSON: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
+  }
+  const azp = (payload as { azp?: unknown }).azp;
+  if (typeof azp !== "string" || azp.length === 0) {
+    throw new Error(
+      "eval bearer carries no `azp` claim — the MCP edge would reject it with missing_client_id.",
+    );
+  }
+  return azp;
+}
+
+/**
+ * Raise the eval client's hosted-MCP quota for the duration of a run.
+ *
+ * ⚠️ THE EVAL OUT-DISPATCHES ITS OWN QUOTA (#5122). A full 20-question run
+ * issues ~244 weighted units in under 4 minutes of model wall-clock — about
+ * 62/min against the 60/min default — so it is not merely *capable* of
+ * throttling itself, it is arithmetically GUARANTEED to, and where it lands
+ * depends on model timing. That made two questions fail as `recovery`
+ * ("the LLM saw error envelopes and did not recover") for a quota the model
+ * would have kept hitting no matter what it did, and made the score
+ * nondeterministic run to run.
+ *
+ * The limiter is not wrong — it scopes hosted-tenant abuse, and a single
+ * synthetic client replaying a fixed corpus is not the tenant it polices. So
+ * the eval sets its own override through the ordinary admin seam
+ * (`setClientRateLimit`, the same call behind Settings → OAuth Clients that the
+ * denial's own hint points at) rather than the limiter growing an eval-shaped
+ * exemption.
+ *
+ * ⚠️ This raises the ceiling; it does NOT make a throttle harmless. The harness
+ * still aborts on a `rate_limited` envelope — see `assertNotRateLimited` in
+ * `canonical-eval-mcp-llm.ts`. A quota that has to be raised again is a signal
+ * about dispatch volume, and must not be absorbed silently.
+ */
+export function liftEvalClientRateLimit(
+  fixture: Pick<EvalAuthFixture, "workspaceId" | "clientId">,
+  requestsPerMinute = EVAL_CLIENT_REQUESTS_PER_MINUTE,
+): void {
+  setClientRateLimit(fixture.workspaceId, fixture.clientId, { requestsPerMinute });
+}
+
+/**
+ * Headroom for an eval run: ~4x the measured 62/min peak. Deliberately a
+ * round multiple rather than a snug fit — a snug ceiling would re-introduce
+ * the same timing-dependent flake the moment a model dispatches slightly more.
+ */
+export const EVAL_CLIENT_REQUESTS_PER_MINUTE = 250;
 
 // ── Better Auth instance ────────────────────────────────────────────
 

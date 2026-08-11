@@ -257,16 +257,20 @@ export async function runToolSelectionEval(
   const ownsAuth = !opts.fixture;
   const authFixture = opts.fixture ?? (await bootDefaultFixture());
 
-  // ⚠️ THIS EVAL SHARES THE OAUTH CLIENT AND THE TOOL SURFACE WITH `--mcp-llm`,
-  // AND IT NEVER CALLED THIS (#5136). `runMcpLlmEval` lifts the quota precisely
-  // because a full run out-dispatches the 60/min default (#5122); the hosted
-  // per-OAuth-client limiter runs ahead of every tool body, so nothing about
-  // this eval's smaller corpus makes it exempt — and the two evals run back to
-  // back against the same bucket. Applied whether or not we own the fixture: a
-  // shared fixture accumulates MORE load against that bucket, not less.
-  liftEvalClientRateLimit(authFixture);
-
   try {
+    // ⚠️ THIS EVAL SHARES THE OAUTH CLIENT AND THE TOOL SURFACE WITH `--mcp-llm`,
+    // AND IT NEVER CALLED THIS (#5136). `runMcpLlmEval` lifts the quota precisely
+    // because a full run out-dispatches the 60/min default (#5122); the hosted
+    // per-OAuth-client limiter runs ahead of every tool body, so nothing about
+    // this eval's smaller corpus makes it exempt — and the two evals run back to
+    // back against the same bucket. Applied whether or not we own the fixture: a
+    // shared fixture accumulates MORE load against that bucket, not less.
+    //
+    // INSIDE the `try` that owns the fixture, not before it: `setClientRateLimit`
+    // is an in-memory map write and unlikely to throw, but a throw from outside
+    // would leak the booted auth server — `close()` never runs and the process
+    // hangs on an open handle instead of reporting the fault.
+    liftEvalClientRateLimit(authFixture);
     const client = new EvalMcpClient({
       baseUrl: authFixture.baseUrl,
       workspaceId: authFixture.workspaceId,

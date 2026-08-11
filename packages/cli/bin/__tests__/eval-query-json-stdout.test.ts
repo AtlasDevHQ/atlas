@@ -256,17 +256,26 @@ describe("atlas eval — stdout in a machine mode", () => {
     expect(fs.existsSync(path.join(dir, ".semantic-backup-eval"))).toBe(false);
   });
 
-  test("keeps the logger off stdout under --json", async () => {
-    // The polluter that is not in this file's source at all. `rootLogger` is a
-    // module-scope const whose destination pino resolves once, at construction —
-    // so the only proof is a real process. ANSI is the tell: the dev branch is
-    // `pino-pretty` with `colorize: true`, and JSON never carries an ESC.
-    const res = await spawnCli(["eval", "--json", "--limit", "1", "--resume", resumeFile()]);
-    expect(res.stdout).not.toContain(ESC);
-    expect(res.stdout).toBe("");
-  });
 });
 
+/**
+ * ⚠️ THE STAMP IS WHAT IS TESTED HERE — NOT THAT THE LOGGER OBEYS IT.
+ *
+ * An earlier cut of this file had a spawn asserting `atlas eval --json` put no
+ * ANSI on stdout. It passed, and it could not fail: that run dies at the
+ * `ATLAS_DATASOURCE_URL` guard and emits NO pino frame at all, so the assertion
+ * held over a process in which the polluter never ran. That is this file's own
+ * header warning — the harness removing the polluter and the suite then
+ * confirming its absence — arriving as an unreached code path rather than a stub.
+ * Deleted rather than patched, because reaching a logging path in `atlas eval`
+ * needs a live database and a provider key.
+ *
+ * What remains is the honest split. `ATLAS_LOG_STDERR` being set for the right
+ * argv is tested below, both directions. That the logger HONOURS it is a
+ * property of the shared logger rather than of this command, and it is proved
+ * once — with real pino frames asserted on fd 2 — by the `canonical-eval` spawn
+ * in `eval-json-stdout.test.ts`, whose runs get far enough to log.
+ */
 describe("eval-log-destination — the machine-stdout table", () => {
   async function probe(argv: readonly string[]): Promise<string> {
     const child = Bun.spawn([process.execPath, PROBE, ...argv], {

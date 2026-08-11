@@ -329,8 +329,11 @@ export function extractToolJson(result: CallToolResult): ExtractedToolJson {
  * a null body.
  *
  * Prefixes are accumulated once, left to right, and then scanned from the
- * longest — so the whole scan is linear in the total text length rather than
- * re-joining a slice per candidate.
+ * longest, which avoids re-joining a slice per candidate. NOT linear — an
+ * earlier version of this line claimed that and it was wrong: the accumulation
+ * still holds n strings averaging half the total length, and the scan still runs
+ * up to n parses, so both are O(items x length). Irrelevant at the 1-2 items
+ * Atlas emits, but a stated measurement is load-bearing in this tree.
  */
 function parseLongestJsonPrefix(
   items: readonly string[],
@@ -343,7 +346,7 @@ function parseLongestJsonPrefix(
   }
   for (let n = prefixes.length - 1; n >= 0; n--) {
     try {
-      return { data: JSON.parse(prefixes[n] as string) as unknown };
+      return { data: JSON.parse(prefixes[n] ?? "") as unknown };
     } catch {
       // intentionally ignored: a prefix that does not parse is a candidate
       // being rejected, not a failure. Every rejection is silent by design —

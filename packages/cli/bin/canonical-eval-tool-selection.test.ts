@@ -499,12 +499,22 @@ describe("bindToolsForRecording", () => {
  * of them right by coincidence.
  */
 describe("throttleAbortError (#5136 / #5133)", () => {
-  it("names the eval's own quota when the envelope carries retry_after", () => {
+  it("names the eval's own quota for a hosted envelope on a TEXT-contract tool", () => {
+    // TEXT contract with HOSTED markers — the pairing #5133 got wrong, which is
+    // why the contract here is the opposite of what the remedy says.
+    //
+    // ⚠️ THE MARKER IS THE MESSAGE. An earlier version of this test used
+    // `{ message: "slow down", retry_after: 30 }` and expected the hosted arm,
+    // which encoded the defect the review found: `retry_after` is set by the
+    // DATASOURCE limiter too (`mcp/tools.ts`), so it cannot be the evidence.
     const err = throttleAbortError("ts-004", {
       toolName: "explore",
-      // TEXT contract with HOSTED markers — the pairing #5133 got wrong.
       contract: "text",
-      envelope: { code: "rate_limited", message: "slow down", retry_after: 30 },
+      envelope: {
+        code: "rate_limited",
+        message: 'OAuth client "eval" exceeded its hosted-MCP quota (250 weighted requests/min).',
+        retry_after: 30,
+      },
     });
     expect(err.message).toContain("ts-004");
     expect(err.message).toContain("Raise it via liftEvalClientRateLimit");
@@ -529,5 +539,52 @@ describe("throttleAbortError (#5136 / #5133)", () => {
       envelope: { code: "rate_limited", message: "hosted-MCP quota exceeded" },
     });
     expect(err.message).toContain("Raise it via liftEvalClientRateLimit");
+  });
+
+  it("does NOT read retry_after as proof of the hosted quota (#5133, second spelling)", () => {
+    // ⚠️ THE FIRST CUT OF THIS FUNCTION ACCEPTED `typeof retry_after ===
+    // "number"` AS PROOF, on the stated ground that only the hosted limiter sets
+    // it. Measured false: `packages/mcp/src/tools.ts` sets `extras.retry_after`
+    // from the DATASOURCE limiter's `retryAfterMs` on a throttled `executeSQL` —
+    // the exact case this function's own `else` arm calls downstream. So the
+    // envelope below, which is what a datasource throttle really looks like, was
+    // routed to the hosted arm and told an operator to raise a quota that had
+    // not fired. On a weekly paid run the only response is to re-run and abort
+    // identically.
+    //
+    // The message is the exact discriminator: both hosted denial paths build it
+    // with `rateLimitedMessage()` (`rate-limit/middleware.ts`), and nothing else
+    // produces the phrase.
+    const err = throttleAbortError("ts-007", {
+      toolName: "executeSQL",
+      contract: "json",
+      envelope: {
+        code: "rate_limited",
+        message: "Datasource query rate limit exceeded.",
+        retry_after: 12,
+      },
+    });
+    expect(err.message).toContain("Raising EVAL_CLIENT_REQUESTS_PER_MINUTE will not help");
+    expect(err.message).not.toContain("Raise it via liftEvalClientRateLimit");
+    // ⚠️ AND THE FIELD IS STILL REPORTED. Demoting it from evidence must not
+    // delete it from the diagnostic — an operator reading the abort still wants
+    // to know the envelope carried one, and why it proves nothing.
+    expect(err.message).toContain("retry_after=12s");
+  });
+
+  it("keeps the hosted arm for an envelope carrying BOTH the phrase and retry_after", () => {
+    // The real hosted envelope has both. Without this, deleting the message test
+    // and keeping only `retry_after` would still pass the negative above.
+    const err = throttleAbortError("ts-008", {
+      toolName: "explore",
+      contract: "text",
+      envelope: {
+        code: "rate_limited",
+        message: 'OAuth client "c1" exceeded its hosted-MCP quota (250 weighted requests/min).',
+        retry_after: 7,
+      },
+    });
+    expect(err.message).toContain("Raise it via liftEvalClientRateLimit");
+    expect(err.message).not.toContain("retry_after=7s");
   });
 });

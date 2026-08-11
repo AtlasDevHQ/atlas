@@ -706,9 +706,20 @@ export async function handleEval(args: string[]): Promise<void> {
   // `console.log` directly and so ignored the mode entirely — see
   // `evalSeedSink`, which is the same rule for the one writer that lives in
   // another package.
+  //
+  // ⚠️ "EVERY" IS LOAD-BEARING AND WAS FALSE WHEN FIRST WRITTEN. Two more lines
+  // — the run header and the per-schema banner — were bare `console.log`s behind
+  // their own hand-written `if (!csvOutput && !jsonOutput)`. Correct output, but
+  // TWO SPELLINGS OF ONE RULE, which is the argument this PR makes against
+  // itself elsewhere: only one of them is under test at a time, and the
+  // duplicated guard is the one a future edit forgets. Both route through here
+  // now, so the claim is true and a mutation to this sink is visible in all of
+  // them. (`printSummary` and the `Results saved to:` line stay on `console.log`
+  // — they sit inside the `else` of the mode check and cannot run in a machine
+  // mode at all.)
   const humanWrite = evalSeedSink({ csvOutput, jsonOutput });
-  // Appends the newline `console.log` used to, so the three call sites below are
-  // a pure redirection rather than a redirection PLUS a formatting change — the
+  // Appends the newline `console.log` used to, so every call site below is a
+  // pure redirection rather than a redirection PLUS a formatting change — the
   // human output of a non-machine run is byte-identical to before.
   const humanOut = (line: string): void => humanWrite(`${line}\n`);
 
@@ -781,12 +792,10 @@ export async function handleEval(args: string[]): Promise<void> {
   const remainingCount = cases.length - completedInScope;
   const schemaCount = bySchema.size;
 
-  if (!csvOutput && !jsonOutput) {
-    console.log(
-      `Atlas Eval: ${cases.length} cases across ${schemaCount} schema(s)` +
-      (completedIds.size > 0 ? ` (${remainingCount} remaining)` : ""),
-    );
-  }
+  humanOut(
+    `Atlas Eval: ${cases.length} cases across ${schemaCount} schema(s)` +
+    (completedIds.size > 0 ? ` (${remainingCount} remaining)` : ""),
+  );
 
   // Get connection string
   const connStr = process.env.ATLAS_DATASOURCE_URL;
@@ -802,9 +811,7 @@ export async function handleEval(args: string[]): Promise<void> {
     let caseIdx = 0;
 
     for (const [schema, schemaCases] of bySchema) {
-      if (!csvOutput && !jsonOutput) {
-        console.log(`\n--- Schema: ${schema} (${schemaCases.length} cases) ---`);
-      }
+      humanOut(`\n--- Schema: ${schema} (${schemaCases.length} cases) ---`);
 
       // Setup phase — errors here affect all cases in this schema
       try {

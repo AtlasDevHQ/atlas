@@ -55,14 +55,23 @@ describe("withTrialFooter", () => {
  * #5137 — the footer is additive ON THE WIRE, and it must be additive to the
  * EVAL CLIENT'S READER too.
  *
- * ⚠️ THE FOOTER TEXT IS NOT WRITTEN HERE. Every fixture below is produced by
- * `withTrialFooter` itself, so the two sides of the match cannot agree by
- * construction: change the advisory's wording, add a third content item, or
- * switch it from `text` to a future content type, and these go red. A
- * hand-written `"Atlas trial: 5 days remaining…"` fixture would pin this file's
- * idea of the footer against itself and keep passing.
+ * ⚠️ WHAT THIS BLOCK IS AND IS NOT. It is a WIRING test: the real
+ * `withTrialFooter` feeding the real `extractToolJson`, so the two halves of the
+ * #5137 seam are exercised against each other rather than against a hand-written
+ * footer string.
  *
- * The defect this closes was invisible for exactly that reason one layer up:
+ * ⚠️ IT IS NOT A FALSIFIER FOR THE FOOTER'S SHAPE, and an earlier version of
+ * this comment claimed it was — naming three mutations ("change the wording, add
+ * a third content item, switch it to a future content type") that it does NOT
+ * catch. `extractToolJson` only ever parses PREFIXES, so any prose wording
+ * passes, a third prose item passes (the 1-item prefix still parses), and a
+ * non-`text` item is dropped by `textItems` and passes. Those three are caught
+ * by the assertions ABOVE — `toHaveLength(2)`, `content[0].text` unchanged, and
+ * the `5 days remaining` check — which is where they belong.
+ *
+ * The reader side's own falsifiers live in `packages/mcp/src/eval/client.test.ts`.
+ *
+ * The defect this closes was invisible for a related reason one layer up:
  * `getTrialDaysRemaining` returns null off-SaaS, with no org, and for a
  * non-trial workspace, so the CI fixture never appended a footer and every eval
  * result carried exactly ONE text item. A single-item fixture cannot falsify a
@@ -75,17 +84,22 @@ describe("withTrialFooter × the eval client's reader", () => {
   };
 
   it("does not change what extractToolJson reads off a successful result", () => {
-    const before = extractToolJson(jsonOk);
-    const after = extractToolJson(withTrialFooter(jsonOk, 5));
-    expect(after).toEqual({ kind: "ok", data: jsonBody });
-    // Additive means IDENTICAL, not merely "still parses" — a reader that
-    // spliced the advisory into `data` would satisfy the line above.
-    expect(after).toEqual(before);
+    // One assertion, not two. An earlier cut also asserted `toEqual(before)` and
+    // justified it as catching a reader that spliced the advisory into `data` —
+    // false: bun's `toEqual` is full structural equality, so such a reader fails
+    // THIS line first and the second could never fail independently.
+    expect(extractToolJson(withTrialFooter(jsonOk, 5))).toEqual({
+      kind: "ok",
+      data: jsonBody,
+    });
   });
 
   it("holds for every days value the footer renders differently", () => {
-    // 1 and 0 take the singular / lapsed branches; a reader keyed on the plural
-    // wording would pass the 5-day case above and fail here.
+    // 1 and 0 take the footer's singular / lapsed branches. ⚠️ NO READER MUTATION
+    // DISTINGUISHES THESE FOUR — the reader never looks at the footer's text —
+    // so this is coverage of the FOOTER's branches through the seam, not a
+    // falsifier for the reader. Said plainly because an earlier comment claimed
+    // it caught "a reader keyed on the plural wording", which cannot exist.
     for (const days of [0, 1, 5, 30]) {
       expect(extractToolJson(withTrialFooter(jsonOk, days))).toEqual({
         kind: "ok",

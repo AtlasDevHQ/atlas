@@ -439,13 +439,17 @@ export async function runMcpLlmEval(
   const ownsFixture = !opts.fixture;
   const fixture = opts.fixture ?? (await bootDefaultFixture());
 
-  // A full run out-dispatches the default hosted-MCP quota (#5122) — see
-  // `liftEvalClientRateLimit`. Applied whether or not we own the fixture: the
-  // OAuth client is the same either way, and a shared fixture across several
-  // runs accumulates MORE load against the same bucket, not less.
-  liftEvalClientRateLimit(fixture);
-
   try {
+    // A full run out-dispatches the default hosted-MCP quota (#5122) — see
+    // `liftEvalClientRateLimit`. Applied whether or not we own the fixture: the
+    // OAuth client is the same either way, and a shared fixture across several
+    // runs accumulates MORE load against the same bucket, not less.
+    //
+    // INSIDE the `try` that owns the fixture, not before it: `setClientRateLimit`
+    // is an in-memory map write and unlikely to throw, but a throw from outside
+    // would leak the booted auth server — `close()` never runs and the process
+    // hangs on an open handle instead of reporting the fault.
+    liftEvalClientRateLimit(fixture);
     const client = new EvalMcpClient({
       baseUrl: fixture.baseUrl,
       workspaceId: fixture.workspaceId,
@@ -736,13 +740,27 @@ async function runOneQuestion(
     // executed by the time the promise resolves, so `recorded` is the
     // complete dispatch sequence the grader walks below.
     finalText = await result.text;
-    // ⚠️ AWAITED INSIDE THE `try`, AND AFTER `.text`. Both matter. The usage
-    // promise settles with the stream, so awaiting it before `.text` would block
-    // on a stream that has not been drained; and a provider-side failure rejects
-    // it, which belongs in the catch below rather than unwinding the run. A
-    // question whose stream threw keeps `usage: null` — an honest "not measured"
-    // rather than a zero that would silently deflate the run total.
-    usage = toTokenUsage(await result.usage);
+    // ⚠️ `totalUsage`, NOT `usage` — THE TWO ARE THE SAME TYPE AND DIFFER BY A
+    // FACTOR OF SEVEN HERE. The AI SDK documents `result.usage` as "the token
+    // usage of the LAST STEP" (`ai/dist/index.d.ts`; the getter resolves
+    // `finalStep.then(step => step.usage)`), while `totalUsage` is the sum over
+    // every step. This is a multi-step tool loop — `stopWhen:
+    // stepCountIs(getAgentMaxSteps())` — and the corpus runs ~124 tool calls
+    // across 20 questions, so `usage` measures one step of roughly seven.
+    //
+    // Both are `LanguageModelUsage`, so TypeScript cannot tell them apart and
+    // the narrowing tests below pass identically on either. Reading the wrong
+    // one ships a number that is systematically low in the REASSURING direction
+    // — a guess wearing a measurement's formatting, which is the exact failure
+    // `TokenUsage`'s own docstring names and #5123 exists to end.
+    //
+    // ⚠️ AWAITED INSIDE THE `try`, AND AFTER `.text`. Both matter. The promise
+    // settles with the stream, so awaiting it before `.text` would block on a
+    // stream that has not been drained; and a provider-side failure rejects it,
+    // which belongs in the catch below rather than unwinding the run. A question
+    // whose stream threw keeps `usage: null` — an honest "not measured" rather
+    // than a zero that would silently deflate the run total.
+    usage = await runTokenUsage(result);
     if (streamErr !== null) throw streamErr;
   } catch (err) {
     const latencyMs = Date.now() - start;
@@ -782,6 +800,31 @@ async function runOneQuestion(
       answerExpectations: input.answerExpectations,
     }),
   };
+}
+
+/**
+ * The run's token usage: EVERY step, summed.
+ *
+ * ⚠️ THE PARAMETER TYPE IS THE FALSIFIER, AND IT IS THE ONLY ONE AVAILABLE.
+ * `result.usage` and `result.totalUsage` are BOTH `LanguageModelUsage`, so
+ * reading the wrong one is invisible to the type checker at the call site,
+ * invisible to `toTokenUsage`'s tests (which pin the narrowing, not the source),
+ * and invisible to every runtime assertion short of a live multi-step run. It is
+ * a wrong number in the reassuring direction — precisely the thing #5123 exists
+ * to stop shipping.
+ *
+ * Naming ONLY `totalUsage` in the parameter type makes `await result.usage` a
+ * COMPILE ERROR inside this function. `bun run type` is the gate; `bun test`
+ * cannot see it, which is why the property is expressed as a type rather than
+ * asserted in a test.
+ *
+ * Structural, not `StreamTextResult`, so the unit test can hand it a plain
+ * object carrying BOTH fields with different values and pin which one is read.
+ */
+async function runTokenUsage(result: {
+  readonly totalUsage: PromiseLike<ReportedUsage>;
+}): Promise<TokenUsage | null> {
+  return toTokenUsage(await result.totalUsage);
 }
 
 /**
@@ -831,7 +874,7 @@ function toTokenUsage(usage: ReportedUsage | undefined): TokenUsage | null {
  * Derived rather than accumulated as the loop runs: the totals and the
  * per-question records are then two views of one list and cannot disagree.
  */
-export function summarizeTokenUsage(
+function summarizeTokenUsage(
   byQuestion: readonly QuestionTokenUsage[],
 ): EvalTokenUsage {
   const totals = byQuestion.reduce<TokenUsage>(
@@ -880,10 +923,15 @@ function assertNotRateLimited(
   q: Question,
   toolCalls: readonly RecordedToolCall[],
 ): void {
-  const throttled = toolCalls.find(
-    (c) => c.result.kind === "error" && isRateLimitedEnvelope(c.result.envelope),
-  );
-  if (!throttled || throttled.result.kind !== "error") return;
+  // `.filter(isErrorResult)` first, so the arm is narrowed by the file's own
+  // type predicate rather than re-checked. An earlier cut wrote `find(...)` and
+  // then `if (!throttled || throttled.result.kind !== "error") return;` — whose
+  // second clause is unreachable and whose disposition is a SILENT return, from
+  // the one function whose entire job is to be loud.
+  const throttled = toolCalls
+    .filter(isErrorResult)
+    .find((c) => isRateLimitedEnvelope(c.result.envelope));
+  if (!throttled) return;
   // ⚠️ CALLS the shared builder rather than restating the remedy. The
   // hosted-vs-downstream branch is the part #5133 measured wrong, and
   // `--tool-selection` grew the same abort in #5136 — two copies of a rule that
@@ -1460,7 +1508,7 @@ function keyedResultMatches(
     (g, i) =>
       // A group the authoritative SQL gave no numbers for has nothing to match;
       // it is carried by the cardinality check alone.
-      g.measures.length === 0 || (representingRows[i] as ReadonlySet<number>).size > 0,
+      g.measures.length === 0 || (representingRows[i]?.size ?? 0) > 0,
   );
   if (!everyGroupRepresented) return false;
 
@@ -1532,12 +1580,26 @@ function separatesAuthoritativeGroups(
     // it has no label to be separated BY either. It is still graded — condition
     // 1 covers it — it just does not constrain the shape.
     if (key === null) return;
+    // ⚠️ AND NEITHER DOES A MEASURE-LESS GROUP. Condition 1 exempts one
+    // explicitly — "nothing to match; carried by the cardinality check alone" —
+    // and this function has to honour the same exemption or the two conditions
+    // CONTRADICT: `rowsRepresenting` returns the empty set for it, an empty
+    // candidate set can never be assigned a representative, and condition 2
+    // becomes unsatisfiable for EVERY column. A byte-correct answer then grades
+    // FAIL, which is the false-negative class this comparison exists to remove.
+    //
+    // Reachable, not hypothetical: `keyedExpectationFrom` builds `measures`
+    // through `numericValues`, which drops NULL and non-numeric cells — so an
+    // `AVG` over an all-NULL subset, or a LEFT-JOINed measure, produces exactly
+    // this. The ALL-measure-less case is caught upstream by the `labelSetMatches`
+    // branch; the MIXED case falls through to here and had no test.
+    if (g.measures.length === 0) return;
     let set = rowsByLabel.get(key);
     if (!set) {
       set = new Set();
       rowsByLabel.set(key, set);
     }
-    for (const r of representingRows[i] as ReadonlySet<number>) set.add(r);
+    for (const r of representingRows[i] ?? []) set.add(r);
   });
 
   const targets = expectedCardinalities(expectation);
@@ -1583,7 +1645,7 @@ function cellKeysAt(
 ): ReadonlySet<string> {
   const out = new Set<string>();
   for (const i of rowIndices) {
-    const key = cellKey((rows[i] as Record<string, unknown>)[column]);
+    const key = cellKey(rows[i]?.[column]);
     if (key !== null) out.add(key);
   }
   return out;
@@ -1608,7 +1670,7 @@ function hasDistinctRepresentatives(
 ): boolean {
   const takenBy = new Map<string, number>();
   const assign = (index: number, seen: Set<string>): boolean => {
-    for (const value of candidates[index] as ReadonlySet<string>) {
+    for (const value of candidates[index] ?? []) {
       if (seen.has(value)) continue;
       seen.add(value);
       const holder = takenBy.get(value);
@@ -2327,6 +2389,9 @@ export const __forTesting__ = {
   // `number | undefined`, so this is where "the provider reported nothing
   // usable" becomes a value rather than a zero, and it needs its own tests.
   toTokenUsage,
+  // #5123 — reads `totalUsage`, and its PARAMETER TYPE is what enforces that.
+  runTokenUsage,
+  summarizeTokenUsage,
 } as const;
 
 // ── Baseline I/O ────────────────────────────────────────────────────

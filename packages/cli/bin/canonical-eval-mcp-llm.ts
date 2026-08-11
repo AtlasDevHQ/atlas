@@ -54,6 +54,7 @@ import {
   streamText,
   type JSONSchema7,
   type LanguageModel,
+  type LanguageModelUsage,
   type Tool,
   type ToolSet,
 } from "ai";
@@ -343,9 +344,67 @@ export interface McpLlmEvalOptions {
   readonly systemPrompt?: string;
 }
 
+/**
+ * Tokens one `streamText` round-trip consumed.
+ *
+ * ⚠️ TOTAL, NOT PARTIAL. The AI SDK types every field of `LanguageModelUsage` as
+ * `number | undefined`, so a provider may report all, some, or none. A value of
+ * this type means ALL of it was reported — see {@link toTokenUsage}, which
+ * returns `null` rather than filling a gap. Half a measurement recorded as a
+ * whole one is a guess wearing a measurement's formatting, which is the exact
+ * thing #5123 exists to remove: the workflow's own *"under $0.05 per run"* was
+ * never measured, and order-of-magnitude arithmetic on a 20-question /
+ * 124-tool-call run puts it nearer $0.50–$2.00, which is also not a measurement.
+ */
+export interface TokenUsage {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly totalTokens: number;
+}
+
+/** One question's token measurement, or the fact that there wasn't one. */
+export interface QuestionTokenUsage {
+  readonly questionId: string;
+  readonly usage: TokenUsage | null;
+}
+
+/**
+ * What a run cost, in tokens.
+ *
+ * ── The shape was decided, not defaulted (#5123) ──
+ *
+ * **Both** per-question and accumulated, because they answer different
+ * questions and are not in tension: `totals` answers #5039's spend criterion,
+ * `byQuestion` answers *which* questions are expensive. `totals` is DERIVED from
+ * `byQuestion` by summation rather than accumulated beside it — a count kept
+ * next to the thing it counts is only ever consistent by construction, the same
+ * reason {@link authoritativeLabels} derives its cardinality.
+ *
+ * **On the RESULT, not on {@link McpLlmOutcome}.** That union is the GRADER's
+ * vocabulary: `grade()` is pure and synchronously unit-testable, and putting
+ * usage on its arms would make `failOutcome`, `passOutcome`, all six per-mode
+ * graders and every test call site carry a field no verdict reads. Token usage
+ * is a measurement OF the run, not an input TO a verdict. Adding it as an
+ * OPTIONAL field on both arms — the shape #5123 warned against — would also
+ * hand every consumer an `undefined` to narrow.
+ *
+ * **`unreported` is named, not implied.** A total silently short by however many
+ * questions the provider declined to measure is the same class of unmeasured
+ * number this field exists to replace, so the ids travel with it.
+ */
+export interface EvalTokenUsage {
+  /** Summed over every question in {@link byQuestion} with a non-null `usage`. */
+  readonly totals: TokenUsage;
+  /** Every question the run graded, in order. */
+  readonly byQuestion: readonly QuestionTokenUsage[];
+  /** Ids whose usage the provider did not report — excluded from {@link totals}. */
+  readonly unreported: readonly string[];
+}
+
 export interface McpLlmEvalResult {
   readonly outcomes: readonly McpLlmOutcome[];
   readonly artifacts: readonly McpFailureArtifact[];
+  readonly usage: EvalTokenUsage;
 }
 
 // ── System prompt ─────────────────────────────────────────────────────
@@ -427,6 +486,10 @@ export async function runMcpLlmEval(
       const limit = opts.maxQuestions ?? questions.length;
       const outcomes: McpLlmOutcome[] = [];
       const artifacts: McpFailureArtifact[] = [];
+      // Self-identifying (each entry carries its `questionId`) rather than
+      // positional against `outcomes`, so the two lists cannot desync into a
+      // question being charged another question's tokens.
+      const tokenUsage: QuestionTokenUsage[] = [];
 
       const systemPrompt = opts.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
       for (const q of questions.slice(0, limit)) {
@@ -435,7 +498,7 @@ export async function runMcpLlmEval(
         // (rather than passing a fresh array per call) keeps the bound
         // tool closures pointing at the same recorder instance.
         recorded.length = 0;
-        const outcome = await runOneQuestion({
+        const { outcome, usage } = await runOneQuestion({
           model: opts.model,
           tools: aiTools,
           systemPrompt,
@@ -446,6 +509,7 @@ export async function runMcpLlmEval(
           answerExpectations: opts.answerExpectations,
         });
         outcomes.push(outcome);
+        tokenUsage.push({ questionId: q.id, usage });
         if (outcome.status === "fail") artifacts.push(outcome.artifact);
 
         // Reporting only — computed AFTER the verdict and incapable of changing
@@ -475,7 +539,7 @@ export async function runMcpLlmEval(
           );
         }
       }
-      return { outcomes, artifacts };
+      return { outcomes, artifacts, usage: summarizeTokenUsage(tokenUsage) };
     } finally {
       await client.close();
     }
@@ -634,12 +698,19 @@ interface OneQuestionInput {
   readonly answerExpectations: McpLlmEvalOptions["answerExpectations"];
 }
 
+/** {@link runOneQuestion}'s product: the verdict, and what it cost to reach. */
+interface OneQuestionResult {
+  readonly outcome: McpLlmOutcome;
+  readonly usage: TokenUsage | null;
+}
+
 async function runOneQuestion(
   input: OneQuestionInput,
-): Promise<McpLlmOutcome> {
+): Promise<OneQuestionResult> {
   const { question, recorded, baseline } = input;
   const start = Date.now();
   let finalText = "";
+  let usage: TokenUsage | null = null;
   // Capture stream-level errors via the AI SDK `onError` callback. The
   // SDK does NOT reject `result.text` on tool-execute failures or
   // provider-side errors — those surface here. Without this hook a
@@ -665,13 +736,22 @@ async function runOneQuestion(
     // executed by the time the promise resolves, so `recorded` is the
     // complete dispatch sequence the grader walks below.
     finalText = await result.text;
+    // ⚠️ AWAITED INSIDE THE `try`, AND AFTER `.text`. Both matter. The usage
+    // promise settles with the stream, so awaiting it before `.text` would block
+    // on a stream that has not been drained; and a provider-side failure rejects
+    // it, which belongs in the catch below rather than unwinding the run. A
+    // question whose stream threw keeps `usage: null` — an honest "not measured"
+    // rather than a zero that would silently deflate the run total.
+    usage = toTokenUsage(await result.usage);
     if (streamErr !== null) throw streamErr;
   } catch (err) {
     const latencyMs = Date.now() - start;
     const message = err instanceof Error ? err.message : String(err);
     const errorName = err instanceof Error ? err.name : "Unknown";
     const stack = err instanceof Error ? err.stack : undefined;
-    return failOutcome({
+    return {
+      usage,
+      outcome: failOutcome({
       question,
       latencyMs,
       finalText,
@@ -686,18 +766,90 @@ async function runOneQuestion(
       response: { error: message, errorName, stack },
       expected: "successful streamText round-trip",
       summary: `streamText threw (${errorName}): ${message}`,
-    });
+      }),
+    };
   }
   const latencyMs = Date.now() - start;
-  return grade({
-    question,
-    toolCalls: [...recorded],
-    finalText,
-    latencyMs,
-    baseline,
-    metricExpectations: input.metricExpectations,
-    answerExpectations: input.answerExpectations,
-  });
+  return {
+    usage,
+    outcome: grade({
+      question,
+      toolCalls: [...recorded],
+      finalText,
+      latencyMs,
+      baseline,
+      metricExpectations: input.metricExpectations,
+      answerExpectations: input.answerExpectations,
+    }),
+  };
+}
+
+/**
+ * The three fields {@link toTokenUsage} reads, projected off the SDK's own type
+ * rather than restated.
+ *
+ * `Pick`, not a hand-written triple: a rename upstream (`inputTokens` →
+ * something else) then breaks the build here instead of silently narrowing every
+ * usage to `null` and reporting a run that cost nothing. The SDK's real shape
+ * also carries `inputTokenDetails` / `outputTokenDetails`, which this function
+ * does not read and a test fixture should not have to fabricate.
+ */
+type ReportedUsage = Pick<
+  LanguageModelUsage,
+  "inputTokens" | "outputTokens" | "totalTokens"
+>;
+
+/**
+ * Narrow the AI SDK's reported usage — every field `number | undefined` — to a
+ * {@link TokenUsage}, or `null` when it cannot be one.
+ *
+ * ⚠️ A PARTIAL REPORT BECOMES `null`, NOT A ZERO-FILLED RECORD. `inputTokens`
+ * and `outputTokens` are both required because cost needs both (they are priced
+ * differently by roughly 5x), and a record with one of them zeroed reads as a
+ * cheap question rather than an unmeasured one. `totalTokens` is taken when the
+ * provider gives it — it can legitimately EXCEED the sum, since reasoning tokens
+ * are counted there and in neither of the other two — and derived only when it
+ * is absent.
+ */
+function toTokenUsage(usage: ReportedUsage | undefined): TokenUsage | null {
+  if (!usage) return null;
+  const { inputTokens, outputTokens, totalTokens } = usage;
+  if (typeof inputTokens !== "number" || typeof outputTokens !== "number") {
+    return null;
+  }
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens:
+      typeof totalTokens === "number" ? totalTokens : inputTokens + outputTokens,
+  };
+}
+
+/**
+ * Sum the per-question measurements into the run's {@link EvalTokenUsage}.
+ *
+ * Derived rather than accumulated as the loop runs: the totals and the
+ * per-question records are then two views of one list and cannot disagree.
+ */
+export function summarizeTokenUsage(
+  byQuestion: readonly QuestionTokenUsage[],
+): EvalTokenUsage {
+  const totals = byQuestion.reduce<TokenUsage>(
+    (acc, q) =>
+      q.usage === null
+        ? acc
+        : {
+            inputTokens: acc.inputTokens + q.usage.inputTokens,
+            outputTokens: acc.outputTokens + q.usage.outputTokens,
+            totalTokens: acc.totalTokens + q.usage.totalTokens,
+          },
+    { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+  );
+  return {
+    totals,
+    byQuestion,
+    unreported: byQuestion.filter((q) => q.usage === null).map((q) => q.questionId),
+  };
 }
 
 // ── Grading ──────────────────────────────────────────────────────────
@@ -2171,6 +2323,10 @@ export const __forTesting__ = {
   gradeVirtual,
   bindMcpToolsForLlm,
   labelDriftNote,
+  // #5123 — the boundary narrow. Every field of the AI SDK's usage shape is
+  // `number | undefined`, so this is where "the provider reported nothing
+  // usable" becomes a value rather than a zero, and it needs its own tests.
+  toTokenUsage,
 } as const;
 
 // ── Baseline I/O ────────────────────────────────────────────────────

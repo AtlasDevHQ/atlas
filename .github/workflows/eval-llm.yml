@@ -368,7 +368,22 @@ jobs:
             head -c 400 eval-mcp-llm-output.json
             exit 1
           fi
-          echo "eval-mcp-llm-output.json parses ($(wc -c < eval-mcp-llm-output.json) bytes)"
+          bytes=$(wc -c < eval-mcp-llm-output.json)
+          echo "eval-mcp-llm-output.json parses ($bytes bytes)"
+          # ⚠️ THE CLIFF IS NOT HYPOTHETICAL AND `jq empty` ABOVE ONLY SEES IT
+          # ONCE IT HAS ALREADY BITTEN. #5134 measured stdout truncation just
+          # above 65536 bytes through a real shell pipe, and the payload was
+          # 63024 — 2.5 KB of headroom that #5123 then spent some of on token
+          # usage. A payload that truncates does not arrive short, it arrives
+          # UNPARSEABLE, so the only useful signal is one that fires BEFORE.
+          #
+          # 61440 (60 KiB) is a warn, not a failure: a run with more failing
+          # questions legitimately carries more artifacts, and turning that into
+          # a red gate would block the eval for succeeding at its job. The point
+          # is that the margin stops being a number someone measured once.
+          if [ "$bytes" -gt 61440 ]; then
+            echo "::warning::the --json payload is $bytes bytes, within 4 KB of the ~65536 stdout truncation cliff (#5134). It parses TODAY; a slightly larger run will not. Shrink what the payload carries per outcome before adding to it."
+          fi
 
       - name: Upload eval artifacts on failure
         # Captured regardless of pass/fail so a baseline drift on a

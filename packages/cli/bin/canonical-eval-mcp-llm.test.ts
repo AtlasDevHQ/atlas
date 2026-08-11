@@ -22,6 +22,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   __forTesting__,
   keyedExpectationFrom,
+  summarizeTokenUsage,
   readBaseline,
   writeBaseline,
   type MetricExpectation,
@@ -2715,3 +2716,139 @@ describe("readBaseline / writeBaseline", () => {
 // lives inside `bindMcpToolsForLlm` rather than in a wrapper around it:
 // anything the loop must not be able to skip has to be unskippable by
 // construction, because nothing here would notice the skip.
+
+// ── Token usage (#5123) ───────────────────────────────────────────────
+
+/**
+ * Every spend figure this lane has ever quoted was a guess — including the
+ * workflow's own *"under $0.05 per run"*, which was never measured, and
+ * order-of-magnitude arithmetic on a 20-question / 124-tool-call run that puts
+ * it nearer $0.50–$2.00 and is also not a measurement.
+ *
+ * These pin the two properties that keep the recorded number from becoming
+ * another one of those: totals are DERIVED from the per-question records, and a
+ * question the provider did not measure is NAMED rather than counted as free.
+ */
+describe("summarizeTokenUsage", () => {
+  const u = (i: number, o: number, t: number) => ({
+    inputTokens: i,
+    outputTokens: o,
+    totalTokens: t,
+  });
+
+  it("sums each field independently", () => {
+    // ⚠️ NINE DISTINCT NUMBERS, NO TWO SUMS EQUAL. With `{100,100,200}` twice,
+    // swapping `inputTokens` for `outputTokens` in the reducer passes. Here
+    // every field's total is unique, so any cross-wiring is visible.
+    const out = summarizeTokenUsage([
+      { questionId: "cq-001", usage: u(100, 20, 130) },
+      { questionId: "cq-002", usage: u(3000, 400, 3450) },
+    ]);
+    expect(out.totals).toEqual({
+      inputTokens: 3100,
+      outputTokens: 420,
+      totalTokens: 3580,
+    });
+  });
+
+  it("keeps a provider totalTokens that EXCEEDS input + output", () => {
+    // Reasoning tokens are counted in `totalTokens` and in neither of the
+    // others, so a total derived as `input + output` would under-report a
+    // reasoning model's spend. 130 ≠ 120 is the whole assertion.
+    const out = summarizeTokenUsage([{ questionId: "cq-001", usage: u(100, 20, 130) }]);
+    expect(out.totals.totalTokens).toBe(130);
+    expect(out.totals.inputTokens + out.totals.outputTokens).toBe(120);
+  });
+
+  it("EXCLUDES an unmeasured question from the totals and names it", () => {
+    // The failure this prevents is a total that is quietly short. A `null`
+    // treated as `{0,0,0}` produces the same totals with no signal at all —
+    // which is why the ids are asserted beside them.
+    const out = summarizeTokenUsage([
+      { questionId: "cq-001", usage: u(100, 20, 130) },
+      { questionId: "cq-002", usage: null },
+      { questionId: "cq-003", usage: null },
+    ]);
+    expect(out.totals).toEqual({ inputTokens: 100, outputTokens: 20, totalTokens: 130 });
+    expect(out.unreported).toEqual(["cq-002", "cq-003"]);
+  });
+
+  it("reports zero totals and every id when NOTHING was measured", () => {
+    // The shape a provider that reports no usage at all produces. Zeros here are
+    // honest only because `unreported` says all three questions are missing —
+    // asserted together for that reason.
+    const out = summarizeTokenUsage([
+      { questionId: "cq-001", usage: null },
+      { questionId: "cq-002", usage: null },
+    ]);
+    expect(out.totals).toEqual({ inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+    expect(out.unreported).toEqual(["cq-001", "cq-002"]);
+  });
+
+  it("carries the per-question records through unchanged", () => {
+    // `byQuestion` is what makes the totals auditable — and what answers *which*
+    // question was expensive. A summarizer that returned only totals would pass
+    // every test above.
+    const byQuestion = [
+      { questionId: "cq-001", usage: u(100, 20, 130) },
+      { questionId: "cq-002", usage: null },
+    ];
+    expect(summarizeTokenUsage(byQuestion).byQuestion).toEqual(byQuestion);
+  });
+
+  it("is empty, not undefined, for a run that graded no questions", () => {
+    const out = summarizeTokenUsage([]);
+    expect(out.totals).toEqual({ inputTokens: 0, outputTokens: 0, totalTokens: 0 });
+    expect(out.unreported).toEqual([]);
+    expect(out.byQuestion).toEqual([]);
+  });
+});
+
+/**
+ * The boundary narrow. The AI SDK types every field of `LanguageModelUsage` as
+ * `number | undefined`, so a provider may report all, some or none of them.
+ */
+describe("toTokenUsage", () => {
+  const { toTokenUsage } = __forTesting__;
+
+  it("passes a fully reported usage through, keeping the provider's total", () => {
+    expect(toTokenUsage({ inputTokens: 100, outputTokens: 20, totalTokens: 130 })).toEqual({
+      inputTokens: 100,
+      outputTokens: 20,
+      totalTokens: 130,
+    });
+  });
+
+  it("derives totalTokens ONLY when the provider omitted it", () => {
+    // 130 above vs 120 here — the two branches produce different numbers on
+    // deliberately-chosen inputs, so an implementation that always derived (or
+    // always trusted) fails one of them.
+    expect(
+      toTokenUsage({ inputTokens: 100, outputTokens: 20, totalTokens: undefined }),
+    ).toEqual({ inputTokens: 100, outputTokens: 20, totalTokens: 120 });
+  });
+
+  it("returns null for a PARTIAL report rather than zero-filling it", () => {
+    // ⚠️ THE RULE THAT KEEPS THIS A MEASUREMENT. `{inputTokens: 5000,
+    // outputTokens: 0}` reads as a very cheap question; `null` reads as an
+    // unmeasured one, and `summarizeTokenUsage` then NAMES it. Input and output
+    // are priced differently by roughly 5x, so a half-report cannot be costed.
+    expect(toTokenUsage({ inputTokens: 5000, outputTokens: undefined, totalTokens: 5000 })).toBeNull();
+    expect(toTokenUsage({ inputTokens: undefined, outputTokens: 20, totalTokens: 20 })).toBeNull();
+  });
+
+  it("returns null when the provider reported no usage object at all", () => {
+    expect(toTokenUsage(undefined)).toBeNull();
+  });
+
+  it("keeps a genuine ZERO, which is not the same as unreported", () => {
+    // A question that dispatched nothing can legitimately cost 0 output tokens.
+    // A truthiness check (`if (!outputTokens) return null`) passes every case
+    // above and fails here — which is why this case exists.
+    expect(toTokenUsage({ inputTokens: 40, outputTokens: 0, totalTokens: 40 })).toEqual({
+      inputTokens: 40,
+      outputTokens: 0,
+      totalTokens: 40,
+    });
+  });
+});

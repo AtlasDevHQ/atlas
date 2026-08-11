@@ -953,20 +953,44 @@ async function runMcpLlmMode(
     human(`  wrote per-question latency baseline to ${options.baselinePath}\n`);
   }
 
+  // `questionId -> usage`, so the per-outcome mapping below reads its own
+  // question's measurement rather than trusting two lists to stay in step.
+  const usageById = new Map(result.usage.byQuestion.map((q) => [q.questionId, q.usage]));
+
   if (options.json) {
-    writeFdSync(
-      1,
-      `${JSON.stringify(
+    const payload = `${JSON.stringify(
         {
           schema: options.schema,
           mode: options.mode,
           total: result.outcomes.length,
           passing,
           failing,
+          // #5123 — what the run cost, measured. Every figure quoted before this
+          // was a guess, including the workflow's own "under $0.05 per run".
+          // `unreported` names the questions the provider declined to measure,
+          // so the totals are never quietly short.
+          usage: {
+            inputTokens: result.usage.totals.inputTokens,
+            outputTokens: result.usage.totals.outputTokens,
+            totalTokens: result.usage.totals.totalTokens,
+            unreported: result.usage.unreported,
+          },
           outcomes: result.outcomes.map((o) => ({
             id: o.questionId,
             status: o.status,
             latencyMs: o.latencyMs,
+            // ⚠️ TWO FLAT NUMBERS, NOT A NESTED `usage` OBJECT, AND THE SHAPE
+            // WAS MEASURED RATHER THAN CHOSEN. #5134 put the stdout truncation
+            // cliff just above 65,536 bytes and the payload at 63,024 — about
+            // 2.5 KB of headroom. Pretty-printed at indent 2 inside `outcomes`,
+            // a nested `{inputTokens, outputTokens, totalTokens}` per question
+            // costs 2,340 bytes across twenty questions and lands the payload
+            // **35 bytes** from the cliff. Flat costs 1,140 and leaves ~1.2 KB.
+            // `totalTokens` is dropped here (derivable, and the split is what
+            // prices a question — input and output differ by roughly 5x); the
+            // run-level block above keeps all three.
+            inputTokens: usageById.get(o.questionId)?.inputTokens ?? null,
+            outputTokens: usageById.get(o.questionId)?.outputTokens ?? null,
             tools: o.toolCalls.map((c) => c.name),
             // ⚠️ `finalText` WAS NEVER ACTUALLY SERIALIZED (#5122). The
             // workflow's own comment claims this JSON "captures full
@@ -989,7 +1013,14 @@ async function runMcpLlmMode(
         },
         null,
         2,
-      )}\n`,
+      )}\n`;
+    writeFdSync(1, payload);
+    // On fd 2, so it costs the payload nothing. #5134's headroom was a number
+    // someone measured once; printing it every run makes the margin a signal
+    // rather than a fact in a comment that ages.
+    human(
+      `  --json payload: ${Buffer.byteLength(payload, "utf-8")} bytes ` +
+        `(stdout truncation cliff is just above 65536 — #5134)\n`,
     );
   } else {
     human(
@@ -997,10 +1028,19 @@ async function runMcpLlmMode(
     );
     for (const o of result.outcomes) {
       const tag = o.status === "pass" ? "[PASS]" : "[FAIL]";
+      const u = usageById.get(o.questionId);
+      const tokens = u ? `${u.inputTokens}in/${u.outputTokens}out` : "unmeasured";
       human(
-        `  ${tag} ${o.questionId.padEnd(7)} ${String(o.latencyMs).padStart(5)}ms tools=${o.toolCalls.map((c) => c.name).join(",") || "<none>"}\n`,
+        `  ${tag} ${o.questionId.padEnd(7)} ${String(o.latencyMs).padStart(5)}ms ${tokens.padStart(16)} tools=${o.toolCalls.map((c) => c.name).join(",") || "<none>"}\n`,
       );
     }
+    const { totals, unreported } = result.usage;
+    human(
+      `  tokens: ${totals.inputTokens} in + ${totals.outputTokens} out = ${totals.totalTokens} total` +
+        (unreported.length > 0
+          ? ` (EXCLUDES ${unreported.length} unmeasured: ${unreported.join(", ")})\n`
+          : `\n`),
+    );
     if (result.artifacts.length > 0) {
       // `human`, not a raw fd-1 write: this branch is unreachable under
       // `--json` today, but the bundle is the largest human payload the command

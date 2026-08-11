@@ -754,10 +754,19 @@ export async function handleEval(args: string[]): Promise<void> {
       try {
         // The channel the surrounding block already uses: this command's
         // `--json` / `--csv` bodies own fd 1, so the seed's progress line goes
-        // to fd 2 there. ⚠️ That does NOT make `atlas eval --json` clean — its
-        // own preamble still writes prose to fd 1 (lines 466-500), which is the
-        // same defect #5126 fixed one command over and is out of this change's
-        // scope. This call site is correct; the command around it is not.
+        // to fd 2 there.
+        //
+        // ⚠️ That does NOT make `atlas eval --json` clean, and the writers that
+        // spoil it are NOT `printSummary` — that is behind the `else` of the
+        // same `jsonOutput` check and never runs in this mode. The live ones
+        // are `console.log("Resuming: …")` under `--resume`, the
+        // `Baseline saved to: …` line, and `printRegressionReport` under
+        // `--compare`, which prints ANSI *after* the JSON body. That is the
+        // same defect #5126 fixed one command over, and it is out of this
+        // change's scope: this call site is correct, the command around it is
+        // not. (Named precisely because the first draft of this comment pointed
+        // at the wrong function — a wrong cause in a comment is what stops the
+        // next person looking.)
         await seedDemoPostgres(connStr, (text) =>
           (csvOutput || jsonOutput ? process.stderr : process.stdout).write(text),
         );

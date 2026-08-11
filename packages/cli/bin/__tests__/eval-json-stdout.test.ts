@@ -57,15 +57,11 @@ const PRELOAD = path.join(
  * a guard over one file is not it — the third polluter was a `console.log` in a
  * file no driver-scoped guard would ever have opened.
  *
- * ⚠️ `src/commands/init.ts` is deliberately NOT here, and the reason is the
- * general shape of this kind of guard. That file legitimately owns fd 1 — it is
- * the interactive `init` command, 50-odd `console.log`s of it — and only
- * `seedDemoPostgres` inside it is on the eval path. A lexical guard cannot
- * express "this function but not its neighbours" without slicing source by
- * brace-matching, which is a worse guard than none. It is covered BEHAVIOURALLY
- * instead, by `src/__tests__/seed-demo-report.test.ts`, which spies every
- * console method that reaches fd 1 for the duration of the real call — stronger
- * than a grep, because it also catches a helper the function delegates to.
+ * ⚠️ `src/commands/init.ts` is not on this WHOLE-FILE list, because it
+ * legitimately owns fd 1 — it is the interactive `init` command, 50-odd
+ * `console.log`s of it — and only `seedDemoPostgres` inside it is on the eval
+ * path. It gets a function-scoped arm of the same guard instead; see
+ * {@link SEED_FN_SIGNATURE}.
  */
 const FD1_GUARDED_SOURCES = [
   "packages/cli/bin/canonical-eval-run.ts",
@@ -74,6 +70,38 @@ const FD1_GUARDED_SOURCES = [
   "packages/cli/bin/canonical-eval-tool-selection.ts",
   "packages/cli/bin/eval-log-destination.ts",
 ].map((p) => path.join(REPO_ROOT, p));
+
+const SEED_SRC = path.join(REPO_ROOT, "packages/cli/src/commands/init.ts");
+
+/**
+ * The one function in `init.ts` that runs inside `canonical-eval`.
+ *
+ * ⚠️ THIS ARM EXISTS BECAUSE THE BEHAVIOURAL SUBSTITUTE WAS WEAKER THAN THE
+ * GREP IT REPLACED, which is the same defect as the bug being fixed, one layer
+ * over. `src/__tests__/seed-demo-report.test.ts` spies `console` methods and
+ * `process.stdout.write` during the real call — genuinely stronger for a helper
+ * the function DELEGATES to, and that is why it stays — but it cannot see
+ * `Bun.stdout` or `fs.writeSync(1, …)`, two of the four spellings this file
+ * declares forbidden three lines up. Neither check subsumes the other: the spy
+ * covers delegation, the grep covers spellings. Both, or the class is open.
+ */
+const SEED_FN_SIGNATURE = "export async function seedDemoPostgres(";
+
+/**
+ * Slice one top-level function's body out of a source file.
+ *
+ * Brace-naive on purpose: it ends at the first line that is exactly `}`, which
+ * in a prettier-formatted file is the function's own closing brace and nothing
+ * else. It fails LOUD rather than silently returning too little — the callers
+ * assert the slice actually contains the body's last statement.
+ */
+function topLevelFunctionBody(source: string, signature: string): string {
+  const start = source.indexOf(signature);
+  expect(start).toBeGreaterThan(-1);
+  const end = source.indexOf("\n}\n", start);
+  expect(end).toBeGreaterThan(start);
+  return source.slice(start, end);
+}
 
 /**
  * Ways to reach fd 1 that are not `writeFdSync`. `console.error` / `.warn` are
@@ -460,6 +488,22 @@ describe("canonical-eval --json keeps stdout machine-readable", () => {
     const driver = fs.readFileSync(DRIVER_SRC, "utf-8");
     expect(driver).toContain("function writeFdSync(");
     expect(driver).toContain("function humanWriter(");
+  });
+
+  test("seedDemoPostgres's own body reaches fd 1 only through its injected sink", () => {
+    // The function-scoped arm. `init.ts` as a whole owns fd 1 legitimately, so
+    // the guard is narrowed to the one function `canonical-eval` runs — which
+    // is where the third polluter lived, and where the LIKELIEST regression is
+    // someone matching the file's house style and reaching for `console.log`.
+    const body = topLevelFunctionBody(
+      stripComments(fs.readFileSync(SEED_SRC, "utf-8")),
+      SEED_FN_SIGNATURE,
+    );
+    // The slice really is the whole body — a brace-naive cut that stopped early
+    // would trivially find no violations.
+    expect(body).toContain("await pool.end()");
+    expect(body).toContain("report(");
+    expect(body.match(FD1_WRITE) ?? []).toEqual([]);
   });
 
   test("bin/atlas.ts requests the log-destination stamp before any other module", () => {

@@ -315,6 +315,40 @@ jobs:
           set -o pipefail
           bun packages/cli/bin/atlas.ts canonical-eval --mcp-llm --json | tee eval-mcp-llm-output.json
 
+      - name: Assert the eval artifact is valid JSON
+        # ⚠️ THE ONLY CHECK THAT CAN SEE A WRITER WE DO NOT OWN. Everything else
+        # guarding fd 1 for this command is a unit test or a source grep over
+        # OUR modules — and #5126's third polluter was already one file further
+        # out than the fix's author looked. The `--json` process also pulls in
+        # `@atlas/api`, `@atlas/mcp`, better-auth, pino and pg through dynamic
+        # imports; any of those can print to fd 1 (there is a `console.debug`
+        # on an `@atlas/api` cache self-heal path today), and no grep over this
+        # repo's eval modules would ever see it.
+        #
+        # It is also the check whose absence is the whole issue: the artifact
+        # had never parsed, for its entire life, and nothing noticed, because
+        # `eval-informational-gate.sh` reads `steps.*.outcome` and never opens
+        # the file.
+        #
+        # Deliberately does NOT fire on a missing or empty file: that means the
+        # eval died before writing, which the gate step below already reports.
+        # Failing here too would bury a real failure under a derived one.
+        if: ${{ always() && env.ATLAS_LLM_EVAL_SKIPPED != '1' && steps.eval.outcome != 'skipped' }}
+        run: |
+          set -euo pipefail
+          if [ ! -s eval-mcp-llm-output.json ]; then
+            echo "::notice::eval-mcp-llm-output.json is absent or empty — the eval produced no payload; see the eval step."
+            exit 0
+          fi
+          if ! jq empty eval-mcp-llm-output.json 2>/tmp/jq-err; then
+            echo "::error::eval-mcp-llm-output.json is not valid JSON — something wrote to stdout alongside the --json payload (#5126)."
+            cat /tmp/jq-err
+            echo "First 400 bytes:"
+            head -c 400 eval-mcp-llm-output.json
+            exit 1
+          fi
+          echo "eval-mcp-llm-output.json parses ($(wc -c < eval-mcp-llm-output.json) bytes)"
+
       - name: Upload eval artifacts on failure
         # Captured regardless of pass/fail so a baseline drift on a
         # green run is still inspectable; the retention budget is small

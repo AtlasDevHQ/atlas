@@ -15,7 +15,7 @@
  * about the CALL SITE — does `runInstalledCanonicalEval` hand over the resolved
  * human writer? — but it can say nothing about the function itself. This file
  * is the other half: the real body, with `pg` mocked, asserting the label goes
- * to the sink and that no `console` method is called at all.
+ * to the sink and that nothing at all reaches fd 1 while it runs.
  */
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
@@ -51,44 +51,69 @@ const STDOUT_CONSOLE_METHODS = [
   "trace",
 ] as const;
 
-let restoreConsole: Array<() => void> = [];
-const consoleCalls: string[] = [];
+/**
+ * ⚠️ `process.stdout.write` IS SPIED TOO, AND ITS ABSENCE WAS A REAL DEFECT IN
+ * THIS FILE. The first cut spied only `console` methods — which is exactly the
+ * "covered the writers I happened to look at" mistake this whole issue is
+ * about, reproduced inside the test written to catch it. `init.ts`'s own house
+ * spelling for this very call is `(text) => process.stdout.write(text)`, so the
+ * uncovered spelling was the one most likely to appear.
+ *
+ * Two spellings this still cannot see — `Bun.stdout` and `fs.writeSync(1, …)` —
+ * are covered lexically by the function-scoped arm in
+ * `bin/__tests__/eval-json-stdout.test.ts`. Neither check subsumes the other:
+ * this one follows delegation into a helper, that one covers every spelling.
+ */
+let restoreWriters: Array<() => void> = [];
+const stdoutCalls: string[] = [];
 
 beforeEach(() => {
   queries.length = 0;
-  consoleCalls.length = 0;
+  stdoutCalls.length = 0;
   ended = 0;
   queryError = null;
-  // Recorded per METHOD, not into one shared sink, so the assertion can name
-  // which one leaked rather than only that something did.
-  restoreConsole = STDOUT_CONSOLE_METHODS.map((name) => {
+  // Recorded with the writer's NAME, not into one anonymous sink, so a failure
+  // says which route leaked rather than only that something did.
+  restoreWriters = STDOUT_CONSOLE_METHODS.map((name) => {
     const original = console[name];
     console[name] = ((...args: unknown[]) => {
-      consoleCalls.push(`${name}: ${args.map(String).join(" ")}`);
+      stdoutCalls.push(`console.${name}: ${args.map(String).join(" ")}`);
     }) as typeof original;
     return () => {
       console[name] = original;
     };
   });
+  const originalWrite = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => {
+    stdoutCalls.push(`process.stdout.write: ${String(chunk)}`);
+    void rest;
+    return true;
+  }) as typeof process.stdout.write;
+  restoreWriters.push(() => {
+    process.stdout.write = originalWrite;
+  });
 });
 
 afterEach(() => {
-  for (const restore of restoreConsole) restore();
-  restoreConsole = [];
+  // Restored in reverse, so `process.stdout.write` is back before anything the
+  // console restores might print — a swallowed stdout would otherwise hide a
+  // later test's output.
+  for (const restore of restoreWriters.reverse()) restore();
+  restoreWriters = [];
 });
 
 describe("seedDemoPostgres reporting", () => {
-  test("the label goes to the injected sink, and nothing goes to a console stdout method", async () => {
+  test("the label goes to the injected sink, and nothing reaches fd 1", async () => {
     const reported: string[] = [];
     await seedDemoPostgres("postgres://unused/db", (text) => reported.push(text));
 
     // The exact label plus the trailing newline the sink now owns — asserting
     // "something was reported" would pass for a sink handed the empty string.
     expect(reported).toEqual([`${DEMO_DATASET.label}\n`]);
-    // The falsifier for the defect itself. Reverting the body to
-    // `console.log(DEMO_DATASET.label)` leaves `reported` empty AND puts an
-    // entry here, so both assertions fail — neither can carry it alone.
-    expect(consoleCalls).toEqual([]);
+    // The falsifier for the defect itself, and it covers a write ALONGSIDE the
+    // sink as well as one replacing it — `reported` alone would pass for a body
+    // that reported correctly and ALSO logged, which is the historical shape.
+    expect(stdoutCalls).toEqual([]);
     // Anchors the run to the success path: on the throw path below the report
     // is correctly skipped, so a test that never queried would pass vacuously.
     expect(queries).toHaveLength(1);
@@ -106,7 +131,7 @@ describe("seedDemoPostgres reporting", () => {
     ).rejects.toThrow("Failed to seed demo data into Postgres");
 
     expect(reported).toEqual([]);
-    expect(consoleCalls).toEqual([]);
+    expect(stdoutCalls).toEqual([]);
     expect(ended).toBe(1);
   });
 });

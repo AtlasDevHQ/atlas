@@ -7,7 +7,7 @@
  *
  * Uses mock.module() — all named exports mocked.
  */
-import { describe, it, expect, mock, beforeEach } from "bun:test";
+import { describe, it, expect, mock, beforeEach, afterEach } from "bun:test";
 import { createConnectionMock } from "@atlas/api/testing/connection";
 
 // ---------------------------------------------------------------------------
@@ -118,10 +118,25 @@ const { validateSQL } = await import("../sql");
 // ---------------------------------------------------------------------------
 
 describe("org-scoped SQL whitelist enforcement", () => {
+  // ⚠️ THE ORG BRANCH NOW REQUIRES AN INTERNAL DB, SO THESE TESTS STATE ONE
+  // (#5122). `validateSQL` branches on `orgId && hasInternalDB()`, and
+  // `hasInternalDB()` is `!!process.env.DATABASE_URL` read at call time — so
+  // before this was stated, every test below passed or failed according to
+  // whether the RUNNER happened to have DATABASE_URL set. That is the same
+  // ambient-env dependency that made the MCP eval auth fixture behave
+  // differently under `bun test` than under the CLI (#5121); it does not get to
+  // decide which branch a security test exercises. Restored per-test so the
+  // no-DB case below can clear it without leaking into its siblings.
+  const previousDatabaseUrl = process.env.DATABASE_URL;
   beforeEach(() => {
     mockOrgId = undefined;
     loadOrgWhitelistCallCount = 0;
     loadOrgWhitelistCalls.length = 0;
+    process.env.DATABASE_URL = "postgres://sql-org-whitelist-test/db";
+  });
+  afterEach(() => {
+    if (previousDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = previousDatabaseUrl;
   });
 
   it("uses org whitelist when activeOrganizationId is present", async () => {
@@ -197,6 +212,35 @@ describe("org-scoped SQL whitelist enforcement", () => {
     mockOrgId = undefined;
     await validateSQL("SELECT * FROM file_companies");
     expect(loadOrgWhitelistCallCount).toBe(0);
+  });
+
+  it("org WITHOUT an internal DB falls back to the file whitelist (#5122)", async () => {
+    // The org whitelist is read from `semantic_entities`. With no internal DB
+    // that table cannot exist, so the org branch resolves empty and rejects
+    // EVERY table — while `listEntities` / `describeEntity`, which gate on
+    // `orgId && hasInternalDB()`, happily advertise the on-disk catalog. That
+    // three-way disagreement is what scored the LLM eval 1/20 (#5122): the
+    // MCP fixture binds an org (in-memory Better Auth) and has no internal DB.
+    mockOrgId = "org-123";
+    delete process.env.DATABASE_URL;
+
+    const result = await validateSQL("SELECT * FROM file_companies");
+    expect(result.valid).toBe(true);
+    // The org whitelist must not be consulted at all — not merely ignored.
+    expect(loadOrgWhitelistCallCount).toBe(0);
+  });
+
+  it("org WITHOUT an internal DB points at catalog.yml, not the admin UI (#5122)", async () => {
+    // The guidance tail follows the SOURCE, not the presence of an org. With no
+    // internal DB the whitelist came from disk, so "admin → Semantic" would be
+    // the dead end #2143 removed for the opposite configuration.
+    mockOrgId = "org-123";
+    delete process.env.DATABASE_URL;
+
+    const result = await validateSQL("SELECT * FROM not_anywhere");
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain("catalog.yml");
+    expect(result.error).not.toContain("admin → Semantic");
   });
 
   it("org isolation: different orgs see different whitelists", async () => {

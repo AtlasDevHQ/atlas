@@ -21,6 +21,7 @@ import type { AST } from "node-sql-parser";
 import { connections, detectDBType, isConnectionVisibleInMode, ConnectionNotRegisteredError, NoDatasourceConfiguredError, PoolCapacityExceededError } from "@atlas/api/lib/db/connection";
 import type { DBConnection, DBType } from "@atlas/api/lib/db/connection";
 import { getWhitelistedTables, getOrgWhitelistedTables, loadOrgWhitelist } from "@atlas/api/lib/semantic";
+import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { logQueryAudit } from "@atlas/api/lib/auth/audit";
 import { SENSITIVE_PATTERNS } from "@atlas/api/lib/security";
 import { withSpan } from "@atlas/api/lib/tracing";
@@ -740,7 +741,18 @@ export async function validateSQL(
       // no request context but pass an explicit workspaceId, so the whitelist
       // must follow it or org-scoped cards validate against the wrong entities
       // while executing against the workspace's own pool (#3109, Codex review).
-      const orgId = workspaceId;
+      // ⚠️ ORG **AND** INTERNAL DB (#5122). The org whitelist is read from
+      // `semantic_entities`; with no internal DB that table does not exist, so
+      // the org branch could only ever resolve the empty set — deny-all for
+      // every table, permanently. Branching on `orgId` alone therefore put
+      // `executeSQL` at odds with `listEntities` / `describeEntity`, which read
+      // the on-disk layer under exactly this gate
+      // (`semantic-tools.ts:resolveEntity`): the catalog advertised 13 entities
+      // while every query against them came back `unknown_entity`. That is what
+      // scored the LLM eval 1/20 on its first real run. The advertise/enforce
+      // parity `/api/v1/tables` maintains (#3898) moves with this — both now
+      // resolve through `resolveAllowedTables`'s single gate.
+      const orgId = workspaceId && hasInternalDB() ? workspaceId : undefined;
       // Lazy-load the per-org whitelist into the in-process cache.
       // The chat path (`agent.ts:570`) explicitly preloads this before
       // dispatching the agent loop. The MCP edge does NOT — every

@@ -51,6 +51,22 @@ export const DEFAULT_REQUESTS_PER_MINUTE = 60;
  * `packages/mcp/src/tools.ts` and `packages/mcp/src/semantic-tools.ts`.
  */
 export const TOOL_WEIGHTS = {
+  // ⚠️ THE MOST EXPENSIVE TOOL, AND IT WAS MISSING FROM THIS TABLE (#5122).
+  // `query` hands the question to Atlas's server-side analyst agent: a SECOND
+  // LLM that explores the catalog and issues its own SELECTs, billed to the
+  // workspace's plan tokens (see QUERY_TOOL_DESCRIPTION — "It runs a second
+  // server-side LLM and spends Atlas plan tokens"). Absent an entry it took
+  // DEFAULT_TOOL_WEIGHT, so the one tool that fans out into several
+  // executeSQL-equivalents plus inference cost the SAME as a `listEntities`
+  // metadata read — and one fifth of the raw `executeSQL` it wraps. A hosted
+  // client aiming at spend rather than row count was therefore policed at the
+  // cheapest rate on offer.
+  //
+  // 10 = twice the priciest raw tool, admitting ~6/min. Chosen as a defensible
+  // ceiling rather than a measured one: nothing records per-tool cost yet
+  // (#5123 adds token accounting), so this is deliberately conservative and
+  // should be revisited against real numbers rather than left to look derived.
+  query: 10,
   executeSQL: 5,
   explore: 5,
   runMetric: 3,

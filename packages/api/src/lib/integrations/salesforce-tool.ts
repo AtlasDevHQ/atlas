@@ -188,8 +188,17 @@ async function defaultResolveWhitelist(): Promise<Set<string>> {
   // that surface, matching the barrel's own "imported broadly" design note.
   const { loadOrgWhitelist, getOrgWhitelistedTables, getWhitelistedTablesStrict } =
     await import("@atlas/api/lib/semantic");
+  const { hasInternalDB } = await import("@atlas/api/lib/db/internal");
   const ctx = getRequestContext();
-  const orgId = ctx?.user?.activeOrganizationId;
+  // Org **and** internal DB, matching `validateSQL` / `resolveAllowedTables`
+  // (#5122): the org whitelist lives in `semantic_entities`, so with no internal
+  // DB the org branch resolves empty and this tool would silently WIDEN to
+  // structural-only (an empty set means "allow any explicitly-named object"
+  // here) rather than reading the authored on-disk layer below.
+  const orgId =
+    ctx?.user?.activeOrganizationId && hasInternalDB()
+      ? ctx.user.activeOrganizationId
+      : undefined;
   if (orgId) {
     // Cache-guarded: O(1) after the first load for this org.
     await loadOrgWhitelist(orgId, ctx?.atlasMode);

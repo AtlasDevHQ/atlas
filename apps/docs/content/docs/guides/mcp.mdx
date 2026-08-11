@@ -478,6 +478,8 @@ Return the full parsed entity YAML — dimensions (with types and sample values)
 name: "orders"
 ```
 
+Pass the `name` exactly as `listEntities` reports it — **including spaces**. Entity display names are human-authored (`Order Items`, `Email Campaigns`), and every identifier the catalog advertises is accepted here; the table name (`order_items`) and the file stem resolve to the same entity. The only names rejected are those containing a path separator, `..`, or a NUL byte.
+
 When the entity does not exist, returns an `unknown_entity` [error envelope](#error-contract) — the agent should call `listEntities` to discover what's available rather than guess. Always call `describeEntity` before writing SQL against an unfamiliar table.
 
 ### searchGlossary
@@ -1099,11 +1101,14 @@ Not all tools are equal. The bucket is debited per dispatch by the tool's weight
 
 | Tool                                  | Weight |
 | ------------------------------------- | ------ |
+| `query`                               | 10     |
 | `executeSQL`, `explore`               | 5      |
 | `runMetric`                           | 3      |
 | `listEntities`, `describeEntity`, `searchGlossary` | 1 |
 
-A 60/min budget admits roughly **12 `executeSQL` calls** or **60 `listEntities` calls** per minute. Mixing tools costs the sum of their weights.
+A 60/min budget admits roughly **6 `query` calls**, **12 `executeSQL` calls**, or **60 `listEntities` calls** per minute. Mixing tools costs the sum of their weights.
+
+`query` is the heaviest because it does the most: it runs Atlas's server-side analyst agent, which is a second LLM that explores the catalog and issues its own `SELECT`s on your behalf — so one `query` dispatch can cost several `executeSQL`-equivalents plus inference billed to your plan.
 
 #### Live usage in Settings → AI Agents
 

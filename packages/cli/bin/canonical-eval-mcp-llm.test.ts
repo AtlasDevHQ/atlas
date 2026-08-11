@@ -99,6 +99,16 @@ function virtualQuestion(
   };
 }
 
+/**
+ * Ground truth for the dispatcher-level tests. These exercise `grade`'s
+ * pre-mode branches (protocol / transport / latency), not value comparison, so
+ * one entry covering the `cq-001` fixtures is enough — but it must exist, or a
+ * successful answering call would trip the missing-expectation guard.
+ */
+const METRIC_EXPECTATIONS = {
+  total_gmv: { kind: "scalar", value: 1 },
+} as const;
+
 function call(
   name: string,
   args: Record<string, unknown>,
@@ -120,21 +130,167 @@ describe("gradeMetric", () => {
         { kind: "ok", data: { id: "total_gmv", sql: "SELECT 1", columns: ["v"], rows: [{ v: 42 }], truncated: false } },
       ),
     ];
-    const out = gradeMetric(q, calls, "GMV is $42", 12);
+    // `runMetric` with the right id runs the semantic layer's own SQL, so it
+    // is correct by construction — no expectation needed to adjudicate it.
+    const out = gradeMetric(q, calls, "GMV is $42", 12, undefined);
     expect(out.status).toBe("pass");
   });
 
-  it("passes when executeSQL is called with the expected SQL substrings", () => {
-    const q = metricQuestion("cq-001", "total_gmv", ["sum(total_cents)", "from orders"]);
+  // ── #5122: metric mode grades the ANSWER, not the SQL's spelling ──
+  //
+  // The `expect.sql_pattern` needles these tests used to assert on are copies
+  // of the metric's own authoritative SQL, so they were vacuous where they were
+  // written (the deterministic eval executes that very SQL) and a spelling test
+  // when reused here. Every case below is a REAL sequence from the 2026-08-10
+  // run that the old grader scored wrong.
+
+  it("passes hand-written SQL that computes the authoritative value a different way (cq-002)", () => {
+    // Ran `SELECT COUNT(*) FROM customers` against a metric whose SQL says
+    // `COUNT(DISTINCT id)`. Identical on a primary key. The needle
+    // `COUNT(DISTINCT id)` failed it.
+    const q = metricQuestion("cq-002", "total_customers", ["COUNT(DISTINCT id)", "FROM customers"]);
     const calls = [
       call(
         "executeSQL",
-        { sql: "SELECT SUM(total_cents) FROM orders" },
-        { kind: "ok", data: { columns: ["v"], rows: [{ v: 1 }] } },
+        { sql: "SELECT COUNT(*) AS customer_count FROM customers" },
+        { kind: "ok", data: { columns: ["customer_count"], rows: [{ customer_count: "5000" }] } },
       ),
     ];
-    const out = gradeMetric(q, calls, "OK", 7);
+    const out = gradeMetric(q, calls, "5000 customers", 7, { kind: "scalar", value: 5000 });
     expect(out.status).toBe("pass");
+  });
+
+  it("passes the same metric answered in a different unit (cq-003)", () => {
+    // Ran `AVG(total_cents / 100.0)` — dollars — against a cents-denominated
+    // metric. The needle `AVG(total_cents)` failed it on the closing paren
+    // alone; cq-001 passed only because ITS `/ 100.0` fell outside the parens.
+    const q = metricQuestion("cq-003", "aov", ["AVG(total_cents)", "FROM orders"]);
+    const calls = [
+      call(
+        "executeSQL",
+        { sql: "SELECT AVG(total_cents / 100.0) AS aov_dollars FROM orders" },
+        { kind: "ok", data: { columns: ["aov_dollars"], rows: [{ aov_dollars: "82.35" }] } },
+      ),
+    ];
+    const out = gradeMetric(q, calls, "AOV is $82.35", 7, { kind: "scalar", value: 8235 });
+    expect(out.status).toBe("pass");
+  });
+
+  it("accepts an answer produced by `query`, the tool the surface recommends (cq-008)", () => {
+    // QUERY_TOOL_DESCRIPTION: "This is the recommended path for
+    // question-answering". The grader counted only runMetric/executeSQL, so
+    // following the surface's own advice scored as a tool_selection failure.
+    const q = metricQuestion("cq-008", "top_customers_by_spend");
+    const calls = [
+      call(
+        "query",
+        { question: "Who are our top customers by spend?" },
+        {
+          kind: "ok",
+          data: {
+            answer: "Ada and Grace lead by spend.",
+            sql: ["SELECT ..."],
+            data: [{ columns: ["name", "spend"], rows: [{ name: "Ada" }, { name: "Grace" }] }],
+          },
+        },
+      ),
+    ];
+    const out = gradeMetric(q, calls, "Ada and Grace.", 9, {
+      kind: "keyed",
+      keys: ["Ada", "Grace"],
+    });
+    expect(out.status).toBe("pass");
+  });
+
+  it("fails a successful answer whose value is wrong — the check is not a formality", () => {
+    // The counterpart the old substring grader could not make: SQL that LOOKS
+    // canonical (matches every needle) but computes the wrong number, because
+    // it dropped the metric's filter. Spelling passes it; the value must not.
+    const q = metricQuestion("cq-001", "total_gmv", ["SUM(total_cents)", "FROM orders"]);
+    const calls = [
+      call(
+        "executeSQL",
+        { sql: "SELECT SUM(total_cents) FROM orders" }, // missing WHERE status != 'cancelled'
+        { kind: "ok", data: { columns: ["sum"], rows: [{ sum: "999999" }] } },
+      ),
+    ];
+    const out = gradeMetric(q, calls, "", 7, { kind: "scalar", value: 450485905 });
+    expect(out.status).toBe("fail");
+    if (out.status === "fail") expect(out.artifact.category).toBe("tool_selection");
+  });
+
+  it("fails a grouped answer that is missing a group", () => {
+    const q = metricQuestion("cq-020", "carrier_performance");
+    const calls = [
+      call(
+        "executeSQL",
+        { sql: "SELECT carrier, COUNT(*) FROM shipments WHERE carrier <> 'USPS' GROUP BY carrier" },
+        { kind: "ok", data: { columns: ["carrier"], rows: [{ carrier: "UPS" }, { carrier: "FedEx" }] } },
+      ),
+    ];
+    const out = gradeMetric(q, calls, "", 7, {
+      kind: "keyed",
+      keys: ["UPS", "FedEx", "USPS"],
+    });
+    expect(out.status).toBe("fail");
+  });
+
+  it("accepts an answer that differs only in rounding precision (cq-019)", () => {
+    // The `return_rate` metric ends in ROUND(…, 1) and publishes 11.2; the
+    // model rounded the identical ratio to two places and answered 11.22.
+    // The first cut of the VALUE grader rejected this — reintroducing, one
+    // layer down, the same "wrong over presentation" defect it replaced.
+    const q = metricQuestion("cq-019", "return_rate", ["FROM orders", "LEFT JOIN returns"]);
+    const calls = [
+      call(
+        "executeSQL",
+        { sql: "SELECT ROUND(100.0 * ... , 2) AS return_rate FROM orders LEFT JOIN returns ..." },
+        { kind: "ok", data: { columns: ["return_rate"], rows: [{ return_rate: "11.22" }] } },
+      ),
+    ];
+    const out = gradeMetric(q, calls, "11.22%", 9, { kind: "scalar", value: 11.2 });
+    expect(out.status).toBe("pass");
+  });
+
+  it("still rejects a value that differs beyond rounding", () => {
+    // Guard the guard: the precision rule must not become a blanket tolerance.
+    // 11.9 vs 11.2 agree at NO shared precision and must stay a failure.
+    const q = metricQuestion("cq-019", "return_rate");
+    const calls = [
+      call(
+        "executeSQL",
+        { sql: "SELECT ... AS return_rate" },
+        { kind: "ok", data: { columns: ["return_rate"], rows: [{ return_rate: "11.9" }] } },
+      ),
+    ];
+    const out = gradeMetric(q, calls, "", 9, { kind: "scalar", value: 11.2 });
+    expect(out.status).toBe("fail");
+  });
+
+  it("keeps integer counts exact", () => {
+    // A count has no decimal places, so the shared precision is 0 and an
+    // off-by-one must not be absorbed as "rounding".
+    const q = metricQuestion("cq-002", "total_customers");
+    const calls = [
+      call(
+        "executeSQL",
+        { sql: "SELECT COUNT(*) FROM customers" },
+        { kind: "ok", data: { columns: ["c"], rows: [{ c: "7999" }] } },
+      ),
+    ];
+    const out = gradeMetric(q, calls, "", 9, { kind: "scalar", value: 8000 });
+    expect(out.status).toBe("fail");
+  });
+
+  it("throws rather than grade a successful answer with no ground truth", () => {
+    // A missing expectation means the harness never established the right
+    // answer. Silently degrading to a weaker check would let the gate stop
+    // checking without saying so.
+    const q = metricQuestion("cq-001", "total_gmv");
+    const calls = [
+      call("executeSQL", { sql: "SELECT 1" }, { kind: "ok", data: { columns: ["v"], rows: [{ v: 1 }] } }),
+    ];
+    expect(() => gradeMetric(q, calls, "", 7, undefined)).toThrow(/no MetricExpectation/);
   });
 
   it("emits tool_selection when neither runMetric nor executeSQL is called", () => {
@@ -142,17 +298,17 @@ describe("gradeMetric", () => {
     const calls = [
       call("searchGlossary", { term: "gmv" }, { kind: "ok", data: { matches: [] } }),
     ];
-    const out = gradeMetric(q, calls, "", 3);
+    const out = gradeMetric(q, calls, "", 3, undefined);
     expect(out.status).toBe("fail");
     if (out.status === "fail") {
       expect(out.artifact.category).toBe("tool_selection");
-      expect(out.artifact.summary).toContain("never called runMetric or executeSQL");
+      expect(out.artifact.summary).toContain("never called an answering tool");
     }
   });
 
   it("emits tool_selection when the LLM never called any tool (empty sequence)", () => {
     const q = metricQuestion("cq-001", "total_gmv");
-    const out = gradeMetric(q, [], "", 2);
+    const out = gradeMetric(q, [], "", 2, undefined);
     expect(out.status).toBe("fail");
     if (out.status === "fail") {
       expect(out.artifact.category).toBe("tool_selection");
@@ -173,7 +329,7 @@ describe("gradeMetric", () => {
         { kind: "ok", data: { id: "total_gmv", sql: "...", columns: ["v"], rows: [{ v: 42 }] } },
       ),
     ];
-    const out = gradeMetric(q, calls, "GMV is $42", 14);
+    const out = gradeMetric(q, calls, "GMV is $42", 14, undefined);
     expect(out.status).toBe("pass");
   });
 
@@ -191,7 +347,7 @@ describe("gradeMetric", () => {
       ),
       // No metric/sql call — should be tool_selection, not recovery.
     ];
-    const out = gradeMetric(q, calls, "", 5);
+    const out = gradeMetric(q, calls, "", 5, undefined);
     expect(out.status).toBe("fail");
     if (out.status === "fail") expect(out.artifact.category).toBe("tool_selection");
   });
@@ -205,7 +361,8 @@ describe("gradeMetric", () => {
         { kind: "error", envelope: { code: "unknown_metric", hint: "call listEntities" } },
       ),
     ];
-    const out = gradeMetric(q, calls, "I don't know", 9);
+    // No successful answering call, so no ground truth is needed to classify.
+    const out = gradeMetric(q, calls, "I don't know", 9, undefined);
     expect(out.status).toBe("fail");
     if (out.status === "fail") expect(out.artifact.category).toBe("recovery");
   });
@@ -219,7 +376,7 @@ describe("gradeMetric", () => {
         { kind: "ok", data: { id: "aov", sql: "SELECT AVG(...)", columns: ["v"], rows: [{ v: 7 }] } },
       ),
     ];
-    const out = gradeMetric(q, calls, "", 4);
+    const out = gradeMetric(q, calls, "", 4, { kind: "scalar", value: 450485905 });
     expect(out.status).toBe("fail");
     if (out.status === "fail") expect(out.artifact.category).toBe("tool_selection");
   });
@@ -228,6 +385,57 @@ describe("gradeMetric", () => {
 // ── Glossary mode ────────────────────────────────────────────────────
 
 describe("gradeGlossary", () => {
+  // ── #5122: the contract is "ASK, never silently pick" ──────────────
+  //
+  // ⚠️ THESE THREE STRINGS ARE THE MODEL'S VERBATIM ANSWERS from the
+  // 2026-08-10 run, pasted rather than paraphrased. A hand-written "asks for
+  // clarification" fixture would agree with the detector by construction and
+  // prove nothing; these are the exact outputs the old grader scored as
+  // tool_selection failures, so they falsify it.
+  const CAPTURED_CQ013 = "Great! The glossary shows there are multiple ways to measure revenue. **Which type would you like to see?**\n\n- **Gross revenue (GMV)** \u2014 total value of all non-cancelled orders before refunds\n- **Net revenue** \u2014 GMV minus refunded amounts (actual collected revenue)\n- **Seller revenue** \u2014 for marketplace sellers, their take after commission\n\nAlso, just to confirm: are you asking about the **most recent completed quarter**, or a **specific quarter** (like Q4 2024)?";
+  const CAPTURED_CQ014 = "I'd be happy to help you filter by status, but I need more context. Could you please clarify:\n\n1. **What data are you looking at?** (e.g., orders, users, transactions, etc.)\n2. **What specific status values** are you interested in? (e.g., \"active\", \"completed\", \"pending\", etc.)\n3. **What question are you trying to answer?** (e.g., \"How many orders are pending?\", \"Show me all active users\", etc.)\n\nOnce you provide these details, I can help you query the data with the appropriate filters.";
+  const CAPTURED_CQ015 = "I'd be happy to help you find pricing information, but I need more context. Could you clarify:\n\n1. **What are you asking about?** (e.g., a product, service, subscription plan, or something else)\n2. **Do you have access to a specific data source?** (e.g., a products table, pricing database)\n\nIf you're asking about data in your Atlas workspace, I can help you query it once I understand:\n- Which table or entity contains the pricing information\n- What specific item(s) you want the price for\n- Any filters (e.g., by product name, category, date, etc.)\n\nCould you provide more details?";
+
+  it("passes when the answer surfaces the ambiguity, however the agent got there (cq-013)", () => {
+    // Dispatched `query` — which consults the glossary server-side — and then
+    // listed the competing definitions and asked which was meant. The old
+    // grader failed it for not dispatching `searchGlossary` literally.
+    const q = glossaryQuestion("cq-013", "revenue");
+    const calls = [
+      call("explore", { cmd: "ls" }, { kind: "ok", data: {} }),
+      call("query", { question: "Show me revenue last quarter" }, { kind: "ok", data: { answer: "..." } }),
+    ];
+    const out = gradeGlossary(q, calls, CAPTURED_CQ013, 11);
+    expect(out.status).toBe("pass");
+  });
+
+  it("passes a clarifying answer that dispatched nothing (cq-014, cq-015)", () => {
+    const cases = [
+      { q: glossaryQuestion("cq-014", "status"), text: CAPTURED_CQ014 },
+      { q: glossaryQuestion("cq-015", "price"), text: CAPTURED_CQ015 },
+    ];
+    for (const { q, text } of cases) {
+      const out = gradeGlossary(q, [], text, 3);
+      expect({ id: q.id, status: out.status }).toEqual({ id: q.id, status: "pass" });
+    }
+  });
+
+  it("still fails an agent that silently picked a mapping and answered", () => {
+    // The regression the eval exists to catch, and the reason the clarifying
+    // path is gated on "no answering tool ran": a confident number with no
+    // disambiguation must stay a failure.
+    const q = glossaryQuestion("cq-013", "revenue");
+    const calls = [
+      call(
+        "executeSQL",
+        { sql: "SELECT SUM(total_cents) FROM orders" },
+        { kind: "ok", data: { columns: ["v"], rows: [{ v: 1 }] } },
+      ),
+    ];
+    const out = gradeGlossary(q, calls, "Revenue last quarter was $4,504,859.", 9);
+    expect(out.status).toBe("fail");
+  });
+
   it("passes when searchGlossary returns ambiguous_term and the LLM stops", () => {
     const q = glossaryQuestion("cq-016", "revenue", "ambiguous");
     const calls = [
@@ -313,6 +521,38 @@ describe("gradeGlossary", () => {
 // ── Pattern mode ─────────────────────────────────────────────────────
 
 describe("gradePattern", () => {
+  it("passes a pattern answer whose SQL is phrased differently but returns the right rows (cq-016)", () => {
+    // ⚠️ cq-016 PASSED on one run and FAILED on the next — same corpus, same
+    // model — because the second time the model phrased the promotion filter
+    // differently and stopped matching `WHERE status != 'cancelled'`. A gate
+    // that flips on SQL phrasing is not measuring the thing it claims to. The
+    // value accept path is ADDITIVE here: it only converts that false negative
+    // into a pass, and cannot make a wrong answer pass that the existing
+    // substring/structural checks would have caught.
+    const q = patternQuestion("cq-016", "Orders", "orders_with_promotions", [
+      "WHERE status != 'cancelled'",
+      "promotion_id IS NOT NULL",
+    ]);
+    const calls = [
+      call(
+        "executeSQL",
+        { sql: "SELECT CASE WHEN promotion_id IS NOT NULL THEN 'With Promotion' ELSE 'No Promotion' END AS promo_status, COUNT(*) FROM orders WHERE status <> 'cancelled' GROUP BY 1" },
+        {
+          kind: "ok",
+          data: {
+            columns: ["promo_status"],
+            rows: [{ promo_status: "With Promotion" }, { promo_status: "No Promotion" }],
+          },
+        },
+      ),
+    ];
+    const out = gradePattern(q, calls, "", 8, {
+      kind: "keyed",
+      keys: ["With Promotion", "No Promotion"],
+    });
+    expect(out.status).toBe("pass");
+  });
+
   it("passes when describeEntity returns an entity carrying the named pattern", () => {
     const q = patternQuestion("cq-019", "orders", "orders_with_promotions");
     const calls = [
@@ -332,7 +572,7 @@ describe("gradePattern", () => {
         },
       ),
     ];
-    const out = gradePattern(q, calls, "", 6);
+    const out = gradePattern(q, calls, "", 6, undefined);
     expect(out.status).toBe("pass");
   });
 
@@ -348,7 +588,7 @@ describe("gradePattern", () => {
         { kind: "ok", data: { columns: ["id"], rows: [] } },
       ),
     ];
-    const out = gradePattern(q, calls, "", 5);
+    const out = gradePattern(q, calls, "", 5, undefined);
     expect(out.status).toBe("pass");
   });
 
@@ -357,14 +597,14 @@ describe("gradePattern", () => {
     const calls = [
       call("listEntities", {}, { kind: "ok", data: { entities: [] } }),
     ];
-    const out = gradePattern(q, calls, "", 4);
+    const out = gradePattern(q, calls, "", 4, undefined);
     expect(out.status).toBe("fail");
     if (out.status === "fail") expect(out.artifact.category).toBe("tool_selection");
   });
 
   it("emits tool_selection on an empty sequence", () => {
     const q = patternQuestion("cq-019", "orders", "orders_with_promotions");
-    const out = gradePattern(q, [], "", 2);
+    const out = gradePattern(q, [], "", 2, undefined);
     expect(out.status).toBe("fail");
     if (out.status === "fail") expect(out.artifact.category).toBe("tool_selection");
   });
@@ -381,9 +621,72 @@ describe("gradePattern", () => {
         { kind: "ok", data: {} },
       ),
     ];
-    const out = gradePattern(q, calls, "", 5);
+    const out = gradePattern(q, calls, "", 5, undefined);
     expect(out.status).toBe("fail");
     if (out.status === "fail") expect(out.artifact.category).toBe("tool_selection");
+  });
+});
+
+// ── Throttle (#5122) ─────────────────────────────────────────────────
+
+describe("rate-limit handling", () => {
+  // The eval used to out-dispatch its own OAuth client's quota (~244 weighted
+  // units in under 4 minutes against 60/min) and then GRADE the resulting
+  // envelope: two questions were scored `recovery` — "the LLM saw error
+  // envelopes and did not recover" — for a limit the model would have kept
+  // hitting however it behaved. That also made the score move with dispatch
+  // timing. A throttle is a harness fault and must stop the run.
+  it("aborts the run instead of grading a rate_limited envelope", () => {
+    const q = metricQuestion("cq-020", "carrier_performance");
+    const calls = [
+      call(
+        "executeSQL",
+        { sql: "SELECT carrier FROM shipments GROUP BY carrier" },
+        {
+          kind: "error",
+          envelope: {
+            code: "rate_limited",
+            message: 'OAuth client "abc" exceeded its hosted-MCP quota (60 weighted requests/min).',
+            retry_after: 5,
+          },
+        },
+      ),
+    ];
+    expect(() =>
+      __forTesting__.grade({
+        question: q,
+        toolCalls: calls,
+        finalText: "",
+        latencyMs: 5,
+        baseline: undefined,
+        metricExpectations: METRIC_EXPECTATIONS,
+        answerExpectations: undefined,
+      }),
+    ).toThrow(/rate limited|throttling ITSELF/);
+  });
+
+  it("does not abort on an ordinary tool error envelope", () => {
+    // Guard the guard: the abort must be scoped to `rate_limited`, or every
+    // recovery-class regression the eval exists to catch becomes a crash.
+    const q = metricQuestion("cq-001", "total_gmv");
+    const calls = [
+      call(
+        "runMetric",
+        { id: "total_gmv" },
+        { kind: "error", envelope: { code: "unknown_metric", hint: "call listEntities" } },
+      ),
+    ];
+    const out = __forTesting__.grade({
+      question: q,
+      toolCalls: calls,
+      finalText: "",
+      latencyMs: 5,
+      baseline: undefined,
+      metricExpectations: METRIC_EXPECTATIONS,
+      answerExpectations: undefined,
+    });
+    expect(out.status).toBe("fail");
+    if (out.status === "fail") expect(out.artifact.category).toBe("recovery");
   });
 });
 
@@ -404,16 +707,17 @@ describe("gradeVirtual", () => {
         { kind: "ok", data: { columns: ["order_size_bucket"], rows: [{ order_size_bucket: "small" }] } },
       ),
     ];
-    const out = gradeVirtual(q, calls, "", 8);
+    const out = gradeVirtual(q, calls, "", 8, undefined);
     expect(out.status).toBe("pass");
   });
+
 
   it("emits tool_selection when executeSQL was never called", () => {
     const q = virtualQuestion("cq-013", "orders", "order_size_bucket");
     const calls = [
       call("listEntities", {}, { kind: "ok", data: { entities: [] } }),
     ];
-    const out = gradeVirtual(q, calls, "", 3);
+    const out = gradeVirtual(q, calls, "", 3, undefined);
     expect(out.status).toBe("fail");
     if (out.status === "fail") expect(out.artifact.category).toBe("tool_selection");
   });
@@ -427,14 +731,14 @@ describe("gradeVirtual", () => {
         { kind: "error", envelope: { code: "validation_failed", hint: "fix SQL" } },
       ),
     ];
-    const out = gradeVirtual(q, calls, "", 4);
+    const out = gradeVirtual(q, calls, "", 4, undefined);
     expect(out.status).toBe("fail");
     if (out.status === "fail") expect(out.artifact.category).toBe("recovery");
   });
 
   it("emits tool_selection on an empty sequence", () => {
     const q = virtualQuestion("cq-013", "orders", "order_size_bucket");
-    const out = gradeVirtual(q, [], "", 2);
+    const out = gradeVirtual(q, [], "", 2, undefined);
     expect(out.status).toBe("fail");
     if (out.status === "fail") expect(out.artifact.category).toBe("tool_selection");
   });
@@ -452,7 +756,7 @@ describe("gradeVirtual", () => {
         { kind: "ok", data: {} },
       ),
     ];
-    const out = gradeVirtual(q, calls, "", 5);
+    const out = gradeVirtual(q, calls, "", 5, undefined);
     expect(out.status).toBe("fail");
     if (out.status === "fail") expect(out.artifact.category).toBe("tool_selection");
   });
@@ -476,7 +780,7 @@ describe("gradeVirtual", () => {
         { kind: "ok", data: { columns: ["order_size_bucket"], rows: [{ order_size_bucket: "small" }] } },
       ),
     ];
-    const out = gradeVirtual(q, calls, "OK", 11);
+    const out = gradeVirtual(q, calls, "OK", 11, undefined);
     expect(out.status).toBe("pass");
   });
 });
@@ -499,6 +803,8 @@ describe("grade", () => {
       finalText: "",
       latencyMs: 5,
       baseline: undefined,
+      metricExpectations: METRIC_EXPECTATIONS,
+      answerExpectations: undefined,
     });
     expect(out.status).toBe("fail");
     if (out.status === "fail") {
@@ -522,6 +828,8 @@ describe("grade", () => {
       finalText: "$1",
       latencyMs: 200,
       baseline: { "cq-001": 100 },
+      metricExpectations: METRIC_EXPECTATIONS,
+      answerExpectations: undefined,
     });
     expect(out.status).toBe("fail");
     if (out.status === "fail") {
@@ -545,6 +853,8 @@ describe("grade", () => {
       finalText: "$1",
       latencyMs: 124,
       baseline: { "cq-001": 100 },
+      metricExpectations: METRIC_EXPECTATIONS,
+      answerExpectations: undefined,
     });
     expect(out.status).toBe("pass");
   });
@@ -568,6 +878,8 @@ describe("grade", () => {
       finalText: "$1",
       latencyMs: 99_999, // arbitrarily slow
       baseline: undefined,
+      metricExpectations: METRIC_EXPECTATIONS,
+      answerExpectations: undefined,
     });
     expect(out.status).toBe("pass");
   });
@@ -586,6 +898,8 @@ describe("grade", () => {
       finalText: "",
       latencyMs: 9999,
       baseline: { "cq-001": 100 },
+      metricExpectations: METRIC_EXPECTATIONS,
+      answerExpectations: undefined,
     });
     expect(out.status).toBe("fail");
     if (out.status === "fail") expect(out.artifact.category).toBe("tool_selection");
@@ -610,6 +924,8 @@ describe("grade", () => {
       finalText: "OK",
       latencyMs: 1,
       baseline: { "cq-001": 0 },
+      metricExpectations: METRIC_EXPECTATIONS,
+      answerExpectations: undefined,
     });
     expect(out.status).toBe("pass");
   });
@@ -641,6 +957,8 @@ describe("grade", () => {
       finalText: "",
       latencyMs: 3,
       baseline: undefined,
+      metricExpectations: METRIC_EXPECTATIONS,
+      answerExpectations: undefined,
     });
     expect(out.status).toBe("fail");
     if (out.status === "fail") {

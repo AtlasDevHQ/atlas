@@ -235,10 +235,22 @@ export type ExtractedToolJson =
  * legitimately printed nothing — Atlas tools normalise that to a placeholder.
  */
 export function joinTextContent(result: CallToolResult): string {
+  return textItems(result).join("");
+}
+
+/**
+ * The result's TEXT content items, in wire order, with every non-text item
+ * dropped.
+ *
+ * Split out of {@link joinTextContent} because {@link extractToolJson} needs the
+ * item BOUNDARIES, not just the concatenation — see its prefix rule. Both
+ * readers therefore share one filter: a future MCP content type that carries a
+ * `text` field must be admitted or excluded in exactly one place, not two.
+ */
+function textItems(result: CallToolResult): readonly string[] {
   return result.content
     .filter((c): c is { type: "text"; text: string } => c.type === "text")
-    .map((c) => c.text)
-    .join("");
+    .map((c) => c.text);
 }
 
 /**
@@ -255,19 +267,42 @@ export function joinTextContent(result: CallToolResult): string {
  * and never reaches the `isError` branch, so the flag is dropped. That is
  * harmless while every caller fails the question on `unparseable`; it is not
  * harmless for a caller that exempts a tool (#5131).
+ *
+ * ── The JSON body is a PREFIX of the text items, not all of them (#5137) ──
+ *
+ * An earlier cut parsed the whole join, which assumes a wire contract the
+ * server never guaranteed: **multiple text content items is legal MCP**, and
+ * Atlas emits them. `withTrialFooter` (`mcp-dispatch.ts`, ADR-0018) APPENDS a
+ * prose advisory to every successful billing-gated result — `runMetric`,
+ * `executeSQL`, `query`, the three tools that answer most of the corpus — so
+ * `<JSON body>` + `"Atlas trial: N days remaining…"` did not parse and a
+ * correct answer was recorded `unparseable`, which {@link grade}'s first branch
+ * fails as `protocol`.
+ *
+ * So: the body is the LONGEST PREFIX of the text items that parses, and any
+ * trailing items are annotation. Two properties make that safe to state rather
+ * than merely plausible:
+ *
+ *   - **Strictly additive.** The full join is tried FIRST (`n = items.length`),
+ *     so anything that parsed before parses identically now, to the same value.
+ *     The rule can only convert `unparseable` into `ok`/`error` — it can never
+ *     move a result that already had a body.
+ *   - **Boundaries, not bytes.** Candidates are cut at ITEM boundaries, so JSON
+ *     split across items (`'{"a":'` + `'1}'`) still joins, and a footer can
+ *     never be half-eaten. A leading prose item followed by a JSON one stays
+ *     `unparseable` — loud, and correct: that is not a shape Atlas produces.
+ *
+ * The dropped trailing text is deliberately NOT surfaced on the `ok` arm. It is
+ * an advisory addressed to the model, which reads the raw result anyway; adding
+ * a field would hand every consumer of this union an `undefined` to narrow for
+ * a value none of them grades. A `text`-contract tool keeps the whole join
+ * (`interpretResult`), because there the prose IS the product.
  */
 export function extractToolJson(result: CallToolResult): ExtractedToolJson {
-  const text = joinTextContent(result);
-  if (!text) return { kind: "unparseable", raw: "" };
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    // intentionally ignored: malformed JSON is a category of result, not
-    // an error. The eval branches on `kind` and reports `unparseable` as
-    // a `protocol` regression artifact rather than throwing.
-    return { kind: "unparseable", raw: text };
-  }
+  const items = textItems(result);
+  const body = parseLongestJsonPrefix(items);
+  if (!body) return { kind: "unparseable", raw: items.join("") };
+  const parsed = body.data;
   if (result.isError === true) {
     // Boundary narrow: the MCP server may emit a primitive error body
     // (string / number) rather than an object. Wrap any non-object
@@ -281,6 +316,42 @@ export function extractToolJson(result: CallToolResult): ExtractedToolJson {
     return { kind: "error", envelope };
   }
   return { kind: "ok", data: parsed };
+}
+
+/**
+ * The longest prefix of `items` whose concatenation parses as JSON, or `null`
+ * when no prefix does.
+ *
+ * Wrapped in a `{ data }` box rather than returned bare, because a body of
+ * literal `null` (`JSON.parse("null")`) is a legitimate tool result and is
+ * indistinguishable from "no prefix parsed" once it leaves this function. The
+ * box makes the two arms nominal instead of relying on the caller never seeing
+ * a null body.
+ *
+ * Prefixes are accumulated once, left to right, and then scanned from the
+ * longest — so the whole scan is linear in the total text length rather than
+ * re-joining a slice per candidate.
+ */
+function parseLongestJsonPrefix(
+  items: readonly string[],
+): { readonly data: unknown } | null {
+  const prefixes: string[] = [];
+  let acc = "";
+  for (const item of items) {
+    acc += item;
+    prefixes.push(acc);
+  }
+  for (let n = prefixes.length - 1; n >= 0; n--) {
+    try {
+      return { data: JSON.parse(prefixes[n] as string) as unknown };
+    } catch {
+      // intentionally ignored: a prefix that does not parse is a candidate
+      // being rejected, not a failure. Every rejection is silent by design —
+      // the ONE signal is the `unparseable` arm the caller gets when no prefix
+      // parsed at all, and it carries the full joined text as `raw`.
+    }
+  }
+  return null;
 }
 
 // ── Internal error classifiers ────────────────────────────────────────

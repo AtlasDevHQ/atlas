@@ -94,6 +94,76 @@ describe("extractToolJson", () => {
   });
 });
 
+/**
+ * #5137 — a JSON body followed by a prose annotation.
+ *
+ * `withTrialFooter` appends one to every successful billing-gated result
+ * (`runMetric`, `executeSQL`, `query` — the three tools that answer most of the
+ * corpus), so the join stopped parsing and a CORRECT answer was recorded
+ * `unparseable`, which `grade()` fails as `protocol`. See
+ * `packages/mcp/src/__tests__/trial-footer.test.ts` for the same property
+ * asserted against the real footer producer rather than a hand-written one.
+ */
+describe("extractToolJson — multi-part results", () => {
+  const FOOTER = "Atlas trial: 5 days remaining. Subscribe on the web before it ends.";
+
+  it("parses the JSON body when a prose item follows it", () => {
+    expect(extractToolJson(result([textItem('{"row_count":3}'), textItem(FOOTER)]))).toEqual({
+      kind: "ok",
+      data: { row_count: 3 },
+    });
+  });
+
+  it("parses a body SPLIT across items when a prose item follows it", () => {
+    // Three items, and the body is the first TWO — so a fix that only ever
+    // tries "the first item" or "the whole join" fails this in one direction
+    // each. The split point is inside a value so a wrong cut cannot parse.
+    expect(
+      extractToolJson(result([textItem('{"row_count":'), textItem("3}"), textItem(FOOTER)])),
+    ).toEqual({ kind: "ok", data: { row_count: 3 } });
+  });
+
+  it("reads a flagged error's envelope through a trailing prose item", () => {
+    expect(
+      extractToolJson(
+        result([textItem(JSON.stringify({ code: "query_timeout" })), textItem(FOOTER)], true),
+      ),
+    ).toEqual({ kind: "error", envelope: { code: "query_timeout" } });
+  });
+
+  it("prefers the LONGEST parsing prefix, not the first one that parses", () => {
+    // ⚠️ THIS IS THE WHOLE "strictly additive" CLAIM, AND IT IS THE ONLY TEST
+    // THAT CAN FALSIFY IT. Both items parse alone, so a shortest-first scan
+    // answers `1` — a DIFFERENT value for a result that already had a body
+    // before #5137. Scanning longest-first answers `12`, exactly what the old
+    // whole-join parse answered.
+    expect(extractToolJson(result([textItem("1"), textItem("2")]))).toEqual({
+      kind: "ok",
+      data: 12,
+    });
+  });
+
+  it("stays unparseable when the PROSE comes first", () => {
+    // Not a shape Atlas produces (the footer is appended), and the honest
+    // answer is the loud one: `raw` carries the whole join so the artifact
+    // shows an operator everything the tool actually said.
+    expect(extractToolJson(result([textItem("Warning: slow query. "), textItem("{}")]))).toEqual({
+      kind: "unparseable",
+      raw: "Warning: slow query. {}",
+    });
+  });
+
+  it("does not treat a body of literal `null` as 'nothing parsed'", () => {
+    // `JSON.parse("null")` is a legitimate body. Unboxed, it is indistinguishable
+    // from the no-prefix-parsed signal, and this result would wrongly read
+    // `unparseable` — with `raw: "null"`, which reads like a protocol regression.
+    expect(extractToolJson(result([textItem("null"), textItem(FOOTER)]))).toEqual({
+      kind: "ok",
+      data: null,
+    });
+  });
+});
+
 function textItem(text: string) {
   return { type: "text" as const, text };
 }

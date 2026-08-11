@@ -21,7 +21,6 @@ import * as path from "path";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   __forTesting__,
-  classifyToolContract,
   keyedExpectationFrom,
   readBaseline,
   writeBaseline,
@@ -29,6 +28,7 @@ import {
   type McpLlmOutcome,
   type RecordedToolCall,
 } from "./canonical-eval-mcp-llm";
+import { classifyToolContract } from "@atlas/mcp/eval/tool-contract";
 import { parseCanonicalEvalOptions } from "./canonical-eval-run";
 import type { Question } from "./canonical-eval";
 

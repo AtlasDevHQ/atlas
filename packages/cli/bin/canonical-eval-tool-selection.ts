@@ -43,7 +43,7 @@ import {
   assertTextContractToolsPresent,
   classifyToolContract,
   interpretResult,
-} from "./canonical-eval-mcp-llm";
+} from "@atlas/mcp/eval/tool-contract";
 
 // ── Public types ──────────────────────────────────────────────────────
 

@@ -8,6 +8,7 @@
 import { describe, it, expect } from "bun:test";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { withTrialFooter } from "../mcp-dispatch.js";
+import { extractToolJson } from "../eval/client.js";
 
 const ok: CallToolResult = {
   content: [{ type: "text", text: "rows: 3" }],
@@ -47,5 +48,49 @@ describe("withTrialFooter", () => {
     const out = withTrialFooter(err, 5);
     expect(out).toBe(err);
     expect(out.content).toHaveLength(1);
+  });
+});
+
+/**
+ * #5137 — the footer is additive ON THE WIRE, and it must be additive to the
+ * EVAL CLIENT'S READER too.
+ *
+ * ⚠️ THE FOOTER TEXT IS NOT WRITTEN HERE. Every fixture below is produced by
+ * `withTrialFooter` itself, so the two sides of the match cannot agree by
+ * construction: change the advisory's wording, add a third content item, or
+ * switch it from `text` to a future content type, and these go red. A
+ * hand-written `"Atlas trial: 5 days remaining…"` fixture would pin this file's
+ * idea of the footer against itself and keep passing.
+ *
+ * The defect this closes was invisible for exactly that reason one layer up:
+ * `getTrialDaysRemaining` returns null off-SaaS, with no org, and for a
+ * non-trial workspace, so the CI fixture never appended a footer and every eval
+ * result carried exactly ONE text item. A single-item fixture cannot falsify a
+ * multi-item bug.
+ */
+describe("withTrialFooter × the eval client's reader", () => {
+  const jsonBody = { row_count: 3, rows: [{ n: 7 }] };
+  const jsonOk: CallToolResult = {
+    content: [{ type: "text", text: JSON.stringify(jsonBody) }],
+  };
+
+  it("does not change what extractToolJson reads off a successful result", () => {
+    const before = extractToolJson(jsonOk);
+    const after = extractToolJson(withTrialFooter(jsonOk, 5));
+    expect(after).toEqual({ kind: "ok", data: jsonBody });
+    // Additive means IDENTICAL, not merely "still parses" — a reader that
+    // spliced the advisory into `data` would satisfy the line above.
+    expect(after).toEqual(before);
+  });
+
+  it("holds for every days value the footer renders differently", () => {
+    // 1 and 0 take the singular / lapsed branches; a reader keyed on the plural
+    // wording would pass the 5-day case above and fail here.
+    for (const days of [0, 1, 5, 30]) {
+      expect(extractToolJson(withTrialFooter(jsonOk, days))).toEqual({
+        kind: "ok",
+        data: jsonBody,
+      });
+    }
   });
 });

@@ -12,6 +12,7 @@
     "./prompts/listing": "./src/prompts/listing.ts",
     "./eval/auth": "./src/eval/auth.ts",
     "./eval/client": "./src/eval/client.ts",
+    "./eval/tool-contract": "./src/eval/tool-contract.ts",
     "./eval/failure-artifact": "./src/eval/failure-artifact.ts"
   },
   "bin": {

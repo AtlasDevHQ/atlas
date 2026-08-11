@@ -15,6 +15,13 @@ import { parseAtlasMcpToolError } from "@useatlas/types/mcp";
 import { SEARCH_BRAIN_INPUT_SHAPE } from "@atlas/api/lib/tools/search-brain-schema";
 import { registerTools } from "../tools.js";
 import { executeSqlOutputSchema } from "../structured-output.js";
+// #5135 — the eval's text-contract list, read from its real module so the pin
+// below compares the registered surface against the value the evals use. Do NOT
+// `mock.module` this: both sides would then read a stub.
+import {
+  assertTextContractToolsPresent,
+  TEXT_CONTRACT_TOOLS,
+} from "../eval/tool-contract.js";
 
 const TEST_ACTOR = createAtlasUser("u_test", "managed", "test@example.com", {
   role: "admin",
@@ -1343,6 +1350,63 @@ describe("MCP tools", () => {
       const result = await client.callTool({ name: "searchBrain", arguments: { query: "x" } });
       expect(result.isError).toBeFalsy();
       expect(JSON.parse(getContentText(result.content)).unavailable).toBe("no_workspace");
+    });
+  });
+
+  /**
+   * #5135 — the eval's text-contract exemption, pinned in the REQUIRED suite.
+   *
+   * `TEXT_CONTRACT_TOOLS` names the tools whose declared output is prose, so the
+   * `--mcp-llm` / `--tool-selection` graders don't fail a successful `ls` as a
+   * JSON-protocol regression (#5131). It is a NAME list, and a name list rots:
+   * rename `explore` and the exemption silently stops matching.
+   *
+   * `assertTextContractToolsPresent` already anchors it — but only at the BOOT
+   * of an eval run, and the real-model lane is weekly and paid, so a rename's
+   * first signal was a wasted paid run up to a week later. The two anchoring
+   * unit tests are no help either: both hand a hand-written surface
+   * (`[{ name: "explore" }, …]`) to the assert, which is correct for testing the
+   * assert and pins nothing about what is registered — both sides of that match
+   * are written by the same author.
+   *
+   * ⚠️ THE POINT IS THE SOURCE OF THE RIGHT-HAND SIDE. This reads the surface
+   * from a live `tools/list` off `registerTools`, so nothing here restates the
+   * names, and a rename in `tools.ts` is red on the PR that lands it.
+   *
+   * Its narrower scope is deliberate and is why it does not replace the boot
+   * anchor: `registerTools` is the NATIVE surface, and the hosted route the eval
+   * actually talks to adds datasource + plugin registrations on top. A tool that
+   * only ever appears there could not be pinned here.
+   */
+  describe("text-contract tool list (#5135)", () => {
+    it("every TEXT_CONTRACT_TOOLS name is a registered tool", async () => {
+      const { client } = await createTestClient();
+      const { tools } = await client.listTools();
+      const registered = new Set(tools.map((t) => t.name));
+      for (const name of TEXT_CONTRACT_TOOLS) {
+        expect(registered).toContain(name);
+      }
+    });
+
+    it("is non-empty, so the loop above is not vacuously true", async () => {
+      // Without this, deleting every name from TEXT_CONTRACT_TOOLS passes the
+      // pin — an empty list iterates zero times and asserts nothing, which is
+      // the exact failure mode (a dead exemption) the pin exists to catch.
+      expect(TEXT_CONTRACT_TOOLS.size).toBeGreaterThan(0);
+    });
+
+    it("agrees with assertTextContractToolsPresent on the same surface", async () => {
+      // The boot anchor and this pin must not be able to disagree: if one is
+      // satisfied by the registered surface, so is the other. A single
+      // registered tool is enough to falsify a rename in either direction.
+      const { client } = await createTestClient();
+      const { tools } = await client.listTools();
+      expect(() => assertTextContractToolsPresent(tools.map((t) => ({ name: t.name })))).not.toThrow();
+      expect(() =>
+        assertTextContractToolsPresent(
+          tools.filter((t) => !TEXT_CONTRACT_TOOLS.has(t.name)).map((t) => ({ name: t.name })),
+        ),
+      ).toThrow(/text-contract tool\(s\) not on the MCP surface/);
     });
   });
 });

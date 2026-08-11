@@ -47,7 +47,11 @@ Agent(
   run_in_background: true,
   description: "ship #<N>",
   prompt: "Run /ship-issue <N>. Follow it exactly — worktree isolation, craft loop,
-           /review-panel until clean (max 3 rounds), /ci, /pr, then drive to merge per
+           cheap pre-flight (--affected/lint/type), push, /pr as a DRAFT, then
+           /review-panel until clean (max 3 rounds) while remote CI runs against the
+           same SHA. Do NOT run a full local /ci — remote CI on the PR is the gate
+           (see /ship-issue Step 4). Mark the PR ready only once the panel closes,
+           then drive to merge per
            Step 5: wait for the first full CI to complete (gh pr checks --watch), then run
            `bash scripts/pr-review-status.sh <N>` ONCE. If it reports no third-party
            reviewer, converge on CI green + clean panel — do NOT wait for bots that don't

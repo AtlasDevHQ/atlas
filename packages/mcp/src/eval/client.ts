@@ -222,17 +222,42 @@ export type ExtractedToolJson =
   | { readonly kind: "unparseable"; readonly raw: string };
 
 /**
+ * Concatenate a `tools/call` result's text content items, in order.
+ *
+ * Exported so a caller that needs the tool's TEXT rather than its parsed JSON
+ * — the `--mcp-llm` eval binder, for a tool whose declared output is free-form
+ * prose — reads exactly the bytes {@link extractToolJson} would have parsed,
+ * from the same implementation. Re-deriving the join at the call site is how
+ * the two drift.
+ *
+ * An empty string means the result carried NO text content at all (an
+ * image-only or empty `content` array), which is distinct from a tool that
+ * legitimately printed nothing — Atlas tools normalise that to a placeholder.
+ */
+export function joinTextContent(result: CallToolResult): string {
+  return result.content
+    .filter((c): c is { type: "text"; text: string } => c.type === "text")
+    .map((c) => c.text)
+    .join("");
+}
+
+/**
  * MCP `tools/call` returns content as an array of items (text / image /
  * resource). The semantic-layer tools always return a single text item
  * containing JSON (success path) or the `AtlasMcpToolError` envelope
  * (failure path). Extract that JSON so callers compare structured data
  * instead of pattern-matching on prose.
+ *
+ * ⚠️ THE `unparseable` ARM IS REACHED BEFORE `result.isError` IS CONSULTED, and
+ * a caller that treats `unparseable` as benign must read `isError` itself. A
+ * server-flagged error whose body is prose rather than JSON — what the MCP
+ * SDK's own `createToolError` emits — lands in the `JSON.parse` catch below
+ * and never reaches the `isError` branch, so the flag is dropped. That is
+ * harmless while every caller fails the question on `unparseable`; it is not
+ * harmless for a caller that exempts a tool (#5131).
  */
 export function extractToolJson(result: CallToolResult): ExtractedToolJson {
-  const text = result.content
-    .filter((c): c is { type: "text"; text: string } => c.type === "text")
-    .map((c) => c.text)
-    .join("");
+  const text = joinTextContent(result);
   if (!text) return { kind: "unparseable", raw: "" };
   let parsed: unknown;
   try {

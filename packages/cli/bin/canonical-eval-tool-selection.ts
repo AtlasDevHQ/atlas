@@ -40,9 +40,11 @@ import {
 import {
   EvalMcpClient,
   extractToolJson,
+  joinTextContent,
   type ToolListEntry,
 } from "@atlas/mcp/eval/client";
 import { createHostedMcpRouter } from "@atlas/mcp/hosted";
+import { classifyToolContract } from "./canonical-eval-mcp-llm";
 
 // ── Public types ──────────────────────────────────────────────────────
 
@@ -320,6 +322,18 @@ function bindToolsForRecording(
         // call fails.
         recorder.push(t.name);
         const result = await client.callTool(t.name, args);
+        // A text-contract tool's product IS its text (#5131). This eval does
+        // not grade `protocol`, so the mis-grading half of that bug never
+        // applied here — but the model-facing half matters MORE in this mode:
+        // telling a model its successful `ls` errored is exactly what makes it
+        // retry or switch tools, and tool SEQUENCE is what this eval scores.
+        // The flagged-error / empty-content carve-outs are the same ones
+        // `interpretResult` makes; see its note for why they are not shell
+        // output.
+        if (classifyToolContract(t.name) === "text" && result.isError !== true) {
+          const text = joinTextContent(result);
+          if (text !== "") return text;
+        }
         const parsed = extractToolJson(result);
         if (parsed.kind === "error") return parsed.envelope;
         if (parsed.kind === "unparseable") {

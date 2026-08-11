@@ -62,9 +62,11 @@ import {
   startEvalAuthServer,
   type EvalAuthFixture,
 } from "@atlas/mcp/eval/auth";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   EvalMcpClient,
   extractToolJson,
+  joinTextContent,
   type ExtractedToolJson,
   type ToolErrorEnvelope,
   type ToolListEntry,
@@ -320,8 +322,10 @@ export async function runMcpLlmEval(
       try {
         await client.close();
       } catch (closeErr) {
-        // intentionally ignored: surfacing the close error would mask
-        // the original connect failure, which is the actionable signal.
+        // Logged rather than re-thrown: the original connect failure is the
+        // actionable signal and must be the error that propagates. NOT
+        // `// intentionally ignored:` — that marker means the catch emits
+        // nothing at all, and this one writes to stderr.
         process.stderr.write(
           `[mcp-llm-eval] client.close after failed connect threw: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}\n`,
         );
@@ -331,11 +335,8 @@ export async function runMcpLlmEval(
 
     try {
       const tools = await client.listTools();
-      // Anchor the text-contract exemption against the surface actually
-      // discovered, before a single question runs. See the function's note.
-      assertTextContractToolsPresent(tools);
       const recorded: RecordedToolCall[] = [];
-      const aiTools = bindMcpToolsForLlm(client, tools, recorded);
+      const aiTools = bindEvalToolSurface(client, tools, recorded);
 
       const questions = loadQuestions(
         opts.questionsPath ?? DEFAULT_QUESTIONS_PATH,
@@ -394,12 +395,13 @@ async function bootDefaultFixture(): Promise<EvalAuthFixture> {
  *    still computed from the name; a marker relocates this list, it cannot
  *    replace it.
  * 2. The one machine-readable candidate — MCP `outputSchema` — is provably
- *    unfaithful here. `describeEntity`, `searchGlossary`, and `listEntities`
+ *    unfaithful here. `listEntities`, `describeEntity` and `searchGlossary`
  *    all answer JSON and declare NO `outputSchema`
- *    (`packages/mcp/src/semantic-tools.ts:287/327/453`; only `runMetric` at
- *    :523 declares one). Exempting "no outputSchema" would exempt three of the
- *    four typed tools the protocol check exists to protect — it would disable
- *    the detector rather than sharpen it.
+ *    (`packages/mcp/src/semantic-tools.ts:287/327/453`, in that order; only
+ *    `runMetric` at :523 declares one). Exempting "no outputSchema" would
+ *    exempt three of the four typed tools the protocol check exists to protect
+ *    — it would disable the detector rather than sharpen it. `explore` declares
+ *    none either, so the signal does not discriminate in EITHER direction.
  *
  * What a name list genuinely gets wrong is ROT: rename or drop `explore` and
  * the exemption silently stops matching, restoring the bug with no signal.
@@ -411,25 +413,80 @@ async function bootDefaultFixture(): Promise<EvalAuthFixture> {
  *
  * `explore` resolves to a different sandbox backend locally than on the CI
  * runner (`packages/api/src/lib/tools/backends/selection.ts`), which is how
- * #5131 stayed invisible across four local runs. With the exemption in place
- * the SHAPE of its output no longer moves the verdict: `explore` is not in
- * {@link ANSWERING_TOOLS} and no per-mode grader inspects it, so the only
- * branches it can still reach are `assertNotRateLimited` (a throttle is a
- * harness fault whatever the tool) and `isTransportFail` (a hang-up is a real
- * protocol regression whatever the tool). Both are backend-agnostic.
+ * #5131 stayed invisible across four local runs. What the fix removes is the
+ * dependence on output SHAPE: a successful call is recorded as `ok` whether the
+ * backend printed a listing or something that happens to parse as JSON, and
+ * `explore` is not in {@link ANSWERING_TOOLS}, so no per-mode grader inspects
+ * it.
  *
- * The residual, recorded rather than papered over: the CONTENT differs. One
- * backend lists the semantic-layer directory and another fails to start, and
- * the model may answer differently on the strength of what it read. No grader
- * change can remove that — it is a property of running a shell in two
- * environments, and the honest fix is pinning the eval's backend, not widening
- * the rubric.
+ * THREE backend-sensitive paths remain, named rather than papered over — the
+ * claim is that each reaches the RIGHT verdict, not that the backend stopped
+ * mattering:
+ *
+ *   - **Latency.** `latencyMs` is whole-question wall clock, so every `explore`
+ *     dispatch sits inside it and a slow cold start can trip the
+ *     `baseline * 1.25` ceiling. This is the most backend-sensitive branch in
+ *     the file and the fix does not touch it.
+ *   - **Throttling.** `explore` can return `rate_limited` from the SANDBOX
+ *     backend, not the eval client's quota (`classifyExploreError`), and
+ *     {@link assertNotRateLimited} aborts on it. Aborting is right either way —
+ *     a throttled run must not produce a score — but the remedy differs, which
+ *     is why that message branches on the tool's contract.
+ *   - **Content.** One backend lists the semantic layer and another fails to
+ *     start, and the model may answer differently on the strength of what it
+ *     read. No grader change can remove this; the honest fix is pinning the
+ *     eval's backend, not widening the rubric.
  */
 const TEXT_CONTRACT_TOOLS: ReadonlySet<string> = new Set(["explore"]);
 
 /** Resolve a discovered tool's output contract. See {@link TEXT_CONTRACT_TOOLS}. */
-function classifyToolContract(name: string): ToolContract {
+export function classifyToolContract(name: string): ToolContract {
   return TEXT_CONTRACT_TOOLS.has(name) ? "text" : "json";
+}
+
+/**
+ * Read one `tools/call` result according to the calling tool's contract.
+ *
+ * ⚠️ THE CONTRACT IS APPLIED HERE, AT THE RECORDING SEAM — NOT IN THE GRADER.
+ * `grade()`'s protocol branch stays a plain `result.kind === "unparseable"`
+ * test, so a future branch that reads `kind` directly cannot reopen #5131, and
+ * a successful `ls` never wears the word "unparseable" in a failure artifact.
+ *
+ * For a `"json"` contract this is exactly {@link extractToolJson}. For a
+ * `"text"` contract the tool's product IS its text, so a successful call is
+ * recorded as `ok` carrying that text verbatim — including when the text
+ * happens to parse as JSON (`wc -l` printing `3`), which otherwise makes the
+ * SAME tool record under two different arms depending on what the directory
+ * contained.
+ *
+ * Two cases stay in the `unparseable` (→ `protocol`) lane, and both are
+ * regressions rather than shell output:
+ *
+ *   - **`isError` was flagged.** `extractToolJson` reaches its `unparseable`
+ *     arm from the `JSON.parse` catch, BEFORE it consults `isError`, so a
+ *     server-flagged error with a prose body — what the MCP SDK's own
+ *     `createToolError` emits for an uncaught throw — is indistinguishable
+ *     from shell output by shape alone. Exempting it would turn #5131's loud
+ *     false FAIL into a silent false PASS, with the model reading an internal
+ *     error message as directory contents.
+ *   - **No text content at all.** `explore` cannot produce this: it normalises
+ *     a silent command to `"(no output)"`
+ *     (`packages/api/src/lib/tools/explore.ts`), and every failure path returns
+ *     an `Error:`-prefixed string. An empty `content` array is a protocol
+ *     anomaly for every tool, whatever its output contract.
+ */
+function interpretResult(
+  result: CallToolResult,
+  contract: ToolContract,
+): ExtractedToolJson {
+  if (contract !== "text") return extractToolJson(result);
+  const text = joinTextContent(result);
+  if (result.isError === true || text === "") {
+    // Not shell output — fall back to the JSON reading so a typed envelope is
+    // still recorded as `error`, and anything else stays `unparseable`.
+    return extractToolJson(result);
+  }
+  return { kind: "ok", data: text };
 }
 
 /**
@@ -452,9 +509,31 @@ function assertTextContractToolsPresent(tools: readonly ToolListEntry[]): void {
       `TEXT_CONTRACT_TOOLS exempts these from the JSON/protocol check because their ` +
       `declared output is free-form text; a name that no longer resolves means the ` +
       `exemption is dead and successful text output would be graded as a protocol ` +
-      `regression. Update TEXT_CONTRACT_TOOLS to match the renamed tool. ` +
-      `Discovered: ${[...discovered].sort().join(", ")}`,
+      `regression (#5131). If the tool was RENAMED, point TEXT_CONTRACT_TOOLS at the ` +
+      `new name. If it was deliberately REMOVED from this surface, delete the name — ` +
+      `re-adding a dead one is the wrong repair. ` +
+      `Discovered: ${
+        discovered.size === 0
+          ? "(empty — tools/list returned no tools)"
+          : [...discovered].sort().join(", ")
+      }`,
   );
+}
+
+/**
+ * Anchor the text-contract exemption against the surface actually discovered,
+ * then bind it for the LLM. The two steps are one seam on purpose: binding
+ * without the anchor is the state #5131 shipped in, and a wrapper is what
+ * makes the wiring testable — a guard whose call site nothing exercises can be
+ * deleted with the whole suite still green.
+ */
+function bindEvalToolSurface(
+  client: { callTool: EvalMcpClient["callTool"] },
+  tools: readonly ToolListEntry[],
+  recorder: RecordedToolCall[],
+): ToolSet {
+  assertTextContractToolsPresent(tools);
+  return bindMcpToolsForLlm(client, tools, recorder);
 }
 
 /**
@@ -498,7 +577,7 @@ function bindMcpToolsForLlm(
         const start = Date.now();
         try {
           const result = await client.callTool(t.name, args);
-          const parsed = extractToolJson(result);
+          const parsed = interpretResult(result, contract);
           const latencyMs = Date.now() - start;
           recorder.push({
             name: t.name,
@@ -509,13 +588,6 @@ function bindMcpToolsForLlm(
           });
           if (parsed.kind === "error") return parsed.envelope;
           if (parsed.kind === "unparseable") {
-            // A text-contract tool answering with text is a SUCCESS. Handing
-            // the model `{ error: "unparseable" }` for a successful `ls` is a
-            // harness-fabricated error: it hides the listing the model asked
-            // for behind a failure word, and the model then "recovers" from
-            // something that never went wrong. Return the raw text — the
-            // tool's actual product (#5131).
-            if (contract === "text") return parsed.raw;
             return { error: "unparseable", raw: parsed.raw };
           }
           return parsed.data;
@@ -671,13 +743,24 @@ function assertNotRateLimited(
   if (!throttled) return;
   const envelope =
     throttled.result.kind === "error" ? throttled.result.envelope : null;
+  // The remedy depends on WHICH limiter fired, and the two are different knobs.
+  // A text-contract tool is a sandboxed shell: its `rate_limited` comes from the
+  // sandbox backend via `classifyExploreError`, not from the eval client's
+  // hosted-MCP quota, so sending an operator to EVAL_CLIENT_REQUESTS_PER_MINUTE
+  // would be pointing at a knob that cannot help (#5131).
+  const remedy =
+    throttled.contract === "text"
+      ? `${throttled.name} is a sandboxed shell, so this is the SANDBOX backend's limiter, ` +
+        `not the eval client's hosted-MCP quota — raising EVAL_CLIENT_REQUESTS_PER_MINUTE ` +
+        `will not help. Check the backend the eval resolved (see backends/selection.ts).`
+      : `This is the eval throttling ITSELF, not a model failure: the run's own ` +
+        `dispatch volume exceeded the eval client's hosted-MCP quota. Raise it via ` +
+        `liftEvalClientRateLimit (EVAL_CLIENT_REQUESTS_PER_MINUTE).`;
   throw new Error(
     `[harness] ${q.id}: MCP dispatch was rate limited on ${throttled.name} — ` +
-      `${envelope?.message ?? "no message"} ` +
-      `This is the eval throttling ITSELF, not a model failure: the run's own ` +
-      `dispatch volume exceeded the eval client's hosted-MCP quota. Raise it via ` +
-      `liftEvalClientRateLimit (EVAL_CLIENT_REQUESTS_PER_MINUTE) rather than ` +
-      `letting the throttle be graded as a recovery regression.`,
+      `${envelope?.message ?? "no message"} ${remedy} ` +
+      `Either way the run stops rather than letting the throttle be graded as a ` +
+      `recovery regression.`,
   );
 }
 
@@ -703,7 +786,15 @@ function grade(input: GradeInput): McpLlmOutcome {
       args: unparseable.args,
       response: { raw: unparseable.result.raw },
       expected: "JSON envelope from MCP tool",
-      summary: `MCP tool ${unparseable.name} returned non-JSON content`,
+      // The anchor proves every DECLARED text tool is on the surface; nothing
+      // proves the reverse, so a newly-added prose-returning tool reproduces
+      // #5131 verbatim and lands here. Say what to do about it rather than
+      // making the next reader re-derive it.
+      summary:
+        `MCP tool ${unparseable.name} returned content that could not be read as JSON. ` +
+        `If this tool's DECLARED output is free-form text (as \`explore\`'s is), add it ` +
+        `to TEXT_CONTRACT_TOOLS; otherwise this is a genuine MCP protocol regression — ` +
+        `note that a server-flagged error carrying a prose body also lands here.`,
     });
   }
 
@@ -1472,20 +1563,21 @@ function findSqlMatch(
 }
 
 /**
- * A JSON-contract tool that answered with something that is not JSON — the
- * MCP protocol regression `grade()`'s first branch exists to catch. The
- * `contract: "json"` member is part of the type, not just the guard body, so
- * a caller that narrows through {@link isUnparseable} carries the proof that
- * the tool was contracted to answer JSON in the first place.
+ * A call whose result could not be read as the protocol requires.
+ *
+ * ⚠️ DELIBERATELY CONTRACT-BLIND. #5131 was a text-output tool graded against
+ * the JSON contract, and the tempting fix was a `contract === "json"` clause
+ * right here — which would have put the exemption in a guard body, leaving
+ * every other reader of `result.kind` free to reopen the bug. The contract is
+ * applied by {@link interpretResult} at the recording seam instead, so by the
+ * time a call reaches this predicate `unparseable` already means the same
+ * thing for every tool: nobody could read it, and that is a regression.
  */
 type UnparseableCall = RecordedToolCall & {
-  readonly contract: "json";
   readonly result: { readonly kind: "unparseable"; readonly raw: string };
 };
 function isUnparseable(c: RecordedToolCall): c is UnparseableCall {
-  // Text-contract tools are exempt: non-JSON from a shell is its output, not
-  // a protocol regression (#5131). The check stays strict for every JSON tool.
-  return c.contract === "json" && c.result.kind === "unparseable";
+  return c.result.kind === "unparseable";
 }
 
 type ErrorCall = RecordedToolCall & {
@@ -1519,7 +1611,7 @@ export const __forTesting__ = {
   gradePattern,
   gradeVirtual,
   bindMcpToolsForLlm,
-  classifyToolContract,
+  bindEvalToolSurface,
   assertTextContractToolsPresent,
 } as const;
 

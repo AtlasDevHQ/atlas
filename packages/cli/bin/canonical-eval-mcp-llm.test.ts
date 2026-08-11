@@ -21,6 +21,7 @@ import * as path from "path";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   __forTesting__,
+  classifyToolContract,
   readBaseline,
   writeBaseline,
   type McpLlmOutcome,
@@ -821,29 +822,100 @@ describe("grade", () => {
     }
   });
 
-  // ── Text-contract tools are exempt from the JSON/protocol check (#5131) ──
+  // ── Text-contract tools and the protocol check (#5131) ───────────────
   //
   // Five of the eight failures on the eval's first real CI run were one
   // `explore` call each: a successful `ls -la` graded as
   // "MCP tool explore returned non-JSON content". `explore` is a sandboxed
   // shell — text IS its output contract.
   //
-  // The pair below is deliberately DISCRIMINATING rather than agreeing by
-  // construction: both sequences carry a text-contract call, and the second
-  // still fails. A fix that exempted the run whenever any text-contract call
-  // appeared, or that dropped the check outright, passes the first test and
-  // fails the second.
+  // ⚠️ THE FIX IS AT THE RECORDING SEAM, NOT HERE. `interpretResult` records a
+  // successful text-contract call as `ok`, so `grade()` never needs to know
+  // about contracts and these tests pin the grader's side of that: a recorded
+  // `unparseable` is a regression for EVERY tool, text-contract or not. The
+  // classifier's own falsifiers live in the `bindMcpToolsForLlm` block below.
 
-  it("does NOT fail a question for a text-contract tool that answered with text", () => {
+  it("passes a question whose text-contract call was recorded as ok, keeping it in the sequence", () => {
+    const q = metricQuestion("cq-001", "total_gmv");
+    const listing = "total 4\ndrwxr-xr-x 1 user user 0 Jan 1 00:00 .\nentities/\nmetrics/\n";
+    const calls = [
+      call("explore", { command: "ls -la" }, { kind: "ok", data: listing }, 5, "text"),
+      call(
+        "runMetric",
+        { id: "total_gmv" },
+        { kind: "ok", data: { id: "total_gmv", sql: "...", columns: ["v"], rows: [{ v: 1 }] } },
+      ),
+    ];
+    const out = __forTesting__.grade({
+      question: q,
+      toolCalls: calls,
+      finalText: "$1",
+      latencyMs: 10,
+      baseline: undefined,
+      metricExpectations: METRIC_EXPECTATIONS,
+      answerExpectations: undefined,
+    });
+    expect(out.status).toBe("pass");
+    // The exemption must mean "not GRADED as a regression", never "dropped
+    // from the record" — a fix that passed by deleting the call would lose the
+    // forensic trail every failure artifact is built from.
+    expect(out.toolCalls.map((c) => c.name)).toContain("explore");
+  });
+
+  it("STILL fails a JSON-contract tool recorded unparseable — same body as an exempt call, and a good answer present", () => {
+    // ⚠️ THIS FIXTURE IS BUILT TO DISCRIMINATE. All three levers a sloppier
+    // fix could key on are held constant or present:
+    //   - the exempt call and the failing call carry the IDENTICAL body, so a
+    //     content heuristic ("looks like shell output") cannot pass this;
+    //   - a successful answering call IS present, so "only report unparseable
+    //     when the run produced no answer" cannot pass this;
+    //   - a text-contract call IS present, so "skip the check when the run
+    //     touched a text tool" cannot pass this.
+    // The only thing that differs between the exempt and failing calls is the
+    // recorded `contract`.
+    const q = metricQuestion("cq-001", "total_gmv");
+    const listing = "entities/\nmetrics/\n";
+    const calls = [
+      call("explore", { command: "ls -la" }, { kind: "ok", data: listing }, 5, "text"),
+      call("describeEntity", { name: "orders" }, { kind: "unparseable", raw: listing }),
+      call(
+        "runMetric",
+        { id: "total_gmv" },
+        { kind: "ok", data: { id: "total_gmv", sql: "...", columns: ["v"], rows: [{ v: 1 }] } },
+      ),
+    ];
+    const out = __forTesting__.grade({
+      question: q,
+      toolCalls: calls,
+      finalText: "$1",
+      latencyMs: 10,
+      baseline: undefined,
+      metricExpectations: METRIC_EXPECTATIONS,
+      answerExpectations: undefined,
+    });
+    expect(out.status).toBe("fail");
+    if (out.status === "fail") {
+      expect(out.artifact.category).toBe("protocol");
+      // The tool NAMED must be the JSON one — a fix that reported `explore`
+      // here would be blaming the shell for the typed tool's regression.
+      expect(out.artifact.tool).toBe("describeEntity");
+    }
+  });
+
+  it("STILL fails a TEXT-contract tool recorded unparseable — the grader must stay contract-blind", () => {
+    // ⚠️ THIS IS THE COMPOSITION TEST, and it exists because a mutation
+    // survived without it. `interpretResult` only ever records a text-contract
+    // call as `unparseable` for the two cases that are NOT shell output: a
+    // server-flagged error, and empty content. So re-adding a
+    // `contract === "json"` clause to `isUnparseable` would reopen both holes
+    // — and every other test here would stay green, because none of them
+    // presents the grader with a text-contract `unparseable`.
     const q = metricQuestion("cq-001", "total_gmv");
     const calls = [
       call(
         "explore",
         { command: "ls -la" },
-        {
-          kind: "unparseable",
-          raw: "total 4\ndrwxr-xr-x 1 user user 0 Jan 1 00:00 .\nentities/\nmetrics/\n",
-        },
+        { kind: "unparseable", raw: "Error: sandbox failed to start" },
         5,
         "text",
       ),
@@ -862,43 +934,44 @@ describe("grade", () => {
       metricExpectations: METRIC_EXPECTATIONS,
       answerExpectations: undefined,
     });
-    expect(out.status).toBe("pass");
-  });
-
-  it("STILL fails a JSON-contract tool that answered with non-JSON, even alongside a text-contract call", () => {
-    const q = metricQuestion("cq-001", "total_gmv");
-    const calls = [
-      // Same successful shell call as the test above — present so the
-      // exemption cannot be "this run touched a text tool, skip the check".
-      call(
-        "explore",
-        { command: "ls -la" },
-        { kind: "unparseable", raw: "entities/\nmetrics/\n" },
-        5,
-        "text",
-      ),
-      call(
-        "runMetric",
-        { id: "total_gmv" },
-        { kind: "unparseable", raw: "<<malformed>>" },
-      ),
-    ];
-    const out = __forTesting__.grade({
-      question: q,
-      toolCalls: calls,
-      finalText: "",
-      latencyMs: 10,
-      baseline: undefined,
-      metricExpectations: METRIC_EXPECTATIONS,
-      answerExpectations: undefined,
-    });
     expect(out.status).toBe("fail");
     if (out.status === "fail") {
       expect(out.artifact.category).toBe("protocol");
-      // The tool NAMED must be the JSON one — a fix that reported `explore`
-      // here would be blaming the shell for the typed tool's regression.
-      expect(out.artifact.tool).toBe("runMetric");
+      expect(out.artifact.tool).toBe("explore");
     }
+  });
+
+  it("points a throttled TEXT-contract tool at the sandbox limiter, not the eval client quota", () => {
+    // `explore` can return `rate_limited` from the SANDBOX backend via
+    // `classifyExploreError`, which is a different knob from the eval client's
+    // hosted-MCP quota. Aborting is right either way — a throttled run must not
+    // produce a score — but sending an operator to
+    // EVAL_CLIENT_REQUESTS_PER_MINUTE for a sandbox limit is pointing at a knob
+    // that cannot help.
+    const q = metricQuestion("cq-001", "total_gmv");
+    const throttle = { kind: "error" as const, envelope: { code: "rate_limited", message: "pool capacity reached" } };
+    const gradeWith = (c: RecordedToolCall) =>
+      __forTesting__.grade({
+        question: q,
+        toolCalls: [c],
+        finalText: "",
+        latencyMs: 5,
+        baseline: undefined,
+        metricExpectations: METRIC_EXPECTATIONS,
+        answerExpectations: undefined,
+      });
+
+    expect(() => gradeWith(call("explore", { command: "ls" }, throttle, 5, "text"))).toThrow(
+      /sandboxed shell.*will not help/s,
+    );
+    // The JSON-contract arm keeps the original remedy — if both said the same
+    // thing the branch would be decoration.
+    expect(() => gradeWith(call("runMetric", { id: "total_gmv" }, throttle))).toThrow(
+      /EVAL_CLIENT_REQUESTS_PER_MINUTE/,
+    );
+    expect(() => gradeWith(call("runMetric", { id: "total_gmv" }, throttle))).not.toThrow(
+      /sandboxed shell/,
+    );
   });
 
   it("STILL fails a text-contract tool whose TRANSPORT hung up", () => {
@@ -1300,18 +1373,20 @@ describe("bindMcpToolsForLlm", () => {
   // ── Contract classification happens HERE, not in the grader (#5131) ──
   //
   // These drive the real binder rather than hand-stamping `contract` on a
-  // fixture, so they falsify `classifyToolContract` itself: point it at the
-  // wrong name, or drop the stamp, and they go red.
+  // fixture, so they falsify `classifyToolContract` and `interpretResult`
+  // themselves: point the name list at the wrong tool, drop the stamp, or
+  // remove the text branch, and they go red. The grader tests above cannot
+  // reach any of that.
 
-  it("stamps the output contract per tool and hands text-contract output back verbatim", async () => {
+  /** The identical body every tool in these fixtures answers with. */
+  const LISTING = "total 4\ndrwxr-xr-x 1 user user 0 Jan 1 00:00 .\nentities/\nmetrics/\n";
+
+  it("records a text tool's output as ok and hands it back verbatim; the SAME body from a json tool is unparseable", async () => {
     const recorded: RecordedToolCall[] = [];
-    const listing = "total 4\ndrwxr-xr-x 1 user user 0 Jan 1 00:00 .\nentities/\nmetrics/\n";
-    const fakeClient = {
-      callTool: async (name: string) =>
-        // Both tools answer the SAME non-JSON body. The only thing that
-        // differs is which tool answered it — which is the whole claim.
-        fakeCallToolResult(name === "explore" ? listing : "<<malformed>>"),
-    };
+    // ⚠️ Both tools answer the IDENTICAL body, so the tool NAME is the only
+    // differentiator. A binder that keyed on what the body looks like rather
+    // than on which tool produced it cannot pass this.
+    const fakeClient = { callTool: async () => fakeCallToolResult(LISTING) };
     const tools = __forTesting__.bindMcpToolsForLlm(
       fakeClient,
       [
@@ -1321,30 +1396,122 @@ describe("bindMcpToolsForLlm", () => {
       recorded,
     );
 
-    const exploreResult = await getRunner(tools, "explore")(
-      { command: "ls -la" },
-      { toolCallId: "t1", messages: [] },
-    );
     // The model gets the listing it asked for — NOT a fabricated
     // `{ error: "unparseable" }` for a call that succeeded.
-    expect(exploreResult).toBe(listing);
+    expect(
+      await getRunner(tools, "explore")({ command: "ls -la" }, { toolCallId: "t1", messages: [] }),
+    ).toBe(LISTING);
 
     const describeResult = (await getRunner(tools, "describeEntity")(
       { name: "orders" },
       { toolCallId: "t2", messages: [] },
-    )) as { error?: string };
+    )) as { error?: string; raw?: string };
     expect(describeResult.error).toBe("unparseable");
+    expect(describeResult.raw).toBe(LISTING);
 
     expect(recorded).toHaveLength(2);
     expect(recorded[0]!.contract).toBe("text");
+    expect(recorded[0]!.result).toEqual({ kind: "ok", data: LISTING });
     expect(recorded[1]!.contract).toBe("json");
+    expect(recorded[1]!.result.kind).toBe("unparseable");
   });
 
-  it("classifies every typed semantic tool as json", () => {
-    // `describeEntity`, `searchGlossary` and `listEntities` declare no MCP
-    // `outputSchema` (only `runMetric` / `executeSQL` / `query` do), so any
-    // exemption keyed on `outputSchema` would have silently let these three
-    // out of the protocol check. Pinned so that shortcut cannot be taken later.
+  it("keeps a server-FLAGGED error on a text tool in the protocol lane", async () => {
+    // `extractToolJson` reaches its `unparseable` arm from the JSON.parse
+    // catch, BEFORE it consults `isError` — so a flagged error with a prose
+    // body is shaped exactly like shell output. Exempting it would turn
+    // #5131's loud false FAIL into a silent false PASS, with the model reading
+    // an internal error message as directory contents.
+    const recorded: RecordedToolCall[] = [];
+    const fakeClient = {
+      callTool: async () => fakeCallToolResult("Error: sandbox failed to start", true),
+    };
+    const tools = __forTesting__.bindMcpToolsForLlm(
+      fakeClient,
+      [{ name: "explore", description: "Shell." }],
+      recorded,
+    );
+    const result = (await getRunner(tools, "explore")(
+      { command: "ls" },
+      { toolCallId: "t1", messages: [] },
+    )) as { error?: string };
+    expect(result.error).toBe("unparseable");
+    expect(recorded[0]!.contract).toBe("text");
+    expect(recorded[0]!.result.kind).toBe("unparseable");
+  });
+
+  it("keeps an EMPTY result on a text tool in the protocol lane", async () => {
+    // `explore` cannot return "": it normalises a silent command to
+    // "(no output)" and every failure path returns an `Error:`-prefixed
+    // string. An empty `content` array is a protocol anomaly for every tool.
+    const recorded: RecordedToolCall[] = [];
+    const fakeClient = { callTool: async () => ({ content: [] }) as CallToolResult };
+    const tools = __forTesting__.bindMcpToolsForLlm(
+      fakeClient,
+      [{ name: "explore", description: "Shell." }],
+      recorded,
+    );
+    const result = (await getRunner(tools, "explore")(
+      { command: "ls" },
+      { toolCallId: "t1", messages: [] },
+    )) as { error?: string };
+    expect(result.error).toBe("unparseable");
+    expect(recorded[0]!.result.kind).toBe("unparseable");
+  });
+
+  it("hands back a text tool's output verbatim even when it happens to parse as JSON", async () => {
+    // `grep -c revenue entities/` prints `3`. Parsing it would make the SAME
+    // tool record under two different arms depending on what the directory
+    // contained — the accidental-shape dependence #5131 was.
+    const recorded: RecordedToolCall[] = [];
+    const fakeClient = { callTool: async () => fakeCallToolResult("3\n") };
+    const tools = __forTesting__.bindMcpToolsForLlm(
+      fakeClient,
+      [{ name: "explore", description: "Shell." }],
+      recorded,
+    );
+    expect(
+      await getRunner(tools, "explore")(
+        { command: "grep -c revenue entities/" },
+        { toolCallId: "t1", messages: [] },
+      ),
+    ).toBe("3\n");
+    expect(recorded[0]!.result).toEqual({ kind: "ok", data: "3\n" });
+  });
+
+  it("stamps the contract on the TRANSPORT-failure record too", async () => {
+    // Otherwise the field is write-only on this path and free to drift into a
+    // lie in the failure artifact the operator actually reads.
+    const recorded: RecordedToolCall[] = [];
+    const fakeClient = {
+      callTool: async () => {
+        throw new Error("socket hang up");
+      },
+    };
+    const tools = __forTesting__.bindMcpToolsForLlm(
+      fakeClient,
+      [
+        { name: "explore", description: "Shell." },
+        { name: "runMetric", description: "Run a metric." },
+      ],
+      recorded,
+    );
+    await expect(
+      getRunner(tools, "explore")({ command: "ls" }, { toolCallId: "t1", messages: [] }),
+    ).rejects.toThrow(/socket hang up/);
+    await expect(
+      getRunner(tools, "runMetric")({ id: "x" }, { toolCallId: "t2", messages: [] }),
+    ).rejects.toThrow(/socket hang up/);
+    expect(recorded.map((c) => c.contract)).toEqual(["text", "json"]);
+  });
+
+  it("classifies explore as text and every typed semantic tool as json", () => {
+    // Both arms live here so the describe block, not the binder test, carries
+    // the classifier's positive case. `listEntities`, `describeEntity` and
+    // `searchGlossary` declare no MCP `outputSchema` (only `runMetric` /
+    // `executeSQL` / `query` do), so an exemption keyed on `outputSchema`
+    // would have silently let these three out of the protocol check.
+    expect(classifyToolContract("explore")).toBe("text");
     for (const name of [
       "runMetric",
       "executeSQL",
@@ -1352,36 +1519,60 @@ describe("bindMcpToolsForLlm", () => {
       "describeEntity",
       "searchGlossary",
       "listEntities",
+      "searchBrain",
     ]) {
-      expect(__forTesting__.classifyToolContract(name)).toBe("json");
+      expect(classifyToolContract(name)).toBe("json");
     }
   });
 });
 
 // ── Text-contract anchoring ───────────────────────────────────────────
 
-describe("assertTextContractToolsPresent", () => {
+describe("bindEvalToolSurface / assertTextContractToolsPresent", () => {
   // The exemption is spelled as a NAME. Rename `explore` and the name stops
   // matching, the exemption becomes a no-op, and every successful shell call
   // is graded as a protocol regression again — silently. This anchor is what
-  // turns that into a loud stop at boot.
+  // turns that into a loud stop at boot, BEFORE any paid LLM token is spent.
+
+  const fakeClient = { callTool: async () => ({ content: [] }) as CallToolResult };
 
   it("passes when every text-contract tool is on the discovered surface", () => {
     expect(() =>
-      __forTesting__.assertTextContractToolsPresent([
-        { name: "explore" },
-        { name: "runMetric" },
-      ]),
+      __forTesting__.assertTextContractToolsPresent([{ name: "explore" }, { name: "runMetric" }]),
     ).not.toThrow();
   });
 
   it("throws, naming the missing tool and the surface, when one was renamed away", () => {
     expect(() =>
-      __forTesting__.assertTextContractToolsPresent([
-        { name: "shell" },
-        { name: "runMetric" },
-      ]),
+      __forTesting__.assertTextContractToolsPresent([{ name: "shell" }, { name: "runMetric" }]),
     ).toThrow(/text-contract tool\(s\) not on the MCP surface: explore.*Discovered:.*shell/s);
+  });
+
+  it("says so explicitly when tools/list returned nothing", () => {
+    expect(() => __forTesting__.assertTextContractToolsPresent([])).toThrow(
+      /Discovered: \(empty — tools\/list returned no tools\)/,
+    );
+  });
+
+  // ⚠️ THE ANCHOR IS ONLY WORTH ITS LINES IF IT IS WIRED IN. Mutating the
+  // assert's BODY is caught by the two tests above; deleting its CALL SITE was
+  // not caught by anything, which is the same unwired-guard shape the anchor
+  // exists to prevent. `bindEvalToolSurface` is the seam `runMcpLlmEval` calls,
+  // so these two pin the wiring rather than the logic.
+
+  it("refuses to bind a surface missing a text-contract tool", () => {
+    expect(() =>
+      __forTesting__.bindEvalToolSurface(fakeClient, [{ name: "runMetric" }], []),
+    ).toThrow(/text-contract tool\(s\) not on the MCP surface: explore/);
+  });
+
+  it("binds every discovered tool when the anchor holds", () => {
+    const bound = __forTesting__.bindEvalToolSurface(
+      fakeClient,
+      [{ name: "explore" }, { name: "runMetric" }],
+      [],
+    );
+    expect(Object.keys(bound).sort()).toEqual(["explore", "runMetric"]);
   });
 });
 

@@ -227,7 +227,34 @@ describe("bindToolsForRecording", () => {
     expect(recorder).toEqual(["runMetric"]);
   });
 
-  it("returns an unparseable shape when MCP content isn't JSON", async () => {
+  it("returns an unparseable shape when a JSON-contract tool's content isn't JSON", async () => {
+    const recorder: string[] = [];
+    const fakeClient = {
+      callTool: async () => fakeResult("not-json", false),
+    };
+    const tools = __forTesting__.bindToolsForRecording(
+      fakeClient,
+      [{ name: "describeEntity", description: "Describe." }],
+      recorder,
+    );
+    const runner = getRunner(tools as Record<string, Tool>, "describeEntity");
+    const result = (await runner(
+      { name: "orders" },
+      { toolCallId: "t1", messages: [] },
+    )) as { error?: string; raw?: string };
+    expect(result.error).toBe("unparseable");
+    expect(result.raw).toBe("not-json");
+    expect(recorder).toEqual(["describeEntity"]);
+  });
+
+  it("hands a TEXT-contract tool's output back verbatim rather than fabricating an error (#5131)", async () => {
+    // ⚠️ THIS TEST PREVIOUSLY ASSERTED THE OPPOSITE, on this exact tool. It
+    // pinned `{ error: "unparseable" }` for a successful `explore` — which is
+    // the model-facing half of #5131, and it matters MORE in this mode than in
+    // the grading one: telling a model its `ls` errored is exactly what makes
+    // it retry or switch tools, and tool SEQUENCE is what this eval scores.
+    // Same body as the JSON case above, so the tool name is the only
+    // differentiator.
     const recorder: string[] = [];
     const fakeClient = {
       callTool: async () => fakeResult("not-json", false),
@@ -238,13 +265,27 @@ describe("bindToolsForRecording", () => {
       recorder,
     );
     const runner = getRunner(tools as Record<string, Tool>, "explore");
+    const result = await runner({ command: "ls" }, { toolCallId: "t1", messages: [] });
+    expect(result).toBe("not-json");
+    expect(recorder).toEqual(["explore"]);
+  });
+
+  it("keeps a server-FLAGGED error on a text-contract tool as an error, not shell output", async () => {
+    const recorder: string[] = [];
+    const fakeClient = {
+      callTool: async () => fakeResult("Error: sandbox failed to start", true),
+    };
+    const tools = __forTesting__.bindToolsForRecording(
+      fakeClient,
+      [{ name: "explore", description: "Explore." }],
+      recorder,
+    );
+    const runner = getRunner(tools as Record<string, Tool>, "explore");
     const result = (await runner(
       { command: "ls" },
       { toolCallId: "t1", messages: [] },
-    )) as { error?: string; raw?: string };
+    )) as { error?: string };
     expect(result.error).toBe("unparseable");
-    expect(result.raw).toBe("not-json");
-    expect(recorder).toEqual(["explore"]);
   });
 
   it("records the tool name BEFORE awaiting dispatch (transport throw still leaves name visible)", async () => {

@@ -52,9 +52,17 @@ type BrainPrincipalContext = Parameters<typeof searchBrainCore>[1]["ctx"];
 
 const WS = "ws-search-logging";
 const SQL = {
-  // `valid_to` — the one column only the fact-page statement selects; the
-  // corroboration subquery appears in the counterpart statement too (#4913).
-  factPage: "f.valid_to",
+  // `last_observed_at` — the decay anchor (#4914), and the one column only the
+  // fact-page statement selects. Corroboration is not unique to it (#4913 gave
+  // the counterpart statement that subquery), and neither is `f.valid_to`, which
+  // this key used to name: #4935 put that column in `COUNTERPART_COLUMNS` too, so
+  // the key had been ambiguous since then and passed only because no test here
+  // registers a counterpart response for `find()` to answer wrongly. #5028
+  // removed `predicate_cardinality` from `FACT_COLUMNS`, which makes it and
+  // `COUNTERPART_COLUMNS` byte-identical — so no key drawn from the shared column
+  // list can separate the two statements again, and the discriminator must come
+  // from what `buildFactQuery` APPENDS.
+  factPage: "AS last_observed_at",
   episodePage: "FROM brain_episodes e",
   tensionEdges: "edge_type = 'in-tension-with'",
   tensionCounterparts: "AND f.id = ANY(",
@@ -74,9 +82,20 @@ function reader(
   responses: Array<{ match: string; rows: Record<string, unknown>[] }> = [],
 ): BrainSearchReader {
   return {
-    query: async (sql: string) => ({
-      rows: responses.find((r) => sql.includes(r.match))?.rows ?? [],
-    }),
+    query: async (sql: string) => {
+      // ENFORCED rather than trusted, on `search.test.ts`'s precedent. `find()`
+      // is first-match-wins, so an ambiguous key does not fail — it answers one
+      // statement with another's rows and the assertion passes VACUOUSLY. That
+      // is how `f.valid_to` survived #4935 here; the throw makes the next
+      // collision self-reporting instead of silent.
+      const hits = responses.filter((r) => sql.includes(r.match));
+      if (hits.length > 1) {
+        throw new Error(
+          `ambiguous SQL fixture key: ${hits.map((h) => JSON.stringify(h.match)).join(", ")} all match one statement — one of them must move to a column exactly one statement selects`,
+        );
+      }
+      return { rows: hits[0]?.rows ?? [] };
+    },
   };
 }
 
@@ -87,7 +106,6 @@ function factRow(overrides: Record<string, unknown> = {}): Record<string, unknow
     predicate: "p",
     object: "o",
     status: "published",
-    predicate_cardinality: "multi",
     visible_to: ["org"],
     provenance: {},
     source_episode_id: "ep-1",

@@ -24453,13 +24453,6 @@
                               "archived"
                             ]
                           },
-                          "predicateCardinality": {
-                            "type": "string",
-                            "enum": [
-                              "single",
-                              "multi"
-                            ]
-                          },
                           "visibleTo": {
                             "type": "array",
                             "items": {
@@ -25014,7 +25007,6 @@
                           "predicate",
                           "object",
                           "status",
-                          "predicateCardinality",
                           "visibleTo",
                           "malformedGrantIndices",
                           "grantReadable",

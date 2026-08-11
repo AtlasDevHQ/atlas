@@ -98,8 +98,15 @@
  *
  * Not the approval UI (#5025). Not the warehouse producer (#5042). Not the drop
  * of `brain_facts.predicate_cardinality` (#5028) — that column is `NOT NULL`
- * with a live CHECK, so this slice stops reading and writing it and the drop is
- * one release later, per `db/migrations/README.md`'s two-phase discipline.
+ * with a live CHECK, so the drop is a release later than the last code that
+ * touches it, per `db/migrations/README.md`'s two-phase discipline.
+ *
+ * ⚠️ This paragraph used to say *"this slice stops reading and writing it"*, and
+ * the READING half was false for three releases. #5027 stopped the WRITES
+ * (`INSERT_FACT_SQL`, the region importer); the two projections in
+ * `candidates.ts` and `search.ts` went on SELECTing the column, which is why
+ * #5028 could not drop it on the schedule its own issue assumed. Reads stop in
+ * #5028 phase 1b; the column and its CHECK go one release after that.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";

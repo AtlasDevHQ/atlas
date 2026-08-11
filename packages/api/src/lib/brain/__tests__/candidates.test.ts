@@ -103,7 +103,6 @@ function factRow(overrides: Record<string, unknown> = {}): Record<string, unknow
     predicate: "uses",
     object: "Postgres",
     status: "draft",
-    predicate_cardinality: "multi",
     visible_to: ["org"],
     pre_widening_visible_to: null,
     provenance: {

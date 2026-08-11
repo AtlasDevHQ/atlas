@@ -408,8 +408,9 @@ async function runWithAgent(
       };
     }
 
-    // The `?? ""` / `?? null` are required under TS strict
-    // `noUncheckedIndexedAccess` — array index access is `T | undefined`.
+    // The `?? ""` / `?? null` are defensive, NOT compiler-required: this comment
+    // used to cite `noUncheckedIndexedAccess`, which no tsconfig in the repo
+    // sets, so index access here is `T`, not `T | undefined` (#5130 review).
     // The empty-array hard-fail below at `agent.sql.length === 0` is the
     // load-bearing guard for the empty case; these defaults only feed the
     // early-return branch's `sql: lastSql || null` mapping.
@@ -479,23 +480,30 @@ export async function handleCanonicalEval(args: string[]): Promise<void> {
  * Stage the semantic layer, run the eval, restore, and reduce the whole run to
  * ONE exit code for {@link handleCanonicalEval} to hand the shell.
  *
- * ⚠️ THE EXIT MUST LIVE OUTSIDE THIS FUNCTION, AND THE `return` MUST LIVE
- * OUTSIDE THE `try`. Both halves were wrong until #5130 and each one silently
- * discards a failure:
+ * ⚠️ THE EXIT MUST LIVE OUTSIDE THIS FUNCTION, THE `return` MUST LIVE OUTSIDE
+ * THE `try`, AND THE `try` MUST HAVE A `catch`. All three were wrong until
+ * #5130, and each one on its own silently discards a failure:
  *
  *   - The exit used to sit after the `try`/`finally` in the same function as
  *     the eval body, so every `return` inside that body ran `finally` and then
  *     left the function — skipping `process.exit(exitCode)` entirely and ending
  *     the process on its natural code, 0. `--mcp-llm` computed its acceptance
  *     floor, printed `FAIL: 12/20 below acceptance floor 18`, and exited 0; the
- *     demo-seed catch did the same for BOTH modes. Splitting the body into
- *     {@link runInstalledCanonicalEval}, whose declared `Promise<number>` makes
- *     the compiler reject any path that fails to produce a code, is what keeps
- *     a future early return from re-opening it.
+ *     demo-seed catch did the same for BOTH modes. Splitting the body out into
+ *     {@link runInstalledCanonicalEval}, declared `Promise<number>`, is what
+ *     keeps a future early `return` from re-opening it: a path that returns
+ *     without a code is then a compile error (TS2366/TS2322 — the mechanism is
+ *     `strictNullChecks`, which the root tsconfig sets via `strict`).
  *   - `return exitCode` INSIDE the `try` would capture the value at return time,
  *     so the `finally`'s restore-failure bump to 2 would be computed and thrown
  *     away — the same defect one layer over. The `return` below is deliberately
  *     after the block.
+ *   - A `throw` is the one code-less path the compiler still permits, and
+ *     without the `catch` below it discarded the bump the same way: the
+ *     exception propagated past `return exitCode` to `main().catch` in
+ *     `bin/atlas.ts`, which exits 1 unconditionally. A run that destroyed the
+ *     user's `semantic/` then reported 1 — indistinguishable from an ordinary
+ *     eval failure, on precisely the path where the distinction matters most.
  */
 async function runStagedCanonicalEval(
   options: CanonicalEvalOptions,
@@ -506,6 +514,15 @@ async function runStagedCanonicalEval(
   let exitCode = 0;
   try {
     exitCode = await runInstalledCanonicalEval(options, connStr);
+  } catch (err) {
+    // Logged here rather than re-thrown: re-throwing reaches `main().catch`,
+    // which exits 1 and would outrank the restore bump computed below. Same
+    // stack the top-level handler would have printed, so nothing is lost.
+    process.stderr.write(
+      `\nError: canonical eval failed: ${err instanceof Error ? err.message : String(err)}\n` +
+        (err instanceof Error && err.stack ? `${err.stack}\n` : ""),
+    );
+    exitCode = 1;
   } finally {
     // Surface restore failure via the exit code — silently swallowing it
     // would let a developer see an "all green" run while their original
@@ -515,6 +532,42 @@ async function runStagedCanonicalEval(
     if (!restored) exitCode = Math.max(exitCode, 2);
   }
   return exitCode;
+}
+
+/**
+ * Write to stdout with a BLOCKING syscall loop instead of the buffered stream.
+ *
+ * ⚠️ `process.exit()` DISCARDS whatever is still sitting in `process.stdout`'s
+ * buffer, with no error on either side. Measured on bun 1.3.13: a 2 MB payload
+ * written via `process.stdout.write` and followed by `process.exit` arrives at
+ * a pipe as exactly 65_536 bytes — one pipe buffer — silently truncated.
+ *
+ * That cliff is not theoretical for this command. The workflow runs
+ * `canonical-eval --mcp-llm --json | tee eval-mcp-llm-output.json` and uploads
+ * the result as the adjudication artifact; the file from the 2026-08-11 run is
+ * 63_024 bytes, 2.5 KB under the limit and growing with every field added to
+ * the payload. Until #5130 the `--mcp-llm` path left via `return` and the
+ * process ended naturally, so the stream always drained — routing it through
+ * the shared `process.exit` is what exposes this, which makes it this change's
+ * to carry.
+ *
+ * `fs.writeSync` returns only once the bytes are handed to the fd, so there is
+ * nothing left to discard. Reserved for the unbounded payloads (the `--json`
+ * bodies and the failure-artifact bundle); the fixed-size progress lines have
+ * no headroom problem and stay on the stream.
+ */
+export function writeStdoutSync(text: string): void {
+  const buf = Buffer.from(text, "utf-8");
+  let offset = 0;
+  while (offset < buf.length) {
+    try {
+      offset += fs.writeSync(1, buf, offset, buf.length - offset);
+    } catch (err) {
+      // EAGAIN is a retry, not a failure: it means the reader has not drained
+      // the pipe yet. Anything else is a real write error and propagates.
+      if ((err as NodeJS.ErrnoException).code !== "EAGAIN") throw err;
+    }
+  }
 }
 
 /**
@@ -557,7 +610,7 @@ async function runInstalledCanonicalEval(
   invalidateExploreBackend();
 
   if (options.mode === "mcp-llm") {
-    return runMcpLlmMode(options);
+    return await runMcpLlmMode(options);
   }
 
   const results =
@@ -566,7 +619,7 @@ async function runInstalledCanonicalEval(
       : await runDeterministic(options);
 
   if (options.json) {
-    process.stdout.write(
+    writeStdoutSync(
       `${JSON.stringify(
         {
           schema: options.schema,
@@ -736,7 +789,7 @@ async function runMcpLlmMode(
   }
 
   if (options.json) {
-    process.stdout.write(
+    writeStdoutSync(
       `${JSON.stringify(
         {
           schema: options.schema,
@@ -783,7 +836,7 @@ async function runMcpLlmMode(
       );
     }
     if (result.artifacts.length > 0) {
-      process.stdout.write(formatArtifactBundle(result.artifacts));
+      writeStdoutSync(formatArtifactBundle(result.artifacts));
     }
   }
 
@@ -943,7 +996,7 @@ async function runToolSelectionMode(
   const floorPct = (result.acceptanceFloor * 100).toFixed(1);
 
   if (options.json) {
-    process.stdout.write(
+    writeStdoutSync(
       `${JSON.stringify(
         {
           schema: options.schema,

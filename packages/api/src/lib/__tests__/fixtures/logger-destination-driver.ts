@@ -16,7 +16,8 @@ createLogger("logger-destination-probe").error(
   {
     probe: "logger-destination",
     // ⚠️ A REDACTED FIELD, ON PURPOSE. `buildRootLogger` now has THREE `pino(…)`
-    // call sites where there used to be one, each spreading `rootLoggerOptions`.
+    // call sites where there used to be one, each carrying `rootLoggerOptions`
+    // (spread on the dev branch, passed positionally on the other two).
     // A branch that dropped the spread — `pino({ level }, destination)` — would
     // still print this line on the right fd, so every fd assertion would pass
     // while redaction, the err serializer, the scrub formatter and the requestId

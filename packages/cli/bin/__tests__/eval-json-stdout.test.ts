@@ -2,23 +2,29 @@
  * `atlas canonical-eval --json` writes JSON to stdout and NOTHING ELSE (#5126).
  *
  * `eval-mcp-llm-output.json` — the failure bundle `.github/workflows/eval-llm.yml`
- * uploads for post-mortems — had never been valid JSON. Two independent writers
- * put non-JSON on fd 1 and the workflow captures fd 1 wholesale:
+ * uploads for post-mortems — had never been valid JSON. THREE independent
+ * writers put non-JSON on fd 1 and the workflow captures fd 1 wholesale:
  *
  *   1. the driver's own human preamble, written unconditionally before any mode
  *      branch, and sufficient on its own;
  *   2. the app's root logger, whose pino default destination is fd 1 — and
  *      because the eval runs with `NODE_ENV` unset (deliberately, #5121) the
  *      dev branch is taken, so the frames arrive PRETTY-PRINTED AND COLOURIZED.
- *      Interleaved, not a strippable prefix.
+ *      Interleaved, not a strippable prefix;
+ *   3. `seedDemoPostgres`'s demo label — OUTSIDE the eval driver entirely, on
+ *      the unconditional path before any mode branch. The first cut of this fix
+ *      covered 1 and 2 and missed it, which is why the guards below are
+ *      process-wide rather than driver-scoped.
  *
- * ⚠️ THE TWO POLLUTERS NEED TWO DIFFERENT PROOFS AND ONE OF THEM CANNOT BE
+ * ⚠️ THE THREE POLLUTERS NEED THREE DIFFERENT PROOFS AND ONE OF THEM CANNOT BE
  * WRITTEN IN-PROCESS. The first is a call-site property; the second is a
  * MODULE-EVALUATION-ORDER property — `rootLogger` is a module-scope `const`, so
  * whether it lands on fd 1 or fd 2 is decided once, before `handleCanonicalEval`
  * exists, by whether `packages/cli/bin/eval-log-destination.ts` ran first. No
  * in-process assertion can observe that; every test here that touches it spawns
- * the real CLI and reads the real fds.
+ * the real CLI and reads the real fds. The third is in another package, and is
+ * held by a function-scoped grep here plus an in-process spy in
+ * `src/__tests__/seed-demo-report.test.ts`.
  *
  * ⚠️ AND THE SPAWN ALONE IS NOT ENOUGH EITHER, which is the subtle part. These
  * spawns use `--preload`, and a preload module is evaluated BEFORE the entry
@@ -32,6 +38,26 @@ import { afterEach, describe, expect, test } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { writeFdSync, type HumanWriter } from "../canonical-eval-run";
+import { STDOUT_CONSOLE_METHODS } from "./fixtures/stdout-console-methods";
+
+/**
+ * ⚠️ THE BRAND'S ONLY FALSIFIER, AND IT IS A TYPE-LEVEL ONE ON PURPOSE.
+ * `HumanWriter` exists so an unbranded writer cannot be passed to a human seam,
+ * and until round 2 nothing failed if the brand were deleted — `bun run test`
+ * does not type-check, and every call site still compiles with a plain
+ * `(text: string) => void`. A guard with no negative case is a claim.
+ *
+ * `packages/cli/tsconfig.json` includes `bin/**` , so `bun run type` checks this
+ * file: delete the brand and the assignment below becomes legal, which makes
+ * the directive itself an unused-`@ts-expect-error` error (TS2578) and fails
+ * the type gate. The value is a real unbranded writer of the shape the brand
+ * exists to reject.
+ */
+const unbrandedWriter: (text: string) => void = (text) => writeFdSync(1, text);
+// @ts-expect-error — an unbranded writer must not satisfy HumanWriter.
+const _brandHolds: HumanWriter = unbrandedWriter;
+void _brandHolds;
 
 const REPO_ROOT = path.resolve(import.meta.dir, "..", "..", "..", "..");
 const CLI_ENTRY = path.join(REPO_ROOT, "packages", "cli", "bin", "atlas.ts");
@@ -109,9 +135,15 @@ function topLevelFunctionBody(source: string, signature: string): string {
  *
  * ⚠️ `fs.writeSync(1` is listed but `fs.writeSync(fd` is not — the latter IS
  * `writeFdSync`'s own body, which is the one sanctioned writer.
+ *
+ * ⚠️ THE CONSOLE HALF IS BUILT FROM `STDOUT_CONSOLE_METHODS` rather than
+ * hand-written — see that fixture for why two hand-maintained copies of this
+ * list drifted on their first outing, in the same direction, past both arms.
  */
-const FD1_WRITE =
-  /(?:process\.stdout|console\.(?:log|info|debug|dir|table|trace)\s*\(|Bun\.stdout|fs\.writeSync\(\s*1\b)/g;
+const FD1_WRITE = new RegExp(
+  `(?:process\\.stdout|console\\.(?:${STDOUT_CONSOLE_METHODS.join("|")})\\s*\\(|Bun\\.stdout|fs\\.writeSync\\(\\s*1\\b)`,
+  "g",
+);
 
 /**
  * Strip comments before matching, so the prose that DESCRIBES the forbidden
@@ -121,16 +153,38 @@ const FD1_WRITE =
  * tell a quotation from an assertion, and `canonical-eval-run.ts`'s comments
  * necessarily name `process.stdout` to explain why it is banned. Stripping is
  * the honest answer; an allowlist would be a hole shaped like the thing being
- * guarded. Only whole-line `//` comments are dropped, so a `//` inside a string
- * literal (`postgres://…`) survives — which fails SAFE, since the worst case is
- * a false positive on a trailing comment that names a banned spelling.
+ * guarded.
+ *
+ * ⚠️ LINE COMMENTS ARE DROPPED FIRST, AND THE ORDER IS THE WHOLE CORRECTNESS
+ * ARGUMENT. Block-stripping first turns any `/*` sequence inside a `//` comment
+ * into an unterminated strip that runs to the next `*` + `/` ANYWHERE in the
+ * file — measured on the real tree, `init.ts`'s
+ * `// … no parallel \`cli/lib/profilers/*\` home` opened one that a docstring 56
+ * lines later closed, losing 30 lines of live code between them — the
+ * plugin-profiler imports, `DEMO_DATASET`, and `parseDemoArg`. A guard that deletes the code it is scanning reports green forever,
+ * which is this issue's own defect wearing a test's clothes. The self-check in
+ * the test below is what keeps that closed rather than this comment.
  */
 function stripComments(source: string): string {
   return source
-    .replace(/\/\*[\s\S]*?\*\//g, "")
     .split("\n")
     .filter((line) => !/^\s*\/\//.test(line))
-    .join("\n");
+    .join("\n")
+    .replace(/\/\*[\s\S]*?\*\//g, "");
+}
+
+/**
+ * Assert the stripper removed only comment lines — nothing that could hide a
+ * violation. Cheap, and it is the falsifier for the ordering above: run it
+ * against the block-first version and `init.ts` fails immediately.
+ */
+function expectStripLosesOnlyComments(file: string, raw: string): void {
+  const stripped = stripComments(raw);
+  const lost = raw
+    .split("\n")
+    .filter((line) => !/^\s*(?:\/\/|\*|\/\*|$)/.test(line))
+    .filter((line) => !stripped.includes(line));
+  expect({ file, lost }).toEqual({ file, lost: [] });
 }
 
 /** ESC. `pino-pretty` with `colorize: true` emits these; JSON never does. */
@@ -369,11 +423,10 @@ describe("canonical-eval --json keeps stdout machine-readable", () => {
 
       const { exitCode, stdout } = await runCanonicalEval(sandbox, {
         args: ["--questions", questionsPath],
-        // ⚠️ EMIT_LOG is on here too, and it is not symmetry for its own sake:
-        // without it, nothing in this suite asserts the STAMP is conditional.
-        // Delete the `if` in `eval-log-destination.ts` — leaving a bare
-        // `ATLAS_LOG_STDERR = "1"` that fires for every command — and every
-        // other test still passes, because they all pass `--json`.
+        // ⚠️ EMIT_LOG is on here too, so the negative is END-TO-END rather than
+        // only argv-level. The stamp-matrix test below is the primary falsifier
+        // for the conditional; this arm proves a real non-`--json` run still
+        // gets its logger on fd 1, colour and all.
         env: { ATLAS_TEST_STUB_SEED: "1", ATLAS_TEST_EMIT_LOG: "1" },
       });
 
@@ -476,8 +529,11 @@ describe("canonical-eval --json keeps stdout machine-readable", () => {
     // the more likely regression by far: it is what the surrounding CLI code
     // uses everywhere, and no `no-console` rule is configured for this package.
     for (const file of FD1_GUARDED_SOURCES) {
-      const source = stripComments(fs.readFileSync(file, "utf-8"));
-      expect({ file, hits: source.match(FD1_WRITE) ?? [] }).toEqual({
+      const raw = fs.readFileSync(file, "utf-8");
+      // Before trusting the scan, prove the stripper did not eat the code it
+      // was meant to scan — see `stripComments`' ordering note.
+      expectStripLosesOnlyComments(file, raw);
+      expect({ file, hits: stripComments(raw).match(FD1_WRITE) ?? [] }).toEqual({
         file,
         hits: [],
       });
@@ -486,19 +542,61 @@ describe("canonical-eval --json keeps stdout machine-readable", () => {
     // Anchored: the writers these were replaced with are still there, so the
     // test cannot pass by the file having been gutted out from under it.
     const driver = fs.readFileSync(DRIVER_SRC, "utf-8");
-    expect(driver).toContain("function writeFdSync(");
+    expect(driver).toContain("export function writeFdSync(");
     expect(driver).toContain("function humanWriter(");
   });
+
+  test(
+    "the stamp fires for `canonical-eval --json` and for nothing else",
+    async () => {
+      // ⚠️ THE `canonical-eval` HALF WAS UNFALSIFIABLE. Every other spawn in
+      // this file passes that token, so narrowing the condition to just
+      // `--json` — which would stamp `atlas query --json`, `atlas eval --json`
+      // and every other command — survived the whole suite. The module header
+      // claims the scan "is narrow on purpose: both tokens must be present, so
+      // no other subcommand is affected"; this is that claim, tested.
+      const driver = path.join(
+        import.meta.dir, "fixtures", "eval-log-destination-driver.ts",
+      );
+      const stampFor = async (args: string[]): Promise<string> => {
+        const proc = Bun.spawn([process.execPath, driver, ...args], {
+          env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        children.push(proc);
+        const [text, code] = await Promise.all([
+          new Response(proc.stderr).text(),
+          proc.exited,
+        ]);
+        expect(code).toBe(0);
+        return text.trim();
+      };
+
+      expect(await stampFor(["canonical-eval", "--json"])).toBe(
+        "ATLAS_LOG_STDERR=1",
+      );
+      // The three negatives, each failing a DIFFERENT wrong predicate: `--json`
+      // alone kills "only check --json", and `canonical-eval` alone kills "only
+      // check the subcommand".
+      expect(await stampFor(["--json"])).toBe("ATLAS_LOG_STDERR=<unset>");
+      expect(await stampFor(["canonical-eval"])).toBe("ATLAS_LOG_STDERR=<unset>");
+      // `query --json` is the real sibling command. Its own stdout is already
+      // clean (verified — see `eval-log-destination.ts`), so this pins that the
+      // stamp stays narrow rather than that the sibling is unfixable.
+      expect(await stampFor(["query", "--json"])).toBe("ATLAS_LOG_STDERR=<unset>");
+    },
+    60_000,
+  );
 
   test("seedDemoPostgres's own body reaches fd 1 only through its injected sink", () => {
     // The function-scoped arm. `init.ts` as a whole owns fd 1 legitimately, so
     // the guard is narrowed to the one function `canonical-eval` runs — which
     // is where the third polluter lived, and where the LIKELIEST regression is
     // someone matching the file's house style and reaching for `console.log`.
-    const body = topLevelFunctionBody(
-      stripComments(fs.readFileSync(SEED_SRC, "utf-8")),
-      SEED_FN_SIGNATURE,
-    );
+    const raw = fs.readFileSync(SEED_SRC, "utf-8");
+    expectStripLosesOnlyComments(SEED_SRC, raw);
+    const body = topLevelFunctionBody(stripComments(raw), SEED_FN_SIGNATURE);
     // The slice really is the whole body — a brace-naive cut that stopped early
     // would trivially find no violations.
     expect(body).toContain("await pool.end()");
@@ -512,22 +610,48 @@ describe("canonical-eval --json keeps stdout machine-readable", () => {
     // masked. Move the stamp down and every `--json` run pollutes again while
     // the rest of this suite stays green.
     //
-    // ⚠️ FIRST MODULE REQUEST, NOT FIRST `import`. `export … from` is a
-    // module-graph edge evaluated in source order exactly like `import`, and
-    // `bin/atlas.ts` is mostly made of them — including the profiler
-    // re-exports, which are precisely what pulls in `@atlas/api/lib/logger`.
-    // A guard matching only `^import` would miss the single most likely edit to
-    // that file (hoisting or adding a re-export block above line 46).
+    // ⚠️ FIRST MODULE REQUEST, NOT FIRST `import` — AND MULTI-LINE. `export …
+    // from` is a module-graph edge evaluated in source order exactly like
+    // `import`, and `bin/atlas.ts` is mostly made of them. Two rounds of this
+    // guard were green on the regression they named:
+    //
+    //   round 0: `/^import\b/` — missed every `export … from`.
+    //   round 1: `…[^\n]*?["']…` — matched `export`, but `[^\n]` cannot cross a
+    //            newline, so it saw 11 of ~20 edges and MISSED the multi-line
+    //            `export { … } from "@atlas/api/lib/profiler";` block, which is
+    //            the exact edge that pulls in `@atlas/api/lib/logger` and the
+    //            one this comment has named as the risk since round 0.
+    //
+    // `[\s\S]*?` is lazy, so it stops at the first quote after the keyword — the
+    // specifier — for both `import "x";` and `import {\n a,\n} from "x";`.
     const source = fs.readFileSync(CLI_ENTRY, "utf-8");
     const requests = [
-      ...source.matchAll(/^(?:import|export)\b[^\n]*?["']([^"']+)["'];?\s*$/gm),
+      ...source.matchAll(/^(?:import|export)\b[\s\S]*?["']([^"']+)["']/gm),
     ].map((m) => m[1]);
     expect(requests[0]).toBe("./eval-log-destination");
 
-    // …and the stamp must have no graph of its own: an import inside it would
-    // evaluate before its own assignment and could reach the logger first.
+    // A count anchor, so the guard cannot silently go blind again the way it
+    // did twice: if a future regex stops seeing multi-line edges, this drops
+    // well below the file's real edge count and fails here rather than passing
+    // vacuously. Deliberately a floor, not an equality — adding an import is a
+    // normal edit and must not fail this test.
+    expect(requests.length).toBeGreaterThanOrEqual(
+      (source.match(/\bfrom\s+["']/g) ?? []).length,
+    );
+    // The specifier that actually matters, positionally — independent of the
+    // regex entirely, so a third regex bug cannot take this down with it.
+    expect(source.indexOf('import "./eval-log-destination";')).toBeLessThan(
+      source.indexOf("@atlas/api/lib/profiler"),
+    );
+
+    // …and the stamp must have no graph of its own: any module edge inside it
+    // would evaluate before its own assignment and could reach the logger
+    // first. Matching on the SPECIFIER rather than on `from`, because the
+    // dangerous spelling — `import "@atlas/api/lib/logger";` — has no `from`,
+    // and is the very spelling `bin/atlas.ts` uses to pull this module in.
+    // The trailing `export {};` has no specifier and is correctly permitted.
     expect(fs.readFileSync(STAMP_SRC, "utf-8")).not.toMatch(
-      /^(?:import|export)\b[^\n]*\bfrom\b/m,
+      /^(?:import|export)\b[\s\S]*?["']/m,
     );
   });
 });

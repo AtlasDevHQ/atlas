@@ -65,8 +65,8 @@ const SCHEMAS_DIR = path.resolve(
 const BACKUP_DIR = path.resolve(".semantic-backup-canonical-eval");
 
 interface CanonicalEvalOptions {
-  schema: ValidSchema;
-  questionsPath: string;
+  readonly schema: ValidSchema;
+  readonly questionsPath: string;
   /**
    * Mutually exclusive: `deterministic` is the default typed-dispatch
    * path; `llm` runs the full agent loop and asserts on the snapshot
@@ -75,16 +75,16 @@ interface CanonicalEvalOptions {
    * (rather than two booleans) makes the mutual exclusion enforceable
    * at parse time.
    */
-  mode: "deterministic" | "llm" | "mcp-llm";
-  json: boolean;
+  readonly mode: "deterministic" | "llm" | "mcp-llm";
+  readonly json: boolean;
   /**
    * Path to the `--mcp-llm` latency baseline JSON. Defaults to
    * `eval/canonical-questions/mcp-llm-baseline.json`. Missing entries
    * are treated as "no baseline yet" by the grader.
    */
-  baselinePath: string;
+  readonly baselinePath: string;
   /** When true and `mode === "mcp-llm"`, write the run's per-question latencies back to `baselinePath`. */
-  writeBaseline: boolean;
+  readonly writeBaseline: boolean;
   /**
    * When true, swap the canonical-question path for the held-out
    * tool-selection fixture — `eval/canonical-questions/tool-selection.json`
@@ -93,9 +93,9 @@ interface CanonicalEvalOptions {
    * when accuracy < `rubric.acceptance_floor` (default 0.9). Only
    * meaningful with `--mcp-llm`. Drives the #2075 audit's success metric.
    */
-  toolSelection: boolean;
+  readonly toolSelection: boolean;
   /** Path to the tool-selection fixture (#2075). Defaults to `eval/canonical-questions/tool-selection.json`. */
-  toolSelectionFixturePath: string;
+  readonly toolSelectionFixturePath: string;
 }
 
 const DEFAULT_BASELINE_PATH = path.resolve(
@@ -583,9 +583,9 @@ async function runStagedCanonicalEval(
  * transcript moves to stderr, including the `note:` lines in
  * `resolveExpectations` and the per-question progress lines, neither of which
  * is bounded in principle (the notes interpolate caught error messages, and
- * `--questions` is caller-supplied). The `writeStderrSync` twin the old comment
- * here said "whoever adds an unbounded stderr diagnostic needs first" is
- * therefore below, and it is why this helper is parameterised by fd at all.
+ * `--questions` is caller-supplied). The fd-2 twin the old comment here said
+ * "whoever adds an unbounded stderr diagnostic needs first" is therefore what
+ * this helper's `fd` parameter provides, and `humanWriter` binds it.
  *
  * ⚠️ EVERY STDOUT WRITE IN THIS MODULE GOES THROUGH HERE, AND NOTHING ELSE MAY
  * TOUCH fd 1. That is not tidiness — it is what lets
@@ -594,19 +594,20 @@ async function runStagedCanonicalEval(
  * and a grep is the only check that survives a call site added later.
  *
  * The buffered fd-2 writes on the FAILURE paths are deliberately left alone:
- * they are #5130's reasoned exit-code paths, they are bounded, and making them
+ * they are #5130's reasoned exit-code paths, they are small (a few hundred bytes
+ * each, except the harness stack, which runs to a few KB), and making them
  * throw on a bad fd 2 would let a write error escape `restoreSemanticLayer`'s
  * catch and discard the exit-2 bump that catch exists to produce.
  *
  * Mixing the two write paths on ONE fd was also order-sensitive (a `writeSync`
  * bypasses the stream's queue entirely and can print ahead of an earlier
  * buffered write that has not flushed). On fd 1 that mixing is now gone. It
- * remains on fd 2 in the `--json` shape — human transcript via `writeStderrSync`,
+ * remains on fd 2 in the `--json` shape — human transcript via `humanWriter`,
  * failure diagnostics via the stream — where the ordering measured on bun 1.3.13
  * held on every path, but it is a measurement rather than a guarantee, and fd 2
  * is a diagnostic channel where a reordered line costs nothing that parses.
  */
-function writeFdSync(fd: 1 | 2, text: string): void {
+export function writeFdSync(fd: 1 | 2, text: string): void {
   const buf = Buffer.from(text, "utf-8");
   // A one-word cell purely to get a blocking sleep on the EAGAIN path below;
   // there is no synchronous `sleep` and a bare retry loop would spin at 100%.
@@ -626,6 +627,14 @@ function writeFdSync(fd: 1 | 2, text: string): void {
       // must not become one: the buffered stream this replaced dropped EPIPE
       // silently, and turning `atlas canonical-eval --json | head` into exit 1
       // with a stack trace would be a regression introduced by a flush fix.
+      //
+      // ⚠️ That reason was written for fd 1 and has to be re-derived for fd 2,
+      // which this now also serves: on stderr the swallow discards the REST OF
+      // THE HUMAN TRANSCRIPT, which under `--json` is the run's only human
+      // record. Still correct — it matches what `process.stderr.write` does
+      // with a closed fd 2, and neither the exit code nor the fd-1 payload is
+      // affected — but the cost is larger than the fd-1 argument implies.
+      //
       // intentionally ignored: the reader hung up. This is the one path here
       // that emits nothing, and that is the correct behaviour for a pipe.
       if (code === "EPIPE") return;
@@ -655,29 +664,6 @@ function writeFdSync(fd: 1 | 2, text: string): void {
   }
 }
 
-/**
- * Blocking write to fd 1. Exported because the truncation proof in
- * `__tests__/fixtures/canonical-eval-write-stdout-driver.ts` drives it directly
- * — the defect it pins only exists in a spawned process.
- */
-export function writeStdoutSync(text: string): void {
-  writeFdSync(1, text);
-}
-
-/**
- * Blocking write to fd 2. See {@link writeFdSync}'s stderr-cliff note.
- *
- * Exported for the same reason its fd-1 twin is: the truncation it prevents
- * only exists in a spawned process, so `__tests__/fixtures/
- * canonical-eval-write-stdout-driver.ts` drives it directly. Without that, this
- * whole function was a surviving mutation — reverting `humanWriter`'s stderr arm
- * to `process.stderr.write` passed every test in the suite, because the largest
- * transcript any of them produces is ~2 KB against a 65_536-byte cliff.
- */
-export function writeStderrSync(text: string): void {
-  writeFdSync(2, text);
-}
-
 declare const HumanChannel: unique symbol;
 
 /**
@@ -685,14 +671,24 @@ declare const HumanChannel: unique symbol;
  *
  * ⚠️ THE BRAND IS ON THE OUTPUT, NOT THE PARAMETER, AND THAT DISTINCTION IS THE
  * WHOLE POINT. A plain `(text: string) => void` parameter is satisfied by
- * `process.stdout.write`, by `console.log`, and — the one that would actually
- * happen — by the exported `writeStdoutSync` sitting three lines up, which is
- * this module's sanctioned way to write fd 1. `evalEachQuestion(qs, "",
- * writeStdoutSync, resolve)` would then compile and silently reopen #5126.
+ * `process.stdout.write` and by `console.log`, so `evalEachQuestion(qs, "",
+ * console.log, resolve)` would compile and silently reopen #5126.
  * {@link humanWriter} is the only producer of this type, so an unbranded
  * sibling producer cannot satisfy the destination.
+ *
+ * It does NOT cover `seedDemoPostgres`'s `report`, which is a plain sink in
+ * another package — that one is held by the function-scoped lexical guard and
+ * the in-process spy in `src/__tests__/seed-demo-report.test.ts`.
+ *
+ * Exported ONLY so `__tests__/eval-json-stdout.test.ts` can hold a
+ * `@ts-expect-error` against it. Deleting the brand makes that line compile,
+ * which turns the directive itself into TS2578 and fails `bun run type` — the
+ * brand's own falsifier, which it did not have until round 2 pointed out that a
+ * type-level guard with no negative case is a claim rather than a guard.
  */
-type HumanWriter = ((text: string) => void) & { readonly [HumanChannel]: true };
+export type HumanWriter = ((text: string) => void) & {
+  readonly [HumanChannel]: true;
+};
 
 /**
  * The fd this run's HUMAN-READABLE output goes to.
@@ -701,24 +697,35 @@ type HumanWriter = ((text: string) => void) & { readonly [HumanChannel]: true };
  * IT. The workflow pipes it into `eval-mcp-llm-output.json` and uploads that as
  * the adjudication artifact; the banner, the provider line, the per-question
  * progress lines and the `note:` lines were all on fd 1 unconditionally, so the
- * artifact had never parsed (#5126). `options.json` was consulted at exactly one
- * place — payload-emission time — and this is what makes it gate every other
- * write instead.
+ * artifact had never parsed (#5126). `options.json` was consulted only at
+ * payload-emission time — three sites, one per mode — and this is what makes it
+ * gate every other write instead.
  *
  * Takes the OPTIONS rather than a bare boolean: `CanonicalEvalOptions` carries
  * three booleans, all in scope at every call site here, and `humanWriter(
  * options.writeBaseline)` would compile and route the transcript down the wrong
  * channel. Resolved at each use site rather than stored alongside `json`, so the
- * flag and the channel cannot disagree.
+ * flag and the channel cannot disagree — which holds only because every field of
+ * `CanonicalEvalOptions` is `readonly`. Six call sites; at most four run in any
+ * one invocation, since the mode functions are mutually exclusive.
  *
  * The logger is the OTHER writer on fd 1 and is not reachable from here — see
  * `bin/eval-log-destination.ts` — and `seedDemoPostgres` was the third, which is
  * why it now takes this writer as a required argument.
  */
 function humanWriter(options: Pick<CanonicalEvalOptions, "json">): HumanWriter {
-  // The one cast in this module, and the reason the brand holds: every other
-  // route to a `HumanWriter` has to come through here.
-  return (options.json ? writeStderrSync : writeStdoutSync) as HumanWriter;
+  const fd = options.json ? 2 : 1;
+  // ⚠️ CLOSES OVER {@link writeFdSync} DIRECTLY rather than over a per-fd pair
+  // of one-line wrappers. Those existed for one round and were a coverage hole
+  // with a test-shaped lid on it: when they went module-private the truncation
+  // driver stopped importing them, so reverting either to its buffered stream
+  // survived the whole repo — while a comment claimed the fd-2 truncation arms
+  // caught exactly that. With no wrappers there is nothing to revert: every
+  // byte this module writes goes through the one function those arms drive.
+  //
+  // The cast is the only one in this module, and it is what makes the brand
+  // hold: every other route to a `HumanWriter` has to come through here.
+  return ((text: string) => writeFdSync(fd, text)) as HumanWriter;
 }
 
 /**
@@ -776,7 +783,8 @@ async function runInstalledCanonicalEval(
       : await runDeterministic(options);
 
   if (options.json) {
-    writeStdoutSync(
+    writeFdSync(
+      1,
       `${JSON.stringify(
         {
           schema: options.schema,
@@ -946,7 +954,8 @@ async function runMcpLlmMode(
   }
 
   if (options.json) {
-    writeStdoutSync(
+    writeFdSync(
+      1,
       `${JSON.stringify(
         {
           schema: options.schema,
@@ -993,7 +1002,7 @@ async function runMcpLlmMode(
       );
     }
     if (result.artifacts.length > 0) {
-      // `human`, not `writeStdoutSync`: this branch is unreachable under
+      // `human`, not a raw fd-1 write: this branch is unreachable under
       // `--json` today, but the bundle is the largest human payload the command
       // produces and hard-wiring it to fd 1 is precisely the shape that made the
       // artifact unparseable. Routed through the same writer, it is stdout here
@@ -1160,7 +1169,8 @@ async function runToolSelectionMode(
   const floorPct = (result.acceptanceFloor * 100).toFixed(1);
 
   if (options.json) {
-    writeStdoutSync(
+    writeFdSync(
+      1,
       `${JSON.stringify(
         {
           schema: options.schema,

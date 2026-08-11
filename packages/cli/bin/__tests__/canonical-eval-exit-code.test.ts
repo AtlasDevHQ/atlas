@@ -370,7 +370,7 @@ describe("canonical-eval process exit code", () => {
 
       // No slicing: since #5126, stdout under `--json` is the JSON body and
       // nothing else — the prose header this used to skip past now goes to
-      // stderr. `../eval-json-stdout.test.ts` owns that property; here it just
+      // stderr. `./eval-json-stdout.test.ts` owns that property; here it just
       // means the truncation assertion measures the payload rather than the
       // payload plus a header.
       const body = stdout;
@@ -477,11 +477,15 @@ describe("canonical-eval process exit code", () => {
       // ⚠️ fd 2, SAME CLIFF, AND SINCE #5126 IT IS LIVE RATHER THAN LATENT.
       // Under `--json` the whole human transcript moves to stderr — the banner,
       // every progress line, and the `note:` lines, which interpolate caught
-      // error messages over a caller-supplied `--questions` corpus. Without
-      // these two arms `writeStderrSync` is a surviving mutation: reverting
-      // `humanWriter`'s stderr side to the buffered stream passes every other
-      // test in the repo, because the largest transcript any of them produces
-      // is ~2 KB against a 65_536-byte cliff.
+      // error messages over a caller-supplied `--questions` corpus.
+      //
+      // These arms pin `writeFdSync(2, …)`: they kill a mutation that hard-codes
+      // fd 1 or drops the blocking loop for fd 2. Be precise about what that
+      // does NOT cover — the driver calls `writeFdSync` directly, so nothing
+      // here reaches `humanWriter`. That is exactly why `humanWriter` closes
+      // over `writeFdSync` rather than over a per-fd pair of one-line wrappers:
+      // a wrapper would sit between this proof and the caller, and reverting it
+      // to the buffered stream would survive the whole repo.
       const syncErr = await read("sync", 2);
       expect(syncErr.code).toBe(0);
       expect(syncErr.length).toBe(size);

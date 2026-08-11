@@ -18,16 +18,20 @@
  * messages and `--questions` is caller-supplied — which is what made the twin
  * necessary and what makes this arm a real falsifier rather than a mirror.
  */
-import { writeStdoutSync, writeStderrSync } from "../../canonical-eval-run";
+// `writeFdSync`, not the `writeStdoutSync` / `writeStderrSync` wrappers — those
+// are module-private on purpose. Each is assignable to every `(text: string) =>
+// void` sink in the codebase, so exporting one put a ready-made wrong argument
+// one import away from the call sites that caused #5126. `(fd, text)` fits no
+// sink, and the wrappers are one-line aliases with nothing of their own to test.
+import { writeFdSync } from "../../canonical-eval-run";
 
 const size = Number(process.argv[2] ?? "0");
 const payload = "x".repeat(size);
-const useStderr = process.argv[4] === "2";
+const fd = process.argv[4] === "2" ? 2 : 1;
 
 if (process.argv[3] === "sync") {
-  if (useStderr) writeStderrSync(payload);
-  else writeStdoutSync(payload);
-} else if (useStderr) {
+  writeFdSync(fd, payload);
+} else if (fd === 2) {
   process.stderr.write(payload);
 } else {
   process.stdout.write(payload);

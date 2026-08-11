@@ -8,8 +8,11 @@
  * unreachable paths need. It is inert unless one of its env switches is set, so
  * a spawn that wants the untouched CLI simply omits `--preload`.
  *
- *   ATLAS_TEST_STUB_SEED=1     — make `seedDemoPostgres` a no-op, so a run can
- *                                get PAST the seed without a live Postgres.
+ *   ATLAS_TEST_STUB_SEED=1     — replace `seedDemoPostgres` with a stub that
+ *                                REPORTS THE LABEL THROUGH THE INJECTED SINK
+ *                                (see below — a no-op would delete the very
+ *                                polluter the suite exists to detect) and skips
+ *                                the live Postgres.
  *   ATLAS_TEST_FAIL_CP_FROM=…  — make `fs.cpSync` throw when copying FROM that
  *                                path, so `restoreSemanticLayer` fails.
  *   ATLAS_TEST_EMIT_LOG=1      — with the seed stub, emit one real app-logger
@@ -101,7 +104,7 @@ if (process.env.ATLAS_TEST_STUB_SEED === "1") {
     // this an assertion about the CALL SITE: does `runInstalledCanonicalEval`
     // hand `seedDemoPostgres` the resolved human writer, or `console.log`?
     // (The real function's own use of the sink is covered in-process by
-    // `../seed-demo-report.test.ts`, which the stub cannot reach.)
+    // `../../../src/__tests__/seed-demo-report.test.ts`, which the stub cannot reach.)
     report(`${realInit.DEMO_DATASET.label}\n`);
 
     // ⚠️ Emitted from INSIDE the run, through the real `createLogger`, because

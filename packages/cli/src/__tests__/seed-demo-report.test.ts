@@ -18,38 +18,47 @@
  * to the sink and that nothing at all reaches fd 1 while it runs.
  */
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+// The SAME list the lexical guard builds its regex from, so the spy below and
+// `FD1_WRITE` cannot drift. They did drift on their first outing — both were
+// missing `console.group` and `console.count`, which reach fd 1 on bun 1.3.13.
+import { STDOUT_CONSOLE_METHODS } from "../../bin/__tests__/fixtures/stdout-console-methods";
 
 const queries: string[] = [];
 let ended = 0;
 let queryError: Error | null = null;
 
+class MockPool {
+  async query(sql: string) {
+    queries.push(sql);
+    if (queryError) throw queryError;
+    return { rows: [] };
+  }
+  async end() {
+    ended += 1;
+  }
+}
+
 // Mocked before importing the module under test, so `init.ts`'s
-// `import { Pool } from "pg"` binds to this. Only `Pool` is used by
-// `seedDemoPostgres`; the CLI's other pg consumers are not in this graph.
-void mock.module("pg", () => ({
-  Pool: class MockPool {
-    async query(sql: string) {
-      queries.push(sql);
-      if (queryError) throw queryError;
-      return { rows: [] };
-    }
-    async end() {
-      ended += 1;
-    }
-  },
-}));
+// `import { Pool } from "pg"` binds to this.
+//
+// ⚠️ ALL EXPORTS, not just `Pool` (CLAUDE.md). Only `Pool` is used by
+// `seedDemoPostgres` TODAY — but `init.ts` pulls `@atlas/api/lib/profiler` and
+// `@atlas/api/lib/semantic/generate` at module scope, and the first of those to
+// touch `pg.types` (an ordinary date-parser registration) would turn a partial
+// mock into an `undefined is not a function` at import time. Mirrors the
+// export set in `doctor.test.ts`, beside it.
+const pgMock = {
+  Pool: MockPool,
+  Client: MockPool,
+  Query: class {},
+  defaults: {},
+  types: { setTypeParser: () => {}, getTypeParser: () => (v: unknown) => v },
+  escapeIdentifier: (s: string) => `"${s}"`,
+  escapeLiteral: (s: string) => `'${s}'`,
+};
+void mock.module("pg", () => ({ ...pgMock, default: pgMock }));
 
 const { seedDemoPostgres, DEMO_DATASET } = await import("../commands/init");
-
-/** Every `console` method that reaches fd 1. `error`/`warn` are fd 2 and fine. */
-const STDOUT_CONSOLE_METHODS = [
-  "log",
-  "info",
-  "debug",
-  "dir",
-  "table",
-  "trace",
-] as const;
 
 /**
  * ⚠️ `process.stdout.write` IS SPIED TOO, AND ITS ABSENCE WAS A REAL DEFECT IN
@@ -83,7 +92,10 @@ beforeEach(() => {
       console[name] = original;
     };
   });
-  const originalWrite = process.stdout.write.bind(process.stdout);
+  // The method itself, not a bound copy: restoring a bound wrapper would leave
+  // `process.stdout.write.call(otherStream, …)` misrouted for the rest of the
+  // process. The patch never calls through, so nothing needs the binding.
+  const originalWrite = process.stdout.write;
   process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => {
     stdoutCalls.push(`process.stdout.write: ${String(chunk)}`);
     void rest;
@@ -133,5 +145,36 @@ describe("seedDemoPostgres reporting", () => {
     expect(reported).toEqual([]);
     expect(stdoutCalls).toEqual([]);
     expect(ended).toBe(1);
+  });
+
+  test("a throwing sink is NOT relabelled as a Postgres failure", async () => {
+    // ⚠️ The sink can throw, and that is new: it used to be `console.log`, which
+    // cannot. The eval passes `writeFdSync`, which propagates every errno except
+    // EPIPE/EAGAIN (ENOSPC, EBADF) plus its own write-stalled guard. With the
+    // report inside the try, that catch relabelled the write failure as
+    // `Failed to seed demo data into Postgres` — and `canonical-eval` would then
+    // tell the operator to `bun run db:up` on a run whose database work had
+    // already succeeded, while `bin/eval.ts` persisted that wrong cause into
+    // every result row.
+    //
+    // Both halves asserted: the real error survives AND the wrong label is
+    // absent. Asserting only the first would pass for a wrapped message that
+    // still names Postgres.
+    const sinkError = new Error("ENOSPC: no space left on device, write");
+
+    await expect(
+      seedDemoPostgres("postgres://unused/db", () => {
+        throw sinkError;
+      }),
+    ).rejects.toThrow("ENOSPC: no space left on device");
+
+    const raised = await seedDemoPostgres("postgres://unused/db", () => {
+      throw sinkError;
+    }).catch((err: unknown) => err);
+    expect(String(raised)).not.toContain("Failed to seed demo data into Postgres");
+
+    // The pool is still closed — the `finally` runs before the report either
+    // way, which is the property that made moving the line safe.
+    expect(ended).toBe(2);
   });
 });

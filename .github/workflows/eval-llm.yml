@@ -91,7 +91,7 @@ on:
       # three of them are not "the eval's harness" in any other sense:
       # `eval-log-destination.ts` stamps the logger's destination,
       # `bin/atlas.ts` holds the import ORDER that stamp depends on,
-      # `lib/logger.ts` is the switch it sets, and `init.ts`'s
+      # `lib/logger.ts` is the switch that stamp sets, and `init.ts`'s
       # `seedDemoPostgres` is the third writer, called before every mode branch.
       - "packages/cli/bin/eval-log-destination.ts"
       - "packages/cli/bin/atlas.ts"
@@ -330,18 +330,39 @@ jobs:
         # `eval-informational-gate.sh` reads `steps.*.outcome` and never opens
         # the file.
         #
-        # Deliberately does NOT fire on a missing or empty file: that means the
-        # eval died before writing, which the gate step below already reports.
-        # Failing here too would bury a real failure under a derived one.
-        if: ${{ always() && env.ATLAS_LLM_EVAL_SKIPPED != '1' && steps.eval.outcome != 'skipped' }}
+        # ⚠️ `continue-on-error` + an outcome threaded into the gate step, NOT a
+        # bare `exit 1`. Every other failure in this job routes through
+        # `eval-informational-gate.sh`, which owns the policy at the top of this
+        # file: informational-but-visible on PRs, blocking on tags. A step that
+        # reddens the job directly would promote this eval to a blocking gate on
+        # PRs — the thing #2025/#2074 declined — and worse, the gate would still
+        # see `success success` and refresh its comment to ✅ beside a red check.
+        #
+        # ⚠️ NOT on `cancelled`. `always()` runs this after a job timeout too,
+        # and a killed run leaves a half-written payload that fails `jq` — which
+        # would report a truncation as an fd-1 polluter, naming one cause with
+        # certainty and the wrong one.
+        id: artifact
+        continue-on-error: true
+        if: ${{ always() && env.ATLAS_LLM_EVAL_SKIPPED != '1' && (steps.eval.outcome == 'success' || steps.eval.outcome == 'failure') }}
+        env:
+          EVAL_OUTCOME: ${{ steps.eval.outcome }}
         run: |
           set -euo pipefail
           if [ ! -s eval-mcp-llm-output.json ]; then
-            echo "::notice::eval-mcp-llm-output.json is absent or empty — the eval produced no payload; see the eval step."
+            # Empty is only benign when the eval itself failed — then it died
+            # before writing, and the gate reports that. An eval that exits 0
+            # having written nothing means the `--json` emitter did not run,
+            # which is a defect this step is exactly positioned to catch.
+            if [ "$EVAL_OUTCOME" = "success" ]; then
+              echo "::error::the eval exited 0 but wrote no payload to stdout — the --json emitter did not run."
+              exit 1
+            fi
+            echo "::notice::eval-mcp-llm-output.json is absent or empty — the eval died before writing; see the eval step."
             exit 0
           fi
           if ! jq empty eval-mcp-llm-output.json 2>/tmp/jq-err; then
-            echo "::error::eval-mcp-llm-output.json is not valid JSON — something wrote to stdout alongside the --json payload (#5126)."
+            echo "::error::eval-mcp-llm-output.json is not valid JSON. Either something wrote to stdout alongside the --json payload (#5126 — look for a console.* in a module the eval pulls in), or the payload is truncated. jq says:"
             cat /tmp/jq-err
             echo "First 400 bytes:"
             head -c 400 eval-mcp-llm-output.json
@@ -372,10 +393,17 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PREFLIGHT_OUTCOME: ${{ steps.preflight.outcome }}
           EVAL_OUTCOME: ${{ steps.eval.outcome }}
+          # The artifact-parses check (#5126). The script takes N outcomes and
+          # applies the same PR-comment / tag-blocking split to the set, so an
+          # unparseable bundle is visible on a PR and blocking on a tag —
+          # exactly like a failing eval. `skipped` is fatal by default there and
+          # `eval-mcp-llm` is on SKIP_TOLERANT_LABELS, so the no-secret path is
+          # unaffected.
+          ARTIFACT_OUTCOME: ${{ steps.artifact.outcome }}
         # Both `skipped` (no AI_GATEWAY_API_KEY wired) and `success` pass —
         # the skip only because `eval-mcp-llm` is on the gate script's
         # SKIP_TOLERANT_LABELS list (#5040), and it emits a ::warning::
         # saying the run proved nothing. A failed preflight (rejected key)
         # or failed eval goes through the PR-comment / tag-blocking split
         # in the script.
-        run: bash scripts/eval-informational-gate.sh eval-mcp-llm "$PREFLIGHT_OUTCOME" "$EVAL_OUTCOME"
+        run: bash scripts/eval-informational-gate.sh eval-mcp-llm "$PREFLIGHT_OUTCOME" "$EVAL_OUTCOME" "$ARTIFACT_OUTCOME"

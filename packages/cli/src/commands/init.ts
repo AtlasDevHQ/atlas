@@ -155,7 +155,6 @@ export async function seedDemoPostgres(
   const pool = new Pool({ connectionString, max: 1 });
   try {
     await pool.query(sql);
-    report(`${DEMO_DATASET.label}\n`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(
@@ -165,6 +164,18 @@ export async function seedDemoPostgres(
   } finally {
     await pool.end();
   }
+  // ⚠️ OUTSIDE THE TRY, AND NOT FOR TIDINESS. `report` is a caller-supplied fd
+  // sink and it CAN throw — the eval passes `writeFdSync`, which propagates
+  // every errno except EPIPE/EAGAIN (ENOSPC, EBADF) plus its own write-stalled
+  // guard, and a stream sink throws ERR_STREAM_DESTROYED. Inside the try, that
+  // catch would relabel a write failure as `Failed to seed demo data into
+  // Postgres`, and `canonical-eval` would then tell the operator to
+  // `bun run db:up` on a run whose database work had already succeeded —
+  // `bin/eval.ts` would persist that wrong cause into every result row.
+  //
+  // Moving it out also preserves the existing contract that a failed seed
+  // reports nothing: the throw above skips this line, exactly as before.
+  report(`${DEMO_DATASET.label}\n`);
 }
 
 // --- Index CLI handler ---

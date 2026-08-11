@@ -36,10 +36,19 @@
  * preference — an operator who wants the logger back on stdout wants a run
  * without `--json`.
  *
- * Sibling not covered, and recorded rather than half-fixed: `atlas query --json`
- * writes its own human preamble to stdout as well, so stamping this for it
- * would fix the logger half and leave the artifact just as unparseable. That
- * command needs the same treatment its own driver got here, in its own change.
+ * Sibling not covered, and the reason is NOT the one an earlier draft of this
+ * comment gave. It said `atlas query --json` writes its own human preamble to
+ * stdout, so a stamp here would fix only half of it — that is false, and it
+ * argued against a fix that would probably work. Verified: `query`'s only
+ * preamble is `io.err("Thinking...")`, which is `console.error` (fd 2) AND
+ * gated behind `!jsonOutput && !csvOutput`, so on the `--json` success path
+ * stdout carries the payload and nothing else. The logger is therefore its ONLY
+ * fd-1 polluter and stamping it would likely be the whole fix.
+ *
+ * Left out anyway, deliberately: it is a different command, nothing in CI
+ * captures `query`'s stdout, and widening the stamp at the close of #5126's
+ * review would ship an unreviewed behaviour change to a user-facing command.
+ * Its own issue, with its own verification that no error branch writes to fd 1.
  */
 if (process.argv.includes("canonical-eval") && process.argv.includes("--json")) {
   process.env.ATLAS_LOG_STDERR = "1";

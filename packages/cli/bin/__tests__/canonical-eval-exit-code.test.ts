@@ -368,9 +368,12 @@ describe("canonical-eval process exit code", () => {
       expect(exitCode).toBe(1);
       expectNoCrash(stderr);
 
-      // stdout carries a prose header before the JSON body (that mixing is
-      // #5126's, not this change's), so slice from the first brace.
-      const body = stdout.slice(stdout.indexOf("{"));
+      // No slicing: since #5126, stdout under `--json` is the JSON body and
+      // nothing else — the prose header this used to skip past now goes to
+      // stderr. `./eval-json-stdout.test.ts` owns that property; here it just
+      // means the truncation assertion measures the payload rather than the
+      // payload plus a header.
+      const body = stdout;
       expect(body.length).toBeGreaterThan(65_536);
       const parsed = JSON.parse(body) as {
         total: number;
@@ -383,11 +386,10 @@ describe("canonical-eval process exit code", () => {
       expect(parsed.passing).toBe(0);
       expect(parsed.failing).toBe(40);
 
-      // The header lines were written to the buffered stream and the body via
-      // writeSync; a writer-ordering regression would put the body first.
-      expect(stdout.indexOf("Atlas canonical-question eval")).toBeLessThan(
-        stdout.indexOf("{"),
-      );
+      // The header still exists — it moved to fd 2, it was not deleted. Without
+      // this the `--json` body could pass every assertion above while the human
+      // transcript had silently stopped being emitted at all.
+      expect(stderr).toContain("Atlas canonical-question eval");
     },
     180_000,
   );
@@ -420,7 +422,7 @@ describe("canonical-eval process exit code", () => {
   );
 
   test(
-    "the JSON payload survives process.exit — writeStdoutSync is not buffered",
+    "payloads survive process.exit on both fds — the sync writers are not buffered",
     async () => {
       // 2 MB against a 64 KiB pipe buffer. `process.exit` discards whatever is
       // still buffered in `process.stdout`, silently and with no error on
@@ -436,19 +438,22 @@ describe("canonical-eval process exit code", () => {
 
       const read = async (
         mode: string,
+        fd: 1 | 2 = 1,
       ): Promise<{ length: number; code: number }> => {
         const proc = Bun.spawn(
-          [process.execPath, driver, String(size), mode],
+          [process.execPath, driver, String(size), mode, String(fd)],
           { stdout: "pipe", stderr: "pipe" },
         );
         children.push(proc);
-        const [text, stderr, code] = await Promise.all([
+        const [out, err, code] = await Promise.all([
           new Response(proc.stdout).text(),
           new Response(proc.stderr).text(),
           proc.exited,
         ]);
-        expect(stderr).toBe("");
-        return { length: text.length, code };
+        // The fd NOT under test must be silent — otherwise a driver that wrote
+        // to both would let either arm carry the other's measurement.
+        expect(fd === 1 ? err : out).toBe("");
+        return { length: (fd === 1 ? out : err).length, code };
       };
 
       const sync = await read("sync");
@@ -468,6 +473,27 @@ describe("canonical-eval process exit code", () => {
       expect(buffered.code).toBe(0);
       expect(buffered.length).toBeGreaterThan(0);
       expect(buffered.length).toBeLessThan(size);
+
+      // ⚠️ fd 2, SAME CLIFF, AND SINCE #5126 IT IS LIVE RATHER THAN LATENT.
+      // Under `--json` the whole human transcript moves to stderr — the banner,
+      // every progress line, and the `note:` lines, which interpolate caught
+      // error messages over a caller-supplied `--questions` corpus.
+      //
+      // These arms pin `writeFdSync(2, …)`: they kill a mutation that hard-codes
+      // fd 1 or drops the blocking loop for fd 2. Be precise about what that
+      // does NOT cover — the driver calls `writeFdSync` directly, so nothing
+      // here reaches `humanWriter`. That is exactly why `humanWriter` closes
+      // over `writeFdSync` rather than over a per-fd pair of one-line wrappers:
+      // a wrapper would sit between this proof and the caller, and reverting it
+      // to the buffered stream would survive the whole repo.
+      const syncErr = await read("sync", 2);
+      expect(syncErr.code).toBe(0);
+      expect(syncErr.length).toBe(size);
+
+      const bufferedErr = await read("buffered", 2);
+      expect(bufferedErr.code).toBe(0);
+      expect(bufferedErr.length).toBeGreaterThan(0);
+      expect(bufferedErr.length).toBeLessThan(size);
     },
     120_000,
   );

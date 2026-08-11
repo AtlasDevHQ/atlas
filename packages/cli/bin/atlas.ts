@@ -38,6 +38,13 @@
  * Supports PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, and Salesforce.
  */
 
+// ⚠️ MUST STAY FIRST. Side-effect only: it pins the app logger to stderr for
+// `canonical-eval … --json`, and it has to run before anything below pulls
+// `@atlas/api/lib/logger` (the profiler re-exports do). See that module's
+// header, and `bin/__tests__/eval-json-stdout.test.ts`, whose last test fails
+// if this line moves — including if a re-export block is added above it, since
+// `export … from` is a module-graph edge evaluated in source order too.
+import "./eval-log-destination";
 import { checkEnvFile } from "../src/env-check";
 import {
   SUBCOMMAND_HELP,

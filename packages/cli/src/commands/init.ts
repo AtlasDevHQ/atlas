@@ -125,8 +125,27 @@ function copyDirRecursive(src: string, dest: string): void {
 
 // --- Demo data seeding ---
 
+/**
+ * Seed the canonical NovaMart demo into Postgres.
+ *
+ * ⚠️ `report` IS REQUIRED, AND DELIBERATELY HAS NO DEFAULT (#5126). This
+ * function used to `console.log` its one progress line, which is fd 1 — and it
+ * is called unconditionally by `canonical-eval`, whose stdout under `--json` is
+ * the machine channel piped into `eval-mcp-llm-output.json`. So the demo
+ * label sat at the top of every uploaded artifact and that file had never
+ * parsed. It was the THIRD writer on that fd and the only one outside the eval
+ * driver, which is exactly why a fix confined to the driver missed it.
+ *
+ * A default would have made this a silent trap for the next caller: it would
+ * compile, run, and put prose on whichever fd happened to be wrong. Requiring
+ * the sink makes the channel a decision every call site has to take, and there
+ * are only three. Callers pass raw text INCLUDING the trailing newline —
+ * `console.log`'s implicit `\n` is not reproduced here, so nothing depends on
+ * which sink is supplied.
+ */
 export async function seedDemoPostgres(
   connectionString: string,
+  report: (text: string) => void,
 ): Promise<void> {
   const sqlFile = path.resolve(import.meta.dir, "../../data", DEMO_DATASET.pg);
   if (!fs.existsSync(sqlFile)) {
@@ -136,7 +155,6 @@ export async function seedDemoPostgres(
   const pool = new Pool({ connectionString, max: 1 });
   try {
     await pool.query(sql);
-    console.log(DEMO_DATASET.label);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(
@@ -146,6 +164,18 @@ export async function seedDemoPostgres(
   } finally {
     await pool.end();
   }
+  // ⚠️ OUTSIDE THE TRY, AND NOT FOR TIDINESS. `report` is a caller-supplied fd
+  // sink and it CAN throw — the eval passes `writeFdSync`, which propagates
+  // every errno except EPIPE/EAGAIN (ENOSPC, EBADF) plus its own write-stalled
+  // guard, and a stream sink throws ERR_STREAM_DESTROYED. Inside the try, that
+  // catch would relabel a write failure as `Failed to seed demo data into
+  // Postgres`, and `canonical-eval` would then tell the operator to
+  // `bun run db:up` on a run whose database work had already succeeded —
+  // `bin/eval.ts` would persist that wrong cause into every result row.
+  //
+  // Moving it out also preserves the existing contract that a failed seed
+  // reports nothing: the throw above skips this line, exactly as before.
+  report(`${DEMO_DATASET.label}\n`);
 }
 
 // --- Index CLI handler ---
@@ -425,7 +455,8 @@ async function profileDatasource(
       throw new Error(`--demo is not supported for ${dbType}.`);
     }
     console.log(`Seeding ecommerce demo data (${dbType})...`);
-    await seedDemoPostgres(connStr);
+    // stdout: `init` is the interactive command, its whole output is human.
+    await seedDemoPostgres(connStr, (text) => process.stdout.write(text));
     console.log("");
   }
 

@@ -5,6 +5,8 @@
  * - Pino mixin + AsyncLocalStorage binds requestId to all log lines within a request
  * - Redaction paths prevent secrets from leaking into logs
  * - ATLAS_LOG_LEVEL env var controls verbosity (default: "info")
+ * - ATLAS_LOG_STDERR=1 pins the destination to fd 2; see `logToStderr` below
+ *   for why the default (fd 1) must stay the default
  */
 
 import pino from "pino";
@@ -391,7 +393,12 @@ export function scrubLogFormatter(
   }
 }
 
-const rootLogger = pino({
+// `satisfies`, not an annotation: an annotation erases the options' own generic
+// (`LoggerOptions<CustomLevels>` collapses to `LoggerOptions<never, boolean>`),
+// so a future `customLevels` would still typecheck here and fail at every call
+// site of the returned logger instead. `satisfies` keeps both the inference and
+// the excess-property check.
+const rootLoggerOptions = {
   level: process.env.ATLAS_LOG_LEVEL ?? "info",
   redact: redactPaths,
   serializers: { err: scrubErrSerializer },
@@ -406,13 +413,66 @@ const rootLogger = pino({
     }
     return base;
   },
-  ...(isDev && {
-    transport: {
-      target: "pino-pretty",
-      options: { colorize: true },
-    },
-  }),
-});
+} satisfies pino.LoggerOptions;
+
+/**
+ * Pin the root logger to fd 2 (stderr) instead of fd 1 (stdout).
+ *
+ * ⚠️ OFF BY DEFAULT, AND THE DEFAULT IS THE LOAD-BEARING PART. Structured logs
+ * on **stdout** is the twelve-factor convention this app's deployments rely on
+ * — Railway reads fd 1 — so the destination is not something to "fix" globally.
+ * This switch exists for a process whose stdout is a MACHINE channel rather
+ * than a diagnostic one: `atlas canonical-eval --json` pipes stdout into
+ * `eval-mcp-llm-output.json`, and one pretty-printed frame there makes the
+ * artifact unparseable (#5126). `packages/mcp/src/logger.ts` has the same shape
+ * permanently (JSON-RPC owns stdout on the stdio transport) and pins fd 2
+ * unconditionally; this is the opt-in form, for a process that is only
+ * SOMETIMES in that shape.
+ *
+ * ⚠️ IT MUST BE SET BEFORE THIS MODULE IS FIRST IMPORTED, and there is no
+ * runtime substitute. `rootLogger` is a module-scope `const`, pino resolves its
+ * destination once at construction, and in the dev branch that destination
+ * belongs to a `pino-pretty` WORKER THREAD with its own fds — so a later
+ * `process.env` assignment changes nothing on either branch. The CLI stamps it
+ * from `packages/cli/bin/eval-log-destination.ts`, which is `bin/atlas.ts`'s
+ * first import for exactly this reason.
+ *
+ * Deliberately NOT in `SAAS_ENV_KEYS`: it is a per-process CLI knob, not part
+ * of the SaaS boot contract, and no deployment should ever set it.
+ */
+const logToStderr = process.env.ATLAS_LOG_STDERR === "1";
+
+function buildRootLogger(): pino.Logger {
+  if (isDev) {
+    return pino({
+      ...rootLoggerOptions,
+      transport: {
+        target: "pino-pretty",
+        // `destination` is pino-pretty's OWN option, read inside the transport
+        // worker. Spreading `false` is a no-op, so with the switch off this
+        // object is byte-identical to what shipped before #5126.
+        options: { colorize: true, ...(logToStderr && { destination: 2 }) },
+      },
+    });
+  }
+  if (logToStderr) {
+    // `sync: true` for the same reason `packages/mcp/src/logger.ts` uses it: a
+    // short-lived CLI process may `process.exit` before an async buffer
+    // flushes, and a diagnostic that never lands is worse than a slow one.
+    //
+    // ⚠️ IT COVERS THIS BRANCH ONLY, AND NOT THE ONE THE EVAL RUNS ON. The eval
+    // runs with `NODE_ENV` unset (#5121), so `isDev` is true and it takes the
+    // `pino-pretty` transport above — a worker thread with no equivalent flush
+    // guarantee, whose queued frames `process.exit` can still drop. That is
+    // accepted rather than solved: on that path the log frames are a secondary
+    // diagnostic, and the record that matters is the fd-2 human transcript,
+    // which `canonical-eval-run.ts` writes with blocking syscalls.
+    return pino(rootLoggerOptions, pino.destination({ dest: 2, sync: true }));
+  }
+  return pino(rootLoggerOptions);
+}
+
+const rootLogger = buildRootLogger();
 
 /**
  * Get the root logger. Request context (requestId) is injected

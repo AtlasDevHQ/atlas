@@ -639,6 +639,38 @@ function loadBaseline(filePath: string): EvalResult[] {
   return results;
 }
 
+/**
+ * Where `seedDemoPostgres`'s progress line goes for this run of `atlas eval`.
+ *
+ * `seedDemoPostgres` requires an explicit sink since #5126 — it used to
+ * `console.log`, which put prose on fd 1 in every mode including the ones whose
+ * stdout is a machine channel. This command's `--json` and `--csv` bodies own
+ * fd 1, so the line goes to fd 2 in both.
+ *
+ * ⚠️ EXTRACTED SO IT CAN BE TESTED. Inline it was three plausible one-character
+ * mutations away from reproducing #5126 here — drop the ternary, swap the arms,
+ * or forget `csvOutput` — and `handleEval` has no test at all, so all three
+ * survived. See `__tests__/eval-seed-sink.test.ts`.
+ *
+ * ⚠️ THIS CALL SITE IS CORRECT; THE COMMAND AROUND IT IS NOT. `atlas eval
+ * --json` still writes prose to fd 1 — and the writers are NOT `printSummary`,
+ * which sits behind the `else` of the same `jsonOutput` check and never runs in
+ * that mode. The live ones are the `Resuming: …` line under `--resume`, the
+ * `Baseline saved to: …` line, and `printRegressionReport` under `--compare`,
+ * which prints ANSI *after* the JSON body. Same defect as #5126, one command
+ * over, out of that issue's scope. (Named precisely because the first draft of
+ * this comment pointed at the wrong function, and a wrong cause in a comment is
+ * what stops the next person looking.)
+ */
+export function evalSeedSink(options: {
+  readonly csvOutput: boolean;
+  readonly jsonOutput: boolean;
+}): (text: string) => void {
+  const machineOwnsStdout = options.csvOutput || options.jsonOutput;
+  return (text) =>
+    void (machineOwnsStdout ? process.stderr : process.stdout).write(text);
+}
+
 // --- Main entry point ---
 
 export async function handleEval(args: string[]): Promise<void> {
@@ -752,7 +784,7 @@ export async function handleEval(args: string[]): Promise<void> {
 
       // Setup phase — errors here affect all cases in this schema
       try {
-        await seedDemoPostgres(connStr);
+        await seedDemoPostgres(connStr, evalSeedSink({ csvOutput, jsonOutput }));
         installSchemaSemanticLayer(schema);
         resetCaches();
         process.env.ATLAS_DATASOURCE_URL = connStr;

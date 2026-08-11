@@ -648,6 +648,14 @@ describeIfPg("claim identity against the live schema (#5019)", () => {
       // refuses the second at ingest. On a small corpus the CREATE succeeds and
       // the loss only shows up in production. ADR-0037 §1 specifies this index
       // and says nothing about a unique constraint; that is the point.
+      //
+      // ⚠️ Do not read this as also settling T3 §7's deferred unique index —
+      // that one is the CLAIM tuple (it includes `object_key`), so the tension
+      // argument above does not reach it: two live claims with different
+      // objects are different tuples. #5038 dropped it for its own reasons
+      // (`subject_cmp` is NULL corpus-wide, so the constraint is either inert
+      // or cements a homonym merge), recorded in ADR-0037 §1's amendment. The
+      // premise that decision rests on lives in `fact-writers.test.ts`.
       expect(
         slot!.indexdef,
         "the slot index is UNIQUE — that refuses the second live claim in a slot, which is exactly what a tension edge is",

@@ -107,6 +107,29 @@
  * on the keys it would make a tension between two live objects structurally
  * unrepresentable.
  *
+ * ⚠️ REVISITED AND CLOSED (#5038, 2026-08-10): the index is NOT coming. The
+ * revisit above is discharged, so read the paragraph as history rather than as
+ * an open action. ADR-0037 §1's amendment carries the argument; the short form
+ * is that T12 raised the bar to "it must carry `subject_cmp` or be dropped",
+ * and `subject_cmp` cannot pay it — NULL for every extractor-supplied subject,
+ * so the index is inert over the whole corpus under `NULLS DISTINCT` and
+ * cements a homonym merge under `NULLS NOT DISTINCT`. Note the tuple #5038
+ * weighed is the CLAIM tuple, which includes `object_key`; the slot-index
+ * objection two sentences up is about a strictly stronger index and does not
+ * transfer to it. Both land in the same place for different reasons.
+ *
+ * ⚠️ So the `_Avoid_` — read-then-insert as the only dedup — stays open, and
+ * this lock is a PARTIAL mitigation in a way worth stating precisely: it
+ * serializes reconcile against reconcile, which is the race it was chosen for,
+ * and it does nothing about the region importer. That is the only other writer
+ * of `brain_facts` (asserted in `__tests__/fact-writers.test.ts`), it takes the
+ * VOCABULARY lock rather than this one — a different namespace, so no mutual
+ * exclusion — and only on its legacy-keying arm. The dropped index would not
+ * have covered that gap either: an imported row's `subject_cmp` is NULL by
+ * construction (only an `entity:` value can reach that column, and #5035's
+ * portability table calls `entity` store-local), so the index would either not
+ * constrain those rows at all or reject the import outright.
+ *
  * Identity is the materialized SLOT KEY of the trimmed SPO —
  * `alias(lexicalNorm(surface))`, computed by `lib/brain/identity.ts`'s
  * {@link slotKey} once per candidate here and stored on the row (#5020,

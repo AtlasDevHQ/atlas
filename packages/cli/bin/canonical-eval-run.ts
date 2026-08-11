@@ -408,8 +408,8 @@ async function runWithAgent(
       };
     }
 
-    // The `?? ""` / `?? null` are required under TS strict
-    // `noUncheckedIndexedAccess` — array index access is `T | undefined`.
+    // The `?? ""` / `?? null` are defensive, NOT compiler-required — no tsconfig
+    // in the repo sets `noUncheckedIndexedAccess`, so index access here is `T`.
     // The empty-array hard-fail below at `agent.sql.length === 0` is the
     // load-bearing guard for the empty case; these defaults only feed the
     // early-return branch's `sql: lastSql || null` mapping.
@@ -471,79 +471,69 @@ export async function handleCanonicalEval(args: string[]): Promise<void> {
     `Atlas canonical-question eval — schema=${options.schema} mode=${options.mode}\n`,
   );
 
+  const exitCode = await runStagedCanonicalEval(options, connStr);
+  process.exit(exitCode);
+}
+
+/**
+ * Stage the semantic layer, run the eval, restore, and reduce the whole run to
+ * ONE exit code for {@link handleCanonicalEval} to hand the shell.
+ *
+ * ⚠️ THE EXIT MUST LIVE OUTSIDE THIS FUNCTION, THE `return` MUST LIVE OUTSIDE
+ * THE `try`, AND THE `try` MUST HAVE A `catch`. All three were wrong until
+ * #5130, and each one on its own silently discards a failure:
+ *
+ *   - The exit used to sit after the `try`/`finally` in the same function as
+ *     the eval body, so every `return` inside that body ran `finally` and then
+ *     left the function — skipping `process.exit(exitCode)` entirely and ending
+ *     the process on its natural code, 0. `--mcp-llm` computed its acceptance
+ *     floor, printed `FAIL: 12/20 below acceptance floor 18`, and exited 0; the
+ *     demo-seed catch did the same for BOTH modes. Splitting the body out into
+ *     {@link runInstalledCanonicalEval}, declared `Promise<number>`, is what
+ *     keeps a future early `return` from re-opening it: a path that returns
+ *     without a code is then a compile error (TS2366/TS2322 — the mechanism is
+ *     `strictNullChecks`, which the root tsconfig sets via `strict`).
+ *   - `return exitCode` INSIDE the `try` would capture the value at return time,
+ *     so the `finally`'s restore-failure bump to 2 would be computed and thrown
+ *     away — the same defect one layer over. The `return` below is deliberately
+ *     after the block.
+ *   - A `throw` is one of the code-less paths the compiler still permits, and
+ *     without the `catch` below it discarded the bump the same way: the
+ *     exception propagated past `return exitCode` to `main().catch` in
+ *     `bin/atlas.ts`, which exits 1 unconditionally. A run that destroyed the
+ *     user's `semantic/` then reported 1 — indistinguishable from an ordinary
+ *     eval failure, on precisely the path where the distinction matters most.
+ *   - ⚠️ The second is a call returning `never`, which `Promise<number>` also
+ *     accepts — and `process.exit` has exactly that type. **Do not call
+ *     `process.exit` anywhere below this function.** It is this CLI's house
+ *     idiom (`bin/atlas.ts` uses it eleven times), so the edit is a natural one
+ *     to make, and it is strictly WORSE than the defect #5130 fixed: it skips
+ *     the `finally` as well as the aggregation, leaving the caller's `semantic/`
+ *     replaced by the demo fixture with no message and no restore. Return a code
+ *     and let it travel. Checked at the time of writing: no `process.exit` in the
+ *     CLI-side eval modules (`canonical-eval*.ts`, `seedDemoPostgres`). The graph
+ *     reaches `@atlas/api` and `@atlas/mcp` through dynamic imports, which a grep
+ *     cannot audit — so this is a rule to follow, not a property anything checks.
+ *     (A non-terminating loop is a third code-less path, and equally accepted.)
+ */
+async function runStagedCanonicalEval(
+  options: CanonicalEvalOptions,
+  connStr: string,
+): Promise<number> {
   // Stage the semantic layer for the chosen schema, identical to bin/eval.ts.
   backupSemanticLayer();
   let exitCode = 0;
   try {
-    installSchemaSemanticLayer(options.schema);
-
-    // Seed the demo Postgres before running so the harness is self-contained
-    // — same hook used by bin/eval.ts. seedDemoPostgres takes a connection
-    // string, not a schema; only `ecommerce` ships today (#2021).
-    try {
-      await seedDemoPostgres(connStr);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      process.stderr.write(
-        `\nError: failed to seed demo Postgres: ${msg}\n` +
-          `Tip: bun run db:up && export ATLAS_DATASOURCE_URL=postgres://atlas:atlas@localhost:5433/atlas_demo\n`,
-      );
-      exitCode = 1;
-      return;
-    }
-
-    // Reset cached connection / whitelist / explore-backend state so the
-    // freshly installed semantic layer is re-resolved. `connections._reset()`
-    // is intentionally synchronous — it queues async pool closes via
-    // `.catch()` handlers (verified in lib/db/connection.ts).
-    const { connections } = await import("@atlas/api/lib/db/connection");
-    const { _resetWhitelists } = await import("@atlas/api/lib/semantic");
-    const { invalidateExploreBackend } = await import(
-      "@atlas/api/lib/tools/explore"
+    exitCode = await runInstalledCanonicalEval(options, connStr);
+  } catch (err) {
+    // Logged here rather than re-thrown: re-throwing reaches `main().catch`,
+    // which exits 1 and would outrank the restore bump computed below. Same
+    // stack the top-level handler would have printed, so nothing is lost.
+    process.stderr.write(
+      `\nError: canonical eval failed: ${err instanceof Error ? err.message : String(err)}\n` +
+        (err instanceof Error && err.stack ? `${err.stack}\n` : ""),
     );
-    connections._reset();
-    _resetWhitelists();
-    invalidateExploreBackend();
-
-    if (options.mode === "mcp-llm") {
-      const mcpExitCode = await runMcpLlmMode(options);
-      exitCode = mcpExitCode;
-      return;
-    }
-
-    const results =
-      options.mode === "llm"
-        ? await runWithAgent(options)
-        : await runDeterministic(options);
-
-    if (options.json) {
-      process.stdout.write(
-        `${JSON.stringify(
-          {
-            schema: options.schema,
-            mode: options.mode,
-            total: results.length,
-            passing: results.filter((r) => r.status === "pass").length,
-            warning: results.filter((r) => r.status === "warn").length,
-            failing: results.filter((r) => r.status === "fail").length,
-            results: results.map((r) => ({
-              id: r.question.id,
-              category: r.question.category,
-              question: r.question.question,
-              status: r.status,
-              detail: r.detail,
-              sql: r.sql,
-            })),
-          },
-          null,
-          2,
-        )}\n`,
-      );
-    } else {
-      process.stdout.write(`\n${formatSummary(results)}\n`);
-    }
-
-    if (results.some((r) => r.status === "fail")) exitCode = 1;
+    exitCode = 1;
   } finally {
     // Surface restore failure via the exit code — silently swallowing it
     // would let a developer see an "all green" run while their original
@@ -552,7 +542,180 @@ export async function handleCanonicalEval(args: string[]): Promise<void> {
     const restored = restoreSemanticLayer();
     if (!restored) exitCode = Math.max(exitCode, 2);
   }
-  process.exit(exitCode);
+  return exitCode;
+}
+
+/**
+ * Write to stdout with a BLOCKING syscall loop instead of the buffered stream.
+ *
+ * ⚠️ `process.exit()` DISCARDS whatever is still sitting in `process.stdout`'s
+ * buffer, with no error on either side. Measured on bun 1.3.13: a 2 MB payload
+ * written via `process.stdout.write` and followed by `process.exit` reaches a
+ * pipe truncated — 65_536 bytes (one pipe buffer) under `| wc -c`, 219_264 under
+ * a concurrently-draining reader. HOW MUCH survives is whatever the reader
+ * drained in time, so it is not a fixed number and not something a caller can
+ * budget against; what is fixed is that the tail is lost and nothing says so.
+ *
+ * That cliff is not theoretical for this command. The workflow runs
+ * `canonical-eval --mcp-llm --json | tee eval-mcp-llm-output.json` and uploads
+ * the result as the adjudication artifact; the file from the 2026-08-11 run is
+ * 63_024 bytes, 2.5 KB under the limit and growing with every field added to
+ * the payload. Until #5130 the `--mcp-llm` path left via `return` and the
+ * process ended naturally, so the stream always drained — routing it through
+ * the shared `process.exit` is what exposes this, which makes it this change's
+ * to carry.
+ *
+ * `fs.writeSync` returns only once the bytes are handed to the fd, so there is
+ * nothing left to discard. Reserved for the payloads that can cross that cliff —
+ * the three `--json` bodies and the failure-artifact bundle.
+ *
+ * ⚠️ STDERR HAS THE SAME CLIFF and no equivalent helper. Measured the same way:
+ * 200 KB to stderr followed by `process.exit` arrives as 65_536 bytes. The
+ * FAILURE-path diagnostics all live there — the acceptance-floor FAIL line,
+ * `CRITICAL: Failed to restore semantic layer`, the harness stack — at a few
+ * hundred bytes each, except the stack, which runs to a few KB. (The pass/fail
+ * DETAIL is not on stderr: that is `formatSummary` and the `--json` bodies, on
+ * stdout.) So this is latent rather than live; whoever adds an unbounded stderr
+ * diagnostic needs a `writeStderrSync` twin first.
+ *
+ * ⚠️ MIXING SYNCHRONOUS AND BUFFERED WRITES IS ORDER-SENSITIVE. A `writeSync`
+ * bypasses `process.stdout`'s queue entirely, so it can print ahead of an
+ * earlier buffered write that has not flushed. The interleaving is correct on
+ * every path measured on bun 1.3.13 — a 4-byte buffered write, a 60_000-byte
+ * one, and a real 40-question `--json` run all landed ahead of the following
+ * `writeStdoutSync` — but that is a MEASUREMENT of this runtime's flush timing,
+ * not a guarantee the code enforces, so do not extend the mixing on the strength
+ * of it. Note in particular that `formatSummary` (the deterministic human
+ * summary) and the `note:` lines in `resolveExpectations` are NOT bounded in
+ * principle: both interpolate caught error messages, and `--questions` is
+ * caller-supplied. They stay on the stream because the buffered path is what
+ * they have always used, not because they are known small.
+ */
+export function writeStdoutSync(text: string): void {
+  const buf = Buffer.from(text, "utf-8");
+  // A one-word cell purely to get a blocking sleep on the EAGAIN path below;
+  // there is no synchronous `sleep` and a bare retry loop would spin at 100%.
+  const idle = new Int32Array(new SharedArrayBuffer(4));
+  let offset = 0;
+  while (offset < buf.length) {
+    let written: number;
+    try {
+      written = fs.writeSync(1, buf, offset, buf.length - offset);
+    } catch (err) {
+      // `.code` is read only after narrowing to Error. Reading it off a bare
+      // caught value raises a TypeError from inside the handler for `throw null`
+      // / `throw undefined` — substituting nonsense for the real write failure —
+      // and silently yields `undefined` for a string or number throw.
+      const code = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
+      // A reader that hung up (`… | head`, a quit pager) is not a failure and
+      // must not become one: the buffered stream this replaced dropped EPIPE
+      // silently, and turning `atlas canonical-eval --json | head` into exit 1
+      // with a stack trace would be a regression introduced by a flush fix.
+      // intentionally ignored: the reader hung up. This is the one path here
+      // that emits nothing, and that is the correct behaviour for a pipe.
+      if (code === "EPIPE") return;
+      // EAGAIN drives a RETRY; it is not discarded. A `write(2)` that returns
+      // EAGAIN wrote nothing, so re-driving the same offset loses no bytes, and
+      // waiting for the reader is exactly what a blocking fd would have done —
+      // this branch only exists because fd 1 may arrive with O_NONBLOCK set.
+      // Every other errno (ENOSPC, EBADF) is a real write failure and
+      // propagates to `runStagedCanonicalEval`'s catch.
+      //
+      // ⚠️ UNTESTED: nothing in the suite can force EAGAIN on a pipe, so this
+      // branch and the sleep below are reasoning, not measurement.
+      if (code !== "EAGAIN") throw err;
+      Atomics.wait(idle, 0, 0, 1);
+      continue;
+    }
+    // A zero-byte return makes no progress and raises nothing, so without this
+    // the loop spins forever with no diagnostic — a hang, which no test can
+    // falsify. Fail loudly with the offset reached instead.
+    if (written === 0) {
+      throw new Error(
+        `stdout write stalled at ${offset}/${buf.length} bytes: write(2) returned 0. ` +
+          `Refusing to spin — the remaining payload would be lost silently.`,
+      );
+    }
+    offset += written;
+  }
+}
+
+/**
+ * Run the eval against the freshly installed semantic layer and return the exit
+ * code it earns: 1 for a seed failure or any failing question, otherwise
+ * whatever the selected mode reports. Restoring the caller's semantic layer is
+ * {@link runStagedCanonicalEval}'s job, not this one's.
+ */
+async function runInstalledCanonicalEval(
+  options: CanonicalEvalOptions,
+  connStr: string,
+): Promise<number> {
+  installSchemaSemanticLayer(options.schema);
+
+  // Seed the demo Postgres before running so the harness is self-contained
+  // — same hook used by bin/eval.ts. seedDemoPostgres takes a connection
+  // string, not a schema; only `ecommerce` ships today (#2021).
+  try {
+    await seedDemoPostgres(connStr);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(
+      `\nError: failed to seed demo Postgres: ${msg}\n` +
+        `Tip: bun run db:up && export ATLAS_DATASOURCE_URL=postgres://atlas:atlas@localhost:5433/atlas_demo\n`,
+    );
+    return 1;
+  }
+
+  // Reset cached connection / whitelist / explore-backend state so the
+  // freshly installed semantic layer is re-resolved. `connections._reset()`
+  // is intentionally synchronous — it queues async pool closes via
+  // `.catch()` handlers (verified in lib/db/connection.ts).
+  const { connections } = await import("@atlas/api/lib/db/connection");
+  const { _resetWhitelists } = await import("@atlas/api/lib/semantic");
+  const { invalidateExploreBackend } = await import(
+    "@atlas/api/lib/tools/explore"
+  );
+  connections._reset();
+  _resetWhitelists();
+  invalidateExploreBackend();
+
+  if (options.mode === "mcp-llm") {
+    return await runMcpLlmMode(options);
+  }
+
+  const results =
+    options.mode === "llm"
+      ? await runWithAgent(options)
+      : await runDeterministic(options);
+
+  if (options.json) {
+    writeStdoutSync(
+      `${JSON.stringify(
+        {
+          schema: options.schema,
+          mode: options.mode,
+          total: results.length,
+          passing: results.filter((r) => r.status === "pass").length,
+          warning: results.filter((r) => r.status === "warn").length,
+          failing: results.filter((r) => r.status === "fail").length,
+          results: results.map((r) => ({
+            id: r.question.id,
+            category: r.question.category,
+            question: r.question.question,
+            status: r.status,
+            detail: r.detail,
+            sql: r.sql,
+          })),
+        },
+        null,
+        2,
+      )}\n`,
+    );
+  } else {
+    process.stdout.write(`\n${formatSummary(results)}\n`);
+  }
+
+  return results.some((r) => r.status === "fail") ? 1 : 0;
 }
 
 // ── Wiring (--mcp-llm mode, #2119 Part B) ───────────────────────────────
@@ -643,7 +806,9 @@ async function runMcpLlmMode(
   // path; the grader is narrower (first-tool match, not per-mode answer
   // correctness) and the acceptance metric is an accuracy floor.
   if (options.toolSelection) {
-    return runToolSelectionMode({
+    // `await`ed, not returned bare: a rejection's stack then stays in this
+    // frame rather than unwinding with the caller's.
+    return await runToolSelectionMode({
       ...options,
       providerLabel: `${providerType}/${modelId}`,
       model,
@@ -696,7 +861,7 @@ async function runMcpLlmMode(
   }
 
   if (options.json) {
-    process.stdout.write(
+    writeStdoutSync(
       `${JSON.stringify(
         {
           schema: options.schema,
@@ -743,7 +908,7 @@ async function runMcpLlmMode(
       );
     }
     if (result.artifacts.length > 0) {
-      process.stdout.write(formatArtifactBundle(result.artifacts));
+      writeStdoutSync(formatArtifactBundle(result.artifacts));
     }
   }
 
@@ -903,7 +1068,7 @@ async function runToolSelectionMode(
   const floorPct = (result.acceptanceFloor * 100).toFixed(1);
 
   if (options.json) {
-    process.stdout.write(
+    writeStdoutSync(
       `${JSON.stringify(
         {
           schema: options.schema,

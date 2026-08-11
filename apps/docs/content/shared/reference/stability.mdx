@@ -21,11 +21,13 @@ Atlas releases under semver via git tags (`v0.0.1`, `v0.0.2`, …). Not every su
 | Agent behavior + prompts | No contract | No contract |
 | Chat UI + Dashboards UI | No contract | No contract |
 | Semantic layer wire format (`semantic/*.yml`) | Stable for entity / metric / glossary; additive only | Stable, governed by the REST contract |
-| Admin Console (`/admin/*`) | No contract — UI evolves freely | No contract |
+| Admin Console (`/admin/*`) and its API (`/api/v1/admin/*`) | No frozen contract — additive by default, but behavior may change between minor tags | No contract |
 
 The rest of this page expands each row.
 
 ## REST API — `/api/v1/*`
+
+**Scope.** This section covers the customer-facing data-plane endpoints. Three prefixes are excluded and are listed under [Out-of-scope surfaces](#out-of-scope-surfaces): `/api/v1/internal/*`, `/api/v1/platform/*`, and `/api/v1/admin/*`. The last is the Admin Console's backing API and evolves with the console it serves — it is documented in the API reference and is additive by default, but it is not frozen.
 
 **Within `v0.x` minor tags:** the wire format of every documented `/api/v1/*` endpoint is stable. New endpoints may be added. New optional fields may be added to existing request/response shapes. Existing fields, status codes, and required parameters do not change between minor tags.
 
@@ -104,6 +106,7 @@ The agent's prompt, tool selection, response shape, the chat UI layout, the dash
 - Agent answers may change format between minor tags as the prompt is tuned.
 - New chart types, new chat affordances, and new dashboard primitives may be added without notice.
 - The admin console may relayout, add/remove pages, and change URLs (route changes are reflected in browser redirects when feasible).
+- The console's backing API (`/api/v1/admin/*`) moves with it. New endpoints and optional fields are the norm, but a refusal condition or validation rule may also tighten where the previous behavior was defective — for example, an import that used to accept a record it could not later address may start rejecting it outright. These land under **Changed** in the release notes.
 
 This is intentional — the value Atlas provides is the agent + chat experience, and freezing the UX would freeze the product. The contract surfaces (REST, MCP, plugin SDK, semantic layer wire format) are the ones third-party integrations build against; the UI layer evolves to serve customers directly.
 
@@ -126,7 +129,7 @@ Every git tag ships a GitHub Release with auto-generated notes (commit + PR list
 - **Breaking** — only appears on a major tag bump. Always paired with a deprecation window.
 - **Added** — new endpoints, new fields, new tools, new features. Safe to adopt or ignore.
 - **Fixed** — bug fix. Adopt by upgrading.
-- **Changed** — behavior change that doesn't break the contract (e.g., performance improvement, error message wording). Safe.
+- **Changed** — behavior change that doesn't break a contract surface (e.g., performance improvement, error message wording). Safe for the contract surfaces. This label also carries behavior changes to the no-contract surfaces above, including `/api/v1/admin/*`, where it is **not** automatically safe — read the entry if you automate against an admin route.
 - **Deprecated** — old surface still works, new surface preferred. Migrate before the sunset date.
 
 The [CHANGELOG.md](https://github.com/AtlasDevHQ/atlas/blob/main/CHANGELOG.md) in the repo mirrors the release notes for searchability.
@@ -136,6 +139,7 @@ The [CHANGELOG.md](https://github.com/AtlasDevHQ/atlas/blob/main/CHANGELOG.md) i
 These are explicitly **not** covered by the stability contract:
 
 - `/api/v1/internal/*` and `/api/v1/platform/*` — operator-facing routes (despite the `v1` prefix), may change without notice. The `v1` contract applies to customer-facing endpoints only.
+- `/api/v1/admin/*` — the Admin Console's backing API. These routes **are** documented in the API reference and we still prefer additive change, but they carry no frozen contract: they evolve with the console, and a validation rule or a refusal condition may tighten between minor tags where the previous behavior was defective. Such changes are called out under **Changed** in the tag's release notes. If you automate against an admin route, pin the tag you tested against and read the notes before upgrading.
 - `@atlas/*` packages (vs `@useatlas/*`) — internal monorepo packages, not published for external consumption
 - Database schema (`packages/api/src/lib/db/schema.ts`) — operators may inspect but should not write
 - Anything under `ee/` (enterprise features) — covered by the commercial license terms, not this page

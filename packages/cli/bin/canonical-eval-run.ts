@@ -937,9 +937,15 @@ async function runMcpLlmMode(
  * check vacuous and the LLM eval's check a spelling test (#5122).
  *
  * Shape classification is structural, not configured: a 1×1 numeric result is a
- * scalar metric; anything else is a grouped metric keyed on the FIRST column,
- * which is the grouping key by convention across the corpus (`channel`,
- * `carrier`, `stock_status`, `month`).
+ * scalar metric; anything else is a grouped result whose FIRST column is the
+ * grouping key by convention across the corpus (`channel`, `carrier`,
+ * `stock_status`, `month`) and whose remaining columns are its measures.
+ *
+ * ⚠️ THE FIRST COLUMN IS A LABEL, NOT GROUND TRUTH (#5128). It used to be the
+ * whole of a grouped expectation, which made a hand-written
+ * `CASE … THEN 'With Promo'` load-bearing for a correctness check. The reduction
+ * now happens in `keyedExpectationFrom`, next to the comparison that consumes
+ * it, and takes the measures as well — see {@link MetricExpectation}.
  *
  * A metric that cannot be resolved or executed THROWS. A missing expectation
  * would otherwise silently downgrade that question's grading, and a gate that
@@ -951,6 +957,11 @@ async function resolveExpectations(questionsPath: string): Promise<{
 }> {
   const lookups = await import("@atlas/api/lib/semantic/lookups");
   const { connections } = await import("@atlas/api/lib/db/connection");
+  // Dynamic, like its siblings above: this module's top-level import of
+  // `canonical-eval-mcp-llm` is deliberately TYPE-ONLY so `--help` / `--llm`
+  // never pull the MCP eval graph. Only `--mcp-llm` reaches here, and it has
+  // already imported the module, so this resolves from cache.
+  const { keyedExpectationFrom } = await import("./canonical-eval-mcp-llm");
 
   /** Execute one authoritative statement and reduce it to an expectation. */
   async function expectationFor(label: string, sql: string): Promise<MetricExpectation> {
@@ -979,7 +990,14 @@ async function resolveExpectations(questionsPath: string): Promise<{
           `keyed result. Ground truth must be one or the other for the answer comparison to mean anything.`,
       );
     }
-    return { kind: "keyed", keys: rows.map((r) => String(r[firstColumn])) };
+    // ⚠️ HARVESTED BY THE COMPARISON'S OWN FACTORY, NOT BY HAND HERE (#5128).
+    // The old line was `keys: rows.map(r => String(r[firstColumn]))` — ground
+    // truth read straight off a DISPLAY column, which is how a hand-written
+    // `CASE … THEN 'With Promo'` became load-bearing for a correctness check
+    // that has nothing to do with labels. `keyedExpectationFrom` takes the
+    // measures too, and lives next to the code that compares them so the two
+    // cannot drift apart again.
+    return keyedExpectationFrom(columns, rows);
   }
 
   const questions = loadQuestions(questionsPath);

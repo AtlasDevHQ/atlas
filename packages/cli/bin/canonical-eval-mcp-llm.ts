@@ -209,11 +209,63 @@ export type MetricExpectation =
   /** Single-row, single-number metric — compare the number. */
   | { readonly kind: "scalar"; readonly value: number }
   /**
-   * Grouped metric — compare the SET of grouping keys (the authoritative SQL's
-   * first column). Robust to the extra columns, aliases, and orderings a model
-   * legitimately adds, while still failing a wrong grouping or a wrong filter.
+   * Grouped metric — compared on SUBSTANCE (the measures it computed and how
+   * many groups it split into), never on what the groups are CALLED.
+   *
+   * ⚠️ THE PREVIOUS ARM CARRIED `keys: string[]` AND WAS THE THIRD PRESENTATION
+   * CHECK IN A ROW (#5128). The value grader was tightened three times and each
+   * tightening caught a *display* difference rather than a substantive one:
+   *
+   *   original   SQL text        `AVG(total_cents / 100.0)` vs `AVG(total_cents)`
+   *   fix 1      exact numbers   `11.22` vs a metric publishing `ROUND(…,1)` = `11.2`
+   *   fix 2      group labels    `'With Promotion'` vs `'With Promo'`
+   *
+   * Fix 2 is this arm's old shape. `orders_with_promotions` labels its groups
+   * with a hand-written `CASE … THEN 'With Promo'`; a model that computed the
+   * identical categorisation, filter and measures but wrote `'With Promotion'`
+   * was graded wrong. Nobody chose to make display text load-bearing — ground
+   * truth was harvested from the first column because that is what came back
+   * first, and the first column of a grouped query is a presentation column.
+   *
+   * So the labels stay, DIAGNOSTIC ONLY (see {@link labelDriftNote}), and the
+   * verdict keys on the two things a relabel cannot touch.
    */
-  | { readonly kind: "keyed"; readonly keys: readonly string[] };
+  | {
+      readonly kind: "keyed";
+      /**
+       * Distinct grouping cardinality of the authoritative result — matched
+       * against the DISTINCT-VALUE COUNT of some column of the observed result,
+       * never against its row count.
+       *
+       * ⚠️ ROW COUNT IS THE TEMPTING SPELLING AND IT REGRESSES THE VERY CASE
+       * THIS ARM EXISTS FOR. cq-016's reproducing answer was *richer* than
+       * ground truth — the model added a per-promotion-type breakdown, so it
+       * returned more rows than the authoritative two. Per-column distinct
+       * cardinality survives extra rows; a row count does not.
+       */
+      readonly groupCount: number;
+      /**
+       * Every numeric cell the authoritative SQL produced OUTSIDE its first
+       * column — i.e. the measures, not the grouping key (which is excluded
+       * even when it is itself numeric, as `month` is).
+       *
+       * Matched as a SUBSET of the observed numbers, so a richer answer passes
+       * and a dropped filter does not. Empty when the authoritative result has
+       * no numeric measures at all — see {@link keyedResultMatches} for what
+       * happens then.
+       */
+      readonly measures: readonly number[];
+      /**
+       * The authoritative result's first-column values.
+       *
+       * ⚠️ NOT PART OF THE VERDICT while `measures` is non-empty. Kept for two
+       * reasons: {@link labelDriftNote} reports a relabel so the drift is
+       * visible without gating on it, and when `measures` is EMPTY these values
+       * are the only substance the authoritative result carries, so the
+       * comparison falls back to them.
+       */
+      readonly labels: readonly string[];
+    };
 
 export interface McpLlmEvalOptions {
   readonly questionsPath?: string;
@@ -376,6 +428,15 @@ export async function runMcpLlmEval(
         });
         outcomes.push(outcome);
         if (outcome.status === "fail") artifacts.push(outcome.artifact);
+
+        // Reporting only — computed AFTER the verdict and incapable of changing
+        // it (#5128). Goes to stderr rather than the outcome so the run's JSON
+        // shape is untouched.
+        const drift = labelDriftNote(
+          outcome,
+          expectationForQuestion(q, opts.metricExpectations, opts.answerExpectations),
+        );
+        if (drift) process.stderr.write(`  note: ${drift}\n`);
       }
       return { outcomes, artifacts };
     } finally {
@@ -916,21 +977,16 @@ function gradeByMode(
   metricExpectations: McpLlmEvalOptions["metricExpectations"],
   answerExpectations: McpLlmEvalOptions["answerExpectations"],
 ): McpLlmOutcome {
+  const expectation = expectationForQuestion(q, metricExpectations, answerExpectations);
   switch (q.mode) {
     case "metric":
-      return gradeMetric(
-        q,
-        toolCalls,
-        finalText,
-        latencyMs,
-        metricExpectations?.[q.metric_id],
-      );
+      return gradeMetric(q, toolCalls, finalText, latencyMs, expectation);
     case "glossary":
       return gradeGlossary(q, toolCalls, finalText, latencyMs);
     case "pattern":
-      return gradePattern(q, toolCalls, finalText, latencyMs, answerExpectations?.[q.id]);
+      return gradePattern(q, toolCalls, finalText, latencyMs, expectation);
     case "virtual":
-      return gradeVirtual(q, toolCalls, finalText, latencyMs, answerExpectations?.[q.id]);
+      return gradeVirtual(q, toolCalls, finalText, latencyMs, expectation);
     default: {
       const _exhaustive: never = q;
       throw new Error(`unreachable mode: ${String(_exhaustive)}`);
@@ -1052,7 +1108,8 @@ function gradeMetric(
           ? "no expectation resolved"
           : expectation.kind === "scalar"
             ? `scalar ${expectation.value}`
-            : `keys [${expectation.keys.join(", ")}]`
+            : `${expectation.groupCount} group(s) carrying measures [${expectation.measures.join(", ")}]` +
+              ` — labels [${expectation.labels.join(", ")}] are NOT compared`
       })`,
   });
 }
@@ -1178,25 +1235,80 @@ function resultMatchesExpectation(data: unknown, expectation: MetricExpectation)
     );
   }
 
-  // Keyed: some column of the model's result must carry exactly the
-  // authoritative grouping keys. Compared as a SET so column aliasing, extra
-  // measure columns, and ORDER BY differences don't matter, while a missing or
-  // spurious group does.
-  const expected = new Set(expectation.keys.map(normalizeKey));
-  if (expected.size === 0) return false;
-  const byColumn = new Map<string, Set<string>>();
-  for (const row of rows) {
-    for (const [col, cell] of Object.entries(row)) {
-      if (cell === null || cell === undefined) continue;
-      let set = byColumn.get(col);
-      if (!set) {
-        set = new Set();
-        byColumn.set(col, set);
-      }
-      set.add(normalizeKey(String(cell)));
-    }
+  return keyedResultMatches(rows, expectation);
+}
+
+/**
+ * Does this grouped result carry the authoritative SUBSTANCE?
+ *
+ * Two conditions, both of which move under a wrong grouping or a dropped
+ * filter and neither of which moves under a relabel (#5128):
+ *
+ *  1. **every** authoritative measure has an approximate match among the
+ *     observed numbers, modulo {@link UNIT_SCALINGS}. SUBSET, not equality —
+ *     equality would fail the richer-than-ground-truth answer that is this
+ *     issue's actual reproducing case; and
+ *  2. **some** column's distinct-value count equals the authoritative group
+ *     count. Per-column and distinct, so extra breakdown rows don't move it.
+ *
+ * ⚠️ TWO TRADE-OFFS, STATED RATHER THAN HIDDEN — this is the fourth cut of this
+ * comparison and the previous three each shipped a false negative that looked
+ * obviously correct in review:
+ *
+ * - Condition 1 is `every`, so an answer that computes the right split but
+ *   publishes only SOME of the authoritative measures fails. Deliberate:
+ *   omitting a measure is not a presentation difference, it is a smaller
+ *   answer, and for a metric question the metric's own SQL is what "the answer"
+ *   means. The looser `some` reading would pass a result sharing one number out
+ *   of six, which is close to no check at all on a corpus where `COUNT(*)`
+ *   recurs.
+ * - Condition 2 wants ROWS. A model that answers a two-group question with one
+ *   pivoted row (`COUNT(*) FILTER (WHERE …) AS with_promo, … AS no_promo`) has
+ *   answered correctly and is failed here, because no column of a single row
+ *   has two distinct values. That shape is rare from a model writing `GROUP BY`
+ *   SQL, and the alternative — dropping the shape check — leaves the subset
+ *   rule alone to grade, which the wrong-grouping test shows is not enough.
+ *   Recorded as a known limit, not defended as ideal.
+ */
+function keyedResultMatches(
+  rows: ReadonlyArray<Record<string, unknown>>,
+  expectation: Extract<MetricExpectation, { kind: "keyed" }>,
+): boolean {
+  if (expectation.groupCount === 0) return false;
+
+  // No numeric measures at all — a `SELECT DISTINCT status`-shaped result. The
+  // key column is then the DATA rather than a display label, and cardinality
+  // alone would pass any result with the right number of distinct values, so
+  // compare the values themselves. This is the old label-set rule, kept exactly
+  // where it is still the strongest thing available.
+  if (expectation.measures.length === 0) return labelSetMatches(rows, expectation.labels);
+
+  const observed = numericValues(rows);
+  const everyMeasurePresent = expectation.measures.every((measure) =>
+    observed.some((candidate) =>
+      UNIT_SCALINGS.some((s) => approximatelyEqual(candidate * s, measure)),
+    ),
+  );
+  if (!everyMeasurePresent) return false;
+
+  for (const set of columnValueSets(rows).values()) {
+    if (set.size === expectation.groupCount) return true;
   }
-  for (const set of byColumn.values()) {
+  return false;
+}
+
+/**
+ * Some column of the result carries EXACTLY the given values, as a set — so
+ * column aliasing, extra measure columns and `ORDER BY` differences don't
+ * matter, while a missing or spurious group does.
+ */
+function labelSetMatches(
+  rows: ReadonlyArray<Record<string, unknown>>,
+  labels: readonly string[],
+): boolean {
+  const expected = new Set(labels.map(normalizeKey));
+  if (expected.size === 0) return false;
+  for (const set of columnValueSets(rows).values()) {
     if (set.size !== expected.size) continue;
     let allPresent = true;
     for (const k of expected) {
@@ -1210,8 +1322,128 @@ function resultMatchesExpectation(data: unknown, expectation: MetricExpectation)
   return false;
 }
 
+/** `columnName → set of its normalized non-null cell values`. */
+function columnValueSets(
+  rows: ReadonlyArray<Record<string, unknown>>,
+): Map<string, Set<string>> {
+  const byColumn = new Map<string, Set<string>>();
+  for (const row of rows) {
+    for (const [col, cell] of Object.entries(row)) {
+      if (cell === null || cell === undefined) continue;
+      let set = byColumn.get(col);
+      if (!set) {
+        set = new Set();
+        byColumn.set(col, set);
+      }
+      set.add(normalizeKey(String(cell)));
+    }
+  }
+  return byColumn;
+}
+
 function normalizeKey(raw: string): string {
   return raw.trim().toLowerCase();
+}
+
+/**
+ * Reduce one authoritative grouped result to its {@link MetricExpectation}.
+ *
+ * Lives beside the comparison rather than beside the SQL execution in
+ * `canonical-eval-run.ts` on purpose: harvesting and comparison are two halves
+ * of one rule, and #5128 is what a split between them looks like — ground truth
+ * was harvested from a display column while the comparison assumed it was data.
+ *
+ * `columns[0]` is the grouping key by convention across the corpus (`channel`,
+ * `carrier`, `stock_status`, `month`, `promo_status`); everything after it is a
+ * measure. The key column is excluded from `measures` even when it is numeric,
+ * so a `month` label never doubles as a value the model must reproduce.
+ */
+export function keyedExpectationFrom(
+  columns: readonly string[],
+  rows: ReadonlyArray<Record<string, unknown>>,
+): Extract<MetricExpectation, { kind: "keyed" }> {
+  const [keyColumn, ...measureColumns] = columns;
+  if (keyColumn === undefined) {
+    throw new Error("keyedExpectationFrom: a keyed result needs at least one column");
+  }
+  const labels = rows.map((r) => String(r[keyColumn]));
+  const measureRows = rows.map((r) => {
+    const out: Record<string, unknown> = {};
+    for (const c of measureColumns) out[c] = r[c];
+    return out;
+  });
+  return {
+    kind: "keyed",
+    labels,
+    groupCount: new Set(labels.map(normalizeKey)).size,
+    measures: numericValues(measureRows),
+  };
+}
+
+/**
+ * Diagnostic for a grouped answer that matched on substance while carrying
+ * NONE of the authoritative display labels — i.e. exactly the case the old
+ * label-set rule failed and this one passes.
+ *
+ * ⚠️ REPORTING, NOT GRADING. It is computed after the verdict and cannot change
+ * it. The point is that a relabel stays *visible*: if the corpus and the
+ * entity's `query_patterns` drift apart, or a model starts inventing its own
+ * vocabulary wholesale, the run says so instead of silently absorbing it.
+ *
+ * Returns `null` when there is nothing to report — a non-keyed or absent
+ * expectation, a fail, a measure-less expectation (where labels ARE the
+ * verdict, so a mismatch already failed), or a matching result that did carry
+ * the labels.
+ */
+function labelDriftNote(
+  outcome: McpLlmOutcome,
+  expectation: MetricExpectation | undefined,
+): string | null {
+  if (outcome.status !== "pass") return null;
+  if (expectation === undefined || expectation.kind !== "keyed") return null;
+  if (expectation.measures.length === 0) return null;
+
+  const matching = outcome.toolCalls
+    .filter((c) => isAnsweringCall(c) && c.result.kind === "ok")
+    .map((c) => (c.result.kind === "ok" ? collectRows(c.result.data) : []))
+    .filter((rows) => rows.length > 0 && keyedResultMatches(rows, expectation));
+
+  if (matching.length === 0) return null;
+  if (matching.some((rows) => labelSetMatches(rows, expectation.labels))) return null;
+
+  return (
+    `${outcome.questionId}: grouped answer matched the authoritative measures and ` +
+    `${expectation.groupCount} group(s), but relabelled them — none of ` +
+    `[${expectation.labels.join(", ")}] appears in any result column. ` +
+    `Not a verdict: those are display labels from the authoritative SQL, not data.`
+  );
+}
+
+/**
+ * The one place that answers "which expectation governs this question".
+ *
+ * Both {@link gradeByMode} and the run loop's drift note need it, and a second
+ * copy is how the note ends up describing a different expectation than the one
+ * that produced the verdict.
+ */
+function expectationForQuestion(
+  q: Question,
+  metricExpectations: McpLlmEvalOptions["metricExpectations"],
+  answerExpectations: McpLlmEvalOptions["answerExpectations"],
+): MetricExpectation | undefined {
+  switch (q.mode) {
+    case "metric":
+      return metricExpectations?.[q.metric_id];
+    case "pattern":
+    case "virtual":
+      return answerExpectations?.[q.id];
+    case "glossary":
+      return undefined;
+    default: {
+      const _exhaustive: never = q;
+      throw new Error(`unreachable mode: ${String(_exhaustive)}`);
+    }
+  }
 }
 
 function gradeGlossary(
@@ -1670,6 +1902,7 @@ export const __forTesting__ = {
   gradePattern,
   gradeVirtual,
   bindMcpToolsForLlm,
+  labelDriftNote,
 } as const;
 
 // ── Baseline I/O ────────────────────────────────────────────────────

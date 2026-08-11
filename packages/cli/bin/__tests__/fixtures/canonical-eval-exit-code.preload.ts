@@ -12,6 +12,9 @@
  *                                get PAST the seed without a live Postgres.
  *   ATLAS_TEST_FAIL_CP_FROM=…  — make `fs.cpSync` throw when copying FROM that
  *                                path, so `restoreSemanticLayer` fails.
+ *   ATLAS_TEST_EMIT_LOG=1      — with the seed stub, emit one real app-logger
+ *                                line from inside the run (#5126). Requires
+ *                                ATLAS_TEST_STUB_SEED=1; see the stub below.
  *
  * ⚠️ Why the switch keys on the copy SOURCE. `restoreSemanticLayer` runs
  * `rmSync(SEMANTIC_DIR)` → `cpSync(BACKUP_DIR → SEMANTIC_DIR)` → `rmSync(BACKUP_DIR)`.
@@ -34,6 +37,18 @@
  * Verified on bun 1.3.13: `mock.module` from `bun:test` applies in a plain
  * `bun --preload` process, not just under `bun test`.
  */
+// ⚠️ FIRST, AND FOR THE SAME REASON IT IS FIRST IN `bin/atlas.ts` (#5126). A
+// `--preload` module is evaluated BEFORE the entry module, so this fixture —
+// not `bin/atlas.ts` — is what reaches `@atlas/api/lib/logger` first here, via
+// the `realInit` import below. Without this line the logger is constructed on
+// fd 1 before the CLI's own stamp ever runs, and every `--json` spawn in this
+// suite would see the pre-#5126 behaviour no matter what the CLI does.
+//
+// It imports the REAL stamp module rather than assigning the env var by hand,
+// so a stamp whose argv condition is wrong fails these tests instead of being
+// papered over. What it cannot cover is the stamp's POSITION in `bin/atlas.ts`,
+// which `../eval-json-stdout.test.ts` asserts against the source directly.
+import "../../eval-log-destination";
 import * as realFs from "fs";
 import { mock } from "bun:test";
 // Hoisted above the `fs` patch below, so this module's graph loads against the
@@ -76,7 +91,21 @@ if (failCpFrom) {
 }
 
 if (process.env.ATLAS_TEST_STUB_SEED === "1") {
-  const stubbedSeed: typeof realInit.seedDemoPostgres = async () => {};
+  const stubbedSeed: typeof realInit.seedDemoPostgres = async () => {
+    // ⚠️ Emitted from INSIDE the run, through the real `createLogger`, because
+    // that is the mechanism (#5126): the polluting frames come from modules the
+    // eval pulls in mid-flight, not from anything the driver writes. A line
+    // emitted at preload time instead would land before the first driver write
+    // and could be stripped by a `tail`, which is exactly the diagnosis the
+    // issue rules out. `seedDemoPostgres` runs after the banner and before the
+    // question loop, so this lands mid-stream like the real ones.
+    if (process.env.ATLAS_TEST_EMIT_LOG !== "1") return;
+    const { createLogger } = await import("@atlas/api/lib/logger");
+    createLogger("canonical-eval-probe").error(
+      { probe: "eval-log-destination" },
+      "probe log line",
+    );
+  };
   // Spread the real module: `bin/atlas.ts` re-exports five symbols from here
   // and a partial factory would leave the rest undefined at import time.
   void mock.module("../../../src/commands/init", () => ({

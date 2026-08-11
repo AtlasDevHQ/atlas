@@ -85,6 +85,9 @@ on:
       - "packages/cli/bin/canonical-eval-mcp-llm.ts"
       - "packages/cli/bin/canonical-eval-run.ts"
       - "packages/cli/bin/canonical-eval-tool-selection.ts"
+      # Keeps fd 1 clean for the `tee` below (#5126) — a break here is invisible
+      # in the job's status and shows up only as an unparseable artifact.
+      - "packages/cli/bin/eval-log-destination.ts"
       - "eval/canonical-questions/**"
       # The published init flow the eval auth fixture drives.
       - "plugins/mcp/src/init/hosted.ts"
@@ -277,6 +280,23 @@ jobs:
         # finalText, response payloads) for the upload-artifact step
         # below — the human-readable summary truncates `finalText` and
         # would lose the recovery-class diagnostic data.
+        #
+        # ⚠️ THE `tee` CAPTURES fd 1 WHOLESALE, WHICH IS WHY THE DRIVER HAS TO
+        # KEEP fd 1 CLEAN — this line cannot defend itself. Until #5126 it could
+        # not: the driver wrote its banner and progress lines to fd 1 alongside
+        # the payload, and the app logger's pino default destination is fd 1 too,
+        # pretty-printed and COLOURIZED because the eval runs with `NODE_ENV`
+        # unset (#5121). `eval-mcp-llm-output.json` had therefore never parsed,
+        # and `eval-informational-gate.sh` never noticed because it reads
+        # `steps.*.outcome` and never opens the file.
+        #
+        # Since #5126 stdout under `--json` is the payload and nothing else, and
+        # the human transcript is on fd 2 — so it still reaches this step's log,
+        # unpiped, while `tee` writes a file that parses. That is a property of
+        # `packages/cli/bin/canonical-eval-run.ts` and
+        # `packages/cli/bin/eval-log-destination.ts`, pinned by
+        # `packages/cli/bin/__tests__/eval-json-stdout.test.ts`; nothing here
+        # needed to change, and a `2>&1` added here would undo all of it.
         #
         # pipefail is load-bearing: the default step shell is `bash -e {0}`
         # (NO pipefail), so without it the step's outcome is `tee`'s exit 0

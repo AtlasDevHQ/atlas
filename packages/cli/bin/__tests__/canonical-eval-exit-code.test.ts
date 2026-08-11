@@ -368,9 +368,12 @@ describe("canonical-eval process exit code", () => {
       expect(exitCode).toBe(1);
       expectNoCrash(stderr);
 
-      // stdout carries a prose header before the JSON body (that mixing is
-      // #5126's, not this change's), so slice from the first brace.
-      const body = stdout.slice(stdout.indexOf("{"));
+      // No slicing: since #5126, stdout under `--json` is the JSON body and
+      // nothing else — the prose header this used to skip past now goes to
+      // stderr. `../eval-json-stdout.test.ts` owns that property; here it just
+      // means the truncation assertion measures the payload rather than the
+      // payload plus a header.
+      const body = stdout;
       expect(body.length).toBeGreaterThan(65_536);
       const parsed = JSON.parse(body) as {
         total: number;
@@ -383,11 +386,10 @@ describe("canonical-eval process exit code", () => {
       expect(parsed.passing).toBe(0);
       expect(parsed.failing).toBe(40);
 
-      // The header lines were written to the buffered stream and the body via
-      // writeSync; a writer-ordering regression would put the body first.
-      expect(stdout.indexOf("Atlas canonical-question eval")).toBeLessThan(
-        stdout.indexOf("{"),
-      );
+      // The header still exists — it moved to fd 2, it was not deleted. Without
+      // this the `--json` body could pass every assertion above while the human
+      // transcript had silently stopped being emitted at all.
+      expect(stderr).toContain("Atlas canonical-question eval");
     },
     180_000,
   );

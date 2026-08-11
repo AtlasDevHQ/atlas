@@ -333,16 +333,21 @@ function toGlossaryMatches(
 // Iterate questions printing a per-question progress line. The resolver
 // closure isolates the deterministic-vs-LLM behavioral difference; this
 // helper just owns the I/O and the result accumulator.
+//
+// `human` is passed rather than derived here because this helper has no
+// options in scope — see {@link humanWriter} for why it is never stdout under
+// `--json`.
 async function evalEachQuestion(
   questions: readonly Question[],
   label: string,
+  human: (text: string) => void,
   resolve: (q: Question) => Promise<QuestionResult>,
 ): Promise<QuestionResult[]> {
   const results: QuestionResult[] = [];
   for (const q of questions) {
-    process.stdout.write(`  ${q.id} ${q.category}${label} ... `);
+    human(`  ${q.id} ${q.category}${label} ... `);
     const r = await resolve(q);
-    process.stdout.write(`${r.status}\n`);
+    human(`${r.status}\n`);
     results.push(r);
   }
   return results;
@@ -371,7 +376,9 @@ async function runDeterministic(
   };
 
   const questions = loadQuestions(options.questionsPath);
-  return evalEachQuestion(questions, "", (q) => resolveQuestion(q, harnessOpts));
+  return evalEachQuestion(questions, "", humanWriter(options.json), (q) =>
+    resolveQuestion(q, harnessOpts),
+  );
 }
 
 // ── Wiring (LLM mode) ────────────────────────────────────────────────────
@@ -383,7 +390,7 @@ async function runWithAgent(
   const lookups = await import("@atlas/api/lib/semantic/lookups");
 
   const questions = loadQuestions(options.questionsPath);
-  return evalEachQuestion(questions, " (--llm)", async (q) => {
+  return evalEachQuestion(questions, " (--llm)", humanWriter(options.json), async (q) => {
     // Glossary mode never invokes the agent — we assert the
     // disambiguation contract by checking semantic-layer state directly.
     if (q.mode === "glossary") {
@@ -467,7 +474,7 @@ export async function handleCanonicalEval(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  process.stdout.write(
+  humanWriter(options.json)(
     `Atlas canonical-question eval — schema=${options.schema} mode=${options.mode}\n`,
   );
 
@@ -546,13 +553,14 @@ async function runStagedCanonicalEval(
 }
 
 /**
- * Write to stdout with a BLOCKING syscall loop instead of the buffered stream.
+ * Write to a standard fd with a BLOCKING syscall loop instead of the buffered
+ * `process.stdout` / `process.stderr` stream.
  *
- * ⚠️ `process.exit()` DISCARDS whatever is still sitting in `process.stdout`'s
- * buffer, with no error on either side. Measured on bun 1.3.13: a 2 MB payload
- * written via `process.stdout.write` and followed by `process.exit` reaches a
- * pipe truncated — 65_536 bytes (one pipe buffer) under `| wc -c`, 219_264 under
- * a concurrently-draining reader. HOW MUCH survives is whatever the reader
+ * ⚠️ `process.exit()` DISCARDS whatever is still sitting in a buffered stream,
+ * with no error on either side. Measured on bun 1.3.13: a 2 MB payload written
+ * via `process.stdout.write` and followed by `process.exit` reaches a pipe
+ * truncated — 65_536 bytes (one pipe buffer) under `| wc -c`, 219_264 under a
+ * concurrently-draining reader. HOW MUCH survives is whatever the reader
  * drained in time, so it is not a fixed number and not something a caller can
  * budget against; what is fixed is that the tail is lost and nothing says so.
  *
@@ -566,32 +574,39 @@ async function runStagedCanonicalEval(
  * to carry.
  *
  * `fs.writeSync` returns only once the bytes are handed to the fd, so there is
- * nothing left to discard. Reserved for the payloads that can cross that cliff —
- * the three `--json` bodies and the failure-artifact bundle.
+ * nothing left to discard.
  *
- * ⚠️ STDERR HAS THE SAME CLIFF and no equivalent helper. Measured the same way:
- * 200 KB to stderr followed by `process.exit` arrives as 65_536 bytes. The
- * FAILURE-path diagnostics all live there — the acceptance-floor FAIL line,
- * `CRITICAL: Failed to restore semantic layer`, the harness stack — at a few
- * hundred bytes each, except the stack, which runs to a few KB. (The pass/fail
- * DETAIL is not on stderr: that is `formatSummary` and the `--json` bodies, on
- * stdout.) So this is latent rather than live; whoever adds an unbounded stderr
- * diagnostic needs a `writeStderrSync` twin first.
+ * ⚠️ STDERR HAS THE SAME CLIFF — measured the same way: 200 KB to stderr
+ * followed by `process.exit` arrives as 65_536 bytes. It used to be latent,
+ * because the only things on fd 2 were the failure-path diagnostics at a few
+ * hundred bytes each. #5126 made it live: under `--json` the whole human
+ * transcript moves to stderr, including the `note:` lines in
+ * `resolveExpectations` and the per-question progress lines, neither of which
+ * is bounded in principle (the notes interpolate caught error messages, and
+ * `--questions` is caller-supplied). The `writeStderrSync` twin the old comment
+ * here said "whoever adds an unbounded stderr diagnostic needs first" is
+ * therefore below, and it is why this helper is parameterised by fd at all.
  *
- * ⚠️ MIXING SYNCHRONOUS AND BUFFERED WRITES IS ORDER-SENSITIVE. A `writeSync`
- * bypasses `process.stdout`'s queue entirely, so it can print ahead of an
- * earlier buffered write that has not flushed. The interleaving is correct on
- * every path measured on bun 1.3.13 — a 4-byte buffered write, a 60_000-byte
- * one, and a real 40-question `--json` run all landed ahead of the following
- * `writeStdoutSync` — but that is a MEASUREMENT of this runtime's flush timing,
- * not a guarantee the code enforces, so do not extend the mixing on the strength
- * of it. Note in particular that `formatSummary` (the deterministic human
- * summary) and the `note:` lines in `resolveExpectations` are NOT bounded in
- * principle: both interpolate caught error messages, and `--questions` is
- * caller-supplied. They stay on the stream because the buffered path is what
- * they have always used, not because they are known small.
+ * ⚠️ EVERY STDOUT WRITE IN THIS MODULE GOES THROUGH HERE, AND NOTHING ELSE MAY
+ * TOUCH fd 1. That is not tidiness — it is what lets
+ * `__tests__/eval-json-stdout.test.ts` assert the invariant by GREP (the file
+ * contains no `process.stdout.write` call at all) rather than by inspection,
+ * and a grep is the only check that survives a call site added later.
+ *
+ * The buffered fd-2 writes on the FAILURE paths are deliberately left alone:
+ * they are #5130's reasoned exit-code paths, they are bounded, and making them
+ * throw on a bad fd 2 would let a write error escape `restoreSemanticLayer`'s
+ * catch and discard the exit-2 bump that catch exists to produce.
+ *
+ * Mixing the two write paths on ONE fd was also order-sensitive (a `writeSync`
+ * bypasses the stream's queue entirely and can print ahead of an earlier
+ * buffered write that has not flushed). On fd 1 that mixing is now gone. It
+ * remains on fd 2 in the `--json` shape — human transcript via `writeStderrSync`,
+ * failure diagnostics via the stream — where the ordering measured on bun 1.3.13
+ * held on every path, but it is a measurement rather than a guarantee, and fd 2
+ * is a diagnostic channel where a reordered line costs nothing that parses.
  */
-export function writeStdoutSync(text: string): void {
+function writeFdSync(fd: 1 | 2, text: string): void {
   const buf = Buffer.from(text, "utf-8");
   // A one-word cell purely to get a blocking sleep on the EAGAIN path below;
   // there is no synchronous `sleep` and a bare retry loop would spin at 100%.
@@ -600,7 +615,7 @@ export function writeStdoutSync(text: string): void {
   while (offset < buf.length) {
     let written: number;
     try {
-      written = fs.writeSync(1, buf, offset, buf.length - offset);
+      written = fs.writeSync(fd, buf, offset, buf.length - offset);
     } catch (err) {
       // `.code` is read only after narrowing to Error. Reading it off a bare
       // caught value raises a TypeError from inside the handler for `throw null`
@@ -617,7 +632,7 @@ export function writeStdoutSync(text: string): void {
       // EAGAIN drives a RETRY; it is not discarded. A `write(2)` that returns
       // EAGAIN wrote nothing, so re-driving the same offset loses no bytes, and
       // waiting for the reader is exactly what a blocking fd would have done —
-      // this branch only exists because fd 1 may arrive with O_NONBLOCK set.
+      // this branch only exists because the fd may arrive with O_NONBLOCK set.
       // Every other errno (ENOSPC, EBADF) is a real write failure and
       // propagates to `runStagedCanonicalEval`'s catch.
       //
@@ -632,12 +647,45 @@ export function writeStdoutSync(text: string): void {
     // falsify. Fail loudly with the offset reached instead.
     if (written === 0) {
       throw new Error(
-        `stdout write stalled at ${offset}/${buf.length} bytes: write(2) returned 0. ` +
+        `fd ${fd} write stalled at ${offset}/${buf.length} bytes: write(2) returned 0. ` +
           `Refusing to spin — the remaining payload would be lost silently.`,
       );
     }
     offset += written;
   }
+}
+
+/**
+ * Blocking write to fd 1. Exported because the truncation proof in
+ * `__tests__/fixtures/canonical-eval-write-stdout-driver.ts` drives it directly
+ * — the defect it pins only exists in a spawned process.
+ */
+export function writeStdoutSync(text: string): void {
+  writeFdSync(1, text);
+}
+
+/** Blocking write to fd 2. See {@link writeFdSync}'s stderr-cliff note. */
+function writeStderrSync(text: string): void {
+  writeFdSync(2, text);
+}
+
+/**
+ * The fd this run's HUMAN-READABLE output goes to.
+ *
+ * ⚠️ UNDER `--json`, STDOUT IS A MACHINE CHANNEL AND NOTHING HUMAN MAY TOUCH
+ * IT. The workflow pipes it into `eval-mcp-llm-output.json` and uploads that as
+ * the adjudication artifact; the banner, the provider line, the per-question
+ * progress lines and the `note:` lines were all on fd 1 unconditionally, so the
+ * artifact had never parsed (#5126). `options.json` was consulted at exactly one
+ * place — payload-emission time — and this is what makes it gate every other
+ * write instead.
+ *
+ * Resolved from `options.json` at each use site rather than stored alongside it,
+ * so the channel and the flag cannot disagree. The logger is the OTHER writer on
+ * fd 1 and it is not reachable from here — see `bin/eval-log-destination.ts`.
+ */
+function humanWriter(json: boolean): (text: string) => void {
+  return json ? writeStderrSync : writeStdoutSync;
 }
 
 /**
@@ -712,7 +760,7 @@ async function runInstalledCanonicalEval(
       )}\n`,
     );
   } else {
-    process.stdout.write(`\n${formatSummary(results)}\n`);
+    humanWriter(options.json)(`\n${formatSummary(results)}\n`);
   }
 
   return results.some((r) => r.status === "fail") ? 1 : 0;
@@ -762,6 +810,7 @@ async function runMcpLlmMode(
     "@atlas/mcp/eval/failure-artifact"
   );
   const { getModelForConfig } = await import("@atlas/api/lib/providers");
+  const human = humanWriter(options.json);
 
   // Resolve provider + model from env. Wrap getModelForConfig errors
   // with eval-context framing so a CI maintainer hitting "ATLAS_MODEL
@@ -797,9 +846,7 @@ async function runMcpLlmMode(
     return 1;
   }
 
-  process.stdout.write(
-    `  using LLM provider=${providerType} model=${modelId}\n`,
-  );
+  human(`  using LLM provider=${providerType} model=${modelId}\n`);
 
   // Branch into the held-out tool-selection fixture (#2075) when
   // requested. The MCP transport boot is identical to the canonical
@@ -817,11 +864,11 @@ async function runMcpLlmMode(
 
   const baseline = readBaseline(options.baselinePath);
   if (baseline) {
-    process.stdout.write(
+    human(
       `  loaded baseline from ${options.baselinePath} (${Object.keys(baseline).length} entries)\n`,
     );
   } else {
-    process.stdout.write(
+    human(
       `  no baseline file at ${options.baselinePath} — latency check skipped (run with --write-baseline to seed)\n`,
     );
   }
@@ -831,8 +878,9 @@ async function runMcpLlmMode(
   // LLM metric mode grades the ANSWER now, not the SQL's spelling (#5122).
   const { metricExpectations, answerExpectations } = await resolveExpectations(
     options.questionsPath,
+    human,
   );
-  process.stdout.write(
+  human(
     `  resolved ${Object.keys(metricExpectations).length} metric + ` +
       `${Object.keys(answerExpectations).length} pattern/virtual expectations from the semantic layer\n`,
   );
@@ -855,9 +903,7 @@ async function runMcpLlmMode(
   // on to read the next CI step.
   if (options.writeBaseline) {
     writeBaseline(options.baselinePath, result.outcomes);
-    process.stdout.write(
-      `  wrote per-question latency baseline to ${options.baselinePath}\n`,
-    );
+    human(`  wrote per-question latency baseline to ${options.baselinePath}\n`);
   }
 
   if (options.json) {
@@ -898,17 +944,22 @@ async function runMcpLlmMode(
       )}\n`,
     );
   } else {
-    process.stdout.write(
+    human(
       `\nMCP LLM canonical eval — ${passing}/${result.outcomes.length} passing (${failing} failing)\n`,
     );
     for (const o of result.outcomes) {
       const tag = o.status === "pass" ? "[PASS]" : "[FAIL]";
-      process.stdout.write(
+      human(
         `  ${tag} ${o.questionId.padEnd(7)} ${String(o.latencyMs).padStart(5)}ms tools=${o.toolCalls.map((c) => c.name).join(",") || "<none>"}\n`,
       );
     }
     if (result.artifacts.length > 0) {
-      writeStdoutSync(formatArtifactBundle(result.artifacts));
+      // `human`, not `writeStdoutSync`: this branch is unreachable under
+      // `--json` today, but the bundle is the largest human payload the command
+      // produces and hard-wiring it to fd 1 is precisely the shape that made the
+      // artifact unparseable. Routed through the same writer, it is stdout here
+      // and would follow the rest to stderr if the branch ever moved.
+      human(formatArtifactBundle(result.artifacts));
     }
   }
 
@@ -945,7 +996,10 @@ async function runMcpLlmMode(
  * would otherwise silently downgrade that question's grading, and a gate that
  * stops checking without saying so is the failure mode this whole issue is about.
  */
-async function resolveExpectations(questionsPath: string): Promise<{
+async function resolveExpectations(
+  questionsPath: string,
+  human: (text: string) => void,
+): Promise<{
   metricExpectations: Record<string, MetricExpectation>;
   answerExpectations: Record<string, MetricExpectation>;
 }> {
@@ -1012,7 +1066,7 @@ async function resolveExpectations(questionsPath: string): Promise<{
         ? findPatternSqlFromDisk(q.entity, q.pattern, SEMANTIC_DIR)
         : q.sql;
     if (!sql) {
-      process.stdout.write(
+      human(
         `  note: no authoritative SQL for ${q.id} — value accept path disabled for it\n`,
       );
       continue;
@@ -1020,7 +1074,7 @@ async function resolveExpectations(questionsPath: string): Promise<{
     try {
       answerExpectations[q.id] = await expectationFor(`${q.mode} question ${q.id}`, sql);
     } catch (err) {
-      process.stdout.write(
+      human(
         `  note: ${q.id} ground truth unavailable (${err instanceof Error ? err.message : String(err)}) — ` +
           `value accept path disabled for it\n`,
       );
@@ -1052,10 +1106,9 @@ async function runToolSelectionMode(
   options: ToolSelectionModeOptions,
 ): Promise<number> {
   const { runToolSelectionEval } = await import("./canonical-eval-tool-selection");
+  const human = humanWriter(options.json);
 
-  process.stdout.write(
-    `  tool-selection fixture: ${options.toolSelectionFixturePath}\n`,
-  );
+  human(`  tool-selection fixture: ${options.toolSelectionFixturePath}\n`);
 
   const result = await runToolSelectionEval({
     fixturePath: options.toolSelectionFixturePath,
@@ -1094,13 +1147,13 @@ async function runToolSelectionMode(
       )}\n`,
     );
   } else {
-    process.stdout.write(
+    human(
       `\nMCP tool-selection eval — ${passing}/${result.outcomes.length} accurate (${accuracyPct}%; floor ${floorPct}%)\n`,
     );
     for (const o of result.outcomes) {
       const tag = o.passed ? "[PASS]" : "[FAIL]";
       const firstTool = o.firstTool ?? "<none>";
-      process.stdout.write(
+      human(
         `  ${tag} ${o.id.padEnd(20)} ${String(o.latencyMs).padStart(5)}ms first=${firstTool} expected=${o.expected.join("|")} sequence=${o.toolSequence.join(",") || "<none>"}\n`,
       );
     }

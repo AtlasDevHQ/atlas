@@ -110,7 +110,28 @@ Note the type label, acceptance criteria, and any `Depends on #M`. If a dependen
 
 Use `cd packages/api && bun run scripts/test-isolated.ts --affected` for the fast red→green loop.
 
-**Step 3 — Internal review BEFORE the PR**
+**Step 3 — Push, open a DRAFT PR, then run the panel against it**
+
+Run the cheap pre-flight (Step 4), push, and open the PR **as a draft** — then start
+the panel. Remote CI and the panel run **concurrently**, against the same head SHA:
+
+```bash
+cd packages/api && bun run scripts/test-isolated.ts --affected   # + bun run lint, bun run type
+git push -u origin <branch>
+# then /pr, adding --draft to its `gh pr create` invocation
+```
+
+⚠️ **The draft is what makes the concurrency safe, and it is not optional.** A draft
+PR cannot be merged — GitHub refuses, and `mergeStateStatus` reports `DRAFT` — so
+"the panel has not closed yet" becomes a **structural** fact about the PR rather
+than a rule someone has to remember. Opening it non-draft and promising to wait is
+the exact posture Step 5's evidence below says fails.
+
+CI runs on drafts (no workflow in `.github/workflows/` guards on
+`github.event.pull_request.draft`, verified 2026-08-11), so the ~4 minutes of remote
+CI overlaps the panel instead of queueing behind it. Panel fixes are `git commit -o
+<files>` + push, which updates the PR in place and re-runs CI — so by the time the
+panel closes, CI has usually already answered on the final SHA.
 
 ```
 /review-panel
@@ -126,16 +147,24 @@ round 1 describes code that round 1's own fixes are about to change.
 
 Measured on #5110: the run picked `comment-analyzer` and `fix-vs-finding` first —
 comment-analyzer in what was effectively round 1, the inversion that file names
-outright — and ran the three code reviewers **after the PR was already open and
-CI green**. That is Step 3 executed at Step 5. `silent-failure-hunter` then
-returned a CRITICAL finding (a poisoned pooled client returned via
-`client.release()` with no argument, under a 500 body asserting *"nothing was
-written … re-sending is safe"*) on code the PR had been declared ready to merge
-with. Nothing was lost because the merge had not happened — but the gate had been
-reported as passed, which is the failure.
+outright — and ran the three code reviewers **after the PR had been declared
+ready to merge**. `silent-failure-hunter` then returned a CRITICAL finding (a
+poisoned pooled client returned via `client.release()` with no argument, under a
+500 body asserting *"nothing was written … re-sending is safe"*) on code the PR
+had been declared ready to merge with. Nothing was lost because the merge had not
+happened — but the gate had been reported as passed, which is the failure.
 
-**Step 3 is BEFORE Step 5. If you are reading review findings after a PR URL
-exists, you are recovering, not reviewing.**
+⚠️ **Read that failure precisely, because the draft-PR flow above deliberately
+does one half of it.** #5110's defect was **not** that a PR URL existed while
+reviewers were still running — that is now the intended flow, and it is how CI
+and the panel overlap. The defect was that the run **reported the gate passed**
+and treated the PR as merge-ready with the code reviewers not yet run. Those are
+different acts, and only the second one is forbidden.
+
+**The panel closes BEFORE the PR leaves draft.** A PR URL existing means nothing;
+a PR marked *ready* is a claim that Step 3 finished. If you are marking a PR ready
+— or reading `mergeStateStatus` as anything but `DRAFT` — with panel rounds still
+outstanding, you are recovering, not reviewing.
 - Verdict **CHANGES REQUESTED** → **triage the must-fix findings first** (`/review-panel` Step 5: local defect → fix inline; new machinery → follow-up by default, from round one), then **Step 5b before writing each fix** — for a guard/branch/comparison, the BEHAVIOUR DELTA table (input classes × old vs new, in the commit); for everything else, the sibling grep. Then fix, build the falsifier in the same commit, then re-run `/review-panel` on the new diff.
 
   ⚠️ **Fixing the reported instance and not the class is THE reason rounds multiply, and the class has members in two directions.** The grep finds siblings in space; the delta table finds siblings in the input domain at one site. #5037 swept diligently for the first and lost three rounds to the second — one guard, edited three times, each edit closing the symptom a reviewer named and opening the input class beside it.
@@ -144,7 +173,7 @@ exists, you are recovering, not reviewing.**
 ⚠️ **"STOP" IN THIS STEP ENDS THE ROUNDS, NOT THE RUN. Read this before any stop rule below.**
 
 Every stop in Step 3 means *this diff gets no more review rounds* — fix what is
-confirmed, pay the closing round's costs, and **continue to Step 4's pre-flight and Step 5's PR.**
+confirmed, pay the closing round's costs, and **continue to Step 5 — mark the draft PR ready and drive it to merge.**
 It does **not** mean park the issue and wait for a human. `/ship-issue` is the
 autonomous loop; the human boundaries are Step 5's HARD HALTS (a fork PR, a
 structurally missing required check) and a genuine blocker — a spec ambiguity you
@@ -189,11 +218,14 @@ and names the boundary.
 
 **Step 4 — CI gate: PUSH FIRST, and let REMOTE CI be the gate**
 
+This is the pre-flight Step 3 opens with — it is documented here, but it **runs
+before the push**, at the top of Step 3:
+
 ```bash
 cd packages/api && bun run scripts/test-isolated.ts --affected   # + bun run lint, bun run type
 ```
 
-Then open the PR (Step 5) and let remote CI run. **Do NOT run `/ci` locally before every PR.**
+Then push, open the draft PR, and let remote CI run **while the panel runs**. **Do NOT run `/ci` locally before every PR.**
 
 ⚠️ **This is a change, and the arithmetic is the whole argument.** `scripts/ci-local.sh` is ~25 minutes, largely serial, and the mutation gate inside it rewrites source files in place — so nothing else can touch the tree while it runs. Remote CI on the PR covers the same gates in **~4 minutes**, in parallel, on hardware that is not yours, while you do something else. Running both means paying the slow one first for a result the fast one is about to produce anyway. Measured across `/ship-issue` runs, local `/ci` was one of the largest single blocks of wall clock in the loop and caught nothing remote CI did not.
 
@@ -323,12 +355,18 @@ disagree with, which is worse than the stale table you started with.
 
 `/ci` uses a **launch-and-watch protocol** (see `ci.md`): the wrapper runs in the background and YOU poll `.ci-local/RESULT` on a loop — never end the turn "waiting for the CI report". A lost subagent hand-off here used to stall the whole ship loop until a human poked it; `.ci-local/RESULT` on disk is the completion signal, not any agent's reply.
 
-**Step 5 — Open the PR, then drive it to merge**
+**Step 5 — Mark the PR ready, then drive it to merge**
 
+The PR already exists — Step 3 opened it as a draft and `/pr` gave it its title,
+body and `Closes #<N>`. The panel has now closed, so take it out of draft:
+
+```bash
+gh pr ready <N> -R AtlasDevHQ/atlas
 ```
-/pr
-```
-`/pr` branches/commits/pushes and opens the PR with `Closes #<N>`.
+
+⚠️ **Marking it ready IS the claim that Step 3 finished.** Do not run this with
+rounds outstanding — see Step 3's #5110 note. If the panel stopped early, the body
+owes the curve *before* this command, not after.
 
 ⚠️ **If the Step-3 panel stopped early, the PR body owes the CURVE and the residue** — rounds with both numbers per round (`round 2: 17 — 4 new surface, 13 defect-in-prior-fix`), why the loop closed, and what was consciously left as a follow-up. That disclosure is what makes an early stop legitimate rather than a shortcut: the reviewer opening the PR is the human the stop rule wanted told, and the PR body is where they are standing.
 
@@ -482,4 +520,4 @@ PR URL · issue closed · CI/merge status · panel rounds it took, with the CURV
 
 ---
 
-**Rules:** Always `-R AtlasDevHQ/atlas`. Worktree-isolated commits only. The panel + `/ci` are mandatory gates, not optional. Respect every merge-discipline halt in CLAUDE.md.
+**Rules:** Always `-R AtlasDevHQ/atlas`. Worktree-isolated commits only. The panel and **remote** CI are the mandatory gates; a full local `/ci` is NOT one — run it only under Step 4's stated exceptions. The PR stays in draft until the panel closes. Respect every merge-discipline halt in CLAUDE.md.

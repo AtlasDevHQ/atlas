@@ -83,6 +83,22 @@ import {
 // ── Public types ──────────────────────────────────────────────────────
 
 /**
+ * What a tool's result is CONTRACTED to look like.
+ *
+ * - `"json"` — the tool answers with a JSON body (success) or an
+ *   `AtlasMcpToolError` envelope (failure). Non-JSON from one of these is an
+ *   MCP protocol regression and the grader fails the question for it.
+ * - `"text"` — the tool's declared output is free-form text. `explore` is a
+ *   sandboxed **shell**: `ls -la` answering with a directory listing is the
+ *   contract being honoured, not broken.
+ *
+ * Stamped onto every {@link RecordedToolCall} by {@link bindMcpToolsForLlm}
+ * (see {@link classifyToolContract}) so the grader branches on the recorded
+ * contract rather than re-deriving it from a tool name at the point of use.
+ */
+export type ToolContract = "json" | "text";
+
+/**
  * Captured shape of one tool dispatch the LLM fired through MCP. The
  * grading code below walks the recorded sequence to decide pass / fail
  * categories — keep this shape stable; the unit tests assert on it.
@@ -91,6 +107,15 @@ export interface RecordedToolCall {
   readonly name: string;
   readonly args: Readonly<Record<string, unknown>>;
   readonly latencyMs: number;
+  /**
+   * The dispatched tool's output contract, resolved once at bind time.
+   *
+   * ⚠️ REQUIRED ON PURPOSE. Optional-with-a-default would let a recorder that
+   * forgot to classify fall through to `"json"` silently, which is the exact
+   * shape of the defect this field exists to close (#5131) — a text-output
+   * tool graded against the JSON contract.
+   */
+  readonly contract: ToolContract;
   /**
    * Either the parsed MCP tool result (via {@link extractToolJson}) or
    * a synthesized error envelope when the dispatch itself threw before
@@ -306,6 +331,9 @@ export async function runMcpLlmEval(
 
     try {
       const tools = await client.listTools();
+      // Anchor the text-contract exemption against the surface actually
+      // discovered, before a single question runs. See the function's note.
+      assertTextContractToolsPresent(tools);
       const recorded: RecordedToolCall[] = [];
       const aiTools = bindMcpToolsForLlm(client, tools, recorded);
 
@@ -351,6 +379,84 @@ async function bootDefaultFixture(): Promise<EvalAuthFixture> {
   return startEvalAuthServer({ mcpRouter });
 }
 
+// ── Tool output contracts ────────────────────────────────────────────
+
+/**
+ * MCP tools whose declared output is free-form TEXT rather than JSON.
+ *
+ * ⚠️ THIS IS A NAME LIST, DELIBERATELY, AND THE ALTERNATIVES WERE MEASURED
+ * RATHER THAN ASSUMED (#5131).
+ *
+ * 1. There is nothing on the wire to derive it from. `bindMcpToolsForLlm`
+ *    classifies from `ToolListEntry`, which is `{ name, description?,
+ *    inputSchema? }` — the `tools/list` response carries no statement about
+ *    the shape of a tool's OUTPUT. Any "marker set at bind time" is therefore
+ *    still computed from the name; a marker relocates this list, it cannot
+ *    replace it.
+ * 2. The one machine-readable candidate — MCP `outputSchema` — is provably
+ *    unfaithful here. `describeEntity`, `searchGlossary`, and `listEntities`
+ *    all answer JSON and declare NO `outputSchema`
+ *    (`packages/mcp/src/semantic-tools.ts:287/327/453`; only `runMetric` at
+ *    :523 declares one). Exempting "no outputSchema" would exempt three of the
+ *    four typed tools the protocol check exists to protect — it would disable
+ *    the detector rather than sharpen it.
+ *
+ * What a name list genuinely gets wrong is ROT: rename or drop `explore` and
+ * the exemption silently stops matching, restoring the bug with no signal.
+ * That is closed by {@link assertTextContractToolsPresent}, which anchors every
+ * name here against the live discovered surface — not by a type, since both
+ * spellings of the type carry the same string.
+ *
+ * ── What this does and does NOT make backend-independent ─────────────
+ *
+ * `explore` resolves to a different sandbox backend locally than on the CI
+ * runner (`packages/api/src/lib/tools/backends/selection.ts`), which is how
+ * #5131 stayed invisible across four local runs. With the exemption in place
+ * the SHAPE of its output no longer moves the verdict: `explore` is not in
+ * {@link ANSWERING_TOOLS} and no per-mode grader inspects it, so the only
+ * branches it can still reach are `assertNotRateLimited` (a throttle is a
+ * harness fault whatever the tool) and `isTransportFail` (a hang-up is a real
+ * protocol regression whatever the tool). Both are backend-agnostic.
+ *
+ * The residual, recorded rather than papered over: the CONTENT differs. One
+ * backend lists the semantic-layer directory and another fails to start, and
+ * the model may answer differently on the strength of what it read. No grader
+ * change can remove that — it is a property of running a shell in two
+ * environments, and the honest fix is pinning the eval's backend, not widening
+ * the rubric.
+ */
+const TEXT_CONTRACT_TOOLS: ReadonlySet<string> = new Set(["explore"]);
+
+/** Resolve a discovered tool's output contract. See {@link TEXT_CONTRACT_TOOLS}. */
+function classifyToolContract(name: string): ToolContract {
+  return TEXT_CONTRACT_TOOLS.has(name) ? "text" : "json";
+}
+
+/**
+ * Fail the run when a declared text-contract tool is absent from the surface
+ * the eval actually discovered.
+ *
+ * This is the anchor that makes {@link TEXT_CONTRACT_TOOLS} safe to spell as
+ * names. Without it, renaming `explore` (or dropping it from the hosted
+ * registration) turns the exemption into a no-op and every successful shell
+ * call starts failing its question as `protocol` again — the #5131 defect,
+ * back, with no diagnostic. Called against the real `tools/list` result, so a
+ * rename is a loud stop at boot rather than five silent mis-graded questions.
+ */
+function assertTextContractToolsPresent(tools: readonly ToolListEntry[]): void {
+  const discovered = new Set(tools.map((t) => t.name));
+  const missing = [...TEXT_CONTRACT_TOOLS].filter((n) => !discovered.has(n));
+  if (missing.length === 0) return;
+  throw new Error(
+    `[harness] text-contract tool(s) not on the MCP surface: ${missing.join(", ")}. ` +
+      `TEXT_CONTRACT_TOOLS exempts these from the JSON/protocol check because their ` +
+      `declared output is free-form text; a name that no longer resolves means the ` +
+      `exemption is dead and successful text output would be graded as a protocol ` +
+      `regression. Update TEXT_CONTRACT_TOOLS to match the renamed tool. ` +
+      `Discovered: ${[...discovered].sort().join(", ")}`,
+  );
+}
+
 /**
  * Translate the MCP tool surface to a Vercel AI SDK `ToolSet`. Every
  * tool's `execute` dispatches back through the MCP transport so the
@@ -383,6 +489,7 @@ function bindMcpToolsForLlm(
         properties: {},
         additionalProperties: true,
       };
+    const contract = classifyToolContract(t.name);
     set[t.name] = dynamicTool({
       description: t.description ?? `MCP tool ${t.name}`,
       inputSchema: jsonSchema(schema),
@@ -396,11 +503,19 @@ function bindMcpToolsForLlm(
           recorder.push({
             name: t.name,
             args,
+            contract,
             latencyMs,
             result: parsed,
           });
           if (parsed.kind === "error") return parsed.envelope;
           if (parsed.kind === "unparseable") {
+            // A text-contract tool answering with text is a SUCCESS. Handing
+            // the model `{ error: "unparseable" }` for a successful `ls` is a
+            // harness-fabricated error: it hides the listing the model asked
+            // for behind a failure word, and the model then "recovers" from
+            // something that never went wrong. Return the raw text — the
+            // tool's actual product (#5131).
+            if (contract === "text") return parsed.raw;
             return { error: "unparseable", raw: parsed.raw };
           }
           return parsed.data;
@@ -420,6 +535,7 @@ function bindMcpToolsForLlm(
           recorder.push({
             name: t.name,
             args,
+            contract,
             latencyMs,
             result: { kind: "error", envelope: transportEnvelope },
           });
@@ -1355,11 +1471,21 @@ function findSqlMatch(
   });
 }
 
+/**
+ * A JSON-contract tool that answered with something that is not JSON — the
+ * MCP protocol regression `grade()`'s first branch exists to catch. The
+ * `contract: "json"` member is part of the type, not just the guard body, so
+ * a caller that narrows through {@link isUnparseable} carries the proof that
+ * the tool was contracted to answer JSON in the first place.
+ */
 type UnparseableCall = RecordedToolCall & {
+  readonly contract: "json";
   readonly result: { readonly kind: "unparseable"; readonly raw: string };
 };
 function isUnparseable(c: RecordedToolCall): c is UnparseableCall {
-  return c.result.kind === "unparseable";
+  // Text-contract tools are exempt: non-JSON from a shell is its output, not
+  // a protocol regression (#5131). The check stays strict for every JSON tool.
+  return c.contract === "json" && c.result.kind === "unparseable";
 }
 
 type ErrorCall = RecordedToolCall & {
@@ -1393,6 +1519,8 @@ export const __forTesting__ = {
   gradePattern,
   gradeVirtual,
   bindMcpToolsForLlm,
+  classifyToolContract,
+  assertTextContractToolsPresent,
 } as const;
 
 // ── Baseline I/O ────────────────────────────────────────────────────

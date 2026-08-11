@@ -117,7 +117,8 @@ const MAX_DESCRIBE_BATCH = 50;
  * authority. `semantic-tools.test.ts` pins the two against a shared corpus
  * ("agrees with isValidEntityName") so they cannot part company again.
  */
-export const ENTITY_NAME_PATTERN = /^(?!.*\.\.)[^/\\\0]+$/;
+// oxlint-disable-next-line no-control-regex -- excluding NUL is the security property, not an accident: `findEntityFile` joins this name into a path. Written as the `\u0000` ESCAPE, never a literal NUL byte: a raw control byte in source makes grep and friends treat the file as binary. Same spelling as `bundle-archive.ts:297`.
+export const ENTITY_NAME_PATTERN = /^(?!.*\.\.)[^/\\\u0000]+$/;
 const ENTITY_NAME_CONSTRAINT =
   "must not contain a path separator (`/`, `\\`), `..`, or a NUL byte";
 

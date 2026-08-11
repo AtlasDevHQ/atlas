@@ -20,6 +20,23 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.5",
+    title: "Company Atlas: Claim Identity",
+    date: "2026-08-11",
+    summary:
+      "The Company Atlas learns that two ways of writing the same thing are the same thing. Until now \"Account Owner\", \"account_owner\" and \"account owner\" were three unrelated subjects, so a fact about one never strengthened, contradicted, or superseded a fact about another — near-duplicates just piled up. Every claim now carries a stable identity derived from its wording, and each workspace can curate a vocabulary saying which spellings genuinely mean the same thing. Aliases are proposed with evidence, reviewed by a person, and show you how many facts they would merge before you approve. Values are compared by meaning rather than text, so \"$499\" and \"USD 499\" agree, and two claims about genuinely different entities stop contradicting each other by accident.",
+    highlights: [
+      "Facts written different ways now connect instead of quietly duplicating",
+      "A curated per-workspace vocabulary — propose an alias, review the evidence, approve or reject it for good",
+      "See the blast radius before you approve: how many facts an alias would merge, and where",
+      "Values compare by meaning, not spelling — \"$499\" and \"USD 499\" are recognised as the same amount",
+      "Claims about different entities no longer look like disagreements about one",
+      "A draft can no longer supersede a published fact that came from your warehouse",
+      "Region migrations carry claim identity across regions rather than rebuilding it on arrival",
+      "For multi-region deployments: upgrade every destination region before any region that exports to it",
+    ],
+  },
+  {
     version: "v0.2.4",
     title: "Pending Changes Counter Accuracy",
     date: "2026-08-03",

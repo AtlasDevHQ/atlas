@@ -340,7 +340,7 @@ function toGlossaryMatches(
 async function evalEachQuestion(
   questions: readonly Question[],
   label: string,
-  human: (text: string) => void,
+  human: HumanWriter,
   resolve: (q: Question) => Promise<QuestionResult>,
 ): Promise<QuestionResult[]> {
   const results: QuestionResult[] = [];
@@ -376,7 +376,7 @@ async function runDeterministic(
   };
 
   const questions = loadQuestions(options.questionsPath);
-  return evalEachQuestion(questions, "", humanWriter(options.json), (q) =>
+  return evalEachQuestion(questions, "", humanWriter(options), (q) =>
     resolveQuestion(q, harnessOpts),
   );
 }
@@ -390,7 +390,7 @@ async function runWithAgent(
   const lookups = await import("@atlas/api/lib/semantic/lookups");
 
   const questions = loadQuestions(options.questionsPath);
-  return evalEachQuestion(questions, " (--llm)", humanWriter(options.json), async (q) => {
+  return evalEachQuestion(questions, " (--llm)", humanWriter(options), async (q) => {
     // Glossary mode never invokes the agent — we assert the
     // disambiguation contract by checking semantic-layer state directly.
     if (q.mode === "glossary") {
@@ -474,7 +474,7 @@ export async function handleCanonicalEval(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  humanWriter(options.json)(
+  humanWriter(options)(
     `Atlas canonical-question eval — schema=${options.schema} mode=${options.mode}\n`,
   );
 
@@ -664,10 +664,35 @@ export function writeStdoutSync(text: string): void {
   writeFdSync(1, text);
 }
 
-/** Blocking write to fd 2. See {@link writeFdSync}'s stderr-cliff note. */
-function writeStderrSync(text: string): void {
+/**
+ * Blocking write to fd 2. See {@link writeFdSync}'s stderr-cliff note.
+ *
+ * Exported for the same reason its fd-1 twin is: the truncation it prevents
+ * only exists in a spawned process, so `__tests__/fixtures/
+ * canonical-eval-write-stdout-driver.ts` drives it directly. Without that, this
+ * whole function was a surviving mutation — reverting `humanWriter`'s stderr arm
+ * to `process.stderr.write` passed every test in the suite, because the largest
+ * transcript any of them produces is ~2 KB against a 65_536-byte cliff.
+ */
+export function writeStderrSync(text: string): void {
   writeFdSync(2, text);
 }
+
+declare const HumanChannel: unique symbol;
+
+/**
+ * A writer that has been RESOLVED against `--json`. Nominal on purpose.
+ *
+ * ⚠️ THE BRAND IS ON THE OUTPUT, NOT THE PARAMETER, AND THAT DISTINCTION IS THE
+ * WHOLE POINT. A plain `(text: string) => void` parameter is satisfied by
+ * `process.stdout.write`, by `console.log`, and — the one that would actually
+ * happen — by the exported `writeStdoutSync` sitting three lines up, which is
+ * this module's sanctioned way to write fd 1. `evalEachQuestion(qs, "",
+ * writeStdoutSync, resolve)` would then compile and silently reopen #5126.
+ * {@link humanWriter} is the only producer of this type, so an unbranded
+ * sibling producer cannot satisfy the destination.
+ */
+type HumanWriter = ((text: string) => void) & { readonly [HumanChannel]: true };
 
 /**
  * The fd this run's HUMAN-READABLE output goes to.
@@ -680,12 +705,20 @@ function writeStderrSync(text: string): void {
  * place — payload-emission time — and this is what makes it gate every other
  * write instead.
  *
- * Resolved from `options.json` at each use site rather than stored alongside it,
- * so the channel and the flag cannot disagree. The logger is the OTHER writer on
- * fd 1 and it is not reachable from here — see `bin/eval-log-destination.ts`.
+ * Takes the OPTIONS rather than a bare boolean: `CanonicalEvalOptions` carries
+ * three booleans, all in scope at every call site here, and `humanWriter(
+ * options.writeBaseline)` would compile and route the transcript down the wrong
+ * channel. Resolved at each use site rather than stored alongside `json`, so the
+ * flag and the channel cannot disagree.
+ *
+ * The logger is the OTHER writer on fd 1 and is not reachable from here — see
+ * `bin/eval-log-destination.ts` — and `seedDemoPostgres` was the third, which is
+ * why it now takes this writer as a required argument.
  */
-function humanWriter(json: boolean): (text: string) => void {
-  return json ? writeStderrSync : writeStdoutSync;
+function humanWriter(options: Pick<CanonicalEvalOptions, "json">): HumanWriter {
+  // The one cast in this module, and the reason the brand holds: every other
+  // route to a `HumanWriter` has to come through here.
+  return (options.json ? writeStderrSync : writeStdoutSync) as HumanWriter;
 }
 
 /**
@@ -698,13 +731,19 @@ async function runInstalledCanonicalEval(
   options: CanonicalEvalOptions,
   connStr: string,
 ): Promise<number> {
+  const human = humanWriter(options);
   installSchemaSemanticLayer(options.schema);
 
   // Seed the demo Postgres before running so the harness is self-contained
   // — same hook used by bin/eval.ts. seedDemoPostgres takes a connection
   // string, not a schema; only `ecommerce` ships today (#2021).
+  //
+  // ⚠️ The sink is not decoration. This call is UNCONDITIONAL and runs before
+  // any mode branch, so the demo label it prints was the first line of every
+  // `--json` artifact — the third fd-1 writer, and the only one outside this
+  // file (#5126). A fix confined to this module would not have reached it.
   try {
-    await seedDemoPostgres(connStr);
+    await seedDemoPostgres(connStr, human);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     process.stderr.write(
@@ -760,7 +799,7 @@ async function runInstalledCanonicalEval(
       )}\n`,
     );
   } else {
-    humanWriter(options.json)(`\n${formatSummary(results)}\n`);
+    human(`\n${formatSummary(results)}\n`);
   }
 
   return results.some((r) => r.status === "fail") ? 1 : 0;
@@ -810,7 +849,7 @@ async function runMcpLlmMode(
     "@atlas/mcp/eval/failure-artifact"
   );
   const { getModelForConfig } = await import("@atlas/api/lib/providers");
-  const human = humanWriter(options.json);
+  const human = humanWriter(options);
 
   // Resolve provider + model from env. Wrap getModelForConfig errors
   // with eval-context framing so a CI maintainer hitting "ATLAS_MODEL
@@ -998,7 +1037,7 @@ async function runMcpLlmMode(
  */
 async function resolveExpectations(
   questionsPath: string,
-  human: (text: string) => void,
+  human: HumanWriter,
 ): Promise<{
   metricExpectations: Record<string, MetricExpectation>;
   answerExpectations: Record<string, MetricExpectation>;
@@ -1106,7 +1145,7 @@ async function runToolSelectionMode(
   options: ToolSelectionModeOptions,
 ): Promise<number> {
   const { runToolSelectionEval } = await import("./canonical-eval-tool-selection");
-  const human = humanWriter(options.json);
+  const human = humanWriter(options);
 
   human(`  tool-selection fixture: ${options.toolSelectionFixturePath}\n`);
 

@@ -13,6 +13,16 @@
 import { createLogger } from "@atlas/api/lib/logger";
 
 createLogger("logger-destination-probe").error(
-  { probe: "logger-destination" },
+  {
+    probe: "logger-destination",
+    // ⚠️ A REDACTED FIELD, ON PURPOSE. `buildRootLogger` now has THREE `pino(…)`
+    // call sites where there used to be one, each spreading `rootLoggerOptions`.
+    // A branch that dropped the spread — `pino({ level }, destination)` — would
+    // still print this line on the right fd, so every fd assertion would pass
+    // while redaction, the err serializer, the scrub formatter and the requestId
+    // mixin had all silently stopped applying on that branch. The value below is
+    // what makes the options set part of the claim.
+    password: "hunter2",
+  },
   "probe log line",
 );

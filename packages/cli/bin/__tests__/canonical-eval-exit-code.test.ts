@@ -422,7 +422,7 @@ describe("canonical-eval process exit code", () => {
   );
 
   test(
-    "the JSON payload survives process.exit — writeStdoutSync is not buffered",
+    "payloads survive process.exit on both fds — the sync writers are not buffered",
     async () => {
       // 2 MB against a 64 KiB pipe buffer. `process.exit` discards whatever is
       // still buffered in `process.stdout`, silently and with no error on
@@ -438,19 +438,22 @@ describe("canonical-eval process exit code", () => {
 
       const read = async (
         mode: string,
+        fd: 1 | 2 = 1,
       ): Promise<{ length: number; code: number }> => {
         const proc = Bun.spawn(
-          [process.execPath, driver, String(size), mode],
+          [process.execPath, driver, String(size), mode, String(fd)],
           { stdout: "pipe", stderr: "pipe" },
         );
         children.push(proc);
-        const [text, stderr, code] = await Promise.all([
+        const [out, err, code] = await Promise.all([
           new Response(proc.stdout).text(),
           new Response(proc.stderr).text(),
           proc.exited,
         ]);
-        expect(stderr).toBe("");
-        return { length: text.length, code };
+        // The fd NOT under test must be silent — otherwise a driver that wrote
+        // to both would let either arm carry the other's measurement.
+        expect(fd === 1 ? err : out).toBe("");
+        return { length: (fd === 1 ? out : err).length, code };
       };
 
       const sync = await read("sync");
@@ -470,6 +473,23 @@ describe("canonical-eval process exit code", () => {
       expect(buffered.code).toBe(0);
       expect(buffered.length).toBeGreaterThan(0);
       expect(buffered.length).toBeLessThan(size);
+
+      // ⚠️ fd 2, SAME CLIFF, AND SINCE #5126 IT IS LIVE RATHER THAN LATENT.
+      // Under `--json` the whole human transcript moves to stderr — the banner,
+      // every progress line, and the `note:` lines, which interpolate caught
+      // error messages over a caller-supplied `--questions` corpus. Without
+      // these two arms `writeStderrSync` is a surviving mutation: reverting
+      // `humanWriter`'s stderr side to the buffered stream passes every other
+      // test in the repo, because the largest transcript any of them produces
+      // is ~2 KB against a 65_536-byte cliff.
+      const syncErr = await read("sync", 2);
+      expect(syncErr.code).toBe(0);
+      expect(syncErr.length).toBe(size);
+
+      const bufferedErr = await read("buffered", 2);
+      expect(bufferedErr.code).toBe(0);
+      expect(bufferedErr.length).toBeGreaterThan(0);
+      expect(bufferedErr.length).toBeLessThan(size);
     },
     120_000,
   );

@@ -85,9 +85,18 @@ on:
       - "packages/cli/bin/canonical-eval-mcp-llm.ts"
       - "packages/cli/bin/canonical-eval-run.ts"
       - "packages/cli/bin/canonical-eval-tool-selection.ts"
-      # Keeps fd 1 clean for the `tee` below (#5126) — a break here is invisible
-      # in the job's status and shows up only as an unparseable artifact.
+      # The four files that keep fd 1 clean for the `tee` below (#5126). A break
+      # in any of them is invisible in the job's status — the eval passes and
+      # the uploaded artifact is unparseable — so they are triggers even though
+      # three of them are not "the eval's harness" in any other sense:
+      # `eval-log-destination.ts` stamps the logger's destination,
+      # `bin/atlas.ts` holds the import ORDER that stamp depends on,
+      # `lib/logger.ts` is the switch it sets, and `init.ts`'s
+      # `seedDemoPostgres` is the third writer, called before every mode branch.
       - "packages/cli/bin/eval-log-destination.ts"
+      - "packages/cli/bin/atlas.ts"
+      - "packages/api/src/lib/logger.ts"
+      - "packages/cli/src/commands/init.ts"
       - "eval/canonical-questions/**"
       # The published init flow the eval auth fixture drives.
       - "plugins/mcp/src/init/hosted.ts"

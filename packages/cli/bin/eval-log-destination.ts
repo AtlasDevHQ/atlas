@@ -8,9 +8,12 @@
  * at construction, and on the dev branch that destination lives in a
  * `pino-pretty` worker thread. So there is no later moment at which this can be
  * done: by the time `handleCanonicalEval` runs, the logger has existed for the
- * whole of module evaluation. Moving this import below any other one silently
- * restores the defect, which is why `__tests__/eval-log-destination.test.ts`
- * asserts its position in the source.
+ * whole of module evaluation. Moving this import below any other module-graph
+ * edge — an `import`, or an `export … from`, of which `bin/atlas.ts` is mostly
+ * made — silently restores the defect, which is why
+ * `__tests__/eval-json-stdout.test.ts` asserts its position in the source, and
+ * why this module deliberately has NO IMPORTS OF ITS OWN: one would evaluate
+ * before the assignment below and could reach the logger first.
  *
  * Under `--json` stdout is a MACHINE channel: the workflow runs
  * `… canonical-eval --mcp-llm --json | tee eval-mcp-llm-output.json` and uploads

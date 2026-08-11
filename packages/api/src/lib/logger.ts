@@ -393,7 +393,12 @@ export function scrubLogFormatter(
   }
 }
 
-const rootLoggerOptions: pino.LoggerOptions = {
+// `satisfies`, not an annotation: an annotation erases the options' own generic
+// (`LoggerOptions<CustomLevels>` collapses to `LoggerOptions<never, boolean>`),
+// so a future `customLevels` would still typecheck here and fail at every call
+// site of the returned logger instead. `satisfies` keeps both the inference and
+// the excess-property check.
+const rootLoggerOptions = {
   level: process.env.ATLAS_LOG_LEVEL ?? "info",
   redact: redactPaths,
   serializers: { err: scrubErrSerializer },
@@ -408,7 +413,7 @@ const rootLoggerOptions: pino.LoggerOptions = {
     }
     return base;
   },
-};
+} satisfies pino.LoggerOptions;
 
 /**
  * Pin the root logger to fd 2 (stderr) instead of fd 1 (stdout).
@@ -454,6 +459,14 @@ function buildRootLogger(): pino.Logger {
     // `sync: true` for the same reason `packages/mcp/src/logger.ts` uses it: a
     // short-lived CLI process may `process.exit` before an async buffer
     // flushes, and a diagnostic that never lands is worse than a slow one.
+    //
+    // ⚠️ IT COVERS THIS BRANCH ONLY, AND NOT THE ONE THE EVAL RUNS ON. The eval
+    // runs with `NODE_ENV` unset (#5121), so `isDev` is true and it takes the
+    // `pino-pretty` transport above — a worker thread with no equivalent flush
+    // guarantee, whose queued frames `process.exit` can still drop. That is
+    // accepted rather than solved: on that path the log frames are a secondary
+    // diagnostic, and the record that matters is the fd-2 human transcript,
+    // which `canonical-eval-run.ts` writes with blocking syscalls.
     return pino(rootLoggerOptions, pino.destination({ dest: 2, sync: true }));
   }
   return pino(rootLoggerOptions);

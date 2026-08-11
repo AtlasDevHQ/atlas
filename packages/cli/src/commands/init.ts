@@ -125,8 +125,27 @@ function copyDirRecursive(src: string, dest: string): void {
 
 // --- Demo data seeding ---
 
+/**
+ * Seed the canonical NovaMart demo into Postgres.
+ *
+ * ⚠️ `report` IS REQUIRED, AND DELIBERATELY HAS NO DEFAULT (#5126). This
+ * function used to `console.log` its one progress line, which is fd 1 — and it
+ * is called unconditionally by `canonical-eval`, whose stdout under `--json` is
+ * the machine channel piped into `eval-mcp-llm-output.json`. So the demo
+ * label sat at the top of every uploaded artifact and that file had never
+ * parsed. It was the THIRD writer on that fd and the only one outside the eval
+ * driver, which is exactly why a fix confined to the driver missed it.
+ *
+ * A default would have made this a silent trap for the next caller: it would
+ * compile, run, and put prose on whichever fd happened to be wrong. Requiring
+ * the sink makes the channel a decision every call site has to take, and there
+ * are only three. Callers pass raw text INCLUDING the trailing newline —
+ * `console.log`'s implicit `\n` is not reproduced here, so nothing depends on
+ * which sink is supplied.
+ */
 export async function seedDemoPostgres(
   connectionString: string,
+  report: (text: string) => void,
 ): Promise<void> {
   const sqlFile = path.resolve(import.meta.dir, "../../data", DEMO_DATASET.pg);
   if (!fs.existsSync(sqlFile)) {
@@ -136,7 +155,7 @@ export async function seedDemoPostgres(
   const pool = new Pool({ connectionString, max: 1 });
   try {
     await pool.query(sql);
-    console.log(DEMO_DATASET.label);
+    report(`${DEMO_DATASET.label}\n`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(
@@ -425,7 +444,8 @@ async function profileDatasource(
       throw new Error(`--demo is not supported for ${dbType}.`);
     }
     console.log(`Seeding ecommerce demo data (${dbType})...`);
-    await seedDemoPostgres(connStr);
+    // stdout: `init` is the interactive command, its whole output is human.
+    await seedDemoPostgres(connStr, (text) => process.stdout.write(text));
     console.log("");
   }
 

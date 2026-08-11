@@ -52,6 +52,17 @@ interface Streams {
 }
 
 /**
+ * Assert the line on `carrier` actually carries the whole options set, not just
+ * the message. `redactPaths` covers `password`, so a branch that dropped the
+ * spread of `rootLoggerOptions` prints `hunter2` verbatim while every fd
+ * assertion still passes.
+ */
+function expectRedactedProbe(carrier: string): void {
+  expect(carrier).toContain("[Redacted]");
+  expect(carrier).not.toContain("hunter2");
+}
+
+/**
  * `env` is built from scratch rather than spread from `process.env`, because
  * the runner sets `NODE_ENV=test` and that is the switch selecting the branch
  * under test — inheriting it would silently collapse the dev arms onto the
@@ -66,11 +77,14 @@ async function runDriver(env: Record<string, string>): Promise<Streams> {
     stderr: "pipe",
   });
   children.push(proc);
-  const [stdout, stderr] = await Promise.all([
+  const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
     proc.exited,
   ]);
+  // A driver that logged and then crashed would satisfy every fd assertion
+  // below; this is what keeps them anchored to a completed run.
+  expect(exitCode).toBe(0);
   return { stdout, stderr };
 }
 
@@ -89,6 +103,7 @@ describe("root logger destination", () => {
       // Unset NODE_ENV really did take the pretty+colour branch — without this
       // the dev arm could be silently testing the production one.
       expect(dev.stdout).toContain(ESC);
+      expectRedactedProbe(dev.stdout);
 
       const prod = await runDriver({ NODE_ENV: "production" });
       expect(prod.stdout).toContain("probe log line");
@@ -96,6 +111,7 @@ describe("root logger destination", () => {
       // Structured JSON, no transport: the contrast that proves the two arms
       // are genuinely different branches and not the same one twice.
       expect(prod.stdout).not.toContain(ESC);
+      expectRedactedProbe(prod.stdout);
     },
     120_000,
   );
@@ -110,6 +126,7 @@ describe("root logger destination", () => {
       const { stdout, stderr } = await runDriver({ ATLAS_LOG_STDERR: "1" });
       expect(stderr).toContain("probe log line");
       expect(stderr).toContain(ESC);
+      expectRedactedProbe(stderr);
       expect(stdout).toBe("");
     },
     120_000,
@@ -125,6 +142,7 @@ describe("root logger destination", () => {
       expect(stderr).toContain("probe log line");
       expect(stdout).toBe("");
       expect(stderr).not.toContain(ESC);
+      expectRedactedProbe(stderr);
     },
     120_000,
   );
@@ -142,6 +160,7 @@ describe("root logger destination", () => {
           NODE_ENV: "production",
         });
         expect(stdout).toContain("probe log line");
+        expectRedactedProbe(stdout);
         expect(stderr).toBe("");
       }
     },

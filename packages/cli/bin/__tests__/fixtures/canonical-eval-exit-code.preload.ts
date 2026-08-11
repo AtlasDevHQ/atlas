@@ -91,7 +91,19 @@ if (failCpFrom) {
 }
 
 if (process.env.ATLAS_TEST_STUB_SEED === "1") {
-  const stubbedSeed: typeof realInit.seedDemoPostgres = async () => {
+  const stubbedSeed: typeof realInit.seedDemoPostgres = async (_conn, report) => {
+    // ⚠️ THE STUB REPORTS THE LABEL THROUGH THE INJECTED SINK. It must, and the
+    // reason is the sharpest lesson of #5126's review: the real
+    // `seedDemoPostgres` was the THIRD writer on fd 1, and a stub that simply
+    // did nothing deleted the polluter and then let the suite confirm the
+    // polluter was absent — the artifact parsed in a world where the bug had
+    // been removed by the fixture. Reporting through `report` instead makes
+    // this an assertion about the CALL SITE: does `runInstalledCanonicalEval`
+    // hand `seedDemoPostgres` the resolved human writer, or `console.log`?
+    // (The real function's own use of the sink is covered in-process by
+    // `../seed-demo-report.test.ts`, which the stub cannot reach.)
+    report(`${realInit.DEMO_DATASET.label}\n`);
+
     // ⚠️ Emitted from INSIDE the run, through the real `createLogger`, because
     // that is the mechanism (#5126): the polluting frames come from modules the
     // eval pulls in mid-flight, not from anything the driver writes. A line

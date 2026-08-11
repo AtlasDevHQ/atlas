@@ -752,7 +752,15 @@ export async function handleEval(args: string[]): Promise<void> {
 
       // Setup phase — errors here affect all cases in this schema
       try {
-        await seedDemoPostgres(connStr);
+        // The channel the surrounding block already uses: this command's
+        // `--json` / `--csv` bodies own fd 1, so the seed's progress line goes
+        // to fd 2 there. ⚠️ That does NOT make `atlas eval --json` clean — its
+        // own preamble still writes prose to fd 1 (lines 466-500), which is the
+        // same defect #5126 fixed one command over and is out of this change's
+        // scope. This call site is correct; the command around it is not.
+        await seedDemoPostgres(connStr, (text) =>
+          (csvOutput || jsonOutput ? process.stderr : process.stdout).write(text),
+        );
         installSchemaSemanticLayer(schema);
         resetCaches();
         process.env.ATLAS_DATASOURCE_URL = connStr;

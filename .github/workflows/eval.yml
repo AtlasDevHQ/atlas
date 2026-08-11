@@ -22,9 +22,19 @@ name: Canonical Eval
 #     count as a pass for every job, which is how `eval-mcp-llm` stayed
 #     green for its entire life without executing once. It is now an
 #     explicit per-label opt-in that only `eval-mcp-llm` holds, and only
-#     until #5039 wires AI_GATEWAY_API_KEY. For the two deterministic jobs
-#     a `skipped` eval step means an earlier infra step already failed the
-#     job red; the gate now says so instead of reporting a pass over it.
+#     until #5039 wires AI_GATEWAY_API_KEY. Neither job in THIS file is
+#     exempt: a `skipped` eval step here means an earlier infra step
+#     already failed the job red, and the gate now says so instead of
+#     reporting a pass over it.
+#
+# ⚠️ THE REAL-MODEL JOB LIVES IN eval-llm.yml, not here (2026-08-10).
+#   `on.pull_request.paths` is workflow-scoped — there is no per-job filter —
+#   so while `eval-mcp-llm` shared this file it fired on these two jobs'
+#   trigger paths too, and it is the only one of the three that costs money.
+#   Measured: 136 of 210 triggering merges in 90 days came SOLELY from
+#   `lib/semantic/**` and `lib/auth/server.ts`, which are precisely the two
+#   paths this file's jobs exist to cover and the LLM eval has nothing to say
+#   about. Adding a path here is free; adding one there is not.
 #   - Scope note: only the EVAL steps are shielded on PRs. Infra steps
 #     (install, types build, DB provision) fail the job red — deliberate:
 #     these checks are non-required, and /deps-update already documents the
@@ -70,13 +80,11 @@ on:
       # already matches `canonical-mcp-eval.evalspec.ts` since the
       # extension still ends in `.ts`.
       - "packages/mcp/src/__tests__/canonical-mcp-*.ts"
-      # Phase 2 part B (#2119) — eval helpers lifted from __tests__/ to
-      # src/eval/ as a public-ish surface, plus the new LLM-driven CLI
-      # binary that consumes them. Re-trigger on any of these so the
-      # eval-mcp-llm CI job catches a regression in the helpers it imports.
-      - "packages/mcp/src/eval/**"
-      - "packages/cli/bin/canonical-eval-mcp-llm.ts"
-      - "eval/canonical-questions/mcp-llm-baseline.json"
+      # ⚠️ The LLM eval's own paths are NOT here — `packages/mcp/src/eval/**`,
+      # `canonical-eval-mcp-llm.ts` and the baseline moved to
+      # eval-llm.yml with the job that reads them. Listing them here would
+      # trigger the two deterministic jobs for a change that says nothing to
+      # either, which is the mirror of the problem the split fixed.
       - "packages/mcp/src/hosted.ts"
       - "packages/mcp/src/server.ts"
       - "packages/mcp/src/actor.ts"
@@ -223,208 +231,3 @@ jobs:
           AUTH_OUTCOME: ${{ steps.auth-smoke.outcome }}
           EVAL_OUTCOME: ${{ steps.evalspec.outcome }}
         run: bash scripts/eval-informational-gate.sh canonical-mcp-eval "$AUTH_OUTCOME" "$EVAL_OUTCOME"
-
-  # LLM-driven MCP eval (#2119 Part B). Runs every canonical question
-  # through the real hosted MCP route via an LLM (Vercel AI SDK
-  # `streamText` + tools bound to MCP `tools/call`) and grades the
-  # tool-call sequence per question.
-  #
-  # Catches regressions the typed evals cannot:
-  #   - `tool_selection`: misleading tool descriptions route the LLM to
-  #     the wrong tool for a known question.
-  #   - `recovery`: the LLM ignores `unknown_*` / `ambiguous_term`
-  #     envelopes instead of self-correcting.
-  #   - `latency`: dispatch fan-out grows past the committed baseline
-  #     by >25% (early-warning signal; baseline lives at
-  #     `eval/canonical-questions/mcp-llm-baseline.json`).
-  #
-  # Needs a real datasource (the LLM may pick `executeSQL`) and an LLM
-  # API key.
-  #
-  # ⚠️ THE CREDENTIAL IS THE VERCEL AI GATEWAY, NOT A DIRECT ANTHROPIC KEY,
-  # and that is the point rather than a convenience. `providers.ts` routes
-  # hosted/SaaS deployments through the gateway, so a direct
-  # `ANTHROPIC_API_KEY` here would exercise a credential path production
-  # does not use — a green eval over the wrong client, on a second bill,
-  # with none of the gateway's spend and latency observability. The eval's
-  # whole claim is "the real path works"; the transport is part of the path.
-  # `ATLAS_MODEL` is therefore a GATEWAY model id (`<provider>/<model>`,
-  # slash-and-dots), not Anthropic's dashed API id. Cheap model + small
-  # question set is expected to keep a run well under a dollar — expected,
-  # not measured, because this job has never executed (#5039).
-  #
-  # AI_GATEWAY_API_KEY must be added as a repo secret by an org owner.
-  # Until the secret is wired the job emits a `::warning::` line and the
-  # eval is skipped — green on PRs and tag pushes alike, because this job
-  # is the sole entry on the gate script's SKIP_TOLERANT_LABELS list. That
-  # list is the whole exemption (#5040): every other job fails on a
-  # skipped step. ⚠️ This job has never actually run — #5039 wires the
-  # secret, and drops this job from the list in the same change, so that
-  # from then on a skip means the key stopped working. Once the secret
-  # lands, tag pushes become blocking via the informational-gate step. The
-  # preflight step
-  # distinguishes an unset secret from an invalid/expired one so a
-  # credential rotation doesn't masquerade as a "0/20 regression" on a
-  # tag push.
-  eval-mcp-llm:
-    name: eval-mcp-llm (#2119 Part B)
-    runs-on: ubuntu-latest
-    # Same policy as the deterministic + JWT-path jobs — PRs
-    # informational-but-visible, tag pushes blocking. A drop below the
-    # 18/20 acceptance floor must not ship in a tag.
-    timeout-minutes: 20
-    # Bind the gateway key at the job level so step-level `if:`
-    # expressions can read it via `env.AI_GATEWAY_API_KEY`. GitHub
-    # Actions does NOT allow the `secrets` context inside step-level
-    # `if:` expressions — that restriction is what trips the workflow
-    # parser ("This run likely failed because of a workflow file
-    # issue."). The job-level env binding is the canonical workaround.
-    env:
-      AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: atlas
-          POSTGRES_PASSWORD: atlas
-          POSTGRES_DB: atlas
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd="pg_isready -U atlas"
-          --health-interval=5s
-          --health-timeout=5s
-          --health-retries=10
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
-
-      - uses: ./.github/actions/setup-bun-cached
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Build @useatlas/types (resolves api imports)
-        run: bun run --filter '@useatlas/types' build
-
-      - name: Provision atlas_demo database
-        env:
-          PGPASSWORD: atlas
-        run: |
-          bun x wait-on tcp:127.0.0.1:5432 --timeout 60000
-          psql -h 127.0.0.1 -U atlas -d atlas -c "CREATE DATABASE atlas_demo;"
-
-      - name: Skip when AI_GATEWAY_API_KEY is not set
-        # `env.AI_GATEWAY_API_KEY` is the job-level binding above; that
-        # surface IS allowed in step-level `if:` (the `secrets` context
-        # itself is not). When the secret is unset the binding evaluates
-        # to the empty string — same skip behavior, valid expression.
-        if: ${{ env.AI_GATEWAY_API_KEY == '' }}
-        run: |
-          echo "::warning::AI_GATEWAY_API_KEY not configured — skipping LLM eval. Add the repo secret to enable."
-          echo "ATLAS_LLM_EVAL_SKIPPED=1" >> "$GITHUB_ENV"
-
-      - name: Verify AI_GATEWAY_API_KEY is valid
-        # Pre-flight catches the case the empty-string skip above
-        # cannot: a secret IS set but rejected (expired, malformed,
-        # billing suspended, rate-limited). Without this check the
-        # eval runs end-to-end, every LLM call fails as a
-        # `tool_selection` regression, and the run trips the
-        # acceptance floor for the wrong reason — masquerading as a
-        # real semantic-layer regression. A 30-second curl preflight
-        # makes the failure mode unambiguous.
-        #
-        # A CHAT COMPLETION, not the catalog. `gateway-catalog.ts` fetches
-        # `GET /v1/models` with no Authorization header at all — it is a
-        # public list, so it answers 200 for a revoked key and would turn
-        # this step into decoration. The one-token completion is the
-        # cheapest call that actually presents the credential. Both arms
-        # were verified against the live gateway before this step shipped:
-        # 200 with a valid key, 401 with a bad one.
-        id: preflight
-        continue-on-error: true
-        if: ${{ env.ATLAS_LLM_EVAL_SKIPPED != '1' }}
-        env:
-          ATLAS_MODEL: anthropic/claude-haiku-4.5
-        run: |
-          set -euo pipefail
-          code=$(curl -s -o /tmp/gateway.json -w "%{http_code}" \
-            -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
-            -H "content-type: application/json" \
-            -d "{\"model\":\"$ATLAS_MODEL\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" \
-            https://ai-gateway.vercel.sh/v1/chat/completions)
-          if [ "$code" != "200" ]; then
-            echo "::error::AI_GATEWAY_API_KEY rejected by the Vercel AI Gateway (HTTP $code). Body:"
-            cat /tmp/gateway.json
-            echo "::error::Rotate the repo secret before re-running."
-            exit 1
-          fi
-          echo "AI_GATEWAY_API_KEY preflight OK"
-
-      - name: Run LLM-driven MCP canonical eval
-        id: eval
-        continue-on-error: true
-        # Requires the preflight to have SUCCEEDED (not just "not skipped"):
-        # a rejected key would otherwise burn the full 20-minute eval as
-        # spurious tool_selection failures. When the key is unset the
-        # preflight is skipped, so this skips too — both outcomes reach the
-        # gate step, where `skipped` counts as a pass for THIS job only
-        # (SKIP_TOLERANT_LABELS, #5040).
-        if: ${{ steps.preflight.outcome == 'success' }}
-        env:
-          # Cheap-and-fast default: Haiku for the eval. Operators can
-          # override at the workflow-dispatch level by setting these
-          # at the job env: layer above. AI_GATEWAY_API_KEY is bound at
-          # the job level so it's already in scope here.
-          #
-          # ⚠️ The model id is the GATEWAY spelling — `anthropic/claude-haiku-4.5`,
-          # slash and dots — and NOT Anthropic's dashed API id
-          # (`claude-haiku-4-5-20251001`), which the gateway does not serve.
-          # Keep it identical to the preflight's `ATLAS_MODEL` above, or the
-          # preflight validates a model the eval never runs.
-          ATLAS_PROVIDER: gateway
-          ATLAS_MODEL: anthropic/claude-haiku-4.5
-          ATLAS_DATASOURCE_URL: postgres://atlas:atlas@127.0.0.1:5432/atlas_demo
-          # DATABASE_URL deliberately unset — the in-process auth fixture
-          # short-circuits audit writes via `hasInternalDB() === false`.
-        # JSON output captures full per-question artifacts (toolCalls,
-        # finalText, response payloads) for the upload-artifact step
-        # below — the human-readable summary truncates `finalText` and
-        # would lose the recovery-class diagnostic data.
-        #
-        # pipefail is load-bearing: the default step shell is `bash -e {0}`
-        # (NO pipefail), so without it the step's outcome is `tee`'s exit 0
-        # and a 0/20 eval run reads as success — which would neuter the
-        # informational gate below on tag pushes.
-        run: |
-          set -o pipefail
-          bun packages/cli/bin/atlas.ts canonical-eval --mcp-llm --json | tee eval-mcp-llm-output.json
-
-      - name: Upload eval artifacts on failure
-        # Captured regardless of pass/fail so a baseline drift on a
-        # green run is still inspectable; the retention budget is small
-        # enough that this is cheap. Without this step the failure
-        # bundle is stuck in the workflow run's stdout and lost the
-        # moment a maintainer closes the tab.
-        if: ${{ always() && env.ATLAS_LLM_EVAL_SKIPPED != '1' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: eval-mcp-llm-output
-          path: eval-mcp-llm-output.json
-          retention-days: 14
-          if-no-files-found: warn
-
-      - name: Informational gate (PR comment on failure; blocks tags)
-        if: always()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          EVENT_NAME: ${{ github.event_name }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          PREFLIGHT_OUTCOME: ${{ steps.preflight.outcome }}
-          EVAL_OUTCOME: ${{ steps.eval.outcome }}
-        # Both `skipped` (no AI_GATEWAY_API_KEY wired) and `success` pass —
-        # the skip only because `eval-mcp-llm` is on the gate script's
-        # SKIP_TOLERANT_LABELS list (#5040), and it emits a ::warning::
-        # saying the run proved nothing. A failed preflight (rejected key)
-        # or failed eval goes through the PR-comment / tag-blocking split
-        # in the script.
-        run: bash scripts/eval-informational-gate.sh eval-mcp-llm "$PREFLIGHT_OUTCOME" "$EVAL_OUTCOME"

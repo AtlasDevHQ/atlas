@@ -37,14 +37,13 @@ import {
   startEvalAuthServer,
   type EvalAuthFixture,
 } from "@atlas/mcp/eval/auth";
-import {
-  EvalMcpClient,
-  extractToolJson,
-  joinTextContent,
-  type ToolListEntry,
-} from "@atlas/mcp/eval/client";
+import { EvalMcpClient, type ToolListEntry } from "@atlas/mcp/eval/client";
 import { createHostedMcpRouter } from "@atlas/mcp/hosted";
-import { classifyToolContract } from "./canonical-eval-mcp-llm";
+import {
+  assertTextContractToolsPresent,
+  classifyToolContract,
+  interpretResult,
+} from "./canonical-eval-mcp-llm";
 
 // ── Public types ──────────────────────────────────────────────────────
 
@@ -231,8 +230,8 @@ export async function runToolSelectionEval(
       try {
         await client.close();
       } catch (closeErr) {
-        // intentionally ignored: surfacing the close error would mask
-        // the original connect failure, which is the actionable signal.
+        // Logged, not re-thrown: the connect failure is the actionable signal
+        // and must be the error that propagates.
         process.stderr.write(
           `[tool-selection-eval] client.close after failed connect threw: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}\n`,
         );
@@ -298,11 +297,23 @@ async function bootDefaultFixture(): Promise<EvalAuthFixture> {
 // Bind every MCP-discovered tool to a `dynamicTool` that records its
 // `name` in dispatch order. We don't need the result envelope here —
 // the grader only inspects the call sequence.
+//
+// ⚠️ ANCHORED, for the same reason the mcp-llm binder is: the imported
+// text-contract list is spelled as a NAME, so renaming `explore` would silently
+// turn the exemption back into a fabricated `{ error: "unparseable" }` for a
+// successful `ls`.
+//
+// That cannot move THIS eval's score — `gradeToolSelection` reads
+// `toolSequence[0]` only, and the name is recorded before the dispatch resolves,
+// so no result can change the verdict. The reason to fix it here anyway is
+// fidelity: the model must see the surface production shows it, or the tool
+// choice being audited is made against a lie.
 function bindToolsForRecording(
   client: { callTool: EvalMcpClient["callTool"] },
   tools: readonly ToolListEntry[],
   recorder: string[],
 ): ToolSet {
+  assertTextContractToolsPresent(tools);
   const set: Record<string, Tool> = {};
   for (const t of tools) {
     const schema =
@@ -324,17 +335,14 @@ function bindToolsForRecording(
         const result = await client.callTool(t.name, args);
         // A text-contract tool's product IS its text (#5131). This eval does
         // not grade `protocol`, so the mis-grading half of that bug never
-        // applied here — but the model-facing half matters MORE in this mode:
-        // telling a model its successful `ls` errored is exactly what makes it
-        // retry or switch tools, and tool SEQUENCE is what this eval scores.
-        // The flagged-error / empty-content carve-outs are the same ones
-        // `interpretResult` makes; see its note for why they are not shell
-        // output.
-        if (classifyToolContract(t.name) === "text" && result.isError !== true) {
-          const text = joinTextContent(result);
-          if (text !== "") return text;
-        }
-        const parsed = extractToolJson(result);
+        // applied here; the model-facing half does, and fidelity is the reason
+        // to close it (see the binder's note above).
+        //
+        // ⚠️ CALLS the shared `interpretResult` rather than restating its rule.
+        // An earlier cut spelled the same three-way decision out inline here,
+        // with a comment promising it matched — an invariant enforced by prose,
+        // which a third carve-out added on the other side would silently break.
+        const parsed = interpretResult(result, classifyToolContract(t.name));
         if (parsed.kind === "error") return parsed.envelope;
         if (parsed.kind === "unparseable") {
           return { error: "unparseable", raw: parsed.raw };

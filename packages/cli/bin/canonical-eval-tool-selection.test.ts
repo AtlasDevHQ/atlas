@@ -194,7 +194,7 @@ describe("bindToolsForRecording", () => {
     };
     const tools = __forTesting__.bindToolsForRecording(
       fakeClient,
-      [{ name: "listEntities", description: "List entities." }],
+      [{ name: "explore", description: "Explore." }, { name: "listEntities", description: "List entities." }],
       recorder,
     );
     const runner = getRunner(tools as Record<string, Tool>, "listEntities");
@@ -216,7 +216,7 @@ describe("bindToolsForRecording", () => {
     };
     const tools = __forTesting__.bindToolsForRecording(
       fakeClient,
-      [{ name: "runMetric", description: "Run a metric." }],
+      [{ name: "explore", description: "Explore." }, { name: "runMetric", description: "Run a metric." }],
       recorder,
     );
     const runner = getRunner(tools as Record<string, Tool>, "runMetric");
@@ -227,7 +227,31 @@ describe("bindToolsForRecording", () => {
     expect(recorder).toEqual(["runMetric"]);
   });
 
-  it("returns an unparseable shape when MCP content isn't JSON", async () => {
+  it("returns an unparseable shape when a JSON-contract tool's content isn't JSON", async () => {
+    const recorder: string[] = [];
+    const fakeClient = {
+      callTool: async () => fakeResult("not-json", false),
+    };
+    const tools = __forTesting__.bindToolsForRecording(
+      fakeClient,
+      [{ name: "explore", description: "Explore." }, { name: "describeEntity", description: "Describe." }],
+      recorder,
+    );
+    const runner = getRunner(tools as Record<string, Tool>, "describeEntity");
+    const result = (await runner(
+      { name: "orders" },
+      { toolCallId: "t1", messages: [] },
+    )) as { error?: string; raw?: string };
+    expect(result.error).toBe("unparseable");
+    expect(result.raw).toBe("not-json");
+    expect(recorder).toEqual(["describeEntity"]);
+  });
+
+  it("hands a TEXT-contract tool's output back verbatim rather than fabricating an error (#5131)", async () => {
+    // ⚠️ THIS TEST PREVIOUSLY ASSERTED THE OPPOSITE, on this exact tool. It
+    // pinned `{ error: "unparseable" }` for a successful `explore` — the
+    // model-facing half of #5131. Same body as the JSON case above, so the tool
+    // name is the only differentiator.
     const recorder: string[] = [];
     const fakeClient = {
       callTool: async () => fakeResult("not-json", false),
@@ -238,13 +262,58 @@ describe("bindToolsForRecording", () => {
       recorder,
     );
     const runner = getRunner(tools as Record<string, Tool>, "explore");
+    const result = await runner({ command: "ls" }, { toolCallId: "t1", messages: [] });
+    expect(result).toBe("not-json");
+    expect(recorder).toEqual(["explore"]);
+  });
+
+  it("keeps a server-FLAGGED error on a text-contract tool as an error, not shell output", async () => {
+    const recorder: string[] = [];
+    const fakeClient = {
+      callTool: async () => fakeResult("Error: sandbox failed to start", true),
+    };
+    const tools = __forTesting__.bindToolsForRecording(
+      fakeClient,
+      [{ name: "explore", description: "Explore." }],
+      recorder,
+    );
+    const runner = getRunner(tools as Record<string, Tool>, "explore");
     const result = (await runner(
       { command: "ls" },
       { toolCallId: "t1", messages: [] },
-    )) as { error?: string; raw?: string };
+    )) as { error?: string };
     expect(result.error).toBe("unparseable");
-    expect(result.raw).toBe("not-json");
     expect(recorder).toEqual(["explore"]);
+  });
+
+  it("keeps an EMPTY result on a text-contract tool as an error, not shell output", async () => {
+    const recorder: string[] = [];
+    const fakeClient = { callTool: async () => ({ content: [] }) };
+    const tools = __forTesting__.bindToolsForRecording(
+      fakeClient,
+      [{ name: "explore", description: "Explore." }],
+      recorder,
+    );
+    const runner = getRunner(tools as Record<string, Tool>, "explore");
+    const result = (await runner(
+      { command: "ls" },
+      { toolCallId: "t1", messages: [] },
+    )) as { error?: string };
+    expect(result.error).toBe("unparseable");
+  });
+
+  // The anchor is wired here too: a renamed `explore` would silently go back to
+  // handing the model `{ error: "unparseable" }` for a successful `ls`. It is
+  // inside `bindToolsForRecording` rather than around it for the same reason as
+  // in the mcp-llm binder — an unanchored binder beside it would be callable.
+  it("refuses to bind a surface missing a text-contract tool", () => {
+    expect(() =>
+      __forTesting__.bindToolsForRecording(
+        { callTool: async () => ({ content: [] }) },
+        [{ name: "runMetric", description: "Run a metric." }],
+        [],
+      ),
+    ).toThrow(/text-contract tool\(s\) not on the MCP surface: explore/);
   });
 
   it("records the tool name BEFORE awaiting dispatch (transport throw still leaves name visible)", async () => {
@@ -261,7 +330,7 @@ describe("bindToolsForRecording", () => {
     };
     const tools = __forTesting__.bindToolsForRecording(
       fakeClient,
-      [{ name: "describeEntity", description: "Describe." }],
+      [{ name: "explore", description: "Explore." }, { name: "describeEntity", description: "Describe." }],
       recorder,
     );
     const runner = getRunner(tools as Record<string, Tool>, "describeEntity");

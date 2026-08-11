@@ -29,7 +29,9 @@
  * against synthetic tool-call sequences (no real LLM tokens, no real
  * MCP connection). The end-to-end `runMcpLlmEval` integration path is
  * exercised in CI by the `eval-mcp-llm` job, which wires a real LLM
- * gated on `ANTHROPIC_API_KEY`.
+ * through the AI gateway, gated on `AI_GATEWAY_API_KEY` — NOT on
+ * `ANTHROPIC_API_KEY`, which would exercise the wrong credential path
+ * (`.github/workflows/eval-llm.yml`).
  *
  * ── Real-DB SQL execution ────────────────────────────────────────────
  *
@@ -62,9 +64,11 @@ import {
   startEvalAuthServer,
   type EvalAuthFixture,
 } from "@atlas/mcp/eval/auth";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   EvalMcpClient,
   extractToolJson,
+  joinTextContent,
   type ExtractedToolJson,
   type ToolErrorEnvelope,
   type ToolListEntry,
@@ -83,6 +87,25 @@ import {
 // ── Public types ──────────────────────────────────────────────────────
 
 /**
+ * What a tool's result is CONTRACTED to look like.
+ *
+ * - `"json"` — the tool answers with a JSON body (success) or an
+ *   `AtlasMcpToolError` envelope (failure). Non-JSON from one of these is an
+ *   MCP protocol regression and the grader fails the question for it.
+ * - `"text"` — the tool's declared output is free-form text. `explore` is a
+ *   sandboxed **shell**: `ls -la` answering with a directory listing is the
+ *   contract being honoured, not broken.
+ *
+ * Resolved once per tool at bind time by {@link classifyToolContract} and
+ * applied by {@link interpretResult}, which is where #5131 is actually closed.
+ * The stamp on {@link RecordedToolCall} is the RECORD of that decision, not the
+ * mechanism: `grade()`'s VERDICT is contract-blind ({@link isUnparseable} never
+ * sees the field), and it reads `contract` only to choose which remedy an
+ * artifact prints.
+ */
+export type ToolContract = "json" | "text";
+
+/**
  * Captured shape of one tool dispatch the LLM fired through MCP. The
  * grading code below walks the recorded sequence to decide pass / fail
  * categories — keep this shape stable; the unit tests assert on it.
@@ -92,8 +115,26 @@ export interface RecordedToolCall {
   readonly args: Readonly<Record<string, unknown>>;
   readonly latencyMs: number;
   /**
-   * Either the parsed MCP tool result (via {@link extractToolJson}) or
-   * a synthesized error envelope when the dispatch itself threw before
+   * The dispatched tool's output contract, resolved once at bind time.
+   *
+   * ⚠️ NOT WHAT CLOSES #5131 — {@link interpretResult} is, from the same value
+   * passed as an argument. This field is the forensic record of that decision,
+   * read only to shape two diagnostics: the throttle abort message, and the
+   * `protocol` artifact, where `explore / contract: text` tells an operator
+   * immediately that they are in the flagged-error-or-empty lane rather than
+   * the shell-output one. It is NOT a discriminator — {@link assertNotRateLimited}
+   * branches on the envelope, not on this.
+   *
+   * REQUIRED rather than optional-with-a-default: it costs nothing, it keeps
+   * the recorder total (no `undefined` arm to narrow at every read), and every
+   * construction site is forced to state the answer rather than inherit one.
+   */
+  readonly contract: ToolContract;
+  /**
+   * The MCP tool result read according to its contract (via
+   * {@link interpretResult} — parsed JSON for a `json` contract, the RAW TEXT
+   * BODY for a `text` one, so `ok.data` is a string there), or a synthesized
+   * error envelope when the dispatch itself threw before
    * MCP returned a frame. Synthesized envelopes carry `__transport: true`
    * + an `error`/`errorName`/`stack` triple so artifact bundles can
    * distinguish a transport hang-up from a typed `AtlasMcpToolError`.
@@ -295,8 +336,8 @@ export async function runMcpLlmEval(
       try {
         await client.close();
       } catch (closeErr) {
-        // intentionally ignored: surfacing the close error would mask
-        // the original connect failure, which is the actionable signal.
+        // Logged, not re-thrown: the connect failure is the actionable signal
+        // and must be the error that propagates.
         process.stderr.write(
           `[mcp-llm-eval] client.close after failed connect threw: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}\n`,
         );
@@ -351,6 +392,166 @@ async function bootDefaultFixture(): Promise<EvalAuthFixture> {
   return startEvalAuthServer({ mcpRouter });
 }
 
+// ── Tool output contracts ────────────────────────────────────────────
+
+/**
+ * MCP tools whose declared output is free-form TEXT rather than JSON.
+ *
+ * ⚠️ THIS IS A NAME LIST, DELIBERATELY, AND THE ALTERNATIVES WERE MEASURED
+ * RATHER THAN ASSUMED (#5131).
+ *
+ * 1. There is nothing on the wire to derive it from. `bindMcpToolsForLlm`
+ *    classifies from `ToolListEntry`, which is `{ name, description?,
+ *    inputSchema? }` — the `tools/list` response carries no statement about
+ *    the shape of a tool's OUTPUT. Any "marker set at bind time" is therefore
+ *    still computed from the name; a marker relocates this list, it cannot
+ *    replace it.
+ * 2. The one machine-readable candidate — MCP `outputSchema` — is provably
+ *    unfaithful here. In `packages/mcp/src/semantic-tools.ts`, `listEntities`,
+ *    `describeEntity` and `searchGlossary` all answer JSON and declare NO
+ *    `outputSchema`; `runMetric` is the only one in that file that does.
+ *    Exempting "no outputSchema" would exempt three of the four typed tools the
+ *    protocol check exists to protect — it would disable the detector rather
+ *    than sharpen it. `explore` declares none either, so the signal does not
+ *    discriminate in EITHER direction. (Grep the registrations rather than
+ *    trusting line numbers; an earlier draft of this note cited four and every
+ *    one had drifted before the PR merged.)
+ *
+ * What a name list genuinely gets wrong is ROT: rename or drop `explore` and
+ * the exemption silently stops matching, restoring the bug with no signal.
+ * That is closed by {@link assertTextContractToolsPresent}, which anchors every
+ * name here against the live discovered surface — not by a type, since both
+ * spellings of the type carry the same string.
+ *
+ * ── Backend dependence: what the fix removes, and what it does not ───
+ *
+ * `explore` resolves to a different sandbox backend locally than on the CI
+ * runner (`packages/api/src/lib/tools/backends/selection.ts`), which is how
+ * #5131 stayed invisible across four local runs. The fix removes the dependence
+ * on output SHAPE only. Three backend-sensitive paths remain, recorded rather
+ * than papered over — each reaches the right verdict, but the backend has not
+ * stopped mattering:
+ *
+ *   - **Latency.** The GRADER's `latencyMs` (`GradeInput`, not the per-dispatch
+ *     {@link RecordedToolCall} field) is whole-question wall clock, so a slow
+ *     sandbox cold start can trip the `baseline * 1.25` ceiling.
+ *   - **Throttling.** `rate_limited` on `explore` can come from the sandbox
+ *     backend OR the hosted quota; see {@link assertNotRateLimited}.
+ *   - **Content.** A backend that lists the semantic layer and one that fails
+ *     to start give the model different information to answer from. No grader
+ *     change can remove this — the honest fix is pinning the eval's backend.
+ */
+const TEXT_CONTRACT_TOOL_NAMES = ["explore"] as const;
+const TEXT_CONTRACT_TOOLS: ReadonlySet<string> = new Set(TEXT_CONTRACT_TOOL_NAMES);
+
+/**
+ * Tools whose successful `data` is read as parsed JSON somewhere in grading:
+ * {@link resultMatchesExpectation} via {@link isAnsweringCall}, and the
+ * `entity.query_patterns` cast in {@link gradePattern}.
+ *
+ * A text contract puts RAW PROSE in `data` ({@link interpretResult}), so a tool
+ * in both lists would have a directory listing compared against a metric's
+ * authoritative value, or `data?.entity` read off a string: no crash, no
+ * artifact, just `false`. A silent false negative rather than a loud stop —
+ * hence a COMPILE-time check rather than a comment.
+ */
+type DataReadingToolName = (typeof ANSWERING_TOOLS)[number] | "describeEntity";
+
+type _AssertContractsDisjoint =
+  Extract<
+    DataReadingToolName,
+    (typeof TEXT_CONTRACT_TOOL_NAMES)[number]
+  > extends never
+    ? true
+    : never;
+/**
+ * The assignment IS the assertion — it stops compiling if the lists overlap.
+ * Type-only on purpose: a runtime `[...ANSWERING_TOOLS, …]` here would be a TDZ
+ * reference, since `ANSWERING_TOOLS` is declared further down the file.
+ */
+const _contractsAreDisjoint: _AssertContractsDisjoint = true;
+
+/** Resolve a discovered tool's output contract. See {@link TEXT_CONTRACT_TOOLS}. */
+export function classifyToolContract(name: string): ToolContract {
+  return TEXT_CONTRACT_TOOLS.has(name) ? "text" : "json";
+}
+
+/**
+ * Read one `tools/call` result according to the calling tool's contract.
+ *
+ * ⚠️ THE CONTRACT IS APPLIED HERE, AT THE RECORDING SEAM — NOT IN THE GRADER.
+ * `grade()`'s protocol branch stays a plain `result.kind === "unparseable"`
+ * test, so a future branch that reads `kind` directly cannot reopen #5131, and
+ * a successful `ls` never wears the word "unparseable" in a failure artifact.
+ *
+ * For a `"json"` contract this is exactly {@link extractToolJson}. For a
+ * `"text"` contract the tool's product IS its text, so a successful call is
+ * recorded as `ok` carrying that text verbatim — including when the text
+ * happens to parse as JSON (`wc -l` printing `3`), which otherwise makes the
+ * SAME tool record under two different arms depending on what the directory
+ * contained.
+ *
+ * Two cases stay in the `unparseable` (→ `protocol`) lane, and both are
+ * regressions rather than shell output:
+ *
+ *   - **`isError` was flagged.** `extractToolJson` reaches its `unparseable`
+ *     arm from the `JSON.parse` catch, BEFORE it consults `isError`, so a
+ *     server-flagged error with a prose body — what the MCP SDK's own
+ *     `createToolError` emits for an uncaught throw — is indistinguishable
+ *     from shell output by shape alone. Exempting it would turn #5131's loud
+ *     false FAIL into a silent false PASS, with the model reading an internal
+ *     error message as directory contents.
+ *   - **No text content at all.** `explore` cannot produce this: it normalises
+ *     a silent command to `"(no output)"`
+ *     (`packages/api/src/lib/tools/explore.ts`), and every failure path returns
+ *     an `Error:`-prefixed string. An empty `content` array is a protocol
+ *     anomaly for every tool, whatever its output contract.
+ */
+export function interpretResult(
+  result: CallToolResult,
+  contract: ToolContract,
+): ExtractedToolJson {
+  if (contract !== "text") return extractToolJson(result);
+  const text = joinTextContent(result);
+  if (result.isError === true || text === "") {
+    // Not shell output — fall back to the JSON reading so a typed envelope is
+    // still recorded as `error`, and anything else stays `unparseable`.
+    return extractToolJson(result);
+  }
+  return { kind: "ok", data: text };
+}
+
+/**
+ * Fail the run when a declared text-contract tool is absent from the surface
+ * the eval actually discovered.
+ *
+ * This is the anchor that makes {@link TEXT_CONTRACT_TOOLS} safe to spell as
+ * names. Without it, renaming `explore` (or dropping it from the hosted
+ * registration) turns the exemption into a no-op and every successful shell
+ * call starts failing its question as `protocol` again — the #5131 defect,
+ * back, with no diagnostic. Called against the real `tools/list` result, so a
+ * rename is a loud stop at boot rather than five silent mis-graded questions.
+ */
+export function assertTextContractToolsPresent(tools: readonly ToolListEntry[]): void {
+  const discovered = new Set(tools.map((t) => t.name));
+  const missing = [...TEXT_CONTRACT_TOOLS].filter((n) => !discovered.has(n));
+  if (missing.length === 0) return;
+  throw new Error(
+    `[harness] text-contract tool(s) not on the MCP surface: ${missing.join(", ")}. ` +
+      `TEXT_CONTRACT_TOOLS exempts these from the JSON/protocol check because their ` +
+      `declared output is free-form text; a name that no longer resolves means the ` +
+      `exemption is dead and successful text output would be graded as a protocol ` +
+      `regression (#5131). If the tool was RENAMED, point TEXT_CONTRACT_TOOLS at the ` +
+      `new name. If it was deliberately REMOVED from this surface, delete the name — ` +
+      `re-adding a dead one is the wrong repair. ` +
+      `Discovered: ${
+        discovered.size === 0
+          ? "(empty — tools/list returned no tools)"
+          : [...discovered].sort().join(", ")
+      }`,
+  );
+}
+
 /**
  * Translate the MCP tool surface to a Vercel AI SDK `ToolSet`. Every
  * tool's `execute` dispatches back through the MCP transport so the
@@ -368,6 +569,13 @@ function bindMcpToolsForLlm(
   tools: readonly ToolListEntry[],
   recorder: RecordedToolCall[],
 ): ToolSet {
+  // ⚠️ THE ANCHOR LIVES INSIDE THE BINDER, NOT IN A WRAPPER AROUND IT.
+  // A wrapper leaves an unanchored binder callable beside it, so swapping the
+  // wrapper back out at the one production call site is invisible — `runMcpLlmEval`
+  // has no test, so nothing would go red. Binding a surface and vouching for it
+  // are one operation here; the sibling binder in `canonical-eval-tool-selection.ts`
+  // calls the anchor the same way, from inside itself.
+  assertTextContractToolsPresent(tools);
   // `dynamicTool` (rather than `tool`) is the right shape here: the
   // input schema comes from the MCP server at runtime, so we cannot
   // statically infer the input type. The production agent loop binds
@@ -383,6 +591,7 @@ function bindMcpToolsForLlm(
         properties: {},
         additionalProperties: true,
       };
+    const contract = classifyToolContract(t.name);
     set[t.name] = dynamicTool({
       description: t.description ?? `MCP tool ${t.name}`,
       inputSchema: jsonSchema(schema),
@@ -391,11 +600,12 @@ function bindMcpToolsForLlm(
         const start = Date.now();
         try {
           const result = await client.callTool(t.name, args);
-          const parsed = extractToolJson(result);
+          const parsed = interpretResult(result, contract);
           const latencyMs = Date.now() - start;
           recorder.push({
             name: t.name,
             args,
+            contract,
             latencyMs,
             result: parsed,
           });
@@ -420,6 +630,7 @@ function bindMcpToolsForLlm(
           recorder.push({
             name: t.name,
             args,
+            contract,
             latencyMs,
             result: { kind: "error", envelope: transportEnvelope },
           });
@@ -526,14 +737,6 @@ interface GradeInput {
 }
 
 /**
- * Per-mode grader. Pass criteria are intentionally lenient on **how**
- * the LLM arrived at the answer (multiple tool sequences are valid for
- * most questions) and strict on **whether** the answer matches the
- * question's contract. This mirrors the deterministic eval's posture —
- * `--mcp-llm` is a regression gate on tool-selection quality, not a
- * style guide for the model.
- */
-/**
  * Abort the run when any dispatch came back `rate_limited`.
  *
  * ⚠️ A THROTTLE IS A HARNESS FAULT, NOT A MODEL FAULT, AND MUST NOT BE GRADED
@@ -555,13 +758,39 @@ function assertNotRateLimited(
   if (!throttled) return;
   const envelope =
     throttled.result.kind === "error" ? throttled.result.envelope : null;
+  // ⚠️ THE REMEDY BRANCHES ON THE ENVELOPE, NOT ON THE TOOL'S CONTRACT — an
+  // earlier cut keyed it on `contract === "text"` and asserted that a throttled
+  // `explore` could only be the sandbox's limiter. That is false, and false in
+  // the dominant direction: the hosted per-OAuth-client quota runs ahead of
+  // EVERY tool body (`rateLimitOrNull` in mcp-dispatch), and `explore` is
+  // charged weight 5 there — tied with `executeSQL` for the second-priciest
+  // tool, so it is one of the largest contributors to the exhaustion
+  // `liftEvalClientRateLimit` exists to prevent. Output shape simply does not
+  // encode which limiter fired.
+  //
+  // The envelope does. The hosted limiter always sets `retry_after` + `hint`
+  // (rate-limit/middleware.ts); the sandbox path builds its envelope with no
+  // extras for `rate_limited` (tools.ts → classifyExploreError), so the field
+  // is absent there.
+  const retryAfter = (envelope as { retry_after?: unknown } | null)?.retry_after;
+  const message = typeof envelope?.message === "string" ? envelope.message : "";
+  const isHostedQuota =
+    typeof retryAfter === "number" || /hosted-MCP quota/.test(message);
+  const remedy = isHostedQuota
+    ? `This is the eval throttling ITSELF, not a model failure: the run's own dispatch ` +
+      `volume exceeded the eval client's hosted-MCP quota (${throttled.name} is just the ` +
+      `dispatch that happened to hit it). Raise it via liftEvalClientRateLimit ` +
+      `(EVAL_CLIENT_REQUESTS_PER_MINUTE).`
+    : `The envelope carries no hosted-quota markers, so a limiter DOWNSTREAM of the eval ` +
+      `client fired — for a text-contract tool that is the sandbox backend ` +
+      `(classifyExploreError); for a JSON one, the datasource QPM/pool or the billing ` +
+      `throttle. Raising EVAL_CLIENT_REQUESTS_PER_MINUTE will not help; read the message ` +
+      `above and check that limiter.`;
   throw new Error(
-    `[harness] ${q.id}: MCP dispatch was rate limited on ${throttled.name} — ` +
-      `${envelope?.message ?? "no message"} ` +
-      `This is the eval throttling ITSELF, not a model failure: the run's own ` +
-      `dispatch volume exceeded the eval client's hosted-MCP quota. Raise it via ` +
-      `liftEvalClientRateLimit (EVAL_CLIENT_REQUESTS_PER_MINUTE) rather than ` +
-      `letting the throttle be graded as a recovery regression.`,
+    `[harness] ${q.id}: MCP dispatch was rate limited on ${throttled.name} ` +
+      `(contract: ${throttled.contract}) — ${message || "no message"} ${remedy} ` +
+      `Either way the run stops rather than letting the throttle be graded as a ` +
+      `recovery regression.`,
   );
 }
 
@@ -585,9 +814,33 @@ function grade(input: GradeInput): McpLlmOutcome {
       category: "protocol",
       tool: unparseable.name,
       args: unparseable.args,
-      response: { raw: unparseable.result.raw },
-      expected: "JSON envelope from MCP tool",
-      summary: `MCP tool ${unparseable.name} returned non-JSON content`,
+      response: { raw: unparseable.result.raw, contract: unparseable.contract },
+      // ⚠️ THE REMEDY DIFFERS BY CONTRACT, AND THE WRONG ONE IS A NO-OP.
+      // A text-contract tool only reaches this branch through
+      // `interpretResult`'s two carve-outs, and in both the tool is ALREADY in
+      // TEXT_CONTRACT_TOOLS — the anchor guarantees it or the run would not
+      // have booted. Telling that operator to add it would be an instruction
+      // that provably changes nothing. The json arm is the newly-added-text-
+      // tool case, which the anchor cannot detect (it proves declared ⊆
+      // discovered, never the reverse).
+      expected:
+        unparseable.contract === "text"
+          ? "text body from a declared text-contract tool"
+          : "JSON envelope from MCP tool",
+      summary:
+        unparseable.contract === "text"
+          ? `MCP tool ${unparseable.name} is a DECLARED text-contract tool, so this is ` +
+            `NOT shell output: it ${
+              unparseable.result.raw === ""
+                ? "returned no text content at all"
+                : "carried a server-flagged error with a prose body"
+            }. Adding it to TEXT_CONTRACT_TOOLS will not help — it is already there. ` +
+            `Check the sandbox backend the eval resolved (backends/selection.ts).`
+          : `MCP tool ${unparseable.name} returned content that could not be read as ` +
+            `JSON. If this tool's DECLARED output is free-form text (as \`explore\`'s ` +
+            `is), add it to TEXT_CONTRACT_TOOLS; otherwise this is a genuine MCP ` +
+            `protocol regression — note that a server-flagged error carrying a prose ` +
+            `body also lands here.`,
     });
   }
 
@@ -647,6 +900,14 @@ function grade(input: GradeInput): McpLlmOutcome {
   return modeOutcome;
 }
 
+/**
+ * Per-mode grader. Pass criteria are intentionally lenient on **how**
+ * the LLM arrived at the answer (multiple tool sequences are valid for
+ * most questions) and strict on **whether** the answer matches the
+ * question's contract. This mirrors the deterministic eval's posture —
+ * `--mcp-llm` is a regression gate on tool-selection quality, not a
+ * style guide for the model.
+ */
 function gradeByMode(
   q: Question,
   toolCalls: readonly RecordedToolCall[],
@@ -1355,6 +1616,17 @@ function findSqlMatch(
   });
 }
 
+/**
+ * A call whose result could not be read as the protocol requires.
+ *
+ * ⚠️ DELIBERATELY CONTRACT-BLIND. #5131 was a text-output tool graded against
+ * the JSON contract, and the tempting fix was a `contract === "json"` clause
+ * right here — which would have put the exemption in a guard body, leaving
+ * every other reader of `result.kind` free to reopen the bug. The contract is
+ * applied by {@link interpretResult} at the recording seam instead, so by the
+ * time a call reaches this predicate `unparseable` already means the same
+ * thing for every tool: nobody could read it, and that is a regression.
+ */
 type UnparseableCall = RecordedToolCall & {
   readonly result: { readonly kind: "unparseable"; readonly raw: string };
 };
@@ -1385,6 +1657,11 @@ function isTransportFail(c: RecordedToolCall): c is ErrorCall {
  * dependency on the per-mode graders' shape and lock the grader
  * implementation. The unit tests in `canonical-eval-mcp-llm.test.ts`
  * are the only intended consumers.
+ *
+ * `classifyToolContract`, `interpretResult` and `assertTextContractToolsPresent`
+ * are deliberately NOT here: `canonical-eval-tool-selection.ts` consumes them as
+ * real dependencies, so they are ordinary top-level exports. Listing them here
+ * as well would imply a test-only surface they do not have.
  */
 export const __forTesting__ = {
   grade: (input: GradeInput) => grade(input),

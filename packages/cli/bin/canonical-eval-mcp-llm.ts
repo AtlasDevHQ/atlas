@@ -78,6 +78,10 @@ import {
   type ToolContract,
 } from "@atlas/mcp/eval/tool-contract";
 import {
+  isRateLimitedEnvelope,
+  throttleAbortError,
+} from "@atlas/mcp/eval/throttle";
+import {
   type FailureCategory,
   type McpFailureArtifact,
 } from "@atlas/mcp/eval/failure-artifact";
@@ -725,45 +729,18 @@ function assertNotRateLimited(
   toolCalls: readonly RecordedToolCall[],
 ): void {
   const throttled = toolCalls.find(
-    (c) => c.result.kind === "error" && c.result.envelope.code === "rate_limited",
+    (c) => c.result.kind === "error" && isRateLimitedEnvelope(c.result.envelope),
   );
-  if (!throttled) return;
-  const envelope =
-    throttled.result.kind === "error" ? throttled.result.envelope : null;
-  // ⚠️ THE REMEDY BRANCHES ON THE ENVELOPE, NOT ON THE TOOL'S CONTRACT — an
-  // earlier cut keyed it on `contract === "text"` and asserted that a throttled
-  // `explore` could only be the sandbox's limiter. That is false, and false in
-  // the dominant direction: the hosted per-OAuth-client quota runs ahead of
-  // EVERY tool body (`rateLimitOrNull` in mcp-dispatch), and `explore` is
-  // charged weight 5 there — tied with `executeSQL` for the second-priciest
-  // tool, so it is one of the largest contributors to the exhaustion
-  // `liftEvalClientRateLimit` exists to prevent. Output shape simply does not
-  // encode which limiter fired.
-  //
-  // The envelope does. The hosted limiter always sets `retry_after` + `hint`
-  // (rate-limit/middleware.ts); the sandbox path builds its envelope with no
-  // extras for `rate_limited` (tools.ts → classifyExploreError), so the field
-  // is absent there.
-  const retryAfter = (envelope as { retry_after?: unknown } | null)?.retry_after;
-  const message = typeof envelope?.message === "string" ? envelope.message : "";
-  const isHostedQuota =
-    typeof retryAfter === "number" || /hosted-MCP quota/.test(message);
-  const remedy = isHostedQuota
-    ? `This is the eval throttling ITSELF, not a model failure: the run's own dispatch ` +
-      `volume exceeded the eval client's hosted-MCP quota (${throttled.name} is just the ` +
-      `dispatch that happened to hit it). Raise it via liftEvalClientRateLimit ` +
-      `(EVAL_CLIENT_REQUESTS_PER_MINUTE).`
-    : `The envelope carries no hosted-quota markers, so a limiter DOWNSTREAM of the eval ` +
-      `client fired — for a text-contract tool that is the sandbox backend ` +
-      `(classifyExploreError); for a JSON one, the datasource QPM/pool or the billing ` +
-      `throttle. Raising EVAL_CLIENT_REQUESTS_PER_MINUTE will not help; read the message ` +
-      `above and check that limiter.`;
-  throw new Error(
-    `[harness] ${q.id}: MCP dispatch was rate limited on ${throttled.name} ` +
-      `(contract: ${throttled.contract}) — ${message || "no message"} ${remedy} ` +
-      `Either way the run stops rather than letting the throttle be graded as a ` +
-      `recovery regression.`,
-  );
+  if (!throttled || throttled.result.kind !== "error") return;
+  // ⚠️ CALLS the shared builder rather than restating the remedy. The
+  // hosted-vs-downstream branch is the part #5133 measured wrong, and
+  // `--tool-selection` grew the same abort in #5136 — two copies of a rule that
+  // subtle is two chances to reintroduce it, with only one under test at a time.
+  throw throttleAbortError(q.id, {
+    toolName: throttled.name,
+    contract: throttled.contract,
+    envelope: throttled.result.envelope,
+  });
 }
 
 function grade(input: GradeInput): McpLlmOutcome {

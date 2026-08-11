@@ -217,6 +217,13 @@ describe("gradeMetric", () => {
     // The fixture carries `spend` because the metric's own SQL does — a keyed
     // expectation is graded on its MEASURES now (#5128), and a `query` answer
     // reaches them through the nested `data` array like any other.
+    //
+    // ⚠️ TWO GROUPS HERE; THE LIVE EXPECTATION HAS TWENTY. `top_customers_by_spend`
+    // ends `LIMIT 20` — the only LIMIT in the corpus — so a model that lists its
+    // top 10 is short 10 groups and fails. That is the `top-N` entry in
+    // `keyedResultMatches`' known-limits block, and it failed identically under
+    // the rule this PR replaces. This fixture is deliberately reduced to keep
+    // the test about `query`'s nested `data` reaching the comparison at all.
     const out = gradeMetric(q, calls, "Ada and Grace.", 9, {
       kind: "keyed",
       groups: [
@@ -984,7 +991,7 @@ describe("keyed comparison — substance over labels (#5128)", () => {
     // happens to carry two distinct values; add one plausible bystander and the
     // same wrong grouping passes.
     //
-    // Recorded rather than fixed because the alternative — tying condition 2 to
+    // Recorded rather than fixed (#5143) because the alternative — tying condition 2 to
     // a specific column — needs to know which column is the grouping key on the
     // OBSERVED side, which is exactly the presentation-level guess this issue
     // exists to stop making. Condition 1 is the grading; condition 2 is a shape
@@ -1084,6 +1091,45 @@ describe("keyed comparison — substance over labels (#5128)", () => {
     ];
     const pq = patternQuestion("cq-022", "Orders", "promo_types", ["nothing-matches-this"]);
     expect(gradePattern(pq, identical, "", 8, withNullGroup).status).toBe("pass");
+  });
+
+  it("⚠️ a COALESCE-rendered NULL group still fails the shape check — the NULL fix does NOT cover it", () => {
+    // ⚠️ ASSERTS A LIMITATION, and specifically the one a reader will assume the
+    // NULL fix closed. Dropping NULL labels from the cardinality makes the
+    // BYTE-IDENTICAL answer pass (pinned above). It does NOT make
+    // `COALESCE(promotion_type, 'unknown')` pass: the model renders the null
+    // group as a value, so the observed column carries 3 distinct values against
+    // an authoritative 2.
+    //
+    // Recorded rather than fixed because it failed under the rule this PR
+    // replaces too — set equality on labels implies equality of cardinality, so
+    // `{percent_off, free_shipping, "null"}` never matched
+    // `{percent_off, free_shipping, unknown}` either. Not a regression; a
+    // pre-existing class, tracked in #5143.
+    const withNullGroup = {
+      kind: "keyed",
+      groups: [
+        { label: "percent_off", measures: [800] },
+        { label: "free_shipping", measures: [300] },
+        { label: null, measures: [3105] },
+      ],
+    } as const satisfies MetricExpectation;
+    const coalesced = [
+      sqlAnswer(
+        "SELECT COALESCE(promotion_type, 'unknown') AS t, COUNT(*) AS orders FROM orders GROUP BY 1",
+        ["t", "orders"],
+        [
+          { t: "percent_off", orders: 800 },
+          { t: "free_shipping", orders: 300 },
+          { t: "unknown", orders: 3105 },
+        ],
+      ),
+    ];
+    const pq = patternQuestion("cq-022", "Orders", "promo_types", ["nothing-matches-this"]);
+    // Condition 1 is satisfied — all three groups are represented — so this is
+    // condition 2 alone, which is what makes it a shape limitation rather than a
+    // grading disagreement.
+    expect(gradePattern(pq, coalesced, "", 8, withNullGroup).status).toBe("fail");
   });
 
   it("throws rather than failing the model when ground truth has no groups", () => {

@@ -1300,11 +1300,30 @@ function resultMatchesExpectation(data: unknown, expectation: MetricExpectation)
  * condition 1 does the grading. `keyed comparison … > a bystander column can
  * satisfy the shape check` pins the honest behaviour rather than a hoped-for one.
  *
- * ⚠️ KNOWN LIMIT: condition 2 wants ROWS. A model that answers a two-group
- * question with one pivoted row (`COUNT(*) FILTER (WHERE …) AS with_promo, …`)
- * has answered correctly and is failed here, because no column of a single row
- * has two distinct values. Rare from a model writing `GROUP BY` SQL. Recorded
- * as a known limit, not defended as ideal.
+ * ⚠️ KNOWN LIMITS, ALL OF THEM CONDITION 2, AND NONE OF THEM NEW. Condition 2
+ * wants the observed result to split into the authoritative number of groups,
+ * so it fails four correct-but-differently-shaped answers:
+ *
+ *   pivoted     one row of `COUNT(*) FILTER (WHERE …) AS with_promo, …` — no
+ *               column of a single row has two distinct values
+ *   top-N       `top_customers_by_spend` ends `LIMIT 20`, so a model that lists
+ *               its top 10 is short 10 groups. The only LIMIT in the corpus
+ *   rollup      an appended `Total` row makes the key column N+1 distinct
+ *   COALESCE    `COALESCE(channel, 'unknown')` renders a NULL group as a value,
+ *               so the observed count is N where the authoritative is N−1
+ *
+ * ⚠️ EACH OF THESE FAILED UNDER THE RULE THIS ONE REPLACES TOO, and that is the
+ * claim to check before "fixing" one. The old rule was set EQUALITY on labels,
+ * which implies equality of cardinality — so every row above was a `FAIL` on
+ * both sides of this change. This comparison is stricter on VALUES and looser
+ * on LABELS than its predecessor; on cardinality it is neither.
+ *
+ * They are not fixed here because the fix needs to know WHICH observed column
+ * is the grouping key, and guessing that from the result's presentation is the
+ * class of move #5128 exists to stop making. Tracked in #5143, together with
+ * condition 2's opposite weakness — a bystander column with the right distinct
+ * count satisfies it for free. The honest behaviour on both sides is pinned by
+ * tests rather than described and hoped for.
  *
  * Throws rather than returning `false` on an empty `groups` — that means ground
  * truth was never established, and charging it to the model would print a

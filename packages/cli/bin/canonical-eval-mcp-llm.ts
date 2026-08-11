@@ -1168,10 +1168,11 @@ function resultMatchesExpectation(data: unknown, expectation: MetricExpectation)
  *  1. **every authoritative GROUP is represented** — for each group, at least
  *     one of the numbers it computed has an approximate match among the
  *     observed numbers, modulo {@link UNIT_SCALINGS}. Subset, not equality; and
- *  2. **some** column's distinct-value count equals the number of DISTINCT
- *     NON-NULL authoritative labels — {@link authoritativeLabels}, **not**
- *     `groups.length`. Per-column and distinct, so extra breakdown rows on an
- *     existing group don't move it.
+ *  2. **one column SEPARATES the authoritative groups at the expected
+ *     cardinality** — some observed column whose distinct-value count matches
+ *     the authoritative one AND which gives a DIFFERENT value to each
+ *     authoritative label ({@link separatesAuthoritativeGroups}). Per-column and
+ *     distinct, so extra breakdown rows on an existing group don't move it.
  *
  * ⚠️ CONDITION 1 IS PER GROUP, NOT PER CELL, AND THE DIFFERENCE IS INSTANCE #4
  * OF THIS ISSUE'S OWN TABLE. The obvious spelling — *every authoritative
@@ -1190,15 +1191,27 @@ function resultMatchesExpectation(data: unknown, expectation: MetricExpectation)
  * a dropped filter moves every number in every group, so no group is
  * represented; a missing group is exactly a group with nothing matched.
  *
- * ⚠️ CONDITION 2 IS WEAKER THAN IT READS, and that is stated rather than
- * implied. It accepts if ANY column — including a bystander the model happened
- * to select — carries the right number of distinct values, so at a group count
- * of 2 a stray boolean-ish column satisfies it for free, and at a group count
- * of 1 any constant column does. It is a shape guard against an answer with the
- * right numbers and no grouping at all, not a second correctness check;
- * condition 1 does the grading. The bystander-column test in
- * `canonical-eval-mcp-llm.test.ts` pins that honest behaviour rather than a
- * hoped-for one.
+ * ⚠️ CONDITION 2 REQUIRES THE COLUMN TO SEPARATE THE GROUPS, NOT MERELY TO COUNT
+ * TO THE RIGHT NUMBER (#5143). The earlier spelling accepted if ANY column
+ * carried the authoritative distinct count, which is nearly vacuous in the
+ * permitting direction: a bystander does it for free. Measured — the
+ * *wrong grouping whose numbers happen to CONTAIN the authoritative ones*
+ * fixture (five shipping regions against a two-group ground truth) failed ONLY
+ * because none of its columns happened to carry two distinct values. Adding one
+ * plausible `domestic: yes/no` column passed the same wrong grouping, and that
+ * was pinned as a limitation rather than fixed.
+ *
+ * Separation closes it without guessing which observed column is the grouping
+ * key — the guess #5128 exists to stop making. The candidate column is not
+ * named or positioned; it EARNS the role by being able to tell the
+ * authoritative groups apart, which is what a grouping key does and what a
+ * bystander cannot. `domestic` gives both represented rows `"yes"`, so it
+ * separates nothing and no longer counts.
+ *
+ * It stays a shape guard, not a second correctness check — condition 1 does the
+ * grading. And it stays weak in one place, stated rather than implied: at a
+ * group count of 1 there is no partition to disagree about, so any column with
+ * one distinct value satisfies it.
  *
  * ⚠️ CONDITION 1 HAS ITS OWN WEAKNESS, AND IT IS A FALSE **POSITIVE** — the one
  * direction this issue was not about. The observed numbers are one flat pool,
@@ -1212,41 +1225,45 @@ function resultMatchesExpectation(data: unknown, expectation: MetricExpectation)
  * need not. Tracked in #5143; not fixed here because a multiset/consume-on-match
  * rule is new grading machinery arriving with no round left to review it.
  *
- * ⚠️ KNOWN LIMITS, ALL SHAPE-RELATED, NONE OF THEM NEW. Four
- * correct-but-differently-shaped answers fail:
+ * ⚠️ KNOWN LIMITS. Of the four correct-but-differently-shaped answers #5143
+ * listed, ONE is closed here and three are not — and which is which is a
+ * statement about what condition 2 can express, not about how much effort was
+ * spent:
  *
- *   pivoted     one row of `COUNT(*) FILTER (WHERE …) AS with_promo, …` — no
- *               column of a single row has two distinct values
- *   top-N       `top_customers_by_spend` ends `LIMIT 20`, so a model that lists
- *               its top 10 is short 10 groups on condition 2 — AND on condition
- *               1, unless the omitted customers' `order_count`s collide with a
- *               listed one's. The only `LIMIT` among the statements
- *               `resolveExpectations` executes; four entity `query_patterns`
- *               carry one too, but no question reaches them
- *   rollup      an appended `Total` row makes the key column N+1 distinct
- *   COALESCE    `COALESCE(channel, 'unknown')` renders a NULL group as a value,
- *               so the observed count is N where the authoritative is N−1
+ *   COALESCE    CLOSED. `COALESCE(channel, 'unknown')` renders a NULL group as
+ *               a value, so the observed count is N where {@link
+ *               authoritativeLabels} counts N−1. The two sides now disagree by
+ *               construction, and the fix is to say so: an expectation carrying
+ *               a NULL group accepts N−1 OR N ({@link expectedCardinalities}).
+ *   pivoted     NOT CLOSED, AND NOT CLOSEABLE HERE. One row of `COUNT(*) FILTER
+ *               (WHERE …) AS with_promo, …` puts the grouping key in the COLUMN
+ *               NAMES, so no column separates anything — which is the same shape
+ *               as the ungrouped answer condition 2 exists to reject. A rule
+ *               that admits the pivot admits `SELECT COUNT(*) a, COUNT(*) b`
+ *               whose two numbers happen to hit both groups. Accepting pivots
+ *               means DELETING condition 2, not refining it.
+ *   rollup      NOT CLOSED. An appended `Total` row makes the key column N+1
+ *               distinct. Separable from a genuinely wrong grouping only by
+ *               recognising the extra row as a TOTAL of the others — real new
+ *               machinery, and a sixth heuristic on a comparison whose first
+ *               five were all wrong.
+ *   top-N       NOT A CONDITION-2 QUESTION AT ALL. `top_customers_by_spend` ends
+ *               `LIMIT 20`, so a top-10 answer is short ten groups on CONDITION
+ *               1 — every one of those groups' measures is absent. Fixing
+ *               condition 2 could never have unblocked it, and #5143's table
+ *               cites only the cardinality half.
  *
- * Three are condition 2 alone; top-N is both, which matters because fixing
- * condition 2 in #5143 would NOT unblock it.
+ * ⚠️ THE THREE THAT REMAIN FAILED UNDER THE RULE THIS ONE REPLACES TOO —
+ * verified row by row against `origin/main`, and the claim to re-check before
+ * "fixing" one. The old rule was set equality on labels, i.e. cardinality
+ * **and** membership: pivoted, top-N and rollup failed it on cardinality, and
+ * COALESCE failed it on membership (`{…, "null"}` vs `{…, unknown}` — same size,
+ * different members).
  *
- * ⚠️ EACH OF THESE FAILED UNDER THE RULE THIS ONE REPLACES TOO — verified row by
- * row against `origin/main`, and the claim to re-check before "fixing" one. The
- * old rule was set equality on labels, i.e. cardinality **and** membership:
- * pivoted, top-N and rollup failed it on cardinality, and COALESCE failed it on
- * membership (`{…, "null"}` vs `{…, unknown}` — same size, different members).
- *
- * So against its predecessor this comparison is stricter on VALUES and looser on
- * LABELS. On cardinality it is **almost** identical: the one flip is that NULL
- * labels no longer count toward the target, which is what lets a byte-identical
- * answer to a NULL-grouped question pass — pinned by *passes an identical answer
- * when the authoritative grouping has a NULL key*.
- *
- * The four are not fixed here because the fix needs to know WHICH observed column
- * is the grouping key, and guessing that from the result's presentation is the
- * class of move #5128 exists to stop making. Tracked in #5143 together with
- * condition 2's opposite weakness; the honest behaviour on both sides is pinned
- * by tests.
+ * So against its predecessor this comparison is stricter on VALUES, looser on
+ * LABELS, and — since #5143 — stricter on SHAPE in the permitting direction
+ * while accepting the one rendering difference that made ground truth and the
+ * answer disagree about how many groups there were.
  *
  * Throws rather than returning `false` on ground truth that cannot adjudicate
  * anything — empty `groups`, or every grouping key NULL. That means ground truth
@@ -1301,24 +1318,182 @@ function keyedResultMatches(
     return labelSetMatches(rows, labels);
   }
 
-  const observed = numericValues(rows);
+  // Row-indexed rather than one flat pool, because condition 2 needs to know
+  // WHICH rows carry a group's numbers, not merely that some row does. Condition
+  // 1's verdict is unchanged by the indexing: "some row carries a match" and
+  // "the flat pool carries a match" are the same predicate over the same cells.
+  const byRow = rows.map((row) => numericValues([row]));
+
+  const representingRows = expectation.groups.map((g) =>
+    rowsRepresenting(g, byRow),
+  );
   const everyGroupRepresented = expectation.groups.every(
-    (g) =>
+    (g, i) =>
       // A group the authoritative SQL gave no numbers for has nothing to match;
       // it is carried by the cardinality check alone.
-      g.measures.length === 0 ||
-      g.measures.some((measure) =>
-        observed.some((candidate) =>
-          UNIT_SCALINGS.some((s) => approximatelyEqual(candidate * s, measure)),
-        ),
-      ),
+      g.measures.length === 0 || (representingRows[i] as ReadonlySet<number>).size > 0,
   );
   if (!everyGroupRepresented) return false;
 
-  for (const set of columnValueSets(rows).values()) {
-    if (set.size === labels.size) return true;
+  return separatesAuthoritativeGroups(rows, expectation, representingRows);
+}
+
+/**
+ * The rows whose numbers include one of this group's measures, modulo
+ * {@link UNIT_SCALINGS}.
+ *
+ * A group can legitimately land on more than one row — the *stock health*
+ * fixture has one row carrying two authoritative groups' measures in different
+ * columns — so this is a SET, and {@link separatesAuthoritativeGroups} picks a
+ * representative from it rather than assuming there is only one.
+ */
+function rowsRepresenting(
+  group: AuthoritativeGroup,
+  byRow: ReadonlyArray<readonly number[]>,
+): ReadonlySet<number> {
+  const out = new Set<number>();
+  byRow.forEach((values, index) => {
+    const hit = group.measures.some((measure) =>
+      values.some((candidate) =>
+        UNIT_SCALINGS.some((s) => approximatelyEqual(candidate * s, measure)),
+      ),
+    );
+    if (hit) out.add(index);
+  });
+  return out;
+}
+
+/**
+ * Condition 2: some observed column both counts to the authoritative grouping
+ * cardinality AND gives a different value to each authoritative label.
+ *
+ * ⚠️ SEPARATION IS WHAT MAKES THE COLUMN A GROUPING KEY, and it is deliberately
+ * not a guess about which column that is. The old rule was cardinality alone, so
+ * a bystander column with the right number of distinct values satisfied it for
+ * free — measured on the *bystander column* fixture, where a plausible
+ * `domestic: yes/no` beside a wrong five-region grouping turned a FAIL into a
+ * PASS. Here `domestic` gives both represented rows `"yes"`, so it separates
+ * nothing and cannot stand in for the key.
+ *
+ * ⚠️ LABELS, NOT GROUPS, ARE WHAT MUST BE SEPARATED. Two authoritative groups
+ * whose labels case-fold together (`'In Stock'` / `'in stock '`) are ONE group
+ * as far as the observed result can tell — {@link authoritativeLabels} already
+ * collapses them for the count — so requiring them to land on different values
+ * would fail a byte-correct answer. They are collapsed here through the same
+ * {@link cellKey}, from the same expectation, so the two cannot drift apart.
+ *
+ * ⚠️ A MATCHING, NOT A GREEDY WALK. A label class may be carried by several rows
+ * and two classes' candidate rows may overlap, so "assign each class a row and
+ * hope" can fail on an assignment order while a valid one exists. The augmenting
+ * search below answers the question the rule actually asks — *does a system of
+ * distinct representatives exist* — rather than an order-dependent approximation
+ * of it.
+ */
+function separatesAuthoritativeGroups(
+  rows: ReadonlyArray<Record<string, unknown>>,
+  expectation: KeyedExpectation,
+  representingRows: ReadonlyArray<ReadonlySet<number>>,
+): boolean {
+  // label key → the rows any of its groups is represented by.
+  const rowsByLabel = new Map<string, Set<number>>();
+  expectation.groups.forEach((g, i) => {
+    const key = cellKey(g.label);
+    // A NULL-labelled group is excluded from the cardinality target
+    // (`authoritativeLabels`) because the observed side cannot produce one, so
+    // it has no label to be separated BY either. It is still graded — condition
+    // 1 covers it — it just does not constrain the shape.
+    if (key === null) return;
+    let set = rowsByLabel.get(key);
+    if (!set) {
+      set = new Set();
+      rowsByLabel.set(key, set);
+    }
+    for (const r of representingRows[i] as ReadonlySet<number>) set.add(r);
+  });
+
+  const targets = expectedCardinalities(expectation);
+  for (const [column, values] of columnValueSets(rows)) {
+    if (!targets.has(values.size)) continue;
+    const candidates = [...rowsByLabel.values()].map(
+      (rowIndices) => cellKeysAt(rows, rowIndices, column),
+    );
+    if (hasDistinctRepresentatives(candidates)) return true;
   }
   return false;
+}
+
+/**
+ * The distinct-value counts an observed column may carry and still be the
+ * grouping key.
+ *
+ * `authoritativeLabels().size` is the base — the NON-NULL, case-folded label
+ * count. The `+ 1` arm exists for exactly one rendering difference, and it is
+ * #5143's COALESCE case: a NULL authoritative group is dropped from the base
+ * because {@link columnValueSets} cannot produce a nullish cell on the observed
+ * side, but `COALESCE(channel, 'unknown')` renders that same group as an
+ * ordinary VALUE — so the model's key column carries one more distinct value
+ * than ground truth counts, for an answer that is byte-correct.
+ *
+ * ⚠️ CONDITIONAL ON GROUND TRUTH HAVING A NULL GROUP, not a blanket tolerance.
+ * A free `N+1` would also admit an appended `Total` row and a genuinely-finer
+ * grouping that happens to be one wider, on every expectation — including the
+ * ones with no NULL group to explain it. The widening is licensed by a fact
+ * about the AUTHORITATIVE side, so it is available only where that fact holds.
+ */
+function expectedCardinalities(expectation: KeyedExpectation): ReadonlySet<number> {
+  const base = authoritativeLabels(expectation).size;
+  const hasNullGroup = expectation.groups.some((g) => cellKey(g.label) === null);
+  return hasNullGroup ? new Set([base, base + 1]) : new Set([base]);
+}
+
+/** The {@link cellKey}s `column` takes across the given rows, nullish cells dropped. */
+function cellKeysAt(
+  rows: ReadonlyArray<Record<string, unknown>>,
+  rowIndices: ReadonlySet<number>,
+  column: string,
+): ReadonlySet<string> {
+  const out = new Set<string>();
+  for (const i of rowIndices) {
+    const key = cellKey((rows[i] as Record<string, unknown>)[column]);
+    if (key !== null) out.add(key);
+  }
+  return out;
+}
+
+/**
+ * Can each candidate set be assigned a value no other set takes — a system of
+ * distinct representatives?
+ *
+ * Kuhn's augmenting-path matching. Exact rather than greedy: with candidate sets
+ * `[{a}, {a, b}]` a left-to-right walk assigns `a` to the first and then finds
+ * `b` for the second, but `[{a, b}, {a}]` assigns `a` to the first and fails —
+ * same family, opposite verdict. Augmenting re-homes the earlier assignment
+ * instead of giving up, so the answer does not depend on the order the
+ * expectation happened to list its groups in.
+ *
+ * An EMPTY candidate set can never be assigned, which is the right answer: a
+ * label whose rows all carry a null cell in this column is not separated by it.
+ */
+function hasDistinctRepresentatives(
+  candidates: ReadonlyArray<ReadonlySet<string>>,
+): boolean {
+  const takenBy = new Map<string, number>();
+  const assign = (index: number, seen: Set<string>): boolean => {
+    for (const value of candidates[index] as ReadonlySet<string>) {
+      if (seen.has(value)) continue;
+      seen.add(value);
+      const holder = takenBy.get(value);
+      if (holder === undefined || assign(holder, seen)) {
+        takenBy.set(value, index);
+        return true;
+      }
+    }
+    return false;
+  };
+  for (let i = 0; i < candidates.length; i++) {
+    if (!assign(i, new Set())) return false;
+  }
+  return true;
 }
 
 /**

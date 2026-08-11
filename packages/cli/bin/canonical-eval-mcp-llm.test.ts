@@ -985,20 +985,22 @@ describe("keyed comparison — substance over labels (#5128)", () => {
     expect(gradePattern(q, calls, "", 8, PROMO_GROUND_TRUTH).status).toBe("fail");
   });
 
-  it("⚠️ a BYSTANDER column satisfies the shape check — pinning the honest weakness", () => {
-    // ⚠️ THIS TEST ASSERTS A LIMITATION, NOT A GUARANTEE, AND THAT IS THE POINT.
-    // Condition 2 accepts if ANY column has the authoritative distinct count —
-    // including a column that has nothing to do with the grouping. The
-    // wrong-grouping fixture above fails only because none of ITS columns
-    // happens to carry two distinct values; add one plausible bystander and the
-    // same wrong grouping passes.
+  it("a BYSTANDER column no longer satisfies the shape check (#5143)", () => {
+    // ⚠️ THIS TEST WAS INVERTED BY #5143 — it asserted the opposite, as a pinned
+    // limitation, and the fix was required to make it go red deliberately.
     //
-    // Recorded rather than fixed (#5143) because the alternative — tying condition 2 to
-    // a specific column — needs to know which column is the grouping key on the
-    // OBSERVED side, which is exactly the presentation-level guess this issue
-    // exists to stop making. Condition 1 is the grading; condition 2 is a shape
-    // guard against an ungrouped answer, and it is weak on purpose. Anyone
-    // strengthening it should make this test go red deliberately.
+    // The old condition 2 accepted if ANY column carried the authoritative
+    // distinct count, including a column with nothing to do with the grouping.
+    // The wrong-grouping fixture above failed ONLY because none of its columns
+    // happened to carry two distinct values — so this is the same wrong grouping
+    // with one plausible bystander (`domestic: yes/no`) added, and it used to
+    // pass.
+    //
+    // What closes it is not a guess about which column is the key — that is the
+    // presentation-level move #5128 exists to stop making. `domestic` gives BOTH
+    // represented rows (`us-east`, `us-west`) the value `"yes"`, so it cannot
+    // tell the two authoritative groups apart, and separating them is the whole
+    // job of a grouping key. The column earns the role or it does not count.
     const calls = [
       sqlAnswer(
         "SELECT region, domestic, COUNT(*) AS orders, AVG(total_cents)/100.0 AS aov, " +
@@ -1013,7 +1015,7 @@ describe("keyed comparison — substance over labels (#5128)", () => {
         ],
       ),
     ];
-    expect(gradePattern(q, calls, "", 8, PROMO_GROUND_TRUTH).status).toBe("pass");
+    expect(gradePattern(q, calls, "", 8, PROMO_GROUND_TRUTH).status).toBe("fail");
   });
 
   const NO_MEASURES = {
@@ -1095,19 +1097,21 @@ describe("keyed comparison — substance over labels (#5128)", () => {
     expect(gradePattern(pq, identical, "", 8, withNullGroup).status).toBe("pass");
   });
 
-  it("⚠️ a COALESCE-rendered NULL group still fails the shape check — the NULL fix does NOT cover it", () => {
-    // ⚠️ ASSERTS A LIMITATION, and specifically the one a reader will assume the
-    // NULL fix closed. Dropping NULL labels from the cardinality makes the
-    // BYTE-IDENTICAL answer pass (pinned above). It does NOT make
-    // `COALESCE(promotion_type, 'unknown')` pass: the model renders the null
-    // group as a value, so the observed column carries 3 distinct values against
-    // an authoritative 2.
+  it("a COALESCE-rendered NULL group now passes the shape check (#5143)", () => {
+    // ⚠️ THE SECOND TEST #5143 INVERTED. It asserted the opposite as a pinned
+    // limitation — specifically the one a reader assumes the NULL fix closed and
+    // it did not.
     //
-    // Recorded rather than fixed because it failed under the rule this PR
-    // replaces too — set equality on labels implies equality of cardinality, so
-    // `{percent_off, free_shipping, "null"}` never matched
-    // `{percent_off, free_shipping, unknown}` either. Not a regression; a
-    // pre-existing class, tracked in #5143.
+    // The disagreement is manufactured by the two sides' own conventions rather
+    // than by anything the model did wrong: `authoritativeLabels` DROPS the NULL
+    // group (the observed side cannot produce a nullish cell), while
+    // `COALESCE(promotion_type, 'unknown')` RENDERS it as an ordinary value. So
+    // ground truth counts 2 and a byte-correct answer shows 3.
+    //
+    // The fix says exactly that and nothing more: an expectation carrying a NULL
+    // group accepts N−1 or N. It is licensed by a fact about the AUTHORITATIVE
+    // side, so it is unavailable to an expectation with no NULL group — pinned
+    // directly below.
     const withNullGroup = {
       kind: "keyed",
       groups: [
@@ -1129,9 +1133,100 @@ describe("keyed comparison — substance over labels (#5128)", () => {
     ];
     const pq = patternQuestion("cq-022", "Orders", "promo_types", ["nothing-matches-this"]);
     // Condition 1 is satisfied — all three groups are represented — so this is
-    // condition 2 alone, which is what makes it a shape limitation rather than a
-    // grading disagreement.
-    expect(gradePattern(pq, coalesced, "", 8, withNullGroup).status).toBe("fail");
+    // condition 2 alone, which is what made it a shape disagreement rather than
+    // a grading one.
+    expect(gradePattern(pq, coalesced, "", 8, withNullGroup).status).toBe("pass");
+  });
+
+  it("does NOT extend the same tolerance to an expectation with no NULL group", () => {
+    // ⚠️ THE OTHER HALF OF THE COALESCE FIX, AND THE ONLY TEST THAT CAN FALSIFY
+    // ITS CONDITION. Ground truth here is the same two labelled groups with the
+    // NULL group REMOVED, against the identical three-row answer — so a blanket
+    // `N + 1` tolerance passes it, and one licensed by a NULL group on the
+    // authoritative side does not. Without this, deleting the `hasNullGroup`
+    // guard is an equivalent mutation: every currently-green test still passes.
+    //
+    // The verdict is also the right one on its own terms: nothing in ground
+    // truth explains the third group, so the answer is grouped more finely than
+    // the question was asked.
+    const noNullGroup = {
+      kind: "keyed",
+      groups: [
+        { label: "percent_off", measures: [800] },
+        { label: "free_shipping", measures: [300] },
+      ],
+    } as const satisfies MetricExpectation;
+    const threeGroups = [
+      sqlAnswer(
+        "SELECT COALESCE(promotion_type, 'unknown') AS t, COUNT(*) AS orders FROM orders GROUP BY 1",
+        ["t", "orders"],
+        [
+          { t: "percent_off", orders: 800 },
+          { t: "free_shipping", orders: 300 },
+          { t: "unknown", orders: 3105 },
+        ],
+      ),
+    ];
+    const pq = patternQuestion("cq-022", "Orders", "promo_types", ["nothing-matches-this"]);
+    expect(gradePattern(pq, threeGroups, "", 8, noNullGroup).status).toBe("fail");
+  });
+
+  it("finds a valid assignment the group ORDER would have hidden from a greedy walk", () => {
+    // ⚠️ THIS IS THE ONLY TEST THAT DISTINGUISHES THE MATCHING FROM A GREEDY
+    // WALK, and the distinction is not academic: the two disagree on this exact
+    // family, and which one you get depends on the order the expectation happens
+    // to list its groups in.
+    //
+    // `beta`'s measures are carried by BOTH rows; `alpha`'s only by the first.
+    // Listed beta-first, a greedy walk hands row 0 to beta and then has nothing
+    // left for alpha — even though beta could have taken row 1. Augmenting
+    // re-homes it. Reverse the two groups and greedy succeeds, which is what
+    // makes an order-dependent rule indefensible rather than merely weaker.
+    //
+    // Both candidate columns (`k` and `m`) present the same family, so a greedy
+    // implementation fails this in every column and the whole grade goes red.
+    const overlapping = {
+      kind: "keyed",
+      groups: [
+        { label: "beta", measures: [10, 20] },
+        { label: "alpha", measures: [10] },
+      ],
+    } as const satisfies MetricExpectation;
+    const answer = [
+      sqlAnswer("SELECT k, SUM(v) AS m FROM t GROUP BY 1", ["k", "m"], [
+        { k: "a", m: 10 },
+        { k: "b", m: 20 },
+      ]),
+    ];
+    const oq = patternQuestion("cq-026", "Orders", "overlapping", ["nothing-matches-this"]);
+    expect(gradePattern(oq, answer, "", 8, overlapping).status).toBe("pass");
+  });
+
+  it("a label whose rows are NULL in the candidate column is not separated by it", () => {
+    // `cellKeysAt` drops nullish cells, so `alpha` — represented only by the row
+    // whose key is NULL — offers no value to be assigned and the column fails to
+    // separate. A `String(cell)` spelling would hand it the value `"null"`,
+    // which separates cleanly and passes: the same two-spellings defect
+    // `cellKey` exists to prevent, one layer over.
+    //
+    // `k` is the only column at the target cardinality (`m` carries three
+    // distinct values), so nothing else can rescue the answer.
+    const twoGroups = {
+      kind: "keyed",
+      groups: [
+        { label: "alpha", measures: [100] },
+        { label: "beta", measures: [200] },
+      ],
+    } as const satisfies MetricExpectation;
+    const nullKeyed = [
+      sqlAnswer("SELECT k, SUM(v) AS m FROM t GROUP BY 1", ["k", "m"], [
+        { k: null, m: 100 },
+        { k: "b", m: 200 },
+        { k: "c", m: 999 },
+      ]),
+    ];
+    const nq = patternQuestion("cq-027", "Orders", "null_key_column", ["nothing-matches-this"]);
+    expect(gradePattern(nq, nullKeyed, "", 8, twoGroups).status).toBe("fail");
   });
 
   it("throws rather than failing the model when ground truth has no groups", () => {
@@ -1198,6 +1293,95 @@ describe("keyed comparison — substance over labels (#5128)", () => {
     const invQ = patternQuestion("cq-025", "Products", "stock_health", ["nothing-matches-this"]);
     // Column distinct counts are s:2, a:2, b:2 — nothing is 3.
     expect(gradePattern(invQ, answer, "", 8, collapsing).status).toBe("pass");
+  });
+});
+
+/**
+ * The three shapes #5143 listed that this fix does NOT close, pinned so the
+ * claim in `keyedResultMatches`' doc block is falsifiable rather than asserted.
+ *
+ * ⚠️ WITHOUT THESE, "we chose not to fix pivoted / rollup / top-N" and "we
+ * accidentally fixed them and never noticed" are the same green suite. Each
+ * says WHY it is not closed, and each is a test that should be DELETED — not
+ * edited — by whoever closes it.
+ */
+describe("keyed comparison — the shapes #5143 leaves open", () => {
+  const pq = patternQuestion("cq-016", "Orders", "orders_with_promotions", [
+    "nothing-matches-this",
+  ]);
+
+  it("still fails a PIVOTED answer, and could not accept one without deleting condition 2", () => {
+    // The grouping key became the COLUMN NAMES, so every column of the single
+    // row has exactly one distinct value and none can separate anything. That is
+    // indistinguishable from the ungrouped answer condition 2 exists to reject:
+    // `SELECT COUNT(*) a, COUNT(*) b` whose two numbers happen to hit both
+    // groups presents the identical shape. A rule that admits one admits both.
+    const pivoted = [
+      sqlAnswer(
+        "SELECT COUNT(*) FILTER (WHERE promotion_id IS NOT NULL) AS with_promo, " +
+          "COUNT(*) FILTER (WHERE promotion_id IS NULL) AS no_promo, " +
+          "AVG(total_cents) FILTER (WHERE promotion_id IS NOT NULL)/100.0 AS aov_promo, " +
+          "AVG(total_cents) FILTER (WHERE promotion_id IS NULL)/100.0 AS aov_none " +
+          "FROM orders WHERE status != 'cancelled'",
+        ["with_promo", "no_promo", "aov_promo", "aov_none"],
+        [{ with_promo: 1240, no_promo: 3105, aov_promo: 118.4, aov_none: 92.7 }],
+      ),
+    ];
+    // Condition 1 is satisfied — both groups' numbers are present — so this is
+    // condition 2 alone, which is what makes it a shape limit and not a grading
+    // disagreement.
+    expect(gradePattern(pq, pivoted, "", 8, PROMO_GROUND_TRUTH).status).toBe("fail");
+  });
+
+  it("still fails a ROLLUP answer, whose extra Total row reads as an extra group", () => {
+    // Telling `Total` apart from a genuinely finer grouping means recognising
+    // the extra row as a SUM of the others — new machinery, and a sixth
+    // heuristic on a comparison whose first five were all wrong. The NULL-group
+    // tolerance deliberately cannot be borrowed for it: ground truth here has no
+    // NULL group, so the target stays exactly 2.
+    const rolledUp = {
+      kind: "keyed",
+      groups: [
+        { label: "percent_off", measures: [100] },
+        { label: "free_shipping", measures: [200] },
+      ],
+    } as const satisfies MetricExpectation;
+    const answer = [
+      sqlAnswer("SELECT t, SUM(v) AS m FROM promos GROUP BY ROLLUP(t)", ["t", "m"], [
+        { t: "percent_off", m: 100 },
+        { t: "free_shipping", m: 200 },
+        { t: "Total", m: 300 },
+      ]),
+    ];
+    const rq = patternQuestion("cq-028", "Orders", "promo_rollup", ["nothing-matches-this"]);
+    expect(gradePattern(rq, answer, "", 8, rolledUp).status).toBe("fail");
+  });
+
+  it("rejects a TRUNCATED top-N on condition 1, which no condition-2 fix could reach", () => {
+    // ⚠️ #5143's table cites only the cardinality half of this one, and the
+    // cardinality half is not what rejects it. This answer is built to satisfy
+    // condition 2 outright — `k` carries THREE distinct values, the authoritative
+    // count, and separates both labels it does represent — and it still fails,
+    // because the `gamma` group's number appears nowhere. A model that lists its
+    // top 10 against a `LIMIT 20` ground truth is short ten groups' measures, and
+    // that is condition 1's verdict, delivered before condition 2 is consulted.
+    const topN = {
+      kind: "keyed",
+      groups: [
+        { label: "alpha", measures: [100] },
+        { label: "beta", measures: [200] },
+        { label: "gamma", measures: [300] },
+      ],
+    } as const satisfies MetricExpectation;
+    const truncated = [
+      sqlAnswer("SELECT k, SUM(v) AS m FROM t GROUP BY 1 ORDER BY 2 DESC LIMIT 3", ["k", "m"], [
+        { k: "alpha", m: 100 },
+        { k: "beta", m: 200 },
+        { k: "beta-runner-up", m: 201 },
+      ]),
+    ];
+    const tq = patternQuestion("cq-029", "Orders", "top_n", ["nothing-matches-this"]);
+    expect(gradePattern(tq, truncated, "", 8, topN).status).toBe("fail");
   });
 });
 

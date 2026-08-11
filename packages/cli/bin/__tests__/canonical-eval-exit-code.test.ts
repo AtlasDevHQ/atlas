@@ -49,14 +49,20 @@ const DEAD_DATASOURCE_URL = "postgres://atlas:atlas@127.0.0.1:1/atlas_demo";
 const BACKUP_DIR_NAME = ".semantic-backup-canonical-eval";
 
 const sandboxes: string[] = [];
-const children: Array<{ kill: () => void }> = [];
+const children: Array<{ kill: () => void; exited: Promise<number> }> = [];
 
-afterEach(() => {
-  // Kill first: `test-isolated.ts` awaits `proc.exited` with no per-file timer,
-  // so a child that outlives its test would hang the whole file rather than
-  // fail it.
+afterEach(async () => {
+  // Kill first, and AWAIT the exit before removing the sandbox: `rmSync` on a
+  // directory a live child is still writing to races it. Unreachable on the
+  // happy path (every test awaits `proc.exited`), live only on a test-timeout —
+  // which is exactly when a clean diagnosis matters. `test-isolated.ts` awaits
+  // `proc.exited` with no per-file timer, so a child that outlives its test
+  // hangs the whole file rather than failing it.
   while (children.length > 0) {
-    children.pop()?.kill();
+    const child = children.pop();
+    if (!child) continue;
+    child.kill();
+    await child.exited;
   }
   while (sandboxes.length > 0) {
     const dir = sandboxes.pop();
@@ -110,6 +116,34 @@ function callersLayerPath(sandbox: string): string {
   return path.join(sandbox, "semantic", "entities", "mine.yml");
 }
 
+/**
+ * A corpus of questions that every grade as `fail` WITHOUT a database.
+ * `resolveQuestion` returns `fail` for an unknown `metric_id` before it ever
+ * builds SQL, so this exercises the real grading loop and the real exit-code
+ * derivation on a dead datasource.
+ *
+ * The padded id is what pushes the `--json` body past the 65_536-byte pipe
+ * buffer, which is what makes this the end-to-end proof that the payload
+ * survives `process.exit` — the 2 MB driver test pins the HELPER, this pins the
+ * WIRING at the call site the CI artifact actually comes from.
+ */
+function writeFailingCorpus(sandbox: string, count: number): string {
+  const questions = Array.from({ length: count }, (_, i) => {
+    const id = `cq-${String(i + 1).padStart(3, "0")}`;
+    return [
+      `  - id: ${id}`,
+      `    question: "what is ${id}?"`,
+      `    mode: metric`,
+      `    category: simple_metric`,
+      `    metric_id: no_such_metric_${"z".repeat(2000)}`,
+      `    expect: {}`,
+    ].join("\n");
+  });
+  const file = path.join(sandbox, "failing-questions.yml");
+  fs.writeFileSync(file, `questions:\n${questions.join("\n")}\n`);
+  return file;
+}
+
 interface RunResult {
   readonly exitCode: number;
   readonly stdout: string;
@@ -124,20 +158,53 @@ interface RunOptions {
    */
   readonly preload?: boolean;
   readonly env?: Record<string, string>;
+  /**
+   * Run the CLI through a real shell pipeline (`… | cat`) instead of reading
+   * `Bun.spawn`'s own pipe.
+   *
+   * ⚠️ LOAD-BEARING FOR THE TRUNCATION ASSERTION, and its absence made that
+   * assertion decoration. `Bun.spawn`'s stdout pipe is far more forgiving than
+   * a shell-created one, so an ~87 KB payload arrives INTACT off the buffered
+   * stream when read the normal way — measured: reverting a `--json` call site
+   * to `process.stdout.write` passed every assertion in this file, and a 750 ms
+   * drain delay did not change that.
+   *
+   * Through a shell pipe the cliff is sharp and reproducible, and it is where
+   * CI stands (`… --json | tee eval-mcp-llm-output.json`). Measured on bun
+   * 1.3.13, identical for `| wc -c` and `| tee`:
+   *
+   *     64_015 bytes → arrives intact
+   *     70_015 bytes → arrives as 65_536, silently
+   *
+   * `eval-mcp-llm-output.json` from the 2026-08-11 run is 63_024 bytes.
+   */
+  readonly shellPipe?: boolean;
 }
 
 async function runCanonicalEval(
   cwd: string,
   options: RunOptions = {},
 ): Promise<RunResult> {
+  const argv = [
+    process.execPath,
+    ...(options.preload === true ? ["--preload", PRELOAD] : []),
+    CLI_ENTRY,
+    "canonical-eval",
+    ...(options.args ?? []),
+  ];
+  // `| cat` makes stdout a shell-created pipe, which is the shape CI's `| tee`
+  // has and the only one that reproduces the truncation cliff. `set -o pipefail`
+  // mirrors the workflow so the observed exit code is still the CLI's.
+  const command = options.shellPipe === true
+    ? [
+        "bash",
+        "-c",
+        `set -o pipefail; ${argv.map((a) => `'${a.replaceAll("'", `'\\''`)}'`).join(" ")} | cat`,
+      ]
+    : argv;
+
   const proc = Bun.spawn(
-    [
-      process.execPath,
-      ...(options.preload === true ? ["--preload", PRELOAD] : []),
-      CLI_ENTRY,
-      "canonical-eval",
-      ...(options.args ?? []),
-    ],
+    command,
     {
       cwd,
       // Built from scratch rather than spread from `process.env` so an
@@ -269,6 +336,59 @@ describe("canonical-eval process exit code", () => {
   );
 
   test(
+    "failing questions exit 1, and the oversized --json body survives intact",
+    async () => {
+      // Three gaps in one run, because they share a fixture:
+      //
+      //   1. the exit code is DERIVED from the grades. Every other test returns
+      //      before `runDeterministic` grades anything, so `results.some(fail)`
+      //      was only ever evaluated against `[]` — where `some(warn)`,
+      //      `some(!pass)` and `length > 0` are all indistinguishable from it.
+      //   2. the `--json` call site is WIRED to writeStdoutSync. The 2 MB driver
+      //      test pins the helper; reverting any single call site back to
+      //      `process.stdout.write` passed every test before this one, including
+      //      the site that produces eval-mcp-llm-output.json.
+      //   3. the truncation fix works END TO END through the real CLI, not just
+      //      in a driver — this body is ~87 KB against a 65_536-byte pipe.
+      const sandbox = makeSandbox();
+      const questionsPath = writeFailingCorpus(sandbox, 40);
+
+      const { exitCode, stdout } = await runCanonicalEval(sandbox, {
+        args: ["--questions", questionsPath, "--json"],
+        preload: true,
+        env: { ATLAS_TEST_STUB_SEED: "1" },
+        // See RunOptions.shellPipe — without it this test cannot tell the two
+        // writers apart and gap (2) below is not actually closed.
+        shellPipe: true,
+      });
+
+      expect(exitCode).toBe(1);
+
+      // stdout carries a prose header before the JSON body (that mixing is
+      // #5126's, not this change's), so slice from the first brace.
+      const body = stdout.slice(stdout.indexOf("{"));
+      expect(body.length).toBeGreaterThan(65_536);
+      const parsed = JSON.parse(body) as {
+        total: number;
+        passing: number;
+        failing: number;
+      };
+      // Distinct values on purpose: 40/0/40 cannot be satisfied by a mapping
+      // that confuses passing with failing, the way 0/0/0 could.
+      expect(parsed.total).toBe(40);
+      expect(parsed.passing).toBe(0);
+      expect(parsed.failing).toBe(40);
+
+      // The header lines were written to the buffered stream and the body via
+      // writeSync; a writer-ordering regression would put the body first.
+      expect(stdout.indexOf("Atlas canonical-question eval")).toBeLessThan(
+        stdout.indexOf("{"),
+      );
+    },
+    180_000,
+  );
+
+  test(
     "a THROWN eval body still reports the restore failure as 2",
     async () => {
       // No seed fixture in the sandbox, so `installSchemaSemanticLayer` throws
@@ -310,23 +430,40 @@ describe("canonical-eval process exit code", () => {
         "canonical-eval-write-stdout-driver.ts",
       );
 
-      const read = async (mode: string): Promise<number> => {
+      const read = async (
+        mode: string,
+      ): Promise<{ length: number; code: number }> => {
         const proc = Bun.spawn(
           [process.execPath, driver, String(size), mode],
-          { stdout: "pipe", stderr: "inherit" },
+          { stdout: "pipe", stderr: "pipe" },
         );
         children.push(proc);
-        const [text] = await Promise.all([
+        const [text, stderr, code] = await Promise.all([
           new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
           proc.exited,
         ]);
-        return text.length;
+        expect(stderr).toBe("");
+        return { length: text.length, code };
       };
 
-      expect(await read("sync")).toBe(size);
+      const sync = await read("sync");
+      expect(sync.code).toBe(0);
+      expect(sync.length).toBe(size);
+
       // The contrast, so a future "simplification" back to the buffered stream
       // cannot pass this test by making both arms agree.
-      expect(await read("buffered")).toBeLessThan(size);
+      //
+      // ⚠️ HOW MUCH survives is NOT deterministic — it is however much the
+      // reader happened to drain before `process.exit` fired, measured at
+      // 65_536 under a `| wc -c` shell pipeline and 219_264 under this test's
+      // concurrently-draining reader. Only the exit code and "strictly less
+      // than the payload, strictly more than nothing" are stable. `> 0` is what
+      // stops a driver that crashed before writing from satisfying this arm.
+      const buffered = await read("buffered");
+      expect(buffered.code).toBe(0);
+      expect(buffered.length).toBeGreaterThan(0);
+      expect(buffered.length).toBeLessThan(size);
     },
     120_000,
   );

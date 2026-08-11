@@ -34,6 +34,12 @@
  */
 import * as realFs from "fs";
 import { mock } from "bun:test";
+// ⚠️ Hoisted above the `fs` patch below, so this module's whole graph loads
+// against the REAL `fs`. That is correct — the patch is for the CLI's later
+// restore call, not for module init — but it means the two are order-coupled:
+// if `bin/atlas.ts` ever pulls `src/commands/init` before the preload runs, the
+// cpSync patch stops applying. It fails safe (the exit-2 tests would report 1
+// and go red), just opaquely.
 import * as realInit from "../../../src/commands/init";
 
 const failCpFrom = process.env.ATLAS_TEST_FAIL_CP_FROM;
@@ -54,7 +60,10 @@ if (failCpFrom) {
     }
     originalCpSync(source, destination, options);
   };
-  const patchedFs = { ...realFs, cpSync: patchedCpSync };
+  // Annotated `typeof realFs` rather than left inferred: without it a misspelled
+  // key (`cpSyncc`) is a legal extra property on an object literal and the whole
+  // module goes out unpatched with no diagnostic. With it, TS2561 names the typo.
+  const patchedFs: typeof realFs = { ...realFs, cpSync: patchedCpSync };
   // `default` must point at the patched surface too — spreading `realFs` copies
   // its own `default` key straight through, leaving an unpatched escape hatch.
   const fsFactory = () => ({ ...patchedFs, default: patchedFs });

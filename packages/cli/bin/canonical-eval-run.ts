@@ -498,12 +498,21 @@ export async function handleCanonicalEval(args: string[]): Promise<void> {
  *     so the `finally`'s restore-failure bump to 2 would be computed and thrown
  *     away — the same defect one layer over. The `return` below is deliberately
  *     after the block.
- *   - A `throw` is the one code-less path the compiler still permits, and
+ *   - A `throw` is one of TWO code-less paths the compiler still permits, and
  *     without the `catch` below it discarded the bump the same way: the
  *     exception propagated past `return exitCode` to `main().catch` in
  *     `bin/atlas.ts`, which exits 1 unconditionally. A run that destroyed the
  *     user's `semantic/` then reported 1 — indistinguishable from an ordinary
  *     eval failure, on precisely the path where the distinction matters most.
+ *   - ⚠️ The second is a call returning `never`, which `Promise<number>` also
+ *     accepts — and `process.exit` has exactly that type. **Do not call
+ *     `process.exit` anywhere below this function.** It is this CLI's house
+ *     idiom (`bin/atlas.ts` uses it eleven times), so the edit is a natural one
+ *     to make, and it is strictly WORSE than the defect #5130 fixed: it skips
+ *     the `finally` as well as the aggregation, leaving the caller's `semantic/`
+ *     replaced by the demo fixture with no message and no restore. Return a code
+ *     and let it travel. Verified clean at the time of writing: no `process.exit`
+ *     exists in `runInstalledCanonicalEval`'s call graph.
  */
 async function runStagedCanonicalEval(
   options: CanonicalEvalOptions,
@@ -539,8 +548,11 @@ async function runStagedCanonicalEval(
  *
  * ⚠️ `process.exit()` DISCARDS whatever is still sitting in `process.stdout`'s
  * buffer, with no error on either side. Measured on bun 1.3.13: a 2 MB payload
- * written via `process.stdout.write` and followed by `process.exit` arrives at
- * a pipe as exactly 65_536 bytes — one pipe buffer — silently truncated.
+ * written via `process.stdout.write` and followed by `process.exit` reaches a
+ * pipe truncated — 65_536 bytes (one pipe buffer) under `| wc -c`, 219_264 under
+ * a concurrently-draining reader. HOW MUCH survives is whatever the reader
+ * drained in time, so it is not a fixed number and not something a caller can
+ * budget against; what is fixed is that the tail is lost and nothing says so.
  *
  * That cliff is not theoretical for this command. The workflow runs
  * `canonical-eval --mcp-llm --json | tee eval-mcp-llm-output.json` and uploads
@@ -552,20 +564,28 @@ async function runStagedCanonicalEval(
  * to carry.
  *
  * `fs.writeSync` returns only once the bytes are handed to the fd, so there is
- * nothing left to discard. Reserved for the payloads whose size scales with the
- * MODEL'S OUTPUT — the three `--json` bodies and the failure-artifact bundle.
- * Everything else stays on the buffered stream.
+ * nothing left to discard. Reserved for the payloads that can cross that cliff —
+ * the three `--json` bodies and the failure-artifact bundle.
  *
- * ⚠️ MIXING THE TWO IS ORDER-SAFE ONLY BECAUSE OF THAT SPLIT, so keep it. A
- * `writeSync` bypasses `process.stdout`'s queue, so it would print ahead of an
- * earlier buffered write that was still pending. A buffered write is only ever
- * still pending once the pipe is full — 65_536 bytes — and every write left on
- * the stream in this file is bounded by the question count (a handful of header
- * lines, one ~100-char line per question, a few `note:` lines): a few KB against
- * a 20-question corpus, cumulatively far under one pipe buffer. They are
- * therefore never pending when a `writeStdoutSync` runs. Move an unbounded
- * payload onto the stream, or a bounded one onto `writeStdoutSync`, and that
- * argument stops holding.
+ * ⚠️ STDERR HAS THE SAME CLIFF and no equivalent helper. Measured the same way:
+ * 200 KB to stderr followed by `process.exit` arrives as 65_536 bytes. Every
+ * diagnostic that EXPLAINS an exit code lives there — the acceptance-floor FAIL
+ * line, `CRITICAL: Failed to restore semantic layer`, the harness stack. All are
+ * a few hundred bytes today, so this is latent rather than live; whoever adds an
+ * unbounded stderr diagnostic needs a `writeStderrSync` twin first.
+ *
+ * ⚠️ MIXING SYNCHRONOUS AND BUFFERED WRITES IS ORDER-SENSITIVE. A `writeSync`
+ * bypasses `process.stdout`'s queue entirely, so it can print ahead of an
+ * earlier buffered write that has not flushed. The interleaving is correct on
+ * every path measured on bun 1.3.13 — a 4-byte buffered write, a 60_000-byte
+ * one, and a real 40-question `--json` run all landed ahead of the following
+ * `writeStdoutSync` — but that is a MEASUREMENT of this runtime's flush timing,
+ * not a guarantee the code enforces, so do not extend the mixing on the strength
+ * of it. Note in particular that `formatSummary` (the deterministic human
+ * summary) and the `note:` lines in `resolveExpectations` are NOT bounded in
+ * principle: both interpolate caught error messages, and `--questions` is
+ * caller-supplied. They stay on the stream because the buffered path is what
+ * they have always used, not because they are known small.
  */
 export function writeStdoutSync(text: string): void {
   const buf = Buffer.from(text, "utf-8");
@@ -574,18 +594,39 @@ export function writeStdoutSync(text: string): void {
   const idle = new Int32Array(new SharedArrayBuffer(4));
   let offset = 0;
   while (offset < buf.length) {
+    let written: number;
     try {
-      offset += fs.writeSync(1, buf, offset, buf.length - offset);
+      written = fs.writeSync(1, buf, offset, buf.length - offset);
     } catch (err) {
+      // `.code` is read only after narrowing to Error — an `as` cast would
+      // raise a TypeError from inside the handler on a non-object throw and
+      // substitute nonsense for the real write failure.
+      const code = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
+      // A reader that hung up (`… | head`, a quit pager) is not a failure and
+      // must not become one: the buffered stream this replaced dropped EPIPE
+      // silently, and turning `atlas canonical-eval --json | head` into exit 1
+      // with a stack trace would be a regression introduced by a flush fix.
+      if (code === "EPIPE") return;
       // EAGAIN drives a RETRY; it is not discarded. A `write(2)` that returns
       // EAGAIN wrote nothing, so re-driving the same offset loses no bytes, and
       // waiting for the reader is exactly what a blocking fd would have done —
       // this branch only exists because fd 1 may arrive with O_NONBLOCK set.
-      // Every other errno (EPIPE, ENOSPC, EBADF) is a real write failure and
+      // Every other errno (ENOSPC, EBADF) is a real write failure and
       // propagates to `runStagedCanonicalEval`'s catch.
-      if ((err as NodeJS.ErrnoException).code !== "EAGAIN") throw err;
+      if (code !== "EAGAIN") throw err;
       Atomics.wait(idle, 0, 0, 1);
+      continue;
     }
+    // A zero-byte return makes no progress and raises nothing, so without this
+    // the loop spins forever with no diagnostic — a hang, which no test can
+    // falsify. Fail loudly with the offset reached instead.
+    if (written === 0) {
+      throw new Error(
+        `stdout write stalled at ${offset}/${buf.length} bytes: write(2) returned 0. ` +
+          `Refusing to spin — the remaining payload would be lost silently.`,
+      );
+    }
+    offset += written;
   }
 }
 
@@ -755,7 +796,9 @@ async function runMcpLlmMode(
   // path; the grader is narrower (first-tool match, not per-mode answer
   // correctness) and the acceptance metric is an accuracy floor.
   if (options.toolSelection) {
-    return runToolSelectionMode({
+    // `await` for the same reason as `runMcpLlmMode` above: a rejection's
+    // stack stays in this frame.
+    return await runToolSelectionMode({
       ...options,
       providerLabel: `${providerType}/${modelId}`,
       model,

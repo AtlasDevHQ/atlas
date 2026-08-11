@@ -990,17 +990,11 @@ async function resolveExpectations(questionsPath: string): Promise<{
           `keyed result. Ground truth must be one or the other for the answer comparison to mean anything.`,
       );
     }
-    // ⚠️ HARVESTED BY THE COMPARISON'S OWN FACTORY, NOT BY HAND HERE (#5128).
-    // The old line was `keys: rows.map(r => String(r[firstColumn]))` — ground
-    // truth read straight off a DISPLAY column, which is how a hand-written
-    // `CASE … THEN 'With Promo'` became load-bearing for a correctness check
-    // that has nothing to do with labels. `keyedExpectationFrom` takes each
-    // group's measures too, and lives next to the code that compares them so
-    // the two cannot drift apart again.
-    //
-    // `firstColumn` is passed as its own argument because the guard above has
-    // already proved it non-undefined; the factory consumes that proof rather
-    // than re-checking it.
+    // ⚠️ HARVESTED BY THE COMPARISON'S OWN FACTORY, NOT BY HAND HERE (#5128) —
+    // see `MetricExpectation` for why reading ground truth off a display column
+    // was the defect. `firstColumn` is passed separately because the guard above
+    // has already proved it non-undefined; the factory consumes that proof
+    // rather than re-checking it.
     return keyedExpectationFrom(firstColumn, columns.slice(1), rows);
   }
 

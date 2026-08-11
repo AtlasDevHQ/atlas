@@ -289,10 +289,10 @@ describe("gradeMetric", () => {
   it("passes a grouped METRIC answer that relabels its groups (cq-020, the gate path)", () => {
     // ⚠️ METRIC MODE IS WHERE THE VALUE CHECK IS THE GATE, not an additive
     // accept path layered over `sql_pattern` — `gradeMetric` has no substring
-    // fallback at all. Every other keyed test in this file grades a PATTERN
-    // question, so without this one the routing arm that reads
-    // `metricExpectations` is unprobed: rewriting it to read
-    // `answerExpectations` left the whole suite green.
+    // fallback at all. Every other keyed test calls its grader DIRECTLY, so
+    // without this one the `grade` → `gradeByMode` → `metricExpectations`
+    // routing arm is unprobed: rewriting it to read `answerExpectations` left
+    // the whole suite green.
     const q = metricQuestion("cq-020", "carrier_performance");
     const calls = [
       call(
@@ -708,9 +708,9 @@ describe("gradePattern", () => {
     ];
     // The pass must come from the VALUE path, not from `sql_pattern`: the
     // fixture SQL spells the filter `status <> 'cancelled'` and so misses the
-    // needle `WHERE status != 'cancelled'`. That is one character of margin, so
-    // pin the provenance rather than trusting it — with no expectation the same
-    // calls must FAIL.
+    // needle `WHERE status != 'cancelled'`. That is one token of margin — and
+    // the SQL DOES carry the other needle verbatim — so pin the provenance
+    // rather than trusting it: with no expectation the same calls must FAIL.
     expect(gradePattern(q, calls, "", 8, undefined).status).toBe("fail");
     const out = gradePattern(q, calls, "", 8, {
       kind: "keyed",
@@ -938,12 +938,14 @@ describe("keyed comparison — substance over labels (#5128)", () => {
     // wrong, and none of the wrong values is a x100 or /100 of an authoritative
     // one, so UNIT_SCALINGS cannot rescue it.
     //
-    // The SQL deliberately spells the predicate `COALESCE(promotion_id, 0) <> 0`
-    // so it misses the `promotion_id IS NOT NULL` needle: `gradePattern` layers
-    // the value check OVER `sql_pattern`, and a fixture satisfying the needle
-    // would pass on the substring alone and prove nothing about measures. The
+    // The SQL misses BOTH needles — `COALESCE(promotion_id, 0) <> 0` rather than
+    // `promotion_id IS NOT NULL`, and `status <> 'cancelled'` rather than
+    // `status != 'cancelled'` — and `findSqlMatch` requires EVERY needle, so
+    // either miss suffices. `gradePattern` layers the value check OVER
+    // `sql_pattern`, and a fixture satisfying the needles would pass on the
+    // substring alone and prove nothing about measures. The
     // `undefined`-expectation assertion pins that provenance rather than
-    // trusting a one-character margin.
+    // trusting the spelling to stay put.
     const calls = [
       sqlAnswer(
         "SELECT CASE WHEN COALESCE(promotion_id, 0) <> 0 THEN 'With Promo' ELSE 'No Promo' END AS promo_status, " +
@@ -1141,6 +1143,62 @@ describe("keyed comparison — substance over labels (#5128)", () => {
       /ground truth was not established/,
     );
   });
+
+  it("throws when EVERY authoritative grouping key is NULL", () => {
+    // ⚠️ THE SIBLING DISPOSITION, AND AN EARLIER CUT GOT IT BACKWARDS. This
+    // branch returned `true` so condition 1 could stand alone — which passes the
+    // ungrouped answer condition 2 exists to reject, AND disagreed with
+    // `labelSetMatches`, which returns `false` on the identical predicate. Which
+    // way a degenerate expectation went was then decided by whether any measure
+    // happened to parse as a number. It is a harness fault either way, so it
+    // gets the harness fault's disposition.
+    const allNull = {
+      kind: "keyed",
+      groups: [
+        { label: null, measures: [4345] },
+        { label: null, measures: [1207] },
+      ],
+    } as const satisfies MetricExpectation;
+    const ungrouped = [
+      sqlAnswer("SELECT COUNT(*) AS a, COUNT(DISTINCT id) AS b FROM orders", ["a", "b"], [
+        { a: 4345, b: 1207 },
+      ]),
+    ];
+    const nq = patternQuestion("cq-024", "Orders", "null_keyed", ["nothing-matches-this"]);
+    expect(() => gradePattern(nq, ungrouped, "", 8, allNull)).toThrow(
+      /every authoritative grouping key is NULL/,
+    );
+  });
+
+  it("pins the DISTINCT-label cardinality without a bystander column to lean on", () => {
+    // ⚠️ THE ONLY TEST THAT SEPARATES `labels.size` FROM `groups.length` WITHOUT
+    // a coincidence. Ground truth is three rows collapsing to two labels; the
+    // answer has two rows, and — deliberately — NO column carrying three
+    // distinct values, so the row-count spelling cannot be satisfied by a
+    // bystander. Without this, the row-count mutation was killed only by the
+    // COALESCE limitation test, which #5143 is expected to invert.
+    const collapsing = {
+      kind: "keyed",
+      groups: [
+        { label: "In Stock", measures: [90] },
+        { label: "in stock ", measures: [12] },
+        { label: "Out of Stock", measures: [5] },
+      ],
+    } as const satisfies MetricExpectation;
+    const answer = [
+      sqlAnswer(
+        "SELECT LOWER(stock_status) AS s, SUM(a) AS a, SUM(b) AS b FROM inventory_levels GROUP BY 1",
+        ["s", "a", "b"],
+        [
+          { s: "in stock", a: 90, b: 12 },
+          { s: "out of stock", a: 5, b: 5 },
+        ],
+      ),
+    ];
+    const invQ = patternQuestion("cq-025", "Products", "stock_health", ["nothing-matches-this"]);
+    // Column distinct counts are s:2, a:2, b:2 — nothing is 3.
+    expect(gradePattern(invQ, answer, "", 8, collapsing).status).toBe("pass");
+  });
 });
 
 describe("labelDriftNote — reports a relabel without gating it (#5128)", () => {
@@ -1154,8 +1212,39 @@ describe("labelDriftNote — reports a relabel without gating it (#5128)", () =>
     expect(out.status).toBe("pass");
     const note = labelDriftNote(out, PROMO_GROUND_TRUTH);
     expect(note).toContain("cq-016");
-    expect(note).toContain("With Promo");
     expect(note).toContain("relabelled");
+    // ⚠️ THE WHOLE BRACKETED LIST, NOT `toContain("With Promo")` — that string is
+    // a PREFIX of the model's own label `"With Promotion"`, so the assertion
+    // passed against a mutant that printed the OBSERVED labels back, producing
+    // the self-contradictory "none of [With Promotion, …] appears in any result
+    // column". A substring assertion on one label cannot tell the two apart.
+    expect(note).toContain("[With Promo, No Promo]");
+    expect(note).not.toContain("With Promotion");
+  });
+
+  it("says nothing when the answer did not match ground truth at all", () => {
+    // ⚠️ THE NOTE MUST NOT SPEAK FOR A PASS IT HAD NOTHING TO DO WITH. A pattern
+    // question can pass on `sql_pattern` while its RESULT is wrong; without the
+    // empty-match guard the note would print "grouped answer matched the
+    // authoritative measures and 2 group(s), but relabelled them" over a result
+    // that matched nothing — a false statement in the one channel whose whole
+    // job is keeping a relabel visible.
+    const passesOnSql = patternQuestion("cq-016", "Orders", "orders_with_promotions", [
+      "FROM orders",
+    ]);
+    const wrongNumbers = [
+      sqlAnswer(
+        "SELECT promo, COUNT(*) AS n FROM orders GROUP BY 1",
+        ["promo", "n"],
+        [
+          { promo: "yes", n: 11 },
+          { promo: "no", n: 22 },
+        ],
+      ),
+    ];
+    const out = gradePattern(passesOnSql, wrongNumbers, "", 8, PROMO_GROUND_TRUTH);
+    expect(out.status).toBe("pass");
+    expect(labelDriftNote(out, PROMO_GROUND_TRUTH)).toBeNull();
   });
 
   it("says nothing when the answer used the authoritative labels", () => {
@@ -1272,9 +1361,17 @@ describe("keyedExpectationFrom — harvesting ground truth (#5128)", () => {
       ),
     ];
     // `status` carries exactly TWO distinct values — the collapsed cardinality,
-    // not the three harvested rows. A row-count spelling would demand 3 and a
-    // case-sensitive one would see 2 vs 2 by luck; this fixture separates them
-    // because the model lower-cased every label.
+    // not the three harvested rows.
+    //
+    // ⚠️ THE STATED MUTATION RESULTS HERE WERE WRONG AND WERE CHECKED, NOT
+    // REASONED. An earlier comment claimed a row-count spelling "would demand 3"
+    // and a case-sensitive fold "would see 2 vs 2 by luck". Both were measured
+    // green: `skus` is `90, 12, 5` — three distinct values — so a BYSTANDER
+    // column satisfies either mutant. What this test actually proves is that a
+    // 3-row / 2-label harvest passes against a 2-group answer. The row-count and
+    // case-folding spellings are killed by `a COALESCE-rendered NULL group` and
+    // `still compares LABELS when the authoritative result has no measures`
+    // respectively.
     expect(gradePattern(invQ, twoGroupAnswer, "", 8, e).status).toBe("pass");
   });
 

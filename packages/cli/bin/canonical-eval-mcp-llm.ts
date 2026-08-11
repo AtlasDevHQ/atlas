@@ -181,31 +181,6 @@ export type McpLlmOutcome =
     };
 
 /**
- * Ground truth for one metric question, derived by EXECUTING the metric's own
- * authoritative SQL (`findMetricById(id).sql`) against the same datasource the
- * model queries — never hand-written.
- *
- * ⚠️ THIS REPLACES `expect.sql_pattern` MATCHING IN LLM METRIC MODE, AND THE
- * REASON IS THAT THE NEEDLES COULD NEVER FAIL WHERE THEY WERE WRITTEN (#5122).
- * `total_customers`' authoritative SQL is
- * `SELECT COUNT(DISTINCT id) AS total_customers FROM customers`, and its needle
- * is `["COUNT(DISTINCT id)", "FROM customers"]` — a verbatim substring of the
- * SQL the DETERMINISTIC eval executes, so there it matches by construction and
- * tests nothing. The LLM grader then reused the identical needle to judge SQL
- * the model wrote from scratch, which turns it into a spelling test:
- *
- *   cq-002  model ran `SELECT COUNT(*) FROM customers` — correct on a primary
- *           key, and marked wrong for not saying `COUNT(DISTINCT id)`.
- *   cq-003  model ran `AVG(total_cents / 100.0)` — the same metric in dollars,
- *           and marked wrong because the needle `AVG(total_cents)` carries the
- *           closing paren. cq-001 passed only because ITS conversion happened
- *           to land outside the parens.
- *
- * Comparing values instead grades whether the question was answered. It is also
- * strictly stronger: a spelling check passes canonical-looking SQL with a wrong
- * filter, and a value check does not.
- */
-/**
  * One group of the authoritative grouped result — its display label and the
  * numbers it computed, kept TOGETHER.
  *
@@ -232,9 +207,12 @@ export interface AuthoritativeGroup {
    */
   readonly label: string | null;
   /**
-   * The numeric cells this group's row produced OUTSIDE the key column — the
-   * measures, never the grouping key (excluded even when the key is itself
-   * numeric, as `month` is).
+   * The numeric cells this group's row produced OUTSIDE the key column.
+   *
+   * The key is excluded STRUCTURALLY rather than by type, so a numeric grouping
+   * key could never become a value the model must reproduce — though no corpus
+   * key is numeric today: every `month` grouping is
+   * `TO_CHAR(created_at, 'YYYY-MM')`, which is a string.
    */
   readonly measures: readonly number[];
 }
@@ -256,7 +234,9 @@ export interface AuthoritativeGroup {
  * identical categorisation, filter and measures but wrote `'With Promotion'`
  * was graded wrong. Nobody chose to make display text load-bearing — ground
  * truth was harvested from the first column because that is what came back
- * first, and the first column of a grouped query is a presentation column.
+ * first, and the first column of a grouped query is USUALLY a presentation
+ * column. The exception — a `SELECT DISTINCT status` shape, where it is the data
+ * — is what {@link keyedResultMatches}' measure-less branch exists for.
  *
  * So the labels stay, DIAGNOSTIC ONLY (see {@link labelDriftNote}), and the
  * verdict keys on what a relabel cannot touch.
@@ -270,6 +250,31 @@ export interface KeyedExpectation {
   readonly groups: readonly AuthoritativeGroup[];
 }
 
+/**
+ * Ground truth for one metric question, derived by EXECUTING the metric's own
+ * authoritative SQL (`findMetricById(id).sql`) against the same datasource the
+ * model queries — never hand-written.
+ *
+ * ⚠️ THIS REPLACES `expect.sql_pattern` MATCHING IN LLM METRIC MODE, AND THE
+ * REASON IS THAT THE NEEDLES COULD NEVER FAIL WHERE THEY WERE WRITTEN (#5122).
+ * `total_customers`' authoritative SQL is
+ * `SELECT COUNT(DISTINCT id) AS total_customers FROM customers`, and its needle
+ * is `["COUNT(DISTINCT id)", "FROM customers"]` — a verbatim substring of the
+ * SQL the DETERMINISTIC eval executes, so there it matches by construction and
+ * tests nothing. The LLM grader then reused the identical needle to judge SQL
+ * the model wrote from scratch, which turns it into a spelling test:
+ *
+ *   cq-002  model ran `SELECT COUNT(*) FROM customers` — correct on a primary
+ *           key, and marked wrong for not saying `COUNT(DISTINCT id)`.
+ *   cq-003  model ran `AVG(total_cents / 100.0)` — the same metric in dollars,
+ *           and marked wrong because the needle `AVG(total_cents)` carries the
+ *           closing paren. cq-001 passed only because ITS conversion happened
+ *           to land outside the parens.
+ *
+ * Comparing values instead grades whether the question was answered. It is also
+ * strictly stronger: a spelling check passes canonical-looking SQL with a wrong
+ * filter, and a value check does not.
+ */
 export type MetricExpectation =
   /** Single-row, single-number metric — compare the number. */
   | { readonly kind: "scalar"; readonly value: number }
@@ -296,7 +301,16 @@ export interface McpLlmEvalOptions {
    * ⚠️ ADDITIVE, unlike metric mode. Here the value check is an EXTRA accept
    * path layered over the existing `sql_pattern` / structural checks rather
    * than a replacement, so it can only ever turn a false negative into a pass —
-   * it cannot introduce one. Metric mode could be replaced outright because its
+   * it cannot introduce one.
+   *
+   * ⚠️ ONE CARVE-OUT, ADDED WITH #5128: `keyedResultMatches` THROWS on ground
+   * truth that cannot adjudicate anything (no groups, or every key NULL), and
+   * that throw reaches this lane through `matchesAnyAnsweringResult`, aborting
+   * the run. That is not a false negative — no question is graded wrong — but it
+   * is a way this path can now end a run, where before it could only decline to
+   * help. The harvester's own failures stay non-fatal (`resolveExpectations`
+   * catches, prints a `note:`, and disables the accept path for that question),
+   * so this is reachable only from a caller-supplied expectation. Metric mode could be replaced outright because its
    * needles were provably vacuous where they were authored; the pattern needles
    * are not obviously so, and widening was the change that could be made
    * without a second round of measurement to justify it.
@@ -444,8 +458,11 @@ export async function runMcpLlmEval(
         // ⚠️ WRAPPED BECAUSE THE ONLY `return` IS AFTER THIS LOOP. A throw here
         // unwinds past every outcome accumulated so far, so a reporting fault
         // would cost a 20-question paid run its entire score and surface as a
-        // harness stack instead of a grade. Nothing on this path throws today;
-        // that is exactly why the assertion is enforced rather than trusted.
+        // harness stack instead of a grade. `keyedResultMatches` DOES throw —
+        // on ground truth that cannot adjudicate anything — and reaches here via
+        // `labelDriftNote`; it survives today only because `canonical-eval-run`
+        // rejects a zero-row harvest upstream. The invariant is enforced rather
+        // than trusted precisely because that guard is two files away.
         try {
           const drift = labelDriftNote(
             outcome,
@@ -1131,10 +1148,17 @@ function gradeMetric(
           ? "no expectation resolved"
           : expectation.kind === "scalar"
             ? `scalar ${expectation.value}`
-            : `${expectation.groups.length} group(s), each needing one of its own measures ` +
+            : // ⚠️ `authoritativeLabels(...).size`, NOT `groups.length` — those
+              // diverge whenever two rows normalize to one label or a key is
+              // NULL, and printing the row count tells an operator the grader
+              // wanted a cardinality it never asked for. Both conditions are
+              // named because condition 2 is what fails the realistic shapes.
+              `${expectation.groups.length} authoritative row(s), each needing one of its own ` +
+              `measures, AND some column carrying exactly ` +
+              `${authoritativeLabels(expectation).size} distinct value(s) ` +
               `— ${expectation.groups
-                .map((g) => `${g.label ?? "<null>"}: [${g.measures.join(", ")}]`)
-                .join(" · ")} — labels are NOT compared`
+                .map((g) => `${displayLabel(g)}: [${g.measures.join(", ")}]`)
+                .join(" · ")} — labels themselves are NOT compared`
       })`,
   });
 }
@@ -1192,7 +1216,9 @@ function numericValues(rows: ReadonlyArray<Record<string, unknown>>): number[] {
 }
 
 /**
- * Unit scalings accepted when comparing a scalar.
+ * Unit scalings accepted when comparing a scalar — and, since #5128, each
+ * group's measures on the keyed path ({@link keyedResultMatches}). Widening this
+ * constant now moves both.
  *
  * The demo layer stores money in CENTS and several metrics divide by 100 to
  * present dollars, so cents-vs-dollars is a presentation choice the model makes
@@ -1271,8 +1297,10 @@ function resultMatchesExpectation(data: unknown, expectation: MetricExpectation)
  *  1. **every authoritative GROUP is represented** — for each group, at least
  *     one of the numbers it computed has an approximate match among the
  *     observed numbers, modulo {@link UNIT_SCALINGS}. Subset, not equality; and
- *  2. **some** column's distinct-value count equals the authoritative group
- *     count. Per-column and distinct, so extra breakdown rows don't move it.
+ *  2. **some** column's distinct-value count equals the number of DISTINCT
+ *     NON-NULL authoritative labels — {@link authoritativeLabels}, **not**
+ *     `groups.length`. Per-column and distinct, so extra breakdown rows on an
+ *     existing group don't move it.
  *
  * ⚠️ CONDITION 1 IS PER GROUP, NOT PER CELL, AND THE DIFFERENCE IS INSTANCE #4
  * OF THIS ISSUE'S OWN TABLE. The obvious spelling — *every authoritative
@@ -1297,38 +1325,68 @@ function resultMatchesExpectation(data: unknown, expectation: MetricExpectation)
  * of 2 a stray boolean-ish column satisfies it for free, and at a group count
  * of 1 any constant column does. It is a shape guard against an answer with the
  * right numbers and no grouping at all, not a second correctness check;
- * condition 1 does the grading. `keyed comparison … > a bystander column can
- * satisfy the shape check` pins the honest behaviour rather than a hoped-for one.
+ * condition 1 does the grading. The bystander-column test in
+ * `canonical-eval-mcp-llm.test.ts` pins that honest behaviour rather than a
+ * hoped-for one.
  *
- * ⚠️ KNOWN LIMITS, ALL OF THEM CONDITION 2, AND NONE OF THEM NEW. Condition 2
- * wants the observed result to split into the authoritative number of groups,
- * so it fails four correct-but-differently-shaped answers:
+ * ⚠️ CONDITION 1 HAS ITS OWN WEAKNESS, AND IT IS A FALSE **POSITIVE** — the one
+ * direction this issue was not about. The observed numbers are one flat pool,
+ * searched independently and without consumption, widened ×3 by
+ * {@link UNIT_SCALINGS}. So N groups sharing a value are all satisfied by one
+ * occurrence of it. `top_customers_by_spend` groups on `full_name` with
+ * `order_count` among its measures — small integers that repeat across
+ * customers — so an answer listing the top 20 by ORDER COUNT (different
+ * customers entirely) can satisfy all 20 groups, while its own name column
+ * supplies condition 2. **The old label-set rule caught that** and this one
+ * need not. Tracked in #5143; not fixed here because a multiset/consume-on-match
+ * rule is new grading machinery arriving with no round left to review it.
+ *
+ * ⚠️ KNOWN LIMITS, ALL SHAPE-RELATED, NONE OF THEM NEW. Four
+ * correct-but-differently-shaped answers fail:
  *
  *   pivoted     one row of `COUNT(*) FILTER (WHERE …) AS with_promo, …` — no
  *               column of a single row has two distinct values
  *   top-N       `top_customers_by_spend` ends `LIMIT 20`, so a model that lists
- *               its top 10 is short 10 groups. The only LIMIT in the corpus
+ *               its top 10 is short 10 groups on condition 2 — AND on condition
+ *               1, unless the omitted customers' `order_count`s collide with a
+ *               listed one's. The only `LIMIT` among the statements
+ *               `resolveExpectations` executes; four entity `query_patterns`
+ *               carry one too, but no question reaches them
  *   rollup      an appended `Total` row makes the key column N+1 distinct
  *   COALESCE    `COALESCE(channel, 'unknown')` renders a NULL group as a value,
  *               so the observed count is N where the authoritative is N−1
  *
- * ⚠️ EACH OF THESE FAILED UNDER THE RULE THIS ONE REPLACES TOO, and that is the
- * claim to check before "fixing" one. The old rule was set EQUALITY on labels,
- * which implies equality of cardinality — so every row above was a `FAIL` on
- * both sides of this change. This comparison is stricter on VALUES and looser
- * on LABELS than its predecessor; on cardinality it is neither.
+ * Three are condition 2 alone; top-N is both, which matters because fixing
+ * condition 2 in #5143 would NOT unblock it.
  *
- * They are not fixed here because the fix needs to know WHICH observed column
+ * ⚠️ EACH OF THESE FAILED UNDER THE RULE THIS ONE REPLACES TOO — verified row by
+ * row against `origin/main`, and the claim to re-check before "fixing" one. The
+ * old rule was set equality on labels, i.e. cardinality **and** membership:
+ * pivoted, top-N and rollup failed it on cardinality, and COALESCE failed it on
+ * membership (`{…, "null"}` vs `{…, unknown}` — same size, different members).
+ *
+ * So against its predecessor this comparison is stricter on VALUES and looser on
+ * LABELS. On cardinality it is **almost** identical: the one flip is that NULL
+ * labels no longer count toward the target, which is what lets a byte-identical
+ * answer to a NULL-grouped question pass — pinned by *passes an identical answer
+ * when the authoritative grouping has a NULL key*.
+ *
+ * The four are not fixed here because the fix needs to know WHICH observed column
  * is the grouping key, and guessing that from the result's presentation is the
- * class of move #5128 exists to stop making. Tracked in #5143, together with
- * condition 2's opposite weakness — a bystander column with the right distinct
- * count satisfies it for free. The honest behaviour on both sides is pinned by
- * tests rather than described and hoped for.
+ * class of move #5128 exists to stop making. Tracked in #5143 together with
+ * condition 2's opposite weakness; the honest behaviour on both sides is pinned
+ * by tests.
  *
- * Throws rather than returning `false` on an empty `groups` — that means ground
- * truth was never established, and charging it to the model would print a
+ * Throws rather than returning `false` on ground truth that cannot adjudicate
+ * anything — empty `groups`, or every grouping key NULL. That means ground truth
+ * was never established, and charging it to the model would print a
  * `tool_selection` artifact blaming the model for a harness fault. Same
  * disposition as {@link gradeMetric}'s missing-expectation throw.
+ *
+ * ⚠️ REACHED ONLY WHEN THE MODEL RETURNED ROWS. {@link resultMatchesExpectation}
+ * short-circuits an empty result to `false` before calling here, so a harness
+ * fault paired with a model that answered nothing still reads as the model's
+ * failure. Narrow, and stated rather than implied.
  */
 function keyedResultMatches(
   rows: ReadonlyArray<Record<string, unknown>>,
@@ -1343,6 +1401,25 @@ function keyedResultMatches(
   }
 
   const labels = authoritativeLabels(expectation);
+
+  // ⚠️ EVERY GROUPING KEY WAS NULL, so there is no cardinality to compare
+  // against and no label to compare either. That is a harness fault — an
+  // all-NULL `GROUP BY` key, or a `CASE`/`NULLIF` that folded every row — and it
+  // gets the same disposition as empty ground truth above.
+  //
+  // An earlier cut returned `true` here so that condition 1 could stand alone.
+  // That was the unsafe direction twice over: it passes the ungrouped answer
+  // condition 2 exists to reject, and it DISAGREED with `labelSetMatches`, which
+  // returns `false` on the identical predicate — so which way a degenerate
+  // expectation went was decided by whether any measure happened to parse.
+  if (labels.size === 0) {
+    throw new Error(
+      "[harness] every authoritative grouping key is NULL, so the grouping " +
+        "cardinality cannot be established and no answer can be adjudicated on " +
+        "shape. Check the key column in the authoritative SQL — an all-NULL " +
+        "GROUP BY key, or a CASE/NULLIF that folded every row.",
+    );
+  }
 
   // No numeric measures anywhere — a `SELECT DISTINCT status`-shaped result. The
   // key column is then the DATA rather than a display label, and cardinality
@@ -1367,11 +1444,6 @@ function keyedResultMatches(
   );
   if (!everyGroupRepresented) return false;
 
-  // Every authoritative label was NULL, so there is no cardinality to check
-  // against — `columnValueSets` cannot produce a nullish value on the observed
-  // side either. Condition 1 stands alone rather than failing by default.
-  if (labels.size === 0) return true;
-
   for (const set of columnValueSets(rows).values()) {
     if (set.size === labels.size) return true;
   }
@@ -1388,7 +1460,15 @@ function keyedResultMatches(
  */
 function authoritativeLabels(expectation: KeyedExpectation): ReadonlySet<string> {
   const out = new Set<string>();
-  for (const g of expectation.groups) if (g.label !== null) out.add(normalizeKey(g.label));
+  // `cellKey`, not `normalizeKey` — the observed side reduces through `cellKey`,
+  // and calling the same function is a guarantee where calling an equivalent one
+  // is only a proof. `cellLabel` is the identity on strings TODAY; if it ever
+  // grows a rule (NFC folding, truncation) this line would silently reopen the
+  // two-spellings defect it was written to close.
+  for (const g of expectation.groups) {
+    const key = cellKey(g.label);
+    if (key !== null) out.add(key);
+  }
   return out;
 }
 
@@ -1416,7 +1496,7 @@ function labelSetMatches(
   return false;
 }
 
-/** `columnName → set of its {@link cellKey}s. Nullish cells are not values. */
+/** `columnName` → set of its {@link cellKey}s. Nullish cells are not values. */
 function columnValueSets(
   rows: ReadonlyArray<Record<string, unknown>>,
 ): Map<string, Set<string>> {
@@ -1440,11 +1520,17 @@ function columnValueSets(
  * The ONE "is this cell a group at all, and what does it read as" rule, called
  * from both sides of the comparison.
  *
- * ⚠️ TWO SPELLINGS OF THIS IS A FALSE NEGATIVE, MEASURED. The harvester used to
- * do `String(cell)` while the observed side skipped nullish cells, so a NULL
- * group harvested as the label `"null"` and counted toward a cardinality no
- * observed result could ever reach — a model returning the byte-identical
- * authoritative rows graded FAIL. One function, both callers.
+ * ⚠️ TWO SPELLINGS OF THIS IS A FALSE NEGATIVE. `origin/main` harvested with
+ * `String(cell)` while the observed side skipped nullish cells, so a NULL group
+ * harvested as the label `"null"` and counted toward a cardinality no observed
+ * result could ever reach — a model returning the byte-identical authoritative
+ * rows would have graded FAIL. One function, both callers.
+ *
+ * LATENT, NOT OBSERVED, and worth the distinction: no corpus grouping key is
+ * nullable today — `acquisition_source` is populated for every seeded row, and
+ * every other keyed question groups on a `CASE`, a `TO_CHAR`, a join key or
+ * `full_name` — so this never fired in a paid run. Found in review, pinned by a
+ * test, not measured on a score.
  *
  * Returns the cell VERBATIM rather than normalized: {@link labelDriftNote}
  * prints these back to an operator, and `with promo` is harder to find in a
@@ -1453,6 +1539,11 @@ function columnValueSets(
  */
 function cellLabel(cell: unknown): string | null {
   return cell === null || cell === undefined ? null : String(cell);
+}
+
+/** How a group's label reads in operator-facing text. Spelled once, not twice. */
+function displayLabel(g: AuthoritativeGroup): string {
+  return g.label === null ? "<null>" : g.label;
 }
 
 /** `cellLabel` + case/whitespace folding — the form the two sides compare in. */
@@ -1540,9 +1631,7 @@ function labelDriftNote(
 
   // Printed VERBATIM, not from the normalized `labels` set — an operator greps
   // the entity's `query_patterns` for this string.
-  const written = expectation.groups
-    .map((g) => (g.label === null ? "<null>" : g.label))
-    .join(", ");
+  const written = expectation.groups.map(displayLabel).join(", ");
   return (
     `${outcome.questionId}: grouped answer matched the authoritative measures and ` +
     `${labels.size} group(s), but relabelled them — none of ` +
@@ -1581,14 +1670,23 @@ function expectationForQuestion(
 /**
  * ⚠️ `String(question)` RENDERS `[object Object]` — no id, no mode, nothing to
  * grep the corpus with, on a message whose whole job is to say which row of
- * `questions.yml` is malformed. Both exhaustive guards in this file used that
- * spelling; this is the one place that phrases it.
+ * `questions.yml` is malformed. The one pre-existing guard (`gradeByMode`) used
+ * that spelling and the new `expectationForQuestion` guard would have copied it;
+ * this is the one place that phrases it.
  */
 function unreachableModeMessage(q: never): string {
-  const { id, mode } = q as { id?: unknown; mode?: unknown };
+  // No cast: `never` is assignable to every type, so the annotation alone reads
+  // the fields. `JSON.stringify(x) ?? fallback` would look dead to a reader —
+  // `lib.d.ts` types the return as `string` — while firing at runtime, because
+  // `JSON.stringify(undefined)` really is `undefined`. Spelled as a ternary so
+  // the live branch is visible, and applied to BOTH fields: an absent `mode` is
+  // as likely as an absent id in a malformed corpus row.
+  const { id, mode }: { id?: unknown; mode?: unknown } = q;
+  const show = (v: unknown, absent: string) =>
+    v === undefined ? absent : JSON.stringify(v);
   return (
-    `unreachable question mode ${JSON.stringify(mode)} on question ` +
-    `${JSON.stringify(id) ?? "<no id>"} — loadQuestions validates \`mode\` against ` +
+    `unreachable question mode ${show(mode, "<no mode>")} on question ` +
+    `${show(id, "<no id>")} — loadQuestions validates \`mode\` against ` +
     `VALID_MODES, so reaching here means the corpus and this switch disagree.`
   );
 }

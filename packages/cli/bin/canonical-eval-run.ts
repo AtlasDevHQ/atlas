@@ -408,9 +408,8 @@ async function runWithAgent(
       };
     }
 
-    // The `?? ""` / `?? null` are defensive, NOT compiler-required: this comment
-    // used to cite `noUncheckedIndexedAccess`, which no tsconfig in the repo
-    // sets, so index access here is `T`, not `T | undefined` (#5130 review).
+    // The `?? ""` / `?? null` are defensive, NOT compiler-required — no tsconfig
+    // in the repo sets `noUncheckedIndexedAccess`, so index access here is `T`.
     // The empty-array hard-fail below at `agent.sql.length === 0` is the
     // load-bearing guard for the empty case; these defaults only feed the
     // early-return branch's `sql: lastSql || null` mapping.
@@ -498,7 +497,7 @@ export async function handleCanonicalEval(args: string[]): Promise<void> {
  *     so the `finally`'s restore-failure bump to 2 would be computed and thrown
  *     away — the same defect one layer over. The `return` below is deliberately
  *     after the block.
- *   - A `throw` is one of TWO code-less paths the compiler still permits, and
+ *   - A `throw` is one of the code-less paths the compiler still permits, and
  *     without the `catch` below it discarded the bump the same way: the
  *     exception propagated past `return exitCode` to `main().catch` in
  *     `bin/atlas.ts`, which exits 1 unconditionally. A run that destroyed the
@@ -511,8 +510,11 @@ export async function handleCanonicalEval(args: string[]): Promise<void> {
  *     to make, and it is strictly WORSE than the defect #5130 fixed: it skips
  *     the `finally` as well as the aggregation, leaving the caller's `semantic/`
  *     replaced by the demo fixture with no message and no restore. Return a code
- *     and let it travel. Verified clean at the time of writing: no `process.exit`
- *     exists in `runInstalledCanonicalEval`'s call graph.
+ *     and let it travel. Checked at the time of writing: no `process.exit` in the
+ *     CLI-side eval modules (`canonical-eval*.ts`, `seedDemoPostgres`). The graph
+ *     reaches `@atlas/api` and `@atlas/mcp` through dynamic imports, which a grep
+ *     cannot audit — so this is a rule to follow, not a property anything checks.
+ *     (A non-terminating loop is a third code-less path, and equally accepted.)
  */
 async function runStagedCanonicalEval(
   options: CanonicalEvalOptions,
@@ -568,11 +570,13 @@ async function runStagedCanonicalEval(
  * the three `--json` bodies and the failure-artifact bundle.
  *
  * ⚠️ STDERR HAS THE SAME CLIFF and no equivalent helper. Measured the same way:
- * 200 KB to stderr followed by `process.exit` arrives as 65_536 bytes. Every
- * diagnostic that EXPLAINS an exit code lives there — the acceptance-floor FAIL
- * line, `CRITICAL: Failed to restore semantic layer`, the harness stack. All are
- * a few hundred bytes today, so this is latent rather than live; whoever adds an
- * unbounded stderr diagnostic needs a `writeStderrSync` twin first.
+ * 200 KB to stderr followed by `process.exit` arrives as 65_536 bytes. The
+ * FAILURE-path diagnostics all live there — the acceptance-floor FAIL line,
+ * `CRITICAL: Failed to restore semantic layer`, the harness stack — at a few
+ * hundred bytes each, except the stack, which runs to a few KB. (The pass/fail
+ * DETAIL is not on stderr: that is `formatSummary` and the `--json` bodies, on
+ * stdout.) So this is latent rather than live; whoever adds an unbounded stderr
+ * diagnostic needs a `writeStderrSync` twin first.
  *
  * ⚠️ MIXING SYNCHRONOUS AND BUFFERED WRITES IS ORDER-SENSITIVE. A `writeSync`
  * bypasses `process.stdout`'s queue entirely, so it can print ahead of an
@@ -598,14 +602,17 @@ export function writeStdoutSync(text: string): void {
     try {
       written = fs.writeSync(1, buf, offset, buf.length - offset);
     } catch (err) {
-      // `.code` is read only after narrowing to Error — an `as` cast would
-      // raise a TypeError from inside the handler on a non-object throw and
-      // substitute nonsense for the real write failure.
+      // `.code` is read only after narrowing to Error. Reading it off a bare
+      // caught value raises a TypeError from inside the handler for `throw null`
+      // / `throw undefined` — substituting nonsense for the real write failure —
+      // and silently yields `undefined` for a string or number throw.
       const code = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
       // A reader that hung up (`… | head`, a quit pager) is not a failure and
       // must not become one: the buffered stream this replaced dropped EPIPE
       // silently, and turning `atlas canonical-eval --json | head` into exit 1
       // with a stack trace would be a regression introduced by a flush fix.
+      // intentionally ignored: the reader hung up. This is the one path here
+      // that emits nothing, and that is the correct behaviour for a pipe.
       if (code === "EPIPE") return;
       // EAGAIN drives a RETRY; it is not discarded. A `write(2)` that returns
       // EAGAIN wrote nothing, so re-driving the same offset loses no bytes, and
@@ -613,6 +620,9 @@ export function writeStdoutSync(text: string): void {
       // this branch only exists because fd 1 may arrive with O_NONBLOCK set.
       // Every other errno (ENOSPC, EBADF) is a real write failure and
       // propagates to `runStagedCanonicalEval`'s catch.
+      //
+      // ⚠️ UNTESTED: nothing in the suite can force EAGAIN on a pipe, so this
+      // branch and the sleep below are reasoning, not measurement.
       if (code !== "EAGAIN") throw err;
       Atomics.wait(idle, 0, 0, 1);
       continue;
@@ -796,8 +806,8 @@ async function runMcpLlmMode(
   // path; the grader is narrower (first-tool match, not per-mode answer
   // correctness) and the acceptance metric is an accuracy floor.
   if (options.toolSelection) {
-    // `await` for the same reason as `runMcpLlmMode` above: a rejection's
-    // stack stays in this frame.
+    // `await`ed, not returned bare: a rejection's stack then stays in this
+    // frame rather than unwinding with the caller's.
     return await runToolSelectionMode({
       ...options,
       providerLabel: `${providerType}/${modelId}`,

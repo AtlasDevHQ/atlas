@@ -25,21 +25,22 @@
  * was restored fine and every line of that message is false.
  *
  * ⚠️ Why a stub and not a chmod: every directory `restoreSemanticLayer` touches
- * arrives via `fs.cpSync`, and cpSync does NOT preserve directory modes — a
- * read-only fixture directory is copied back as 0755, measured. So no
- * permission trick on disk can reach the restore.
+ * arrives via `fs.cpSync`, and cpSync does NOT preserve directory modes — a 0500
+ * fixture directory is copied back as 0755, measured. So no permission trick on
+ * the COPIED directories can reach the restore. (Chmod'ing the sandbox cwd would
+ * reach it, but that breaks the earlier backup step first, and it assumes a
+ * non-root runner.)
  *
  * Verified on bun 1.3.13: `mock.module` from `bun:test` applies in a plain
  * `bun --preload` process, not just under `bun test`.
  */
 import * as realFs from "fs";
 import { mock } from "bun:test";
-// ⚠️ Hoisted above the `fs` patch below, so this module's whole graph loads
-// against the REAL `fs`. That is correct — the patch is for the CLI's later
-// restore call, not for module init — but it means the two are order-coupled:
-// if `bin/atlas.ts` ever pulls `src/commands/init` before the preload runs, the
-// cpSync patch stops applying. It fails safe (the exit-2 tests would report 1
-// and go red), just opaquely.
+// Hoisted above the `fs` patch below, so this module's graph loads against the
+// real `fs`. That is only true AT LOAD TIME and it does not weaken the patch:
+// bun rebinds the namespace in place, so an already-loaded module's later
+// `fs.cpSync` calls still go through the patch. Measured on bun 1.3.13 with a
+// helper imported by a preload before its own `mock.module("fs")`.
 import * as realInit from "../../../src/commands/init";
 
 const failCpFrom = process.env.ATLAS_TEST_FAIL_CP_FROM;
@@ -50,10 +51,10 @@ if (failCpFrom) {
   // the stack blows, which surfaces as a restore failure for entirely the
   // wrong reason.
   const originalCpSync = realFs.cpSync;
-  // Annotating with `typeof realFs.cpSync` rather than hand-writing the
-  // parameter types makes the substitution compiler-checked: a spread simply
-  // replaces the property, so a hand-written signature that drifts from
-  // @types/node would raise no error at all.
+  // `typeof realFs.cpSync` rather than hand-written parameter types: the params
+  // are then contextually typed, so no signature can drift from @types/node in
+  // the first place, and a mismatch is reported HERE rather than one line down
+  // on the object literal.
   const patchedCpSync: typeof realFs.cpSync = (source, destination, options) => {
     if (String(source) === failCpFrom) {
       throw new Error(`EACCES: permission denied, cp '${failCpFrom}'`);
@@ -67,8 +68,9 @@ if (failCpFrom) {
   // `default` must point at the patched surface too — spreading `realFs` copies
   // its own `default` key straight through, leaving an unpatched escape hatch.
   const fsFactory = () => ({ ...patchedFs, default: patchedFs });
-  // Both specifiers resolve to the same builtin but are separate registry keys
-  // in bun, and the code under test imports the bare form.
+  // Both specifiers are patched defensively. On bun 1.3.13 either call alone
+  // patches both — measured in both directions — but that equivalence is
+  // undocumented, so don't rely on it in the next fixture.
   void mock.module("fs", fsFactory);
   void mock.module("node:fs", fsFactory);
 }

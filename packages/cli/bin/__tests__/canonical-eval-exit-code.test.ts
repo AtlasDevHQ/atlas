@@ -35,8 +35,9 @@ const PRELOAD = path.join(
 );
 
 /**
- * Port 1 is reserved and never listening, so `seedDemoPostgres` fails with a
- * fast ECONNREFUSED rather than a connect timeout.
+ * Port 1 is reserved and binding it requires privilege, so nothing is listening
+ * on a test runner and `seedDemoPostgres` fails with a fast ECONNREFUSED rather
+ * than a connect timeout.
  */
 const DEAD_DATASOURCE_URL = "postgres://atlas:atlas@127.0.0.1:1/atlas_demo";
 
@@ -55,9 +56,10 @@ afterEach(async () => {
   // Kill first, and AWAIT the exit before removing the sandbox: `rmSync` on a
   // directory a live child is still writing to races it. Unreachable on the
   // happy path (every test awaits `proc.exited`), live only on a test-timeout —
-  // which is exactly when a clean diagnosis matters. `test-isolated.ts` awaits
-  // `proc.exited` with no per-file timer, so a child that outlives its test
-  // hangs the whole file rather than failing it.
+  // which is exactly when a clean diagnosis matters. `packages/cli/scripts/
+  // test-isolated.ts` awaits the child's streams and then `proc.exited`, with no
+  // per-file timer — so a child that outlives its test hangs the whole file
+  // rather than failing it, and it hangs on the pipe before it hangs on exit.
   while (children.length > 0) {
     const child = children.pop();
     if (!child) continue;
@@ -122,10 +124,11 @@ function callersLayerPath(sandbox: string): string {
  * builds SQL, so this exercises the real grading loop and the real exit-code
  * derivation on a dead datasource.
  *
- * The padded id is what pushes the `--json` body past the 65_536-byte pipe
- * buffer, which is what makes this the end-to-end proof that the payload
- * survives `process.exit` — the 2 MB driver test pins the HELPER, this pins the
- * WIRING at the call site the CI artifact actually comes from.
+ * ⚠️ The 2_000-character `metric_id` is what pushes the `--json` body past the
+ * 65_536-byte pipe buffer (40 x ~2_050 B of an ~88 KB body) — shrink it and the
+ * test below silently stops proving anything about truncation. That is what
+ * makes this the end-to-end proof: the 2 MB driver test pins the HELPER, this
+ * pins the WIRING at the call site the CI artifact actually comes from.
  */
 function writeFailingCorpus(sandbox: string, count: number): string {
   const questions = Array.from({ length: count }, (_, i) => {
@@ -313,10 +316,11 @@ describe("canonical-eval process exit code", () => {
     "a clean run exits 0 — the code is derived, not a constant",
     async () => {
       // An empty question set is the one clean run reachable without Postgres:
-      // `runDeterministic` builds its `executeSql` closure per question, so
-      // zero questions means zero database work. The stdout assertion is what
-      // keeps this from being a vacuous pass — it proves the run reached the
-      // summary rather than exiting 0 by dying early.
+      // `runDeterministic`'s `executeSql` closure only touches the database when
+      // it is INVOKED (`connections.getDefault()` is inside its body), so zero
+      // questions means zero database work. The stdout assertion is what keeps
+      // this from being a vacuous pass — it proves the run reached the summary
+      // rather than exiting 0 by dying early.
       const sandbox = makeSandbox();
       const questionsPath = path.join(sandbox, "no-questions.yml");
       fs.writeFileSync(questionsPath, "questions: []\n");
@@ -353,16 +357,16 @@ describe("canonical-eval process exit code", () => {
       const sandbox = makeSandbox();
       const questionsPath = writeFailingCorpus(sandbox, 40);
 
-      const { exitCode, stdout } = await runCanonicalEval(sandbox, {
+      const { exitCode, stdout, stderr } = await runCanonicalEval(sandbox, {
         args: ["--questions", questionsPath, "--json"],
         preload: true,
         env: { ATLAS_TEST_STUB_SEED: "1" },
-        // See RunOptions.shellPipe — without it this test cannot tell the two
-        // writers apart and gap (2) below is not actually closed.
+        // Load-bearing — see RunOptions.shellPipe.
         shellPipe: true,
       });
 
       expect(exitCode).toBe(1);
+      expectNoCrash(stderr);
 
       // stdout carries a prose header before the JSON body (that mixing is
       // #5126's, not this change's), so slice from the first brace.

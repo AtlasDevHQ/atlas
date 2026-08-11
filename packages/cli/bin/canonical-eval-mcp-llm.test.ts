@@ -22,15 +22,17 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   __forTesting__,
   classifyToolContract,
+  keyedExpectationFrom,
   readBaseline,
   writeBaseline,
+  type MetricExpectation,
   type McpLlmOutcome,
   type RecordedToolCall,
 } from "./canonical-eval-mcp-llm";
 import { parseCanonicalEvalOptions } from "./canonical-eval-run";
 import type { Question } from "./canonical-eval";
 
-const { gradeMetric, gradeGlossary, gradePattern, gradeVirtual } =
+const { grade, gradeMetric, gradeGlossary, gradePattern, gradeVirtual, labelDriftNote } =
   __forTesting__;
 
 // ── Fixture helpers ──────────────────────────────────────────────────
@@ -199,14 +201,35 @@ describe("gradeMetric", () => {
           data: {
             answer: "Ada and Grace lead by spend.",
             sql: ["SELECT ..."],
-            data: [{ columns: ["name", "spend"], rows: [{ name: "Ada" }, { name: "Grace" }] }],
+            data: [
+              {
+                columns: ["name", "spend"],
+                rows: [
+                  { name: "Ada", spend: "48210.5" },
+                  { name: "Grace", spend: "31905.75" },
+                ],
+              },
+            ],
           },
         },
       ),
     ];
+    // The fixture carries `spend` because the metric's own SQL does — a keyed
+    // expectation is graded on its MEASURES now (#5128), and a `query` answer
+    // reaches them through the nested `data` array like any other.
+    //
+    // ⚠️ TWO GROUPS HERE; THE LIVE EXPECTATION HAS TWENTY. `top_customers_by_spend`
+    // ends `LIMIT 20` — the only LIMIT in the corpus — so a model that lists its
+    // top 10 is short 10 groups and fails. That is the `top-N` entry in
+    // `keyedResultMatches`' known-limits block, and it failed identically under
+    // the rule this PR replaces. This fixture is deliberately reduced to keep
+    // the test about `query`'s nested `data` reaching the comparison at all.
     const out = gradeMetric(q, calls, "Ada and Grace.", 9, {
       kind: "keyed",
-      keys: ["Ada", "Grace"],
+      groups: [
+        { label: "ada", measures: [48210.5] },
+        { label: "grace", measures: [31905.75] },
+      ],
     });
     expect(out.status).toBe("pass");
   });
@@ -229,17 +252,142 @@ describe("gradeMetric", () => {
   });
 
   it("fails a grouped answer that is missing a group", () => {
+    // ⚠️ THE ANSWER CARRIES A THIRD, WRONGLY-LABELLED ROW so that ONLY the
+    // per-group measure rule can fail it. An earlier version returned two rows,
+    // which made the cardinality rule fail too — and a fixture that trips both
+    // conditions proves neither. Here `other`'s 55 satisfies the cardinality
+    // check (three distinct carriers) while USPS's 96 appears nowhere.
     const q = metricQuestion("cq-020", "carrier_performance");
     const calls = [
       call(
         "executeSQL",
         { sql: "SELECT carrier, COUNT(*) FROM shipments WHERE carrier <> 'USPS' GROUP BY carrier" },
-        { kind: "ok", data: { columns: ["carrier"], rows: [{ carrier: "UPS" }, { carrier: "FedEx" }] } },
+        {
+          kind: "ok",
+          data: {
+            columns: ["carrier", "shipments"],
+            rows: [
+              { carrier: "UPS", shipments: 412 },
+              { carrier: "FedEx", shipments: 288 },
+              { carrier: "other", shipments: 55 },
+            ],
+          },
+        },
       ),
     ];
     const out = gradeMetric(q, calls, "", 7, {
       kind: "keyed",
-      keys: ["UPS", "FedEx", "USPS"],
+      groups: [
+        { label: "ups", measures: [412] },
+        { label: "fedex", measures: [288] },
+        { label: "usps", measures: [96] },
+      ],
+    });
+    expect(out.status).toBe("fail");
+  });
+
+  it("passes a grouped METRIC answer that relabels its groups (cq-020, the gate path)", () => {
+    // ⚠️ METRIC MODE IS WHERE THE VALUE CHECK IS THE GATE, not an additive
+    // accept path layered over `sql_pattern` — `gradeMetric` has no substring
+    // fallback at all. Every other keyed test calls its grader DIRECTLY, so
+    // without this one the `grade` → `gradeByMode` → `metricExpectations`
+    // routing arm is unprobed: rewriting it to read `answerExpectations` left
+    // the whole suite green.
+    const q = metricQuestion("cq-020", "carrier_performance");
+    const calls = [
+      call(
+        "executeSQL",
+        { sql: "SELECT UPPER(carrier) AS shipper, COUNT(*) AS n FROM shipments GROUP BY 1" },
+        {
+          kind: "ok",
+          data: {
+            columns: ["shipper", "n"],
+            rows: [
+              { shipper: "UNITED PARCEL", n: 412 },
+              { shipper: "FEDERAL EXPRESS", n: 288 },
+              { shipper: "US POSTAL", n: 96 },
+            ],
+          },
+        },
+      ),
+    ];
+    const out = grade({
+      question: q,
+      toolCalls: calls,
+      finalText: "",
+      latencyMs: 7,
+      baseline: undefined,
+      metricExpectations: {
+        carrier_performance: {
+          kind: "keyed",
+          groups: [
+            { label: "ups", measures: [412] },
+            { label: "fedex", measures: [288] },
+            { label: "usps", measures: [96] },
+          ],
+        },
+      },
+      answerExpectations: undefined,
+    });
+    expect(out.status).toBe("pass");
+  });
+
+  it("passes a grouped metric answered in DOLLARS against cents ground truth", () => {
+    // UNIT_SCALINGS is brand new on the keyed path (#5128) and was previously
+    // pinned only for scalars: removing it from `keyedResultMatches` — and
+    // widening it to ±1000x — both left the suite green.
+    const q = metricQuestion("cq-007", "revenue_dtc_vs_marketplace");
+    const calls = [
+      call(
+        "executeSQL",
+        { sql: "SELECT channel, SUM(total_cents)/100.0 AS revenue FROM orders GROUP BY 1" },
+        {
+          kind: "ok",
+          data: {
+            columns: ["channel", "revenue"],
+            rows: [
+              { channel: "dtc", revenue: "1284.01" },
+              { channel: "marketplace", revenue: "642.5" },
+            ],
+          },
+        },
+      ),
+    ];
+    const centsGroundTruth = {
+      kind: "keyed",
+      groups: [
+        { label: "dtc", measures: [128401] },
+        { label: "marketplace", measures: [64250] },
+      ],
+    } as const satisfies MetricExpectation;
+    expect(gradeMetric(q, calls, "", 7, centsGroundTruth).status).toBe("pass");
+  });
+
+  it("does NOT rescue a grouped answer that is off by 1000x", () => {
+    // Guards the guard: UNIT_SCALINGS is cents-vs-dollars and nothing wider.
+    const q = metricQuestion("cq-007", "revenue_dtc_vs_marketplace");
+    const calls = [
+      call(
+        "executeSQL",
+        { sql: "SELECT channel, SUM(total_cents)/1000.0 AS revenue FROM orders GROUP BY 1" },
+        {
+          kind: "ok",
+          data: {
+            columns: ["channel", "revenue"],
+            rows: [
+              { channel: "dtc", revenue: "128.401" },
+              { channel: "marketplace", revenue: "64.25" },
+            ],
+          },
+        },
+      ),
+    ];
+    const out = gradeMetric(q, calls, "", 7, {
+      kind: "keyed",
+      groups: [
+        { label: "dtc", measures: [128401] },
+        { label: "marketplace", measures: [64250] },
+      ],
     });
     expect(out.status).toBe("fail");
   });
@@ -549,15 +697,27 @@ describe("gradePattern", () => {
         {
           kind: "ok",
           data: {
-            columns: ["promo_status"],
-            rows: [{ promo_status: "With Promotion" }, { promo_status: "No Promotion" }],
+            columns: ["promo_status", "order_count"],
+            rows: [
+              { promo_status: "With Promotion", order_count: 1240 },
+              { promo_status: "No Promotion", order_count: 3105 },
+            ],
           },
         },
       ),
     ];
+    // The pass must come from the VALUE path, not from `sql_pattern`: the
+    // fixture SQL spells the filter `status <> 'cancelled'` and so misses the
+    // needle `WHERE status != 'cancelled'`. That is one token of margin — and
+    // the SQL DOES carry the other needle verbatim — so pin the provenance
+    // rather than trusting it: with no expectation the same calls must FAIL.
+    expect(gradePattern(q, calls, "", 8, undefined).status).toBe("fail");
     const out = gradePattern(q, calls, "", 8, {
       kind: "keyed",
-      keys: ["With Promotion", "No Promotion"],
+      groups: [
+        { label: "with promotion", measures: [1240] },
+        { label: "no promotion", measures: [3105] },
+      ],
     });
     expect(out.status).toBe("pass");
   });
@@ -633,6 +793,613 @@ describe("gradePattern", () => {
     const out = gradePattern(q, calls, "", 5, undefined);
     expect(out.status).toBe("fail");
     if (out.status === "fail") expect(out.artifact.category).toBe("tool_selection");
+  });
+});
+
+// ── Keyed comparison: substance, not labels (#5128) ───────────────────
+
+/**
+ * The `orders_with_promotions` pattern's authoritative result, as
+ * `keyedExpectationFrom` reduces it. Written out ONCE and reused so every case
+ * below argues against the same ground truth.
+ *
+ * The labels are the pattern SQL's own hand-written `CASE … THEN 'With Promo'`;
+ * the measures are its `COUNT(*)`, `AVG(total_cents)/100.0` and
+ * `SUM(total_cents)/100.0` for each group. Deliberately six distinct values
+ * across two groups — never `{n, n}`, and no value is a x100 or /100 of any
+ * other — so no assertion below can be satisfied by two states that the fixture
+ * happened to make equal, nor rescued by `UNIT_SCALINGS`.
+ *
+ * Hand-written rather than produced by `keyedExpectationFrom`: an oracle built
+ * by the code it grades agrees with it by construction and cannot falsify it.
+ * The factory gets its own tests further down.
+ */
+const PROMO_GROUND_TRUTH = {
+  kind: "keyed",
+  groups: [
+    { label: "With Promo", measures: [1240, 118.4, 146816] },
+    { label: "No Promo", measures: [3105, 92.7, 287833.5] },
+  ],
+} as const satisfies MetricExpectation;
+
+function sqlAnswer(
+  sql: string,
+  columns: readonly string[],
+  rows: ReadonlyArray<Record<string, unknown>>,
+): RecordedToolCall {
+  return call("executeSQL", { sql }, { kind: "ok", data: { columns, rows } });
+}
+
+/**
+ * cq-016's reproducing answer, minus the richer breakdown: the authoritative
+ * numbers exactly, under the model's own group labels.
+ */
+function relabelledPromoAnswer(): RecordedToolCall[] {
+  return [
+    sqlAnswer(
+      "SELECT CASE WHEN promotion_id IS NOT NULL THEN 'With Promotion' ELSE 'No Promotion' END AS promo_status, " +
+        "COUNT(*) AS orders, AVG(total_cents)/100.0 AS aov, SUM(total_cents)/100.0 AS revenue " +
+        "FROM orders WHERE status != 'cancelled' GROUP BY 1",
+      ["promo_status", "orders", "aov", "revenue"],
+      [
+        { promo_status: "With Promotion", orders: 1240, aov: 118.4, revenue: 146816 },
+        { promo_status: "No Promotion", orders: 3105, aov: 92.7, revenue: 287833.5 },
+      ],
+    ),
+  ];
+}
+
+describe("keyed comparison — substance over labels (#5128)", () => {
+  const q = patternQuestion("cq-016", "Orders", "orders_with_promotions", [
+    "WHERE status != 'cancelled'",
+    "promotion_id IS NOT NULL",
+  ]);
+
+  it("passes cq-016's reproducing answer: relabelled groups AND a richer breakdown", () => {
+    // ⚠️ THE REPRODUCING CASE, VERBATIM IN SHAPE. The model computed the same
+    // categorisation (`promotion_id IS NOT NULL`), the same filter and the same
+    // measures, wrote `'With Promotion'` / `'No Promotion'` instead of the
+    // pattern author's `'With Promo'` / `'No Promo'`, and added a
+    // per-promotion-type breakdown on top. The label-set rule failed it on the
+    // display text alone — the third presentation check in a row to produce a
+    // false negative (#5122 → #5127 → this).
+    //
+    // Note the FIVE rows against a two-group ground truth: "group count equals
+    // row count" is the obvious spelling of this fix and it regresses exactly
+    // here. `promo_status` still has two DISTINCT values, which is what is
+    // actually being asserted.
+    const calls = [
+      sqlAnswer(
+        "SELECT CASE WHEN promotion_id IS NOT NULL THEN 'With Promotion' ELSE 'No Promotion' END AS promo_status, " +
+          "promotion_type, COUNT(*) AS orders, AVG(total_cents)/100.0 AS aov, SUM(total_cents)/100.0 AS revenue " +
+          "FROM orders WHERE status <> 'cancelled' GROUP BY 1, 2 WITH ROLLUP",
+        ["promo_status", "promotion_type", "orders", "aov", "revenue"],
+        [
+          { promo_status: "With Promotion", promotion_type: "ALL", orders: 1240, aov: 118.4, revenue: 146816 },
+          { promo_status: "No Promotion", promotion_type: "ALL", orders: 3105, aov: 92.7, revenue: 287833.5 },
+          { promo_status: "With Promotion", promotion_type: "percent_off", orders: 800, aov: 120.1, revenue: 96080 },
+          { promo_status: "With Promotion", promotion_type: "free_shipping", orders: 300, aov: 110, revenue: 33000 },
+          { promo_status: "With Promotion", promotion_type: "bogo", orders: 140, aov: 126.9, revenue: 17766 },
+        ],
+      ),
+    ];
+    expect(gradePattern(q, calls, "", 8, PROMO_GROUND_TRUTH).status).toBe("pass");
+  });
+
+  it("fails a dropped filter even though the labels match EXACTLY", () => {
+    // ⚠️ THIS IS THE TRADE THE FIX MAKES, AND IT GOES BOTH WAYS. The answer
+    // uses the pattern's own labels verbatim and splits into the same two
+    // groups — so the OLD label-set rule PASSED it — but it forgot
+    // `WHERE status != 'cancelled'`, so every measure is inflated. Substance
+    // catches what labels could not.
+    const calls = [
+      sqlAnswer(
+        "SELECT CASE WHEN promotion_id IS NOT NULL THEN 'With Promo' ELSE 'No Promo' END AS promo_status, " +
+          "COUNT(*) AS orders, AVG(total_cents)/100.0 AS aov, SUM(total_cents)/100.0 AS revenue FROM orders GROUP BY 1",
+        ["promo_status", "orders", "aov", "revenue"],
+        [
+          { promo_status: "With Promo", orders: 1301, aov: 117.2, revenue: 152477.2 },
+          { promo_status: "No Promo", orders: 3260, aov: 91.4, revenue: 297964 },
+        ],
+      ),
+    ];
+    // `sql_pattern` must not rescue it either — the SQL genuinely lacks the
+    // `WHERE status != 'cancelled'` needle, so this is a clean fail.
+    expect(gradePattern(q, calls, "", 8, PROMO_GROUND_TRUTH).status).toBe("fail");
+  });
+
+  it("passes an answer that publishes ONE measure per group and drops the rest", () => {
+    // ⚠️ THIS IS INSTANCE #4, CAUGHT IN REVIEW BEFORE IT SHIPPED. The first cut
+    // of this fix required every authoritative measure CELL to appear. The
+    // corpus's grouped metrics publish auxiliary columns no natural answer
+    // includes — `revenue_by_category` gives revenue + order_count + units_sold
+    // for a question that asks only for revenue, `monthly_gmv_trend` gives
+    // order_count + gmv + aov for a question that asks only for GMV — so that
+    // rule flips currently-PASSING questions to fail, over an exhaustiveness
+    // difference rather than a substantive one. Per GROUP, not per cell.
+    const calls = [
+      sqlAnswer(
+        "SELECT CASE WHEN COALESCE(promotion_id, 0) <> 0 THEN 'Promo' ELSE 'None' END AS s, " +
+          "COUNT(*) AS orders FROM orders WHERE status <> 'cancelled' GROUP BY 1",
+        ["s", "orders"],
+        [
+          { s: "Promo", orders: 1240 },
+          { s: "None", orders: 3105 },
+        ],
+      ),
+    ];
+    expect(gradePattern(q, calls, "", 8, undefined).status).toBe("fail");
+    expect(gradePattern(q, calls, "", 8, PROMO_GROUND_TRUTH).status).toBe("pass");
+  });
+
+  it("fails when one whole GROUP is unrepresented", () => {
+    // The other side of per-group: `every` still means every. The With-Promo
+    // group is reproduced exactly; the No-Promo group's three numbers are all
+    // wrong, and none of the wrong values is a x100 or /100 of an authoritative
+    // one, so UNIT_SCALINGS cannot rescue it.
+    //
+    // The SQL misses BOTH needles — `COALESCE(promotion_id, 0) <> 0` rather than
+    // `promotion_id IS NOT NULL`, and `status <> 'cancelled'` rather than
+    // `status != 'cancelled'` — and `findSqlMatch` requires EVERY needle, so
+    // either miss suffices. `gradePattern` layers the value check OVER
+    // `sql_pattern`, and a fixture satisfying the needles would pass on the
+    // substring alone and prove nothing about measures. The
+    // `undefined`-expectation assertion pins that provenance rather than
+    // trusting the spelling to stay put.
+    const calls = [
+      sqlAnswer(
+        "SELECT CASE WHEN COALESCE(promotion_id, 0) <> 0 THEN 'With Promo' ELSE 'No Promo' END AS promo_status, " +
+          "COUNT(*) AS orders, AVG(total_cents)/100.0 AS aov, SUM(total_cents)/100.0 AS revenue " +
+          "FROM orders WHERE status <> 'cancelled' GROUP BY 1",
+        ["promo_status", "orders", "aov", "revenue"],
+        [
+          { promo_status: "With Promo", orders: 1240, aov: 118.4, revenue: 146816 },
+          { promo_status: "No Promo", orders: 2911, aov: 88.3, revenue: 257041.3 },
+        ],
+      ),
+    ];
+    expect(gradePattern(q, calls, "", 8, undefined).status).toBe("fail");
+    expect(gradePattern(q, calls, "", 8, PROMO_GROUND_TRUTH).status).toBe("fail");
+  });
+
+  it("fails a wrong grouping whose numbers happen to CONTAIN the authoritative ones", () => {
+    // ⚠️ THE CASE THE PER-GROUP MEASURE RULE CANNOT CATCH ALONE, which is why
+    // the cardinality condition exists. Both authoritative groups are
+    // represented — 1240 and 3105 are both present — but the model grouped by
+    // shipping region, into five groups rather than two, and no column here
+    // carries two distinct values.
+    const calls = [
+      sqlAnswer(
+        "SELECT region, COUNT(*) AS orders, AVG(total_cents)/100.0 AS aov, SUM(total_cents)/100.0 AS revenue " +
+          "FROM orders WHERE status <> 'cancelled' GROUP BY region",
+        ["region", "orders", "aov", "revenue"],
+        [
+          { region: "us-east", orders: 1240, aov: 118.4, revenue: 146816 },
+          { region: "us-west", orders: 3105, aov: 92.7, revenue: 287833.5 },
+          { region: "emea", orders: 610, aov: 101.3, revenue: 61793 },
+          { region: "apac", orders: 455, aov: 99.8, revenue: 45409 },
+          { region: "latam", orders: 190, aov: 88.2, revenue: 16758 },
+        ],
+      ),
+    ];
+    expect(gradePattern(q, calls, "", 8, PROMO_GROUND_TRUTH).status).toBe("fail");
+  });
+
+  it("⚠️ a BYSTANDER column satisfies the shape check — pinning the honest weakness", () => {
+    // ⚠️ THIS TEST ASSERTS A LIMITATION, NOT A GUARANTEE, AND THAT IS THE POINT.
+    // Condition 2 accepts if ANY column has the authoritative distinct count —
+    // including a column that has nothing to do with the grouping. The
+    // wrong-grouping fixture above fails only because none of ITS columns
+    // happens to carry two distinct values; add one plausible bystander and the
+    // same wrong grouping passes.
+    //
+    // Recorded rather than fixed (#5143) because the alternative — tying condition 2 to
+    // a specific column — needs to know which column is the grouping key on the
+    // OBSERVED side, which is exactly the presentation-level guess this issue
+    // exists to stop making. Condition 1 is the grading; condition 2 is a shape
+    // guard against an ungrouped answer, and it is weak on purpose. Anyone
+    // strengthening it should make this test go red deliberately.
+    const calls = [
+      sqlAnswer(
+        "SELECT region, domestic, COUNT(*) AS orders, AVG(total_cents)/100.0 AS aov, " +
+          "SUM(total_cents)/100.0 AS revenue FROM orders WHERE status <> 'cancelled' GROUP BY 1, 2",
+        ["region", "domestic", "orders", "aov", "revenue"],
+        [
+          { region: "us-east", domestic: "yes", orders: 1240, aov: 118.4, revenue: 146816 },
+          { region: "us-west", domestic: "yes", orders: 3105, aov: 92.7, revenue: 287833.5 },
+          { region: "emea", domestic: "no", orders: 610, aov: 101.3, revenue: 61793 },
+          { region: "apac", domestic: "no", orders: 455, aov: 99.8, revenue: 45409 },
+          { region: "latam", domestic: "no", orders: 190, aov: 88.2, revenue: 16758 },
+        ],
+      ),
+    ];
+    expect(gradePattern(q, calls, "", 8, PROMO_GROUND_TRUTH).status).toBe("pass");
+  });
+
+  const NO_MEASURES = {
+    kind: "keyed",
+    groups: [
+      { label: "shipped", measures: [] },
+      { label: "delivered", measures: [] },
+      { label: "returned", measures: [] },
+    ],
+  } as const satisfies MetricExpectation;
+  const statusQ = patternQuestion("cq-021", "Orders", "order_statuses", [
+    "nothing-matches-this",
+  ]);
+
+  it("still compares LABELS when the authoritative result has no measures", () => {
+    // A `SELECT DISTINCT status`-shaped ground truth: the key column IS the
+    // data, not a display label, and cardinality alone would pass any result
+    // with three distinct values. The old label-set rule is kept for exactly
+    // this case rather than deleted, so it must still bite.
+    const wrongValues = [
+      sqlAnswer("SELECT DISTINCT status FROM orders", ["status"], [
+        { status: "shipped" },
+        { status: "delivered" },
+        { status: "cancelled" },
+      ]),
+    ];
+    const rightValues = [
+      sqlAnswer("SELECT DISTINCT status FROM orders", ["status"], [
+        { status: "RETURNED" },
+        { status: "shipped" },
+        { status: "delivered" },
+      ]),
+    ];
+    expect(gradePattern(statusQ, wrongValues, "", 8, NO_MEASURES).status).toBe("fail");
+    expect(gradePattern(statusQ, rightValues, "", 8, NO_MEASURES).status).toBe("pass");
+  });
+
+  it("fails a SUPERSET of the authoritative labels on the measure-less path", () => {
+    // The label rule is set EQUALITY, not containment: a spurious extra group is
+    // as wrong as a missing one. Nothing pinned the superset direction before.
+    const extraValue = [
+      sqlAnswer("SELECT DISTINCT status FROM orders", ["status"], [
+        { status: "shipped" },
+        { status: "delivered" },
+        { status: "returned" },
+        { status: "pending" },
+      ]),
+    ];
+    expect(gradePattern(statusQ, extraValue, "", 8, NO_MEASURES).status).toBe("fail");
+  });
+
+  it("passes an identical answer when the authoritative grouping has a NULL key", () => {
+    // ⚠️ REGRESSION PIN FOR A FALSE NEGATIVE FOUND IN REVIEW. Harvest used to
+    // stringify a NULL grouping key to the label `"null"` and count it toward
+    // the cardinality, while the observed side skips nullish cells — so the
+    // model returning the BYTE-IDENTICAL authoritative rows graded `fail`. That
+    // is this issue's own defect class, one layer down. Both sides now reduce a
+    // cell through `cellKey` and neither counts a NULL as a distinct value.
+    const withNullGroup = {
+      kind: "keyed",
+      groups: [
+        { label: "percent_off", measures: [] },
+        { label: "free_shipping", measures: [] },
+        { label: null, measures: [] },
+      ],
+    } as const satisfies MetricExpectation;
+    const identical = [
+      sqlAnswer(
+        "SELECT DISTINCT promotion_type FROM orders",
+        ["promotion_type"],
+        [
+          { promotion_type: "percent_off" },
+          { promotion_type: "free_shipping" },
+          { promotion_type: null },
+        ],
+      ),
+    ];
+    const pq = patternQuestion("cq-022", "Orders", "promo_types", ["nothing-matches-this"]);
+    expect(gradePattern(pq, identical, "", 8, withNullGroup).status).toBe("pass");
+  });
+
+  it("⚠️ a COALESCE-rendered NULL group still fails the shape check — the NULL fix does NOT cover it", () => {
+    // ⚠️ ASSERTS A LIMITATION, and specifically the one a reader will assume the
+    // NULL fix closed. Dropping NULL labels from the cardinality makes the
+    // BYTE-IDENTICAL answer pass (pinned above). It does NOT make
+    // `COALESCE(promotion_type, 'unknown')` pass: the model renders the null
+    // group as a value, so the observed column carries 3 distinct values against
+    // an authoritative 2.
+    //
+    // Recorded rather than fixed because it failed under the rule this PR
+    // replaces too — set equality on labels implies equality of cardinality, so
+    // `{percent_off, free_shipping, "null"}` never matched
+    // `{percent_off, free_shipping, unknown}` either. Not a regression; a
+    // pre-existing class, tracked in #5143.
+    const withNullGroup = {
+      kind: "keyed",
+      groups: [
+        { label: "percent_off", measures: [800] },
+        { label: "free_shipping", measures: [300] },
+        { label: null, measures: [3105] },
+      ],
+    } as const satisfies MetricExpectation;
+    const coalesced = [
+      sqlAnswer(
+        "SELECT COALESCE(promotion_type, 'unknown') AS t, COUNT(*) AS orders FROM orders GROUP BY 1",
+        ["t", "orders"],
+        [
+          { t: "percent_off", orders: 800 },
+          { t: "free_shipping", orders: 300 },
+          { t: "unknown", orders: 3105 },
+        ],
+      ),
+    ];
+    const pq = patternQuestion("cq-022", "Orders", "promo_types", ["nothing-matches-this"]);
+    // Condition 1 is satisfied — all three groups are represented — so this is
+    // condition 2 alone, which is what makes it a shape limitation rather than a
+    // grading disagreement.
+    expect(gradePattern(pq, coalesced, "", 8, withNullGroup).status).toBe("fail");
+  });
+
+  it("throws rather than failing the model when ground truth has no groups", () => {
+    // An empty expectation means the harness never established ground truth.
+    // Returning `false` would print a `tool_selection` artifact blaming the
+    // model for a harness fault, 40 minutes into a paid run.
+    const empty = { kind: "keyed", groups: [] } as const satisfies MetricExpectation;
+    expect(() => gradePattern(q, relabelledPromoAnswer(), "", 8, empty)).toThrow(
+      /ground truth was not established/,
+    );
+  });
+
+  it("throws when EVERY authoritative grouping key is NULL", () => {
+    // ⚠️ THE SIBLING DISPOSITION, AND AN EARLIER CUT GOT IT BACKWARDS. This
+    // branch returned `true` so condition 1 could stand alone — which passes the
+    // ungrouped answer condition 2 exists to reject, AND disagreed with
+    // `labelSetMatches`, which returns `false` on the identical predicate. Which
+    // way a degenerate expectation went was then decided by whether any measure
+    // happened to parse as a number. It is a harness fault either way, so it
+    // gets the harness fault's disposition.
+    const allNull = {
+      kind: "keyed",
+      groups: [
+        { label: null, measures: [4345] },
+        { label: null, measures: [1207] },
+      ],
+    } as const satisfies MetricExpectation;
+    const ungrouped = [
+      sqlAnswer("SELECT COUNT(*) AS a, COUNT(DISTINCT id) AS b FROM orders", ["a", "b"], [
+        { a: 4345, b: 1207 },
+      ]),
+    ];
+    const nq = patternQuestion("cq-024", "Orders", "null_keyed", ["nothing-matches-this"]);
+    expect(() => gradePattern(nq, ungrouped, "", 8, allNull)).toThrow(
+      /every authoritative grouping key is NULL/,
+    );
+  });
+
+  it("pins the DISTINCT-label cardinality without a bystander column to lean on", () => {
+    // ⚠️ THE ONLY TEST THAT SEPARATES `labels.size` FROM `groups.length` WITHOUT
+    // a coincidence. Ground truth is three rows collapsing to two labels; the
+    // answer has two rows, and — deliberately — NO column carrying three
+    // distinct values, so the row-count spelling cannot be satisfied by a
+    // bystander. Without this, the row-count mutation was killed only by the
+    // COALESCE limitation test, which #5143 is expected to invert.
+    const collapsing = {
+      kind: "keyed",
+      groups: [
+        { label: "In Stock", measures: [90] },
+        { label: "in stock ", measures: [12] },
+        { label: "Out of Stock", measures: [5] },
+      ],
+    } as const satisfies MetricExpectation;
+    const answer = [
+      sqlAnswer(
+        "SELECT LOWER(stock_status) AS s, SUM(a) AS a, SUM(b) AS b FROM inventory_levels GROUP BY 1",
+        ["s", "a", "b"],
+        [
+          { s: "in stock", a: 90, b: 12 },
+          { s: "out of stock", a: 5, b: 5 },
+        ],
+      ),
+    ];
+    const invQ = patternQuestion("cq-025", "Products", "stock_health", ["nothing-matches-this"]);
+    // Column distinct counts are s:2, a:2, b:2 — nothing is 3.
+    expect(gradePattern(invQ, answer, "", 8, collapsing).status).toBe("pass");
+  });
+});
+
+describe("labelDriftNote — reports a relabel without gating it (#5128)", () => {
+  const q = patternQuestion("cq-016", "Orders", "orders_with_promotions", [
+    "nothing-matches-this",
+  ]);
+  const relabelled = relabelledPromoAnswer();
+
+  it("reports the drift on a question it just PASSED", () => {
+    const out = gradePattern(q, relabelled, "", 8, PROMO_GROUND_TRUTH);
+    expect(out.status).toBe("pass");
+    const note = labelDriftNote(out, PROMO_GROUND_TRUTH);
+    expect(note).toContain("cq-016");
+    expect(note).toContain("relabelled");
+    // ⚠️ THE WHOLE BRACKETED LIST, NOT `toContain("With Promo")` — that string is
+    // a PREFIX of the model's own label `"With Promotion"`, so the assertion
+    // passed against a mutant that printed the OBSERVED labels back, producing
+    // the self-contradictory "none of [With Promotion, …] appears in any result
+    // column". A substring assertion on one label cannot tell the two apart.
+    expect(note).toContain("[With Promo, No Promo]");
+    expect(note).not.toContain("With Promotion");
+  });
+
+  it("says nothing when the answer did not match ground truth at all", () => {
+    // ⚠️ THE NOTE MUST NOT SPEAK FOR A PASS IT HAD NOTHING TO DO WITH. A pattern
+    // question can pass on `sql_pattern` while its RESULT is wrong; without the
+    // empty-match guard the note would print "grouped answer matched the
+    // authoritative measures and 2 group(s), but relabelled them" over a result
+    // that matched nothing — a false statement in the one channel whose whole
+    // job is keeping a relabel visible.
+    const passesOnSql = patternQuestion("cq-016", "Orders", "orders_with_promotions", [
+      "FROM orders",
+    ]);
+    const wrongNumbers = [
+      sqlAnswer(
+        "SELECT promo, COUNT(*) AS n FROM orders GROUP BY 1",
+        ["promo", "n"],
+        [
+          { promo: "yes", n: 11 },
+          { promo: "no", n: 22 },
+        ],
+      ),
+    ];
+    const out = gradePattern(passesOnSql, wrongNumbers, "", 8, PROMO_GROUND_TRUTH);
+    expect(out.status).toBe("pass");
+    expect(labelDriftNote(out, PROMO_GROUND_TRUTH)).toBeNull();
+  });
+
+  it("says nothing when the answer used the authoritative labels", () => {
+    const onLabel = [
+      sqlAnswer(
+        "SELECT CASE WHEN promotion_id IS NOT NULL THEN 'With Promo' ELSE 'No Promo' END AS promo_status, " +
+          "COUNT(*) AS orders, AVG(total_cents)/100.0 AS aov, SUM(total_cents)/100.0 AS revenue " +
+          "FROM orders WHERE status != 'cancelled' GROUP BY 1",
+        ["promo_status", "orders", "aov", "revenue"],
+        [
+          { promo_status: "With Promo", orders: 1240, aov: 118.4, revenue: 146816 },
+          { promo_status: "No Promo", orders: 3105, aov: 92.7, revenue: 287833.5 },
+        ],
+      ),
+    ];
+    const out = gradePattern(q, onLabel, "", 8, PROMO_GROUND_TRUTH);
+    expect(out.status).toBe("pass");
+    expect(labelDriftNote(out, PROMO_GROUND_TRUTH)).toBeNull();
+  });
+
+  it("says nothing on a FAIL whose answer WOULD have matched — a note is a report, not a second verdict", () => {
+    // ⚠️ THE FIXTURE HAS TO FAIL FOR A REASON OTHER THAN THE COMPARISON, or it
+    // proves nothing: an answer whose measures are simply wrong returns `null`
+    // from the substance check and would satisfy this assertion with the
+    // pass-only guard deleted. A mutation confirmed exactly that.
+    //
+    // The `latency` branch is one of three places a keyed answer can match on
+    // substance and still be graded `fail` — `protocol` (unparseable) and
+    // `protocol` (transport) are the others, and all three return before
+    // `gradeByMode`. It is simply the cheapest of the three to construct. The
+    // note is suppressed on all of them: the artifact already carries the
+    // expectation, and a "matched but relabelled" line beside a failure verdict
+    // reads as a second, contrary verdict.
+    const out = grade({
+      question: q,
+      toolCalls: relabelled,
+      finalText: "",
+      latencyMs: 9_000,
+      baseline: { "cq-016": 1_000 },
+      metricExpectations: undefined,
+      answerExpectations: { "cq-016": PROMO_GROUND_TRUTH },
+    });
+    expect(out.status).toBe("fail");
+    if (out.status === "fail") expect(out.artifact.category).toBe("latency");
+    expect(labelDriftNote(out, PROMO_GROUND_TRUTH)).toBeNull();
+  });
+});
+
+describe("keyedExpectationFrom — harvesting ground truth (#5128)", () => {
+  it("keeps each group's measures WITH its label, and excludes a numeric key", () => {
+    // `month` is a grouping label that happens to be a number. Harvesting it as
+    // a measure would force the model to reproduce `3` somewhere in its result
+    // — a spelling test on a calendar. And the measures must stay attached to
+    // the group that produced them: the comparison grades PER GROUP, so a flat
+    // list would make "which group is unrepresented" unanswerable.
+    const e = keyedExpectationFrom(
+      "month",
+      ["orders", "revenue"],
+      [
+        { month: 1, orders: 410, revenue: 39221.5 },
+        { month: 2, orders: 388, revenue: 35907.25 },
+        { month: 3, orders: 502, revenue: 47118 },
+      ],
+    );
+    expect(e.groups).toEqual([
+      { label: "1", measures: [410, 39221.5] },
+      { label: "2", measures: [388, 35907.25] },
+      { label: "3", measures: [502, 47118] },
+    ]);
+  });
+
+  it("parses Postgres `numeric` measures, which arrive as strings", () => {
+    const e = keyedExpectationFrom(
+      "channel",
+      ["gmv"],
+      [
+        { channel: "dtc", gmv: "128401.75" },
+        { channel: "marketplace", gmv: "64200.5" },
+      ],
+    );
+    expect(e.groups.map((g) => g.measures)).toEqual([[128401.75], [64200.5]]);
+  });
+
+  it("keeps labels VERBATIM, and the cardinality collapses them at comparison time", () => {
+    // Three rows spelling two groups. `groups.length` is 3 and the labels are
+    // untouched — an operator greps the pattern SQL for `'In Stock'`, not
+    // `in stock` — while the shape check the model is measured against is
+    // DISTINCT normalized labels, i.e. 2. Asserting that through `gradePattern`
+    // rather than off the field is the only way to see the collapse happen:
+    // reading `groups.length` would silently pass a row-count spelling.
+    const e = keyedExpectationFrom(
+      "stock_status",
+      ["skus"],
+      [
+        { stock_status: "In Stock", skus: 90 },
+        { stock_status: "in stock ", skus: 12 },
+        { stock_status: "Out of Stock", skus: 5 },
+      ],
+    );
+    expect(e.groups).toHaveLength(3);
+    expect(e.groups.map((g) => g.label)).toEqual(["In Stock", "in stock ", "Out of Stock"]);
+
+    const invQ = patternQuestion("cq-023", "Products", "stock_health", ["nothing-matches-this"]);
+    const twoGroupAnswer = [
+      sqlAnswer(
+        "SELECT LOWER(stock_status) AS status, warehouse, COUNT(*) AS skus " +
+          "FROM inventory_levels GROUP BY 1, 2",
+        ["status", "warehouse", "skus"],
+        [
+          { status: "in stock", warehouse: "west", skus: 90 },
+          { status: "in stock", warehouse: "east", skus: 12 },
+          { status: "out of stock", warehouse: "west", skus: 5 },
+        ],
+      ),
+    ];
+    // `status` carries exactly TWO distinct values — the collapsed cardinality,
+    // not the three harvested rows.
+    //
+    // ⚠️ THE STATED MUTATION RESULTS HERE WERE WRONG AND WERE CHECKED, NOT
+    // REASONED. An earlier comment claimed a row-count spelling "would demand 3"
+    // and a case-sensitive fold "would see 2 vs 2 by luck". Both were measured
+    // green: `skus` is `90, 12, 5` — three distinct values — so a BYSTANDER
+    // column satisfies either mutant. What this test actually proves is that a
+    // 3-row / 2-label harvest passes against a 2-group answer. The row-count and
+    // case-folding spellings are killed by `a COALESCE-rendered NULL group` and
+    // `still compares LABELS when the authoritative result has no measures`
+    // respectively.
+    expect(gradePattern(invQ, twoGroupAnswer, "", 8, e).status).toBe("pass");
+  });
+
+  it("harvests a NULL grouping key as `null`, never as the string \"null\"", () => {
+    // ⚠️ `String(cell)` HERE WAS A FALSE NEGATIVE. `"null"` counts toward a
+    // cardinality the observed side can never reach, because `columnValueSets`
+    // skips nullish cells — so the model returning the identical rows failed.
+    const e = keyedExpectationFrom(
+      "promotion_type",
+      ["orders"],
+      [
+        { promotion_type: "percent_off", orders: 800 },
+        { promotion_type: null, orders: 3105 },
+      ],
+    );
+    expect(e.groups.map((g) => g.label)).toEqual(["percent_off", null]);
+  });
+
+  it("yields no measures when the authoritative result is key-only", () => {
+    const e = keyedExpectationFrom(
+      "status",
+      [],
+      [{ status: "shipped" }, { status: "delivered" }],
+    );
+    expect(e.groups).toEqual([
+      { label: "shipped", measures: [] },
+      { label: "delivered", measures: [] },
+    ]);
   });
 });
 

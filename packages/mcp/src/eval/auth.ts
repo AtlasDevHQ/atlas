@@ -297,6 +297,33 @@ function buildEvalAuth(opts: BuildEvalAuthOptions): EvalAuth {
   return betterAuth({
     secret: "atlas-eval-test-secret-not-for-production-use-32+chars",
     baseURL: opts.baseUrl,
+    // ⚠️ STATED, because the default is `isTest()` and that made this fixture
+    // behave differently depending on WHO RAN IT.
+    //
+    //   better-auth/dist/context/create-context.mjs:210
+    //     skipOriginCheck: options.advanced?.disableOriginCheck !== undefined
+    //       ? options.advanced.disableOriginCheck
+    //       : isTest() ? true : false
+    //
+    // Under `bun test` — the deterministic MCP job, and every local run of
+    // `canonical-mcp-auth.test.ts` — `isTest()` is true, so the origin check
+    // was skipped and the loopback DCR call (which sends a cookie and no
+    // `Origin`, as any non-browser client does) sailed through. Under the CLI
+    // binary, which is how the `eval-mcp-llm` job invokes this same fixture,
+    // `isTest()` is false and the identical request is refused with
+    // `403 MISSING_OR_NULL_ORIGIN` before a single LLM call is made.
+    //
+    // That job has never executed (#5039: its secret was never wired, and
+    // until #5040 a skipped step counted as a pass), so the break has been
+    // latent since the fixture was written and would have surfaced as a 403
+    // on the first real run — a failure that looks nothing like the eval
+    // regression the job exists to report.
+    //
+    // Setting it explicitly costs NO coverage: the check has never been
+    // exercised by either eval path, because the path that runs is always in
+    // test mode. What changes is that both paths now agree, and neither
+    // depends on the runner's NODE_ENV.
+    advanced: { disableOriginCheck: true },
     // Memory adapter requires every table the plugin set will touch to
     // be pre-allocated as an empty array, otherwise the first findOne
     // throws "Model X not found". The plugin set below exercises:

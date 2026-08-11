@@ -29,7 +29,7 @@
 #   property is covered (ADR-0037 §9).
 #
 #   That is not hypothetical here. `eval-mcp-llm` — the repo's only
-#   real-model job — is gated on ANTHROPIC_API_KEY, which has never been a
+#   real-model job — is gated on AI_GATEWAY_API_KEY, which has never been a
 #   repo secret (#5039). No secret → preflight skips → eval skips → this
 #   script returned 0. Permanently green, never executed, and its own
 #   latency baseline (`eval/canonical-questions/mcp-llm-baseline.json`) is
@@ -75,7 +75,7 @@ shift
 # the correct verdict (nothing was evaluated) and on a PR adds the same
 # visible comment any other non-run would get.
 SKIP_TOLERANT_LABELS=(
-  # Steps skip when ANTHROPIC_API_KEY is unset. Remove this line when
+  # Steps skip when AI_GATEWAY_API_KEY is unset. Remove this line when
   # #5039 wires the secret — after that, a skip means the key stopped
   # working, which is exactly what this gate should catch.
   eval-mcp-llm

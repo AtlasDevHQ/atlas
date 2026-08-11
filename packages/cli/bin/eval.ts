@@ -667,7 +667,8 @@ function loadBaseline(filePath: string): EvalResult[] {
  * fd-1 writers this comment used to NAME as still-broken — the `Resuming: …`
  * line under `--resume`, the `Baseline saved to: …` line, and
  * `printRegressionReport` under `--compare`, which printed ANSI *after* the JSON
- * body — all route through `humanOut` in `handleEval`, which is this function.
+ * body — all route through `handleEval`'s `humanOut`, which appends a newline to
+ * the sink THIS function returns.
  * `printSummary` never needed it: it sits behind the `else` of the same
  * `jsonOutput` check and does not run in a machine mode. (That distinction is
  * kept because the first draft of this comment pointed at the wrong function,
@@ -700,7 +701,11 @@ export async function handleEval(args: string[]): Promise<void> {
   const saveBaseline = args.includes("--baseline");
   const csvOutput = args.includes("--csv");
   const jsonOutput = args.includes("--json");
-  // ⚠️ EVERY PROSE LINE THIS COMMAND WRITES GOES THROUGH HERE (#5146). Under
+  // ⚠️ EVERY PROSE LINE THIS COMMAND WRITES TO fd 1 GOES THROUGH HERE (#5146).
+  // The fd-1 scoping is load-bearing and was missing from the first two attempts
+  // at this sentence: `handleEval` has a dozen `console.error` / stderr writers
+  // that are prose and do not route through here, correctly, because fd 2 is
+  // never the machine channel. Under
   // `--json` or `--csv` stdout is a MACHINE channel and nothing human may touch
   // it; `printJSON` / `printCSV` own fd 1 in those modes. Three writers used
   // `console.log` directly and so ignored the mode entirely — see
@@ -714,9 +719,26 @@ export async function handleEval(args: string[]): Promise<void> {
   // itself elsewhere: only one of them is under test at a time, and the
   // duplicated guard is the one a future edit forgets. Both route through here
   // now, so the claim is true and a mutation to this sink is visible in all of
-  // them. (`printSummary` and the `Results saved to:` line stay on `console.log`
-  // — they sit inside the `else` of the mode check and cannot run in a machine
-  // mode at all.)
+  // them.
+  //
+  // ⚠️ TWO EXEMPTIONS, BOTH DELIBERATE, AND THE LIST WAS INCOMPLETE THE FIRST
+  // TIME THIS CLAIM WAS CORRECTED — which is why it is spelled out rather than
+  // summarised:
+  //   - `printSummary` and the `Results saved to:` line stay on `console.log`.
+  //     They sit inside the `else` of the mode check and cannot run in a machine
+  //     mode at all.
+  //   - the two per-case PROGRESS writers below keep their own
+  //     `if (!csvOutput && !jsonOutput)` and write to `process.stderr`. They are
+  //     SUPPRESSED in a machine mode, not redirected — a different rule, and
+  //     routing them through `humanOut` would MOVE them to fd 1 in human mode,
+  //     which is a behaviour change rather than a fix. Same for every
+  //     `console.error` in this function: fd 2 is not the channel under guard.
+  //
+  // ⚠️ AND THE REDIRECTION IS NOT BEHAVIOUR-FREE IN A MACHINE MODE. The two
+  // lines routed here previously emitted NOTHING under `--json`/`--csv`; they
+  // now appear on fd 2. That is the wanted behaviour — progress belongs on
+  // stderr — but it is a change, and this PR's own thesis is that a stated
+  // property must be true.
   const humanWrite = evalSeedSink({ csvOutput, jsonOutput });
   // Appends the newline `console.log` used to, so every call site below is a
   // pure redirection rather than a redirection PLUS a formatting change — the

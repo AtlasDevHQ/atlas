@@ -44,12 +44,15 @@ name: Canonical Eval (LLM)
 #   gateway) was 20 questions / 124 tool calls / 429s of model wall-clock: an
 #   order of magnitude more work than $0.05 of Haiku buys.
 #
-#   ⚠️ The true figure is STILL UNKNOWN, and the reason is worth naming rather
-#   than papering over: the eval records latency per question and does not
-#   record token usage at all, so a job whose only open question is spend
-#   cannot answer it. #5123 adds that. Until then, treat any dollar figure —
-#   including the arithmetic in #5123 — as an estimate, and make #5039's spend
-#   decision against a measured run.
+#   ⚠️ #5123 CLOSED THE MEASUREMENT GAP THIS BLOCK USED TO DESCRIBE. The eval now
+#   records token usage per question and for the run — `usage.{inputTokens,
+#   outputTokens,totalTokens}` plus `usage.unreported` in the `--json` payload,
+#   and an `N in + M out = T total` line on stderr. So the figure is no longer
+#   unknown in principle; it is unknown until a real run publishes one.
+#
+#   Read it OFF A RUN, not off arithmetic. Every dollar figure quoted for this
+#   job before #5123 — including "under $0.05" above — was an estimate, and
+#   #5039's spend decision wants the measured number from the artifact.
 #
 # POLICY — identical to eval.yml's, and the gate script is shared:
 #   - Pull requests: informational but VISIBLE (green check + PR comment).

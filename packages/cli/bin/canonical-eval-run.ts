@@ -956,29 +956,25 @@ async function runMcpLlmMode(
   // `questionId -> usage`, so the per-outcome mapping below reads its own
   // question's measurement rather than trusting two lists to stay in step.
   const usageById = new Map(result.usage.byQuestion.map((q) => [q.questionId, q.usage]));
-  // ⚠️ A MAP MISS AND AN UNMEASURED QUESTION RENDER IDENTICALLY (`null`), AND
-  // ONLY ONE OF THEM IS HONEST. A miss means the outcome list and the usage list
-  // disagree — the very desync the map was introduced to make impossible — and
-  // it would land a question in the payload with `inputTokens: null`, ABSENT
-  // from `unreported`, and the totals quietly short. That is the "never quietly
-  // short" property this block claims, failing silently. A duplicate `id` in
-  // `questions.yml` is the reachable way in: `new Map` keeps the last entry, so
-  // two outcomes share one measurement and the other is lost.
+  // ⚠️ THE MAP IS TOTAL, AND THE ROUND-1 GUARD THAT ASSERTED IT WAS DEAD CODE
+  // WITH A MISLEADING REMEDY. It threw on a desync and named "a duplicate
+  // question id in the corpus" as the cause — but `loadQuestions` already
+  // rejects duplicates (`canonical-eval.ts`, `Duplicate question id "..."`), and
+  // it runs TWICE before any LLM call, so that fault aborts before a cent is
+  // spent and with a better message. No other trigger exists: `outcomes.push`
+  // and `tokenUsage.push({ questionId: q.id, ... })` are consecutive statements
+  // in one loop iteration, and `outcome.questionId` is `question.id` on both
+  // arms of `runOneQuestion`.
   //
-  // A loud stop, not a warning: the figure is the product, and this run is paid.
-  const missingUsage = result.outcomes
-    .map((o) => o.questionId)
-    .filter((id) => !usageById.has(id));
-  if (missingUsage.length > 0 || usageById.size !== result.usage.byQuestion.length) {
-    throw new Error(
-      `[harness] usage/outcome desync — ${result.outcomes.length} outcome(s), ` +
-        `${result.usage.byQuestion.length} usage record(s), ${usageById.size} distinct id(s)` +
-        (missingUsage.length > 0 ? `; no usage for: ${missingUsage.join(", ")}` : "") +
-        `. The reported token totals would be short by an unknown amount, so the run ` +
-        `stops rather than publishing a cost figure it cannot stand behind. A duplicate ` +
-        `question id in the corpus is the usual cause.`,
-    );
-  }
+  // So the guard could not fire for any value the producer can produce, while
+  // its DISPOSITION was to unwind a completed paid run — discarding every grade,
+  // artifact and latency measurement, and leaving the `--json` payload unwritten
+  // so the workflow's `tee` artifact fails `jq empty`. That inverts the rule the
+  // sibling module states and enforces: "grading is the run's product and a
+  // diagnostic must not be able to discard it." Token usage is the diagnostic.
+  //
+  // Removed rather than reworded. What makes `?? null` below honest is the
+  // pairing above, not an assertion here.
 
   if (options.json) {
     const payload = `${JSON.stringify(

@@ -16,21 +16,28 @@
  * why this module deliberately has NO IMPORTS OF ITS OWN: one would evaluate
  * before the assignment below and could reach the logger first.
  *
- * Under `--json` stdout is a MACHINE channel: the workflow runs
+ * Under `--json` or `--csv` stdout is a MACHINE channel. Taking `canonical-eval`
+ * as the worked example: the workflow runs
  * `… canonical-eval --mcp-llm --json | tee eval-mcp-llm-output.json` and uploads
- * the result as the adjudication artifact. That file had never parsed — two
- * independent writers put prose on fd 1, and the logger's was the one that also
+ * the result as the adjudication artifact. That file had never parsed — three
+ * independent writers put prose on fd 1 (see the note below on the third), and
+ * the logger's was the one that also
  * carried ANSI escapes, because the eval runs with `NODE_ENV` unset (#5121) so
  * `isDev` is true even in CI and the transport is `pino-pretty` with
  * `colorize: true`.
  *
  * ⚠️ THE ARGV SCAN IS DELIBERATELY DUPLICATED FROM `parseCanonicalEvalOptions`,
  * not shared with it. That parser is the real one and it stays the real one —
- * but it runs from inside `handleCanonicalEval`, hundreds of module
- * evaluations too late to matter here. A positional pre-scan is the only thing
- * available at this point in the process's life. It is narrow on purpose: both
- * tokens must be present, so no other subcommand is affected, and the two
- * spellings cannot drift far because `--json` is `canonical-eval`'s flag.
+ * but it runs from inside `handleCanonicalEval`, hundreds of module evaluations
+ * too late to matter here. A raw argv pre-scan is the only thing available at
+ * this point in the process's life. It is narrow because both tokens must be
+ * present, not because only one subcommand is listed — since #5146 the table
+ * below carries three, and `--csv` beside `--json`.
+ *
+ * (This paragraph said "a POSITIONAL pre-scan", "no other subcommand is
+ * affected", and "`--json` is `canonical-eval`'s flag". All three were true of
+ * #5126's single-command version and none survived #5146; the loop below matches
+ * with `includes`, deliberately, and says why.)
  *
  * ⚠️ IT OVERRIDES AN EXISTING VALUE, INCLUDING `ATLAS_LOG_STDERR=0`. Under
  * `--json` a clean stdout is a correctness property of the artifact, not a
@@ -75,9 +82,15 @@ for (const [command, machineFlags] of Object.entries(MACHINE_STDOUT_COMMANDS)) {
   // position. Position would be stricter, but this module runs before anything
   // that knows how the binary was invoked — and `bun run atlas -- <cmd>` shapes
   // argv differently from a direct `bun bin/atlas.ts <cmd>`. Requiring the flag
-  // too keeps it narrow: a bare `atlas query "…"` is untouched, and a prompt
-  // that happens to contain the word `eval` only matches a command that already
-  // owns fd 1 for the same reason.
+  // too keeps it narrow: a bare `atlas query "…"` is untouched, and a `query`
+  // prompt containing the word `eval` matches a command that already owns fd 1
+  // for the same reason.
+  //
+  // It NARROWS rather than bounds, and the residue is stated rather than implied:
+  // any invocation with an argv element literally equal to a table key alongside
+  // one of its flags stamps — `atlas plugin add query --json` would. The cost is
+  // that logs move to fd 2 for a command that did not ask, which is why this is
+  // recorded rather than closed.
   if (
     process.argv.includes(command) &&
     machineFlags.some((flag) => process.argv.includes(flag))

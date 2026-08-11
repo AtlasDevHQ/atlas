@@ -96,10 +96,15 @@ import {
 // ── Public types ──────────────────────────────────────────────────────
 
 /**
- * Re-exported from `@atlas/mcp/eval/tool-contract`, where the contract now
- * lives (#5135). Kept as a named export here because {@link RecordedToolCall}
- * — this module's shape — is typed by it, and every consumer that narrows a
- * recorded call reads it from this file.
+ * Re-exported from `@atlas/mcp/eval/tool-contract`, where the contract now lives
+ * (#5135), because {@link RecordedToolCall} — this module's shape — is typed by
+ * it, so a consumer narrowing a recorded call can reach the type without a
+ * second import.
+ *
+ * No such consumer exists today: everything that needs `ToolContract` takes it
+ * from the owning module. Said plainly, because an earlier version of this note
+ * justified the re-export by "every consumer … reads it from this file", which
+ * is true only vacuously and reads as if call sites exist.
  */
 export type { ToolContract };
 
@@ -349,8 +354,16 @@ export interface McpLlmEvalOptions {
  *
  * ⚠️ TOTAL, NOT PARTIAL. The AI SDK types every field of `LanguageModelUsage` as
  * `number | undefined`, so a provider may report all, some, or none. A value of
- * this type means ALL of it was reported — see {@link toTokenUsage}, which
- * returns `null` rather than filling a gap. Half a measurement recorded as a
+ * this type means the reported figures were complete AT THE FIELD LEVEL — see
+ * {@link toTokenUsage}, which returns `null` rather than filling a gap.
+ *
+ * ⚠️ IT DOES NOT MEAN EVERY STEP REPORTED. The source is `totalUsage`, which the
+ * SDK sums with `addTokenCounts` — a step that reports nothing contributes 0 and
+ * is indistinguishable from a step that genuinely used none. So `unreported`
+ * means "no step reported anything for this question", not "this question was
+ * fully measured". Stated rather than tightened: distinguishing them means
+ * walking `result.steps`, which is real machinery for a case the Gateway
+ * providers do not currently produce. Half a measurement recorded as a
  * whole one is a guess wearing a measurement's formatting, which is the exact
  * thing #5123 exists to remove: the workflow's own *"under $0.05 per run"* was
  * never measured, and order-of-magnitude arithmetic on a 20-question /
@@ -382,8 +395,9 @@ export interface QuestionTokenUsage {
  *
  * **On the RESULT, not on {@link McpLlmOutcome}.** That union is the GRADER's
  * vocabulary: `grade()` is pure and synchronously unit-testable, and putting
- * usage on its arms would make `failOutcome`, `passOutcome`, all six per-mode
- * graders and every test call site carry a field no verdict reads. Token usage
+ * usage on its arms would make `failOutcome`, `passOutcome`, all four per-mode
+ * graders (`gradeMetric`, `gradeGlossary`, `gradePattern`, `gradeVirtual`) and
+ * every test call site carry a field no verdict reads. Token usage
  * is a measurement OF the run, not an input TO a verdict. Adding it as an
  * OPTIONAL field on both arms — the shape #5123 warned against — would also
  * hand every consumer an `undefined` to narrow.
@@ -726,7 +740,23 @@ async function runOneQuestion(
   // hook for the same reason.
   let streamErr: unknown = null;
   try {
-    const result = streamText({
+    // ⚠️ THE ANNOTATION IS THE GUARD, AND IT HAS TO BE HERE — ON THE LOCAL — NOT
+    // ONLY ON `runTokenUsage`'S PARAMETER. Round 1 put it on the parameter and
+    // measured TS2339 on reverting the helper's BODY; that measured a mutation
+    // nobody makes. The mutation that shipped #5123's defect was at THIS line's
+    // consumer — `toTokenUsage(await result.usage)` — and it recompiled clean and
+    // green, because `result` was still the full `StreamTextResult` carrying both
+    // fields. Inlining a one-line private helper is a routine refactor and it was
+    // all that stood between here and the defect.
+    //
+    // Narrowing the binding closes the class: `result.usage` is now TS2339 at
+    // every read in this function, so neither inlining the helper nor passing
+    // `{ totalUsage: result.usage }` into it compiles. `PromiseLike`, not
+    // `Promise` — `StreamTextResult` declares both fields as `PromiseLike`.
+    const result: {
+      readonly text: PromiseLike<string>;
+      readonly totalUsage: PromiseLike<ReportedUsage>;
+    } = streamText({
       model: input.model,
       tools: input.tools,
       system: input.systemPrompt,
@@ -754,12 +784,22 @@ async function runOneQuestion(
     // — a guess wearing a measurement's formatting, which is the exact failure
     // `TokenUsage`'s own docstring names and #5123 exists to end.
     //
-    // ⚠️ AWAITED INSIDE THE `try`, AND AFTER `.text`. Both matter. The promise
-    // settles with the stream, so awaiting it before `.text` would block on a
-    // stream that has not been drained; and a provider-side failure rejects it,
-    // which belongs in the catch below rather than unwinding the run. A question
-    // whose stream threw keeps `usage: null` — an honest "not measured" rather
-    // than a zero that would silently deflate the run total.
+    // ⚠️ INSIDE THE `try`: a provider-side rejection belongs in the catch below
+    // rather than unwinding the run, and a question whose stream REJECTED then
+    // keeps `usage: null` — an honest "not measured" rather than a zero that
+    // would silently deflate the run total.
+    //
+    // Ordering after `.text` is for the RECORDER, not the promise: `recorded`
+    // must be the complete dispatch sequence before the grader walks it. An
+    // earlier version of this comment claimed awaiting `totalUsage` first would
+    // "block on a stream that has not been drained" — false, the SDK's getter
+    // calls `consumeStream()` itself.
+    //
+    // ⚠️ AND `usage: null` IS NOT WHAT EVERY FAILED QUESTION CARRIES. This line
+    // runs BEFORE the `streamErr` re-throw below, so a question that failed via
+    // `onError` — the path tool-execute and provider-side errors take — reaches
+    // the catch with a REAL measurement. That is correct (the tokens were spent)
+    // and it is not what "a question whose stream threw keeps null" implied.
     usage = await runTokenUsage(result);
     if (streamErr !== null) throw streamErr;
   } catch (err) {
@@ -805,7 +845,11 @@ async function runOneQuestion(
 /**
  * The run's token usage: EVERY step, summed.
  *
- * ⚠️ THE PARAMETER TYPE IS THE FALSIFIER, AND IT IS THE ONLY ONE AVAILABLE.
+ * ⚠️ THE TYPE IS THE FALSIFIER — AND THE LOAD-BEARING HALF IS THE ANNOTATION ON
+ * THE CALLER'S LOCAL, not this parameter. See the note at the `streamText` call.
+ * A runtime falsifier is not impossible, only expensive: a two-step
+ * `MockLanguageModelV3` driven through `runOneQuestion` would do it, and needs
+ * the MCP auth fixture that `runMcpLlmEval` has never had a test for.
  * `result.usage` and `result.totalUsage` are BOTH `LanguageModelUsage`, so
  * reading the wrong one is invisible to the type checker at the call site,
  * invisible to `toTokenUsage`'s tests (which pin the narrowing, not the source),
@@ -850,9 +894,14 @@ type ReportedUsage = Pick<
  * and `outputTokens` are both required because cost needs both (they are priced
  * differently by roughly 5x), and a record with one of them zeroed reads as a
  * cheap question rather than an unmeasured one. `totalTokens` is taken when the
- * provider gives it — it can legitimately EXCEED the sum, since reasoning tokens
- * are counted there and in neither of the other two — and derived only when it
- * is absent.
+ * provider gives it and derived only when it is absent — the provider's own
+ * figure is authoritative and may not equal the sum.
+ *
+ * ⚠️ AN EARLIER VERSION OF THIS COMMENT EXPLAINED THE MISMATCH AS REASONING
+ * TOKENS "counted there and in neither of the other two". False for the pinned
+ * SDK: reasoning tokens live in `outputTokenDetails.reasoningTokens`, i.e.
+ * INSIDE `outputTokens`. Trusting the provider's total remains right; the reason
+ * given for it was not.
  */
 function toTokenUsage(usage: ReportedUsage | undefined): TokenUsage | null {
   if (!usage) return null;
@@ -1519,10 +1568,12 @@ function keyedResultMatches(
  * The rows whose numbers include one of this group's measures, modulo
  * {@link UNIT_SCALINGS}.
  *
- * A group can legitimately land on more than one row — the *stock health*
- * fixture has one row carrying two authoritative groups' measures in different
- * columns — so this is a SET, and {@link separatesAuthoritativeGroups} picks a
- * representative from it rather than assuming there is only one.
+ * A group can legitimately land on more than one row — the *overlapping* fixture
+ * has `beta`'s measures on both rows — so this is a SET, and
+ * {@link separatesAuthoritativeGroups} picks a representative from it rather than
+ * assuming there is only one. (The *stock health* fixture shows the converse, one
+ * row carrying two groups' measures; an earlier version of this note cited it for
+ * this claim, which it does not support.)
  */
 function rowsRepresenting(
   group: AuthoritativeGroup,
@@ -1601,6 +1652,50 @@ function separatesAuthoritativeGroups(
     }
     for (const r of representingRows[i] ?? []) set.add(r);
   });
+
+  // ⚠️ AN EMPTY CANDIDATE **SET** CANNOT BE ASSIGNED; AN EMPTY CANDIDATE **LIST**
+  // IS VACUOUSLY SATISFIED, AND THAT ASYMMETRY IS A LIVE FALSE POSITIVE.
+  //
+  // Both skips above — NULL-labelled and measure-less — remove a group from
+  // `rowsByLabel`. When they remove ALL of them, `hasDistinctRepresentatives([])`
+  // returns `true` on a zero-iteration loop, and condition 2 collapses to "some
+  // column has the right number of distinct values": exactly the bystander rule
+  // this condition was written to replace. Measured on the round-1 fix:
+  // `groups: [{label: null, measures: [412]}, {label: "ups", measures: []}]`
+  // PASSED an ungrouped one-row answer `SELECT COUNT(*)` — a false POSITIVE
+  // introduced by the fix for a false negative.
+  //
+  // Reachable from the same ground truth the measure-less skip cites: a NULL key
+  // row carrying the only numbers, beside a labelled row whose measure came back
+  // NULL. Unadjudicable, so it gets this function's standing disposition for
+  // unadjudicable ground truth — the loud one, like the two throws above — and
+  // NOT a permissive default on the gate.
+  // ⚠️ THE THRESHOLD IS TWO, NOT ONE, AND `=== 0` WAS THE FIRST CUT'S OWN
+  // UNDER-FIRE. This is a PAIRWISE-distinctness gate: with a single surviving
+  // label there is no pair, `hasDistinctRepresentatives` imposes nothing, and
+  // condition 2 collapses to bare cardinality just as completely as it does at
+  // zero. Measured on that cut — take this file's own bystander fixture (five
+  // shipping regions, a `domestic: yes/no` column) and make ONE authoritative
+  // group measure-less: `rowsByLabel.size` is 1, the guard stays quiet, and the
+  // wrong grouping that `a BYSTANDER column no longer satisfies the shape check`
+  // pins as a FAIL passes again.
+  //
+  // `min(2, labelCount)` rather than a flat 2, because a genuine one-label
+  // expectation has no pair to form and is the documented weak case above —
+  // there the honest answer is bare cardinality, not a throw.
+  const labelCount = authoritativeLabels(expectation).size;
+  if (rowsByLabel.size < Math.min(2, labelCount)) {
+    throw new Error(
+      `[harness] only ${rowsByLabel.size} authoritative group(s) both carry a label ` +
+        `and carry measures, against ${labelCount} distinct label(s) — so there is no ` +
+        `pair left for a column to tell apart and the grouping shape cannot be ` +
+        `adjudicated. Every other group was skipped as NULL-labelled or measure-less. ` +
+        `Passing here would accept an UNGROUPED answer, which is what this check exists ` +
+        `to reject. Look at the key column and the measure columns in the authoritative ` +
+        `SQL — an all-NULL key row, or a measure that came back NULL for every row of a ` +
+        `group, produces exactly this.`,
+    );
+  }
 
   const targets = expectedCardinalities(expectation);
   for (const [column, values] of columnValueSets(rows)) {

@@ -141,6 +141,11 @@ describe("atlas eval — stdout in a machine mode", () => {
     // deletion: a human run still prints it, on fd 1, where it always was.
     const res = await spawnCli(["eval", "--limit", "1", "--resume", resumeFile()]);
     expect(res.stdout).toContain("Resuming: 1 cases already completed");
+    // ⚠️ THE SECOND WRITER'S HUMAN DIRECTION, WHICH HAD NO FALSIFIER. The
+    // machine direction is covered three times over, so "route everything to
+    // stderr unconditionally" was a free pass. This spawn already reaches the
+    // line; asserting it costs nothing.
+    expect(res.stdout).toContain("Atlas Eval:");
   });
 
   /**
@@ -254,6 +259,68 @@ describe("atlas eval — stdout in a machine mode", () => {
     expect(fs.existsSync(path.join(dir, "eval", "baselines"))).toBe(true);
     // The backup dir is a temp-dir artifact, and restore cleans it up.
     expect(fs.existsSync(path.join(dir, ".semantic-backup-eval"))).toBe(false);
+  });
+
+  test("the per-schema banner stays off the JSON body — the loop must actually RUN", async () => {
+    // ⚠️ THIS WRITER HAD NO FALSIFIER IN EITHER DIRECTION, AND THE REASON IS THE
+    // TRAP THIS FILE'S HEADER NAMES. It sits inside `for (const [schema,
+    // schemaCases] of bySchema)`, and every other spawn here either dies at the
+    // datasource guard before that loop or uses `--resume` to empty `bySchema`.
+    // So the writer never executed in any observing process: measured, a
+    // `console.log` mutation on it survived all 596 tests in `packages/cli/bin`.
+    //
+    // The fix is to let the loop iterate and let the SEED fail instead. A
+    // syntactically valid but unreachable datasource URL gets past the
+    // non-empty guard, `seedDemoPostgres` throws into `handleEval`'s existing
+    // per-schema `catch` (fd 2), and the run completes normally — so the JSON
+    // body is written and the banner has genuinely run.
+    const dir = sandbox();
+    const child = Bun.spawn(
+      [process.execPath, CLI_ENTRY, "eval", "--json", "--id", "ec-001"],
+      {
+        cwd: dir,
+        env: {
+          ...process.env,
+          ATLAS_DATASOURCE_URL: "postgres://unused:unused@127.0.0.1:1/never",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const [stdout, stderr] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    // ⚠️ BOTH ASSERTIONS, OR NEITHER PROVES ANYTHING. The parse alone is
+    // satisfied by a run that never reached the banner; the stderr check alone
+    // is satisfied by a writer that emits to BOTH.
+    expect(stderr).toContain("--- Schema: ecommerce");
+    const parsed = JSON.parse(stdout) as { summary?: { total?: number } };
+    expect(parsed.summary?.total).toBe(1);
+    expect(stdout).not.toContain("--- Schema:");
+
+    // ⚠️ AND THE HUMAN DIRECTION, IN THE SAME TEST, BECAUSE IT SURVIVED ON ITS
+    // OWN. With only the machine assertions above, moving the banner to
+    // `process.stderr.write` UNCONDITIONALLY passes — a human run silently loses
+    // it. Every other human-mode spawn in this file dies before the loop, so
+    // this is the only place the second direction is reachable.
+    const humanDir = sandbox();
+    const human = Bun.spawn([process.execPath, CLI_ENTRY, "eval", "--id", "ec-001"], {
+      cwd: humanDir,
+      env: {
+        ...process.env,
+        ATLAS_DATASOURCE_URL: "postgres://unused:unused@127.0.0.1:1/never",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [humanOut] = await Promise.all([
+      new Response(human.stdout).text(),
+      new Response(human.stderr).text(),
+      human.exited,
+    ]);
+    expect(humanOut).toContain("--- Schema: ecommerce");
   });
 
 });

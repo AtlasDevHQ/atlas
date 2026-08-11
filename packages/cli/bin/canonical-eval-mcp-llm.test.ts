@@ -1217,6 +1217,94 @@ describe("keyed comparison — substance over labels (#5128)", () => {
     expect(gradePattern(mq, undersplit, "", 8, mixed).status).toBe("fail");
   });
 
+  it("THROWS when too few groups both carry a label and carry measures", () => {
+    // ⚠️ THE ROUND-1 FIX'S OWN DEFECT, INVERTED. Skipping measure-less groups
+    // stopped condition 2 being unsatisfiable — and when the skips remove ALL
+    // groups, `hasDistinctRepresentatives([])` is VACUOUSLY TRUE on a
+    // zero-iteration loop, so condition 2 collapsed to the bystander rule it
+    // replaced. Measured: this exact expectation PASSED the ungrouped one-row
+    // answer below, a false POSITIVE created by the fix for a false negative.
+    //
+    // An empty candidate SET cannot be assigned; an empty candidate LIST is
+    // satisfied by having nothing to ask. That asymmetry is the whole bug.
+    const nothingAdjudicable = {
+      kind: "keyed",
+      groups: [
+        { label: null, measures: [412] },
+        { label: "ups", measures: [] },
+      ],
+    } as const satisfies MetricExpectation;
+    const ungrouped = [
+      sqlAnswer("SELECT COUNT(*) AS n FROM orders", ["n"], [{ n: 412 }]),
+    ];
+    const nq = patternQuestion("cq-031", "Orders", "unadjudicable", ["nothing-matches-this"]);
+    // A THROW, not a `fail`: this is ground truth that cannot adjudicate, which
+    // gets the same disposition as the empty-groups and all-NULL-key cases.
+    // Grading it `fail` would blame the model for a harness fault; grading it
+    // `pass` — what the round-1 fix did — accepts an answer that never grouped.
+    expect(() => gradePattern(nq, ungrouped, "", 8, nothingAdjudicable)).toThrow(
+      /no pair left for a column to tell apart/,
+    );
+
+    // ⚠️ AND THE THRESHOLD IS TWO, NOT ONE — the first cut of this guard used
+    // `size === 0` and a fix-vs-finding pass REPRODUCED the defect against it.
+    // This is a PAIRWISE-distinctness gate: one surviving label forms no pair,
+    // so `hasDistinctRepresentatives` imposes nothing and condition 2 collapses
+    // to bare cardinality just as completely as at zero.
+    //
+    // The fixture is this file's own bystander case — the five-region wrong
+    // grouping with a `domestic: yes/no` bystander — with ONE authoritative
+    // group made measure-less. Under `size === 0` the guard stayed quiet,
+    // `domestic` satisfied a candidate list of length 1, and the wrong grouping
+    // PASSED again.
+    const oneSeparableLabel = {
+      kind: "keyed",
+      groups: [
+        { label: "With Promo", measures: [1240, 118.4, 146816] },
+        { label: "No Promo", measures: [] },
+      ],
+    } as const satisfies MetricExpectation;
+    const bystanderAnswer = [
+      sqlAnswer(
+        "SELECT region, domestic, COUNT(*) AS orders, AVG(total_cents)/100.0 AS aov, " +
+          "SUM(total_cents)/100.0 AS revenue FROM orders WHERE status <> 'cancelled' GROUP BY 1, 2",
+        ["region", "domestic", "orders", "aov", "revenue"],
+        [
+          { region: "us-east", domestic: "yes", orders: 1240, aov: 118.4, revenue: 146816 },
+          { region: "us-west", domestic: "yes", orders: 3105, aov: 92.7, revenue: 287833.5 },
+          { region: "emea", domestic: "no", orders: 610, aov: 101.3, revenue: 61793 },
+        ],
+      ),
+    ];
+    expect(() => gradePattern(q, bystanderAnswer, "", 8, oneSeparableLabel)).toThrow(
+      /only 1 authoritative group\(s\) both carry a label and carry measures/,
+    );
+  });
+
+  it("does NOT throw on a genuine ONE-label expectation — there is no pair to want", () => {
+    // ⚠️ THE FALSIFIER FOR `Math.min(2, labelCount)` RATHER THAN A FLAT 2, and
+    // without it the `min` is decoration: replacing it with `2` left every other
+    // test green. A grouped metric whose grouping key takes ONE value in the data
+    // — `GROUP BY status` on a table where every row is `shipped` — is a
+    // legitimate run, and aborting it would be a harness fault invented by the
+    // guard rather than found by it.
+    //
+    // This is the weak case the doc block already admits: at one group there is
+    // no partition to disagree about, so bare cardinality is the honest answer.
+    // Pinned so the admission stays true.
+    const single = {
+      kind: "keyed",
+      groups: [{ label: "shipped", measures: [4345] }],
+    } as const satisfies MetricExpectation;
+    const answer = [
+      sqlAnswer("SELECT status, COUNT(*) AS n FROM orders GROUP BY 1", ["status", "n"], [
+        { status: "shipped", n: 4345 },
+      ]),
+    ];
+    const sq = patternQuestion("cq-032", "Orders", "single_group", ["nothing-matches-this"]);
+    expect(gradePattern(sq, answer, "", 8, single).status).toBe("pass");
+  });
+
   it("still grades a NULL-labelled group's MEASURES on condition 1 alone", () => {
     // ⚠️ THE ONE PLACE CONDITION 1 IS INDEPENDENTLY LOAD-BEARING, and without
     // this test it is unfalsifiable: `if (false && !everyGroupRepresented)` left
@@ -2851,9 +2939,12 @@ describe("summarizeTokenUsage", () => {
   });
 
   it("keeps a provider totalTokens that EXCEEDS input + output", () => {
-    // Reasoning tokens are counted in `totalTokens` and in neither of the
-    // others, so a total derived as `input + output` would under-report a
-    // reasoning model's spend. 130 ≠ 120 is the whole assertion.
+    // The provider's own total is authoritative and need not equal the sum, so
+    // an always-derive implementation loses it. 130 ≠ 120 is the whole assertion.
+    // (An earlier version of this comment explained the gap as reasoning tokens
+    // "counted in totalTokens and in neither of the others" — false for the
+    // pinned SDK, where they sit inside `outputTokens`. Same correction as
+    // `toTokenUsage`'s docstring; this copy was missed the first time.)
     const out = summarizeTokenUsage([{ questionId: "cq-001", usage: u(100, 20, 130) }]);
     expect(out.totals.totalTokens).toBe(130);
     expect(out.totals.inputTokens + out.totals.outputTokens).toBe(120);

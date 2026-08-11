@@ -62,9 +62,11 @@ export function isRateLimitedEnvelope(envelope: ToolErrorEnvelope): boolean {
  * spelling of #5133's mistake and it survived the move: an earlier cut of this
  * function accepted `typeof retry_after === "number"` as proof of the hosted
  * quota, on the stated ground that only the hosted limiter sets it. Measured
- * false — `packages/mcp/src/tools.ts:316` sets `extras.retry_after` from the
+ * false — `packages/mcp/src/tools.ts` sets `extras.retry_after` from the
  * DATASOURCE limiter's `retryAfterMs` (`lib/tools/sql.ts`) on a throttled
- * `executeSQL`, which is the very case this function's `else` arm describes as
+ * `executeSQL` (grep `extras.retry_after`; `tool-contract.ts` records what
+ * happened the last time a line number was cited here), which is the very case
+ * this function's `else` arm describes as
  * downstream. So a datasource throttle was routed to the hosted arm and told an
  * operator to raise a quota that had not fired — on a weekly, paid run, whose
  * only response is to re-run and abort identically.

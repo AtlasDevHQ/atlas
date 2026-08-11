@@ -224,11 +224,13 @@ export type ExtractedToolJson =
 /**
  * Concatenate a `tools/call` result's text content items, in order.
  *
- * Exported so a caller that needs the tool's TEXT rather than its parsed JSON
- * — the `--mcp-llm` eval binder, for a tool whose declared output is free-form
- * prose — reads exactly the bytes {@link extractToolJson} would have parsed,
- * from the same implementation. Re-deriving the join at the call site is how
- * the two drift.
+ * Exported so a caller that needs the tool's TEXT rather than its parsed JSON —
+ * a tool whose declared output is free-form prose — reads exactly the bytes
+ * {@link extractToolJson} would have parsed, from the same implementation.
+ * Re-deriving the join at the call site is how the two drift.
+ *
+ * Since #5135 that caller is `interpretResult` in `./tool-contract.ts`; the eval
+ * binders reach it through there rather than importing this directly.
  *
  * An empty string means the result carried NO text content at all (an
  * image-only or empty `content` array), which is distinct from a tool that
@@ -273,17 +275,18 @@ function textItems(result: CallToolResult): readonly string[] {
  * An earlier cut parsed the whole join, which assumes a wire contract the
  * server never guaranteed: **multiple text content items is legal MCP**, and
  * Atlas emits them. `withTrialFooter` (`mcp-dispatch.ts`, ADR-0018) APPENDS a
- * prose advisory to every successful billing-gated result — `runMetric`,
- * `executeSQL`, `query`, the three tools that answer most of the corpus — so
- * `<JSON body>` + `"Atlas trial: N days remaining…"` did not parse and a
- * correct answer was recorded `unparseable`, which {@link grade}'s first branch
- * fails as `protocol`.
+ * prose advisory to every successful result of a tool declaring `checksBilling`
+ * — which includes `runMetric`, `executeSQL` and `query`, the three that answer
+ * most of the corpus, and also the datasource-management tools the hosted route
+ * registers on top. So `<JSON body>` + `"Atlas trial: N days remaining…"` did
+ * not parse and a correct answer was recorded `unparseable`, which the
+ * `--mcp-llm` grader's first branch fails as `protocol`.
  *
  * So: the body is the LONGEST PREFIX of the text items that parses, and any
  * trailing items are annotation. Two properties make that safe to state rather
  * than merely plausible:
  *
- *   - **Strictly additive.** The full join is tried FIRST (`n = items.length`),
+ *   - **Strictly additive.** The full join is tried FIRST (the last index),
  *     so anything that parsed before parses identically now, to the same value.
  *     The rule can only convert `unparseable` into `ok`/`error` — it can never
  *     move a result that already had a body.

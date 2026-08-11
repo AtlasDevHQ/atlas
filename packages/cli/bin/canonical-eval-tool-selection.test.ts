@@ -445,7 +445,10 @@ describe("bindToolsForRecording", () => {
       // Both halves matter. Capturing is what lets the run loop abort; returning
       // is what keeps the abort OUT of `execute`, where the AI SDK would turn it
       // into a tool-error part indistinguishable from a transport failure — and
-      // the run loop's `catch` swallows those into an empty sequence.
+      // the run loop's `catch` then grades whatever was recorded before it, with
+      // no throttle among it. (Not "an empty sequence": names are pushed BEFORE
+      // dispatch, so the sequence carries every call that started. Third copy of
+      // that wrong premise; the two in the source were corrected first.)
       const { tools, recorder } = bind(throttledClient({ retry_after: 30 }));
       const result = (await getRunner(tools, "runMetric")(
         {},

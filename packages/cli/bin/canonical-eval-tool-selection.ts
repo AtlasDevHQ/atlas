@@ -320,18 +320,24 @@ export async function runToolSelectionEval(
           await result.text;
           if (streamErr !== null) throw streamErr;
         } catch (err) {
-          // streamText throwing here counts as "didn't pick the right
-          // tool" — record an empty sequence and let the grader fail it.
+          // streamText throwing here counts as "didn't pick the right tool" —
+          // let the grader judge whatever was recorded before the failure. NOT
+          // necessarily empty: `execute` pushes the name BEFORE dispatching, so a
+          // stream that died after two calls leaves two records.
           process.stderr.write(
             `[tool-selection-eval] streamText threw on "${item.id}": ${err instanceof Error ? err.message : String(err)}\n`,
           );
         }
         const latencyMs = Date.now() - start;
         // ⚠️ REACHED AFTER THE `catch` ABOVE, AND THAT IS LOAD-BEARING. The catch
-        // deliberately swallows a `streamText` failure into an empty sequence, so
-        // a throttle severe enough to abort the stream would be absorbed there
-        // and graded as a miss. `gradeToolSelection` sees the recorded dispatches
-        // either way and aborts on one before it scores anything (#5136).
+        // deliberately swallows a `streamText` failure and grades WHATEVER WAS
+        // RECORDED before it — possibly empty, but not necessarily, since names
+        // are pushed before dispatch. (An earlier version of this comment said
+        // "into an empty sequence", which is the premise a future reader would
+        // reason from and it is wrong.) Either way a throttle severe enough to
+        // abort the stream would be absorbed there and graded as a miss, so
+        // `gradeToolSelection` reads the recorded dispatches and aborts on one
+        // before it scores anything (#5136).
         outcomes.push(gradeToolSelection(item, [...recorded], latencyMs));
       }
 
@@ -409,9 +415,9 @@ function bindToolsForRecording(
           // ⚠️ RECORDED HERE AND RETURNED ANYWAY (#5136). The envelope still
           // goes back to the model, because aborting from inside `execute` is
           // indistinguishable to the AI SDK from a transport failure and lands
-          // in the run loop's `catch`, which swallows it into an empty sequence.
-          // `gradeToolSelection` reads it after the stream drains instead — the
-          // one place the abort can be loud.
+          // in the run loop's `catch`, which grades whatever was recorded before
+          // the failure. `gradeToolSelection` reads the throttle after the stream
+          // drains instead — the one place the abort can be loud.
           if (isRateLimitedEnvelope(parsed.envelope)) {
             record.throttle = {
               toolName: t.name,

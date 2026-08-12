@@ -20,7 +20,7 @@ Conflicts turn on **predicate cardinality** — whether one subject may hold one
 | `single` | The subject has exactly one value (a person has one manager) | The new claim is recorded as being **in tension with** the incumbent |
 | `multi` | Values coexist and corroborate (a person knows many languages) | The claims simply coexist |
 
-`multi` is the conservative answer everywhere cardinality is read, deliberately. Coexisting wrongly is recoverable at the review gate; superseding wrongly destroys a belief.
+`multi` is the conservative answer wherever cardinality is read for a decision, deliberately. Coexisting wrongly is recoverable at the review gate; superseding wrongly destroys a belief.
 
 When a `single`-cardinality claim arrives that disagrees with an existing one, Atlas writes an `in-tension-with` edge between them. That edge is a **record of disagreement**, not a verdict.
 
@@ -30,20 +30,22 @@ Cardinality is a property of the **canonical predicate**, curated by a human on 
 
 A *stored* `multi` is a different fact from absence: it records a human who looked and declined the question, which is what stops the automatic proposer raising it again. Only an **approved** entry counts. A proposer that watches human corrections can suggest `single`; it can never approve one, and nothing autonomous can.
 
-Three readers consult cardinality, and they do not all read the same source — which is what decides whether anything can be destroyed:
+Three decisions read cardinality, and they do not all read the same source — which is what decides whether anything can be destroyed:
 
-| What reads it | Which source | On an uncurated predicate |
+| The decision | Which source | On an uncurated predicate |
 |---|---|---|
-| The `in-tension-with` edge written **at ingest** | The producer's own per-claim declaration; the extractor's is a model guess | Still flags conflicts |
-| The `in-tension-with` edges minted by an **admin tension sweep** | The workspace's currently-approved `single` entries | Mints nothing |
-| **Supersession** — closing the incumbent's validity window, at a human publish or correction | The same approved `single` entry | Never supersedes |
+| Write an `in-tension-with` edge **at ingest** | The producer's own per-claim declaration; the extractor's is a model guess against a prompt biased toward `multi` | Still flags conflicts — whenever the producer declared `single` |
+| Mint `in-tension-with` edges in an **admin tension sweep** | The workspace's currently-approved `single` entries | Mints nothing |
+| **Supersede a colliding claim at the publish gate** — closing the incumbent's validity window | The same approved `single` entry | Never supersedes |
 
-<Callout type="warn" title="Contradiction detection works before curation; retiring a belief does not">
+A **human correction** is the case that is not on that list, and it is worth stating because the table invites the wrong inference. The `supersede` verb closes a validity window on the reviewer's own warrant and reads **no** cardinality entry at all — the human naming the claim *is* the arbitration. So an uncurated predicate is not a workspace where nothing can ever be retired; it is one where nothing is retired *without somebody saying so*.
+
+<Callout type="warn" title="Contradiction detection works before curation; automatic retirement does not">
   A workspace that has never curated a predicate still sees conflicts. The ingest path flags them from the producer's declaration, and the clusters below are populated normally.
 
-  What curation adds is the **deterministic** half: the sweep that re-examines pairs nothing would otherwise look at again — approving an entry changes what *would* collide for facts already written — and supersession itself.
+  What curation adds is the **deterministic** half: the sweep that re-examines pairs nothing would otherwise look at again — approving an entry changes what *would* collide for facts already written — and collision-driven supersession at the publish gate.
 
-  The asymmetry is the design, not a gap. An advisory edge is recoverable in both directions, so a model's guess is worth exactly one: a missing edge costs a reviewer a hint, a spurious one costs a glance. Closing a validity window is recoverable by no verb at all, and a curated `single` is **retroactive** — it makes every existing pair in that slot supersedable at the next publish. So Atlas under-flags deterministically rather than retiring beliefs stochastically.
+  The asymmetry is the design, not a gap. An advisory edge is recoverable in both directions, so a model's guess is worth exactly one: a missing edge costs a reviewer a hint, a spurious one costs a glance. Closing a validity window is recoverable by no verb at all, and a curated `single` is **retroactive** — it makes every existing *published* pair in that slot supersedable at the next publish. So Atlas under-flags deterministically rather than retiring beliefs stochastically.
 </Callout>
 
 ## What a conflict cluster shows

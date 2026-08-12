@@ -296,10 +296,12 @@ jobs:
       - name: Check published Brain* contract snippets against their declarations (#5165)
         run: bun scripts/check-docs-brain-snippets.ts
 
-      # Enumerated here because this workflow lists each fixture suite BY NAME
+      # ⚠️ Enumerated here because this workflow lists each fixture suite BY NAME
       # while ci-local.sh globs the directory — see the mutation-tables note
-      # above. Rewrites two tracked files in place and trap-restores them; no
-      # Postgres, ~2 seconds.
+      # above. Rewrites two tracked files in place and trap-restores them, so
+      # locally it runs in ci-local.sh's SERIAL stage 2, never beside the
+      # scanners that read those files. No Postgres; ~25s measured on WSL2 (21
+      # fixtures, each a fresh `bun` spawn).
       - name: Adversarial fixtures for the brain-snippets gate (#5165)
         run: bash scripts/__tests__/check-docs-brain-snippets.test.sh
 

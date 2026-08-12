@@ -30,8 +30,10 @@
 #   Stage 1  parallel  lint + lint:type-aware + syncpack + ~22 read-only
 #                      drift/check scripts.
 #                      None touch dist/, so they fan out safely (CI_LOCAL_JOBS).
-#   Stage 2  serial    the tree-WRITING gate (mutation-tables). `mutate.ts` rewrites
-#                      sources in place, so it cannot share Stage 1 with ~30 scanners.
+#   Stage 2  serial    the tree-WRITING gates (gate-fixtures, mutation-tables).
+#                      Both rewrite sources in place — `mutate.ts` per mutation,
+#                      and several adversarial suites per fixture — so neither can
+#                      share Stage 1 with ~30 scanners reading those files.
 #   Stage 3  serial    `bun run test` ALONE. The full suite flakes under CPU
 #                      contention on WSL2, so it gets the machine to itself.
 #
@@ -253,7 +255,6 @@ launch docs-brain-snippets       bun scripts/check-docs-brain-snippets.ts
 launch auth-md-parity            g_auth_md_parity
 launch apex-discovery-drift      bash scripts/check-apex-discovery-drift.sh
 launch openapi-drift             g_openapi_drift
-launch gate-fixtures             g_gate_fixtures
 if [ "$NO_NET" != "1" ]; then
   launch published-symbols       g_published_symbols
   launch unpublished-versions    g_unpublished
@@ -277,6 +278,19 @@ wait
 # `mutation-tables` job runs everything in parallel, where 14 minutes costs no
 # wall clock. Skips entirely without TEST_DATABASE_URL.
 status "stage 2: tree-writing gates (serial — these mutate sources in place) …"
+# ⚠️ `gate-fixtures` MOVED HERE from Stage 1 (#5165), for the same correctness
+# reason as `mutation-tables` above and not for load. Several of the adversarial
+# suites REWRITE TRACKED SOURCE in place and trap-restore it:
+# `check-pricing-parity.test.sh` mutates `packages/api/src/lib/settings.ts`, and
+# `check-docs-brain-snippets.test.sh` mutates
+# `packages/api/src/lib/brain/ingest/types.ts` — adding a REQUIRED member to
+# `BrainSourceConnector`, which makes that file non-compiling for the ~1s the
+# fixture is live. Run in parallel with Stage 1 that lands inside the window
+# where `lint-type-aware`, `brain-fact-promotion` and `docs-brain-snippets` are
+# reading those very files, so they go red on a line the developer never wrote —
+# the flake-teaching outcome the paragraph above exists to prevent. Worse, in
+# Stage 1 the fixture suite raced the very gate it tests.
+run_fg gate-fixtures   g_gate_fixtures
 run_fg mutation-tables bash scripts/check-mutation-tables.sh --affected origin/main
 
 if [ "$NO_TEST" != "1" ]; then
@@ -290,7 +304,7 @@ fi
 # half-written. RESULT's existence = run finished; its contents = the report.
 #
 # ⚠️ The verdict logic itself lives in scripts/lib/ci-local-report.sh so it can
-# be tested WITHOUT running 32 gates. It cannot be tested by invoking this
+# be tested WITHOUT running 35 gates. It cannot be tested by invoking this
 # script: `g_gate_fixtures` above runs every scripts/__tests__/*.test.sh, so
 # such a test would recurse. See scripts/__tests__/ci-local-verdict.test.sh.
 # shellcheck source=lib/ci-local-report.sh

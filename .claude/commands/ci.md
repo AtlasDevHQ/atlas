@@ -1,5 +1,5 @@
 ---
-description: "Run the pre-PR gate — scripts/ci-local.sh, 33 gates, PASS/FAIL table. Mandatory before a PR. Iterate with test-isolated.ts --affected instead."
+description: "Run the pre-PR gate — scripts/ci-local.sh, 35 gates, PASS/FAIL table. Mandatory before a PR. Iterate with test-isolated.ts --affected instead."
 ---
 
 Run the same checks CI runs. This must pass before opening a PR.
@@ -103,9 +103,9 @@ promoted type-aware rules at `error`; permanent `warn` residuals don't fail it),
 `plugin-count`, `enforcement-parity`, `schema-drift`, `migration-rename`,
 `oauth-helper-drift`, `ee-imports`, `twenty-resolver`, `no-admin-plugin`,
 `no-legacy-connections`, `test-discipline`, `settings-readers`, `saas-env-doc`,
-`docs-links`, `auth-md-parity`, `openapi-drift`, `gate-fixtures` (the adversarial
-`scripts/__tests__/*.test.sh` suites), `published-symbols`, `unpublished-versions`,
-and the full `test` suite.
+`docs-links`, `docs-brain-snippets`, `auth-md-parity`, `openapi-drift`,
+`gate-fixtures` (the adversarial `scripts/__tests__/*.test.sh` suites),
+`published-symbols`, `unpublished-versions`, and the full `test` suite.
 
 It does **not** run the GitHub-only required checks (Deploy Validation,
 `Image Scan`, `Analyze (javascript-typescript)` / CodeQL, `ee-stub-build`) or

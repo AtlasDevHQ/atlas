@@ -39,7 +39,7 @@ interface BrainSourceVendorClient {
 }
 ```
 
-In practice a vendor directory holds four to six leaf files, and the split is worth copying: `config.ts` (identity, the stored-config shape, and the source-id contract), `api.ts` (raw vendor calls — absent for Slack, which reuses the existing Slack client), `client.ts` (the page walk and record construction), `connector.ts` (registration and credential resolution), `audience.ts` — **required** for a grant-deriving class, and absent only when something else reconciles this source's audiences (Slack is the shipped case) — `webhook.ts` for a source with a fast-path writer, plus whatever the vendor's own formats demand (Zoom has a `vtt.ts`).
+In practice a vendor directory holds four to six leaf files, and the split is worth copying: `config.ts` (identity, the stored-config shape, and the source-id contract), `api.ts` (raw vendor calls — absent for Slack, which reuses the existing Slack client), `client.ts` (the page walk and record construction), `connector.ts` (registration and credential resolution), `audience.ts` — by convention for a grant-deriving class, which every shipped one has (`zoom/`, `outlook/`; Slack has none); what registration actually requires is the **re-verifier itself**, wherever it lives — `webhook.ts` for a source with a fast-path writer, plus whatever the vendor's own formats demand (Zoom has a `vtt.ts`).
 
 `config.ts` deliberately imports nothing from the ingest core. That is what makes adding a vendor purely additive: the install handler, the connector, the audience re-verifier and the catalog seed all share one definition without any of them reaching into the engine.
 
@@ -88,11 +88,21 @@ Which arm you may declare is a property of your **class**, not a preference. A c
 
 | Connector class | Audience grain | Arm |
 |---|---|---|
-| `chat` | Channel-scoped, reconciled by the install-driven Slack walk | `externally-synced` (Slack's) |
-| `transcript` | Per object — the meeting's own participants | `reverified`, required |
-| `email` | Per object — the message's own recipients | `reverified`, required |
+| `transcript` | Per object — the meeting's own participants | `reverified`, **required** |
+| `email` | Per object — the message's own recipients | `reverified`, **required** |
+| `chat` | Not per-object *as Slack implements it* — see the warning below | Slack declares `externally-synced` |
 
-`BrainSourceAudienceFor<S>` is what makes that a compile-time error at a connector literal: for a per-object class it resolves to the `reverified` arm alone. **It is not the enforcement on its own** — a plugin is compiled separately and arrives as data, a cast widens past it, and so does a factory that widened its own return type — so `registerBrainSourceConnector` re-checks at runtime.
+`BrainSourceAudienceFor<S>` is what makes the per-object rows a compile-time error at a connector literal: for those classes it resolves to the `reverified` arm alone. **It is not the enforcement on its own** — a plugin is compiled separately and arrives as data, a cast widens past it, and so does a factory that widened its own return type — so `registerBrainSourceConnector` re-checks at runtime.
+
+<Callout type="warn" title="The chat row is Slack's answer, not the chat class's — and this is the one place nothing checks you">
+  This page is written for whoever adds "a second chat platform", so read this row carefully: it is the one that will not stop you.
+
+  Slack may declare `externally-synced` because a concrete thing reconciles its audiences — `audience/sync.ts` walks Slack channel rosters directly, parameterised by `SLACK_HISTORY_CATALOG_ID`. That is a fact about **Slack's implementation**, not about chat.
+
+  The grain map is keyed by **class**, so a second chat vendor — Teams, Discord — inherits `not-required` with no roster walk of its own. Declaring `externally-synced` there compiles cleanly *and* registers cleanly: the conditional type resolves to the whole union for a `chat` source, and the runtime re-check only fires for per-object classes. Nothing goes red, and you land in the 168h-then-invisible decay this section exists to prevent.
+
+  So a new chat vendor with no equivalent roster walk owes `reverified` — and that obligation is carried by this paragraph and by the grain map's own ⚠️, because neither the type nor the registry will say it.
+</Callout>
 
 <Callout type="warn" title="`externally-synced` on a grant-deriving class is refused at registration">
   A transcript or mail connector declaring `externally-synced` does not boot degraded — `registerBrainSourceConnector` **throws**, the install step logs it at `error`, and that source ingests nothing at all.
@@ -248,7 +258,7 @@ There is a separate, narrower lane where an unrecognised kind *can* reach storag
 - [ ] Transport encoding never reaches the stored id.
 - [ ] The new member declares its class, and the class is the right one.
 - [ ] The grant deriver is your class's, and a class new to Atlas got its own function rather than a new branch.
-- [ ] `audience` is declared, and its arm matches your class — `reverified`, with the re-verifier, for a per-object class. Registration refuses the connector otherwise.
+- [ ] `audience` is declared. A per-object class (`transcript`, `email`) owes `reverified` and registration refuses it otherwise; a new **chat** vendor owes `reverified` too, and nothing will tell you so.
 - [ ] "The audience could not be established" blocks; "the audience contains no Atlas users" does not.
 - [ ] `coverageIncomplete` is paired with a contiguous high-water mark.
 - [ ] Permanent per-record failures are counted skips, not throws.

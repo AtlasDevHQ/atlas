@@ -5,59 +5,105 @@
 // ## Why this exists
 //
 // `guides/brain-connector-authoring.mdx` opens with the sentence "This page is
-// the contract" and then hand-copies `BrainSourceConnector` into a ```ts fence.
-// It drifted: the real interface grew a fourth, NON-OPTIONAL member —
-// `readonly audience: BrainSourceAudienceFor<S>` (#4985) — and the page never
-// did. An author following the page writes a connector that fails registration,
-// or, on a class the compile-time narrowing cannot reach, one that mints
-// `audience:` grants nothing refreshes: the 168h-then-invisible failure that
-// seam exists to prevent. A hand-copied interface on a page that calls itself
-// the contract will drift again, so the copy is checked rather than trusted.
+// the contract" and then hand-copies `BrainSourceConnector` into a fenced block.
+// It drifted: the real interface gained a non-optional third member —
+// `readonly audience: BrainSourceAudienceFor<S>` (#4985), taking it to four —
+// and the page never did. An author following the page writes a connector that
+// fails registration, or, on a chat-class source where neither the conditional
+// type nor the registration check constrains the arm, one that mints `audience:`
+// grants nothing refreshes: the 168h-then-invisible failure that seam exists to
+// prevent. A hand-copied interface on a page that calls itself the contract will
+// drift again, so the copy is checked rather than trusted.
 //
 // ## What it compares, and what it deliberately does NOT
 //
-// MEMBER NAMES plus OPTIONALITY, per declaration. Not types.
+// MEMBER NAMES, plus `readonly` and `?`. Not types.
 //
 // That boundary is the whole reason this gate can exist without being exempted
 // later. A doc snippet legitimately simplifies types — the real
 // `BrainSourceConnector` is generic in `S` and its `source` is `S`, where a
 // reader is better served by seeing what `S` ranges over — so byte-comparing
 // type text would fail on correct prose, and a gate that fails on correct prose
-// gets an exemption comment instead of a fix. Names and optionality are the axis
-// the #5165 drift lived on: a member that is absent, renamed, or shown as `?`
-// when the real one is required is a page telling an author something false
-// about what they must write. A type that has been simplified for exposition is
-// not.
+// gets an exemption comment instead of a fix. Names and modifiers are the axis
+// the #5165 drift lived on: a member that is absent, renamed, shown as `?` when
+// the real one is required, or shown mutable when the real one is `readonly` is
+// a page telling an author something false about what they must write. A type
+// that has been simplified for exposition is not.
+//
+// Type PARAMETERS are also not compared, for the same reason — the page publishes
+// `<S extends EpisodeSource = EpisodeSource>` and is free to drop it.
 //
 // ## Both sides are DISCOVERED, never enumerated
 //
 // Source side: every exported interface and type alias named `Brain*` under
-// `packages/api/src/lib/brain/**`. Doc side: every ```ts fence in
+// `packages/*/src/**` and `ee/src/**`. Doc side: every fenced TypeScript block in
 // `apps/docs/content/**/*.mdx` that declares a `Brain*` interface or type alias.
-// So a new brain guide, or a fourth snippet on an existing one, enrolls itself.
+// So a new brain guide, or an additional snippet on an existing one, enrols
+// itself.
 //
-// A doc snippet naming a `Brain*` declaration that no longer exists in source is
-// a FAILURE, not a skip — a snippet for a renamed or deleted interface is the
-// same lie as one missing a member.
+// The source glob is deliberately wider than `lib/brain/**`: `BrainFactSegment`
+// (`api/routes/admin-publish-preview.ts`) and `BrainToolReason`
+// (`lib/tools/search-brain.ts`) are exported `Brain*` contracts outside it, and a
+// narrow glob would tell a page publishing either that its snippet names a
+// declaration that "no longer exists" — a false diagnosis with a destructive
+// remedy attached.
 //
-// ## Type aliases: two analyzable shapes, and a loud refusal outside them
+// A doc snippet naming a `Brain*` declaration that is not exported anywhere in
+// scope is a FAILURE, not a skip — a snippet for a renamed or deleted interface
+// is the same lie as one missing a member.
+//
+// ## Type aliases: two readable shapes, and an OPAQUE record outside them
 //
 // `BrainSourceAudience` is the second half of the #5165 drift — its two arms
 // (`reverified` / `externally-synced`) were never shown at all — so a union has
-// to be comparable or half the finding stays unguarded. Two shapes are handled:
-// a union of string literals, and a discriminated union of object literals keyed
-// on a string-literal `kind`. Anything else FAILS with an instruction to extend
-// this guard, rather than silently comparing nothing: a union shape this script
-// cannot read is exactly where an omitted arm would hide.
+// to be comparable or that half stays uncheckable. Two shapes are readable: a
+// union of string literals, and a union of object literals sharing one
+// string-literal discriminant property.
 //
-// ## Vacuity floor
+// Anything else is recorded as the `opaque` variant of {@link Shape} rather than
+// compared, and a doc snippet for an opaque declaration FAILS with the reason.
+// Be precise about the scope of that: opaque is loud only where a page actually
+// publishes one. Most exported `Brain*` aliases are opaque today (`BrainGrant` is
+// `readonly string[]`, `BrainAsOfInstant` is a branded intersection,
+// `BrainSourceAudienceFor` is conditional) and none of them is published, so
+// nothing fails — this is not a claim that every alias in the tree is comparable,
+// and for an unpublished one it is precisely a skip.
 //
-// `BrainSourceConnector` MUST be among the compared declarations. Every other
-// check here is discovered, so a page rename, a fence relabelled from ```ts, or
-// a regex that stops matching would leave this gate green while comparing
-// nothing — and the one snippet whose absence means the contract page has lost
-// its contract is that one. `scripts/__tests__/check-docs-brain-snippets.test.sh`
-// probes exactly that.
+// ## Fenced blocks are parsed line-wise
+//
+// The first cut used a single multiline regex anchored at column 0. Three
+// silent-skip holes, all measured: a fence indented for a numbered step or a JSX
+// child never matched (and this tree already has indented `ts` fences); a missing
+// closing fence swallowed the rest of the file, so every later snippet went
+// unchecked; and a `ts` fence nested inside a 4-backtick `md` block was compared
+// as though it were published contract, which is a false failure on correct prose.
+//
+// {@link FENCE_OPEN} / {@link closesFence} are the CommonMark rules, ported from
+// the sibling guard `scripts/check-docs-links.ts` so the two agree about what a
+// fence is. An unterminated fence is a malformed page, reported rather than
+// skipped — the same reflex this repo applies to an unparseable SQL query.
+//
+// ## Three ways this gate refuses to be vacuous, because everything else is
+// ## discovered
+//
+// 1. {@link REQUIRED_DECLARATIONS} must all be compared. A fence relabelled away
+//    from `ts`, an indent that stops matching, or a snippet renamed out of the
+//    `Brain*` namespace then becomes loud instead of leaving the gate green having
+//    compared everything EXCEPT the snippets that matter. (A page *rename* is not
+//    on that list and never was: `DOCS_GLOB` keys on the extension, so renaming a
+//    file changes nothing.)
+// 2. The per-file count of opening TypeScript fences must equal the number
+//    extracted, so a scanner that starts skipping is caught arithmetically rather
+//    than by someone noticing a name is gone.
+// 3. {@link textualBrainNames} reconciles the parser's output against the body
+//    text, because (2) is not sufficient: a MERGED fenced block keeps the count
+//    correct while TypeScript error-recovers past the prose and drops a whole
+//    declaration. Measured — `BrainSourceVendorClient` left the compared set with
+//    the gate printing PASS.
+//
+// `scripts/__tests__/check-docs-brain-snippets.test.sh` probes all three, and
+// every arm below: 21 fixtures, and each one names a marker so a crash or a
+// different arm firing cannot satisfy it.
 //
 // Run locally: bun scripts/check-docs-brain-snippets.ts
 
@@ -70,24 +116,44 @@ import ts from "typescript";
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "..");
 
-const SOURCE_GLOB = "packages/api/src/lib/brain/**/*.ts";
+// Where published `Brain*` contracts may be declared. Scoped to each package's
+// `src` rather than the whole package, so a build output
+// (`packages/types/dist/brain.d.ts`) cannot be read as a second declaration of a
+// name its own source already exports.
+const SOURCE_GLOBS = ["packages/*/src/**/*.ts", "ee/src/**/*.ts"] as const;
 const DOCS_GLOB = "apps/docs/content/**/*.mdx";
 
 /** Only declarations in the product's own `Brain*` namespace are contracts. */
 const CONTRACT_NAME = /^Brain[A-Z]/;
 
 /**
- * The one declaration whose absence means the contract page stopped publishing
- * its contract — the vacuity floor. See the header.
+ * Declarations whose absence from the compared set means a contract page stopped
+ * publishing its contract — the name-level vacuity floor.
+ *
+ * Both are #5165's own subject: the interface whose member was missing, and the
+ * union whose arms were never shown. The second is here because the arm
+ * comparison guards drift WITHIN a published union and cannot guard the union
+ * going unpublished — measured, by deleting the fence and watching the gate stay
+ * green with only `BrainSourceConnector` floored.
  */
-const REQUIRED_DECLARATION = "BrainSourceConnector";
+const REQUIRED_DECLARATIONS = ["BrainSourceConnector", "BrainSourceAudience"] as const;
+
+/** Fenced-block languages whose body is parsed as TypeScript. */
+const TS_FENCE_TAG = /^(ts|tsx|typescript)\b/i;
 
 /** A declaration reduced to the axis this gate compares. */
 type Shape =
-  /** An interface: member names, each with its optionality. */
+  /** An interface: member names, each with its modifiers. */
   | { readonly kind: "members"; readonly members: ReadonlySet<string> }
   /** A union this gate can read: the set of arms, each as a printable token. */
-  | { readonly kind: "union"; readonly arms: ReadonlySet<string> };
+  | { readonly kind: "union"; readonly arms: ReadonlySet<string> }
+  /**
+   * Declared, but in a shape this gate cannot compare. Carried as a variant
+   * rather than as `Declared | null` so that ABSENT is expressible only as a
+   * missing map key — the three-way absent/null/present read was a real
+   * type hole (`Map.has()` does not narrow `Map.get()`).
+   */
+  | { readonly kind: "opaque"; readonly reason: string };
 
 interface Declared {
   readonly shape: Shape;
@@ -100,11 +166,55 @@ function parse(text: string, fileName: string): ts.SourceFile {
 }
 
 /**
- * An interface's members as `name` / `name?` tokens.
+ * `Brain*` declaration names a fence body mentions TEXTUALLY.
  *
- * Index signatures, call signatures and constructors carry no name to compare,
- * so they are represented by their kind — two declarations that differ only by
- * gaining one still differ in this set, which is the property that matters.
+ * The reconciliation partner of {@link collect}, and the reason it exists is a
+ * measured hole rather than a hypothetical. `ts.createSourceFile` does NOT throw
+ * on a syntax error — it error-recovers and returns a PARTIAL tree. Blanking one
+ * closing fence MERGES two fenced blocks, so the prose between them lands inside
+ * the body; TypeScript then recovers past the wreckage and
+ * `BrainSourceVendorClient` silently left the compared set while the gate printed
+ * PASS. The per-file fence COUNT still agreed, so the arithmetic floor could not
+ * see it either.
+ *
+ * Comparing this against what the AST yielded turns parse-recovery loss into a
+ * failure, WITHOUT the gate having to reject every unparseable fence in the docs
+ * tree — which is not an option: 75 `ts`-tagged fences site-wide are legitimately
+ * elided (`…`, JSX in a `ts` fence, a bare expression), and a gate that fails on
+ * correct prose earns an exemption comment instead of a fix. A fence that
+ * declares no `Brain*` name is not this gate's business at all.
+ */
+const TEXTUAL_DECLARATION = /^[ \t]*(?:export[ \t]+)?(?:interface|type)[ \t]+(Brain[A-Z]\w*)/gm;
+
+function textualBrainNames(body: string): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const match of body.matchAll(TEXTUAL_DECLARATION)) {
+    const name = match[1];
+    if (name !== undefined) names.add(name);
+  }
+  return names;
+}
+
+/**
+ * A property name as written, with quotes normalized away.
+ *
+ * `.text` rather than `getText()`: an identifier and a legally-quoted
+ * `readonly "catalogId": string` must produce the SAME token, or a quoting style
+ * reads as drift. It also drops the dependency on live parent pointers that
+ * `getText()` carries.
+ */
+function propertyName(name: ts.PropertyName): string {
+  return ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)
+    ? name.text
+    : name.getText(name.getSourceFile());
+}
+
+/**
+ * An interface's members as `readonly name?` tokens.
+ *
+ * Index, call and construct signatures carry no name to compare, so they are
+ * represented by their kind — two declarations that differ only by gaining one
+ * still differ in this set.
  */
 function interfaceShape(node: ts.InterfaceDeclaration): Shape {
   const members = new Set<string>();
@@ -123,36 +233,42 @@ function interfaceShape(node: ts.InterfaceDeclaration): Shape {
     }
     const name = member.name;
     if (name === undefined) {
-      // Any other unnamed member shape. Recorded rather than dropped so it
-      // cannot be the difference this gate is blind to.
+      // Defensive: any other unnamed member shape. Recorded rather than dropped
+      // so it cannot be the difference this gate is blind to.
       members.add(`[unnamed:${ts.SyntaxKind[member.kind]}]`);
       continue;
     }
+    const isProperty = ts.isPropertySignature(member);
     const optional =
-      (ts.isPropertySignature(member) || ts.isMethodSignature(member)) &&
-      member.questionToken !== undefined;
-    members.add(`${name.getText(name.getSourceFile())}${optional ? "?" : ""}`);
+      (isProperty || ts.isMethodSignature(member)) && member.questionToken !== undefined;
+    // `readonly` is a member-level modifier, not a type simplification, so it is
+    // inside this gate's boundary: a snippet dropping it tells an author the
+    // field is mutable, which is the same class of lie as dropping the `?`.
+    const readonlyModifier =
+      isProperty &&
+      member.modifiers?.some((m) => m.kind === ts.SyntaxKind.ReadonlyKeyword) === true;
+    members.add(`${readonlyModifier ? "readonly " : ""}${propertyName(name)}${optional ? "?" : ""}`);
   }
   return { kind: "members", members };
 }
 
 /** A single union arm reduced to a token, or `null` when unreadable. */
-function armToken(node: ts.TypeNode): string | null {
+function armToken(node: ts.TypeNode, discriminant: string): string | null {
   // `"incremental"` — a bare string-literal arm.
   if (ts.isLiteralTypeNode(node) && ts.isStringLiteral(node.literal)) {
     return JSON.stringify(node.literal.text);
   }
   // `{ readonly kind: "reverified"; … }` — a discriminated object arm. Only the
   // discriminant is compared: the arms' own payload members are the types this
-  // gate deliberately does not police (see the header), while the SET of arms is
-  // the thing a snippet can silently omit.
+  // gate deliberately does not police, while the set of arms is what a snippet
+  // can silently omit.
   if (ts.isTypeLiteralNode(node)) {
     for (const member of node.members) {
       if (!ts.isPropertySignature(member) || member.name === undefined) continue;
-      if (member.name.getText(member.name.getSourceFile()) !== "kind") continue;
+      if (propertyName(member.name) !== discriminant) continue;
       const type = member.type;
       if (type !== undefined && ts.isLiteralTypeNode(type) && ts.isStringLiteral(type.literal)) {
-        return `kind:${JSON.stringify(type.literal.text)}`;
+        return `${discriminant}:${JSON.stringify(type.literal.text)}`;
       }
     }
   }
@@ -160,53 +276,96 @@ function armToken(node: ts.TypeNode): string | null {
 }
 
 /**
- * A type alias's arms, or `null` when the alias is not one of the two shapes
- * this gate can read. `null` is a LOUD refusal at the call sites, never a skip.
+ * The property every object arm uses as its discriminant, or `null`.
+ *
+ * NOT hard-coded to `kind`: `BrainPrincipalContext` discriminates on `origin`,
+ * and a gate that only knew `kind` would call it unreadable and tell an author to
+ * extend `armToken` when nothing was wrong with their snippet.
  */
-function aliasShape(node: ts.TypeAliasDeclaration): Shape | null {
+function discriminantOf(arms: readonly ts.TypeNode[]): string | null {
+  const literals = arms.filter(ts.isTypeLiteralNode);
+  if (literals.length === 0) return null;
+  const candidates = new Set<string>();
+  const first = literals[0];
+  if (first === undefined) return null;
+  for (const member of first.members) {
+    if (!ts.isPropertySignature(member) || member.name === undefined) continue;
+    const type = member.type;
+    if (type !== undefined && ts.isLiteralTypeNode(type) && ts.isStringLiteral(type.literal)) {
+      candidates.add(propertyName(member.name));
+    }
+  }
+  for (const name of candidates) {
+    if (literals.every((arm) => armToken(arm, name) !== null)) return name;
+  }
+  return null;
+}
+
+/** A type alias's arms, or an opaque record naming why it could not be read. */
+function aliasShape(node: ts.TypeAliasDeclaration): Shape {
   const type = node.type;
-  if (!ts.isUnionTypeNode(type)) return null;
+  if (!ts.isUnionTypeNode(type)) {
+    return {
+      kind: "opaque",
+      reason: `its declaration is not a union (it is a ${ts.SyntaxKind[type.kind]})`,
+    };
+  }
+  const stringLiteralsOnly = type.types.every(
+    (arm) => ts.isLiteralTypeNode(arm) && ts.isStringLiteral(arm.literal),
+  );
+  const discriminant = stringLiteralsOnly ? null : discriminantOf(type.types);
+  if (!stringLiteralsOnly && discriminant === null) {
+    return {
+      kind: "opaque",
+      reason:
+        "its arms are neither all string literals nor all object literals sharing one string-literal discriminant property",
+    };
+  }
   const arms = new Set<string>();
   for (const arm of type.types) {
-    const token = armToken(arm);
-    if (token === null) return null;
+    const token = armToken(arm, discriminant ?? "kind");
+    if (token === null) {
+      return { kind: "opaque", reason: "one of its arms could not be reduced to a token" };
+    }
+    if (arms.has(token)) {
+      // Two arms sharing a discriminant value would collapse to one token, and a
+      // snippet omitting one of them would then compare equal. Refuse to compare
+      // rather than compare wrongly.
+      return {
+        kind: "opaque",
+        reason: `two arms share the discriminant value ${token}, so the arm set cannot be compared by discriminant alone`,
+      };
+    }
     arms.add(token);
   }
-  return arms.size > 0 ? { kind: "union", arms } : null;
+  return { kind: "union", arms };
 }
 
 /**
  * Every `Brain*` interface / type alias declared in one parsed file.
  *
- * `exportedOnly` splits the two sides: a source declaration is a published
- * contract only when it is exported, while a doc fence is illustrative prose and
- * never carries `export`.
+ * `scope` splits the two sides: a source declaration is a published contract only
+ * when it is exported, while a doc fence is illustrative prose and never carries
+ * `export`. A string union rather than a boolean because passing a boolean
+ * backwards silently WIDENS the source side (unexported names start counting),
+ * which weakens the deleted-declaration check with no signal.
  */
 function collect(
   sourceFile: ts.SourceFile,
   where: string,
-  exportedOnly: boolean,
-): Map<string, Declared | null> {
-  const found = new Map<string, Declared | null>();
-  const isExported = (node: ts.InterfaceDeclaration | ts.TypeAliasDeclaration): boolean =>
-    node.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) === true;
-
+  scope: "exported-only" | "all",
+): readonly (readonly [string, Declared])[] {
+  const found: (readonly [string, Declared])[] = [];
   const visit = (node: ts.Node): void => {
     if (ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node)) {
       const name = node.name.text;
-      if (CONTRACT_NAME.test(name) && (!exportedOnly || isExported(node))) {
-        found.set(
+      const exported =
+        node.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) === true;
+      if (CONTRACT_NAME.test(name) && (scope === "all" || exported)) {
+        found.push([
           name,
-          ts.isInterfaceDeclaration(node)
-            ? { shape: interfaceShape(node), where }
-            : // `null` records "declared, but in a union shape this gate cannot
-              // read" — distinct from absent, and reported as a failure rather
-              // than compared as an empty set.
-              (() => {
-                const shape = aliasShape(node);
-                return shape === null ? null : { shape, where };
-              })(),
-        );
+          { shape: ts.isInterfaceDeclaration(node) ? interfaceShape(node) : aliasShape(node), where },
+        ]);
       }
     }
     ts.forEachChild(node, visit);
@@ -215,28 +374,93 @@ function collect(
   return found;
 }
 
-/** Every ```ts / ```typescript fence body in an MDX file. */
-function tsFences(mdx: string): readonly string[] {
-  const fences: string[] = [];
-  // Opening fence: three-or-more backticks, then a `ts`/`tsx`/`typescript`
-  // language tag (optionally followed by fumadocs meta like `title="…"`).
-  // Closed by a run of at least as many backticks at line start.
-  const open = /^(`{3,})(ts|tsx|typescript)\b[^\n]*\n/gm;
-  for (let match = open.exec(mdx); match !== null; match = open.exec(mdx)) {
-    const ticks = match[1] ?? "```";
-    const bodyStart = match.index + match[0].length;
-    const close = new RegExp(`^\`{${ticks.length},}\\s*$`, "m");
-    const rest = mdx.slice(bodyStart);
-    const end = close.exec(rest);
-    fences.push(end === null ? rest : rest.slice(0, end.index));
-    // Resume scanning after this fence so a fence BODY can never be read as an
-    // opening fence of its own.
-    open.lastIndex = end === null ? mdx.length : bodyStart + end.index;
+// ── Fenced-block scanning (CommonMark, ported from check-docs-links.ts) ──────
+
+const FENCE_OPEN = /^[ \t]*(`{3,}|~{3,})/;
+
+/**
+ * Does this line close the given open fence? CommonMark: same character, at
+ * least as long as the opener, nothing but whitespace after (info strings are
+ * only legal on the OPENING fence) — so a ``` line inside a ```` block stays
+ * inside.
+ */
+function closesFence(line: string, fence: string): boolean {
+  const m = FENCE_OPEN.exec(line);
+  const ticks = m?.[1];
+  return (
+    m !== null &&
+    ticks !== undefined &&
+    ticks[0] === fence[0] &&
+    ticks.length >= fence.length &&
+    line.slice(m.index + m[0].length).trim() === ""
+  );
+}
+
+interface Fence {
+  readonly body: string;
+  /** 1-based line of the opening fence, for error messages. */
+  readonly line: number;
+}
+
+interface FenceScan {
+  readonly fences: readonly Fence[];
+  /**
+   * Opening TypeScript fences counted independently of extraction — the
+   * arithmetic half of the vacuity floor. A skip or a mis-slice shows up as a
+   * disagreement with `fences.length`.
+   */
+  readonly openedTsFences: number;
+  /** 1-based line of an unterminated fence, when the file has one. */
+  readonly unterminatedAt: number | null;
+}
+
+/**
+ * Every fenced TypeScript block in an MDX file, scanned line-wise.
+ *
+ * Walks EVERY fence, not only TypeScript ones, so a `ts` block nested inside a
+ * 4-backtick `md` block is correctly treated as that block's content rather than
+ * as published contract.
+ */
+function scanTsFences(mdx: string): FenceScan {
+  const lines = mdx.split("\n");
+  const fences: Fence[] = [];
+  let openedTsFences = 0;
+  let fence: string | null = null;
+  let isTs = false;
+  let bodyStart = 0;
+  let openedAt = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? "";
+    if (fence !== null) {
+      if (!closesFence(line, fence)) continue;
+      if (isTs) fences.push({ body: lines.slice(bodyStart, i).join("\n"), line: openedAt });
+      fence = null;
+      isTs = false;
+      continue;
+    }
+    const m = FENCE_OPEN.exec(line);
+    const ticks = m?.[1];
+    if (m === null || ticks === undefined) continue;
+    fence = ticks;
+    isTs = TS_FENCE_TAG.test(line.slice(m.index + m[0].length).trim());
+    if (isTs) openedTsFences++;
+    bodyStart = i + 1;
+    openedAt = i + 1;
   }
-  return fences;
+
+  return {
+    fences,
+    openedTsFences,
+    // An unterminated fence means the guard cannot tell where the snippet ends,
+    // so it refuses rather than treating the rest of the file as one body — the
+    // shape that silently unchecked every later fence.
+    unterminatedAt: fence !== null ? openedAt : null,
+  };
 }
 
 function describe(shape: Shape): string {
+  if (shape.kind === "opaque") return `opaque (${shape.reason})`;
   const values = shape.kind === "members" ? shape.members : shape.arms;
   return [...values].sort().join(", ");
 }
@@ -245,24 +469,42 @@ function difference(a: ReadonlySet<string>, b: ReadonlySet<string>): readonly st
   return [...a].filter((value) => !b.has(value)).sort();
 }
 
+const problems: string[] = [];
+
 // ── Source side ─────────────────────────────────────────────────────────────
-const source = new Map<string, Declared | null>();
-for (const file of new Glob(SOURCE_GLOB).scanSync({ cwd: REPO_ROOT })) {
-  // Tests declare `Brain*` fixtures that are not the published contract.
-  if (file.includes("__tests__") || file.includes("__mocks__")) continue;
-  const abs = resolve(REPO_ROOT, file);
-  for (const [name, declared] of collect(
-    parse(readFileSync(abs, "utf8"), abs),
-    relative(REPO_ROOT, abs),
-    /* exportedOnly */ true,
-  )) {
-    source.set(name, declared);
+const source = new Map<string, Declared>();
+for (const glob of SOURCE_GLOBS) {
+  for (const file of new Glob(glob).scanSync({ cwd: REPO_ROOT })) {
+    // Tests and mocks may declare `Brain*` fixtures that are not the published
+    // contract. Defensive rather than load-bearing — `exported-only` already
+    // excludes most — but a test fixture that happens to be exported would
+    // otherwise shadow the real declaration.
+    if (file.includes("__tests__") || file.includes("__mocks__")) continue;
+    const abs = resolve(REPO_ROOT, file);
+    const rel = relative(REPO_ROOT, abs);
+    for (const [name, declared] of collect(
+      parse(readFileSync(abs, "utf8"), abs),
+      rel,
+      "exported-only",
+    )) {
+      const existing = source.get(name);
+      if (existing !== undefined) {
+        // Last-write-wins would resolve by glob order, so a page would be
+        // compared against whichever file the scan happened to reach second.
+        problems.push(
+          `\`${name}\` is exported from BOTH ${existing.where} and ${rel}.\n` +
+            `  This gate compares a published snippet against one declaration per name, so a duplicate makes the comparison depend on scan order. Rename one, or narrow SOURCE_GLOBS in scripts/check-docs-brain-snippets.ts.`,
+        );
+        continue;
+      }
+      source.set(name, declared);
+    }
   }
 }
 
 if (source.size === 0) {
   console.error(
-    `[docs-brain-snippets] FAIL: no exported Brain* declarations found under ${SOURCE_GLOB}.`,
+    `[docs-brain-snippets] FAIL: no exported Brain* declarations found under ${SOURCE_GLOBS.join(", ")}.`,
   );
   console.error(
     "[docs-brain-snippets] The source side of this gate read nothing, so it can prove nothing — has lib/brain moved?",
@@ -271,47 +513,82 @@ if (source.size === 0) {
 }
 
 // ── Doc side ────────────────────────────────────────────────────────────────
-const problems: string[] = [];
 const compared = new Set<string>();
 
 for (const file of new Glob(DOCS_GLOB).scanSync({ cwd: REPO_ROOT })) {
   const abs = resolve(REPO_ROOT, file);
   const rel = relative(REPO_ROOT, abs);
-  const mdx = readFileSync(abs, "utf8");
-  for (const fence of tsFences(mdx)) {
-    // A fence is illustrative TS, not a module — parse it standalone. Syntax
-    // errors are not this gate's business; an unparseable fence simply declares
-    // nothing and is reported by the vacuity floor if it was the required one.
-    for (const [name, declared] of collect(
-      parse(fence, `${abs}.fence.ts`),
-      rel,
-      /* exportedOnly */ false,
-    )) {
-      if (!source.has(name)) {
+  const scan = scanTsFences(readFileSync(abs, "utf8"));
+
+  if (scan.unterminatedAt !== null) {
+    problems.push(
+      `${rel}:${scan.unterminatedAt}: a fenced block is opened and never closed.\n` +
+        `  The guard cannot tell where that snippet ends, so it refuses to compare this page rather than silently treating the rest of the file as one snippet body. Close the fence.`,
+    );
+    continue;
+  }
+  if (scan.fences.length !== scan.openedTsFences) {
+    problems.push(
+      `${rel}: counted ${scan.openedTsFences} opening TypeScript fence(s) but extracted ${scan.fences.length}.\n` +
+        `  The fence scanner and its own count disagree, which means a snippet is being skipped. Fix scanTsFences() in scripts/check-docs-brain-snippets.ts.`,
+    );
+    continue;
+  }
+
+  const seenInFile = new Map<string, number>();
+  for (const fence of scan.fences) {
+    // A fence is illustrative TypeScript, not a module — parse it standalone.
+    const fenceFile = parse(fence.body, `${abs}.fence.ts`);
+    const collected = collect(fenceFile, rel, "all");
+    // Reconcile the AST against the text. A `Brain*` name the body spells but the
+    // parser did not yield is parse-recovery LOSS, not an absent declaration.
+    const parsedNames = new Set(collected.map(([name]) => name));
+    const lost = [...textualBrainNames(fence.body)].filter((name) => !parsedNames.has(name));
+    if (lost.length > 0) {
+      problems.push(
+        `${rel}:${fence.line}: this fence spells ${lost.map((n) => `\`${n}\``).join(", ")} but the parser did not yield ${lost.length === 1 ? "it" : "them"}.\n` +
+          `  TypeScript error-recovers rather than throwing, so a malformed snippet silently drops declarations from the comparison instead of failing. The usual cause is a MERGED fenced block — a missing closing fence earlier on the page, which puts prose inside this body. Check the fences above line ${fence.line}.`,
+      );
+      continue;
+    }
+    for (const [name, declared] of collected) {
+      const previousLine = seenInFile.get(name);
+      if (previousLine !== undefined) {
+        // A before/after or "don't do this / do this" pair is a normal docs
+        // idiom, and last-write-wins would make the WRONG half invisible.
         problems.push(
-          `${rel}: publishes a snippet for \`${name}\`, which is no longer an exported Brain* declaration under ${SOURCE_GLOB}.\n` +
+          `${rel}:${fence.line}: declares \`${name}\` more than once (also at line ${previousLine}).\n` +
+            `  This gate compares one snippet per name, so a second declaration would hide the first. Publish one canonical snippet per declaration.`,
+        );
+        continue;
+      }
+      seenInFile.set(name, fence.line);
+
+      const real = source.get(name);
+      if (real === undefined) {
+        problems.push(
+          `${rel}:${fence.line}: publishes a snippet for \`${name}\`, which is not an exported Brain* declaration under ${SOURCE_GLOBS.join(", ")}.\n` +
             `  A snippet for a renamed or deleted declaration misleads exactly as much as one missing a member. Update or remove the snippet.`,
         );
         continue;
       }
-      const real = source.get(name);
-      if (real === null) {
+      if (real.shape.kind === "opaque") {
         problems.push(
-          `${rel}: publishes a snippet for \`${name}\`, whose real declaration is a union shape this gate cannot read.\n` +
-            `  Extend armToken() in scripts/check-docs-brain-snippets.ts so the arms are comparable — a union it cannot read is where an omitted arm hides.`,
+          `${rel}:${fence.line}: publishes a snippet for \`${name}\`, whose real declaration in ${real.where} is a shape this gate cannot compare — ${real.shape.reason}.\n` +
+            `  Extend aliasShape()/armToken() in scripts/check-docs-brain-snippets.ts so it is comparable. A published contract this gate cannot read is exactly where an omitted member or arm hides.`,
         );
         continue;
       }
-      if (declared === null) {
+      if (declared.shape.kind === "opaque") {
         problems.push(
-          `${rel}: the \`${name}\` snippet is a union shape this gate cannot read, while its real declaration is comparable (${describe(real.shape)}).\n` +
-            `  Write the snippet's arms as string literals or as \`{ kind: "…" }\` objects so the published arms are checkable.`,
+          `${rel}:${fence.line}: the \`${name}\` snippet is a shape this gate cannot compare — ${declared.shape.reason} — while its real declaration in ${real.where} is comparable (${describe(real.shape)}).\n` +
+            `  Write the snippet's arms as string literals, or as object literals sharing one string-literal discriminant, so the published arms are checkable.`,
         );
         continue;
       }
       if (declared.shape.kind !== real.shape.kind) {
         problems.push(
-          `${rel}: the \`${name}\` snippet is declared as a ${declared.shape.kind === "members" ? "interface" : "union"}, but ${real.where} declares it as a ${real.shape.kind === "members" ? "interface" : "union"}.`,
+          `${rel}:${fence.line}: the \`${name}\` snippet is declared as ${declared.shape.kind === "members" ? "an interface" : "a union"}, but ${real.where} declares it as ${real.shape.kind === "members" ? "an interface" : "a union"}.`,
         );
         continue;
       }
@@ -324,7 +601,7 @@ for (const file of new Glob(DOCS_GLOB).scanSync({ cwd: REPO_ROOT })) {
       if (missing.length === 0 && extra.length === 0) continue;
       const noun = declared.shape.kind === "members" ? "member" : "arm";
       const lines = [
-        `${rel}: the published \`${name}\` snippet has drifted from ${real.where}.`,
+        `${rel}:${fence.line}: the published \`${name}\` snippet has drifted from ${real.where}.`,
       ];
       if (missing.length > 0) {
         lines.push(
@@ -339,34 +616,39 @@ for (const file of new Glob(DOCS_GLOB).scanSync({ cwd: REPO_ROOT })) {
       lines.push(`  real: ${describe(real.shape)}`);
       lines.push(`  page: ${describe(declared.shape)}`);
       lines.push(
-        `  A trailing \`?\` is part of the comparison: showing a required member as optional is the same lie as omitting it.`,
+        `  \`readonly\` and a trailing \`?\` are part of the comparison: showing a required member as optional, or an immutable one as mutable, is the same lie as omitting it.`,
       );
       problems.push(lines.join("\n"));
     }
   }
 }
 
-// ── Vacuity floor ───────────────────────────────────────────────────────────
-if (!compared.has(REQUIRED_DECLARATION)) {
-  console.error(
-    `[docs-brain-snippets] FAIL: no published snippet for \`${REQUIRED_DECLARATION}\` was compared.`,
-  );
-  console.error(
-    `[docs-brain-snippets] That snippet is the connector-authoring guide's stated contract, and every other check here is DISCOVERED — so a page rename, a fence relabelled away from \`\`\`ts, or a regex that stopped matching would leave this gate green while comparing nothing.`,
-  );
-  console.error(
-    `[docs-brain-snippets] Restore the snippet, or move the floor in scripts/check-docs-brain-snippets.ts if the contract genuinely moved.`,
-  );
-  process.exit(1);
-}
-
+// ── Report ──────────────────────────────────────────────────────────────────
+// `problems` prints BEFORE the floor is evaluated. The floor's own message is
+// generic advice; when a required snippet went missing it is usually a problem
+// above that says why, and exiting on the floor first suppressed exactly that
+// diagnostic.
 if (problems.length > 0) {
   console.error(
     `[docs-brain-snippets] FAIL: ${problems.length} published Brain* snippet ${problems.length === 1 ? "problem" : "problems"}:\n`,
   );
   for (const problem of problems) console.error(`${problem}\n`);
-  process.exit(1);
 }
+
+const missingFloor = REQUIRED_DECLARATIONS.filter((name) => !compared.has(name));
+if (missingFloor.length > 0) {
+  console.error(
+    `[docs-brain-snippets] FAIL: no published snippet was compared for: ${missingFloor.join(", ")}.`,
+  );
+  console.error(
+    `[docs-brain-snippets] Those are the connector-authoring guide's stated contract, and every other check here is DISCOVERED — so a fence relabelled away from a \`ts\` tag, an indent, or a regex that stopped matching would leave this gate green having compared everything EXCEPT the snippets that matter.`,
+  );
+  console.error(
+    `[docs-brain-snippets] Restore the snippet(s), or move REQUIRED_DECLARATIONS in scripts/check-docs-brain-snippets.ts if the contract genuinely moved.`,
+  );
+}
+
+if (problems.length > 0 || missingFloor.length > 0) process.exit(1);
 
 console.log(
   `[docs-brain-snippets] PASS: ${compared.size} published Brain* snippet${compared.size === 1 ? "" : "s"} match their declarations (${[...compared].sort().join(", ")}).`,

@@ -4418,9 +4418,21 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     // workspace, and `action_type` / `target_type` / `timestamp` / `org_id` all
     // survive to say so.
     //
-    // `anonymized_at IS NULL` keeps the count honest and the write idempotent:
-    // an already-scrubbed row is not re-stamped, so the reported number is
-    // "rows this purge anonymized", never a re-count of earlier erasures.
+    // ⚠️ The predicate is "not already FULLY scrubbed", not `anonymized_at IS
+    // NULL`, and the difference is a hole this change would otherwise have
+    // opened. `anonymized_at` was the right test while the scrub only touched
+    // the actor columns — but the F-36 endpoint stamps it after nulling ONLY
+    // actor_id/actor_email, so a row erased by F-36 first would then be SKIPPED
+    // here and keep its `metadata` and `target_id` — the member-identifying
+    // columns this change was widened to catch — forever. Found by the
+    // falsifier: widening the columns without widening the predicate left a
+    // pre-scrubbed row holding a member email through a completed purge.
+    //
+    // Stated as a residue check rather than a timestamp check, so the predicate
+    // cannot drift out of step with the SET list again: a row is skipped only
+    // when every column below already holds its scrubbed value. That keeps the
+    // count honest ("rows this purge scrubbed") AND keeps the write idempotent —
+    // a second run over fully-scrubbed rows matches nothing.
     const anonymizeResult = await client.query(
       `UPDATE admin_action_log
           SET actor_id = NULL,
@@ -4429,7 +4441,15 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
               target_id = '[purged]',
               metadata = NULL,
               anonymized_at = now()
-        WHERE org_id = $1 AND anonymized_at IS NULL
+        WHERE org_id = $1
+          AND NOT (
+            actor_id IS NULL
+            AND actor_email IS NULL
+            AND ip_address IS NULL
+            AND metadata IS NULL
+            AND target_id = '[purged]'
+            AND anonymized_at IS NOT NULL
+          )
         RETURNING 1`,
       [orgId],
     );

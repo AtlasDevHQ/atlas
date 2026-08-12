@@ -236,6 +236,13 @@ const COLUMN_OVERRIDES: Readonly<Record<string, Readonly<Record<string, string>>
     actor_id: `('actor-' || $1)`,
     actor_email: `('actor-' || $1 || '@purge.test')`,
     ip_address: `'203.0.113.7'`,
+    // `metadata` and `target_id` carry a MEMBER's identity, not the operator's
+    // — admin-mfa-reset writes `targetUserEmail` here. Both are seeded with
+    // real content for the same reason actor_id is: measured, a scrub that
+    // stopped nulling `metadata` passed this suite 15/15, because the column is
+    // nullable and the generic pass left it NULL. Nulling NULL proves nothing.
+    metadata: `jsonb_build_object('targetUserEmail', 'member-' || $1 || '@purge.test', 'reason', 'mfa-reset')`,
+    target_id: `('member-' || $1)`,
     anonymized_at: `NULL`,
   },
   audit_log: { auth_mode: `'managed'` },
@@ -593,15 +600,35 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
        VALUES ('password-reset', 'enc:v1:orphaned-flow', NULL, 'pending')`,
     );
 
-    // An admin_action_log row that was ALREADY scrubbed by the F-36 per-user
-    // endpoint. The purge's `anonymized_at IS NULL` predicate must skip it, or
-    // the reported count re-counts an earlier erasure as this purge's work.
+    // Two more admin_action_log rows, distinguishing the two states the scrub's
+    // predicate has to tell apart. Seeded with DIFFERENT residue so one
+    // assertion cannot satisfy both.
+    //
+    // (a) PARTIALLY scrubbed — the F-36 per-user endpoint nulled the actor
+    // columns and stamped anonymized_at, but F-36 predates this scrub and never
+    // touched `target_id`/`metadata`. The purge MUST still clear those, or a
+    // member's identity survives a completed erasure because an earlier,
+    // narrower erasure got there first.
     await pool.query(
       `INSERT INTO admin_action_log
          (timestamp, actor_id, actor_email, scope, org_id, action_type, target_type,
-          target_id, status, request_id, anonymized_at)
+          target_id, status, request_id, metadata, anonymized_at)
        VALUES (now(), NULL, NULL, 'workspace', $1, 'workspace.suspend', 'workspace',
-               'previously-scrubbed', 'success', 'req-old', now() - interval '1 day')`,
+               'member-partially-scrubbed', 'success', 'req-old',
+               jsonb_build_object('targetUserEmail', 'stale@purge.test'),
+               now() - interval '1 day')`,
+      [ORG],
+    );
+    // (b) FULLY scrubbed already — nothing left to clear. The purge must SKIP
+    // it, or the reported count re-counts an earlier erasure as this purge's
+    // work and the write is not idempotent.
+    await pool.query(
+      `INSERT INTO admin_action_log
+         (timestamp, actor_id, actor_email, scope, org_id, action_type, target_type,
+          target_id, status, request_id, metadata, ip_address, anonymized_at)
+       VALUES (now(), NULL, NULL, 'workspace', $1, 'workspace.suspend', 'workspace',
+               '[purged]', 'success', 'req-older', NULL, NULL,
+               now() - interval '2 days')`,
       [ORG],
     );
 
@@ -779,9 +806,22 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
   }, PG_TIMEOUT_MS);
 
   it("removes the orphaned user's session, account and user-keyed rows", async () => {
-    // C2/C1 from the review: none of these were seeded, so deleting any of their
-    // DELETEs passed both suites. A `session` row outliving its own user row is
-    // a live token for a deleted account.
+    // None of these were seeded before the round-1 review, so deleting their
+    // statements passed both suites.
+    //
+    // ⚠️ READ THE SPLIT, because it was measured and it is not what it looks
+    // like. `session` and `account` cascade from `"user"(id) ON DELETE CASCADE`
+    // — a real FK that prod has and this file's bootstrap now mirrors — so
+    // removing `DELETE FROM session` still leaves ZERO rows here and this
+    // assertion passes. Verified by mutation: it survived 15/15. What that
+    // assertion actually establishes is the OUTCOME (no session outlives its
+    // user), by whichever mechanism; the explicit statement is pinned instead by
+    // purge-scope.test.ts's exact DELETE-count check, which does fail. The
+    // statement is a completeness guarantee for deployments predating the FK,
+    // same reasoning as the `messages` delete.
+    //
+    // The Atlas-owned tables below have no such cascade — measured: gutting
+    // `DELETE FROM user_onboarding` fails this test by name.
     for (const table of ["session", "account"]) {
       const r = await pool.query<{ n: string }>(
         `SELECT count(*)::text AS n FROM "${table}" WHERE "userId" = $1`,
@@ -836,17 +876,33 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     expect(Number(r.rows[0].n), "a NULL-org outbox row must survive a workspace purge").toBe(1);
   });
 
-  it("does not re-count an already-scrubbed admin_action_log row", async () => {
-    // The `anonymized_at IS NULL` predicate. Without it the count includes rows
-    // a previous erasure scrubbed, and `adminActionLogAnonymized` stops meaning
-    // "rows this purge scrubbed". Two rows exist for ORG; exactly one was
-    // scrubbable, so the count must be 1 rather than 2.
-    expect(result.adminActionLogAnonymized).toBe(1);
+  it("re-scrubs a PARTIALLY scrubbed row but skips a fully scrubbed one", async () => {
+    // Three rows exist for ORG, and the count distinguishes them — 2, not 1 and
+    // not 3, so neither "skip everything stamped" nor "scrub everything" passes:
+    //   (1) fresh, full PII                  → scrubbed
+    //   (2) F-36-scrubbed, keeps metadata    → scrubbed (this is the hole an
+    //       `anonymized_at IS NULL` predicate left open once the scrub grew to
+    //       cover metadata and target_id)
+    //   (3) already fully scrubbed           → SKIPPED, so the count stays honest
+    expect(result.adminActionLogAnonymized).toBe(2);
+
     const total = await pool.query<{ n: string }>(
       `SELECT count(*)::text AS n FROM admin_action_log WHERE org_id = $1`,
       [ORG],
     );
-    expect(Number(total.rows[0].n), "both rows must still be present").toBe(2);
+    expect(Number(total.rows[0].n), "all three rows must still be present").toBe(3);
+
+    // The stale email from the partially-scrubbed row is the specific thing the
+    // widened predicate exists to remove.
+    const stale = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM admin_action_log
+        WHERE org_id = $1 AND metadata::text LIKE '%stale@purge.test%'`,
+      [ORG],
+    );
+    expect(
+      Number(stale.rows[0].n),
+      "an F-36-scrubbed row must not keep its metadata through a workspace purge",
+    ).toBe(0);
   });
 
   it("reports no skipped tables when the region's schema is complete", () => {
@@ -914,6 +970,27 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     expect(Number(row.with_ip), "ip_address must be scrubbed").toBe(0);
     expect(Number(row.unstamped), "every scrubbed row must carry anonymized_at").toBe(0);
     expect(result.adminActionLogAnonymized).toBeGreaterThan(0);
+
+    // The MEMBER's identity, which the first draft of the scrub left behind:
+    // `metadata.targetUserEmail` and `target_id`. Asserted on the actual bytes
+    // rather than on the column being non-null, because the harm is the email
+    // still being readable.
+    const pii = await pool.query<{ leaked: string }>(
+      `SELECT count(*)::text AS leaked FROM admin_action_log
+        WHERE org_id = $1
+          AND (metadata IS NOT NULL OR target_id <> '[purged]')`,
+      [ORG],
+    );
+    expect(
+      Number(pii.rows[0].leaked),
+      "metadata and target_id can hold a member's email — both must be scrubbed",
+    ).toBe(0);
+    const anyEmail = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM admin_action_log
+        WHERE org_id = $1 AND metadata::text LIKE '%@purge.test%'`,
+      [ORG],
+    );
+    expect(Number(anyEmail.rows[0].n), "a member email survived inside metadata").toBe(0);
     // And the neighbour's trail is untouched — the scrub is org-scoped.
     const n = await pool.query<{ with_actor: string }>(
       `SELECT count(actor_id)::text AS with_actor FROM admin_action_log WHERE org_id = $1`,

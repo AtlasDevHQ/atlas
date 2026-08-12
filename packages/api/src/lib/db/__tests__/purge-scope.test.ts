@@ -299,12 +299,20 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
     expect(scrub.includes("metadata = NULL"), "admin_action_log scrub misses metadata").toBe(true);
     expect(scrub.includes("target_id ="), "admin_action_log scrub misses target_id").toBe(true);
     expect(scrub.includes("anonymized_at = now()")).toBe(true);
-    // The idempotence predicate is what makes the reported count "rows THIS
-    // purge scrubbed" rather than a re-count of every earlier erasure.
-    expect(
-      scrub.includes("anonymized_at IS NULL"),
-      "the scrub must skip already-anonymized rows or its count is not honest",
-    ).toBe(true);
+    // The skip predicate must be a RESIDUE check covering every column the SET
+    // list touches — not `anonymized_at IS NULL`. A timestamp check drifts out
+    // of step the moment the SET list grows: F-36 stamps `anonymized_at` after
+    // nulling only the actor columns, so a row it touched would be skipped here
+    // and keep `metadata`/`target_id` through a completed purge. Every column
+    // set above must also appear in the predicate.
+    for (const col of ["actor_id", "actor_email", "ip_address", "metadata", "target_id"]) {
+      expect(
+        scrub.includes(`${col} IS NULL`) || scrub.includes(`${col} = '[purged]'`),
+        `the scrub's skip predicate does not check ${col} — a row already scrubbed by a ` +
+          `NARROWER erasure would be skipped while still holding ${col}`,
+      ).toBe(true);
+    }
+    expect(scrub.includes("anonymized_at IS NOT NULL")).toBe(true);
   });
 
   it("pins admin_action_log's full column list, so a new column forces a scrub decision", () => {

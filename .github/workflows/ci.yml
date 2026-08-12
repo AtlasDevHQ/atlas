@@ -250,7 +250,9 @@ jobs:
 
       # ⚠️ Enumerated here because this workflow lists each fixture suite BY NAME
       # while ci-local.sh globs the directory — so a new suite runs locally and
-      # silently never runs in CI. This was the only one of thirteen missing.
+      # silently never runs in CI. This was the only one missing at the time (of
+      # thirteen suites then; there are 17 now — 16 enumerated below plus
+      # `scan-image.test.sh` in image-scan.yml).
       # It builds throwaway trees and needs no Postgres; ~2 seconds.
       - name: Adversarial fixtures for the mutation-tables gate (#5077)
         run: bash scripts/__tests__/check-mutation-tables.test.sh
@@ -292,6 +294,18 @@ jobs:
 
       - name: Test the docs-links gate itself (adversarial fixtures)
         run: bash scripts/__tests__/check-docs-links.test.sh
+
+      - name: Check published Brain* contract snippets against their declarations (#5165)
+        run: bun scripts/check-docs-brain-snippets.ts
+
+      # ⚠️ Enumerated here because this workflow lists each fixture suite BY NAME
+      # while ci-local.sh globs the directory — see the mutation-tables note
+      # above. Rewrites two tracked files in place and trap-restores them, so
+      # locally it runs in ci-local.sh's SERIAL stage 2, never beside the
+      # scanners that read those files. No Postgres; ~33s measured on WSL2 — 22
+      # `bun` spawns at ~1.5s each (21 fixtures plus the pre-flight baseline run).
+      - name: Adversarial fixtures for the brain-snippets gate (#5165)
+        run: bash scripts/__tests__/check-docs-brain-snippets.test.sh
 
   lint:
     name: lint

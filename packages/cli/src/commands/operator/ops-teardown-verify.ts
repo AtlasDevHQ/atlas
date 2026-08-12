@@ -46,6 +46,7 @@ import {
   closeInternalDB,
   updateWorkspaceStatus,
   hardDeleteWorkspace,
+  totalRowsDeleted,
 } from "@atlas/api/lib/db/internal";
 import {
   purgeStripeBillingForWorkspace,
@@ -610,10 +611,16 @@ export async function handleTeardownVerifyAccounts(args: string[]): Promise<void
       softDelete: (orgId) => updateWorkspaceStatus(orgId, "deleted"),
       hardDelete: async (orgId) => {
         const purged = await hardDeleteWorkspace(orgId);
-        // HardDeleteResult is an all-number per-table count map; assert that so
-        // the sum can't silently become NaN/string-concat if a non-number field
-        // is ever added (Object.values on an index-signature-less type widens to any).
-        return (Object.values(purged) as number[]).reduce((sum, n) => sum + n, 0);
+        // Use the helper that lives with the type (#5160). This was a local
+        // `(Object.values(purged) as number[]).reduce(...)`, whose comment
+        // predicted precisely what went wrong: it guarded against a non-number
+        // field being added, and two were — `skippedTables` (an array, which the
+        // cast would have string-concatenated into the sum) and
+        // `adminActionLogAnonymized`, which counts rows that SURVIVED and so
+        // made this command over-report destruction. The route had the identical
+        // bug and was fixed by hand; this copy was not, which is why the
+        // arithmetic now has one home.
+        return totalRowsDeleted(purged);
       },
     }, dryRun);
 

@@ -93,7 +93,7 @@ All operations run in a single database transaction — either everything is pur
 
 Not every workspace-scoped row is deleted, and the two exceptions are chosen rather than overlooked. Both are enforced by a per-table registry (`lib/db/purge-scope.ts`) whose tripwire fails CI when a new workspace-scoped table appears without a decision.
 
-- **The admin action log is anonymized, not deleted.** Its rows include the record of the purge itself, so deleting them would erase the evidence that the erasure happened. The purge instead NULLs `actor_id`, `actor_email` and `ip_address` and stamps `anonymized_at`. The action sequence remains auditable; the identifiers do not survive.
+- **The admin action log is anonymized, not deleted.** It records what operators *did* to this workspace — suspensions, plan changes, MFA resets — and an erasure should not be able to destroy its own accountability trail on the way out. The purge NULLs `actor_id`, `actor_email`, `ip_address` and `metadata`, and replaces `target_id` with a sentinel. `action_type`, `target_type`, `timestamp` and `org_id` survive, so *what happened* stays auditable and *who it happened to* does not. `metadata` is cleared wholesale rather than key-by-key, because it is free-form and written from many call sites — some of which store a member's email address.
 - **Two Stripe tables are retained.** `stripe_teardown_pending` rows *are* the retry that still has to cancel a live subscription — deleting them would strand a subscription invoicing a deleted workspace. `stripe_purged_subscriptions` is the tombstone the purge writes so that cancellation webhooks arriving after the transaction commits cannot regrow ledger rows. Neither holds customer personal data.
 
 A third case is worth naming because it looks like an omission: the one-trial-per-user grant (`user_trial_grants`) deliberately outlives the workspace. It is keyed on the user, and deleting it would let a purged workspace's owner claim a fresh trial on demand. It is removed when the user account itself is deleted.
@@ -179,11 +179,20 @@ POST /api/v1/platform/workspaces/:id/purge
     "members": 12,
     "organization": 1
   },
-  "totalRows": 6016
+  "totalRows": 5985,
+  "adminActionLogAnonymized": 31,
+  "skippedTables": [],
+  "complete": true
 }
 ```
 
-The `purged` object contains row counts for each table, useful for audit purposes. The example above is abbreviated — the actual response includes a key for every table deleted (approximately 50 entries). The `totalRows` field is the sum of all deleted rows.
+The `purged` object carries a row count per table, useful for audit purposes. The example above is abbreviated — the real response includes a key for every table the purge touched (around 95 entries).
+
+<Callout type="warn">
+**`totalRows` is the count of rows DELETED, and it deliberately excludes `adminActionLogAnonymized`.** That one key inside `purged` counts rows that *survived* with their identifying columns scrubbed, so summing every value in `purged` over-reports destruction by exactly that number — in the example above, `5985` is the deleted total and naively summing gives `6016`. It is repeated as a top-level field so the distinction is visible without reading the whole map. Use `totalRows`; do not re-derive it.
+</Callout>
+
+**Always check `complete`.** When it is `false`, `skippedTables` names relations that were absent from this region's schema, whose data was **not** deleted — the purge ran, reported `0` for those tables, and is not finished. Run the region's migrations and purge again before recording the erasure as complete.
 
 ## Noisy Neighbor Detection
 

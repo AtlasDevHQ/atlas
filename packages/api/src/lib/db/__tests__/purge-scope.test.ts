@@ -69,23 +69,72 @@ const userScopeColumnOf = (name: string): string | undefined =>
 // suite exists to prevent.
 const internalSource = readFileSync(join(import.meta.dir, "..", "internal.ts"), "utf8");
 
-const purgeFnBody = (() => {
+const rawPurgeFnBody = (() => {
   const start = internalSource.indexOf("export async function hardDeleteWorkspace");
-  expect(start, "hardDeleteWorkspace not found in internal.ts — did it get renamed?").toBeGreaterThan(-1);
+  if (start === -1) throw new Error("hardDeleteWorkspace not found in internal.ts — did it get renamed?");
   // The function's last statement is the client.release() in its finally block.
   const releaseIdx = internalSource.indexOf("client.release(rollbackErr", start);
-  expect(releaseIdx, "hardDeleteWorkspace's finally/release block not found").toBeGreaterThan(-1);
-  const end = internalSource.indexOf("\n}", releaseIdx);
-  return internalSource.slice(start, end);
+  if (releaseIdx === -1) throw new Error("hardDeleteWorkspace's finally/release block not found");
+  return internalSource.slice(start, internalSource.indexOf("\n}", releaseIdx));
 })();
 
-const deleteTargets = new Set(
-  [...purgeFnBody.matchAll(/DELETE\s+FROM\s+"?([a-z_][a-z0-9_]*)"?/gi)].map((m) => m[1]),
+/**
+ * COMMENTS STRIPPED — and this is not tidiness, it is the difference between a
+ * guard and a decoration.
+ *
+ * Measured on this very PR: `DELETE FROM scim_group_mappings` appeared twice in
+ * the function, once in a comment explaining the `to_regclass` probe; `DELETE
+ * FROM organization` appeared three times, two of them prose. So deleting the
+ * REAL statement left this suite passing 15/15, satisfied by the sentence
+ * describing it — and because `-pg` suites skip silently without
+ * TEST_DATABASE_URL, this tripwire is the entire completeness gate for anyone
+ * running the suite locally.
+ *
+ * A lexical guard cannot tell a quotation from an assertion. The repo's rule for
+ * that is reword-not-exempt, but here the quotations are legitimate and load
+ * bearing (they explain the RESTRICT ordering and the probe), so the guard has
+ * to read code rather than prose.
+ */
+const purgeFnBody = rawPurgeFnBody
+  .replace(/\/\*[\s\S]*?\*\//g, "")
+  .replace(/^[ \t]*\/\/.*$/gm, "");
+
+const deleteMatches = [...purgeFnBody.matchAll(/DELETE\s+FROM\s+"?([a-z_][a-z0-9_]*)"?/gi)].map(
+  (m) => m[1],
 );
+const deleteTargets = new Set(deleteMatches);
 
 const updateTargets = new Set(
   [...purgeFnBody.matchAll(/UPDATE\s+"?([a-z_][a-z0-9_]*)"?/gi)].map((m) => m[1]),
 );
+
+/**
+ * Better-Auth tables the purge deletes directly. They are not in `db/schema.ts`
+ * (global by ADR-0024) so they never enter the registry, but they ARE real
+ * DELETE targets, so the exact-count assertion has to know about them.
+ */
+const BETTER_AUTH_DELETE_TARGETS = new Set([
+  "organization",
+  "member",
+  "invitation",
+  "session",
+  "account",
+  "user",
+]);
+
+/**
+ * The one `user_scoped` table with no DELETE of its own: the migration-level
+ * `"user"(id) ON DELETE CASCADE` in `0048_trusted_device.sql` removes it when
+ * the orphaned user row goes. Named as a single table rather than exempting the
+ * whole `user_scoped` category, so the next addition has to justify itself.
+ */
+const FK_CASCADE_ONLY = new Set(["trusted_device"]);
+
+/** Tables the purge deletes for orphaned users, keyed on the user rather than the org. */
+const USER_SCOPED_DELETE_TARGETS = Object.entries(PURGE_TABLE_DECISIONS)
+  .filter(([, v]) => v.decision === "user_scoped")
+  .map(([k]) => k)
+  .filter((t) => !FK_CASCADE_ONLY.has(t));
 
 describe("GDPR purge-scope drift tripwire (#5160)", () => {
   it("enumerates a plausible schema (sanity: the known pillars are present)", () => {
@@ -106,12 +155,35 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
   it("parses the purge implementation (sanity: the DELETE scan found the known targets)", () => {
     // Same guard one layer over: a regex that matched nothing would make
     // "every purged table has a DELETE" fail loudly rather than pass, but a
-    // regex that matched a PREFIX of the statements would silently weaken the
-    // registry-vs-implementation check.
-    expect(deleteTargets.size).toBeGreaterThan(80);
+    // regex that matching a PREFIX of the statements would silently weaken the
+    // registry-vs-implementation check. Pinned to the exact count rather than a
+    // floor — a floor of 80 against 95 actual leaves room for a refactor to lose
+    // 14 statements silently. Update this number deliberately when adding one.
+    expect(deleteTargets.size).toBe(
+      PURGED_TABLES.size + USER_SCOPED_DELETE_TARGETS.length + BETTER_AUTH_DELETE_TARGETS.size,
+    );
     for (const known of ["conversations", "brain_facts", "knowledge_documents", "organization"]) {
       expect([...deleteTargets]).toContain(known);
     }
+  });
+
+  it("issues EXACTLY ONE DELETE per table (a duplicate hides a stray statement)", () => {
+    // The check that would have caught this PR's own comment-satisfied scan
+    // independently of the comment strip: `scim_group_mappings` and
+    // `organization` both resolved twice before the fix. It also catches the
+    // reverse mistake — the same table deleted under two different predicates,
+    // where only one of them is scoped correctly.
+    const counts = new Map<string, number>();
+    for (const t of deleteMatches) counts.set(t, (counts.get(t) ?? 0) + 1);
+    const duplicated = [...counts.entries()]
+      .filter(([, n]) => n > 1)
+      .map(([t, n]) => `${t} (${n}×)`);
+    expect(
+      duplicated,
+      `Table(s) with more than one DELETE FROM in hardDeleteWorkspace: ${duplicated.join(", ")}. ` +
+        `If that is deliberate, say why here; if it is a comment, the strip above should have ` +
+        `removed it; if it is a stray statement, remove it.`,
+    ).toEqual([]);
   });
 
   it("every schema table has an explicit purge decision (new table ⇒ decide before merge)", () => {
@@ -184,20 +256,12 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
     // longer a faithful description of the purge, which is how it would rot
     // back into a list nobody trusts. Better-Auth tables are not in
     // db/schema.ts (global by ADR-0024) and never enter this registry.
-    const betterAuthTables = new Set([
-      "organization",
-      "member",
-      "invitation",
-      "session",
-      "account",
-      "user",
-    ]);
     // `user_scoped` is a legitimate second answer, not a loophole: the purge
     // DOES delete user_onboarding and email_preferences, but only for users
     // orphaned by the member removal, keyed on the user id rather than the org.
     const deletableDecisions = new Set(["purged", "user_scoped"]);
     const unregistered = [...deleteTargets]
-      .filter((t) => !betterAuthTables.has(t))
+      .filter((t) => !BETTER_AUTH_DELETE_TARGETS.has(t))
       .filter((t) => !deletableDecisions.has(decisionFor[t]?.decision ?? ""));
     expect(
       unregistered,
@@ -219,11 +283,66 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
       expect(deleteTargets.has(table), `${table} is 'anonymized' but DELETEd`).toBe(false);
     }
     // The scrub must null every personal-data column, not just the obvious two.
-    const scrub = purgeFnBody.slice(purgeFnBody.indexOf("UPDATE admin_action_log"));
+    // Bounded to the statement: an unbounded slice to end-of-function would be
+    // satisfied by ANY later statement mentioning these columns, which is the
+    // same lexical over-reach the comment strip above exists to close.
+    const scrubStart = purgeFnBody.indexOf("UPDATE admin_action_log");
+    expect(scrubStart).toBeGreaterThan(-1);
+    const scrub = purgeFnBody.slice(scrubStart, purgeFnBody.indexOf("`", scrubStart + 1));
+    // Every column on admin_action_log that can carry a person's identity —
+    // including the two that are NOT obvious, and which the first draft of this
+    // fix missed: `metadata` (admin-mfa-reset writes targetUserEmail into it)
+    // and `target_id` (a user id on any user-targeted action).
     for (const col of ["actor_id", "actor_email", "ip_address"]) {
       expect(scrub.includes(`${col} = NULL`), `admin_action_log scrub misses ${col}`).toBe(true);
     }
+    expect(scrub.includes("metadata = NULL"), "admin_action_log scrub misses metadata").toBe(true);
+    expect(scrub.includes("target_id ="), "admin_action_log scrub misses target_id").toBe(true);
     expect(scrub.includes("anonymized_at = now()")).toBe(true);
+    // The idempotence predicate is what makes the reported count "rows THIS
+    // purge scrubbed" rather than a re-count of every earlier erasure.
+    expect(
+      scrub.includes("anonymized_at IS NULL"),
+      "the scrub must skip already-anonymized rows or its count is not honest",
+    ).toBe(true);
+  });
+
+  it("pins admin_action_log's full column list, so a new column forces a scrub decision", () => {
+    // THE RATCHET (Step 5b). The scrub had to be widened once already — the
+    // first draft nulled actor_id/actor_email/ip_address and left
+    // `metadata.targetUserEmail` and `target_id` holding a purged workspace's
+    // member emails, under a response that said the identifiers were gone. A
+    // pinned scrub-column list cannot notice the NEXT identity-bearing column,
+    // so pin the TABLE instead: adding a column to admin_action_log fails here
+    // and the author has to say whether it survives a purge.
+    //
+    // The failure message is the whole value — it asks the question rather than
+    // just reporting a mismatch.
+    const cols = columnsOf("admin_action_log").toSorted();
+    expect(
+      cols,
+      `admin_action_log's columns changed. For each ADDED column, decide: can it carry a ` +
+        `person's identity or free-form content? If yes, add it to the scrub in ` +
+        `hardDeleteWorkspace's Phase 4b AND to the assertions above. If no, add it here. ` +
+        `Do not just update this list — the scrub is what the purge response promises.`,
+    ).toEqual(
+      [
+        "action_type",
+        "actor_email",
+        "actor_id",
+        "anonymized_at",
+        "id",
+        "ip_address",
+        "metadata",
+        "org_id",
+        "request_id",
+        "scope",
+        "status",
+        "target_id",
+        "target_type",
+        "timestamp",
+      ].toSorted(),
+    );
   });
 
   it("no 'retained' table is deleted, and each names a concrete harm", () => {
@@ -253,6 +372,22 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
         `${name} is 'user_scoped' but has no user_id column`,
       ).toBeDefined();
     }
+  });
+
+  it("every 'user_scoped' table is either DELETEd or removed by a documented FK cascade", () => {
+    // The direction this suite was missing: it checked `purged` ⇒ has a DELETE,
+    // but nothing checked the same for `user_scoped`, so removing
+    // `DELETE FROM user_onboarding` or its `email_preferences` twin was
+    // invisible to BOTH suites — an orphaned user kept their tour state and
+    // email preferences after their account was erased.
+    //
+    // `trusted_device` is the one legitimate exception (see FK_CASCADE_ONLY).
+    const unreached = USER_SCOPED_DELETE_TARGETS.filter((t) => !deleteTargets.has(t));
+    expect(
+      unreached,
+      `'user_scoped' table(s) with no DELETE in hardDeleteWorkspace: ${unreached.join(", ")}. ` +
+        `Either add the orphaned-user DELETE or record the FK cascade that removes it.`,
+    ).toEqual([]);
   });
 
   it("every 'platform' table is unscoped in both dimensions", () => {

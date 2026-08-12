@@ -3892,7 +3892,46 @@ export interface HardDeleteResult {
   betterAuthInvitations: number;
   orphanedUsers: number;
   organization: number;
+  /**
+   * Relations absent from this region's schema, whose DELETE was SKIPPED (#5160).
+   *
+   * NOT a count — the only non-numeric field, and deliberately so. A skipped
+   * table reports `0` rows, which is indistinguishable from "there were none",
+   * and the purge response is what an operator attaches to a DPA erasure record.
+   * Non-empty means the purge was INCOMPLETE and the route must say so.
+   */
+  skippedTables: readonly string[];
 }
+
+/**
+ * Total rows the purge DESTROYED.
+ *
+ * Lives here, next to the type, because two callers previously each did their own
+ * `Object.values(result).reduce(...)` and both were wrong in the same way: the sum
+ * included `adminActionLogAnonymized`, which counts rows that SURVIVED. One
+ * caller was fixed by hand and the other (`ops teardown-verify-accounts`) was
+ * not, which is exactly the drift a shared helper prevents (#5160).
+ */
+export function totalRowsDeleted(result: HardDeleteResult): number {
+  let total = 0;
+  for (const [field, value] of Object.entries(result)) {
+    if (typeof value !== "number") continue; // skippedTables
+    if (SURVIVOR_COUNT_FIELDS.has(field)) continue;
+    total += value;
+  }
+  return total;
+}
+
+/**
+ * Fields on `HardDeleteResult` that count rows which SURVIVED the purge, and so
+ * must never be summed into a "rows destroyed" total.
+ *
+ * `satisfies` ties each entry to a real field, so renaming the field is a compile
+ * error here rather than a silently-stale exclusion.
+ */
+const SURVIVOR_COUNT_FIELDS: ReadonlySet<string> = new Set(
+  ["adminActionLogAnonymized"] satisfies readonly (keyof HardDeleteResult)[],
+);
 
 /**
  * GDPR-compliant hard delete — permanently removes ALL data for a workspace.
@@ -3947,6 +3986,48 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     const delRaw = async (sql: string, params: unknown[] = [orgId]) => {
       const result = await client.query(sql, params);
       return result.rows.length;
+    };
+
+    // Tables this purge could NOT reach because the relation is absent from this
+    // region's schema. Reported on HardDeleteResult and surfaced by the route as
+    // an operator warning (#5160): a skipped table otherwise reports `0`, which
+    // is indistinguishable from "there were none" — and the purge response is
+    // the artefact an operator attaches to a DPA erasure record, so "0" reading
+    // as "clean" is the wrong default for a table nobody looked at.
+    const skippedTables: string[] = [];
+
+    /**
+     * Probe a relation before deleting from it, so region drift skips ONE table
+     * instead of aborting the whole transaction.
+     *
+     * Deliberately UNQUALIFIED, matching the unqualified `DELETE FROM` it guards:
+     * a `public.`-qualified probe resolves a different name than the statement it
+     * gates whenever search_path is not the default, so the probe would answer
+     * "absent" and the DELETE would be skipped for a table that is right there.
+     * Identical under the default search_path, so prod behaviour is unchanged.
+     *
+     * Every miss logs AND is recorded. The previous code had two hand-rolled
+     * probes with different behaviour — `scim_group_mappings` warned, while
+     * `subscription` was silent by design — and the silent one skipped three
+     * things at once (the subscription rows, the webhook ledger rows, and the
+     * #3468 tombstone whose absence lets those ledger rows immediately regrow)
+     * while the operator was told the purge was complete.
+     */
+    const tableExists = async (table: string): Promise<boolean> => {
+      const probe = await client.query(
+        `SELECT to_regclass($1) IS NOT NULL AS table_exists`,
+        [table],
+      );
+      const exists =
+        (probe.rows[0] as { table_exists?: boolean } | undefined)?.table_exists === true;
+      if (!exists) {
+        skippedTables.push(table);
+        log.warn(
+          { orgId, table },
+          "Relation absent during hardDeleteWorkspace — its DELETE was SKIPPED, so the purge is incomplete for this table (region-DB drift; run this region's migrations and re-purge)",
+        );
+      }
+      return exists;
     };
 
     // ── Phase 1: Child tables with FK dependencies (delete children first) ──
@@ -4042,34 +4123,22 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     const onboardingEmails = await del(`DELETE FROM onboarding_emails WHERE org_id = $1`);
     const piiColumnClassifications = await del(`DELETE FROM pii_column_classifications WHERE org_id = $1`);
     // scim_group_mappings ships in 0000_baseline.sql + migration 0152 (#4019),
-    // but the EU/APAC prod region DBs were observed missing it — and unlike the
-    // `subscription` deletes below, this DELETE had NO existence probe, so its
-    // `relation "scim_group_mappings" does not exist` aborted the ENTIRE purge
-    // transaction: a workspace could be soft-deleted but never GDPR-purged.
-    // Probe with to_regclass so a region with residual drift skips this one
-    // table instead of rolling the whole cascade back. The `subscription` probe
-    // below stays silent on a miss (a historically Better-Auth-only table whose
-    // probe predates 0152), but scim_group_mappings has always shipped in the
-    // baseline, so post-0152 an absent table here is pure drift — log it rather
-    // than skip silently.
-    // The probe is deliberately UNQUALIFIED, matching the unqualified
-    // `DELETE FROM scim_group_mappings` it guards (#5160). A `public.`-qualified
-    // probe resolves a different name than the statement it gates whenever
-    // search_path is not the default: the probe answers "absent", the DELETE is
-    // skipped, and the purge logs drift that isn't there while leaving the rows
-    // behind. Identical result under the default search_path, so prod behaviour
-    // is unchanged — this only stops the two from disagreeing.
+    // but the EU/APAC prod region DBs were observed missing it, and before the
+    // probe existed its `relation "scim_group_mappings" does not exist` aborted
+    // the ENTIRE purge transaction: a workspace could be soft-deleted but never
+    // GDPR-purged. `tableExists` (defined above) skips this one table instead of
+    // rolling the whole cascade back, and records the skip so the operator is
+    // not told the purge was complete.
+    //
+    // Only two of the ~95 relations here are probed, and that asymmetry is a
+    // decision rather than an oversight: these are the two with observed region
+    // drift. For every other table an absent relation aborts the transaction,
+    // which is the SAFER failure (nothing is deleted, nothing is claimed) but
+    // also a workspace that cannot be purged until the region is migrated. The
+    // route surfaces the aborting relation's name so that is diagnosable.
     let scimGroupMappings = 0;
-    const scimTableProbe = await client.query(
-      `SELECT to_regclass('scim_group_mappings') IS NOT NULL AS table_exists`,
-    );
-    if ((scimTableProbe.rows[0] as { table_exists?: boolean } | undefined)?.table_exists === true) {
+    if (await tableExists("scim_group_mappings")) {
       scimGroupMappings = await del(`DELETE FROM scim_group_mappings WHERE org_id = $1`);
-    } else {
-      log.warn(
-        { orgId },
-        "scim_group_mappings absent during hardDeleteWorkspace — skipping its DELETE (region-DB drift; migration 0152 should have repaired this)",
-      );
     }
     const sandboxCredentials = await del(`DELETE FROM sandbox_credentials WHERE org_id = $1`);
     const dashboards = await del(`DELETE FROM dashboards WHERE org_id = $1`);
@@ -4228,14 +4297,13 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     // go before the subscription rows.
     let subscriptions = 0;
     let stripeWebhookEvents = 0;
-    // Unqualified for the same reason as the scim probe above (#5160) — it must
-    // resolve the same `subscription` the DELETE below will target.
-    const subscriptionTableProbe = await client.query(
-      `SELECT to_regclass('subscription') IS NOT NULL AS table_exists`,
-    );
-    const subscriptionTableExists =
-      (subscriptionTableProbe.rows[0] as { table_exists?: boolean } | undefined)?.table_exists === true;
-    if (subscriptionTableExists) {
+    // Probed through the same helper as scim_group_mappings (#5160), which means
+    // a miss now WARNS and is reported instead of passing silently. The old
+    // silent skip lost three things at once and told the operator nothing: the
+    // billable linkage #3425 exists to remove, the webhook ledger rows, and the
+    // #3468 tombstone — without which post-commit cancellation webhooks
+    // immediately regrow the ledger rows a completed purge just cleared.
+    if (await tableExists("subscription")) {
       // Tombstone the purged subscription ids FIRST (#3468): the remote
       // teardown's cancellations generate `customer.subscription.deleted`
       // webhooks that arrive after this transaction commits, and the
@@ -4311,10 +4379,19 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     // ── Phase 4b: Anonymize the operator accountability trail (#5160) ──
     //
     // admin_action_log is the one workspace-scoped table that is deliberately
-    // NOT deleted: its rows include the record of THIS purge, so destroying
-    // them would erase the evidence that the erasure happened. Scrubbing the
-    // identifiers instead satisfies the DPA's Personal Data obligation while
-    // keeping the action sequence auditable.
+    // NOT deleted: it is the record of what operators DID to this workspace,
+    // and an erasure that destroys its own audit trail cannot be shown to have
+    // happened correctly. Scrubbing the identifying columns satisfies the DPA's
+    // Personal Data obligation while keeping the action sequence auditable.
+    //
+    // ⚠️ The purge's OWN row is not among the rows scrubbed here, and an earlier
+    // draft of this comment claimed it was. `logAdminAction` for the purge runs
+    // in the route AFTER this function returns, and it stamps `org_id` from the
+    // acting platform admin's active organization — not the purged workspace —
+    // so it falls outside this `WHERE` either way. What is preserved is the
+    // history of PRIOR operator actions on this workspace, which is the real
+    // argument; the "would erase the evidence of this purge" version described
+    // a mechanism that cannot fire.
     //
     // This is not a new mechanism — it is exactly the scrub F-36 (migration
     // 0035) built for the right-to-erasure contract, and the reason actor_id /
@@ -4322,12 +4399,36 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     // `actor_id = userId`, so a workspace purge never reached it; the purge
     // therefore performs the org-scoped scrub itself.
     //
+    // ⚠️ `metadata` and `target_id` are scrubbed too, and leaving them was a
+    // real hole rather than a nicety: `admin-mfa-reset.ts` writes
+    // `metadata.targetUserEmail`, and `target_id` is a member's user id on any
+    // user-targeted action. Nulling only actor_id/actor_email/ip_address left a
+    // purged workspace's member emails sitting in the table under a response
+    // that said the identifiers were gone — the same class of overstatement
+    // #5160 was filed about. `target_id` is NOT NULL, so it takes a sentinel
+    // rather than a NULL.
+    //
+    // `metadata` is nulled WHOLESALE rather than having known keys stripped. A
+    // key denylist (`metadata - 'targetUserEmail' - 'email' …`) was written first
+    // and rejected: it has the identical defect as pinning a column list, one
+    // level down — the next writer to put an email under a new key inherits a
+    // stale decision silently, and metadata is free-form jsonb written from a
+    // dozen call sites, so no list can be complete by construction. What the
+    // accountability trail actually needs is WHAT happened, WHEN, and TO WHICH
+    // workspace, and `action_type` / `target_type` / `timestamp` / `org_id` all
+    // survive to say so.
+    //
     // `anonymized_at IS NULL` keeps the count honest and the write idempotent:
     // an already-scrubbed row is not re-stamped, so the reported number is
     // "rows this purge anonymized", never a re-count of earlier erasures.
     const anonymizeResult = await client.query(
       `UPDATE admin_action_log
-          SET actor_id = NULL, actor_email = NULL, ip_address = NULL, anonymized_at = now()
+          SET actor_id = NULL,
+              actor_email = NULL,
+              ip_address = NULL,
+              target_id = '[purged]',
+              metadata = NULL,
+              anonymized_at = now()
         WHERE org_id = $1 AND anonymized_at IS NULL
         RETURNING 1`,
       [orgId],
@@ -4433,6 +4534,7 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
       betterAuthInvitations,
       orphanedUsers,
       organization,
+      skippedTables,
     };
   } catch (err) {
     await client.query("ROLLBACK").catch((rbErr: unknown) => {
@@ -4442,6 +4544,28 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
         "ROLLBACK failed after purge transaction error — client will be destroyed",
       );
     });
+    // Region drift gets a message that names its own cause (#5160). Only two of
+    // the ~95 relations are probed, so for every other one an absent table or
+    // column aborts the whole transaction — the safe failure, but one that
+    // otherwise reaches the operator as a bare 500 with the relation name
+    // available only in server logs. The outcome is "this workspace cannot be
+    // GDPR-purged until this region is migrated", which is exactly the kind of
+    // thing the response should say rather than imply.
+    const code =
+      typeof err === "object" && err !== null && "code" in err
+        ? String((err as { code: unknown }).code)
+        : undefined;
+    if (code === "42P01" || code === "42703") {
+      const detail = err instanceof Error ? err.message : String(err);
+      log.error(
+        { orgId, code, err: detail },
+        "hardDeleteWorkspace aborted on a missing relation or column — this region's schema is behind",
+      );
+      throw new Error(
+        `Purge aborted: this region's schema is missing a relation or column the purge names (${detail}). ` +
+          `Nothing was deleted. Run this region's migrations, then re-purge.`,
+      );
+    }
     throw err;
   } finally {
     client.release(rollbackErr ?? undefined);

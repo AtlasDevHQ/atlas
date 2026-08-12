@@ -100,7 +100,15 @@ const PG_TIMEOUT_MS = 120_000;
 const ORG = "org-purge-falsifier";
 /** A second workspace, seeded identically and never purged — the blast radius control. */
 const NEIGHBOUR = "org-purge-neighbour";
+/** Member of ORG only. Orphaned by the purge, so their user row and everything keyed to it must go. */
 const USER_ORPHAN = "user-purge-orphan";
+/**
+ * Member of BOTH workspaces. The control for the user arm: the purge must NOT
+ * touch them, because they still belong to NEIGHBOUR. Without this user, every
+ * "the orphan's row is gone" assertion is satisfied by a DELETE with no user
+ * predicate at all.
+ */
+const USER_SHARED = "user-purge-shared";
 
 /**
  * Minimal Better Auth bootstrap — `hardDeleteWorkspace` reads and writes
@@ -119,13 +127,13 @@ const BETTER_AUTH_BOOTSTRAP_SQL = `
   );
   CREATE TABLE IF NOT EXISTS "session" (
     id TEXT PRIMARY KEY,
-    "userId" TEXT NOT NULL,
+    "userId" TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
     token TEXT,
     "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now()
   );
   CREATE TABLE IF NOT EXISTS "account" (
     id TEXT PRIMARY KEY,
-    "userId" TEXT NOT NULL,
+    "userId" TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
     "providerId" TEXT,
     "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now()
   );
@@ -137,14 +145,14 @@ const BETTER_AUTH_BOOTSTRAP_SQL = `
   );
   CREATE TABLE IF NOT EXISTS "member" (
     id TEXT PRIMARY KEY,
-    "organizationId" TEXT NOT NULL,
-    "userId" TEXT NOT NULL,
+    "organizationId" TEXT NOT NULL REFERENCES "organization"(id) ON DELETE CASCADE,
+    "userId" TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
     role TEXT,
     "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now()
   );
   CREATE TABLE IF NOT EXISTS "invitation" (
     id TEXT PRIMARY KEY,
-    "organizationId" TEXT NOT NULL,
+    "organizationId" TEXT NOT NULL REFERENCES "organization"(id) ON DELETE CASCADE,
     email TEXT,
     "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now()
   );
@@ -465,14 +473,23 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
   };
 
   beforeAll(async () => {
-    pool = new Pool({ connectionString: TEST_DB_URL, max: 4 });
-    pool.on("connect", (client) => {
-      void client.query(`SET search_path TO "${schemaName}"`).catch((err) => {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(`hard-delete-purge-pg: SET search_path failed: ${message}`);
-      });
+    // The scratch schema is baked into the CONNECTION STRING rather than set by
+    // an `on("connect")` handler (matching `migrate-roundtrip-pg` and
+    // `admin-last-admin-pg`). The handler form applies the search_path with a
+    // fire-and-forget query whose failure is only a `console.error` — and if it
+    // ever failed, this suite would run 196 migrations and a full GDPR purge
+    // against `public` on the shared test database. Baking it in makes a failure
+    // a connection failure instead of a silent fallback, which is the same
+    // standard this file's docstring demands of its own falsifiers.
+    const setupPool = new Pool({ connectionString: TEST_DB_URL, max: 1 });
+    await setupPool.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
+    await setupPool.end();
+
+    pool = new Pool({
+      connectionString: TEST_DB_URL,
+      max: 4,
+      options: `-c search_path="${schemaName}"`,
     });
-    await pool.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
     await pool.query(BETTER_AUTH_BOOTSTRAP_SQL);
     // Full migration set, nothing skipped — the Better Auth tables above exist,
     // so the MANAGED_AUTH_MIGRATIONS apply too. The brain and KB tables the
@@ -497,9 +514,95 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
       [USER_ORPHAN],
     );
     await pool.query(
+      `INSERT INTO "user" (id, email) VALUES ($1, 'shared@purge.test')
+       ON CONFLICT (id) DO NOTHING`,
+      [USER_SHARED],
+    );
+    await pool.query(
       `INSERT INTO "member" (id, "organizationId", "userId", role)
        VALUES ('m-orphan', $1, $2, 'owner') ON CONFLICT (id) DO NOTHING`,
       [ORG, USER_ORPHAN],
+    );
+    // USER_SHARED belongs to BOTH orgs, so the purge must spare them.
+    await pool.query(
+      `INSERT INTO "member" (id, "organizationId", "userId", role)
+       VALUES ('m-shared-org', $1, $2, 'member') ON CONFLICT (id) DO NOTHING`,
+      [ORG, USER_SHARED],
+    );
+    await pool.query(
+      `INSERT INTO "member" (id, "organizationId", "userId", role)
+       VALUES ('m-shared-neighbour', $1, $2, 'member') ON CONFLICT (id) DO NOTHING`,
+      [NEIGHBOUR, USER_SHARED],
+    );
+
+    // ── Better-Auth session/account rows, and the user-keyed Atlas tables ──
+    // None of these are in db/schema.ts or PURGED_TABLES, so the registry-driven
+    // loop below cannot reach them — and until they were seeded here, deleting
+    // `DELETE FROM session`, `DELETE FROM account`, `DELETE FROM user_onboarding`
+    // or `DELETE FROM email_preferences` outright passed BOTH suites. A live
+    // session token surviving its own deleted user is the sharpest of those.
+    for (const userId of [USER_ORPHAN, USER_SHARED]) {
+      await pool.query(
+        `INSERT INTO "session" (id, "userId", token) VALUES ('s-' || $1, $1, 'tok-' || $1)
+         ON CONFLICT (id) DO NOTHING`,
+        [userId],
+      );
+      await pool.query(
+        `INSERT INTO "account" (id, "userId", "providerId") VALUES ('a-' || $1, $1, 'credential')
+         ON CONFLICT (id) DO NOTHING`,
+        [userId],
+      );
+      await pool.query(
+        `INSERT INTO user_onboarding (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`,
+        [userId],
+      );
+      await pool.query(
+        `INSERT INTO email_preferences (user_id, onboarding_emails) VALUES ($1, true)
+         ON CONFLICT (user_id) DO NOTHING`,
+        [userId],
+      );
+      await pool.query(
+        `INSERT INTO trusted_device (identifier, user_id, user_agent, ip_address)
+         VALUES ('td-' || $1, $1, 'purge-seed-ua', '203.0.113.9')
+         ON CONFLICT (identifier) DO NOTHING`,
+        [userId],
+      );
+    }
+
+    // The anti-abuse trial grant, keyed on a REAL user (#5160 review). The
+    // generic pass would have synthesized a phantom `user_id`, which made the
+    // migration-level `"user"(id) ON DELETE CASCADE` unable to fire — so the
+    // test asserting the cascade removes it was asserting nothing.
+    await pool.query(
+      `INSERT INTO user_trial_grants (user_id, org_id) VALUES ($1, $2)
+       ON CONFLICT (user_id) DO NOTHING`,
+      [USER_ORPHAN, ORG],
+    );
+    await pool.query(
+      `INSERT INTO user_trial_grants (user_id, org_id) VALUES ($1, $2)
+       ON CONFLICT (user_id) DO NOTHING`,
+      [USER_SHARED, ORG],
+    );
+
+    // A pending password-reset email with NO org (a session-less flow). The
+    // purge scopes on `org_id = $1`, which excludes NULL — the registry states
+    // that exclusion is deliberate, and this row is what makes the statement
+    // falsifiable: broadening to `OR org_id IS NULL` destroys a live reset.
+    await pool.query(
+      `INSERT INTO email_outbox (email_type, payload, org_id, status)
+       VALUES ('password-reset', 'enc:v1:orphaned-flow', NULL, 'pending')`,
+    );
+
+    // An admin_action_log row that was ALREADY scrubbed by the F-36 per-user
+    // endpoint. The purge's `anonymized_at IS NULL` predicate must skip it, or
+    // the reported count re-counts an earlier erasure as this purge's work.
+    await pool.query(
+      `INSERT INTO admin_action_log
+         (timestamp, actor_id, actor_email, scope, org_id, action_type, target_type,
+          target_id, status, request_id, anonymized_at)
+       VALUES (now(), NULL, NULL, 'workspace', $1, 'workspace.suspend', 'workspace',
+               'previously-scrubbed', 'success', 'req-old', now() - interval '1 day')`,
+      [ORG],
     );
 
     // ── Seed every purged table, for BOTH workspaces ──
@@ -514,7 +617,15 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     const seedClient = await pool.connect();
     const seedErrors: string[] = [];
     try {
-      await seedClient.query(`SET search_path TO "${schemaName}"`);
+      // search_path already comes from the pool's connection options; asserting
+      // it here catches a misconfigured pool before the seed writes anywhere.
+      const sp = await seedClient.query<{ search_path: string }>(`SHOW search_path`);
+      if (!sp.rows[0].search_path.includes(schemaName)) {
+        throw new Error(
+          `seed client is not on the scratch schema (search_path=${sp.rows[0].search_path}) — ` +
+            `refusing to seed into a shared schema`,
+        );
+      }
       const replica = await seedClient
         .query(`SET session_replication_role = replica`)
         .then(() => true)
@@ -667,6 +778,84 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     ).toEqual([]);
   }, PG_TIMEOUT_MS);
 
+  it("removes the orphaned user's session, account and user-keyed rows", async () => {
+    // C2/C1 from the review: none of these were seeded, so deleting any of their
+    // DELETEs passed both suites. A `session` row outliving its own user row is
+    // a live token for a deleted account.
+    for (const table of ["session", "account"]) {
+      const r = await pool.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM "${table}" WHERE "userId" = $1`,
+        [USER_ORPHAN],
+      );
+      expect(Number(r.rows[0].n), `${table} rows survived for the orphaned user`).toBe(0);
+    }
+    for (const table of ["user_onboarding", "email_preferences", "trusted_device"]) {
+      const r = await pool.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM "${table}" WHERE user_id = $1`,
+        [USER_ORPHAN],
+      );
+      expect(Number(r.rows[0].n), `${table} rows survived for the orphaned user`).toBe(0);
+    }
+  });
+
+  it("spares a user who still belongs to another workspace", async () => {
+    // The other half, and the half that makes the test above able to fail for
+    // the RIGHT reason: an unscoped `DELETE FROM session` would satisfy "the
+    // orphan's rows are gone" perfectly while logging out every other tenant.
+    const user = await pool.query(`SELECT 1 FROM "user" WHERE id = $1`, [USER_SHARED]);
+    expect(user.rows.length, "a user with another membership must NOT be deleted").toBe(1);
+    for (const [table, col] of [
+      ["session", `"userId"`],
+      ["account", `"userId"`],
+      ["user_onboarding", "user_id"],
+      ["email_preferences", "user_id"],
+      ["trusted_device", "user_id"],
+    ] as const) {
+      const r = await pool.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM "${table}" WHERE ${col} = $1`,
+        [USER_SHARED],
+      );
+      expect(Number(r.rows[0].n), `${table} row for a still-active user was destroyed`).toBe(1);
+    }
+    // Their membership of the PURGED org is gone; their membership of the
+    // neighbour survives.
+    const members = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM "member" WHERE "userId" = $1`,
+      [USER_SHARED],
+    );
+    expect(Number(members.rows[0].n)).toBe(1);
+  });
+
+  it("keeps a NULL-org pending email (a session-less flow is not workspace data)", async () => {
+    // Makes the registry's stated reasoning falsifiable: broadening the purge to
+    // `WHERE org_id = $1 OR org_id IS NULL` would destroy a live password-reset
+    // token mid-flow, and previously nothing noticed.
+    const r = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM email_outbox WHERE org_id IS NULL`,
+    );
+    expect(Number(r.rows[0].n), "a NULL-org outbox row must survive a workspace purge").toBe(1);
+  });
+
+  it("does not re-count an already-scrubbed admin_action_log row", async () => {
+    // The `anonymized_at IS NULL` predicate. Without it the count includes rows
+    // a previous erasure scrubbed, and `adminActionLogAnonymized` stops meaning
+    // "rows this purge scrubbed". Two rows exist for ORG; exactly one was
+    // scrubbable, so the count must be 1 rather than 2.
+    expect(result.adminActionLogAnonymized).toBe(1);
+    const total = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM admin_action_log WHERE org_id = $1`,
+      [ORG],
+    );
+    expect(Number(total.rows[0].n), "both rows must still be present").toBe(2);
+  });
+
+  it("reports no skipped tables when the region's schema is complete", () => {
+    // `skippedTables` non-empty means a relation was absent and its DELETE never
+    // ran. On a fully-migrated schema it must be empty, or the purge is quietly
+    // reporting 0 rows for a table nobody looked at.
+    expect(result.skippedTables).toEqual([]);
+  });
+
   it("leaves exactly the neighbour's row in each parent-scoped child table", async () => {
     // The child tables have no scope column, so the previous test cannot see
     // them. Both workspaces got one row each; after the purge exactly one (the
@@ -675,11 +864,31 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     const wrong: string[] = [];
     for (const table of Object.keys(PARENT_LINK)) {
       if (!seeded.has(table)) continue;
+      const link = PARENT_LINK[table];
       const r = await pool.query<{ n: string }>(`SELECT count(*)::text AS n FROM "${table}"`);
       const n = Number(r.rows[0].n);
-      if (n !== 1) wrong.push(`${table} (${n} row(s), expected exactly the neighbour's 1)`);
+      if (n !== 1) {
+        wrong.push(`${table} (${n} row(s), expected exactly the neighbour's 1)`);
+        continue;
+      }
+      // A count of 1 does NOT say WHOSE row it is — two rows in, one out is
+      // identical whether the purge removed ORG's or the neighbour's. The
+      // neighbour's parent survives the purge, so its id is the discriminator
+      // that turns a count into an identity check.
+      const survivor = await pool.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM "${table}"
+          WHERE "${link.column}" IN (
+            SELECT "${link.parentKey}" FROM "${link.parent}" WHERE "${link.parentScope}" = $1
+          )`,
+        [NEIGHBOUR],
+      );
+      if (Number(survivor.rows[0].n) !== 1) {
+        wrong.push(
+          `${table} (1 row survived, but it is NOT the neighbour's — the purge deleted the wrong tenant's row)`,
+        );
+      }
     }
-    expect(wrong, `Parent-scoped child table(s) with the wrong survivor count: ${wrong.join(", ")}`).toEqual([]);
+    expect(wrong, `Parent-scoped child table(s) with the wrong survivor: ${wrong.join(", ")}`).toEqual([]);
   }, PG_TIMEOUT_MS);
 
   it("ANONYMIZES admin_action_log rather than deleting it", async () => {
@@ -746,16 +955,43 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     ).toBe(1);
   });
 
-  it("keeps the anti-abuse trial grant, keyed on the user, not the org", async () => {
-    // Deleting this would hand a purged workspace's owner a fresh trial. The
-    // grant's user was ORPHANED by this purge, so the migration-level
-    // "user"(id) ON DELETE CASCADE is what removes it — asserted through a
-    // second, non-orphaned user whose grant must persist.
-    const r = await pool.query<{ n: string }>(
-      `SELECT count(*)::text AS n FROM user_trial_grants WHERE org_id = $1`,
-      [NEIGHBOUR],
+  it("keeps the anti-abuse trial grant of a user who survives the purge", async () => {
+    // The claim: `user_trial_grants` is `retained`, so the purge must not delete
+    // it by ORG — otherwise a purged workspace's owner claims a fresh trial on
+    // demand and the purge becomes an abuse primitive.
+    //
+    // Both seeded grants carry `org_id = ORG` (the purged workspace), which is
+    // what makes this able to fail: adding `DELETE FROM user_trial_grants WHERE
+    // org_id = $1` takes BOTH rows. The previous version asserted only on a
+    // NEIGHBOUR-scoped grant that no plausible mutation could reach, so it
+    // passed against exactly the mutation it was written to catch.
+    const shared = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM user_trial_grants WHERE user_id = $1`,
+      [USER_SHARED],
     );
-    expect(Number(r.rows[0].n), "the neighbour's trial grant must survive").toBe(1);
+    expect(
+      Number(shared.rows[0].n),
+      "a surviving user's trial grant must outlive the purge of the org it was granted in",
+    ).toBe(1);
+  });
+
+  it("removes the trial grant of a user the purge deleted (the FK cascade fires)", async () => {
+    // The other half, and the reason the grant is `user_scoped`-shaped rather
+    // than simply immortal: when the USER is genuinely erased, the
+    // migration-level `"user"(id) ON DELETE CASCADE` takes the grant with them.
+    //
+    // This is only a real assertion because the seed now points `user_id` at a
+    // REAL user. The generic pass synthesized a phantom id, so the cascade could
+    // never fire and the row survived for the wrong reason — the row was there,
+    // the test was green, and neither fact was connected to the other.
+    const orphan = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM user_trial_grants WHERE user_id = $1`,
+      [USER_ORPHAN],
+    );
+    expect(
+      Number(orphan.rows[0].n),
+      "the deleted user's trial grant must cascade away with their user row",
+    ).toBe(0);
   });
 
   it("removes the organization row and the orphaned user", async () => {

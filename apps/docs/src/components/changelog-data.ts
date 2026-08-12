@@ -20,6 +20,19 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.6",
+    title: "Retiring the Guessed Cardinality",
+    date: "2026-08-12",
+    summary:
+      "A cleanup release that finishes what v0.2.5 started. Before the curated Claim Vocabulary existed, the model guessed — per claim, as it read each message — whether a fact could have one value or many. That guess is no longer used or returned anywhere: your workspace's reviewed vocabulary is now the only thing that decides. Search results and the fact review queue are correspondingly simpler, and nothing in the product reads the old guess. Self-hosted operators should note this is the first of two steps: the underlying column is deliberately left in place until the next release, so a rolling upgrade never has one version reading a column another has already removed.",
+    highlights: [
+      "The model's per-claim cardinality guess is gone from search results and the fact review queue",
+      "Your curated vocabulary is now the single source of truth for whether a claim is single- or multi-valued",
+      "Self-hosted: the database column is intentionally retained this release — the drop lands in the next one, so rolling upgrades stay safe",
+      "@useatlas/types 0.10.0 removes `predicateCardinality` from two published types — update if you read that field",
+    ],
+  },
+  {
     version: "v0.2.5",
     title: "Company Atlas: Claim Identity",
     date: "2026-08-11",

@@ -1,7 +1,7 @@
 <h1 align="center">Atlas</h1>
 
 <p align="center">
-  Atlas is the AI data analyst you can run anywhere. It answers plain-English questions across your SQL warehouses and REST APIs — grounded in a semantic layer you author, a Knowledge Base of your own docs, and the query patterns it learns as your team approves them.
+  Atlas is the AI data analyst you can run anywhere. It answers plain-English questions across your SQL warehouses and REST APIs — grounded in a semantic layer you author, a Knowledge Base of your own docs, the query patterns it learns as your team approves them, and a Company Atlas of what your colleagues have said and someone has stood behind.
 </p>
 
 <p align="center">
@@ -26,15 +26,18 @@ Ask two tools what revenue was last quarter and you can get two different number
 
 ### What grounds an answer
 
-Three context surfaces, each with a different job — and a boundary between them that Atlas enforces rather than trusts:
+Four context surfaces, each with a different job — and a boundary between them that Atlas enforces rather than trusts:
 
 | | What it is | Its job |
 |---|---|---|
 | **Semantic layer** | YAML on disk — entities, dimensions, measures, joins, glossary terms, pinned metrics | The **sole authoritative** surface. The table whitelist, pinned metric SQL, and glossary gating are *enforced*, not suggested |
-| **Knowledge Base** | Your own docs — mirrored through ten vendor connectors (Notion, Confluence, GitBook, Zendesk, Salesforce, Intercom, Front, Help Scout, Freshdesk) or uploaded directly | **Descriptive only.** Runbooks, definitions, policies. Never queried as data, never extends the whitelist, never gates the agent ([ADR-0028](docs/adr/0028-knowledge-base-fourth-pillar.md)) |
+| **Knowledge Base** | Your own docs — mirrored through ten vendor connectors (Notion, Confluence (Cloud + Data Center), GitBook, Zendesk, Salesforce, Intercom, Front, Help Scout, Freshdesk) or uploaded directly | **Descriptive only.** Runbooks, definitions, policies. Never queried as data, never extends the whitelist, never gates the agent ([ADR-0028](docs/adr/0028-knowledge-base-fourth-pillar.md)) |
 | **Learned patterns** | The query shapes Atlas keeps as your team approves them | The canonical joins for your domain — earned from real use rather than authored up front |
+| **Company Atlas** | Claims drawn from what your company already says — chat, meeting transcripts, mail — each carrying its source, its date, and the person who approved it | **Nothing counts until a person approves it.** Facts are ACL-scoped fail-closed, superseded rather than deleted, and readable as of a past date. Contradictions are surfaced with both sources, never arbitrated ([ADR-0036](docs/adr/0036-atlas-as-company-brain.md)) |
 
 That descriptive-vs-authoritative split is the point: a runbook can *inform* an answer, but only the semantic layer can *authorize* the SQL behind it.
+
+The Company Atlas is the newest of the four and the one you opt into: **extraction ships off by default** (`ATLAS_BRAIN_EXTRACTION_ENABLED`), so nothing is drawn from your chat, transcripts, or mail until you turn it on — and once on, a claim still waits for a person before it counts.
 
 Every YAML field exists because an LLM needs it to write correct SQL: `sample_values` ground the agent in real data, `glossary.status: ambiguous` forces clarifying questions, `metrics.objective` picks `MAX` vs `MIN`, `query_patterns` teach the canonical join shapes for your domain.
 
@@ -49,7 +52,7 @@ The same grounded agent, reachable however your team already works:
 - **Chat platforms** — six, Slack one-click; Teams, Discord, Telegram, and WhatsApp with your own bot (Google Chat coming soon)
 - **REST API + CLI** — headless, typed, scriptable
 
-Built with Hono, Vercel AI SDK, and bun. Supports Anthropic, OpenAI, Bedrock, Ollama, and Vercel AI Gateway. Works with PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, BigQuery, Elasticsearch, and Salesforce.
+Built with Hono, Vercel AI SDK, and bun. Supports Anthropic, OpenAI, Bedrock, Ollama, any OpenAI-compatible endpoint, and Vercel AI Gateway. Works with PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, BigQuery, Elasticsearch, and Salesforce.
 
 ## Try the demo locally
 
@@ -249,7 +252,7 @@ See [sandbox architecture](https://docs.useatlas.dev/architecture/sandbox) for t
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ATLAS_PROVIDER` | `anthropic` | LLM provider (`anthropic`, `openai`, `bedrock`, `ollama`, `gateway`) |
+| `ATLAS_PROVIDER` | `anthropic` | LLM provider (`anthropic`, `openai`, `bedrock`, `ollama`, `openai-compatible`, `gateway`) |
 | `ATLAS_MODEL` | Provider default | Model ID override |
 | `DATABASE_URL` | — | Atlas internal Postgres for auth, audit, settings |
 | `ATLAS_DATASOURCE_URL` | — | Analytics datasource (PostgreSQL, MySQL, etc.) |

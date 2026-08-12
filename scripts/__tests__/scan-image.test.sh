@@ -133,6 +133,13 @@ fi
 #
 #     Built hermetically: take the fixture's own findings, baseline exactly
 #     those, and assert the gate goes green while the SARIF still names them.
+#
+#     ⚠️ The enumeration below passes --ignore-unfixed, which is load-bearing
+#     now that the report pass carries the same flag (2026-08-12). It keeps the
+#     probe CVE inside the set the report pass can still emit, so a green
+#     assertion here means "the BASELINE did not leak" and not "the CVE happened
+#     to be fixable". Drop that flag and this test starts failing for a reason
+#     that has nothing to do with the baseline split it exists to check.
 trivy image --scanners vuln --pkg-types os --severity HIGH,CRITICAL --ignore-unfixed \
   --ignorefile /dev/null --quiet --format json atlas-scan-fixture:vulnerable 2>/dev/null \
   | grep -oE '"VulnerabilityID": *"[^"]+"' | sed 's/.*"\([A-Z][A-Z0-9-]*\)"$/\1/' | sort -u \
@@ -154,7 +161,7 @@ else
   fi
 
   if grep -q "$probe_cve" "$SARIF_DIR/fixture-baselined.sarif" 2>/dev/null; then
-    ok "baselined findings still appear in SARIF ($probe_cve) — report pass is unfiltered"
+    ok "baselined findings still appear in SARIF ($probe_cve) — baseline not applied to the report pass"
   else
     bad "baseline leaked into the report pass — $probe_cve is missing from SARIF"
   fi
@@ -190,6 +197,29 @@ if [ "$rc" -eq 0 ]; then
   ok "package-free image passes the gate"
 else
   bad "clean fixture — expected exit 0, got exit $rc (gate is unconditionally red)"
+fi
+
+# (9) The census pass must run and print to the job log.
+#
+#     This is the compensating control for --ignore-unfixed on the report pass
+#     (2026-08-12). That flag stops unfixed CVEs from becoming code-scanning
+#     alerts; the census is the ONLY place they remain visible. Delete the
+#     census and the flag silently becomes a suppression, which is precisely
+#     the "invisibility cloak" failure (3) exists to prevent one surface over.
+#
+#     ⚠️ Scope of what this can prove, stated because the gap is not obvious:
+#     it asserts the census RUNS, not that it surfaces a finding the SARIF
+#     omits. Neither shipped fixture can prove the latter — measured
+#     2026-08-12, atlas-scan-fixture:vulnerable has 8 findings and ZERO of them
+#     unfixed, so "in census but not in SARIF" is an empty set and any such
+#     assertion would pass without being able to fail. Writing it anyway would
+#     add a test that looks like coverage and is not. If a fixture with a
+#     durably-unfixed CVE ever exists, tighten this to the set-difference form.
+census_out="$(bash "$SCAN" atlas-scan-fixture:clean fixture-census "$SARIF_DIR" 2>&1)" || true
+if printf '%s' "$census_out" | grep -q "census: ALL findings including unfixed"; then
+  ok "census pass runs and labels itself in the job log"
+else
+  bad "census pass missing — unfixed findings now have no visible surface at all"
 fi
 
 echo "  $PASS passed, $FAIL failed"

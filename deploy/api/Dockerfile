@@ -172,6 +172,22 @@ FROM base AS runner
 ARG INSTALL_NSJAIL=false
 WORKDIR /app
 ENV NODE_ENV=production
+# Patch the base image's Debian packages. oven/bun is digest-pinned (deliberate
+# — see engines.bun, held at 1.3.13 by the #2811 --isolate TLA regression), so
+# the OS layer only ever gets newer when this line runs. Without it the pin
+# means "frozen packages forever", which is the opposite of what pinning a
+# RUNTIME is for.
+#
+# Measured 2026-08-12 against the pinned digest: 107 unique CVEs -> 75, 6
+# critical -> 4, and gate-blocking (fixable HIGH/CRITICAL OS packages) 7 -> 0.
+# Bumping to 1.3.14 instead produces the IDENTICAL 75/4/0 — the base image is
+# not where the fixes are, the security repo is — so there is no security
+# argument for moving the runtime pin.
+#
+# Deliberately its own layer ahead of the nsjail/PGDG installs below: those add
+# a third-party apt source, and an upgrade that ran after it would silently
+# widen its blast radius from "Debian security" to "Debian security + PGDG".
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 RUN echo "atlas:x:1001:" >> /etc/group && \
     echo "atlas:x:1001:1001:atlas:/app:/bin/sh" >> /etc/passwd
 # Install nsjail runtime dependencies (when nsjail is enabled)

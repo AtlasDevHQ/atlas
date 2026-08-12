@@ -7,15 +7,20 @@
 #            vendor has published a fixed version, so a red gate here always
 #            has an action attached to it: bump the pin.
 #
-# REPORTING  everything else — every severity, including vulnerabilities with
-#            no fix available. Emitted as SARIF for GitHub code scanning, where
-#            it is triageable alongside CodeQL. Never fails the job.
+# REPORTING  every FIXABLE finding, at every severity and every package type.
+#            Emitted as SARIF for GitHub code scanning, where it is triageable
+#            alongside CodeQL. Never fails the job.
 #
-# Unfixed CVEs do not block, deliberately. A gate that goes red for something
-# nobody can action teaches people to ignore it, and an ignored gate is worse
-# than no gate at all: it reads as coverage while providing none. They are
-# still reported, so an unfixed CRITICAL is visible — it just does not stop a
-# merge that had nothing to do with it.
+# CENSUS     everything, unfixed included, printed to the job log. Not uploaded.
+#
+# Unfixed CVEs neither block nor raise an alert, deliberately, and it is the
+# same reasoning at both surfaces: a signal nobody can action teaches people to
+# ignore the surface carrying it. For the gate that means a red merge button
+# with no fix behind it; for code scanning it meant 116 of 272 unique CVEs
+# parked open forever, which is what buried a genuinely fixable 4-CRITICAL base
+# image for weeks. An unfixed CRITICAL stays visible in the census above — that
+# relocation is the point, and it is what makes dropping the alert honest
+# rather than a suppression.
 #
 # SCOPE      The gate looks at OS packages only (--pkg-types os). Language
 #            dependencies found inside the image — npm, Go modules — are
@@ -50,12 +55,19 @@
 #            scanning is worth having even when this gate is not the right
 #            place to enforce it.
 #
-# BASELINE   .trivyignore holds the fixable HIGH/CRITICAL findings that already
-#            existed in the third-party base images when this gate was added.
-#            It is applied to the GATE pass only — never to the report pass — so
-#            code scanning always shows the true picture while pre-existing debt
-#            in an image Atlas does not build cannot block an unrelated PR. Read
-#            .trivyignore itself for why each entry is there and when it expires.
+# BASELINE   .trivyignore holds dated exemptions for fixable HIGH/CRITICAL OS
+#            findings that cannot yet be cleared in a shipped image. It is
+#            applied to the GATE pass only — never to the report pass — so a
+#            merge-gate exemption can never become an invisibility cloak in code
+#            scanning. It is currently EMPTY: the 2026-08-12 runner-stage
+#            upgrades cleared all 11 original entries. Read .trivyignore itself
+#            before adding one.
+#
+#            ⚠️ "Applied to the gate only" is a statement about the BASELINE,
+#            not a claim that the report pass shows everything — since
+#            2026-08-12 it also drops unfixed findings. Those two filters have
+#            different reasons and different compensating controls; do not
+#            collapse them when editing this header.
 #
 # The practical effect of that split: this gate blocks *regressions*. A newly
 # disclosed CVE, or one introduced by a dependency or base-image change, goes
@@ -127,10 +139,44 @@ trivy image \
   --format sarif \
   --output "$SARIF" \
   --ignorefile /dev/null \
+  --ignore-unfixed \
   --exit-code 0 \
   "$IMAGE"
 
-echo "SARIF written to $SARIF (unfiltered — all severities, baseline not applied)"
+echo "SARIF written to $SARIF (all severities, baseline not applied, FIXABLE only)"
+
+# ── Why --ignore-unfixed landed on the REPORT pass too (2026-08-12) ───────────
+#
+# It was deliberately absent here until now, on the reasoning that "an unfixed
+# CRITICAL is visible — it just does not stop a merge." The visibility half of
+# that is worth keeping. The alert half stopped working:
+#
+#   Of 272 unique CVEs open across the images, 116 had no published fix. They
+#   are not triageable — there is no version to move to, no override to write,
+#   no decision to record. They sat in code scanning as permanent open alerts,
+#   and their volume is what made the whole surface unreadable: a stale
+#   caddy:2.10-alpine pin carrying 4 CRITICAL and 43 HIGH FIXABLE CVEs went
+#   unnoticed for weeks underneath them.
+#
+# An alert nobody can action is not coverage, and at this ratio it actively
+# buries the alerts that are. Same reasoning the gate pass already used — this
+# just applies it one surface over.
+#
+# ⚠️ Unfixed findings are NOT dropped, they are relocated. The census pass below
+# prints every one of them, unfiltered, into the job log on every run. That is
+# the compensating control for what this flag removes, so if you ever delete the
+# census, put --ignore-unfixed back under review at the same time.
+echo
+echo "──── census: ALL findings including unfixed (informational, never fails) ────"
+echo "     Not uploaded to code scanning — see the note in this script for why."
+trivy image \
+  --scanners vuln \
+  --severity HIGH,CRITICAL \
+  --ignorefile /dev/null \
+  --skip-db-update \
+  --format table \
+  --exit-code 0 \
+  "$IMAGE"
 
 # Gate pass. --skip-db-update reuses the DB the report pass just fetched, so
 # this is a second pass over cached data rather than a second download.

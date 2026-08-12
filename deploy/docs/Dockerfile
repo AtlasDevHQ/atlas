@@ -121,7 +121,20 @@ RUN cd apps/docs && bun run postinstall && bun run build && /usr/local/bin/check
 # runtime data path (no DB, no API), so retiring the Node server drops
 # resident memory from ~900 MB (the Next.js MDX heap) to ~25 MB (Caddy
 # + page cache), which is what was costing $10/mo on Railway.
-FROM caddy:2.10-alpine AS runner
+#
+# Digest-pinned, matching the oven/bun convention in the other Dockerfiles.
+# It was a floating `caddy:2.10-alpine` until 2026-08-12, which is how it sat
+# a full minor behind without anything going red: the gate scans OS packages
+# (apk), and every finding here is in the compiled `caddy` Go binary, which is
+# a LIBRARY finding and deliberately non-blocking. Those findings were reported
+# to code scanning the whole time — 97 unique CVEs, 4 critical and 43 high,
+# spanning golang.org/x/crypto, Go stdlib, grpc, smallstep and Caddy itself —
+# and were invisible in practice because ~1,000 duplicated base-image alerts
+# were stacked on top of them.
+#
+# So: when bumping this, read the LIBRARY findings in the SARIF, not the gate.
+# The gate is green on a badly outdated Caddy by design.
+FROM caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648 AS runner
 
 COPY deploy/docs/Caddyfile /etc/caddy/Caddyfile
 COPY --from=builder /app/apps/docs/out /srv
@@ -130,7 +143,17 @@ COPY --from=builder /app/apps/docs/out /srv
 # Caddyfile) serves the .gz/.zst sidecars without recompressing on every
 # request. curl is for HEALTHCHECK — BusyBox wget can't refuse redirects,
 # so a future redirect rule accidentally catching / would mask brokenness.
-RUN apk add --no-cache curl zstd findutils \
+#
+# `apk upgrade` FIRST, and it is load-bearing rather than hygiene. The base
+# ships curl 8.19.0-r0 pre-installed, so `apk add curl` is a silent no-op: the
+# constraint is already satisfied and apk never reaches for the 8.20.0-r0 in
+# v3.23/main that fixes CVE-2026-5773 and CVE-2026-6276 (both HIGH, both
+# fixable — i.e. both gate-blocking). Same shape for c-ares 1.34.6-r0 →
+# 1.34.8-r0 (CVE-2026-33630). Measured 2026-08-12: with `apk add` alone the
+# runner carries 3 gate-blocking CVEs; with the upgrade it carries ZERO, which
+# is what let .trivyignore drop to empty in the same commit.
+RUN apk upgrade --no-cache \
+  && apk add --no-cache curl zstd findutils \
   && find /srv \( -name '*.html' -o -name '*.css' -o -name '*.js' \
                   -o -name '*.json' -o -name '*.svg' -o -name '*.xml' \
                   -o -name '*.txt' -o -name '*.md' \) \

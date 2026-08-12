@@ -99,9 +99,21 @@
  * | the machine-may-not-reject refusal downgraded to `not-entitled` | 1 |
  * | the entitlement bar scoped to the APPROVE verb only | 1 |
  * | the workspace-mismatch guard scoped to the APPROVE verb only | 1 |
+ * | the unreadable-settings-tier latch dropped (#5162) | 1 |
  *
- * 51 mutations, 51 caught, zero survivors. TWELVE rows, in five groups, need
- * reading with care rather than at face value:
+ * 52 mutations, 52 caught, zero survivors.
+ *
+ * ⚠️ The final row was measured at #5162, the other 51 at #5023, and the two
+ * are not one run. #5162 added a conjunct to `autoApproveEligible` and two
+ * tests to this file, so the counts above are now LOWER BOUNDS rather than
+ * exact: a mutation can only be killed by more tests, never fewer, so no row
+ * above can have fallen — but the threshold and source-class rows in
+ * particular may kill more than they say, since the new opt-out test exercises
+ * both. Re-measure the whole table, not one cell, before treating any number
+ * here as exact again.
+ *
+ * TWELVE rows, in five groups, need reading with care rather than at face
+ * value:
  *
  * **The ordered-identity row** is NOT caught by the headline producer test:
  * that one re-emits the pair in the same order it was removed in, so an ordered

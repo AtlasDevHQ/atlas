@@ -1,11 +1,9 @@
 /**
- * Unit tests for the shared email recipient-domain gate (#3341, #4479).
+ * Unit tests for the shared email recipient-domain gate (#3341, #4479, #4663).
  *
  * Real modules throughout (no `mock.module()`) — the gate's two seams are
  * injectable (`resolveMemberEmails`) or env-backed (settings resolution
- * falls through to env when no internal DB row exists). The deprecation
- * warn itself is asserted in `recipient-gate-warn.test.ts` (which needs a
- * logger mock and so lives in its own file for the isolated runner).
+ * falls through to env when no internal DB row exists).
  */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 
@@ -14,12 +12,11 @@ import {
   normalizeEmailAddress,
   resetRecipientGateWarnsForTests,
   EMAIL_RECIPIENT_DOMAINS_SETTING,
-  LEGACY_EMAIL_DOMAINS_ENV,
 } from "@atlas/api/lib/email/recipient-gate";
 
 const WSID = "ws-recipient-gate-test";
 
-const ENV_KEYS = [EMAIL_RECIPIENT_DOMAINS_SETTING, LEGACY_EMAIL_DOMAINS_ENV] as const;
+const ENV_KEYS = [EMAIL_RECIPIENT_DOMAINS_SETTING] as const;
 const saved: Record<string, string | undefined> = {};
 
 beforeEach(() => {
@@ -27,6 +24,10 @@ beforeEach(() => {
     saved[key] = process.env[key];
     delete process.env[key];
   }
+  // Re-arm the surviving no-internal-DB warn latch. Every test here injects
+  // `resolveMemberEmails`, so nothing in this file trips it — but the latch
+  // is module-global, so re-arming keeps the file order-independent if a
+  // future test exercises the default member resolver.
   resetRecipientGateWarnsForTests();
 });
 
@@ -164,35 +165,46 @@ describe("checkRecipientsAllowed — single-address enforcement", () => {
   });
 });
 
-describe("checkRecipientsAllowed — legacy ATLAS_EMAIL_ALLOWED_DOMAINS fallback (#4479 → #4663)", () => {
-  it("honors the deprecated knob when the surviving setting is unconfigured", async () => {
-    process.env[LEGACY_EMAIL_DOMAINS_ENV] = "legacy.example";
-    const result = await checkRecipientsAllowed(WSID, ["a@legacy.example"], members());
-    expect(result.allowed).toBe(true);
-  });
+describe("checkRecipientsAllowed — unconfigured survivor is members-only (#4663)", () => {
+  // #4663 dropped the retired env-only fallback domain list. The failure
+  // mode to fear is a removal that WIDENS the allowed set, so these pin the
+  // unset/cleared default from both directions with a deliberately
+  // asymmetric fixture: two members must pass, two non-members on two
+  // distinct domains must be blocked, and the blocked list is asserted
+  // exactly. A resolver that returned any non-empty domain set — or that
+  // short-circuited to allowed — cannot satisfy this by coincidence.
+  const RECIPIENTS = [
+    "Member@Corp.Example",
+    "second@corp.example",
+    "a@partner.example",
+    "b@retired-knob.example",
+  ] as const;
+  const MEMBERS = members("member@corp.example", "second@corp.example");
 
-  it("ignores the deprecated knob when the surviving setting is set", async () => {
-    process.env[EMAIL_RECIPIENT_DOMAINS_SETTING] = "partner.example";
-    process.env[LEGACY_EMAIL_DOMAINS_ENV] = "legacy.example";
-    const result = await checkRecipientsAllowed(WSID, ["a@legacy.example"], members());
+  it("blocks every non-member when the surviving setting is unset", async () => {
+    const result = await checkRecipientsAllowed(WSID, [...RECIPIENTS], MEMBERS);
     expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.blocked).toEqual(["a@partner.example", "b@retired-knob.example"]);
+    }
   });
 
-  it("ignores the deprecated knob when the surviving setting is explicitly cleared", async () => {
-    // "" is an explicit members-only policy, not an absence — a lingering
-    // legacy env var must not silently widen it (#4479 review finding).
+  it('blocks every non-member when the surviving setting is cleared to ""', async () => {
+    // "" is an explicit members-only policy; post-#4663 it is also what an
+    // absent setting means, so the two cases must agree.
     process.env[EMAIL_RECIPIENT_DOMAINS_SETTING] = "";
-    process.env[LEGACY_EMAIL_DOMAINS_ENV] = "legacy.example";
-    const result = await checkRecipientsAllowed(WSID, ["a@legacy.example"], members());
+    const result = await checkRecipientsAllowed(WSID, [...RECIPIENTS], MEMBERS);
     expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.blocked).toEqual(["a@partner.example", "b@retired-knob.example"]);
+    }
   });
 
-  it("still allows workspace members alongside the legacy domain list", async () => {
-    process.env[LEGACY_EMAIL_DOMAINS_ENV] = "legacy.example";
+  it("allows only workspace members when nothing is configured", async () => {
     const result = await checkRecipientsAllowed(
       WSID,
-      ["member@corp.example", "a@legacy.example"],
-      members("member@corp.example"),
+      ["Member@Corp.Example", "second@corp.example"],
+      MEMBERS,
     );
     expect(result.allowed).toBe(true);
   });

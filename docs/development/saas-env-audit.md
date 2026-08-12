@@ -306,19 +306,17 @@ items and re-baselined the counts:
   nine `STRIPE_*_PRICE_ID`s — the Stripe section points at
   Admin → Settings → Billing instead of enumerating (its stale "six" count
   corrected to nine). New counts: 924 lines, ~312 declared vars.
-- **Reduction-backlog item — #4479 (SHIPPED 2026-07-16)**: the sweep surfaced
-  a near-duplicate knob pair with opposite unset defaults
-  (`ATLAS_EMAIL_ALLOWED_DOMAINS`, env-only, fail-open, gating the
-  `sendEmailReport` action vs the registry's
-  `ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS`, fail-closed, gating the `sendEmail`
-  integration tool). **Consolidated**: both agent email paths now route
-  through the shared recipient gate (`lib/email/recipient-gate.ts`) keyed on
-  the registry-backed `ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS`; the unset
-  default is uniformly fail-closed (workspace members only). The retired
-  `ATLAS_EMAIL_ALLOWED_DOMAINS` is honored as a deprecated fallback domain
-  list (warn once per process on first use) only while the survivor is not
-  explicitly configured, then drops in the next release — two-phase
-  discipline, phase 2 tracked in #4663. The
+- **Reduction-backlog item — #4479 (SHIPPED 2026-07-16), completed by #4663**:
+  the sweep surfaced a near-duplicate knob pair with opposite unset defaults —
+  a retired env-only, fail-open knob gating the `sendEmailReport` action vs the
+  registry's `ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS`, fail-closed, gating the
+  `sendEmail` integration tool. **Consolidated**: both agent email paths now
+  route through the shared recipient gate (`lib/email/recipient-gate.ts`) keyed
+  on the registry-backed `ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS`; the unset
+  default is uniformly fail-closed (workspace members only). The retired knob
+  was honored as a deprecated fallback (warn once per process) for one release
+  under the two-phase discipline and **#4663 dropped it** — the survivor is now
+  the gate's only domain source, with no env-derived fallback. The
   repo-wide env-knob consolidation sweep + inverse `check-settings-readers`
   ratchet decision was split out to #4620 (`ready-for-human`); its findings
   fold back into this document.

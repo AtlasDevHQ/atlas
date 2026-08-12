@@ -545,9 +545,10 @@ describe("createSendEmailTool — execute paths", () => {
 
 describe("sendEmail recipient allowlist (#3341)", () => {
   const SETTING = "ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS";
-  // Since #4479 the gate also honors the deprecated ATLAS_EMAIL_ALLOWED_DOMAINS
-  // env knob as a fallback — clear both so ambient env can't flip these tests.
-  const GATE_ENV_KEYS = [SETTING, "ATLAS_EMAIL_ALLOWED_DOMAINS"] as const;
+  // Since #4663 this is the gate's only domain source — clear it so ambient
+  // env can't flip these tests, and so the blocked cases below assert the
+  // unconfigured (workspace-members-only) default on this path.
+  const GATE_ENV_KEYS = [SETTING] as const;
   const savedDomains: Record<string, string | undefined> = {};
 
   beforeEach(() => {

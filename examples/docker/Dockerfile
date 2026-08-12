@@ -80,7 +80,7 @@ RUN echo "atlas:x:1001:" >> /etc/group && \
     echo "atlas:x:1001:1001:atlas:/app:/bin/sh" >> /etc/passwd
 # Install nsjail runtime dependencies + Python for nsjail Python sandbox
 RUN if [ "$INSTALL_NSJAIL" = "true" ]; then \
-      apt-get update && apt-get install -y --no-install-recommends \
+      apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
         libnl-route-3-200 libprotobuf32t64 \
         python3 python3-pip \
       && pip3 install --break-system-packages --no-cache-dir \

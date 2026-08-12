@@ -1,7 +1,7 @@
 FROM oven/bun:1.3.13@sha256:87416c977a612a204eb54ab9f3927023c2a3c971f4f345a01da08ea6262ae30e AS base
 
 # Install only the tools needed for explore mode
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     bash coreutils grep findutils tree \
     && rm -rf /var/lib/apt/lists/*
 

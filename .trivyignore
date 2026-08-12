@@ -5,9 +5,15 @@
 # It is not a waiver, and it hides nothing. scripts/scan-image.sh runs Trivy
 # twice and applies this file to ONE of the two passes:
 #
-#   report pass  --ignorefile /dev/null   every severity, every package type,
-#                                         including everything listed here →
+#   report pass  --ignorefile /dev/null   every FIXABLE finding, at every
+#                --ignore-unfixed         severity and package type, including
+#                                         everything listed here →
 #                                         SARIF → GitHub code scanning.
+#                                         (Unfixed findings go to the census in
+#                                         the job log — see scan-image.sh. Every
+#                                         entry in THIS file is fixable by
+#                                         definition, so all of them still
+#                                         reach code scanning.)
 #
 #   gate pass    --ignorefile .trivyignore  fixable HIGH/CRITICAL OS packages,
 #                                           minus this list → blocks the merge.
@@ -19,19 +25,37 @@
 #
 # ── Why there is a baseline at all ────────────────────────────────────────────
 #
-# There currently is not one. This file is deliberately EMPTY of entries, and
-# that is the finished state rather than a gap — see below.
+# Because two different things get scanned, and only one of them ships.
 #
-# It held 11 entries from 2026-07-27 (#4822) to 2026-08-12. Each was present in
-# an upstream base image on the day the gate landed and none was fixable by
-# bumping a pin: the pinned digest for oven/bun:1.3.13 IS the current digest for
-# that tag, so upstream had simply not rebuilt with the patched packages.
-# "Fixable" in Trivy's sense means the distro published a fixed package version
-# — not that a fixed base image exists to move to.
+#   BUILT images (deploy/api, deploy/web, deploy/docs) — the artifacts that
+#   reach Railway and customers. Their runner stages run `apt-get upgrade` /
+#   `apk upgrade`, so every entry below is already patched out of them.
+#   Measured 2026-08-12 with the pinned Trivy 0.72.0: ZERO gate-blocking
+#   findings in all three.
 #
-# That original note named the fix and then declined it: "clearing them needs an
-# apt/apk upgrade in the runner stages ... out of scope for the PR that added
-# the gate." The upgrade is now in the runner stages, and it cleared all 11.
+#   BARE base images (oven/bun:1.3.13, caddy:2.11.4-alpine) — scanned by the
+#   base-images tier for pin regressions and for DISCOVERY, which is the only
+#   thing that notices a new Dockerfile with a base nobody enumerated. Nothing
+#   has upgraded these yet at the moment they are scanned, so they still carry
+#   the findings below.
+#
+# So the entries here are not a deferral of unfixed debt. They are the gap
+# between "what the base ships with" and "what our images ship with", and the
+# runner-stage upgrade is what closes it.
+#
+# ⚠️ An earlier draft of this change emptied the file entirely, on a
+# measurement taken against the BUILT images only. CI failed both base-image
+# legs immediately. Recording that because the mistake is easy to repeat: a
+# green built-image scan says nothing about the bare-base gate, and the two
+# numbers are not interchangeable.
+#
+# ⚠️ Why baselining is legitimate HERE and would not have been before: until
+# 2026-08-12 no Atlas image upgraded its packages, so a bare-base CVE really did
+# ship — including into the create-atlas docker templates a customer scaffolds
+# from. Every runtime stage in the tree now upgrades (deploy/api, deploy/web,
+# deploy/docs, packages/sandbox-sidecar, examples/docker, and all three
+# create-atlas/templates/docker Dockerfiles). If a future Dockerfile adds a
+# runtime stage WITHOUT an upgrade, these entries silently start lying.
 #
 # ── Scope note ────────────────────────────────────────────────────────────────
 #
@@ -51,21 +75,32 @@
 # ── How to re-measure ─────────────────────────────────────────────────────────
 #
 # After ANY change to a base-image pin or a runner-stage package install,
-# re-scan and delete every entry that no longer appears. Scan the BUILT images,
-# not just the bases: the runner stages now upgrade packages, so a base-image
-# scan overstates what actually ships.
+# re-scan and delete every entry that no longer appears. Scan BOTH surfaces —
+# they answer different questions and neither substitutes for the other:
 #
-#   bash scripts/list-runtime-base-images.sh | while read -r i; do \
-#     trivy image --scanners vuln --pkg-types os --severity HIGH,CRITICAL \
-#       --ignore-unfixed --ignorefile /dev/null "$i"; done
+#   the bare bases decide what belongs in THIS file (the base-images gate):
+#
+#     bash scripts/list-runtime-base-images.sh | while read -r i; do \
+#       trivy image --scanners vuln --pkg-types os --severity HIGH,CRITICAL \
+#         --ignore-unfixed --ignorefile /dev/null "$i"; done
+#
+#   the built images decide whether the runner-stage upgrades still work, which
+#   is the premise every entry here rests on. Expect ZERO from each:
+#
+#     docker build -f deploy/api/Dockerfile -t probe-api . && \
+#       trivy image --scanners vuln --pkg-types os --severity HIGH,CRITICAL \
+#         --ignore-unfixed --ignorefile /dev/null probe-api
+#
+# If the second command starts returning findings, do NOT add them here — the
+# upgrade has stopped working and that is the bug.
 #
 # Entries are global rather than per-image on purpose: the two runtime bases
 # shared 7 of the original 11, so per-image files would duplicate and drift.
 #
-# ── The 11 entries that used to live here, and what replaced them ────────────
+# ── What the 2026-08-12 pass changed ─────────────────────────────────────────
 #
-# Emptied 2026-08-12. All measurements below are from Trivy 0.72.0 — the pinned
-# version — run against the actual images, not inferred from advisory text.
+# All measurements from Trivy 0.72.0 — the pinned version — run against the
+# actual images, not inferred from advisory text.
 #
 #   deploy/docs    caddy:2.10-alpine -> 2.11.4-alpine, digest-pinned, plus an
 #                  `apk upgrade`. 128 unique CVEs -> 10; 6 CRITICAL -> 0;
@@ -75,6 +110,10 @@
 #   deploy/web     #2811 --isolate TLA regression), plus an `apt-get upgrade`.
 #                  107 unique CVEs -> 75; 6 CRITICAL -> 4; 29 HIGH -> 18;
 #                  gate-blocking 7 -> 0.
+#
+# The baseline went 11 -> 10 entries, and the 10 are NOT a subset of the 11 —
+# the caddy bump retired 4 Alpine findings and introduced 2 curl ones the older
+# base did not have. Do not diff the counts and assume continuity.
 #
 # ⚠️ The `apk upgrade` / `apt-get upgrade` is the load-bearing half, NOT the
 # base-image bump. Two things this measured that reading advisories would not:
@@ -98,3 +137,41 @@
 # repo snapshot. Always give it an `exp:` date — the expiry is the forcing
 # function; once passed, Trivy stops honouring it and the gate goes red until it
 # is fixed or consciously re-dated. Do not bulk-extend dates — re-scan first.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# oven/bun:1.3.13 (Debian trixie) — runtime base for deploy/api, deploy/web,
+# packages/sandbox-sidecar, examples/docker and the create-atlas docker
+# templates. All seven are cleared by the `apt-get upgrade` in every runtime
+# stage; they persist only in the bare base, which is what base-images scans.
+# ─────────────────────────────────────────────────────────────────────────────
+# HIGH     libssl3t64 / openssl-provider-legacy  3.5.5-1~deb13u1 -> u2
+CVE-2026-28387 exp:2026-11-01
+# HIGH     libssl3t64 / openssl-provider-legacy
+CVE-2026-28388 exp:2026-11-01
+# HIGH     libssl3t64 / openssl-provider-legacy
+CVE-2026-28389 exp:2026-11-01
+# HIGH     libssl3t64 / openssl-provider-legacy
+CVE-2026-28390 exp:2026-11-01
+# CRITICAL libssl3t64 / openssl-provider-legacy
+CVE-2026-31789 exp:2026-11-01
+# HIGH     libssl3t64 / openssl-provider-legacy  -> 3.5.6-1~deb13u2
+CVE-2026-45447 exp:2026-11-01
+# HIGH     libcap2  1:2.75-10+b8 -> 1:2.75-10+deb13u1
+CVE-2026-4878 exp:2026-11-01
+
+# ─────────────────────────────────────────────────────────────────────────────
+# caddy:2.11.4-alpine — runtime base for deploy/docs only. Cleared by the
+# `apk upgrade` in that runner stage.
+#
+# ⚠️ The two curl entries are NEW with the 2.11.4 bump and did not exist under
+# 2.10-alpine. The base ships curl 8.19.0-r0 pre-installed, so the runner's
+# `apk add --no-cache curl` is a silent no-op — only the explicit upgrade
+# reaches the 8.20.0-r0 in v3.23/main that fixes them. If that upgrade is ever
+# removed, these two ship.
+# ─────────────────────────────────────────────────────────────────────────────
+# HIGH     c-ares  1.34.6-r0 -> 1.34.8-r0
+CVE-2026-33630 exp:2026-11-01
+# HIGH     curl / libcurl  8.19.0-r0 -> 8.20.0-r0
+CVE-2026-5773 exp:2026-11-01
+# HIGH     curl / libcurl  8.19.0-r0 -> 8.20.0-r0
+CVE-2026-6276 exp:2026-11-01

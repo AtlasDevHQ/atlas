@@ -173,6 +173,25 @@ export type McpLlmOutcome =
       readonly latencyMs: number;
       readonly toolCalls: readonly RecordedToolCall[];
       readonly finalText: string;
+      /**
+       * Set when dispatch ran >25% over the committed baseline. The question
+       * still PASSED — this is the early-warning signal `eval-llm.yml`
+       * describes, not a verdict.
+       *
+       * ⚠️ Only on the passing variant, and that is not an oversight: the
+       * latency check is layered on top of an already-successful answer and
+       * returns early for a failing one, so a `fail` outcome never carries it.
+       *
+       * Deliberately NOT an `McpFailureArtifact` — the `--json` payload runs
+       * within ~4 KB of the ~65536 stdout truncation cliff (#5134), and a full
+       * artifact per slow question re-spends that margin to restate numbers
+       * already on the outcome.
+       */
+      readonly latencyWarning?: {
+        readonly baselineMs: number;
+        readonly ceilingMs: number;
+        readonly summary: string;
+      };
     }
   | {
       readonly questionId: string;
@@ -1073,25 +1092,39 @@ function grade(input: GradeInput): McpLlmOutcome {
   );
   if (modeOutcome.status === "fail") return modeOutcome;
 
-  // Latency check is layered on top of a successful answer — a slow
-  // answer is still an answer, but it deserves an artifact so a future
-  // baseline shift is easy to spot.
+  // Latency is layered on top of a successful answer — "a slow answer is still
+  // an answer" — so it WARNS and does not gate.
+  //
+  // ⚠️ It used to `failOutcome`, which counted against the 18/20 acceptance
+  // floor. That contradicted both this comment and `eval-llm.yml`, which calls
+  // latency an "early-warning signal"; the contradiction was invisible while
+  // the committed baseline was the 3 bytes `{}`, because no baseline meant no
+  // comparison. Seeding it (#5039) made the check live and the defect
+  // immediate.
+  //
+  // MEASURED across two CI runs of IDENTICAL code: per-question dispatch moved
+  // -29% to +71%, and 5 of 20 questions cleared a +25% ceiling on noise alone
+  // — 18/20 became 14/20, under the floor. On a pull_request the informational
+  // gate renders that green, so it would have surfaced first as a TAG PUSH
+  // exiting 1: every release blocked by jitter. A single-sample baseline
+  // cannot gate a corpus whose natural spread is ~3x the threshold (#5129 is
+  // the same defect in the pass-floor channel).
+  //
+  // Widening the ceiling to swallow +71% was the alternative and is worse: a
+  // signal that needs a near-doubling to fire detects nothing worth knowing.
+  // So the ceiling stays tight and the consequence goes away.
   const baselineMs = baseline?.[q.id];
   if (typeof baselineMs === "number" && baselineMs > 0) {
     const ceiling = Math.round(baselineMs * 1.25);
     if (latencyMs > ceiling) {
-      return failOutcome({
-        question: q,
-        latencyMs,
-        finalText,
-        toolCalls,
-        category: "latency",
-        tool: null,
-        args: {},
-        response: { latencyMs },
-        expected: { baselineMs, ceilingMs: ceiling },
-        summary: `dispatch ${latencyMs}ms exceeded baseline ${baselineMs}ms by >25% (cap ${ceiling}ms)`,
-      });
+      return {
+        ...modeOutcome,
+        latencyWarning: {
+          baselineMs,
+          ceilingMs: ceiling,
+          summary: `dispatch ${latencyMs}ms exceeded baseline ${baselineMs}ms by >25% (cap ${ceiling}ms)`,
+        },
+      };
     }
   }
 

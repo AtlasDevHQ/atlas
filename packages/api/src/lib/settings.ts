@@ -780,16 +780,29 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
   // → everything queues) or to widen it — never a decision an implementer had
   // to make for the operator.
   //
-  // ⚠️ ONE CONSEQUENCE OF DEFAULTING ON, recorded rather than solved. A
+  // ⚠️ ONE CONSEQUENCE OF DEFAULTING ON, and where it is contained (#5162). A
   // workspace that opts OUT does so with a DB override, and `loadSettings`
-  // treats a failed load as non-fatal (it logs at error and leaves the cache at
-  // its last good state — empty on first boot). So on a boot where the settings
-  // load failed, an opted-out workspace resolves through the tier chain to this
-  // default and auto-approval is back ON. The two keys above cannot reach that
-  // state because their default is already the off position; these can.
-  // Dormant today — nothing calls the seam until #5034's producer — and the
-  // repair belongs with whatever makes a failed settings load fail closed
-  // generally, not with a bespoke latch on this one authority path.
+  // treats a failed load as non-fatal. The swap is atomic, so `_cache` keeps
+  // its last good contents on every failure EXCEPT the first load after boot,
+  // which has no last good state to keep. In that one window the workspace
+  // tier is simply absent: an opted-out workspace resolves through the chain
+  // to this default and auto-approval would be back ON. The two keys above
+  // cannot reach that state because their default is already the off position;
+  // these can.
+  //
+  // The latch lives at the authority path, not here — `autoApproveEligible`
+  // (`brain/vocabulary-decide.ts`) refuses while `settingsCacheEverLoaded()`
+  // is false, because a tier that cannot be read cannot be honoured. Falsified
+  // in `vocabulary-decide.test.ts`.
+  //
+  // ⚠️ What this comment SAID until #5162, because the shape is the lesson: it
+  // deferred the repair as "dormant today — nothing calls the seam until
+  // #5034's producer". #5034 shipped 2026-08-06 and `extract.ts:1188` now
+  // calls it. The conclusion happened to survive, but only because of a knob
+  // this comment never named — `ATLAS_BRAIN_EXTRACTION_ENABLED`,
+  // platform-scoped and default-off. A deferral whose stated trigger is not
+  // its real gate expires silently, and nothing was watching the trigger it
+  // did name.
   {
     key: "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD",
     section: "Intelligence",
@@ -803,6 +816,14 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     default: "1",
     envVar: "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD",
     scope: "workspace",
+    // #5161 — hidden from the generic settings page on Atlas Cloud, like the
+    // nine other brain keys and like the third workspace-scoped one
+    // (`ATLAS_BRAIN_AUDIENCE_SYNC_ENABLED`). `scope: "workspace"` means "can
+    // hold a different value per workspace", NOT "a workspace admin writes
+    // it" — a platform admin sets the per-workspace override. Without this
+    // line `saasVisible` defaults true and `saasWritable` resolves from it, so
+    // a Cloud workspace admin could widen their own auto-approval bar.
+    saasVisible: false,
   },
   {
     key: "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES",
@@ -821,6 +842,9 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     default: "warehouse_key",
     envVar: "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES",
     scope: "workspace",
+    // #5161 — see the threshold key above for why a workspace-scoped key is
+    // still platform-admin-only on Cloud.
+    saasVisible: false,
   },
 
   // Demo
@@ -2031,11 +2055,46 @@ function cacheKey(key: string, orgId?: string | null): string {
 
 let _cache = new Map<string, CacheEntry>();
 
+/**
+ * Whether {@link loadSettings} has ever completed successfully in this process
+ * (#5162). Latches true on the first success and never clears — a LATER failed
+ * load is harmless, because the atomic swap leaves `_cache` holding its last
+ * good contents.
+ *
+ * The one window this exists for is the first load after boot, which has no
+ * last good state to keep: `_cache` is empty, so every DB-override tier is
+ * silently absent and {@link getSetting} resolves straight to env/default. For
+ * most keys that is fine. For a key whose default is the PERMISSIVE position,
+ * it means a workspace's explicit opt-out evaporates and the authority it
+ * withheld comes back on — see the `ATLAS_BRAIN_ALIAS_AUTO_APPROVE_*` block in
+ * the registry above.
+ */
+let _cacheEverLoaded = false;
+
 const SETTINGS_MAP = new Map(SETTINGS_REGISTRY.map((s) => [s.key, s]));
+
+/**
+ * Whether a DB-override tier could be consulted at all (#5162).
+ *
+ * Consumers that resolve an AUTHORITY decision through a workspace or platform
+ * override must fail closed when this is false: a tier that was never read
+ * cannot be honoured, so an override that would have withheld permission is
+ * indistinguishable from one that was never set.
+ *
+ * ⚠️ `hasInternalDB() === false` reads as LOADED, deliberately. A deployment
+ * with no internal DB resolves through env → default by design; that is a
+ * supported configuration, not a degraded one, and an opt-out there is
+ * expressed as an env var that IS present. Treating it as unloaded would fail
+ * every self-hosted deployment closed for a tier it was never going to have.
+ */
+export function settingsCacheEverLoaded(): boolean {
+  return !hasInternalDB() || _cacheEverLoaded;
+}
 
 /** @internal Reset cache — for testing only. */
 export function _resetSettingsCache(): void {
   _cache = new Map();
+  _cacheEverLoaded = false;
   _liveCache.clear();
 }
 
@@ -2227,6 +2286,7 @@ export async function loadSettings(): Promise<number> {
       });
     }
     _cache = next; // atomic swap — readers see old or new, never empty
+    _cacheEverLoaded = true;
 
     if (rows.length > 0) {
       log.info({ count: rows.length }, "Loaded settings from internal DB");
@@ -2680,48 +2740,110 @@ function isSaasImmutableKey(key: string): key is SaasImmutableKey {
 }
 
 /**
- * Abuse-control thresholds that stay hot-reloadable by design (operators
- * tune them without a redeploy) but whose runtime mutation is
- * security-relevant (#3797). Unlike {@link SAAS_IMMUTABLE_KEYS}, these are
- * NOT write-blocked — the documented `0 = disabled` semantics and the
- * tune-without-restart contract are intentional. Instead, a write or clear
+ * Settings that stay hot-reloadable by design (operators tune them without a
+ * redeploy) but whose runtime mutation is security-relevant. Unlike
+ * {@link SAAS_IMMUTABLE_KEYS} these are NOT write-blocked — the
+ * tune-without-restart contract is intentional. Instead, a write or clear
  * emits a distinct `log.warn` security-audit line (above the generic
- * "Setting override saved" info log) so weakening or disabling an abuse
- * control is traceable and alertable during an incident, not lost in the
- * settings-change noise. The per-IP / per-email start_trial limiters are the
- * subject of #3797; the sibling contact / demo attempt limiters share the
- * same shape and are reasonable future additions.
+ * "Setting override saved" info log) so a weakening is traceable and
+ * alertable during an incident, not lost in the settings-change noise.
+ *
+ * Two families live here, and they weaken in OPPOSITE directions — which is
+ * why {@link securitySensitiveAuditFields} computes a per-key predicate
+ * instead of one numeric rule:
+ *
+ * - **Abuse-control thresholds** (#3797) — the per-IP / per-email start_trial
+ *   limiters. Documented `0 = disabled` semantics, so a *low or zero* value is
+ *   the weakening. The sibling contact / demo attempt limiters share the shape
+ *   and are reasonable future additions.
+ * - **Alias auto-approve authority** (#5161) — the two knobs deciding which
+ *   alias proposals re-key a corpus with no human in front of them. Here the
+ *   weakening is a *wider* source list or a *lower* confidence bar, and the
+ *   empty/unparseable value is the SAFE end (everything queues for review).
+ *   Membership is the audit half of #5161; `saasVisible: false` on the defs is
+ *   the access half.
  */
 export const SECURITY_SENSITIVE_KEYS: ReadonlySet<string> = new Set([
   "ATLAS_TRIAL_IP_RATE_LIMIT_RPM",
   "ATLAS_TRIAL_EMAIL_RATE_LIMIT_RPM",
+  "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES",
+  "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD",
 ]);
 
 /**
- * Pure audit decision for {@link auditSecuritySensitiveChange}: returns the
- * structured fields to log when `key` is a {@link SECURITY_SENSITIVE_KEYS}
- * abuse threshold, or `null` when it isn't (no audit). `disablesControl`
- * flags the `0`/non-finite disabled-sentinel for a `set` so an outright
- * disable is obvious in the log line and alertable. Exported for unit
- * testing the disable-detection without DB/logger plumbing.
+ * The only alias source class that may auto-approve without widening the
+ * authority — a warehouse primary key, certain by construction. Kept as a bare
+ * string rather than imported from `brain/vocabulary-*`: `lib/settings.ts` is
+ * below the brain modules and must not acquire an edge to them for an audit
+ * predicate. The registry `default` two hundred lines up is the same literal.
+ */
+const ALIAS_SOURCE_CLASS_NOT_WIDENING = "warehouse_key";
+
+/**
+ * Pure audit decision for {@link auditSecuritySensitiveChange}: the structured
+ * fields to log when `key` is in {@link SECURITY_SENSITIVE_KEYS}, or `null`
+ * when it isn't (no audit). Exported so both predicates are unit-testable
+ * without DB/logger plumbing.
+ *
+ * Two flags rather than one "weakened" boolean, because they are not the same
+ * claim and an operator filters on different ones:
+ *
+ * - `disablesControl` — an abuse control was turned OFF (the `0`/non-finite
+ *   sentinel). **Always false for the alias keys**: their disabled position
+ *   (empty threshold) means *everything queues for review*, which is the safe
+ *   end, and reusing the numeric rule there would flag the safest possible
+ *   write as a disable. That inversion is the whole reason this function
+ *   dispatches on key.
+ * - `widensAuthority` — more proposals now auto-approve with nobody in front
+ *   of them. Always false for the abuse thresholds, which have no such notion.
+ *
+ * Both are computed on the WRITTEN value, not on the reader's post-validation
+ * effect. `aliasAutoApproveSources` silently drops tokens it doesn't
+ * recognise, so `warehouse_key,extractr` widens nothing in practice — but it
+ * is an attempt to widen, and an audit log that stays silent on a typo'd
+ * privilege escalation is the wrong failure. A `clear` is value-unknown (it
+ * reverts to a platform override that may itself be wide), so it flags
+ * neither, consistent with the pre-existing threshold behaviour.
  */
 export function securitySensitiveAuditFields(
   key: string,
   action: "set" | "clear",
   value: string | undefined,
-): { disablesControl: boolean } | null {
+): { disablesControl: boolean; widensAuthority: boolean } | null {
   if (!SECURITY_SENSITIVE_KEYS.has(key)) return null;
+
+  if (key === "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES") {
+    const widensAuthority =
+      action === "set" &&
+      (value ?? "")
+        .split(",")
+        .map((t) => t.trim())
+        .filter(Boolean)
+        .some((t) => t !== ALIAS_SOURCE_CLASS_NOT_WIDENING);
+    return { disablesControl: false, widensAuthority };
+  }
+
+  if (key === "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD") {
+    // Only a finite bar BELOW the shipped `1` widens. Empty and unparseable
+    // both disable auto-approval outright (`aliasAutoApproveThreshold` returns
+    // null), so they narrow — the opposite of the numeric rule below.
+    const parsed = value === undefined || value.trim() === "" ? undefined : Number(value);
+    const widensAuthority =
+      action === "set" && parsed !== undefined && Number.isFinite(parsed) && parsed < 1;
+    return { disablesControl: false, widensAuthority };
+  }
+
   const parsed = value === undefined ? undefined : Number(value);
   const disablesControl =
     action === "set" && (parsed === 0 || (parsed !== undefined && !Number.isFinite(parsed)));
-  return { disablesControl };
+  return { disablesControl, widensAuthority: false };
 }
 
 /**
  * Emit a security-audit `log.warn` when a {@link SECURITY_SENSITIVE_KEYS}
- * abuse threshold is changed or cleared at runtime. `action` is `set` (a new
- * value persisted) or `clear` (override deleted → reverts to env/default).
- * A no-op for non-sensitive keys.
+ * setting is changed or cleared at runtime. `action` is `set` (a new value
+ * persisted) or `clear` (override deleted → reverts to env/default). A no-op
+ * for non-sensitive keys.
  */
 function auditSecuritySensitiveChange(
   key: string,
@@ -2733,8 +2855,17 @@ function auditSecuritySensitiveChange(
   const fields = securitySensitiveAuditFields(key, action, value);
   if (!fields) return;
   log.warn(
-    { key, action, value, disablesControl: fields.disablesControl, actorId, orgId, event: "security_setting.changed" },
-    `Security-sensitive abuse control ${action === "clear" ? "override cleared" : "changed"} at runtime: ${key}`,
+    {
+      key,
+      action,
+      value,
+      disablesControl: fields.disablesControl,
+      widensAuthority: fields.widensAuthority,
+      actorId,
+      orgId,
+      event: "security_setting.changed",
+    },
+    `Security-sensitive setting ${action === "clear" ? "override cleared" : "changed"} at runtime: ${key}`,
   );
 }
 

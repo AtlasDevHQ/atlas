@@ -1217,24 +1217,165 @@ describe("securitySensitiveAuditFields (#3797)", () => {
   it("audits a normal change without flagging disablesControl", () => {
     expect(securitySensitiveAuditFields("ATLAS_TRIAL_IP_RATE_LIMIT_RPM", "set", "10")).toEqual({
       disablesControl: false,
+      widensAuthority: false,
     });
   });
 
   it("flags disablesControl when set to the 0 disabled-sentinel", () => {
     expect(securitySensitiveAuditFields("ATLAS_TRIAL_EMAIL_RATE_LIMIT_RPM", "set", "0")).toEqual({
       disablesControl: true,
+      widensAuthority: false,
     });
   });
 
   it("flags disablesControl when set to a non-finite value", () => {
     expect(securitySensitiveAuditFields("ATLAS_TRIAL_IP_RATE_LIMIT_RPM", "set", "off")).toEqual({
       disablesControl: true,
+      widensAuthority: false,
     });
   });
 
   it("audits a clear without flagging disablesControl (revert is value-unknown)", () => {
     expect(securitySensitiveAuditFields("ATLAS_TRIAL_IP_RATE_LIMIT_RPM", "clear", undefined)).toEqual({
       disablesControl: false,
+      widensAuthority: false,
     });
+  });
+});
+
+// #5161 — the two alias auto-approve knobs joined the audited set. They weaken
+// in the OPPOSITE direction from the abuse thresholds above: the empty value is
+// the SAFE end (everything queues for review), so the numeric `0`/non-finite
+// disable rule would have flagged the safest possible write as a disable and
+// fired `disablesControl: true` on every string write to the source list. That
+// inversion is what these tests pin.
+describe("securitySensitiveAuditFields — alias auto-approve authority (#5161)", () => {
+  const SOURCES = "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES";
+  const THRESHOLD = "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD";
+
+  it("includes both alias auto-approve keys in the sensitive set", () => {
+    expect(SECURITY_SENSITIVE_KEYS.has(SOURCES)).toBe(true);
+    expect(SECURITY_SENSITIVE_KEYS.has(THRESHOLD)).toBe(true);
+  });
+
+  it("the shipped source list is not a widening", () => {
+    expect(securitySensitiveAuditFields(SOURCES, "set", "warehouse_key")).toEqual({
+      disablesControl: false,
+      widensAuthority: false,
+    });
+  });
+
+  it("adding any class beyond warehouse_key widens", () => {
+    expect(securitySensitiveAuditFields(SOURCES, "set", "warehouse_key,extractor")).toEqual({
+      disablesControl: false,
+      widensAuthority: true,
+    });
+    // Bare, not just appended — a replacement is as much a widening as an
+    // addition, and a predicate written as "contains a comma" would miss it.
+    expect(securitySensitiveAuditFields(SOURCES, "set", "extractor")).toMatchObject({
+      widensAuthority: true,
+    });
+  });
+
+  it("an unrecognized class still counts as an attempt to widen", () => {
+    // `aliasAutoApproveSources` drops tokens it doesn't know, so this widens
+    // nothing in effect. It is audited anyway: an audit log that goes quiet on
+    // a typo'd privilege escalation is the wrong failure.
+    expect(securitySensitiveAuditFields(SOURCES, "set", "warehouse_key,extractr")).toMatchObject({
+      widensAuthority: true,
+    });
+  });
+
+  it("whitespace and empty tokens do not manufacture a widening", () => {
+    expect(securitySensitiveAuditFields(SOURCES, "set", " warehouse_key , ")).toMatchObject({
+      widensAuthority: false,
+    });
+  });
+
+  it("an empty source list is a narrowing, not a disable", () => {
+    // Nothing is eligible, so nothing auto-approves. The numeric rule would
+    // have read "" as 0 and called this a disabled control.
+    expect(securitySensitiveAuditFields(SOURCES, "set", "")).toEqual({
+      disablesControl: false,
+      widensAuthority: false,
+    });
+  });
+
+  it("lowering the confidence bar below the shipped 1 widens", () => {
+    expect(securitySensitiveAuditFields(THRESHOLD, "set", "0.9")).toEqual({
+      disablesControl: false,
+      widensAuthority: true,
+    });
+  });
+
+  it("the shipped threshold of 1 is not a widening", () => {
+    expect(securitySensitiveAuditFields(THRESHOLD, "set", "1")).toMatchObject({
+      widensAuthority: false,
+    });
+  });
+
+  it("an empty threshold is the SAFE end — neither a widening nor a disable", () => {
+    // The single most important row here. Empty = queue everything for human
+    // review, which the reference page names as the setting to reach for when
+    // you want every alias seen by a person. `Number("")` is 0, so the abuse
+    // rule would flag it `disablesControl: true`.
+    expect(securitySensitiveAuditFields(THRESHOLD, "set", "")).toEqual({
+      disablesControl: false,
+      widensAuthority: false,
+    });
+  });
+
+  it("an unparseable threshold is a narrowing — the reader disables on it", () => {
+    expect(securitySensitiveAuditFields(THRESHOLD, "set", "very confident")).toEqual({
+      disablesControl: false,
+      widensAuthority: false,
+    });
+  });
+
+  it("a clear flags neither, on either key (revert is value-unknown)", () => {
+    // Consistent with the abuse thresholds: a workspace-level clear reverts to
+    // a platform override that may itself be wide, so the written value here
+    // does not determine the resulting authority.
+    expect(securitySensitiveAuditFields(SOURCES, "clear", undefined)).toEqual({
+      disablesControl: false,
+      widensAuthority: false,
+    });
+    expect(securitySensitiveAuditFields(THRESHOLD, "clear", undefined)).toEqual({
+      disablesControl: false,
+      widensAuthority: false,
+    });
+  });
+});
+
+// #5161 — the access half. The registry, not the docs, is what a Cloud
+// workspace admin's settings page actually reads.
+describe("alias auto-approve knobs are platform-admin-only on Cloud (#5161)", () => {
+  it("both carry saasVisible: false", () => {
+    // Asserted as `=== false`, not falsy: the field is OPTIONAL and defaults to
+    // TRUE, which is exactly how both keys shipped visible without anyone
+    // writing `saasVisible: true`. `toBeFalsy()` would pass on `undefined` —
+    // the very value that caused the defect.
+    for (const key of [
+      "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES",
+      "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD",
+    ]) {
+      const def = getSettingsRegistry().find((s) => s.key === key);
+      expect(def).toBeDefined();
+      expect(def?.saasVisible).toBe(false);
+    }
+  });
+
+  it("stay workspace-scoped — hidden is about who writes, not about per-workspace values", () => {
+    // The two axes are independent, and collapsing them is the misreading the
+    // decision turned on. `ATLAS_BRAIN_AUDIENCE_SYNC_ENABLED` is the precedent:
+    // workspace-scoped AND hidden, with a platform admin setting the
+    // per-workspace override.
+    for (const key of [
+      "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES",
+      "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD",
+      "ATLAS_BRAIN_AUDIENCE_SYNC_ENABLED",
+    ]) {
+      expect(getSettingsRegistry().find((s) => s.key === key)?.scope).toBe("workspace");
+    }
   });
 });

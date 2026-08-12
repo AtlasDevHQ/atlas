@@ -27,8 +27,8 @@
 # SCHEDULE (race- and flake-safe, not max-parallel)
 #   Stage 0  serial    `bun run type` — the ONLY gate that writes SDK dist/.
 #                      Runs alone first so nothing reads a half-written dist/.
-#   Stage 1  parallel  lint + lint:type-aware + syncpack + ~28 read-only
-#                      drift/check scripts (31 launches, 2 of them net-gated).
+#   Stage 1  parallel  lint + lint:type-aware + syncpack + ~29 read-only
+#                      drift/check scripts (32 launches, 2 of them net-gated).
 #                      None touch dist/, so they fan out safely (CI_LOCAL_JOBS).
 #   Stage 2  serial    the tree-WRITING gates (gate-fixtures, mutation-tables).
 #                      Both rewrite sources in place — `mutate.ts` per mutation,
@@ -250,6 +250,7 @@ launch brain-fact-promotion      bash scripts/check-brain-fact-promotion.sh
 launch test-discipline           bash scripts/check-test-discipline.sh
 launch settings-readers          bash scripts/check-settings-readers.sh
 launch saas-env-doc              bash scripts/check-saas-env-doc.sh
+launch brain-settings-doc        bun scripts/check-brain-settings-doc.ts
 launch docs-links                bun scripts/check-docs-links.ts
 launch docs-brain-snippets       bun scripts/check-docs-brain-snippets.ts
 launch auth-md-parity            g_auth_md_parity
@@ -306,7 +307,7 @@ fi
 # half-written. RESULT's existence = run finished; its contents = the report.
 #
 # ⚠️ The verdict logic itself lives in scripts/lib/ci-local-report.sh so it can
-# be tested WITHOUT running 35 gates. It cannot be tested by invoking this
+# be tested WITHOUT running 36 gates. It cannot be tested by invoking this
 # script: `g_gate_fixtures` above runs every scripts/__tests__/*.test.sh, so
 # such a test would recurse. See scripts/__tests__/ci-local-verdict.test.sh.
 # shellcheck source=lib/ci-local-report.sh

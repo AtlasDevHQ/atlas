@@ -65,10 +65,10 @@ internal/
 /atlas.config.ts
 
 # Lighthouse CI working dirs. `.lighthouseci/` is lhci's own scratch space
-# (per-run LHRs + assertion results); `lighthouse-reports/` is the
-# `upload.outputDir` the PR-comment step and the workflow artifact read
-# (lighthouserc.js). Both are regenerated per run and neither was ignored
-# before #4899, so a local `lhci autorun` left them untracked in the tree.
+# (per-run LHRs + assertion results); `lighthouse-reports/` is the parent of the
+# per-form-factor `upload.outputDir`s that the PR-comment step and the workflow
+# artifact read (lighthouserc.js). Both are regenerated per run, and a local
+# `lhci autorun` otherwise leaves them untracked in the tree.
 # Deliberately NOT root-anchored: lhci resolves both against `process.cwd()`,
 # so running it from e.g. `apps/www/` writes them there instead.
 .lighthouseci/

@@ -5,10 +5,15 @@ name: Lighthouse
 # (`apps/www` for `/` + `/pricing`, `packages/web` for `/demo`) or the
 # config / workflow itself.
 #
-# First-month policy: every assertion in `lighthouserc.js` is `warn`-only,
-# and this workflow never fails a PR. The signal is the auto-posted PR
-# comment — we want a few weeks of "is this stable on shared runners?"
-# data before promoting any assertion to `error`.
+# First-month policy: every budget assertion in `lighthouserc.js` is
+# `warn`-only and never fails a PR. The signal is the auto-posted PR comment —
+# we want a few weeks of "is this stable on shared runners?" data before
+# promoting any assertion to `error`.
+#
+# The JOB, however, can go red, and saying otherwise here was wrong: a build or
+# server-start failure fails it, and so does a run where both Lighthouse steps
+# ran and delivered no reports (`Verify reports landed`). `lighthouse` is not a
+# required check either way, so neither blocks a PR.
 #
 # Workflow-injection notes (per the GitHub Actions hardening guide):
 #   - No untrusted PR/issue/commit fields are ever spliced into `run:`
@@ -116,11 +121,12 @@ jobs:
       # #4899 blamed one for losing them. It did not: `lhci collect` really does
       # write `lhr-*.json` into `.lighthouseci` (and `assert` adds
       # `assertion-results.json`), while `healthcheck` creates that directory
-      # before `collect` even runs — so the old `[ -d .lighthouseci ]` was always
-      # true and its `mv` always fired.
+      # before `collect` even runs — so on any run where `autorun` actually
+      # started, `[ -d .lighthouseci ]` was true and its `mv` fired.
       # The single file that was never there is `manifest.json`, which only the
-      # `filesystem` upload target writes and which is the only thing the
-      # comment reads. `lhci` now writes each form factor straight to its own
+      # `filesystem` upload target writes and which is the only file gating the
+      # tables — without it no row renders at all, whatever else is on disk.
+      # `lhci` now writes each form factor straight to its own
       # directory, so there is nothing to move and nothing to overwrite: the
       # mobile run's `collect` clears `.lighthouseci`, but desktop's reports
       # already live outside it.
@@ -138,34 +144,51 @@ jobs:
           LH_FORM_FACTOR: mobile
         run: bun x @lhci/cli@${{ env.LHCI_VERSION }} autorun --failOnUploadFailure --config=./lighthouserc.js
 
-      # #4899's whole failure mode was SILENCE: for three weeks the reports were
-      # missing and the only symptom was a PR comment politely saying "No
-      # reports found", on a green workflow. This step exists so that never
-      # reads as green again.
+      # #4899's whole failure mode was SILENCE: the reports were missing for
+      # THREE MONTHS — the workflow landed 2026-05-02 and the defect shipped
+      # with it, across 1200+ runs — and the only symptom was a PR comment
+      # politely saying "No reports found", on a green workflow. This step exists
+      # so that never reads as green again.
       #
-      # It checks the SAME predicate the comment does — at least one manifest
-      # entry with `isRepresentativeRun: true` — rather than a proxy for it. An
-      # earlier draft checked only that the directory and `manifest.json`
-      # existed and that some `*.report.json` was present; a `manifest.json`
-      # containing `[]` passes all three of those and still renders the empty
-      # state, which is the #4899 shape one layer in.
+      # It evaluates the same predicate the comment does — at least one manifest
+      # entry with `isRepresentativeRun: true`, parsed rather than pattern-
+      # matched. An earlier draft checked only that the directory and
+      # `manifest.json` existed and that some `*.report.json` was present; a
+      # `manifest.json` containing `[]` passes all three of those and still
+      # renders the empty state, which is the #4899 shape one layer in.
       #
       # Escalation policy, deliberately narrow: a form factor missing its
       # reports is a `::warning::`, but BOTH missing is a plumbing failure and
-      # exits non-zero. That does not violate the first-month warn-only policy,
-      # which is about budget ASSERTIONS: `lighthouse` is not a required check
-      # (`ci` · `Deploy Validation` · `Image Scan` · `Analyze
-      # (javascript-typescript)` · `fork-pr-gate` are), so a red run here is
-      # visible without blocking any PR. #4899 survived three weeks precisely
-      # because a polite annotation under a green check goes unread.
+      # exits non-zero — PROVIDED the Lighthouse steps actually ran. The gate on
+      # `$ran` is load-bearing: this step is `if: always()` and nothing before
+      # the Lighthouse steps carries `continue-on-error`, so a failed build or a
+      # server that never came up reaches here with no reports at all. Escalating
+      # there would stack a second red annotation on a run whose real signal is
+      # the build failure, and blame it on a plumbing regression it is not.
+      #
+      # Failing here does not violate the first-month warn-only policy, which is
+      # about budget ASSERTIONS: `lighthouse` is not currently a required check
+      # (see `docs/development/branch-protection.md`), so a red run is visible
+      # without blocking any PR. #4899 survived three months precisely because a
+      # polite annotation under a green check goes unread.
       - name: Verify reports landed
         if: always()
+        env:
+          DESKTOP_OUTCOME: ${{ steps.lh-desktop.outcome }}
+          MOBILE_OUTCOME: ${{ steps.lh-mobile.outcome }}
         run: |
+          # Only `success` and `failure` mean the step executed. `skipped` and
+          # `''` mean it never started, and `cancelled` means the job was torn
+          # down — in none of those is a missing report this step's news.
+          ran=0
+          case "$DESKTOP_OUTCOME" in success|failure) ran=1 ;; esac
+          case "$MOBILE_OUTCOME" in success|failure) ran=1 ;; esac
+
           landed=0
           for ff in desktop mobile; do
             dir="lighthouse-reports/$ff"
             if [ ! -d "$dir" ]; then
-              echo "::warning::$dir is missing — lhci wrote no reports for $ff; the $ff table will render its empty state"
+              echo "::warning::$dir does not exist — the $ff table will render its empty state"
               continue
             fi
             # Decoupled from lhci's `reportFilenamePattern` on purpose: matching
@@ -174,9 +197,27 @@ jobs:
             count=$(find "$dir" -type f -name '*.json' ! -name manifest.json | wc -l)
             echo "$dir: $count per-run JSON report(s)"
             if [ ! -f "$dir/manifest.json" ]; then
-              echo "::warning::$dir/manifest.json is missing — the $ff table will render its empty state"
-            elif ! grep -q '"isRepresentativeRun": true' "$dir/manifest.json"; then
-              echo "::warning::$dir/manifest.json has no representative runs — the $ff table will render its empty state"
+              echo "::warning::$dir/manifest.json does not exist — the $ff table will render its empty state"
+            # Evaluate the predicate; do not pattern-match its serialization. An
+            # earlier draft grepped for `"isRepresentativeRun": true`, which is
+            # coupled to `JSON.stringify(…, null, 2)`'s exact spacing — the same
+            # coupling the `count` glob above deliberately avoids, but with
+            # `exit 1` behind it. It diverged from the comment's real predicate
+            # in BOTH directions: a manifest truncated mid-write that still
+            # contained the literal passed GREEN while the comment rendered its
+            # empty state, and a compact-JSON manifest would fail RED beside a
+            # perfectly populated comment.
+            elif ! node -e '
+              const fs = require("node:fs");
+              try {
+                const parsed = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+                process.exit(Array.isArray(parsed) && parsed.some((r) => r && r.isRepresentativeRun) ? 0 : 1);
+              } catch (err) {
+                console.log(`::warning::${process.argv[1]} is unreadable: ${err instanceof Error ? err.message : String(err)}`);
+                process.exit(1);
+              }
+            ' "$dir/manifest.json"; then
+              echo "::warning::$dir/manifest.json yielded no representative run — the $ff table will render its empty state"
             else
               landed=$((landed + 1))
             fi
@@ -186,10 +227,19 @@ jobs:
           done
           # Full listing so a future regression is diagnosable from the log
           # alone, without re-running the workflow to add debug output.
-          find lighthouse-reports -maxdepth 2 -type f | sort || true
-          if [ "$landed" -eq 0 ]; then
-            echo "::error::Neither form factor produced a usable manifest — the Lighthouse budget signal was not delivered for this run. This is the #4899 regression class; see the annotations above."
+          find lighthouse-reports -maxdepth 2 -type f 2>/dev/null | sort || true
+
+          if [ "$landed" -eq 0 ] && [ "$ran" -eq 1 ]; then
+            # "At least one", not "both": `ran` is an OR, so desktop=failure with
+            # mobile=cancelled reaches here. Claiming both ran would be asserting
+            # more than the gate establishes.
+            echo "::error::At least one Lighthouse step ran and neither form factor produced a manifest with a representative run, so the budget signal was not delivered. This is #4899's regression class; see the annotations above."
             exit 1
+          fi
+          if [ "$landed" -eq 0 ]; then
+            # NOT "see the failing step above": this arm also fires on a
+            # cancelled job, where there is no failing step to look at.
+            echo "::warning::No reports to verify (desktop=$DESKTOP_OUTCOME mobile=$MOBILE_OUTCOME) — Lighthouse did not run; see the earlier steps in this job."
           fi
 
       # `lighthouse-reports/` is deliberately not dot-prefixed: this action
@@ -233,11 +283,32 @@ jobs:
             // performance, accessibility, 'best-practices', seo } }.
             function readManifest(dir) {
               const manifestPath = path.join(dir, 'manifest.json');
-              if (!fs.existsSync(manifestPath)) return [];
+              // Warns rather than returning a bare `[]`. This was the last
+              // silent reader in the script, and it is the residual signal for
+              // the one drift class the report-path duplication still allows: if
+              // these directory literals ever disagree with
+              // `lighthouserc.js`'s `outputDir` while the "Verify reports
+              // landed" step's own path does not, that step passes, the artifact
+              // uploads, and the comment renders its empty state — with this
+              // line as the only trace anywhere that a path was wrong.
+              if (!fs.existsSync(manifestPath)) {
+                core.warning(`no manifest at ${manifestPath}; the ${dir} table will render its empty state`);
+                return [];
+              }
               try {
                 const raw = fs.readFileSync(manifestPath, 'utf8');
                 const parsed = JSON.parse(raw);
-                return parsed.filter((r) => r.isRepresentativeRun);
+                // `Array.isArray` + the `r &&` guard keep this EXACTLY as
+                // tolerant as the "Verify reports landed" step's predicate. They
+                // used to differ: a manifest like `[null, {…true}]` threw here
+                // (caught below → empty state) while that step's `some()` passed
+                // it green — the two-readers-disagree divergence that step's
+                // comment claims to have closed, one entry shape in.
+                if (!Array.isArray(parsed)) {
+                  core.warning(`manifest at ${manifestPath} is not an array; the ${dir} table will render its empty state`);
+                  return [];
+                }
+                return parsed.filter((r) => r && r.isRepresentativeRun);
               } catch (err) {
                 core.warning(
                   `manifest read failed for ${dir}: ${err instanceof Error ? err.message : String(err)}`,
@@ -249,18 +320,19 @@ jobs:
             // `manifest.json` records ABSOLUTE report paths, baked in by
             // `lhci upload` on the machine that wrote them, so in this job they
             // resolve as-is. The basename fallback is defensive: it survives the
-            // report directory being moved or renamed under us. It is NOT enough
-            // on its own to make this script run against a downloaded artifact —
-            // `upload-artifact` strips the least-common-ancestor, so an
-            // extracted artifact has `desktop/` and `mobile/` at its root and
-            // `readManifest(dir)` would miss the manifest first.
+            // absolute PREFIX changing under us (a different workspace or
+            // checkout path with the same relative layout). It does NOT make this
+            // script runnable against a downloaded artifact — with a single
+            // search path the artifact's root IS the uploaded directory, so an
+            // extracted artifact has `desktop/` and `mobile/` at its top level
+            // and `readManifest(dir)` would miss the manifest first.
             //
-            // Warns rather than returning a bare null: every other reader in
-            // this script (`readManifest`, `readAuditNumber`) reports its own
-            // failure, and an unannotated null here would render `–` in LCP and
-            // CLS while Perf/A11y/SEO — which come from the manifest summary,
-            // not the file — still looked authoritative. That is #4899 at cell
-            // granularity, and #4899 is a bug about a signal that stayed quiet.
+            // Warns rather than returning a bare null: every reader in this
+            // script reports its own failure, and an unannotated null here would
+            // render `–` in LCP and CLS while Perf/A11y/SEO — which come from
+            // the manifest summary, not the file — still looked authoritative.
+            // That is #4899 at cell granularity, and #4899 is a bug about a
+            // signal that stayed quiet.
             function resolveReportPath(dir, recordedPath) {
               if (typeof recordedPath !== 'string' || recordedPath === '') {
                 core.warning(
@@ -277,11 +349,23 @@ jobs:
               return null;
             }
 
+            // The two audit ids, named once so the id passed to
+            // `readAuditNumbers` and the id read back out in the row formatter
+            // cannot drift apart. A mistyped identifier is then a ReferenceError
+            // rather than a cell quietly reading `–`.
+            const LCP = 'largest-contentful-paint';
+            const CLS = 'cumulative-layout-shift';
+
             // Pull lighthouse-typed numeric audit values (LCP, CLS) from the
             // per-run JSON report alongside the manifest summary. Reads the
-            // report ONCE and pulls every requested audit from it — these LHRs
-            // are multi-megabyte, and a read-and-parse per metric meant parsing
-            // each of them twice per row.
+            // report ONCE and pulls every requested audit from it; a
+            // read-and-parse per metric meant parsing each report twice per row.
+            //
+            // Every arm warns. An audit present but without a numeric value is
+            // the realistic case rather than an exotic one — an LCP audit with
+            // `scoreDisplayMode: 'error'` has no `numericValue` — and a bare
+            // null there renders `–` beside authoritative-looking scores, which
+            // is the same cell-level silence `resolveReportPath` was fixed for.
             function readAuditNumbers(jsonReportPath, auditIds) {
               const empty = Object.fromEntries(auditIds.map((id) => [id, null]));
               if (jsonReportPath == null) return empty;
@@ -291,7 +375,11 @@ jobs:
                 return Object.fromEntries(
                   auditIds.map((id) => {
                     const audit = parsed.audits && parsed.audits[id];
-                    return [id, audit && typeof audit.numericValue === 'number' ? audit.numericValue : null];
+                    if (audit && typeof audit.numericValue === 'number') return [id, audit.numericValue];
+                    core.warning(
+                      `audit \`${id}\` has no numeric value in ${jsonReportPath}; it will render as –`,
+                    );
+                    return [id, null];
                   }),
                 );
               } catch (err) {
@@ -308,9 +396,14 @@ jobs:
               try {
                 return new URL(u).pathname || '/';
               } catch {
-                // intentionally ignored: lhci can occasionally surface a
-                // synthetic non-URL string (e.g. an audit error label);
-                // rendering it as-is is better than failing the comment.
+                // intentionally ignored: `r.url` is manifest-supplied and lhci
+                // always writes `lhr.requestedUrl` there, having itself parsed it
+                // with `new URL(...)` before writing the entry — so this arm is
+                // unreachable today. If a future writer ever puts something else
+                // in that field, rendering it raw beats throwing away the whole
+                // comment. (The reason recorded here previously — that lhci can
+                // surface a synthetic non-URL audit label — is not true of that
+                // field.)
                 return u;
               }
             }
@@ -335,8 +428,8 @@ jobs:
             // `outcome` is the step's PRE-`continue-on-error` result, so it is
             // `failure` whenever `lhci autorun` exited non-zero even though the
             // job carried on. It is NOT limited to success/failure: a step that
-            // never executed reports `skipped` or `''`, and a timed-out or
-            // superseded job reports `cancelled`. Nothing before the two
+            // never executed reports `skipped` or `''`, and a job torn down
+            // mid-flight reports `cancelled`. Nothing before the two
             // Lighthouse steps carries `continue-on-error`, so a build or
             // `Wait for servers` failure lands here — and an earlier draft of
             // this script collapsed every non-`failure` outcome into "No
@@ -346,11 +439,10 @@ jobs:
             // ⚠️ THE RULE FOR EVERY SENTENCE IN THIS COMMENT: describe what was
             // OBSERVED; never name a cause the signal cannot establish. Where a
             // cause is genuinely useful, name it as a candidate and point at the
-            // logs. This rule is here because the first fix for #4899 broke it
-            // three times in one commit — the empty state, the failure banner
-            // and the artifact footer each asserted a specific cause from a
-            // signal that only established an observation. It is the same defect
-            // #4899 itself was, so it is the one to keep watch on.
+            // logs. This is the defect #4899 itself was — a comment asserting
+            // "No reports found" about runs that had produced nine reports — and
+            // it recurred repeatedly while fixing it, so it is the one to keep
+            // watch on.
             const EMPTY_STATE = {
               // Says only that the step exited non-zero and no reports were
               // read — deliberately not why.
@@ -375,28 +467,35 @@ jobs:
               '': 'Lighthouse did not run — see the earlier steps in this job.',
             };
 
+            // Returns `{ markdown, rowCount }`. The count travels with the text
+            // so the footer can ask "did anything render?" without re-deriving
+            // it by pattern-matching this function's own markdown — a coupling
+            // that silently inverts the moment the table's shape changes.
             function tableForFormFactor(label, dir, outcome) {
               const runs = readManifest(dir);
               const failed = outcome === 'failure';
               if (runs.length === 0) {
-                const why =
-                  EMPTY_STATE[outcome ?? ''] ?? `Unrecognized step outcome \`${outcome}\`.`;
-                return `### ${label}\n\n_${why}_ See workflow logs.\n`;
+                // `Object.hasOwn`, not `EMPTY_STATE[key] ?? fallback`: `??` only
+                // fires on null/undefined, so every inherited `Object.prototype`
+                // key (`constructor`, `toString`, `valueOf`) is truthy and would
+                // sail past the fallback and render a native function into the
+                // comment. Unreachable with GitHub's fixed vocabulary, but the
+                // whole point of this lookup is being total.
+                const key = outcome ?? '';
+                const why = Object.hasOwn(EMPTY_STATE, key)
+                  ? EMPTY_STATE[key]
+                  : `Unrecognized step outcome \`${outcome}\`.`;
+                return { markdown: `### ${label}\n\n_${why}_ See workflow logs.\n`, rowCount: 0 };
               }
               // Failed-but-populated. Exactly one thing is established — the
               // step exited non-zero — so that is all this says, plus where to
-              // look. It deliberately names NO cause.
-              //
-              // Two earlier drafts got this wrong in the same way, which is why
-              // it is now this terse. The first asserted "an `error`-level
-              // assertion was violated"; the `assert` phase is the only door to
-              // this branch but it exits non-zero for several config and parse
-              // errors too, and with every assertion in `lighthouserc.js` set to
-              // `warn` a violated budget could not reach here at all — the named
-              // cause was the one thing it could not be. The second replaced it
-              // with a candidate LIST, which was neither exhaustive nor free of
-              // unreachable members. Enumerating causes correctly turned out to
-              // be harder than not enumerating them.
+              // look. It deliberately names NO cause: the `assert` phase is the
+              // only door to this branch (`collect` and `healthcheck` failures
+              // exit before `upload`, so they leave no manifest), and `assert`
+              // exits non-zero for config and parse errors as well as for a
+              // violated `error`-level budget — which, while every assertion in
+              // `lighthouserc.js` is `warn`, cannot reach here at all. Two
+              // earlier drafts named a cause anyway and were wrong both times.
               //
               // "The representative runs from the manifest" is also deliberate:
               // the rows are what `readManifest` kept, which is 3 of 9 entries
@@ -408,14 +507,14 @@ jobs:
                 '| Surface | Perf | A11y | Best Practices | SEO | LCP | CLS |\n' +
                 '|---|---|---|---|---|---|---|';
               const rows = runs.map((r) => {
-                const audits = readAuditNumbers(resolveReportPath(dir, r.jsonPath), [
-                  'largest-contentful-paint',
-                  'cumulative-layout-shift',
-                ]);
+                const audits = readAuditNumbers(resolveReportPath(dir, r.jsonPath), [LCP, CLS]);
                 const s = r.summary || {};
-                return `| \`${pathOf(r.url)}\` | ${fmtScore(s.performance)} | ${fmtScore(s.accessibility)} | ${fmtScore(s['best-practices'])} | ${fmtScore(s.seo)} | ${fmtMs(audits['largest-contentful-paint'])} | ${fmtCls(audits['cumulative-layout-shift'])} |`;
+                return `| \`${pathOf(r.url)}\` | ${fmtScore(s.performance)} | ${fmtScore(s.accessibility)} | ${fmtScore(s['best-practices'])} | ${fmtScore(s.seo)} | ${fmtMs(audits[LCP])} | ${fmtCls(audits[CLS])} |`;
               });
-              return `### ${label}\n${note}\n${header}\n${rows.join('\n')}\n`;
+              return {
+                markdown: `### ${label}\n${note}\n${header}\n${rows.join('\n')}\n`,
+                rowCount: rows.length,
+              };
             }
 
             const desktop = tableForFormFactor(
@@ -429,16 +528,19 @@ jobs:
               process.env.MOBILE_OUTCOME,
             );
             // Pointing at the artifact unconditionally would send the reader to a
-            // 404 on the runs where they most want the reports. But this test
+            // 404 on the runs where they most want the reports. But this
             // establishes only "a table rendered", i.e. a readable manifest — NOT
             // "an artifact exists": `if-no-files-found: warn` uploads whatever is
             // under `lighthouse-reports/`, so reports written before an
             // interrupted manifest write DO produce an artifact with no table.
-            // An earlier draft rendered "No artifact was produced for this run"
-            // here, which steers the reader away from the only evidence such a
-            // run left behind. The false arm now describes the observation and
-            // sends them looking anyway.
-            const anyTables = /^\| `/m.test(desktop) || /^\| `/m.test(mobile);
+            // So the false arm describes the observation and sends the reader
+            // looking anyway, rather than asserting no artifact exists.
+            //
+            // Read from the builders' own `rowCount` rather than pattern-matching
+            // their markdown, which would quietly invert the moment a table gains
+            // a column or moves inside a `<details>` — printing "no table"
+            // beside two tables.
+            const anyTables = desktop.rowCount + mobile.rowCount > 0;
 
             const body = [
               COMMENT_MARKER,
@@ -452,8 +554,8 @@ jobs:
               // at all. `lighthouse` is not a required check either way.
               '> First-month policy: budget assertions are `warn`-only and never fail a PR. This comment is the signal.',
               '',
-              desktop,
-              mobile,
+              desktop.markdown,
+              mobile.markdown,
               '',
               anyTables
                 ? '<sub>Full HTML reports are in the `lighthouse-reports` artifact on this run · workflow: `.github/workflows/lighthouse.yml`</sub>'

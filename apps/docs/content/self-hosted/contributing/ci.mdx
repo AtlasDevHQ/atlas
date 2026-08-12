@@ -41,17 +41,17 @@ Run the full `bun run test` once before opening a PR even if `--affected` has be
 
 ## Lighthouse budget (advisory)
 
-`.github/workflows/lighthouse.yml` runs on PRs that touch `apps/www/**`, `packages/web/**`, the `lighthouserc.js` config, or the workflow itself. It does **not** gate merge — the assertions in `lighthouserc.js` are all `warn`-level for the first month while we calibrate flake on shared CI runners.
+`.github/workflows/lighthouse.yml` runs on PRs that touch `apps/www/**`, `packages/web/**`, the `lighthouserc.js` config, or the workflow itself. It is **not a required check** — the assertions in `lighthouserc.js` are all `warn`-level for the first month while we calibrate flake on shared CI runners, so a budget regression never blocks a merge. The job itself can still go red: a build or server-start failure fails it, and so does a run where Lighthouse ran and delivered no reports at all (the `Verify reports landed` step).
 
 What it does:
 
 1. Builds `apps/www` (static export) and `packages/web` (Next prod build).
 2. Starts both locally — apps/www on `:8080`, packages/web on `:3000`.
 3. Runs Lighthouse 3× per surface, twice — once with `LH_FORM_FACTOR=desktop`, once `mobile`.
-4. Uploads reports to:
-   - The workflow artifact `lighthouse-reports` (HTML + JSON, 14-day retention).
-   - Lighthouse CI's temporary public storage — shareable URLs in the report output.
+4. Writes reports to `lighthouse-reports/{desktop,mobile}/` via lhci's `filesystem` upload target — per-run HTML + JSON plus the `manifest.json` the comment step reads — and uploads that directory as the workflow artifact `lighthouse-reports` (14-day retention).
 5. Posts (or updates) a single PR comment with a per-surface score table.
+
+> The `filesystem` target is load-bearing, not a preference: it is the only lhci upload target that writes `manifest.json`, and without that file the comment renders an empty state. Using `temporary-public-storage` instead is what made the comment read `_No reports found._` on every run for the workflow's first three months ([#4899](https://github.com/AtlasDevHQ/atlas/issues/4899)). The artifact is now the only place full reports live; there are no shareable public URLs.
 
 ### Surfaces covered
 
@@ -83,3 +83,5 @@ Update the `.md` file with the new numbers and adjust the thresholds in `lightho
 ### Promoting to a hard gate
 
 When an assertion has been stable on PR comments for ~4 weeks, change its level in `lighthouserc.js` from `"warn"` to `"error"`. lhci will then exit non-zero on a regression — and the `continue-on-error: true` setting on both the desktop and mobile lhci steps will need to be reconsidered (it's there today so a single flaky run doesn't bury the comment, but once assertions can fail the gate, that hiding behavior needs an explicit policy decision).
+
+Note that promoting an assertion changes which branch of the PR comment you land in. An `error`-level violation makes `lhci autorun` exit non-zero *after* uploading, so the tables still render — with a caveat line above them saying the step failed. That caveat deliberately does not name a cause, because `assert` also exits non-zero on a malformed config; the reason for a given failure is in the step log.

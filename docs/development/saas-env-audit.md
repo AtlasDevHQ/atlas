@@ -305,18 +305,21 @@ items and re-baselined the counts:
 - **The only registry keys deliberately absent from `.env.example`** are the
   nine `STRIPE_*_PRICE_ID`s — the Stripe section points at
   Admin → Settings → Billing instead of enumerating (its stale "six" count
-  corrected to nine). New counts: 924 lines, ~312 declared vars.
-- **Reduction-backlog item — #4479 (SHIPPED 2026-07-16), completed by #4663**:
-  the sweep surfaced a near-duplicate knob pair with opposite unset defaults —
-  a retired env-only, fail-open knob gating the `sendEmailReport` action vs the
-  registry's `ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS`, fail-closed, gating the
-  `sendEmail` integration tool. **Consolidated**: both agent email paths now
-  route through the shared recipient gate (`lib/email/recipient-gate.ts`) keyed
-  on the registry-backed `ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS`; the unset
-  default is uniformly fail-closed (workspace members only). The retired knob
-  was honored as a deprecated fallback (warn once per process) for one release
-  under the two-phase discipline and **#4663 dropped it** — the survivor is now
-  the gate's only domain source, with no env-derived fallback. The
+  corrected to nine). New counts, as of 2026-07-10: 924 lines, ~312 declared
+  vars.
+- **Reduction-backlog item — #4479 (SHIPPED 2026-07-16), completed by #4663
+  (2026-08-12)**: the sweep surfaced a near-duplicate knob pair with opposite
+  unset defaults — the env-only, fail-open `ATLAS_EMAIL_ALLOWED_DOMAINS`
+  (**removed in #4663; no longer read anywhere**) gating the `sendEmailReport`
+  action vs the registry's `ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS`,
+  fail-closed, gating the `sendEmail` integration tool. **Consolidated**: both
+  agent email paths now route through the shared recipient gate
+  (`lib/email/recipient-gate.ts`) keyed on the registry-backed
+  `ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS`; the unset default is uniformly
+  fail-closed (workspace members only). The retired knob was honored as a
+  deprecated fallback (warn once per process) under the two-phase discipline
+  across 23 tagged releases — `v0.0.55` (2026-07-16) through `v0.2.7` — and
+  **#4663 dropped it**: the survivor is now the gate's only domain source. The
   repo-wide env-knob consolidation sweep + inverse `check-settings-readers`
   ratchet decision was split out to #4620 (`ready-for-human`); its findings
   fold back into this document.

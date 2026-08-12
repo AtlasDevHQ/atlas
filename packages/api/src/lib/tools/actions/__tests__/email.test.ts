@@ -49,7 +49,9 @@ let mockRequestContext:
 // (member/domain boundary, members-only when the setting is unconfigured,
 // fail-closed) is unit-tested in lib/email/__tests__/recipient-gate.test.ts;
 // here we verify the action wires recipients through it and honors its
-// verdict.
+// verdict. The same action against the REAL gate is pinned in
+// ./email-recipient-gate.test.ts — which must not share a process with this
+// file, since the mock below is global.
 // ---------------------------------------------------------------------------
 
 type GateResult =

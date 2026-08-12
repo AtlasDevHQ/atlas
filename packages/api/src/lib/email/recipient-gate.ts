@@ -25,10 +25,13 @@
  * list smuggled into one string) is blocked outright — the gate must judge
  * exactly the address the transport would deliver to, never a prefix of it.
  *
- * The setting above is the ONLY domain source (#4663 completed the #4479
- * two-phase deprecation by dropping the retired env-only action-path
- * knob). Unset, absent, or cleared to "" all mean the same thing:
- * workspace members only.
+ * `ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS` is the only domain source. #4479
+ * deprecated the separate env-only action-path knob and #4663 removed it,
+ * so an operator who still has that variable set gets no domains from it.
+ * No DB override and no env var, or either one set to "", all resolve to
+ * the empty domain set: workspace members only. The retired name is
+ * deliberately not repeated here — it is set and asserted inert in
+ * `__tests__/recipient-gate.test.ts`, which is the tree's one record of it.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -45,8 +48,11 @@ export const EMAIL_RECIPIENT_DOMAINS_SETTING = "ATLAS_EMAIL_ALLOWED_RECIPIENT_DO
 let noMemberDbWarned = false;
 
 /**
- * Test-only: re-arm the once-per-process warn latch so a suite's assertions
- * don't depend on whether an earlier test in the same process tripped it.
+ * Test-only: re-arm EVERY once-per-process warn latch in this module, so a
+ * future latch inherits the contract rather than needing a second seam.
+ * Today that is the no-internal-DB latch above, and
+ * `lib/tools/actions/__tests__/email-recipient-gate.test.ts` is the suite
+ * that both trips it and asserts on it.
  */
 export function resetRecipientGateWarnsForTests(): void {
   noMemberDbWarned = false;
@@ -64,10 +70,18 @@ function parseAllowedDomains(raw: string | undefined): Set<string> {
 /**
  * Resolve the admin-allowlisted recipient domains for a workspace.
  *
- * One source only: the surviving setting, read as a workspace/platform DB
- * override first and the env var second. An unconfigured setting yields the
- * empty set — no env-derived fallback exists (#4663), so the unset default
- * is workspace-members-only on both agent email paths.
+ * One key, two tiers: a workspace/platform DB override first, then that same
+ * key's env var. Nothing else feeds it — #4663 removed the second knob whose
+ * list used to apply when this one was unconfigured — so an unconfigured
+ * setting yields the empty set and the default is workspace-members-only on
+ * both agent email paths.
+ *
+ * Note `??`, not `||`: an admin-saved empty value is a configuration, not an
+ * absence, so it wins over a non-empty env var and narrows to members-only
+ * (the #4479 review finding). And when the settings cache is empty — the
+ * internal DB was unavailable at load; `loadSettings` logs "using env vars
+ * only" there, not here — the DB tier is invisible and the env var is the
+ * whole policy, which can be BROADER than an override cleared to "".
  */
 function resolveAllowedDomains(workspaceId: string | undefined): Set<string> {
   return parseAllowedDomains(

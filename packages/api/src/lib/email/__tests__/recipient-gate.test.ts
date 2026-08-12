@@ -16,7 +16,14 @@ import {
 
 const WSID = "ws-recipient-gate-test";
 
-const ENV_KEYS = [EMAIL_RECIPIENT_DOMAINS_SETTING] as const;
+/**
+ * The env knob #4663 retired. Named here and nowhere else in the source tree:
+ * a removal is only verifiable if something SETS the removed name and watches
+ * it do nothing, so this literal is the experiment, not a read.
+ */
+const RETIRED_DOMAINS_ENV = "ATLAS_EMAIL_ALLOWED_DOMAINS";
+
+const ENV_KEYS = [EMAIL_RECIPIENT_DOMAINS_SETTING, RETIRED_DOMAINS_ENV] as const;
 const saved: Record<string, string | undefined> = {};
 
 beforeEach(() => {
@@ -24,10 +31,11 @@ beforeEach(() => {
     saved[key] = process.env[key];
     delete process.env[key];
   }
-  // Re-arm the surviving no-internal-DB warn latch. Every test here injects
-  // `resolveMemberEmails`, so nothing in this file trips it — but the latch
-  // is module-global, so re-arming keeps the file order-independent if a
-  // future test exercises the default member resolver.
+  // Nothing in this file trips the no-internal-DB latch (every test injects
+  // `resolveMemberEmails`), and this file uses the real logger so it could
+  // not assert on the warn anyway — the assertion lives in
+  // `lib/tools/actions/__tests__/email-recipient-gate.test.ts`. This call is
+  // hygiene for a future test that drops the injected resolver.
   resetRecipientGateWarnsForTests();
 });
 
@@ -166,13 +174,18 @@ describe("checkRecipientsAllowed — single-address enforcement", () => {
 });
 
 describe("checkRecipientsAllowed — unconfigured survivor is members-only (#4663)", () => {
-  // #4663 dropped the retired env-only fallback domain list. The failure
-  // mode to fear is a removal that WIDENS the allowed set, so these pin the
-  // unset/cleared default from both directions with a deliberately
-  // asymmetric fixture: two members must pass, two non-members on two
-  // distinct domains must be blocked, and the blocked list is asserted
-  // exactly. A resolver that returned any non-empty domain set — or that
-  // short-circuited to allowed — cannot satisfy this by coincidence.
+  // #4663 dropped the retired env-only fallback domain list, and the failure
+  // mode to fear is a removal that WIDENS the allowed set. So every test here
+  // SETS the retired knob to a domain one recipient belongs to: a resolver
+  // that consulted it again — the exact regression — admits
+  // `b@retired-knob.example` and fails. That set-and-assert-nothing-happens
+  // is the only thing that can distinguish this code from its predecessor;
+  // asserting the end state alone passes against both.
+  //
+  // The fixture is also deliberately asymmetric so a resolver that returned
+  // some OTHER non-empty domain set cannot slip through: two members pass,
+  // two non-members on two distinct domains are blocked, and the blocked
+  // list is asserted by equality rather than membership.
   const RECIPIENTS = [
     "Member@Corp.Example",
     "second@corp.example",
@@ -180,24 +193,27 @@ describe("checkRecipientsAllowed — unconfigured survivor is members-only (#466
     "b@retired-knob.example",
   ] as const;
   const MEMBERS = members("member@corp.example", "second@corp.example");
+  const BLOCKED = ["a@partner.example", "b@retired-knob.example"];
+
+  beforeEach(() => {
+    process.env[RETIRED_DOMAINS_ENV] = "retired-knob.example, partner.example";
+  });
 
   it("blocks every non-member when the surviving setting is unset", async () => {
     const result = await checkRecipientsAllowed(WSID, [...RECIPIENTS], MEMBERS);
     expect(result.allowed).toBe(false);
-    if (!result.allowed) {
-      expect(result.blocked).toEqual(["a@partner.example", "b@retired-knob.example"]);
-    }
+    if (!result.allowed) expect(result.blocked).toEqual(BLOCKED);
   });
 
   it('blocks every non-member when the surviving setting is cleared to ""', async () => {
     // "" is an explicit members-only policy; post-#4663 it is also what an
-    // absent setting means, so the two cases must agree.
+    // absent setting means, so the two cases must agree — and neither may
+    // re-expose the retired knob's list (the #4479 review finding, now the
+    // permanent state rather than a fallback precedence rule).
     process.env[EMAIL_RECIPIENT_DOMAINS_SETTING] = "";
     const result = await checkRecipientsAllowed(WSID, [...RECIPIENTS], MEMBERS);
     expect(result.allowed).toBe(false);
-    if (!result.allowed) {
-      expect(result.blocked).toEqual(["a@partner.example", "b@retired-knob.example"]);
-    }
+    if (!result.allowed) expect(result.blocked).toEqual(BLOCKED);
   });
 
   it("allows only workspace members when nothing is configured", async () => {
@@ -207,6 +223,15 @@ describe("checkRecipientsAllowed — unconfigured survivor is members-only (#466
       MEMBERS,
     );
     expect(result.allowed).toBe(true);
+  });
+
+  it("keeps the surviving setting authoritative while the retired knob is set", async () => {
+    // The other direction: the survivor is what widens the set, and it does
+    // so without the retired knob contributing its own extra domain.
+    process.env[EMAIL_RECIPIENT_DOMAINS_SETTING] = "partner.example";
+    const result = await checkRecipientsAllowed(WSID, [...RECIPIENTS], MEMBERS);
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) expect(result.blocked).toEqual(["b@retired-knob.example"]);
   });
 });
 

@@ -522,7 +522,7 @@ entry in that file is accounted for here. Legend:
 | `ATLAS_EMAIL_PROVIDER` | 🟦 | `resend`. |
 | `RESEND_API_KEY` | 🔒 | Staging Resend key ([§2g](#2g-resend--pending-slice-18-2906)). |
 | `SENDGRID_API_KEY`, `POSTMARK_SERVER_TOKEN`, `ATLAS_SMTP_URL` | ⚪ | Alternate providers — unset. |
-| `ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS` | ⚪ | Optional; `StagingClamp` already clamps recipients. Unset = workspace members only, and since #4663 this is the recipient gate's only domain source. |
+| `ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS` | ⚪ | Optional, but unset = **workspace members only** — and since #4663 this is the recipient gate's only domain source. `StagingClamp` does not rescue a non-member address: the gate runs pre-approval, the clamp rewrites later at delivery. |
 | `ATLAS_EMAIL_FROM` | 🟦 | A `staging.useatlas.dev` sender (e.g. `Atlas Staging <noreply@staging.useatlas.dev>`). |
 | `ATLAS_ONBOARDING_EMAILS_ENABLED` | ⚪ | Leave unset — `ATLAS_DEPLOY_ENV=staging` defaults it **off**. |
 | `ATLAS_UNSUBSCRIBE_TOKEN_TTL_MS` | ♻️ | Default (30 days). |

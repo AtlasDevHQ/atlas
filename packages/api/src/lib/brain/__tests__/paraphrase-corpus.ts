@@ -67,7 +67,16 @@ export interface RecordedTriple {
   readonly cardinalityHint: string | null;
 }
 
-export type RecordedSides = Readonly<Record<"a" | "b", readonly RecordedTriple[]>>;
+/**
+ * The two sides of a pair. Spelled once here for the reason `SIDES` is spelled
+ * once in the driver: three separate `{ a, b }` literals in this file had
+ * nothing linking them, so a third side would have had to be remembered in
+ * three places rather than being a compile error in three places.
+ */
+export const SIDES = ["a", "b"] as const;
+export type Side = (typeof SIDES)[number];
+
+export type RecordedSides = Readonly<Record<Side, readonly RecordedTriple[]>>;
 
 export interface RecordedArtifact {
   readonly description: string;
@@ -78,9 +87,30 @@ export interface RecordedArtifact {
   readonly pairs: Readonly<Record<string, RecordedSides>>;
 }
 
+/**
+ * ⚠️ COPIED FROM THE DRIVER'S `PARAPHRASE_RELATIONS` AS A UNION, not flattened
+ * to `string`.
+ *
+ * The first cut of this twin declared `relation: string`, which is the one part
+ * of the corpus contract this side actually branches on
+ * (`paraphrase-identity.test.ts` filters `=== "same-claim"`). A typo there
+ * compiles under `string` and is caught only by a runtime set assertion — so the
+ * copy was lossy in exactly the direction that costs safety, which is the
+ * failure mode that makes a duplication indefensible rather than merely
+ * unfortunate. Copying the five-member tuple as well is strictly cheaper.
+ */
+export const PARAPHRASE_RELATIONS = [
+  "same-claim",
+  "contradiction",
+  "inverse",
+  "different-claim",
+  "no-claim",
+] as const;
+export type ParaphraseRelation = (typeof PARAPHRASE_RELATIONS)[number];
+
 export interface ParaphrasePair {
   readonly id: string;
-  readonly relation: string;
+  readonly relation: ParaphraseRelation;
   readonly why: string;
   readonly a: { readonly source: string; readonly body: string };
   readonly b: { readonly source: string; readonly body: string };
@@ -95,7 +125,10 @@ function readJson(filePath: string, what: string): unknown {
     throw new Error(
       `The paraphrase ${what} is missing at ${filePath}. It is committed to the repo; a fresh ` +
         `one is recorded with \`bun packages/cli/bin/brain-paraphrase-eval.ts --write\`, which ` +
-        `needs AI_GATEWAY_API_KEY and spends real money.`,
+        `needs AI_GATEWAY_API_KEY and spends real money. ⚠️ After a --write, run this suite ` +
+        `EXPLICITLY (\`bun test src/lib/brain/__tests__/paraphrase-identity.test.ts\`) — a ` +
+        `regeneration touches only JSON, and \`scripts/test-isolated.ts --affected\` walks .ts ` +
+        `files alone, so it selects nothing for the one change most likely to break this file.`,
     );
   }
   try {
@@ -106,12 +139,49 @@ function readJson(filePath: string, what: string): unknown {
   }
 }
 
+/**
+ * Load the recording, with the same envelope checks the driver's `loadArtifact`
+ * makes.
+ *
+ * ⚠️ It used to be a bare cast, and the asymmetry was the defect: this is the
+ * side that runs on EVERY PR, and it had the weaker validation of the two. A
+ * truncated `extracted.json` reached `Object.keys(artifact.pairs)` at module
+ * scope in the consuming test and surfaced as `TypeError: Cannot convert
+ * undefined to object` — before any test NAME was printed, so the failure did
+ * not say which file was broken or what to do about it, in a module whose error
+ * messages are otherwise its best feature.
+ */
 export function loadRecordedArtifact(): RecordedArtifact {
-  return readJson(PARAPHRASE_ARTIFACT_PATH, "artifact") as RecordedArtifact;
+  const parsed = readJson(PARAPHRASE_ARTIFACT_PATH, "artifact");
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`The paraphrase artifact at ${PARAPHRASE_ARTIFACT_PATH} is not a JSON object.`);
+  }
+  const root = parsed as Record<string, unknown>;
+  if (typeof root.corpusDigest !== "string" || root.corpusDigest === "") {
+    throw new Error(
+      `The paraphrase artifact at ${PARAPHRASE_ARTIFACT_PATH} has no \`corpusDigest\`, so it cannot ` +
+        `be checked against the corpus it claims to describe. Re-record it with ` +
+        `\`bun packages/cli/bin/brain-paraphrase-eval.ts --write\`.`,
+    );
+  }
+  if (!root.pairs || typeof root.pairs !== "object" || Array.isArray(root.pairs)) {
+    throw new Error(
+      `The paraphrase artifact at ${PARAPHRASE_ARTIFACT_PATH} has no \`pairs\` object — it is ` +
+        `truncated or was written by something other than the eval.`,
+    );
+  }
+  return parsed as RecordedArtifact;
 }
 
 export function loadMessages(): MessageCorpus {
-  return readJson(PARAPHRASE_MESSAGES_PATH, "message corpus") as MessageCorpus;
+  const parsed = readJson(PARAPHRASE_MESSAGES_PATH, "message corpus");
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`The paraphrase message corpus at ${PARAPHRASE_MESSAGES_PATH} is not a JSON object.`);
+  }
+  if (!Array.isArray((parsed as Record<string, unknown>).pairs)) {
+    throw new Error(`The paraphrase message corpus at ${PARAPHRASE_MESSAGES_PATH} has no \`pairs\` array.`);
+  }
+  return parsed as MessageCorpus;
 }
 
 /**
@@ -124,7 +194,7 @@ export function loadMessages(): MessageCorpus {
  * grades as honest has exactly one claim per side except `small-talk`, which has
  * none by design and is asserted directly rather than through this helper.
  */
-export function soleClaim(artifact: RecordedArtifact, pairId: string, side: "a" | "b"): RecordedTriple {
+export function soleClaim(artifact: RecordedArtifact, pairId: string, side: Side): RecordedTriple {
   const sides = artifact.pairs[pairId];
   if (!sides) {
     throw new Error(
@@ -132,6 +202,14 @@ export function soleClaim(artifact: RecordedArtifact, pairId: string, side: "a" 
     );
   }
   const claims = sides[side];
+  // A missing side would otherwise reach `.length` and raise a bare
+  // `Cannot read properties of undefined`, with no mention of the artifact — in
+  // the one helper whose whole job is to fail informatively.
+  if (!Array.isArray(claims)) {
+    throw new Error(
+      `paraphrase pair "${pairId}" has no side ${side} in the artifact — it is malformed, not merely stale.`,
+    );
+  }
   if (claims.length !== 1) {
     throw new Error(
       `paraphrase pair "${pairId}" side ${side} recorded ${claims.length} claims, expected exactly 1. ` +
@@ -165,7 +243,7 @@ export function soleClaim(artifact: RecordedArtifact, pairId: string, side: "a" 
 export function corpusDigest(corpus: MessageCorpus): string {
   const material = corpus.pairs.map((p) => [
     p.id,
-    ...(["a", "b"] as const).map((side) => [p[side].source, p[side].body]),
+    ...SIDES.map((side) => [p[side].source, p[side].body]),
   ]);
   return createHash("sha256").update(JSON.stringify(material)).digest("hex");
 }

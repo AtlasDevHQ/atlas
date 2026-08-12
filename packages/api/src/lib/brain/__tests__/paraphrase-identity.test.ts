@@ -34,33 +34,64 @@
  * values the recorded objects produce — which is a fact about the parser and the
  * recording, not about the join.
  *
- * ## ⚠️ It cannot falsify `lexicalNorm`, and that was MEASURED
+ * ## ⚠️ It cannot falsify `lexicalNorm` AT ALL, and that was MEASURED
  *
- * Four mutations, run against this file at the commit that added it:
+ * Mutations run against this file, with what each killed. The zeroes are the
+ * point of the table — a mutation battery that only published its kills would be
+ * a claim about coverage this file does not have.
  *
  *   | mutation | tests killed |
  *   |---|---|
- *   | `slotKey` ignores its `alias` argument | 2 |
+ *   | `slotKey` ignores its `alias` argument | 3 |
  *   | `comparableValue` always abstains | 2 |
- *   | the vocabulary leaks across slot positions | 1 |
+ *   | `comparableTag` always returns `null` | 1 |
+ *   | the vocabulary leaks across slot positions **(a TEST-FILE mutation — see below)** | 1 |
  *   | **`lexicalNorm` stops case-folding** | **0** |
  *   | **`lexicalNorm` stops collapsing separators** | **0** |
+ *   | **`lexicalNorm` drops the edge trim** | **0** |
+ *   | **`identityKey` never returns `null`** | **0** |
+ *   | **`slotKey` drops the re-norm: `identityKey(alias(norm))` → `alias(norm)`** | **0** |
+ *   | **`identityAlias` is not the identity** | **0** |
  *
- * The two zeroes are a property of the corpus rather than a hole to be patched.
- * The extractor is instructed to emit short lowercase verb phrases and it obeys,
- * so almost every recorded surface arrives already at normal form — there is
- * nothing for the case arm or the separator arm to do. `Deploy Window` /
- * `deploy_window` is a shape a HUMAN writes, and `identity-corpus.ts` +
- * `identity.test.ts` are where it is exercised, deliberately, by hand.
+ * All three `lexicalNorm` arms are zero, so the claim is total rather than
+ * partial: **this file cannot falsify the lexical layer in any respect.** That is
+ * a property of the corpus rather than a hole to be patched. The extractor is
+ * instructed to emit short lowercase verb phrases and it obeys, so almost every
+ * recorded surface arrives already at normal form — there is nothing for any of
+ * the arms to do. `Deploy Window` / `deploy_window` is a shape a HUMAN writes,
+ * and `identity-corpus.ts` + `identity.test.ts` are where it is exercised,
+ * deliberately, by hand.
  *
  * That is the strongest available argument against retiring the hand-authored
  * corpus in favour of this one: a machine-produced corpus can only ever exercise
  * the variance the machine happens to produce. Do not read a green run here as
  * covering the lexical layer.
+ *
+ * ⚠️ **The `1` on the position-leak row comes from mutating THIS FILE'S
+ * `withPredicateAlias`, not production code, and the distinction matters.**
+ * `slotKey` takes ONE `AliasLookup` per call, so position leakage is
+ * structurally impossible at that call site and no production mutation can reach
+ * it. The place a leak is actually reachable is `loadWorkspaceVocabulary`'s
+ * `slot_position` scoping in `lib/brain/vocabulary.ts`, which this file never
+ * touches and `vocabulary-pg.test.ts` owns. The test below still earns its place
+ * — it defends the helper every other test in the vocabulary block depends on —
+ * but read as production coverage it would be a claim this file does not hold.
+ *
+ * ## One deviation from the separate-block rule, recorded rather than hidden
+ *
+ * Three blocks carry a control INLINE, ahead of the prohibition, rather than in a
+ * sibling `test()`: the inverse case, the position-scoping case, and
+ * `different-subject`. In each the inline assertion is an ANTECEDENT — *the
+ * alias did collapse the two predicates*, *the two subject keys really are
+ * different* — which the prohibition is meaningless without, so splitting them
+ * would produce a second block that asserts a premise and nothing else. The
+ * masking risk the rule exists to prevent is covered by a cross-block control in
+ * each case (the alias machinery by `an alias derived from the recording…`).
  */
 
 import { describe, expect, test } from "bun:test";
 
+import { BRAIN_EXTRACTION_PRODUCER } from "@atlas/api/lib/brain/extract";
 import {
   identityKey,
   identityVocabulary,
@@ -102,9 +133,15 @@ function sameSlot(a: RecordedTriple, b: RecordedTriple, vocabulary: ClaimVocabul
   const right = slotOf(b, vocabulary);
   // A null key means the surface normalized away and the claim asserts nothing —
   // it has no slot to share, so it can never be "the same slot" as anything,
-  // including another null. Without this arm two unkeyable claims would compare
-  // equal and read as one belief, which is migration 0187's `DEFAULT ''` hazard
-  // reached through a test helper.
+  // including another null. Two unkeyable claims comparing equal would read as
+  // one belief, which is migration 0187's `DEFAULT ''` hazard reached through a
+  // test helper.
+  //
+  // ⚠️ UNREACHABLE FROM THIS CORPUS, and measured: deleting this arm kills zero
+  // tests here, because no recorded surface normalizes away — the eval now
+  // refuses to record a blank slot at all (`hasBlankSlot`). It is kept as
+  // correct defensive code for a future recording, NOT as something this file
+  // exercises. `identity-corpus.ts` owns the refusal semantics.
   if (left.subject === null || left.predicate === null) return false;
   return left.subject === right.subject && left.predicate === right.predicate;
 }
@@ -159,11 +196,17 @@ describe("the recorded fixture is what it claims to be", () => {
   test("it names the model and the extractor version that produced it", () => {
     // Provenance is what makes a regenerated fixture reviewable: the diff has to
     // say whether the surfaces moved because the model changed or because the
-    // extractor did. Asserted non-empty rather than pinned to a literal — the
-    // model id is `eval-llm.yml`'s to choose, and pinning it here would make a
-    // deliberate model change fail in a file that has no opinion about it.
+    // extractor did. The MODEL is asserted non-empty rather than pinned — it is
+    // `eval-llm.yml`'s to choose, and pinning it here would make a deliberate
+    // model change fail in a file that has no opinion about it.
     expect(artifact.model.length).toBeGreaterThan(0);
-    expect(artifact.extractor).toBe("extraction:v1");
+    // ⚠️ THE EXTRACTOR IS PINNED TO THE LIVE CONSTANT, not to the string
+    // `"extraction:v1"`. A hand-typed literal agrees with the artifact's own
+    // hand-... machine-written copy and neither is the running code, so a bump
+    // of `BRAIN_EXTRACTION_PRODUCER` with no regeneration — exactly the
+    // staleness this assertion exists to catch — would leave both agreeing and
+    // the test green.
+    expect(artifact.extractor).toBe(BRAIN_EXTRACTION_PRODUCER);
   });
 });
 
@@ -340,8 +383,14 @@ describe("only a reviewed vocabulary entry closes the gap", () => {
     // publishing either retires the other.
     const { a, b } = pair("different-subject");
     const leaky = withPredicateAlias(a.subject, b.subject);
-    expect(slotKey(a.subject, leaky.subject)).toBe(identityKey(a.subject));
-    expect(slotKey(a.subject, leaky.subject)).not.toBe(slotKey(b.subject, leaky.subject));
+    // ⚠️ The antecedent: the alias really would have collapsed these two, if it
+    // were consulted at the subject. Without it the prohibition below is
+    // satisfied by an alias that maps nothing. (Asserted against the PREDICATE
+    // lookup, where the alias IS installed — an earlier spelling asserted
+    // `slotKey(a.subject, leaky.subject) === identityKey(a.subject)`, which is
+    // true by `lexicalNorm` idempotence for any identity lookup and so could
+    // only ever fail by mutating this test's own helper.)
+    expect(slotKey(a.subject, leaky.predicate)).toBe(identityKey(b.subject));
     expect(sameSlot(a, b, leaky)).toBe(false);
   });
 });
@@ -374,7 +423,14 @@ describe("the comparable values the recorded objects produce", () => {
     const right = comparableValue({ surface: b.object });
     expect(left).not.toBeNull();
     expect(right).not.toBeNull();
-    expect(comparableTag(String(left))).toBe(comparableTag(String(right)));
+    // ⚠️ ASSERTED AGAINST THE LITERAL TAG, not against each other. `toBe(
+    // comparableTag(String(right)))` was the first spelling and it is satisfied
+    // by `null === null`: mutating `comparableTag` to return `null`
+    // unconditionally killed nothing, so the "both sides carry the same tag"
+    // claim — the only thing that makes their inequality mean *difference*
+    // rather than *two unrelated kinds* — was held by nothing.
+    expect(comparableTag(String(left))).toBe("money");
+    expect(comparableTag(String(right))).toBe("money");
     expect(left).not.toBe(right);
   });
 

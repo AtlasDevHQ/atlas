@@ -62,9 +62,16 @@ import * as path from "path";
 
 import type { LanguageModel } from "ai";
 
-// Type-only, so this edge carries no runtime graph and cannot reach the logger
+// A LEAF module — it imports `fs` and nothing else — which is what makes this
+// edge safe above the stamp. Taking the writer from `canonical-eval-run.ts`,
+// where it lived until #5041, would pull `./atlas` and `./canonical-eval` in
+// behind it and construct the logger before the line above ran.
+import { writeFdSync } from "./write-fd-sync";
+
+// Type-only, so these edges carry no runtime graph and cannot reach the logger
 // ahead of the stamp above.
 import type { FactCandidate } from "@atlas/api/lib/brain/reconcile";
+import type { PredicateCardinality } from "@atlas/api/lib/brain/types";
 
 // ── Paths ─────────────────────────────────────────────────────────────
 
@@ -204,7 +211,29 @@ export function loadMessageCorpus(filePath: string): MessageCorpus {
       }
     }
   }
-  return parsed as MessageCorpus;
+  // ⚠️ COMPOSITION, not just per-entry validity — the one thing the honesty
+  // checks structurally cannot see. Those checks are relative to each pair's
+  // human-declared `relation`, so a corpus whose entries are ALL `no-claim` is
+  // honest by construction against a completely dead extractor: every side
+  // records empty, every check passes, `--write` succeeds, and the deterministic
+  // suite's every prohibition then passes against nothing. The reverse (no
+  // `no-claim` entry at all) removes the control that distinguishes a
+  // discriminating extractor from one that emits a triple for small talk.
+  const typed = parsed as MessageCorpus;
+  const claimBearing = typed.pairs.filter((p) => p.relation !== "no-claim").length;
+  if (claimBearing === 0) {
+    throw new Error(
+      `Paraphrase corpus ${filePath} has no claim-bearing pair — every entry is \`no-claim\`, so a ` +
+        `dead extractor would grade honest and the recording would exercise nothing.`,
+    );
+  }
+  if (claimBearing === typed.pairs.length) {
+    throw new Error(
+      `Paraphrase corpus ${filePath} has no \`no-claim\` control — without one, an extractor that ` +
+        `emits a triple for every message is indistinguishable from a discriminating one.`,
+    );
+  }
+  return typed;
 }
 
 /**
@@ -244,8 +273,14 @@ export interface RecordedTriple {
    * What the extractor GUESSED about cardinality — recorded because #5027 made
    * it advisory and worth observing, and read by nothing. It is not part of the
    * identity comparison and never gates a `valid_to` stamp.
+   *
+   * The producer's union, not `string`: this side MINTS the value from a
+   * `FactCandidate` and knows it is one of two members. The consuming twin in
+   * `paraphrase-corpus.ts` widens it to `string | null` deliberately — that end
+   * reads untrusted JSON off disk and has no business asserting a union the file
+   * could contradict.
    */
-  readonly cardinalityHint: string | null;
+  readonly cardinalityHint: PredicateCardinality | null;
 }
 
 export type RecordedSides = Readonly<Record<Side, readonly RecordedTriple[]>>;
@@ -334,8 +369,17 @@ export interface ParaphraseResult {
   readonly passed: boolean;
 }
 
-/** Deep equality over the compared fields, in emission order. Order is signal: it is what the model chose to say first. */
-function triplesEqual(a: readonly RecordedTriple[], b: readonly RecordedTriple[]): boolean {
+/**
+ * Deep equality over the compared fields, in emission order. Order is signal: it
+ * is what the model chose to say first.
+ *
+ * Exported for the unit surface. The honesty checks now refuse to grade any pair
+ * carrying more than one claim a side, so the ORDER and LENGTH arms cannot be
+ * reached through `gradeParaphraseRun` at all — the only way to falsify them is
+ * to call this directly, and an arm no test can reach is an arm that is not
+ * really there.
+ */
+export function triplesEqual(a: readonly RecordedTriple[], b: readonly RecordedTriple[]): boolean {
   if (a.length !== b.length) return false;
   return a.every((t, i) => {
     const o = b[i];
@@ -351,6 +395,63 @@ function triplesEqual(a: readonly RecordedTriple[], b: readonly RecordedTriple[]
 function formatTriples(triples: readonly RecordedTriple[]): string {
   if (triples.length === 0) return "(none)";
   return triples.map((t) => `${t.subject} | ${t.predicate} | ${t.object}`).join(" ;; ");
+}
+
+/**
+ * Does this claim carry a slot the identity layer cannot key?
+ *
+ * ⚠️ `.trim() === ""` and not `=== ""`. `lexicalNorm` treats `-` and `_` as
+ * separators and trims the edges, so `"   "`, `"-"` and `"__"` all normalize to
+ * the empty string and `identityKey` answers `null` for each — a claim that
+ * asserts nothing. A whitespace-only check would catch the first and pass the
+ * other two, which is a guard that stops discriminating exactly where a
+ * degenerate model output is most likely to land.
+ */
+function hasBlankSlot(triple: RecordedTriple): boolean {
+  return [triple.subject, triple.predicate, triple.object].some(
+    (surface) => surface.replace(/[\s_-]+/g, "") === "",
+  );
+}
+
+/**
+ * Compare one honest pair against the artifact. Split out of the loop so the
+ * `no-claim` arm reaches it too: an honest `no-claim` pair still has a recording
+ * (two empty arrays) that can go stale or drift, and folding it into the
+ * fall-through left it graded by a path its `continue` had already skipped.
+ */
+function comparedOutcome(
+  pair: ParaphrasePair,
+  freshSides: RecordedSides,
+  artifact: RecordedArtifact | null,
+): PairOutcome {
+  const recorded = artifact?.pairs[pair.id] ?? null;
+  if (!recorded) {
+    return {
+      id: pair.id,
+      relation: pair.relation,
+      status: "unrecorded",
+      detail: "the artifact carries no recording for this pair — regenerate with --write.",
+      fresh: freshSides,
+      recorded: null,
+    };
+  }
+  const drifted = SIDES.filter((s) => !triplesEqual(freshSides[s], recorded[s] ?? []));
+  if (drifted.length > 0) {
+    return {
+      id: pair.id,
+      relation: pair.relation,
+      status: "drift",
+      detail: drifted
+        .map(
+          (s) =>
+            `side ${s}: recorded ${formatTriples(recorded[s] ?? [])} — now ${formatTriples(freshSides[s])}`,
+        )
+        .join(" | "),
+      fresh: freshSides,
+      recorded,
+    };
+  }
+  return { id: pair.id, relation: pair.relation, status: "match", detail: "", fresh: freshSides, recorded };
 }
 
 /**
@@ -390,82 +491,85 @@ export function gradeParaphraseRun(
     }
 
     // ── Honesty, BEFORE the artifact comparison ──
-    // A `no-claim` pair that produced a triple, or any other pair that produced
-    // none, means the corpus has stopped exercising what it claims to — and that
-    // is true whether or not the artifact happens to agree. Checking it first is
-    // what stops a recorded-empty artifact from making a dead corpus read green
-    // forever.
+    // Checking it first is what stops a recorded-dead corpus from reading green
+    // forever: if the artifact agreed with a useless recording, a comparison-led
+    // order would report `match` and nobody would look again.
+    //
+    // ⚠️ THREE CHECKS, NOT ONE, AND THE ARITY AND CONTENT ARMS WERE MISSING
+    // UNTIL REVIEW. The first cut asked only *how many* claims a side carried,
+    // never *what* they were or whether the consumer could read them — so two
+    // recordings that exercise nothing graded honest and were written:
+    //
+    //   - BLANK SURFACES. `ExtractionSchema` uses bare `z.string()` with no
+    //     `.min(1)`, so `{subject:"", predicate:"   ", object:""}` is valid model
+    //     output and counts as a claim. `identityKey` returns `null` for every
+    //     one of them, so every prohibition downstream passes vacuously — the
+    //     exact state this lane exists to refuse, arriving through the lane.
+    //   - MORE THAN ONE CLAIM A SIDE. `soleClaim` in the consuming suite throws
+    //     on anything but exactly one, deliberately. The producer accepting `>= 1`
+    //     meant a regeneration could report PASS, write, and break the api suite
+    //     in another package — the diagnosis landing one CI lane later than the
+    //     command that caused it. The two ends may not hold different contracts.
+    //
+    // Every arm only ever REFUSES more than the old code did, so this edit
+    // cannot regress in the permitting direction by construction.
     const emptySides = SIDES.filter((s) => freshSides[s].length === 0);
-    if (pair.relation === "no-claim") {
-      if (emptySides.length !== SIDES.length) {
-        const spoke = SIDES.filter((s) => freshSides[s].length > 0);
-        outcomes.push({
-          id: pair.id,
-          relation: pair.relation,
-          status: "honesty",
-          detail:
-            `a \`no-claim\` pair produced claims on side(s) ${spoke.join(", ")}: ` +
-            spoke.map((s) => `${s}=${formatTriples(freshSides[s])}`).join(" / ") +
-            ". Either the message stopped being small talk, or the extractor has stopped discriminating.",
-          fresh: freshSides,
-          recorded: artifact?.pairs[pair.id] ?? null,
-        });
-        continue;
-      }
-    } else if (emptySides.length > 0) {
+    const dishonest = (detail: string): void => {
       outcomes.push({
         id: pair.id,
         relation: pair.relation,
         status: "honesty",
-        detail:
-          `the extractor produced NO claim on side(s) ${emptySides.join(", ")}, so this pair ` +
-          `exercises nothing — a prohibition with an empty side passes against an identity ` +
-          `layer that does nothing.`,
+        detail,
         fresh: freshSides,
         recorded: artifact?.pairs[pair.id] ?? null,
       });
+    };
+
+    if (pair.relation === "no-claim") {
+      if (emptySides.length !== SIDES.length) {
+        const spoke = SIDES.filter((s) => freshSides[s].length > 0);
+        dishonest(
+          `a \`no-claim\` pair produced claims on side(s) ${spoke.join(", ")}: ` +
+            spoke.map((s) => `${s}=${formatTriples(freshSides[s])}`).join(" / ") +
+            ". Either the message stopped being small talk, or the extractor has stopped discriminating.",
+        );
+        continue;
+      }
+      outcomes.push(comparedOutcome(pair, freshSides, artifact));
       continue;
     }
 
-    const recorded = artifact?.pairs[pair.id] ?? null;
-    if (!recorded) {
-      outcomes.push({
-        id: pair.id,
-        relation: pair.relation,
-        status: "unrecorded",
-        detail: "the artifact carries no recording for this pair — regenerate with --write.",
-        fresh: freshSides,
-        recorded: null,
-      });
+    if (emptySides.length > 0) {
+      dishonest(
+        `the extractor produced NO claim on side(s) ${emptySides.join(", ")}, so this pair ` +
+          `exercises nothing — a prohibition with an empty side passes against an identity ` +
+          `layer that does nothing.`,
+      );
       continue;
     }
 
-    const drifted = SIDES.filter((s) => !triplesEqual(freshSides[s], recorded[s] ?? []));
-    if (drifted.length > 0) {
-      outcomes.push({
-        id: pair.id,
-        relation: pair.relation,
-        status: "drift",
-        detail: drifted
-          .map(
-            (s) =>
-              `side ${s}: recorded ${formatTriples(recorded[s] ?? [])} — now ${formatTriples(freshSides[s])}`,
-          )
-          .join(" | "),
-        fresh: freshSides,
-        recorded,
-      });
+    const plural = SIDES.filter((s) => freshSides[s].length > 1);
+    if (plural.length > 0) {
+      dishonest(
+        `side(s) ${plural.map((s) => `${s}=${freshSides[s].length}`).join(", ")} carry more than one ` +
+          `claim. The deterministic suite reads exactly one per side (\`soleClaim\`) and throws ` +
+          `otherwise, so recording this would report PASS here and fail there.`,
+      );
       continue;
     }
 
-    outcomes.push({
-      id: pair.id,
-      relation: pair.relation,
-      status: "match",
-      detail: "",
-      fresh: freshSides,
-      recorded,
-    });
+    const blank = SIDES.filter((s) => freshSides[s].some(hasBlankSlot));
+    if (blank.length > 0) {
+      dishonest(
+        `side(s) ${blank.join(", ")} carry a claim with an empty slot: ` +
+          blank.map((s) => `${s}=${formatTriples(freshSides[s])}`).join(" / ") +
+          `. A blank surface keys to null, so every prohibition downstream would pass without ` +
+          `the identity layer doing anything.`,
+      );
+      continue;
+    }
+
+    outcomes.push(comparedOutcome(pair, freshSides, artifact));
   }
 
   const corpusIds = new Set(corpus.pairs.map((p) => p.id));
@@ -505,18 +609,54 @@ export type ExtractOneMessage = (input: {
   readonly message: ParaphraseMessage;
 }) => Promise<readonly RecordedTriple[]>;
 
-/** Everything a run needs to say about itself, once graded. */
+/**
+ * Everything a run needs to say about itself, once graded.
+ *
+ * ⚠️ **`passed` here is NOT `ParaphraseResult.passed`, and the override is the
+ * one thing to read carefully.** The base computes it from the artifact
+ * comparison; in `--write` mode that comparison is against the artifact being
+ * REPLACED, so a first-ever recording legitimately grades every pair
+ * `unrecorded` and the run still succeeded. The write-mode verdict is therefore
+ * the honesty checks alone. Both values travel — {@link write} says which
+ * predicate produced this one, and the inherited `outcomes` /
+ * `staleArtifactPairs` / `digestMismatch` still describe the comparison — so a
+ * future gate reading `passed` can tell the two modes apart instead of
+ * inheriting a number whose meaning it cannot see.
+ */
 export interface ParaphraseRunReport extends ParaphraseResult {
   readonly model: string;
   readonly extractor: string;
   readonly corpusPath: string;
   readonly artifactPath: string;
+  /** Which mode produced {@link passed} — see the warning above. */
+  readonly write: boolean;
   readonly wrote: boolean;
+  /** How many pairs failed the corpus-honesty checks. The write-mode verdict. */
+  readonly dishonestCount: number;
+  /**
+   * Set when `--write` found an EXISTING artifact it could not read and replaced
+   * it anyway.
+   *
+   * On the report rather than only in the transcript because the whole design
+   * rests on a regeneration being a REVIEWED change: the reviewer of that diff
+   * is entitled to know the prior recording was DISCARDED rather than
+   * superseded, and an fd-2 line does not survive an automated run.
+   */
+  readonly priorArtifactError: string | null;
 }
 
-/** fd 2, always — see the header. Unbuffered so an abort cannot lose the tail. */
+/**
+ * fd 2, always — see the header.
+ *
+ * Through {@link writeFdSync} rather than a bare `fs.writeSync`, for the three
+ * reasons that helper's own docstring measured: a single `writeSync` to a pipe
+ * can return SHORT (silently truncating), `EPIPE` from a hung-up reader must not
+ * become exit 1, and `EAGAIN` on a non-blocking fd needs a retry rather than a
+ * lost line. fd 2 has the same 65_536-byte cliff as fd 1, and the transcript
+ * here is unbounded in principle — it interpolates every recorded surface.
+ */
 function human(text: string): void {
-  fs.writeSync(2, text);
+  writeFdSync(2, text);
 }
 
 /**
@@ -529,7 +669,7 @@ function human(text: string): void {
  * client would exercise a credential path production does not use and could
  * drift from it silently.
  */
-async function realExtractor(modelIdOverride: string | null): Promise<{
+async function realExtractor(): Promise<{
   extract: ExtractOneMessage;
   modelId: string;
   extractor: string;
@@ -541,7 +681,11 @@ async function realExtractor(modelIdOverride: string | null): Promise<{
   );
   const { getModelForConfig } = await import("@atlas/api/lib/providers");
 
-  const requested = modelIdOverride ?? process.env.ATLAS_MODEL ?? DEFAULT_MODEL_ID;
+  // No override parameter: the sole call site passed `null` and there is no
+  // `--model` flag, so the branch was dead and therefore untested. The model is
+  // the environment's to choose — `eval-llm.yml` sets it beside the preflight's
+  // so the credential check validates the model the eval actually runs.
+  const requested = process.env.ATLAS_MODEL ?? DEFAULT_MODEL_ID;
   let model: LanguageModel;
   let modelId: string;
   try {
@@ -587,17 +731,20 @@ async function realExtractor(modelIdOverride: string | null): Promise<{
 /**
  * Narrow a `FactCandidate` to the recorded shape.
  *
- * `detail` is typed as an open record on the candidate, so the hint is read
- * defensively: a non-string value records `null` rather than being coerced into
- * a string that reads like an answer the extractor gave.
+ * `predicateCardinality` is OPTIONAL on the candidate (`PredicateCardinality |
+ * undefined`), so the `??` is an absent-value guard and nothing more. Spelled
+ * that way rather than `typeof hint === "string"`, which an earlier draft used
+ * and whose comment justified it as defending against an open `detail` record —
+ * a field this function does not read. The guard was harmless and its stated
+ * reason was false, which is the comment class this repo has been bitten by
+ * repeatedly; `?? null` says what is actually true.
  */
 export function toRecordedTriple(candidate: FactCandidate): RecordedTriple {
-  const hint = candidate.predicateCardinality;
   return {
     subject: candidate.subject,
     predicate: candidate.predicate,
     object: candidate.object,
-    cardinalityHint: typeof hint === "string" ? hint : null,
+    cardinalityHint: candidate.predicateCardinality ?? null,
   };
 }
 
@@ -615,7 +762,7 @@ export async function runBrainParaphraseEval(
 
   const seam = opts.extract
     ? { extract: opts.extract, modelId: "(injected)", extractor: "(injected)" }
-    : await realExtractor(null);
+    : await realExtractor();
 
   const fresh: Record<string, RecordedSides> = {};
   for (const pair of corpus.pairs) {
@@ -628,19 +775,28 @@ export async function runBrainParaphraseEval(
     fresh[pair.id] = { a: sides.a ?? [], b: sides.b ?? [] };
   }
 
-  // In `--write` mode a missing or unparseable artifact is the expected state,
-  // not a failure — that is the mode that creates one. Every other mode wants
-  // the load error to propagate with its own message.
+  // In `--write` mode a MISSING artifact is the expected state — that is the
+  // mode that creates one. An artifact that EXISTS and cannot be read is a
+  // different fact, and the first cut conflated them: one `catch` covered
+  // not-found, a truncated file, `EACCES`, `EISDIR`, and a missing
+  // `corpusDigest` alike, and all five printed "no usable existing artifact"
+  // before silently discarding the committed bytes. Split, so the transcript
+  // says which happened and the report carries the destructive case.
   let artifact: RecordedArtifact | null = null;
+  let priorArtifactError: string | null = null;
   if (opts.write) {
-    try {
-      artifact = loadArtifact(opts.artifactPath);
-    } catch (err) {
-      // Reported, never swallowed: regenerating over a file that failed to parse
-      // is the right move, and a maintainer is still entitled to know it did.
-      human(
-        `  (no usable existing artifact: ${err instanceof Error ? err.message : String(err)})\n`,
-      );
+    if (fs.existsSync(opts.artifactPath)) {
+      try {
+        artifact = loadArtifact(opts.artifactPath);
+      } catch (err) {
+        // Reported and carried, never swallowed: replacing an unreadable
+        // artifact is the right move, and both the maintainer watching and the
+        // reviewer of the resulting diff are entitled to know it happened.
+        priorArtifactError = err instanceof Error ? err.message : String(err);
+        human(`  ⚠️ the existing artifact is unusable and will be REPLACED: ${priorArtifactError}\n`);
+      }
+    } else {
+      human(`  (no artifact at ${opts.artifactPath} yet — recording a first one)\n`);
     }
   } else {
     artifact = loadArtifact(opts.artifactPath);
@@ -684,11 +840,18 @@ export async function runBrainParaphraseEval(
     extractor: seam.extractor,
     corpusPath: opts.corpusPath,
     artifactPath: opts.artifactPath,
+    write: opts.write,
     wrote,
+    dishonestCount: dishonest.length,
+    priorArtifactError,
   };
 }
 
 // ── CLI ───────────────────────────────────────────────────────────────
+
+/** Flags that take a following value, so the unknown-flag scan can skip it. */
+const VALUE_FLAGS = ["--corpus", "--artifact"] as const;
+const BARE_FLAGS = ["--write", "--json"] as const;
 
 export function parseParaphraseArgs(args: readonly string[]): ParaphraseRunOptions {
   const flagValue = (name: string): string | null => {
@@ -700,6 +863,28 @@ export function parseParaphraseArgs(args: readonly string[]): ParaphraseRunOptio
     }
     return value;
   };
+
+  // ⚠️ AN UNRECOGNIZED FLAG IS AN ERROR, because every way of ignoring one here
+  // is silently the OPPOSITE of what was asked. `--writ` grades instead of
+  // writing and then advises the operator to run the command they just ran;
+  // `--jsn` produces no payload at all, which in CI is caught only by the
+  // artifact step's "exited 0 but wrote no payload" arm — one lane late, and
+  // never at all locally.
+  const known = new Set<string>([...VALUE_FLAGS, ...BARE_FLAGS]);
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (!arg.startsWith("--")) continue;
+    if (!known.has(arg)) {
+      throw new Error(
+        `Unrecognized flag ${arg}. Known flags: ${[...VALUE_FLAGS, ...BARE_FLAGS].join(", ")}.`,
+      );
+    }
+    // Skip a value flag's argument so a path that happens to start with `--`
+    // is not itself scanned. `flagValue` already refuses that shape, so this is
+    // belt-and-braces rather than the guard.
+    if ((VALUE_FLAGS as readonly string[]).includes(arg)) i += 1;
+  }
+
   return {
     corpusPath: flagValue("--corpus") ?? DEFAULT_CORPUS_PATH,
     artifactPath: flagValue("--artifact") ?? DEFAULT_ARTIFACT_PATH,
@@ -715,8 +900,14 @@ export function reportParaphraseRun(report: ParaphraseRunReport): number {
 
   human(`\nbrain paraphrase eval — model=${report.model} extractor=${report.extractor}\n`);
   for (const o of report.outcomes) {
-    human(`  ${o.status === "match" ? "ok  " : "FAIL"} ${o.id} (${o.relation})`);
-    human(o.detail === "" ? "\n" : `\n       ${o.detail}\n`);
+    // ⚠️ IN WRITE MODE, ONLY AN HONESTY FAILURE IS A FAILURE. `drift` and
+    // `unrecorded` are what `--write` exists to resolve, so printing them as
+    // FAIL made a first-ever recording report ten FAIL lines and then PASS —
+    // a transcript that contradicts itself teaches people to stop reading it.
+    const failed = report.write ? o.status === "honesty" : o.status !== "match";
+    const label = failed ? "FAIL" : report.write && o.status !== "match" ? "rec " : "ok  ";
+    human(`  ${label} ${o.id} (${o.relation})`);
+    human(o.detail === "" || (report.write && !failed) ? "\n" : `\n       ${o.detail}\n`);
   }
   if (report.digestMismatch) {
     human(
@@ -730,11 +921,33 @@ export function reportParaphraseRun(report: ParaphraseRunReport): number {
   }
   if (report.wrote) human(`\nwrote ${report.artifactPath}\n`);
 
+  if (report.write) {
+    // ⚠️ THE REFUSAL HAS TO BE NAMED. The first cut printed nothing for it: the
+    // only sign the file had not been written was the ABSENCE of the line above,
+    // and the tail below then advised the operator to re-run `--write` — the
+    // command they had just run, which cannot succeed until the corpus is fixed.
+    // A remedy that loops is worse than none, because the next move after
+    // exhausting it is to hand-edit `extracted.json`, which is precisely what
+    // this refusal exists to prevent.
+    if (report.wrote) {
+      human(`\nPASS: recorded ${report.outcomes.length} pairs.\n`);
+    } else {
+      human(
+        `\nFAIL: REFUSED to write ${report.artifactPath} — ${report.dishonestCount} pair(s) failed the\n` +
+          "corpus-honesty checks above. Regenerating does NOT fix this, which is why it was\n" +
+          "refused: recording a corpus that exercises nothing would bless an empty fixture, and\n" +
+          "every prohibition in the deterministic suite would then pass forever against an\n" +
+          "identity layer doing nothing. Fix the extractor or the corpus first (ADR-0037 §9).\n",
+      );
+    }
+    return report.passed ? 0 : 1;
+  }
+
   const matched = counts.get("match") ?? 0;
   human(
     `\n${report.passed ? "PASS" : "FAIL"}: ${matched}/${report.outcomes.length} pairs match the recorded artifact.\n`,
   );
-  if (!report.passed && !report.wrote) {
+  if (!report.passed) {
     human(
       "\nThis eval fails on DRIFT by design: the deterministic brain suite consumes this\n" +
         "artifact, so a change here is a change to what that suite proves. Read what moved,\n" +
@@ -749,10 +962,16 @@ async function main(): Promise<number> {
   const report = await runBrainParaphraseEval(opts);
   const code = reportParaphraseRun(report);
   if (opts.json) {
-    // The ONLY write to fd 1 in this process. Blocking, because
-    // `process.stdout` is buffered and a `process.exit` on the next line would
-    // discard whatever is still in the buffer — the payload, in full.
-    fs.writeSync(1, `${JSON.stringify(report, null, 2)}\n`);
+    // The ONLY write to fd 1 in this process, and it goes through the package's
+    // one sanctioned writer. `process.stdout` is buffered and the `process.exit`
+    // below would discard whatever is still in it; a bare `fs.writeSync` fixes
+    // that and reintroduces three others — a SHORT write silently truncating the
+    // payload (which the workflow's `jq empty` step would then misdiagnose as
+    // stdout pollution), `EPIPE` from `… | head` becoming exit 1, and `EAGAIN`
+    // on a non-blocking fd losing the tail. `writeFdSync` is the loop that
+    // handles all three, and `eval-json-stdout.test.ts` greps this file for the
+    // spellings that bypass it.
+    writeFdSync(1, `${JSON.stringify(report, null, 2)}\n`);
   }
   return code;
 }

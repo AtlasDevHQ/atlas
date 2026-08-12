@@ -265,7 +265,39 @@ describe("what the lexical layer does with machine-produced paraphrase", () => {
       const { a, b } = pair(id);
       return !sameSlot(a, b, identityVocabulary);
     });
-    expect(gap).toEqual(["price-copula", "manager-phrasing", "schedule-phrasing"]);
+    expect(gap).toEqual(["price-copula", "schedule-phrasing"]);
+  });
+
+  test("⚠️ the gap MOVED on 2026-08-12, and this is the record of it", () => {
+    // ⭐ THE LANE'S FIRST REAL CATCH, and the whole loop in one paragraph.
+    //
+    // `manager-phrasing` was in the gap set above until the eval's first CI run.
+    // At 12:25 UTC the extractor emitted `has manager` for *"Ada's manager is
+    // Grace"* against `reports to` for *"Ada reports to Grace"* — two slots for
+    // one claim. By 13:40 UTC it emitted `reports to` for BOTH, on the same
+    // model id, at `temperature: 0`, from the same machine. Measured six times
+    // across the two windows, three each, with no local change in between: the
+    // provider's behaviour moved.
+    //
+    // So the eval failed on drift, the artifact was regenerated as a reviewed
+    // commit, and THIS assertion changed — which is the point of the loop. A
+    // hand-authored fixture would have gone on asserting a gap that had closed,
+    // and the suite would have kept reporting a defect the extractor had stopped
+    // producing.
+    //
+    // ⚠️ It also bounds what the sibling claim in this file's header is worth:
+    // "three independent runs, 10/10 byte-identical" was true when measured and
+    // the stability window turned out to be HOURS. Do not read the drift gate as
+    // cheap to keep green — read it as the thing that tells you when what Atlas
+    // believes has changed underneath it. #5129 asks the same question of the
+    // sibling eval; this is a data point for it.
+    //
+    // The pair now serves as a SECOND positive control: a genuine noun-vs-verb
+    // paraphrase the extractor normalizes on its own, beside
+    // `price-object-phrasing`'s identical-predicate case.
+    const { a, b } = pair("manager-phrasing");
+    expect(identityKey(a.predicate)).toBe(identityKey(b.predicate));
+    expect(sameSlot(a, b, identityVocabulary)).toBe(true);
   });
 
   test("positive control: a one-claim pair that DOES share a slot", () => {

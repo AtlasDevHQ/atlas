@@ -13,6 +13,21 @@ name: Brain Paraphrase Eval
 # (`bun packages/cli/bin/brain-paraphrase-eval.ts --write`), never to loosen the
 # comparison.
 #
+# ⚠️ AND IT WILL GO RED. THE FIRST CI RUN CAUGHT REAL DRIFT, WITHIN HOURS.
+#   Measured 2026-08-12: at 12:25 UTC the extractor emitted `has manager` for
+#   *"Ada's manager is Grace"*; by 13:40 UTC it emitted `reports to`, on the same
+#   model id, at `temperature: 0`, from the same machine — six runs across the
+#   two windows with no local change between them. The recording was regenerated
+#   and `paraphrase-identity.test.ts`'s gap-set assertion CHANGED with it, which
+#   is the loop working rather than failing: a hand-authored fixture would have
+#   gone on asserting a gap that had closed.
+#
+#   Budget for that. Three same-hour runs were byte-identical, so the gate is not
+#   noise — but the stability window is HOURS, not releases, and a maintainer who
+#   expects this job to stay green without attention will eventually loosen the
+#   comparison, which is the one repair this design forbids. #5129 asks the same
+#   question of the sibling eval; this job is a second data point for it.
+#
 # WHY IT IS ITS OWN WORKFLOW, and this is `eval-llm.yml`'s argument reused
 #   `on.pull_request.paths` is WORKFLOW-scoped in GitHub Actions — there is no
 #   per-job path filter. Adding this job to `eval-llm.yml` therefore ran it on

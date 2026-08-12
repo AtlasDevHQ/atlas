@@ -19,71 +19,82 @@
 #
 # ── Why there is a baseline at all ────────────────────────────────────────────
 #
-# Every entry below was present in an upstream base image on the day the gate
-# landed (#4822), and none was fixable by bumping a pin: the pinned digest for
-# oven/bun:1.3.13 IS the current digest for that tag, so upstream has simply not
-# rebuilt with the patched packages. "Fixable" in Trivy's sense means the distro
-# published a fixed package version — not that a fixed base image exists for us
-# to move to.
+# There currently is not one. This file is deliberately EMPTY of entries, and
+# that is the finished state rather than a gap — see below.
 #
-# Clearing them needs a change to shipped artifacts: an apt/apk upgrade in the
-# runner stages, a rebase onto a refreshed base, or waiting for upstream to
-# rebuild. That is deliberate product surface, and it was out of scope for the
-# PR that added the gate, which landed during the 2026-07-27 ship freeze.
+# It held 11 entries from 2026-07-27 (#4822) to 2026-08-12. Each was present in
+# an upstream base image on the day the gate landed and none was fixable by
+# bumping a pin: the pinned digest for oven/bun:1.3.13 IS the current digest for
+# that tag, so upstream had simply not rebuilt with the patched packages.
+# "Fixable" in Trivy's sense means the distro published a fixed package version
+# — not that a fixed base image exists to move to.
+#
+# That original note named the fix and then declined it: "clearing them needs an
+# apt/apk upgrade in the runner stages ... out of scope for the PR that added
+# the gate." The upgrade is now in the runner stages, and it cleared all 11.
 #
 # ── Scope note ────────────────────────────────────────────────────────────────
 #
-# Only OS packages appear here, because only OS packages are gated. Library
+# Only OS packages belong here, because only OS packages are gated. Library
 # findings inside the images (npm, Go modules) are reported to code scanning but
-# never block — they are Dependabot's remit, and it can open the fix PR. See the
-# SCOPE section in scripts/scan-image.sh.
+# never block.
 #
-# ── How to clear it ───────────────────────────────────────────────────────────
+# ⚠️ This paragraph used to end "— they are Dependabot's remit, and it can open
+# the fix PR." That is false and was already corrected in scripts/scan-image.sh
+# by #4878; the correction just never reached this file. Atlas uses bun, and
+# `bun` is a separate Dependabot ecosystem from `npm` with NO security updates,
+# so no configuration produces a fix PR here. Remediation for library findings
+# is hand-authored root `overrides` plus parent bumps. Read the SCOPE section in
+# scripts/scan-image.sh for the real detection -> visibility -> remediation
+# handoff, and do not restate it here — one copy, one place to keep true.
 #
-# Re-scan after any base-image change and delete every line that no longer
-# appears. The expiry dates are the forcing function: once passed, Trivy stops
-# honouring the entry and the gate goes red until it is fixed or consciously
-# re-dated. Do not bulk-extend the dates — re-scan first.
+# ── How to re-measure ─────────────────────────────────────────────────────────
+#
+# After ANY change to a base-image pin or a runner-stage package install,
+# re-scan and delete every entry that no longer appears. Scan the BUILT images,
+# not just the bases: the runner stages now upgrade packages, so a base-image
+# scan overstates what actually ships.
 #
 #   bash scripts/list-runtime-base-images.sh | while read -r i; do \
 #     trivy image --scanners vuln --pkg-types os --severity HIGH,CRITICAL \
 #       --ignore-unfixed --ignorefile /dev/null "$i"; done
 #
 # Entries are global rather than per-image on purpose: the two runtime bases
-# share 7 of these, so per-image files would duplicate them and drift apart.
+# shared 7 of the original 11, so per-image files would duplicate and drift.
 #
-# Baseline captured 2026-07-27. Expiry 2026-09-01 — after the v0.2.0 release on
-# 2026-08-03, with slack to schedule the base-image work.
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Shared by BOTH runtime bases (oven/bun:1.3.13 and caddy:2.10-alpine).
-# openssl plus libcap — the same upstream advisories reaching Debian and Alpine.
-# These ship in every Atlas image, including the create-atlas docker templates.
-# ─────────────────────────────────────────────────────────────────────────────
-# HIGH     libcrypto3 (debian: libssl3t64)
-CVE-2026-28387 exp:2026-09-01
-# HIGH     libcrypto3 (debian: libssl3t64)
-CVE-2026-28388 exp:2026-09-01
-# HIGH     libcrypto3 (debian: libssl3t64)
-CVE-2026-28389 exp:2026-09-01
-# HIGH     libcrypto3 (debian: libssl3t64)
-CVE-2026-28390 exp:2026-09-01
-# CRITICAL libcrypto3 (debian: libssl3t64)
-CVE-2026-31789 exp:2026-09-01
-# HIGH     libcrypto3 (debian: libssl3t64)
-CVE-2026-45447 exp:2026-09-01
-# HIGH     libcap (debian: libcap2)
-CVE-2026-4878 exp:2026-09-01
-
-# ─────────────────────────────────────────────────────────────────────────────
-# caddy:2.10-alpine only — runtime base for deploy/docs. Alpine/musl packages
-# with no Debian equivalent, so they do not affect the bun-based images.
-# ─────────────────────────────────────────────────────────────────────────────
-# HIGH     zlib
-CVE-2026-22184 exp:2026-09-01
-# HIGH     nghttp2-libs
-CVE-2026-27135 exp:2026-09-01
-# HIGH     c-ares
-CVE-2026-33630 exp:2026-09-01
-# HIGH     musl
-CVE-2026-40200 exp:2026-09-01
+# ── The 11 entries that used to live here, and what replaced them ────────────
+#
+# Emptied 2026-08-12. All measurements below are from Trivy 0.72.0 — the pinned
+# version — run against the actual images, not inferred from advisory text.
+#
+#   deploy/docs    caddy:2.10-alpine -> 2.11.4-alpine, digest-pinned, plus an
+#                  `apk upgrade`. 128 unique CVEs -> 10; 6 CRITICAL -> 0;
+#                  65 HIGH -> 6; gate-blocking 11 -> 0.
+#
+#   deploy/api     oven/bun:1.3.13 UNCHANGED (engines.bun holds it there — the
+#   deploy/web     #2811 --isolate TLA regression), plus an `apt-get upgrade`.
+#                  107 unique CVEs -> 75; 6 CRITICAL -> 4; 29 HIGH -> 18;
+#                  gate-blocking 7 -> 0.
+#
+# ⚠️ The `apk upgrade` / `apt-get upgrade` is the load-bearing half, NOT the
+# base-image bump. Two things this measured that reading advisories would not:
+#
+#   - `apk add --no-cache curl` is a SILENT NO-OP when the base already has
+#     curl at a lower version. caddy:2.11.4-alpine ships curl 8.19.0-r0 and the
+#     fix for CVE-2026-5773 / CVE-2026-6276 is 8.20.0-r0, which sits in the
+#     v3.23/main repo the image is already pointed at. Without the explicit
+#     upgrade the bump ADDS two gate-blocking CVEs instead of clearing them.
+#
+#   - Bumping oven/bun to 1.3.14 produces the IDENTICAL 75/4/0 as staying on
+#     1.3.13 with the upgrade. The fixes are in the security repo, not the base
+#     image, so there was never a security argument for moving that pin — which
+#     matters, because moving it would have broken the isolated test runner.
+#
+# ── If a NEW entry is ever needed ─────────────────────────────────────────────
+#
+# Prefer fixing the image. A baseline entry is correct only when the distro has
+# published no fixed package (Trivy already filters those with --ignore-unfixed,
+# so this is rarer than it looks) or when the fix is unreachable from the pinned
+# repo snapshot. Always give it an `exp:` date — the expiry is the forcing
+# function; once passed, Trivy stops honouring it and the gate goes red until it
+# is fixed or consciously re-dated. Do not bulk-extend dates — re-scan first.

@@ -17,9 +17,23 @@ name: Image Scan
 # .trivyignore. Read those two files for the reasoning. In short:
 #
 #   blocks    fixable HIGH/CRITICAL in OS packages, minus the dated
-#             .trivyignore baseline
-#   reports   everything else, unfiltered — every severity, unfixed CVEs, and
-#             language dependencies — via SARIF to GitHub code scanning
+#             .trivyignore baseline (which is currently EMPTY — see that file)
+#   reports   every FIXABLE finding at every severity and package type, from the
+#             BUILT images only, via SARIF to GitHub code scanning
+#   logs      everything else, unfixed included, as a census in the job log
+#
+# ⚠️ Two reporting narrowings landed 2026-08-12, both measured. Together they
+# took code scanning from ~1,059 open alerts to a readable set, and neither
+# removed a unique finding:
+#
+#   base-image legs no longer upload SARIF. Of their 113 unique CVEs, ZERO were
+#   absent from the built-image scans — the base set IS the set of bases those
+#   images are built from. They still GATE, and they still provide the
+#   discovery property that an enumerated list of built images cannot.
+#
+#   unfixed CVEs no longer become alerts. 116 of 272 unique CVEs had no
+#   published fix, so no version to move to and no decision to record. They are
+#   printed in full to the job log instead. See scripts/scan-image.sh.
 #
 # Two things deliberately do not block:
 #
@@ -257,13 +271,42 @@ jobs:
   # One matrix leg per image. Splitting them is not just parallelism: code
   # scanning refuses multiple SARIF runs under one category, so each image needs
   # its own upload with its own category anyway.
+  # ⚠️ This tier GATES but deliberately does NOT report to code scanning
+  # (changed 2026-08-12). It is the one job here whose SARIF is not uploaded.
+  #
+  # Why it still exists: discovery. scripts/list-runtime-base-images.sh resolves
+  # the runtime stage of EVERY Dockerfile in the tree, so a new Dockerfile with
+  # a base nobody remembered to scan enters this matrix automatically. The three
+  # built images below are an enumerated list and cannot do that. Deleting this
+  # job to silence its alerts would have traded a real coverage property for a
+  # number.
+  #
+  # Why the SARIF upload went away, measured rather than assumed:
+  #
+  #   1. It was pure duplication. Of the 113 unique CVEs these legs reported,
+  #      ZERO were absent from the built-image scans — the base set IS, by
+  #      construction, the set of runtime bases those images are built FROM.
+  #      The cost was ~396 of the ~1,059 open alerts, because code scanning
+  #      needs a distinct category per upload and therefore counts the same
+  #      base-layer CVE once per image.
+  #
+  #   2. Since 2026-08-12 it is also WRONG. deploy/api, deploy/web and
+  #      deploy/docs now run `apt-get upgrade` / `apk upgrade` in their runner
+  #      stages, so a scan of the bare base reports packages that do not ship —
+  #      it overstates the shipped surface. The built-image scan is the only one
+  #      that reads the artifact a customer actually receives.
+  #
+  # The gate is unaffected: this job still fails on a fixable HIGH/CRITICAL OS
+  # package in a base, which is what catches a bad pin on the PR that makes it.
   base-images:
     name: Base image (${{ matrix.image.label }})
     needs: [changes, gate-self-test]
     runs-on: ubuntu-latest
+    # No `security-events: write` — nothing here uploads any more. Kept minimal
+    # on purpose: if a future edit re-adds an upload step it will fail loudly on
+    # the missing permission rather than quietly re-inflating the alert count.
     permissions:
       contents: read
-      security-events: write
     strategy:
       fail-fast: false
       matrix:
@@ -280,17 +323,6 @@ jobs:
           IMAGE: ${{ matrix.image.ref }}
           CATEGORY: base-${{ matrix.image.label }}
         run: bash scripts/scan-image.sh "$IMAGE" "$CATEGORY" trivy-results
-
-      - name: Upload SARIF to code scanning
-        # `always()` so findings are still triageable when the gate failed —
-        # that is exactly when someone needs to look at them. Fork PRs cannot
-        # write security events, so skip rather than fail the job on a
-        # permissions error that says nothing about the code.
-        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-        uses: github/codeql-action/upload-sarif@4187e74d05793876e9989daffde9c3e66b4acd07 # v3
-        with:
-          sarif_file: trivy-results/base-${{ matrix.image.label }}.sarif
-          category: base-${{ matrix.image.label }}
 
   # Tier 2 — the images Atlas builds and deploys, scanned as finished artifacts.
   built-images:

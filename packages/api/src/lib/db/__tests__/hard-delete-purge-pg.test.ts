@@ -490,12 +490,26 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     // standard this file's docstring demands of its own falsifiers.
     const setupPool = new Pool({ connectionString: TEST_DB_URL, max: 1 });
     await setupPool.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
+    // ⚠️ pgcrypto must live in `public`, and this line is load-bearing for a
+    // test OTHER than this one. Migration 0151 runs `CREATE EXTENSION IF NOT
+    // EXISTS pgcrypto`, and an extension lands in the FIRST schema of the
+    // creating session's search_path — so running the full migration set inside
+    // a scratch schema puts `digest()` there, where no other suite can reach it.
+    // Extensions are database-scoped, so the next suite's `IF NOT EXISTS` then
+    // no-ops and its 0151 fails with `function digest(text, unknown) does not
+    // exist`. Measured: this broke `migrate-pg-with-auth` in CI, a file this PR
+    // never touched. Creating it in `public` first (this pool has the default
+    // search_path) makes 0151 a no-op here and leaves `digest()` visible to
+    // every suite, in either running order.
+    await setupPool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public`);
     await setupPool.end();
 
     pool = new Pool({
       connectionString: TEST_DB_URL,
       max: 4,
-      options: `-c search_path="${schemaName}"`,
+      // `,public` so extension functions resolve; the scratch schema comes first
+      // so every migrated table is still created and read there.
+      options: `-c search_path="${schemaName}",public`,
     });
     await pool.query(BETTER_AUTH_BOOTSTRAP_SQL);
     // Full migration set, nothing skipped — the Better Auth tables above exist,

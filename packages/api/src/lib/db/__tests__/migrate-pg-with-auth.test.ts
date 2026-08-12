@@ -106,6 +106,16 @@ describeIfPg("migrate-pg-with-auth (real Postgres, Better Auth tables present)",
     const bootstrap = new Pool({ connectionString: TEST_DB_URL });
     try {
       await bootstrap.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
+      // Pin pgcrypto to `public` before the migrations run (#5160). 0151 does
+      // `CREATE EXTENSION IF NOT EXISTS pgcrypto`, and an extension lands in the
+      // FIRST schema of the creating session's search_path — which for the pool
+      // below is this suite's scratch schema. Extensions are database-scoped, so
+      // whichever full-migration suite runs FIRST captures `digest()` into its
+      // own schema and every later one fails 0151 with `function digest(text,
+      // unknown) does not exist`. This bootstrap connection has the default
+      // search_path, so creating it here puts it where the `,public` entry below
+      // can always find it, regardless of suite order.
+      await bootstrap.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public`);
     } finally {
       await bootstrap.end();
     }

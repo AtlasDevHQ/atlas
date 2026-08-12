@@ -175,7 +175,6 @@ POST /api/v1/platform/workspaces/:id/purge
     "brainFacts": 412,
     "brainEpisodes": 967,
     "knowledgeDocuments": 58,
-    "adminActionLogAnonymized": 31,
     "members": 12,
     "organization": 1
   },
@@ -186,10 +185,10 @@ POST /api/v1/platform/workspaces/:id/purge
 }
 ```
 
-The `purged` object carries a row count per table, useful for audit purposes. The example above is abbreviated — the real response includes a key for every table the purge touched (around 95 entries).
+The `purged` object carries a row count per table, useful for audit purposes. The example above is abbreviated — the real response includes a key for every table the purge deleted from (around 95 entries).
 
-<Callout type="warn">
-**`totalRows` is the count of rows DELETED, and it deliberately excludes `adminActionLogAnonymized`.** That one key inside `purged` counts rows that *survived* with their identifying columns scrubbed, so summing every value in `purged` over-reports destruction by exactly that number — in the example above, `5985` is the deleted total and naively summing gives `6016`. It is repeated as a top-level field so the distinction is visible without reading the whole map. Use `totalRows`; do not re-derive it.
+<Callout type="info">
+**`purged` contains deletion counts only, so `totalRows` is exactly their sum.** Two related numbers deliberately sit *outside* that map rather than inside it, because neither is a count of destroyed rows: `adminActionLogAnonymized` counts rows that **survived** with their identifying columns scrubbed, and `skippedTables` is not a count at all. Keeping them out is what makes the obvious `Object.values(purged).reduce(…)` agree with `totalRows` instead of over-reporting destruction on an erasure record.
 </Callout>
 
 **Always check `complete`.** When it is `false`, `skippedTables` names relations that were absent from this region's schema, whose data was **not** deleted — the purge ran, reported `0` for those tables, and is not finished. Run the region's migrations and purge again before recording the erasure as complete.

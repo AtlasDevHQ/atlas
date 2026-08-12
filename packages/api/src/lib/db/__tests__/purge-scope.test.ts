@@ -95,9 +95,19 @@ const rawPurgeFnBody = (() => {
  * bearing (they explain the RESTRICT ordering and the probe), so the guard has
  * to read code rather than prose.
  */
+// The line-comment strip is UNANCHORED. Anchoring it to line start (the first
+// version of this fix) leaves TRAILING comments intact, so
+// `const brainFacts = 0; // DELETE FROM brain_facts WHERE workspace_id = $1`
+// still satisfied every check — measured, tripwire passed 18/18 with the real
+// statement gone. That is the same defect one comment form over.
+//
+// Over-stripping is the safe direction: if this ever ate a real statement, the
+// exact-count assertion and the ordering checks fail loudly rather than passing
+// vacuously. Verified there is no `//` inside the function's SQL template
+// literals (no URLs, no `//` in any string), so the unanchored form is safe here.
 const purgeFnBody = rawPurgeFnBody
   .replace(/\/\*[\s\S]*?\*\//g, "")
-  .replace(/^[ \t]*\/\/.*$/gm, "");
+  .replace(/\/\/.*$/gm, "");
 
 const deleteMatches = [...purgeFnBody.matchAll(/DELETE\s+FROM\s+"?([a-z_][a-z0-9_]*)"?/gi)].map(
   (m) => m[1],
@@ -165,6 +175,44 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
     for (const known of ["conversations", "brain_facts", "knowledge_documents", "organization"]) {
       expect([...deleteTargets]).toContain(known);
     }
+  });
+
+  it("scopes every DELETE by the workspace ALONE — no status/state narrowing", () => {
+    // A purge DELETE may filter by the workspace (or a parent subquery). It may
+    // NOT narrow further on a status, kind or state column, because such a
+    // predicate silently leaves the rows in every other state behind while the
+    // count still reads non-zero and the response still says "irreversibly
+    // deleted".
+    //
+    // This forbids the SHAPE rather than detecting one instance, which is the
+    // stronger guard and the reason it is here rather than in the -pg suite:
+    // measured, `DELETE FROM knowledge_documents WHERE workspace_id = $1 AND
+    // status = 'published'` — which under the draft-first model (ADR-0029/0034)
+    // abandons most of a workspace's knowledge base — passed all three suites,
+    // because the fixture seeds exactly one row per table and COLUMN_OVERRIDES
+    // pins its status to a single value. Making the fixture disprove that needs
+    // a second row per table with a distinct key, which the seeder's key
+    // synthesis cannot currently produce; forbidding the predicate costs one
+    // regex and covers every table at once.
+    //
+    // `chat_cache` is the deliberate exception: its scope IS an expression
+    // (`key LIKE 'slack:installation:%' AND value->>'orgId' = $1`), and the LIKE
+    // is what identifies the workspace's rows rather than narrowing them.
+    const NARROWING = /\b(status|state|kind|type|level|verdict|tier|mode)\s*(=|<>|!=|IN)\s*'/i;
+    const offenders: string[] = [];
+    for (const stmt of purgeFnBody.split("DELETE FROM ").slice(1)) {
+      const clause = stmt.slice(0, stmt.indexOf("`") === -1 ? stmt.length : stmt.indexOf("`"));
+      const table = clause.match(/^"?([a-z_][a-z0-9_]*)"?/i)?.[1] ?? "?";
+      if (table === "chat_cache") continue;
+      const m = clause.match(NARROWING);
+      if (m) offenders.push(`${table} (narrowed on \`${m[0]}…\`)`);
+    }
+    expect(
+      offenders,
+      `DELETE(s) narrowed by a state column: ${offenders.join(", ")}. A purge must remove ` +
+        `ALL of a workspace's rows in a table, not the ones in one state — the rest survive ` +
+        `silently under a non-zero count and an "irreversibly deleted" response.`,
+    ).toEqual([]);
   });
 
   it("issues EXACTLY ONE DELETE per table (a duplicate hides a stray statement)", () => {
@@ -305,14 +353,64 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
     // nulling only the actor columns, so a row it touched would be skipped here
     // and keep `metadata`/`target_id` through a completed purge. Every column
     // set above must also appear in the predicate.
+    // ⚠️ Sliced to the WHERE clause, and that slice is the whole assertion.
+    // Measured: checking against the FULL statement, `target_id = '[purged]'`
+    // was satisfied by the SET clause that writes exactly that string — so
+    // deleting `AND target_id = '[purged]'` from the predicate passed all three
+    // suites. The other four columns were safe only by spelling accident (`= NULL`
+    // in the SET vs `IS NULL` in the WHERE); `target_id` is the one column where
+    // the two forms collide. Slicing fixes all five uniformly instead of
+    // special-casing the one that bit.
+    const whereIdx = scrub.indexOf("WHERE");
+    expect(whereIdx, "the scrub has no WHERE clause").toBeGreaterThan(-1);
+    const scrubWhere = scrub.slice(whereIdx);
     for (const col of ["actor_id", "actor_email", "ip_address", "metadata", "target_id"]) {
       expect(
-        scrub.includes(`${col} IS NULL`) || scrub.includes(`${col} = '[purged]'`),
-        `the scrub's skip predicate does not check ${col} — a row already scrubbed by a ` +
-          `NARROWER erasure would be skipped while still holding ${col}`,
+        scrubWhere.includes(`${col} IS NULL`) || scrubWhere.includes(`${col} = '[purged]'`),
+        `the scrub's skip PREDICATE does not check ${col} — a row already scrubbed by a ` +
+          `NARROWER erasure (F-36 nulls only the actor columns) would be skipped while ` +
+          `still holding ${col}`,
       ).toBe(true);
     }
-    expect(scrub.includes("anonymized_at IS NOT NULL")).toBe(true);
+    expect(scrubWhere.includes("anonymized_at IS NOT NULL")).toBe(true);
+    // The scrub must stay org-scoped. `admin_action_log.org_id` is NULLABLE —
+    // platform-scope operator actions carry NULL — so a predicate broadened to
+    // `OR org_id IS NULL` would let every workspace purge quietly strip the
+    // identity columns off the entire platform-wide operator trail.
+    expect(
+      scrubWhere.includes("org_id IS NULL"),
+      "the scrub must NOT match NULL-org rows — those are platform-scope operator actions, " +
+        "not this workspace's data",
+    ).toBe(false);
+  });
+
+  it("has exactly one 'anonymized' table, so the survivor-exclusion list stays complete", () => {
+    // `SURVIVOR_COUNT_FIELDS` in internal.ts is an opt-OUT list: `satisfies`
+    // makes a rename a compile error, but an OMISSION is nothing at all. If a
+    // second table becomes `anonymized` and its count is not added to that list,
+    // `totalRowsDeleted` silently sums surviving rows into "rows irreversibly
+    // destroyed" — reopening #5160's overstatement one table over, on the number
+    // an operator puts in a DPA erasure record.
+    //
+    // Pinning the count to one is the cheap guard: growing the category fails
+    // here and the message says what else has to change.
+    const anonymized = Object.entries(PURGE_TABLE_DECISIONS)
+      .filter(([, v]) => v.decision === "anonymized")
+      .map(([k]) => k);
+    expect(
+      anonymized,
+      `The 'anonymized' category grew. Each anonymized table needs (a) a survivor count on ` +
+        `HardDeleteResult, (b) an entry in SURVIVOR_COUNT_FIELDS so totalRowsDeleted excludes ` +
+        `it, and (c) its own scrub assertions here. Update this list LAST, once those exist.`,
+    ).toEqual(["admin_action_log"]);
+
+    // And the exclusion list in the implementation must name exactly that table's
+    // count field — read from source, the same way the DELETE checks are.
+    const survivorBlock = internalSource.slice(
+      internalSource.indexOf("const SURVIVOR_COUNT_FIELDS"),
+      internalSource.indexOf(");", internalSource.indexOf("const SURVIVOR_COUNT_FIELDS")),
+    );
+    expect(survivorBlock).toContain("adminActionLogAnonymized");
   });
 
   it("pins admin_action_log's full column list, so a new column forces a scrub decision", () => {
@@ -326,31 +424,49 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
     //
     // The failure message is the whole value — it asks the question rather than
     // just reporting a mismatch.
+    // TWO buckets, not one flat list. A flat list is satisfied by appending the
+    // new column's name — the cheapest path to green is exactly the one that
+    // skips the decision. Splitting it means a new column has to be classified,
+    // and the SCRUBBED bucket is then checked against the real SET list by the
+    // per-column loop above, so putting it in the wrong bucket also fails.
+    const SCRUBBED = [
+      "actor_id",
+      "actor_email",
+      "ip_address",
+      "metadata",
+      "target_id",
+      "anonymized_at",
+    ];
+    const SURVIVES_PURGE = [
+      "action_type",
+      "id",
+      "org_id",
+      "request_id",
+      "scope",
+      "status",
+      "target_type",
+      "timestamp",
+    ];
     const cols = columnsOf("admin_action_log").toSorted();
     expect(
       cols,
-      `admin_action_log's columns changed. For each ADDED column, decide: can it carry a ` +
-        `person's identity or free-form content? If yes, add it to the scrub in ` +
-        `hardDeleteWorkspace's Phase 4b AND to the assertions above. If no, add it here. ` +
-        `Do not just update this list — the scrub is what the purge response promises.`,
-    ).toEqual(
-      [
-        "action_type",
-        "actor_email",
-        "actor_id",
-        "anonymized_at",
-        "id",
-        "ip_address",
-        "metadata",
-        "org_id",
-        "request_id",
-        "scope",
-        "status",
-        "target_id",
-        "target_type",
-        "timestamp",
-      ].toSorted(),
-    );
+      `admin_action_log's columns changed. Put each ADDED column in exactly one bucket ` +
+        `in this test: SCRUBBED (it can carry a person's identity or free-form content) or ` +
+        `SURVIVES_PURGE (it cannot). If SCRUBBED, wire it into BOTH scrubs — ` +
+        `hardDeleteWorkspace's Phase 4b (SET list AND skip predicate) in lib/db/internal.ts, ` +
+        `and the per-user right-to-erasure scrub in ee/src/audit/retention.ts. There are TWO, ` +
+        `and #5160 found them already divergent: the per-user path (the stronger Article 17 ` +
+        `obligation) was clearing strictly less than the bulk purge. Appending to the wrong ` +
+        `bucket fails the per-column assertions above, which is the point — the scrub is what ` +
+        `the purge response promises.`,
+    ).toEqual([...SCRUBBED, ...SURVIVES_PURGE].toSorted());
+
+    // Every column claimed as SCRUBBED must really be in the scrub's SET list.
+    const scrubStart = purgeFnBody.indexOf("UPDATE admin_action_log");
+    const setBlock = purgeFnBody.slice(scrubStart, purgeFnBody.indexOf("WHERE", scrubStart));
+    for (const col of SCRUBBED) {
+      expect(setBlock.includes(`${col} =`), `${col} is bucketed SCRUBBED but the SET list omits it`).toBe(true);
+    }
   });
 
   it("no 'retained' table is deleted, and each names a concrete harm", () => {
@@ -489,7 +605,7 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
     // `value->>'orgId'` expression), so `slackInstallations` is the honest
     // label for what the count measures. Aliased explicitly so the guard stays
     // exact everywhere else instead of being loosened to accommodate it.
-    const REPORTED_UNDER: Readonly<Record<string, string>> = {
+    const REPORTED_UNDER: Readonly<Record<string, string | undefined>> = {
       chat_cache: "slackInstallations",
     };
     const unreported = [...PURGED_TABLES].filter((t) => {

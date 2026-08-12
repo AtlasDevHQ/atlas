@@ -22,7 +22,7 @@ import { createPlatformRouter } from "./admin-router";
 import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
-import { runEffect } from "@atlas/api/lib/effect/hono";
+import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import {
   RequestContext,
 } from "@atlas/api/lib/effect/services";
@@ -37,6 +37,7 @@ import {
   cascadeWorkspaceDelete,
   hardDeleteWorkspace,
   totalRowsDeleted,
+  PurgeAbortedError,
   type WorkspaceRow,
   type PlanTier,
   type WorkspaceStatus,
@@ -830,13 +831,28 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
     // The arithmetic lives in `totalRowsDeleted` rather than here: this used to
     // be a local `Object.values(purged).reduce(...)`, and so did the CLI's
     // teardown command, and fixing one by hand left the other over-reporting.
-    const { adminActionLogAnonymized, skippedTables } = purged;
+    // `counts` excludes `skippedTables`, and that exclusion is the fix for a
+    // defect this PR's own earlier commit created: `purged` is published as
+    // `Record<string, number>`, so spreading the whole result put a string ARRAY
+    // inside a map of counts. A client doing the obvious
+    // `Object.values(body.purged).reduce(...)` would then string-concatenate it —
+    // bit for bit the bug removed from the CLI two commits ago, re-exported to
+    // every consumer of the admin API. The cast below is only true because of
+    // this line.
+    const { adminActionLogAnonymized, skippedTables, ...counts } = purged;
     const totalRows = totalRowsDeleted(purged);
 
     // A skipped table means the purge is INCOMPLETE for that relation, and the
     // response is what an operator attaches to a DPA erasure record — so it
     // qualifies the claim rather than letting a `0` count read as "clean".
-    const incomplete = skippedTables.length > 0;
+    //
+    // Stripe warnings count too. `purgeStripeBillingForWorkspace` never throws:
+    // a failed customer delete becomes a warning plus a durable retry, so the
+    // response could otherwise answer `complete: true` beside a warning saying a
+    // billable customer record — which holds the customer's name and email —
+    // still exists. One boolean on an erasure receipt has to mean "this erasure
+    // is finished", not "the table loop finished".
+    const incomplete = skippedTables.length > 0 || billing.warnings.length > 0;
 
     log.info(
       { workspaceId, totalRows, adminActionLogAnonymized, skippedTables, stripe: billing, requestId },
@@ -871,15 +887,34 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
       "Workspace permanently purged. All workspace data has been irreversibly deleted; " +
       "the admin action log is retained with its identifiers scrubbed, and pending Stripe " +
       "teardown records are kept until they settle. See `purged` for per-table counts.";
+    // ⚠️ The remedy deliberately does NOT say "purge again". The transaction
+    // COMMITTED — `DELETE FROM organization` ran — so a retry hits the 404 above
+    // and there is no path back through this endpoint. Telling an operator to
+    // re-purge would be an instruction that cannot be followed, which on a
+    // compliance remedy is worse than saying nothing. The residue sweep in
+    // platform-admin.mdx is the procedure that actually works.
+    const reasons: string[] = [];
+    if (skippedTables.length > 0) {
+      reasons.push(
+        `${skippedTables.length} relation(s) were absent from this region's schema and their ` +
+          `data was NOT deleted (${skippedTables.join(", ")})`,
+      );
+    }
+    if (billing.warnings.length > 0) {
+      reasons.push(`Stripe teardown did not fully settle (see \`warnings\`)`);
+    }
     const incompleteMessage =
-      `Workspace purged, but INCOMPLETE: ${skippedTables.length} relation(s) were absent from ` +
-      `this region's schema and their data was NOT deleted (${skippedTables.join(", ")}). ` +
-      `Run this region's migrations and purge again before treating this erasure as complete.`;
+      `Workspace purged, but INCOMPLETE: ${reasons.join("; ")}. The organization record is ` +
+      `already gone, so this endpoint cannot be re-run — migrate this region, then clear the ` +
+      `residue with the orphaned-workspace sweep in the platform-admin runbook before ` +
+      `recording this erasure as complete.`;
 
     return c.json({
       message: incomplete ? incompleteMessage : completeMessage,
       workspaceId,
-      purged: purged as unknown as Record<string, number>,
+      // `counts`, not `purged` — see the destructure above. Shipping the whole
+      // result put a string array inside a documented map of numbers.
+      purged: counts as unknown as Record<string, number>,
       totalRows,
       adminActionLogAnonymized,
       // Copied rather than passed through: `HardDeleteResult.skippedTables` is
@@ -889,7 +924,20 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
       complete: !incomplete,
       ...withWarnings(billing),
     }, 200);
-  }), { label: "purge workspace (GDPR)" });
+  }), {
+    label: "purge workspace (GDPR)",
+    // Without this the purge's operator-actionable aborts fall through to the
+    // generic 500 body and their messages are discarded (#5160). Both codes map
+    // to 409 — a conflict the operator resolves and retries, not a server fault
+    // — and 4xx is also what makes `classifyError` pass the message through
+    // rather than replacing it with an opaque reference.
+    domainErrors: [
+      domainError(PurgeAbortedError, {
+        region_schema_behind: 409,
+        not_soft_deleted: 409,
+      }),
+    ],
+  });
 });
 
 // ── Change plan ──────────────────────────────────────────────────────

@@ -1192,6 +1192,12 @@ describe("hardDeleteWorkspace()", () => {
         if (upper.startsWith("SELECT WORKSPACE_STATUS")) {
           return { rows: [{ workspace_status: "deleted" }] };
         }
+        // Both probed relations are present. This branch used to be absent, and
+        // the probe read the fall-through `{ rows: [] }` as "table absent" —
+        // silently skipping two DELETEs in a test about GDPR completeness. The
+        // probe now fails closed on an unshaped response (#5160), so the mock has
+        // to say what it means.
+        if (sql.includes("to_regclass")) return { rows: [{ table_exists: true }] };
         // Orphaned-user lookup — no orphans, keeps the user-delete path skipped.
         if (sql.includes("FROM member m")) return { rows: [] };
         // Distinct row counts let us assert the count wiring per table.
@@ -1229,12 +1235,11 @@ describe("hardDeleteWorkspace()", () => {
     // …and the counts are surfaced in HardDeleteResult.
     expect(result.integrationCredentials).toBe(2);
     expect(result.twentyIntegrations).toBe(3);
-    // #5160 — this test's mock answers `table_exists: false` to every probe as
-    // a don't-care, so BOTH probed relations read as absent. Asserting that
-    // rather than leaving it unstated: it is the same code path the region-drift
-    // test exercises deliberately, and a silent 0-rows-because-skipped is
-    // exactly what `skippedTables` exists to make visible.
-    expect(result.skippedTables).toEqual(["scim_group_mappings", "subscription"]);
+    // #5160 — both probed relations are present here, so nothing was skipped.
+    // This is the CONTROL for the region-drift test below: without a case that
+    // shows `skippedTables` empty, "non-empty ⇒ the purge is incomplete" is a
+    // claim about a field that could be populated unconditionally.
+    expect(result.skippedTables).toEqual([]);
   });
 
   it("purges Stripe billing linkage rows when the plugin's subscription table exists (#3425)", async () => {

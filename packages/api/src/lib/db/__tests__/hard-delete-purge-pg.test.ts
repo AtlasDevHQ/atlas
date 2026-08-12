@@ -73,6 +73,14 @@ const SURVIVOR_TABLES: readonly string[] = Object.entries(PURGE_TABLE_DECISIONS)
 const EXPRESSION_SCOPED: readonly string[] = ["chat_cache"];
 
 /**
+ * `$1` for a NULL-scope seed row. The scope column is set to a literal NULL, but
+ * `$1` still needs a value: it feeds the synthesized text columns, several of
+ * which are primary keys that would collide with the two workspace rows.
+ */
+const NULL_SCOPE_MARK = "null-scope";
+
+
+/**
  * Tables that must be seeded in THIS order, before everything else.
  *
  * The brain block's two RESTRICT foreign keys are the reason. Measured: with the
@@ -185,7 +193,7 @@ interface ParentLink {
   readonly parentScope: string;
 }
 
-const PARENT_LINK: Readonly<Record<string, ParentLink>> = {
+const PARENT_LINK: Readonly<Record<string, ParentLink | undefined>> = {
   messages: { column: "conversation_id", parent: "conversations", parentKey: "id", parentScope: "org_id" },
   slack_threads: { column: "conversation_id", parent: "conversations", parentKey: "id", parentScope: "org_id" },
   dashboard_cards: { column: "dashboard_id", parent: "dashboards", parentKey: "id", parentScope: "org_id" },
@@ -212,7 +220,7 @@ const PARENT_LINK: Readonly<Record<string, ParentLink>> = {
  * would not be purged AND would not be expected to be — the seed has to
  * reproduce the shape the expression targets, or the assertion is vacuous.
  */
-const COLUMN_OVERRIDES: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+const COLUMN_OVERRIDES: Readonly<Record<string, Readonly<Record<string, string>> | undefined>> = {
   chat_cache: {
     key: `'slack:installation:' || $1`,
     value: `jsonb_build_object('orgId', $1::text, 'token', 'enc:v1:fake')`,
@@ -333,6 +341,8 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
   /** table → the scope column its rows were seeded under. */
   const seeded = new Map<string, string>();
   const skipped: string[] = [];
+  /** Purged tables that also got an UNSCOPED (scope column NULL) row. */
+  const nullScopeSeeded: string[] = [];
   let result: HardDeleteResult;
 
   const columnsFor = async (table: string): Promise<ColumnMeta[]> => {
@@ -394,13 +404,21 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
   const seedRow = async (
     client: { query: (sql: string, params?: unknown[]) => Promise<unknown> },
     table: string,
-    workspaceId: string,
+    /**
+     * The workspace to attribute the row to, or `null` to seed an UNSCOPED row
+     * (scope column NULL) — a deployment-wide default that no workspace purge
+     * may touch. `$1` still carries a value in the NULL case so synthesized text
+     * stays unique against the two workspace rows; only the scope column differs.
+     */
+    workspaceId: string | null,
+    /** Extra column overrides layered on top, for the second-enum-value row. */
+    extra: Readonly<Record<string, string>> = {},
   ): Promise<string | null> => {
     const cols = await columnsFor(table);
     if (cols.length === 0) return null;
 
     const names = cols.map((c) => c.column_name);
-    const overrides = COLUMN_OVERRIDES[table] ?? {};
+    const overrides = { ...(COLUMN_OVERRIDES[table] ?? {}), ...extra };
     const scopeCol = (WORKSPACE_SCOPE_COLUMNS as readonly string[]).find((c) => names.includes(c));
     const link = PARENT_LINK[table];
 
@@ -419,7 +437,7 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     };
 
     // The attribution first — it is the whole point of the row.
-    if (scopeCol) push(scopeCol, `$1`);
+    if (scopeCol) push(scopeCol, workspaceId === null ? `NULL` : `$1`);
     if (link) {
       // Scope by the PARENT's column, not the child's: the child has no scope
       // column (that is why it is in PARENT_LINK at all), and `conversations`
@@ -441,9 +459,15 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
 
     if (!scopeCol && !link && !EXPRESSION_SCOPED.includes(table)) return null;
 
+    const sql = `INSERT INTO "${table}" (${insertCols.join(", ")}) VALUES (${insertVals.join(", ")})`;
+    // Pass `$1` only when the statement actually references it. In the NULL-scope
+    // form the scope column becomes a literal NULL, and for a table whose other
+    // columns are all uuid/timestamp/defaulted that removes the only `$1` — pg
+    // then rejects the bind with "supplies 1 parameters, but prepared statement
+    // requires 0".
     await client.query(
-      `INSERT INTO "${table}" (${insertCols.join(", ")}) VALUES (${insertVals.join(", ")})`,
-      [workspaceId],
+      sql,
+      sql.includes("$1") ? [workspaceId ?? `${NULL_SCOPE_MARK}-${table}`] : [],
     );
     return scopeCol ?? (link ? `via ${link.parent}` : "via expression");
   };
@@ -605,14 +629,10 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
       [USER_SHARED, ORG],
     );
 
-    // A pending password-reset email with NO org (a session-less flow). The
-    // purge scopes on `org_id = $1`, which excludes NULL — the registry states
-    // that exclusion is deliberate, and this row is what makes the statement
-    // falsifiable: broadening to `OR org_id IS NULL` destroys a live reset.
-    await pool.query(
-      `INSERT INTO email_outbox (email_type, payload, org_id, status)
-       VALUES ('password-reset', 'enc:v1:orphaned-flow', NULL, 'pending')`,
-    );
+    // NOTE: the NULL-org `email_outbox` row this used to insert by hand is now
+    // produced by the DERIVED unscoped-row pass in the seed loop below, along
+    // with one for every other nullable-scope table. Keeping both would put two
+    // unscoped rows in this one table and break the exact counts.
 
     // Two more admin_action_log rows, distinguishing the two states the scrub's
     // predicate has to tell apart. Seeded with DIFFERENT residue so one
@@ -631,6 +651,35 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
                'member-partially-scrubbed', 'success', 'req-old',
                jsonb_build_object('targetUserEmail', 'stale@purge.test'),
                now() - interval '1 day')`,
+      [ORG],
+    );
+    // (c) A PLATFORM-scope operator action, `org_id IS NULL`. `admin_action_log.org_id`
+    // is nullable, so these exist in production and are NOT this workspace's
+    // data. Measured: without this row, broadening the scrub to
+    // `(org_id = $1 OR org_id IS NULL)` passed every suite — meaning every
+    // workspace purge could silently strip the identity columns off the entire
+    // platform-wide operator trail, one purge at a time.
+    await pool.query(
+      `INSERT INTO admin_action_log
+         (timestamp, actor_id, actor_email, scope, org_id, action_type, target_type,
+          target_id, status, request_id, ip_address, metadata)
+       VALUES (now(), 'platform-actor', 'ops@purge.test', 'platform', NULL,
+               'platform.config', 'platform', 'platform-target', 'success', 'req-platform',
+               '198.51.100.4', jsonb_build_object('note', 'platform-scope'))`,
+    );
+    // (d) Scrubbed of EVERYTHING EXCEPT `target_id`, which still holds a member
+    // id. Its only purpose is to make the `target_id` disjunct of the skip
+    // predicate falsifiable at runtime: row (a) is caught by the actor columns
+    // and row (b) by `metadata`, so dropping `AND target_id = '[purged]'` from
+    // the predicate left both suites green — the tripwire's WHERE-slice check
+    // caught it, but nothing observed the surviving id.
+    await pool.query(
+      `INSERT INTO admin_action_log
+         (timestamp, actor_id, actor_email, scope, org_id, action_type, target_type,
+          target_id, status, request_id, metadata, ip_address, anonymized_at)
+       VALUES (now(), NULL, NULL, 'workspace', $1, 'workspace.suspend', 'user',
+               'member-id-only-residue', 'success', 'req-idonly', NULL, NULL,
+               now() - interval '3 days')`,
       [ORG],
     );
     // (b) FULLY scrubbed already — nothing left to clear. The purge must SKIP
@@ -716,6 +765,35 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
             [workspaceId],
           );
         }
+
+        // ── NULL-scope rows, DERIVED rather than hand-picked ──
+        //
+        // 23 purged tables have a NULLABLE scope column. A NULL scope means the
+        // row is not any workspace's data — a deployment-wide `settings` default,
+        // a session-less `email_outbox` reset. Every purge scopes with `= $1`,
+        // which excludes NULL, and that exclusion is load-bearing for all 23.
+        //
+        // It was asserted for exactly ONE (`email_outbox`, hand-written because
+        // its registry reason argued about it). Measured: broadening
+        // `DELETE FROM settings` to `OR org_id IS NULL` — which destroys the
+        // global settings tier — passed all three suites. Deriving the fixture
+        // from the schema is the same move that made the seed list trustworthy:
+        // it turns one table's property into the class property it always was.
+        for (const table of order) {
+          const cols = await columnsFor(table);
+          const scopeCol = cols.find((c) =>
+            (WORKSPACE_SCOPE_COLUMNS as readonly string[]).includes(c.column_name),
+          );
+          if (!scopeCol || scopeCol.is_nullable !== "YES") continue;
+          try {
+            await seedRow(seedClient, table, null);
+            nullScopeSeeded.push(table);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            seedErrors.push(`${table} (NULL scope): ${message}`);
+          }
+        }
+
         await seedClient.query(`SET session_replication_role = DEFAULT`);
       }
     } finally {
@@ -880,6 +958,39 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     expect(Number(members.rows[0].n)).toBe(1);
   });
 
+  it("leaves EVERY unscoped row alone, across all nullable-scope tables", async () => {
+    // The class, derived rather than hand-picked. A NULL scope column means the
+    // row belongs to no workspace — a deployment-wide `settings` default, a
+    // session-less password-reset email — and every purge's `= $1` predicate
+    // excludes NULL. That exclusion was asserted for ONE table; measured,
+    // broadening `DELETE FROM settings` to `OR org_id IS NULL` (which destroys
+    // the global settings tier) passed all three suites.
+    expect(
+      nullScopeSeeded.length,
+      "no nullable-scope table was seeded with an unscoped row — this test would be vacuous",
+    ).toBeGreaterThan(10);
+
+    const destroyed: string[] = [];
+    for (const table of nullScopeSeeded) {
+      const cols = (await columnsFor(table)).map((c) => c.column_name);
+      const scopeCol = (WORKSPACE_SCOPE_COLUMNS as readonly string[]).find((c) =>
+        cols.includes(c),
+      );
+      if (!scopeCol) continue;
+      const r = await pool.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM "${table}" WHERE "${scopeCol}" IS NULL`,
+      );
+      if (Number(r.rows[0].n) !== 1) {
+        destroyed.push(`${table} (${r.rows[0].n} unscoped row(s), expected 1)`);
+      }
+    }
+    expect(
+      destroyed,
+      `A workspace purge destroyed rows belonging to NO workspace in: ${destroyed.join(", ")}. ` +
+        `Those are deployment-wide defaults, not tenant data.`,
+    ).toEqual([]);
+  }, PG_TIMEOUT_MS);
+
   it("keeps a NULL-org pending email (a session-less flow is not workspace data)", async () => {
     // Makes the registry's stated reasoning falsifiable: broadening the purge to
     // `WHERE org_id = $1 OR org_id IS NULL` would destroy a live password-reset
@@ -890,21 +1001,23 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     expect(Number(r.rows[0].n), "a NULL-org outbox row must survive a workspace purge").toBe(1);
   });
 
-  it("re-scrubs a PARTIALLY scrubbed row but skips a fully scrubbed one", async () => {
-    // Three rows exist for ORG, and the count distinguishes them — 2, not 1 and
-    // not 3, so neither "skip everything stamped" nor "scrub everything" passes:
-    //   (1) fresh, full PII                  → scrubbed
-    //   (2) F-36-scrubbed, keeps metadata    → scrubbed (this is the hole an
+  it("re-scrubs every row with residue and skips only the fully scrubbed one", async () => {
+    // Four rows exist for ORG, and the count discriminates in both directions —
+    // 3, not 1 ("skip everything stamped") and not 4 ("scrub everything"):
+    //   (1) fresh, full PII                     → scrubbed
+    //   (2) F-36-scrubbed, keeps metadata       → scrubbed (the hole an
     //       `anonymized_at IS NULL` predicate left open once the scrub grew to
     //       cover metadata and target_id)
-    //   (3) already fully scrubbed           → SKIPPED, so the count stays honest
-    expect(result.adminActionLogAnonymized).toBe(2);
+    //   (3) target_id residue only              → scrubbed (the disjunct that
+    //       had no runtime witness until this row existed)
+    //   (4) already fully scrubbed              → SKIPPED, so the count is honest
+    expect(result.adminActionLogAnonymized).toBe(3);
 
     const total = await pool.query<{ n: string }>(
       `SELECT count(*)::text AS n FROM admin_action_log WHERE org_id = $1`,
       [ORG],
     );
-    expect(Number(total.rows[0].n), "all three rows must still be present").toBe(3);
+    expect(Number(total.rows[0].n), "all four rows must still be present").toBe(4);
 
     // The stale email from the partially-scrubbed row is the specific thing the
     // widened predicate exists to remove.
@@ -917,6 +1030,33 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
       Number(stale.rows[0].n),
       "an F-36-scrubbed row must not keep its metadata through a workspace purge",
     ).toBe(0);
+  });
+
+  it("leaves PLATFORM-scope operator rows (org_id IS NULL) completely untouched", async () => {
+    // The unscoped direction, which the neighbour control cannot see: a purge
+    // broadened to `OR org_id IS NULL` destroys the platform-wide operator trail
+    // — the one thing this table exists to preserve — and gets worse with every
+    // purge. Asserted on the actual identity columns, not just row presence.
+    const r = await pool.query<{
+      n: string;
+      with_actor: string;
+      with_ip: string;
+      with_meta: string;
+      scrubbed: string;
+    }>(
+      `SELECT count(*)::text AS n,
+              count(actor_id)::text AS with_actor,
+              count(ip_address)::text AS with_ip,
+              count(metadata)::text AS with_meta,
+              count(anonymized_at)::text AS scrubbed
+         FROM admin_action_log WHERE org_id IS NULL`,
+    );
+    const row = r.rows[0];
+    expect(Number(row.n), "the platform-scope row must still exist").toBe(1);
+    expect(Number(row.with_actor), "a workspace purge must not scrub a platform-scope actor").toBe(1);
+    expect(Number(row.with_ip), "a workspace purge must not scrub a platform-scope ip").toBe(1);
+    expect(Number(row.with_meta), "a workspace purge must not scrub platform-scope metadata").toBe(1);
+    expect(Number(row.scrubbed), "a platform-scope row must not be stamped anonymized").toBe(0);
   });
 
   it("reports no skipped tables when the region's schema is complete", () => {
@@ -945,6 +1085,7 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
       // identical whether the purge removed ORG's or the neighbour's. The
       // neighbour's parent survives the purge, so its id is the discriminator
       // that turns a count into an identity check.
+      if (!link) continue; // unreachable: `table` came from Object.keys(PARENT_LINK)
       const survivor = await pool.query<{ n: string }>(
         `SELECT count(*)::text AS n FROM "${table}"
           WHERE "${link.column}" IN (

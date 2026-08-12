@@ -3769,6 +3769,31 @@ export async function setWorkspaceTrialEndsAt(
 // GDPR hard-delete (purge) — removes ALL org-scoped data permanently
 // ---------------------------------------------------------------------------
 
+/** Why a GDPR purge refused to run or aborted. Each maps to a 4xx in the route. */
+export type PurgeAbortCode = "region_schema_behind" | "not_soft_deleted";
+
+/**
+ * A purge that aborted for a reason the OPERATOR can act on (#5160).
+ *
+ * Carries a `code`, so `runEffect`'s `domainErrors` mapping renders the message
+ * on the wire. A plain `Error` does not: it matches none of `classifyError`'s
+ * branches and falls through to the generic 500 body ("Failed to purge workspace
+ * (GDPR)."), which is where the carefully-worded region-drift message used to go
+ * to die — the branch built it, logged it, and the bridge discarded it.
+ *
+ * Only 4xx codes belong here. `classifyError` deliberately replaces the message
+ * of a 5xx domain error with an opaque reference, so a code mapped to 500 would
+ * reintroduce exactly the problem this class exists to solve.
+ */
+export class PurgeAbortedError extends Error {
+  readonly code: PurgeAbortCode;
+  constructor(code: PurgeAbortCode, message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "PurgeAbortedError";
+    this.code = code;
+  }
+}
+
 /**
  * Hard-delete result — counts of rows removed from each table.
  */
@@ -3904,6 +3929,17 @@ export interface HardDeleteResult {
 }
 
 /**
+ * Fields on `HardDeleteResult` that count rows which SURVIVED the purge, and so
+ * must never be summed into a "rows destroyed" total.
+ *
+ * `satisfies` ties each entry to a real field, so renaming the field is a compile
+ * error here rather than a silently-stale exclusion.
+ */
+const SURVIVOR_COUNT_FIELDS: ReadonlySet<string> = new Set(
+  ["adminActionLogAnonymized"] satisfies readonly (keyof HardDeleteResult)[],
+);
+
+/**
  * Total rows the purge DESTROYED.
  *
  * Lives here, next to the type, because two callers previously each did their own
@@ -3922,16 +3958,6 @@ export function totalRowsDeleted(result: HardDeleteResult): number {
   return total;
 }
 
-/**
- * Fields on `HardDeleteResult` that count rows which SURVIVED the purge, and so
- * must never be summed into a "rows destroyed" total.
- *
- * `satisfies` ties each entry to a real field, so renaming the field is a compile
- * error here rather than a silently-stale exclusion.
- */
-const SURVIVOR_COUNT_FIELDS: ReadonlySet<string> = new Set(
-  ["adminActionLogAnonymized"] satisfies readonly (keyof HardDeleteResult)[],
-);
 
 /**
  * GDPR-compliant hard delete — permanently removes ALL data for a workspace.
@@ -3973,7 +3999,15 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
           "ROLLBACK failed during hardDeleteWorkspace status check — client will be destroyed",
         );
       });
-      throw new Error("Workspace is not in deleted status — purge aborted");
+      // Tagged so the racing admin gets the same 409 the non-racing path gets
+      // from the route's pre-check. As a plain Error this produced a generic
+      // 500, so losing the race looked like a server fault rather than the
+      // conflict it is.
+      throw new PurgeAbortedError(
+        "not_soft_deleted",
+        "Workspace is not in deleted status — purge aborted. It was reactivated after the " +
+          "pre-check; soft-delete it again before purging. Nothing was deleted.",
+      );
     }
 
     // del() executes a DELETE with RETURNING 1 to count affected rows
@@ -4013,21 +4047,42 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
      * #3468 tombstone whose absence lets those ledger rows immediately regrow)
      * while the operator was told the purge was complete.
      */
-    const tableExists = async (table: string): Promise<boolean> => {
+    // `alsoSkipped` names the OTHER work that does not happen when this relation
+    // is absent. The probe guards a block, not a statement: a missing
+    // `subscription` skips the subscription DELETE, the stripe_webhook_events
+    // ledger DELETE, and the #3468 tombstone INSERT — three things, of which
+    // recording only the probed name would report one. What the operator needs
+    // is the list of work that did not run.
+    const tableExists = async (
+      table: string,
+      alsoSkipped: readonly string[] = [],
+    ): Promise<boolean> => {
       const probe = await client.query(
         `SELECT to_regclass($1) IS NOT NULL AS table_exists`,
         [table],
       );
-      const exists =
-        (probe.rows[0] as { table_exists?: boolean } | undefined)?.table_exists === true;
-      if (!exists) {
-        skippedTables.push(table);
-        log.warn(
-          { orgId, table },
-          "Relation absent during hardDeleteWorkspace — its DELETE was SKIPPED, so the purge is incomplete for this table (region-DB drift; run this region's migrations and re-purge)",
+      // Fail CLOSED on an unexpected shape. `?.table_exists === true` would
+      // coerce an empty result set, a renamed alias or a non-boolean into
+      // "absent", and then SKIP the delete while logging that the relation does
+      // not exist — a false statement about the database, on an erasure path.
+      // "I could not determine whether this table exists" must abort the
+      // transaction (nothing is deleted, nothing is claimed), not silently
+      // decide not to delete.
+      const row = probe.rows[0] as { table_exists?: unknown } | undefined;
+      if (probe.rows.length !== 1 || typeof row?.table_exists !== "boolean") {
+        throw new Error(
+          `Existence probe for '${table}' returned an unexpected shape during hardDeleteWorkspace — ` +
+            `refusing to guess whether the relation exists. Nothing was deleted.`,
         );
       }
-      return exists;
+      if (!row.table_exists) {
+        skippedTables.push(table, ...alsoSkipped);
+        log.warn(
+          { orgId, table, alsoSkipped },
+          "Relation absent during hardDeleteWorkspace — its DELETE was SKIPPED, so the purge is incomplete for this table (region-DB drift; migrate this region, then clear the residue with the orphaned-workspace sweep — the organization row is gone, so the purge endpoint cannot be re-run)",
+        );
+      }
+      return row.table_exists;
     };
 
     // ── Phase 1: Child tables with FK dependencies (delete children first) ──
@@ -4303,7 +4358,11 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     // billable linkage #3425 exists to remove, the webhook ledger rows, and the
     // #3468 tombstone — without which post-commit cancellation webhooks
     // immediately regrow the ledger rows a completed purge just cleared.
-    if (await tableExists("subscription")) {
+    // The two relations named here are not probed themselves — they are the work
+    // that silently does not happen when `subscription` is absent, and without
+    // them the operator is told one relation was skipped when three operations
+    // were.
+    if (await tableExists("subscription", ["stripe_webhook_events", "stripe_purged_subscriptions"])) {
       // Tombstone the purged subscription ids FIRST (#3468): the remote
       // teardown's cancellations generate `customer.subscription.deleted`
       // webhooks that arrive after this transaction commits, and the
@@ -4581,9 +4640,18 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
         { orgId, code, err: detail },
         "hardDeleteWorkspace aborted on a missing relation or column — this region's schema is behind",
       );
-      throw new Error(
+      // A PurgeAbortedError, not a plain Error: the route maps it to a 409 and
+      // the message reaches the operator. `cause` is preserved so the pg error
+      // (and its SQLSTATE) is still available to anything downstream.
+      //
+      // "Re-purge" IS the right remedy here, unlike the skipped-table path: this
+      // transaction ROLLED BACK, so the organization row still exists and the
+      // endpoint can be run again once the region is migrated.
+      throw new PurgeAbortedError(
+        "region_schema_behind",
         `Purge aborted: this region's schema is missing a relation or column the purge names (${detail}). ` +
-          `Nothing was deleted. Run this region's migrations, then re-purge.`,
+          `Nothing was deleted. Run this region's migrations, then purge again.`,
+        { cause: err },
       );
     }
     throw err;

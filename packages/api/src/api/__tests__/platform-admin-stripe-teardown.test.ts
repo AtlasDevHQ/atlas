@@ -287,12 +287,21 @@ describe("POST /api/v1/platform/workspaces/:id/purge — Stripe teardown", () =>
     };
 
     expect(res.status).toBe(200);
-    // 3 + 5 + 1 + 1 = 10 deleted. The 7 anonymized rows SURVIVED, so a naive
-    // sum of `purged` gives 17 — that difference is the whole assertion.
+    // 3 + 5 + 1 + 1 = 10 deleted. The 7 anonymized rows SURVIVED, so summing
+    // them in would give 17 — that difference is the whole assertion.
     expect(body.totalRows).toBe(10);
     expect(body.adminActionLogAnonymized).toBe(7);
     expect(body.complete).toBe(true);
     expect(body.skippedTables).toEqual([]);
+
+    // `purged` carries DELETION counts only. Both non-deletion fields are kept
+    // out of it, so the obvious client-side sum agrees with `totalRows` instead
+    // of over-reporting destruction — and so the published
+    // `Record<string, number>` contract is not shipping a string array.
+    expect(body.purged.adminActionLogAnonymized).toBeUndefined();
+    expect(body.purged.skippedTables).toBeUndefined();
+    expect(Object.values(body.purged).every((v) => typeof v === "number")).toBe(true);
+    expect(Object.values(body.purged).reduce((a, b) => a + b, 0)).toBe(body.totalRows);
   });
 
   it("names both retained exceptions in the success message", async () => {

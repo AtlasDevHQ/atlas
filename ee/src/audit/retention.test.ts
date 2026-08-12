@@ -581,11 +581,21 @@ describe("hardDeleteExpired — library self-audit (F-27)", () => {
 /**
  * F-36 — GDPR / CCPA "right to erasure" over `admin_action_log`.
  *
- * `anonymizeUserAdminActions(userId, initiatedBy)` scrubs `actor_id` and
- * `actor_email` to NULL and stamps `anonymized_at = now()` on every row
- * where `actor_id = userId`. The row survives (timestamp, action_type,
- * target, metadata, ip_address, request_id preserved) so the sequence of
- * actions is intact without the identifier.
+ * `anonymizeUserAdminActions(userId, initiatedBy)` scrubs `actor_id`,
+ * `actor_email`, `ip_address` and `metadata` to NULL and stamps
+ * `anonymized_at = now()` on every row where `actor_id = userId`. The row
+ * survives (timestamp, action_type, target, request_id preserved) so the
+ * sequence of actions is intact without the identifier.
+ *
+ * `ip_address` and `metadata` joined the SET list in #5160. They were omitted
+ * while this was the only scrub; the GDPR workspace purge then widened its own
+ * scrub to cover them, leaving the INDIVIDUAL's Article 17 path clearing
+ * strictly less than the bulk one — on a row where the erased user is the
+ * actor, `ip_address` is that user's own data.
+ *
+ * `target_id` is deliberately still preserved: on an actor's own row it
+ * identifies a THIRD PARTY, and erasing person A must not erase the record of
+ * what was done to person B.
  *
  * Design doc: .claude/research/design/admin-action-log-retention.md
  *
@@ -606,7 +616,7 @@ describe("anonymizeUserAdminActions (F-36)", () => {
     mockPool.query.mockClear();
   });
 
-  it("scrubs actor_id + actor_email and stamps anonymized_at on matching rows", async () => {
+  it("scrubs every identity column and stamps anonymized_at on matching rows", async () => {
     // pool.query for the UPDATE CTE — returns count of affected rows
     mockPool.query.mockImplementation(async () => ({ rows: [{ cnt: 3 }] }));
 
@@ -621,6 +631,13 @@ describe("anonymizeUserAdminActions (F-36)", () => {
     const sql = String(updateCall![0]);
     expect(sql).toMatch(/actor_id\s*=\s*NULL/i);
     expect(sql).toMatch(/actor_email\s*=\s*NULL/i);
+    // #5160 — the erased user's own IP, and the free-form metadata the
+    // workspace purge clears wholesale. Omitting these made the per-user
+    // erasure weaker than the bulk one.
+    expect(sql).toMatch(/ip_address\s*=\s*NULL/i);
+    expect(sql).toMatch(/metadata\s*=\s*NULL/i);
+    // …but NOT target_id: that identifies a third party on this actor's row.
+    expect(sql).not.toMatch(/target_id\s*=/i);
     expect(sql).toMatch(/anonymized_at\s*=\s*now\(\)/i);
     expect(sql).toMatch(/WHERE\s+actor_id\s*=\s*\$1/i);
     // Must not re-anonymize already-scrubbed rows (idempotency + keeps

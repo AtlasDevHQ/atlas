@@ -25,6 +25,11 @@
 import { mock, type Mock } from "bun:test";
 import { Context, Effect, Layer } from "effect";
 import { asRatio } from "@useatlas/types";
+// The REAL error class, re-exported through the mocked `db/internal` surface
+// (#5160). The purge route maps it with `domainError`, which matches by
+// `instanceof` — a hand-rolled stand-in here would never match, and the route's
+// 409s would silently degrade to generic 500s in every route test.
+import { PurgeAbortedError as RealPurgeAbortedError } from "@atlas/api/lib/db/internal";
 import {
   createConnectionMock,
   type ConnectionMockOverrides,
@@ -295,6 +300,28 @@ export function buildInternalDbMockDefaults(deps: {
         : { withhold: false, clause: "org_id IS NULL" },
     AMENDMENT_CLAIM_STALE_MINUTES: 10,
     hardDeleteWorkspace: mock(async () => ({})),
+    // #5160 — the purge route imports this alongside hardDeleteWorkspace, so it
+    // must be in the complete surface or the named import SyntaxErrors under bun
+    // and every route in the file 404s. Mirrors the real implementation: sum the
+    // numeric fields, skip `skippedTables` (an array) and the anonymized count
+    // (rows that SURVIVED), so a test asserting on totalRows exercises the same
+    // arithmetic the route does.
+    PurgeAbortedError: RealPurgeAbortedError,
+    // #5160 — mirrors the real `totalRowsDeleted`: sum the numeric fields, skip
+    // `skippedTables` (an array) and the anonymized count (rows that SURVIVED).
+    // Duplicated rather than imported because this mock surface stands in for the
+    // very module the function lives in. The drift risk is real but bounded:
+    // `purge-scope.test.ts` pins the `anonymized` category to exactly one table,
+    // so a second survivor field cannot appear without that guard failing first.
+    totalRowsDeleted: (result: Record<string, unknown>) => {
+      let total = 0;
+      for (const [field, value] of Object.entries(result)) {
+        if (typeof value !== "number") continue;
+        if (field === "adminActionLogAnonymized") continue;
+        total += value;
+      }
+      return total;
+    },
   
     // Remaining named exports with no behavior worth faking — present so
     // a transitive `import { x }` never SyntaxErrors at load time.

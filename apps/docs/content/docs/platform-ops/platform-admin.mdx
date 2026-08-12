@@ -70,19 +70,70 @@ Purging a workspace is **irreversible**. All data is permanently removed in a si
 
 The purge action permanently removes **all** data for a workspace to satisfy GDPR right-to-erasure (Article 17) requests. It deletes every row across all tables scoped to the workspace, including:
 
-- Conversations, messages, and audit logs
+- Conversations, messages, agent run transcripts, and audit logs
+- **Company Atlas / brain data** — extracted claims (`brain_facts`), the provenance and conflict graph, raw source episodes, the curated identity vocabulary, and audience membership
+- **Knowledge Base** — every ingested document, the link graph, sync state, and the encrypted sync connector credentials
 - Connections, settings, and plugin configurations
-- Semantic entities, learned patterns, and query suggestions
+- Semantic entities, entity version history, profiling state, learned patterns, and query suggestions
+- Dashboards, cards, per-user drafts, and their cached result snapshots
 - Scheduled tasks and task run history
-- Integration installations (Slack, Teams, Discord, Telegram, etc.)
-- Usage events, SLA metrics, and abuse events
+- Integration installations (Slack, Discord, GitHub, Linear, email) and every encrypted credential store
+- Proactive chat configuration, pause state, metering, and human review verdicts
+- Usage events, token accounting, overage meter reports, SLA metrics, and abuse events
 - Custom domains, sandbox credentials, and region migrations
-- SSO providers, IP allowlists, custom roles, and approval workflows
+- SSO providers, IP allowlists, custom roles, approval workflows, and the MCP action policy
+- Cross-workspace agent grants, scopes, and rate limits
 - Workspace branding, onboarding emails, and PII classifications
 - Members, invitations, and the organization record itself
 - **Orphaned users** — users with no remaining workspace memberships are also deleted (sessions, accounts, and user record)
 
 All operations run in a single database transaction — either everything is purged or nothing changes.
+
+#### Two deliberate exceptions
+
+Not every workspace-scoped row is deleted, and the two exceptions are chosen rather than overlooked. Both are enforced by a per-table registry (`lib/db/purge-scope.ts`) whose tripwire fails CI when a new workspace-scoped table appears without a decision.
+
+- **The admin action log is anonymized, not deleted.** It records what operators *did* to this workspace — suspensions, plan changes, MFA resets — and an erasure should not be able to destroy its own accountability trail on the way out. The purge NULLs `actor_id`, `actor_email`, `ip_address` and `metadata`, and replaces `target_id` with a sentinel. `action_type`, `target_type`, `timestamp` and `org_id` survive, so *what happened* stays auditable and *who it happened to* does not. `metadata` is cleared wholesale rather than key-by-key, because it is free-form and written from many call sites — some of which store a member's email address.
+- **Two Stripe tables are retained.** `stripe_teardown_pending` rows *are* the retry that still has to cancel a live subscription — deleting them would strand a subscription invoicing a deleted workspace. `stripe_purged_subscriptions` is the tombstone the purge writes so that cancellation webhooks arriving after the transaction commits cannot regrow ledger rows. Neither holds customer personal data.
+
+A third case is worth naming because it looks like an omission: the one-trial-per-user grant (`user_trial_grants`) deliberately outlives the workspace. It is keyed on the user, and deleting it would let a purged workspace's owner claim a fresh trial on demand. It is removed when the user account itself is deleted.
+
+#### Residue from purges performed before this coverage existed
+
+Purges run before the brain and Knowledge Base tables entered the purge path left their rows behind. Those rows are identifiable: a `workspace_id` present in one of these tables with **no matching `organization` row** is orphaned, and orphaned tenant data should not exist.
+
+The decision: **a sweep is required where the detection query returns anything, and it must be run per region** — there are three independent region databases, and a workspace purged in one leaves nothing in the others. Run the detection first; do not run a blind delete.
+
+<Callout type="warn">
+**An orphan does not prove a purge happened, and the difference changes what you should do.** Two code paths delete an `organization` row: this GDPR purge, and Better Auth's own `POST /api/auth/organization/delete`, which a workspace **owner** can call (the `owner` role carries `organization: ["delete"]`) and which runs **no Atlas cascade at all**. A workspace removed that way orphans *every* one of the ~95 tables, not just the brain and KB ones — so a large, broad result set here is more likely a self-service deletion than pre-fix purge residue. Both are data that should be gone, but the second is a wider gap; check the admin action log for a `workspace.purge` entry on that id before assuming which you are looking at.
+</Callout>
+
+```sql
+-- Per region. Any row returned is data a completed GDPR purge should have removed.
+SELECT 'brain_facts' AS table_name, b.workspace_id, count(*) AS rows
+  FROM brain_facts b
+ WHERE NOT EXISTS (SELECT 1 FROM organization o WHERE o.id = b.workspace_id)
+ GROUP BY b.workspace_id
+UNION ALL
+SELECT 'brain_episodes', b.workspace_id, count(*)
+  FROM brain_episodes b
+ WHERE NOT EXISTS (SELECT 1 FROM organization o WHERE o.id = b.workspace_id)
+ GROUP BY b.workspace_id
+UNION ALL
+SELECT 'knowledge_documents', k.workspace_id, count(*)
+  FROM knowledge_documents k
+ WHERE NOT EXISTS (SELECT 1 FROM organization o WHERE o.id = k.workspace_id)
+ GROUP BY k.workspace_id
+UNION ALL
+SELECT 'knowledge_sync_credentials', k.workspace_id, count(*)
+  FROM knowledge_sync_credentials k
+ WHERE NOT EXISTS (SELECT 1 FROM organization o WHERE o.id = k.workspace_id)
+ GROUP BY k.workspace_id;
+```
+
+<Callout type="warn">
+Two things to hold before running a deletion. First, a region **import** cannot produce a false positive here — it writes into an already-active organization, so it never leaves rows without one; the orphan signal really does mean "the organization row is gone" — see the caveat above for *which* deletion put it there. Second, that makes the query's output a deletion list against real customer data with no undo, so run it through the operator binary's double-gating (`ATLAS_*_OK=1` plus `--confirm`) and take a `pg_dump` first, exactly as with `ops wipe`. Never hand-run the delete against a region database.
+</Callout>
 
 #### Prerequisites
 
@@ -119,21 +170,34 @@ POST /api/v1/platform/workspaces/:id/purge
 
 ```json
 {
-  "message": "Workspace permanently purged. All data has been irreversibly removed.",
+  "message": "Workspace permanently purged. All workspace data has been irreversibly deleted; the admin action log is retained with its identifiers scrubbed, and pending Stripe teardown records are kept until they settle. See `purged` for per-table counts.",
   "workspaceId": "org_abc123",
   "purged": {
     "auditLog": 1250,
     "conversations": 84,
     "messages": 3201,
-    "connections": 3,
+    "brainFacts": 412,
+    "brainEpisodes": 967,
+    "knowledgeDocuments": 58,
     "members": 12,
     "organization": 1
   },
-  "totalRows": 4551
+  "totalRows": 5985,
+  "adminActionLogAnonymized": 31,
+  "skippedTables": [],
+  "complete": true
 }
 ```
 
-The `purged` object contains row counts for each table, useful for audit purposes. The example above is abbreviated — the actual response includes a key for every table deleted (approximately 50 entries). The `totalRows` field is the sum of all deleted rows.
+The `purged` object carries a row count per table, useful for audit purposes. The example above is abbreviated — the real response includes a key for every table the purge deleted from (around 95 entries).
+
+<Callout type="info">
+**`purged` contains deletion counts only, so `totalRows` is exactly their sum.** Two related numbers deliberately sit *outside* that map rather than inside it, because neither is a count of destroyed rows: `adminActionLogAnonymized` counts rows that **survived** with their identifying columns scrubbed, and `skippedTables` is not a count at all. Keeping them out is what makes the obvious `Object.values(purged).reduce(…)` agree with `totalRows` instead of over-reporting destruction on an erasure record.
+</Callout>
+
+**Always check `complete`.** When it is `false`, the purge ran but did not finish: `skippedTables` names the work that did not run — relations absent from this region's schema, plus the deletes and writes gated behind them — and it reported `0` for each, which reads exactly like "there were none". `complete` is also `false` when the Stripe teardown left a warning.
+
+Run the region's migrations, then clear the residue with the orphaned-workspace sweep above. **Do not try to purge again** — the organization record is already gone, so the endpoint answers `404`.
 
 ## Noisy Neighbor Detection
 

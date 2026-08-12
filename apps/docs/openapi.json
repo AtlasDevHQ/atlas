@@ -76073,7 +76073,7 @@
           "Platform Admin"
         ],
         "summary": "Purge workspace (GDPR hard delete)",
-        "description": "SaaS only. Permanently removes ALL data for a workspace — conversations, messages, audit logs, integrations, members, and orphaned users. The workspace must already be soft-deleted. This action is irreversible.",
+        "description": "SaaS only. Permanently removes ALL workspace data — conversations, messages, company-brain claims and episodes, knowledge-base documents, semantic layer, dashboards, integrations and their encrypted credentials, members, and orphaned users. Two deliberate exceptions: the admin action log is retained with its identifying columns scrubbed (counted separately as `adminActionLogAnonymized`), and pending Stripe teardown records are kept until they settle. The workspace must already be soft-deleted. This action is irreversible. Check `complete` — when false, `skippedTables` names the work that did not run (relations absent from this region, plus the deletes and writes gated behind them) and that data was NOT deleted.",
         "responses": {
           "200": {
             "description": "Workspace purged",
@@ -76097,6 +76097,18 @@
                     "totalRows": {
                       "type": "number"
                     },
+                    "adminActionLogAnonymized": {
+                      "type": "number"
+                    },
+                    "skippedTables": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "complete": {
+                      "type": "boolean"
+                    },
                     "warnings": {
                       "type": "array",
                       "items": {
@@ -76108,7 +76120,10 @@
                     "message",
                     "workspaceId",
                     "purged",
-                    "totalRows"
+                    "totalRows",
+                    "adminActionLogAnonymized",
+                    "skippedTables",
+                    "complete"
                   ]
                 }
               }

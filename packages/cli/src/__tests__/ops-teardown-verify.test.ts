@@ -387,7 +387,7 @@ describe("teardownTargets", () => {
     const deps: TeardownDeps = {
       purgeStripe: async () => { calls.push("purge"); return okStripe(); },
       softDelete: async () => { calls.push("soft"); return true; },
-      hardDelete: async () => { calls.push("hard"); return 0; },
+      hardDelete: async () => { calls.push("hard"); return { rowsPurged: 0, skippedTables: [] }; },
     };
     const report = await teardownTargets(
       [target({ orgs: [ownedOrg()] })],
@@ -405,7 +405,7 @@ describe("teardownTargets", () => {
     const deps: TeardownDeps = {
       purgeStripe: async () => { order.push("purge"); return okStripe({ actions: ["deleted Stripe customer cus_1"] }); },
       softDelete: async () => { order.push("soft"); return true; },
-      hardDelete: async () => { order.push("hard"); return 42; },
+      hardDelete: async () => { order.push("hard"); return { rowsPurged: 42, skippedTables: [] }; },
     };
     const report = await teardownTargets(
       [target({ orgs: [ownedOrg({ stripeCustomerId: "cus_1" })] })],
@@ -431,7 +431,7 @@ describe("teardownTargets", () => {
         return okStripe({ actions: ["deleted Stripe customer cus_org"] });
       },
       softDelete: async () => true,
-      hardDelete: async () => 1,
+      hardDelete: async () => ({ rowsPurged: 1, skippedTables: [] }),
     };
     const report = await teardownTargets(
       [target({ orgs: [ownedOrg({ stripeCustomerId: "cus_org" })] })],
@@ -447,7 +447,7 @@ describe("teardownTargets", () => {
     const deps: TeardownDeps = {
       purgeStripe: async () => { calls.push("purge"); return okStripe(); },
       softDelete: async () => { calls.push("soft"); return true; },
-      hardDelete: async () => { calls.push("hard"); return 0; },
+      hardDelete: async () => { calls.push("hard"); return { rowsPurged: 0, skippedTables: [] }; },
     };
     const report = await teardownTargets(
       [target({ orgs: [ownedOrg({ orgId: "org_shared", isOwner: false })] })],
@@ -462,7 +462,7 @@ describe("teardownTargets", () => {
     const deps: TeardownDeps = {
       purgeStripe: async () => okStripe({ warnings: ["Failed to delete Stripe customer cus_1: boom"] }),
       softDelete: async () => true,
-      hardDelete: async () => 1,
+      hardDelete: async () => ({ rowsPurged: 1, skippedTables: [] }),
     };
     const report = await teardownTargets([target({ orgs: [ownedOrg({ stripeCustomerId: "cus_1" })] })], deps, false);
     expect(report.targets[0]!.orgs[0]!.warnings).toContain("Failed to delete Stripe customer cus_1: boom");
@@ -476,10 +476,48 @@ describe("teardownTargets", () => {
     const deps: TeardownDeps = {
       purgeStripe: async () => okStripe(),
       softDelete: async () => false, // org concurrently reactivated/removed
-      hardDelete: async () => 3,
+      hardDelete: async () => ({ rowsPurged: 3, skippedTables: [] }),
     };
     const report = await teardownTargets([target({ orgs: [ownedOrg()] })], deps, false);
     expect(report.targets[0]!.orgs[0]!.warnings.some((w) => w.includes("Soft-delete affected 0 rows"))).toBe(true);
+  });
+
+  it("marks a purge INCOMPLETE when the region was missing a relation (#5160)", async () => {
+    // The purge returns rows AND the relations it could not reach. Before this,
+    // `hardDelete` returned a bare count, so a skipped relation was structurally
+    // unable to reach the report: the command printed "✓ torn down" and exited 0
+    // on a teardown that had left tenant data behind.
+    const deps: TeardownDeps = {
+      purgeStripe: async () => okStripe(),
+      softDelete: async () => true,
+      hardDelete: async () => ({
+        rowsPurged: 12,
+        skippedTables: ["scim_group_mappings", "subscription"],
+      }),
+    };
+    const report = await teardownTargets([target({ orgs: [ownedOrg()] })], deps, false);
+    const org = report.targets[0]!.orgs[0]!;
+
+    expect(org.status).toBe("torn-down-incomplete");
+    expect(org.skippedTables).toEqual(["scim_group_mappings", "subscription"]);
+    // The count is still reported — "incomplete" is not "failed".
+    expect(org.rowsPurged).toBe(12);
+    // The total is what the exit-code gate reads, so it is the load-bearing one.
+    expect(report.totals.incompleteTeardowns).toBe(1);
+  });
+
+  it("reports a complete teardown as complete (the control for the test above)", async () => {
+    // Without this, "incompleteTeardowns" could be incremented unconditionally
+    // and the assertion above would still pass.
+    const deps: TeardownDeps = {
+      purgeStripe: async () => okStripe(),
+      softDelete: async () => true,
+      hardDelete: async () => ({ rowsPurged: 12, skippedTables: [] }),
+    };
+    const report = await teardownTargets([target({ orgs: [ownedOrg()] })], deps, false);
+
+    expect(report.targets[0]!.orgs[0]!.status).toBe("torn-down");
+    expect(report.totals.incompleteTeardowns).toBe(0);
   });
 
   it("records a per-org failure and continues to the next org", async () => {
@@ -488,7 +526,7 @@ describe("teardownTargets", () => {
       softDelete: async () => true,
       hardDelete: async (orgId) => {
         if (orgId === "org_bad") throw new Error("status check failed");
-        return 5;
+        return { rowsPurged: 5, skippedTables: [] };
       },
     };
     const report = await teardownTargets(
@@ -507,7 +545,7 @@ describe("teardownTargets", () => {
     const deps: TeardownDeps = {
       purgeStripe: async () => okStripe(),
       softDelete: async () => true,
-      hardDelete: async () => 0,
+      hardDelete: async () => ({ rowsPurged: 0, skippedTables: [] }),
     };
     const report = await teardownTargets(
       [

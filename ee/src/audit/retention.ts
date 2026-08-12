@@ -767,10 +767,33 @@ export const anonymizeUserAdminActions = (
 
     const result = yield* Effect.tryPromise({
       try: () => pool.query(
+        // `ip_address` and `metadata` are scrubbed alongside the actor columns
+        // (#5160). They were omitted while this was the only scrub; the GDPR
+        // workspace purge then widened its own scrub to cover them, which left
+        // the INDIVIDUAL's Article 17 path — the stronger obligation — clearing
+        // strictly less than the bulk one. On a row where the erased user IS the
+        // actor, `ip_address` is that user's own personal data, and `metadata`
+        // carries the same free-form content the purge clears wholesale.
+        //
+        // `target_id` is deliberately NOT scrubbed here, and the asymmetry with
+        // the workspace purge is the point: on an actor's own row, `target_id`
+        // identifies a THIRD PARTY (the user an MFA reset was performed on), and
+        // erasing person A must not erase the record of what was done to person
+        // B. The workspace purge clears it because there the whole workspace —
+        // both parties — is going.
+        //
+        // The skip predicate stays `anonymized_at IS NULL` rather than becoming a
+        // residue check, and the reason is the MATCH column, not the SET list:
+        // this scrub matches on `actor_id = $1`, and any row either scrub has
+        // already touched has `actor_id IS NULL`, so it cannot re-match at all.
+        // The workspace purge needed a residue check because it matches on
+        // `org_id`, which survives its own scrub.
         `WITH updated AS (
            UPDATE admin_action_log
            SET actor_id = NULL,
                actor_email = NULL,
+               ip_address = NULL,
+               metadata = NULL,
                anonymized_at = now()
            WHERE actor_id = $1
              AND anonymized_at IS NULL

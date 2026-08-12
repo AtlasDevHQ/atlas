@@ -19,6 +19,7 @@ import {
   reconcileWorkspaceDatasources,
   cascadeWorkspaceDelete,
   hardDeleteWorkspace,
+  totalRowsDeleted,
   updateWorkspacePlanTier,
   isPlanOverrideActive,
   _resetPool,
@@ -1057,6 +1058,48 @@ describe("cascadeWorkspaceDelete()", () => {
   });
 });
 
+describe("totalRowsDeleted()", () => {
+  // Tested against the REAL function, unmocked. The route-level test can only
+  // check wiring — it runs against a mocked `db/internal`, so an assertion on
+  // `totalRows` there is an assertion about the mock. This is where the
+  // arithmetic itself has to be able to fail (#5160).
+  //
+  // The values are deliberately distinct (3/5/7/11): with all-equal counts, a
+  // sum that included the wrong field would still land on a plausible number.
+  const base = {
+    conversations: 3,
+    brainFacts: 5,
+    organization: 11,
+    adminActionLogAnonymized: 7,
+    skippedTables: [] as readonly string[],
+  } as unknown as Parameters<typeof totalRowsDeleted>[0];
+
+  it("sums the deleted counts", () => {
+    expect(totalRowsDeleted(base)).toBe(19); // 3 + 5 + 11
+  });
+
+  it("EXCLUDES the anonymized count — those rows survived", () => {
+    // The whole point. A naive Object.values sum gives 26; the 7 anonymized
+    // rows are still in the table, so counting them as destroyed is the
+    // overstatement #5160 was filed about, one metric layer down.
+    expect(totalRowsDeleted(base)).not.toBe(26);
+    const more = { ...base, adminActionLogAnonymized: 1000 };
+    expect(
+      totalRowsDeleted(more as typeof base),
+      "the total must not move when only the anonymized count changes",
+    ).toBe(19);
+  });
+
+  it("ignores the non-numeric skippedTables field", () => {
+    // `skippedTables` is an array. A `reduce((s, n) => s + n)` over
+    // Object.values would string-concatenate it into the total — which is
+    // exactly what the CLI's cast-based version would have done.
+    const skipped = { ...base, skippedTables: ["scim_group_mappings", "subscription"] };
+    expect(totalRowsDeleted(skipped as typeof base)).toBe(19);
+    expect(typeof totalRowsDeleted(skipped as typeof base)).toBe("number");
+  });
+});
+
 describe("hardDeleteWorkspace()", () => {
   it("destroys the client when ROLLBACK fails after a purge transaction error", async () => {
     const { pool: basePool } = createMockPool();
@@ -1149,6 +1192,12 @@ describe("hardDeleteWorkspace()", () => {
         if (upper.startsWith("SELECT WORKSPACE_STATUS")) {
           return { rows: [{ workspace_status: "deleted" }] };
         }
+        // Both probed relations are present. This branch used to be absent, and
+        // the probe read the fall-through `{ rows: [] }` as "table absent" —
+        // silently skipping two DELETEs in a test about GDPR completeness. The
+        // probe now fails closed on an unshaped response (#5160), so the mock has
+        // to say what it means.
+        if (sql.includes("to_regclass")) return { rows: [{ table_exists: true }] };
         // Orphaned-user lookup — no orphans, keeps the user-delete path skipped.
         if (sql.includes("FROM member m")) return { rows: [] };
         // Distinct row counts let us assert the count wiring per table.
@@ -1186,6 +1235,11 @@ describe("hardDeleteWorkspace()", () => {
     // …and the counts are surfaced in HardDeleteResult.
     expect(result.integrationCredentials).toBe(2);
     expect(result.twentyIntegrations).toBe(3);
+    // #5160 — both probed relations are present here, so nothing was skipped.
+    // This is the CONTROL for the region-drift test below: without a case that
+    // shows `skippedTables` empty, "non-empty ⇒ the purge is incomplete" is a
+    // claim about a field that could be populated unconditionally.
+    expect(result.skippedTables).toEqual([]);
   });
 
   it("purges Stripe billing linkage rows when the plugin's subscription table exists (#3425)", async () => {
@@ -1232,6 +1286,12 @@ describe("hardDeleteWorkspace()", () => {
     expect(queries.some((q) => q.includes("DELETE FROM stripe_webhook_events"))).toBe(true);
     expect(result.subscriptions).toBe(1);
     expect(result.stripeWebhookEvents).toBe(2);
+    // #5160 — the CONTROL for the region-drift assertions elsewhere in this
+    // file: this mock answers `table_exists: true` to every probe, so nothing
+    // was skipped and `skippedTables` must be EMPTY. Without a test that shows
+    // it empty, "non-empty ⇒ the purge is incomplete" is a claim about a field
+    // that could be populated unconditionally and nothing would notice.
+    expect(result.skippedTables).toEqual([]);
   });
 
   it("tombstones the purged subscription ids BEFORE deleting their ledger rows (#3468)", async () => {
@@ -1339,15 +1399,19 @@ describe("hardDeleteWorkspace()", () => {
     const { pool: basePool } = createMockPool();
     const queries: string[] = [];
     const client = {
-      async query(sql: string) {
+      async query(sql: string, params?: unknown[]) {
         queries.push(sql);
         const upper = sql.trim().toUpperCase();
         if (upper.startsWith("SELECT WORKSPACE_STATUS")) {
           return { rows: [{ workspace_status: "deleted" }] };
         }
         // Only scim_group_mappings is absent; `subscription` still exists.
+        // The probe passes the relation name as a PARAMETER (#5160 unified the
+        // two hand-rolled probes into one helper), so the table name is not in
+        // the SQL text — read it from params, or this mock reports every table
+        // present and the DELETE it is meant to prevent runs.
         if (sql.includes("to_regclass")) {
-          return { rows: [{ table_exists: !sql.includes("scim_group_mappings") }] };
+          return { rows: [{ table_exists: params?.[0] !== "scim_group_mappings" }] };
         }
         if (sql.includes("FROM member m")) return { rows: [] };
         // A real Postgres throws here if the cascade ever issues the DELETE —
@@ -1375,7 +1439,14 @@ describe("hardDeleteWorkspace()", () => {
     expect(queries.some((q) => q.includes("DELETE FROM scim_group_mappings"))).toBe(false);
     // The rest of the cascade still ran — proof the purge completed, not aborted.
     expect(result.subscriptions).toBe(1);
+    // #5160 — a skipped table must be REPORTED, not just survive. `0` rows is
+    // indistinguishable from "there were none", and the purge response is the
+    // artefact an operator attaches to a DPA erasure record, so the skip has to
+    // travel with it. Without this, the assertion above passes identically for
+    // "skipped" and "nothing to delete".
+    expect(result.skippedTables).toEqual(["scim_group_mappings"]);
   });
+
 });
 
 describe("connection URL encryption", () => {

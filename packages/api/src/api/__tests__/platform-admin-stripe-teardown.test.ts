@@ -61,9 +61,25 @@ const mockCascade = mock(async () => {
     settings: 0,
   };
 });
+let hardDeleteSkipped: string[] = [];
+/**
+ * Purge result. Deliberately carries the three field SHAPES the route has to
+ * tell apart (#5160): plain deleted counts, the anonymized count (rows that
+ * SURVIVED, so it must not enter `totalRows`), and `skippedTables` (not a count
+ * at all). The anonymized count is 7 — a value no other field carries and one
+ * no subset of the others sums to — so a total that wrongly includes it lands
+ * on a number the correct arithmetic cannot produce.
+ */
 const mockHardDelete = mock(async () => {
   callOrder.push("hardDelete");
-  return { conversations: 3, subscriptions: 1, organization: 1 };
+  return {
+    conversations: 3,
+    brainFacts: 5,
+    subscriptions: 1,
+    organization: 1,
+    adminActionLogAnonymized: 7,
+    skippedTables: hardDeleteSkipped,
+  };
 });
 
 // #3427 — spies for the plan-override + trial-extension behavior.
@@ -254,6 +270,73 @@ describe("POST /api/v1/platform/workspaces/:id/purge — Stripe teardown", () =>
     expect(body.warnings).toHaveLength(1);
     expect(body.warnings?.[0]).toContain("cus_acme");
     expect(mockHardDelete).toHaveBeenCalledTimes(1);
+  });
+
+  // ── #5160: the response must not overstate what was destroyed ──
+  // Nothing asserted the 200 body before this, so reverting `totalRows` to
+  // `Object.values(purged).reduce(...)` — restoring the exact overstatement
+  // #5160 was filed about, one metric layer down — passed every gate.
+
+  it("EXCLUDES the anonymized count from totalRows", async () => {
+    const res = await app.fetch(platformRequest("POST", "/api/v1/platform/workspaces/org-1/purge"));
+    const body = (await res.json()) as {
+      totalRows: number;
+      adminActionLogAnonymized: number;
+      purged: Record<string, number>;
+      complete: boolean;
+      skippedTables: string[];
+    };
+
+    expect(res.status).toBe(200);
+    // 3 + 5 + 1 + 1 = 10 deleted. The 7 anonymized rows SURVIVED, so summing
+    // them in would give 17 — that difference is the whole assertion.
+    expect(body.totalRows).toBe(10);
+    expect(body.adminActionLogAnonymized).toBe(7);
+    expect(body.complete).toBe(true);
+    expect(body.skippedTables).toEqual([]);
+
+    // `purged` carries DELETION counts only. Both non-deletion fields are kept
+    // out of it, so the obvious client-side sum agrees with `totalRows` instead
+    // of over-reporting destruction — and so the published
+    // `Record<string, number>` contract is not shipping a string array.
+    expect(body.purged.adminActionLogAnonymized).toBeUndefined();
+    expect(body.purged.skippedTables).toBeUndefined();
+    expect(Object.values(body.purged).every((v) => typeof v === "number")).toBe(true);
+    expect(Object.values(body.purged).reduce((a, b) => a + b, 0)).toBe(body.totalRows);
+  });
+
+  it("names both retained exceptions in the success message", async () => {
+    // The message is a representation to an operator recording a GDPR erasure.
+    // If it goes back to claiming everything was removed, that is the defect.
+    const res = await app.fetch(platformRequest("POST", "/api/v1/platform/workspaces/org-1/purge"));
+    const body = (await res.json()) as { message: string };
+
+    expect(body.message).toContain("admin action log");
+    expect(body.message).toContain("Stripe");
+    expect(body.message).not.toContain("All data has been irreversibly removed");
+  });
+
+  it("reports INCOMPLETE when a relation was absent from this region", async () => {
+    // A skipped table reports 0 rows, which reads exactly like "there were
+    // none". The response has to distinguish them, because it is the artefact
+    // an operator attaches to an erasure record.
+    hardDeleteSkipped = ["scim_group_mappings", "subscription"];
+    try {
+      const res = await app.fetch(platformRequest("POST", "/api/v1/platform/workspaces/org-1/purge"));
+      const body = (await res.json()) as {
+        message: string;
+        complete: boolean;
+        skippedTables: string[];
+      };
+
+      expect(res.status).toBe(200);
+      expect(body.complete).toBe(false);
+      expect(body.skippedTables).toEqual(["scim_group_mappings", "subscription"]);
+      expect(body.message).toContain("INCOMPLETE");
+      expect(body.message).toContain("scim_group_mappings");
+    } finally {
+      hardDeleteSkipped = [];
+    }
   });
 });
 

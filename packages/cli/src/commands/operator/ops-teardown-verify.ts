@@ -46,6 +46,7 @@ import {
   closeInternalDB,
   updateWorkspaceStatus,
   hardDeleteWorkspace,
+  totalRowsDeleted,
 } from "@atlas/api/lib/db/internal";
 import {
   purgeStripeBillingForWorkspace,
@@ -341,8 +342,11 @@ export interface OrgTeardownResult {
   orgName: string | null;
   region: string | null;
   stripeCustomerId: string | null;
-  status: "torn-down" | "would-tear-down" | "skipped-not-owner" | "error";
+  /** `torn-down-incomplete`: the purge ran but some relations were absent (#5160). */
+  status: "torn-down" | "torn-down-incomplete" | "would-tear-down" | "skipped-not-owner" | "error";
   rowsPurged: number;
+  /** Relations the purge could not reach in this region. Non-empty ⇒ incomplete. */
+  skippedTables: string[];
   stripeActions: string[];
   warnings: string[];
 }
@@ -368,19 +372,25 @@ export interface TeardownReport {
      *  warning (e.g. a customer that couldn't be deleted) — a non-clean
      *  outcome the handler exits non-zero on, even though the row purge ran. */
     stripeWarnings: number;
+    /** Workspaces whose purge skipped at least one relation (#5160). */
+    incompleteTeardowns: number;
   };
 }
 
 /** Injected SSOT operations — real in the handler, fakes in unit tests.
- *  `hardDelete` returns the total rows purged; the handler sums the SSOT's
- *  per-table `HardDeleteResult` so the orchestration stays shape-agnostic. */
+ *  `hardDelete` returns the total rows purged AND the relations the purge could
+ *  not reach. It used to return just the count, which meant `skippedTables` was
+ *  structurally unable to reach the report: the command printed `✓ torn down`
+ *  and exited 0 on a purge that had silently skipped a table (#5160). The route
+ *  learned to answer `complete: false`; this is the same signal for the surface
+ *  an operator actually scripts against. */
 export interface TeardownDeps {
   purgeStripe: (
     orgId: string,
     stripeCustomerId: string | null,
   ) => Promise<StripeTeardownOutcome>;
   softDelete: (orgId: string) => Promise<boolean>;
-  hardDelete: (orgId: string) => Promise<number>;
+  hardDelete: (orgId: string) => Promise<{ rowsPurged: number; skippedTables: readonly string[] }>;
 }
 
 /**
@@ -410,6 +420,7 @@ export async function teardownTargets(
     rowsPurged: 0,
     errors: 0,
     stripeWarnings: 0,
+    incompleteTeardowns: 0,
   };
 
   for (const target of targets) {
@@ -434,6 +445,7 @@ export async function teardownTargets(
           stripeCustomerId: org.stripeCustomerId,
           status: "skipped-not-owner",
           rowsPurged: 0,
+          skippedTables: [],
           stripeActions: [],
           warnings: [
             `${target.email} is a non-owner member of workspace ${org.orgName ?? org.orgId} — left untouched.`,
@@ -450,6 +462,7 @@ export async function teardownTargets(
           stripeCustomerId: org.stripeCustomerId,
           status: "would-tear-down",
           rowsPurged: 0,
+          skippedTables: [],
           stripeActions: [],
           warnings: [],
         });
@@ -470,19 +483,21 @@ export async function teardownTargets(
             "Soft-delete affected 0 rows (org concurrently reactivated or removed?) — hard-delete may abort.",
           );
         }
-        const rowsPurged = await deps.hardDelete(org.orgId);
+        const { rowsPurged, skippedTables } = await deps.hardDelete(org.orgId);
         orgResults.push({
           orgId: org.orgId,
           orgName: org.orgName,
           region: org.region,
           stripeCustomerId: org.stripeCustomerId,
-          status: "torn-down",
+          status: skippedTables.length > 0 ? "torn-down-incomplete" : "torn-down",
           rowsPurged,
+          skippedTables: [...skippedTables],
           stripeActions: stripe.actions,
           warnings,
         });
         totals.orgsTornDown += 1;
         totals.rowsPurged += rowsPurged;
+        if (skippedTables.length > 0) totals.incompleteTeardowns += 1;
         if (stripe.warnings.length > 0) totals.stripeWarnings += 1;
       } catch (err) {
         totals.errors += 1;
@@ -493,6 +508,7 @@ export async function teardownTargets(
           stripeCustomerId: org.stripeCustomerId,
           status: "error",
           rowsPurged: 0,
+          skippedTables: [],
           stripeActions: [],
           warnings: [
             `Teardown failed for workspace ${org.orgName ?? org.orgId}: ${err instanceof Error ? err.message : String(err)}`,
@@ -526,15 +542,26 @@ export function printTeardownReport(report: TeardownReport): void {
     for (const org of target.orgs) {
       const tag = {
         "torn-down": "✓ torn down",
+        "torn-down-incomplete": "⚠ torn down INCOMPLETE",
         "would-tear-down": "→ would tear down",
         "skipped-not-owner": "– skipped (not owner)",
         error: "✗ error",
       }[org.status];
       const region = org.region ? ` region=${org.region}` : "";
-      const rows = org.status === "torn-down" ? ` (${org.rowsPurged} rows)` : "";
+      const rows =
+        org.status === "torn-down" || org.status === "torn-down-incomplete"
+          ? ` (${org.rowsPurged} rows)`
+          : "";
       console.log(`  ${tag}: ${org.orgName ?? org.orgId} [${org.orgId}]${region}${rows}`);
       if (org.stripeCustomerId) console.log(`     stripe customer: ${org.stripeCustomerId}`);
       for (const a of org.stripeActions) console.log(`     stripe: ${a}`);
+      // Printed BEFORE the generic warnings: an incomplete erasure is the most
+      // consequential line in this report and must not be scrolled past.
+      if (org.skippedTables.length > 0) {
+        console.log(
+          `     ⚠ INCOMPLETE — relations absent from this region, data NOT deleted: ${org.skippedTables.join(", ")}`,
+        );
+      }
       for (const w of org.warnings) console.log(`     ⚠ ${w}`);
     }
   }
@@ -544,6 +571,7 @@ export function printTeardownReport(report: TeardownReport): void {
     `\n[ops:teardown-verify-accounts] ${report.dryRun ? "would tear down" : "tore down"} ` +
       `${report.dryRun ? t.orgsWouldTearDown : t.orgsTornDown} workspace(s)` +
       (report.dryRun ? "" : `, ${t.rowsPurged} rows purged`) +
+      (t.incompleteTeardowns > 0 ? `, ${t.incompleteTeardowns} INCOMPLETE` : "") +
       (t.stripeWarnings > 0 ? `, ${t.stripeWarnings} workspace(s) with Stripe warnings` : "") +
       (t.errors > 0 ? `, ${t.errors} error(s)` : ""),
   );
@@ -610,21 +638,36 @@ export async function handleTeardownVerifyAccounts(args: string[]): Promise<void
       softDelete: (orgId) => updateWorkspaceStatus(orgId, "deleted"),
       hardDelete: async (orgId) => {
         const purged = await hardDeleteWorkspace(orgId);
-        // HardDeleteResult is an all-number per-table count map; assert that so
-        // the sum can't silently become NaN/string-concat if a non-number field
-        // is ever added (Object.values on an index-signature-less type widens to any).
-        return (Object.values(purged) as number[]).reduce((sum, n) => sum + n, 0);
+        // Use the helper that lives with the type (#5160). This was a local
+        // `(Object.values(purged) as number[]).reduce(...)`, whose comment
+        // predicted precisely what went wrong: it guarded against a non-number
+        // field being added, and two were — `skippedTables` (an array, which the
+        // cast would have string-concatenated into the sum) and
+        // `adminActionLogAnonymized`, which counts rows that SURVIVED and so
+        // made this command over-report destruction. The route had the identical
+        // bug and was fixed by hand; this copy was not, which is why the
+        // arithmetic now has one home.
+        return { rowsPurged: totalRowsDeleted(purged), skippedTables: purged.skippedTables };
       },
     }, dryRun);
 
     printTeardownReport(report);
-    // Exit non-zero on a row-purge error OR a left-behind Stripe linkage — a
-    // scripted cleanup must fail loudly rather than report a clean "success"
-    // while a billable Stripe customer survives. A failed customer-delete /
+    // Exit non-zero on a row-purge error, a left-behind Stripe linkage, OR an
+    // INCOMPLETE purge — a scripted cleanup must fail loudly rather than report
+    // a clean "success" while data survives. A failed customer-delete /
     // subscription-cancel is enqueued in `stripe_teardown_pending` for durable
     // retry; a subscription-read or outbox-write warning is manual-follow-up
     // only — either way the operator/CI should know it didn't fully complete.
-    if (report.totals.errors > 0 || report.totals.stripeWarnings > 0) {
+    //
+    // `incompleteTeardowns` was added by #5160 for exactly the reason the two
+    // conditions beside it exist: a relation absent from the region's schema
+    // means tenant data was NOT deleted, and this command previously printed
+    // "✓ torn down" and exited 0 in that case.
+    if (
+      report.totals.errors > 0 ||
+      report.totals.stripeWarnings > 0 ||
+      report.totals.incompleteTeardowns > 0
+    ) {
       process.exitCode = 1;
     }
   } catch (err) {

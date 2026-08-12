@@ -3769,8 +3769,37 @@ export async function setWorkspaceTrialEndsAt(
 // GDPR hard-delete (purge) — removes ALL org-scoped data permanently
 // ---------------------------------------------------------------------------
 
+/** Why a GDPR purge refused to run or aborted. Each maps to a 4xx in the route. */
+export type PurgeAbortCode = "region_schema_behind" | "not_soft_deleted";
+
 /**
- * Hard-delete result — counts of rows removed from each table.
+ * A purge that aborted for a reason the OPERATOR can act on (#5160).
+ *
+ * Carries a `code`, so `runEffect`'s `domainErrors` mapping renders the message
+ * on the wire. A plain `Error` does not: it matches none of `classifyError`'s
+ * branches and falls through to the generic 500 body ("Failed to purge workspace
+ * (GDPR)."), which is where the carefully-worded region-drift message used to go
+ * to die — the branch built it, logged it, and the bridge discarded it.
+ *
+ * Only 4xx codes belong here. `classifyError` deliberately replaces the message
+ * of a 5xx domain error with an opaque reference, so a code mapped to 500 would
+ * reintroduce exactly the problem this class exists to solve.
+ */
+export class PurgeAbortedError extends Error {
+  readonly code: PurgeAbortCode;
+  constructor(code: PurgeAbortCode, message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "PurgeAbortedError";
+    this.code = code;
+  }
+}
+
+/**
+ * Hard-delete result — a removal count per table, plus two fields that are NOT
+ * removal counts: `adminActionLogAnonymized` (rows that SURVIVED, scrubbed) and
+ * `skippedTables` (a string array). Use `totalRowsDeleted()` to total it; a bare
+ * `Object.values(...).reduce(...)` over-reports destruction and string-
+ * concatenates the array.
  */
 export interface HardDeleteResult {
   // Data tables (org_id)
@@ -3832,12 +3861,115 @@ export interface HardDeleteResult {
   // dedupe-ledger rows for the org's subscription ids.
   subscriptions: number;
   stripeWebhookEvents: number;
+  // ── Company Atlas / brain pillar (ADR-0036/0037) — added by #5160 ──
+  // Unreachable by the purge until #5160: workspace_id-keyed with no FK to
+  // `organization`, so the `DELETE FROM organization` below never cascaded to
+  // them. `brain_facts` is the highest-sensitivity table in the internal DB
+  // (claims extracted from Slack/Zoom/Outlook, retained verbatim) and is
+  // documented in schema.ts as "Nothing DELETEs" — the purge is its ONLY
+  // removal path, which is why its absence had no other mechanism behind it.
+  brainFacts: number;
+  brainEdges: number;
+  brainEpisodes: number;
+  brainVocabularyEdge: number;
+  brainVocabularyTarget: number;
+  brainVocabularyProposal: number;
+  brainPredicateCardinality: number;
+  brainAudienceReverifyAttempt: number;
+  factAudienceMember: number;
+  // ── Knowledge Base pillar (ADR-0028) — added by #5160 ──
+  // knowledge_sync_credentials is a secret at rest: the same class of miss
+  // integration_credentials was (#3425), one pillar over.
+  knowledgeDocuments: number;
+  knowledgeLinks: number;
+  knowledgeSyncCredentials: number;
+  knowledgeSyncState: number;
+  // ── Remaining workspace-scoped tables the purge never reached (#5160) ──
+  // Found by the mechanical sweep behind lib/db/purge-scope.ts rather than by
+  // enumeration from memory — see that file for the per-table rationale.
+  agentRuns: number;
+  agentSessionMemory: number;
+  adminActionRetentionConfig: number;
+  connectionGroupDescriptions: number;
+  connectionProfileState: number;
+  semanticProfileStatus: number;
+  learnedPatternInjections: number;
+  suggestionUserClicks: number;
+  dashboardUserDrafts: number;
+  dashboardDraftCardCache: number;
+  userFavoritePrompts: number;
+  mcpActionPolicy: number;
+  oauthClientWorkspaceGrants: number;
+  oauthClientWorkspaceScope: number;
+  oauthClientRateLimits: number;
+  overageMeterReports: number;
+  workspaceModelCatalog: number;
+  workspaceProactiveConfig: number;
+  channelProactiveConfig: number;
+  proactivePauses: number;
+  proactiveMeterEvents: number;
+  proactiveClassificationReview: number;
+  proactivePublicDataset: number;
+  emailOutbox: number;
+  crmOutbox: number;
+  // Rows SCRUBBED rather than deleted: the operator accountability trail keeps
+  // WHAT happened to this workspace (action_type / target_type / timestamp /
+  // org_id) while losing WHO — actor_id, actor_email, ip_address and metadata
+  // are NULLed and target_id takes a sentinel. PRIOR operator actions only: the
+  // purge's own audit row is written after this function returns, stamped with
+  // the acting admin's org, so it is never in scope. See purge-scope.ts
+  // `anonymized`.
+  adminActionLogAnonymized: number;
   // Better Auth tables
   members: number;
   betterAuthInvitations: number;
   orphanedUsers: number;
   organization: number;
+  /**
+   * Work the purge did NOT do (#5160): relations absent from this region's
+   * schema, PLUS the deletes and writes that were gated behind them. A missing
+   * `subscription` contributes three names — itself, `stripe_webhook_events`
+   * (whose delete reads it) and `stripe_purged_subscriptions` (whose tombstone
+   * INSERT never ran) — and only the first was actually absent.
+   *
+   * NOT a count — the only non-numeric field, and deliberately so. A skipped
+   * table reports `0` rows, which is indistinguishable from "there were none",
+   * and the purge response is what an operator attaches to a DPA erasure record.
+   * Non-empty means the purge was INCOMPLETE and the route must say so.
+   */
+  skippedTables: readonly string[];
 }
+
+/**
+ * Fields on `HardDeleteResult` that count rows which SURVIVED the purge, and so
+ * must never be summed into a "rows destroyed" total.
+ *
+ * `satisfies` ties each entry to a real field, so renaming the field is a compile
+ * error here rather than a silently-stale exclusion.
+ */
+const SURVIVOR_COUNT_FIELDS: ReadonlySet<string> = new Set(
+  ["adminActionLogAnonymized"] satisfies readonly (keyof HardDeleteResult)[],
+);
+
+/**
+ * Total rows the purge DESTROYED.
+ *
+ * Lives here, next to the type, because two callers previously each did their own
+ * `Object.values(result).reduce(...)` and both were wrong in the same way: the sum
+ * included `adminActionLogAnonymized`, which counts rows that SURVIVED. One
+ * caller was fixed by hand and the other (`ops teardown-verify-accounts`) was
+ * not, which is exactly the drift a shared helper prevents (#5160).
+ */
+export function totalRowsDeleted(result: HardDeleteResult): number {
+  let total = 0;
+  for (const [field, value] of Object.entries(result)) {
+    if (typeof value !== "number") continue; // skippedTables
+    if (SURVIVOR_COUNT_FIELDS.has(field)) continue;
+    total += value;
+  }
+  return total;
+}
+
 
 /**
  * GDPR-compliant hard delete — permanently removes ALL data for a workspace.
@@ -3879,7 +4011,15 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
           "ROLLBACK failed during hardDeleteWorkspace status check — client will be destroyed",
         );
       });
-      throw new Error("Workspace is not in deleted status — purge aborted");
+      // Tagged so the racing admin gets the same 409 the non-racing path gets
+      // from the route's pre-check. As a plain Error this produced a generic
+      // 500, so losing the race looked like a server fault rather than the
+      // conflict it is.
+      throw new PurgeAbortedError(
+        "not_soft_deleted",
+        "Workspace is not in deleted status — purge aborted. It was reactivated after the " +
+          "pre-check; soft-delete it again before purging. Nothing was deleted.",
+      );
     }
 
     // del() executes a DELETE with RETURNING 1 to count affected rows
@@ -3892,6 +4032,69 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     const delRaw = async (sql: string, params: unknown[] = [orgId]) => {
       const result = await client.query(sql, params);
       return result.rows.length;
+    };
+
+    // Tables this purge could NOT reach because the relation is absent from this
+    // region's schema. Reported on HardDeleteResult and surfaced by the route as
+    // an operator warning (#5160): a skipped table otherwise reports `0`, which
+    // is indistinguishable from "there were none" — and the purge response is
+    // the artefact an operator attaches to a DPA erasure record, so "0" reading
+    // as "clean" is the wrong default for a table nobody looked at.
+    const skippedTables: string[] = [];
+
+    /**
+     * Probe a relation before deleting from it, so region drift skips ONE table
+     * instead of aborting the whole transaction.
+     *
+     * Deliberately UNQUALIFIED, matching the unqualified `DELETE FROM` it guards:
+     * a `public.`-qualified probe resolves a different name than the statement it
+     * gates whenever search_path is not the default, so the probe would answer
+     * "absent" and the DELETE would be skipped for a table that is right there.
+     * Identical under the default search_path, so prod behaviour is unchanged.
+     *
+     * Every miss logs AND is recorded. The previous code had two hand-rolled
+     * probes with different behaviour — `scim_group_mappings` warned, while
+     * `subscription` was silent by design — and the silent one skipped three
+     * things at once (the subscription rows, the webhook ledger rows, and the
+     * #3468 tombstone whose absence lets those ledger rows immediately regrow)
+     * while the operator was told the purge was complete.
+     */
+    // `alsoSkipped` names the OTHER work that does not happen when this relation
+    // is absent. The probe guards a block, not a statement: a missing
+    // `subscription` skips the subscription DELETE, the stripe_webhook_events
+    // ledger DELETE, and the #3468 tombstone INSERT — three things, of which
+    // recording only the probed name would report one. What the operator needs
+    // is the list of work that did not run.
+    const tableExists = async (
+      table: string,
+      alsoSkipped: readonly string[] = [],
+    ): Promise<boolean> => {
+      const probe = await client.query(
+        `SELECT to_regclass($1) IS NOT NULL AS table_exists`,
+        [table],
+      );
+      // Fail CLOSED on an unexpected shape. `?.table_exists === true` would
+      // coerce an empty result set, a renamed alias or a non-boolean into
+      // "absent", and then SKIP the delete while logging that the relation does
+      // not exist — a false statement about the database, on an erasure path.
+      // "I could not determine whether this table exists" must abort the
+      // transaction (nothing is deleted, nothing is claimed), not silently
+      // decide not to delete.
+      const row = probe.rows[0] as { table_exists?: unknown } | undefined;
+      if (probe.rows.length !== 1 || typeof row?.table_exists !== "boolean") {
+        throw new Error(
+          `Existence probe for '${table}' returned an unexpected shape during hardDeleteWorkspace — ` +
+            `refusing to guess whether the relation exists. Nothing was deleted.`,
+        );
+      }
+      if (!row.table_exists) {
+        skippedTables.push(table, ...alsoSkipped);
+        log.warn(
+          { orgId, table, alsoSkipped },
+          "Relation absent during hardDeleteWorkspace — its DELETE was SKIPPED, so the purge is incomplete for this table (region-DB drift; migrate this region, then clear the residue with the orphaned-workspace sweep — the organization row is gone, so the purge endpoint cannot be re-run)",
+        );
+      }
+      return row.table_exists;
     };
 
     // ── Phase 1: Child tables with FK dependencies (delete children first) ──
@@ -3923,6 +4126,29 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     // dashboard_cards references dashboards via FK cascade
     const dashboardCards = await delRaw(
       `DELETE FROM dashboard_cards WHERE dashboard_id IN (SELECT id FROM dashboards WHERE org_id = $1) RETURNING 1`,
+    );
+
+    // dashboard_draft_card_cache → dashboard_user_drafts → dashboards (#5160).
+    // Both cascade, but both are deleted explicitly for the same reason
+    // `messages` is: neither carries a scope column, so a cascade is the ONLY
+    // thing that would remove them, and the cache holds `cached_rows` —
+    // materialized query RESULTS, i.e. customer data at rest. Grandchild first.
+    const dashboardDraftCardCache = await delRaw(
+      `DELETE FROM dashboard_draft_card_cache WHERE dashboard_id IN (SELECT id FROM dashboards WHERE org_id = $1) RETURNING 1`,
+    );
+    const dashboardUserDrafts = await delRaw(
+      `DELETE FROM dashboard_user_drafts WHERE dashboard_id IN (SELECT id FROM dashboards WHERE org_id = $1) RETURNING 1`,
+    );
+
+    // knowledge_links references knowledge_documents via FK cascade (#5160).
+    // No scope column of its own, so it goes via its parent's workspace_id.
+    const knowledgeLinks = await delRaw(
+      `DELETE FROM knowledge_links WHERE source_document_id IN (SELECT id FROM knowledge_documents WHERE workspace_id = $1) RETURNING 1`,
+    );
+
+    // suggestion_user_clicks references query_suggestions via FK cascade (#5160)
+    const suggestionUserClicks = await delRaw(
+      `DELETE FROM suggestion_user_clicks WHERE suggestion_id IN (SELECT id FROM query_suggestions WHERE org_id = $1) RETURNING 1`,
     );
 
     // ── Phase 2: All org_id tables ──
@@ -3964,31 +4190,60 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     const onboardingEmails = await del(`DELETE FROM onboarding_emails WHERE org_id = $1`);
     const piiColumnClassifications = await del(`DELETE FROM pii_column_classifications WHERE org_id = $1`);
     // scim_group_mappings ships in 0000_baseline.sql + migration 0152 (#4019),
-    // but the EU/APAC prod region DBs were observed missing it — and unlike the
-    // `subscription` deletes below, this DELETE had NO existence probe, so its
-    // `relation "scim_group_mappings" does not exist` aborted the ENTIRE purge
-    // transaction: a workspace could be soft-deleted but never GDPR-purged.
-    // Probe with to_regclass so a region with residual drift skips this one
-    // table instead of rolling the whole cascade back. The `subscription` probe
-    // below stays silent on a miss (a historically Better-Auth-only table whose
-    // probe predates 0152), but scim_group_mappings has always shipped in the
-    // baseline, so post-0152 an absent table here is pure drift — log it rather
-    // than skip silently.
+    // but the EU/APAC prod region DBs were observed missing it, and before the
+    // probe existed its `relation "scim_group_mappings" does not exist` aborted
+    // the ENTIRE purge transaction: a workspace could be soft-deleted but never
+    // GDPR-purged. `tableExists` (defined above) skips this one table instead of
+    // rolling the whole cascade back, and records the skip so the operator is
+    // not told the purge was complete.
+    //
+    // Only two of the ~95 relations here are probed, and that asymmetry is a
+    // decision rather than an oversight: these are the two with observed region
+    // drift. For every other table an absent relation aborts the transaction,
+    // which is the SAFER failure (nothing is deleted, nothing is claimed) but
+    // also a workspace that cannot be purged until the region is migrated. The
+    // route surfaces the aborting relation's name so that is diagnosable.
     let scimGroupMappings = 0;
-    const scimTableProbe = await client.query(
-      `SELECT to_regclass('public.scim_group_mappings') IS NOT NULL AS table_exists`,
-    );
-    if ((scimTableProbe.rows[0] as { table_exists?: boolean } | undefined)?.table_exists === true) {
+    if (await tableExists("scim_group_mappings")) {
       scimGroupMappings = await del(`DELETE FROM scim_group_mappings WHERE org_id = $1`);
-    } else {
-      log.warn(
-        { orgId },
-        "scim_group_mappings absent during hardDeleteWorkspace — skipping its DELETE (region-DB drift; migration 0152 should have repaired this)",
-      );
     }
     const sandboxCredentials = await del(`DELETE FROM sandbox_credentials WHERE org_id = $1`);
     const dashboards = await del(`DELETE FROM dashboards WHERE org_id = $1`);
     const oauthState = await del(`DELETE FROM oauth_state WHERE org_id = $1`);
+
+    // ── Phase 2b: org_id tables the purge never reached until #5160 ──
+    // Enumerated mechanically against db/schema.ts rather than from memory —
+    // `lib/db/purge-scope.ts` carries the per-table rationale and the tripwire
+    // that fails CI when a new org_id/workspace_id table appears with no
+    // decision. NOTHING in schema.ts has an FK to `organization`, so the
+    // `DELETE FROM organization` in Phase 5 cascades to none of these.
+    //
+    // agent_runs.transcript and agent_session_memory.value hold verbatim agent
+    // traces (ADR-0020); both also cascade from conversations, but they carry
+    // org_id, so they are deleted explicitly like `messages`.
+    const agentRuns = await del(`DELETE FROM agent_runs WHERE org_id = $1`);
+    const agentSessionMemory = await del(`DELETE FROM agent_session_memory WHERE org_id = $1`);
+    const adminActionRetentionConfig = await del(
+      `DELETE FROM admin_action_retention_config WHERE org_id = $1`,
+    );
+    // Profiled schema, sample-derived statistics and verbatim customer table
+    // names — the semantic layer's operational half.
+    const connectionGroupDescriptions = await del(
+      `DELETE FROM connection_group_descriptions WHERE org_id = $1`,
+    );
+    const connectionProfileState = await del(`DELETE FROM connection_profile_state WHERE org_id = $1`);
+    const semanticProfileStatus = await del(`DELETE FROM semantic_profile_status WHERE org_id = $1`);
+    const learnedPatternInjections = await del(
+      `DELETE FROM learned_pattern_injections WHERE org_id = $1`,
+    );
+    const userFavoritePrompts = await del(`DELETE FROM user_favorite_prompts WHERE org_id = $1`);
+    const mcpActionPolicy = await del(`DELETE FROM mcp_action_policy WHERE org_id = $1`);
+    const overageMeterReports = await del(`DELETE FROM overage_meter_reports WHERE org_id = $1`);
+    const workspaceModelCatalog = await del(`DELETE FROM workspace_model_catalog WHERE org_id = $1`);
+    // Pending sends only for THIS org. A NULL org_id row is a session-less flow
+    // (password reset) and is not workspace data — scoping on `= $1` already
+    // excludes NULL, and that exclusion is deliberate, not incidental.
+    const emailOutbox = await del(`DELETE FROM email_outbox WHERE org_id = $1`);
 
     // Integration tables (org_id). teams/telegram/gchat/whatsapp_installations
     // were dropped by migration 0119 (#3161) — those static-bot installs live
@@ -4017,6 +4272,85 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     const integrationCredentials = await del(`DELETE FROM integration_credentials WHERE workspace_id = $1`);
     const twentyIntegrations = await del(`DELETE FROM twenty_integrations WHERE workspace_id = $1`);
 
+    // ── Phase 3c: Company Atlas / brain pillar (ADR-0036/0037) — #5160 ──
+    //
+    // The headline gap. These are workspace_id-keyed with NO FK to
+    // `organization` (0180_brain_substrate.sql:63-67 says so explicitly), so
+    // nothing here ever cascaded, and `brain_facts` is bi-temporal
+    // invalidate-never-delete by design — schema.ts states "Nothing DELETEs".
+    // The purge is therefore the ONLY mechanism that can remove a workspace's
+    // claims, and until now it did not, while the endpoint answered "All data
+    // has been irreversibly removed".
+    //
+    // DELETE ORDER IS LOAD-BEARING — two FKs here are RESTRICT, not CASCADE, so
+    // the referencing side must go first or the whole purge transaction aborts:
+    //   brain_facts → brain_episodes                 (restrict)
+    //   brain_vocabulary_target → brain_vocabulary_edge (restrict)
+    // brain_edges references both facts and episodes (cascade), so it leads.
+    const brainEdges = await del(`DELETE FROM brain_edges WHERE workspace_id = $1`);
+    const brainFacts = await del(`DELETE FROM brain_facts WHERE workspace_id = $1`);
+    const brainEpisodes = await del(`DELETE FROM brain_episodes WHERE workspace_id = $1`);
+    const brainVocabularyTarget = await del(`DELETE FROM brain_vocabulary_target WHERE workspace_id = $1`);
+    const brainVocabularyEdge = await del(`DELETE FROM brain_vocabulary_edge WHERE workspace_id = $1`);
+    const brainVocabularyProposal = await del(
+      `DELETE FROM brain_vocabulary_proposal WHERE workspace_id = $1`,
+    );
+    const brainPredicateCardinality = await del(
+      `DELETE FROM brain_predicate_cardinality WHERE workspace_id = $1`,
+    );
+    const brainAudienceReverifyAttempt = await del(
+      `DELETE FROM brain_audience_reverify_attempt WHERE workspace_id = $1`,
+    );
+    // Resolved identities backing the `audience:` ACL arm — email joins and
+    // SSO-domain narrowing, so squarely personal data.
+    const factAudienceMember = await del(`DELETE FROM fact_audience_member WHERE workspace_id = $1`);
+
+    // ── Phase 3d: Knowledge Base pillar (ADR-0028) — #5160 ──
+    // knowledge_links was already removed in Phase 1 (it scopes via its parent).
+    // knowledge_sync_credentials is AES-256-GCM ciphertext — a secret at rest
+    // that survived every purge until now.
+    const knowledgeDocuments = await del(`DELETE FROM knowledge_documents WHERE workspace_id = $1`);
+    const knowledgeSyncCredentials = await del(
+      `DELETE FROM knowledge_sync_credentials WHERE workspace_id = $1`,
+    );
+    const knowledgeSyncState = await del(`DELETE FROM knowledge_sync_state WHERE workspace_id = $1`);
+
+    // ── Phase 3e: Remaining workspace_id / reference_id tables — #5160 ──
+    // Proactive chat (enterprise-gated) kept per-workspace config, pause state
+    // and human review verdicts across a purge.
+    const workspaceProactiveConfig = await del(
+      `DELETE FROM workspace_proactive_config WHERE workspace_id = $1`,
+    );
+    const channelProactiveConfig = await del(
+      `DELETE FROM channel_proactive_config WHERE workspace_id = $1`,
+    );
+    const proactivePauses = await del(`DELETE FROM proactive_pauses WHERE workspace_id = $1`);
+    const proactiveMeterEvents = await del(`DELETE FROM proactive_meter_events WHERE workspace_id = $1`);
+    const proactiveClassificationReview = await del(
+      `DELETE FROM proactive_classification_review WHERE workspace_id = $1`,
+    );
+    const proactivePublicDataset = await del(
+      `DELETE FROM proactive_public_dataset WHERE workspace_id = $1`,
+    );
+    // Lead-capture events attributed to this workspace; the payload holds
+    // email addresses (0106, #2849).
+    const crmOutbox = await del(`DELETE FROM crm_outbox WHERE workspace_id = $1`);
+    // Cross-workspace agent identity (#2073). NOTE the column split, which is
+    // the naming trap `purge-scope.ts`'s WORKSPACE_SCOPE_COLUMNS exists to
+    // catch: `oauth_client_workspace_grants` scopes by `workspace_id`, but its
+    // two siblings scope by `reference_id` (migration 0051: "reference_id is
+    // the workspace/org id"). A guard that only knew the first two column
+    // names reported these unscoped, which is how they slipped the purge.
+    const oauthClientWorkspaceGrants = await del(
+      `DELETE FROM oauth_client_workspace_grants WHERE workspace_id = $1`,
+    );
+    const oauthClientWorkspaceScope = await del(
+      `DELETE FROM oauth_client_workspace_scope WHERE reference_id = $1`,
+    );
+    const oauthClientRateLimits = await del(
+      `DELETE FROM oauth_client_rate_limits WHERE reference_id = $1`,
+    );
+
     // ── Phase 3b: Stripe billing linkage rows (#3425) ──
     // Better Auth creates the @better-auth/stripe `subscription` table only on
     // Stripe deployments (STRIPE_SECRET_KEY), but migration 0152 (#4019) now also
@@ -4030,12 +4364,17 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     // go before the subscription rows.
     let subscriptions = 0;
     let stripeWebhookEvents = 0;
-    const subscriptionTableProbe = await client.query(
-      `SELECT to_regclass('public.subscription') IS NOT NULL AS table_exists`,
-    );
-    const subscriptionTableExists =
-      (subscriptionTableProbe.rows[0] as { table_exists?: boolean } | undefined)?.table_exists === true;
-    if (subscriptionTableExists) {
+    // Probed through the same helper as scim_group_mappings (#5160), which means
+    // a miss now WARNS and is reported instead of passing silently. The old
+    // silent skip lost three things at once and told the operator nothing: the
+    // billable linkage #3425 exists to remove, the webhook ledger rows, and the
+    // #3468 tombstone — without which post-commit cancellation webhooks
+    // immediately regrow the ledger rows a completed purge just cleared.
+    // The two relations named here are not probed themselves — they are the work
+    // that silently does not happen when `subscription` is absent, and without
+    // them the operator is told one relation was skipped when three operations
+    // were.
+    if (await tableExists("subscription", ["stripe_webhook_events", "stripe_purged_subscriptions"])) {
       // Tombstone the purged subscription ids FIRST (#3468): the remote
       // teardown's cancellations generate `customer.subscription.deleted`
       // webhooks that arrive after this transaction commits, and the
@@ -4108,6 +4447,85 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
       orphanedUsers = userResult.rows.length;
     }
 
+    // ── Phase 4b: Anonymize the operator accountability trail (#5160) ──
+    //
+    // admin_action_log is the one workspace-scoped table that is deliberately
+    // NOT deleted: it is the record of what operators DID to this workspace,
+    // and an erasure that destroys its own audit trail cannot be shown to have
+    // happened correctly. Scrubbing the identifying columns satisfies the DPA's
+    // Personal Data obligation while keeping the action sequence auditable.
+    //
+    // ⚠️ The purge's OWN row is not among the rows scrubbed here, and an earlier
+    // draft of this comment claimed it was. `logAdminAction` for the purge runs
+    // in the route AFTER this function returns, and it stamps `org_id` from the
+    // acting platform admin's active organization — not the purged workspace —
+    // so it falls outside this `WHERE` either way. What is preserved is the
+    // history of PRIOR operator actions on this workspace, which is the real
+    // argument; the "would erase the evidence of this purge" version described
+    // a mechanism that cannot fire.
+    //
+    // This is not a new mechanism — it is exactly the scrub F-36 (migration
+    // 0035) built for the right-to-erasure contract, and the reason actor_id /
+    // actor_email are nullable at all. The pre-existing F-36 endpoint keys on
+    // `actor_id = userId`, so a workspace purge never reached it; the purge
+    // therefore performs the org-scoped scrub itself.
+    //
+    // ⚠️ `metadata` and `target_id` are scrubbed too, and leaving them was a
+    // real hole rather than a nicety: `admin-mfa-reset.ts` writes
+    // `metadata.targetUserEmail`, and `target_id` is a member's user id on any
+    // user-targeted action. Nulling only actor_id/actor_email/ip_address left a
+    // purged workspace's member emails sitting in the table under a response
+    // that said the identifiers were gone — the same class of overstatement
+    // #5160 was filed about. `target_id` is NOT NULL, so it takes a sentinel
+    // rather than a NULL.
+    //
+    // `metadata` is nulled WHOLESALE rather than having known keys stripped. A
+    // key denylist (`metadata - 'targetUserEmail' - 'email' …`) was written first
+    // and rejected: it has the identical defect as pinning a column list, one
+    // level down — the next writer to put an email under a new key inherits a
+    // stale decision silently, and metadata is free-form jsonb written from a
+    // dozen call sites, so no list can be complete by construction. What the
+    // accountability trail actually needs is WHAT happened, WHEN, and TO WHICH
+    // workspace, and `action_type` / `target_type` / `timestamp` / `org_id` all
+    // survive to say so.
+    //
+    // ⚠️ The predicate is "not already FULLY scrubbed", not `anonymized_at IS
+    // NULL`, and the difference is a hole this change would otherwise have
+    // opened. `anonymized_at` was the right test while the scrub only touched
+    // the actor columns — but the F-36 endpoint stamps it after nulling ONLY
+    // actor_id/actor_email, so a row erased by F-36 first would then be SKIPPED
+    // here and keep its `metadata` and `target_id` — the member-identifying
+    // columns this change was widened to catch — forever. Found by the
+    // falsifier: widening the columns without widening the predicate left a
+    // pre-scrubbed row holding a member email through a completed purge.
+    //
+    // Stated as a residue check rather than a timestamp check, so the predicate
+    // cannot drift out of step with the SET list again: a row is skipped only
+    // when every column below already holds its scrubbed value. That keeps the
+    // count honest ("rows this purge scrubbed") AND keeps the write idempotent —
+    // a second run over fully-scrubbed rows matches nothing.
+    const anonymizeResult = await client.query(
+      `UPDATE admin_action_log
+          SET actor_id = NULL,
+              actor_email = NULL,
+              ip_address = NULL,
+              target_id = '[purged]',
+              metadata = NULL,
+              anonymized_at = now()
+        WHERE org_id = $1
+          AND NOT (
+            actor_id IS NULL
+            AND actor_email IS NULL
+            AND ip_address IS NULL
+            AND metadata IS NULL
+            AND target_id = '[purged]'
+            AND anonymized_at IS NOT NULL
+          )
+        RETURNING 1`,
+      [orgId],
+    );
+    const adminActionLogAnonymized = anonymizeResult.rows.length;
+
     // ── Phase 5: Delete the organization row itself ──
 
     const organization = await del(`DELETE FROM organization WHERE id = $1`);
@@ -4164,10 +4582,50 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
       twentyIntegrations,
       subscriptions,
       stripeWebhookEvents,
+      brainFacts,
+      brainEdges,
+      brainEpisodes,
+      brainVocabularyEdge,
+      brainVocabularyTarget,
+      brainVocabularyProposal,
+      brainPredicateCardinality,
+      brainAudienceReverifyAttempt,
+      factAudienceMember,
+      knowledgeDocuments,
+      knowledgeLinks,
+      knowledgeSyncCredentials,
+      knowledgeSyncState,
+      agentRuns,
+      agentSessionMemory,
+      adminActionRetentionConfig,
+      connectionGroupDescriptions,
+      connectionProfileState,
+      semanticProfileStatus,
+      learnedPatternInjections,
+      suggestionUserClicks,
+      dashboardUserDrafts,
+      dashboardDraftCardCache,
+      userFavoritePrompts,
+      mcpActionPolicy,
+      oauthClientWorkspaceGrants,
+      oauthClientWorkspaceScope,
+      oauthClientRateLimits,
+      overageMeterReports,
+      workspaceModelCatalog,
+      workspaceProactiveConfig,
+      channelProactiveConfig,
+      proactivePauses,
+      proactiveMeterEvents,
+      proactiveClassificationReview,
+      proactivePublicDataset,
+      emailOutbox,
+      crmOutbox,
+      adminActionLogAnonymized,
       members,
       betterAuthInvitations,
       orphanedUsers,
       organization,
+      skippedTables,
     };
   } catch (err) {
     await client.query("ROLLBACK").catch((rbErr: unknown) => {
@@ -4177,6 +4635,37 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
         "ROLLBACK failed after purge transaction error — client will be destroyed",
       );
     });
+    // Region drift gets a message that names its own cause (#5160). Only two of
+    // the ~95 relations are probed, so for every other one an absent table or
+    // column aborts the whole transaction — the safe failure, but one that
+    // otherwise reaches the operator as a bare 500 with the relation name
+    // available only in server logs. The outcome is "this workspace cannot be
+    // GDPR-purged until this region is migrated", which is exactly the kind of
+    // thing the response should say rather than imply.
+    const code =
+      typeof err === "object" && err !== null && "code" in err
+        ? String((err as { code: unknown }).code)
+        : undefined;
+    if (code === "42P01" || code === "42703") {
+      const detail = err instanceof Error ? err.message : String(err);
+      log.error(
+        { orgId, code, err: detail },
+        "hardDeleteWorkspace aborted on a missing relation or column — this region's schema is behind",
+      );
+      // A PurgeAbortedError, not a plain Error: the route maps it to a 409 and
+      // the message reaches the operator. `cause` is preserved so the pg error
+      // (and its SQLSTATE) is still available to anything downstream.
+      //
+      // "Re-purge" IS the right remedy here, unlike the skipped-table path: this
+      // transaction ROLLED BACK, so the organization row still exists and the
+      // endpoint can be run again once the region is migrated.
+      throw new PurgeAbortedError(
+        "region_schema_behind",
+        `Purge aborted: this region's schema is missing a relation or column the purge names (${detail}). ` +
+          `Nothing was deleted. Run this region's migrations, then purge again.`,
+        { cause: err },
+      );
+    }
     throw err;
   } finally {
     client.release(rollbackErr ?? undefined);

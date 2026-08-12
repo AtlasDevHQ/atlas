@@ -1,11 +1,9 @@
 /**
- * Unit tests for the shared email recipient-domain gate (#3341, #4479).
+ * Unit tests for the shared email recipient-domain gate (#3341, #4479, #4663).
  *
  * Real modules throughout (no `mock.module()`) — the gate's two seams are
  * injectable (`resolveMemberEmails`) or env-backed (settings resolution
- * falls through to env when no internal DB row exists). The deprecation
- * warn itself is asserted in `recipient-gate-warn.test.ts` (which needs a
- * logger mock and so lives in its own file for the isolated runner).
+ * falls through to env when no internal DB row exists).
  */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 
@@ -14,12 +12,22 @@ import {
   normalizeEmailAddress,
   resetRecipientGateWarnsForTests,
   EMAIL_RECIPIENT_DOMAINS_SETTING,
-  LEGACY_EMAIL_DOMAINS_ENV,
 } from "@atlas/api/lib/email/recipient-gate";
 
 const WSID = "ws-recipient-gate-test";
 
-const ENV_KEYS = [EMAIL_RECIPIENT_DOMAINS_SETTING, LEGACY_EMAIL_DOMAINS_ENV] as const;
+/**
+ * The env knob #4663 retired. A removal is only verifiable if something SETS
+ * the removed name and watches it do nothing, so this literal is the
+ * experiment, not a read — it appears nowhere in shipped code, and every
+ * occurrence in a test is a set-and-assert-inert fixture like this one.
+ * Each suite declares its own rather than sharing one, so that a grep of
+ * shipped code stays the acceptance check and no suite imports a fixture
+ * from another suite's file.
+ */
+const RETIRED_DOMAINS_ENV = "ATLAS_EMAIL_ALLOWED_DOMAINS";
+
+const ENV_KEYS = [EMAIL_RECIPIENT_DOMAINS_SETTING, RETIRED_DOMAINS_ENV] as const;
 const saved: Record<string, string | undefined> = {};
 
 beforeEach(() => {
@@ -27,6 +35,11 @@ beforeEach(() => {
     saved[key] = process.env[key];
     delete process.env[key];
   }
+  // Nothing in this file trips the no-internal-DB latch (every test injects
+  // `resolveMemberEmails`), and this file uses the real logger so it could
+  // not assert on the warn anyway — the assertion lives in
+  // `lib/tools/actions/__tests__/email-recipient-gate.test.ts`. This call is
+  // hygiene for a future test that drops the injected resolver.
   resetRecipientGateWarnsForTests();
 });
 
@@ -164,37 +177,86 @@ describe("checkRecipientsAllowed — single-address enforcement", () => {
   });
 });
 
-describe("checkRecipientsAllowed — legacy ATLAS_EMAIL_ALLOWED_DOMAINS fallback (#4479 → #4663)", () => {
-  it("honors the deprecated knob when the surviving setting is unconfigured", async () => {
-    process.env[LEGACY_EMAIL_DOMAINS_ENV] = "legacy.example";
-    const result = await checkRecipientsAllowed(WSID, ["a@legacy.example"], members());
-    expect(result.allowed).toBe(true);
+describe("checkRecipientsAllowed — unconfigured survivor is members-only (#4663)", () => {
+  // #4663 dropped the retired env-only fallback domain list, and the failure
+  // mode to fear is a removal that WIDENS the allowed set. Asserting the end
+  // state cannot catch that — "unset survivor ⇒ members only" is true of the
+  // code before this change too. So the `beforeEach` SETS the retired knob to
+  // domains two recipients belong to, and the three tests with a non-member
+  // recipient watch it contribute nothing.
+  //
+  // Those three are three DIFFERENT falsifiers, not three witnesses to one —
+  // no single reintroduction shape reddens all of them, so none is redundant.
+  // Measured against this suite (18 tests):
+  //
+  //   unset survivor          a `?? process.env[retired]` re-add       18 -> 17
+  //   survivor cleared to ""  a `||`-shaped re-add reading "" as absent 18 -> 16
+  //   survivor authoritative  a union that merges instead of replacing  18 -> 15
+  //
+  // The middle two cannot redden on a plain `??` re-add: `??` treats both a
+  // configured "" and a configured value as present, so the retired tier is
+  // never reached. That precedence is the point of the pair.
+  //
+  // The fixture is also deliberately asymmetric so a resolver that returned
+  // some OTHER non-empty domain set cannot slip through: two members pass,
+  // two non-members on two distinct domains are blocked, and the blocked
+  // list is asserted by equality rather than membership.
+  //
+  // The fourth test is a positive control and is labelled as such: its
+  // recipients are all members, so `memberEmails.has(...)` short-circuits
+  // before the domain set is consulted and NO widening mutation can redden
+  // it. It is a readable in-block sanity check, nothing more.
+  const RECIPIENTS = [
+    "Member@Corp.Example",
+    "second@corp.example",
+    "a@partner.example",
+    "b@retired-knob.example",
+  ] as const;
+  const MEMBERS = members("member@corp.example", "second@corp.example");
+  const BLOCKED = ["a@partner.example", "b@retired-knob.example"];
+
+  beforeEach(() => {
+    process.env[RETIRED_DOMAINS_ENV] = "retired-knob.example, partner.example";
   });
 
-  it("ignores the deprecated knob when the surviving setting is set", async () => {
-    process.env[EMAIL_RECIPIENT_DOMAINS_SETTING] = "partner.example";
-    process.env[LEGACY_EMAIL_DOMAINS_ENV] = "legacy.example";
-    const result = await checkRecipientsAllowed(WSID, ["a@legacy.example"], members());
+  it("blocks every non-member when the surviving setting is unset", async () => {
+    const result = await checkRecipientsAllowed(WSID, [...RECIPIENTS], MEMBERS);
     expect(result.allowed).toBe(false);
+    if (!result.allowed) expect(result.blocked).toEqual(BLOCKED);
   });
 
-  it("ignores the deprecated knob when the surviving setting is explicitly cleared", async () => {
-    // "" is an explicit members-only policy, not an absence — a lingering
-    // legacy env var must not silently widen it (#4479 review finding).
+  it('blocks every non-member when the surviving setting is cleared to ""', async () => {
+    // "" is an explicit members-only policy; post-#4663 it is also what an
+    // absent setting means, so the two cases must agree — and neither may
+    // re-expose the retired knob's list (the #4479 review finding, now the
+    // permanent state rather than a fallback precedence rule).
     process.env[EMAIL_RECIPIENT_DOMAINS_SETTING] = "";
-    process.env[LEGACY_EMAIL_DOMAINS_ENV] = "legacy.example";
-    const result = await checkRecipientsAllowed(WSID, ["a@legacy.example"], members());
+    const result = await checkRecipientsAllowed(WSID, [...RECIPIENTS], MEMBERS);
     expect(result.allowed).toBe(false);
+    if (!result.allowed) expect(result.blocked).toEqual(BLOCKED);
   });
 
-  it("still allows workspace members alongside the legacy domain list", async () => {
-    process.env[LEGACY_EMAIL_DOMAINS_ENV] = "legacy.example";
+  // POSITIVE CONTROL, not part of the experiment — see the note above. Its
+  // coverage is redundant: the three tests above already prove both members
+  // passed the filter (they are absent from the asserted blocked list), and
+  // inverting the `blocked.length === 0` allow verdict reddens five tests
+  // elsewhere in this file. Kept as a readable in-block sanity check.
+  it("allows workspace members when nothing is configured", async () => {
     const result = await checkRecipientsAllowed(
       WSID,
-      ["member@corp.example", "a@legacy.example"],
-      members("member@corp.example"),
+      ["Member@Corp.Example", "second@corp.example"],
+      MEMBERS,
     );
     expect(result.allowed).toBe(true);
+  });
+
+  it("keeps the surviving setting authoritative while the retired knob is set", async () => {
+    // The other direction: the survivor is what widens the set, and it does
+    // so without the retired knob contributing its own extra domain.
+    process.env[EMAIL_RECIPIENT_DOMAINS_SETTING] = "partner.example";
+    const result = await checkRecipientsAllowed(WSID, [...RECIPIENTS], MEMBERS);
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) expect(result.blocked).toEqual(["b@retired-knob.example"]);
   });
 });
 

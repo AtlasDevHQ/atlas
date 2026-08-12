@@ -545,9 +545,11 @@ describe("createSendEmailTool — execute paths", () => {
 
 describe("sendEmail recipient allowlist (#3341)", () => {
   const SETTING = "ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS";
-  // Since #4479 the gate also honors the deprecated ATLAS_EMAIL_ALLOWED_DOMAINS
-  // env knob as a fallback — clear both so ambient env can't flip these tests.
-  const GATE_ENV_KEYS = [SETTING, "ATLAS_EMAIL_ALLOWED_DOMAINS"] as const;
+  // Since #4663 this is the gate's only domain source — clear it so ambient
+  // env can't flip these tests, and so the blocked cases below assert the
+  // unconfigured (workspace-members-only) default on this path.
+  const RETIRED_DOMAINS_ENV = "ATLAS_EMAIL_ALLOWED_DOMAINS";
+  const GATE_ENV_KEYS = [SETTING, RETIRED_DOMAINS_ENV] as const;
   const savedDomains: Record<string, string | undefined> = {};
 
   beforeEach(() => {
@@ -555,6 +557,12 @@ describe("sendEmail recipient allowlist (#3341)", () => {
       savedDomains[key] = process.env[key];
       delete process.env[key];
     }
+    // #4663: set the retired knob to the blocked recipients' domain and watch
+    // it do nothing. Without this the blocked cases assert only an end state
+    // that was already true before the fallback was dropped, so a resolver
+    // that consulted the knob again would be invisible on THIS path — the
+    // other agent email path named in the acceptance criterion.
+    process.env[RETIRED_DOMAINS_ENV] = "evil.example";
   });
 
   afterEach(() => {

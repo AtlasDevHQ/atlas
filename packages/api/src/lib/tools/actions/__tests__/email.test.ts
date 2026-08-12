@@ -46,9 +46,12 @@ let mockRequestContext:
 
 // ---------------------------------------------------------------------------
 // Mock the shared recipient gate (#4479) — the gate's own behavior
-// (member/domain boundary, legacy-knob fallback, fail-closed) is unit-tested
-// in lib/email/__tests__/recipient-gate.test.ts; here we verify the action
-// wires recipients through it and honors its verdict.
+// (member/domain boundary, members-only when the setting is unconfigured,
+// fail-closed) is unit-tested in lib/email/__tests__/recipient-gate.test.ts;
+// here we verify the action wires recipients through it and honors its
+// verdict. The same action against the REAL gate is pinned in
+// ./email-recipient-gate.test.ts — which must not share a process with this
+// file, since the mock below is global.
 // ---------------------------------------------------------------------------
 
 type GateResult =
@@ -60,7 +63,6 @@ let lastGateCall: { workspaceId: string | undefined; to: readonly string[] } | n
 
 void mock.module("@atlas/api/lib/email/recipient-gate", () => ({
   EMAIL_RECIPIENT_DOMAINS_SETTING: "ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS",
-  LEGACY_EMAIL_DOMAINS_ENV: "ATLAS_EMAIL_ALLOWED_DOMAINS",
   checkRecipientsAllowed: async (workspaceId: string | undefined, to: readonly string[]) => {
     lastGateCall = { workspaceId, to };
     return mockGateResult;

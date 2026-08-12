@@ -1641,24 +1641,40 @@ describe("labelDriftNote — reports a relabel without gating it (#5128)", () =>
     // from the substance check and would satisfy this assertion with the
     // pass-only guard deleted. A mutation confirmed exactly that.
     //
-    // The `latency` branch is one of three places a keyed answer can match on
-    // substance and still be graded `fail` — `protocol` (unparseable) and
-    // `protocol` (transport) are the others, and all three return before
-    // `gradeByMode`. It is simply the cheapest of the three to construct. The
-    // note is suppressed on all of them: the artifact already carries the
-    // expectation, and a "matched but relabelled" line beside a failure verdict
-    // reads as a second, contrary verdict.
+    // ⚠️ THIS USED TO RIDE ON `latency`, and #5039 removed that route. Latency
+    // now warns instead of failing, so the old construction returns `pass` —
+    // and the assertion below is `toBeNull()`, which a passing outcome can
+    // satisfy for an entirely different reason. Left alone it would not have
+    // gone red; it would have gone VACUOUS, still green, testing nothing.
+    //
+    // `protocol` (transport) is now the cheapest of the two remaining places a
+    // keyed answer can match on substance and still be graded `fail`; both
+    // return before `gradeByMode`. The note is suppressed on all of them: the
+    // artifact already carries the expectation, and a "matched but relabelled"
+    // line beside a failure verdict reads as a second, contrary verdict.
     const out = grade({
       question: q,
-      toolCalls: relabelled,
+      toolCalls: [
+        ...relabelled,
+        {
+          name: "explore",
+          args: { command: "ls -la" },
+          contract: "text",
+          latencyMs: 3,
+          result: {
+            kind: "error",
+            envelope: { __transport: true, error: "socket hang up", errorName: "AbortError" },
+          },
+        },
+      ],
       finalText: "",
       latencyMs: 9_000,
-      baseline: { "cq-016": 1_000 },
+      baseline: undefined,
       metricExpectations: undefined,
       answerExpectations: { "cq-016": PROMO_GROUND_TRUTH },
     });
     expect(out.status).toBe("fail");
-    if (out.status === "fail") expect(out.artifact.category).toBe("latency");
+    if (out.status === "fail") expect(out.artifact.category).toBe("protocol");
     expect(labelDriftNote(out, PROMO_GROUND_TRUTH)).toBeNull();
   });
 });
@@ -2209,7 +2225,12 @@ describe("grade", () => {
     }
   });
 
-  it("emits a latency artifact when dispatch exceeds baseline by >25% (after a successful answer)", () => {
+  // ⚠️ This asserted `status === "fail"` until #5039. Latency now WARNS instead
+  // of gating: a slow answer is still an answer, and a single-sample baseline
+  // measured -29%..+71% run-to-run cannot decide a release. The signal has to
+  // survive that change, so the assertion moved from the verdict to the
+  // warning rather than being deleted with the failure it used to ride on.
+  it("warns — but does NOT fail — when dispatch exceeds baseline by >25%", () => {
     const q = metricQuestion("cq-001", "total_gmv");
     const calls = [
       call(
@@ -2227,11 +2248,37 @@ describe("grade", () => {
       metricExpectations: METRIC_EXPECTATIONS,
       answerExpectations: undefined,
     });
-    expect(out.status).toBe("fail");
-    if (out.status === "fail") {
-      expect(out.artifact.category).toBe("latency");
-      expect(out.artifact.summary).toContain("exceeded baseline");
+    expect(out.status).toBe("pass");
+    if (out.status === "pass") {
+      expect(out.latencyWarning).toBeDefined();
+      expect(out.latencyWarning?.summary).toContain("exceeded baseline");
+      expect(out.latencyWarning?.baselineMs).toBe(100);
+      expect(out.latencyWarning?.ceilingMs).toBe(125);
     }
+  });
+
+  // The other half of the pair. Without it, a grader that attached the warning
+  // unconditionally would satisfy the case above.
+  it("attaches no latency warning when dispatch is within 25% of baseline", () => {
+    const q = metricQuestion("cq-001", "total_gmv");
+    const calls = [
+      call(
+        "runMetric",
+        { id: "total_gmv" },
+        { kind: "ok", data: { id: "total_gmv", sql: "...", columns: ["v"], rows: [{ v: 1 }] } },
+      ),
+    ];
+    const out = __forTesting__.grade({
+      question: q,
+      toolCalls: calls,
+      finalText: "$1",
+      latencyMs: 110,
+      baseline: { "cq-001": 100 },
+      metricExpectations: METRIC_EXPECTATIONS,
+      answerExpectations: undefined,
+    });
+    expect(out.status).toBe("pass");
+    if (out.status === "pass") expect(out.latencyWarning).toBeUndefined();
   });
 
   it("does NOT emit latency when dispatch is within 25% of baseline", () => {
@@ -2831,6 +2878,53 @@ describe("readBaseline / writeBaseline", () => {
 
   it("returns undefined when the file does not exist", () => {
     expect(readBaseline(tmpPath())).toBeUndefined();
+  });
+
+  // ⚠️ Asserts the COMMITTED baseline, not a fixture — the only test here that
+  // does. Every other case builds its own file, so all of them stayed green
+  // for the entire period the real baseline was the 3 bytes `{}` it was
+  // created with (#5039). `readBaseline` treats a missing entry as "no
+  // baseline yet" and says nothing, so an emptied or truncated baseline
+  // degrades the latency early-warning signal SILENTLY: the job keeps
+  // passing, and the only symptom is a regression it can no longer see.
+  //
+  // Seeded from the `v0.2.5` tag run (merged code, valid JSON only after
+  // #5148 fixed stdout) — never from a local run, which #5122-era history
+  // shows were taken on a broken whitelist or a mid-flight grader.
+  describe("the committed baseline", () => {
+    const committed = path.resolve(
+      __dirname,
+      "../../../eval/canonical-questions/mcp-llm-baseline.json",
+    );
+
+    it("is populated, and every entry survives readBaseline's filter", () => {
+      const out = readBaseline(committed);
+      expect(out).toBeDefined();
+      const entries = Object.entries(out ?? {});
+      expect(entries.length).toBeGreaterThan(0);
+      // `readBaseline` drops non-finite and <= 0 values. If the committed file
+      // ever disagrees with what it yields, some entries are being silently
+      // discarded and the signal is thinner than the file suggests.
+      const onDisk = JSON.parse(fs.readFileSync(committed, "utf-8")) as Record<string, unknown>;
+      expect(entries.length).toBe(Object.keys(onDisk).length);
+      for (const [id, ms] of entries) {
+        expect(id).toMatch(/^cq-\d{3}$/);
+        expect(ms).toBeGreaterThan(0);
+      }
+    });
+
+    it("covers every canonical question", () => {
+      const yml = fs.readFileSync(
+        path.resolve(__dirname, "../../../eval/canonical-questions/questions.yml"),
+        "utf-8",
+      );
+      const asked = [...new Set([...yml.matchAll(/^\s*-?\s*id:\s*"?(cq-\d{3})"?/gm)].map((m) => m[1]))];
+      expect(asked.length).toBeGreaterThan(0);
+      const covered = Object.keys(readBaseline(committed) ?? {});
+      // A question added without regenerating the baseline has no latency
+      // signal at all, and nothing else would say so.
+      expect(covered.sort()).toEqual(asked.sort());
+    });
   });
 
   it("round-trips written entries", () => {

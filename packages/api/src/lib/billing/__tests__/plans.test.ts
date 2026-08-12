@@ -4,6 +4,8 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 
+import { PLAN_TIERS } from "@useatlas/types";
+
 import {
   getPlanDefinition,
   getPlanLimits,
@@ -165,7 +167,27 @@ describe("billing/plans", () => {
       expect(business.features.customDomain).toBe(true);
       expect(business.features.sso).toBe(true);
       expect(business.features.dataResidency).toBe(true);
-      expect(business.features.sla).toBe("99.9%");
+    });
+
+    // #5163 — the Business tier committed "99.9%" with no SLA document,
+    // measurement window, exclusion set, or credit schedule, and with no
+    // external monitoring on two of the three regions sold. `/terms`
+    // §Warranties warrants performance "as described in the documentation",
+    // which pulled that docs table cell into the contract.
+    //
+    // Asserted across EVERY tier, not just Business: the defect was one plan
+    // carrying a figure, so a test naming only that plan would pass again the
+    // moment the figure reappears on Pro. Restoring any value goes red here.
+    it("publishes no numeric SLA on any tier (#5163)", () => {
+      // Iterated from PLAN_TIERS rather than a hand-written array: the array
+      // spelled five of the six tiers (it omitted `locked`) while the comment
+      // above claimed EVERY tier, and it could never cover a tier added later —
+      // which is the same fixture-agrees-by-construction gap the claim is
+      // arguing against.
+      expect(PLAN_TIERS.length).toBeGreaterThan(0);
+      for (const tier of PLAN_TIERS) {
+        expect(getPlanDefinition(tier).features.sla).toBeNull();
+      }
     });
 
     it("every paid tier carries the flat $20/seat at-cost credit; free/locked carry none (#4034)", () => {

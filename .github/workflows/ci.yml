@@ -282,6 +282,15 @@ jobs:
       - name: Check SaaS env reference ↔ SAAS_ENV_KEYS drift (#3707)
         run: bash scripts/check-saas-env-doc.sh
 
+      - name: Check Company Atlas env reference ↔ settings registry (#5161)
+        run: bun scripts/check-brain-settings-doc.ts
+
+      # Proves the gate above can FAIL. Two of its arms were empirically silent
+      # in review (a reworded sentence, a digit count), and a third passed a
+      # renamed section because the heading was matched with indexOf.
+      - name: Adversarial fixtures for the Company Atlas doc gate (#5161)
+        run: bash scripts/__tests__/check-brain-settings-doc.test.sh
+
       - name: Check /auth.md ↔ .well-known discovery parity (#3825)
         # Runs from packages/api so the guard's `@atlas/api/*` imports resolve.
         run: cd packages/api && bun scripts/check-auth-md-discovery-parity.ts

@@ -30,7 +30,21 @@ export interface PlanFeatures {
   sso: boolean;
   /** Whether the plan supports data residency selection. */
   dataResidency: boolean;
-  /** SLA commitment, e.g. "99.9%". null = no SLA. */
+  /**
+   * Published SLA commitment. `null` on every plan today (#5163), and the
+   * field is kept rather than deleted because a negotiated per-contract SLA is
+   * the supported path and needs somewhere to land.
+   *
+   * ⚠️ A non-null value here is a CONTRACT TERM, not a marketing string.
+   * `/terms` §Warranties warrants that the Service "will materially perform as
+   * described in the documentation", and this field is rendered into the
+   * documentation's plan table — so any figure written here is warranted by
+   * reference. Before setting one, the availability has to be measurable from
+   * OUTSIDE the process being measured, per region sold, with a credit
+   * schedule and a claims path. `platform-sla.ts` is operator-facing and
+   * in-process; it cannot observe its own region's outage and is not that
+   * evidence.
+   */
   sla: string | null;
 }
 
@@ -296,7 +310,11 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
       customDomain: true,
       sso: true,
       dataResidency: true,
-      sla: "99.9%",
+      // #5163 — was "99.9%", with no SLA document, no measurement window, no
+      // exclusions, no credit schedule, and no external monitoring on two of
+      // the three regions sold. Business sells SSO, SCIM, unlimited seats and
+      // connections; uptime is sold unquantified, as /pricing already does.
+      sla: null,
     },
   },
 };

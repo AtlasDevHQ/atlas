@@ -85,12 +85,13 @@ const SECTIONS: LegalSectionData[] = [
       "Account data: name, email, organization, role, hashed password (or SSO subject identifier).",
       "Configuration data: semantic-layer YAML, validator rules, warehouse connection metadata (host, database, schema names — never credentials in plaintext).",
       "Operational data: query metadata (timestamp, gate outcomes, execution time, row count, error class). Query SQL and natural-language prompts are stored only when audit logging is enabled by the Customer admin.",
+      "Connected-source content: where a Customer admin installs a Knowledge Base or Company Atlas source, Atlas reads and stores content from the systems that source names, using credentials the Customer grants and limited to the channels, mailboxes, accounts, or spaces the Customer scopes it to. Depending on which sources are installed this includes chat history, meeting transcripts and recording metadata, mailbox contents, and documents from connected knowledge tools. Stored content keeps its authorship and participant identifiers, so it will contain personal data about the Customer’s employees and about third parties who corresponded with them. Atlas may additionally derive short factual claims from this content when the Customer enables extraction; the underlying content is stored whether or not extraction is enabled.",
       "Telemetry: IP address, browser user-agent, page-load timing, error stack traces. Telemetry is sampled and retained for 30 days.",
       "Security data: on signup and other abuse-sensitive endpoints we capture the client IP address and a bot-mitigation token to enforce rate limits and verify the request is human. The IP and token are sent to Cloudflare (Turnstile) for verification; per-IP and per-email attempt windows are kept transiently and swept automatically.",
       "Billing data: company name, billing address, tax ID, payment method tokens. We use Stripe as our payment processor; we never store full card numbers.",
     ],
     plain:
-      "Account info, your configuration, query metadata (query text only when your admin enables audit logging), error and performance telemetry, security/anti-abuse signals (IP + a bot-check token, verified by Cloudflare on signup), and billing details handled by Stripe.",
+      "Account info, your configuration, query metadata (query text only when your admin enables audit logging), error and performance telemetry, security/anti-abuse signals (IP + a bot-check token, verified by Cloudflare on signup), and billing details handled by Stripe. If your admin connects a Knowledge Base or Company Atlas source, we also store content from it — chat history, meeting transcripts, mailbox contents, or knowledge documents, depending on which sources are connected and what they are scoped to.",
   },
   {
     id: "why",
@@ -171,10 +172,11 @@ const SECTIONS: LegalSectionData[] = [
       "Account data: retained for the duration of the account plus 90 days after closure.",
       "Audit logs: 365 days by default; configurable per-workspace with a 7-day floor and a hard-delete delay for compliance export.",
       "Telemetry: 30 days, then aggregated and de-identified.",
+      "Connected-source content and derived claims: retained for the life of the workspace, with no automatic expiry window. Ingested content (chat messages, meeting transcripts, mail, knowledge documents) is kept so that answers stay reproducible and so that re-processing does not have to re-read the source. Derived factual claims are stored bi-temporally: correcting or superseding a claim marks the earlier one no longer current rather than removing it, so the record of what Atlas previously held — including the claim text — persists as history. Disconnecting a source stops further ingestion and destroys the stored credentials for it, but does not erase what was already ingested: Knowledge Base documents are archived and stop being used to answer questions, while Company Atlas evidence and the claims drawn from it are retained and remain searchable by the people already permitted to see them. Deleting the workspace deletes all of it, on the same term-plus-90-days schedule as account data, and is the only operation that removes Company Atlas evidence and superseded claims in bulk. A Customer admin can additionally withdraw an individual claim at any time, which marks it withdrawn and stops it being used.",
       "Backups: after deletion from production, data persists in encrypted backups for up to a further 90 days as those backups rotate — the same additional-90-day window stated in the Data Processing Addendum.",
     ],
     plain:
-      "Account data: term + 90 days. Audit logs: 365 days by default, configurable per-workspace (7-day floor). Telemetry: 30 days then aggregated. Encrypted backups: a further 90 days after deletion, matching the DPA.",
+      "Account data: term + 90 days. Audit logs: 365 days by default, configurable per-workspace (7-day floor). Telemetry: 30 days then aggregated. Content from connected sources and the claims drawn from it: kept for the life of the workspace with no expiry window. Disconnecting a source stops ingestion but doesn’t erase what was already collected — Knowledge Base documents are archived, Company Atlas evidence and claims are retained. Deleting the workspace deletes all of it. Encrypted backups: a further 90 days after deletion, matching the DPA.",
   },
   {
     id: "security",

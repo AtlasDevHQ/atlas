@@ -19,7 +19,9 @@ import {
   HOT_RELOADED_KEYS,
   isHotReloadedKey,
   securitySensitiveAuditFields,
+  settingsCacheEverLoaded,
   SECURITY_SENSITIVE_KEYS,
+  type SecuritySensitiveKey,
   _resetSettingsCache,
 } from "../settings";
 import { ANSWER_STYLE_NAMES, isAnswerStyle } from "../answer-styles";
@@ -1217,24 +1219,407 @@ describe("securitySensitiveAuditFields (#3797)", () => {
   it("audits a normal change without flagging disablesControl", () => {
     expect(securitySensitiveAuditFields("ATLAS_TRIAL_IP_RATE_LIMIT_RPM", "set", "10")).toEqual({
       disablesControl: false,
+      widensAuthority: false,
     });
   });
 
   it("flags disablesControl when set to the 0 disabled-sentinel", () => {
     expect(securitySensitiveAuditFields("ATLAS_TRIAL_EMAIL_RATE_LIMIT_RPM", "set", "0")).toEqual({
       disablesControl: true,
+      widensAuthority: false,
     });
   });
 
-  it("flags disablesControl when set to a non-finite value", () => {
+  // ⚠️ THIS ROW USED TO ASSERT THE OPPOSITE, and it was wrong about the reader.
+  // `parseRpm` returns the shipped DEFAULT on a non-finite value, so `"off"`
+  // leaves the limiter running at 5rpm — nothing was disabled, and flagging it
+  // trains an incident responder to discount the one signal that says an abuse
+  // control went away. The raw value still rides in the log line, so a garbled
+  // write is not invisible; it is just not a *disable*.
+  it("does NOT flag disablesControl on a non-finite value — the reader keeps the default", () => {
     expect(securitySensitiveAuditFields("ATLAS_TRIAL_IP_RATE_LIMIT_RPM", "set", "off")).toEqual({
-      disablesControl: true,
+      disablesControl: false,
+      widensAuthority: false,
+    });
+  });
+
+  // The audit must agree with `trial-abuse.ts`'s `parseRpm` about what a value
+  // MEANS, exactly as the alias threshold agrees with `aliasAutoApproveThreshold`.
+  // Review measured this table against both implementations. FIVE rows are
+  // ones the pre-#5161 rule got wrong: `0.9`/`0.4`/`1e-9` as false negatives
+  // (the reader floors them to the disabled sentinel) and `off`/`abc` as false
+  // alarms (the reader keeps its default). `-1` and `""` it happened to get
+  // right, for the wrong reason.
+  it.each([
+    // [written, reader's effective limit, disablesControl]
+    ["0", "0 — the disabled sentinel", true],
+    ["", "0 (Number('') is 0)", true],
+    // parseRpm FLOORS, so a sub-1 value silently disables the limiter.
+    ["0.9", "0 (floored)", true],
+    ["0.4", "0 (floored)", true],
+    ["1e-9", "0 (floored)", true],
+    // Non-finite and negative both fall back to the shipped default: ON.
+    ["off", "5 (fallback — control stays ON)", false],
+    ["abc", "5 (fallback — control stays ON)", false],
+    ["-1", "5 (fallback — control stays ON)", false],
+    ["5", "5", false],
+    ["1", "1", false],
+  ])("rpm %p → reader applies %s → disablesControl=%p", (written, _effect, expected) => {
+    expect(securitySensitiveAuditFields("ATLAS_TRIAL_IP_RATE_LIMIT_RPM", "set", written)).toEqual({
+      disablesControl: expected,
+      widensAuthority: false,
     });
   });
 
   it("audits a clear without flagging disablesControl (revert is value-unknown)", () => {
     expect(securitySensitiveAuditFields("ATLAS_TRIAL_IP_RATE_LIMIT_RPM", "clear", undefined)).toEqual({
       disablesControl: false,
+      widensAuthority: false,
     });
+  });
+});
+
+// #5161 — the two alias auto-approve knobs joined the audited set. They weaken
+// in the OPPOSITE direction from the abuse thresholds above: the empty value is
+// the SAFE end (everything queues for review), so the numeric `0`/non-finite
+// disable rule would have flagged the safest possible write as a disable and
+// fired `disablesControl: true` on every string write to the source list. That
+// inversion is what these tests pin.
+describe("securitySensitiveAuditFields — alias auto-approve authority (#5161)", () => {
+  // Typed as the closed union, so a typo or a stale key name is a compile
+  // error rather than a test that quietly asserts nothing about a key that no
+  // longer exists. This is also `SecuritySensitiveKey`'s only consumer — an
+  // exported type with no user OUTSIDE its own module is a claim nothing
+  // checks — `SECURITY_SENSITIVE_RULES` and `isSecuritySensitiveKey` consume it
+  // inside settings.ts, which is what makes it load-bearing there.
+  const SOURCES: SecuritySensitiveKey = "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES";
+  const THRESHOLD: SecuritySensitiveKey = "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD";
+  const ABUSE_THRESHOLD_KEYS: SecuritySensitiveKey[] = [
+    "ATLAS_TRIAL_IP_RATE_LIMIT_RPM",
+    "ATLAS_TRIAL_EMAIL_RATE_LIMIT_RPM",
+  ];
+  const AUTHORITY_KEYS: SecuritySensitiveKey[] = [SOURCES, THRESHOLD];
+
+  it("includes both alias auto-approve keys in the sensitive set", () => {
+    expect(SECURITY_SENSITIVE_KEYS.has(SOURCES)).toBe(true);
+    expect(SECURITY_SENSITIVE_KEYS.has(THRESHOLD)).toBe(true);
+  });
+
+  it("every sensitive key is classified into exactly one family", () => {
+    // The two families weaken in OPPOSITE directions, so a key that belongs to
+    // neither list is a key whose audit direction nobody decided. The dispatch
+    // table makes omitting a RULE a compile error; this makes omitting the
+    // THOUGHT a test failure, in both directions.
+    // Widened to `string[]` on purpose: the comparison is against
+    // `SECURITY_SENSITIVE_KEYS`, which is a `ReadonlySet<string>`, and the
+    // point of the test is that the two AGREE — narrowing this side to the
+    // union would make one half of the comparison the thing being checked.
+    const classified: string[] = [...ABUSE_THRESHOLD_KEYS, ...AUTHORITY_KEYS].sort();
+    expect(classified).toEqual([...SECURITY_SENSITIVE_KEYS].sort());
+    expect(new Set(classified).size).toBe(classified.length);
+  });
+
+  it("every sensitive key exists in the settings registry", () => {
+    // The compiler ties the key literal to the RULES table; nothing ties it to
+    // the registry. A renamed registry key would silently stop being audited —
+    // `isSecuritySensitiveKey` returns false, no line is ever emitted again,
+    // and every test above still passes because they all pass literals in.
+    for (const key of SECURITY_SENSITIVE_KEYS) {
+      expect(getSettingDefinition(key)).toBeDefined();
+    }
+  });
+
+  // ⚠️ The partition test above proves each key was CLASSIFIED. It cannot prove
+  // it was classified CORRECTLY — `Record<SecuritySensitiveKey, Rule>` demands
+  // *a* rule, not the right one, so a fifth key wired to the wrong family by
+  // copy-paste compiles clean and passes the partition. These drive the
+  // behaviour off the family arrays, so a new key inherits its family's claim
+  // instead of needing someone to remember to write one.
+  it.each(ABUSE_THRESHOLD_KEYS)("%s treats a floored zero as the disabled sentinel", (key) => {
+    expect(securitySensitiveAuditFields(key, "set", "0")).toEqual({
+      disablesControl: true,
+      widensAuthority: false,
+    });
+  });
+
+  it.each(AUTHORITY_KEYS)("%s never reports disablesControl — its safe end is empty", (key) => {
+    // `Number("0")` is 0, so an authority key wired to the abuse rule by
+    // mistake would report `disablesControl: true` here. For SOURCES, "0" is
+    // an unrecognised class (widens); for THRESHOLD it is a bar of 0 (widens).
+    // Either way `disablesControl` must stay false.
+    expect(securitySensitiveAuditFields(key, "set", "0")).toMatchObject({
+      disablesControl: false,
+    });
+  });
+
+  it("a clear flags neither EVEN WHEN a value rides along", () => {
+    // Every other clear assertion passes `undefined`, which is the one input
+    // where the `action` guard is not load-bearing — so dropping
+    // `action === "set"` from any of the three rules survived the whole suite.
+    // `value` is typed `string | undefined`, so this state is representable
+    // even though today's only caller always passes undefined.
+    for (const [key, value] of [
+      ["ATLAS_TRIAL_IP_RATE_LIMIT_RPM", "0"],
+      [SOURCES, "extractor"],
+      [THRESHOLD, "0.5"],
+    ] as const) {
+      expect(securitySensitiveAuditFields(key, "clear", value)).toEqual({
+        disablesControl: false,
+        widensAuthority: false,
+      });
+    }
+  });
+
+  it("the shipped default source list never reads as a widening", () => {
+    // `ALIAS_SOURCE_CLASS_NOT_WIDENING` duplicates the registry `default`,
+    // deliberately (settings.ts must not import brain modules) — so the
+    // duplication needs a test or it rots silently. Renaming
+    // the source class in the brain module without updating the audit would
+    // make the shipped default audit as a widening, and every real widening
+    // audit as safe.
+    const def = getSettingDefinition(SOURCES);
+    expect(def?.default).toBe("warehouse_key");
+    expect(securitySensitiveAuditFields(SOURCES, "set", def?.default)).toMatchObject({
+      widensAuthority: false,
+    });
+  });
+
+  it("the shipped source list is not a widening", () => {
+    expect(securitySensitiveAuditFields(SOURCES, "set", "warehouse_key")).toEqual({
+      disablesControl: false,
+      widensAuthority: false,
+    });
+  });
+
+  it("adding any class beyond warehouse_key widens", () => {
+    expect(securitySensitiveAuditFields(SOURCES, "set", "warehouse_key,extractor")).toEqual({
+      disablesControl: false,
+      widensAuthority: true,
+    });
+    // Bare, not just appended — a replacement is as much a widening as an
+    // addition, and a predicate written as "contains a comma" would miss it.
+    expect(securitySensitiveAuditFields(SOURCES, "set", "extractor")).toMatchObject({
+      widensAuthority: true,
+    });
+  });
+
+  it("an unrecognized class still counts as an attempt to widen", () => {
+    // `aliasAutoApproveSources` drops tokens it doesn't know, so this widens
+    // nothing in effect. It is audited anyway: an audit log that goes quiet on
+    // a typo'd privilege escalation is the wrong failure.
+    expect(securitySensitiveAuditFields(SOURCES, "set", "warehouse_key,extractr")).toMatchObject({
+      widensAuthority: true,
+    });
+  });
+
+  it("whitespace and empty tokens do not manufacture a widening", () => {
+    expect(securitySensitiveAuditFields(SOURCES, "set", " warehouse_key , ")).toMatchObject({
+      widensAuthority: false,
+    });
+  });
+
+  it("an empty source list is a narrowing, not a disable", () => {
+    // Nothing is eligible, so nothing auto-approves. The numeric rule would
+    // have read "" as 0 and called this a disabled control.
+    expect(securitySensitiveAuditFields(SOURCES, "set", "")).toEqual({
+      disablesControl: false,
+      widensAuthority: false,
+    });
+  });
+
+  it("lowering the confidence bar below the shipped 1 widens", () => {
+    expect(securitySensitiveAuditFields(THRESHOLD, "set", "0.9")).toEqual({
+      disablesControl: false,
+      widensAuthority: true,
+    });
+  });
+
+  // ⚠️ THE AUDIT MUST PARSE AS THE READER PARSES, and this table is the claim.
+  // `aliasAutoApproveThreshold` uses `Number.parseFloat` plus a 0..1 range; an
+  // earlier draft of the audit used `Number`, and review measured the two rows
+  // marked below as divergences — one a false negative on exactly the
+  // escalation the flag exists to catch.
+  it.each([
+    // [written value, reader's effective bar, widensAuthority]
+    ["0.9", "0.9", true],
+    ["0", "0", true],
+    ["1", "1 (the shipped bar)", false],
+    // `Number("0.5x")` is NaN → audited as harmless; `parseFloat("0.5x")` is
+    // 0.5 and the reader HALVES the bar. A typo'd write that really does widen.
+    ["0.5x", "0.5", true],
+    // The mirror: parses, but out of range, so the reader disables entirely —
+    // the safest state. Flagging it as a widening was a false alarm.
+    ["-0.5", "disabled (out of range)", false],
+    ["1.5", "disabled (out of range)", false],
+    ["very confident", "disabled (unparseable)", false],
+    ["", "disabled (empty)", false],
+  ])(
+    "threshold %p → reader applies %s → widensAuthority=%p",
+    (written, _readerEffect, expected) => {
+      expect(securitySensitiveAuditFields(THRESHOLD, "set", written)).toEqual({
+        disablesControl: false,
+        widensAuthority: expected,
+      });
+    },
+  );
+
+  it("the shipped threshold of 1 is not a widening", () => {
+    expect(securitySensitiveAuditFields(THRESHOLD, "set", "1")).toMatchObject({
+      widensAuthority: false,
+    });
+  });
+
+  it("an empty threshold is the SAFE end — neither a widening nor a disable", () => {
+    // The single most important row here. Empty = queue everything for human
+    // review, which the reference page names as the setting to reach for when
+    // you want every alias seen by a person. `Number("")` is 0, so the abuse
+    // rule would flag it `disablesControl: true`.
+    expect(securitySensitiveAuditFields(THRESHOLD, "set", "")).toEqual({
+      disablesControl: false,
+      widensAuthority: false,
+    });
+  });
+
+  it("an unparseable threshold is a narrowing — the reader disables on it", () => {
+    expect(securitySensitiveAuditFields(THRESHOLD, "set", "very confident")).toEqual({
+      disablesControl: false,
+      widensAuthority: false,
+    });
+  });
+
+  it("a clear flags neither, on either key (revert is value-unknown)", () => {
+    // Consistent with the abuse thresholds: a workspace-level clear reverts to
+    // a platform override that may itself be wide, so the written value here
+    // does not determine the resulting authority.
+    expect(securitySensitiveAuditFields(SOURCES, "clear", undefined)).toEqual({
+      disablesControl: false,
+      widensAuthority: false,
+    });
+    expect(securitySensitiveAuditFields(THRESHOLD, "clear", undefined)).toEqual({
+      disablesControl: false,
+      widensAuthority: false,
+    });
+  });
+});
+
+// #5162 — the signal the alias authority path fails closed on. These live in
+// the ALWAYS-RUN lane deliberately: the behavioural falsifier is in
+// `vocabulary-decide-pg.test.ts`, which self-skips without TEST_DATABASE_URL,
+// and one arm here is not reachable from a pg suite at all (they set
+// DATABASE_URL in beforeAll, so `!hasInternalDB()` is false in both branches).
+// Review measured the consequence: mutating the body to `return _cacheEverLoaded`
+// turned alias auto-approval permanently OFF for every self-hosted deployment
+// with nothing in the repo going red — before this block existed. The first
+// test below is what changed that.
+const origDatabaseUrlForLatchTests = process.env.DATABASE_URL;
+
+describe("settingsCacheEverLoaded (#5162)", () => {
+  // This describe is a TOP-LEVEL sibling of `describe("settings module")`, so
+  // it inherits none of that block's teardown — and its helpers mutate
+  // `process.env.DATABASE_URL` and install `mockPool` as the internal pool.
+  // Without this, whatever describe is appended next silently inherits a fake
+  // DATABASE_URL and an injected pool.
+  afterEach(() => {
+    _resetPool(null);
+    _resetSettingsCache();
+    if (origDatabaseUrlForLatchTests === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = origDatabaseUrlForLatchTests;
+  });
+
+  it("reads as LOADED when there is no internal DB — self-hosted is not degraded", () => {
+    // The deliberately-inverted arm. A deployment with no internal DB resolves
+    // through env → default BY DESIGN, and an opt-out there is an env var that
+    // IS present, so failing closed would break every self-hosted deployment
+    // for a tier it was never going to have.
+    disableInternalDB();
+    _resetSettingsCache();
+    expect(settingsCacheEverLoaded()).toBe(true);
+  });
+
+  it("reads as NOT loaded when an internal DB exists but no load has succeeded", () => {
+    enableInternalDB();
+    _resetSettingsCache();
+    expect(settingsCacheEverLoaded()).toBe(false);
+  });
+
+  it("latches on a successful load", async () => {
+    enableInternalDB();
+    _resetSettingsCache();
+    setResults({ rows: [] });
+    await loadSettings();
+    // Zero overrides is a SUCCESSFUL read, not an absent one — the latch is
+    // about whether the tier was consulted, not whether it had contents.
+    expect(settingsCacheEverLoaded()).toBe(true);
+  });
+
+  it("STAYS latched across a later failed load", async () => {
+    // The claim the source comment makes and nothing checked: `_cache` swaps
+    // atomically, so a later failure leaves the last good contents in place and
+    // the tier is still readable. Adding `_cacheEverLoaded = false` to the
+    // catch, or moving the assignment before the query, goes red here.
+    enableInternalDB();
+    _resetSettingsCache();
+    setResults({ rows: [] });
+    await loadSettings();
+    expect(settingsCacheEverLoaded()).toBe(true);
+
+    const savedQuery = mockPool.query;
+    mockPool.query = async () => {
+      throw new Error("connection terminated unexpectedly");
+    };
+    try {
+      await loadSettings();
+    } finally {
+      mockPool.query = savedQuery;
+    }
+    expect(settingsCacheEverLoaded()).toBe(true);
+  });
+
+  it("does NOT latch when the FIRST load fails — the #5162 window", async () => {
+    enableInternalDB();
+    _resetSettingsCache();
+    const savedQuery = mockPool.query;
+    mockPool.query = async () => {
+      throw new Error("connection terminated unexpectedly");
+    };
+    try {
+      await loadSettings();
+    } finally {
+      mockPool.query = savedQuery;
+    }
+    expect(settingsCacheEverLoaded()).toBe(false);
+  });
+});
+
+// #5161 — the access half. The registry, not the docs, is what a Cloud
+// workspace admin's settings page actually reads.
+describe("alias auto-approve knobs are platform-admin-only on Cloud (#5161)", () => {
+  it("both carry saasVisible: false", () => {
+    // Asserted as `=== false`, not falsy: the field is OPTIONAL and defaults to
+    // TRUE, which is exactly how both keys shipped visible without anyone
+    // writing `saasVisible: true`. `toBeFalsy()` would pass on `undefined` —
+    // the very value that caused the defect.
+    for (const key of [
+      "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES",
+      "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD",
+    ]) {
+      const def = getSettingsRegistry().find((s) => s.key === key);
+      expect(def).toBeDefined();
+      expect(def?.saasVisible).toBe(false);
+    }
+  });
+
+  it("stay workspace-scoped — hidden is about who writes, not about per-workspace values", () => {
+    // The two axes are independent, and collapsing them is the misreading the
+    // decision turned on. `ATLAS_BRAIN_AUDIENCE_SYNC_ENABLED` is the precedent:
+    // workspace-scoped AND hidden, with a platform admin setting the
+    // per-workspace override.
+    for (const key of [
+      "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES",
+      "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD",
+      "ATLAS_BRAIN_AUDIENCE_SYNC_ENABLED",
+    ]) {
+      expect(getSettingsRegistry().find((s) => s.key === key)?.scope).toBe("workspace");
+    }
   });
 });

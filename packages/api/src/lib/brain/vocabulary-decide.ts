@@ -163,7 +163,7 @@
 
 import { randomUUID } from "node:crypto";
 import { createLogger } from "@atlas/api/lib/logger";
-import { getSettingAuto } from "@atlas/api/lib/settings";
+import { getSettingAuto, settingsCacheEverLoaded } from "@atlas/api/lib/settings";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 import {
   IDENTITY_MUTATION_LOCK_NAMESPACE,
@@ -497,6 +497,44 @@ function aliasAutoApproveSources(workspaceId: string): ReadonlySet<AliasSourceCl
 }
 
 /**
+ * One warn per process for the unreadable-settings-tier refusal, not one per
+ * proposal (#5162).
+ *
+ * The condition is process-lifetime: it cannot clear without a successful
+ * `loadSettings`, and nothing in a producer run triggers one. Logged per
+ * candidate it would emit a line for every alias in the batch — 10k identical
+ * warns on a first-run producer, which buries the one fact an operator needs.
+ * Modelled on `lib/email/recipient-gate.ts`'s `noMemberDbWarned`, and carrying
+ * its caveat verbatim: this gates LOG VOLUME ONLY, never the security decision.
+ * The refusal itself is evaluated every single time.
+ *
+ * ⚠️ NOTHING RE-ARMS THIS AUTOMATICALLY, and an earlier draft of this comment
+ * claimed `_resetSettingsCache` did. It cannot: that function lives in
+ * `lib/settings.ts`, which must not acquire an edge to a brain module, and it
+ * touches only `_cache`, `_cacheEverLoaded` and `_liveCache`. A test that
+ * simulates a fresh boot must call {@link _resetSettingsTierWarning} itself —
+ * `vocabulary-decide-pg.test.ts`'s `afterEach` does, which is what keeps this
+ * export from being decoration.
+ */
+let settingsTierWarned = false;
+
+/** @internal Re-arm the once-per-process warn — for testing only. */
+export function _resetSettingsTierWarning(): void {
+  settingsTierWarned = false;
+}
+
+function warnSettingsTierUnreadable(workspaceId: string): void {
+  if (settingsTierWarned) return;
+  settingsTierWarned = true;
+  log.warn(
+    { workspaceId, event: "brain.alias_auto_approve.settings_tier_unreadable" },
+    "Settings never loaded from the internal DB this boot, so a workspace's alias auto-approval " +
+      "opt-out cannot be read — every alias proposal queues for human review until settings load. " +
+      "Check the `settings` table is reachable and restart. Logged once per process.",
+  );
+}
+
+/**
  * ADR-0037 §6's split, as one predicate.
  *
  * Three conjuncts, and the FIRST is not a knob. `warehouse_key` at the
@@ -506,6 +544,15 @@ function aliasAutoApproveSources(workspaceId: string): ReadonlySet<AliasSourceCl
  * Widening the knob to `extractor` therefore widens what auto-approves at a
  * position the ADR already reasoned about — a real operator decision — while
  * this line is what stops the position alone doing it.
+ *
+ * A FOURTH conjunct guards the knobs themselves (#5162). Both are
+ * workspace-scoped with a PERMISSIVE default, so a workspace opts out by
+ * writing a DB override — and an override that cannot be read is
+ * indistinguishable from one that was never written. On the one boot where the
+ * first `loadSettings` fails, the cache is empty, the workspace tier is absent,
+ * and an opted-out workspace would resolve to the shipped `warehouse_key` / `1`
+ * and auto-approve again. Everything else in this function already fails closed
+ * on an unreadable INPUT; this applies the same rule to an unreadable TIER.
  */
 function autoApproveEligible(
   workspaceId: string,
@@ -517,6 +564,14 @@ function autoApproveEligible(
     readonly confidence: number;
   },
 ): boolean {
+  // FIRST, before any knob is read: a settings cache that never loaded cannot
+  // carry this workspace's opt-out. Ordered ahead of the shape checks so the
+  // refusal turns on the condition rather than on whichever candidate happened
+  // to arrive with a readable position.
+  if (!settingsCacheEverLoaded()) {
+    warnSettingsTierUnreadable(workspaceId);
+    return false;
+  }
   // Narrowed rather than cast: the decide arm reads these off a database row,
   // and a `source_class` the deployment's enum does not know must fail the
   // split rather than be asserted into it.
@@ -1086,21 +1141,49 @@ export async function decideAliasProposal(
       // live workspace setting and can change between the two, and a producer
       // that cached `autoApprove: true` across a batch would otherwise approve
       // under a policy the operator has already turned off.
-      const eligible = autoApproveEligible(workspaceId, {
-        position: row.slot_position,
-        sourceClass: row.source_class,
-        confidence: row.confidence,
-      });
+      // Read ONCE, BEFORE the predicate, and used for both the guard and the
+      // message. Reading it again after `autoApproveEligible` returned would
+      // open a window in which a concurrent `loadSettings` latches between the
+      // two reads, and the refusal caused by the unreadable tier would then
+      // carry the policy message — reintroducing the very misattribution the
+      // two-branch message exists to remove.
+      const settingsUnreadable = !settingsCacheEverLoaded();
+      // `approver.kind === "auto" &&` FIRST, so the predicate is not evaluated
+      // on the human path at all (#5162). It emits a warn, and a human
+      // approving a proposal used to trigger
+      // `brain.alias_auto_approve.settings_tier_unreadable` — a line saying
+      // every alias proposal queues for human review — at the moment their
+      // approval committed, asserting the opposite of what happened.
+      const eligible =
+        approver.kind !== "auto" ||
+        autoApproveEligible(workspaceId, {
+          position: row.slot_position,
+          sourceClass: row.source_class,
+          confidence: row.confidence,
+        });
       if (approver.kind === "auto" && !eligible) {
+        // Two causes, two messages. "The settings narrow that further" is FALSE
+        // when the settings were never read, and it sends an operator to
+        // inspect two knobs that are set correctly while the real cause — one
+        // failed `loadSettings` at boot — appears nowhere in the response.
+        //
+        // When BOTH hold — tier unreadable AND the proposal independently
+        // ineligible — this names the tier, because that is the conjunct that
+        // actually refused (it is evaluated first) and it is the one the
+        // operator must clear before the other is even knowable.
         return {
           kind: "refused",
           id,
           refusal: "not-auto-approvable",
-          message:
-            `Proposal ${id} (${row.source_class}, ${position}) is not eligible for auto-approval. ` +
-            "ADR-0037 §6 admits only a warehouse-derived entity edge, and the workspace's " +
-            "`ATLAS_BRAIN_ALIAS_AUTO_APPROVE_*` settings narrow that further. It stays queued for " +
-            "a human.",
+          message: settingsUnreadable
+            ? `Proposal ${id} (${row.source_class}, ${position}) stays queued for a human: settings ` +
+              "never loaded from the internal DB this boot, so this workspace's alias auto-approval " +
+              "policy could not be read and no proposal may auto-approve. This is not a policy " +
+              "decision — check the `settings` table is reachable and restart."
+            : `Proposal ${id} (${row.source_class}, ${position}) is not eligible for auto-approval. ` +
+              "ADR-0037 §6 admits only a warehouse-derived entity edge, and the workspace's " +
+              "`ATLAS_BRAIN_ALIAS_AUTO_APPROVE_*` settings narrow that further. It stays queued for " +
+              "a human.",
         };
       }
 

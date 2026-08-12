@@ -163,7 +163,7 @@
 
 import { randomUUID } from "node:crypto";
 import { createLogger } from "@atlas/api/lib/logger";
-import { getSettingAuto } from "@atlas/api/lib/settings";
+import { getSettingAuto, settingsCacheEverLoaded } from "@atlas/api/lib/settings";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 import {
   IDENTITY_MUTATION_LOCK_NAMESPACE,
@@ -506,6 +506,15 @@ function aliasAutoApproveSources(workspaceId: string): ReadonlySet<AliasSourceCl
  * Widening the knob to `extractor` therefore widens what auto-approves at a
  * position the ADR already reasoned about — a real operator decision — while
  * this line is what stops the position alone doing it.
+ *
+ * A FOURTH conjunct guards the knobs themselves (#5162). Both are
+ * workspace-scoped with a PERMISSIVE default, so a workspace opts out by
+ * writing a DB override — and an override that cannot be read is
+ * indistinguishable from one that was never written. On the one boot where the
+ * first `loadSettings` fails, the cache is empty, the workspace tier is absent,
+ * and an opted-out workspace would resolve to the shipped `warehouse_key` / `1`
+ * and auto-approve again. Everything else in this function already fails closed
+ * on an unreadable INPUT; this applies the same rule to an unreadable TIER.
  */
 function autoApproveEligible(
   workspaceId: string,
@@ -517,6 +526,17 @@ function autoApproveEligible(
     readonly confidence: number;
   },
 ): boolean {
+  // FIRST, before any knob is read: a settings cache that never loaded cannot
+  // carry this workspace's opt-out. Ordered ahead of the shape checks so the
+  // warn fires on the condition rather than on whichever candidate happened to
+  // arrive with a readable position.
+  if (!settingsCacheEverLoaded()) {
+    log.warn(
+      { workspaceId },
+      "Settings cache never loaded — refusing alias auto-approval; a workspace opt-out cannot be read, so every proposal queues for review",
+    );
+    return false;
+  }
   // Narrowed rather than cast: the decide arm reads these off a database row,
   // and a `source_class` the deployment's enum does not know must fail the
   // split rather than be asserted into it.

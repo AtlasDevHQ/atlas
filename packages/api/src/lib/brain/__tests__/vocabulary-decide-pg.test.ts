@@ -445,6 +445,15 @@ describeIfPg("the alias decision seam (#5023)", () => {
     }
     await runMigrations(pool, { skip: MANAGED_AUTH_MIGRATIONS });
     _resetPool(pool);
+    // BOOT THE SETTINGS CACHE, because a booted process is what this suite is
+    // simulating (#5162). `autoApproveEligible` refuses while
+    // `settingsCacheEverLoaded()` is false — a workspace's opt-out lives in the
+    // DB-override tier, and a tier that was never read cannot be honoured. The
+    // real server does this in its init path; without it every auto-approval
+    // control in this file asserts against a process that never looked at its
+    // own settings table, which is not the state any of them mean to describe.
+    const { loadSettings: bootSettings } = await import("@atlas/api/lib/settings");
+    await bootSettings();
     // Also here, not only in `afterEach`: otherwise the FIRST test in the file
     // runs under whatever the ambient environment holds, and a developer with
     // either knob exported would see a different suite than CI does.
@@ -1587,6 +1596,68 @@ describeIfPg("the alias decision seam (#5023)", () => {
       await loadSettings();
       await pool.query("DELETE FROM brain_vocabulary_proposal WHERE workspace_id = $1", [OTHER_WS]);
     }
+  });
+
+  it("a workspace's opt-out SURVIVES a settings load that never succeeded (#5162)", async () => {
+    // The fail-open this closes: both alias knobs default to the PERMISSIVE
+    // position, and a workspace opts out by writing a DB override. `_cache` is
+    // swapped atomically, so a failed load normally leaves the last good
+    // contents in place — except on the FIRST load after boot, which has no
+    // last good state. There the workspace tier is simply absent, the chain
+    // falls through to `warehouse_key` / `1`, and the opt-out evaporates.
+    //
+    // ASSERTING THE OPT-OUT SURVIVES, not that the load failed. A test that
+    // checked only "loadSettings returned 0" would pass against the bug: the
+    // load failing is the PREMISE here, and the claim is what the authority
+    // path does afterwards.
+    const { loadSettings, _resetSettingsCache } = await import("@atlas/api/lib/settings");
+    await pool.query(
+      `INSERT INTO settings (key, value, org_id, updated_by) VALUES ($1, $2, $3, 'test')`,
+      // The strongest opt-out the knob offers: empty threshold = queue
+      // everything. Chosen over a narrowed source list because it is the
+      // setting the reference page tells an operator to reach for, and because
+      // the shipped default it must survive is the exact opposite value.
+      ["ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD", "", WS],
+    );
+    try {
+      // The control: with the override readable, the opt-out holds. Without
+      // this line the assertion below passes against a `proposeAliasEdge` that
+      // never auto-approves anything.
+      await loadSettings();
+      expect(await proposeAliasEdge(WS, warehouseEdge("project atlas", "nova"), {})).toMatchObject({
+        kind: "queued",
+        autoApprove: false,
+      });
+      await pool.query("DELETE FROM brain_vocabulary_proposal WHERE workspace_id = $1", [WS]);
+
+      // Now the boot whose first settings load failed: cache empty, and — the
+      // load-bearing half — never successfully loaded. `_resetSettingsCache`
+      // restores exactly that state, which is why the latch keys on
+      // ever-loaded rather than on the cache being empty (an empty cache is
+      // also the legitimate state of a deployment with zero overrides).
+      _resetSettingsCache();
+      expect(await proposeAliasEdge(WS, warehouseEdge("project atlas", "nova"), {})).toMatchObject({
+        kind: "queued",
+        autoApprove: false,
+      });
+    } finally {
+      await pool.query("DELETE FROM settings WHERE org_id = $1", [WS]);
+      await loadSettings();
+    }
+  });
+
+  it("the latch is the UNREADABLE tier, not a blanket refusal (#5162 control)", async () => {
+    // The pairing test for the one above. `return false` at the top of
+    // `autoApproveEligible` satisfies that test completely — the opt-out
+    // "survives" because nothing auto-approves ever. This is the case that
+    // separates the latch from the sledgehammer: same workspace, same
+    // proposal, cache loaded, no override, and auto-approval still works.
+    const { loadSettings } = await import("@atlas/api/lib/settings");
+    await loadSettings();
+    expect(await proposeAliasEdge(WS, warehouseEdge("project atlas", "nova"), {})).toMatchObject({
+      kind: "queued",
+      autoApprove: true,
+    });
   });
 
   // ── 11. Errors are not decisions ────────────────────────────────────────

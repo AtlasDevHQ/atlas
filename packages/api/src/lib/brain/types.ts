@@ -133,6 +133,24 @@ export interface BrainFact {
   readonly status: BrainFactStatus;
   /** Never empty — no-grant-no-promotion, enforced at rest. */
   readonly visibleTo: BrainGrant;
+  /**
+   * ⚠️ VESTIGIAL — do not branch on it, and do not treat it as live contract.
+   *
+   * One of FIVE declaration sites of a field #5027 made meaningless:
+   * cardinality is a property of the CANONICAL PREDICATE, curated in
+   * `brain_predicate_cardinality` and read at the publish gate. Three
+   * consumer-facing copies — `BrainFactCandidate`, `BrainFactResult`, and the
+   * Zod schema — were annotated by #5027 and DELETED by #5028 phase 1b. A
+   * fourth survives DELIBERATELY: `ExportedBrainFact` in `@useatlas/types`
+   * keeps it optional so a v1/v2 bundle stays representable (#5035, ADR-0037
+   * §8), and `bundle-identity-v3.test.ts` pins it there. THIS one was missed by
+   * #5027 and by phase 1b both, and a required field with no annotation reads
+   * as live contract — which is exactly how a re-read gets written. Nothing in
+   * the tree constructs `BrainFact` at all, so no compiler checks it into truth.
+   *
+   * Kept rather than deleted only because this interface models the ROW, and
+   * the row still has the column until the phase-2 migration. It goes with it.
+   */
   readonly predicateCardinality: PredicateCardinality;
   readonly createdAt: Date;
   readonly updatedAt: Date;

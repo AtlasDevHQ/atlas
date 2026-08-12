@@ -103,10 +103,15 @@
  *
  * ⚠️ This paragraph used to say *"this slice stops reading and writing it"*, and
  * the READING half was false from #5027 (2026-08-05) until #5028 phase 1b — one
- * shipped release, `v0.2.5`, which is the one currently in production and the
- * reason the drop could not follow it. #5027 stopped the WRITES
- * (`INSERT_FACT_SQL`, the region importer); the two projections in
- * `candidates.ts` and `search.ts` went on SELECTing the column, which is why
+ * shipped release, `v0.2.5`, the release #5027 and #5035 both landed in, and the
+ * reason the drop could not follow it. #5027 stopped the RECONCILE write
+ * (`INSERT_FACT_SQL`); #5035 stopped the region importer's a day later, when
+ * bundle v3 dropped the field from the format — both shipped in `v0.2.5`. (An
+ * earlier draft of this paragraph credited #5027 with both, misreading
+ * `admin-migrate.ts`'s own comment, which names #5027 for the MOTIVE and was
+ * written by #5035. `git show --stat d91770895` does not list that file.) The
+ * two projections in `candidates.ts` and `search.ts` went on SELECTing the
+ * column, which is why
  * #5028 could not drop it on the schedule its own issue assumed. Reads stop in
  * #5028 phase 1b; the column and its CHECK go one release after that.
  */

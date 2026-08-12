@@ -53,8 +53,11 @@
  * because T8's resolution left it open.
  *
  *   - **There is no write-time value left to read.** #5027 made cardinality a
- *     property of the canonical predicate and stopped reading
- *     `brain_facts.predicate_cardinality`, whose stored values are the
+ *     property of the canonical predicate and stopped WRITING
+ *     `brain_facts.predicate_cardinality` (#5035 stopped the region importer's
+ *     write; #5028 phase 1b stopped the last two READS — this header used to
+ *     say #5027 stopped the reads, which was false for one shipped release),
+ *     whose stored values are the
  *     EXTRACTOR's per-claim guesses against a prompt that says *"When unsure
  *     answer 'multi'"*. Sweeping on it would resurrect
  *     the stochastic input #5027 made unrepresentable, at the one moment a human

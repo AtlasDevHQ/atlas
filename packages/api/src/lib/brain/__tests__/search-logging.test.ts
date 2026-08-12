@@ -184,6 +184,16 @@ describe("searchBrain observation", () => {
     // fixture load-bearing rather than decorative.
     expect(res.results).toHaveLength(1);
     expect(warnings("outside the grammar")).toHaveLength(0);
+    // ⚠️ The GUARD on the fixture's fidelity, and it belongs here because this
+    // is the only test in the file asserting a clean row. `factRow()` must carry
+    // every column the fact statement selects that has a drift arm behind it —
+    // omitting one does not fail anything locally, it just adds a fabricated
+    // degradation warn to EVERY fact test in the file, which is how this file
+    // ran at a noise floor of two for as long as it did. A total-silence
+    // assertion is the only thing that goes red when a column is dropped from
+    // the fixture again, and it also forward-guards the next column added to the
+    // SELECT with a drift arm of its own.
+    expect(logCalls.filter((c) => c.level === "warn").map((c) => c.message)).toEqual([]);
   });
 
   it("reports drift, not a fabricated age, when the SELECT drops the decay anchor", async () => {
@@ -197,6 +207,20 @@ describe("searchBrain observation", () => {
     const { last_observed_at: _dropped, ...row } = factRow();
     await run(reader([{ match: SQL.factPage, rows: [row] }]));
     expect(warnings("no longer selects the decay anchor")).toHaveLength(1);
+  });
+
+  it("withholds attribution, and says so, when the SELECT drops the pre-widening grant", async () => {
+    // The TWIN of the test above, and the arm with the higher stakes: collapsing
+    // `pre_widening_visible_to` to "never widened" discloses a private channel's
+    // first speaker on the surface that answers the model. It had NO coverage
+    // anywhere — its only exercise at this seam was the accidental firing caused
+    // by `factRow()` omitting the column, which the fixture fix above removed.
+    // So without this test, that fix would have taken the arm from
+    // accidentally-covered to uncovered.
+    const { pre_widening_visible_to: _dropped, ...row } = factRow();
+    const res = await run(reader([{ match: SQL.factPage, rows: [row] }]));
+    expect(warnings("the query does not select it")).toHaveLength(1);
+    expect(res.results[0]).toMatchObject({ provenance: { attribution: { visible: false } } });
   });
 
   it("reports a `visible_to` that did not decode as an array at all", async () => {

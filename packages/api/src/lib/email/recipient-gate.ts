@@ -28,10 +28,15 @@
  * `ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS` is the only domain source. #4479
  * deprecated the separate env-only action-path knob and #4663 removed it,
  * so an operator who still has that variable set gets no domains from it.
- * No DB override and no env var, or either one set to "", all resolve to
- * the empty domain set: workspace members only. The retired name is
- * deliberately not repeated here — it is set and asserted inert in
- * `__tests__/recipient-gate.test.ts`, which is the tree's one record of it.
+ * With no DB override and no env var — or with whichever tier WINS set to
+ * "" — the domain set is empty: workspace members only. (Which tier wins is
+ * not symmetric; see {@link resolveAllowedDomains}.) The retired name appears
+ * nowhere in shipped code. It survives only in the suites that gate this
+ * module, where each SETS it and asserts it contributes nothing — a removal
+ * is not verifiable otherwise — plus past-tense records in
+ * `docs/development/saas-env-audit.md` and `.claude/research/ROADMAP.md`.
+ * Stated as a property rather than a count on purpose: a count is a claim
+ * that goes stale the next time a suite needs the fixture, which it has.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -50,9 +55,10 @@ let noMemberDbWarned = false;
 /**
  * Test-only: re-arm EVERY once-per-process warn latch in this module, so a
  * future latch inherits the contract rather than needing a second seam.
- * Today that is the no-internal-DB latch above, and
- * `lib/tools/actions/__tests__/email-recipient-gate.test.ts` is the suite
- * that both trips it and asserts on it.
+ * Today that is the no-internal-DB latch above. **No suite asserts on that
+ * warn** — the latch's once-per-process property is therefore unfalsified —
+ * so this seam is hygiene: it keeps a suite that TRIPS the latch from
+ * suppressing the warn for later tests in the same process, nothing more.
  */
 export function resetRecipientGateWarnsForTests(): void {
   noMemberDbWarned = false;
@@ -78,10 +84,18 @@ function parseAllowedDomains(raw: string | undefined): Set<string> {
  *
  * Note `??`, not `||`: an admin-saved empty value is a configuration, not an
  * absence, so it wins over a non-empty env var and narrows to members-only
- * (the #4479 review finding). And when the settings cache is empty — the
- * internal DB was unavailable at load; `loadSettings` logs "using env vars
- * only" there, not here — the DB tier is invisible and the env var is the
- * whole policy, which can be BROADER than an override cleared to "".
+ * (the #4479 review finding). **That precedence is UNTESTED** — reaching the
+ * DB tier needs a populated settings cache, which no unit test can produce
+ * without an internal DB, and #4663 fenced the settings mechanism out of
+ * scope. Post-#4663 there is nothing below the env tier, so `??` and `||`
+ * are indistinguishable from the env var down; the rule only bites between
+ * the two tiers above.
+ *
+ * When the settings cache is empty the DB tier is invisible and the env var
+ * is the whole policy, which can be BROADER than an override cleared to "".
+ * Two ways to get there and only one is loud: no internal DB, where
+ * `loadSettings` early-returns silently, and a failed load, where it logs
+ * "using env vars only". Neither is logged from here.
  */
 function resolveAllowedDomains(workspaceId: string | undefined): Set<string> {
   return parseAllowedDomains(

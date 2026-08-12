@@ -17,9 +17,13 @@ import {
 const WSID = "ws-recipient-gate-test";
 
 /**
- * The env knob #4663 retired. Named here and nowhere else in the source tree:
- * a removal is only verifiable if something SETS the removed name and watches
- * it do nothing, so this literal is the experiment, not a read.
+ * The env knob #4663 retired. A removal is only verifiable if something SETS
+ * the removed name and watches it do nothing, so this literal is the
+ * experiment, not a read — it appears nowhere in shipped code, and every
+ * occurrence in a test is a set-and-assert-inert fixture like this one.
+ * Each suite declares its own rather than sharing one, so that a grep of
+ * shipped code stays the acceptance check and no suite imports a fixture
+ * from another suite's file.
  */
 const RETIRED_DOMAINS_ENV = "ATLAS_EMAIL_ALLOWED_DOMAINS";
 
@@ -175,17 +179,33 @@ describe("checkRecipientsAllowed — single-address enforcement", () => {
 
 describe("checkRecipientsAllowed — unconfigured survivor is members-only (#4663)", () => {
   // #4663 dropped the retired env-only fallback domain list, and the failure
-  // mode to fear is a removal that WIDENS the allowed set. So every test here
-  // SETS the retired knob to a domain one recipient belongs to: a resolver
-  // that consulted it again — the exact regression — admits
-  // `b@retired-knob.example` and fails. That set-and-assert-nothing-happens
-  // is the only thing that can distinguish this code from its predecessor;
-  // asserting the end state alone passes against both.
+  // mode to fear is a removal that WIDENS the allowed set. Asserting the end
+  // state cannot catch that — "unset survivor ⇒ members only" is true of the
+  // code before this change too. So the `beforeEach` SETS the retired knob to
+  // domains two recipients belong to, and the three tests with a non-member
+  // recipient watch it contribute nothing.
+  //
+  // Those three are three DIFFERENT falsifiers, not three witnesses to one —
+  // no single reintroduction shape reddens all of them, so none is redundant.
+  // Measured against this suite (18 tests):
+  //
+  //   unset survivor          a `?? process.env[retired]` re-add       18 -> 17
+  //   survivor cleared to ""  a `||`-shaped re-add reading "" as absent 18 -> 16
+  //   survivor authoritative  a union that merges instead of replacing  18 -> 15
+  //
+  // The middle two cannot redden on a plain `??` re-add: `??` treats both a
+  // configured "" and a configured value as present, so the retired tier is
+  // never reached. That precedence is the point of the pair.
   //
   // The fixture is also deliberately asymmetric so a resolver that returned
   // some OTHER non-empty domain set cannot slip through: two members pass,
   // two non-members on two distinct domains are blocked, and the blocked
   // list is asserted by equality rather than membership.
+  //
+  // The fourth test is a positive control and is labelled as such: its
+  // recipients are all members, so `memberEmails.has(...)` short-circuits
+  // before the domain set is consulted and NO widening mutation can redden
+  // it. It is a readable in-block sanity check, nothing more.
   const RECIPIENTS = [
     "Member@Corp.Example",
     "second@corp.example",
@@ -216,7 +236,12 @@ describe("checkRecipientsAllowed — unconfigured survivor is members-only (#466
     if (!result.allowed) expect(result.blocked).toEqual(BLOCKED);
   });
 
-  it("allows only workspace members when nothing is configured", async () => {
+  // POSITIVE CONTROL, not part of the experiment — see the note above. Its
+  // coverage is redundant: the three tests above already prove both members
+  // passed the filter (they are absent from the asserted blocked list), and
+  // inverting the `blocked.length === 0` allow verdict reddens five tests
+  // elsewhere in this file. Kept as a readable in-block sanity check.
+  it("allows workspace members when nothing is configured", async () => {
     const result = await checkRecipientsAllowed(
       WSID,
       ["Member@Corp.Example", "second@corp.example"],

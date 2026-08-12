@@ -318,7 +318,9 @@ items and re-baselined the counts:
   `ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS`; the unset default is uniformly
   fail-closed (workspace members only). The retired knob was honored as a
   deprecated fallback (warn once per process) under the two-phase discipline
-  across 23 tagged releases — `v0.0.55` (2026-07-16) through `v0.2.7` — and
+  across 23 tagged releases — `v0.0.55` (2026-07-17) through `v0.2.7`, i.e.
+  `git tag --contains cce2ee05d | grep -c '^v[0-9]'` at the time of the drop —
+  and
   **#4663 dropped it**: the survivor is now the gate's only domain source. The
   repo-wide env-knob consolidation sweep + inverse `check-settings-readers`
   ratchet decision was split out to #4620 (`ready-for-human`); its findings

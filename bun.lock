@@ -454,7 +454,7 @@
     },
     "packages/types": {
       "name": "@useatlas/types",
-      "version": "0.8.0",
+      "version": "0.10.0",
       "devDependencies": {
         "@typescript/native-preview": "7.0.0-dev.20260623.1",
       },

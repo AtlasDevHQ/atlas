@@ -13,7 +13,20 @@ whose source graph your branch touched — typically 10–60s vs the full suite)
 All gates run through one wrapper: **`bash scripts/ci-local.sh`**. It runs every
 gate, redirects each one's output to `.ci-local/<gate>.log`, and prints only a
 compact PASS/FAIL table plus the tail of any *failed* gate — one small result
-instead of ~26 verbose ones. Exit code is 0 (all green) or 1 (something failed).
+instead of ~26 verbose ones.
+
+Exit code is **0** (all green), **3** (a gate DECLINED to verify — rendered
+`SKIP`), or **1** (a gate failed). 3 is the same code the individual gates use
+for "declined", so the meaning is consistent at both layers. `RESULT` carries
+exactly **one** `RESULT:` line and the exit code always agrees with it — before
+#5151 a declined run printed both a `PASS with N DECLINED` line and a
+self-contradictory `FAIL — 0 of 34 gates failed:` line, then exited 0.
+
+⚠️ Exit **3 is the normal outcome of a bare local run**: `TEST_DATABASE_URL` is
+unset by default, which declines `mutation-tables`. Bring up Postgres (below)
+for a clean 0. Running `/ci` from `main` with no local commits also declines
+that gate — the `--affected` set is then empty *by construction*, and remote
+CI's `--all` job on the push to `main` is what covers that SHA.
 
 The wrapper also leaves machine-readable run state under `.ci-local/`, so
 completion is observable **from disk**, independent of any agent hand-off:

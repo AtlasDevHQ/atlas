@@ -25,15 +25,18 @@
  * list smuggled into one string) is blocked outright — the gate must judge
  * exactly the address the transport would deliver to, never a prefix of it.
  *
- * Deprecation (#4479, phase 1 of 2 — drop tracked in #4663): the retired
- * action-path knob `ATLAS_EMAIL_ALLOWED_DOMAINS` is honored as a fallback
- * domain list only while the surviving setting is not explicitly
- * configured anywhere (no workspace/platform DB override and no env var).
- * An admin explicitly saving an empty value therefore wins over a
- * lingering legacy var; note that *resetting* the override (Admin →
- * Reset, which deletes the row) removes the configuration entirely and
- * re-exposes the legacy fallback until #4663 drops it. Warns once per
- * process on first use.
+ * `ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS` is the only domain source. #4479
+ * deprecated the separate env-only action-path knob and #4663 removed it,
+ * so an operator who still has that variable set gets no domains from it.
+ * With no DB override and no env var — or with whichever tier WINS set to
+ * "" — the domain set is empty: workspace members only. (Which tier wins is
+ * not symmetric; see {@link resolveAllowedDomains}.) The retired name appears
+ * nowhere in shipped code. It survives only in the suites that gate this
+ * module, where each SETS it and asserts it contributes nothing — a removal
+ * is not verifiable otherwise — plus past-tense records in
+ * `docs/development/saas-env-audit.md` and `.claude/research/ROADMAP.md`.
+ * Stated as a property rather than a count on purpose: a count is a claim
+ * that goes stale the next time a suite needs the fixture, which it has.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -45,19 +48,19 @@ const log = createLogger("email.recipient-gate");
 /** The surviving knob — settings-registry-backed, workspace-scoped. */
 export const EMAIL_RECIPIENT_DOMAINS_SETTING = "ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS";
 
-/** Retired env-only knob (#4479) — fallback this release, dropped in #4663. */
-export const LEGACY_EMAIL_DOMAINS_ENV = "ATLAS_EMAIL_ALLOWED_DOMAINS";
-
-// Once-per-process warn latches — they gate log volume only, never the
-// security decision.
-let legacyFallbackWarned = false;
-let legacyIgnoredWarned = false;
+// Once-per-process warn latch for the no-internal-DB case — it gates log
+// volume only, never the security decision.
 let noMemberDbWarned = false;
 
-/** Test-only: re-arm the once-per-process warn latches. */
+/**
+ * Test-only: re-arm EVERY once-per-process warn latch in this module, so a
+ * future latch inherits the contract rather than needing a second seam.
+ * Today that is the no-internal-DB latch above. **No suite asserts on that
+ * warn** — the latch's once-per-process property is therefore unfalsified —
+ * so this seam is hygiene: it keeps a suite that TRIPS the latch from
+ * suppressing the warn for later tests in the same process, nothing more.
+ */
 export function resetRecipientGateWarnsForTests(): void {
-  legacyFallbackWarned = false;
-  legacyIgnoredWarned = false;
   noMemberDbWarned = false;
 }
 
@@ -73,38 +76,32 @@ function parseAllowedDomains(raw: string | undefined): Set<string> {
 /**
  * Resolve the admin-allowlisted recipient domains for a workspace.
  *
- * The surviving setting wins whenever it is explicitly configured — a
- * workspace/platform DB override (even one cleared to "", meaning
- * members-only) or the env var. Only when neither exists does the
- * deprecated `ATLAS_EMAIL_ALLOWED_DOMAINS` env knob apply (#4479; drop
- * tracked in #4663). Each warn fires once per process.
+ * One key, two tiers: a workspace/platform DB override first, then that same
+ * key's env var. Nothing else feeds it — #4663 removed the second knob whose
+ * list used to apply when this one was unconfigured — so an unconfigured
+ * setting yields the empty set and the default is workspace-members-only on
+ * both agent email paths.
+ *
+ * Note `??`, not `||`: an admin-saved empty value is a configuration, not an
+ * absence, so it wins over a non-empty env var and narrows to members-only
+ * (the #4479 review finding). **That precedence is UNTESTED** — reaching the
+ * DB tier needs a populated settings cache, which no unit test can produce
+ * without an internal DB, and #4663 fenced the settings mechanism out of
+ * scope. Post-#4663 there is nothing below the env tier, so `??` and `||`
+ * are indistinguishable from the env var down; the rule only bites between
+ * the two tiers above.
+ *
+ * When the settings cache is empty the DB tier is invisible and the env var
+ * is the whole policy, which can be BROADER than an override cleared to "".
+ * Two ways to get there and only one is loud: no internal DB, where
+ * `loadSettings` early-returns silently, and a failed load, where it logs
+ * "using env vars only". Neither is logged from here.
  */
 function resolveAllowedDomains(workspaceId: string | undefined): Set<string> {
-  const configured =
+  return parseAllowedDomains(
     getSettingOverride(EMAIL_RECIPIENT_DOMAINS_SETTING, workspaceId) ??
-    process.env[EMAIL_RECIPIENT_DOMAINS_SETTING];
-
-  if (configured !== undefined) {
-    if (process.env[LEGACY_EMAIL_DOMAINS_ENV] !== undefined && !legacyIgnoredWarned) {
-      legacyIgnoredWarned = true;
-      log.warn(
-        { legacyKnob: LEGACY_EMAIL_DOMAINS_ENV, survivor: EMAIL_RECIPIENT_DOMAINS_SETTING },
-        `${LEGACY_EMAIL_DOMAINS_ENV} is set but ignored because ${EMAIL_RECIPIENT_DOMAINS_SETTING} is configured — remove the deprecated variable`,
-      );
-    }
-    return parseAllowedDomains(configured);
-  }
-
-  const legacy = parseAllowedDomains(process.env[LEGACY_EMAIL_DOMAINS_ENV]);
-  if (legacy.size > 0 && !legacyFallbackWarned) {
-    legacyFallbackWarned = true;
-    log.warn(
-      { legacyKnob: LEGACY_EMAIL_DOMAINS_ENV, survivor: EMAIL_RECIPIENT_DOMAINS_SETTING },
-      `${LEGACY_EMAIL_DOMAINS_ENV} is deprecated and will be removed in the next release (#4663) — ` +
-        `move the domain list to ${EMAIL_RECIPIENT_DOMAINS_SETTING} (Admin → Settings → Security, or the env var)`,
-    );
-  }
-  return legacy;
+      process.env[EMAIL_RECIPIENT_DOMAINS_SETTING],
+  );
 }
 
 async function defaultResolveMemberEmails(workspaceId: string): Promise<string[]> {

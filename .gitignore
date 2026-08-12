@@ -73,3 +73,9 @@ internal/
 # so running it from e.g. `apps/www/` writes them there instead.
 .lighthouseci/
 lighthouse-reports/
+
+# Throwaway pages written into a tracked content dir by an adversarial fixture
+# suite and removed on exit (scripts/__tests__/check-docs-brain-snippets.test.sh).
+# Ignored so a SIGKILLed run cannot leave one committable in a shared worktree —
+# CLAUDE.md's "never `git add -A`" rule exists for exactly this shape.
+apps/docs/content/**/__fixture-*.mdx

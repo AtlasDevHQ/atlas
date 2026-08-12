@@ -16,14 +16,18 @@ This page is the contract. It is written for whoever adds the next vendor — a 
 A connector is one object registered against one catalog row:
 
 ```ts
-interface BrainSourceConnector {
+interface BrainSourceConnector<S extends EpisodeSource = EpisodeSource> {
   /** The catalog row this connector serves — the dispatch key. */
   readonly catalogId: string;
   /** The source kind stamped onto every episode it produces. */
-  readonly source: EpisodeSource;
+  readonly source: S;
+  /** How this source's `audience:` grants stay inside the staleness bound. */
+  readonly audience: BrainSourceAudienceFor<S>;
   createClient(ctx: BrainSourceInstallContext): Promise<BrainSourceVendorClient> | BrainSourceVendorClient;
 }
 ```
+
+Four members, and `audience` is **not optional**. It is the one a new connector is likeliest to omit: the other three are about producing episodes, and this one is about keeping the grants on them alive. [The audience declaration](#the-audience-declaration-is-required) below is what it means and how to choose an arm; [Registration](#registration) is what happens if you get it wrong.
 
 `createClient` is handed the install row and nothing else — the workspace id, the install id, and the install's non-secret config. It may throw; a bad config or a disconnected upstream OAuth install becomes that source's error outcome with your message surfaced to the admin, so **write the message for the admin who has to fix it**, not for a log reader.
 
@@ -35,7 +39,7 @@ interface BrainSourceVendorClient {
 }
 ```
 
-In practice a vendor directory holds four to six leaf files, and the split is worth copying: `config.ts` (identity, the stored-config shape, and the source-id contract), `api.ts` (raw vendor calls — absent for Slack, which reuses the existing Slack client), `client.ts` (the page walk and record construction), `connector.ts` (registration and credential resolution), `audience.ts` for a source that owns its own audience re-verification, `webhook.ts` for a source with a fast-path writer, plus whatever the vendor's own formats demand (Zoom has a `vtt.ts`).
+In practice a vendor directory holds four to six leaf files, and the split is worth copying: `config.ts` (identity, the stored-config shape, and the source-id contract), `api.ts` (raw vendor calls — absent for Slack, which reuses the existing Slack client), `client.ts` (the page walk and record construction), `connector.ts` (registration and credential resolution), `audience.ts` — by convention for a grant-deriving class, which every shipped one has (`zoom/`, `outlook/`; Slack has none); what registration actually requires is the **re-verifier itself**, wherever it lives — `webhook.ts` for a source with a fast-path writer, plus whatever the vendor's own formats demand (Zoom has a `vtt.ts`).
 
 `config.ts` deliberately imports nothing from the ingest core. That is what makes adding a vendor purely additive: the install handler, the connector, the audience re-verifier and the catalog seed all share one definition without any of them reaching into the engine.
 
@@ -59,6 +63,53 @@ Note what a connector **cannot** name: the episode's `id`, its `ingestedAt` and 
   Your client decides *what the vendor said about visibility* and hands it to the deriver for your class. It does not build grant tokens itself.
 
   Each class has its own derivation function, and the duplication is deliberate: only the chat deriver has an org-wide arm, because only a chat channel has a genuine public mode. The transcript and email derivers have no org-wide branch at all, so they cannot acquire one by accident — adding one would be a deliberate act in a function whose whole header argues against it. **A new class adds a function; it does not add a branch to an existing one.**
+</Callout>
+
+## The audience declaration is required
+
+Deriving a grant is one job; keeping it resolving is the other, and `audience` is where a connector declares who owns it.
+
+It is a **field on the connector** rather than a second registration call, and that shape is load-bearing. A source that mints per-object grants needs two things registered — the connector, so it ingests, and a re-verifier, so the grants it minted keep resolving. Written as two statements the first can commit and the second throw, leaving a source that ingests normally for `ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS` (168h by default) and then goes **silently invisible**: its content starts reading as *not existing* rather than as denied, in a different subsystem, a week later, with nothing pointing back at boot. One field written by one registration call leaves no statement order to get wrong.
+
+There are two arms:
+
+```ts
+type BrainSourceAudience =
+  // This source mints its own `audience:` grants and brings the re-verifier that
+  // refreshes them. Registered under the connector's own `source` kind, so the two
+  // halves cannot be wired to different sources.
+  | { readonly kind: "reverified"; readonly reverifier: AudienceReverifier }
+  // Something OTHER than a registered re-verifier reconciles this source's
+  // audiences, and it registers none.
+  | { readonly kind: "externally-synced" };
+```
+
+Which arm you may declare is a property of your **class**, not a preference. A class whose grants are derived from the record itself — a transcript's participants, a mail's recipients — can only be refreshed by a re-verifier registered for that source:
+
+| Connector class | Audience grain | Arm |
+|---|---|---|
+| `transcript` | Per object — the meeting's own participants | `reverified`, **required** |
+| `email` | Per object — the message's own recipients | `reverified`, **required** |
+| `chat` | Not per-object *as Slack implements it* — see the warning below | Slack declares `externally-synced` |
+
+`BrainSourceAudienceFor<S>` is what makes the per-object rows a compile-time error at a connector literal: for those classes it resolves to the `reverified` arm alone. **It is not the enforcement on its own** — a plugin is compiled separately and arrives as data, a cast widens past it, and so does a factory that widened its own return type — so `registerBrainSourceConnector` re-checks at runtime.
+
+<Callout type="warn" title="The chat row is Slack's answer, not the chat class's — and this is the one place nothing checks you">
+  This page is written for whoever adds "a second chat platform", so read this row carefully: it is the one that will not stop you.
+
+  Slack may declare `externally-synced` because a concrete thing reconciles its audiences — `audience/sync.ts` walks Slack channel rosters directly, parameterised by `SLACK_HISTORY_CATALOG_ID`. That is a fact about **Slack's implementation**, not about chat.
+
+  The grain map is keyed by **class**, so a second chat vendor — Teams, Discord — inherits `not-required` with no roster walk of its own. Declaring `externally-synced` there compiles cleanly *and* registers cleanly: the conditional type resolves to the whole union for a `chat` source, and the runtime re-check only fires for per-object classes. Nothing goes red, and you land in the 168h-then-invisible decay this section exists to prevent.
+
+  So a new chat vendor with no equivalent roster walk owes `reverified` — and that obligation is carried by this paragraph and by the grain map's own ⚠️, because neither the type nor the registry will say it.
+</Callout>
+
+<Callout type="warn" title="`externally-synced` on a grant-deriving class is refused at registration">
+  A transcript or mail connector declaring `externally-synced` does not boot degraded — `registerBrainSourceConnector` **throws**, the install step logs it at `error`, and that source ingests nothing at all.
+
+  That is the intended outcome, and it is worth being precise about why the loud one is preferable: the half-state this seam exists to prevent is a **committed connector whose re-verifier was refused**, which is quiet for a week and then reads as missing content. A connector that never registered is fail-closed and noticed the same day.
+
+  And `externally-synced` is a **declaration, not an opt-out**. Naming what reconciles your audiences instead — as Slack's arm names `audience/sync.ts`'s channel-roster walk — is a claim a reviewer can check, where leaving a field off was not.
 </Callout>
 
 ## The stable source-id obligation
@@ -179,7 +230,21 @@ Throwing is fine and is isolated per source — a rate-limit error from the shar
 
 ## Registration
 
-Register once, at wiring time. Registration fails loudly on four conditions: a duplicate catalog id, a malformed source slug, a kind outside the vocabulary, and — the one a new author is likeliest to trip — **a catalog id already claimed by the knowledge-document registry**. One catalog id has exactly one ingest target, and both registries claim through a shared module so the check is order-independent rather than depending on which registers first. A silent overwrite would let one source shadow another's installs; an unknown kind would land a value no downstream discriminator recognises.
+Register once, at wiring time. Registration fails loudly, and never halfway — every one of these throws with nothing written to any registry:
+
+| Refusal | What it would otherwise cost |
+|---|---|
+| A duplicate catalog id | A silent overwrite, letting one source shadow another's installs |
+| A malformed source slug | Unqueryable garbage in `brain_episodes.source` |
+| A kind outside the vocabulary | A value no downstream discriminator recognises, making every fact derived from it uncorrectable |
+| A malformed `audience` declaration | A re-verifier registered as `undefined`, which then fails on every cycle forever |
+| **A grant-deriving class that declared no re-verifier** | The 168h-then-invisible decay above |
+| A re-verifier already held for this source | Two of them reconciling against their own rosters, each revoking the loser's members every cycle |
+| **A catalog id already claimed by the knowledge-document registry** | Two ingest targets for one catalog id |
+
+The last is the one a new author is likeliest to trip. One catalog id has exactly one ingest target, and both registries claim through a shared module so the check is order-independent rather than depending on which registers first.
+
+That "never halfway" is a property of how the function is arranged, not a promise: registration writes three process-global structures, and no `catch` outside it can undo a write, so every throw site sits **above** the first write.
 
 The vocabulary check exists at runtime as well as in the type system, because a plugin-shaped connector is compiled separately and arrives as data rather than as a checked type. At registration an unrecognised kind simply **throws** — no such connector ever produces an episode.
 
@@ -193,6 +258,7 @@ There is a separate, narrower lane where an unrecognised kind *can* reach storag
 - [ ] Transport encoding never reaches the stored id.
 - [ ] The new member declares its class, and the class is the right one.
 - [ ] The grant deriver is your class's, and a class new to Atlas got its own function rather than a new branch.
+- [ ] `audience` is declared. A per-object class (`transcript`, `email`) owes `reverified` and registration refuses it otherwise; a new **chat** vendor owes `reverified` too, and nothing will tell you so.
 - [ ] "The audience could not be established" blocks; "the audience contains no Atlas users" does not.
 - [ ] `coverageIncomplete` is paired with a contiguous high-water mark.
 - [ ] Permanent per-record failures are counted skips, not throws.

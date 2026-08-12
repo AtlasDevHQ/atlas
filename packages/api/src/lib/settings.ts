@@ -285,12 +285,10 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
   {
     // #3341 — recipient allowlist for agent-initiated email. Since #4479
     // this single knob gates BOTH agent email paths (the `sendEmail`
-    // integration tool and the `sendEmailReport` action); the legacy
-    // action-path env knob `ATLAS_EMAIL_ALLOWED_DOMAINS` is honored as a
-    // deprecated fallback only while this setting is not explicitly
-    // configured (drop tracked in #4663). Workspace members are always
-    // allowed; this adds extra domains. Empty (the default) = workspace
-    // members only.
+    // integration tool and the `sendEmailReport` action), and since #4663
+    // it is their only domain source — the retired action-path env knob's
+    // fallback is gone. Workspace members are always allowed; this adds
+    // extra domains. Empty (the default) = workspace members only.
     key: "ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS",
     section: "Security",
     label: "Email Recipient Domains",

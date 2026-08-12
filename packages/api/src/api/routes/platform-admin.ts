@@ -813,24 +813,44 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     });
 
-    const totalRows = Object.values(purged).reduce((sum, n) => sum + n, 0);
+    // `adminActionLogAnonymized` counts rows that SURVIVED with their
+    // identifiers scrubbed, not rows deleted (#5160), so it is reported beside
+    // `totalRows` rather than inside it. Summing it in would have made the one
+    // number an operator reads as "rows destroyed" quietly include rows that
+    // are still there — the same class of overstatement as the message below.
+    const { adminActionLogAnonymized, ...deleted } = purged;
+    const totalRows = Object.values(deleted).reduce((sum, n) => sum + n, 0);
 
-    log.info({ workspaceId, totalRows, stripe: billing, requestId }, "Workspace purged (GDPR hard delete)");
+    log.info(
+      { workspaceId, totalRows, adminActionLogAnonymized, stripe: billing, requestId },
+      "Workspace purged (GDPR hard delete)",
+    );
 
     logAdminAction({
       actionType: ADMIN_ACTIONS.workspace.purge,
       targetType: "workspace",
       targetId: workspaceId,
       scope: "platform",
-      metadata: { purged, totalRows, ...stripeAuditMetadata(billing) },
+      metadata: { purged, totalRows, adminActionLogAnonymized, ...stripeAuditMetadata(billing) },
       ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
     });
 
     return c.json({
-      message: "Workspace permanently purged. All data has been irreversibly removed.",
+      // Precise rather than sweeping. The old wording — "All data has been
+      // irreversibly removed" — was the false representation #5160 was filed
+      // about: it was untrue of the brain and KB tables the purge never
+      // reached, and it stays untrue in a smaller way even with those fixed,
+      // because the admin action log is deliberately anonymized rather than
+      // deleted and two Stripe tables are deliberately retained. Naming the
+      // exceptions is what makes the claim checkable against `purged`.
+      message:
+        "Workspace permanently purged. All workspace data has been irreversibly deleted; " +
+        "the admin action log is retained with its identifiers scrubbed, and pending Stripe " +
+        "teardown records are kept until they settle. See `purged` for per-table counts.",
       workspaceId,
       purged: purged as unknown as Record<string, number>,
       totalRows,
+      adminActionLogAnonymized,
       ...withWarnings(billing),
     }, 200);
   }), { label: "purge workspace (GDPR)" });

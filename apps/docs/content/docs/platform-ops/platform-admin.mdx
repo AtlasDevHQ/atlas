@@ -70,19 +70,66 @@ Purging a workspace is **irreversible**. All data is permanently removed in a si
 
 The purge action permanently removes **all** data for a workspace to satisfy GDPR right-to-erasure (Article 17) requests. It deletes every row across all tables scoped to the workspace, including:
 
-- Conversations, messages, and audit logs
+- Conversations, messages, agent run transcripts, and audit logs
+- **Company Atlas / brain data** — extracted claims (`brain_facts`), the provenance and conflict graph, raw source episodes, the curated identity vocabulary, and audience membership
+- **Knowledge Base** — every ingested document, the link graph, sync state, and the encrypted sync connector credentials
 - Connections, settings, and plugin configurations
-- Semantic entities, learned patterns, and query suggestions
+- Semantic entities, entity version history, profiling state, learned patterns, and query suggestions
+- Dashboards, cards, per-user drafts, and their cached result snapshots
 - Scheduled tasks and task run history
-- Integration installations (Slack, Teams, Discord, Telegram, etc.)
-- Usage events, SLA metrics, and abuse events
+- Integration installations (Slack, Discord, GitHub, Linear, email) and every encrypted credential store
+- Proactive chat configuration, pause state, metering, and human review verdicts
+- Usage events, token accounting, overage meter reports, SLA metrics, and abuse events
 - Custom domains, sandbox credentials, and region migrations
-- SSO providers, IP allowlists, custom roles, and approval workflows
+- SSO providers, IP allowlists, custom roles, approval workflows, and the MCP action policy
+- Cross-workspace agent grants, scopes, and rate limits
 - Workspace branding, onboarding emails, and PII classifications
 - Members, invitations, and the organization record itself
 - **Orphaned users** — users with no remaining workspace memberships are also deleted (sessions, accounts, and user record)
 
 All operations run in a single database transaction — either everything is purged or nothing changes.
+
+#### Two deliberate exceptions
+
+Not every workspace-scoped row is deleted, and the two exceptions are chosen rather than overlooked. Both are enforced by a per-table registry (`lib/db/purge-scope.ts`) whose tripwire fails CI when a new workspace-scoped table appears without a decision.
+
+- **The admin action log is anonymized, not deleted.** Its rows include the record of the purge itself, so deleting them would erase the evidence that the erasure happened. The purge instead NULLs `actor_id`, `actor_email` and `ip_address` and stamps `anonymized_at`. The action sequence remains auditable; the identifiers do not survive.
+- **Two Stripe tables are retained.** `stripe_teardown_pending` rows *are* the retry that still has to cancel a live subscription — deleting them would strand a subscription invoicing a deleted workspace. `stripe_purged_subscriptions` is the tombstone the purge writes so that cancellation webhooks arriving after the transaction commits cannot regrow ledger rows. Neither holds customer personal data.
+
+A third case is worth naming because it looks like an omission: the one-trial-per-user grant (`user_trial_grants`) deliberately outlives the workspace. It is keyed on the user, and deleting it would let a purged workspace's owner claim a fresh trial on demand. It is removed when the user account itself is deleted.
+
+#### Residue from purges performed before this coverage existed
+
+Purges run before the brain and Knowledge Base tables entered the purge path left their rows behind. Those rows are **precisely identifiable**, because `hardDeleteWorkspace` is the only code path that deletes an `organization` row: a `workspace_id` present in one of these tables with no matching organization is residue from an earlier purge.
+
+The decision: **a sweep is required where the detection query returns anything, and it must be run per region** — there are three independent region databases, and a workspace purged in one leaves nothing in the others. Run the detection first; do not run a blind delete.
+
+```sql
+-- Per region. Any row returned is data a completed GDPR purge should have removed.
+SELECT 'brain_facts' AS table_name, b.workspace_id, count(*) AS rows
+  FROM brain_facts b
+ WHERE NOT EXISTS (SELECT 1 FROM organization o WHERE o.id = b.workspace_id)
+ GROUP BY b.workspace_id
+UNION ALL
+SELECT 'brain_episodes', b.workspace_id, count(*)
+  FROM brain_episodes b
+ WHERE NOT EXISTS (SELECT 1 FROM organization o WHERE o.id = b.workspace_id)
+ GROUP BY b.workspace_id
+UNION ALL
+SELECT 'knowledge_documents', k.workspace_id, count(*)
+  FROM knowledge_documents k
+ WHERE NOT EXISTS (SELECT 1 FROM organization o WHERE o.id = k.workspace_id)
+ GROUP BY k.workspace_id
+UNION ALL
+SELECT 'knowledge_sync_credentials', k.workspace_id, count(*)
+  FROM knowledge_sync_credentials k
+ WHERE NOT EXISTS (SELECT 1 FROM organization o WHERE o.id = k.workspace_id)
+ GROUP BY k.workspace_id;
+```
+
+<Callout type="warn">
+Two things to hold before running a deletion. First, a region **import** cannot produce a false positive here — it writes into an already-active organization, so it never leaves rows without one; the orphan signal really does mean "the organization row is gone". Second, that makes the query's output a deletion list against real customer data with no undo, so run it through the operator binary's double-gating (`ATLAS_*_OK=1` plus `--confirm`) and take a `pg_dump` first, exactly as with `ops wipe`. Never hand-run the delete against a region database.
+</Callout>
 
 #### Prerequisites
 
@@ -119,17 +166,20 @@ POST /api/v1/platform/workspaces/:id/purge
 
 ```json
 {
-  "message": "Workspace permanently purged. All data has been irreversibly removed.",
+  "message": "Workspace permanently purged. All workspace data has been irreversibly deleted; the admin action log is retained with its identifiers scrubbed, and pending Stripe teardown records are kept until they settle. See `purged` for per-table counts.",
   "workspaceId": "org_abc123",
   "purged": {
     "auditLog": 1250,
     "conversations": 84,
     "messages": 3201,
-    "connections": 3,
+    "brainFacts": 412,
+    "brainEpisodes": 967,
+    "knowledgeDocuments": 58,
+    "adminActionLogAnonymized": 31,
     "members": 12,
     "organization": 1
   },
-  "totalRows": 4551
+  "totalRows": 6016
 }
 ```
 

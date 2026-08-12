@@ -793,7 +793,9 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
   // The latch lives at the authority path, not here — `autoApproveEligible`
   // (`brain/vocabulary-decide.ts`) refuses while `settingsCacheEverLoaded()`
   // is false, because a tier that cannot be read cannot be honoured. Falsified
-  // in `vocabulary-decide.test.ts`.
+  // behaviourally in `brain/__tests__/vocabulary-decide-pg.test.ts` (pg-gated,
+  // so it self-skips without TEST_DATABASE_URL) and unconditionally in
+  // `lib/__tests__/settings.test.ts`.
   //
   // ⚠️ What this comment SAID until #5162, because the shape is the lesson: it
   // deferred the repair as "dormant today — nothing calls the seam until
@@ -2057,9 +2059,9 @@ let _cache = new Map<string, CacheEntry>();
 
 /**
  * Whether {@link loadSettings} has ever completed successfully in this process
- * (#5162). Latches true on the first success and never clears — a LATER failed
- * load is harmless, because the atomic swap leaves `_cache` holding its last
- * good contents.
+ * (#5162). Latches true on the first success and is never cleared by a later
+ * FAILED load — the atomic swap leaves `_cache` holding its last good contents.
+ * Only `_resetSettingsCache` (test-only) re-arms it.
  *
  * The one window this exists for is the first load after boot, which has no
  * last good state to keep: `_cache` is empty, so every DB-override tier is
@@ -2783,22 +2785,44 @@ type SecuritySensitiveRule = (
  * authority — a warehouse primary key, certain by construction. Kept as a bare
  * string rather than imported from `brain/vocabulary-*`: `lib/settings.ts` is
  * below the brain modules and must not acquire an edge to them for an audit
- * predicate. The registry `default` two hundred lines up is the same literal,
- * and `settings.test.ts` pins the two together so the duplication cannot rot.
+ * predicate. The `ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES` registry `default` is
+ * the same literal, and `settings.test.ts` pins the two together so the
+ * duplication cannot rot.
  */
 const ALIAS_SOURCE_CLASS_NOT_WIDENING = "warehouse_key";
 
 /**
- * The abuse-control rule (#3797): a documented `0 = disabled` sentinel, so a
- * zero or unparseable value turned the control OFF. No widening notion.
+ * The abuse-control rule (#3797): the documented `0 = disabled` sentinel.
+ *
+ * ⚠️ Parses exactly as `trial-abuse.ts`'s `parseRpm` parses, for the same
+ * reason {@link aliasThresholdRule} mirrors its own reader — and this rule did
+ * NOT, until review measured it. Two divergences, in opposite directions:
+ *
+ * - `parseRpm` FLOORS, so `"0.9"` resolves to `0` and
+ *   `sliding-window-rate-limit.ts`'s `limit === 0` short-circuit allows every
+ *   request. The limiter is off and the old rule reported
+ *   `disablesControl: false` — a false negative on exactly the event the flag
+ *   exists to catch.
+ * - `parseRpm` falls back to the shipped DEFAULT on non-finite or negative, so
+ *   `"off"` leaves the limiter running at its shipped default — 5rpm per-IP,
+ *   3 per-email. The old rule reported `disablesControl: true` — a false
+ *   alarm, and a test pinned it.
+ *
+ * `settings.ts` cannot import `trial-abuse.ts` — that module imports
+ * `getSettingAuto` from here, so the back-import would cycle — which makes the
+ * duplication deliberate. It carries a value/effect table in `settings.test.ts`,
+ * the same treatment `ALIAS_SOURCE_CLASS_NOT_WIDENING` gets for the same reason.
  */
 const abuseThresholdRule: SecuritySensitiveRule = (action, value) => {
-  const parsed = value === undefined ? undefined : Number(value);
-  return {
-    disablesControl:
-      action === "set" && (parsed === 0 || (parsed !== undefined && !Number.isFinite(parsed))),
-    widensAuthority: false,
-  };
+  if (action !== "set" || value === undefined) {
+    return { disablesControl: false, widensAuthority: false };
+  }
+  const n = Number(value);
+  // Non-finite or negative → `parseRpm` returns the fallback, so the control
+  // stays ON and nothing was disabled. Otherwise it floors, and a floored zero
+  // IS the disabled sentinel.
+  const readerHonours = Number.isFinite(n) && n >= 0;
+  return { disablesControl: readerHonours && Math.floor(n) === 0, widensAuthority: false };
 };
 
 /**
@@ -2834,8 +2858,9 @@ const aliasSourcesRule: SecuritySensitiveRule = (action, value) => ({
  * construction rather than by coincidence. Using `Number` here instead was a
  * measured false negative in review: `Number("0.5x")` is `NaN` so the write
  * audited as harmless, while `parseFloat("0.5x")` is `0.5` and the reader
- * halved the bar. It also flagged `-0.5` as a widening when the reader rejects
- * it into the disabled (safest) state. Both directions of that divergence are
+ * halved the bar. An earlier draft paired that `Number` with a bare
+ * `parsed < 1` and no range check, which also flagged `-0.5` as a widening when
+ * the reader rejects it into the disabled (safest) state. Both directions are
  * pinned in `settings.test.ts`.
  */
 const aliasThresholdRule: SecuritySensitiveRule = (action, value) => {
@@ -2852,12 +2877,18 @@ const aliasThresholdRule: SecuritySensitiveRule = (action, value) => {
  *
  * ⚠️ THE TABLE IS THE SET — that is the whole point of the shape, and it is the
  * same `as const`-plus-closed-union device `SAAS_IMMUTABLE_KEYS` uses forty
- * lines up for the same reason. A hand-maintained `Set` with a `switch` beside
- * it lets a fifth key be added with no rule, where it falls through to whatever
- * arm is last — and review measured that: a boolean key landing on
- * {@link abuseThresholdRule} reports `disablesControl: true` on `"true"` AND on
- * `"false"`, because `Number("true")` is `NaN`. A false security-audit line is
- * worse than none, and nothing — not the compiler, not a test — would have
+ * uses above it for the same reason. A hand-maintained `Set` with a `switch`
+ * beside it lets a fifth key be added with no rule, where it falls through to
+ * whatever arm is last — and review measured that against the NUMERIC rule of
+ * the day: a boolean key landing on {@link abuseThresholdRule} reported
+ * `disablesControl: true` on `"true"` AND on `"false"`, because `Number("true")`
+ * is `NaN`.
+ *
+ * ⚠️ Since that rule was fixed to mirror `parseRpm`, the same mis-wiring fails
+ * the OTHER way — non-finite now reads as "the reader kept its default", so a
+ * boolean key would report `disablesControl: false` on every value and audit
+ * nothing at all. The direction flipped; the defect did not. Either way it is a
+ * rule nobody chose, and nothing — not the compiler, not a test — would have
  * caught it.
  *
  * `Record<SecuritySensitiveKey, …>` makes "added a key, forgot the rule" a

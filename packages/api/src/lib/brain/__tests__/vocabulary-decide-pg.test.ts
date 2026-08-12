@@ -100,20 +100,35 @@
  * | the entitlement bar scoped to the APPROVE verb only | 1 |
  * | the workspace-mismatch guard scoped to the APPROVE verb only | 1 |
  * | the unreadable-settings-tier latch dropped (#5162) | 1 |
+ * | the settings-unreadable refusal message replaced by the policy one (#5162) | 1 |
  *
- * 52 mutations, 52 caught, zero survivors.
+ * 53 mutations against the DECISION LOGIC, 53 caught, zero survivors.
  *
- * ⚠️ The final row was measured at #5162, the other 51 at #5023, and the two
- * are not one run. #5162 added a conjunct to `autoApproveEligible` and two
- * tests to this file, so the counts above are now LOWER BOUNDS rather than
- * exact: a mutation can only be killed by more tests, never fewer, so no row
- * above can have fallen — but the threshold and source-class rows in
- * particular may kill more than they say, since the new opt-out test exercises
- * both. Re-measure the whole table, not one cell, before treating any number
- * here as exact again.
+ * ⚠️ TWO SCOPE CAVEATS, because "53 caught" otherwise reads as completeness
+ * over the whole seam and it is not.
  *
- * TWELVE rows, in five groups, need reading with care rather than at face
- * value:
+ * **The counts are LOWER BOUNDS.** The last two rows were measured at #5162,
+ * the other 51 at #5023, and the two are not one run. #5162 added a conjunct
+ * to `autoApproveEligible`, three tests to this file and two assertions to an
+ * existing one, so a mutation can only be killed by more tests, never fewer —
+ * no row above can have fallen, but the
+ * threshold and source-class rows may kill more than they say, since the new
+ * opt-out test exercises both. Re-measure the whole table, not one cell,
+ * before treating any number here as exact again.
+ *
+ * **The table covers the decision, not the diagnostics.** #5162 also added a
+ * once-per-process warn latch (`settingsTierWarned`) and the human-path
+ * short-circuit at the decide call site. Neither has a row, and both would
+ * SURVIVE — but NOT for want of a seam, and the distinction is what makes this
+ * gap cheap to close. `vocabulary-rekey-logging.test.ts` already mocks the
+ * logger process-wide and drives this very module through it; it just filters
+ * for "Drift re-key complete" and only ever approves as a human, so neither
+ * #5162 line is reached, let alone asserted. Falsifying them is a matter of
+ * adding cases there, not of building capture. Stated rather than papered over:
+ * the refusal MESSAGE is falsified (the row above), the log LINE is not.
+ *
+ * TWELVE of the #5023 rows, in five groups, need reading with care rather than
+ * at face value:
  *
  * **The ordered-identity row** is NOT caught by the headline producer test:
  * that one re-emits the pair in the same order it was removed in, so an ordered
@@ -464,8 +479,16 @@ describeIfPg("the alias decision seam (#5023)", () => {
     // real server does this in its init path; without it every auto-approval
     // control in this file asserts against a process that never looked at its
     // own settings table, which is not the state any of them mean to describe.
-    const { loadSettings: bootSettings } = await import("@atlas/api/lib/settings");
+    const { loadSettings: bootSettings, settingsCacheEverLoaded } = await import(
+      "@atlas/api/lib/settings"
+    );
     await bootSettings();
+    // ASSERTED, not assumed: `loadSettings` swallows its own failure and
+    // returns 0, so a missing settings table would leave every auto-approval
+    // control in this file refusing for the latch's reason rather than its own
+    // — a dozen confusing `expected autoApprove: true` failures instead of one
+    // clear cause.
+    expect(settingsCacheEverLoaded()).toBe(true);
     // Also here, not only in `afterEach`: otherwise the FIRST test in the file
     // runs under whatever the ambient environment holds, and a developer with
     // either knob exported would see a different suite than CI does.
@@ -484,6 +507,11 @@ describeIfPg("the alias decision seam (#5023)", () => {
   }, PG_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
+    // The once-per-process warn latch is NOT re-armed by `_resetSettingsCache`
+    // — nothing wires the two together — so a test that trips it would
+    // otherwise silence the warn for every later test in this process.
+    const { _resetSettingsTierWarning } = await import("@atlas/api/lib/brain/vocabulary-decide");
+    _resetSettingsTierWarning();
     // Targets BEFORE edges — `fk_brain_vocabulary_target_edge` is RESTRICT.
     await pool.query("DELETE FROM brain_vocabulary_target");
     await pool.query("DELETE FROM brain_vocabulary_edge");
@@ -959,10 +987,49 @@ describeIfPg("the alias decision seam (#5023)", () => {
       approver: { kind: "auto", producer: PRODUCER },
     });
     expect(decided).toMatchObject({ kind: "refused", refusal: "not-auto-approvable" });
+    // The POLICY message, asserted positively AND negatively. Without the
+    // negative half, swapping the two arms of the message ternary is green:
+    // both arms produce a refusal with this tag, and only the prose differs.
+    expect(decided).toMatchObject({ message: expect.stringContaining("ADR-0037 §6") });
+    expect(decided).not.toMatchObject({
+      message: expect.stringContaining("never loaded from the internal DB"),
+    });
     // Left decidable by a human — a refused auto-approval must not consume the
     // proposal.
     expect(await statusOf(id)).toBe("pending");
     expect(await storedEdges()).toEqual([]);
+  });
+
+  it("an unreadable settings tier refuses with ITS OWN cause, not the policy one (#5162)", async () => {
+    // The message branch had no test and no reachable input: `beforeAll` boots
+    // the cache, so `settingsCacheEverLoaded()` is true for every other
+    // `decideAliasProposal` in this file. Deleting the ternary — reverting to
+    // the single "the workspace's settings narrow that further" string — was
+    // green, which is the whole reason the branch is worth an assertion: that
+    // sentence sends an operator to inspect two knobs that are set correctly.
+    const { loadSettings, _resetSettingsCache } = await import("@atlas/api/lib/settings");
+    const id = await queue(warehouseEdge("project atlas", "nova"));
+    try {
+      _resetSettingsCache();
+      const decided = await decideAliasProposal({
+        id,
+        workspaceId: WS,
+        decision: "approved",
+        approver: { kind: "auto", producer: PRODUCER },
+      });
+      expect(decided).toMatchObject({ kind: "refused", refusal: "not-auto-approvable" });
+      expect(decided).toMatchObject({
+        message: expect.stringContaining("never loaded from the internal DB"),
+      });
+      // The negative half: it must NOT blame the knobs. This is the assertion
+      // that fails if the two arms are swapped or the ternary is removed.
+      expect(decided).not.toMatchObject({
+        message: expect.stringContaining("ATLAS_BRAIN_ALIAS_AUTO_APPROVE_*"),
+      });
+      expect(await statusOf(id)).toBe("pending");
+    } finally {
+      await loadSettings();
+    }
   });
 
   it("the auto approver CAN approve an eligible proposal (the control)", async () => {

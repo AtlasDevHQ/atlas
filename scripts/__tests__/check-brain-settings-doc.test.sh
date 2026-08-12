@@ -16,17 +16,17 @@
 # `3 are **workspace-scoped**` each disabled the workspace-scope check silently,
 # at exit 0, with no output — while the identical shapes in the hidden-count
 # check failed loudly, because that check pushes a failure when its sentence is
-# missing or unreadable and the workspace one did not. Fixtures W-MISSING and
-# W-DIGITS below pin both directions so the asymmetry cannot come back.
+# missing or unreadable and the workspace one did not. Fixtures W-REWORD and
+# W-DIGITS below pin those two shapes so the asymmetry cannot come back.
 #
 # ## Every FAILURE fixture asserts a MARKER, not just a non-zero exit
 #
 # `bun` exits 1 on an uncaught exception too, so an exit code alone cannot tell
 # "the arm I meant fired" from "the guard crashed" or "a different arm fired" —
 # and several mutations below legitimately trip more than one arm. Each `check
-# fail` names a substring only its own arm prints. The PASS fixtures are the two
-# a no-op guard would satisfy, which is exactly what the failure fixtures rule
-# out.
+# fail` names a substring only its own arm prints. The three PASS fixtures are
+# all a no-op guard would satisfy, which is exactly what the failure fixtures
+# rule out.
 #
 # ## Coverage: both directions, plus the vacuity floor
 #
@@ -117,10 +117,22 @@ done
 # `--preserve=timestamps` so a restored file does not read as `M` in git status
 # through stat-cache staleness, which in a shared worktree looks exactly like
 # the suite having left something behind.
+RESTORED=0
 restore() {
-  # Idempotent: the INT/TERM traps run it and then exit, but bash also runs the
-  # EXIT trap on the way out.
-  [ -f "$DOC_BACKUP" ] || return 0
+  # Idempotent via an explicit flag, NOT via "does a backup file still exist".
+  # That test conflates "already restored, nothing to do" with "my backup
+  # vanished" — and the second is total silence: the trap returns 0, the two
+  # backups it never consulted are ignored, and a mutated registry and guard
+  # stay in the tree behind a green run.
+  [ "$RESTORED" -eq 1 ] && return 0
+  local b
+  for b in "$DOC_BACKUP" "$REG_BACKUP" "$GUARD_BACKUP"; do
+    if [ ! -f "$b" ]; then
+      echo "::error::backup $b vanished before restore — the tree may still hold a fixture mutation." >&2
+      echo "::error::Recover with: git checkout -- '$DOC' '$REG' '$GUARD'" >&2
+      return 1
+    fi
+  done
   local rc=0
   cp --preserve=timestamps "$DOC_BACKUP" "$DOC" || rc=1
   cp --preserve=timestamps "$REG_BACKUP" "$REG" || rc=1
@@ -135,6 +147,7 @@ restore() {
     echo "::error::Only if those are gone: git checkout -- '$DOC' '$REG' '$GUARD'  (discards any unrelated uncommitted edits to them)" >&2
     return 1
   fi
+  RESTORED=1
   rm -f "$DOC_BACKUP" "$REG_BACKUP" "$GUARD_BACKUP"
 }
 
@@ -199,14 +212,28 @@ mutate() {
     exit 2
   fi
 }
+# Verified against the git object id, exactly as `restore()` is. `mutate()`'s
+# proof-it-landed is `cmp` against the BACKUP — a relative test — so an
+# inter-fixture restore that wrote wrong content would make the next `mutate`
+# see a difference, declare its sed landed, and assert against a leftover
+# mutation. The arm-specific markers backstop that, but there is no reason for
+# the weaker check.
+restore_verified() {
+  local file="$1" backup="$2" sha="$3"
+  cp --preserve=timestamps "$backup" "$file" || { echo "::error::inter-fixture restore of $file failed" >&2; exit 2; }
+  if [ "$(git -C "$ROOT" hash-object "$file")" != "$sha" ]; then
+    echo "::error::inter-fixture restore of $file did not reproduce its committed content" >&2
+    exit 2
+  fi
+}
 restore_doc() {
-  cp --preserve=timestamps "$DOC_BACKUP" "$DOC" || { echo "::error::inter-fixture restore of $DOC failed" >&2; exit 2; }
+  restore_verified "$DOC" "$DOC_BACKUP" "$DOC_SHA"
 }
 restore_reg() {
-  cp --preserve=timestamps "$REG_BACKUP" "$REG" || { echo "::error::inter-fixture restore of $REG failed" >&2; exit 2; }
+  restore_verified "$REG" "$REG_BACKUP" "$REG_SHA"
 }
 restore_guard() {
-  cp --preserve=timestamps "$GUARD_BACKUP" "$GUARD" || { echo "::error::inter-fixture restore of $GUARD failed" >&2; exit 2; }
+  restore_verified "$GUARD" "$GUARD_BACKUP" "$GUARD_SHA"
 }
 
 echo "check-brain-settings-doc.test.sh: adversarial fixtures"
@@ -250,11 +277,28 @@ restore_doc
 
 mutate "$DOC" "$DOC_BACKUP" 's/All eleven are hidden from the generic settings page/All of them are concealed from the generic settings page/'
 check fail "REWORDING the hidden-count sentence fails loudly rather than going blind" \
-  'sentence is gone'
+  '"all N are hidden" sentence is gone'
+restore_doc
+
+# The hidden-count sentence's UNREADABLE arm. Its workspace twin has W-REWORD;
+# leaving this one unfixtured would recreate, inside the fixture suite, the very
+# asymmetry between the two checks that this suite exists because of.
+mutate "$DOC" "$DOC_BACKUP" 's/All eleven are hidden from the generic settings page/All keys are hidden from the generic settings page/'
+check fail "an unreadable hidden-count fails loudly" \
+  'as a number word in the hidden-count sentence'
+restore_doc
+
+# The doc→registry direction: a row naming a key the registry does not have.
+# This is the mirror of the closure check, and the arm that catches a typo'd
+# key name in the table. It also trips the count arm, so the marker is what
+# makes the fixture discriminate.
+mutate "$DOC" "$DOC_BACKUP" '/^| `ATLAS_BRAIN_GRANT_SWEEP_INTERVAL_HOURS`/i\| `ATLAS_BRAIN_NOT_REAL` | `1` | fixture row |'
+check fail "a doc row naming a key the registry lacks is caught" \
+  'is documented in'
 restore_doc
 
 # --- doc side: the workspace-scoped sentence ---------------------------------
-# ⚠️ W-MISSING and W-DIGITS are the two review empirically falsified. Before the
+# ⚠️ W-REWORD and W-DIGITS are the two review empirically falsified. Before the
 # fix both exited 0 with no output, silently disabling the workspace check while
 # the run still reported PASS.
 mutate "$DOC" "$DOC_BACKUP" 's/Three are \*\*workspace-scoped\*\*/Three of them are **workspace-scoped**/'

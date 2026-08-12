@@ -508,8 +508,13 @@ function aliasAutoApproveSources(workspaceId: string): ReadonlySet<AliasSourceCl
  * its caveat verbatim: this gates LOG VOLUME ONLY, never the security decision.
  * The refusal itself is evaluated every single time.
  *
- * Re-armed by `_resetSettingsCache` so a test that simulates a fresh boot sees
- * a fresh warn rather than inheriting an earlier test's latch.
+ * ⚠️ NOTHING RE-ARMS THIS AUTOMATICALLY, and an earlier draft of this comment
+ * claimed `_resetSettingsCache` did. It cannot: that function lives in
+ * `lib/settings.ts`, which must not acquire an edge to a brain module, and it
+ * touches only `_cache`, `_cacheEverLoaded` and `_liveCache`. A test that
+ * simulates a fresh boot must call {@link _resetSettingsTierWarning} itself —
+ * `vocabulary-decide-pg.test.ts`'s `afterEach` does, which is what keeps this
+ * export from being decoration.
  */
 let settingsTierWarned = false;
 
@@ -1136,11 +1141,19 @@ export async function decideAliasProposal(
       // live workspace setting and can change between the two, and a producer
       // that cached `autoApprove: true` across a batch would otherwise approve
       // under a policy the operator has already turned off.
+      // Read ONCE, BEFORE the predicate, and used for both the guard and the
+      // message. Reading it again after `autoApproveEligible` returned would
+      // open a window in which a concurrent `loadSettings` latches between the
+      // two reads, and the refusal caused by the unreadable tier would then
+      // carry the policy message — reintroducing the very misattribution the
+      // two-branch message exists to remove.
+      const settingsUnreadable = !settingsCacheEverLoaded();
       // `approver.kind === "auto" &&` FIRST, so the predicate is not evaluated
       // on the human path at all (#5162). It emits a warn, and a human
-      // approving a proposal used to trigger a line reading "refusing alias
-      // auto-approval" at the moment their approval committed — the log
-      // asserting the opposite of what happened.
+      // approving a proposal used to trigger
+      // `brain.alias_auto_approve.settings_tier_unreadable` — a line saying
+      // every alias proposal queues for human review — at the moment their
+      // approval committed, asserting the opposite of what happened.
       const eligible =
         approver.kind !== "auto" ||
         autoApproveEligible(workspaceId, {
@@ -1153,7 +1166,11 @@ export async function decideAliasProposal(
         // when the settings were never read, and it sends an operator to
         // inspect two knobs that are set correctly while the real cause — one
         // failed `loadSettings` at boot — appears nowhere in the response.
-        const settingsUnreadable = !settingsCacheEverLoaded();
+        //
+        // When BOTH hold — tier unreadable AND the proposal independently
+        // ineligible — this names the tier, because that is the conjunct that
+        // actually refused (it is evaluated first) and it is the one the
+        // operator must clear before the other is even knowable.
         return {
           kind: "refused",
           id,

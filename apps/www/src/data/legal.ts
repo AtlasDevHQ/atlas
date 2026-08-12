@@ -12,7 +12,9 @@ export const LEGAL_STAMPS: Record<"privacy" | "terms" | "dpa" | "aup", LegalStam
   // 2026-08-12 (#5163, #5164) — the Knowledge Base / Company Atlas ingest
   // surface is disclosed in privacy §what-we-collect and DPA §processing
   // details; Annex I states the read-from/disclose-to rule and gains the four
-  // chat platforms Atlas posts into; privacy §Retention gains the
+  // remaining chat platforms Atlas posts into on Cloud today (Slack was already
+  // listed; Google Chat is built but not released, so it joins when it ships —
+  // the annex says so explicitly); privacy §Retention gains the
   // connected-source class; the 99.9% availability figure is withdrawn from
   // terms and the plan tables.
   privacy: { effective: "2026-06-19", version: "v3.3", lastUpdated: "2026-08-12" },

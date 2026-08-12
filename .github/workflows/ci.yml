@@ -293,6 +293,16 @@ jobs:
       - name: Test the docs-links gate itself (adversarial fixtures)
         run: bash scripts/__tests__/check-docs-links.test.sh
 
+      - name: Check published Brain* contract snippets against their declarations (#5165)
+        run: bun scripts/check-docs-brain-snippets.ts
+
+      # Enumerated here because this workflow lists each fixture suite BY NAME
+      # while ci-local.sh globs the directory — see the mutation-tables note
+      # above. Rewrites two tracked files in place and trap-restores them; no
+      # Postgres, ~2 seconds.
+      - name: Adversarial fixtures for the brain-snippets gate (#5165)
+        run: bash scripts/__tests__/check-docs-brain-snippets.test.sh
+
   lint:
     name: lint
     runs-on: ubuntu-latest

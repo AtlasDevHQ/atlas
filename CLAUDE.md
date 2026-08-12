@@ -33,7 +33,7 @@ These hold everywhere. The rest of this file is orientation, not rules.
 
 ### Tests
 - **`bun run test`, never bare `bun test`** — isolated per-file runner. Single file OK: `bun test path/to/file.test.ts`
-- **Remote CI on the PR is the gate, not a local `/ci`** — push, open the PR as a **draft**, and let `ci.yml` run (~4 min, parallel) while you review. The local pre-flight is the cheap subset: `cd packages/api && bun run scripts/test-isolated.ts --affected`, plus `bun run lint` and `bun run type`. Run the full `scripts/ci-local.sh` (32 gates, ~25 min, serial, rewrites source in place for the mutation gate) only when remote CI is broken, when you reshaped something `mutation-tables` anchors on, or before `/release`. Exceptions and the arithmetic: `/ship-issue` Step 4
+- **Remote CI on the PR is the gate, not a local `/ci`** — push, open the PR as a **draft**, and let `ci.yml` run (~4 min, parallel) while you review. The local pre-flight is the cheap subset: `cd packages/api && bun run scripts/test-isolated.ts --affected`, plus `bun run lint` and `bun run type`. Run the full `scripts/ci-local.sh` (33 gates, ~25 min, serial, rewrites source in place for the mutation gate) only when remote CI is broken, when you reshaped something `mutation-tables` anchors on, or before `/release`. Exceptions and the arithmetic: `/ship-issue` Step 4
 
 ### Merge discipline
 Rationale + override rules: [docs/development/branch-protection.md](docs/development/branch-protection.md). These are workflow rules — no file-read triggers them, so they stay here:

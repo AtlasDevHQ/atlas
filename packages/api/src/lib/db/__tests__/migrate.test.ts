@@ -322,7 +322,16 @@ describe("runMigrations", () => {
     //   "no writer has keyed this row yet" and "this surface asserts nothing" —
     //   by making the first unrepresentable and the second refused at ingest,
     //   #5047) = 195.
-    expect(count).toBe(195);
+    //   Plus 0195 (brain_facts_drop_predicate_cardinality — the CONTRACT half of
+    //   the two-phase drop #5028 split in two. The column and
+    //   `chk_brain_facts_predicate_cardinality` go one release AFTER v0.2.6
+    //   removed the last read, so no draining container can SELECT a column that
+    //   is gone. ⚠️ It deliberately backfills NOTHING into
+    //   `brain_predicate_cardinality`: the per-row values are the extractor's
+    //   guesses, and seeding the curated vocabulary from them would launder the
+    //   stochastic input #5027 made unrepresentable into the decision that
+    //   replaced it, #5028) = 196.
+    expect(count).toBe(196);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -546,6 +555,7 @@ describe("runMigrations", () => {
         "0192_brain_predicate_cardinality.sql",
         "0193_brain_fact_subject_cmp.sql",
         "0194_brain_fact_slot_keys_not_null.sql",
+        "0195_brain_facts_drop_predicate_cardinality.sql",
       ],
     });
 

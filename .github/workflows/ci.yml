@@ -255,6 +255,15 @@ jobs:
       - name: Adversarial fixtures for the mutation-tables gate (#5077)
         run: bash scripts/__tests__/check-mutation-tables.test.sh
 
+      # Enumerated here for the reason stated above. This one covers the
+      # WRAPPER's verdict — ci-local.sh was the only gate script with no
+      # fixtures, and it shipped a declined run that printed two contradictory
+      # RESULT lines and exited 0 (#5151). It sources
+      # scripts/lib/ci-local-report.sh rather than invoking ci-local.sh, because
+      # ci-local.sh runs this very directory and would recurse. Milliseconds.
+      - name: Adversarial fixtures for the ci-local verdict (#5151)
+        run: bash scripts/__tests__/ci-local-verdict.test.sh
+
       # Enumerated here for the reason stated above. This one gates the
       # eval workflow's own pass/fail meaning — it must not be the suite
       # that only ever ran locally. Pure bash, no network; well under a

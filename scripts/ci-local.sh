@@ -287,69 +287,19 @@ fi
 # Rendered once, printed to stdout AND written atomically (tmp + mv) to
 # .ci-local/RESULT so a watcher polling for the file can never observe it
 # half-written. RESULT's existence = run finished; its contents = the report.
-failed=()
-# ⚠️ Tracked SEPARATELY from `failed`, because the headline has to say so. The
-# row rendered SKIP correctly and the summary line still read "all N gates
-# green" — and TEST_DATABASE_URL unset is the DEFAULT local state, so that was
-# nearly every local run. `/ci`'s protocol tells the agent that RESULT's
-# contents ARE the report, so a false green there is read as a clean pre-PR pass.
-# Same defect as the row, moved one screen down.
-skipped=()
-for name in "${GATE_NAMES[@]}"; do
-  rc="$(cat "$LOG_DIR/$name.exit" 2>/dev/null || echo 1)"
-  if [ "$rc" = "3" ]; then skipped+=("$name")
-  elif [ "$rc" != "0" ]; then failed+=("$name"); fi
-done
-total="${#GATE_NAMES[@]}"
+#
+# ⚠️ The verdict logic itself lives in scripts/lib/ci-local-report.sh so it can
+# be tested WITHOUT running 32 gates. It cannot be tested by invoking this
+# script: `g_gate_fixtures` above runs every scripts/__tests__/*.test.sh, so
+# such a test would recurse. See scripts/__tests__/ci-local-verdict.test.sh.
+# shellcheck source=lib/ci-local-report.sh
+. "$ROOT/scripts/lib/ci-local-report.sh"
 
-render_report() {
-  local name rc secs
-  echo ""
-  printf '%-28s %-7s %5s\n' "GATE" "RESULT" "TIME"
-  printf '%s\n' "------------------------------------------------"
-  for name in "${GATE_NAMES[@]}"; do
-    rc="$(cat "$LOG_DIR/$name.exit" 2>/dev/null || echo 1)"
-    secs="$(cat "$LOG_DIR/$name.secs" 2>/dev/null || echo '?')"
-    if [ "$rc" = "3" ]; then
-      # ⚠️ Exit 3 means "declined to verify", and it is NOT PASS. A gate that
-      # cannot tell "verified" from "did not run" in its own summary line is the
-      # same defect class as the deflated table `mutation-tables` exists to
-      # refuse — and the compact table is what the /ci agent protocol reads.
-      printf '%-28s %-7s %4ss\n' "$name" "SKIP" "$secs"
-    elif [ "$rc" = "0" ]; then
-      printf '%-28s %-7s %4ss\n' "$name" "PASS" "$secs"
-    else
-      printf '%-28s %-7s %4ss\n' "$name" "FAIL" "$secs"
-    fi
-  done
-  printf '%s\n' "------------------------------------------------"
-
-  if [ "${#failed[@]}" -eq 0 ] && [ "${#skipped[@]}" -gt 0 ]; then
-    echo "RESULT: PASS with ${#skipped[@]} DECLINED — ${skipped[*]} verified nothing; not a clean pre-PR pass."
-  elif [ "${#failed[@]}" -eq 0 ]; then
-    if [ "$NO_TEST" = "1" ]; then
-      echo "RESULT: PASS (tests skipped — Stage 2 not run; not a clean pre-PR pass)"
-    else
-      echo "RESULT: PASS — all $total gates green."
-    fi
-    return
-  fi
-
-  echo "RESULT: FAIL — ${#failed[@]} of $total gates failed: ${failed[*]}"
-  echo ""
-  for name in "${failed[@]}"; do
-    echo "▼ $name  (.ci-local/$name.log — last $FAIL_TAIL lines)"
-    tail -n "$FAIL_TAIL" "$LOG_DIR/$name.log" 2>/dev/null | sed 's/^/    /'
-    echo ""
-  done
-  echo "Full logs: .ci-local/<gate>.log   Re-run one gate, e.g.: bash scripts/check-schema-drift.sh"
-  echo "Note: a 'type' failure can cascade into openapi-drift/test (incomplete SDK dist) — fix type first."
-}
+ci_local_classify_gates
 
 report="$(render_report)"
 printf '%s\n' "$report"
 printf '%s\n' "$report" >"$LOG_DIR/RESULT.tmp"
 mv "$LOG_DIR/RESULT.tmp" "$LOG_DIR/RESULT"
 
-[ "${#failed[@]}" -eq 0 ] && exit 0
-exit 1
+exit "$(ci_local_exit_code)"

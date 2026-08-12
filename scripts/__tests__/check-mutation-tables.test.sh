@@ -17,6 +17,7 @@
 #   3. an unresolvable base WIDENS rather than passing     (the fail-safe)
 #   4. TEST_DATABASE_URL unset exits 3, not 0              (SKIP, never PASS)
 #   5. POSITIVE CONTROL: a current table passes            (or the above is vacuous)
+#   6. HEAD == base exits 3, and HEAD-ahead still exits 0  (#5151, a PAIR)
 #
 # ⚠️ EVERY fixture here was proven sensitive by DELETING the guard it pins and
 # confirming it goes red. Two more (`.todo` refused, dead anchor refused) were
@@ -159,6 +160,25 @@ else
   echo "  FAIL  TEST_DATABASE_URL unset — expected exit 3, got $rc"; FAIL=$((FAIL + 1))
 fi
 rm -rf "$T"
+
+# 6. Empty-by-construction is not "nothing changed" (#5151). These two run as a
+# PAIR and the pair is the assertion: both reach the same empty-selection
+# branch, and the gate must return a DIFFERENT verdict for each. A fixture that
+# only pinned the 3 would still pass if the gate declined unconditionally —
+# which would make every ordinary PR's instant no-op read as unverified.
+#
+# ⚠️ These are also the first fixtures in this file to exercise the selector
+# loop itself (`mutate.ts --files` per spec). Fixtures 1/2/5 pass --all, and 3
+# widens on an unresolvable base before the loop is reached.
+T=$(make_tree "$GOOD_TARGET" '"  return 42;"' 'true')
+check 3 "HEAD == base exits 3 (SKIP) — the affected set is empty BY CONSTRUCTION" "$T" --affected main
+
+# The negative control. HEAD is one commit ahead of the base and that commit
+# touches nothing any spec depends on, so the empty selection is a real answer
+# rather than an artefact of there being no delta at all — exit 0 is honest here.
+T=$(make_tree "$GOOD_TARGET" '"  return 42;"' \
+   'git branch base-ref HEAD && echo note > ../../notes.md && git add -A >/dev/null && git commit --quiet -m irrelevant')
+check 0 "HEAD ahead of base, no spec dep touched — still a genuine PASS" "$T" --affected base-ref
 
 echo ":: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

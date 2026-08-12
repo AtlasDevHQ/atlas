@@ -164,6 +164,43 @@ $UNTRACKED"
         done <<< "$DEPS"
       done
       if [ ${#SELECTED[@]} -eq 0 ]; then
+        # ⚠️ TWO different states reach here and they are NOT the same verdict.
+        # Collapsing them into `exit 0` was the last false-green left in this
+        # file, and it fired at the worst possible moment (#5151).
+        #
+        #   HEAD != BASE — the branch genuinely touches no spec's dependencies.
+        #     "Nothing to verify" is the true answer and a green PASS is honest.
+        #
+        #   HEAD == BASE — there is no committed delta AT ALL, so the affected
+        #     set is empty BY CONSTRUCTION. This gate cannot verify anything via
+        #     --affected here no matter what state the tables are in. That is
+        #     exactly where `/ci` sits when run from `main` immediately before
+        #     `/release` — the one moment CLAUDE.md makes the full run mandatory
+        #     — so the gate reported a green PASS for a check it had structurally
+        #     declined to perform, precisely when it was most wanted.
+        #
+        # Declining (3) rather than widening to --all is deliberate: the full
+        # sweep is 832s MEASURED, more than the rest of ci-local.sh combined,
+        # and remote CI already runs --all on every push to main, so widening
+        # would re-verify the same SHA at the highest cost for no new coverage.
+        # What was missing was not coverage, it was an honest verdict.
+        HEAD_SHA=$(cd "$ROOT" && git rev-parse HEAD 2>&1) || HEAD_SHA=""
+        BASE_SHA=$(cd "$ROOT" && git rev-parse "$BASE" 2>&1) || BASE_SHA=""
+        if [ -z "$HEAD_SHA" ] || [ -z "$BASE_SHA" ]; then
+          # Widen, never narrow — the fourth instance of this twin in this file.
+          # An unresolvable ref here cannot prove the set is non-empty by
+          # construction, and "cannot tell" must never render as a green PASS.
+          echo "check-mutation-tables: cannot resolve HEAD or '$BASE' to compare them — declining."
+          echo "  An empty affected set that MIGHT be empty by construction is not a verification."
+          exit 3
+        fi
+        if [ "$HEAD_SHA" = "$BASE_SHA" ]; then
+          echo "check-mutation-tables: HEAD == $BASE, so the affected set is empty BY CONSTRUCTION —"
+          echo "  ${#SPECS[@]} spec(s) not verified. This gate cannot check anything via --affected here."
+          echo "  Coverage for this SHA is remote CI's --all job on the push to $BASE."
+          echo "  To verify locally instead: bash scripts/check-mutation-tables.sh --all  (~832s measured)."
+          exit 3
+        fi
         echo "check-mutation-tables: no spec's targets or sources changed vs $BASE — nothing to verify."
         echo "  (push: main runs --all, so a table that drifted for another reason is still caught there.)"
         exit 0

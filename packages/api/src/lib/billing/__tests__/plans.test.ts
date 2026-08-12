@@ -165,7 +165,21 @@ describe("billing/plans", () => {
       expect(business.features.customDomain).toBe(true);
       expect(business.features.sso).toBe(true);
       expect(business.features.dataResidency).toBe(true);
-      expect(business.features.sla).toBe("99.9%");
+    });
+
+    // #5163 — the Business tier committed "99.9%" with no SLA document,
+    // measurement window, exclusion set, or credit schedule, and with no
+    // external monitoring on two of the three regions sold. `/terms`
+    // §Warranties warrants performance "as described in the documentation",
+    // which pulled that docs table cell into the contract.
+    //
+    // Asserted across EVERY tier, not just Business: the defect was one plan
+    // carrying a figure, so a test naming only that plan would pass again the
+    // moment the figure reappears on Pro. Restoring any value goes red here.
+    it("publishes no numeric SLA on any tier (#5163)", () => {
+      for (const tier of ["free", "trial", "starter", "pro", "business"] as const) {
+        expect(getPlanDefinition(tier).features.sla).toBeNull();
+      }
     });
 
     it("every paid tier carries the flat $20/seat at-cost credit; free/locked carry none (#4034)", () => {

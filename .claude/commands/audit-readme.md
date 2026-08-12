@@ -137,7 +137,7 @@ The README's Security table is a **public claim about isolation**, which puts it
 | Omits the tier that is actually the default in prod | **HIGH** — misleads self-hosters about what they're getting |
 | Validation-layer copy diverges from the canonical phrasing | MEDIUM |
 
-**Worked example (2026-07-27):** the table read "nsjail / Firecracker / sidecar". **Firecracker is not an Atlas tier** — it appears in the codebase only as a comment about Vercel Sandbox's underlying MMDS. The row simultaneously omitted `vercel-sandbox`, which is the actual SaaS default.
+**Worked example (2026-07-27) — VERIFIED FIXED 2026-08-12, do not re-derive.** The table read "nsjail / Firecracker / sidecar". **Firecracker is not an Atlas tier** — it appears in the codebase only as a comment about Vercel Sandbox's underlying MMDS. The row simultaneously omitted `vercel-sandbox`, which is the actual SaaS default. `README.md:243` now reads "Vercel Sandbox, nsjail, or the sidecar — with e2b, Daytona, and Railway available as bring-your-own-cloud backends": Firecracker is gone and the SaaS default is named. Re-check that it still holds; don't re-open it from scratch.
 
 ---
 

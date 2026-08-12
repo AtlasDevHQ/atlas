@@ -68,13 +68,13 @@ const SECTIONS: LegalSectionData[] = [
     legal: [
       "Subject matter: provision of the Atlas Cloud text-to-SQL service.",
       "Duration: for the term of the Agreement plus the retention periods set out in the Privacy Policy.",
-      "Nature & purpose: storing semantic-layer configuration; routing queries between Customer’s authorized users, model providers, and Customer’s data warehouse; producing audit logs.",
-      "Categories of data subjects: Customer’s employees, contractors, and any individuals whose data resides in Customer’s data warehouse and is returned in query results.",
-      "Categories of personal data: identifiers (name, email, SSO subject), business contact info, query text and results when audit logging is enabled, IP addresses, device metadata.",
-      "Atlas does not process special categories of personal data (Art. 9 GDPR) on Customer’s behalf in the ordinary course. Customer is responsible for not submitting such data without notifying Atlas in writing.",
+      "Nature & purpose: storing semantic-layer configuration; routing queries between Customer’s authorized users, model providers, and Customer’s data warehouse; producing audit logs; and, where Customer installs a Knowledge Base or Company Atlas source, retrieving content from the systems that source names under credentials Customer grants, storing it, indexing it for retrieval, and — where Customer enables extraction — deriving short factual claims from it so the Service can answer questions from Customer’s own material.",
+      "Categories of data subjects: Customer’s employees, contractors, any individuals whose data resides in Customer’s data warehouse and is returned in query results, and — where Customer installs a Knowledge Base or Company Atlas source — any individual appearing in the content that source covers, including external correspondents and meeting participants who are not Customer’s personnel.",
+      "Categories of personal data: identifiers (name, email, SSO subject), business contact info, query text and results when audit logging is enabled, IP addresses, device metadata. Where Customer installs a Knowledge Base or Company Atlas source, also the content of that source and the personal data within it — depending on which sources Customer connects and how Customer scopes them, this includes chat messages and their authorship, meeting transcripts and participant lists, mailbox contents including message bodies and correspondents, and documents held in connected knowledge tools, together with any factual claims Atlas derives from that content.",
+      "Special categories (Art. 9 GDPR): Atlas does not seek out special-category personal data and no feature is designed to identify, infer, or index it. Customer controls which sources are connected and the channels, mailboxes, accounts, or spaces each is scoped to, and therefore controls what enters the Service. Customer acknowledges that free-text business communications may incidentally contain special-category data, that Atlas cannot detect or exclude it, and that Atlas processes it only as an undifferentiated part of the content Customer directs it to read. Customer is responsible for determining whether connecting a given source is appropriate under Art. 9 and, where the Service is to be used for processing that intentionally involves such data, for notifying Atlas in writing beforehand so the parties can agree any additional measures.",
     ],
     plain:
-      "Required by Art. 28(3) GDPR. Subject matter, duration, nature, purpose, and categories of data and data subjects all specified above.",
+      "Required by Art. 28(3) GDPR. Subject matter, duration, nature, purpose, and categories of data and data subjects all specified above — including what a connected Knowledge Base or Company Atlas source brings in, since that is the widest category by far.",
   },
   {
     id: "obligations",
@@ -143,7 +143,7 @@ const SECTIONS: LegalSectionData[] = [
     id: "annex",
     title: "Annexes",
     legal: [
-      "Annex I — List of Sub-processors. The current list is rendered as a table at the bottom of this page and is the source of truth.",
+      "Annex I — List of Sub-processors. The current list is rendered as a table at the bottom of this page and is the source of truth. Annex I lists third parties that receive or hold Customer Personal Data from Atlas in the course of providing the Service. A system that Atlas reads from under credentials Customer grants — a mailbox, a meeting archive, a chat workspace, a knowledge tool Customer already operates — is a data source, not a sub-processor: Customer’s relationship with that provider exists independently of Atlas and is governed by Customer’s own agreement with it, and Atlas discloses no Personal Data to it. Where Atlas both reads from and writes into the same platform (as it does for the chat platforms Atlas posts answers into), that platform is listed. The categories of data Atlas reads from connected sources are described in Processing Details above and in the Privacy Policy.",
       "Annex II — Technical and Organizational Measures: encryption (TLS 1.2+ in transit, AES-256-GCM at rest with versioned key rotation; integration credentials and connection strings encrypted in the internal database), customer-managed KMS keys negotiable on enterprise contracts, two-factor authentication (TOTP or passkey) required for every administrator, owner, and platform-administrator account on managed-mode sessions, audit logging of administrative operations with configurable retention and data-subject erasure tooling, automated vulnerability scanning of both software dependencies and container images, static application security testing on every change, secret scanning with push protection, fail-closed startup guards that prevent the Service booting with missing or invalid security-critical configuration, a documented incident-response runbook published in the Service’s security documentation and organized around the notification deadline in this DPA, per-region data isolation across the EU, US, and APAC deployments — except that sandboxed tool execution (the explore and Python tools) currently runs in the United States for all regions, because the sandbox sub-processor exposes no region primitive, as disclosed in the Service’s data-residency documentation — SELECT-only validation of every query the agent generates, and read-only enforcement at the database session level on PostgreSQL, MySQL, and ClickHouse connections. Atlas operates a security program aligned with SOC 2 Type II and ISO 27001 controls; it does not hold either certification and does not maintain a formally documented ISMS today. A third-party penetration-testing program is on the public roadmap and is not represented as in place today.",
       "Annex III — Standard Contractual Clauses, Module Two (controller-to-processor) selected by default. Optional Clause 7 (Docking Clause) is included. Clause 9 sub-processor option (b) — general written authorization with 30-day notice — applies. Clause 11 dispute-resolution option (a) is selected. Clause 17 governing law: Ireland. Clause 18 forum: Ireland.",
     ],
@@ -254,6 +254,14 @@ export default function DPAPage() {
               <p className="mt-2 max-w-xl text-sm text-fg-muted">
                 This list is the source of truth. We notify Customer at least
                 30 days before any addition or replacement.
+              </p>
+              <p className="mt-3 max-w-xl text-sm text-fg-muted">
+                It lists third parties we send your data <em>to</em>. A system
+                we only read <em>from</em> under credentials you grant — your
+                mailbox, meeting archive, or knowledge tool — is a source, not
+                a sub-processor: you already have that relationship, and we
+                disclose nothing to it. Platforms we also post <em>into</em>
+                are listed.
               </p>
             </div>
 

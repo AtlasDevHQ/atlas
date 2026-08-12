@@ -56,6 +56,34 @@
     "changed_at": "2026-07-26"
   },
   {
+    "name": "Microsoft",
+    "purpose": "Chat delivery — the Atlas bot for Microsoft Teams posts answers and query results into Customer’s Teams tenant and receives questions from it; per-workspace bot credentials are stored encrypted by Atlas. Listed for chat delivery only: where Customer connects an Outlook mailbox as a knowledge source, Atlas reads from Customer’s own Microsoft tenant under credentials Customer grants and discloses no Personal Data to Microsoft, so that use is a source rather than a sub-processing engagement",
+    "region": "Customer’s own Microsoft 365 tenant — data location determined by Customer’s agreement with Microsoft",
+    "since": "2026-08",
+    "changed_at": "2026-08-12"
+  },
+  {
+    "name": "Discord",
+    "purpose": "Chat delivery — the Atlas Discord bot posts answers and query results into Customer’s Discord server and receives questions from it; per-workspace bot tokens are stored encrypted by Atlas",
+    "region": "Customer’s own Discord server — data location determined by Customer’s agreement with Discord",
+    "since": "2026-08",
+    "changed_at": "2026-08-12"
+  },
+  {
+    "name": "Telegram",
+    "purpose": "Chat delivery — the Atlas Telegram bot posts answers and query results into Customer’s Telegram chats and receives questions from them; per-workspace bot tokens are stored encrypted by Atlas",
+    "region": "Global — data location determined by Customer’s agreement with Telegram",
+    "since": "2026-08",
+    "changed_at": "2026-08-12"
+  },
+  {
+    "name": "WhatsApp (Meta Platforms)",
+    "purpose": "Chat delivery — the Atlas WhatsApp Business integration posts answers and query results into Customer’s WhatsApp conversations and receives questions from them; per-workspace credentials are stored encrypted by Atlas",
+    "region": "Global — data location determined by Customer’s agreement with Meta",
+    "since": "2026-08",
+    "changed_at": "2026-08-12"
+  },
+  {
     "name": "Cloudflare",
     "purpose": "Bot mitigation (Turnstile on signup / abuse-sensitive endpoints) + CDN/edge proxy; receives end-user IP address",
     "region": "Global (edge)",

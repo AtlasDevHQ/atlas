@@ -25,16 +25,23 @@ the gate can't see:
   *resolves* (no 404), but sends a `/self-hosted` reader on a cross-section
   jump — judge whether audience-appropriate phrasing or `<AudienceLink>` fits
 
-### I3. Notebook Docs Currency
+### I3. Notebook Docs Currency — RETIRED 2026-08-12
 
-**Docs:** `apps/docs/content/docs/guides/notebook.mdx`
-**Source:** `packages/web/src/ui/components/notebook/`
+**Deleted, not skipped.** Both sides of this check stopped existing at `8a552d375` —
+*"refactor(notebook): retire the notebook surface end-to-end (ADR-0035) (#4589)"* — which
+removed `apps/docs/content/docs/guides/notebook.mdx` and
+`packages/web/src/ui/components/notebook/` in the same commit, along with the three source
+files this check read (`use-keyboard-nav.ts`, `use-notebook.ts`, `notebook-export.ts`).
 
-Check that the docs page reflects the CURRENT state of the notebook by reading the source files. Don't assume what's shipped — verify against code:
-- Current keyboard shortcuts (read `use-keyboard-nav.ts`)
-- Current cell operations (read `use-notebook.ts` — includes text cells, fork, reorder, export)
-- Persistence model (read `use-notebook.ts` — server-side with localStorage cache)
-- Export capabilities (read `notebook-export.ts` — Markdown + HTML)
+It had therefore been **silently passing** ever since: a check whose docs page and source
+tree are both gone matches nothing and reports nothing.
+
+The number is kept as a tombstone rather than renumbering, because `audit-docs.md` and
+this file both reference **I4** by name.
+
+The only remaining "notebook" strings in the content trees are in
+`shared/comparisons/{cube,vanna,index}.mdx`, all describing **competitors'** notebooks —
+correct, and not an Atlas claim. Nothing to re-add here.
 
 ### I4. Audience Drift (content-level — the build gate can't catch this)
 

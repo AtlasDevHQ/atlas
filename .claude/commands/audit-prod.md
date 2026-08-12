@@ -44,7 +44,7 @@ The deployed surface as of writing: `api.useatlas.dev`, `api-eu.useatlas.dev`, `
    grep -rEn '\.json\(\s*\{[^}]*\}\s*,\s*500\b' packages/api/src/ --include='*.ts' | grep -v requestId
    ```
 4. **Scheduler instrumentation** — does each scheduled task type emit a span / metric / log when it fires, succeeds, fails? Read `packages/api/src/lib/scheduler/` end-to-end.
-5. **Abuse counter wiring** — `packages/api/src/lib/security/abuse.ts` increments counters; do those counters export to a telemetry sink (OTel metrics? a dashboard endpoint?) or are they purely in-memory? In-memory-only is a finding.
+5. **Abuse counter wiring** — ⚠️ **re-pointed 2026-08-12.** `packages/api/src/lib/security/abuse.ts` is now a **delegating shim**; the engine moved to `ee/src/abuse-prevention/engine.ts` (post-#4000 WS5). Audit the engine, not the shim — a check aimed at the shim finds no counters and silently passes. As of the re-point the counters **do** export: `engine.ts:34` imports `abuseEscalations` from `@atlas/api/lib/metrics` and increments the OTel Counter on every level transition, with `engine.test.ts:653` pinning the wiring. Verify that still holds; in-memory-only would be the finding.
 6. **Plugin health surface** — each plugin can register a health check. Grep for plugins that don't, or whose health endpoint doesn't surface to the admin console / OTel.
 
 ### Findings to flag
@@ -140,7 +140,7 @@ For each upstream dependency, walk the failure path top-to-bottom and document w
    - Connection pool `pool.perOrg.*` defaults (5 / 30000 / 50 / 2 / 5) — fine for trial-tier, undersized for Business?
    - `ATLAS_RATE_LIMIT_RPM_CHAT` (memory: F-74 separate-bucket chat ceiling) — what's the actual production value vs default?
    - `ATLAS_CONVERSATION_STEP_CAP` default 500 — fine
-4. **Hot-reloadable vs startup-only correctness** — the lock mechanism now exists: `SAAS_IMMUTABLE_KEYS` (in `lib/effect/saas-env.ts`) blocks runtime mutation of boot-guard-dependent keys. Audit its MEMBERSHIP, not its existence: every setting whose value a boot guard validated (DPA email vendor, encryption keys, deploy mode, plan-tier enforcement) must be in the immutable set or have a hot-reload path that re-runs the guard. A guard-validated key that's runtime-mutable is the finding.
+4. **Hot-reloadable vs startup-only correctness** — the lock mechanism now exists: `SAAS_IMMUTABLE_KEYS` (in `packages/api/src/lib/settings.ts`, built from `SAAS_IMMUTABLE_KEYS_LITERAL`; **not** in `saas-env.ts`, where this command wrongly placed it until 2026-08-12 — no `ATLAS_BRAIN_*` or any other key appears in `saas-env.ts`'s immutable set because there isn't one there) blocks runtime mutation of boot-guard-dependent keys. Audit its MEMBERSHIP, not its existence: every setting whose value a boot guard validated (DPA email vendor, encryption keys, deploy mode, plan-tier enforcement) must be in the immutable set or have a hot-reload path that re-runs the guard. A guard-validated key that's runtime-mutable is the finding.
 5. **Required-but-undocumented env vars** — `/audit-docs` Part A handles this for the docs site, but cross-check that `.env.example` and the docs page agree with what the **deployed** API actually reads in prod paths (vs dev/test-only).
 
 ### Findings to flag

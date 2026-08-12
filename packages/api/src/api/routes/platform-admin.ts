@@ -254,7 +254,7 @@ const purgeWorkspaceRoute = createRoute({
   path: "/workspaces/{id}/purge",
   tags: ["Platform Admin"],
   summary: "Purge workspace (GDPR hard delete)",
-  description: "SaaS only. Permanently removes ALL workspace data — conversations, messages, company-brain claims and episodes, knowledge-base documents, semantic layer, dashboards, integrations and their encrypted credentials, members, and orphaned users. Two deliberate exceptions: the admin action log is retained with its identifying columns scrubbed (counted separately as `adminActionLogAnonymized`), and pending Stripe teardown records are kept until they settle. The workspace must already be soft-deleted. This action is irreversible. Check `complete` — when false, `skippedTables` names relations absent from this region whose data was NOT deleted.",
+  description: "SaaS only. Permanently removes ALL workspace data — conversations, messages, company-brain claims and episodes, knowledge-base documents, semantic layer, dashboards, integrations and their encrypted credentials, members, and orphaned users. Two deliberate exceptions: the admin action log is retained with its identifying columns scrubbed (counted separately as `adminActionLogAnonymized`), and pending Stripe teardown records are kept until they settle. The workspace must already be soft-deleted. This action is irreversible. Check `complete` — when false, `skippedTables` names the work that did not run (relations absent from this region, plus the deletes and writes gated behind them) and that data was NOT deleted.",
   responses: {
     200: {
       description: "Workspace purged",
@@ -268,7 +268,7 @@ const purgeWorkspaceRoute = createRoute({
             totalRows: z.number(),
             /** Rows kept with their identifying columns scrubbed — survivors, not deletions. */
             adminActionLogAnonymized: z.number(),
-            /** Relations absent from this region, whose DELETE was skipped. Non-empty ⇒ incomplete. */
+            /** Work the purge did NOT do — absent relations plus the deletes/writes gated behind them. Non-empty ⇒ incomplete. */
             skippedTables: z.array(z.string()),
             /** False when `skippedTables` is non-empty — the erasure is not finished. */
             complete: z.boolean(),
@@ -896,8 +896,8 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
     const reasons: string[] = [];
     if (skippedTables.length > 0) {
       reasons.push(
-        `${skippedTables.length} relation(s) were absent from this region's schema and their ` +
-          `data was NOT deleted (${skippedTables.join(", ")})`,
+        `${skippedTables.length} operation(s) did not run because a relation was absent from ` +
+          `this region's schema, so that data was NOT deleted (${skippedTables.join(", ")})`,
       );
     }
     if (billing.warnings.length > 0) {

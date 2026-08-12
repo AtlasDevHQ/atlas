@@ -306,11 +306,13 @@ export function buildInternalDbMockDefaults(deps: {
     // numeric fields, skip `skippedTables` (an array) and the anonymized count
     // (rows that SURVIVED), so a test asserting on totalRows exercises the same
     // arithmetic the route does.
-    // #5160 — the purge route imports this to map its aborts to a 409. A named
-    // import missing from the complete surface SyntaxErrors under bun and takes
-    // every route in the file down with it, so it must be the REAL class:
-    // `domainError` matches with `instanceof`, and a stand-in would never match.
     PurgeAbortedError: RealPurgeAbortedError,
+    // #5160 — mirrors the real `totalRowsDeleted`: sum the numeric fields, skip
+    // `skippedTables` (an array) and the anonymized count (rows that SURVIVED).
+    // Duplicated rather than imported because this mock surface stands in for the
+    // very module the function lives in. The drift risk is real but bounded:
+    // `purge-scope.test.ts` pins the `anonymized` category to exactly one table,
+    // so a second survivor field cannot appear without that guard failing first.
     totalRowsDeleted: (result: Record<string, unknown>) => {
       let total = 0;
       for (const [field, value] of Object.entries(result)) {

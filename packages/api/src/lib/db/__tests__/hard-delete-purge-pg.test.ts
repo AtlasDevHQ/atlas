@@ -5,7 +5,7 @@
  * rows in every one of these tables, purges, and asserts zero rows remain. A
  * test that only asserts the purge succeeds cannot fail."*
  *
- * `hardDeleteWorkspace` had 56 DELETEs and reached none of `brain_facts`,
+ * `hardDeleteWorkspace` had 57 DELETEs and reached none of `brain_facts`,
  * `brain_edges`, `brain_episodes` or `knowledge_documents`, while the endpoint
  * answered *"All data has been irreversibly removed"*. Every test it had passed
  * throughout, because they asserted the purge SUCCEEDED and checked counts for
@@ -508,7 +508,7 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     // an `on("connect")` handler (matching `migrate-roundtrip-pg` and
     // `admin-last-admin-pg`). The handler form applies the search_path with a
     // fire-and-forget query whose failure is only a `console.error` — and if it
-    // ever failed, this suite would run 196 migrations and a full GDPR purge
+    // ever failed, this suite would run the full migration set and a full GDPR purge
     // against `public` on the shared test database. Baking it in makes a failure
     // a connection failure instead of a silent fallback, which is the same
     // standard this file's docstring demands of its own falsifiers.
@@ -669,9 +669,9 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     );
     // (d) Scrubbed of EVERYTHING EXCEPT `target_id`, which still holds a member
     // id. Its only purpose is to make the `target_id` disjunct of the skip
-    // predicate falsifiable at runtime: row (a) is caught by the actor columns
-    // and row (b) by `metadata`, so dropping `AND target_id = '[purged]'` from
-    // the predicate left both suites green — the tripwire's WHERE-slice check
+    // predicate falsifiable at runtime: the generic seeded row is caught by the
+    // actor columns and row (a) by `metadata`, so dropping
+    // `AND target_id = '[purged]'` from the predicate left both suites green — the tripwire's WHERE-slice check
     // caught it, but nothing observed the surviving id.
     await pool.query(
       `INSERT INTO admin_action_log
@@ -768,7 +768,7 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
 
         // ── NULL-scope rows, DERIVED rather than hand-picked ──
         //
-        // 23 purged tables have a NULLABLE scope column. A NULL scope means the
+        // Every purged table with a NULLABLE scope column. A NULL scope means the
         // row is not any workspace's data — a deployment-wide `settings` default,
         // a session-less `email_outbox` reset. Every purge scopes with `= $1`,
         // which excludes NULL, and that exclusion is load-bearing for all 23.
@@ -912,8 +912,11 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     // statement is a completeness guarantee for deployments predating the FK,
     // same reasoning as the `messages` delete.
     //
-    // The Atlas-owned tables below have no such cascade — measured: gutting
-    // `DELETE FROM user_onboarding` fails this test by name.
+    // `user_onboarding` and `email_preferences` have no such cascade — measured:
+    // gutting `DELETE FROM user_onboarding` fails this test by name.
+    // `trusted_device` DOES cascade (it is the sole member of FK_CASCADE_ONLY in
+    // purge-scope.test.ts), so it is asserted here for the OUTCOME, not to pin a
+    // statement that does not exist.
     for (const table of ["session", "account"]) {
       const r = await pool.query<{ n: string }>(
         `SELECT count(*)::text AS n FROM "${table}" WHERE "userId" = $1`,
@@ -1103,8 +1106,10 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
   }, PG_TIMEOUT_MS);
 
   it("ANONYMIZES admin_action_log rather than deleting it", async () => {
-    // The row survives — it is the record of the purge — but the identifiers do
-    // not. Asserted as four separate facts, because "the row is still there"
+    // The rows survive — they are the record of what operators previously DID to
+    // this workspace — but the identifiers do not. (NOT "the record of the
+    // purge": that row is written after this function returns, under the acting
+    // admin's org, and is never in scope here.) Asserted as four separate facts, because "the row is still there"
     // and "the row no longer identifies anyone" can fail independently.
     const r = await pool.query<{
       n: string;
@@ -1127,9 +1132,7 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     expect(result.adminActionLogAnonymized).toBeGreaterThan(0);
 
     // The MEMBER's identity, which the first draft of the scrub left behind:
-    // `metadata.targetUserEmail` and `target_id`. Asserted on the actual bytes
-    // rather than on the column being non-null, because the harm is the email
-    // still being readable.
+    // `metadata.targetUserEmail` and `target_id`.
     const pii = await pool.query<{ leaked: string }>(
       `SELECT count(*)::text AS leaked FROM admin_action_log
         WHERE org_id = $1
@@ -1140,6 +1143,8 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
       Number(pii.rows[0].leaked),
       "metadata and target_id can hold a member's email — both must be scrubbed",
     ).toBe(0);
+    // …and on the actual BYTES, not just the column being non-null, because the
+    // harm is the email still being readable.
     const anyEmail = await pool.query<{ n: string }>(
       `SELECT count(*)::text AS n FROM admin_action_log
         WHERE org_id = $1 AND metadata::text LIKE '%@purge.test%'`,

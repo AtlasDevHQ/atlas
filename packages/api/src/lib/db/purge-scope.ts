@@ -1,13 +1,16 @@
 /**
  * GDPR hard-delete purge scope — the per-table reachability registry (#5160).
  *
- * The bug this pins: `hardDeleteWorkspace` issued 56 `DELETE FROM` statements
+ * The bug this pins: `hardDeleteWorkspace` issued 57 `DELETE FROM` statements
  * and touched none of `brain_facts`, `brain_edges`, `brain_episodes` or
  * `knowledge_documents`, while the purge endpoint answered *"All data has been
  * irreversibly removed"* and `/dpa` promised deletion of all Personal Data.
  * The gap was not one missed pillar — the mechanical sweep behind this registry
- * found **35** workspace-scoped tables the purge never reached, including three
- * encrypted credential stores.
+ * found **34** workspace-scoped tables the purge never reached — plus
+ * `user_trial_grants`, which is scoped, was never reached, and is deliberately
+ * `retained`. Among them the encrypted KB sync-connector credentials
+ * (`knowledge_sync_credentials`), the same class of miss `integration_credentials`
+ * was in #3425, one pillar over.
  *
  * Why a registry rather than a longer DELETE list: **no table in `db/schema.ts`
  * has a foreign key to `organization`.** Not one. `DELETE FROM organization` in
@@ -33,13 +36,17 @@
  *   never outrun the implementation.
  *
  *   There is deliberately NO "reached by cascade" decision. Every
- *   workspace-scoped table is deleted explicitly, including the six that would
- *   in fact cascade from a purged parent (`messages`, `dashboard_cards`,
- *   `dashboard_user_drafts`, `dashboard_draft_card_cache`, `knowledge_links`,
- *   `suggestion_user_clicks`), which go via a parent subquery because they have
- *   no scope column of their own. Two reasons, and the first is the whole bug:
- *   an inherited cascade is exactly the mechanism everyone ASSUMED was removing
- *   the brain tables, and it was not there. The second is that "zero rows
+ *   workspace-scoped table is deleted explicitly — including the EIGHT with no
+ *   scope column of their own, which go via a parent subquery (`messages`,
+ *   `slack_threads`, `dashboard_cards`, `dashboard_user_drafts`,
+ *   `dashboard_draft_card_cache`, `knowledge_links`, `suggestion_user_clicks`,
+ *   `prompt_items`, `scheduled_task_runs`). Several SCOPED tables would cascade
+ *   too — `agent_runs`, `agent_session_memory`, `learned_pattern_injections` —
+ *   and are deleted explicitly all the same.
+ *
+ *   Two reasons, and the first is the whole bug: an inherited cascade is
+ *   exactly the mechanism everyone ASSUMED was removing the brain tables, and
+ *   it was not there. The second is that "zero rows
  *   remain in this table" is directly assertable per table, which is what makes
  *   the falsifier in `hard-delete-purge-pg.test.ts` able to fail. `messages`
  *   already carried this reasoning as a "GDPR completeness guarantee"; #5160
@@ -48,9 +55,12 @@
  *   orphaned-user arm of the purge (a user with no other org membership), and
  *   deliberately retained for a user who is still a member elsewhere.
  * - `anonymized` — the rows SURVIVE and their personal-data columns are
- *   scrubbed inside the purge transaction. Used where the row is an
- *   accountability record whose destruction would erase the evidence of the
- *   erasure itself.
+ *   scrubbed inside the purge transaction. Used where the row is an operator
+ *   accountability record: destroying it would erase the history of what was
+ *   done TO the workspace before it was purged. NOT, as an earlier draft of this
+ *   line said, "the evidence of the erasure itself" — the purge's own audit row
+ *   is written after the transaction under a different org, and was never in
+ *   scope. See the `admin_action_log` entry below.
  * - `retained` — deliberately survives the purge intact. Every entry here is a
  *   case where deleting the row causes a concrete harm named in its reason;
  *   none of them carry customer personal data.
@@ -167,7 +177,7 @@ export const PURGE_TABLE_DECISIONS = {
   github_installations: { decision: "purged", reason: "GitHub install rows for the workspace." },
   linear_installations: { decision: "purged", reason: "Linear install rows for the workspace." },
   email_installations: { decision: "purged", reason: "Email-channel install rows for the workspace." },
-  chat_cache: { decision: "purged", reason: "Holds the Slack installation store (AES-GCM bot tokens under `slack:installation:*`). No org_id column — purged by the `value->>'orgId'` expression, matching the partial expression index." },
+  chat_cache: { decision: "purged", reason: "Holds the Slack installation store (AES-GCM bot tokens under `slack:installation:*`). No org_id column — purged by `key LIKE 'slack:installation:%' AND value->>'orgId' = $1`, matching the partial expression index. The `key LIKE` bound is deliberate and is the one narrowing predicate in the whole purge: the table's other entries (thread subscriptions, conversation ids, OAuth nonces — see migration 0086) carry no orgId to scope by and expire on their own TTL. If one ever gains an orgId, it needs its own DELETE here rather than a widened LIKE." },
   plugin_settings: { decision: "purged", reason: "Per-plugin settings for the workspace." },
 
   // Auth / access control / compliance config

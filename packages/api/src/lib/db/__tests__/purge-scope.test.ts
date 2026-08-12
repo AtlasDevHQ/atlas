@@ -1,12 +1,12 @@
 /**
  * GDPR purge-scope drift tripwire (#5160).
  *
- * The bug this pins: `hardDeleteWorkspace` shipped 56 `DELETE FROM` statements
+ * The bug this pins: `hardDeleteWorkspace` shipped 57 `DELETE FROM` statements
  * and reached none of `brain_facts`, `brain_edges`, `brain_episodes` or
  * `knowledge_documents` — while the purge endpoint answered *"All data has been
  * irreversibly removed"* and `/dpa` promised deletion of all Personal Data.
  * Nothing forced a per-table decision, so every table added after the purge was
- * written silently escaped it. The mechanical sweep found 35 such tables.
+ * written silently escaped it. The mechanical sweep found 34 such tables.
  *
  * The structural reason it could not self-correct: **no table in `db/schema.ts`
  * has a foreign key to `organization`**, so `DELETE FROM organization` cascades
@@ -321,7 +321,8 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
   it("the 'anonymized' table is UPDATEd, not deleted", () => {
     // admin_action_log's whole point is that the row survives. A future edit
     // that "simplified" the scrub into a DELETE would satisfy the reason field
-    // and destroy the record of the purge, so pin the mechanism, not the label.
+    // and destroy the record of what operators previously did to this
+    // workspace, so pin the mechanism, not the label.
     const anonymized = Object.entries(PURGE_TABLE_DECISIONS)
       .filter(([, v]) => v.decision === "anonymized")
       .map(([k]) => k);
@@ -551,7 +552,7 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
   });
 
   it("deletes child tables that scope via a parent subquery before that parent", () => {
-    // These six have no scope column, so their DELETE reads the parent's rows.
+    // None of these has a scope column, so their DELETE reads the parent's rows.
     // Deleting the parent first silently leaves them behind — no error, no
     // count, exactly the shape of the original bug.
     const childBeforeParent: Array<[string, string]> = [

@@ -782,9 +782,12 @@ export const anonymizeUserAdminActions = (
         // B. The workspace purge clears it because there the whole workspace —
         // both parties — is going.
         //
-        // The skip predicate stays `anonymized_at IS NULL` rather than becoming
-        // a residue check: unlike the purge, this SET list is the widest one
-        // applied to a given row, so a stamped row here really has nothing left.
+        // The skip predicate stays `anonymized_at IS NULL` rather than becoming a
+        // residue check, and the reason is the MATCH column, not the SET list:
+        // this scrub matches on `actor_id = $1`, and any row either scrub has
+        // already touched has `actor_id IS NULL`, so it cannot re-match at all.
+        // The workspace purge needed a residue check because it matches on
+        // `org_id`, which survives its own scrub.
         `WITH updated AS (
            UPDATE admin_action_log
            SET actor_id = NULL,

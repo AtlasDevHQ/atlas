@@ -100,9 +100,13 @@ A third case is worth naming because it looks like an omission: the one-trial-pe
 
 #### Residue from purges performed before this coverage existed
 
-Purges run before the brain and Knowledge Base tables entered the purge path left their rows behind. Those rows are **precisely identifiable**, because `hardDeleteWorkspace` is the only code path that deletes an `organization` row: a `workspace_id` present in one of these tables with no matching organization is residue from an earlier purge.
+Purges run before the brain and Knowledge Base tables entered the purge path left their rows behind. Those rows are identifiable: a `workspace_id` present in one of these tables with **no matching `organization` row** is orphaned, and orphaned tenant data should not exist.
 
 The decision: **a sweep is required where the detection query returns anything, and it must be run per region** — there are three independent region databases, and a workspace purged in one leaves nothing in the others. Run the detection first; do not run a blind delete.
+
+<Callout type="warn">
+**An orphan does not prove a purge happened, and the difference changes what you should do.** Two code paths delete an `organization` row: this GDPR purge, and Better Auth's own `POST /api/auth/organization/delete`, which a workspace **owner** can call (the `owner` role carries `organization: ["delete"]`) and which runs **no Atlas cascade at all**. A workspace removed that way orphans *every* one of the ~95 tables, not just the brain and KB ones — so a large, broad result set here is more likely a self-service deletion than pre-fix purge residue. Both are data that should be gone, but the second is a wider gap; check the admin action log for a `workspace.purge` entry on that id before assuming which you are looking at.
+</Callout>
 
 ```sql
 -- Per region. Any row returned is data a completed GDPR purge should have removed.
@@ -128,7 +132,7 @@ SELECT 'knowledge_sync_credentials', k.workspace_id, count(*)
 ```
 
 <Callout type="warn">
-Two things to hold before running a deletion. First, a region **import** cannot produce a false positive here — it writes into an already-active organization, so it never leaves rows without one; the orphan signal really does mean "the organization row is gone". Second, that makes the query's output a deletion list against real customer data with no undo, so run it through the operator binary's double-gating (`ATLAS_*_OK=1` plus `--confirm`) and take a `pg_dump` first, exactly as with `ops wipe`. Never hand-run the delete against a region database.
+Two things to hold before running a deletion. First, a region **import** cannot produce a false positive here — it writes into an already-active organization, so it never leaves rows without one; the orphan signal really does mean "the organization row is gone" — see the caveat above for *which* deletion put it there. Second, that makes the query's output a deletion list against real customer data with no undo, so run it through the operator binary's double-gating (`ATLAS_*_OK=1` plus `--confirm`) and take a `pg_dump` first, exactly as with `ops wipe`. Never hand-run the delete against a region database.
 </Callout>
 
 #### Prerequisites
@@ -191,7 +195,9 @@ The `purged` object carries a row count per table, useful for audit purposes. Th
 **`purged` contains deletion counts only, so `totalRows` is exactly their sum.** Two related numbers deliberately sit *outside* that map rather than inside it, because neither is a count of destroyed rows: `adminActionLogAnonymized` counts rows that **survived** with their identifying columns scrubbed, and `skippedTables` is not a count at all. Keeping them out is what makes the obvious `Object.values(purged).reduce(…)` agree with `totalRows` instead of over-reporting destruction on an erasure record.
 </Callout>
 
-**Always check `complete`.** When it is `false`, `skippedTables` names relations that were absent from this region's schema, whose data was **not** deleted — the purge ran, reported `0` for those tables, and is not finished. Run the region's migrations and purge again before recording the erasure as complete.
+**Always check `complete`.** When it is `false`, the purge ran but did not finish: `skippedTables` names the work that did not run — relations absent from this region's schema, plus the deletes and writes gated behind them — and it reported `0` for each, which reads exactly like "there were none". `complete` is also `false` when the Stripe teardown left a warning.
+
+Run the region's migrations, then clear the residue with the orphaned-workspace sweep above. **Do not try to purge again** — the organization record is already gone, so the endpoint answers `404`.
 
 ## Noisy Neighbor Detection
 

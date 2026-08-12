@@ -61,14 +61,15 @@ const mockCascade = mock(async () => {
     settings: 0,
   };
 });
+let hardDeleteSkipped: string[] = [];
 /**
  * Purge result. Deliberately carries the three field SHAPES the route has to
  * tell apart (#5160): plain deleted counts, the anonymized count (rows that
- * SURVIVED, so it must not enter `totalRows`), and `skippedTables` (not a
- * count at all). Distinct values — 3/5/1/7 rather than all-1 — so an assertion
- * on the total cannot pass by coincidence.
+ * SURVIVED, so it must not enter `totalRows`), and `skippedTables` (not a count
+ * at all). The anonymized count is 7 — a value no other field carries and one
+ * no subset of the others sums to — so a total that wrongly includes it lands
+ * on a number the correct arithmetic cannot produce.
  */
-let hardDeleteSkipped: string[] = [];
 const mockHardDelete = mock(async () => {
   callOrder.push("hardDelete");
   return {

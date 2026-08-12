@@ -3795,7 +3795,11 @@ export class PurgeAbortedError extends Error {
 }
 
 /**
- * Hard-delete result — counts of rows removed from each table.
+ * Hard-delete result — a removal count per table, plus two fields that are NOT
+ * removal counts: `adminActionLogAnonymized` (rows that SURVIVED, scrubbed) and
+ * `skippedTables` (a string array). Use `totalRowsDeleted()` to total it; a bare
+ * `Object.values(...).reduce(...)` over-reports destruction and string-
+ * concatenates the array.
  */
 export interface HardDeleteResult {
   // Data tables (org_id)
@@ -3909,8 +3913,12 @@ export interface HardDeleteResult {
   emailOutbox: number;
   crmOutbox: number;
   // Rows SCRUBBED rather than deleted: the operator accountability trail keeps
-  // its action sequence (including the record of this purge) while losing
-  // actor_id / actor_email / ip_address. See purge-scope.ts `anonymized`.
+  // WHAT happened to this workspace (action_type / target_type / timestamp /
+  // org_id) while losing WHO — actor_id, actor_email, ip_address and metadata
+  // are NULLed and target_id takes a sentinel. PRIOR operator actions only: the
+  // purge's own audit row is written after this function returns, stamped with
+  // the acting admin's org, so it is never in scope. See purge-scope.ts
+  // `anonymized`.
   adminActionLogAnonymized: number;
   // Better Auth tables
   members: number;
@@ -3918,7 +3926,11 @@ export interface HardDeleteResult {
   orphanedUsers: number;
   organization: number;
   /**
-   * Relations absent from this region's schema, whose DELETE was SKIPPED (#5160).
+   * Work the purge did NOT do (#5160): relations absent from this region's
+   * schema, PLUS the deletes and writes that were gated behind them. A missing
+   * `subscription` contributes three names — itself, `stripe_webhook_events`
+   * (whose delete reads it) and `stripe_purged_subscriptions` (whose tombstone
+   * INSERT never ran) — and only the first was actually absent.
    *
    * NOT a count — the only non-numeric field, and deliberately so. A skipped
    * table reports `0` rows, which is indistinguishable from "there were none",

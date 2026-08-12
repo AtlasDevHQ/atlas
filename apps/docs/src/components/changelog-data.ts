@@ -20,6 +20,19 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.7",
+    title: "Completing the Cleanup",
+    date: "2026-08-12",
+    summary:
+      "The second and final step of the change v0.2.6 began. The database column that stored the model's old per-claim cardinality guess is now removed outright, along with the constraint that policed it. Nothing has read or written it since the previous release, which is exactly why removing it now is safe: during a rolling upgrade there is never a version running that expects a column another version has already dropped. The old guesses are discarded rather than carried over — they were never a reliable signal, and folding them into your reviewed vocabulary would quietly undo the point of curating it. Self-hosted operators upgrading from v0.2.5 or earlier should land v0.2.6 first.",
+    highlights: [
+      "The unused cardinality column and its constraint are dropped — the two-step change started in v0.2.6 is complete",
+      "Old per-claim guesses are discarded, not merged into your curated vocabulary",
+      "Self-hosted: upgrade to v0.2.6 before v0.2.7 — skipping it is the one sequence this change is not safe for",
+      "Internal: the real-model evaluation lane is now honest about not running, and no longer fails a release on timing noise",
+    ],
+  },
+  {
     version: "v0.2.6",
     title: "Retiring the Guessed Cardinality",
     date: "2026-08-12",

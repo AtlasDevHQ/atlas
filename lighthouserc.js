@@ -12,17 +12,26 @@
 // we calibrate flake on shared CI runners. Promote individual assertions
 // to `error` once their PR-comment signal has been stable for ~4 weeks.
 
+// Normalize to the validated form factor FIRST, then derive the boolean from
+// it. The reverse order — projecting to `isMobile` and rebuilding the name from
+// that boolean — reintroduces the very bug the throw below exists to prevent,
+// one derivation later: adding a third value to `FORM_FACTORS` would leave
+// `isMobile === false`, so the new form factor would silently get desktop
+// throttling AND overwrite `lighthouse-reports/desktop`, and the PR comment
+// would label the result "Desktop". Deriving the name from the validated string
+// makes that unrepresentable — a new value gets its own directory or throws.
+const FORM_FACTORS = ["desktop", "mobile"];
 const rawFormFactor = process.env.LH_FORM_FACTOR;
-if (rawFormFactor && rawFormFactor !== "mobile" && rawFormFactor !== "desktop") {
+if (rawFormFactor && !FORM_FACTORS.includes(rawFormFactor)) {
   // Fail loudly — silently coercing a typo (e.g. "Mobile") to desktop
   // would produce results that look like passing mobile runs but were
   // really run with desktop throttling.
   throw new Error(
-    `LH_FORM_FACTOR must be "mobile" or "desktop"; got: ${JSON.stringify(rawFormFactor)}`,
+    `LH_FORM_FACTOR must be one of ${FORM_FACTORS.join(", ")}; got: ${JSON.stringify(rawFormFactor)}`,
   );
 }
-const isMobile = rawFormFactor === "mobile";
-const formFactor = isMobile ? "mobile" : "desktop";
+const formFactor = rawFormFactor || "desktop";
+const isMobile = formFactor === "mobile";
 
 const wwwBase = process.env.LH_WWW_BASE_URL || "http://localhost:8080";
 const webBase = process.env.LH_WEB_BASE_URL || "http://localhost:3000";
@@ -112,11 +121,15 @@ module.exports = {
       // LHRs to a Google bucket and prints a link, but writes NOTHING to
       // disk, so there was never a manifest to read.
       //
-      // Dropping `temporary-public-storage` also takes a network dependency
-      // off the critical path: it ran *after* assertions, so a bucket hiccup
-      // failed the step and flipped the comment to "Run failed." on a run
-      // whose reports were complete. Its public URLs were never surfaced in
+      // Dropping `temporary-public-storage` also takes a network dependency on
+      // a Google bucket off the run, and its public URLs were never surfaced in
       // the comment anyway — the artifact is the documented delivery channel.
+      // (An earlier draft of this comment also claimed a bucket failure had
+      // been flipping the comment to "Run failed."; that was wrong twice over
+      // and is recorded here so it does not get re-derived. `autorun` exits 0
+      // on an upload failure unless `--failOnUploadFailure` is passed, which is
+      // why the workflow now passes it — and under this target no manifest
+      // existed on ANY run, so the comment's empty state was unconditional.)
       // No LHCI server (operating one is its own follow-up; #2009 defers it).
       target: "filesystem",
       // Deliberately NOT dot-prefixed. `actions/upload-artifact` v4 defaults

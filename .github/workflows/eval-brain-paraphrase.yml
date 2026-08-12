@@ -1,0 +1,248 @@
+name: Brain Paraphrase Eval
+
+# The claim-identity paraphrase eval (#5041, ADR-0037 §9). It drives the REAL
+# fact-extractor over `eval/brain-paraphrase/messages.json` and compares what
+# came back against the committed recording in `extracted.json` — the fixture
+# `packages/api/src/lib/brain/__tests__/paraphrase-identity.test.ts` consumes.
+#
+# ⚠️ WHAT A RED RUN HERE MEANS, because it is not "the eval broke". That test
+# asserts what the identity layer does with the surfaces in the recording. So a
+# drift is a change to what the deterministic suite PROVES, arriving from
+# outside the repo — the model started phrasing a relationship differently. The
+# fix is to read the diff and regenerate as a reviewed commit
+# (`bun packages/cli/bin/brain-paraphrase-eval.ts --write`), never to loosen the
+# comparison.
+#
+# ⚠️ AND IT WILL GO RED. THE FIRST CI RUN CAUGHT REAL DRIFT, WITHIN HOURS.
+#   Measured 2026-08-12: at 12:25 UTC the extractor emitted `has manager` for
+#   *"Ada's manager is Grace"*; by 13:40 UTC it emitted `reports to`, on the same
+#   model id, at `temperature: 0`, from the same machine — six runs across the
+#   two windows with no local change between them. The recording was regenerated
+#   and `paraphrase-identity.test.ts`'s gap-set assertion CHANGED with it, which
+#   is the loop working rather than failing: a hand-authored fixture would have
+#   gone on asserting a gap that had closed.
+#
+#   Budget for that. Three same-hour runs were byte-identical, so the gate is not
+#   noise — but the stability window is HOURS, not releases, and a maintainer who
+#   expects this job to stay green without attention will eventually loosen the
+#   comparison, which is the one repair this design forbids. #5129 asks the same
+#   question of the sibling eval; this job is a second data point for it.
+#
+# WHY IT IS ITS OWN WORKFLOW, and this is `eval-llm.yml`'s argument reused
+#   `on.pull_request.paths` is WORKFLOW-scoped in GitHub Actions — there is no
+#   per-job path filter. Adding this job to `eval-llm.yml` therefore ran it on
+#   every one of that workflow's ~20 trigger paths: the whole MCP tool surface,
+#   `packages/mcp/package.json`, the published init flow. Not one of those files
+#   can change what this extractor emits, so every such run was 20 model calls
+#   bought to answer a question nobody asked. That is the same defect eval.yml
+#   was split for on 2026-08-10, one workflow later.
+#
+#   The paths below are the extractor, this eval's own harness, and its corpus.
+#   Nothing else can move the recording.
+#
+# WHY THE WEEKLY SCHEDULE
+#   ⚠️ The drift this eval exists to catch is MODEL-SIDE. A provider changes a
+#   model's behaviour and no PR of ours touches any path — so a path trigger
+#   structurally cannot see it, and a tag trigger sees it only if we happen to
+#   release. The cron is the trigger that matches the failure mode.
+#
+#   A scheduled run is not a `pull_request`, so `eval-informational-gate.sh`
+#   takes its non-PR branch and the workflow goes RED on `main` rather than
+#   posting a comment. Deliberate: a drift alarm nobody is looking at has to be
+#   visible on its own.
+#
+# COST — the shape is stated, the dollar figure deliberately is NOT.
+#   The repo's rule after #5123: read it off a run, never off arithmetic. No run
+#   has published a number for this job, so none is claimed here. What IS known
+#   is the shape, and it bounds the answer far below `eval-mcp-llm`'s: twenty
+#   single-turn `generateObject` calls, no tool loop and no dispatch fan-out,
+#   against that job's MEASURED 1.02M input tokens across 124 tool calls. (Each
+#   call bills the ~200-token extraction system prompt and the tool schema on top
+#   of a ~40-token message — an earlier draft quoted the message alone, which is
+#   the arithmetic-instead-of-measurement habit #5123 exists to break.) That is why PR runs here are not label-gated as its are — but if
+#   a run ever publishes a figure that makes this look like the wrong call, gate
+#   it the same way rather than arguing with this comment.
+#
+# POLICY — identical to eval.yml's and eval-llm.yml's; the gate script is shared:
+#   - Pull requests: informational but VISIBLE (green check + PR comment).
+#   - Release tags and scheduled runs: blocking / red.
+#   - ⚠️ SKIP-FATAL FROM ITS FIRST RUN, with nothing to remember. This label is
+#     absent from `SKIP_TOLERANT_LABELS` in `scripts/eval-informational-gate.sh`,
+#     which is empty and fail-closed by default — so a missing or rejected key
+#     reports a non-run instead of a pass. That is the structural difference
+#     #5039 bought: `eval-mcp-llm` was permanently green and never executed for
+#     the whole of its life, because a gate that returns "pass" for a job that
+#     did not run consumes the belief that the property is covered.
+#
+# Workflow-injection notes: no untrusted PR/issue/commit field is spliced into
+# any `run:` string; the gate step forwards only `steps.*.outcome`, the PR
+# number, and server-side run metadata via `env:`.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      # The extractor itself — its prompt and its schema decide every surface in
+      # the recording, so a change here is the one PR-visible way to move it.
+      - "packages/api/src/lib/brain/extract.ts"
+      # This eval's harness and the writer that keeps fd 1 parseable for `tee`.
+      - "packages/cli/bin/brain-paraphrase-eval.ts"
+      - "packages/cli/bin/write-fd-sync.ts"
+      # `lib/logger.ts` is the switch the driver's `ATLAS_LOG_STDERR` stamp sets;
+      # a break there puts pino frames on fd 1 and the artifact stops parsing,
+      # which is invisible in the eval's own status.
+      - "packages/api/src/lib/logger.ts"
+      # The corpus and the recording.
+      - "eval/brain-paraphrase/**"
+      # This file, and the gate step it ends with.
+      - ".github/workflows/eval-brain-paraphrase.yml"
+      - "scripts/eval-informational-gate.sh"
+  push:
+    tags:
+      - "v*.*.*"
+  # Mondays, 06:00 UTC. Scheduled runs only ever fire on the default branch.
+  schedule:
+    - cron: "0 6 * * 1"
+  # So a drift investigation does not have to wait for Monday.
+  workflow_dispatch:
+
+# A superseded run has nothing to say: the recording it would grade is the one
+# at a commit that no longer exists. Scoped to the ref, so a tag push and the
+# Monday cron get distinct groups and cannot cancel each other.
+concurrency:
+  group: eval-brain-paraphrase-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write # informational-gate PR comments only
+
+env:
+  BUN_VERSION: "1.3.13"
+
+jobs:
+  eval-brain-paraphrase:
+    name: eval-brain-paraphrase (#5041)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - uses: ./.github/actions/setup-bun-cached
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Build @useatlas/types (resolves api imports)
+        run: bun run --filter '@useatlas/types' build
+
+      - name: Verify AI_GATEWAY_API_KEY is valid
+        # The same one-token completion the job above pre-flights with, and for
+        # the same reason: without it a rejected key runs the whole eval, every
+        # extraction fails, and the run reports a total paraphrase regression —
+        # a credential rotation wearing a model-drift costume. A chat completion
+        # rather than the catalog, because `GET /v1/models` needs no
+        # Authorization header and answers 200 for a revoked key.
+        id: preflight
+        continue-on-error: true
+        env:
+          ATLAS_MODEL: anthropic/claude-haiku-4.5
+        run: |
+          set -euo pipefail
+          if [ -z "${AI_GATEWAY_API_KEY:-}" ]; then
+            echo "::error::AI_GATEWAY_API_KEY is not set. This job is skip-fatal: a non-run is reported, not passed."
+            exit 1
+          fi
+          code=$(curl -s -o /tmp/gateway-paraphrase.json -w "%{http_code}" \
+            -H "Authorization: Bearer $AI_GATEWAY_API_KEY" \
+            -H "content-type: application/json" \
+            -d "{\"model\":\"$ATLAS_MODEL\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" \
+            https://ai-gateway.vercel.sh/v1/chat/completions)
+          if [ "$code" != "200" ]; then
+            echo "::error::AI_GATEWAY_API_KEY rejected by the Vercel AI Gateway (HTTP $code). Body:"
+            cat /tmp/gateway-paraphrase.json
+            echo "::error::Rotate the repo secret before re-running."
+            exit 1
+          fi
+          echo "AI_GATEWAY_API_KEY preflight OK"
+
+      - name: Run the paraphrase eval
+        id: eval
+        continue-on-error: true
+        # Requires the preflight to have SUCCEEDED, not merely "not been
+        # skipped" — a rejected key would otherwise spend the full corpus
+        # producing failures that read as drift.
+        if: ${{ steps.preflight.outcome == 'success' }}
+        env:
+          # Identical to the preflight's `ATLAS_MODEL`, or the preflight
+          # validates a model the eval never runs. The GATEWAY spelling
+          # (`<provider>/<model>`), never Anthropic's dashed API id.
+          ATLAS_PROVIDER: gateway
+          ATLAS_MODEL: anthropic/claude-haiku-4.5
+        # ⚠️ `pipefail` is load-bearing: the default step shell is `bash -e {0}`
+        # with NO pipefail, so without it the step's outcome would be `tee`'s
+        # exit 0 and a fully drifted run would read as success — neutering the
+        # gate below on tag pushes.
+        #
+        # The driver keeps fd 1 clean for exactly this pipe: it stamps
+        # `ATLAS_LOG_STDERR=1` before the dynamic import that constructs pino's
+        # logger, and writes its human transcript to fd 2 in every mode. A
+        # `2>&1` added here would undo all of it.
+        run: |
+          set -o pipefail
+          bun packages/cli/bin/brain-paraphrase-eval.ts --json | tee eval-brain-paraphrase-output.json
+
+      - name: Assert the eval artifact is valid JSON
+        # The only check that can see a writer we do not own (#5126). This
+        # process pulls in `@atlas/api` through dynamic imports, and any module
+        # on that graph can print to fd 1 without any grep over this repo's eval
+        # modules ever seeing it. Routed through the gate rather than a bare
+        # `exit 1` so an unparseable bundle keeps the same PR-visible /
+        # tag-blocking split as every other failure here.
+        id: artifact
+        continue-on-error: true
+        if: ${{ always() && (steps.eval.outcome == 'success' || steps.eval.outcome == 'failure') }}
+        env:
+          EVAL_OUTCOME: ${{ steps.eval.outcome }}
+        run: |
+          set -euo pipefail
+          if [ ! -s eval-brain-paraphrase-output.json ]; then
+            if [ "$EVAL_OUTCOME" = "success" ]; then
+              echo "::error::the eval exited 0 but wrote no payload to stdout — the --json emitter did not run."
+              exit 1
+            fi
+            echo "::notice::no payload — the eval died before writing; see the eval step."
+            exit 0
+          fi
+          if ! jq empty eval-brain-paraphrase-output.json 2>/tmp/jq-paraphrase-err; then
+            echo "::error::eval-brain-paraphrase-output.json is not valid JSON — something wrote to stdout alongside the --json payload (#5126), or the payload is truncated. jq says:"
+            cat /tmp/jq-paraphrase-err
+            head -c 400 eval-brain-paraphrase-output.json
+            exit 1
+          fi
+          echo "eval-brain-paraphrase-output.json parses ($(wc -c < eval-brain-paraphrase-output.json) bytes)"
+
+      - name: Upload the recording diff
+        # Uploaded on green runs too: the payload carries every fresh triple, so
+        # a maintainer regenerating the fixture can read what the model said
+        # without paying for a second run.
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: eval-brain-paraphrase-output
+          path: eval-brain-paraphrase-output.json
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Informational gate (PR comment on failure; blocks tags)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PREFLIGHT_OUTCOME: ${{ steps.preflight.outcome }}
+          EVAL_OUTCOME: ${{ steps.eval.outcome }}
+          ARTIFACT_OUTCOME: ${{ steps.artifact.outcome }}
+        run: bash scripts/eval-informational-gate.sh eval-brain-paraphrase "$PREFLIGHT_OUTCOME" "$EVAL_OUTCOME" "$ARTIFACT_OUTCOME"

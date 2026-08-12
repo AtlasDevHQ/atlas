@@ -95,7 +95,27 @@ const FD1_GUARDED_SOURCES = [
   "packages/cli/bin/canonical-eval-mcp-llm.ts",
   "packages/cli/bin/canonical-eval-tool-selection.ts",
   "packages/cli/bin/eval-log-destination.ts",
+  // #5041's paraphrase eval. It is a SECOND driver whose stdout is piped to
+  // `tee` in CI and uploaded as the adjudication artifact, so it inherits this
+  // invariant whole — and it declares fd-1 cleanliness as its defining
+  // constraint in its own header. Until it was added here that claim was held
+  // by prose plus a weekly `jq empty` step, which can only see pollution a real
+  // run happens to trigger; this scan sees the spelling.
+  "packages/cli/bin/brain-paraphrase-eval.ts",
+  // ⚠️ THE WRITER ITSELF IS SCANNED, and an earlier draft exempted it with a
+  // sentence its own next clause refuted: "its body is the one sanctioned
+  // `fs.writeSync` … spelled `fs.writeSync(fd, …)`, which FD1_WRITE deliberately
+  // does not match." If the regex does not match it, there is nothing to exempt
+  // — and while `writeFdSync` lived inside `canonical-eval-run.ts` it WAS
+  // scanned. Leaving it off after the move made the one module every guarded
+  // driver delegates to the only one nothing watched, so a `console.log` added
+  // during a future EAGAIN investigation would corrupt both `tee` artifacts
+  // invisibly. Measured before adding: zero hits on the current file.
+  "packages/cli/bin/write-fd-sync.ts",
 ].map((p) => path.join(REPO_ROOT, p));
+
+/** Where `writeFdSync` is DEFINED, as opposed to the drivers that call it. */
+const WRITE_FD_SYNC_SRC = path.join(REPO_ROOT, "packages/cli/bin/write-fd-sync.ts");
 
 const SEED_SRC = path.join(REPO_ROOT, "packages/cli/src/commands/init.ts");
 
@@ -541,8 +561,15 @@ describe("canonical-eval --json keeps stdout machine-readable", () => {
 
     // Anchored: the writers these were replaced with are still there, so the
     // test cannot pass by the file having been gutted out from under it.
+    //
+    // ⚠️ `writeFdSync`'s DEFINITION moved out of the driver in #5041 (to
+    // `write-fd-sync.ts`, so a second eval driver could take the writer without
+    // taking this file's module graph), so the anchor follows it. Asserting it
+    // against `DRIVER_SRC` after the move would fail on a correct tree — and
+    // dropping the assertion instead would retire the only thing stopping this
+    // whole test from passing over a gutted file.
     const driver = fs.readFileSync(DRIVER_SRC, "utf-8");
-    expect(driver).toContain("export function writeFdSync(");
+    expect(fs.readFileSync(WRITE_FD_SYNC_SRC, "utf-8")).toContain("export function writeFdSync(");
     expect(driver).toContain("function humanWriter(");
   });
 

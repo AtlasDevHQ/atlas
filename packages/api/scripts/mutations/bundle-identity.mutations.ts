@@ -456,7 +456,7 @@ comparison and the counts are the real ones.
           fact.createdAt,`,
         },
       ],
-      note: "Restores a per-row LLM guess as though it were the curated decision #5027 moved to `brain_predicate_cardinality`. On a v3 bundle the field is absent, so this writes the schema default whether the importer honours it or not — the only population where the revert changes a stored value is a LEGACY bundle carrying `single`, which is why the legacy test asserts the column rather than the v3 path doing so.",
+      note: "Restores a per-row LLM guess as though it were the curated decision #5027 moved to `brain_predicate_cardinality`. ⚠️ The COLUMN IS GONE since #5028 phase 2 (migration 0195), so the revert no longer writes a wrong value — it writes to a column that does not exist and the importer's INSERT aborts. The legacy-bundle test therefore catches it by the row simply not being there (`toHaveLength(1)`), where it used to catch it by asserting the stored value was the schema default. Same mutation, same kill, different instrument: the drop turned a value assertion into a structural one.",
     },
   ],
 };

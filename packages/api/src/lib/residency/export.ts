@@ -377,8 +377,9 @@ export async function exportWorkspaceBundle(
     //
     // `predicate_cardinality` is GONE from v3. #5027 moved cardinality onto the
     // canonical predicate, and the per-row values are LLM guesses — carrying one
-    // forward would restore a guess as a curated decision. #5028 drops the
-    // column itself.
+    // forward would restore a guess as a curated decision. #5028 phase 2 has
+    // since dropped the column itself (migration 0195), so this projection could
+    // no longer name it even if someone tried.
     pool.query(
       `SELECT f.id, f.source_episode_id, f.subject, f.predicate, f.object,
               f.subject_key, f.predicate_key, f.object_key,

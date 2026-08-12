@@ -582,6 +582,12 @@ describe("migrateAuthTables", () => {
             // same reason as 0187–0192: Better Auth owns nothing it touches.
             { name: "0193_brain_fact_subject_cmp.sql" },
             { name: "0194_brain_fact_slot_keys_not_null.sql" },
+            // 0195 DROPS `brain_facts.predicate_cardinality` and its CHECK
+            // (#5028 phase 2) — a removal on a brain-owned table, so it is in
+            // the already-applied set for the same reason as 0187–0194: Better
+            // Auth owns nothing it touches. Direction is irrelevant here; what
+            // matters is the table.
+            { name: "0195_brain_facts_drop_predicate_cardinality.sql" },
           ],
         };
       }

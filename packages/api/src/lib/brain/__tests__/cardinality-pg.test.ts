@@ -130,30 +130,34 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
   }
 
   /**
-   * A fact inserted DIRECTLY, with its row-level `predicate_cardinality` stated
-   * explicitly.
+   * A fact inserted DIRECTLY.
    *
-   * The direct insert is the point rather than a shortcut. `INSERT_FACT_SQL` no
-   * longer binds that column at all, so the production path cannot produce the
-   * DISAGREEING pair target (a) needs — the two sides would both fall to the
-   * schema default and the fixture would agree with itself, which is precisely
-   * the failure mode #5000 was built out of. Writing the column by hand is the
-   * only way to stand up the state the old both-sides clause used to refuse.
+   * ⚠️ It used to state a row-level `predicate_cardinality`, and THAT was the
+   * point rather than a shortcut: `INSERT_FACT_SQL` had already stopped binding
+   * the column, so a hand-written INSERT was the only way to stand up the
+   * DISAGREEING pair the old both-sides clause used to refuse — two rows in one
+   * slot each carrying its own opinion. #5028 phase 2 dropped the column
+   * (migration 0195), so that state is no longer representable at all, which is
+   * a stronger guarantee than the fixture was: the pair cannot disagree because
+   * neither side has an opinion to hold. Cardinality now reaches the collision
+   * predicate only through `curate()` — one lookup on the shared
+   * `predicate_key`. The direct insert survives because these tests still need
+   * to place rows in specific `status` states without running the extractor.
    */
   async function seedFact(
     workspaceId: string,
     episodeId: string,
     claim: { subject: string; predicate: string; object: string },
-    opts: { status: "draft" | "published"; rowCardinality: "single" | "multi" },
+    opts: { status: "draft" | "published" },
   ): Promise<string> {
     const cmp = comparableValue({ surface: claim.object });
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_facts
          (workspace_id, subject, predicate, object, source_episode_id, provenance,
-          visible_to, status, predicate_cardinality,
+          visible_to, status,
           subject_key, predicate_key, object_key, object_cmp)
        VALUES ($1, $2, $3, $4, $5, '{"source":"slack","actor":"test"}'::jsonb, ARRAY['org'],
-               $6, $7, $8, $9, $10, $11)
+               $6, $7, $8, $9, $10)
        RETURNING id`,
       [
         workspaceId,
@@ -162,7 +166,6 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
         claim.object,
         episodeId,
         opts.status,
-        opts.rowCardinality,
         slotKey(claim.subject, identityAlias),
         slotKey(claim.predicate, identityAlias),
         slotKey(claim.object, identityAlias),
@@ -221,13 +224,13 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
           ws,
           ep,
           { subject: "business tier", predicate: "priced at", object: "499 USD" },
-          { status: "published", rowCardinality: "multi" },
+          { status: "published" },
         );
         await seedFact(
           ws,
           ep,
           { subject: "business tier", predicate: "priced at", object: "599 USD" },
-          { status: "draft", rowCardinality: "single" },
+          { status: "draft" },
         );
         await curate(ws, "priced at", "single");
 
@@ -253,13 +256,13 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
           ws,
           ep,
           { subject: "business tier", predicate: "priced at", object: "499 USD" },
-          { status: "published", rowCardinality: "multi" },
+          { status: "published" },
         );
         await seedFact(
           ws,
           ep,
           { subject: "business tier", predicate: "priced at", object: "599 USD" },
-          { status: "draft", rowCardinality: "multi" },
+          { status: "draft" },
         );
         await curate(ws, "priced at", "single");
 
@@ -281,13 +284,13 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
           ws,
           ep,
           { subject: "business tier", predicate: "priced at", object: "499 USD" },
-          { status: "published", rowCardinality: "single" },
+          { status: "published" },
         );
         await seedFact(
           ws,
           ep,
           { subject: "business tier", predicate: "priced at", object: "599 USD" },
-          { status: "draft", rowCardinality: "single" },
+          { status: "draft" },
         );
 
         expect(
@@ -313,13 +316,13 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
           ws,
           ep,
           { subject: "acme", predicate: "reports to", object: "499 USD" },
-          { status: "published", rowCardinality: "single" },
+          { status: "published" },
         );
         await seedFact(
           ws,
           ep,
           { subject: "acme", predicate: "reports to", object: "599 USD" },
-          { status: "draft", rowCardinality: "single" },
+          { status: "draft" },
         );
 
         expect(await collisionCount(ws)).toBe(0);
@@ -349,13 +352,13 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
           ws,
           ep,
           { subject: "business tier", predicate: "priced at", object: "499 USD" },
-          { status: "published", rowCardinality: "multi" },
+          { status: "published" },
         );
         await seedFact(
           ws,
           ep,
           { subject: "business tier", predicate: "priced at", object: "599 USD" },
-          { status: "draft", rowCardinality: "multi" },
+          { status: "draft" },
         );
         // An UNCURATED predicate in the same workspace, whose pair is otherwise
         // identical in every way the collision looks at — same subject slot
@@ -365,13 +368,13 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
           ws,
           ep,
           { subject: "business tier", predicate: "renews on", object: "700 USD" },
-          { status: "published", rowCardinality: "multi" },
+          { status: "published" },
         );
         await seedFact(
           ws,
           ep,
           { subject: "business tier", predicate: "renews on", object: "800 USD" },
-          { status: "draft", rowCardinality: "multi" },
+          { status: "draft" },
         );
         await curate(ws, "priced at", "single");
 
@@ -397,13 +400,13 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
           ws,
           ep,
           { subject: "acme", predicate: "located in", object: "499 USD" },
-          { status: "published", rowCardinality: "single" },
+          { status: "published" },
         );
         await seedFact(
           ws,
           ep,
           { subject: "acme", predicate: "located in", object: "599 USD" },
-          { status: "draft", rowCardinality: "single" },
+          { status: "draft" },
         );
         await curate(ws, "located in", "multi");
 
@@ -425,13 +428,13 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
           ws,
           ep,
           { subject: "acme", predicate: "owned by", object: "499 USD" },
-          { status: "published", rowCardinality: "single" },
+          { status: "published" },
         );
         await seedFact(
           ws,
           ep,
           { subject: "acme", predicate: "owned by", object: "599 USD" },
-          { status: "draft", rowCardinality: "single" },
+          { status: "draft" },
         );
         const proposed = await proposePredicateCardinality(pool, ws, {
           predicateKey: slotKey("owned by", identityAlias),
@@ -613,13 +616,13 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
         workspaceId,
         slackEpisode,
         { subject, predicate, object: from },
-        { status: "published", rowCardinality: "multi" },
+        { status: "published" },
       );
       const newId = await seedFact(
         workspaceId,
         humanEpisode,
         { subject, predicate, object: to },
-        { status: "published", rowCardinality: "multi" },
+        { status: "published" },
       );
       await pool.query(
         `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_fact_id)
@@ -759,13 +762,13 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
             ws,
             machineEpisode,
             { subject: `tier-${i}`, predicate: "priced at", object: `${100 + i} USD` },
-            { status: "published", rowCardinality: "multi" },
+            { status: "published" },
           );
           const newId = await seedFact(
             ws,
             machineEpisode,
             { subject: `tier-${i}`, predicate: "priced at", object: `${200 + i} USD` },
-            { status: "published", rowCardinality: "multi" },
+            { status: "published" },
           );
           await pool.query(
             `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_fact_id)
@@ -826,13 +829,13 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
         ws,
         ep,
         { subject: "business tier", predicate: "priced at", object: "499 USD" },
-        { status: "published", rowCardinality: "multi" },
+        { status: "published" },
       );
       const draft = await seedFact(
         ws,
         ep,
         { subject: "business tier", predicate: "priced at", object: "599 USD" },
-        { status: "draft", rowCardinality: "multi" },
+        { status: "draft" },
       );
       // A SECOND slot at an unrelated predicate, so the count is a real
       // selection rather than "every promotable draft".
@@ -840,13 +843,13 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
         ws,
         ep,
         { subject: "acme", predicate: "renews on", object: "700 USD" },
-        { status: "published", rowCardinality: "multi" },
+        { status: "published" },
       );
       const other = await seedFact(
         ws,
         ep,
         { subject: "acme", predicate: "renews on", object: "800 USD" },
-        { status: "draft", rowCardinality: "multi" },
+        { status: "draft" },
       );
 
       const heldBack = async () => {
@@ -889,10 +892,10 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
       await pool.query(
         `INSERT INTO brain_facts
            (workspace_id, subject, predicate, object, source_episode_id, provenance,
-            visible_to, status, predicate_cardinality,
+            visible_to, status,
             subject_key, predicate_key, object_key, object_cmp)
          VALUES ($1, 'business tier', 'priced at', '499 USD', $2,
-                 '{"source":"warehouse"}'::jsonb, ARRAY['org'], 'published', 'multi',
+                 '{"source":"warehouse"}'::jsonb, ARRAY['org'], 'published',
                  'business tier', 'priced at', '499 usd', 'money:USD:499')`,
         [ws, ep],
       );
@@ -900,7 +903,7 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
         ws,
         ep,
         { subject: "business tier", predicate: "priced at", object: "599 USD" },
-        { status: "draft", rowCardinality: "multi" },
+        { status: "draft" },
       );
 
       const { rows } = await pool.query<{ held_back: number }>(CARDINALITY_HELD_BACK_COUNT_SQL, [
@@ -932,13 +935,13 @@ describeIfPg("cardinality on the canonical predicate (#5027)", () => {
         ws,
         ep,
         { subject: "Business Tier", predicate: "Priced At", object: "499 USD" },
-        { status: "published", rowCardinality: "multi" },
+        { status: "published" },
       );
       await seedFact(
         ws,
         ep,
         { subject: "business tier", predicate: "priced at", object: "599 USD" },
-        { status: "draft", rowCardinality: "multi" },
+        { status: "draft" },
       );
       await curate(ws, "priced at", "single");
 

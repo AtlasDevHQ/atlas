@@ -1409,7 +1409,10 @@ describe("advisory contradiction edges", () => {
     // A COUNT rather than a value check, and that is the only thing that
     // catches it: re-adding the column and its bind leaves valid SQL, an
     // unchanged row, and every other assertion in this file still green. The
-    // column now falls to its schema default until #5028 drops it.
+    // column fell to its schema default until #5028 phase 2 dropped it
+    // (migration 0195). The count assertion is unchanged and still the sharpest
+    // instrument here — the mutation now ALSO fails as invalid SQL, but that is
+    // a second line of defence, not this test's.
     const store = new FakeBrainStore();
     await run(store, { candidates: [candidate({ predicateCardinality: "single" })] });
 

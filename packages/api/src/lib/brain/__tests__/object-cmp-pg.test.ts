@@ -264,8 +264,8 @@ describeIfPg("object_cmp against a real schema (#5030)", () => {
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_facts
          (workspace_id, subject, predicate, object, source_episode_id, provenance,
-          visible_to, predicate_cardinality, subject_key, predicate_key, object_key)
-       VALUES ($1, $2, $3, $4, $5, '{"actor":"test"}'::jsonb, ARRAY['org'], 'single',
+          visible_to, subject_key, predicate_key, object_key)
+       VALUES ($1, $2, $3, $4, $5, '{"actor":"test"}'::jsonb, ARRAY['org'],
                $6, $7, $8)
        RETURNING id`,
       [

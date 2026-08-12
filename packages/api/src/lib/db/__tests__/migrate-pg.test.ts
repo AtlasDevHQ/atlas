@@ -3319,17 +3319,19 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     const ws = `ws-fact-${stamp}`;
     const episodeId = await insertEpisode(ws, `ep-${stamp}`);
 
-    const { rows } = await pool.query<{ status: string; predicate_cardinality: string }>(
+    const { rows } = await pool.query<{ status: string }>(
       `INSERT INTO brain_facts
          (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, visible_to)
        VALUES ($1, 'acme', 'uses', 'postgres', 'acme', 'uses', 'postgres', $2, '{"actor":"u1"}'::jsonb, ARRAY['org'])
-       RETURNING status, predicate_cardinality`,
+       RETURNING status`,
       [ws, episodeId],
     );
     // Every extraction candidate lands draft — the review gate, not a fast path.
     expect(rows[0]!.status).toBe("draft");
-    // The conservative arm: coexist rather than supersede.
-    expect(rows[0]!.predicate_cardinality).toBe("multi");
+    // `predicate_cardinality` defaulted to 'multi' here — the conservative arm —
+    // until migration 0195 dropped the column (#5028 phase 2). 0180 still
+    // CREATES it, so this test covers 0180's surviving surface; the drop's own
+    // coverage is the 0195 case below.
 
     await expectRejected(
       "chk_brain_facts_status",
@@ -3678,6 +3680,44 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     );
     expect(rows.map((r) => r.tablename)).toEqual(["brain_episodes", "brain_facts"]);
     for (const row of rows) expect(row.indexdef).toContain("USING gin");
+  }, PG_TEST_TIMEOUT_MS);
+
+  // ⚠️ The drop needs its OWN positive coverage. Every other test touching this
+  // column asserts an ABSENCE somewhere else — a projection that no longer
+  // names it, an INSERT that no longer binds it — and absences are exactly what
+  // a re-added column would satisfy without anyone noticing. These two assert
+  // the catalog directly, which is the only place the drop is a fact rather
+  // than an inference.
+  it("0195: brain_facts.predicate_cardinality and its CHECK are GONE (#5028 phase 2)", async () => {
+    const col = await pool.query<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'brain_facts'
+          AND column_name = 'predicate_cardinality'
+          AND table_schema = current_schema()`,
+    );
+    expect(col.rows).toHaveLength(0);
+
+    const chk = await pool.query<{ conname: string }>(
+      `SELECT conname FROM pg_constraint
+        WHERE conname = 'chk_brain_facts_predicate_cardinality'`,
+    );
+    expect(chk.rows).toHaveLength(0);
+  }, PG_TEST_TIMEOUT_MS);
+
+  // The sibling that must SURVIVE. `brain_predicate_cardinality` (0192) is the
+  // curated vocabulary the column was replaced BY, and its name contains the
+  // dropped column's name as a substring — so a drop written with a careless
+  // pattern, or a future cleanup grepping for "predicate_cardinality", takes
+  // the replacement out along with the thing it replaced. Nothing else in this
+  // file would notice: every vocabulary test would fail with a confusing
+  // "relation does not exist" rather than pointing at the cause.
+  it("0195: the vocabulary table it was replaced BY still exists (#5028)", async () => {
+    const { rows } = await pool.query<{ table_name: string }>(
+      `SELECT table_name FROM information_schema.tables
+        WHERE table_name = 'brain_predicate_cardinality'
+          AND table_schema = current_schema()`,
+    );
+    expect(rows).toHaveLength(1);
   }, PG_TEST_TIMEOUT_MS);
 });
 

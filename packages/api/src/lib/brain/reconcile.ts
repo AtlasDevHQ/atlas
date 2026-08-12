@@ -929,11 +929,12 @@ export const CORROBORATION_LOOKUP_SQL = `SELECT id
  * ADR-0037 §3), so nothing on the row decides supersession and no producer
  * should be writing an opinion onto one.
  *
- * Omitted from the list rather than bound to a literal, so the column falls to
- * its schema default (`'multi'`, 0180) — which is what keeps this statement
- * legal while the column is still `NOT NULL` with a live CHECK. #5028 drops the
- * column one release later, per the two-phase discipline in
- * `db/migrations/README.md`. Re-adding it here is a regression, not a fix.
+ * It was omitted from the list rather than bound to a literal, so the column
+ * fell to its schema default (`'multi'`, 0180) — which is what kept this
+ * statement legal while the column was still `NOT NULL` with a live CHECK.
+ * #5028 phase 2 dropped the column (migration 0195) one release later, per the
+ * two-phase discipline in `db/migrations/README.md`, so re-adding it here is no
+ * longer a silently-wrong write: it is invalid SQL. A regression either way.
  */
 export const INSERT_FACT_SQL = `INSERT INTO brain_facts
          (workspace_id, subject, predicate, object, valid_from, extracted_at,

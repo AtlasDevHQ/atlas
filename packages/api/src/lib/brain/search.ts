@@ -391,8 +391,7 @@ function str(value: unknown): string | null {
  *
  * `0` is the conservative value but not a harmless one: `corroborationCount: 0`
  * on a corroborated claim understates the evidence behind it, which on a
- * trust-labeled surface is the same class of harm the `cardinality` fallback
- * logs for.
+ * trust-labeled surface is the same class of harm {@link factStatus} logs for.
  */
 function count(value: unknown, field: string, workspaceId: string): number {
   const n = typeof value === "number" ? value : Number(value);
@@ -421,31 +420,6 @@ function factStatus(value: unknown, rowId: string, workspaceId: string) {
   return "draft" as const;
 }
 
-/**
- * Cardinality off `pg`. `multi` is the conservative fallback — hence the log.
- *
- * ⚠️ **VESTIGIAL since #5027 (ADR-0037 §3) — do not branch on it.**
- *
- * Cardinality is a property of the CANONICAL PREDICATE now, read live from `brain_predicate_cardinality` at the
- * publish gate. `brain_facts.predicate_cardinality` stopped being written, so
- * every fact ingested since the migration reports `multi` however its predicate
- * is curated, and every earlier one carries the extractor's stale LLM guess.
- *
- * This is the second surviving consumer and the one with the wider blast radius:
- * `searchBrain` returns `BrainFactResult` TO THE MODEL, so the agent is told
- * `multi` for every fact ingested since the migration. Lower stakes than the
- * rendered sentence `candidate-detail.tsx` deleted (no prose is attached to it),
- * but it is not nothing, and #5028 owns removing it from the wire.
- */
-function cardinality(value: unknown, rowId: string, workspaceId: string) {
-  if (value === "single" || value === "multi") return value;
-  log.warn(
-    { rowId, workspaceId, cardinality: value },
-    "brain search: fact carries a predicate cardinality outside the vocabulary — reporting `multi`, which understates any conflict",
-  );
-  return "multi" as const;
-}
-
 // ---------------------------------------------------------------------------
 // SQL
 // ---------------------------------------------------------------------------
@@ -468,7 +442,6 @@ const FACT_COLUMNS = `f.id::text AS id,
          f.predicate,
          f.object,
          f.status,
-         f.predicate_cardinality,
          f.visible_to,
          f.pre_widening_visible_to,
          f.provenance,
@@ -655,7 +628,6 @@ interface FactRow {
   readonly predicate: string;
   readonly object: string;
   readonly status: unknown;
-  readonly predicate_cardinality: unknown;
   readonly visible_to: unknown;
   /** ACL input for provenance attribution — see `AttributionRow` (#4836). */
   readonly pre_widening_visible_to: unknown;
@@ -711,7 +683,6 @@ function toFactResult(
     subject: row.subject,
     predicate: row.predicate,
     object: row.object,
-    predicateCardinality: cardinality(row.predicate_cardinality, row.id, workspaceId),
     status: factStatus(row.status, row.id, workspaceId),
     validFrom: iso(row.valid_from),
     validTo: iso(row.valid_to),

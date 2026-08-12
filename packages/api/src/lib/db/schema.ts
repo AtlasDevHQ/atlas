@@ -3450,10 +3450,28 @@ export const brainFacts = pgTable(
     // because the import writes `status` verbatim and the fact never
     // re-publishes.
     preWideningVisibleTo: text("pre_widening_visible_to").array(),
-    // The supersede-vs-coexist switch M2 needs, landing now so M2 adds an
-    // engine and not a column. `single` supersedes, `multi` coexists +
-    // corroborates. Defaults to the conservative arm: coexisting is
-    // recoverable, wrongly superseding destroys a belief.
+    // ⚠️ VESTIGIAL. No APPLICATION code reads or writes this column — but every
+    // row added to this table still gets a value at the DATABASE layer, via the
+    // `'multi'` default below, which is why it can stay `NOT NULL`. #5027
+    // stopped the reconcile write (`INSERT_FACT_SQL`) and #5035 the region
+    // importer's, when cardinality became a property of the CANONICAL PREDICATE,
+    // curated in `brain_predicate_cardinality`; #5028 phase 1b stopped the last
+    // two reads. It survives here ONLY because this file mirrors the live
+    // database and the column has a live CHECK — the drop is its own migration,
+    // one release after phase 1b, per the two-phase discipline in
+    // `db/migrations/README.md`. Do not read it, and do not restore a read to
+    // "use what is already there": every row ingested since `v0.2.5` (which
+    // carried both #5027 and #5035) has the schema default whatever its
+    // predicate is curated as, and every earlier one carries the extractor's
+    // stale LLM guess. Dated by RELEASE rather than by issue on purpose — the
+    // two writers stopped a day apart, so a row imported in that window still
+    // carries its bundle's value.
+    //
+    // Its original rationale, VERBATIM, kept because the drop has not happened:
+    //   "The supersede-vs-coexist switch M2 needs, landing now so M2 adds an
+    //    engine and not a column. `single` supersedes, `multi` coexists +
+    //    corroborates. Defaults to the conservative arm: coexisting is
+    //    recoverable, wrongly superseding destroys a belief."
     predicateCardinality: text("predicate_cardinality").notNull().default("multi"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

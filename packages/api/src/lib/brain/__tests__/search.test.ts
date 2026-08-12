@@ -65,13 +65,30 @@ interface Call {
  * the assertion passes vacuously on the withheld arm. Since #4913 the
  * counterpart statement carries the corroboration subquery as well.
  *
- * The fact page is keyed on `predicate_cardinality` — the one column only it
+ * The fact page is keyed on `last_observed_at` — the one column only it
  * selects. It was `valid_to` until #4935 gave the counterpart statement that
  * column too, at which point the counterpart query matched the fact page's key
- * first and was answered with the fact page's rows. If a future slice adds
- * `predicate_cardinality` to `COUNTERPART_COLUMNS`, this key has to move again:
- * the invariant is "a column exactly one statement selects", not any particular
- * column.
+ * first and was answered with the fact page's rows; then `predicate_cardinality`
+ * until #5028 removed that column from `FACT_COLUMNS` on the way to dropping it.
+ *
+ * ⚠️ The sibling file `search-logging.test.ts` carried the SAME `f.valid_to` key
+ * and was live-colliding on it until #5028 — its truncation test registered a
+ * counterpart response and was answered with the fact page's row. That collision
+ * was undetectable by assertion: the substituted row is keyed `fact-1` while the
+ * counterpart lookup is by `rival-i`, so it was discarded before reaching any
+ * output and NO widening of that test's assertions would have caught it (see
+ * that file's `SQL` comment for the full trace). A collision is not hypothetical,
+ * and it does not announce itself to a test — the throw below is the only thing
+ * that makes it announce itself.
+ *
+ * ⚠️ That removal made `FACT_COLUMNS` and `COUNTERPART_COLUMNS` BYTE-IDENTICAL,
+ * so no key in the shared column list can ever separate them again — the
+ * discriminator has to come from what `buildFactQuery` APPENDS. Corroboration is
+ * not it (the counterpart statement carries that subquery too since #4913);
+ * `last_observed_at` is the decay anchor (#4914) and the fact page is its only
+ * selector. If a future slice gives the counterpart statement a decay signal,
+ * this key has to move again: the invariant is "a column exactly one statement
+ * selects", not any particular column.
  *
  * `reader()` ENFORCES that rather than trusting this paragraph. #4935 got a
  * loud failure only by luck of array order — `find()` is first-match-wins, so
@@ -79,7 +96,7 @@ interface Call {
  * VACUOUS PASS instead. The throw makes the next collision self-reporting.
  */
 const SQL = {
-  factPage: "f.predicate_cardinality",
+  factPage: "AS last_observed_at",
   episodePage: "FROM brain_episodes e",
   tensionEdges: "edge_type = 'in-tension-with'",
   tensionCounterparts: "AND f.id = ANY(",
@@ -111,7 +128,6 @@ function factRow(overrides: Record<string, unknown> = {}): Record<string, unknow
     predicate: "owned_by",
     object: "platform team",
     status: "published",
-    predicate_cardinality: "single",
     visible_to: ["org"],
     pre_widening_visible_to: null,
     provenance: { source: "slack", sourceId: "m-1", episodeId: "ep-1" },
@@ -302,7 +318,6 @@ describe("asOf — the bi-temporal point read (#4916)", () => {
          f.predicate,
          f.object,
          f.status,
-         f.predicate_cardinality,
          f.visible_to,
          f.pre_widening_visible_to,
          f.provenance,

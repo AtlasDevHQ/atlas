@@ -416,7 +416,6 @@ const CANDIDATE_COLUMNS = `f.id::text AS id,
          f.predicate,
          f.object,
          f.status,
-         f.predicate_cardinality,
          f.visible_to,
          f.pre_widening_visible_to,
          f.provenance,
@@ -458,7 +457,6 @@ interface FactRow {
   readonly predicate: string;
   readonly object: string;
   readonly status: string;
-  readonly predicate_cardinality: string;
   readonly visible_to: unknown;
   /** ACL input for provenance attribution — see `AttributionRow` (#4836). */
   readonly pre_widening_visible_to: unknown;
@@ -530,38 +528,6 @@ function reviewStatus(value: unknown, rowId: string, workspaceId: string): Brain
     "brain review: fact carries a status outside the vocabulary — reporting it as a draft",
   );
   return "draft";
-}
-
-/**
- * Predicate cardinality off `pg`.
- *
- * ⚠️ **VESTIGIAL since #5027 (ADR-0037 §3) — do not branch on it.**
- *
- * Cardinality is a property of the CANONICAL PREDICATE now, read live from `brain_predicate_cardinality` at the
- * publish gate. `brain_facts.predicate_cardinality` stopped being written, so
- * every fact ingested since the migration reports `multi` however its predicate
- * is curated, and every earlier one carries the extractor's stale LLM guess.
- *
- * The reading it used to drive is gone with it: this docstring said `multi`
- * "renders as *many values may coexist*, understating a conflict", and
- * `candidate-detail.tsx` deleted that sentence in the same slice — a claim
- * about an irreversible write, on the screen where a reviewer makes it, sourced
- * from a column that no longer decides one.
- *
- * Still projected only because removing a field from a published type is a
- * breaking change; #5028, which drops the column, owns it. Nothing may branch on
- * it, and the drift log below is now about the STORED value's shape rather than
- * about a conflict anyone will read.
- */
-function predicateCardinality(row: FactRow, workspaceId: string): "single" | "multi" {
-  if (row.predicate_cardinality === "single" || row.predicate_cardinality === "multi") {
-    return row.predicate_cardinality;
-  }
-  log.warn(
-    { rowId: row.id, workspaceId, cardinality: row.predicate_cardinality },
-    "brain review: fact carries a predicate cardinality outside the vocabulary — reporting it as `multi`, which understates any conflict",
-  );
-  return "multi";
 }
 
 /**
@@ -842,7 +808,6 @@ export async function loadFactCandidates(
       predicate: row.predicate,
       object: row.object,
       status: reviewStatus(row.status, row.id, ctx.workspaceId),
-      predicateCardinality: predicateCardinality(row, ctx.workspaceId),
       visibleTo: (grant?.tokens ?? []).map((t) => (typeof t === "string" ? t : String(t))),
       malformedGrantIndices: grant?.malformed ?? [],
       grantReadable: grant?.readable ?? false,

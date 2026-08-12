@@ -103,7 +103,6 @@ function factRow(overrides: Record<string, unknown> = {}): Record<string, unknow
     predicate: "uses",
     object: "Postgres",
     status: "draft",
-    predicate_cardinality: "multi",
     visible_to: ["org"],
     pre_widening_visible_to: null,
     provenance: {
@@ -336,6 +335,36 @@ describe("loadFactCandidates — visibility", () => {
     const db = reader([{ match: "FROM brain_facts f", rows: [factRow()] }]);
     await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
     expect(db.calls[0]?.sql).toContain("f.invalidated_at IS NULL");
+  });
+
+  it("does not SELECT predicate_cardinality — the column is being dropped (#5028)", async () => {
+    // The pin every other site that stopped touching this column already has
+    // (`reconcile.test.ts`, `correction.test.ts`, `export.test.ts`,
+    // `bundle-identity-v3.test.ts`; `FACT_COLUMNS` is covered by
+    // `search.test.ts`'s byte-identical golden). `CANDIDATE_COLUMNS` had none,
+    // which is the gap that matters most after the drop lands: re-adding the
+    // column here is one plausible-looking line, and it becomes a 500 on the
+    // review queue the moment phase 2 ships. Cheap now, unfalsifiable later —
+    // once the column is gone a `-pg` suite would catch it, but this queue's
+    // unit tests run without Postgres and would stay green.
+    // ⚠️ Resolved by SEARCH, not by `calls[0]`. A negative assertion pinned to a
+    // positional index degrades the wrong way: reorder the statements and the
+    // pin silently passes against the episode or edge query, neither of which
+    // ever contained the column. Its positive-assertion siblings above go loudly
+    // red on the same reorder, which is why they can afford the index and this
+    // cannot.
+    //
+    // ⚠️ A NON-EMPTY page, deliberately. An empty one short-circuits at
+    // `loadFactCandidates`' `rows.length === 0` early return, so only ONE
+    // statement is ever issued and the search degenerates into `calls[0]` —
+    // which would make the paragraph above describe a hazard the fixture had
+    // quietly removed. A row makes the episode and edge statements run too, so
+    // resolving by predicate is doing real work.
+    const db = reader([{ match: "FROM brain_facts f", rows: [factRow()] }]);
+    await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
+    const factSql = db.calls.find((c) => c.sql.includes("FROM brain_facts f"))?.sql;
+    expect(factSql).toBeDefined();
+    expect(factSql).not.toContain("predicate_cardinality");
   });
 
   it("excludes SUPERSEDED facts exactly as tombstoned ones (#4912)", async () => {

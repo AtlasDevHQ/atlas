@@ -52,9 +52,37 @@ type BrainPrincipalContext = Parameters<typeof searchBrainCore>[1]["ctx"];
 
 const WS = "ws-search-logging";
 const SQL = {
-  // `valid_to` — the one column only the fact-page statement selects; the
-  // corroboration subquery appears in the counterpart statement too (#4913).
-  factPage: "f.valid_to",
+  // `last_observed_at` — the decay anchor (#4914), and the one column only the
+  // fact-page statement selects. Corroboration is not unique to it (#4913 gave
+  // the counterpart statement that subquery), and neither is `f.valid_to`, which
+  // this key used to name: #4935 put that column in `COUNTERPART_COLUMNS` too, so
+  // the key had been ambiguous since then.
+  //
+  // ⚠️ The collision was LIVE, not merely possible — "logs AND flags when the
+  // conflict fan-out is truncated" below registers a counterpart response, and
+  // under first-match-wins `find()` the counterpart statement was answered with
+  // the FACT PAGE's row.
+  //
+  // It was nonetheless INERT, and the reason is worth stating exactly, because
+  // the obvious explanation ("the test just doesn't assert the counterpart
+  // list") is wrong and would mislead the next author into thinking a wider
+  // assertion catches this. It does not. `loadTensionClusters` keys its
+  // `visible` map by counterpart row id and reads it back only via
+  // `visible.get(pair.other)`; that test's edges are `fact-1 → rival-i`, so
+  // every `other` is a `rival-i` and the substituted row — `id: "fact-1"` —
+  // is never looked up. The cluster comes out byte-identical to the intended
+  // empty list, no warn fires, and `res` is unchanged. Verified by reverting
+  // the key and disabling the throw: the test still passes, clean.
+  //
+  // So the lesson is not "assert more". It is that a wrong answer discarded by
+  // keying before it reaches any output is invisible to ASSERTIONS ALTOGETHER —
+  // only a structural check at the dispatch point can see it, which is what the
+  // throw below is. #5028
+  // removed `predicate_cardinality` from `FACT_COLUMNS`, which makes it and
+  // `COUNTERPART_COLUMNS` byte-identical — so no key drawn from the shared column
+  // list can separate the two statements again, and the discriminator must come
+  // from what `buildFactQuery` APPENDS.
+  factPage: "AS last_observed_at",
   episodePage: "FROM brain_episodes e",
   tensionEdges: "edge_type = 'in-tension-with'",
   tensionCounterparts: "AND f.id = ANY(",
@@ -74,9 +102,20 @@ function reader(
   responses: Array<{ match: string; rows: Record<string, unknown>[] }> = [],
 ): BrainSearchReader {
   return {
-    query: async (sql: string) => ({
-      rows: responses.find((r) => sql.includes(r.match))?.rows ?? [],
-    }),
+    query: async (sql: string) => {
+      // ENFORCED rather than trusted, on `search.test.ts`'s precedent. `find()`
+      // is first-match-wins, so an ambiguous key does not fail — it answers one
+      // statement with another's rows and the assertion passes VACUOUSLY. That
+      // is how `f.valid_to` survived #4935 here; the throw makes the next
+      // collision self-reporting instead of silent.
+      const hits = responses.filter((r) => sql.includes(r.match));
+      if (hits.length > 1) {
+        throw new Error(
+          `ambiguous SQL fixture key: ${hits.map((h) => JSON.stringify(h.match)).join(", ")} all match one statement — one of them must move to a column exactly one statement selects`,
+        );
+      }
+      return { rows: hits[0]?.rows ?? [] };
+    },
   };
 }
 
@@ -87,8 +126,16 @@ function factRow(overrides: Record<string, unknown> = {}): Record<string, unknow
     predicate: "p",
     object: "o",
     status: "published",
-    predicate_cardinality: "multi",
     visible_to: ["org"],
+    // ⚠️ BOTH of these are selected by the fact statement, and omitting them is
+    // not neutral: each drives a degradation warn of its own
+    // (`attributionDecision`'s missing-column arm, and `toFactResult`'s
+    // `last_observed_at === undefined` arm). Without them every fact test in
+    // this file ran at a noise floor of two FABRICATED degradations — in the one
+    // file whose whole premise is that those warn lines are the only artifact of
+    // a degradation. Present and null, mirroring `search.test.ts`'s fixture.
+    pre_widening_visible_to: null,
+    last_observed_at: null,
     provenance: {},
     source_episode_id: "ep-1",
     valid_from: null,
@@ -129,8 +176,51 @@ describe("searchBrain observation", () => {
   });
 
   it("says nothing for a wholly well-formed grant", async () => {
-    await run(reader([{ match: SQL.factPage, rows: [factRow()] }]));
+    const res = await run(reader([{ match: SQL.factPage, rows: [factRow()] }]));
+    // ⚠️ The fixture must have been ANSWERED. This is the one bare-negative
+    // assertion in the file, so it is also the one test that stays green when
+    // `SQL.factPage` matches NOTHING — a dead key returns zero rows, and zero
+    // rows carry no grant to warn about. The length check is what makes the
+    // fixture load-bearing rather than decorative.
+    expect(res.results).toHaveLength(1);
     expect(warnings("outside the grammar")).toHaveLength(0);
+    // ⚠️ The GUARD on the fixture's fidelity, and it belongs here because this
+    // is the only test in the file asserting a clean row. `factRow()` must carry
+    // every column the fact statement selects that has a drift arm behind it —
+    // omitting one does not fail anything locally, it just adds a fabricated
+    // degradation warn to EVERY fact test in the file, which is how this file
+    // ran at a noise floor of two for as long as it did. A total-silence
+    // assertion is the only thing that goes red when a column is dropped from
+    // the fixture again, and it also forward-guards the next column added to the
+    // SELECT with a drift arm of its own.
+    expect(logCalls.filter((c) => c.level === "warn").map((c) => c.message)).toEqual([]);
+  });
+
+  it("reports drift, not a fabricated age, when the SELECT drops the decay anchor", async () => {
+    // The twin of `candidates.test.ts`'s "reports drift, not a fabricated
+    // label" — and it did not exist until #5028 phase 1b, which is the PR that
+    // makes it matter: `search.ts`'s `last_observed_at === undefined` arm is the
+    // detector for "a column left the fact SELECT", and removing a column from
+    // that SELECT is precisely what phase 1b does. `pg` never yields `undefined`
+    // for a selected column, so a row without the key means the statement
+    // stopped selecting it.
+    const { last_observed_at: _dropped, ...row } = factRow();
+    await run(reader([{ match: SQL.factPage, rows: [row] }]));
+    expect(warnings("no longer selects the decay anchor")).toHaveLength(1);
+  });
+
+  it("withholds attribution, and says so, when the SELECT drops the pre-widening grant", async () => {
+    // The TWIN of the test above, and the arm with the higher stakes: collapsing
+    // `pre_widening_visible_to` to "never widened" discloses a private channel's
+    // first speaker on the surface that answers the model. It had NO coverage
+    // anywhere — its only exercise at this seam was the accidental firing caused
+    // by `factRow()` omitting the column, which the fixture fix above removed.
+    // So without this test, that fix would have taken the arm from
+    // accidentally-covered to uncovered.
+    const { pre_widening_visible_to: _dropped, ...row } = factRow();
+    const res = await run(reader([{ match: SQL.factPage, rows: [row] }]));
+    expect(warnings("the query does not select it")).toHaveLength(1);
+    expect(res.results[0]).toMatchObject({ provenance: { attribution: { visible: false } } });
   });
 
   it("reports a `visible_to` that did not decode as an array at all", async () => {

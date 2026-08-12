@@ -60,7 +60,7 @@
     "croner": "^10.0.1",
     "domhandler": "^6.0.1",
     "entities": "^8.0.0",
-    "hono": "^4.12.32",
+    "hono": "^4.12.34",
     "htmlparser2": "^12.0.0",
     "jose": "6.2.3",
     "js-yaml": "^5.2.2",

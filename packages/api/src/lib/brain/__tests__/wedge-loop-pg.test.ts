@@ -1252,9 +1252,9 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
     await pool.query(
       `INSERT INTO brain_facts (workspace_id, subject, predicate, object,
                                 subject_key, predicate_key, object_key,
-                                predicate_cardinality, visible_to, provenance, source_episode_id)
+                                visible_to, provenance, source_episode_id)
        VALUES ($1, 'ungranted claim', 'is', 'unreachable',
-               'ungranted claim', 'is', 'unreachable', 'single', ARRAY['everyone'],
+               'ungranted claim', 'is', 'unreachable', ARRAY['everyone'],
                '{"source":"slack","producer":"import"}'::jsonb, $2)`,
       [WORKSPACE, episode.id],
     );

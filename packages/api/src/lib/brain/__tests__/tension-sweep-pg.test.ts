@@ -49,12 +49,16 @@
  * same workspace id. Every workspace name here is prefixed `ws-5029-`, which is
  * what keeps that true; do not drop the prefix.
  *
- * **`seedFact` writes `brain_facts.predicate_cardinality`, which
- * [#5028](https://github.com/AtlasDevHQ/atlas/issues/5028) DROPS.** It is
- * load-bearing rather than incidental — it is the AC-4 falsifier's opposite
- * value, the whole point being that the sweep must ignore it — so #5028 has to
- * update this fixture in the same PR or CI fails with `column
- * "predicate_cardinality" does not exist` while every local gate is green.
+ * **`seedFact` USED TO write `brain_facts.predicate_cardinality`**, as the
+ * AC-4 falsifier's opposite value — the point being that the sweep must ignore
+ * it. [#5028](https://github.com/AtlasDevHQ/atlas/issues/5028) phase 2 dropped
+ * the column (migration 0195), so that fixture is gone and the property it
+ * guarded is now STRUCTURAL: the sweep cannot read a per-row guess that does
+ * not exist. The AC-4 tests below keep their assertions — mint only on a
+ * CURATED predicate — but they no longer discriminate between "reads the row"
+ * and "reads the vocabulary", because only one of those is still expressible.
+ * That is what a completed two-phase drop looks like: the guard graduates from
+ * a test fixture into the schema.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -133,11 +137,10 @@ describeIfPg("the admin-triggered tension sweep (#5029)", () => {
   /**
    * A stored fact, inserted directly.
    *
-   * `rowCardinality` defaults to `'multi'` — the schema default every row
-   * written since #5027 falls to — and is overridable so the "today's
-   * cardinality" block can set it to the OPPOSITE of the vocabulary's answer.
-   * That opposition is the whole falsifier there: a fixture that let both
-   * agree could not tell the two readings apart.
+   * There is no per-row cardinality knob any more: #5028 phase 2 dropped
+   * `brain_facts.predicate_cardinality`, so the OPPOSITE-of-the-vocabulary
+   * fixture the "today's cardinality" block used as its falsifier is no longer
+   * expressible. Cardinality reaches the sweep only through `curate()` below.
    *
    * `ingestedAt` is explicit because the sweep's pair DIRECTION is a total
    * order on `(ingested_at, id)`, so a fixture that let every row default to
@@ -151,7 +154,6 @@ describeIfPg("the admin-triggered tension sweep (#5029)", () => {
     opts: {
       ingestedAt: string;
       status?: "draft" | "published";
-      rowCardinality?: "single" | "multi";
       invalidated?: boolean;
       validTo?: string | null;
       /**
@@ -168,10 +170,10 @@ describeIfPg("the admin-triggered tension sweep (#5029)", () => {
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_facts
          (workspace_id, subject, predicate, object, source_episode_id, provenance,
-          visible_to, status, predicate_cardinality, ingested_at, invalidated_at, valid_to,
+          visible_to, status, ingested_at, invalidated_at, valid_to,
           subject_key, predicate_key, object_key, object_cmp, subject_cmp)
        VALUES ($1, $2, $3, $4, $5, '{"source":"slack","actor":"test"}'::jsonb, ARRAY['org'],
-               $6, $7, $8::timestamptz, $9, $10::timestamptz, $11, $12, $13, $14, $15)
+               $6, $7::timestamptz, $8, $9::timestamptz, $10, $11, $12, $13, $14)
        RETURNING id`,
       [
         workspaceId,
@@ -180,7 +182,6 @@ describeIfPg("the admin-triggered tension sweep (#5029)", () => {
         claim.object,
         episodeId,
         opts.status ?? "published",
-        opts.rowCardinality ?? "multi",
         opts.ingestedAt,
         opts.invalidated === true ? new Date().toISOString() : null,
         opts.validTo ?? null,
@@ -475,25 +476,27 @@ describeIfPg("the admin-triggered tension sweep (#5029)", () => {
     /**
      * One slot, three vocabulary states, one fixture.
      *
-     * ⚠️ Both rows carry `predicate_cardinality = 'single'` — the EXTRACTOR's
-     * per-claim guess, and deliberately the opposite of what the vocabulary says
-     * in the first two states. A build that swept on the row column would mint
-     * an edge in all three, and a fixture that left the column at its default
-     * could not tell the two readings apart at all.
+     * ⚠️ Both rows USED to carry `predicate_cardinality = 'single'` — the
+     * extractor's per-claim guess, deliberately opposite to the vocabulary in
+     * the first two states, so that a build sweeping on the row column would
+     * mint in all three and be caught. #5028 phase 2 dropped that column, so
+     * the opposite value is no longer expressible and the name went with it.
+     * These tests now assert the surviving half: minting follows the CURATED
+     * predicate and nothing else.
      */
-    async function slotWithOppositeRowGuess(ws: string) {
+    async function slotWithUncuratedPredicate(ws: string) {
       const ep = await seedEpisode(ws, `today-${ws}`);
       await seedFact(
         ws,
         ep,
         { subject: "starter tier", predicate: "priced at", object: "19 USD" },
-        { ingestedAt: T0, rowCardinality: "single" },
+        { ingestedAt: T0 },
       );
       await seedFact(
         ws,
         ep,
         { subject: "starter tier", predicate: "priced at", object: "29 USD" },
-        { ingestedAt: T1, rowCardinality: "single" },
+        { ingestedAt: T1 },
       );
     }
 
@@ -501,11 +504,11 @@ describeIfPg("the admin-triggered tension sweep (#5029)", () => {
       "mints nothing when the predicate is UNCURATED, however the extractor guessed",
       async () => {
         const ws = "ws-5029-today-absent";
-        await slotWithOppositeRowGuess(ws);
+        await slotWithUncuratedPredicate(ws);
 
         expect(
           await sweep(ws),
-          "the sweep minted against an uncurated predicate — it is reading `brain_facts.predicate_cardinality`, the stochastic per-claim guess #5027 made unrepresentable, and #5028 is about to drop",
+          "the sweep minted against an UNCURATED predicate. Since #5028 phase 2 there is no per-row cardinality left to read, so this can only mean the vocabulary lookup itself stopped gating.",
         ).toEqual({ minted: 0, truncated: false });
       },
       PG_TEST_TIMEOUT_MS,
@@ -519,7 +522,7 @@ describeIfPg("the admin-triggered tension sweep (#5029)", () => {
         // heuristic arm an autonomous writer with no human in the loop. It reads
         // as a tightening in a diff and has no symptom at rest.
         const ws = "ws-5029-today-pending";
-        await slotWithOppositeRowGuess(ws);
+        await slotWithUncuratedPredicate(ws);
         const proposed = await proposePredicateCardinality(pool, ws, {
           predicateKey: slotKey("priced at", identityAlias),
           cardinality: "single",
@@ -544,7 +547,7 @@ describeIfPg("the admin-triggered tension sweep (#5029)", () => {
         // Without this, both prohibitions above are satisfied by a build that
         // never mints anything, which is the failure mode ADR-0037 §9 names.
         const ws = "ws-5029-today-approved";
-        await slotWithOppositeRowGuess(ws);
+        await slotWithUncuratedPredicate(ws);
         expect(await sweep(ws)).toEqual({ minted: 0, truncated: false });
 
         await curate(ws, "priced at", "single");
@@ -564,7 +567,7 @@ describeIfPg("the admin-triggered tension sweep (#5029)", () => {
         // verb. An `EXISTS` that checked only for a ROW rather than for
         // `cardinality = 'single'` would pass every test above and mint here.
         const ws = "ws-5029-today-multi";
-        await slotWithOppositeRowGuess(ws);
+        await slotWithUncuratedPredicate(ws);
         await curate(ws, "priced at", "multi");
 
         expect(

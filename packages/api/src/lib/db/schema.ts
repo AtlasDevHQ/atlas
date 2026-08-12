@@ -3450,29 +3450,13 @@ export const brainFacts = pgTable(
     // because the import writes `status` verbatim and the fact never
     // re-publishes.
     preWideningVisibleTo: text("pre_widening_visible_to").array(),
-    // ⚠️ VESTIGIAL. No APPLICATION code reads or writes this column — but every
-    // row added to this table still gets a value at the DATABASE layer, via the
-    // `'multi'` default below, which is why it can stay `NOT NULL`. #5027
-    // stopped the reconcile write (`INSERT_FACT_SQL`) and #5035 the region
-    // importer's, when cardinality became a property of the CANONICAL PREDICATE,
-    // curated in `brain_predicate_cardinality`; #5028 phase 1b stopped the last
-    // two reads. It survives here ONLY because this file mirrors the live
-    // database and the column has a live CHECK — the drop is its own migration,
-    // one release after phase 1b, per the two-phase discipline in
-    // `db/migrations/README.md`. Do not read it, and do not restore a read to
-    // "use what is already there": every row ingested since `v0.2.5` (which
-    // carried both #5027 and #5035) has the schema default whatever its
-    // predicate is curated as, and every earlier one carries the extractor's
-    // stale LLM guess. Dated by RELEASE rather than by issue on purpose — the
-    // two writers stopped a day apart, so a row imported in that window still
-    // carries its bundle's value.
-    //
-    // Its original rationale, VERBATIM, kept because the drop has not happened:
-    //   "The supersede-vs-coexist switch M2 needs, landing now so M2 adds an
-    //    engine and not a column. `single` supersedes, `multi` coexists +
-    //    corroborates. Defaults to the conservative arm: coexisting is
-    //    recoverable, wrongly superseding destroys a belief."
-    predicateCardinality: text("predicate_cardinality").notNull().default("multi"),
+    // ⚠️ `predicateCardinality` was HERE and is gone — dropped by migration 0195
+    // (#5028 phase 2), one release after v0.2.6 removed the last read. Do not
+    // re-add it. Cardinality is a property of the canonical PREDICATE, curated
+    // by a human in `brainPredicateCardinality` below; a per-row column is the
+    // stochastic per-claim LLM guess #5027 made unrepresentable, and restoring
+    // it would resurrect a supersession that fired at P(model says single)^2 on
+    // an irreversible operation.
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     // Stored generated FTS vector for the `searchBrain` tier-2 lexical read
@@ -3524,10 +3508,8 @@ export const brainFacts = pgTable(
     // Lexical tier-2 retrieval (#4773, migration 0181).
     index("idx_brain_facts_fts").using("gin", t.fts),
     check("chk_brain_facts_status", sql`status IN ('draft', 'published', 'archived')`),
-    check(
-      "chk_brain_facts_predicate_cardinality",
-      sql`predicate_cardinality IN ('single', 'multi')`,
-    ),
+    // `chk_brain_facts_predicate_cardinality` was here — dropped with its column
+    // by migration 0195 (#5028 phase 2).
     // No-grant-no-promotion. The public majority carries an explicit `org` —
     // "visible to everyone" is a stated grant, never an omission, so a
     // forgotten grant can never read as public.

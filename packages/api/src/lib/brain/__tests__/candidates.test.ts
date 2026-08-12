@@ -337,7 +337,7 @@ describe("loadFactCandidates — visibility", () => {
     expect(db.calls[0]?.sql).toContain("f.invalidated_at IS NULL");
   });
 
-  it("does not SELECT predicate_cardinality — the column is being dropped (#5028)", async () => {
+  it("does not SELECT predicate_cardinality — the column is GONE (#5028 phase 2)", async () => {
     // The pin every other site that stopped touching this column already has
     // (`reconcile.test.ts`, `correction.test.ts`, `export.test.ts`,
     // `bundle-identity-v3.test.ts`; `FACT_COLUMNS` is covered by

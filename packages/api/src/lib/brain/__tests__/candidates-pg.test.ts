@@ -137,7 +137,6 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
     episodeId: string;
     visibleTo?: readonly (string | null)[];
     status?: "draft" | "published";
-    cardinality?: "single" | "multi";
     provenance?: Record<string, unknown>;
     /** The grant before publish-time widening; omit for a never-widened fact. */
     preWideningVisibleTo?: readonly (string | null)[];
@@ -147,10 +146,10 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_facts
          (workspace_id, subject, predicate, object, source_episode_id, provenance,
-          status, visible_to, pre_widening_visible_to, predicate_cardinality,
+          status, visible_to, pre_widening_visible_to,
           subject_key, predicate_key, object_key)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::text[], $9::text[], $10,
-               $11, $12, $13)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::text[], $9::text[],
+               $10, $11, $12)
        RETURNING id`,
       [
         WS,
@@ -162,7 +161,6 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
         opts.status ?? "draft",
         opts.visibleTo ?? ["org"],
         opts.preWideningVisibleTo ?? null,
-        opts.cardinality ?? "multi",
         // Keyed like an ingested row (#5020) — `correct_fact`'s replacement path
         // runs the reconcile lookups, which match on the keys and see nothing on
         // an unkeyed row. Derived through `slotKey` — the same function
@@ -414,13 +412,11 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
         subject: "TensionSubject",
         object: "Postgres",
         episodeId: ep,
-        cardinality: "single",
       });
       const rival = await seedFact({
         subject: "TensionSubject",
         object: "MySQL",
         episodeId: ep,
-        cardinality: "single",
       });
       await edge("in-tension-with", rival, incumbent);
 
@@ -621,7 +617,6 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
         object: "Ana",
         episodeId: ep,
         status: "published",
-        cardinality: "single",
       });
 
       const outcome = await correctFact(
@@ -824,7 +819,6 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
         object: "Ana",
         episodeId: ep,
         status: "published",
-        cardinality: "single",
       });
 
       const outcome = await correctFact(
@@ -886,7 +880,6 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
         object: "Ana",
         episodeId: ep,
         status: "published",
-        cardinality: "single",
       });
       await pool.query(`UPDATE brain_facts SET status = 'archived' WHERE id = $1`, [
         await seedFact({
@@ -894,7 +887,6 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
           predicate: "is owned by",
           object: "Bo",
           episodeId: ep,
-          cardinality: "single",
         }),
       ]);
 

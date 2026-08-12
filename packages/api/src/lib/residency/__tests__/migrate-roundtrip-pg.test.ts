@@ -192,14 +192,12 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       `INSERT INTO brain_facts (id, workspace_id, subject, predicate, object, valid_from,
                                 ingested_at, extracted_at, source_episode_id, provenance,
                                 status, visible_to, pre_widening_visible_to,
-                                predicate_cardinality,
                                 subject_key, predicate_key, object_key,
                                 subject_cmp, object_cmp)
        VALUES ($1, $2, 'acme:pro-plan', 'price_per_seat', '49',
                '2026-06-01T00:00:00Z', '2026-06-01T00:05:00Z', '2026-06-01T00:05:00Z', $3,
                '{"actor":"U-alice","episode":"C123/1700000000.1"}'::jsonb,
                'published', ARRAY['org'], ARRAY['audience:chat-channel:slack:C-FOUNDERS'],
-               'single',
                'acme:pro plan', 'unit price', 'forty nine',
                'entity:01JSRCSUBJECT7X', 'money:USD:49')`,
       [FACT_ID, SOURCE_ORG, EPISODE_ID],
@@ -212,12 +210,12 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
     await pool.query(
       `INSERT INTO brain_facts (id, workspace_id, subject, predicate, object, valid_from, valid_to,
                                 ingested_at, invalidated_at, source_episode_id, provenance,
-                                status, visible_to, predicate_cardinality,
+                                status, visible_to,
                                 subject_key, predicate_key, object_key, object_cmp)
        VALUES ($1, $2, 'acme:pro-plan', 'price_per_seat', '39',
                '2026-01-01T00:00:00Z', '2026-06-01T00:00:00Z',
                '2026-01-01T00:00:00Z', '2026-06-01T00:00:00Z', $3,
-               '{"actor":"U-bob"}'::jsonb, 'published', ARRAY['org'], 'single',
+               '{"actor":"U-bob"}'::jsonb, 'published', ARRAY['org'],
                'acme:pro plan', 'unit price', 'thirty nine', 'entity:01JSRCOBJECT7X')`,
       [SUPERSEDED_FACT_ID, SOURCE_ORG, EPISODE_ID],
     );
@@ -442,12 +440,11 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         visible_to: string[];
         pre_widening_visible_to: string[] | null;
         provenance: Record<string, unknown>;
-        predicate_cardinality: string;
         invalidated_at: Date | null;
         source_episode_id: string;
       }>(
         `SELECT object, status, visible_to, pre_widening_visible_to, provenance,
-                predicate_cardinality, invalidated_at, source_episode_id
+                invalidated_at, source_episode_id
            FROM brain_facts WHERE id = $1 AND workspace_id = $2`,
         [FACT_ID, TARGET_ORG],
       );
@@ -477,16 +474,13 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         episode: "C123/1700000000.1",
         provisional: true,
       });
-      // ⚠️ `predicate_cardinality` does NOT travel on v3, and the source row
-      // says `single`. #5027 moved cardinality onto the canonical predicate and
-      // the per-row values are LLM guesses, so honouring one here would restore
-      // a guess as though it were a curated decision. The column falls to its
-      // schema default — `multi`, the conservative arm, since coexisting is
-      // recoverable and wrongly superseding destroys a belief — and #5028 drops
-      // it. Asserted as the exact value rather than left unchecked: "the field
-      // was removed from the bundle" and "the field is silently still being
-      // written" both pass a `toBeDefined`.
-      expect(brainFact.rows[0].predicate_cardinality).toBe("multi");
+      // ⚠️ This used to assert `predicate_cardinality === 'multi'` — that the
+      // v3 path let the column fall to its schema default rather than restoring
+      // the source row's `single` LLM guess as though it were a curated
+      // decision. #5028 phase 2 dropped the column (migration 0195), so there is
+      // no value left to honour or ignore and the assertion has nothing to read.
+      // The property is now structural. What still needs proving is the
+      // read-side tolerance, and the LEGACY block below is where it lives.
       // FK re-resolved against the imported episode, UUID preserved.
       expect(brainFact.rows[0].source_episode_id).toBe(EPISODE_ID);
 
@@ -956,20 +950,23 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         subject_cmp: string | null;
         object_cmp: string | null;
         provenance: Record<string, unknown>;
-        predicate_cardinality: string;
       }>(
         `SELECT subject_key, predicate_key, object_key, subject_cmp, object_cmp,
-                provenance, predicate_cardinality
+                provenance
            FROM brain_facts WHERE id = $1 AND workspace_id = $2`,
         [LEGACY_FACT_ID, LEGACY_ORG],
       );
+      // ⚠️ THIS LENGTH CHECK IS THE READ-SIDE TOLERANCE ASSERTION (#5028 AC-4),
+      // and it carries more weight than it looks like it does. The legacy bundle
+      // in this fixture still carries `predicateCardinality` — older bundles are
+      // accepted and the field ignored. Since migration 0195 dropped the column,
+      // an importer that tried to honour it would raise `column
+      // "predicate_cardinality" does not exist`, the INSERT would abort, and
+      // this row would not be here at all. So `toHaveLength(1)` fails closed on
+      // exactly the regression the AC names. It replaced an assertion on the
+      // stored value, which was the only place "accepted and ignored" was
+      // observable while the column existed.
       expect(keyed.rows).toHaveLength(1);
-      // The bundle says `single`; the row lands `multi`. This is the ONLY
-      // population where "accepted and ignored" changes a stored value — a v3
-      // bundle carries no such field, so the v3 path writes the schema default
-      // whether the importer honours the field or not, and an assertion there
-      // would pass against a build that still writes it.
-      expect(keyed.rows[0].predicate_cardinality).toBe("multi");
       // Computed, not carried, and computed through the vocabulary that arrived
       // in the same transaction.
       expect(keyed.rows[0].predicate_key).toBe("unit price");

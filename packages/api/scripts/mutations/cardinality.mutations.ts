@@ -218,7 +218,7 @@ human behind it.
     ...agreementBinds(item.keys, item.comparableAtRest, item.subjectComparable),`,
         },
       ],
-      note: "The other half of the revert, and the half that makes restoring the both-sides clause a WORKING change rather than a silent no-op. Caught by parameter COUNT in two suites — the only instrument that sees it, since the mutated statement is valid SQL that writes an unchanged-looking row.",
+      note: "The other half of the revert, and the half that makes restoring the both-sides clause a WORKING change rather than a silent no-op. It used to be caught by parameter COUNT alone — the only instrument that saw it, because the mutated statement was still VALID SQL writing an unchanged-looking row. ⚠️ That is no longer why it dies: #5028 phase 2 dropped the column (migration 0195), so the mutated statement names a column that does not exist and fails outright. The parameter-count assertions still stand and still matter for the shape of this mutation, but they are no longer the last line of defence — the schema is.",
     },
     {
       label: "`retract` feeds the proposer too",

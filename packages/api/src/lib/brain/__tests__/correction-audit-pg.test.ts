@@ -180,9 +180,9 @@ describeIfPg("correction audit row (real Postgres)", () => {
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_facts
          (workspace_id, subject, predicate, object, source_episode_id, provenance,
-          status, visible_to, predicate_cardinality,
+          status, visible_to,
           subject_key, predicate_key, object_key)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'published', ARRAY['org'], 'single',
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'published', ARRAY['org'],
                $7, $8, $9)
        RETURNING id`,
       [

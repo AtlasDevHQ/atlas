@@ -992,9 +992,9 @@ describeIfPg("knowledge ingest lifecycle against the live schema", () => {
         // warning, and owns the carve-out's coverage.
         `INSERT INTO brain_facts
            (workspace_id, subject, predicate, object, source_episode_id,
-            provenance, status, visible_to, predicate_cardinality,
+            provenance, status, visible_to,
             subject_key, predicate_key, object_key, object_cmp)
-         VALUES ($1, 'alice', 'manager', $2, $3, '{"actor":"test"}'::jsonb, $4, '{org}', 'multi',
+         VALUES ($1, 'alice', 'manager', $2, $3, '{"actor":"test"}'::jsonb, $4, '{org}',
                  $5, $6, $7, $8)
          RETURNING id`,
         [

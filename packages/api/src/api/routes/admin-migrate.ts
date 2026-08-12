@@ -487,7 +487,10 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
         // the per-row values are LLM guesses), and a v1/v2 bundle that still
         // carries one is accepted and IGNORED rather than refused — refusing it
         // would strand every workspace whose bundle predates v3 in its current
-        // region, for a field nothing reads. #5028 drops the column.
+        // region, for a field nothing reads. #5028 phase 2 has since DROPPED the
+        // column (migration 0195), which makes accepting-and-ignoring the only
+        // possible behaviour rather than a chosen one: there is nowhere left to
+        // put the value even if this validator wanted it.
         //
         // The five IDENTITY fields, on the other hand, are REQUIRED from v3 and
         // must be ABSENT before it — the same loud-drift discipline the pillar
@@ -2191,7 +2194,10 @@ export async function importBundle(
         // so the column falls to its schema default (`multi`, the conservative
         // arm — coexisting is recoverable, wrongly superseding destroys a
         // belief). This is the same move `INSERT_FACT_SQL` made, one writer
-        // over; #5028 drops the column. A v1/v2 bundle's carried value is
+        // over. ⚠️ #5028 phase 2 has since DROPPED the column (migration 0195),
+        // so re-adding it here no longer writes a stale guess — it aborts the
+        // import outright, which `migrate-roundtrip-pg.test.ts` catches by the
+        // legacy row not arriving at all. A v1/v2 bundle's carried value is
         // accepted by validation and dropped HERE, deliberately: honouring it
         // would restore a guess as though it were a curated decision.
         //

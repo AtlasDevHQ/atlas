@@ -29,11 +29,20 @@
 #   property is covered (ADR-0037 §9).
 #
 #   That is not hypothetical here. `eval-mcp-llm` — the repo's only
-#   real-model job — is gated on AI_GATEWAY_API_KEY, which has never been a
-#   repo secret (#5039). No secret → preflight skips → eval skips → this
-#   script returned 0. Permanently green, never executed, and its own
-#   latency baseline (`eval/canonical-questions/mcp-llm-baseline.json`) is
-#   still the 3 bytes it was created with.
+#   real-model job — is gated on AI_GATEWAY_API_KEY, which for the whole of
+#   the job's life was NOT a repo secret (#5039). No secret → preflight
+#   skips → eval skips → this script returned 0. Permanently green, never
+#   executed, and its own latency baseline
+#   (`eval/canonical-questions/mcp-llm-baseline.json`) sat at the 3 bytes it
+#   was created with.
+#
+#   ✅ RESOLVED 2026-08-11 — and this paragraph is kept in the past tense
+#   rather than deleted, because it is the worked example the policy above
+#   rests on. `AI_GATEWAY_API_KEY` is wired at repo scope, the job has run
+#   for real (18/20 and 19/20 across runs, floor 18), and the baseline is
+#   seeded from the `v0.2.5` tag run. `eval-mcp-llm` is therefore NO LONGER
+#   skip-tolerant: a skip now means the key stopped working, which is
+#   precisely what this gate exists to catch.
 #
 #   So skip-tolerance is an explicit per-label OPT-IN carrying its reason
 #   (SKIP_TOLERANT_LABELS below) and every other label is fail-closed. The
@@ -74,11 +83,16 @@ shift
 # gate used to call that a pass; it now reports it, which on a tag push is
 # the correct verdict (nothing was evaluated) and on a PR adds the same
 # visible comment any other non-run would get.
+# ⚠️ INTENTIONALLY EMPTY — every label is now fail-closed on `skipped`.
+# `eval-mcp-llm` was the sole entry and was removed by #5039 once
+# AI_GATEWAY_API_KEY was wired and the job was observed running for real. A
+# skip there now means the key stopped working, which is the thing this gate
+# is for. Keep the multi-line array form even while empty: the test suite's
+# `sed -n '/^SKIP_TOLERANT_LABELS=(/,/^)/p'` extraction and its `perl`
+# mutant both anchor on `)` at the start of a line, and collapsing this to a
+# single-line `=()` makes the extraction run to EOF and the mutant a no-op —
+# a test that silently stops discriminating.
 SKIP_TOLERANT_LABELS=(
-  # Steps skip when AI_GATEWAY_API_KEY is unset. Remove this line when
-  # #5039 wires the secret — after that, a skip means the key stopped
-  # working, which is exactly what this gate should catch.
-  eval-mcp-llm
 )
 
 SKIP_IS_PASS=0

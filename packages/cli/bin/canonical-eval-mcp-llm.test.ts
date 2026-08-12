@@ -2833,6 +2833,53 @@ describe("readBaseline / writeBaseline", () => {
     expect(readBaseline(tmpPath())).toBeUndefined();
   });
 
+  // ⚠️ Asserts the COMMITTED baseline, not a fixture — the only test here that
+  // does. Every other case builds its own file, so all of them stayed green
+  // for the entire period the real baseline was the 3 bytes `{}` it was
+  // created with (#5039). `readBaseline` treats a missing entry as "no
+  // baseline yet" and says nothing, so an emptied or truncated baseline
+  // degrades the latency early-warning signal SILENTLY: the job keeps
+  // passing, and the only symptom is a regression it can no longer see.
+  //
+  // Seeded from the `v0.2.5` tag run (merged code, valid JSON only after
+  // #5148 fixed stdout) — never from a local run, which #5122-era history
+  // shows were taken on a broken whitelist or a mid-flight grader.
+  describe("the committed baseline", () => {
+    const committed = path.resolve(
+      __dirname,
+      "../../../eval/canonical-questions/mcp-llm-baseline.json",
+    );
+
+    it("is populated, and every entry survives readBaseline's filter", () => {
+      const out = readBaseline(committed);
+      expect(out).toBeDefined();
+      const entries = Object.entries(out ?? {});
+      expect(entries.length).toBeGreaterThan(0);
+      // `readBaseline` drops non-finite and <= 0 values. If the committed file
+      // ever disagrees with what it yields, some entries are being silently
+      // discarded and the signal is thinner than the file suggests.
+      const onDisk = JSON.parse(fs.readFileSync(committed, "utf-8")) as Record<string, unknown>;
+      expect(entries.length).toBe(Object.keys(onDisk).length);
+      for (const [id, ms] of entries) {
+        expect(id).toMatch(/^cq-\d{3}$/);
+        expect(ms).toBeGreaterThan(0);
+      }
+    });
+
+    it("covers every canonical question", () => {
+      const yml = fs.readFileSync(
+        path.resolve(__dirname, "../../../eval/canonical-questions/questions.yml"),
+        "utf-8",
+      );
+      const asked = [...new Set([...yml.matchAll(/^\s*-?\s*id:\s*"?(cq-\d{3})"?/gm)].map((m) => m[1]))];
+      expect(asked.length).toBeGreaterThan(0);
+      const covered = Object.keys(readBaseline(committed) ?? {});
+      // A question added without regenerating the baseline has no latency
+      // signal at all, and nothing else would say so.
+      expect(covered.sort()).toEqual(asked.sort());
+    });
+  });
+
   it("round-trips written entries", () => {
     const p = tmpPath();
     try {

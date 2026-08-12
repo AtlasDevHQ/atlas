@@ -3451,7 +3451,7 @@ export const brainFacts = pgTable(
     // re-publishes.
     preWideningVisibleTo: text("pre_widening_visible_to").array(),
     // ⚠️ VESTIGIAL. No APPLICATION code reads or writes this column — but every
-    // `INSERT INTO brain_facts` still writes it at the database layer, via the
+    // row added to this table still gets a value at the DATABASE layer, via the
     // `'multi'` default below, which is why it can stay `NOT NULL`. #5027
     // stopped the reconcile write (`INSERT_FACT_SQL`) and #5035 the region
     // importer's, when cardinality became a property of the CANONICAL PREDICATE,

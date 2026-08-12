@@ -1,0 +1,92 @@
+{
+  "description": "The STIMULUS half of the claim-identity falsification loop (#5041, ADR-0037 §9). Human-authored, synthetic, in-repo — the repo is public, so real customer chat cannot be the source. Each entry is a PAIR of messages plus a claim about what they MEAN relative to each other. It contains no subject, predicate or object anyone chose: those are produced by driving the real extractor over these messages (`bun packages/cli/bin/brain-paraphrase-eval.ts`) and recorded in `extracted.json`, which is what the deterministic suite consumes. A corpus whose predicate side is hand-authored is the fixture-that-agrees-by-construction trap in a file with a better name.",
+  "rubric": {
+    "what_a_human_may_write_here": "The message bodies, and `relation` — a statement about English, which a human is the right oracle for. Never a triple, never a key, never a verdict.",
+    "how_it_is_graded": "The eval drives the real extractor over every message and compares the emitted triples against `extracted.json` byte for byte. Any difference is DRIFT and fails the run; the fix is to regenerate the artifact as a reviewed commit (`--write`), never to loosen the comparison. Two corpus-honesty checks ride along: a `no-claim` pair that produces a triple, and any other pair that produces none on either side, mean the corpus has stopped exercising what it claims to.",
+    "why_pairs_and_not_items": "Identity is a relation between two claims. A single message can only ever demonstrate extraction; it takes two to demonstrate that two spellings of one belief do — or do not — land in one slot."
+  },
+  "pairs": [
+    {
+      "id": "price-copula",
+      "relation": "same-claim",
+      "why": "⭐ #5000's own shape, reached the way the bug reached production: two people state one price in a working week and nobody phrases it twice the same. Both messages assert one fact about one product at one price, so a reader would call them one claim. Whether the extractor spells the relationship with a copula on one side and without it on the other is exactly what this corpus refuses to assume — it is the recorded answer, not the input. The subject and the amount are held steady in the PROSE so that whatever varies in the recording varies because the extractor varied it.",
+      "a": {
+        "source": "chat",
+        "body": "Confirming for the pricing deck: the Business tier is priced at $499 a month."
+      },
+      "b": {
+        "source": "chat",
+        "body": "For the FAQ — we price the Business tier at $499 a month."
+      }
+    },
+    {
+      "id": "manager-phrasing",
+      "relation": "same-claim",
+      "why": "The reporting line, stated as a verb on one side and as a noun on the other, WITHOUT swapping who is who — Ada is the subject of both sentences and Grace the value of both. That separation is the whole point of keeping this entry apart from `leads-inverse` below: here a collapse is correct and an over-match costs nothing, there a collapse retires a true belief. A corpus with only one of the two cannot tell a rule that helps from a rule that harms.",
+      "a": { "source": "chat", "body": "Heads up: Ada reports to Grace as of this sprint." },
+      "b": { "source": "chat", "body": "For the org chart — Ada's manager is Grace." }
+    },
+    {
+      "id": "schedule-phrasing",
+      "relation": "same-claim",
+      "why": "A recurring window, stated twice. Deliberately not a price and not a person: if every `same-claim` entry in the corpus were about money, a drift in the recording could not be told apart from a drift in how the extractor handles money in particular. The object here is a weekday, which parses to no comparable value at all — so the pair reaches the identity layer through the KEY arm alone.",
+      "a": { "source": "chat", "body": "The deploy job runs on Thursdays." },
+      "b": { "source": "chat", "body": "Scheduling note: the deploy job is scheduled for Thursdays." }
+    },
+    {
+      "id": "price-object-phrasing",
+      "relation": "same-claim",
+      "why": "One amount, two ways of writing money — the `499 USD` / `USD 499` shape that ADR-0037 §2 pins, arriving from prose rather than from a fixture. This is the entry whose interesting axis is the OBJECT: the two messages are as close as English allows on subject and relationship, so a difference in the recorded object surface is the extractor's, not the sentence's. It is what gives the deterministic suite a pair that can only corroborate through a comparable VALUE if it corroborates at all.",
+      "a": { "source": "chat", "body": "Starter is priced at 499 USD." },
+      "b": { "source": "chat", "body": "Starter is priced at 499 dollars." }
+    },
+    {
+      "id": "price-contradiction",
+      "relation": "contradiction",
+      "why": "⭐ THE live #5000 instance, and the reason ADR-0037 §6 corrects T4's worked example. The prod rows were `499 a month` and `599 a month`: the objects DISAGREE, so this is a contradiction and not a restatement, and the alias proposer returns zero candidates for it BY DESIGN. It is here as the shape the identity layer must reach a DIFFERENT verdict on from every `same-claim` entry above — without it, a recording where everything collides and a recording where nothing does are equally green.",
+      "a": {
+        "source": "chat",
+        "body": "Confirming for the pricing deck: the Business tier is priced at $499 a month."
+      },
+      "b": {
+        "source": "chat",
+        "body": "Update — we now charge $599 a month for the Business tier."
+      }
+    },
+    {
+      "id": "price-comparable-contradiction",
+      "relation": "contradiction",
+      "why": "⭐ THE positive control for the abstain band, and it exists because the corpus without it could not tell *abstained* from *broken*. `price-contradiction` above is the shape the bug reported, and both of its amounts are written the way people write them in chat — `$499 a month`, three tokens, which the money grammar refuses. So every comparable value in this corpus would be NULL, agreement would be `unknown` everywhere, and a value parser that had stopped working entirely would look identical to one abstaining correctly. Here both amounts carry an explicit ISO-4217 code, so both sides are comparable AS MONEY and their difference is positive evidence rather than two strings failing to match. Same contradiction, stated in the register a pricing page uses rather than the one a Slack thread does.",
+      "a": { "source": "chat", "body": "Starter is priced at 499 USD." },
+      "b": { "source": "chat", "body": "Correction — Starter is priced at 599 USD." }
+    },
+    {
+      "id": "leads-inverse",
+      "relation": "inverse",
+      "why": "⚠️ `led_by` and `leads` — INVERSE relations, live in the corpus that started this map, and the pair every lexical near-miss detector ranks at the top. One fact stated from both ends: the subject of each sentence is the object of the other. Collapsing them is not an over-match on a synonym, it is an assertion that a claim and its converse occupy one slot, which at `single` cardinality hands the publish gate a `valid_to` stamp on a true belief. This entry exists so that a rule which passes every `same-claim` pair above still has to survive the one place where collapsing is destructive.",
+      "a": { "source": "chat", "body": "Ana leads the Osprey rollout." },
+      "b": { "source": "chat", "body": "Just so it's written down: the Osprey rollout is led by Ana." }
+    },
+    {
+      "id": "price-vs-renewal",
+      "relation": "different-claim",
+      "why": "What a tier costs and what it costs to RENEW are different questions, and both answers are true at once. The two messages share a subject and an amount-shaped object, so nothing but the relationship holds them apart — which is what makes this the predicate arm's falsifier at the message level. A normalization rule loose enough to fold `priced at` into `renews at` would have both beliefs in one slot and one of them retired.",
+      "a": { "source": "chat", "body": "The Business tier is priced at $499 a month." },
+      "b": { "source": "chat", "body": "The Business tier renews at $449 a month." }
+    },
+    {
+      "id": "different-subject",
+      "relation": "different-claim",
+      "why": "Two tiers, each with its own price — no contradiction, nothing to arbitrate. The relationship and the shape of the object are as close as the corpus gets, so the SUBJECT is the only thing keeping these apart, and a subject arm that stopped discriminating would show up here and nowhere else.",
+      "a": { "source": "chat", "body": "The Business tier is priced at $499 a month." },
+      "b": { "source": "chat", "body": "The Starter tier is priced at $199 a month." }
+    },
+    {
+      "id": "small-talk",
+      "relation": "no-claim",
+      "why": "⭐ THE positive control for the extractor itself, and the entry that keeps every prohibition in this corpus honest. An empty list is the correct answer for greetings and status noise — and an extractor that had silently stopped working returns an empty list for EVERYTHING, which would satisfy every `different-claim` entry above while proving nothing. Grading it in the other direction (this pair must produce nothing, every other pair must produce something) is what separates a discriminating extractor from a broken one.",
+      "a": { "source": "chat", "body": "morning all — coffee machine is fixed 🎉" },
+      "b": { "source": "chat", "body": "anyone else seeing that flaky test on main, or just me?" }
+    }
+  ]
+}

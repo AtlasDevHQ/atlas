@@ -1,0 +1,175 @@
+{
+  "description": "RECORDED OUTPUT — every triple below was emitted by the real extractor over eval/brain-paraphrase/messages.json, never typed by a human. Regenerate with `bun packages/cli/bin/brain-paraphrase-eval.ts --write` and commit the result as a REVIEWED change: a regenerated fixture can make a passing test pass for a new reason, and review is the only thing in between (ADR-0037 §9). Consumed by packages/api/src/lib/brain/__tests__/paraphrase-identity.test.ts.",
+  "model": "anthropic/claude-haiku-4.5",
+  "extractor": "extraction:v1",
+  "recordedAt": "2026-08-12T12:27:58.218Z",
+  "corpusDigest": "50b3a6e39d386fd4ddb9dfdd7b760f898cc9a02ecf9e042ff10c9b897039efcc",
+  "pairs": {
+    "price-copula": {
+      "a": [
+        {
+          "subject": "Business tier",
+          "predicate": "is priced at",
+          "object": "$499 a month",
+          "cardinalityHint": "single"
+        }
+      ],
+      "b": [
+        {
+          "subject": "Business tier",
+          "predicate": "costs",
+          "object": "$499 a month",
+          "cardinalityHint": "single"
+        }
+      ]
+    },
+    "manager-phrasing": {
+      "a": [
+        {
+          "subject": "Ada",
+          "predicate": "reports to",
+          "object": "Grace",
+          "cardinalityHint": "single"
+        }
+      ],
+      "b": [
+        {
+          "subject": "Ada",
+          "predicate": "has manager",
+          "object": "Grace",
+          "cardinalityHint": "single"
+        }
+      ]
+    },
+    "schedule-phrasing": {
+      "a": [
+        {
+          "subject": "The deploy job",
+          "predicate": "runs on",
+          "object": "Thursdays",
+          "cardinalityHint": "single"
+        }
+      ],
+      "b": [
+        {
+          "subject": "deploy job",
+          "predicate": "is scheduled for",
+          "object": "Thursdays",
+          "cardinalityHint": "single"
+        }
+      ]
+    },
+    "price-object-phrasing": {
+      "a": [
+        {
+          "subject": "Starter",
+          "predicate": "is priced at",
+          "object": "499 USD",
+          "cardinalityHint": "single"
+        }
+      ],
+      "b": [
+        {
+          "subject": "Starter",
+          "predicate": "is priced at",
+          "object": "499 dollars",
+          "cardinalityHint": "single"
+        }
+      ]
+    },
+    "price-contradiction": {
+      "a": [
+        {
+          "subject": "Business tier",
+          "predicate": "is priced at",
+          "object": "$499 a month",
+          "cardinalityHint": "single"
+        }
+      ],
+      "b": [
+        {
+          "subject": "Business tier",
+          "predicate": "costs",
+          "object": "$599 a month",
+          "cardinalityHint": "single"
+        }
+      ]
+    },
+    "price-comparable-contradiction": {
+      "a": [
+        {
+          "subject": "Starter",
+          "predicate": "is priced at",
+          "object": "499 USD",
+          "cardinalityHint": "single"
+        }
+      ],
+      "b": [
+        {
+          "subject": "Starter",
+          "predicate": "is priced at",
+          "object": "599 USD",
+          "cardinalityHint": "single"
+        }
+      ]
+    },
+    "leads-inverse": {
+      "a": [
+        {
+          "subject": "Ana",
+          "predicate": "leads",
+          "object": "Osprey rollout",
+          "cardinalityHint": "single"
+        }
+      ],
+      "b": [
+        {
+          "subject": "Osprey rollout",
+          "predicate": "is led by",
+          "object": "Ana",
+          "cardinalityHint": "single"
+        }
+      ]
+    },
+    "price-vs-renewal": {
+      "a": [
+        {
+          "subject": "Business tier",
+          "predicate": "is priced at",
+          "object": "$499 a month",
+          "cardinalityHint": "single"
+        }
+      ],
+      "b": [
+        {
+          "subject": "Business tier",
+          "predicate": "renews at",
+          "object": "$449 a month",
+          "cardinalityHint": "single"
+        }
+      ]
+    },
+    "different-subject": {
+      "a": [
+        {
+          "subject": "Business tier",
+          "predicate": "is priced at",
+          "object": "$499 a month",
+          "cardinalityHint": "single"
+        }
+      ],
+      "b": [
+        {
+          "subject": "Starter tier",
+          "predicate": "is priced at",
+          "object": "$199 a month",
+          "cardinalityHint": "single"
+        }
+      ]
+    },
+    "small-talk": {
+      "a": [],
+      "b": []
+    }
+  }
+}

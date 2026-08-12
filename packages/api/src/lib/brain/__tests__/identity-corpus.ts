@@ -46,12 +46,24 @@
  * *one side of every identity assertion is a value the system produced, not a
  * value the test wrote* — applied to the inputs rather than the assertions.
  *
- * ⚠️ **This is the deterministic half only.** The map's T7 §5 asks for the
- * predicate side to be produced by driving the real extractor in the eval lane,
- * precisely so nobody hand-authors it — and that half is not built. Until it is,
- * this corpus proves the identity layer handles the variation someone thought to
- * write, and nothing about variation nobody imagined. Do not read a green run
- * here as closing §9's loop.
+ * ⚠️ **This is the HAND-AUTHORED corpus, and it is not the only one.** The map's
+ * T7 §5 asks for a predicate side produced by driving the real extractor,
+ * precisely so nobody hand-authors it. That half now exists (#5041):
+ * `eval/brain-paraphrase/` records what the extractor emits over human-written
+ * messages, and `paraphrase-identity.test.ts` consumes the recording. So this
+ * corpus is no longer the whole story — but it is still load-bearing, and the
+ * division of labour is measured rather than assumed:
+ *
+ *   - **There** the surfaces cannot be argued with, and the coverage is whatever
+ *     the model happens to produce. Mutating `lexicalNorm`'s case arm and its
+ *     separator arm killed **zero** tests in that file: the extractor emits
+ *     short lowercase verb phrases, so nothing it writes exercises either.
+ *   - **Here** a human chose every surface, which is what makes `Deploy Window`
+ *     / `deploy_window` — and the tier, entity-id and declared-type dimensions
+ *     no message can produce — testable at all.
+ *
+ * Neither corpus can replace the other, and a green run in either one still
+ * proves only its own half.
  *
  * ⚠️ `promotion-pg.test.ts` also still holds a parallel consumer-3 fixture set
  * of its own (`ws-5020-phrasing`). It is NOT redundant with this corpus — it

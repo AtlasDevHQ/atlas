@@ -61,6 +61,24 @@ function dashboard(over: Partial<SharedDashboard> = {}): SharedDashboard {
 // #4718 — the client-side org-share resolution branch, at the component seam:
 // the resolver must render the SAME success/error surfaces the SSR path does,
 // with the #4690 login/membership split now driven by the viewer's real session.
+// Link assertions below compare a parsed ORIGIN, not a string prefix.
+//
+// The prefix form (`h.startsWith("https://www.useatlas.dev")`) treats
+// https://www.useatlas.dev.attacker.com as the marketing origin and therefore
+// FILTERS IT OUT of the internal-links set — the assertion gets weaker exactly
+// where a wrong link would matter. CodeQL flags that shape as
+// js/incomplete-url-substring-sanitization and it is right, in a test as much
+// as in production code.
+//
+// Relative hrefs (/login) have no origin of their own, so they resolve against
+// the app base and correctly count as internal. URL.parse returns null rather
+// than throwing on a malformed href, and null?.origin is undefined, so an
+// unparseable link counts as internal and FAILS the assertion — the
+// conservative direction.
+const MARKETING_ORIGIN = "https://www.useatlas.dev";
+const isInternalHref = (href: string): boolean =>
+  URL.parse(href, "https://app.useatlas.dev")?.origin !== MARKETING_ORIGIN;
+
 describe("OrgShareResolver (#4718)", () => {
   afterEach(() => {
     cleanup();
@@ -106,7 +124,7 @@ describe("OrgShareResolver (#4718)", () => {
     const internalLinks = screen
       .queryAllByRole("link")
       .map((a) => a.getAttribute("href") ?? "")
-      .filter((h) => !h.startsWith("https://www.useatlas.dev"));
+      .filter(isInternalHref);
     expect(internalLinks).toEqual([]);
   });
 
@@ -121,7 +139,7 @@ describe("OrgShareResolver (#4718)", () => {
     const internalLinks = screen
       .queryAllByRole("link")
       .map((a) => a.getAttribute("href") ?? "")
-      .filter((h) => !h.startsWith("https://www.useatlas.dev"));
+      .filter(isInternalHref);
     expect(internalLinks).toEqual([]);
   });
 

@@ -63,11 +63,14 @@
 // Anything else is recorded as the `opaque` variant of {@link Shape} rather than
 // compared, and a doc snippet for an opaque declaration FAILS with the reason.
 // Be precise about the scope of that: opaque is loud only where a page actually
-// publishes one. Most exported `Brain*` aliases are opaque today (`BrainGrant` is
-// `readonly string[]`, `BrainAsOfInstant` is a branded intersection,
-// `BrainSourceAudienceFor` is conditional) and none of them is published, so
-// nothing fails — this is not a claim that every alias in the tree is comparable,
-// and for an unpublished one it is precisely a skip.
+// publishes one. About half the exported `Brain*` aliases are opaque today — 25 of
+// 51, measured, e.g. `BrainGrant` is `readonly string[]`, `BrainAsOfInstant` is a
+// branded intersection, `BrainSourceAudienceFor` is conditional — and none of them
+// is published, so nothing fails. This is not a claim that every alias in the tree
+// is comparable, and for an unpublished one it is precisely a skip.
+//
+// An interface with an `extends` clause is opaque for the same reason: the bases
+// are not resolved, so its own members are not its shape.
 //
 // ## Fenced blocks are parsed line-wise
 //
@@ -83,7 +86,7 @@
 // fence is. An unterminated fence is a malformed page, reported rather than
 // skipped — the same reflex this repo applies to an unparseable SQL query.
 //
-// ## Three ways this gate refuses to be vacuous, because everything else is
+// ## Two ways this gate refuses to be vacuous, because everything else is
 // ## discovered
 //
 // 1. {@link REQUIRED_DECLARATIONS} must all be compared. A fence relabelled away
@@ -92,18 +95,25 @@
 //    compared everything EXCEPT the snippets that matter. (A page *rename* is not
 //    on that list and never was: `DOCS_GLOB` keys on the extension, so renaming a
 //    file changes nothing.)
-// 2. The per-file count of opening TypeScript fences must equal the number
-//    extracted, so a scanner that starts skipping is caught arithmetically rather
-//    than by someone noticing a name is gone.
-// 3. {@link textualBrainNames} reconciles the parser's output against the body
-//    text, because (2) is not sufficient: a MERGED fenced block keeps the count
-//    correct while TypeScript error-recovers past the prose and drops a whole
-//    declaration. Measured — `BrainSourceVendorClient` left the compared set with
-//    the gate printing PASS.
+// 2. A fence that does not parse AND spells a `Brain*` declaration is refused,
+//    because TypeScript error-recovers rather than throwing: a MERGED fenced block
+//    keeps every count correct while the parser walks past the prose and drops a
+//    whole declaration. Measured — `BrainSourceVendorClient` left the compared set
+//    with the gate printing PASS. See {@link spelledBrainNames} for why the rule is
+//    the CONJUNCTION and not a set difference.
 //
-// `scripts/__tests__/check-docs-brain-snippets.test.sh` probes all three, and
-// every arm below: 21 fixtures, and each one names a marker so a crash or a
-// different arm firing cannot satisfy it.
+// There is a third, weaker assertion in `scanTsFences`: extracted fences must
+// equal opening TypeScript fences. Stated honestly, it is **unreachable while the
+// scanner is correct** — a `ts` fence that opens and never closes also sets
+// `unterminatedAt`, which is reported first — so it is a regression tripwire on
+// the scanner itself rather than one of the vacuity floors above, and it is not
+// fixtured for that reason.
+//
+// `scripts/__tests__/check-docs-brain-snippets.test.sh` probes both floors and
+// every arm below: 21 fixtures, of which the 19 failure fixtures each name a
+// marker AND require exit status exactly 1, so a crash or a different arm firing
+// cannot satisfy one. The 2 remaining are `pass` fixtures asserting exit 0 — those
+// are the ones a no-op guard would satisfy, which is what the 19 exist to rule out.
 //
 // Run locally: bun scripts/check-docs-brain-snippets.ts
 
@@ -166,29 +176,82 @@ function parse(text: string, fileName: string): ts.SourceFile {
 }
 
 /**
- * `Brain*` declaration names a fence body mentions TEXTUALLY.
+ * `Brain*` declaration names a fence body SPELLS, found by tokenizing.
  *
- * The reconciliation partner of {@link collect}, and the reason it exists is a
+ * The reconciliation partner of {@link collect}, and it exists because of a
  * measured hole rather than a hypothetical. `ts.createSourceFile` does NOT throw
  * on a syntax error — it error-recovers and returns a PARTIAL tree. Blanking one
  * closing fence MERGES two fenced blocks, so the prose between them lands inside
  * the body; TypeScript then recovers past the wreckage and
  * `BrainSourceVendorClient` silently left the compared set while the gate printed
- * PASS. The per-file fence COUNT still agreed, so the arithmetic floor could not
- * see it either.
+ * PASS, with the per-file fence count still agreeing.
  *
  * Comparing this against what the AST yielded turns parse-recovery loss into a
  * failure, WITHOUT the gate having to reject every unparseable fence in the docs
- * tree — which is not an option: 75 `ts`-tagged fences site-wide are legitimately
- * elided (`…`, JSX in a `ts` fence, a bare expression), and a gate that fails on
- * correct prose earns an exemption comment instead of a fix. A fence that
- * declares no `Brain*` name is not this gate's business at all.
+ * tree — which is not an option: 75 of the 407 `ts`-tagged fences site-wide carry
+ * parse diagnostics because they are legitimately elided (`…`, JSX in a `ts`
+ * fence, a bare expression), none of them declares a `Brain*` name, and a gate
+ * that fails on correct prose earns an exemption comment instead of a fix.
+ *
+ * ## Why a SCANNER and not a regex
+ *
+ * The first cut was `/^[ \t]*(?:export[ \t]+)?(?:interface|type)[ \t]+(Brain[A-Z]\w*)/gm`
+ * and it was wrong in BOTH directions, which is the worst shape for a
+ * reconciliation — it must agree with the parser about what a declaration is.
+ *
+ *   - **False positive on correct prose.** It matched a declaration inside a
+ *     block comment or a template literal, which the parser correctly ignores —
+ *     so a page keeping an "old shape, for reference" comment failed with
+ *     *"the parser did not yield it"* and a remedy about merged fences. Measured.
+ *   - **Blind to three real forms**, so a merged fence could still lose a
+ *     declaration silently: `export declare interface Brain…`; two declarations
+ *     on one line; and a name on the line after its `type` keyword.
+ *
+ * ## The rule is PARSE FAILURE **and** a spelled name — not a set difference
+ *
+ * A tokenizing pass was tried and is also wrong here: `ts.createScanner`
+ * correctly skips template-literal spans, and a merged fence is full of markdown
+ * prose whose backticks open one — so the name this check exists to notice lands
+ * inside a string span and the scanner cannot see it. Measured: the merged-fence
+ * fixture went green.
+ *
+ * So the two signals are combined instead of either being trusted alone:
+ *
+ *   - {@link syntaxErrors} — the body did not parse, so what the AST yielded is a
+ *     PARTIAL tree and any member set from it is untrustworthy;
+ *   - {@link spelledBrainNames} — a deliberately LOOSE match, because it is only
+ *     ever consulted on a body already known not to parse.
+ *
+ * That combination is what makes both error directions safe. A commented-out
+ * declaration on a well-formed page has no parse errors, so it cannot trip
+ * anything. An elided snippet (75 of the 407 site-wide) has parse errors but
+ * spells no `Brain*` name, so it cannot either. And a merged fence has both.
  */
-const TEXTUAL_DECLARATION = /^[ \t]*(?:export[ \t]+)?(?:interface|type)[ \t]+(Brain[A-Z]\w*)/gm;
+function syntaxErrors(sourceFile: ts.SourceFile): readonly string[] {
+  // `parseDiagnostics` is internal — there is no public accessor for a file
+  // parsed without a program. It has been on `SourceFile` since TS 1.x; the
+  // `?? []` makes a future rename degrade to "no errors" rather than crashing,
+  // and the fixture suite pins that this arm still fires.
+  const withDiagnostics = sourceFile as ts.SourceFile & {
+    readonly parseDiagnostics?: readonly ts.Diagnostic[];
+  };
+  return (withDiagnostics.parseDiagnostics ?? []).map((d) =>
+    ts.flattenDiagnosticMessageText(d.messageText, " "),
+  );
+}
 
-function textualBrainNames(body: string): ReadonlySet<string> {
+/**
+ * Loose, position-free: any `interface`/`type` keyword followed by a `Brain*`
+ * identifier, anywhere. `\s+` spans newlines and the match is not anchored, so it
+ * covers `export declare interface Brain…`, two declarations on one line, and a
+ * name on the line after its keyword — three forms an anchored per-line pattern
+ * missed, each of which a merged fence could otherwise lose silently.
+ */
+const SPELLED_DECLARATION = /\b(?:interface|type)\s+(Brain[A-Z]\w*)/g;
+
+function spelledBrainNames(body: string): ReadonlySet<string> {
   const names = new Set<string>();
-  for (const match of body.matchAll(TEXTUAL_DECLARATION)) {
+  for (const match of body.matchAll(SPELLED_DECLARATION)) {
     const name = match[1];
     if (name !== undefined) names.add(name);
   }
@@ -217,6 +280,21 @@ function propertyName(name: ts.PropertyName): string {
  * still differ in this set.
  */
 function interfaceShape(node: ts.InterfaceDeclaration): Shape {
+  // ⚠️ An `extends` clause is NOT resolved, so the honest answer is opaque rather
+  // than "these are its members". `packages/types/src/brain.ts` has the standing
+  // instance (`BrainDocumentNeighbor extends BrainDocumentResult`), and comparing
+  // own-members-only against a page that published the expanded shape would
+  // accuse it of INVENTING every inherited member — telling an author to delete
+  // true lines from the docs, which is #5165's own harm inverted.
+  if (node.heritageClauses !== undefined && node.heritageClauses.length > 0) {
+    const bases = node.heritageClauses
+      .flatMap((clause) => clause.types.map((t) => t.expression.getText(node.getSourceFile())))
+      .join(", ");
+    return {
+      kind: "opaque",
+      reason: `it extends ${bases}, whose members this gate does not resolve`,
+    };
+  }
   const members = new Set<string>();
   for (const member of node.members) {
     if (ts.isIndexSignatureDeclaration(member)) {
@@ -262,13 +340,23 @@ function armToken(node: ts.TypeNode, discriminant: string): string | null {
   // discriminant is compared: the arms' own payload members are the types this
   // gate deliberately does not police, while the set of arms is what a snippet
   // can silently omit.
+  //
+  // The discriminant's OWN `readonly` and `?` travel with the token, on
+  // `interfaceShape`'s reasoning. Without them the gate's own failure text —
+  // "`readonly` and a trailing `?` are part of the comparison" — was false for
+  // arms, and measurably so: a snippet publishing `{ kind?: "reverified" }`
+  // compared equal to a real `{ readonly kind: "reverified" }`, on
+  // `BrainSourceAudience`, which is one of the two floored names.
   if (ts.isTypeLiteralNode(node)) {
     for (const member of node.members) {
       if (!ts.isPropertySignature(member) || member.name === undefined) continue;
       if (propertyName(member.name) !== discriminant) continue;
       const type = member.type;
       if (type !== undefined && ts.isLiteralTypeNode(type) && ts.isStringLiteral(type.literal)) {
-        return `${discriminant}:${JSON.stringify(type.literal.text)}`;
+        const readonlyModifier =
+          member.modifiers?.some((m) => m.kind === ts.SyntaxKind.ReadonlyKeyword) === true;
+        const optional = member.questionToken !== undefined;
+        return `${readonlyModifier ? "readonly " : ""}${discriminant}${optional ? "?" : ""}:${JSON.stringify(type.literal.text)}`;
       }
     }
   }
@@ -281,13 +369,25 @@ function armToken(node: ts.TypeNode, discriminant: string): string | null {
  * NOT hard-coded to `kind`: `BrainPrincipalContext` discriminates on `origin`,
  * and a gate that only knew `kind` would call it unreadable and tell an author to
  * extend `armToken` when nothing was wrong with their snippet.
+ *
+ * ⚠️ A candidate must yield tokens that are non-null AND **DISTINCT**. Requiring
+ * only non-null picked the first property that happened to be string-literal
+ * typed in every arm, which is not necessarily the one that tells them apart —
+ * so `{ mode: "x"; kind: "a" } | { mode: "x"; kind: "b" }` selected `mode`,
+ * collapsed both arms to one token, and the duplicate-arm refusal below then
+ * reported a perfectly good union as uncomparable with a remedy the author could
+ * not follow. Measured, and order-dependent in the worst way: the same type with
+ * `kind` declared first compared fine. The distinctness test is what makes that
+ * refusal a genuine last resort — reachable only when NO property discriminates.
+ *
+ * Candidates come from the first object arm because a discriminant must appear in
+ * every arm, so that basis loses nothing.
  */
 function discriminantOf(arms: readonly ts.TypeNode[]): string | null {
   const literals = arms.filter(ts.isTypeLiteralNode);
-  if (literals.length === 0) return null;
-  const candidates = new Set<string>();
   const first = literals[0];
   if (first === undefined) return null;
+  const candidates = new Set<string>();
   for (const member of first.members) {
     if (!ts.isPropertySignature(member) || member.name === undefined) continue;
     const type = member.type;
@@ -296,7 +396,10 @@ function discriminantOf(arms: readonly ts.TypeNode[]): string | null {
     }
   }
   for (const name of candidates) {
-    if (literals.every((arm) => armToken(arm, name) !== null)) return name;
+    // Over ALL arms, not just the object ones, so a string-literal arm in a mixed
+    // union contributes its own token to the distinctness check.
+    const tokens = arms.map((arm) => armToken(arm, name));
+    if (tokens.every((t) => t !== null) && new Set(tokens).size === tokens.length) return name;
   }
   return null;
 }
@@ -527,6 +630,11 @@ for (const file of new Glob(DOCS_GLOB).scanSync({ cwd: REPO_ROOT })) {
     );
     continue;
   }
+  // A regression tripwire on the scanner, NOT a vacuity floor — unreachable while
+  // `scanTsFences` is correct, because the only way to open a `ts` fence and not
+  // extract it is to leave it unterminated, which the branch above reports first.
+  // Kept because it costs nothing and would catch a future scanner edit that
+  // starts dropping fences some other way; deliberately unfixtured.
   if (scan.fences.length !== scan.openedTsFences) {
     problems.push(
       `${rel}: counted ${scan.openedTsFences} opening TypeScript fence(s) but extracted ${scan.fences.length}.\n` +
@@ -540,14 +648,15 @@ for (const file of new Glob(DOCS_GLOB).scanSync({ cwd: REPO_ROOT })) {
     // A fence is illustrative TypeScript, not a module — parse it standalone.
     const fenceFile = parse(fence.body, `${abs}.fence.ts`);
     const collected = collect(fenceFile, rel, "all");
-    // Reconcile the AST against the text. A `Brain*` name the body spells but the
-    // parser did not yield is parse-recovery LOSS, not an absent declaration.
-    const parsedNames = new Set(collected.map(([name]) => name));
-    const lost = [...textualBrainNames(fence.body)].filter((name) => !parsedNames.has(name));
-    if (lost.length > 0) {
+    // A body that did not parse yields a PARTIAL tree, so any member set taken
+    // from it is untrustworthy — but only a body that also spells a `Brain*`
+    // declaration is this gate's business. See `spelledBrainNames`.
+    const errors = syntaxErrors(fenceFile);
+    const spelled = [...spelledBrainNames(fence.body)];
+    if (errors.length > 0 && spelled.length > 0) {
       problems.push(
-        `${rel}:${fence.line}: this fence spells ${lost.map((n) => `\`${n}\``).join(", ")} but the parser did not yield ${lost.length === 1 ? "it" : "them"}.\n` +
-          `  TypeScript error-recovers rather than throwing, so a malformed snippet silently drops declarations from the comparison instead of failing. The usual cause is a MERGED fenced block — a missing closing fence earlier on the page, which puts prose inside this body. Check the fences above line ${fence.line}.`,
+        `${rel}:${fence.line}: this fence spells ${spelled.map((n) => `\`${n}\``).join(", ")} and does not parse (${errors.length} syntax error${errors.length === 1 ? "" : "s"}; first: ${errors[0] ?? "unknown"}).\n` +
+          `  TypeScript error-recovers rather than throwing, so a malformed snippet silently drops declarations from the comparison instead of failing. The usual cause is a MERGED fenced block — a missing CLOSING fence for the block opened at line ${fence.line}, which puts prose inside this body.`,
       );
       continue;
     }
@@ -573,9 +682,17 @@ for (const file of new Glob(DOCS_GLOB).scanSync({ cwd: REPO_ROOT })) {
         continue;
       }
       if (real.shape.kind === "opaque") {
+        // The remedy BRANCHES on the reason, because one-size was wrong for the
+        // commonest case. `BrainGrant` is `readonly string[]` and unions of named
+        // interfaces are how this repo writes wire types — for those, "extend the
+        // gate" is the wrong instruction; not publishing that declaration on a
+        // contract page is the right one.
+        const extendable = real.shape.reason.startsWith("two arms share");
         problems.push(
           `${rel}:${fence.line}: publishes a snippet for \`${name}\`, whose real declaration in ${real.where} is a shape this gate cannot compare — ${real.shape.reason}.\n` +
-            `  Extend aliasShape()/armToken() in scripts/check-docs-brain-snippets.ts so it is comparable. A published contract this gate cannot read is exactly where an omitted member or arm hides.`,
+            (extendable
+              ? `  Extend discriminantOf()/armToken() in scripts/check-docs-brain-snippets.ts so the arms are distinguishable. A published contract this gate cannot read is exactly where an omitted arm hides.`
+              : `  This gate compares member names and union arms, and that declaration is neither — so publishing it here is a contract claim nothing can check. Either describe it in prose instead, or teach aliasShape() in scripts/check-docs-brain-snippets.ts to read this shape.`),
         );
         continue;
       }

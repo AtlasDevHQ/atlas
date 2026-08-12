@@ -95,17 +95,24 @@ pass); `CI_LOCAL_NO_NET=1` skips the two npm-registry gates for offline runs;
 ## What the wrapper covers
 
 It is a **superset of the historic /ci list** — it adds the drift gates real CI
-runs that the old /ci skipped (so you stop discovering them only after a push):
+runs that the old /ci skipped (so you stop discovering them only after a push).
+The roster is `GATE_NAMES` in `scripts/ci-local.sh`, which is the authority; all
+35 of them, in run order:
 `type`, `lint`, `lint-type-aware` (oxlint `--type-aware` via tsgolint — the
 promoted type-aware rules at `error`; permanent `warn` residuals don't fail it),
 `syncpack`, `dockerfile-bun-pins`, `dockerfile-workspace`,
 `railway-watch`, `template-drift`, `security-headers-drift`, `pricing-parity`,
-`plugin-count`, `enforcement-parity`, `schema-drift`, `migration-rename`,
-`oauth-helper-drift`, `ee-imports`, `twenty-resolver`, `no-admin-plugin`,
-`no-legacy-connections`, `test-discipline`, `settings-readers`, `saas-env-doc`,
-`docs-links`, `docs-brain-snippets`, `auth-md-parity`, `openapi-drift`,
+`plugin-count`, `plugin-lockstep`, `enforcement-parity`, `schema-drift`,
+`migration-rename`, `oauth-helper-drift`, `ee-imports`, `twenty-resolver`,
+`no-admin-plugin`, `streaming-cors`, `no-legacy-connections`,
+`brain-fact-promotion`, `test-discipline`, `settings-readers`, `saas-env-doc`,
+`docs-links`, `docs-brain-snippets`, `auth-md-parity`, `apex-discovery-drift`,
+`openapi-drift`, `published-symbols`, `unpublished-versions` (both net-gated),
 `gate-fixtures` (the adversarial `scripts/__tests__/*.test.sh` suites),
-`published-symbols`, `unpublished-versions`, and the full `test` suite.
+`mutation-tables`, and the full `test` suite.
+
+35 is the **default-configuration** count: `CI_LOCAL_NO_NET=1` drops the two
+registry gates (33), `CI_LOCAL_NO_TEST=1` drops `test` (34), both drop to 32.
 
 It does **not** run the GitHub-only required checks (Deploy Validation,
 `Image Scan`, `Analyze (javascript-typescript)` / CodeQL, `ee-stub-build`) or
@@ -113,8 +120,10 @@ the heavy `bun run build` web build — those run remotely (see "Remote checks")
 
 Schedule is deliberately race- and flake-safe, not max-parallel: Stage 0 runs
 `bun run type` alone (the only gate that writes SDK `dist/`); Stage 1 fans out
-all read-only gates; Stage 2 runs the full test suite **isolated** (it flakes
-under CPU contention on WSL2).
+the read-only gates; Stage 2 runs the **tree-writing** gates serially
+(`gate-fixtures` and `mutation-tables` both rewrite sources in place, so they
+must not run beside the scanners that read those files); Stage 3 runs the full
+test suite **isolated** (it flakes under CPU contention on WSL2).
 
 **Real-Postgres tests (`*-pg.test.ts`) are SILENTLY SKIPPED without a database.**
 They run only when `TEST_DATABASE_URL` is set (the wrapper prints whether it is).

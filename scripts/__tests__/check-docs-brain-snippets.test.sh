@@ -7,21 +7,29 @@
 # `audience` member missing from a page that calls itself "the contract") sat in
 # the tree unnoticed, so a green-but-vacuous guard would be worse than none.
 #
-# ## Every fixture asserts a MARKER, not just a non-zero exit
+# ## The 19 FAILURE fixtures each assert a MARKER, not just a non-zero exit
 #
 # `bun` exits 1 on an uncaught exception too, so an exit code alone cannot tell
 # "the arm I meant reported a violation" from "the guard crashed" or "a DIFFERENT
-# arm fired". Each fixture below names a substring that only its own arm prints,
+# arm fired". Each `check fail` below names a substring only its own arm prints,
 # on `scripts/__tests__/check-docs-links.test.sh`'s precedent. Without this, a
-# review measured nine of eleven fixtures satisfied by `process.exit(3)` at the
-# top of the guard.
+# review measured nine of the then-eleven fixtures satisfied by `process.exit(3)`
+# at the top of the guard — and it is load-bearing beyond that: five of the nine
+# mutations still exit 1 (they fall through to the vacuity floor), so ONLY the
+# marker distinguishes them.
+#
+# The other 2 of the 21 are `check pass` fixtures, which assert exit 0 and
+# structurally cannot name a marker. Those are the two a no-op guard would satisfy
+# — which is exactly what the 19 exist to rule out.
 #
 # ## Every mutation is asserted to have LANDED
 #
 # Each `sed` is anchored to exact committed text. A pattern that matches nothing
 # leaves the file untouched, and the fixture would then be asserting that the
 # guard fails on the PRISTINE tree — a false green that reads as "the guard
-# stopped detecting X". `mutate()` refuses to continue if the file did not change.
+# stopped detecting X". `mutate()` refuses to continue if the file did not change,
+# and `require_line()` refuses an anchor that resolves to nothing, which is the
+# same defect one layer up (an empty sed ADDRESS applies file-wide).
 #
 # ## Coverage: three directions plus the arms that only a fixture can reach
 #
@@ -32,11 +40,12 @@
 #   • vacuity   — the page stops publishing a floored contract, or the fence
 #                 scanner stops reading it, which is the failure mode a
 #                 discovered-both-sides guard is uniquely exposed to;
-#   • plus the refusal arms whose whole design claim is "loud, never a skip" — an
-#     opaque real declaration, an opaque published snippet, an interface/union
-#     mismatch, an invented member, and second-file discovery. A review proved
-#     every one of those could be turned into a bare `continue` with the suite
-#     still green.
+#   • plus the arms a review proved were unfalsified. Three are refusal branches
+#     whose design claim is "loud, never a skip" (an opaque real declaration, an
+#     opaque published snippet, an interface/union mismatch) and each could be
+#     turned into a bare `continue` with the suite still green. The other two
+#     failed differently: an INVENTED member survived deleting the `extra` arm,
+#     and BOTH globs survived being collapsed to literal paths.
 
 set -uo pipefail
 
@@ -74,19 +83,30 @@ run_guard() { (cd "$ROOT" && bun "$GUARD") 2>&1; }
 # back by restore() as the "good" baseline — persisting drift silently, which is
 # the one outcome worse than the drift this guard catches.
 #
-# The check is the GUARD ITSELF rather than a substring grep: a grep for
-# `readonly audience:` passes on `readonly audience?:` (this suite's own second
-# fixture state) and says nothing about a renamed member, a dropped union arm, or
-# the code-side probe. Running the guard is content-addressed over exactly the
-# axis the backups need to be clean on.
+# The check is the GUARD ITSELF rather than a substring grep. The old greps said
+# nothing about a renamed member, a dropped union arm, or the code-side probe —
+# all three leave `readonly audience:` intact — so they covered 2 of the 9
+# windows. Running the guard covers every window this suite can create, because
+# each fixture is defined by the guard failing on it.
+#
+# Not "content-addressed" — it is a semantic-equivalence check, and its
+# completeness rests on an assumption worth naming: the only plausible concurrent
+# writer is another instance of THIS suite, every one of whose states the guard
+# refuses. A concurrent edit to a part of either file the guard does not compare
+# would pass here and be reverted by `restore()` (see the residual below).
 #
 # It runs before `trap restore EXIT` is installed, so this exit cannot restore a
 # poisoned backup over a good file — the previous version installed the trap
 # first, and its own message claimed the opposite.
 #
-# Residual, stated rather than implied: a concurrent run can still mutate a file
-# between this check and the `cp` below. That window is milliseconds and cannot be
-# closed without locking; CI runs in an isolated checkout where it cannot occur.
+# Residuals, stated rather than implied. Two, and the second is the wider one:
+#   • a concurrent run can mutate a file between this check and the `cp` below —
+#     milliseconds, and not closable without locking;
+#   • `restore()` writes the START-OF-RUN backup at the END (~30s and 22 guard
+#     spawns later), so any concurrent edit made DURING the run is reverted and
+#     reported as a successful restore. That window is the whole run, not
+#     milliseconds.
+# CI runs in an isolated checkout, where neither can occur.
 if ! baseline="$(run_guard)"; then
   echo "::error::the guard does NOT pass on the current tree, so no trustworthy baseline can be captured." >&2
   echo "::error::Refusing to run (no backups taken, nothing mutated). Either the tree has real drift, or a concurrent run has a fixture target mid-mutation." >&2
@@ -97,36 +117,77 @@ fi
 PASS=0
 FAIL=0
 
-DOC_BACKUP="$(mktemp)"
-TYPES_BACKUP="$(mktemp)"
-cp "$DOC" "$DOC_BACKUP"
-cp "$TYPES" "$TYPES_BACKUP"
+# The BACKUPS are checked too, and that is not paranoia about `cp`. The
+# verification in `restore()` compares the file against the backup it was just
+# written from, so it can detect a failed restore but NEVER a bad backup: with a
+# full or read-only TMPDIR, `mktemp` succeeds, the `cp` fails, every restore then
+# writes a zero-byte file over a tracked page, and `cmp` reports success
+# (empty == empty) before deleting the evidence. Content-address against git so a
+# truncated or partial backup cannot masquerade as a good one.
+DOC_BACKUP="$(mktemp)" || exit 2
+TYPES_BACKUP="$(mktemp)" || exit 2
+DOC_SHA="$(git hash-object "$DOC")" || exit 2
+TYPES_SHA="$(git hash-object "$TYPES")" || exit 2
+for pair in "$DOC:$DOC_BACKUP" "$TYPES:$TYPES_BACKUP"; do
+  src="${pair%:*}"; dst="${pair##*:}"
+  if ! cp "$src" "$dst" || ! cmp -s "$src" "$dst"; then
+    echo "::error::could not take a verified backup of $src (TMPDIR full or read-only?). Refusing to run — nothing has been mutated." >&2
+    rm -f "$DOC_BACKUP" "$TYPES_BACKUP"
+    exit 2
+  fi
+done
 
 # Restore must be TOTAL and VERIFIED. The previous version was a bare sequence of
 # `cp`s under `set -e`, so a failing first `cp` aborted the function and left the
 # `types.ts` mutation — a required member added to `BrainSourceConnector` — in the
 # tree, with `cp`'s stderr as the only signal. `set -e` is off in this file and
-# each step is checked explicitly instead.
+# every step is checked explicitly instead, including the two inter-fixture
+# helpers below.
+#
+# Verified against the GIT OBJECT ID taken above, not against the backup, for the
+# reason in the backup block.
 #
 # `--preserve=timestamps` so a restored file does not read as `M` in `git status`
 # through stat-cache staleness, which in a shared worktree looks exactly like the
 # suite having left something behind.
 restore() {
+  # Idempotent: the INT/TERM traps below run it and then exit, but bash also runs
+  # the EXIT trap on the way out. Without this, the second pass would `cp` from
+  # backups the first pass deleted.
+  [ -f "$DOC_BACKUP" ] || return 0
   local rc=0
   cp --preserve=timestamps "$DOC_BACKUP" "$DOC" || rc=1
   cp --preserve=timestamps "$TYPES_BACKUP" "$TYPES" || rc=1
   rm -f "$EXTRA_DOC" || rc=1
-  if [ "$rc" -ne 0 ] || ! cmp -s "$DOC_BACKUP" "$DOC" || ! cmp -s "$TYPES_BACKUP" "$TYPES"; then
+  if [ "$rc" -ne 0 ] ||
+     [ "$(git hash-object "$DOC")" != "$DOC_SHA" ] ||
+     [ "$(git hash-object "$TYPES")" != "$TYPES_SHA" ]; then
     echo "::error::RESTORE FAILED — a fixture mutation may still be in the tree." >&2
-    echo "::error::Backups KEPT at $DOC_BACKUP and $TYPES_BACKUP." >&2
-    echo "::error::Recover with: git checkout -- '$DOC' '$TYPES' && rm -f '$EXTRA_DOC'" >&2
+    echo "::error::Backups KEPT. Recover NON-DESTRUCTIVELY first:" >&2
+    echo "::error::  cp '$DOC_BACKUP' '$DOC' && cp '$TYPES_BACKUP' '$TYPES' && rm -f '$EXTRA_DOC'" >&2
+    echo "::error::Only if those are gone: git checkout -- '$DOC' '$TYPES'  (discards any unrelated uncommitted edits to them)" >&2
     return 1
   fi
   rm -f "$DOC_BACKUP" "$TYPES_BACKUP"
 }
-# INT/TERM as well as EXIT: this suite rewrites packages/api source under a
-# Ctrl-C-prone local `/ci`.
-trap restore EXIT INT TERM
+
+# ⚠️ `trap restore EXIT` is NOT enough, and both halves of this were measured.
+#
+# A non-zero RETURN from an EXIT trap does not become the script's exit status —
+# bash discards it. So the whole restore-verification above was decoration: on the
+# path it was written for, the suite printed "RESTORE FAILED — a fixture mutation
+# may still be in the tree" and then exited 0, `g_gate_fixtures` recorded a PASS,
+# and CI went green with a required member added to `BrainSourceConnector` still in
+# `packages/api`. `|| exit 2` is what makes the verification mean anything.
+#
+# And an INT/TERM handler that merely returns lets the script CONTINUE: the old
+# `trap restore EXIT INT TERM` restored, deleted both backups, then ran the
+# remaining fixtures with no backups at all — `cmp` against a missing file reads as
+# "the sed landed", and every later restore silently did nothing. The explicit
+# `exit` is what actually stops the run.
+trap 'restore || exit 2' EXIT
+trap 'restore; exit 130' INT
+trap 'restore; exit 143' TERM
 
 # check <pass|fail> <name> [marker]
 #
@@ -171,26 +232,60 @@ mutate() {
     exit 2
   fi
 }
-restore_doc() { cp --preserve=timestamps "$DOC_BACKUP" "$DOC"; }
-restore_types() { cp --preserve=timestamps "$TYPES_BACKUP" "$TYPES"; }
+# Checked, because these are the only writes between fixtures: an unchecked `cp`
+# failing here leaves the PREVIOUS fixture's mutation live for every fixture after
+# it, and with `set -e` off nothing would say so.
+restore_doc() {
+  cp --preserve=timestamps "$DOC_BACKUP" "$DOC" || { echo "::error::inter-fixture restore of $DOC failed" >&2; exit 2; }
+}
+restore_types() {
+  cp --preserve=timestamps "$TYPES_BACKUP" "$TYPES" || { echo "::error::inter-fixture restore of $TYPES failed" >&2; exit 2; }
+}
 
 # The fence fixtures need to address FENCE lines, which carry no distinguishing
 # text of their own — every one of them is exactly "```". Resolving them by
 # content-relative position rather than by a hard-coded line number is not a
-# stylistic choice: the first cut used literal line numbers and three of them
-# drifted the moment a Callout was added to the page mid-review. `mutate()`
-# caught it, which is the point, but a fixture that needs re-numbering on every
-# prose edit is a fixture that eventually gets deleted instead of fixed.
-line_of()      { grep -n -- "$1" "$DOC" | head -n1 | cut -d: -f1; }
-last_line_of() { grep -n -- "$1" "$DOC" | tail -n1 | cut -d: -f1; }
+# stylistic choice: an earlier draft used literal line numbers, and they went stale
+# the moment a Callout was added to this page mid-review. `mutate()` caught it,
+# which is the point — but a fixture that needs re-numbering on every prose edit is
+# a fixture that eventually gets deleted instead of fixed.
+#
+# ⚠️ EVERY resolution is checked, and this is not defensive habit — it is the
+# defect `mutate()` was added to catch, arriving one layer up. An unresolved anchor
+# printed the empty string, and `set -u` does not fire because the variable IS
+# assigned. `sed -i "s/^X$/Y/"` with an EMPTY address applies to every matching
+# line in the file, and `mutate()`'s "did the file change?" test passes happily —
+# so three fence fixtures would have indented, blanked or relabelled EVERY fence on
+# the page and still reported `ok` for a reason they do not name. `awk -v start=""`
+# likewise matches from line 1. Measured, all three.
+#
+# The trigger is licensed by the guard's own design: type parameters are not
+# compared, so the page is free to drop `<S extends EpisodeSource = EpisodeSource>`
+# — at which point `^interface BrainSourceConnector<` resolves to nothing, the
+# guard still PASSes so the baseline is clean, and the suite goes green having
+# tested something else entirely.
+require_line() {
+  local n="$1" what="$2"
+  case "$n" in
+    "" | *[!0-9]*)
+      echo "::error::anchor did not resolve to a line number: $what" >&2
+      echo "::error::The committed text has drifted from this fixture's pattern, so the sed below would be UNADDRESSED and apply file-wide. Update the pattern." >&2
+      exit 2
+      ;;
+  esac
+  echo "$n"
+}
+line_of()      { require_line "$(grep -n -- "$1" "$DOC" | head -n1 | cut -d: -f1)" "first match of: $1"; }
+last_line_of() { require_line "$(grep -n -- "$1" "$DOC" | tail -n1 | cut -d: -f1)" "last match of: $1"; }
 # The fence that OPENS the block declaring $1 — the line above the declaration.
 fence_open_above() {
-  local decl; decl="$(line_of "$1")"
-  [ -n "$decl" ] && echo $((decl - 1))
+  local decl; decl="$(line_of "$1")" || exit 2
+  require_line "$((decl - 1))" "fence opening above: $1"
 }
 # The first bare closing fence at or after line $1.
 fence_close_after() {
-  awk -v start="$1" 'NR >= start && /^```[[:space:]]*$/ { print NR; exit }' "$DOC"
+  require_line "$(awk -v start="$1" 'NR >= start && /^```[[:space:]]*$/ { print NR; exit }' "$DOC")" \
+    "closing fence at or after line $1"
 }
 
 # --- the committed tree is in sync ------------------------------------------
@@ -240,7 +335,7 @@ restore_doc
 # the #5165 finding, which the member comparison alone cannot see.
 mutate "$DOC" "$DOC_BACKUP" '/^  | { readonly kind: "externally-synced" };$/d'
 check fail "a published union missing an arm trips the gate" \
-  'MISSING from the snippet (arm the real declaration has): kind:"externally-synced"'
+  'MISSING from the snippet (arm the real declaration has): readonly kind:"externally-synced"'
 restore_doc
 
 # --- code side: the interface moves, the page does not -----------------------
@@ -253,16 +348,19 @@ restore_types
 # Add a third arm to the real union and leave the page alone.
 mutate "$TYPES" "$TYPES_BACKUP" 's#^  | { readonly kind: "externally-synced" };$#  | { readonly kind: "externally-synced" }\n  | { readonly kind: "probe-added-by-fixture" };#'
 check fail "a new union arm on the real declaration with no page update trips the gate" \
-  'MISSING from the snippet (arm the real declaration has): kind:"probe-added-by-fixture"'
+  'MISSING from the snippet (arm the real declaration has): readonly kind:"probe-added-by-fixture"'
 restore_types
 
 # --- the REFUSAL arms: "loud, never a skip" is the guard's design claim ------
 # The REAL declaration becomes a shape the gate cannot read, while the page still
 # publishes a snippet for it. Replacing all three refusal bodies with `continue`
 # left the suite green before these three fixtures existed.
+# ⚠️ The marker must name THIS arm. `"is a shape this gate cannot compare"` appears
+# in the declared-opaque message too, so it could not tell the two apart — and a
+# fixture that passes on the wrong arm asserts something false.
 mutate "$TYPES" "$TYPES_BACKUP" 's#^  | { readonly kind: "externally-synced" };$#  | AudienceReverifier;#'
 check fail "an opaque REAL declaration behind a published snippet trips the gate" \
-  "is a shape this gate cannot compare"
+  "whose real declaration in"
 restore_types
 
 # The PAGE rewrites its union into a form the gate cannot read, so the published
@@ -287,8 +385,17 @@ restore_doc
 
 # --- discovery: BOTH globs, not one hard-coded pair of paths -----------------
 # Collapsing SOURCE_GLOBS and DOCS_GLOB to the two literal paths these fixtures
-# use left the suite green, so the header's headline claim was unfalsified. A
-# drifted snippet in a SECOND doc file is what pins the docs half.
+# use left the suite green, so the header's headline claim was unfalsified.
+#
+# ⚠️ ONE fixture pins BOTH globs, and the choice of declaration is what does it.
+# A second doc FILE pins `DOCS_GLOB`. Declaring `BrainToolReason` — which lives in
+# `packages/api/src/lib/tools/search-brain.ts`, OUTSIDE `lib/brain/**` — pins
+# `SOURCE_GLOBS`: narrow the source side back to `lib/brain` and this snippet stops
+# resolving, so the gate reports "not an exported Brain* declaration" instead of a
+# drift and the marker below no longer matches. An earlier version declared
+# `BrainEpisodeRecord`, which lives in the one file every other fixture already
+# uses — so `SOURCE_GLOBS` collapsed to a literal path stayed green, and the
+# commit claiming both globs were pinned was half true.
 cat > "$EXTRA_DOC" <<'PROBE_EOF'
 ---
 title: Fixture probe
@@ -296,13 +403,17 @@ description: Throwaway page written by check-docs-brain-snippets.test.sh; remove
 ---
 
 ```ts
-interface BrainEpisodeRecord {
-  readonly sourceId: string;
-}
+type BrainToolReason =
+  | { readonly kind: "invented-by-fixture" };
 ```
 PROBE_EOF
-check fail "a drifted snippet in a SECOND doc file trips the gate" \
-  "__fixture-brain-snippets-probe.mdx"
+# The marker names the SOURCE FILE the declaration resolved to, which is what makes
+# this pin the source glob: narrow `SOURCE_GLOBS` back to `lib/brain` and the
+# message becomes "is not an exported Brain* declaration", which does not contain
+# that path. A marker naming only the probe FILENAME would match either way and
+# would pin the docs glob alone.
+check fail "a snippet in a SECOND doc file, for a declaration OUTSIDE lib/brain, trips the gate" \
+  "whose real declaration in packages/api/src/lib/tools/search-brain.ts"
 rm -f "$EXTRA_DOC"
 
 # --- the fence scanner: every silent-skip hole gets a fixture ---------------
@@ -329,7 +440,7 @@ restore_doc
 # either. Caught now by reconciling the parser's output against the body text.
 mutate "$DOC" "$DOC_BACKUP" "$(fence_close_after "$(line_of '^interface BrainSourceConnector<')")s/^\`\`\`\$//"
 check fail "a MERGED fenced block does not silently drop a declaration" \
-  "but the parser did not yield"
+  "and does not parse"
 restore_doc
 
 # A genuinely UNTERMINATED fence — the last closing fence on the page removed, so

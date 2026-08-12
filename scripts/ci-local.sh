@@ -27,8 +27,8 @@
 # SCHEDULE (race- and flake-safe, not max-parallel)
 #   Stage 0  serial    `bun run type` — the ONLY gate that writes SDK dist/.
 #                      Runs alone first so nothing reads a half-written dist/.
-#   Stage 1  parallel  lint + lint:type-aware + syncpack + ~22 read-only
-#                      drift/check scripts.
+#   Stage 1  parallel  lint + lint:type-aware + syncpack + ~28 read-only
+#                      drift/check scripts (31 launches, 2 of them net-gated).
 #                      None touch dist/, so they fan out safely (CI_LOCAL_JOBS).
 #   Stage 2  serial    the tree-WRITING gates (gate-fixtures, mutation-tables).
 #                      Both rewrite sources in place — `mutate.ts` per mutation,
@@ -283,13 +283,15 @@ status "stage 2: tree-writing gates (serial — these mutate sources in place) �
 # suites REWRITE TRACKED SOURCE in place and trap-restore it:
 # `check-pricing-parity.test.sh` mutates `packages/api/src/lib/settings.ts`, and
 # `check-docs-brain-snippets.test.sh` mutates
-# `packages/api/src/lib/brain/ingest/types.ts` — adding a REQUIRED member to
-# `BrainSourceConnector`, which makes that file non-compiling for the ~1s the
-# fixture is live. Run in parallel with Stage 1 that lands inside the window
-# where `lint-type-aware`, `brain-fact-promotion` and `docs-brain-snippets` are
-# reading those very files, so they go red on a line the developer never wrote —
-# the flake-teaching outcome the paragraph above exists to prevent. Worse, in
-# Stage 1 the fixture suite raced the very gate it tests.
+# `packages/api/src/lib/brain/ingest/types.ts` twice — once adding a REQUIRED
+# member to `BrainSourceConnector`, which leaves `types.ts` itself valid but breaks
+# EVERY connector literal in the package (`zoom/`, `outlook/`, `slack/`), and once
+# replacing a union arm, which makes `types.ts` genuinely non-compiling at its own
+# `audience.kind` reads. Either way the window is ~1s per fixture. Run in parallel,
+# Stage 1 lands inside it while `lint-type-aware`, `brain-fact-promotion` and
+# `docs-brain-snippets` are reading those very files, so they go red on a line the
+# developer never wrote — the flake-teaching outcome the paragraph above exists to
+# prevent. Worse, in Stage 1 the fixture suite raced the very gate it tests.
 run_fg gate-fixtures   g_gate_fixtures
 run_fg mutation-tables bash scripts/check-mutation-tables.sh --affected origin/main
 

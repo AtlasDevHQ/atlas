@@ -193,6 +193,83 @@ describe("organization plugin wiring", () => {
     expect(org).toBeDefined();
   });
 
+  // ── #5175 ──────────────────────────────────────────────────────────────────
+  // `POST /api/auth/organization/delete` removes the `organization` row and
+  // cascades to NOTHING — no table in db/schema.ts has an FK to it (#5160) — so
+  // it orphans every workspace-scoped table in lib/db/purge-scope.ts. The
+  // `owner` role carries `organization: ["delete"]`, so a workspace owner could
+  // reach it. The supported lifecycle is soft-delete -> `hardDeleteWorkspace`.
+  it("disableOrganizationDeletion is wired to true", () => {
+    const plugins = buildPlugins();
+    const org = plugins.find((p: { id?: string }) => p.id === "organization");
+    expect(org).toBeDefined();
+    // Same option-shape probe as the assertion above: Better Auth has shipped
+    // plugin options under `options` and `_config` across versions.
+    const opts =
+      (org as { options?: { disableOrganizationDeletion?: boolean } }).options
+      ?? (org as { _config?: { disableOrganizationDeletion?: boolean } })._config
+      ?? (org as Record<string, unknown>);
+    expect(
+      (opts as { disableOrganizationDeletion?: boolean }).disableOrganizationDeletion,
+    ).toBe(true);
+  });
+
+  // The config assertion above proves the flag is SET. This one proves it is
+  // ENFORCED, by driving the real HTTP door — a Better Auth upgrade could keep
+  // accepting the option while changing what it does, and the config test would
+  // stay green through that.
+  //
+  // ⚠️ No session is created on purpose, and that is what makes this falsifiable
+  // rather than vacuous. In better-auth 1.6.25 the disable check runs at the TOP
+  // of the handler, above `getSession`:
+  //
+  //     if (ctx.context.orgOptions.disableOrganizationDeletion) throw ...
+  //     const session = await ctx.context.getSession(ctx);
+  //
+  // so the two states are distinguishable without any auth setup:
+  //   flag ON  -> 404 "Organization deletion is disabled"
+  //   flag OFF -> 401 UNAUTHORIZED (it got past the gate and asked for a session)
+  //
+  // Verified by flipping the flag to false: this test then sees 401 and fails.
+  it("HTTP /organization/delete is refused before the session is even read", async () => {
+    const plugins = buildPlugins();
+    const org = plugins.find((p: { id?: string }) => p.id === "organization");
+    const instance = betterAuth({
+      baseURL: "http://localhost:3000",
+      // The org plugin's models must be declared up-front — the memory adapter
+      // throws "Model … not found" for a table it was not given.
+      database: memoryAdapter({
+        user: [],
+        account: [],
+        session: [],
+        verification: [],
+        organization: [],
+        member: [],
+        invitation: [],
+      }),
+      secret: "test-secret-at-least-32-characters-long",
+      emailAndPassword: { enabled: true },
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any -- Better Auth plugin union types
+      plugins: [org] as any[],
+    });
+
+    const res = await instance.handler(
+      new Request("http://localhost:3000/api/auth/organization/delete", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ organizationId: "org_does_not_exist" }),
+      }),
+    );
+
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { message?: string; code?: string };
+    // Assert the CODE, not the prose — the message is upstream copy and can be
+    // reworded in a patch release without the block changing.
+    expect(body.code).toBe("ORGANIZATION_DELETION_DISABLED");
+
+    await instance.$context.catch(() => {});
+  });
+
   // #4046 / ADR-0027 §6 — the workspace-scoped API key path is inert unless the
   // apiKey() plugin is wired. The plugin's options (`enableMetadata` /
   // `enableSessionForAPIKeys`) are NOT introspectable on the constructed plugin

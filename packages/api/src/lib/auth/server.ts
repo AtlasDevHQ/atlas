@@ -2479,6 +2479,48 @@ export function buildPlugins() {
       // and prevent an attacker who guesses an `invitationId` from claiming
       // a row intended for someone else. Pairs with the email-OTP plugin.
       requireEmailVerificationOnInvitation: true,
+      // ── #5175 ────────────────────────────────────────────────────────────
+      // `POST /api/auth/organization/delete` deletes the `organization` row
+      // and nothing else. NO table in `db/schema.ts` has an FK to
+      // `organization` (#5160), so that cascades to nothing: it orphans every
+      // workspace-scoped table in `lib/db/purge-scope.ts` — brain claims, the
+      // knowledge base, every encrypted credential store, dashboards, audit
+      // logs — with no operator record that it happened. The `owner` role
+      // carries `organization: ["delete"]` (`org-permissions.ts:49`), so any
+      // workspace owner could reach it.
+      //
+      // It also skips `hardDeleteWorkspace`'s soft-delete precondition and
+      // its Stripe teardown, so it can strand a live subscription against a
+      // deleted org.
+      //
+      // The supported lifecycle is soft-delete -> operator purge
+      // (`hardDeleteWorkspace`). This is not a capability being withdrawn;
+      // it is a path that silently corrupted the tenant.
+      //
+      // ⚠️ Why the flag and NOT a `beforeDeleteOrganization` hook that throws.
+      // The hook does abort — it is awaited before `adapter.deleteOrganization`
+      // — but the plugin runs this FIRST, above the hook call:
+      //
+      //     if (organizationId === session.session.activeOrganizationId)
+      //       await adapter.setActiveOrganization(session.session.token, null)
+      //
+      // so a hook-based refusal still nulls the caller's active organization
+      // on every attempt: a persistent side effect from an operation that was
+      // refused. This flag throws at the top of the handler, before the
+      // session is even read, so a blocked call mutates nothing.
+      //
+      // A hook is also the wrong shape for the other posture. Wiring the real
+      // cascade there would run it OUTSIDE the plugin's delete, and #5160
+      // established the delete ORDER is load-bearing (two brain FKs are
+      // RESTRICT) — a partial failure would leave a workspace half-purged,
+      // which is worse than the orphaned-but-consistent state this prevents.
+      // If self-service deletion is ever wanted as a real feature, it should
+      // call `hardDeleteWorkspace`, not re-implement it.
+      //
+      // Refusal shape (better-auth 1.6.25, `routes/crud-org.mjs`):
+      //   404, message "Organization deletion is disabled",
+      //   code ORGANIZATION_DELETION_DISABLED
+      disableOrganizationDeletion: true,
       organizationHooks: {
         // Lives here rather than in `databaseHooks.member.create.after`
         // because the org plugin inserts the initial owner-member through

@@ -152,9 +152,20 @@ export function loadMessageCorpus(filePath: string): MessageCorpus {
   if (!fs.existsSync(filePath)) {
     throw new Error(`Paraphrase message corpus not found at ${filePath}.`);
   }
+  // ⚠️ THE READ AND THE PARSE GET SEPARATE HANDLERS. One `try` around both sent
+  // a maintainer to look at JSON syntax for an EACCES or an EISDIR — the same
+  // over-broad-catch finding that split the write-mode load, stopping one frame
+  // short.
+  let raw: string;
+  try {
+    raw = fs.readFileSync(filePath, "utf-8");
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to READ paraphrase corpus ${filePath}: ${msg}`, { cause: err });
+  }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    parsed = JSON.parse(raw);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(`Failed to parse paraphrase corpus ${filePath}: ${msg}`, { cause: err });
@@ -312,9 +323,16 @@ export function loadArtifact(filePath: string): RecordedArtifact {
         `\`bun packages/cli/bin/brain-paraphrase-eval.ts --write\` (needs AI_GATEWAY_API_KEY).`,
     );
   }
+  let raw: string;
+  try {
+    raw = fs.readFileSync(filePath, "utf-8");
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to READ paraphrase artifact ${filePath}: ${msg}`, { cause: err });
+  }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    parsed = JSON.parse(raw);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(`Failed to parse paraphrase artifact ${filePath}: ${msg}`, { cause: err });
@@ -370,16 +388,28 @@ export interface ParaphraseResult {
 }
 
 /**
- * Deep equality over the compared fields, in emission order. Order is signal: it
- * is what the model chose to say first.
+ * Equality over the three SLOTS — subject, predicate, object — in emission
+ * order. It deliberately ignores `cardinalityHint`, which is advisory since
+ * #5027 and must never be able to fail a release gate.
  *
- * Exported for the unit surface. The honesty checks now refuse to grade any pair
- * carrying more than one claim a side, so the ORDER and LENGTH arms cannot be
- * reached through `gradeParaphraseRun` at all — the only way to falsify them is
- * to call this directly, and an arm no test can reach is an arm that is not
- * really there.
+ * ⚠️ Named `…BySlot` rather than `triplesEqual` because it is EXPORTED: a second
+ * caller reading the bare name would reasonably assume full structural equality
+ * of `RecordedTriple`s and be silently wrong about the hint. The name is the
+ * only thing standing between that reader and a wrong assumption.
+ *
+ * Exported for the unit surface, and the reason is narrower than an earlier
+ * draft claimed. The honesty checks bound the FRESH sides to at most one claim,
+ * so the ORDER arm is genuinely unreachable through `gradeParaphraseRun` and can
+ * only be falsified by calling this directly.
+ *
+ * ⚠️ The LENGTH arm is NOT unreachable, and saying it was would have invited
+ * deleting a live guard: the checks constrain the fresh sides only, and the
+ * RECORDED side is whatever the artifact holds. A stale or hand-edited
+ * recording carrying two claims against an honest one-claim run reaches the
+ * length arm and grades `drift` through it — measured, not reasoned. Delete the
+ * length check and that pair grades `match`.
  */
-export function triplesEqual(a: readonly RecordedTriple[], b: readonly RecordedTriple[]): boolean {
+export function triplesEqualBySlot(a: readonly RecordedTriple[], b: readonly RecordedTriple[]): boolean {
   if (a.length !== b.length) return false;
   return a.every((t, i) => {
     const o = b[i];
@@ -400,12 +430,21 @@ function formatTriples(triples: readonly RecordedTriple[]): string {
 /**
  * Does this claim carry a slot the identity layer cannot key?
  *
- * ⚠️ `.trim() === ""` and not `=== ""`. `lexicalNorm` treats `-` and `_` as
- * separators and trims the edges, so `"   "`, `"-"` and `"__"` all normalize to
- * the empty string and `identityKey` answers `null` for each — a claim that
- * asserts nothing. A whitespace-only check would catch the first and pass the
- * other two, which is a guard that stops discriminating exactly where a
- * degenerate model output is most likely to land.
+ * ⚠️ THE SEPARATOR-CLASS STRIP, NOT `.trim()`. `lexicalNorm` treats `-` and `_`
+ * as separators and trims the edges, so `"   "`, `"-"` and `"__"` all normalize
+ * to the empty string and `identityKey` answers `null` for each — a claim that
+ * asserts nothing. A whitespace-only check (`.trim() === ""`) catches the first
+ * and passes the other two, which is a guard that stops discriminating exactly
+ * where a degenerate model output is most likely to land. An earlier draft of
+ * this headline named `.trim()` as the implementation, which is the one the rest
+ * of this paragraph argues against.
+ *
+ * ⚠️ `\s` is WIDER than `lexicalNorm`'s deliberately spelled-out
+ * `[ \t\n\v\f\r_-]` — it also covers U+00A0 and the U+2000 block, which
+ * `identityKey` keys happily. So this refuses slightly MORE than the identity
+ * layer would. That is the safe direction, and it is a real disagreement rather
+ * than an intended equivalence; `paraphrase-corpus.ts` holds the property itself
+ * (`identityKey(surface) !== null`) on the consuming side.
  */
 function hasBlankSlot(triple: RecordedTriple): boolean {
   return [triple.subject, triple.predicate, triple.object].some(
@@ -435,7 +474,7 @@ function comparedOutcome(
       recorded: null,
     };
   }
-  const drifted = SIDES.filter((s) => !triplesEqual(freshSides[s], recorded[s] ?? []));
+  const drifted = SIDES.filter((s) => !triplesEqualBySlot(freshSides[s], recorded[s] ?? []));
   if (drifted.length > 0) {
     return {
       id: pair.id,
@@ -621,7 +660,11 @@ export type ExtractOneMessage = (input: {
  * predicate produced this one, and the inherited `outcomes` /
  * `staleArtifactPairs` / `digestMismatch` still describe the comparison — so a
  * future gate reading `passed` can tell the two modes apart instead of
- * inheriting a number whose meaning it cannot see.
+ * inheriting a number whose meaning it cannot see. Both verdicts travel:
+ * `passed` is the mode's, and {@link comparisonPassed} is the artifact
+ * comparison's. (They did not always — an earlier draft claimed this while the
+ * override simply replaced the inherited field, leaving the comparison verdict
+ * reconstructible only by re-deriving it from `outcomes`.)
  */
 export interface ParaphraseRunReport extends ParaphraseResult {
   readonly model: string;
@@ -630,6 +673,14 @@ export interface ParaphraseRunReport extends ParaphraseResult {
   readonly artifactPath: string;
   /** Which mode produced {@link passed} — see the warning above. */
   readonly write: boolean;
+  /**
+   * The ARTIFACT-COMPARISON verdict, in both modes — what `ParaphraseResult`
+   * computes before {@link passed} overrides it. In grade mode the two agree; in
+   * write mode this is the answer about the artifact being replaced, which is
+   * the number a reviewer of a regeneration wants and the only one `passed`
+   * cannot express.
+   */
+  readonly comparisonPassed: boolean;
   readonly wrote: boolean;
   /** How many pairs failed the corpus-honesty checks. The write-mode verdict. */
   readonly dishonestCount: number;
@@ -683,8 +734,9 @@ async function realExtractor(): Promise<{
 
   // No override parameter: the sole call site passed `null` and there is no
   // `--model` flag, so the branch was dead and therefore untested. The model is
-  // the environment's to choose — `eval-llm.yml` sets it beside the preflight's
-  // so the credential check validates the model the eval actually runs.
+  // the environment's to choose — `eval-brain-paraphrase.yml` (the workflow that
+  // runs THIS program; `eval-llm.yml` runs the MCP eval) sets it beside its own
+  // preflight's, so the credential check validates the model the eval runs.
   const requested = process.env.ATLAS_MODEL ?? DEFAULT_MODEL_ID;
   let model: LanguageModel;
   let modelId: string;
@@ -751,9 +803,11 @@ export function toRecordedTriple(candidate: FactCandidate): RecordedTriple {
 /**
  * Run the corpus through the extractor and grade it.
  *
- * Sequential rather than `Promise.all`: this is nine pairs against a rate-limited
- * gateway, the wall clock is irrelevant to a weekly cron, and a serial run gives
- * a progress line per message that names the pair a failure came from.
+ * Sequential rather than `Promise.all`: one call per SIDE of every corpus pair
+ * against a rate-limited gateway, the wall clock is irrelevant to a weekly cron,
+ * and a serial run gives a progress line per message that names the pair a
+ * failure came from. (Derived rather than counted — an earlier draft said "nine
+ * pairs" and the corpus had ten.)
  */
 export async function runBrainParaphraseEval(
   opts: ParaphraseRunOptions,
@@ -841,6 +895,7 @@ export async function runBrainParaphraseEval(
     corpusPath: opts.corpusPath,
     artifactPath: opts.artifactPath,
     write: opts.write,
+    comparisonPassed: graded.passed,
     wrote,
     dishonestCount: dishonest.length,
     priorArtifactError,
@@ -870,18 +925,28 @@ export function parseParaphraseArgs(args: readonly string[]): ParaphraseRunOptio
   // `--jsn` produces no payload at all, which in CI is caught only by the
   // artifact step's "exited 0 but wrote no payload" arm — one lane late, and
   // never at all locally.
+  // ⚠️ EVERY UNCONSUMED TOKEN, not only `--`-prefixed ones. The first cut
+  // scanned `--xxx` alone, which left `-w`, `-write` and a bare `write` as
+  // silent no-ops that GRADE — and `-w` is the likelier typo of the two. That is
+  // this guard's own argument, unclosed on the tokens it skipped: the class is
+  // "an argument we ignore produces the opposite of what was asked", and a
+  // leading-dash test does not describe it.
   const known = new Set<string>([...VALUE_FLAGS, ...BARE_FLAGS]);
+  const seen = new Set<string>();
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
-    if (!arg.startsWith("--")) continue;
     if (!known.has(arg)) {
       throw new Error(
-        `Unrecognized flag ${arg}. Known flags: ${[...VALUE_FLAGS, ...BARE_FLAGS].join(", ")}.`,
+        `Unrecognized argument "${arg}". Known flags: ${[...VALUE_FLAGS, ...BARE_FLAGS].join(", ")}.`,
       );
     }
-    // Skip a value flag's argument so a path that happens to start with `--`
-    // is not itself scanned. `flagValue` already refuses that shape, so this is
-    // belt-and-braces rather than the guard.
+    // A repeat would be resolved by `indexOf` taking the FIRST occurrence, so
+    // `--corpus a --corpus b` silently grades `a` while the operator reads `b`
+    // off their own command line — the same "graded something other than what
+    // was asked for" failure the scan above exists to prevent.
+    if (seen.has(arg)) throw new Error(`${arg} was given more than once.`);
+    seen.add(arg);
+    // Skip a value flag's argument so a path is not itself scanned as a token.
     if ((VALUE_FLAGS as readonly string[]).includes(arg)) i += 1;
   }
 
@@ -893,12 +958,24 @@ export function parseParaphraseArgs(args: readonly string[]): ParaphraseRunOptio
   };
 }
 
-/** The human summary, on fd 2. Returns the process exit code. */
-export function reportParaphraseRun(report: ParaphraseRunReport): number {
+/**
+ * The human summary, on fd 2. Returns the process exit code.
+ *
+ * `write` is injectable so the TRANSCRIPT is testable and not merely the return
+ * value. Round 2 measured six mutations here — the refusal message never
+ * printed, the PASS/FAIL word pinned to one value, the per-outcome detail
+ * dropped — and every one survived, because the only tests built a report with
+ * `outcomes: []` and never executed the loop. Under `--json` this transcript is
+ * the operator's ONLY human record.
+ */
+export function reportParaphraseRun(
+  report: ParaphraseRunReport,
+  write: (text: string) => void = human,
+): number {
   const counts = new Map<PairStatus, number>();
   for (const o of report.outcomes) counts.set(o.status, (counts.get(o.status) ?? 0) + 1);
 
-  human(`\nbrain paraphrase eval — model=${report.model} extractor=${report.extractor}\n`);
+  write(`\nbrain paraphrase eval — model=${report.model} extractor=${report.extractor}\n`);
   for (const o of report.outcomes) {
     // ⚠️ IN WRITE MODE, ONLY AN HONESTY FAILURE IS A FAILURE. `drift` and
     // `unrecorded` are what `--write` exists to resolve, so printing them as
@@ -906,20 +983,35 @@ export function reportParaphraseRun(report: ParaphraseRunReport): number {
     // a transcript that contradicts itself teaches people to stop reading it.
     const failed = report.write ? o.status === "honesty" : o.status !== "match";
     const label = failed ? "FAIL" : report.write && o.status !== "match" ? "rec " : "ok  ";
-    human(`  ${label} ${o.id} (${o.relation})`);
-    human(o.detail === "" || (report.write && !failed) ? "\n" : `\n       ${o.detail}\n`);
+    write(`  ${label} ${o.id} (${o.relation})`);
+    // The detail is printed in BOTH modes. Suppressing it in write mode silenced
+    // the drift diagnosis in the one mode whose whole job is to resolve drift —
+    // while the module header, the artifact description and the workflow all
+    // tell the operator to read what moved BEFORE regenerating.
+    write(o.detail === "" ? "\n" : `\n       ${o.detail}\n`);
   }
+  // ⚠️ BOTH LOOPS ARE MODE-GATED, and the first cut of the write-mode fix gated
+  // only the per-outcome loop above. These two are computed against the artifact
+  // being REPLACED, so in write mode they are known-stale by construction — and
+  // printing `Re-run with --write` inside a `--write` run is the same looping
+  // remedy the refusal message below was fixed for, on the two lines beneath it.
   if (report.digestMismatch) {
-    human(
-      `  FAIL corpus digest — the artifact was recorded from different message bodies ` +
-        `(artifact ${report.digestMismatch.artifact.slice(0, 12)}, corpus ${report.digestMismatch.corpus.slice(0, 12)}). ` +
-        `Re-run with --write.\n`,
+    write(
+      report.write
+        ? `  rec  corpus digest refreshed — the previous recording was made from different message bodies.\n`
+        : `  FAIL corpus digest — the artifact was recorded from different message bodies ` +
+            `(artifact ${report.digestMismatch.artifact.slice(0, 12)}, corpus ${report.digestMismatch.corpus.slice(0, 12)}). ` +
+            `Re-run with --write.\n`,
     );
   }
   for (const id of report.staleArtifactPairs) {
-    human(`  FAIL stale artifact entry "${id}" — no such pair in the corpus. Re-run with --write.\n`);
+    write(
+      report.write
+        ? `  rec  dropped stale artifact entry "${id}" — no such pair in the corpus.\n`
+        : `  FAIL stale artifact entry "${id}" — no such pair in the corpus. Re-run with --write.\n`,
+    );
   }
-  if (report.wrote) human(`\nwrote ${report.artifactPath}\n`);
+  if (report.wrote) write(`\nwrote ${report.artifactPath}\n`);
 
   if (report.write) {
     // ⚠️ THE REFUSAL HAS TO BE NAMED. The first cut printed nothing for it: the
@@ -930,9 +1022,28 @@ export function reportParaphraseRun(report: ParaphraseRunReport): number {
     // exhausting it is to hand-edit `extracted.json`, which is precisely what
     // this refusal exists to prevent.
     if (report.wrote) {
-      human(`\nPASS: recorded ${report.outcomes.length} pairs.\n`);
+      if (report.priorArtifactError !== null) {
+        // The destructive fact, in the summary rather than only in a line the
+        // operator scrolled past — the reviewer of the resulting diff is the
+        // audience, and this is what tells them the prior recording was
+        // DISCARDED rather than superseded.
+        write(
+          `\n⚠️ the prior recording was DISCARDED, not superseded: ${report.priorArtifactError}\n`,
+        );
+      }
+      write(`\nPASS: recorded ${report.outcomes.length} pairs.\n`);
+    } else if (report.dishonestCount === 0) {
+      // ⚠️ Wrote nothing and gave no reason. Unreachable through
+      // `runBrainParaphraseEval` today, but the exit code below used to key on
+      // `passed` alone — which is derived from `dishonestCount` — so this state
+      // printed "REFUSED … 0 pair(s) failed" and exited 0: a diagnosis
+      // contradicted by its own number, and the exact mutation class this
+      // lane's commit message headlines, reproduced in the sibling function.
+      write(
+        `\nFAIL: wrote nothing and no pair failed the honesty checks — this is a harness fault, not a corpus one.\n`,
+      );
     } else {
-      human(
+      write(
         `\nFAIL: REFUSED to write ${report.artifactPath} — ${report.dishonestCount} pair(s) failed the\n` +
           "corpus-honesty checks above. Regenerating does NOT fix this, which is why it was\n" +
           "refused: recording a corpus that exercises nothing would bless an empty fixture, and\n" +
@@ -940,15 +1051,17 @@ export function reportParaphraseRun(report: ParaphraseRunReport): number {
           "identity layer doing nothing. Fix the extractor or the corpus first (ADR-0037 §9).\n",
       );
     }
-    return report.passed ? 0 : 1;
+    // Keys on `wrote` as well as `passed`: a write mode that exited 0 having
+    // written nothing is the failure this branch exists to make impossible.
+    return report.wrote && report.passed ? 0 : 1;
   }
 
   const matched = counts.get("match") ?? 0;
-  human(
+  write(
     `\n${report.passed ? "PASS" : "FAIL"}: ${matched}/${report.outcomes.length} pairs match the recorded artifact.\n`,
   );
   if (!report.passed) {
-    human(
+    write(
       "\nThis eval fails on DRIFT by design: the deterministic brain suite consumes this\n" +
         "artifact, so a change here is a change to what that suite proves. Read what moved,\n" +
         "then regenerate with --write and commit it as a reviewed change (ADR-0037 §9).\n",
@@ -957,10 +1070,25 @@ export function reportParaphraseRun(report: ParaphraseRunReport): number {
   return report.passed ? 0 : 1;
 }
 
-async function main(): Promise<number> {
-  const opts = parseParaphraseArgs(process.argv.slice(2));
-  const report = await runBrainParaphraseEval(opts);
-  const code = reportParaphraseRun(report);
+/**
+ * Parse, run, report, emit. Exported and parameterised so the composition is
+ * testable — which round 2 found it was not.
+ *
+ * ⚠️ `reportParaphraseRun` returning the right number and `main` handing that
+ * number to `process.exit` are TWO facts, and only the first had a test. A
+ * `return 0` here made a fully drifted, tag-blocking run exit 0 with the suite
+ * green — the same sentence this lane's commit message opens with, one frame up
+ * the stack. Closing the reported instances and leaving the composition unheld
+ * is how a class survives a fix.
+ */
+export async function main(
+  argv: readonly string[],
+  seam?: ExtractOneMessage,
+  write: (text: string) => void = human,
+): Promise<number> {
+  const opts = parseParaphraseArgs(argv);
+  const report = await runBrainParaphraseEval(seam ? { ...opts, extract: seam } : opts);
+  const code = reportParaphraseRun(report, write);
   if (opts.json) {
     // The ONLY write to fd 1 in this process, and it goes through the package's
     // one sanctioned writer. `process.stdout` is buffered and the `process.exit`
@@ -977,7 +1105,7 @@ async function main(): Promise<number> {
 }
 
 if (import.meta.main) {
-  main()
+  main(process.argv.slice(2))
     .then((code) => process.exit(code))
     .catch((err: unknown) => {
       human(`\nError: ${err instanceof Error ? err.message : String(err)}\n`);

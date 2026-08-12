@@ -53,25 +53,29 @@ import * as fs from "fs";
  * "whoever adds an unbounded stderr diagnostic needs first" is therefore what
  * this helper's `fd` parameter provides, and `humanWriter` binds it.
  *
- * ⚠️ EVERY STDOUT WRITE IN THIS MODULE GOES THROUGH HERE, AND NOTHING ELSE MAY
- * TOUCH fd 1. That is not tidiness — it is what lets
- * `__tests__/eval-json-stdout.test.ts` assert the invariant by GREP (the file
- * contains no `process.stdout.write` call at all) rather than by inspection,
- * and a grep is the only check that survives a call site added later.
+ * ⚠️ EVERY STDOUT WRITE IN THE CALLING DRIVERS GOES THROUGH HERE, AND NOTHING
+ * ELSE MAY TOUCH fd 1. That is not tidiness — it is what lets
+ * `__tests__/eval-json-stdout.test.ts` assert the invariant by GREP over
+ * `FD1_GUARDED_SOURCES` (this module included) rather than by inspection, and a
+ * grep is the only check that survives a call site added later.
  *
- * The buffered fd-2 writes on the FAILURE paths are deliberately left alone:
- * they are #5130's reasoned exit-code paths, they are small (a few hundred bytes
- * each, except the harness stack, which runs to a few KB), and making them
- * throw on a bad fd 2 would let a write error escape `restoreSemanticLayer`'s
- * catch and discard the exit-2 bump that catch exists to produce.
+ * In `canonical-eval-run.ts` the buffered fd-2 writes on the FAILURE paths are
+ * deliberately left alone: they are #5130's reasoned exit-code paths, they are
+ * small (a few hundred bytes each, except the harness stack, which runs to a few
+ * KB), and making them throw on a bad fd 2 would let a write error escape
+ * `restoreSemanticLayer`'s catch and discard the exit-2 bump that catch exists
+ * to produce.
  *
- * Mixing the two write paths on ONE fd was also order-sensitive (a `writeSync`
+ * In `canonical-eval-run.ts`, mixing the two write paths on ONE fd was also
+ * order-sensitive (a `writeSync`
  * bypasses the stream's queue entirely and can print ahead of an earlier
  * buffered write that has not flushed). On fd 1 that mixing is now gone. It
  * remains on fd 2 in the `--json` shape — human transcript via `humanWriter`,
  * failure diagnostics via the stream — where the ordering measured on bun 1.3.13
  * held on every path, but it is a measurement rather than a guarantee, and fd 2
  * is a diagnostic channel where a reordered line costs nothing that parses.
+ * `brain-paraphrase-eval.ts` has no such mixing at all — every fd-2 write there
+ * goes through this function.
  */
 export function writeFdSync(fd: 1 | 2, text: string): void {
   const buf = Buffer.from(text, "utf-8");
@@ -109,7 +113,13 @@ export function writeFdSync(fd: 1 | 2, text: string): void {
       // waiting for the reader is exactly what a blocking fd would have done —
       // this branch only exists because the fd may arrive with O_NONBLOCK set.
       // Every other errno (ENOSPC, EBADF) is a real write failure and
-      // propagates to `runStagedCanonicalEval`'s catch.
+      // propagates to the CALLER's handler — `runStagedCanonicalEval`'s catch
+      // for everything inside the staged run, `bin/atlas.ts`'s top-level handler
+      // for the preamble write that precedes it, and `main().catch` in
+      // `brain-paraphrase-eval.ts`. (Noted because that second handler itself
+      // writes through this function, so a genuinely broken fd 2 can throw a
+      // second time inside the rejection handler; the process still exits
+      // non-zero, which is the property that matters.)
       //
       // ⚠️ UNTESTED: nothing in the suite can force EAGAIN on a pipe, so this
       // branch and the sleep below are reasoning, not measurement.

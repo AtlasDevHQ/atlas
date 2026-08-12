@@ -88,15 +88,20 @@ on:
       - "packages/cli/bin/canonical-eval-mcp-llm.ts"
       - "packages/cli/bin/canonical-eval-run.ts"
       - "packages/cli/bin/canonical-eval-tool-selection.ts"
-      # The four files that keep fd 1 clean for the `tee` below (#5126). A break
+      # The FIVE files that keep fd 1 clean for the `tee` below (#5126). A break
       # in any of them is invisible in the job's status — the eval passes and
       # the uploaded artifact is unparseable — so they are triggers even though
-      # three of them are not "the eval's harness" in any other sense:
+      # four of them are not "the eval's harness" in any other sense:
       # `eval-log-destination.ts` stamps the logger's destination,
       # `bin/atlas.ts` holds the import ORDER that stamp depends on,
       # `lib/logger.ts` is the switch that stamp sets, and `init.ts`'s
       # `seedDemoPostgres` is the third writer, called before every mode branch.
       - "packages/cli/bin/eval-log-destination.ts"
+      # ⚠️ `writeFdSync` MOVED HERE in #5041 and this trigger did not follow it.
+      # It is the syscall loop that keeps this job's 63 KB artifact — 2.5 KB
+      # under the pipe cliff — from arriving truncated, and for one commit an
+      # edit to it stopped triggering the job that depends on it.
+      - "packages/cli/bin/write-fd-sync.ts"
       - "packages/cli/bin/atlas.ts"
       - "packages/api/src/lib/logger.ts"
       - "packages/cli/src/commands/init.ts"

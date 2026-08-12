@@ -40,9 +40,11 @@ name: Brain Paraphrase Eval
 #   The repo's rule after #5123: read it off a run, never off arithmetic. No run
 #   has published a number for this job, so none is claimed here. What IS known
 #   is the shape, and it bounds the answer far below `eval-mcp-llm`'s: twenty
-#   single-turn `generateObject` calls on ~40-token prompts, no tool loop and no
-#   dispatch fan-out, against that job's MEASURED 1.02M input tokens across 124
-#   tool calls. That is why PR runs here are not label-gated as its are — but if
+#   single-turn `generateObject` calls, no tool loop and no dispatch fan-out,
+#   against that job's MEASURED 1.02M input tokens across 124 tool calls. (Each
+#   call bills the ~200-token extraction system prompt and the tool schema on top
+#   of a ~40-token message — an earlier draft quoted the message alone, which is
+#   the arithmetic-instead-of-measurement habit #5123 exists to break.) That is why PR runs here are not label-gated as its are — but if
 #   a run ever publishes a figure that makes this look like the wrong call, gate
 #   it the same way rather than arguing with this comment.
 #

@@ -102,15 +102,19 @@ const FD1_GUARDED_SOURCES = [
   // by prose plus a weekly `jq empty` step, which can only see pollution a real
   // run happens to trigger; this scan sees the spelling.
   "packages/cli/bin/brain-paraphrase-eval.ts",
+  // ⚠️ THE WRITER ITSELF IS SCANNED, and an earlier draft exempted it with a
+  // sentence its own next clause refuted: "its body is the one sanctioned
+  // `fs.writeSync` … spelled `fs.writeSync(fd, …)`, which FD1_WRITE deliberately
+  // does not match." If the regex does not match it, there is nothing to exempt
+  // — and while `writeFdSync` lived inside `canonical-eval-run.ts` it WAS
+  // scanned. Leaving it off after the move made the one module every guarded
+  // driver delegates to the only one nothing watched, so a `console.log` added
+  // during a future EAGAIN investigation would corrupt both `tee` artifacts
+  // invisibly. Measured before adding: zero hits on the current file.
+  "packages/cli/bin/write-fd-sync.ts",
 ].map((p) => path.join(REPO_ROOT, p));
 
-/**
- * Where `writeFdSync` is DEFINED, as opposed to the drivers that call it.
- *
- * ⚠️ Not on {@link FD1_GUARDED_SOURCES}, and it must not be: its body is the one
- * sanctioned `fs.writeSync` in the package. It is spelled `fs.writeSync(fd, …)`,
- * which {@link FD1_WRITE} deliberately does not match — see that fixture's note.
- */
+/** Where `writeFdSync` is DEFINED, as opposed to the drivers that call it. */
 const WRITE_FD_SYNC_SRC = path.join(REPO_ROOT, "packages/cli/bin/write-fd-sync.ts");
 
 const SEED_SRC = path.join(REPO_ROOT, "packages/cli/src/commands/init.ts");

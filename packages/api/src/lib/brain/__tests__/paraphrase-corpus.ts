@@ -36,6 +36,12 @@ import { createHash } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 
+// The identity layer itself, so the blank-slot check below asserts the PROPERTY
+// (`identityKey` cannot key this surface) rather than a second spelling of the
+// separator class. A value import: this module already runs inside the api
+// package's test graph, so there is no logger-ordering constraint to respect.
+import { identityKey } from "@atlas/api/lib/brain/identity";
+
 /**
  * The repo root, from this file's own location rather than from `process.cwd()`.
  *
@@ -120,15 +126,31 @@ export interface MessageCorpus {
   readonly pairs: readonly ParaphrasePair[];
 }
 
+/**
+ * The remedy for a missing file, which is DIFFERENT for the two callers — and
+ * one shared sentence got it wrong for one of them.
+ *
+ * `--write` produces the artifact. It cannot produce `messages.json`: that file
+ * is the hand-authored INPUT the eval reads, so a maintainer sent to `--write`
+ * for a missing corpus runs a command that fails for the identical reason.
+ */
+const MISSING_REMEDY: Readonly<Record<string, string>> = {
+  artifact:
+    "Record a fresh one with `bun packages/cli/bin/brain-paraphrase-eval.ts --write`, which needs " +
+    "AI_GATEWAY_API_KEY and spends real money. ⚠️ After a --write, run this suite EXPLICITLY " +
+    "(`bun test src/lib/brain/__tests__/paraphrase-identity.test.ts`) — a regeneration touches only " +
+    "JSON, and `scripts/test-isolated.ts --affected` walks .ts files alone, so it selects nothing " +
+    "for the one change most likely to break this file.",
+  "message corpus":
+    "Restore it from git. It is HUMAN-AUTHORED — the eval reads it and never writes it, so `--write` " +
+    "cannot recreate it.",
+};
+
 function readJson(filePath: string, what: string): unknown {
   if (!fs.existsSync(filePath)) {
     throw new Error(
-      `The paraphrase ${what} is missing at ${filePath}. It is committed to the repo; a fresh ` +
-        `one is recorded with \`bun packages/cli/bin/brain-paraphrase-eval.ts --write\`, which ` +
-        `needs AI_GATEWAY_API_KEY and spends real money. ⚠️ After a --write, run this suite ` +
-        `EXPLICITLY (\`bun test src/lib/brain/__tests__/paraphrase-identity.test.ts\`) — a ` +
-        `regeneration touches only JSON, and \`scripts/test-isolated.ts --affected\` walks .ts ` +
-        `files alone, so it selects nothing for the one change most likely to break this file.`,
+      `The paraphrase ${what} is missing at ${filePath}. It is committed to the repo. ` +
+        (MISSING_REMEDY[what] ?? ""),
     );
   }
   try {
@@ -151,37 +173,94 @@ function readJson(filePath: string, what: string): unknown {
  * not say which file was broken or what to do about it, in a module whose error
  * messages are otherwise its best feature.
  */
-export function loadRecordedArtifact(): RecordedArtifact {
-  const parsed = readJson(PARAPHRASE_ARTIFACT_PATH, "artifact");
+export function loadRecordedArtifact(filePath: string = PARAPHRASE_ARTIFACT_PATH): RecordedArtifact {
+  const parsed = readJson(filePath, "artifact");
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`The paraphrase artifact at ${PARAPHRASE_ARTIFACT_PATH} is not a JSON object.`);
+    throw new Error(`The paraphrase artifact at ${filePath} is not a JSON object.`);
   }
   const root = parsed as Record<string, unknown>;
   if (typeof root.corpusDigest !== "string" || root.corpusDigest === "") {
     throw new Error(
-      `The paraphrase artifact at ${PARAPHRASE_ARTIFACT_PATH} has no \`corpusDigest\`, so it cannot ` +
+      `The paraphrase artifact at ${filePath} has no \`corpusDigest\`, so it cannot ` +
         `be checked against the corpus it claims to describe. Re-record it with ` +
         `\`bun packages/cli/bin/brain-paraphrase-eval.ts --write\`.`,
     );
   }
   if (!root.pairs || typeof root.pairs !== "object" || Array.isArray(root.pairs)) {
     throw new Error(
-      `The paraphrase artifact at ${PARAPHRASE_ARTIFACT_PATH} has no \`pairs\` object — it is ` +
+      `The paraphrase artifact at ${filePath} has no \`pairs\` object — it is ` +
         `truncated or was written by something other than the eval.`,
     );
   }
-  return parsed as RecordedArtifact;
+  const artifact = parsed as RecordedArtifact;
+
+  // ⚠️ EVERY RECORDED SURFACE MUST KEY TO SOMETHING, checked HERE and not only
+  // in the eval that wrote the file.
+  //
+  // The eval refuses to RECORD a claim with a slot that normalizes away. Nothing
+  // refused to CONSUME one, and the two are not the same guarantee: this file is
+  // committed, the eval runs weekly and informationally on PRs, and this suite
+  // runs on every PR. A hand-edited artifact carrying `"predicate": "-"` left
+  // every prohibition below GREEN — `sameSlot` answers `false` for a null key,
+  // which is exactly what the prohibitions assert — so the suite proved nothing
+  // while reporting that it had. That is the state ADR-0037 §9 and this whole
+  // lane exist to make impossible, reached through the one door the lane does
+  // not watch.
+  //
+  // It also pins the eval's `hasBlankSlot` by CONSTRUCTION rather than by a
+  // copied regex: that guard spells its own separator class in another package,
+  // and this asserts the property it is a proxy for — `identityKey` itself. If
+  // the two ever disagree in the direction that matters, this fails.
+  for (const [pairId, sides] of Object.entries(artifact.pairs)) {
+    for (const side of SIDES) {
+      for (const claim of sides[side] ?? []) {
+        for (const [slot, surface] of Object.entries({
+          subject: claim.subject,
+          predicate: claim.predicate,
+          object: claim.object,
+        })) {
+          if (typeof surface !== "string" || identityKey(surface) === null) {
+            throw new Error(
+              `The paraphrase artifact records a claim whose ${slot} keys to NOTHING ` +
+                `(pair "${pairId}", side ${side}, surface ${JSON.stringify(surface)}). Every ` +
+                `prohibition in paraphrase-identity.test.ts passes vacuously against such a row, ` +
+                `so the suite would report proof it does not have. Re-record the artifact rather ` +
+                `than editing it by hand.`,
+            );
+          }
+        }
+      }
+    }
+  }
+  return artifact;
 }
 
-export function loadMessages(): MessageCorpus {
-  const parsed = readJson(PARAPHRASE_MESSAGES_PATH, "message corpus");
+export function loadMessages(filePath: string = PARAPHRASE_MESSAGES_PATH): MessageCorpus {
+  const parsed = readJson(filePath, "message corpus");
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`The paraphrase message corpus at ${PARAPHRASE_MESSAGES_PATH} is not a JSON object.`);
+    throw new Error(`The paraphrase message corpus at ${filePath} is not a JSON object.`);
   }
   if (!Array.isArray((parsed as Record<string, unknown>).pairs)) {
-    throw new Error(`The paraphrase message corpus at ${PARAPHRASE_MESSAGES_PATH} has no \`pairs\` array.`);
+    throw new Error(`The paraphrase message corpus at ${filePath} has no \`pairs\` array.`);
   }
-  return parsed as MessageCorpus;
+  const corpus = parsed as MessageCorpus;
+  // ⚠️ THIS IS WHAT MAKES THE COPIED TUPLE LOAD-BEARING. Copying
+  // `PARAPHRASE_RELATIONS` as a union bought a compile error for a typo in THIS
+  // file — but the union was then asserted by a bare cast over JSON nobody
+  // checked, so a relation added to the driver's tuple and to `messages.json`
+  // would have left this side's type claiming a value the file contradicts,
+  // silently. The duplication is only defensible while its drift is loud, and
+  // for the digest and `SIDES` it already is; this is the third copy's turn.
+  for (const pair of corpus.pairs) {
+    if (!(PARAPHRASE_RELATIONS as readonly string[]).includes(pair.relation)) {
+      throw new Error(
+        `The paraphrase message corpus pair "${pair.id}" has relation ` +
+          `${JSON.stringify(pair.relation)}, which this module's copy of PARAPHRASE_RELATIONS does ` +
+          `not know. The driver's tuple and this one have drifted — reconcile them.`,
+      );
+    }
+  }
+  return corpus;
 }
 
 /**

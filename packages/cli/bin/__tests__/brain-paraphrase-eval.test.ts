@@ -25,11 +25,12 @@ import {
   loadArtifact,
   loadMessageCorpus,
   parseParaphraseArgs,
+  main,
   reportParaphraseRun,
   runBrainParaphraseEval,
   serializeArtifact,
   toRecordedTriple,
-  triplesEqual,
+  triplesEqualBySlot,
   type MessageCorpus,
   type ParaphrasePair,
   type ParaphraseRunReport,
@@ -147,7 +148,7 @@ describe("gradeParaphraseRun", () => {
     // ⚠️ The subject is a keyed slot and the deterministic suite asserts on it
     // twice — the article in `schedule-phrasing`, and `different-subject` where
     // the subject is the ONLY thing holding two prices apart. Deleting
-    // `t.subject === o.subject` from `triplesEqual` killed nothing until this
+    // `t.subject === o.subject` from `triplesEqualBySlot` killed nothing until this
     // test existed: every drift case varied the predicate or the object. Without
     // it, a model that started emitting one subject on both sides of a pair
     // would grade `match` here and turn the api suite red with no indication of
@@ -282,6 +283,19 @@ describe("the corpus-honesty checks", () => {
     const corpus = corpusOf(pairEntry());
     const fresh: RecordedSides = {
       a: [triple({ object: "-" })],
+      b: [triple({ predicate: "costs" })],
+    };
+    const result = gradeParaphraseRun(corpus, { "price-copula": fresh }, artifactOf(corpus, { "price-copula": fresh }));
+    expect(result.outcomes[0].status).toBe("honesty");
+  });
+
+  test("a blank SUBJECT is caught too, not only the predicate and object", () => {
+    // Dropping `triple.subject` from `hasBlankSlot`'s list killed nothing while
+    // both blank tests used a predicate and an object — and the subject is the
+    // slot the consuming suite leans on hardest.
+    const corpus = corpusOf(pairEntry());
+    const fresh: RecordedSides = {
+      a: [triple({ subject: "  " })],
       b: [triple({ predicate: "costs" })],
     };
     const result = gradeParaphraseRun(corpus, { "price-copula": fresh }, artifactOf(corpus, { "price-copula": fresh }));
@@ -505,6 +519,10 @@ describe("runBrainParaphraseEval --write", () => {
     // …and the drift it resolved still travels in the payload, so `--json`
     // records what moved even on a successful write.
     expect(report.outcomes.some((o) => o.status === "drift")).toBe(true);
+    // ⚠️ `comparisonPassed` is the ONLY field that can express "the artifact
+    // being replaced did not match" — `passed` is the write-mode verdict and is
+    // `true` here. Pinning it constant killed nothing until this line.
+    expect(report.comparisonPassed).toBe(false);
   });
 
   test("an existing artifact that cannot be READ is replaced, and the report says so", async () => {
@@ -537,6 +555,7 @@ describe("runBrainParaphraseEval --write", () => {
       extract: honestSeam,
     });
     expect(report.wrote).toBe(true);
+    expect(report.write).toBe(true);
     expect(report.priorArtifactError).toBeNull();
   });
 
@@ -556,7 +575,12 @@ describe("runBrainParaphraseEval --write", () => {
     });
     const raw = fs.readFileSync(artifactPath, "utf-8");
     expect(raw.endsWith("\n")).toBe(true);
-    expect(serializeArtifact(JSON.parse(raw) as RecordedArtifact)).toBe(raw);
+    // ⚠️ The INDENT, not a round-trip. `serializeArtifact(JSON.parse(raw))`
+    // reproduces `raw` for any deterministic serializer — `JSON.parse` preserves
+    // key order and `stringify` re-emits it — so dropping the 2-space indent
+    // killed nothing while the test claimed to pin "stable key order and a
+    // trailing newline". The newline and the order are held by their own lines.
+    expect(raw).toContain('\n  "model":');
     // Corpus order, NOT sorted and NOT insertion order of some map.
     expect(Object.keys((JSON.parse(raw) as RecordedArtifact).pairs)).toEqual([
       "zzz-last",
@@ -568,7 +592,7 @@ describe("runBrainParaphraseEval --write", () => {
 
 // ── The comparison itself ─────────────────────────────────────────────
 
-describe("triplesEqual", () => {
+describe("triplesEqualBySlot", () => {
   // ⚠️ Called DIRECTLY, because the honesty checks now refuse any pair carrying
   // more than one claim a side — so the order and length arms are unreachable
   // through `gradeParaphraseRun`, and an arm no test can reach is an arm that is
@@ -579,11 +603,11 @@ describe("triplesEqual", () => {
   test("order is part of the recording", () => {
     // What the model chose to say first is signal. A set comparison would hide a
     // reordering that the consuming suite would then read differently.
-    expect(triplesEqual([one, two], [two, one])).toBe(false);
+    expect(triplesEqualBySlot([one, two], [two, one])).toBe(false);
   });
 
   test("positive control: the same order compares equal", () => {
-    expect(triplesEqual([one, two], [one, two])).toBe(true);
+    expect(triplesEqualBySlot([one, two], [one, two])).toBe(true);
   });
 
   test("⚠️ a LOST claim is caught — the length check fails in the dangerous direction", () => {
@@ -591,14 +615,14 @@ describe("triplesEqual", () => {
     // the explicit length check a side that LOST a claim grades equal. (A side
     // that GAINED one is caught anyway, because the index goes `undefined`.)
     // That asymmetry is the whole reason the check is there.
-    expect(triplesEqual([one], [one, two])).toBe(false);
-    expect(triplesEqual([one, two], [one])).toBe(false);
+    expect(triplesEqualBySlot([one], [one, two])).toBe(false);
+    expect(triplesEqualBySlot([one, two], [one])).toBe(false);
   });
 
   test("each of the three slots is compared", () => {
-    expect(triplesEqual([one], [triple({ subject: "Starter tier" })])).toBe(false);
-    expect(triplesEqual([one], [triple({ predicate: "costs" })])).toBe(false);
-    expect(triplesEqual([one], [triple({ object: "$599 a month" })])).toBe(false);
+    expect(triplesEqualBySlot([one], [triple({ subject: "Starter tier" })])).toBe(false);
+    expect(triplesEqualBySlot([one], [triple({ predicate: "costs" })])).toBe(false);
+    expect(triplesEqualBySlot([one], [triple({ object: "$599 a month" })])).toBe(false);
   });
 });
 
@@ -695,12 +719,105 @@ describe("reportParaphraseRun", () => {
       corpusPath: "/tmp/messages.json",
       artifactPath: "/tmp/extracted.json",
       write: false,
+      comparisonPassed: true,
       wrote: false,
       dishonestCount: 0,
       priorArtifactError: null,
       ...over,
     };
   }
+
+  /** Collect the transcript instead of writing it to fd 2. */
+  function transcriptOf(over: Partial<ParaphraseRunReport>): { text: string; code: number } {
+    const lines: string[] = [];
+    const code = reportParaphraseRun(reportOf(over), (t) => lines.push(t));
+    return { text: lines.join(""), code };
+  }
+
+  const driftOutcome = {
+    id: "price-copula",
+    relation: "same-claim" as const,
+    status: "drift" as const,
+    detail: "side a: recorded is priced at — now has price",
+    fresh: { a: [triple()], b: [triple()] },
+    recorded: { a: [triple()], b: [triple()] },
+  };
+
+  test("⚠️ the REFUSAL is named, and does not advise re-running the command that was refused", () => {
+    // The fix for round 1's finding shipped untested: mutating the refusal
+    // message away killed nothing, because every test here built a report with
+    // `outcomes: []` and never executed the loop.
+    const { text } = transcriptOf({ write: true, wrote: false, passed: false, dishonestCount: 2 });
+    expect(text).toContain("REFUSED to write");
+    expect(text).toContain("2 pair(s)");
+    // The remedy must not loop: this IS the `--write` run.
+    expect(text).not.toContain("regenerate with --write");
+  });
+
+  test("a failing GRADE run says FAIL and tells the operator to read what moved", () => {
+    const { text } = transcriptOf({ passed: false, outcomes: [driftOutcome] });
+    // ⚠️ THE SUMMARY LINE, not a bare "FAIL". `toContain("FAIL")` matched the
+    // per-outcome line above it, so pinning the summary word to a constant
+    // killed nothing — a grade run could print `PASS: 0/1 pairs match` and exit
+    // 1, which is the self-contradicting transcript this lane fixed in the
+    // write branch and could not detect in this one.
+    expect(text).toContain("FAIL: 0/1 pairs match the recorded artifact.");
+    expect(text).toContain("fails on DRIFT by design");
+    expect(text).toContain("is priced at");
+  });
+
+  test("a passing GRADE run says PASS and offers no remedy", () => {
+    // The control for the line above — and for the summary WORD, which was
+    // pinned to nothing: a mutation forcing "PASS" survived while a grade run
+    // could print `PASS: 3/9 pairs match` and then exit 1.
+    const { text } = transcriptOf({
+      passed: true,
+      outcomes: [{ ...driftOutcome, status: "match", detail: "" }],
+    });
+    expect(text).toContain("PASS: 1/1 pairs match the recorded artifact.");
+    expect(text).not.toContain("FAIL");
+    expect(text).not.toContain("fails on DRIFT by design");
+  });
+
+  test("write mode still prints WHAT MOVED — it is the mode that resolves drift", () => {
+    // Suppressing the detail here silenced the drift diagnosis in the one mode
+    // whose job is to resolve drift, while every other surface tells the
+    // operator to read it before regenerating.
+    const { text } = transcriptOf({ write: true, wrote: true, passed: true, outcomes: [driftOutcome] });
+    expect(text).toContain("is priced at");
+  });
+
+  test("write mode does not print a stale remedy for the digest it just refreshed", () => {
+    const { text } = transcriptOf({
+      write: true,
+      wrote: true,
+      passed: true,
+      digestMismatch: { corpus: "aaaaaaaaaaaa", artifact: "bbbbbbbbbbbb" },
+      staleArtifactPairs: ["long-gone"],
+    });
+    expect(text).not.toContain("Re-run with --write");
+    expect(text).toContain("long-gone");
+  });
+
+  test("⚠️ a write that wrote NOTHING and refused nothing is a harness fault, and exits 1", () => {
+    // `passed` derives from `dishonestCount`, so this state used to print
+    // "REFUSED … 0 pair(s) failed" — a diagnosis contradicted by its own number
+    // — and exit 0. The same mutation class this lane's commit message opens
+    // with, in the sibling function.
+    const { text, code } = transcriptOf({ write: true, wrote: false, passed: true, dishonestCount: 0 });
+    expect(text).toContain("harness fault");
+    expect(code).toBe(1);
+  });
+
+  test("a discarded prior recording is named in the SUMMARY, not only mid-transcript", () => {
+    const { text } = transcriptOf({
+      write: true,
+      wrote: true,
+      passed: true,
+      priorArtifactError: "Failed to parse paraphrase artifact /tmp/x.json: unexpected token",
+    });
+    expect(text).toContain("DISCARDED, not superseded");
+  });
 
   test("a passing report exits 0", () => {
     expect(reportParaphraseRun(reportOf({ passed: true }))).toBe(0);
@@ -718,6 +835,66 @@ describe("reportParaphraseRun", () => {
 
   test("a successful write exits 0", () => {
     expect(reportParaphraseRun(reportOf({ write: true, wrote: true, passed: true }))).toBe(0);
+  });
+});
+
+describe("main", () => {
+  // ⚠️ THE COMPOSITION, which round 2 found unheld. `reportParaphraseRun`
+  // returning the right number and `main` handing that number to `process.exit`
+  // are two facts; only the first had a test, and `return 0` here made a fully
+  // drifted, tag-blocking run exit 0 with the suite green.
+  function stage(): { corpusPath: string; artifactPath: string; corpus: MessageCorpus } {
+    const dir = tempDir();
+    const corpus = loadableCorpus();
+    const corpusPath = path.join(dir, "messages.json");
+    const artifactPath = path.join(dir, "extracted.json");
+    fs.writeFileSync(corpusPath, JSON.stringify(corpus));
+    fs.writeFileSync(
+      artifactPath,
+      serializeArtifact(
+        artifactOf(corpus, {
+          "price-copula": { a: [triple()], b: [triple({ predicate: "costs" })] },
+          "small-talk": { a: [], b: [] },
+        }),
+      ),
+    );
+    return { corpusPath, artifactPath, corpus };
+  }
+
+  const matching = async ({ pairId, side }: { pairId: string; side: "a" | "b" }) =>
+    pairId === "small-talk" ? [] : [triple({ predicate: side === "a" ? "is priced at" : "costs" })];
+  const drifted = async ({ pairId, side }: { pairId: string; side: "a" | "b" }) =>
+    pairId === "small-talk" ? [] : [triple({ predicate: side === "a" ? "has price" : "costs" })];
+
+  test("returns 0 when the run reproduces the artifact", async () => {
+    const { corpusPath, artifactPath } = stage();
+    const code = await main(["--corpus", corpusPath, "--artifact", artifactPath], matching, () => {});
+    expect(code).toBe(0);
+  });
+
+  test("⚠️ returns 1 when the run has drifted — this is the tag-blocking gate", async () => {
+    const { corpusPath, artifactPath } = stage();
+    const code = await main(["--corpus", corpusPath, "--artifact", artifactPath], drifted, () => {});
+    expect(code).toBe(1);
+  });
+
+  test("--json does not change the verdict", async () => {
+    // ⚠️ The fd-1 CONTENT is deliberately not asserted here. `import * as fs`
+    // is not patchable under ESM, so a spy would be testing the spy — and the
+    // property that matters (nothing but the payload reaches fd 1) is held by
+    // the GREP in `eval-json-stdout.test.ts`, which now covers this driver and
+    // the writer it delegates to, plus the workflow's `jq empty` step. What is
+    // worth pinning here is that the flag is presentational: a mode that
+    // changed the verdict would make the CI run and a local run disagree.
+    const { corpusPath, artifactPath } = stage();
+    const plain = await main(["--corpus", corpusPath, "--artifact", artifactPath], drifted, () => {});
+    const json = await main(
+      ["--corpus", corpusPath, "--artifact", artifactPath, "--json"],
+      drifted,
+      () => {},
+    );
+    expect(plain).toBe(1);
+    expect(json).toBe(plain);
   });
 });
 
@@ -754,8 +931,22 @@ describe("parseParaphraseArgs", () => {
   test("⚠️ an unrecognized flag is an error, not a silent no-op", () => {
     // `--writ` would otherwise GRADE instead of writing, then advise the
     // operator to run `--write` — the command they thought they had run.
-    expect(() => parseParaphraseArgs(["--writ"])).toThrow(/Unrecognized flag --writ/);
-    expect(() => parseParaphraseArgs(["--jsn"])).toThrow(/Unrecognized flag --jsn/);
+    expect(() => parseParaphraseArgs(["--writ"])).toThrow(/Unrecognized argument "--writ"/);
+    expect(() => parseParaphraseArgs(["--jsn"])).toThrow(/Unrecognized argument "--jsn"/);
+    // ⚠️ AND THE SPELLINGS THAT ARE NOT `--`-PREFIXED, which the first cut of
+    // this guard skipped — `-w` is the likelier typo than `--writ`, and a bare
+    // word is the likelier paste.
+    expect(() => parseParaphraseArgs(["-w"])).toThrow(/Unrecognized argument "-w"/);
+    expect(() => parseParaphraseArgs(["write"])).toThrow(/Unrecognized argument "write"/);
+    expect(() => parseParaphraseArgs(["/some/path.json"])).toThrow(/Unrecognized argument/);
+  });
+
+  test("a repeated flag throws rather than silently taking the first", () => {
+    // `indexOf` resolves the FIRST occurrence, so `--corpus a --corpus b` grades
+    // `a` while the operator reads `b` off their own command line.
+    expect(() => parseParaphraseArgs(["--corpus", "/a", "--corpus", "/b"])).toThrow(
+      /--corpus was given more than once/,
+    );
   });
 
   test("a path that starts with `--` is not itself scanned as a flag", () => {

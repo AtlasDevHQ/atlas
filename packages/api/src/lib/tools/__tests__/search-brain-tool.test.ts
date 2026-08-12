@@ -315,7 +315,6 @@ describe("searchBrain tool.execute", () => {
             predicate: "owned_by",
             object: "platform",
             status: "published",
-            predicate_cardinality: "single",
             visible_to: ["org"],
             provenance: { source: "slack", sourceId: "m1", episodeId: "e1" },
             source_episode_id: "e1",

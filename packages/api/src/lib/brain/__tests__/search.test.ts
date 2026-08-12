@@ -71,6 +71,16 @@ interface Call {
  * first and was answered with the fact page's rows; then `predicate_cardinality`
  * until #5028 removed that column from `FACT_COLUMNS` on the way to dropping it.
  *
+ * ⚠️ The sibling file `search-logging.test.ts` carried the SAME `f.valid_to` key
+ * and was live-colliding on it until #5028 — its truncation test registered a
+ * counterpart response and was answered with the fact page's row. That collision
+ * was undetectable by assertion: the substituted row is keyed `fact-1` while the
+ * counterpart lookup is by `rival-i`, so it was discarded before reaching any
+ * output and NO widening of that test's assertions would have caught it (see
+ * that file's `SQL` comment for the full trace). A collision is not hypothetical,
+ * and it does not announce itself to a test — the throw below is the only thing
+ * that makes it announce itself.
+ *
  * ⚠️ That removal made `FACT_COLUMNS` and `COUNTERPART_COLUMNS` BYTE-IDENTICAL,
  * so no key in the shared column list can ever separate them again — the
  * discriminator has to come from what `buildFactQuery` APPENDS. Corroboration is

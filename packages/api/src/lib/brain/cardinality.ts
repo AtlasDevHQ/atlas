@@ -102,7 +102,9 @@
  * touches it, per `db/migrations/README.md`'s two-phase discipline.
  *
  * ⚠️ This paragraph used to say *"this slice stops reading and writing it"*, and
- * the READING half was false for three releases. #5027 stopped the WRITES
+ * the READING half was false from #5027 (2026-08-05) until #5028 phase 1b — one
+ * shipped release, `v0.2.5`, which is the one currently in production and the
+ * reason the drop could not follow it. #5027 stopped the WRITES
  * (`INSERT_FACT_SQL`, the region importer); the two projections in
  * `candidates.ts` and `search.ts` went on SELECTing the column, which is why
  * #5028 could not drop it on the schedule its own issue assumed. Reads stop in

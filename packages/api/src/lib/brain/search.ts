@@ -391,8 +391,7 @@ function str(value: unknown): string | null {
  *
  * `0` is the conservative value but not a harmless one: `corroborationCount: 0`
  * on a corroborated claim understates the evidence behind it, which on a
- * trust-labeled surface is the same class of harm the `cardinality` fallback
- * logs for.
+ * trust-labeled surface is the same class of harm {@link factStatus} logs for.
  */
 function count(value: unknown, field: string, workspaceId: string): number {
   const n = typeof value === "number" ? value : Number(value);

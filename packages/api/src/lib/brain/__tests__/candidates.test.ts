@@ -337,6 +337,21 @@ describe("loadFactCandidates — visibility", () => {
     expect(db.calls[0]?.sql).toContain("f.invalidated_at IS NULL");
   });
 
+  it("does not SELECT predicate_cardinality — the column is being dropped (#5028)", async () => {
+    // The pin every other site that stopped touching this column already has
+    // (`reconcile.test.ts`, `correction.test.ts`, `export.test.ts`,
+    // `bundle-identity-v3.test.ts`; `FACT_COLUMNS` is covered by
+    // `search.test.ts`'s byte-identical golden). `CANDIDATE_COLUMNS` had none,
+    // which is the gap that matters most after the drop lands: re-adding the
+    // column here is one plausible-looking line, and it becomes a 500 on the
+    // review queue the moment phase 2 ships. Cheap now, unfalsifiable later —
+    // once the column is gone a `-pg` suite would catch it, but this queue's
+    // unit tests run without Postgres and would stay green.
+    const db = reader([{ match: "FROM brain_facts f", rows: [factRow()] }]);
+    await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
+    expect(db.calls[0]?.sql).not.toContain("predicate_cardinality");
+  });
+
   it("excludes SUPERSEDED facts exactly as tombstoned ones (#4912)", async () => {
     // A stamped `valid_to` means a human promotion replaced this belief; there
     // is no trust call left to make on it and it leaves the queue the way a

@@ -324,7 +324,8 @@ export function CandidateDetail({ candidate }: { candidate: BrainFactCandidate }
           entry, and #5025 owns that surface along with the blast-radius preview
           a `single` flag requires. No claim beats a false one, and the
           will-supersede preview already tells the reviewer what this publish
-          actually does. #5028 removes the field from the wire type.
+          actually does. #5028 phase 1b removed the field from the wire type, so
+          the repoint this comment warns against no longer compiles.
         */}
         <p className="text-xs text-muted-foreground">
           {candidate.corroborationCount} corroborating{" "}

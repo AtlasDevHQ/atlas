@@ -497,6 +497,39 @@ function aliasAutoApproveSources(workspaceId: string): ReadonlySet<AliasSourceCl
 }
 
 /**
+ * One warn per process for the unreadable-settings-tier refusal, not one per
+ * proposal (#5162).
+ *
+ * The condition is process-lifetime: it cannot clear without a successful
+ * `loadSettings`, and nothing in a producer run triggers one. Logged per
+ * candidate it would emit a line for every alias in the batch — 10k identical
+ * warns on a first-run producer, which buries the one fact an operator needs.
+ * Modelled on `lib/email/recipient-gate.ts`'s `noMemberDbWarned`, and carrying
+ * its caveat verbatim: this gates LOG VOLUME ONLY, never the security decision.
+ * The refusal itself is evaluated every single time.
+ *
+ * Re-armed by `_resetSettingsCache` so a test that simulates a fresh boot sees
+ * a fresh warn rather than inheriting an earlier test's latch.
+ */
+let settingsTierWarned = false;
+
+/** @internal Re-arm the once-per-process warn — for testing only. */
+export function _resetSettingsTierWarning(): void {
+  settingsTierWarned = false;
+}
+
+function warnSettingsTierUnreadable(workspaceId: string): void {
+  if (settingsTierWarned) return;
+  settingsTierWarned = true;
+  log.warn(
+    { workspaceId, event: "brain.alias_auto_approve.settings_tier_unreadable" },
+    "Settings never loaded from the internal DB this boot, so a workspace's alias auto-approval " +
+      "opt-out cannot be read — every alias proposal queues for human review until settings load. " +
+      "Check the `settings` table is reachable and restart. Logged once per process.",
+  );
+}
+
+/**
  * ADR-0037 §6's split, as one predicate.
  *
  * Three conjuncts, and the FIRST is not a knob. `warehouse_key` at the
@@ -528,13 +561,10 @@ function autoApproveEligible(
 ): boolean {
   // FIRST, before any knob is read: a settings cache that never loaded cannot
   // carry this workspace's opt-out. Ordered ahead of the shape checks so the
-  // warn fires on the condition rather than on whichever candidate happened to
-  // arrive with a readable position.
+  // refusal turns on the condition rather than on whichever candidate happened
+  // to arrive with a readable position.
   if (!settingsCacheEverLoaded()) {
-    log.warn(
-      { workspaceId },
-      "Settings cache never loaded — refusing alias auto-approval; a workspace opt-out cannot be read, so every proposal queues for review",
-    );
+    warnSettingsTierUnreadable(workspaceId);
     return false;
   }
   // Narrowed rather than cast: the decide arm reads these off a database row,
@@ -1106,21 +1136,37 @@ export async function decideAliasProposal(
       // live workspace setting and can change between the two, and a producer
       // that cached `autoApprove: true` across a batch would otherwise approve
       // under a policy the operator has already turned off.
-      const eligible = autoApproveEligible(workspaceId, {
-        position: row.slot_position,
-        sourceClass: row.source_class,
-        confidence: row.confidence,
-      });
+      // `approver.kind === "auto" &&` FIRST, so the predicate is not evaluated
+      // on the human path at all (#5162). It emits a warn, and a human
+      // approving a proposal used to trigger a line reading "refusing alias
+      // auto-approval" at the moment their approval committed — the log
+      // asserting the opposite of what happened.
+      const eligible =
+        approver.kind !== "auto" ||
+        autoApproveEligible(workspaceId, {
+          position: row.slot_position,
+          sourceClass: row.source_class,
+          confidence: row.confidence,
+        });
       if (approver.kind === "auto" && !eligible) {
+        // Two causes, two messages. "The settings narrow that further" is FALSE
+        // when the settings were never read, and it sends an operator to
+        // inspect two knobs that are set correctly while the real cause — one
+        // failed `loadSettings` at boot — appears nowhere in the response.
+        const settingsUnreadable = !settingsCacheEverLoaded();
         return {
           kind: "refused",
           id,
           refusal: "not-auto-approvable",
-          message:
-            `Proposal ${id} (${row.source_class}, ${position}) is not eligible for auto-approval. ` +
-            "ADR-0037 §6 admits only a warehouse-derived entity edge, and the workspace's " +
-            "`ATLAS_BRAIN_ALIAS_AUTO_APPROVE_*` settings narrow that further. It stays queued for " +
-            "a human.",
+          message: settingsUnreadable
+            ? `Proposal ${id} (${row.source_class}, ${position}) stays queued for a human: settings ` +
+              "never loaded from the internal DB this boot, so this workspace's alias auto-approval " +
+              "policy could not be read and no proposal may auto-approve. This is not a policy " +
+              "decision — check the `settings` table is reachable and restart."
+            : `Proposal ${id} (${row.source_class}, ${position}) is not eligible for auto-approval. ` +
+              "ADR-0037 §6 admits only a warehouse-derived entity edge, and the workspace's " +
+              "`ATLAS_BRAIN_ALIAS_AUTO_APPROVE_*` settings narrow that further. It stays queued for " +
+              "a human.",
         };
       }
 

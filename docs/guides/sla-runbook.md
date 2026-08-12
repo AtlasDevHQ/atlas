@@ -2,9 +2,30 @@
 
 > This is an internal operations document. It is NOT published to the docs site.
 
-## Published SLA targets
+> ⚠️ **Atlas publishes no numeric availability SLA (#5163).** Nothing below is a
+> customer commitment. The figures in this file are **internal operational
+> targets** — what we aim at and page ourselves on. `features.sla` is `null` on
+> every plan. (The table's columns used to be labelled with two tier names that
+> matched nothing in `PLAN_TIERS`; they are now plain severity bands, because a
+> target column named after a plan reads as a plan's entitlement.)
+>
+> Two consequences worth stating, because this is the document someone opens
+> mid-incident and it used to read as though a contract existed:
+>
+> - **Do not quote these numbers to a customer**, and do not use "SLA breach" in
+>   customer-facing writing on the strength of them. Where a customer genuinely
+>   has a service level, it is in a signed order form — read that, not this.
+> - **The uptime figures are not measurable as written.** The one external
+>   monitor targets the fleet-aggregating `/api/health`, so a healthy region can
+>   read down because another is degraded, and two of the three regions sold
+>   (`eu`, `apac`) have no external monitor at all. Treat an uptime number here
+>   as US-only and directional until per-region monitoring exists.
 
-| Metric              | Team     | Enterprise |
+## Internal operational targets
+
+*Not published, not contractual — see the note above.*
+
+| Metric              | Standard | Priority   |
 | ------------------- | -------- | ---------- |
 | Uptime              | 99.9%    | 99.95%     |
 | SQL generation p95  | < 5s     | < 5s       |
@@ -22,7 +43,7 @@
 - API health endpoint monitored at 10-minute intervals from US East (free tier; upgrade to Starter for 1-min)
 - A "down" event is any check that returns non-2xx or times out (10s)
 - Monthly uptime = `(total_checks - failed_checks) / total_checks`
-- Breach threshold: Team < 99.9% (43.2 min/month), Enterprise < 99.95% (21.6 min/month)
+- Internal target: < 99.9% (43.2 min/month) standard, < 99.95% (21.6 min/month) priority. Missing one is an operational signal, not a contractual breach
 
 **What triggers an alert:**
 - OpenStatus marks a monitor as "degraded" or "down"
@@ -97,15 +118,23 @@ The incident affecting {service} has been resolved.
 - Duration: {start} to {end} ({X minutes})
 - Root cause: {brief description}
 - Resolution: {what fixed it}
-- Affected plans: {Team, Enterprise, or both}
+- Affected plans: {list the affected plan tiers}
 
 A post-incident review will be published within 5 business days.
-SLA credits (if applicable) will be calculated and applied automatically.
 
 — Atlas Operations
 ```
 
 ## Credit calculation
+
+> ⚠️ **There is no standing service-credit entitlement to calculate against
+> (#5163).** No plan carries a published SLA, so nothing below is owed to a
+> customer by default, and "SLA breach confirmed → calculate credits" is not a
+> procedure to run on your own authority. Treat this section as a **worked
+> model** for negotiating or honouring a credit term in a signed order form:
+> read that contract's own window, exclusions, cap and claims process, which
+> may differ from every number here. If a customer asks for a credit and no
+> order-form term exists, that is a commercial decision, not an operational one.
 
 ### Formula
 
@@ -123,14 +152,14 @@ credit_amount = (monthly_fee / total_minutes_in_month) * credit_minutes
    - Customer-side configuration issues
    - Third-party service outages (LLM providers, customer databases)
    - Force majeure
-4. **Application** — credits applied automatically to next billing cycle after incident confirmation
+4. **Application** — where an order form provides credits, apply them to the next billing cycle after incident confirmation, following that contract's claims process (some require the customer to request within a window)
 5. **Verification** — use OpenStatus incident history as source of truth for downtime duration
 
 ### Example
 
-- Enterprise customer paying $200/seat/mo, 10 seats = $2,000/mo
+- Hypothetical customer with a negotiated 99.95% order-form term, paying $200/seat/mo, 10 seats = $2,000/mo
 - 15 minutes of unplanned downtime in a month
-- Enterprise SLA allows ~22 min downtime (99.95% of ~43,200 min)
+- That term allows ~22 min downtime (99.95% of ~43,200 min)
 - 15 min < 22 min threshold → no credit owed
 - If downtime were 30 min: 30 - 22 = 8 min over SLA → 80 min credit
 - Credit = ($2,000 / 43,200) * 80 ≈ $3.70
@@ -142,8 +171,8 @@ credit_amount = (monthly_fee / total_minutes_in_month) * credit_minutes
 | 1    | Monitor alert fires              | On-call engineer    | Acknowledge within 15 min, begin triage   |
 | 2    | Not resolved within 30 min       | On-call engineer    | Post update, escalate to senior engineer  |
 | 3    | Not resolved within 1 hour       | Engineering lead    | Coordinate cross-team response            |
-| 4    | Customer-facing > 1 hour         | Engineering lead    | Notify affected Enterprise customers      |
-| 5    | SLA breach confirmed             | Operations          | Calculate credits, update status page     |
+| 4    | Customer-facing > 1 hour         | Engineering lead    | Notify affected customers                 |
+| 5    | Availability target missed       | Operations          | Update status page; credits ONLY if an order form provides them (#5163) |
 
 ## Post-incident review process
 
@@ -157,7 +186,7 @@ credit_amount = (monthly_fee / total_minutes_in_month) * credit_minutes
 **Date:** {YYYY-MM-DD}
 **Duration:** {start} to {end} ({X minutes})
 **Severity:** {Critical | High | Normal}
-**Affected plans:** {Team, Enterprise, or both}
+**Affected plans:** {list the affected plan tiers}
 
 ## Summary
 {1-2 sentence description of what happened}
@@ -185,7 +214,7 @@ credit_amount = (monthly_fee / total_minutes_in_month) * credit_minutes
 ### Publication
 
 - Internal review shared in team channel
-- Enterprise customers receive a summary if SLA was breached
+- Customers on a negotiated order-form service level receive a summary if its target was missed
 - Public post-mortem on status page for Critical severity incidents
 
 ## Alerting configuration checklist

@@ -2762,28 +2762,139 @@ function isSaasImmutableKey(key: string): key is SaasImmutableKey {
  *   empty/unparseable value is the SAFE end (everything queues for review).
  *   Membership is the audit half of #5161; `saasVisible: false` on the defs is
  *   the access half.
+ *
+ * Adding a family means adding a rule in {@link SECURITY_SENSITIVE_RULES}; the
+ * table below IS the key set, so there is no way to join one without the other.
  */
-export const SECURITY_SENSITIVE_KEYS: ReadonlySet<string> = new Set([
-  "ATLAS_TRIAL_IP_RATE_LIMIT_RPM",
-  "ATLAS_TRIAL_EMAIL_RATE_LIMIT_RPM",
-  "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES",
-  "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD",
-]);
+/** The structured fields {@link auditSecuritySensitiveChange} logs. */
+export interface SecuritySensitiveAudit {
+  readonly disablesControl: boolean;
+  readonly widensAuthority: boolean;
+}
+
+/** How one sensitive key decides its audit flags from a written value. */
+type SecuritySensitiveRule = (
+  action: "set" | "clear",
+  value: string | undefined,
+) => SecuritySensitiveAudit;
 
 /**
  * The only alias source class that may auto-approve without widening the
  * authority — a warehouse primary key, certain by construction. Kept as a bare
  * string rather than imported from `brain/vocabulary-*`: `lib/settings.ts` is
  * below the brain modules and must not acquire an edge to them for an audit
- * predicate. The registry `default` two hundred lines up is the same literal.
+ * predicate. The registry `default` two hundred lines up is the same literal,
+ * and `settings.test.ts` pins the two together so the duplication cannot rot.
  */
 const ALIAS_SOURCE_CLASS_NOT_WIDENING = "warehouse_key";
 
 /**
+ * The abuse-control rule (#3797): a documented `0 = disabled` sentinel, so a
+ * zero or unparseable value turned the control OFF. No widening notion.
+ */
+const abuseThresholdRule: SecuritySensitiveRule = (action, value) => {
+  const parsed = value === undefined ? undefined : Number(value);
+  return {
+    disablesControl:
+      action === "set" && (parsed === 0 || (parsed !== undefined && !Number.isFinite(parsed))),
+    widensAuthority: false,
+  };
+};
+
+/**
+ * The alias source-list rule (#5161). Widens when any class beyond
+ * `warehouse_key` is named.
+ *
+ * ⚠️ Judged on the WRITTEN value, not the reader's post-validation effect, and
+ * that asymmetry with {@link aliasThresholdRule} below is deliberate.
+ * `aliasAutoApproveSources` silently DROPS a token it doesn't recognise, so
+ * `warehouse_key,extractr` widens nothing — but the operator who wrote it
+ * believes they widened, the drop is invisible to them, and an audit log that
+ * goes quiet on a typo'd privilege escalation is the wrong failure. The
+ * threshold has no equivalent silent-drop: an out-of-range value there is
+ * rejected INTO the safest state, loudly.
+ */
+const aliasSourcesRule: SecuritySensitiveRule = (action, value) => ({
+  disablesControl: false,
+  widensAuthority:
+    action === "set" &&
+    (value ?? "")
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .some((t) => t !== ALIAS_SOURCE_CLASS_NOT_WIDENING),
+});
+
+/**
+ * The alias confidence-bar rule (#5161). Widens only when the bar the reader
+ * will actually apply is BELOW the shipped `1`.
+ *
+ * ⚠️ Parses exactly as `aliasAutoApproveThreshold` parses — `parseFloat`, then
+ * the same `0 <= n <= 1` range — so the audit and the behaviour agree by
+ * construction rather than by coincidence. Using `Number` here instead was a
+ * measured false negative in review: `Number("0.5x")` is `NaN` so the write
+ * audited as harmless, while `parseFloat("0.5x")` is `0.5` and the reader
+ * halved the bar. It also flagged `-0.5` as a widening when the reader rejects
+ * it into the disabled (safest) state. Both directions of that divergence are
+ * pinned in `settings.test.ts`.
+ */
+const aliasThresholdRule: SecuritySensitiveRule = (action, value) => {
+  if (action !== "set" || value === undefined || value.trim() === "") {
+    return { disablesControl: false, widensAuthority: false };
+  }
+  const parsed = Number.parseFloat(value);
+  const readerHonours = Number.isFinite(parsed) && parsed >= 0 && parsed <= 1;
+  return { disablesControl: false, widensAuthority: readerHonours && parsed < 1 };
+};
+
+/**
+ * Every sensitive key, paired with the rule that reads it.
+ *
+ * ⚠️ THE TABLE IS THE SET — that is the whole point of the shape, and it is the
+ * same `as const`-plus-closed-union device `SAAS_IMMUTABLE_KEYS` uses forty
+ * lines up for the same reason. A hand-maintained `Set` with a `switch` beside
+ * it lets a fifth key be added with no rule, where it falls through to whatever
+ * arm is last — and review measured that: a boolean key landing on
+ * {@link abuseThresholdRule} reports `disablesControl: true` on `"true"` AND on
+ * `"false"`, because `Number("true")` is `NaN`. A false security-audit line is
+ * worse than none, and nothing — not the compiler, not a test — would have
+ * caught it.
+ *
+ * `Record<SecuritySensitiveKey, …>` makes "added a key, forgot the rule" a
+ * compile error, and a typo in a key name a compile error rather than a silent
+ * fall-through. This is #5161's own defect class one level up: a claim whose
+ * subject was enlarged without re-checking the predicate riding on it.
+ */
+const SECURITY_SENSITIVE_KEYS_LITERAL = [
+  "ATLAS_TRIAL_IP_RATE_LIMIT_RPM",
+  "ATLAS_TRIAL_EMAIL_RATE_LIMIT_RPM",
+  "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES",
+  "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD",
+] as const;
+
+/** Closed union of keys whose runtime mutation is security-relevant. */
+export type SecuritySensitiveKey = (typeof SECURITY_SENSITIVE_KEYS_LITERAL)[number];
+
+const SECURITY_SENSITIVE_RULES: Record<SecuritySensitiveKey, SecuritySensitiveRule> = {
+  ATLAS_TRIAL_IP_RATE_LIMIT_RPM: abuseThresholdRule,
+  ATLAS_TRIAL_EMAIL_RATE_LIMIT_RPM: abuseThresholdRule,
+  ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES: aliasSourcesRule,
+  ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD: aliasThresholdRule,
+};
+
+export const SECURITY_SENSITIVE_KEYS: ReadonlySet<string> = new Set(
+  SECURITY_SENSITIVE_KEYS_LITERAL,
+);
+
+/** Type-guard that narrows `string` → {@link SecuritySensitiveKey}. */
+function isSecuritySensitiveKey(key: string): key is SecuritySensitiveKey {
+  return (SECURITY_SENSITIVE_KEYS as ReadonlySet<string>).has(key);
+}
+
+/**
  * Pure audit decision for {@link auditSecuritySensitiveChange}: the structured
- * fields to log when `key` is in {@link SECURITY_SENSITIVE_KEYS}, or `null`
- * when it isn't (no audit). Exported so both predicates are unit-testable
- * without DB/logger plumbing.
+ * fields to log when `key` is sensitive, or `null` when it isn't (no audit).
+ * Exported so every rule is unit-testable without DB/logger plumbing.
  *
  * Two flags rather than one "weakened" boolean, because they are not the same
  * claim and an operator filters on different ones:
@@ -2792,51 +2903,20 @@ const ALIAS_SOURCE_CLASS_NOT_WIDENING = "warehouse_key";
  *   sentinel). **Always false for the alias keys**: their disabled position
  *   (empty threshold) means *everything queues for review*, which is the safe
  *   end, and reusing the numeric rule there would flag the safest possible
- *   write as a disable. That inversion is the whole reason this function
- *   dispatches on key.
+ *   write as a disable. That inversion is why the rules are per-key.
  * - `widensAuthority` — more proposals now auto-approve with nobody in front
  *   of them. Always false for the abuse thresholds, which have no such notion.
  *
- * Both are computed on the WRITTEN value, not on the reader's post-validation
- * effect. `aliasAutoApproveSources` silently drops tokens it doesn't
- * recognise, so `warehouse_key,extractr` widens nothing in practice — but it
- * is an attempt to widen, and an audit log that stays silent on a typo'd
- * privilege escalation is the wrong failure. A `clear` is value-unknown (it
- * reverts to a platform override that may itself be wide), so it flags
- * neither, consistent with the pre-existing threshold behaviour.
+ * A `clear` flags neither on any key: it reverts to a platform override that
+ * may itself be wide, so the written value does not determine the outcome.
  */
 export function securitySensitiveAuditFields(
   key: string,
   action: "set" | "clear",
   value: string | undefined,
-): { disablesControl: boolean; widensAuthority: boolean } | null {
-  if (!SECURITY_SENSITIVE_KEYS.has(key)) return null;
-
-  if (key === "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES") {
-    const widensAuthority =
-      action === "set" &&
-      (value ?? "")
-        .split(",")
-        .map((t) => t.trim())
-        .filter(Boolean)
-        .some((t) => t !== ALIAS_SOURCE_CLASS_NOT_WIDENING);
-    return { disablesControl: false, widensAuthority };
-  }
-
-  if (key === "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD") {
-    // Only a finite bar BELOW the shipped `1` widens. Empty and unparseable
-    // both disable auto-approval outright (`aliasAutoApproveThreshold` returns
-    // null), so they narrow — the opposite of the numeric rule below.
-    const parsed = value === undefined || value.trim() === "" ? undefined : Number(value);
-    const widensAuthority =
-      action === "set" && parsed !== undefined && Number.isFinite(parsed) && parsed < 1;
-    return { disablesControl: false, widensAuthority };
-  }
-
-  const parsed = value === undefined ? undefined : Number(value);
-  const disablesControl =
-    action === "set" && (parsed === 0 || (parsed !== undefined && !Number.isFinite(parsed)));
-  return { disablesControl, widensAuthority: false };
+): SecuritySensitiveAudit | null {
+  if (!isSecuritySensitiveKey(key)) return null;
+  return SECURITY_SENSITIVE_RULES[key](action, value);
 }
 
 /**

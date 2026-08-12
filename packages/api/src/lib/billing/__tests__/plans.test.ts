@@ -4,6 +4,8 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 
+import { PLAN_TIERS } from "@useatlas/types";
+
 import {
   getPlanDefinition,
   getPlanLimits,
@@ -177,7 +179,13 @@ describe("billing/plans", () => {
     // carrying a figure, so a test naming only that plan would pass again the
     // moment the figure reappears on Pro. Restoring any value goes red here.
     it("publishes no numeric SLA on any tier (#5163)", () => {
-      for (const tier of ["free", "trial", "starter", "pro", "business"] as const) {
+      // Iterated from PLAN_TIERS rather than a hand-written array: the array
+      // spelled five of the six tiers (it omitted `locked`) while the comment
+      // above claimed EVERY tier, and it could never cover a tier added later —
+      // which is the same fixture-agrees-by-construction gap the claim is
+      // arguing against.
+      expect(PLAN_TIERS.length).toBeGreaterThan(0);
+      for (const tier of PLAN_TIERS) {
         expect(getPlanDefinition(tier).features.sla).toBeNull();
       }
     });

@@ -19,6 +19,7 @@ import {
   HOT_RELOADED_KEYS,
   isHotReloadedKey,
   securitySensitiveAuditFields,
+  settingsCacheEverLoaded,
   SECURITY_SENSITIVE_KEYS,
   _resetSettingsCache,
 } from "../settings";
@@ -1258,6 +1259,32 @@ describe("securitySensitiveAuditFields — alias auto-approve authority (#5161)"
     expect(SECURITY_SENSITIVE_KEYS.has(THRESHOLD)).toBe(true);
   });
 
+  it("every sensitive key is classified into exactly one family", () => {
+    // The two families weaken in OPPOSITE directions, so a key that belongs to
+    // neither list is a key whose audit direction nobody decided. The dispatch
+    // table makes omitting a RULE a compile error; this makes omitting the
+    // THOUGHT a test failure, in both directions.
+    const ABUSE_THRESHOLD_KEYS = ["ATLAS_TRIAL_IP_RATE_LIMIT_RPM", "ATLAS_TRIAL_EMAIL_RATE_LIMIT_RPM"];
+    const AUTHORITY_KEYS = [SOURCES, THRESHOLD];
+    const classified = [...ABUSE_THRESHOLD_KEYS, ...AUTHORITY_KEYS].sort();
+    expect(classified).toEqual([...SECURITY_SENSITIVE_KEYS].sort());
+    expect(new Set(classified).size).toBe(classified.length);
+  });
+
+  it("the shipped default source list never reads as a widening", () => {
+    // `ALIAS_SOURCE_CLASS_NOT_WIDENING` duplicates the registry `default` two
+    // hundred lines away, deliberately (settings.ts must not import brain
+    // modules) — so the duplication needs a test or it rots silently. Renaming
+    // the source class in the brain module without updating the audit would
+    // make the shipped default audit as a widening, and every real widening
+    // audit as safe.
+    const def = getSettingDefinition(SOURCES);
+    expect(def?.default).toBe("warehouse_key");
+    expect(securitySensitiveAuditFields(SOURCES, "set", def?.default)).toMatchObject({
+      widensAuthority: false,
+    });
+  });
+
   it("the shipped source list is not a widening", () => {
     expect(securitySensitiveAuditFields(SOURCES, "set", "warehouse_key")).toEqual({
       disablesControl: false,
@@ -1308,6 +1335,35 @@ describe("securitySensitiveAuditFields — alias auto-approve authority (#5161)"
     });
   });
 
+  // ⚠️ THE AUDIT MUST PARSE AS THE READER PARSES, and this table is the claim.
+  // `aliasAutoApproveThreshold` uses `Number.parseFloat` plus a 0..1 range; an
+  // earlier draft of the audit used `Number`, and review measured the two rows
+  // marked below as divergences — one a false negative on exactly the
+  // escalation the flag exists to catch.
+  it.each([
+    // [written value, reader's effective bar, widensAuthority]
+    ["0.9", "0.9", true],
+    ["0", "0", true],
+    ["1", "1 (the shipped bar)", false],
+    // `Number("0.5x")` is NaN → audited as harmless; `parseFloat("0.5x")` is
+    // 0.5 and the reader HALVES the bar. A typo'd write that really does widen.
+    ["0.5x", "0.5", true],
+    // The mirror: parses, but out of range, so the reader disables entirely —
+    // the safest state. Flagging it as a widening was a false alarm.
+    ["-0.5", "disabled (out of range)", false],
+    ["1.5", "disabled (out of range)", false],
+    ["very confident", "disabled (unparseable)", false],
+    ["", "disabled (empty)", false],
+  ])(
+    "threshold %p → reader applies %s → widensAuthority=%p",
+    (written, _readerEffect, expected) => {
+      expect(securitySensitiveAuditFields(THRESHOLD, "set", written)).toEqual({
+        disablesControl: false,
+        widensAuthority: expected,
+      });
+    },
+  );
+
   it("the shipped threshold of 1 is not a widening", () => {
     expect(securitySensitiveAuditFields(THRESHOLD, "set", "1")).toMatchObject({
       widensAuthority: false,
@@ -1344,6 +1400,80 @@ describe("securitySensitiveAuditFields — alias auto-approve authority (#5161)"
       disablesControl: false,
       widensAuthority: false,
     });
+  });
+});
+
+// #5162 — the signal the alias authority path fails closed on. These live in
+// the ALWAYS-RUN lane deliberately: the behavioural falsifier is in
+// `vocabulary-decide-pg.test.ts`, which self-skips without TEST_DATABASE_URL,
+// and one arm here is not reachable from a pg suite at all (they set
+// DATABASE_URL in beforeAll, so `!hasInternalDB()` is false in both branches).
+// Review measured the consequence: mutating the body to `return _cacheEverLoaded`
+// turned alias auto-approval permanently OFF for every self-hosted deployment
+// with nothing in the repo going red.
+describe("settingsCacheEverLoaded (#5162)", () => {
+  it("reads as LOADED when there is no internal DB — self-hosted is not degraded", () => {
+    // The deliberately-inverted arm. A deployment with no internal DB resolves
+    // through env → default BY DESIGN, and an opt-out there is an env var that
+    // IS present, so failing closed would break every self-hosted deployment
+    // for a tier it was never going to have.
+    disableInternalDB();
+    _resetSettingsCache();
+    expect(settingsCacheEverLoaded()).toBe(true);
+  });
+
+  it("reads as NOT loaded when an internal DB exists but no load has succeeded", () => {
+    enableInternalDB();
+    _resetSettingsCache();
+    expect(settingsCacheEverLoaded()).toBe(false);
+  });
+
+  it("latches on a successful load", async () => {
+    enableInternalDB();
+    _resetSettingsCache();
+    setResults({ rows: [] });
+    await loadSettings();
+    // Zero overrides is a SUCCESSFUL read, not an absent one — the latch is
+    // about whether the tier was consulted, not whether it had contents.
+    expect(settingsCacheEverLoaded()).toBe(true);
+  });
+
+  it("STAYS latched across a later failed load", async () => {
+    // The claim the source comment makes and nothing checked: `_cache` swaps
+    // atomically, so a later failure leaves the last good contents in place and
+    // the tier is still readable. Adding `_cacheEverLoaded = false` to the
+    // catch, or moving the assignment before the query, goes red here.
+    enableInternalDB();
+    _resetSettingsCache();
+    setResults({ rows: [] });
+    await loadSettings();
+    expect(settingsCacheEverLoaded()).toBe(true);
+
+    const savedQuery = mockPool.query;
+    mockPool.query = async () => {
+      throw new Error("connection terminated unexpectedly");
+    };
+    try {
+      await loadSettings();
+    } finally {
+      mockPool.query = savedQuery;
+    }
+    expect(settingsCacheEverLoaded()).toBe(true);
+  });
+
+  it("does NOT latch when the FIRST load fails — the #5162 window", async () => {
+    enableInternalDB();
+    _resetSettingsCache();
+    const savedQuery = mockPool.query;
+    mockPool.query = async () => {
+      throw new Error("connection terminated unexpectedly");
+    };
+    try {
+      await loadSettings();
+    } finally {
+      mockPool.query = savedQuery;
+    }
+    expect(settingsCacheEverLoaded()).toBe(false);
   });
 });
 

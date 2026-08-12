@@ -12,16 +12,13 @@
 // we calibrate flake on shared CI runners. Promote individual assertions
 // to `error` once their PR-comment signal has been stable for ~4 weeks.
 
+// The form factor is normalized here and VALIDATED further down, against the
+// keys of the `PROFILES` table that actually selects the behaviour — see the
+// note there for why the allowlist is derived from that table rather than
+// written out twice.
 const rawFormFactor = process.env.LH_FORM_FACTOR;
-if (rawFormFactor && rawFormFactor !== "mobile" && rawFormFactor !== "desktop") {
-  // Fail loudly — silently coercing a typo (e.g. "Mobile") to desktop
-  // would produce results that look like passing mobile runs but were
-  // really run with desktop throttling.
-  throw new Error(
-    `LH_FORM_FACTOR must be "mobile" or "desktop"; got: ${JSON.stringify(rawFormFactor)}`,
-  );
-}
-const isMobile = rawFormFactor === "mobile";
+const DEFAULT_FORM_FACTOR = "desktop";
+const formFactor = rawFormFactor || DEFAULT_FORM_FACTOR;
 
 const wwwBase = process.env.LH_WWW_BASE_URL || "http://localhost:8080";
 const webBase = process.env.LH_WEB_BASE_URL || "http://localhost:3000";
@@ -61,15 +58,52 @@ const mobileAssertions = {
   "cumulative-layout-shift": ["warn", { maxNumericValue: 0.1 }],
 };
 
-const assertions = isMobile ? mobileAssertions : desktopAssertions;
+// Every per-form-factor decision hangs off ONE table, so the allowlist and the
+// behaviour it selects cannot drift apart.
+//
+// This replaced the two independent `isMobile ? … : …` ternaries — the assertion
+// thresholds and the collect preset — and folded in the output directory, which
+// was already keyed off the validated string. That last part was the trap:
+// normalising `formFactor` fixed only the directory, so a third form factor
+// added to the allowlist would still get `isMobile === false`, hence DESKTOP
+// throttling and DESKTOP's 0.95/1500 ms thresholds, in a directory of its own.
+// Reports that look like a passing new form factor but were measured as desktop
+// is the exact failure the throw below exists to prevent, so it must not be
+// reachable one derivation later.
+const PROFILES = {
+  desktop: {
+    assertions: desktopAssertions,
+    // Lighthouse's *default* config is mobile (Moto-G-class throttling, 4× CPU,
+    // slow 4G). `preset: "desktop"` switches to desktop emulation with no
+    // CPU/network throttling. We deliberately omit `formFactor` and
+    // `throttling` — overriding either piecemeal is the canonical way to land
+    // in a half-mobile-half-desktop hybrid that doesn't match the baseline.
+    collect: { preset: "desktop" },
+  },
+  mobile: {
+    assertions: mobileAssertions,
+    // Nothing to set: mobile IS Lighthouse's default.
+    collect: {},
+  },
+};
 
-// Lighthouse's *default* config is mobile (Moto-G-class throttling, 4× CPU,
-// slow 4G). Setting `preset: "desktop"` switches to desktop emulation with
-// no CPU/network throttling. We deliberately omit `formFactor` and
-// `throttling` — overriding either piecemeal is the canonical way to land
-// in a half-mobile-half-desktop hybrid that doesn't match the baseline.
+// Validate against the table that selects the behaviour, not a hand-written
+// list beside it. `Object.hasOwn` rather than `in` or a truthiness check so an
+// inherited key (`constructor`, `toString`) cannot resolve to a bogus profile.
+//
+// Fail loudly — silently coercing a typo (e.g. "Mobile") to desktop would
+// produce results that look like passing mobile runs but were really measured
+// with desktop throttling.
+if (!Object.hasOwn(PROFILES, formFactor)) {
+  throw new Error(
+    `LH_FORM_FACTOR must be one of ${Object.keys(PROFILES).join(", ")}; got: ${JSON.stringify(rawFormFactor)}`,
+  );
+}
+const profile = PROFILES[formFactor];
+const assertions = profile.assertions;
+
 const collectSettings = {
-  ...(isMobile ? {} : { preset: "desktop" }),
+  ...profile.collect,
   // Headless Chrome flags that match what the #1945 baselines were
   // captured under — keep these in sync if the baselines are ever
   // recaptured against different flags.
@@ -101,11 +135,41 @@ module.exports = {
       ],
     },
     upload: {
-      // Ephemeral by design — full reports land in the workflow artifact
-      // and as a temporary public-storage URL on the PR comment. No LHCI
-      // server (operating one is its own follow-up; #2009 explicitly
-      // defers it).
-      target: "temporary-public-storage",
+      // `filesystem` is the ONLY target that writes `manifest.json` — see
+      // `runFilesystemTarget` in @lhci/cli's `src/upload/upload.js`, which is
+      // the sole `writeFileSync(manifestPath, ...)` call site in the package.
+      // The workflow's PR-comment step reads exactly that file to build the
+      // score tables, so with the previous `temporary-public-storage` target no
+      // table ever rendered — on any run, since the workflow landed (#2009,
+      // 2026-05-02) until #4899: roughly three months and 1200+ runs. (The
+      // wording the reader saw depended on the step outcome; "No reports found"
+      // whenever both steps exited 0.) That target uploads the median LHRs to a
+      // Google bucket and prints a link, but writes NOTHING to disk, so there
+      // was never a manifest to read.
+      //
+      // Dropping `temporary-public-storage` also takes a network dependency on
+      // a Google bucket off the run, and its public URLs were never surfaced in
+      // the comment anyway — the artifact is the documented delivery channel.
+      // (An earlier draft of this comment also claimed a bucket failure had
+      // been flipping the comment to "Run failed."; that was wrong twice over
+      // and is recorded here so it does not get re-derived. `autorun` exits 0
+      // on an upload failure unless `--failOnUploadFailure` is passed, which is
+      // why the workflow now passes it — and under this target no manifest
+      // existed on ANY run, so the comment's empty state was unconditional.)
+      // No LHCI server (operating one is its own follow-up; #2009 defers it).
+      target: "filesystem",
+      // Deliberately NOT dot-prefixed. The pinned `actions/upload-artifact`
+      // (v4.6.2) defaults `include-hidden-files: false`, which makes
+      // `@actions/glob` skip any entry at or below the uploaded path whose own
+      // name starts with `.` — including that path itself. That is the second,
+      // independent half of #4899: the `lighthouse-reports` artifact uploaded
+      // nothing because the old `.lighthouseci-desktop/` and
+      // `.lighthouseci-mobile/` paths matched zero files. (A dot-prefixed
+      // ancestor ABOVE the uploaded path is not examined, so only the leading
+      // segment of what we pass matters.) Writing straight to a per-form-factor
+      // dir also removes the need for the workflow to `mv` the reports out of
+      // `.lighthouseci` between the two runs.
+      outputDir: `lighthouse-reports/${formFactor}`,
     },
   },
 };

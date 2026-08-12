@@ -116,6 +116,26 @@ on:
   # So a drift investigation does not have to wait for Monday.
   workflow_dispatch:
 
+# ⚠️ COST CONTROL, and the numbers are measured rather than estimated.
+#
+# This is the only job in the repo that spends real money per run: 1.02M input
+# + 15.9k output tokens for 20 questions, which at the gateway's blended rate
+# (measured 2026-08-12: $26.80 / 26M tokens) is ~$1.05 A RUN. The "<$0.05/run"
+# figure #5039 was filed with is off by ~20x.
+#
+# Without a concurrency group every push to an eval-surface PR paid in full,
+# including runs already superseded. MEASURED over one 11-hour window: 12 runs,
+# ~$13 — of which `fix/eval-lane-residual-defects` was 4 pushes to one PR and
+# `chore/5039` was 2 (a force-push whose first run was billed to completion).
+# Roughly HALF that window's spend was superseded work.
+#
+# `cancel-in-progress` is scoped to the ref, so it only ever kills a run whose
+# commit is already stale. Tag pushes and the Monday cron get distinct groups
+# from any PR and cannot cancel each other.
+concurrency:
+  group: eval-llm-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   pull-requests: write # informational-gate PR comments only
@@ -175,6 +195,26 @@ jobs:
     # Same policy as the deterministic + JWT-path jobs — PRs
     # informational-but-visible, tag pushes blocking. A drop below the
     # 18/20 acceptance floor must not ship in a tag.
+    #
+    # ⚠️ PR RUNS ARE OPT-IN, BY LABEL. Every OTHER trigger — tag push, the
+    # Monday cron, workflow_dispatch — runs unconditionally, so the release
+    # gate and the drift check are untouched. Only the ~54/yr path-triggered
+    # PR runs are gated, and they were the bulk of the spend (see the cost
+    # note on `concurrency:` above: ~$1.05/run, measured).
+    #
+    # Opting in is one label — `run-llm-eval` — and it is worth reaching for
+    # on any PR touching the MCP tool surface or this eval's own harness,
+    # which is precisely when a pre-merge answer is load-bearing. The paths
+    # filter still decides whether the job is OFFERED; the label decides
+    # whether it SPENDS. A PR that skips it is not unguarded: the tag push
+    # before release still blocks on the 18/20 floor.
+    #
+    # `github.event_name != 'pull_request'` is the first clause on purpose —
+    # it short-circuits for tag/cron/dispatch, where `pull_request.labels`
+    # does not exist and would evaluate to an empty set.
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'run-llm-eval')
     timeout-minutes: 20
     # Bind the gateway key at the job level so step-level `if:`
     # expressions can read it via `env.AI_GATEWAY_API_KEY`. GitHub

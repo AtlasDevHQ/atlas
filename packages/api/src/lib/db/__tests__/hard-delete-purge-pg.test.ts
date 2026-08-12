@@ -72,6 +72,26 @@ const SURVIVOR_TABLES: readonly string[] = Object.entries(PURGE_TABLE_DECISIONS)
  */
 const EXPRESSION_SCOPED: readonly string[] = ["chat_cache"];
 
+/**
+ * Tables that must be seeded in THIS order, before everything else.
+ *
+ * The brain block's two RESTRICT foreign keys are the reason. Measured: with the
+ * seed leaving `brain_facts.source_episode_id` NULL and
+ * `brain_vocabulary_target.norm` pointing at nothing, swapping the delete order
+ * to `brain_episodes` before `brain_facts` passed this suite 9/9 — the RESTRICT
+ * cannot fire when no row references anything, so the ordering the
+ * implementation calls load-bearing was unproven here and only the static
+ * tripwire caught it. Wiring the references makes the wrong order abort the
+ * purge transaction, which is the actual production consequence.
+ */
+const SEED_PRIORITY: readonly string[] = [
+  "brain_episodes",
+  "brain_facts",
+  "brain_edges",
+  "brain_vocabulary_edge",
+  "brain_vocabulary_target",
+];
+
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
 const ORIGINAL_DATABASE_URL = process.env.DATABASE_URL;
@@ -245,6 +265,9 @@ const COLUMN_OVERRIDES: Readonly<Record<string, Readonly<Record<string, string>>
     visible_to: `ARRAY['org']::text[]`,
     provenance: `jsonb_build_object('source', 'purge-seed')`,
     status: `'published'`,
+    // The RESTRICT FK to brain_episodes. Nullable, so the generic pass skips it
+    // — and a NULL here is what made the delete-order mutation pass.
+    source_episode_id: `(SELECT id FROM brain_episodes WHERE workspace_id = $1 LIMIT 1)`,
   },
   // body XOR locator, whichever is set must be non-empty, and visible_to needs
   // a real grant — the generic ARRAY synthesizer produces '{}', which is
@@ -254,16 +277,16 @@ const COLUMN_OVERRIDES: Readonly<Record<string, Readonly<Record<string, string>>
     locator: `NULL`,
     visible_to: `ARRAY['org']::text[]`,
   },
-  // 'derives-from' is the one edge_type whose endpoint check is unconditional,
-  // so it needs no to_* endpoint of a specific kind — but from_fact_id must be
-  // non-null (it is nullable in the schema, so the generic pass skips it) and
-  // exactly one of to_fact_id / to_episode_id must be set.
+  // 'derives-from' is the one edge_type whose endpoint check is unconditional.
+  // from_fact_id must be non-null (nullable in the schema, so the generic pass
+  // skips it) and exactly one of to_fact_id / to_episode_id must be set. Both
+  // endpoints point at the REAL seeded rows so the composite FKs resolve.
   brain_edges: {
     edge_type: `'derives-from'`,
-    from_fact_id: `gen_random_uuid()`,
+    from_fact_id: `(SELECT id FROM brain_facts WHERE workspace_id = $1 LIMIT 1)`,
     from_episode_id: `NULL`,
-    to_fact_id: `gen_random_uuid()`,
-    to_episode_id: `NULL`,
+    to_fact_id: `NULL`,
+    to_episode_id: `(SELECT id FROM brain_episodes WHERE workspace_id = $1 LIMIT 1)`,
   },
   // `from_norm <> to_norm` / `norm <> effective_target` — the synthesized value
   // is the same string on both sides, which is exactly what these forbid.
@@ -272,8 +295,11 @@ const COLUMN_OVERRIDES: Readonly<Record<string, Readonly<Record<string, string>>
     to_norm: `'purge-seed-to'`,
     slot_position: `'subject'`,
   },
+  // `norm` must MATCH the edge's from_norm, or the RESTRICT FK to
+  // brain_vocabulary_edge references nothing and the delete-order constraint
+  // this pair exists to enforce is never exercised.
   brain_vocabulary_target: {
-    norm: `'purge-seed-norm'`,
+    norm: `'purge-seed-from'`,
     effective_target: `'purge-seed-target'`,
     slot_position: `'subject'`,
   },
@@ -500,10 +526,15 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
           return false;
         });
 
-      // Parents before children so PARENT_LINK subqueries resolve.
-      const order = [...PURGED_TABLES].toSorted(
-        (a, b) => (PARENT_LINK[a] ? 1 : 0) - (PARENT_LINK[b] ? 1 : 0),
-      );
+      // SEED_PRIORITY first (in its own order, so the brain block's RESTRICT
+      // references resolve), then everything else, then the PARENT_LINK children
+      // whose INSERT subqueries read their parent's rows.
+      const rank = (t: string): number => {
+        const priority = SEED_PRIORITY.indexOf(t);
+        if (priority !== -1) return priority;
+        return PARENT_LINK[t] ? 1000 : 500;
+      };
+      const order = [...PURGED_TABLES].toSorted((a, b) => rank(a) - rank(b));
       if (replica) {
         for (const workspaceId of [ORG, NEIGHBOUR]) {
           for (const table of [...order, ...SURVIVOR_TABLES]) {

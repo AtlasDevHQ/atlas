@@ -22,6 +22,7 @@ if (rawFormFactor && rawFormFactor !== "mobile" && rawFormFactor !== "desktop") 
   );
 }
 const isMobile = rawFormFactor === "mobile";
+const formFactor = isMobile ? "mobile" : "desktop";
 
 const wwwBase = process.env.LH_WWW_BASE_URL || "http://localhost:8080";
 const webBase = process.env.LH_WEB_BASE_URL || "http://localhost:3000";
@@ -101,11 +102,32 @@ module.exports = {
       ],
     },
     upload: {
-      // Ephemeral by design — full reports land in the workflow artifact
-      // and as a temporary public-storage URL on the PR comment. No LHCI
-      // server (operating one is its own follow-up; #2009 explicitly
-      // defers it).
-      target: "temporary-public-storage",
+      // `filesystem` is the ONLY target that writes `manifest.json` — see
+      // `runFilesystemTarget` in @lhci/cli's `src/upload/upload.js`, which is
+      // the sole `writeFileSync(manifestPath, ...)` call site in the package.
+      // The workflow's PR-comment step reads exactly that file to build the
+      // score tables, so with the previous `temporary-public-storage` target
+      // the comment rendered its "No reports found" empty state on every run
+      // from #2009 (2026-07-22) until #4899. That target uploads the median
+      // LHRs to a Google bucket and prints a link, but writes NOTHING to
+      // disk, so there was never a manifest to read.
+      //
+      // Dropping `temporary-public-storage` also takes a network dependency
+      // off the critical path: it ran *after* assertions, so a bucket hiccup
+      // failed the step and flipped the comment to "Run failed." on a run
+      // whose reports were complete. Its public URLs were never surfaced in
+      // the comment anyway — the artifact is the documented delivery channel.
+      // No LHCI server (operating one is its own follow-up; #2009 defers it).
+      target: "filesystem",
+      // Deliberately NOT dot-prefixed. `actions/upload-artifact` v4 defaults
+      // `include-hidden-files: false` and silently drops every path with a
+      // dot-prefixed segment, which is the second, independent half of #4899:
+      // the `lighthouse-reports` artifact uploaded nothing because the old
+      // `.lighthouseci-desktop/` and `.lighthouseci-mobile/` paths read as
+      // hidden. Writing straight to a per-form-factor dir also removes the
+      // need for the workflow to `mv` the reports out of `.lighthouseci`
+      // between the two runs.
+      outputDir: `lighthouse-reports/${formFactor}`,
     },
   },
 };

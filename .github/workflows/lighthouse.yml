@@ -97,22 +97,26 @@ jobs:
           done
 
       # `lhci autorun` runs collect → assert → upload. The config decides
-      # the URLs and presets; LH_FORM_FACTOR switches desktop ↔ mobile.
+      # the URLs and presets; LH_FORM_FACTOR switches desktop ↔ mobile, and
+      # also picks the `upload.outputDir` — each form factor writes its own
+      # `lighthouse-reports/<form-factor>/` with a `manifest.json`.
       # `continue-on-error: true` so a single flaky run on either form
       # factor still lets the comment step build a partial table.
+      #
+      # There is deliberately no "stash the reports" step between the two
+      # runs. #4899 blamed one for losing the reports; the reports were never
+      # in `.lighthouseci` to begin with as far as the comment was concerned,
+      # because only the `filesystem` upload target writes the `manifest.json`
+      # the comment reads. `lhci` now writes each form factor straight to its
+      # own directory, so there is nothing to move and nothing to overwrite:
+      # the mobile run's `collect` clears `.lighthouseci`, but desktop's
+      # reports already live outside it.
       - name: Lighthouse (desktop)
         id: lh-desktop
         continue-on-error: true
         env:
           LH_FORM_FACTOR: desktop
         run: bun x @lhci/cli@${{ env.LHCI_VERSION }} autorun --config=./lighthouserc.js
-
-      - name: Stash desktop reports
-        if: always()
-        run: |
-          if [ -d .lighthouseci ]; then
-            mv .lighthouseci .lighthouseci-desktop
-          fi
 
       - name: Lighthouse (mobile)
         id: lh-mobile
@@ -121,21 +125,46 @@ jobs:
           LH_FORM_FACTOR: mobile
         run: bun x @lhci/cli@${{ env.LHCI_VERSION }} autorun --config=./lighthouserc.js
 
-      - name: Stash mobile reports
+      # #4899's whole failure mode was SILENCE: for three weeks the reports
+      # were missing and the only symptom was a PR comment politely saying
+      # "No reports found", with a green workflow. This step turns a missing
+      # or empty report directory into a visible annotation on the run.
+      #
+      # It deliberately does NOT fail the job — the first-month policy is that
+      # this workflow never fails a PR — but it must never be silent either.
+      - name: Verify reports landed
         if: always()
         run: |
-          if [ -d .lighthouseci ]; then
-            mv .lighthouseci .lighthouseci-mobile
-          fi
+          for ff in desktop mobile; do
+            dir="lighthouse-reports/$ff"
+            if [ ! -d "$dir" ]; then
+              echo "::warning::$dir is missing — lhci wrote no reports for $ff; the PR comment will render its empty state"
+              continue
+            fi
+            count=$(find "$dir" -type f -name '*.report.json' | wc -l)
+            echo "$dir: $count per-run JSON report(s)"
+            if [ ! -f "$dir/manifest.json" ]; then
+              echo "::warning::$dir/manifest.json is missing — the $ff table will render its empty state"
+            fi
+            if [ "$count" -eq 0 ]; then
+              echo "::warning::$dir contains no per-run JSON reports"
+            fi
+          done
+          # Full listing so a future regression is diagnosable from the log
+          # alone, without re-running the workflow to add debug output.
+          find lighthouse-reports -maxdepth 2 -type f | sort || true
 
+      # `lighthouse-reports/` is deliberately not dot-prefixed: this action
+      # defaults `include-hidden-files: false`, and the previous
+      # `.lighthouseci-*/` paths were therefore filtered out entirely — the
+      # run log showed `No files were found with the provided path` even on
+      # runs where every report existed. See #4899.
       - name: Upload Lighthouse artifact
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: lighthouse-reports
-          path: |
-            .lighthouseci-desktop/
-            .lighthouseci-mobile/
+          path: lighthouse-reports/
           if-no-files-found: warn
           retention-days: 14
 
@@ -179,9 +208,22 @@ jobs:
               }
             }
 
+            // `manifest.json` records ABSOLUTE report paths, baked in by
+            // `lhci upload` on the machine that wrote them. Those resolve as-is
+            // here (same job, same workspace), but fall back to the basename
+            // inside `dir` so the same script also works against a downloaded
+            // artifact, where the recorded prefix no longer exists.
+            function resolveReportPath(dir, recordedPath) {
+              if (typeof recordedPath !== 'string' || recordedPath === '') return null;
+              if (fs.existsSync(recordedPath)) return recordedPath;
+              const local = path.join(dir, path.basename(recordedPath));
+              return fs.existsSync(local) ? local : null;
+            }
+
             // Pull lighthouse-typed numeric audit values (LCP, CLS) from
             // the per-run JSON report alongside the manifest summary.
             function readAuditNumber(jsonReportPath, auditId) {
+              if (jsonReportPath == null) return null;
               try {
                 const raw = fs.readFileSync(jsonReportPath, 'utf8');
                 const parsed = JSON.parse(raw);
@@ -226,19 +268,31 @@ jobs:
 
             function tableForFormFactor(label, dir, outcome) {
               const runs = readManifest(dir);
+              // `outcome` is the step's PRE-`continue-on-error` result, so it is
+              // `failure` whenever `lhci autorun` exited non-zero even though
+              // the job carried on.
+              const failed = outcome === 'failure';
               if (runs.length === 0) {
-                return `### ${label}\n\n_${outcome === 'failure' ? 'Run failed.' : 'No reports found.'}_ See workflow logs.\n`;
+                return `### ${label}\n\n_${failed ? 'Run failed.' : 'No reports found.'}_ See workflow logs.\n`;
               }
+              // A step can exit non-zero AFTER writing some reports (one flaky
+              // URL out of three). Rendering those rows with no caveat is the
+              // same lie #4899 was about, one branch over: the numbers look
+              // authoritative while the run that produced them did not finish.
+              const note = failed
+                ? `\n> ⚠️ \`lhci autorun\` exited non-zero for ${label.toLowerCase()} — these rows may be partial. See workflow logs.\n`
+                : '';
               const header =
                 '| Surface | Perf | A11y | Best Practices | SEO | LCP | CLS |\n' +
                 '|---|---|---|---|---|---|---|';
               const rows = runs.map((r) => {
-                const lcp = readAuditNumber(r.jsonPath, 'largest-contentful-paint');
-                const cls = readAuditNumber(r.jsonPath, 'cumulative-layout-shift');
+                const jsonPath = resolveReportPath(dir, r.jsonPath);
+                const lcp = readAuditNumber(jsonPath, 'largest-contentful-paint');
+                const cls = readAuditNumber(jsonPath, 'cumulative-layout-shift');
                 const s = r.summary || {};
                 return `| \`${pathOf(r.url)}\` | ${fmtScore(s.performance)} | ${fmtScore(s.accessibility)} | ${fmtScore(s['best-practices'])} | ${fmtScore(s.seo)} | ${fmtMs(lcp)} | ${fmtCls(cls)} |`;
               });
-              return `### ${label}\n\n${header}\n${rows.join('\n')}\n`;
+              return `### ${label}\n${note}\n${header}\n${rows.join('\n')}\n`;
             }
 
             const body = [
@@ -249,8 +303,8 @@ jobs:
               '',
               '> First-month policy: assertions are `warn`-only. The workflow never fails a PR; this comment is the signal.',
               '',
-              tableForFormFactor('Desktop', '.lighthouseci-desktop', process.env.DESKTOP_OUTCOME),
-              tableForFormFactor('Mobile', '.lighthouseci-mobile', process.env.MOBILE_OUTCOME),
+              tableForFormFactor('Desktop', 'lighthouse-reports/desktop', process.env.DESKTOP_OUTCOME),
+              tableForFormFactor('Mobile', 'lighthouse-reports/mobile', process.env.MOBILE_OUTCOME),
               '',
               '<sub>Full HTML reports are in the `lighthouse-reports` artifact on this run · workflow: `.github/workflows/lighthouse.yml`</sub>',
             ].join('\n');

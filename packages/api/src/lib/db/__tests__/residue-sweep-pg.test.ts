@@ -9,38 +9,51 @@
  * plants the real thing. Every scope value below is one the 2026-08-12 prod
  * sweep actually returned, in the table it returned from, seeded through the
  * real migration set — so what is asserted is that an EXECUTE against a
- * migrated region schema removes the one genuine orphan and leaves the eight
- * sentinels standing, which is exactly the call the command exists to make.
+ * migrated region schema removes the genuine orphans and leaves every sentinel
+ * standing, which is exactly the call the command exists to make.
  *
- * Three properties make this able to fail:
+ * Four properties make this able to fail:
  *
- *  1. **The survivors are seeded with real rows and their counts asserted.**
- *     A sentinel assertion against an unseeded table passes whether the guard
- *     works or not.
- *  2. **Row counts differ across classes** (3 withheld in `sla_thresholds`, 2 in
- *     `crm_outbox`, 4 deletable in total). With 1/1/1 an implementation that
- *     confused the two lists would still satisfy a totals assertion.
- *  3. **`admin_action_log` (`anonymized`) and `user_trial_grants` (`retained`)
+ *  1. **`_default` comes from its PRODUCTION ORIGIN, not from this fixture.**
+ *     `runSeeds` → `seedSlaThresholdDefaults` is what writes it in a real
+ *     region. Hand-inserting the same literal would prove the guard withholds a
+ *     string this test wrote, not the string production emits — a fixture
+ *     agreeing with the implementation at the origin.
+ *  2. **`runSeeds` also plants the NULL-scope rows.** The built-in
+ *     `prompt_collections` library rows have `org_id IS NULL`, and
+ *     `NOT EXISTS (o.id = NULL)` is TRUE — so without the orphan query's
+ *     `IS NOT NULL` they are enumerated as residue and the classifier is handed
+ *     a null. That is real prod data, not a contrived row.
+ *  3. **Row counts differ across classes** (3 deletable, 6 withheld; 4 withheld
+ *     in `sla_thresholds` vs 2 in `crm_outbox`). With 1/1/1 an implementation
+ *     that confused the two lists would still satisfy a totals assertion.
+ *  4. **`admin_action_log` (`anonymized`) and `user_trial_grants` (`retained`)
  *     are seeded with orphaned rows too.** Their scope values are NOT sentinels
- *     — `user_trial_grants` carries a plain nanoid — so they survive only
- *     because the candidate set is filtered by `decision: "purged"`. Widening
- *     the sweep to "every workspace-scoped table" deletes both, which is the
- *     failure the registry derivation prevents and no sentinel test can see.
+ *     — a plain nanoid — so they survive only because the candidate set is
+ *     filtered by `decision: "purged"`. Widening the sweep to "every
+ *     workspace-scoped table" deletes both, which no sentinel test can see.
  *
  * A private scratch DATABASE, not a scratch schema: the sweep hardcodes
  * `public` (as `ops wipe` and the runbook query do), and this suite runs a
  * DESTRUCTIVE delete. Pointing it at the shared test database's `public` schema
- * would let a bug here delete a sibling suite's rows.
+ * would put a sibling suite's rows in the blast radius.
  *
- * Skipped cleanly when TEST_DATABASE_URL is unset. CI's api-tests workflow
+ * ⚠️ The four tests are ORDER-COUPLED through shared database state:
+ * discovery → DRY RUN (asserts rows present) → EXECUTE (deletes them) →
+ * idempotency (asserts the delete stuck). bun runs them in declaration order,
+ * so a full-file run is correct; `bun test -t "idempotent"` alone is not.
+ *
+ * Skipped cleanly when TEST_DATABASE_URL is unset. Requires a role with
+ * CREATEDB (CI's `atlas` role owns the database). CI's api-tests workflow
  * provides the Postgres service.
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Pool } from "pg";
-import { runMigrations } from "@atlas/api/lib/db/migrate";
+import { runMigrations, runSeeds } from "@atlas/api/lib/db/migrate";
 import {
   discoverResidueTargets,
+  isBenignSkip,
   sweepResidue,
   type ResidueQuery,
 } from "../residue-sweep";
@@ -61,11 +74,20 @@ const RESIDUE_B = "wsResidueBBBBBBBBBBBBBBBBBBBBBBB";
 const RESIDUE_PROTECTED = "wsProtectedCCCCCCCCCCCCCCCCCCCCC";
 
 /**
- * Minimal Better Auth bootstrap — these tables are global (ADR-0024), not
- * Atlas-owned, so the migration set assumes rather than creates them. Only the
- * columns this fixture needs; migrations extend `organization` themselves.
+ * Minimal Better Auth bootstrap. These tables are global (ADR-0024), not
+ * Atlas-owned, so the migration set assumes rather than creates them.
+ *
+ * ⚠️ **The full migration set runs — `MANAGED_AUTH_MIGRATIONS` is NOT skipped
+ * here, and that is deliberate rather than an oversight.** Most `-pg` suites do
+ * skip it, and this one tried: measured, `runMigrations(pool, { skip:
+ * MANAGED_AUTH_MIGRATIONS })` fails with `column "is_operator_workspace" does
+ * not exist`, because later Atlas migrations read `organization` columns that
+ * the managed-auth set adds. So the choice is this bootstrap plus the full set
+ * (what `hard-delete-purge-pg.test.ts` also does), and the drift surface it
+ * carries is real: a managed-auth migration that starts touching a column
+ * absent below will fail HERE, in CI, after every local gate was green.
  */
-const BETTER_AUTH_BOOTSTRAP_SQL = `
+const AUTH_BOOTSTRAP_SQL = `
   CREATE TABLE IF NOT EXISTS "user" (
     id TEXT PRIMARY KEY,
     email TEXT,
@@ -109,13 +131,19 @@ const BETTER_AUTH_BOOTSTRAP_SQL = `
 
 describeIfPg("residue sweep against a migrated region schema", () => {
   let pool: Pool;
-  let scratchDbUrl: string;
   let query: ResidueQuery;
 
   async function countWhere(table: string, column: string, value: string): Promise<number> {
     const r = await pool.query<{ n: string }>(
       `SELECT count(*)::text AS n FROM "${table}" WHERE "${column}" = $1`,
       [value],
+    );
+    return Number(r.rows[0]?.n ?? "0");
+  }
+
+  async function countNullScope(table: string, column: string): Promise<number> {
+    const r = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM "${table}" WHERE "${column}" IS NULL`,
     );
     return Number(r.rows[0]?.n ?? "0");
   }
@@ -136,22 +164,25 @@ describeIfPg("residue sweep against a migrated region schema", () => {
 
     const url = new URL(TEST_DB_URL as string);
     url.pathname = `/${scratchDbName}`;
-    scratchDbUrl = url.toString();
-    pool = new Pool({ connectionString: scratchDbUrl, max: 4 });
+    pool = new Pool({ connectionString: url.toString(), max: 4 });
     query = (async (sql: string, params?: unknown[]) =>
-      (await pool.query(sql, params)).rows) as ResidueQuery;
+      (await pool.query<Record<string, unknown>>(sql, params)).rows) as ResidueQuery;
 
-    await pool.query(BETTER_AUTH_BOOTSTRAP_SQL);
+    await pool.query(AUTH_BOOTSTRAP_SQL);
     await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public`);
     await pool.query(`INSERT INTO "organization" (id, name, slug) VALUES ($1, $1, $1)`, [LIVE_ORG]);
     await pool.query(`INSERT INTO "user" (id, email) VALUES ('u-residue', 'residue@sweep.test')`);
     await runMigrations(pool);
+    // The production seed path. It writes `sla_thresholds._default` — the
+    // sentinel this suite is about — and the NULL-org `prompt_collections`
+    // library rows the IS NOT NULL guard exists for. Neither is hand-planted.
+    await runSeeds(pool);
 
-    // ── sla_thresholds: 3 withheld sentinels + 1 orphan + 1 live ────────────
-    // `_default` is the deployment-wide default tier the prod sweep flagged in
-    // all three regions; `_global` is NOT on the denylist and proves the
-    // leading-underscore backstop; `''` is the empty-scope case.
-    for (const workspaceId of ["_default", "_global", "", RESIDUE_A, LIVE_ORG]) {
+    // ── sla_thresholds: 3 more withheld + 1 orphan + 1 live ─────────────────
+    // `_default` is already there from runSeeds. `_global` proves the
+    // leading-underscore backstop, `default` the reserved-word arm, `''` the
+    // empty-scope case — none of them on the denylist except the last.
+    for (const workspaceId of ["_global", "default", "", RESIDUE_A, LIVE_ORG]) {
       await pool.query(
         `INSERT INTO sla_thresholds (workspace_id) VALUES ($1) ON CONFLICT (workspace_id) DO NOTHING`,
         [workspaceId],
@@ -213,7 +244,7 @@ describeIfPg("residue sweep against a migrated region schema", () => {
   }, PG_TIMEOUT_MS);
 
   test(
-    "discovery reaches the seeded purged tables and skips the non-purged ones",
+    "discovery reaches the seeded purged tables, skips the non-purged, and reads everything",
     async () => {
       const { targets, skipped } = await discoverResidueTargets(query);
       const swept = new Set(targets.map((t) => t.table));
@@ -228,7 +259,12 @@ describeIfPg("residue sweep against a migrated region schema", () => {
       expect(mentioned.has("user_trial_grants")).toBe(false);
       // `messages` has no scope column of its own — reported, never silent.
       const messages = skipped.find((s) => s.table === "messages");
-      expect(messages?.reason).toContain("no workspace scope column");
+      expect(messages?.kind).toBe("no-scope-column");
+      // The owning role can read every table it can see, so nothing is
+      // `unreadable`. This is the assertion that would catch `to_regclass`
+      // regressing to the privilege-filtered information_schema probe on a
+      // schema where the two disagree.
+      expect(skipped.filter((s) => !isBenignSkip(s))).toEqual([]);
     },
     PG_TIMEOUT_MS,
   );
@@ -236,26 +272,36 @@ describeIfPg("residue sweep against a migrated region schema", () => {
   test(
     "DRY RUN classifies the real prod result set and deletes nothing",
     async () => {
+      // The IS NOT NULL guard's real subject: production seed rows, not a
+      // contrived fixture. If they were enumerated, `wouldDelete` grows and the
+      // classifier is handed a null.
+      expect(await countNullScope("prompt_collections", "org_id")).toBeGreaterThan(0);
+
       const report = await sweepResidue(query, { dryRun: true });
 
       const withheld = new Map(report.withheld.map((w) => [`${w.table}:${w.value}`, w]));
+      // `_default` was written by runSeeds, and carries the DENYLIST's reason —
+      // the one no structural arm produces.
       expect(withheld.get("sla_thresholds:_default")?.reason).toContain("default tier row");
       expect(withheld.get("sla_thresholds:_global")?.reason).toContain("by convention");
+      expect(withheld.get("sla_thresholds:default")?.reason).toContain("reserved deployment-wide");
       expect(withheld.get("sla_thresholds:")?.reason).toContain("admin_action_log");
       expect(withheld.get("crm_outbox:<atlas-operator>")?.reason).toContain("0106");
       expect(withheld.get("crm_outbox:<atlas-operator>")?.rows).toBe(2);
 
       // Nothing beyond the planted orphans is proposed for deletion. This is
-      // the global claim — a widened candidate set or a broken classifier shows
-      // up here as an extra value, not as a missing one.
+      // the global claim — a widened candidate set, a dropped NULL guard or a
+      // broken classifier shows up here as an extra value, not a missing one.
       expect(new Set(report.wouldDelete.map((d) => d.value))).toEqual(
         new Set([RESIDUE_A, RESIDUE_B]),
       );
-      // 2 rows for RESIDUE_A (sla_thresholds + workspace_proactive_config),
-      // 1 for RESIDUE_B, 3 withheld in sla_thresholds + 2 in crm_outbox.
+      // 2 rows for RESIDUE_A (sla_thresholds + workspace_proactive_config) and
+      // 1 for RESIDUE_B; 4 withheld in sla_thresholds + 2 in crm_outbox.
       expect(report.totals.rowsWouldDelete).toBe(3);
-      expect(report.totals.rowsWithheld).toBe(5);
+      expect(report.totals.rowsWithheld).toBe(6);
       expect(report.totals.rowsDeleted).toBe(0);
+      expect(report.totals.tablesUnreadable).toBe(0);
+      expect(report.refusedToExecute).toBeNull();
 
       // The rows are all still there.
       expect(await countWhere("sla_thresholds", "workspace_id", RESIDUE_A)).toBe(1);
@@ -267,10 +313,12 @@ describeIfPg("residue sweep against a migrated region schema", () => {
   test(
     "EXECUTE deletes the residue and leaves every sentinel standing",
     async () => {
+      const promptCollectionsBefore = await countNullScope("prompt_collections", "org_id");
       const report = await sweepResidue(query, { dryRun: false });
 
       expect(report.errors).toEqual([]);
       expect(report.totals.rowsDeleted).toBe(3);
+      expect(report.refusedToExecute).toBeNull();
 
       // The orphans are gone.
       expect(await countWhere("sla_thresholds", "workspace_id", RESIDUE_A)).toBe(0);
@@ -281,8 +329,12 @@ describeIfPg("residue sweep against a migrated region schema", () => {
       // one of the two `<atlas-operator>` rows would fail here.
       expect(await countWhere("sla_thresholds", "workspace_id", "_default")).toBe(1);
       expect(await countWhere("sla_thresholds", "workspace_id", "_global")).toBe(1);
+      expect(await countWhere("sla_thresholds", "workspace_id", "default")).toBe(1);
       expect(await countWhere("sla_thresholds", "workspace_id", "")).toBe(1);
       expect(await countWhere("crm_outbox", "workspace_id", "<atlas-operator>")).toBe(2);
+
+      // The NULL-scope production seed rows survive untouched.
+      expect(await countNullScope("prompt_collections", "org_id")).toBe(promptCollectionsBefore);
 
       // The live workspace's rows are untouched — the blast-radius control.
       expect(await countWhere("sla_thresholds", "workspace_id", LIVE_ORG)).toBe(1);
@@ -303,7 +355,27 @@ describeIfPg("residue sweep against a migrated region schema", () => {
       expect(report.totals.rowsDeleted).toBe(0);
       expect(report.errors).toEqual([]);
       // Still reported, still refused.
-      expect(report.totals.rowsWithheld).toBe(5);
+      expect(report.totals.rowsWithheld).toBe(6);
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  test(
+    "a database with no organizations is refused outright, not swept",
+    async () => {
+      // The premise guard. With zero orgs every workspace-scoped row matches the
+      // orphan predicate and the "residue" is the whole tenant dataset — the
+      // shape of a wrong --database-url or a dump restored without the Better
+      // Auth tables. Run last: it empties `organization`.
+      await pool.query(`DELETE FROM "organization"`);
+      await expect(sweepResidue(query, { dryRun: false })).rejects.toThrow(
+        /organization has 0 rows/,
+      );
+      // ...and a DRY RUN is refused too: a preview built on a broken premise
+      // would be read as a genuine finding.
+      await expect(sweepResidue(query, { dryRun: true })).rejects.toThrow(/0 rows/);
+      // Nothing was destroyed by the refusal.
+      expect(await countWhere("sla_thresholds", "workspace_id", LIVE_ORG)).toBe(1);
     },
     PG_TIMEOUT_MS,
   );

@@ -12,27 +12,32 @@
  * path was also the only available one.
  *
  * The sweep itself lives in `@atlas/api/lib/db/residue-sweep` beside
- * `purge-scope.ts`, which is the registry it derives its table set from. This
- * file is the operator surface: the gates, the region binding, and the report.
+ * `purge-scope.ts`, the registry it derives its table set from. This file is the
+ * operator surface: the gates, the region binding, and the report.
  *
  * Safety (this targets a PROD region DB):
  *   - One region DB per invocation (`--region` or `--database-url`); no silent
  *     DATABASE_URL fallback, reusing `ops teardown-verify-accounts`'s resolver
- *     so there is one wrong-DB rule rather than two.
+ *     so there is one wrong-DB rule rather than two. The bound pool is then
+ *     VERIFIED with `current_database()` before anything is deleted, rather
+ *     than assumed from the rebind.
  *   - DRY RUN by default. Executing requires BOTH `ATLAS_RESIDUE_OK=1` and
  *     `--confirm` (the same double-gate as `ops wipe`).
  *   - EXECUTE additionally requires `--pg-dump <path>` naming a backup that
- *     EXISTS and is non-empty. There is no undo, and a path that is merely
- *     recorded is a string that can lie.
- *   - Sentinel scope values are never deleted — see `classifyScopeValue`. Of the
- *     9 rows the 2026-08-12 prod sweep flagged, 8 were sentinels and one of them
- *     (`_default` in `sla_thresholds`) is the deployment-wide SLA default tier.
- *   - Nothing is filtered silently: every skipped table and every withheld value
- *     is printed with its reason.
+ *     EXISTS, is a regular file, is non-empty, and is RECENT. There is no undo,
+ *     and a path that is merely recorded is a string that can lie.
+ *   - Sentinel scope values are never deleted, and a database with no
+ *     organizations is refused outright — see `residue-sweep.ts`.
+ *   - Nothing is filtered silently: every skipped table and every withheld
+ *     value is printed with its reason, and a table the sweep could not READ is
+ *     reported separately from one that was never in scope. The exit code is
+ *     non-zero for both a failed delete and an unreadable table, because
+ *     "we could not look" must never be scripted as "it was clean".
  */
 import { statSync } from "node:fs";
 import {
   sweepResidue,
+  isBenignSkip,
   type ResidueSweepReport,
 } from "@atlas/api/lib/db/residue-sweep";
 import { internalQuery, closeInternalDB } from "@atlas/api/lib/db/internal";
@@ -41,6 +46,16 @@ import { resolveRegionDbUrl } from "./ops-teardown-verify";
 
 /** Env var that, set to exactly "1", is one half of the execute double-gate. */
 export const RESIDUE_OK_ENV = "ATLAS_RESIDUE_OK";
+
+/**
+ * How stale a `--pg-dump` file may be and still count as this run's backup.
+ *
+ * The point of the flag is that a backup was taken FOR THIS SWEEP. Without a
+ * freshness bound, last month's dump of a different region clears the gate — and
+ * the runbook hands operators `residue-us.dump` as a copy-pasteable example, so
+ * the eu/apac runs are one paste away from exactly that.
+ */
+export const MAX_PG_DUMP_AGE_MS = 6 * 60 * 60 * 1000;
 
 /**
  * The execute double-gate, mirroring `checkWipeGate` / `checkTeardownGate`.
@@ -67,54 +82,73 @@ export function isResidueDryRun(args: string[], env: NodeJS.ProcessEnv): boolean
   return checkResidueGate(args, env) !== null || args.includes("--dry-run");
 }
 
-/** What {@link checkPgDump} needs to know about a path — null when absent. */
-export interface FileFacts {
-  readonly isFile: boolean;
-  readonly size: number;
-}
+/**
+ * What {@link checkPgDump} needs to know about a path.
+ *
+ * A tagged union rather than `FileFacts | null`, because "absent" and
+ * "unreadable" want different remedies — take the backup vs fix the permission
+ * — and collapsing them produced a refusal that gave the wrong advice for
+ * `EACCES`.
+ */
+export type FileFacts =
+  | { readonly ok: true; readonly isFile: boolean; readonly size: number; readonly mtimeMs: number }
+  | { readonly ok: false; readonly error: string };
 
 /** Probe a path for {@link checkPgDump}. Real in the handler, a fake in tests. */
-export type FileProbe = (path: string) => FileFacts | null;
+export type FileProbe = (path: string) => FileFacts;
 
-/** The default probe. A missing/unreadable path is reported as absent by the
- *  caller's error message, so the failure is surfaced rather than swallowed. */
+/**
+ * The default probe. The errno is CARRIED rather than discarded, so the refusal
+ * can name the operator's actual next move — `ENOENT` means take the backup,
+ * `EACCES` means fix the permission, and telling someone to take a backup they
+ * already took is how a safety gate loses its credibility.
+ */
 export const statProbe: FileProbe = (path) => {
   try {
     const stat = statSync(path);
-    return { isFile: stat.isFile(), size: stat.size };
-  } catch {
-    // intentionally ignored: an unreadable path IS the "no backup here" answer,
-    // and checkPgDump turns it into the operator-facing refusal.
-    return null;
+    return { ok: true, isFile: stat.isFile(), size: stat.size, mtimeMs: stat.mtimeMs };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 };
 
 /**
  * The backup gate: EXECUTE refuses without `--pg-dump <path>` pointing at a
- * real, non-empty file. Returns null when cleared, or the refusal.
+ * real, non-empty, recent file. Returns null when cleared, or the refusal.
  *
- * Existence is checked rather than trusted because this command destroys rows
- * with no undo, and "I took a dump" recorded as a flag value is exactly the
- * claim an operator makes when they have not.
+ * Existence and freshness are checked rather than trusted because this command
+ * destroys rows with no undo, and "I took a dump" recorded as a flag value is
+ * exactly the claim an operator makes when they have not. `now` is injected so
+ * the freshness arm is deterministic under test.
  */
-export function checkPgDump(args: string[], probe: FileProbe): string | null {
+export function checkPgDump(args: string[], probe: FileProbe, now: number): string | null {
   const path = getFlag(args, "--pg-dump");
   if (!path) {
     return (
       "Refusing to execute: --pg-dump <path> is required. Take a backup first " +
-      "(`pg_dump \"$ATLAS_REGION_US_DB_URL\" -Fc -f residue-us.dump`) and pass its path — " +
+      '(`pg_dump "$ATLAS_REGION_US_DB_URL" -Fc -f residue-us.dump`) and pass its path — ' +
       "this delete has no undo."
     );
   }
   const facts = probe(path);
-  if (facts === null) {
-    return `Refusing to execute: --pg-dump path "${path}" does not exist or is unreadable. Take the backup before the sweep, not after.`;
+  if (!facts.ok) {
+    return `Refusing to execute: --pg-dump path "${path}" could not be read (${facts.error}). Take the backup before the sweep, not after.`;
   }
   if (!facts.isFile) {
     return `Refusing to execute: --pg-dump path "${path}" is not a regular file.`;
   }
   if (facts.size === 0) {
     return `Refusing to execute: --pg-dump path "${path}" is empty (0 bytes) — the backup did not produce anything.`;
+  }
+  const ageMs = now - facts.mtimeMs;
+  if (ageMs > MAX_PG_DUMP_AGE_MS) {
+    const ageHours = Math.round(ageMs / 3.6e6);
+    return (
+      `Refusing to execute: --pg-dump path "${path}" was last written ${ageHours}h ago ` +
+      `(limit ${MAX_PG_DUMP_AGE_MS / 3.6e6}h). A dump that old does not cover the rows this ` +
+      "sweep is about to delete, and is usually a different region's file. Re-run pg_dump " +
+      "against the region you are sweeping."
+    );
   }
   return null;
 }
@@ -140,7 +174,23 @@ export function printResidueReport(report: ResidueSweepReport): void {
     }
   }
 
-  if (report.dryRun) {
+  const unreadable = report.skipped.filter((s) => !isBenignSkip(s));
+  if (unreadable.length > 0) {
+    console.error(
+      `\n⚠ UNREADABLE — ${report.totals.tablesUnreadable} table(s) could NOT be checked. ` +
+        "Their residue state is UNKNOWN, not clean:",
+    );
+    for (const s of unreadable) {
+      console.error(`  ? ${s.table}${s.column ? `.${s.column}` : ""}`);
+      console.error(`      ${s.reason}`);
+    }
+  }
+
+  if (report.refusedToExecute) {
+    console.error(`\n✗ REFUSED — nothing was deleted: ${report.refusedToExecute}`);
+  }
+
+  if (report.dryRun || report.refusedToExecute) {
     if (report.wouldDelete.length === 0) {
       console.log("\nNo residue found — nothing would be deleted.");
     } else {
@@ -157,41 +207,92 @@ export function printResidueReport(report: ResidueSweepReport): void {
       console.log(
         `  ✓ ${d.table}.${d.column} — ${d.deletedRows} row(s) across ${d.values.length} workspace id(s)`,
       );
-      if (d.deletedRows !== d.expectedRows) {
+      // The two directions are NOT the same event and must not share a message.
+      // Under-delete is benign (rows went away, or the DELETE's own orphan
+      // re-check spared a re-created workspace). Over-delete means rows this
+      // report never listed were destroyed, which is the worst outcome short of
+      // a wrong-DB run — it is an error, on stderr, and it sets the exit code.
+      if (d.deletedRows > d.expectedRows) {
+        console.error(
+          `      ⚠ OVER-DELETE: removed ${d.deletedRows} but enumeration counted ${d.expectedRows} — ` +
+            `${d.deletedRows - d.expectedRows} row(s) this report never listed were destroyed. ` +
+            `Check ${JSON.stringify(d.values)} against the pg_dump before proceeding.`,
+        );
+      } else if (d.deletedRows < d.expectedRows) {
         console.log(
-          `      ⚠ enumeration counted ${d.expectedRows} — the difference is concurrent writes, not a partial delete.`,
+          `      · ${d.expectedRows - d.deletedRows} of ${d.expectedRows} enumerated row(s) were not removed — ` +
+            "deleted concurrently, or spared by the DELETE's own orphan re-check.",
         );
       }
     }
   }
 
-  if (report.skipped.length > 0) {
-    console.log("\nSKIPPED (not swept — nothing here was checked for residue):");
-    for (const s of report.skipped) {
+  const benign = report.skipped.filter(isBenignSkip);
+  if (benign.length > 0) {
+    console.log("\nNOT IN SCOPE (never candidates — nothing to sweep here):");
+    for (const s of benign) {
       console.log(`  – ${s.table}${s.column ? `.${s.column}` : ""}`);
       console.log(`      ${s.reason}`);
     }
   }
 
   for (const e of report.errors) {
-    console.log(`\n  ✗ ${e.table}.${e.column} delete failed: ${e.message}`);
-    console.log(`      values: ${e.values.join(", ")}`);
+    console.error(`\n  ✗ ${e.table}.${e.column} delete failed: ${e.message}`);
+    console.error(`      ${e.expectedRows} row(s) SURVIVE. values: ${e.values.join(", ")}`);
   }
 
   const t = report.totals;
   console.log(
-    `\n[ops:sweep-residue] ${report.dryRun ? `would delete ${t.rowsWouldDelete}` : `deleted ${t.rowsDeleted}`} row(s), ` +
-      `withheld ${t.rowsWithheld}, skipped ${t.tablesSkipped} table(s)` +
+    `\n[ops:sweep-residue] ${report.dryRun || report.refusedToExecute ? `would delete ${t.rowsWouldDelete}` : `deleted ${t.rowsDeleted}`} row(s), ` +
+      `withheld ${t.rowsWithheld}, ${t.tablesNotInScope} table(s) not in scope` +
+      (t.tablesUnreadable > 0 ? `, ${t.tablesUnreadable} UNREADABLE` : "") +
       (t.errors > 0 ? `, ${t.errors} error(s)` : ""),
   );
 }
 
+/** Number of rows over the enumerated count across all deletions. */
+export function countOverDeletes(report: ResidueSweepReport): number {
+  return report.deletions.filter((d) => d.deletedRows > d.expectedRows).length;
+}
+
+/**
+ * Whether this run must exit non-zero. A scripted `for region in us eu apac`
+ * loop reads the exit code, not the report, so every outcome where residue
+ * survived, could not be looked for, or more was destroyed than was listed has
+ * to be visible there.
+ */
+export function residueExitCode(report: ResidueSweepReport): number {
+  if (report.errors.length > 0) return 1;
+  if (report.totals.tablesUnreadable > 0) return 1;
+  if (report.refusedToExecute) return 1;
+  if (countOverDeletes(report) > 0) return 1;
+  return 0;
+}
+
+/** Injected seams — real in the handler, fakes in unit tests. */
+export interface ResidueHandlerDeps {
+  readonly sweep: typeof sweepResidue;
+  readonly query: typeof internalQuery;
+  readonly now: () => number;
+  readonly probe: FileProbe;
+}
+
+const REAL_DEPS: ResidueHandlerDeps = {
+  sweep: sweepResidue,
+  query: internalQuery,
+  now: () => Date.now(),
+  probe: statProbe,
+};
+
 /** Wire the command: resolve gate/backup/region, bind the pool, sweep, report. */
-export async function handleSweepResidue(args: string[]): Promise<void> {
+export async function handleSweepResidue(
+  args: string[],
+  deps: ResidueHandlerDeps = REAL_DEPS,
+): Promise<void> {
   const dryRun = isResidueDryRun(args, process.env);
 
   if (!dryRun) {
-    const backupRefusal = checkPgDump(args, statProbe);
+    const backupRefusal = checkPgDump(args, deps.probe, deps.now());
     if (backupRefusal) {
       console.error(`[ops:sweep-residue] ${backupRefusal}`);
       process.exit(1);
@@ -205,13 +306,18 @@ export async function handleSweepResidue(args: string[]): Promise<void> {
   }
 
   // Bind the internal-DB pool to the chosen region DB, closing any pre-bound
-  // pool FIRST so the rebind is authoritative rather than a silent no-op against
-  // a previously-bound DB. Same reasoning as ops-teardown-verify: the wrong-DB
-  // footgun here would delete from the wrong region.
+  // pool first. ⚠️ The sibling command's comment claims a close failure "doesn't
+  // change which URL the next getInternalDB() binds to" — that is TRUE for the
+  // lazy fallback pool, which is nulled before the await, and FALSE when the
+  // pool is Effect-managed: `closeInternalDB` then returns as a no-op WITHOUT
+  // clearing `_sqlClient`, and every later statement runs against the previously
+  // bound database while the banner below prints the newly resolved one. Not
+  // reachable from the one-shot CLI today, and far too consequential to rest on
+  // that, so the binding is VERIFIED rather than assumed, immediately below.
   await closeInternalDB().catch(() => {
-    // intentionally ignored: best-effort discard of any pre-bound pool before
-    // rebinding; a close failure here doesn't change which URL the next
-    // getInternalDB() binds to.
+    // intentionally ignored: best-effort discard of any pre-bound pool. The
+    // current_database() check below is what establishes the binding, so a
+    // failure here cannot silently become a wrong-region delete.
   });
   process.env.DATABASE_URL = resolved.url;
   console.log(
@@ -219,11 +325,22 @@ export async function handleSweepResidue(args: string[]): Promise<void> {
   );
 
   try {
-    const report = await sweepResidue(internalQuery, { dryRun });
+    const bound = await deps.query<{ db: string }>(`SELECT current_database() AS db`);
+    const actual = bound[0]?.db;
+    const expected = new URL(resolved.url).pathname.replace(/^\//, "");
+    if (expected && actual !== expected) {
+      console.error(
+        `[ops:sweep-residue] Refusing to sweep: the internal-DB pool is bound to ` +
+          `"${actual ?? "unknown"}" but ${resolved.source} names "${expected}". A pre-bound pool ` +
+          "was not released — re-run in a fresh process.",
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    const report = await deps.sweep(deps.query, { dryRun });
     printResidueReport(report);
-    // A failed delete means residue survives while the report says the sweep
-    // ran — a scripted cleanup must fail loudly rather than exit 0 on it.
-    if (report.errors.length > 0) process.exitCode = 1;
+    process.exitCode = residueExitCode(report);
   } catch (err) {
     console.error(
       `[ops:sweep-residue] failed: ${err instanceof Error ? err.message : String(err)}`,

@@ -608,8 +608,15 @@ export async function handleTeardownVerifyAccounts(args: string[]): Promise<void
   // one-shot CLI path no pool exists yet, so this is a cheap no-op.)
   await closeInternalDB().catch(() => {
     // intentionally ignored: best-effort discard of any pre-bound pool before
-    // rebinding; a close failure here doesn't change which URL the next
-    // getInternalDB() binds to.
+    // rebinding. This used to claim "a close failure here doesn't change which
+    // URL the next getInternalDB() binds to" — true only for the LAZY fallback
+    // pool, which `closeInternalDB` nulls before it awaits. When the pool is
+    // Effect-managed it returns as a no-op WITHOUT clearing `_sqlClient`, so a
+    // rebind is silently ignored and every statement below would run against
+    // the previously bound database. Not reachable from the one-shot CLI (no
+    // AppLayer boots here), which is why this remains best-effort rather than
+    // fatal — see ops-residue.ts for the current_database() verification the
+    // same hazard earned on the residue sweep (#5185).
   });
   process.env.DATABASE_URL = resolved.url;
   console.log(

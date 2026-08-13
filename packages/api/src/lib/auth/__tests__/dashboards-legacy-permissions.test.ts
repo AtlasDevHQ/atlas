@@ -84,6 +84,35 @@ describe("#5189 — legacy role mapping carries the dashboards flags", () => {
   });
 });
 
+describe("#5192 — the legacy mapping withholds dashboards:share from member", () => {
+  // This is the non-EE half of the regression. `member` is the legacy analyst
+  // persona on every self-hosted deploy without a `custom_roles` table, so this
+  // mapping IS the authorization answer there — and #5190 handed it a
+  // public-link-minting capability that had been admin-only.
+  it("member cannot mint a public share link", async () => {
+    const perms = await resolve("member");
+    expect(perms.has("dashboards:share")).toBe(false);
+    // …while keeping the authoring flag the same route still requires, so this
+    // cannot pass by having taken dashboards away from `member` wholesale.
+    expect(perms.has("dashboards:write")).toBe(true);
+  });
+
+  it("the unknown-role fall-through does not smuggle it in either", async () => {
+    // The fall-through target IS `member`, so this is the same set — but the
+    // path is different code, and a deleted EE custom role whose members still
+    // carry its name arrives here rather than above.
+    const perms = await resolve("data-scientist");
+    expect(perms.has("dashboards:share")).toBe(false);
+  });
+
+  it("owner, admin and platform_admin do hold it", async () => {
+    for (const role of ["owner", "admin", "platform_admin"]) {
+      const perms = await resolve(role);
+      expect(perms.has("dashboards:share"), `${role} should hold it`).toBe(true);
+    }
+  });
+});
+
 describe("#5189 round 2 — the lookup key is a free string", () => {
   it("does not resolve a prototype member as a role", async () => {
     // `role` carries EE custom-role names at runtime, so indexing the mapping

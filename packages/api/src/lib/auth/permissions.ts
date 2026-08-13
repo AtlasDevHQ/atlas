@@ -71,6 +71,21 @@ export const PERMISSIONS = [
   // reaches first.
   "dashboards:read",
   "dashboards:write",
+  // #5192 — a THIRD dashboards flag, and the reason it is not a finer slice of
+  // authoring: `POST /{id}/share` in `shareMode: "public"` mints a token served
+  // by `publicDashboards` at `/api/public/dashboards/{token}`, which bypasses
+  // auth entirely. That is publishing workspace data to the unauthenticated
+  // internet — a distinct authority from "can edit a dashboard", not a degree
+  // of it. #5189's two-flags-not-three decision was about read-vs-write
+  // granularity within authoring and still stands for that.
+  //
+  // Withheld from `member`, `analyst` and `viewer`; admin/owner/platform_admin
+  // pick it up through the `[...PERMISSIONS]` spreads. Enforced in the share
+  // handler on the PUBLIC branch only — an `org`-mode share re-checks org
+  // membership on read, so it is authoring-adjacent and stays on
+  // `dashboards:write`, as does REVOKING a link (de-escalation must never be
+  // harder than escalation).
+  "dashboards:share",
   "admin:users",
   "admin:connections",
   "admin:settings",

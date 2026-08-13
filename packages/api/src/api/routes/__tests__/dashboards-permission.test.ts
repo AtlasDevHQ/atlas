@@ -86,6 +86,14 @@ void mock.module("@atlas/api/lib/dashboards", () => ({
     ok: true as const,
     data: { id: "d-1", title: "T", updatedAt: "2026-08-13T00:00:00Z", cardCount: 0 },
   })),
+  // #5192 — mocked so the ALLOWED outcome on each share branch is an exact
+  // status. The branch tests below would otherwise rest on `not.toBe(403)`,
+  // which a 404 from a renamed path or a 500 from the unmocked DB satisfies
+  // just as well as the success they mean to assert.
+  shareDashboard: mock(async () => ({
+    ok: true as const,
+    data: { token: "tok", shareMode: "public", expiresAt: null },
+  })),
 }));
 
 const { app } = await import("../../index");
@@ -105,7 +113,16 @@ function req(path: string, method = "GET", body?: unknown): Request {
   return new Request(`http://localhost${MOUNT}${suffix}`, init);
 }
 
-const VALID_ID = "01JQ0000000000000000000000";
+/**
+ * ⚠️ A real UUID, and it has to be. The name was already `VALID_ID` when the
+ * value was a ULID — which every dashboards handler rejects with a 400 via
+ * `UUID_RE`, so no handler BODY in this suite was ever reached. That was
+ * invisible while every assertion here was about middleware, and it stopped
+ * being invisible with #5192: the `dashboards:share` check lives in the handler
+ * (it depends on the parsed `shareMode`), so with a ULID the second flag was
+ * never consulted and the branch tests below measured the 400 instead.
+ */
+const VALID_ID = "00000000-0000-4000-8000-000000000000";
 
 /**
  * The full route table, with the flag each route is expected to enforce.
@@ -122,11 +139,37 @@ const VALID_ID = "01JQ0000000000000000000000";
  * authoring. Its non-forking neighbours (`GET /{id}?view=draft`,
  * `/draft/status`) stay READ.
  */
+/**
+ * #5192 — a route may declare ONE conditional second flag, consulted on a
+ * named branch only.
+ *
+ * The exact-set assertion below (`toEqual([r.permission])`) is what stops a
+ * double-gated route hiding, and it is deliberately NOT weakened to
+ * `toContain` for the one route that legitimately consults two. Instead the
+ * table expresses the second flag, so the assertion still names an exact,
+ * ordered set — and a route that grew a second gate nobody declared still
+ * reddens.
+ *
+ * `body` drives the branch, so it is stated here rather than derived: for
+ * `POST /{id}/share` the conditional branch is taken by an ABSENT or empty
+ * body, because `shareMode` defaults to `"public"`. `bodyWithout` is a body
+ * that must take the OTHER branch, which is the half that proves the condition
+ * is a condition and not just a second unconditional gate.
+ */
+type DashboardPermission = "dashboards:read" | "dashboards:write" | "dashboards:share";
+
 const ROUTES: ReadonlyArray<{
   method: string;
   path: string;
-  permission: "dashboards:read" | "dashboards:write";
+  permission: DashboardPermission;
   body?: unknown;
+  alsoEnforces?: {
+    permission: DashboardPermission;
+    /** Prose for the test name — what makes the second flag apply. */
+    when: string;
+    /** A body that must NOT reach the second flag. */
+    bodyWithout: unknown;
+  };
 }> = [
   { method: "GET", path: "/", permission: "dashboards:read" },
   { method: "GET", path: `/${VALID_ID}`, permission: "dashboards:read" },
@@ -150,7 +193,24 @@ const ROUTES: ReadonlyArray<{
   { method: "POST", path: `/${VALID_ID}/cards`, permission: "dashboards:write", body: {} },
   { method: "PATCH", path: `/${VALID_ID}/cards/c-1`, permission: "dashboards:write", body: {} },
   { method: "DELETE", path: `/${VALID_ID}/cards/c-1`, permission: "dashboards:write" },
-  { method: "POST", path: `/${VALID_ID}/share`, permission: "dashboards:write", body: {} },
+  {
+    method: "POST",
+    path: `/${VALID_ID}/share`,
+    permission: "dashboards:write",
+    // ⚠️ An EMPTY body on purpose — `{}` is what a bare `POST` with no
+    // configuration looks like once parsed, and `shareMode` defaults to
+    // `"public"`. Driving `{ shareMode: "public" }` here would test the gate
+    // against the caller who asked for it explicitly and miss the exact
+    // regression, which is that asking for nothing gets you a public link.
+    body: {},
+    alsoEnforces: {
+      permission: "dashboards:share",
+      when: "the share is PUBLIC (which an absent/empty body defaults to)",
+      bodyWithout: { shareMode: "org" },
+    },
+  },
+  // Revoking stays on `dashboards:write` alone (#5192): unsharing REDUCES
+  // exposure, and de-escalation must never be harder than escalation.
   { method: "DELETE", path: `/${VALID_ID}/share`, permission: "dashboards:write" },
   { method: "POST", path: `/${VALID_ID}/suggest`, permission: "dashboards:write", body: {} },
   { method: "POST", path: "/preview-card", permission: "dashboards:write", body: { sql: "SELECT 1" } },
@@ -277,8 +337,16 @@ describe("#5189 — no dashboards route may exist without a permission decision"
       const found = [...desc.matchAll(/Requires the `(dashboards:\w+)` permission/g)].map(
         (m) => m[1],
       );
-      if (found.length !== 1 || found[0] !== r.permission) {
-        wrong.push(`${r.method} ${path}: doc says ${JSON.stringify(found)}, gate is ${r.permission}`);
+      // #5192 — a conditional second flag must be PUBLISHED too, and in the
+      // same sentence form. An integrator reading the reference page has no
+      // other way to learn that a bare POST needs a flag their `analyst` token
+      // does not carry; a description naming only `dashboards:write` would tell
+      // them the opposite of what the route does.
+      const expected = [r.permission, ...(r.alsoEnforces ? [r.alsoEnforces.permission] : [])];
+      if (found.length !== expected.length || found.some((f, i) => f !== expected[i])) {
+        wrong.push(
+          `${r.method} ${path}: doc says ${JSON.stringify(found)}, gate is ${JSON.stringify(expected)}`,
+        );
       }
     }
     expect(wrong).toEqual([]);
@@ -296,14 +364,23 @@ describe("#5189 — no dashboards route may exist without a permission decision"
 
 describe("#5189 — each route enforces its OWN flag", () => {
   for (const r of ROUTES) {
-    it(`${r.method} ${r.path} → checkPermission("${r.permission}") and nothing else`, async () => {
+    const declared = [r.permission, ...(r.alsoEnforces ? [r.alsoEnforces.permission] : [])];
+    it(`${r.method} ${r.path} → checkPermission(${declared.map((p) => `"${p}"`).join(", ")}) and nothing else`, async () => {
       await app.fetch(req(r.path, r.method, r.body));
       const seen = mockCheckPermission.mock.calls.map((c) => c[1]);
-      // The exact set, not `toContain`. A route carrying BOTH gates — the
-      // precise failure the two-routers-at-one-mount-path shape produces, which
-      // is why the gate is per route — satisfies `toContain` for either flag and
-      // passes the 403 loop below as well. Only this assertion sees it.
-      expect([...new Set(seen)]).toEqual([r.permission]);
+      // The exact ORDERED set, not `toContain`. A route carrying BOTH gates —
+      // the precise failure the two-routers-at-one-mount-path shape produces,
+      // which is why the gate is per route — satisfies `toContain` for either
+      // flag and passes the 403 loop below as well. Only this assertion sees it.
+      //
+      // #5192 kept it exact rather than relaxing it for the one route that
+      // legitimately consults two flags: the second is DECLARED in the table,
+      // so an undeclared second gate still reddens here. Order is meaningful
+      // and asserted — the route gate runs as middleware, the conditional flag
+      // inside the handler, so the middleware flag always comes first. A
+      // reversal would mean the handler had started authorizing before the
+      // route gate, which is a real defect wearing the right set of flags.
+      expect([...new Set(seen)]).toEqual(declared);
     });
   }
 
@@ -318,6 +395,52 @@ describe("#5189 — each route enforces its OWN flag", () => {
       expect(res.status).toBe(403);
       const body = (await res.json()) as { error: string };
       expect(body.error).toBe("insufficient_permissions");
+    });
+  }
+
+  // ── #5192 — the conditional flag, both branches ────────────────────
+  for (const r of ROUTES) {
+    const cond = r.alsoEnforces;
+    if (!cond) continue;
+
+    it(`${r.method} ${r.path} → 403 when ${cond.permission} is denied and ${cond.when}`, async () => {
+      // The regression test, stated as the issue states it: a caller holding
+      // `dashboards:write` and NOT `dashboards:share` is denied.
+      mockCheckPermission.mockImplementation((_u, permission, requestId) =>
+        Effect.succeed(
+          permission === cond.permission ? denialFor(permission, requestId) : null,
+        ),
+      );
+      const res = await app.fetch(req(r.path, r.method, r.body));
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error: string; message: string };
+      expect(body.error).toBe("insufficient_permissions");
+      // Name the flag that actually denied. Both gates answer 403 with the
+      // same code, so without this the test passes when the WRITE gate denies
+      // — i.e. when the conditional branch was never reached at all.
+      expect(body.message).toContain(cond.permission);
+    });
+
+    it(`${r.method} ${r.path} → does NOT consult ${cond.permission} on the other branch`, async () => {
+      // The half that proves the condition is a condition. Without it, an
+      // unconditional second gate passes every assertion above — and it would
+      // be a real regression in the other direction, taking org-scoped sharing
+      // away from the analyst the flag was never meant to affect.
+      await app.fetch(req(r.path, r.method, cond.bodyWithout));
+      const seen = mockCheckPermission.mock.calls.map((c) => c[1]);
+      expect([...new Set(seen)]).toEqual([r.permission]);
+    });
+
+    it(`${r.method} ${r.path} → denying ${cond.permission} leaves the other branch working`, async () => {
+      mockCheckPermission.mockImplementation((_u, permission, requestId) =>
+        Effect.succeed(
+          permission === cond.permission ? denialFor(permission, requestId) : null,
+        ),
+      );
+      const res = await app.fetch(req(r.path, r.method, cond.bodyWithout));
+      // An exact status, not `not.toBe(403)`: `shareDashboard` is mocked, so
+      // the allowed outcome is a known 200 and a 404/500 cannot pass for it.
+      expect(res.status).toBe(200);
     });
   }
 });

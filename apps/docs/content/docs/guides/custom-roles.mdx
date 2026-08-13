@@ -37,7 +37,8 @@ Atlas supports custom role definitions with granular permission flags. Move beyo
 | `query` | Can send chat queries |
 | `query:raw_data` | Can see raw row data (vs aggregates only) |
 | `dashboards:read` | Can list, open and export dashboards |
-| `dashboards:write` | Can create, edit, share and publish dashboards |
+| `dashboards:write` | Can create and edit dashboards, and share one with the workspace |
+| `dashboards:share` | Can publish a dashboard to a **public** link — readable by anyone who has the URL, with no account |
 | `admin:users` | Can manage users |
 | `admin:connections` | Can manage data connections |
 | `admin:settings` | Can manage application settings |
@@ -48,6 +49,8 @@ Atlas supports custom role definitions with granular permission flags. Move beyo
 Permissions are **additive** — a role is the union of its flags. There is no "deny" mechanism.
 
 The `admin:*` flags **refine** the admin gate rather than replace it: those routes also require an org role of `admin`, `owner` or `platform_admin`, so a flag alone does not open them. `dashboards:*` is enforced on its own, outside the admin gate — which is what lets a non-admin role such as `analyst` carry it. (`query` and `query:raw_data` are declared and grantable, but are not yet enforced at any route.)
+
+`dashboards:share` is the one dashboards flag no built-in role below `admin` carries, and it is the only one gated on a **branch** rather than a route: `POST /dashboards/{id}/share` requires `dashboards:write` for every share, and `dashboards:share` additionally when the share is public. A request with no body counts as public, because that is the default. Revoking a share needs only `dashboards:write` — taking a link down must never be harder than putting one up.
 
 ---
 
@@ -60,6 +63,8 @@ Three roles are seeded automatically and cannot be modified or deleted:
 | `admin` | All permissions | Full administrative access |
 | `analyst` | `query`, `query:raw_data`, `dashboards:read`, `dashboards:write`, `admin:audit` | Data team members who need raw data, dashboard authoring and audit visibility |
 | `viewer` | `query`, `dashboards:read` | Stakeholders who read dashboards and need aggregate query results only |
+
+Note that `analyst` does **not** carry `dashboards:share`. An analyst authors dashboards and shares them with the workspace; publishing one to a public URL is an admin decision. Grant it to a custom role if your workspace wants it elsewhere.
 
 ---
 
@@ -173,7 +178,7 @@ The role name must match an existing role (built-in or custom) in the organizati
 
 Custom roles are fully backward compatible with the existing auth system:
 
-- **No enterprise license?** The legacy `admin`/`member`/`owner` roles continue to work exactly as before. `admin` and `owner` get all permissions; `member` gets the query pair plus both `dashboards:*` flags.
+- **No enterprise license?** The legacy `admin`/`member`/`owner` roles continue to work exactly as before. `admin` and `owner` get all permissions; `member` gets the query pair plus `dashboards:read` and `dashboards:write` — not `dashboards:share`, so a member can build and workspace-share a dashboard but cannot put one on a public URL.
 - **Enterprise enabled but no custom roles assigned?** Users fall back to their existing role's default permissions.
 - **Mixed deployment?** The permission resolver checks for custom roles first, then falls back to the legacy mapping.
 

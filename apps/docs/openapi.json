@@ -8606,7 +8606,7 @@
           "Dashboards"
         ],
         "summary": "Share a dashboard",
-        "description": "Generates (or updates) a share token for public or org-scoped access. Requires the `dashboards:write` permission. Optional JSON body: `{ expiresIn?: '1h'|'24h'|'7d'|'30d'|'never'|null, shareMode?: 'public'|'org', rotate?: boolean }`. An absent/empty body uses safe defaults (public, no rotation); a present-but-invalid body returns 400 and never downgrades the share to public (#4317). `rotate` is opt-in: without it, editing expiry/visibility PRESERVES the existing token so prior links keep working; with it, a new token is minted and prior links die.",
+        "description": "Generates (or updates) a share token for public or org-scoped access. Requires the `dashboards:write` permission. Minting a PUBLIC link is gated a second time, because such a token is served with no authentication at all. Requires the `dashboards:share` permission on that branch only (#5192) — an org-scoped share needs `dashboards:write` alone, as does revoking a link. Optional JSON body: `{ expiresIn?: '1h'|'24h'|'7d'|'30d'|'never'|null, shareMode?: 'public'|'org', rotate?: boolean }`. An absent/empty body uses safe defaults (public, no rotation) and therefore takes the public branch; a present-but-invalid body returns 400 and never downgrades the share to public (#4317). `rotate` is opt-in: without it, editing expiry/visibility PRESERVES the existing token so prior links keep working; with it, a new token is minted and prior links die.",
         "parameters": [
           {
             "schema": {
@@ -8723,6 +8723,17 @@
                     "error",
                     "message"
                   ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Authorization service unavailable — the permission check could not be completed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
                 }
               }
             }

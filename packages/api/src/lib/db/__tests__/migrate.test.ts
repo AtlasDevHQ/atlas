@@ -339,7 +339,15 @@ describe("runMigrations", () => {
     //   `dashboards:read` and 403'd off dashboards. The seeder now reconciles,
     //   but its only call site is `listRoles`, which the 403'd user has no
     //   reason to visit) = 197.
-    expect(count).toBe(197);
+    //   Plus 0197 (builtin_roles_dashboards_share — the same reconcile one flag
+    //   later. #5190 moved `POST /{id}/share` off `adminAuth` onto
+    //   `dashboards:write`, and since an absent body defaults to
+    //   `shareMode: "public"`, every `member`/`analyst` acquired the ability to
+    //   mint a link readable by anyone on the internet with no account. #5192
+    //   splits that authority out as `dashboards:share`, admin-only — and a new
+    //   flag reaches an already-seeded workspace only through a backfill, for
+    //   exactly the reason 0196 records) = 198.
+    expect(count).toBe(198);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -565,6 +573,7 @@ describe("runMigrations", () => {
         "0194_brain_fact_slot_keys_not_null.sql",
         "0195_brain_facts_drop_predicate_cardinality.sql",
         "0196_builtin_roles_dashboards_flags.sql",
+        "0197_builtin_roles_dashboards_share.sql",
       ],
     });
 

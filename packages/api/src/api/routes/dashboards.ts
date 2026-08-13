@@ -80,7 +80,7 @@ import {
   validateAutoComparison,
 } from "@atlas/api/lib/dashboard-parameters";
 import { ErrorSchema, parsePagination } from "./shared-schemas";
-import { requireOrgContext } from "./admin-router";
+import { requireOrgContext, enforcePermission } from "./admin-router";
 import {
   createWorkspaceRouter,
   requireWorkspacePermission,
@@ -924,8 +924,10 @@ const shareDashboardRoute = createRoute({
   summary: "Share a dashboard",
   description:
     "Generates (or updates) a share token for public or org-scoped access. Requires the `dashboards:write` permission. " +
+    "Minting a PUBLIC link is gated a second time, because such a token is served with no authentication at all. " +
+    "Requires the `dashboards:share` permission on that branch only (#5192) — an org-scoped share needs `dashboards:write` alone, as does revoking a link. " +
     "Optional JSON body: `{ expiresIn?: '1h'|'24h'|'7d'|'30d'|'never'|null, shareMode?: 'public'|'org', rotate?: boolean }`. " +
-    "An absent/empty body uses safe defaults (public, no rotation); a present-but-invalid body returns 400 and never downgrades the share to public (#4317). " +
+    "An absent/empty body uses safe defaults (public, no rotation) and therefore takes the public branch; a present-but-invalid body returns 400 and never downgrades the share to public (#4317). " +
     "`rotate` is opt-in: without it, editing expiry/visibility PRESERVES the existing token so prior links keep working; with it, a new token is minted and prior links die.",
   // The body is validated in-handler (fail closed → 400) rather than via the
   // framework's json validator, so a malformed/invalid body returns a 400
@@ -941,6 +943,13 @@ const shareDashboardRoute = createRoute({
     403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     404: { description: "Dashboard not found", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+    // #5192 — the `dashboards:share` check runs IN the handler (it depends on
+    // the parsed `shareMode`), so unlike the per-route gates its
+    // `permissions_unavailable` fail-closed answer is part of this route's own
+    // response union and has to be declared. Every gated route can emit it from
+    // middleware; here it is visible to the compiler, which is why only this one
+    // says so.
+    503: { description: "Authorization service unavailable — the permission check could not be completed", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
   },
 });
 
@@ -2833,9 +2842,40 @@ authed.openapi(
         parsed = validated.data;
       }
 
+      // #5192 — the PUBLIC branch needs a second, stronger flag.
+      //
+      // `public` mints a token served by `publicDashboards` at
+      // `/api/public/dashboards/{token}`, which bypasses auth entirely
+      // (rate-limited per IP only). `org` re-checks that the reader is a member
+      // of the dashboard's org, so it is authoring-adjacent and stays on the
+      // route's `dashboards:write` gate alone.
+      //
+      // Resolved from `parsed` AFTER the body has been validated, which is why
+      // this is in the handler rather than a second route middleware: the
+      // default is `public`, so an ABSENT or empty body — a bare `POST` with
+      // nothing in it — takes this branch. That is the exact regression #5190
+      // shipped, and a gate that only fired on an explicit
+      // `shareMode: "public"` would miss it entirely.
+      const shareMode = parsed.shareMode ?? "public";
+      if (shareMode === "public") {
+        const denied = yield* Effect.promise(() =>
+          enforcePermission(user, "dashboards:share", requestId),
+        );
+        // Split on the status rather than passing `denied.status` through. The
+        // typed-response union wants a LITERAL status per `c.json` call: a
+        // `403 | 503` argument matches neither arm and fails to compile. The
+        // two statuses stay genuinely distinct — 503 is "we could not decide",
+        // never "you may not" (`permissionLoadFailedResponse`).
+        if (denied) {
+          return denied.status === 503
+            ? c.json(denied.body, 503)
+            : c.json(denied.body, 403);
+        }
+      }
+
       const result = yield* Effect.promise(() => shareDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }, {
         expiresIn: parsed.expiresIn ?? null,
-        shareMode: parsed.shareMode ?? "public",
+        shareMode,
         rotate: parsed.rotate ?? false,
       }));
 

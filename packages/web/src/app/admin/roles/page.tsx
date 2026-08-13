@@ -69,6 +69,11 @@ const PERMISSION_LABELS: Record<string, string> = {
   "query:raw_data": "View raw row data",
   "dashboards:read": "View dashboards",
   "dashboards:write": "Create and edit dashboards",
+  // #5192 — the label says "public" because that is the whole of what this
+  // grants and the part an admin must weigh. Sharing to the workspace rides on
+  // "Create and edit dashboards"; this one puts a dashboard on a URL that
+  // anyone can open with no account.
+  "dashboards:share": "Publish dashboards to a public link",
   "admin:users": "Manage users",
   "admin:connections": "Manage connections",
   "admin:settings": "Manage settings",
@@ -89,7 +94,7 @@ const PERMISSION_LABELS: Record<string, string> = {
  */
 const PERMISSION_GROUPS: Record<string, string[]> = {
   "Data Access": ["query", "query:raw_data"],
-  "Dashboards": ["dashboards:read", "dashboards:write"],
+  "Dashboards": ["dashboards:read", "dashboards:write", "dashboards:share"],
   "Administration": ["admin:users", "admin:connections", "admin:settings", "admin:audit", "admin:roles", "admin:semantic"],
 };
 

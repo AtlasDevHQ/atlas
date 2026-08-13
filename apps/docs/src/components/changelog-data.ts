@@ -20,6 +20,23 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.8",
+    title: "Dashboards Leave the Admin Perimeter",
+    date: "2026-08-13",
+    summary:
+      "Until now, permissions could only ever take capabilities away from an administrator — never grant one to anybody else. That made dashboards administrator-only in practice: an analyst or a viewer, roles whose entire purpose is querying data, were refused before their permissions were ever consulted. Dashboards are now governed by ordinary workspace permissions, so the roles you already have can open them. This release also fixes a bug where a signed-in user without access was bounced to the login page every few seconds with no error shown, narrows who may publish a dashboard to the public internet, and completes a workspace deletion that was not removing everything it claimed to.",
+    highlights: [
+      "Dashboards are governed by workspace permissions instead of the administrator role — analyst, viewer and member roles can now open them",
+      "Fixed: signed-in users without dashboard access were redirected to the login page in a loop instead of being shown a permission error",
+      "Publishing a dashboard to a public link is now a separate, administrator-only permission — and a share request that names no mode is no longer treated as public",
+      "Deleting a workspace now also removes its Company Atlas facts and Knowledge Base documents, which the previous deletion claimed to remove and did not",
+      "Self-service organization deletion is blocked — it ran no cleanup and left workspace data behind",
+      "Container images and the project scaffolds now patch their operating-system packages, clearing 4 critical and 43 high-severity advisories",
+      "The Company Atlas alias auto-approval settings are no longer visible or writable to Cloud workspace administrators, matching what the documentation always promised",
+      "Self-hosted: migrations 0196 and 0197 backfill the new dashboard permissions onto built-in roles — without them, workspaces created before this release would be denied the capability rather than granted it",
+    ],
+  },
+  {
     version: "v0.2.7",
     title: "Completing the Cleanup",
     date: "2026-08-12",

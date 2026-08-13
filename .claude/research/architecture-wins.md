@@ -2822,3 +2822,27 @@ The implementation survey narrowed the candidate's "16 pages" to the surfaces th
 - The overlap trap is documented where it bites: `EpisodeSource` and `EpisodeSourceClass` spell two members identically, the unions are not mutually assignable but the literal-typed CONSTANTS are — so `storedSource === WAREHOUSE_CLASS` (the #4938 bug respelled) compiles. `EMAIL_CLASS` is named as the one most likely to expire, since a second email vendor makes `{ class: "email", vendor: "gmail" }` correct and a collapsed stored `"email"` tempting but wrong.
 
 **Category:** A mixed storage grain described in prose and re-derived per reader → one declared spec map with both axes separable in code, the ADR-level refusal reading the class instead of a literal, and the residual prose rule named rather than pretended away.
+
+---
+
+## 104. A permission gate that authorizes on its own — RBAC stops being able only to subtract from admin (#5189)
+
+**Date:** 2026-08-13
+**Issue:** #5189 (with #5188, the prod symptom)
+**PR:** #5190
+**Commit:** 79fd4801e
+
+**Problem:** Every permission-gated router in the tree was built through `createAdminRouter()`, which mounts `adminAuth` first. `requirePermission` is documented as *refining* that coarse gate — its own comment says "we're inside the admin perimeter" — so the permission system could only ever **subtract from admin, never grant to a non-admin**. `checkPermission` was never reached for anyone outside `{admin, owner, platform_admin}`.
+
+The consequence was structural rather than incidental: any surface had exactly two options, admin-only or ungated. `ee/src/auth/roles.ts` had shipped `analyst` and `viewer` as built-in roles for years — roles whose entire description is querying data — and neither could open a dashboard, because `PERMISSIONS` contained only `query*` (enforced nowhere) and six `admin:*` flags. Dashboards, linked unconditionally in every user's sidebar, took the admin option. That is what produced #5188's prod symptom: a fresh SaaS signup is their org's `owner`, `owner` is in `mfaRequired`'s `ENFORCED_ROLES`, and a brand-new user has no second factor — so the gate fired on their first visit, the web read the 403 as "not signed in", and the user looped `/login` → 403 → `/login` every ~5s with no error and no way forward.
+
+**Solution:** `createWorkspaceRouter()` + `requireWorkspacePermission()` (`api/routes/workspace-router.ts`) is the third option: `standardAuth` + org context + a permission check that authorizes on its own, reusing `enforcePermission` so the fail-closed posture (the `permissions_unavailable` 503, the throw path, the `mode: "none"` carve-out) cannot fork from the admin path. `dashboards:read` / `dashboards:write` are the first flags in `PERMISSIONS` enforced outside the admin perimeter.
+
+**Impact:**
+- **The gate is declared PER ROUTE, and that was measured rather than chosen.** The obvious shape — a read router and a write router mounted at the same path — does not isolate its `use()` chains on hono 4 / `@hono/zod-openapi` 1.5: the read router's gate also runs on the write router's routes, so a write would silently require BOTH flags, passing only because every write-capable role happens to hold read. Declaring the gate on each `createRoute` is what makes the two independent, and what makes the two independence tests possible at all.
+- **The classification line is "does this persist", not "is this a GET"** — the viewing path includes POSTs (`/render` per card, `/export`), and two shape-misleading routes are writes: `/refresh` UPDATEs the PUBLISHED card cache every viewer reads, and `GET /{id}/draft` FORKS on first call. Both were initially classified read; the second was caught by `fix-vs-finding` after the first was fixed, one arm over.
+- **Not a weaker path than the router it replaces.** `standardAuth` does two fewer things than `adminAuth`, and `workspaceActorGuard` restores both: workspace API keys stay denied (#4110) and `mode: "none"` is refused under SaaS (#3342 L-1). The gate refuses to run at all if that guard did not, because the middleware that grants is not the middleware that guards.
+- **A coverage tripwire compares REGISTERED routes against TESTED routes, in both directions**, read off the composed `app`. Tagging the gate closure was tried first and does not survive `app.route()`'s handler wrapping — measured, it found zero tags across all 26 routes, i.e. it would have passed by finding nothing on any tree forever. A third guard asserts each route's OpenAPI description names the flag it enforces; 8 of 26 had published no authorization requirement at all.
+- **What it deliberately did NOT buy is recorded at the seam.** Nothing at the type level prevents a new route from shipping with no gate — `@hono/zod-openapi` intersects route middleware into the handler env rather than checking it against the app's, so making the context flag required produces no compile error at any call site. The runtime tripwire is the enforcement, and a `createGatedRoute` wrapper that would make omission a compile error is filed rather than pretended.
+
+**Category:** A refinement-only gate that structurally could not grant → a sibling gate that authorizes on its own, with the fail-closed posture shared rather than forked, and the residual type-level gap named instead of papered over.

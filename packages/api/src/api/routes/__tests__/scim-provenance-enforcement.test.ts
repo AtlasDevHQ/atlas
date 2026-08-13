@@ -24,7 +24,7 @@
  * F-53 chokepoint; this suite covers the F-57 chokepoint that runs after.
  */
 
-import { PERMISSIONS as REAL_PERMISSIONS, isValidPermission as realIsValidPermission } from "@useatlas/types/auth";
+import { PERMISSIONS as REAL_PERMISSIONS, isValidPermission as realIsValidPermission } from "@atlas/api/lib/auth/permissions";
 import {
   describe,
   it,

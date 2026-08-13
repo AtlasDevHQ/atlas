@@ -24,7 +24,6 @@ import {
   FormDescription,
 } from "@/components/form-dialog";
 import { z } from "zod";
-import type { Permission } from "@useatlas/types/auth";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -66,19 +65,24 @@ const RolesResponseSchema = z.object({
 // ── Permission labels ────────────────────────────────────────────
 
 /**
- * ⚠️ `satisfies Record<Permission, string>`, not `Record<string, string>`
- * (#5191).
+ * ⚠️ NOT exhaustive over the flag union, and that is a KNOWN GAP rather than a
+ * choice (#5191).
  *
- * Keyed by the flag union, a permission with no label is a COMPILE error, and
- * `satisfies` keeps that in BOTH directions — a label for a flag that no longer
- * exists is an excess-property error — while leaving the literal's own key type
- * intact for the `Map` below.
+ * `Record<Permission, string>` would make a missing label a COMPILE error in
+ * both directions, which is what this map wants — as `Record<string, …>` a
+ * missing label is a raw id rendered inside a badge, which is how
+ * `dashboards:read`/`dashboards:write` reached the editor as literal strings
+ * before anyone noticed.
  *
- * As `Record<string, …>` a missing label was a raw id rendered inside a badge —
- * which is how `dashboards:read`/`dashboards:write` reached the editor as
- * literal strings before anyone noticed. The union only became reachable here
- * when `PERMISSIONS` moved to `@useatlas/types`; the web speaks HTTP and cannot
- * import from `@atlas/api`.
+ * The union is not reachable here: the web speaks HTTP and cannot import from
+ * `@atlas/api`, and moving `PERMISSIONS` to `@useatlas/types` is gated on a
+ * `/publish` of that package landing first — `create-atlas` builds
+ * `packages/api` against the PUBLISHED copy, so the move failed Deploy
+ * Validation with `Export PERMISSIONS doesn't exist in target module`. See the
+ * note in `lib/auth/permissions.ts` and the follow-up issue.
+ *
+ * Until then the runtime test in `__tests__/permission-grouping.test.ts` is
+ * what holds the map honest — it asserts every known flag has real copy.
  */
 const PERMISSION_LABELS = {
   "query": "Query data",
@@ -96,7 +100,7 @@ const PERMISSION_LABELS = {
   "admin:audit": "View audit logs",
   "admin:roles": "Manage roles",
   "admin:semantic": "Edit semantic layer",
-} satisfies Record<Permission, string>;
+};
 
 /**
  * The label map keyed for a FREE-STRING lookup.
@@ -139,7 +143,7 @@ export function permissionLabel(p: string): string {
  * not, and an EE admin had no way to author a dashboard-capable role. Anything
  * unclaimed here now falls into "Other" rather than disappearing.
  */
-const PERMISSION_GROUPS: Record<string, Permission[]> = {
+const PERMISSION_GROUPS: Record<string, string[]> = {
   "Data Access": ["query", "query:raw_data"],
   "Dashboards": ["dashboards:read", "dashboards:write", "dashboards:share"],
   "Administration": ["admin:users", "admin:connections", "admin:settings", "admin:audit", "admin:roles", "admin:semantic"],
@@ -170,9 +174,6 @@ export function offerablePermissions(
  * not offered".
  */
 export function groupPermissions(allPermissions: string[]): Array<[string, string[]]> {
-  // `Set<string>`, not the inferred `Set<Permission>`: it is tested against the
-  // SERVER's list, which may name a flag outside this build's union — and that
-  // is precisely the "Other" case two lines down.
   const claimed = new Set<string>(Object.values(PERMISSION_GROUPS).flat());
   const groups: Array<[string, string[]]> = Object.entries(PERMISSION_GROUPS).map(
     ([name, perms]) => [name, perms.filter((p) => allPermissions.includes(p))],

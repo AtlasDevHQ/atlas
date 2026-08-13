@@ -14,7 +14,7 @@
  * / defect / EnterpriseError paths all produce a failure-status audit row.
  */
 
-import { PERMISSIONS as REAL_PERMISSIONS, isValidPermission as realIsValidPermission } from "@useatlas/types/auth";
+import { PERMISSIONS as REAL_PERMISSIONS, isValidPermission as realIsValidPermission } from "@atlas/api/lib/auth/permissions";
 import {
   describe,
   it,

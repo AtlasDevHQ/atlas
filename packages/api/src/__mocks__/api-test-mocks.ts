@@ -25,7 +25,7 @@
 import { mock, type Mock } from "bun:test";
 import { Context, Effect, Layer } from "effect";
 import { asRatio } from "@useatlas/types";
-import { PERMISSIONS as REAL_PERMISSIONS, isValidPermission as realIsValidPermission } from "@useatlas/types/auth";
+import { PERMISSIONS as REAL_PERMISSIONS, isValidPermission as realIsValidPermission } from "@atlas/api/lib/auth/permissions";
 // The REAL error class, re-exported through the mocked `db/internal` surface
 // (#5160). The purge route maps it with `domainError`, which matches by
 // `instanceof` — a hand-rolled stand-in here would never match, and the route's

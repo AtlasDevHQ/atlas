@@ -15,21 +15,41 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import { PERMISSIONS } from "@useatlas/types/auth";
 import { groupPermissions, offerablePermissions, permissionLabel } from "../page";
 
-// #5191 — the REAL tuple, not a hand-copy. The previous version of this file
-// restated all ten flags with a comment admitting it, because `PERMISSIONS`
-// lived in `packages/api` and the web speaks HTTP. It now lives in
-// `@useatlas/types` beside `ATLAS_ROLES`, which the web already imports in ~69
-// files, so the copy is simply unnecessary.
-//
-// What that buys is not tidiness: the "offers every server-known permission"
-// test below is only meaningful if its input is what the server will actually
-// send. Against a stale copy it proved that the editor handles a list from
-// 2026, which is the shape of a fixture agreeing with itself by construction.
-
-const ALL = [...PERMISSIONS];
+/**
+ * ⚠️ STILL a hand-copy, and #5191 tried to remove it. Stating the constraint
+ * honestly rather than pretending otherwise:
+ *
+ * `PERMISSIONS` lives in `packages/api/src/lib/auth/permissions.ts` and the web
+ * speaks HTTP rather than importing from `@atlas/api`, so it genuinely cannot
+ * be reached here. The fix is to promote it to `@useatlas/types` beside
+ * `ATLAS_ROLES` — which was implemented, and then REVERTED: `create-atlas`
+ * builds `packages/api` against the PUBLISHED `@useatlas/types`, so the api's
+ * re-export failed Deploy Validation (a required check) with
+ * `Export PERMISSIONS doesn't exist in target module`. The move is gated on a
+ * `/publish` of that package landing first; tracked as a follow-up.
+ *
+ * Drift is therefore possible and DELIBERATELY SAFE: `groupPermissions` is
+ * driven by the SERVER's list, so a flag this copy has never heard of still
+ * reaches the editor via "Other" — which the "unrecognised flag" test pins, and
+ * which is the real guarantee. This literal only fixes the input to the other
+ * cases.
+ */
+const ALL = [
+  "query",
+  "query:raw_data",
+  "dashboards:read",
+  "dashboards:write",
+  // #5192 — the third dashboards flag.
+  "dashboards:share",
+  "admin:users",
+  "admin:connections",
+  "admin:settings",
+  "admin:audit",
+  "admin:roles",
+  "admin:semantic",
+];
 
 describe("groupPermissions", () => {
   it("offers every server-known permission exactly once", () => {

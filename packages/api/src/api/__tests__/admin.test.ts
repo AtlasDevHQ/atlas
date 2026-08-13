@@ -8,7 +8,7 @@
  */
 
 import { createConnectionMock } from "@atlas/api/testing/connection";
-import { PERMISSIONS as REAL_PERMISSIONS, isValidPermission as realIsValidPermission } from "@useatlas/types/auth";
+import { PERMISSIONS as REAL_PERMISSIONS, isValidPermission as realIsValidPermission } from "@atlas/api/lib/auth/permissions";
 import {
   makeQueryEffectMock,
   MockInternalDB,

@@ -24,7 +24,7 @@
  * `resolvePermissions` — that is exercised by `ee/__tests__/roles.test.ts`.
  */
 
-import { PERMISSIONS as REAL_PERMISSIONS, isValidPermission as realIsValidPermission } from "@useatlas/types/auth";
+import { PERMISSIONS as REAL_PERMISSIONS, isValidPermission as realIsValidPermission } from "@atlas/api/lib/auth/permissions";
 import {
   describe,
   it,

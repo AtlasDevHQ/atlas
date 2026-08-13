@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
-import { PERMISSIONS as REAL_PERMISSIONS, isValidPermission as realIsValidPermission } from "@useatlas/types/auth";
+import { PERMISSIONS as REAL_PERMISSIONS, isValidPermission as realIsValidPermission } from "@atlas/api/lib/auth/permissions";
 
 // Real ADMIN_ACTIONS so audit-row assertions pin to canonical strings.
 import { ADMIN_ACTIONS as REAL_ADMIN_ACTIONS } from "@atlas/api/lib/audit/actions";

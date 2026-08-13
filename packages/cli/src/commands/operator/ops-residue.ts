@@ -188,6 +188,14 @@ export function printResidueReport(report: ResidueSweepReport): void {
 
   if (report.refusedToExecute) {
     console.error(`\n✗ REFUSED — nothing was deleted: ${report.refusedToExecute}`);
+  } else if (report.blastRadiusWarning) {
+    // The DRY-RUN half. The preview below still lists everything — nothing is
+    // hidden — but it is FLAGGED, because a preview of a broken-premise state
+    // that reads as an ordinary finding is the failure the sweep refuses
+    // outright for on an empty `organization`.
+    console.error(
+      `\n⚠ IMPLAUSIBLE RESULT — do not act on the list below as a finding: ${report.blastRadiusWarning}`,
+    );
   }
 
   if (report.dryRun || report.refusedToExecute) {
@@ -265,6 +273,10 @@ export function residueExitCode(report: ResidueSweepReport): number {
   if (report.errors.length > 0) return 1;
   if (report.totals.tablesUnreadable > 0) return 1;
   if (report.refusedToExecute) return 1;
+  // Both modes. A flagged DRY RUN exiting 0 would let a scripted preview report
+  // a wrong-DB result set as an ordinary finding — the same failure one mode
+  // over, which is exactly how this guard was wrong the first time.
+  if (report.blastRadiusWarning) return 1;
   if (countOverDeletes(report) > 0) return 1;
   return 0;
 }

@@ -206,6 +206,7 @@ const BASE_REPORT: ResidueSweepReport = {
   deletions: [],
   errors: [],
   refusedToExecute: null,
+  blastRadiusWarning: null,
   totals: {
     rowsWouldDelete: 1,
     rowsDeleted: 0,
@@ -252,7 +253,23 @@ describe("residueExitCode", () => {
 
   it("is 1 when the blast-radius cap refused the execute", () => {
     expect(
-      residueExitCode({ ...BASE_REPORT, dryRun: false, refusedToExecute: "too many" }),
+      residueExitCode({
+        ...BASE_REPORT,
+        dryRun: false,
+        refusedToExecute: "too many",
+        blastRadiusWarning: "too many",
+      }),
+    ).toBe(1);
+  });
+
+  it("is 1 on a FLAGGED dry run — a preview of a wrong-DB result is not clean", () => {
+    // The fix-vs-finding catch: the first blast-radius guard exempted DRY RUN
+    // ("an operator must be able to preview any result set"), sitting next to
+    // the premise guard whose argument is that a preview built on a broken
+    // premise is worse than none. A flagged preview exiting 0 would let a
+    // scripted run report a wrong-DB result set as an ordinary finding.
+    expect(
+      residueExitCode({ ...BASE_REPORT, blastRadiusWarning: "51 distinct workspace ids" }),
     ).toBe(1);
   });
 
@@ -430,8 +447,21 @@ describe("printResidueReport", () => {
   });
 
   it("prints a blast-radius refusal and still lists what it would have deleted", () => {
-    printResidueReport({ ...BASE_REPORT, dryRun: false, refusedToExecute: "too many ids" });
+    printResidueReport({
+      ...BASE_REPORT,
+      dryRun: false,
+      refusedToExecute: "too many ids",
+      blastRadiusWarning: "too many ids",
+    });
     expect(err.join("\n")).toContain("REFUSED");
+    expect(out.join("\n")).toContain("WOULD DELETE");
+  });
+
+  it("FLAGS an implausible dry run on stderr while still printing the preview", () => {
+    printResidueReport({ ...BASE_REPORT, blastRadiusWarning: "51 distinct workspace ids" });
+    expect(err.join("\n")).toContain("IMPLAUSIBLE RESULT");
+    expect(err.join("\n")).toContain("not act on the list below as a finding");
+    // Nothing is hidden — the operator still sees every value.
     expect(out.join("\n")).toContain("WOULD DELETE");
   });
 });

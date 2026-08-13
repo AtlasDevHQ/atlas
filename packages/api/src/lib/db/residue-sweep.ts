@@ -254,15 +254,11 @@ export function isBenignSkip(skip: ResidueSkip): boolean {
   return skip.kind !== "unreadable";
 }
 
-interface SchemaColumnRow extends Record<string, unknown> {
+/** One catalog row: a candidate table, and one scope column of it (or none). */
+interface CatalogColumnRow extends Record<string, unknown> {
   table_name: string;
-  column_name: string;
-  data_type: string;
-}
-
-interface RegclassRow extends Record<string, unknown> {
-  table_name: string;
-  present: boolean;
+  column_name: string | null;
+  data_type: string | null;
 }
 
 /**
@@ -274,6 +270,14 @@ interface RegclassRow extends Record<string, unknown> {
  * Auth tables, or a not-yet-provisioned region looks like. This throws rather
  * than returning a report, because a preview built on a broken premise is worse
  * than no preview: an operator would read it as a genuine finding.
+ *
+ * ⚠️ **What this establishes is non-emptiness, NOT completeness**, and the
+ * difference matters: a restore that recovered 1 organization of 5,000 passes
+ * here while the orphan predicate is still trivially true for nearly
+ * everything. {@link checkResidueBlastRadius} is what covers that case — it
+ * fires on the SIZE of the resulting plan, which is the observable a partial
+ * restore actually produces. Neither guard alone is sufficient, and this
+ * docstring used to claim the stronger property.
  */
 export async function assertOrganizationPopulated(query: ResidueQuery): Promise<number> {
   const rows = await query<{ n: string }>(
@@ -302,15 +306,22 @@ export async function assertOrganizationPopulated(query: ResidueQuery): Promise<
  * Resolve which `purged` tables this region's schema can actually be swept for,
  * pairing each with its workspace scope column.
  *
- * ⚠️ **Presence is probed with `to_regclass`, not `information_schema`.** Those
- * views are PRIVILEGE-FILTERED: a role without `SELECT` on a table sees no rows
- * for it, which an earlier revision reported as *"relation absent — run the
- * region's migrations"*. That diagnosis is confident, specific and false — the
- * operator runs migrations, sees no change, and concludes the table is gone
- * while it sits unswept. `to_regclass` answers from the catalog regardless of
- * privilege, so present-but-invisible becomes an `unreadable` skip carrying the
- * remedy that actually works. `purge-scope.ts` already names `to_regclass` as
- * the tool for this, on `subscription` and `scim_group_mappings`.
+ * ⚠️ **Both presence and columns come from `pg_catalog`, NOT
+ * `information_schema`.** Those views are PRIVILEGE-FILTERED — `tables` and
+ * `columns` per relation AND per COLUMN — so a role without the right grant
+ * simply sees no rows. An earlier revision read that as *"relation absent — run
+ * the region's migrations"*; a later one fixed the relation half with
+ * `to_regclass` and left the column half, where a role holding column-level
+ * grants that exclude the scope column reported *"no workspace scope column —
+ * the purge reaches this table through a parent subquery"*. Both diagnoses are
+ * confident, specific and false, both send the operator somewhere useless, and
+ * both file the table as benign so the run still exits 0.
+ *
+ * `pg_class` / `pg_attribute` answer regardless of privilege, so "the table
+ * has no scope column" is now a structural fact rather than a privilege
+ * artifact. A table the role genuinely cannot READ then fails in
+ * {@link enumerateOrphanValues} and is recorded as `unreadable` — measured,
+ * rather than inferred from an absence.
  */
 export async function discoverResidueTargets(
   query: ResidueQuery,
@@ -324,43 +335,38 @@ export async function discoverResidueTargets(
     .sort((a, b) => a.table.localeCompare(b.table));
   const candidateNames = candidates.map((c) => c.table);
 
-  const regclassRows = await query<RegclassRow>(
-    `SELECT t AS table_name, to_regclass('public.' || quote_ident(t)) IS NOT NULL AS present
-       FROM unnest($1::text[]) AS t`,
-    [candidateNames],
-  );
-  const present = new Set(regclassRows.filter((r) => r.present).map((r) => r.table_name));
-
-  const columnRows = await query<SchemaColumnRow>(
-    `SELECT table_name, column_name, data_type FROM information_schema.columns
-      WHERE table_schema = 'public'
-        AND table_name = ANY($1)
-        AND column_name = ANY($2)
-      ORDER BY table_name, column_name`,
+  // LEFT JOIN so a present table with no scope column still yields a row (with
+  // NULL column_name) — that is how presence and scope are answered by one
+  // privilege-blind query. `atttypid::regtype` gives the bare type name without
+  // a typmod, so `character varying(255)` compares as `character varying`.
+  const catalogRows = await query<CatalogColumnRow>(
+    `SELECT c.relname AS table_name,
+            a.attname AS column_name,
+            a.atttypid::regtype::text AS data_type
+       FROM pg_class c
+       JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'public'
+       LEFT JOIN pg_attribute a
+              ON a.attrelid = c.oid
+             AND a.attnum > 0
+             AND NOT a.attisdropped
+             AND a.attname = ANY($2)
+      WHERE c.relkind = 'r' AND c.relname = ANY($1)
+      ORDER BY c.relname, a.attname`,
     [candidateNames, [...WORKSPACE_SCOPE_COLUMNS]],
   );
-  const byTable = new Map<string, SchemaColumnRow[]>();
-  for (const row of columnRows) {
+  const byTable = new Map<string, CatalogColumnRow[]>();
+  for (const row of catalogRows) {
     const list = byTable.get(row.table_name);
     if (list) list.push(row);
     else byTable.set(row.table_name, [row]);
   }
 
-  // Which candidates this role can see AT ALL. A table `to_regclass` finds but
-  // whose columns are entirely invisible is unreadable, not scope-less, and the
-  // two produce opposite operator moves.
-  const visibleRows = await query<{ table_name: string }>(
-    `SELECT DISTINCT table_name FROM information_schema.columns
-      WHERE table_schema = 'public' AND table_name = ANY($1)`,
-    [candidateNames],
-  );
-  const visible = new Set(visibleRows.map((r) => r.table_name));
-
   const targets: ResidueTarget[] = [];
   const skipped: ResidueSkip[] = [];
 
   for (const { table, registryReason } of candidates) {
-    if (!present.has(table)) {
+    const rows = byTable.get(table);
+    if (!rows) {
       skipped.push({
         kind: "relation-absent",
         table,
@@ -371,18 +377,10 @@ export async function discoverResidueTargets(
       continue;
     }
 
-    if (!visible.has(table)) {
-      skipped.push({
-        kind: "unreadable",
-        table,
-        column: null,
-        reason:
-          "relation exists but no column of it is visible to this role — the sweep has no privilege on it. Its residue state is UNKNOWN, not clean. Grant SELECT/DELETE and re-run.",
-      });
-      continue;
-    }
-
-    const columns = byTable.get(table) ?? [];
+    const columns = rows.filter(
+      (r): r is CatalogColumnRow & { column_name: string; data_type: string } =>
+        typeof r.column_name === "string" && typeof r.data_type === "string",
+    );
     if (columns.length === 0) {
       skipped.push({
         kind: "no-scope-column",
@@ -570,22 +568,40 @@ export function planResidueSweep(orphans: readonly OrphanValue[]): ResiduePlan {
 export const MAX_RESIDUE_WORKSPACES = 50;
 
 /**
- * Refuse to EXECUTE against more distinct workspace ids than
- * {@link MAX_RESIDUE_WORKSPACES}. Returns a refusal reason, or null. DRY RUN is
- * always uncapped — an operator must be able to preview any result set.
+ * Whether the plan's size is itself evidence the premise is wrong.
+ *
+ * ⚠️ **This fires in BOTH modes, and the first version of it did not.** It was
+ * written as `if (dryRun) return null` — "an operator must be able to preview
+ * any result set" — beside {@link assertOrganizationPopulated}, whose whole
+ * argument is that *"a preview built on a broken premise is worse than no
+ * preview: an operator would read it as a genuine finding."* Two guards for the
+ * same broken premise, in the same commit, disagreeing about the preview.
+ *
+ * The resolution keeps both halves: a DRY RUN still enumerates and still prints
+ * everything, so nothing is hidden from the operator — but the result is
+ * FLAGGED rather than presented as a finding, and the run exits non-zero.
+ * `refusedToExecute` is what stops an EXECUTE; this is what stops a preview
+ * being read as clean. Returns the warning, or null.
+ *
+ * Behaviour delta from the first version:
+ *
+ * ```
+ *                       old          new
+ * dry run, <= cap       null         null
+ * dry run,  > cap       null         WARN + exit 1   ← changed, more conservative
+ * execute, <= cap       null         null
+ * execute,  > cap       refuse       refuse
+ * ```
  */
-export function checkResidueBlastRadius(
-  deletable: readonly OrphanValue[],
-  dryRun: boolean,
-): string | null {
-  if (dryRun) return null;
+export function checkResidueBlastRadius(deletable: readonly OrphanValue[]): string | null {
   const ids = new Set(deletable.map((d) => d.value));
   if (ids.size > MAX_RESIDUE_WORKSPACES) {
     return (
-      `Refusing to execute: ${ids.size} distinct workspace ids resolved as residue ` +
-      `(> ${MAX_RESIDUE_WORKSPACES}). Residue is the tail of past purges, not a population — ` +
-      "a set this size reads as a wrong DB or a partially-restored one. Re-check --region / " +
-      "--database-url against the DRY RUN output before proceeding."
+      `${ids.size} distinct workspace ids resolved as residue (> ${MAX_RESIDUE_WORKSPACES}). ` +
+      "Residue is the tail of past purges, not a population — a set this size reads as a wrong " +
+      "DB or a partially-restored one, in which the orphan predicate is trivially true for " +
+      "nearly everything. Treat this result as a wrong-DB signal, not a finding: re-check " +
+      "--region / --database-url before acting on any of it."
     );
   }
   return null;
@@ -673,11 +689,20 @@ function groupDeletions(deletable: readonly OrphanValue[]): DeleteGroup[] {
  * going red. A hang is not a falsifier. With the bound, the same mutation
  * terminates and a test can pin the statement count.
  *
- * ⚠️ **The DELETE re-asserts the orphan predicate.** The proof that these values
- * are orphans was gathered in a different statement, possibly a different
- * invocation. Re-checking is ADDITIVE — it can only ever delete fewer rows,
- * never more — so it cannot regress in the destructive direction, and it makes
- * the statement carry its own precondition instead of trusting a stale read.
+ * ⚠️ **The DELETE re-asserts the orphan predicate AND its own precondition.**
+ * The proof that these values are orphans was gathered in a different
+ * statement, possibly a different invocation. Both clauses are ADDITIVE — they
+ * can only ever delete fewer rows, never more — so neither can regress in the
+ * destructive direction.
+ *
+ * The `EXISTS (SELECT 1 FROM public.organization)` clause is the one that was
+ * missing when the `NOT EXISTS` clause was first added, and it is the same
+ * defect one layer down: with an empty `organization` the `NOT EXISTS` is
+ * vacuously true for every row, so the guard protected nothing in precisely the
+ * state it was written for. {@link assertOrganizationPopulated} covers
+ * `sweepResidue`, but this function is exported and callable on its own — so
+ * the premise travels WITH the destructive statement rather than being
+ * established once in an earlier read and thereafter trusted.
  *
  * Each DELETE is its own implicit transaction. Nothing here is atomic across
  * tables by design — a residue sweep is a cleanup, the operator has taken a
@@ -704,6 +729,7 @@ export async function executeResidueDeletes(
         const removed = await query<{ deleted: number }>(
           `DELETE FROM public.${table} t
             WHERE t.${column}::text = ANY($1)
+              AND EXISTS (SELECT 1 FROM public.organization)
               AND NOT EXISTS (
                 SELECT 1 FROM public.organization o WHERE o.id = t.${column}::text
               )
@@ -762,6 +788,17 @@ export interface ResidueSweepReport {
   readonly errors: readonly ResidueDeleteError[];
   /** Non-null when an EXECUTE computed its plan and then refused to run it. */
   readonly refusedToExecute: string | null;
+  /**
+   * Non-null when the plan's SIZE is itself evidence the premise is wrong.
+   *
+   * Present in BOTH modes — on an EXECUTE it is also the `refusedToExecute`
+   * reason, and on a DRY RUN it flags the preview rather than suppressing it.
+   * A preview of a broken-premise state that reads as an ordinary finding is
+   * the failure `assertOrganizationPopulated` refuses outright for; this is the
+   * partial-restore version, which cannot be refused outright because a large
+   * legitimate backlog is possible.
+   */
+  readonly blastRadiusWarning: string | null;
   readonly totals: {
     readonly rowsWouldDelete: number;
     readonly rowsDeleted: number;
@@ -815,7 +852,10 @@ export async function sweepResidue(
 
   const skipped = [...discoverySkips, ...querySkips];
   const common = summarize(skipped, withheld);
-  const blastRefusal = checkResidueBlastRadius(deletable, options.dryRun);
+  // Computed in BOTH modes. On EXECUTE it also refuses; on DRY RUN it flags the
+  // preview, because a preview of this state is read as a finding.
+  const blastRadiusWarning = checkResidueBlastRadius(deletable);
+  const blastRefusal = options.dryRun ? null : blastRadiusWarning;
 
   if (options.dryRun || blastRefusal) {
     return {
@@ -828,6 +868,7 @@ export async function sweepResidue(
       deletions: [],
       errors: [],
       refusedToExecute: blastRefusal,
+      blastRadiusWarning,
       totals: {
         ...common,
         rowsWouldDelete: deletable.reduce((n, d) => n + d.rows, 0),
@@ -848,6 +889,7 @@ export async function sweepResidue(
     deletions,
     errors,
     refusedToExecute: null,
+    blastRadiusWarning,
     totals: {
       ...common,
       rowsWouldDelete: 0,

@@ -53,7 +53,9 @@ import { Pool } from "pg";
 import { runMigrations, runSeeds } from "@atlas/api/lib/db/migrate";
 import {
   discoverResidueTargets,
+  executeResidueDeletes,
   isBenignSkip,
+  planResidueSweep,
   sweepResidue,
   type ResidueQuery,
 } from "../residue-sweep";
@@ -376,6 +378,25 @@ describeIfPg("residue sweep against a migrated region schema", () => {
       await expect(sweepResidue(query, { dryRun: true })).rejects.toThrow(/0 rows/);
       // Nothing was destroyed by the refusal.
       expect(await countWhere("sla_thresholds", "workspace_id", LIVE_ORG)).toBe(1);
+
+      // ⚠️ And the DELETE carries the premise ITSELF. `executeResidueDeletes` is
+      // exported and callable without `sweepResidue`'s guard — and with an empty
+      // `organization` its `NOT EXISTS (o.id = …)` clause is vacuously true for
+      // every row, so the orphan re-check alone protected nothing in exactly the
+      // state it was written for. `AND EXISTS (SELECT 1 FROM public.organization)`
+      // is what makes the premise travel with the destructive statement. Every
+      // remaining row here belongs to a live workspace that no longer has an
+      // organization row, so a missing clause deletes real data.
+      const before = await countWhere("sla_thresholds", "workspace_id", LIVE_ORG);
+      const { deletions, errors } = await executeResidueDeletes(
+        query,
+        planResidueSweep([
+          { table: "sla_thresholds", column: "workspace_id", value: LIVE_ORG, rows: 1 },
+        ]).deletable,
+      );
+      expect(errors).toEqual([]);
+      expect(deletions[0]?.deletedRows).toBe(0);
+      expect(await countWhere("sla_thresholds", "workspace_id", LIVE_ORG)).toBe(before);
     },
     PG_TIMEOUT_MS,
   );

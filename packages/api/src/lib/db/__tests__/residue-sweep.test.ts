@@ -192,27 +192,24 @@ describe("checkResidueBlastRadius", () => {
       rows: 1,
     }));
 
-  test("a DRY RUN is uncapped — an operator must be able to preview anything", () => {
-    expect(checkResidueBlastRadius(many(MAX_RESIDUE_WORKSPACES + 100), true)).toBeNull();
+  test("fires past the cap, naming the count", () => {
+    const warning = checkResidueBlastRadius(many(MAX_RESIDUE_WORKSPACES + 1));
+    expect(warning).toContain(String(MAX_RESIDUE_WORKSPACES + 1));
+    expect(warning).toContain("wrong DB");
+    expect(warning).toContain("not a finding");
   });
 
-  test("EXECUTE refuses past the cap, naming the count", () => {
-    const refusal = checkResidueBlastRadius(many(MAX_RESIDUE_WORKSPACES + 1), false);
-    expect(refusal).toContain(String(MAX_RESIDUE_WORKSPACES + 1));
-    expect(refusal).toContain("wrong DB");
+  test("is silent at exactly the cap", () => {
+    expect(checkResidueBlastRadius(many(MAX_RESIDUE_WORKSPACES))).toBeNull();
   });
 
-  test("EXECUTE is cleared at exactly the cap", () => {
-    expect(checkResidueBlastRadius(many(MAX_RESIDUE_WORKSPACES), false)).toBeNull();
-  });
-
-  test("the cap counts distinct WORKSPACE IDS, not rows", () => {
-    // 200 rows across 2 ids is a small blast radius; counting rows would refuse.
+  test("counts distinct WORKSPACE IDS, not rows", () => {
+    // 200 rows across 2 ids is a small blast radius; counting rows would fire.
     const twoIds: OrphanValue[] = [
       { table: "audit_log", column: "org_id", value: "wsAAA", rows: 100 },
       { table: "audit_log", column: "org_id", value: "wsBBB", rows: 100 },
     ];
-    expect(checkResidueBlastRadius(twoIds, false)).toBeNull();
+    expect(checkResidueBlastRadius(twoIds)).toBeNull();
   });
 });
 
@@ -250,33 +247,33 @@ describe("planResidueSweep", () => {
 describe("discoverResidueTargets — the candidate set is registry-derived", () => {
   interface FakeSchema {
     columns: { table_name: string; column_name: string; data_type: string }[];
-    /** Tables `to_regclass` finds. Defaults to every candidate. */
+    /** Tables the catalog finds. Defaults to every candidate. */
     present?: string[];
-    /** Tables visible in information_schema at all. Defaults to `present`. */
-    visible?: string[];
   }
 
+  /**
+   * Stand in for the single `pg_catalog` LEFT JOIN. A present table with no
+   * scope column yields one row with NULL `column_name`, which is how presence
+   * and scope come back from one privilege-blind query.
+   */
   function schemaQuery(schema: FakeSchema): ResidueQuery {
     return fakeQuery(async (sql, params) => {
       if (isOrgCount(sql)) return ORG_COUNT_ROWS;
-      if (sql.includes("to_regclass")) {
-        const asked = (params?.[0] ?? []) as string[];
-        const present = schema.present ?? asked;
-        return asked.map((t) => ({ table_name: t, present: present.includes(t) }));
-      }
-      if (sql.includes("SELECT DISTINCT table_name")) {
-        const asked = (params?.[0] ?? []) as string[];
-        const visible = schema.visible ?? schema.present ?? asked;
-        return asked.filter((t) => visible.includes(t)).map((t) => ({ table_name: t }));
-      }
-      if (sql.includes("information_schema.columns")) {
+      if (sql.includes("pg_attribute")) {
         const asked = (params?.[0] ?? []) as string[];
         const scopeColumns = (params?.[1] ?? []) as string[];
-        // The real query filters on column_name too; a laxer fake could "prove"
-        // a target on a column the sweep would never see.
-        return schema.columns.filter(
-          (c) => asked.includes(c.table_name) && scopeColumns.includes(c.column_name),
-        );
+        const present = schema.present ?? asked;
+        return asked.flatMap((table): Array<Record<string, unknown>> => {
+          if (!present.includes(table)) return [];
+          // The real query filters on attname too; a laxer fake could "prove" a
+          // target on a column the sweep would never see.
+          const cols = schema.columns.filter(
+            (c) => c.table_name === table && scopeColumns.includes(c.column_name),
+          );
+          return cols.length > 0
+            ? cols
+            : [{ table_name: table, column_name: null, data_type: null }];
+        });
       }
       throw new Error(`unexpected query: ${sql}`);
     });
@@ -336,25 +333,29 @@ describe("discoverResidueTargets — the candidate set is registry-derived", () 
     expect(absent && isBenignSkip(absent)).toBe(true);
   });
 
-  test("a table present but INVISIBLE to the role is `unreadable`, not `relation-absent`", async () => {
-    // information_schema is privilege-filtered; to_regclass is not. Reporting a
-    // permission problem as "run your migrations" is a confident, specific and
-    // FALSE diagnosis — the operator runs migrations, sees no change, and
-    // concludes the table is gone while it sits unswept.
-    const query = schemaQuery({
-      columns: [{ table_name: "sla_thresholds", column_name: "workspace_id", data_type: "text" }],
-      present: ["sla_thresholds", "crm_outbox"],
-      visible: ["sla_thresholds"],
+  test("discovery reads pg_catalog, which no privilege grant can filter", async () => {
+    // ⚠️ Both `information_schema.tables` AND `.columns` are privilege-filtered,
+    // the latter per COLUMN. A role holding column-level grants that exclude the
+    // scope column saw an empty column list and the sweep reported "no workspace
+    // scope column — the purge reaches this table through a parent subquery":
+    // confident, specific, false, and filed as BENIGN so the run exited 0.
+    // `pg_class`/`pg_attribute` answer regardless of grant, so "no scope column"
+    // is now a structural fact; a table the role cannot READ fails in
+    // enumerateOrphanValues instead and is recorded as `unreadable` — measured,
+    // not inferred from an absence.
+    let captured = "";
+    const query = fakeQuery(async (sql, params) => {
+      if (isOrgCount(sql)) return ORG_COUNT_ROWS;
+      captured = sql;
+      const asked = (params?.[0] ?? []) as string[];
+      return asked.map((t) => ({ table_name: t, column_name: null, data_type: null }));
     });
 
-    const { skipped } = await discoverResidueTargets(query);
-    const crm = skipped.find((s) => s.table === "crm_outbox");
+    await discoverResidueTargets(query);
 
-    expect(crm?.kind).toBe("unreadable");
-    expect(crm?.reason).toContain("no privilege");
-    expect(crm && isBenignSkip(crm)).toBe(false);
-    // ...and a genuinely absent table still reports the migrations remedy.
-    expect(skipped.find((s) => s.table === "conversations")?.kind).toBe("relation-absent");
+    expect(captured).toContain("pg_attribute");
+    expect(captured).toContain("pg_class");
+    expect(captured).not.toContain("information_schema");
   });
 
   test("a scope column of an uncomparable type is skipped, with the type named", async () => {
@@ -524,9 +525,16 @@ describe("executeResidueDeletes", () => {
     expect(deletions[0]?.values).toHaveLength(2);
   });
 
-  test("the DELETE re-asserts the orphan predicate rather than trusting the read", async () => {
-    // Additive by construction: re-checking can only ever delete FEWER rows, so
+  test("the DELETE carries BOTH the orphan predicate and its own precondition", async () => {
+    // Additive by construction: both clauses can only ever delete FEWER rows, so
     // a workspace re-created between preview and execute is spared.
+    //
+    // ⚠️ The `EXISTS (SELECT 1 FROM public.organization)` clause is the one the
+    // first version of this fix left out, and its absence made the `NOT EXISTS`
+    // vacuous in exactly the state it was written for: with an empty
+    // organization table, `NOT EXISTS (o.id = …)` is true for every row.
+    // `assertOrganizationPopulated` covers `sweepResidue`, but this function is
+    // exported and callable directly — as the tests above do.
     let captured = "";
     const query = fakeQuery(async (sql) => {
       captured = sql;
@@ -538,6 +546,7 @@ describe("executeResidueDeletes", () => {
       plan([{ table: "crm_outbox", column: "workspace_id", value: "wsAAA", rows: 1 }]),
     );
 
+    expect(captured).toContain("AND EXISTS (SELECT 1 FROM public.organization)");
     expect(captured).toContain("NOT EXISTS");
     expect(captured).toContain("FROM public.organization o");
   });
@@ -627,24 +636,16 @@ describe("sweepResidue", () => {
    * A fake region DB holding one sentinel and one genuine residue value.
    * `deleteFails` drives the error path.
    */
-  function region(options: { deleteFails?: boolean } = {}): ResidueQuery {
-    return fakeQuery(async (sql, params) => {
+  function region(
+    options: { deleteFails?: boolean; orphanIds?: string[] } = {},
+  ): ResidueQuery {
+    return fakeQuery(async (sql) => {
       if (isOrgCount(sql)) return ORG_COUNT_ROWS;
       if (sql.startsWith("DELETE")) {
         if (options.deleteFails) throw new Error("violates foreign key constraint");
         return [{ deleted: 1 }];
       }
-      if (sql.includes("to_regclass")) {
-        const asked = (params?.[0] ?? []) as string[];
-        return asked.map((t) => ({
-          table_name: t,
-          present: t === "sla_thresholds" || t === "workspace_proactive_config",
-        }));
-      }
-      if (sql.includes("SELECT DISTINCT table_name")) {
-        return [{ table_name: "sla_thresholds" }, { table_name: "workspace_proactive_config" }];
-      }
-      if (sql.includes("information_schema.columns")) {
+      if (sql.includes("pg_attribute")) {
         return [
           { table_name: "sla_thresholds", column_name: "workspace_id", data_type: "text" },
           {
@@ -655,7 +656,8 @@ describe("sweepResidue", () => {
         ];
       }
       if (sql.includes("sla_thresholds")) return [{ scope_value: "_default", row_count: "2" }];
-      return [{ scope_value: "jukFiKym65bnNAYGiY1zdthspoNUYpov", row_count: "1" }];
+      const ids = options.orphanIds ?? ["jukFiKym65bnNAYGiY1zdthspoNUYpov"];
+      return ids.map((value) => ({ scope_value: value, row_count: "1" }));
     });
   }
 
@@ -720,6 +722,43 @@ describe("sweepResidue", () => {
     // ...and the withheld sentinel is gone, because that table was never read —
     // which is exactly why "0 residue" must not read as "clean".
     expect(report.withheld).toEqual([]);
+  });
+
+  test("an implausible plan FLAGS a dry run — it is not silently previewed", async () => {
+    // ⚠️ The first version of the blast-radius guard read `if (dryRun) return
+    // null`, sitting beside `assertOrganizationPopulated`, whose whole argument
+    // is that a preview built on a broken premise is worse than no preview.
+    // Two guards for the same premise, one commit, disagreeing about previews.
+    const tooMany = Array.from({ length: MAX_RESIDUE_WORKSPACES + 1 }, (_, i) => `wsOrphan${i}`);
+    const report = await sweepResidue(region({ orphanIds: tooMany }), { dryRun: true });
+
+    expect(report.blastRadiusWarning).toContain("wrong DB");
+    // The preview still lists everything — nothing is hidden from the operator.
+    expect(report.wouldDelete).toHaveLength(tooMany.length);
+    // ...but it is not a clean EXECUTE refusal either; that arm is mode-specific.
+    expect(report.refusedToExecute).toBeNull();
+  });
+
+  test("an implausible plan REFUSES an execute, and deletes nothing", async () => {
+    const tooMany = Array.from({ length: MAX_RESIDUE_WORKSPACES + 1 }, (_, i) => `wsOrphan${i}`);
+    const statements: string[] = [];
+    const base = region({ orphanIds: tooMany });
+    const spy = fakeQuery(async (sql, params) => {
+      statements.push(sql);
+      return base(sql, params);
+    });
+
+    const report = await sweepResidue(spy, { dryRun: false });
+
+    expect(report.refusedToExecute).toContain("wrong DB");
+    expect(report.blastRadiusWarning).toBe(report.refusedToExecute);
+    expect(statements.some((s) => s.startsWith("DELETE"))).toBe(false);
+    expect(report.totals.rowsDeleted).toBe(0);
+  });
+
+  test("a plan at the cap carries no warning in either mode", async () => {
+    const report = await sweepResidue(region(), { dryRun: true });
+    expect(report.blastRadiusWarning).toBeNull();
   });
 
   test("a failed delete lands in `errors` with its surviving row count", async () => {

@@ -12,7 +12,7 @@
  * migrated region schema removes the genuine orphans and leaves every sentinel
  * standing, which is exactly the call the command exists to make.
  *
- * Four properties make this able to fail:
+ * Six properties make this able to fail:
  *
  *  1. **`_default` comes from its PRODUCTION ORIGIN, not from this fixture.**
  *     `runSeeds` → `seedSlaThresholdDefaults` is what writes it in a real
@@ -32,20 +32,34 @@
  *     — a plain nanoid — so they survive only because the candidate set is
  *     filtered by `decision: "purged"`. Widening the sweep to "every
  *     workspace-scoped table" deletes both, which no sentinel test can see.
+ *  5. **Only a real RELATION can falsify the relkind arm.** The unit fakes
+ *     answer from a fixture, not from the query's WHERE clause, so restoring
+ *     `AND c.relkind = 'r'` leaves them 49/49 green — measured. The VIEW test
+ *     below turns a purged-class name into an actual view and is the only thing
+ *     that reddens.
+ *  6. **Only a real restricted ROLE can falsify the privilege arm.** As the
+ *     owner, `information_schema` and `pg_catalog` agree on every row, so an
+ *     owner-only suite cannot tell them apart — measured: reverting discovery to
+ *     `information_schema` leaves every other test here green.
  *
  * A private scratch DATABASE, not a scratch schema: the sweep hardcodes
  * `public` (as `ops wipe` and the runbook query do), and this suite runs a
  * DESTRUCTIVE delete. Pointing it at the shared test database's `public` schema
  * would put a sibling suite's rows in the blast radius.
  *
- * ⚠️ The four tests are ORDER-COUPLED through shared database state:
+ * ⚠️ **ALL of these tests are ORDER-COUPLED through shared database state.**
+ * The two schema-mutating ones (the VIEW test, the restricted-role test)
+ * restore what they change and must precede the destructive ones; then
  * discovery → DRY RUN (asserts rows present) → EXECUTE (deletes them) →
- * idempotency (asserts the delete stuck). bun runs them in declaration order,
- * so a full-file run is correct; `bun test -t "idempotent"` alone is not.
+ * idempotency (asserts the delete stuck); and the no-organizations test empties
+ * `organization`, so it must run LAST. bun runs them in declaration order, so a
+ * full-file run is correct; `bun test -t <name>` on any single one is not.
  *
  * Skipped cleanly when TEST_DATABASE_URL is unset. Requires a role with
- * CREATEDB (CI's `atlas` role owns the database). CI's api-tests workflow
- * provides the Postgres service.
+ * **CREATEDB and CREATEROLE** (CI's `atlas` role is superuser and has both) —
+ * the privilege falsifier creates and drops a login role, and needs a `pg_hba`
+ * that permits that role's password login from the test host. CI's api-tests
+ * workflow provides the Postgres service.
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
@@ -53,6 +67,7 @@ import { Pool } from "pg";
 import { runMigrations, runSeeds } from "@atlas/api/lib/db/migrate";
 import {
   discoverResidueTargets,
+  enumerateOrphanValues,
   executeResidueDeletes,
   isBenignSkip,
   planResidueSweep,
@@ -262,11 +277,122 @@ describeIfPg("residue sweep against a migrated region schema", () => {
       // `messages` has no scope column of its own — reported, never silent.
       const messages = skipped.find((s) => s.table === "messages");
       expect(messages?.kind).toBe("no-scope-column");
-      // The owning role can read every table it can see, so nothing is
-      // `unreadable`. This is the assertion that would catch `to_regclass`
-      // regressing to the privilege-filtered information_schema probe on a
-      // schema where the two disagree.
+      // As the OWNER, nothing is unreadable. This is a control, not the
+      // privilege falsifier — measured, it stays green with discovery reverted
+      // to `information_schema`, because owner and catalog agree on every row.
+      // The falsifier that CAN fail is the restricted-role test below.
       expect(skipped.filter((s) => !isBenignSkip(s))).toEqual([]);
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  test(
+    "a purged-class name that is a VIEW is `unreadable`, not `relation-absent`",
+    async () => {
+      // ⚠️ Only a real relation can falsify this. `relkind` used to be filtered
+      // in the WHERE clause, so a view — or a PARTITIONED table, which is the
+      // realistic case for `messages`/`agent_runs`/`audit_log` — returned zero
+      // catalog rows and read as "relation absent — run the region's
+      // migrations": benign, exit 0, and a remedy that can never work. The unit
+      // fakes cannot catch that: they answer from a fixture, not from the WHERE
+      // clause, so reverting the SQL leaves them green (measured).
+      //
+      // `linear_installations` is a `purged` table this fixture never otherwise
+      // touches, and this runs before the destructive tests below.
+      await pool.query(`DROP TABLE IF EXISTS linear_installations CASCADE`);
+      await pool.query(
+        `CREATE VIEW linear_installations AS SELECT 'never'::text AS org_id`,
+      );
+
+      const { targets, skipped } = await discoverResidueTargets(query);
+      const asView = skipped.find((s) => s.table === "linear_installations");
+
+      expect(targets.some((t) => t.table === "linear_installations")).toBe(false);
+      expect(asView?.kind).toBe("unreadable");
+      expect(asView?.reason).toContain('relkind "v"');
+      expect(asView && isBenignSkip(asView)).toBe(false);
+
+      await pool.query(`DROP VIEW IF EXISTS linear_installations`);
+      await pool.query(
+        `CREATE TABLE linear_installations (org_id TEXT PRIMARY KEY, installed_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
+      );
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  test(
+    "a role that cannot read a table gets `unreadable`, never a benign skip",
+    async () => {
+      // ⚠️ THE privilege falsifier, and it needs a real restricted role — the
+      // owner sees the same thing through `information_schema` and `pg_catalog`,
+      // so an owner-only suite cannot tell the two apart. Measured before this
+      // test existed: reverting discovery to `information_schema` left the whole
+      // `-pg` suite green while a column-grant role got
+      // `kind: "no-scope-column"` — benign, exit 0, and a remedy ("resolve it
+      // through the parent table") that can never work.
+      const role = `residue_reader_${Math.floor(Math.random() * 1e6)}`;
+      const restricted = new Pool({
+        connectionString: (() => {
+          const u = new URL(TEST_DB_URL as string);
+          u.pathname = `/${scratchDbName}`;
+          u.username = role;
+          u.password = "probe";
+          return u.toString();
+        })(),
+        max: 1,
+      });
+      try {
+        await pool.query(`CREATE ROLE ${role} LOGIN PASSWORD 'probe'`);
+        await pool.query(`GRANT USAGE ON SCHEMA public TO ${role}`);
+        // The scope column is deliberately EXCLUDED from the grant.
+        await pool.query(`GRANT SELECT (latency_p99_ms) ON public.sla_thresholds TO ${role}`);
+        await pool.query(`GRANT SELECT ON public.organization TO ${role}`);
+
+        const restrictedQuery = (async (sql: string, params?: unknown[]) =>
+          (await restricted.query<Record<string, unknown>>(sql, params)).rows) as ResidueQuery;
+
+        const { targets, skipped } = await discoverResidueTargets(restrictedQuery);
+        // The catalog is privilege-blind, so the scope column is still FOUND —
+        // "this table has no scope column" stays a structural fact.
+        expect(targets).toContainEqual({ table: "sla_thresholds", column: "workspace_id" });
+        expect(skipped.find((s) => s.table === "sla_thresholds")).toBeUndefined();
+
+        // The privilege problem then surfaces where it is MEASURED rather than
+        // inferred: the orphan query fails, and that is `unreadable`.
+        const { orphans, skipped: querySkips } = await enumerateOrphanValues(restrictedQuery, [
+          { table: "sla_thresholds", column: "workspace_id" },
+        ]);
+        expect(orphans).toEqual([]);
+        expect(querySkips[0]?.kind).toBe("unreadable");
+        expect(querySkips[0]?.reason).toContain("permission denied");
+        expect(querySkips[0] && isBenignSkip(querySkips[0])).toBe(false);
+      } finally {
+        await restricted.end().catch((err: unknown) => {
+          console.warn(
+            `residue-sweep-pg: restricted pool end failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
+        await pool
+          .query(`REVOKE ALL ON ALL TABLES IN SCHEMA public FROM ${role}`)
+          .catch((err: unknown) => {
+            console.warn(
+              `residue-sweep-pg: revoke failed: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          });
+        await pool.query(`REVOKE USAGE ON SCHEMA public FROM ${role}`).catch((err: unknown) => {
+          // Logged like its two neighbours. The marker it used to carry means
+          // SILENCE, and nothing distinguished this teardown step from the
+          // REVOKE and DROP around it, both of which warn.
+          console.warn(
+            `residue-sweep-pg: revoke usage failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
+        await pool.query(`DROP ROLE IF EXISTS ${role}`).catch((err: unknown) => {
+          console.warn(
+            `residue-sweep-pg: drop role failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
+      }
     },
     PG_TIMEOUT_MS,
   );
@@ -379,23 +505,28 @@ describeIfPg("residue sweep against a migrated region schema", () => {
       // Nothing was destroyed by the refusal.
       expect(await countWhere("sla_thresholds", "workspace_id", LIVE_ORG)).toBe(1);
 
-      // ⚠️ And the DELETE carries the premise ITSELF. `executeResidueDeletes` is
-      // exported and callable without `sweepResidue`'s guard — and with an empty
-      // `organization` its `NOT EXISTS (o.id = …)` clause is vacuously true for
-      // every row, so the orphan re-check alone protected nothing in exactly the
-      // state it was written for. `AND EXISTS (SELECT 1 FROM public.organization)`
-      // is what makes the premise travel with the destructive statement. Every
-      // remaining row here belongs to a live workspace that no longer has an
-      // organization row, so a missing clause deletes real data.
+      // ⚠️ And `executeResidueDeletes` carries the premise ITSELF — AUDIBLY.
+      // It is exported and callable without `sweepResidue`'s guard, and with an
+      // empty `organization` its SQL `NOT EXISTS (o.id = …)` clause is vacuously
+      // true for every row, so the orphan re-check alone protected nothing in
+      // exactly the state it was written for.
+      //
+      // The SQL `AND EXISTS (SELECT 1 FROM public.organization)` clause is still
+      // there as defence in depth, but on its own it is NOT enough: when it is
+      // what zeroes the delete, the outcome is `{deletions:[{deletedRows:0}],
+      // errors:[]}` — the SUCCESS shape, exit 0. The guard would fire and nobody
+      // would be told, which is this module's whole subject. So it REFUSES.
+      // Every remaining row here belongs to a workspace whose organization row
+      // is gone, so a missing guard deletes real data.
       const before = await countWhere("sla_thresholds", "workspace_id", LIVE_ORG);
-      const { deletions, errors } = await executeResidueDeletes(
-        query,
-        planResidueSweep([
-          { table: "sla_thresholds", column: "workspace_id", value: LIVE_ORG, rows: 1 },
-        ]).deletable,
-      );
-      expect(errors).toEqual([]);
-      expect(deletions[0]?.deletedRows).toBe(0);
+      await expect(
+        executeResidueDeletes(
+          query,
+          planResidueSweep([
+            { table: "sla_thresholds", column: "workspace_id", value: LIVE_ORG, rows: 1 },
+          ]).deletable,
+        ),
+      ).rejects.toThrow(/organization has 0 rows/);
       expect(await countWhere("sla_thresholds", "workspace_id", LIVE_ORG)).toBe(before);
     },
     PG_TIMEOUT_MS,

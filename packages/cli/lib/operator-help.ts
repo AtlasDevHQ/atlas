@@ -220,7 +220,7 @@ export const OPERATOR_SUBCOMMAND_HELP = {
       {
         name: "sweep-residue",
         description:
-          "Delete orphaned-workspace residue — rows whose organization row is already gone, left behind by a purge that predated the table entering the purge path (#5185). The normal purge cannot reach them: it requires the workspace to exist and be soft-deleted. Candidate tables are derived from lib/db/purge-scope.ts (decision: purged only) and sentinel scope values (_default, <atlas-operator>, empty) are never deleted. DRY RUN by default; EXECUTE requires ATLAS_RESIDUE_OK=1 + --confirm + --pg-dump <path> naming a real backup. Flags: --region <us|eu|apac> OR --database-url <url>, --pg-dump <path>, --confirm, --dry-run.",
+          "Delete orphaned-workspace residue — rows whose organization row is already gone, left behind by a purge that predated the table entering the purge path (#5185). The normal purge cannot reach them: it requires the workspace to exist and be soft-deleted. Candidate tables are derived from lib/db/purge-scope.ts (decision: purged only) and sentinel scope values (_default, <atlas-operator>, empty) are never deleted. DRY RUN by default; EXECUTE requires ATLAS_RESIDUE_OK=1 + --confirm + --pg-dump <path> naming a real, recent backup. Exits non-zero if anything survived or could not be checked. Flags: --region <us|eu|apac> OR --database-url <url>, --pg-dump <path>, --confirm, --dry-run.",
       },
     ],
     flags: [
@@ -242,7 +242,7 @@ export const OPERATOR_SUBCOMMAND_HELP = {
       {
         flag: "--pg-dump <path>",
         description:
-          "sweep-residue: path to the backup taken before the sweep. Required to execute, and the file must exist and be non-empty — the delete has no undo.",
+          "sweep-residue: path to the backup taken before the sweep. Required to execute; the file must exist, be a regular file, be non-empty, and be less than 6 hours old — the delete has no undo, and a stale path is usually another region's dump.",
       },
     ],
     examples: [

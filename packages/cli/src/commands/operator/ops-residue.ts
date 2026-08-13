@@ -31,8 +31,10 @@
  *   - Nothing is filtered silently: every skipped table and every withheld
  *     value is printed with its reason, and a table the sweep could not READ is
  *     reported separately from one that was never in scope. The exit code is
- *     non-zero for both a failed delete and an unreadable table, because
- *     "we could not look" must never be scripted as "it was clean".
+ *     non-zero on ANY of: a failed delete · a table that could not be read · a
+ *     blast-radius refusal on an EXECUTE **or a blast-radius flag on a DRY RUN**
+ *     (the surprising one) · a delete that removed more rows than the report
+ *     listed. "We could not look" must never be scripted as "it was clean".
  */
 import { statSync } from "node:fs";
 import {
@@ -137,10 +139,17 @@ export function checkPgDump(args: string[], probe: FileProbe, now: number): stri
   if (!facts.isFile) {
     return `Refusing to execute: --pg-dump path "${path}" is not a regular file.`;
   }
-  if (facts.size === 0) {
-    return `Refusing to execute: --pg-dump path "${path}" is empty (0 bytes) — the backup did not produce anything.`;
+  // `!Number.isFinite(...)`, not just `=== 0`: NaN compares false against BOTH
+  // `=== 0` and `> MAX`, so a probe yielding one would clear every arm of a gate
+  // whose whole job is refusing. `statProbe` cannot produce it, but `FileProbe`
+  // is exported, so other probes exist.
+  if (!Number.isFinite(facts.size) || facts.size === 0) {
+    return `Refusing to execute: --pg-dump path "${path}" reports size ${facts.size} — it is empty, or its size could not be established.`;
   }
   const ageMs = now - facts.mtimeMs;
+  if (!Number.isFinite(ageMs)) {
+    return `Refusing to execute: --pg-dump path "${path}" has no readable modification time, so its freshness cannot be established.`;
+  }
   if (ageMs > MAX_PG_DUMP_AGE_MS) {
     const ageHours = Math.round(ageMs / 3.6e6);
     return (
@@ -153,8 +162,28 @@ export function checkPgDump(args: string[], probe: FileProbe, now: number): stri
   return null;
 }
 
+/**
+ * The report's three operator-facing modes, derived once.
+ *
+ * `dryRun` + `refusedToExecute` + `blastRadiusWarning` are three independent
+ * fields encoding one mode, and branching on `report.dryRun ||
+ * report.refusedToExecute` in several places let a state exist where an
+ * EXECUTED run printed "do not act on the list below as a finding" over rows
+ * that were already gone. Deriving the mode once makes the printer say one
+ * thing — every branch below reads it, except the banner, which is legitimately
+ * about `dryRun` alone.
+ */
+export type ResidueReportMode = "dry-run" | "refused" | "executed";
+
+export function residueReportMode(report: ResidueSweepReport): ResidueReportMode {
+  if (report.dryRun) return "dry-run";
+  if (report.refusedToExecute) return "refused";
+  return "executed";
+}
+
 /** Render the report as operator-facing console lines. */
 export function printResidueReport(report: ResidueSweepReport): void {
+  const mode = residueReportMode(report);
   const banner = report.dryRun
     ? `DRY RUN — set ${RESIDUE_OK_ENV}=1 and pass --confirm (plus --pg-dump <path>) to execute`
     : "EXECUTE";
@@ -188,7 +217,7 @@ export function printResidueReport(report: ResidueSweepReport): void {
 
   if (report.refusedToExecute) {
     console.error(`\n✗ REFUSED — nothing was deleted: ${report.refusedToExecute}`);
-  } else if (report.blastRadiusWarning) {
+  } else if (report.blastRadiusWarning && mode === "dry-run") {
     // The DRY-RUN half. The preview below still lists everything — nothing is
     // hidden — but it is FLAGGED, because a preview of a broken-premise state
     // that reads as an ordinary finding is the failure the sweep refuses
@@ -198,17 +227,28 @@ export function printResidueReport(report: ResidueSweepReport): void {
     );
   }
 
-  if (report.dryRun || report.refusedToExecute) {
+  if (mode !== "executed") {
     if (report.wouldDelete.length === 0) {
-      console.log("\nNo residue found — nothing would be deleted.");
+      console.log(
+        report.totals.tablesUnreadable > 0
+          ? `\nNo residue found in the tables that could be READ — nothing would be deleted. ${report.totals.tablesUnreadable} table(s) were not checked at all.`
+          : "\nNo residue found — nothing would be deleted.",
+      );
     } else {
       console.log("\nWOULD DELETE — orphaned tenant rows:");
       for (const d of report.wouldDelete) {
         console.log(`  → ${d.table}.${d.column} = ${JSON.stringify(d.value)} (${d.rows} row(s))`);
       }
     }
-  } else if (report.deletions.length === 0) {
+  } else if (report.deletions.length === 0 && report.errors.length === 0) {
     console.log("\nNo residue found — nothing was deleted.");
+  } else if (report.deletions.length === 0) {
+    // EVERY planned delete failed. The old branch printed "No residue found —
+    // nothing was deleted", which is the opposite of what happened and is the
+    // line an operator's `grep -q` would read as clean.
+    console.error(
+      "\n✗ Nothing was deleted — EVERY planned delete FAILED. Residue SURVIVES; see the errors below.",
+    );
   } else {
     console.log("\nDELETED:");
     for (const d of report.deletions) {
@@ -251,16 +291,22 @@ export function printResidueReport(report: ResidueSweepReport): void {
 
   const t = report.totals;
   console.log(
-    `\n[ops:sweep-residue] ${report.dryRun || report.refusedToExecute ? `would delete ${t.rowsWouldDelete}` : `deleted ${t.rowsDeleted}`} row(s), ` +
+    `\n[ops:sweep-residue] ${mode === "executed" ? `deleted ${t.rowsDeleted}` : `would delete ${t.rowsWouldDelete}`} row(s), ` +
       `withheld ${t.rowsWithheld}, ${t.tablesNotInScope} table(s) not in scope` +
       (t.tablesUnreadable > 0 ? `, ${t.tablesUnreadable} UNREADABLE` : "") +
       (t.errors > 0 ? `, ${t.errors} error(s)` : ""),
   );
 }
 
-/** Number of rows over the enumerated count across all deletions. */
+/**
+ * Total rows destroyed BEYOND what the report enumerated, across all deletions.
+ *
+ * Counts rows, not deletions — the name said rows and the body returned groups,
+ * so a 4,000-row over-delete reported as `1`. Only ever compared `> 0` today,
+ * but it is exported and the number is the one an operator actually needs.
+ */
 export function countOverDeletes(report: ResidueSweepReport): number {
-  return report.deletions.filter((d) => d.deletedRows > d.expectedRows).length;
+  return report.deletions.reduce((n, d) => n + Math.max(0, d.deletedRows - d.expectedRows), 0);
 }
 
 /**
@@ -271,7 +317,11 @@ export function countOverDeletes(report: ResidueSweepReport): number {
  */
 export function residueExitCode(report: ResidueSweepReport): number {
   if (report.errors.length > 0) return 1;
-  if (report.totals.tablesUnreadable > 0) return 1;
+  // The ARRAY, not `totals.tablesUnreadable`. The two are representations of one
+  // fact and the printer already reads both; gating on the counter alone means a
+  // report listing three unreadable tables with a stale `0` counter exits clean —
+  // the round-1 defect exactly, one indirection over.
+  if (report.skipped.some((s) => !isBenignSkip(s))) return 1;
   if (report.refusedToExecute) return 1;
   // Both modes. A flagged DRY RUN exiting 0 would let a scripted preview report
   // a wrong-DB result set as an ordinary finding — the same failure one mode
@@ -339,8 +389,23 @@ export async function handleSweepResidue(
   try {
     const bound = await deps.query<{ db: string }>(`SELECT current_database() AS db`);
     const actual = bound[0]?.db;
-    const expected = new URL(resolved.url).pathname.replace(/^\//, "");
-    if (expected && actual !== expected) {
+    const expected = decodeURIComponent(new URL(resolved.url).pathname.replace(/^\//, ""));
+    if (!expected) {
+      // `if (expected && …)` silently SKIPPED the whole verification for a URL
+      // with no path (`postgres://host:5432`, valid libpq — the database
+      // defaults to the role name) or a trailing slash. A check that could not
+      // be performed reading as a pass is the exact shape this command exists
+      // to refuse, and it is the backstop that licenses the silent
+      // `closeInternalDB()` catch above.
+      console.error(
+        `[ops:sweep-residue] Refusing to sweep: ${resolved.source} names no database in its ` +
+          "URL path, so the pool binding cannot be verified. Pass a URL that names the " +
+          "database explicitly.",
+      );
+      process.exitCode = 1;
+      return;
+    }
+    if (actual !== expected) {
       console.error(
         `[ops:sweep-residue] Refusing to sweep: the internal-DB pool is bound to ` +
           `"${actual ?? "unknown"}" but ${resolved.source} names "${expected}". A pre-bound pool ` +

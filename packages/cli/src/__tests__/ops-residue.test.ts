@@ -15,12 +15,13 @@
  *      looked for has to be visible there.
  *
  * ⚠️ Every test that reaches `handleSweepResidue` past its refusals injects a
- * fake `sweep`/`query`. Nothing here may be able to touch a real database: the
- * ordering test at the bottom deliberately sets `ATLAS_REGION_US_DB_URL` to an
- * unreachable sentinel, because on a machine where that variable IS set (an
- * operator's shell, a Railway session) a regression that moved the region
- * resolution above the backup gate would otherwise have run a real sweep
- * against the live US region before failing its assertion.
+ * fake `sweep`/`query`. Nothing here may be able to touch a real database, and
+ * `UNREACHABLE_DB_URL` is why: `refuses an EXECUTE with no --pg-dump BEFORE it
+ * resolves a region` runs on the REAL deps through `handleOps`, so on a machine
+ * where `ATLAS_REGION_US_DB_URL` is set (an operator's shell, a Railway
+ * session) a regression moving the region resolution above the backup gate
+ * would otherwise have run a live sweep against the US region before failing
+ * its assertion.
  */
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import {
@@ -123,9 +124,19 @@ describe("checkPgDump", () => {
     expect(checkPgDump(["--pg-dump", "/tmp"], dir, NOW)).toContain("not a regular file");
   });
 
+  it("refuses a NaN size — every comparison in a no-undo gate must fail CLOSED", () => {
+    const nan: FileProbe = () => ({ ok: true, isFile: true, size: Number.NaN, mtimeMs: NOW });
+    expect(checkPgDump(["--pg-dump", "/tmp/x.dump"], nan, NOW)).toContain("could not be established");
+  });
+
+  it("refuses a NaN mtime for the same reason", () => {
+    const nan: FileProbe = () => ({ ok: true, isFile: true, size: 10, mtimeMs: Number.NaN });
+    expect(checkPgDump(["--pg-dump", "/tmp/x.dump"], nan, NOW)).toContain("no readable modification time");
+  });
+
   it("refuses an empty file — pg_dump produced nothing", () => {
     const empty: FileProbe = () => ({ ok: true, isFile: true, size: 0, mtimeMs: NOW });
-    expect(checkPgDump(["--pg-dump", "/tmp/empty.dump"], empty, NOW)).toContain("empty (0 bytes)");
+    expect(checkPgDump(["--pg-dump", "/tmp/empty.dump"], empty, NOW)).toContain("reports size 0");
   });
 
   it("refuses a STALE dump — the realistic wrong-region error", () => {
@@ -246,7 +257,36 @@ describe("residueExitCode", () => {
     expect(
       residueExitCode({
         ...BASE_REPORT,
-        totals: { ...BASE_REPORT.totals, tablesUnreadable: 3 },
+        skipped: [...BASE_REPORT.skipped,
+      {
+        kind: "unreadable" as const,
+        table: "crm_outbox",
+        column: "workspace_id",
+        reason: "orphan query failed: permission denied for table",
+      },
+        ],
+        totals: { ...BASE_REPORT.totals, tablesUnreadable: 1 },
+      }),
+    ).toBe(1);
+  });
+
+  it("reads the SKIPPED array, not the totals counter", () => {
+    // `totals` and `skipped` are two representations of one fact, and the
+    // printer already reads both. Gating on the counter alone meant a report
+    // LISTING unreadable tables with a stale `0` exited clean — the round-1
+    // defect one indirection over. This fixture makes them disagree on purpose.
+    expect(
+      residueExitCode({
+        ...BASE_REPORT,
+        skipped: [...BASE_REPORT.skipped,
+      {
+        kind: "unreadable" as const,
+        table: "crm_outbox",
+        column: "workspace_id",
+        reason: "orphan query failed: permission denied for table",
+      },
+        ],
+        totals: { ...BASE_REPORT.totals, tablesUnreadable: 0 },
       }),
     ).toBe(1);
   });
@@ -291,6 +331,36 @@ describe("residueExitCode", () => {
         totals: { ...BASE_REPORT.totals, rowsWouldDelete: 0, rowsDeleted: 4 },
       }),
     ).toBe(1);
+  });
+
+  it("countOverDeletes counts ROWS, not deletions", () => {
+    // The name and the docstring said rows; the body returned the number of
+    // groups, so a 4,000-row over-delete reported as `1`. Only ever compared
+    // `> 0` today — which is exactly why nothing caught the drift.
+    expect(
+      countOverDeletes({
+        ...BASE_REPORT,
+        dryRun: false,
+        wouldDelete: [],
+        deletions: [
+          {
+            table: "crm_outbox",
+            column: "workspace_id",
+            values: ["wsAAA"],
+            expectedRows: 1,
+            deletedRows: 4001,
+          },
+          {
+            table: "audit_log",
+            column: "org_id",
+            values: ["wsBBB"],
+            expectedRows: 10,
+            deletedRows: 3,
+          },
+        ],
+        totals: { ...BASE_REPORT.totals, rowsWouldDelete: 0, rowsDeleted: 4004 },
+      }),
+    ).toBe(4000);
   });
 
   it("is 0 on an UNDER-delete — benign, and the opposite direction", () => {
@@ -425,6 +495,74 @@ describe("printResidueReport", () => {
     });
     expect(err.join("\n")).not.toContain("OVER-DELETE");
     expect(out.join("\n")).toContain("were not removed");
+  });
+
+  it("does NOT say 'No residue found' when every planned delete failed", () => {
+    // `deletions` empty + `errors` non-empty is "everything failed", not
+    // "nothing was there" — and the old branch printed the most quotable line
+    // in the report as the exact opposite of what happened.
+    printResidueReport({
+      ...BASE_REPORT,
+      dryRun: false,
+      wouldDelete: [],
+      errors: [
+        {
+          table: "brain_episodes",
+          column: "workspace_id",
+          values: ["wsAAA"],
+          expectedRows: 7,
+          message: "violates foreign key constraint",
+        },
+      ],
+      totals: { ...BASE_REPORT.totals, rowsWouldDelete: 0, errors: 1 },
+    });
+    expect(out.join("\n")).not.toContain("No residue found");
+    expect(err.join("\n")).toContain("EVERY planned delete FAILED");
+    expect(err.join("\n")).toContain("Residue SURVIVES");
+  });
+
+  it("qualifies 'No residue found' when tables could not be read", () => {
+    printResidueReport({
+      ...BASE_REPORT,
+      wouldDelete: [],
+      skipped: [
+        ...BASE_REPORT.skipped,
+        {
+          kind: "unreadable",
+          table: "crm_outbox",
+          column: "workspace_id",
+          reason: "orphan query failed: permission denied for table",
+        },
+      ],
+      totals: { ...BASE_REPORT.totals, rowsWouldDelete: 0, tablesUnreadable: 1 },
+    });
+    expect(out.join("\n")).toContain("in the tables that could be READ");
+    expect(out.join("\n")).toContain("were not checked at all");
+  });
+
+  it("does not tell an EXECUTED run not to act on rows already deleted", () => {
+    // `dryRun: false` + `blastRadiusWarning` + `refusedToExecute: null` is a
+    // state the three independent fields can represent. Before the mode was
+    // derived once, the printer emitted "do not act on the list below as a
+    // finding" and then listed rows that were already gone.
+    printResidueReport({
+      ...BASE_REPORT,
+      dryRun: false,
+      wouldDelete: [],
+      blastRadiusWarning: "51 distinct workspace ids",
+      deletions: [
+        {
+          table: "crm_outbox",
+          column: "workspace_id",
+          values: ["wsAAA"],
+          expectedRows: 1,
+          deletedRows: 1,
+        },
+      ],
+      totals: { ...BASE_REPORT.totals, rowsWouldDelete: 0, rowsDeleted: 1 },
+    });
+    expect(err.join("\n")).not.toContain("IMPLAUSIBLE RESULT");
+    expect(out.join("\n")).toContain("DELETED:");
   });
 
   it("prints a failed delete with the row count that SURVIVES", () => {
@@ -609,10 +747,61 @@ describe("handleSweepResidue", () => {
     await withRegionUrl(UNREACHABLE_DB_URL, async () => {
       await handleSweepResidue(
         ["ops", "sweep-residue", "--region", "us"],
-        deps({ ...BASE_REPORT, totals: { ...BASE_REPORT.totals, tablesUnreadable: 2 } }),
+        deps({
+          ...BASE_REPORT,
+          skipped: [...BASE_REPORT.skipped,
+      {
+        kind: "unreadable" as const,
+        table: "crm_outbox",
+        column: "workspace_id",
+        reason: "orphan query failed: permission denied for table",
+      },
+          ],
+          totals: { ...BASE_REPORT.totals, tablesUnreadable: 1 },
+        }),
       );
     });
     expect(process.exitCode).toBe(1);
+  });
+
+  it("refuses a --database-url that names NO database — the check must not self-disable", async () => {
+    // `if (expected && actual !== expected)` skipped the entire verification for
+    // a URL with no path (`postgres://host:5432` is valid libpq — the database
+    // defaults to the role name) with no message at all. A check that could not
+    // be performed reading as a pass is the shape this command exists to refuse,
+    // and it is the backstop that licenses the silent `closeInternalDB()` catch.
+    let swept = false;
+    await handleSweepResidue(
+      ["ops", "sweep-residue", "--database-url", "postgresql://user:pw@localhost:1"],
+      {
+        ...deps(BASE_REPORT),
+        sweep: (async () => {
+          swept = true;
+          return BASE_REPORT;
+        }) as ResidueHandlerDeps["sweep"],
+      },
+    );
+    expect(swept).toBe(false);
+    expect(process.exitCode).toBe(1);
+    expect(errors.join("\n")).toContain("names no database");
+  });
+
+  it("accepts a --database-url that names one, and verifies the binding", async () => {
+    // The control for the arm above: the refusal must be about the missing
+    // path, not about `--database-url` being unsupported.
+    let swept = false;
+    await handleSweepResidue(
+      ["ops", "sweep-residue", "--database-url", "postgresql://user:pw@localhost:1/never"],
+      {
+        ...deps(BASE_REPORT),
+        sweep: (async () => {
+          swept = true;
+          return BASE_REPORT;
+        }) as ResidueHandlerDeps["sweep"],
+      },
+    );
+    expect(swept).toBe(true);
+    expect(process.exitCode).toBe(0);
   });
 
   it("refuses to sweep when the bound pool is a DIFFERENT database than resolved", async () => {

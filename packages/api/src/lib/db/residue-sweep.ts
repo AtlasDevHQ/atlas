@@ -17,18 +17,22 @@
  *     hand-written. Only `decision: "purged"` tables are candidates: an
  *     `anonymized` row is meant to survive (`admin_action_log`), a `retained`
  *     one is load-bearing (`user_trial_grants`, `stripe_teardown_pending`), and
- *     a `user_scoped` one belongs to the orphaned-user arm. The docs section
- *     this replaces carried a four-table hand-written query that returned 0
- *     rows in all three prod regions while genuine residue sat in three tables
- *     it did not name.
+ *     a `user_scoped` one belongs to the orphaned-user arm. This is the same
+ *     lesson the docs section learned one issue earlier: until #5184 it carried
+ *     a four-table HAND-WRITTEN query that returned 0 rows in all three prod
+ *     regions while genuine residue sat in three tables it did not name. #5184
+ *     made the detection query self-discovering; this module makes the DELETE a
+ *     command, and derives its table set the same way.
  *  2. **A scope value that matches no organization is NOT automatically tenant
  *     data.** Sentinel scope values are not organization ids, so
  *     `NOT EXISTS (… o.id = t.scope)` is true for them and they are reported
- *     identically to real residue. Of the 9 rows the 2026-08-12 prod sweep
- *     flagged, 8 were sentinels — `_default` (the deployment-wide default SLA
- *     tier, in all three regions), `<atlas-operator>` (`crm_outbox`), and the
- *     empty string (`admin_action_log`). Deleting the first would destroy SLA
- *     defaults for every workspace. {@link classifyScopeValue} is that guard,
+ *     identically to real residue. Of the 9 rows the 2026-08-12 **diagnostic
+ *     query** flagged — a wider instrument than this command, since it scans
+ *     every org-scoped column rather than the `purged` set — 8 were sentinels:
+ *     `_default` (the deployment-wide default SLA tier, in all three regions),
+ *     `<atlas-operator>` (`crm_outbox`), and the empty string
+ *     (`admin_action_log`, which this sweep never reads). Deleting the first
+ *     would destroy SLA defaults for every workspace. {@link classifyScopeValue} is that guard,
  *     and {@link DeletableValue} is what makes it unskippable: withheld values
  *     are not assignable to {@link executeResidueDeletes}, so
  *     `execute(…, plan.withheld)` — a one-identifier slip that would delete
@@ -124,7 +128,7 @@ export const SCOPE_SENTINELS: readonly ScopeSentinel[] = [
   {
     value: "",
     reason:
-      "an empty scope value marks a deployment-scoped row (e.g. `admin_action_log`'s `brain.extraction_cycle` and `oauth_token.refresh` entries), not a workspace.",
+      "an empty scope value marks a row belonging to the DEPLOYMENT rather than to any workspace — `settings`' global tier is the `purged`-class example. It was first seen in `admin_action_log` (`brain.extraction_cycle`, `oauth_token.refresh`), which this sweep never reads because it is `anonymized`; the diagnostic runbook query is wider than this command.",
   },
 ];
 
@@ -249,17 +253,41 @@ export type ResidueSkip =
       readonly reason: string;
     };
 
-/** True when the table was never in scope, as opposed to could not be read. */
+/**
+ * True when the table was never in scope, as opposed to could not be read.
+ *
+ * ⚠️ **Exhaustive on purpose.** Written as `skip.kind !== "unreadable"` this
+ * FAILS OPEN: a future arm — a lock timeout, a refused decision — would be
+ * silently benign, exit 0, printed under "never candidates". The whole finding
+ * behind `ResidueSkip`'s discriminant is that unknown must not read as clean,
+ * and the helper encoding that decision must not default to clean. The switch
+ * makes a new arm a compile error instead.
+ */
 export function isBenignSkip(skip: ResidueSkip): boolean {
-  return skip.kind !== "unreadable";
+  switch (skip.kind) {
+    case "relation-absent":
+    case "no-scope-column":
+    case "unsweepable-type":
+      return true;
+    case "unreadable":
+      return false;
+  }
 }
 
 /** One catalog row: a candidate table, and one scope column of it (or none). */
 interface CatalogColumnRow extends Record<string, unknown> {
   table_name: string;
+  relkind: string;
   column_name: string | null;
   data_type: string | null;
 }
+
+/**
+ * Relation kinds the sweep can DELETE through: an ordinary table and a
+ * partitioned one. Anything else — a view, a matview, a foreign table — is
+ * reported `unreadable` rather than swept or, worse, reported absent.
+ */
+const DELETABLE_RELKINDS: readonly string[] = ["r", "p"];
 
 /**
  * Refuse to sweep a database whose `organization` table is empty.
@@ -274,10 +302,15 @@ interface CatalogColumnRow extends Record<string, unknown> {
  * ⚠️ **What this establishes is non-emptiness, NOT completeness**, and the
  * difference matters: a restore that recovered 1 organization of 5,000 passes
  * here while the orphan predicate is still trivially true for nearly
- * everything. {@link checkResidueBlastRadius} is what covers that case — it
- * fires on the SIZE of the resulting plan, which is the observable a partial
- * restore actually produces. Neither guard alone is sufficient, and this
- * docstring used to claim the stronger property.
+ * everything. {@link checkResidueBlastRadius} narrows that band — a plan naming
+ * more than {@link MAX_RESIDUE_WORKSPACES} ids is refused on an EXECUTE and
+ * flagged on a DRY RUN — but it does not
+ * close it, and an earlier draft of this line said it did, which is the same
+ * over-claim one guard over. **The residual, stated plainly: a partial restore
+ * that lost at most {@link MAX_RESIDUE_WORKSPACES} organizations is covered by
+ * NEITHER guard.** What bounds it there is the DRY RUN — every value is printed
+ * before it is deleted, and a plan naming workspaces the operator recognises as
+ * live is the signal no predicate here can produce.
  */
 export async function assertOrganizationPopulated(query: ResidueQuery): Promise<number> {
   const rows = await query<{ n: string }>(
@@ -340,7 +373,14 @@ export async function discoverResidueTargets(
   // privilege-blind query. `atttypid::regtype` gives the bare type name without
   // a typmod, so `character varying(255)` compares as `character varying`.
   const catalogRows = await query<CatalogColumnRow>(
+    // relkind is SELECTED, not filtered on. Filtering it made every non-ordinary
+    // relation — a partitioned table, a view, a matview — return zero rows and
+    // read as `relation-absent`: "run the region's migrations", benign, exit 0.
+    // That is verbatim the false-benign diagnosis this query was written to
+    // remove, one arm over, and `messages` / `agent_runs` / `audit_log` are the
+    // standard partition candidates.
     `SELECT c.relname AS table_name,
+            c.relkind::text AS relkind,
             a.attname AS column_name,
             a.atttypid::regtype::text AS data_type
        FROM pg_class c
@@ -350,7 +390,7 @@ export async function discoverResidueTargets(
              AND a.attnum > 0
              AND NOT a.attisdropped
              AND a.attname = ANY($2)
-      WHERE c.relkind = 'r' AND c.relname = ANY($1)
+      WHERE c.relname = ANY($1)
       ORDER BY c.relname, a.attname`,
     [candidateNames, [...WORKSPACE_SCOPE_COLUMNS]],
   );
@@ -377,10 +417,37 @@ export async function discoverResidueTargets(
       continue;
     }
 
+    const relkind = rows[0]?.relkind;
+    if (typeof relkind !== "string" || !DELETABLE_RELKINDS.includes(relkind)) {
+      skipped.push({
+        kind: "unreadable",
+        table,
+        column: null,
+        reason: `relation exists but has relkind ${JSON.stringify(relkind)} (not an ordinary or partitioned table). The sweep does not delete through views, matviews or foreign tables, so this table's residue state is UNKNOWN, not clean. Resolve it by hand.`,
+      });
+      continue;
+    }
+
+    // SPLIT, not filtered: a row naming a scope column whose type came
+    // back in an unexpected SHAPE is not the same as a table with no scope
+    // column, and silently dropping it produced the second thing while meaning
+    // the first — a benign, exit-0 verdict on a table nobody looked at.
     const columns = rows.filter(
       (r): r is CatalogColumnRow & { column_name: string; data_type: string } =>
         typeof r.column_name === "string" && typeof r.data_type === "string",
     );
+    const malformed = rows.filter(
+      (r) => r.column_name !== null && !(typeof r.column_name === "string" && typeof r.data_type === "string"),
+    );
+    if (malformed.length > 0) {
+      skipped.push({
+        kind: "unreadable",
+        table,
+        column: null,
+        reason: `${malformed.length} catalog row(s) for this table have an unexpected shape (column_name/data_type were not both strings), so the sweep cannot tell whether it has a scope column. Its residue state is UNKNOWN, not clean.`,
+      });
+      continue;
+    }
     if (columns.length === 0) {
       skipped.push({
         kind: "no-scope-column",
@@ -482,6 +549,13 @@ export async function enumerateOrphanValues(
   for (const target of targets) {
     const table = quoteIdent(target.table);
     const column = quoteIdent(target.column);
+    // Collected per target and only committed if the WHOLE target was clean.
+    // Continuing the row loop on an anomaly declared the table's state UNKNOWN
+    // and then deleted its other rows on the strength of the very query that
+    // had just been called untrustworthy — the two-scope-column arm above faces
+    // a milder ambiguity and correctly refuses the whole table.
+    const candidates: OrphanValue[] = [];
+    let anomaly: string | null = null;
     try {
       const rows = await query<{ scope_value: string | null; row_count: string }>(
         `SELECT t.${column}::text AS scope_value, count(*)::text AS row_count
@@ -495,26 +569,16 @@ export async function enumerateOrphanValues(
       );
       for (const row of rows) {
         if (typeof row.scope_value !== "string") {
-          skipped.push({
-            kind: "unreadable",
-            table: target.table,
-            column: target.column,
-            reason:
-              "a NULL scope value reached the classifier, which means the IS NOT NULL guard did not apply. NULL-scope rows are deployment-scoped by design and are NOT residue; this table's state is UNKNOWN.",
-          });
-          continue;
+          anomaly =
+            "a NULL scope value reached the classifier, which means the IS NOT NULL guard did not apply. NULL-scope rows are deployment-scoped by design and are NOT residue";
+          break;
         }
         const rowCount = Number.parseInt(row.row_count, 10);
         if (!Number.isFinite(rowCount)) {
-          skipped.push({
-            kind: "unreadable",
-            table: target.table,
-            column: target.column,
-            reason: `unparseable row count ${JSON.stringify(row.row_count)} for scope value ${JSON.stringify(row.scope_value)} — the row shape is not what the sweep assumes.`,
-          });
-          continue;
+          anomaly = `unparseable row count ${JSON.stringify(row.row_count)} for scope value ${JSON.stringify(row.scope_value)} — the row shape is not what the sweep assumes`;
+          break;
         }
-        orphans.push({
+        candidates.push({
           table: target.table,
           column: target.column,
           value: row.scope_value,
@@ -522,13 +586,19 @@ export async function enumerateOrphanValues(
         });
       }
     } catch (err) {
+      anomaly = `orphan query failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+
+    if (anomaly) {
       skipped.push({
         kind: "unreadable",
         table: target.table,
         column: target.column,
-        reason: `orphan query failed: ${err instanceof Error ? err.message : String(err)}`,
+        reason: `${anomaly}. No value from this table is proposed for deletion, and its residue state is UNKNOWN, not clean.`,
       });
+      continue;
     }
+    orphans.push(...candidates);
   }
 
   return { orphans, skipped };
@@ -583,17 +653,21 @@ export const MAX_RESIDUE_WORKSPACES = 50;
  * `refusedToExecute` is what stops an EXECUTE; this is what stops a preview
  * being read as clean. Returns the warning, or null.
  *
- * Behaviour delta from the first version:
+ * SYSTEM behaviour, of which this function computes only the `string | null`
+ * — the exit code is {@link ~ops-residue.residueExitCode}'s and the refusal is
+ * `sweepResidue`'s:
  *
  * ```
- *                       old          new
- * dry run, <= cap       null         null
- * dry run,  > cap       null         WARN + exit 1   ← changed, more conservative
- * execute, <= cap       null         null
- * execute,  > cap       refuse       refuse
+ * dry run, <= cap    silent
+ * dry run,  > cap    WARN, preview still printed in full, exit 1
+ * execute, <= cap    silent
+ * execute,  > cap    REFUSE, nothing deleted, exit 1
  * ```
+ *
+ * The dry-run row is the one that changed during review: an earlier draft
+ * returned null there, which is the arm the note above is about.
  */
-export function checkResidueBlastRadius(deletable: readonly OrphanValue[]): string | null {
+export function checkResidueBlastRadius(deletable: readonly DeletableValue[]): string | null {
   const ids = new Set(deletable.map((d) => d.value));
   if (ids.size > MAX_RESIDUE_WORKSPACES) {
     return (
@@ -636,7 +710,7 @@ interface DeleteGroup {
 }
 
 /** Group the deletable values into one statement per (table, column). */
-function groupDeletions(deletable: readonly OrphanValue[]): DeleteGroup[] {
+function groupDeletions(deletable: readonly DeletableValue[]): DeleteGroup[] {
   const order: string[] = [];
   const building = new Map<
     string,
@@ -708,6 +782,11 @@ function groupDeletions(deletable: readonly OrphanValue[]): DeleteGroup[] {
  * tables by design — a residue sweep is a cleanup, the operator has taken a
  * `pg_dump`, and one table's RESTRICT must not roll back the tables that
  * succeeded.
+ *
+ * ⚠️ **THROWS rather than returning on a broken premise** — an empty
+ * `organization`, or a plan over {@link MAX_RESIDUE_WORKSPACES}. Both are
+ * checked HERE and not only in `sweepResidue`, because this function is
+ * exported and callable on its own.
  */
 export async function executeResidueDeletes(
   query: ResidueQuery,
@@ -715,6 +794,27 @@ export async function executeResidueDeletes(
 ): Promise<{ deletions: ResidueDeletion[]; errors: ResidueDeleteError[] }> {
   const deletions: ResidueDeletion[] = [];
   const errors: ResidueDeleteError[] = [];
+
+  // ⚠️ Both premises are re-established HERE, not just in `sweepResidue`.
+  //
+  // The SQL clause below is defence in depth, and on its own it is not enough:
+  // when `AND EXISTS (SELECT 1 FROM public.organization)` is what zeroes the
+  // delete, the code path is identical to "the rows were already gone" — no
+  // error, a `✓` line, exit 0. The guard fires and nobody is told, which is the
+  // silent-failure shape this whole module is about. So the premise is checked
+  // where it can be REPORTED, and the statement carries it too.
+  if (deletable.length > 0) {
+    await assertOrganizationPopulated(query);
+    const overRadius = checkResidueBlastRadius(deletable);
+    if (overRadius) {
+      // The cap is the only guard covering a partial restore that kept enough
+      // organizations to pass the non-emptiness check. `sweepResidue` consults
+      // it, but this function is exported and callable on its own — the same
+      // reason the SQL clause exists.
+      throw new Error(`Refusing to delete: ${overRadius}`);
+    }
+  }
+
   const groups = groupDeletions(deletable);
   let pending = groups;
 
@@ -837,8 +937,9 @@ function summarize(
  *
  * DRY RUN enumerates and classifies but issues no DELETE; the caller's gate
  * decides which mode this is, so a gate-less invocation previews rather than
- * deletes. Throws only when the premise itself is broken — see
- * {@link assertOrganizationPopulated}.
+ * deletes. Throws only when a premise is broken: an empty `organization`
+ * ({@link assertOrganizationPopulated}), or a schema carrying none of the
+ * purged-class tables — the symmetric case, checked inline below.
  */
 export async function sweepResidue(
   query: ResidueQuery,
@@ -847,6 +948,20 @@ export async function sweepResidue(
   await assertOrganizationPopulated(query);
 
   const { targets, skipped: discoverySkips } = await discoverResidueTargets(query);
+  if (targets.length === 0 && PURGED_TABLES.size > 0) {
+    // The symmetric premise to an empty `organization`: that one says "these
+    // orgs are not real", this one says "this is not an Atlas schema". A DB with
+    // a populated `organization` but no purged tables is a wrong `--database-url`
+    // pointed at another service, a region mid-provision, or a Better Auth
+    // global schema (ADR-0024). Without this the sweep prints 87 benign
+    // `relation-absent` skips and "No residue found", and exits 0.
+    throw new Error(
+      `Refusing to sweep: none of the ${PURGED_TABLES.size} purged-class tables is present with a ` +
+        "workspace scope column, so the sweep would examine nothing and report clean. That is a " +
+        "wrong-DB or not-yet-migrated-region signal, not an empty region. Re-check --region / " +
+        "--database-url, then run the region's migrations.",
+    );
+  }
   const { orphans, skipped: querySkips } = await enumerateOrphanValues(query, targets);
   const { deletable, withheld } = planResidueSweep(orphans);
 

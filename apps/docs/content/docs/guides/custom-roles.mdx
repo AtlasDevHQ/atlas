@@ -36,6 +36,8 @@ Atlas supports custom role definitions with granular permission flags. Move beyo
 |-----------|-------------|
 | `query` | Can send chat queries |
 | `query:raw_data` | Can see raw row data (vs aggregates only) |
+| `dashboards:read` | Can list, open and export dashboards |
+| `dashboards:write` | Can create, edit, share and publish dashboards |
 | `admin:users` | Can manage users |
 | `admin:connections` | Can manage data connections |
 | `admin:settings` | Can manage application settings |
@@ -44,6 +46,8 @@ Atlas supports custom role definitions with granular permission flags. Move beyo
 | `admin:semantic` | Can edit the semantic layer |
 
 Permissions are **additive** — a role is the union of its flags. There is no "deny" mechanism.
+
+The `admin:*` flags **refine** the admin gate rather than replace it: those routes also require an org role of `admin`, `owner` or `platform_admin`, so a flag alone does not open them. `dashboards:*` is enforced on its own, outside the admin gate — which is what lets a non-admin role such as `analyst` carry it. (`query` and `query:raw_data` are declared and grantable, but are not yet enforced at any route.)
 
 ---
 
@@ -54,8 +58,8 @@ Three roles are seeded automatically and cannot be modified or deleted:
 | Role | Permissions | Use Case |
 |------|------------|----------|
 | `admin` | All permissions | Full administrative access |
-| `analyst` | `query`, `query:raw_data`, `admin:audit` | Data team members who need raw data and audit visibility |
-| `viewer` | `query` | Stakeholders who only need aggregate query results |
+| `analyst` | `query`, `query:raw_data`, `dashboards:read`, `dashboards:write`, `admin:audit` | Data team members who need raw data, dashboard authoring and audit visibility |
+| `viewer` | `query`, `dashboards:read` | Stakeholders who read dashboards and need aggregate query results only |
 
 ---
 
@@ -169,7 +173,7 @@ The role name must match an existing role (built-in or custom) in the organizati
 
 Custom roles are fully backward compatible with the existing auth system:
 
-- **No enterprise license?** The legacy `admin`/`member`/`owner` roles continue to work exactly as before. `admin` and `owner` get all permissions; `member` gets query permissions.
+- **No enterprise license?** The legacy `admin`/`member`/`owner` roles continue to work exactly as before. `admin` and `owner` get all permissions; `member` gets the query pair plus both `dashboards:*` flags.
 - **Enterprise enabled but no custom roles assigned?** Users fall back to their existing role's default permissions.
 - **Mixed deployment?** The permission resolver checks for custom roles first, then falls back to the legacy mapping.
 

@@ -588,6 +588,10 @@ describe("migrateAuthTables", () => {
             // Auth owns nothing it touches. Direction is irrelevant here; what
             // matters is the table.
             { name: "0195_brain_facts_drop_predicate_cardinality.sql" },
+            // 0196 backfills `custom_roles` permission arrays (#5189). Better
+            // Auth owns nothing on that table either — it is an Atlas EE table
+            // — so it belongs in the already-applied set on the same grounds.
+            { name: "0196_builtin_roles_dashboards_flags.sql" },
           ],
         };
       }

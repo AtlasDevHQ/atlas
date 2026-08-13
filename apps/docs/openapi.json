@@ -4695,7 +4695,7 @@
           "Dashboards"
         ],
         "summary": "List dashboards",
-        "description": "Returns dashboards for the active organization. Requires admin role.",
+        "description": "Returns dashboards for the active organization. Requires the `dashboards:read` permission.",
         "parameters": [
           {
             "schema": {
@@ -4810,7 +4810,7 @@
           "Dashboards"
         ],
         "summary": "Create a dashboard",
-        "description": "Creates a new dashboard. Requires admin role.",
+        "description": "Creates a new dashboard. Requires the `dashboards:write` permission.",
         "requestBody": {
           "required": true,
           "content": {
@@ -5034,7 +5034,7 @@
           "Dashboards"
         ],
         "summary": "Get dashboard with cards",
-        "description": "Returns a dashboard with all its cards. Requires admin role. Pass `?view=draft` to overlay the caller's per-user draft (#2364) when one exists; the published view is returned otherwise.",
+        "description": "Returns a dashboard with all its cards. Requires the `dashboards:read` permission. Pass `?view=draft` to overlay the caller's per-user draft (#2364) when one exists; the published view is returned otherwise.",
         "parameters": [
           {
             "schema": {
@@ -5177,7 +5177,7 @@
           "Dashboards"
         ],
         "summary": "Update a dashboard",
-        "description": "Updates dashboard title, description, or refresh schedule. Requires admin role.",
+        "description": "Updates dashboard title, description, or refresh schedule. Requires the `dashboards:write` permission.",
         "parameters": [
           {
             "schema": {
@@ -5441,7 +5441,7 @@
           "Dashboards"
         ],
         "summary": "Delete a dashboard",
-        "description": "Soft-deletes a dashboard and its cards. Requires admin role.",
+        "description": "Soft-deletes a dashboard and its cards. Requires the `dashboards:write` permission.",
         "parameters": [
           {
             "schema": {
@@ -5565,7 +5565,7 @@
           "Drafts"
         ],
         "summary": "Get (or fork) the caller's draft for a dashboard",
-        "description": "Returns the current user's draft for this dashboard, forking from published on first call. Requires admin role.",
+        "description": "Returns the current user's draft for this dashboard, forking from published on first call. Requires the `dashboards:write` permission — the first call FORKS a draft, which inserts rows.",
         "parameters": [
           {
             "schema": {
@@ -5697,7 +5697,7 @@
           "Drafts"
         ],
         "summary": "Check whether the caller has an active draft for this dashboard",
-        "description": "Non-forking presence check. Returns 200 with `{ hasDraft: true, publishedBaselineAt, dashboardUpdatedAt }` when the caller's draft exists, or 200 with `{ hasDraft: false }` when not. The client uses `publishedBaselineAt !== dashboardUpdatedAt` to surface the stale-baseline banner.",
+        "description": "Non-forking presence check. Returns 200 with `{ hasDraft: true, publishedBaselineAt, dashboardUpdatedAt }` when the caller's draft exists, or 200 with `{ hasDraft: false }` when not. The client uses `publishedBaselineAt !== dashboardUpdatedAt` to surface the stale-baseline banner. Requires the `dashboards:read` permission.",
         "parameters": [
           {
             "schema": {
@@ -5829,7 +5829,7 @@
           "Drafts"
         ],
         "summary": "Publish the caller's draft to the live dashboard",
-        "description": "Diff-merges the caller's draft into the live dashboard in a single transaction. Returns 409 when a teammate has published since the draft was forked (with `reason: \"stale_baseline\"`) or when both sides edited the same card (with `reason: \"conflict\"`).",
+        "description": "Diff-merges the caller's draft into the live dashboard in a single transaction. Returns 409 when a teammate has published since the draft was forked (with `reason: \"stale_baseline\"`) or when both sides edited the same card (with `reason: \"conflict\"`). Requires the `dashboards:write` permission.",
         "parameters": [
           {
             "schema": {
@@ -5986,7 +5986,7 @@
           "Drafts"
         ],
         "summary": "Discard the caller's draft",
-        "description": "Idempotently drops the caller's draft for this dashboard. No-op if no draft exists.",
+        "description": "Idempotently drops the caller's draft for this dashboard. No-op if no draft exists. Requires the `dashboards:write` permission.",
         "parameters": [
           {
             "schema": {
@@ -6085,7 +6085,7 @@
           "Drafts"
         ],
         "summary": "Rebase the caller's draft onto the latest published baseline",
-        "description": "Fast-forwards the draft onto the latest published row when there are no conflicts; returns 409 with the conflict set when both sides edited the same card.",
+        "description": "Fast-forwards the draft onto the latest published row when there are no conflicts; returns 409 with the conflict set when both sides edited the same card. Requires the `dashboards:write` permission.",
         "parameters": [
           {
             "schema": {
@@ -6242,7 +6242,7 @@
           "Drafts"
         ],
         "summary": "Undo a bound-editor destructive edit in the caller's draft",
-        "description": "Applies the inverse of a bound-editor destructive edit to the caller's draft: `restore_card` re-adds a removed card (verbatim, same id), `revert_sql` restores a card's prior SQL. An ordinary draft edit — nothing touches the published board until publish. Idempotent: restoring a card that already exists in the draft is a no-op.",
+        "description": "Applies the inverse of a bound-editor destructive edit to the caller's draft: `restore_card` re-adds a removed card (verbatim, same id), `revert_sql` restores a card's prior SQL. An ordinary draft edit — nothing touches the published board until publish. Idempotent: restoring a card that already exists in the draft is a no-op. Requires the `dashboards:write` permission.",
         "parameters": [
           {
             "schema": {
@@ -6676,7 +6676,7 @@
           "Dashboards"
         ],
         "summary": "Add a card to a dashboard",
-        "description": "Adds a query result card with optional cached data. Requires admin role.",
+        "description": "Adds a query result card with optional cached data. Requires the `dashboards:write` permission.",
         "parameters": [
           {
             "schema": {
@@ -7115,7 +7115,7 @@
           "Dashboards"
         ],
         "summary": "Update a card",
-        "description": "Updates card title, chart config, or position. Requires admin role.",
+        "description": "Updates card title, chart config, or position. Requires the `dashboards:write` permission.",
         "parameters": [
           {
             "schema": {
@@ -7529,7 +7529,7 @@
           "Dashboards"
         ],
         "summary": "Remove a card",
-        "description": "Removes a card from a dashboard. Requires admin role.",
+        "description": "Removes a card from a dashboard. Requires the `dashboards:write` permission.",
         "parameters": [
           {
             "schema": {
@@ -7686,7 +7686,7 @@
           "Dashboards"
         ],
         "summary": "Preview a card query without saving",
-        "description": "Validates and executes SQL against the analytics datasource through the full Atlas pipeline (validation, approval, RLS, auto-LIMIT, audit, masking). Used by the chat-side dashboard canvas to render live previews of cards the agent has proposed but the user has not yet saved. Requires admin role.",
+        "description": "Validates and executes SQL against the analytics datasource through the full Atlas pipeline (validation, approval, RLS, auto-LIMIT, audit, masking). Used by the chat-side dashboard canvas to render live previews of cards the agent has proposed but the user has not yet saved. Requires the `dashboards:write` permission.",
         "requestBody": {
           "required": true,
           "content": {
@@ -7910,7 +7910,7 @@
           "Dashboards"
         ],
         "summary": "Refresh a card",
-        "description": "Re-executes the card's SQL through the full Atlas pipeline and updates cached results. Requires admin role.",
+        "description": "Re-executes the card's SQL through the full Atlas pipeline and updates cached results. Requires the `dashboards:write` permission.",
         "parameters": [
           {
             "schema": {
@@ -8140,7 +8140,7 @@
           "Dashboards"
         ],
         "summary": "Render a card with parameters",
-        "description": "Executes the card's SQL through the full Atlas pipeline with the supplied dashboard parameter values bound server-side (#2267). Values reach SQL only via parameterized queries — never string-interpolated. Omitted parameters fall back to their server-resolved defaults. The result is NOT persisted to the card cache; it's an ephemeral, per-viewer render for the parameter bar. With `?format=csv` (#3210) the SAME parameter-bound result is streamed as a `text/csv` attachment (auto-LIMIT still applies; truncation is surfaced via the `X-Atlas-Truncated` header). Requires admin role.",
+        "description": "Executes the card's SQL through the full Atlas pipeline with the supplied dashboard parameter values bound server-side (#2267). Values reach SQL only via parameterized queries — never string-interpolated. Omitted parameters fall back to their server-resolved defaults. The result is NOT persisted to the card cache; it's an ephemeral, per-viewer render for the parameter bar. With `?format=csv` (#3210) the SAME parameter-bound result is streamed as a `text/csv` attachment (auto-LIMIT still applies; truncation is surfaced via the `X-Atlas-Truncated` header). Requires the `dashboards:read` permission.",
         "parameters": [
           {
             "schema": {
@@ -8413,7 +8413,7 @@
           "Dashboards"
         ],
         "summary": "Refresh all cards",
-        "description": "Re-executes SQL for all cards in a dashboard. Requires admin role. Pass `?view=draft` (#4559) to run the caller's DRAFT cards' SQL and persist each result to the caller's private draft cache — the published cards' cached data is left untouched. Omitted/`published` runs the published definitions and writes the shared published cache as before; a caller with no draft always falls back to published.",
+        "description": "Re-executes SQL for all cards in a dashboard. Requires the `dashboards:write` permission. Pass `?view=draft` (#4559) to run the caller's DRAFT cards' SQL and persist each result to the caller's private draft cache — the published cards' cached data is left untouched. Omitted/`published` runs the published definitions and writes the shared published cache as before; a caller with no draft always falls back to published.",
         "parameters": [
           {
             "schema": {
@@ -8606,7 +8606,7 @@
           "Dashboards"
         ],
         "summary": "Share a dashboard",
-        "description": "Generates (or updates) a share token for public or org-scoped access. Requires admin role. Optional JSON body: `{ expiresIn?: '1h'|'24h'|'7d'|'30d'|'never'|null, shareMode?: 'public'|'org', rotate?: boolean }`. An absent/empty body uses safe defaults (public, no rotation); a present-but-invalid body returns 400 and never downgrades the share to public (#4317). `rotate` is opt-in: without it, editing expiry/visibility PRESERVES the existing token so prior links keep working; with it, a new token is minted and prior links die.",
+        "description": "Generates (or updates) a share token for public or org-scoped access. Requires the `dashboards:write` permission. Optional JSON body: `{ expiresIn?: '1h'|'24h'|'7d'|'30d'|'never'|null, shareMode?: 'public'|'org', rotate?: boolean }`. An absent/empty body uses safe defaults (public, no rotation); a present-but-invalid body returns 400 and never downgrades the share to public (#4317). `rotate` is opt-in: without it, editing expiry/visibility PRESERVES the existing token so prior links keep working; with it, a new token is minted and prior links die.",
         "parameters": [
           {
             "schema": {
@@ -8735,7 +8735,7 @@
           "Dashboards"
         ],
         "summary": "Revoke dashboard share",
-        "description": "Revokes the share token. Requires admin role.",
+        "description": "Revokes the share token. Requires the `dashboards:write` permission.",
         "parameters": [
           {
             "schema": {
@@ -8856,7 +8856,7 @@
           "Dashboards"
         ],
         "summary": "Get share status",
-        "description": "Returns the current share status of a dashboard. Requires admin role.",
+        "description": "Returns the current share status of a dashboard. Requires the `dashboards:read` permission.",
         "parameters": [
           {
             "schema": {
@@ -8987,7 +8987,7 @@
           "Dashboards"
         ],
         "summary": "Suggest new cards via AI",
-        "description": "Analyzes existing dashboard cards and proposes 2-3 complementary cards using the AI model and semantic layer. Requires admin role.",
+        "description": "Analyzes existing dashboard cards and proposes 2-3 complementary cards using the AI model and semantic layer. Requires the `dashboards:write` permission.",
         "parameters": [
           {
             "schema": {
@@ -9118,7 +9118,7 @@
           "Dashboards"
         ],
         "summary": "List archived bound chat sessions for a dashboard",
-        "description": "Returns past chat sessions bound to this dashboard (one row per drawer-open). Workspace-wide visibility: any user who can view the dashboard sees every session. Used by the bound chat drawer's History tab (#2368).",
+        "description": "Returns past chat sessions bound to this dashboard (one row per drawer-open). Workspace-wide visibility: any user who can view the dashboard sees every session. Used by the bound chat drawer's History tab (#2368). Requires the `dashboards:read` permission.",
         "parameters": [
           {
             "schema": {
@@ -9249,7 +9249,7 @@
           "Dashboards"
         ],
         "summary": "Read a bound chat session transcript",
-        "description": "Returns the read-only transcript (messages) for one bound session. Workspace-wide visibility: gated by dashboard ACL + binding match, not per-user ownership. Used by the bound chat drawer's History tab transcript panel (#2368).",
+        "description": "Returns the read-only transcript (messages) for one bound session. Workspace-wide visibility: gated by dashboard ACL + binding match, not per-user ownership. Used by the bound chat drawer's History tab transcript panel (#2368). Requires the `dashboards:read` permission.",
         "parameters": [
           {
             "schema": {
@@ -9389,7 +9389,7 @@
           "Dashboards"
         ],
         "summary": "Render a PNG screenshot of the dashboard",
-        "description": "Renders the dashboard in a headless Chromium and returns the captured PNG. Scoped to the calling user — when #2364 (drafts foundation) lands, draft views are returned per-user, otherwise the published baseline is captured. Output is cached by (dashboardId, userId, snapshotHash) and invalidated on every mutation. Used internally by the bound agent's `screenshotDashboard` tool (#2367); also exposable to UI for in-conversation previews.",
+        "description": "Renders the dashboard in a headless Chromium and returns the captured PNG. Scoped to the calling user — when #2364 (drafts foundation) lands, draft views are returned per-user, otherwise the published baseline is captured. Output is cached by (dashboardId, userId, snapshotHash) and invalidated on every mutation. Used internally by the bound agent's `screenshotDashboard` tool (#2367); also exposable to UI for in-conversation previews. Requires the `dashboards:read` permission.",
         "parameters": [
           {
             "schema": {
@@ -9545,7 +9545,7 @@
           "Dashboards"
         ],
         "summary": "Export the whole dashboard as PNG or PDF",
-        "description": "Renders the full dashboard at the caller's current parameter values in a headless Chromium and returns the artifact as a downloadable attachment (filename = dashboard title + UTC timestamp). Reuses the screenshot pipeline (#2367) rather than a second headless path. A single tile that fails to render does NOT abort the export — the response carries `X-Atlas-Export-Partial: 1` and the partial board is still returned. `format` defaults to `pdf`. Requires admin role.",
+        "description": "Renders the full dashboard at the caller's current parameter values in a headless Chromium and returns the artifact as a downloadable attachment (filename = dashboard title + UTC timestamp). Reuses the screenshot pipeline (#2367) rather than a second headless path. A single tile that fails to render does NOT abort the export — the response carries `X-Atlas-Export-Partial: 1` and the partial board is still returned. `format` defaults to `pdf`. Requires the `dashboards:read` permission.",
         "parameters": [
           {
             "schema": {

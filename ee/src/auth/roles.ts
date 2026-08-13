@@ -69,13 +69,20 @@ export const BUILTIN_ROLES: readonly BuiltinRoleDefinition[] = [
   },
   {
     name: "analyst",
-    description: "Can query data (including raw data) and view audit logs",
-    permissions: ["query", "query:raw_data", "admin:audit"],
+    description:
+      "Can query data (including raw data), build dashboards, and view audit logs",
+    permissions: [
+      "query",
+      "query:raw_data",
+      "dashboards:read",
+      "dashboards:write",
+      "admin:audit",
+    ],
   },
   {
     name: "viewer",
-    description: "Can query data with aggregate results only",
-    permissions: ["query"],
+    description: "Can query data with aggregate results only, and view dashboards",
+    permissions: ["query", "dashboards:read"],
   },
 ] as const;
 
@@ -433,8 +440,26 @@ export const assignRole = (
 // ── Seeding ──────────────────────────────────────────────────────
 
 /**
- * Seed built-in roles for an organization. Called during migration.
- * Idempotent — checks each role by name + org_id before inserting.
+ * Seed built-in roles for an organization, and RECONCILE the ones already there.
+ *
+ * #5189 — this used to be insert-if-absent, which made `BUILTIN_ROLES` an
+ * *initial* value rather than the source of truth its name implies. The stored
+ * row wins at resolution time (`resolvePermissions` returns the `custom_roles`
+ * set and does not union it with the legacy mapping), and `updateRole` refuses
+ * `is_builtin` rows — so once seeded, a built-in role's permission set was
+ * frozen in the DB and unreachable from every supported surface.
+ *
+ * That turned adding a flag into a silent regression for existing workspaces:
+ * any org where someone had ever opened `/admin/roles` (the only
+ * `seedBuiltinRoles` call site is `listRoles`) carried an `admin` row with the
+ * then-current 8 flags, so after this change an org admin resolved to a set
+ * WITHOUT `dashboards:read` and was 403'd off a surface they used yesterday.
+ * Invited admins broke; `owner` did not, because no `owner` row is seeded — so
+ * the founder's account, the one most likely to be used for QA, looked fine.
+ *
+ * `DO UPDATE … WHERE is_builtin` reconciles only rows we own. A custom role
+ * that happens to be named `analyst` is `is_builtin = false` and is left
+ * untouched, so an operator's own definition is never overwritten by ours.
  */
 export const seedBuiltinRoles = (orgId: string): Effect.Effect<void, Error> =>
   Effect.gen(function* () {
@@ -447,17 +472,16 @@ export const seedBuiltinRoles = (orgId: string): Effect.Effect<void, Error> =>
     for (const def of BUILTIN_ROLES) {
       yield* Effect.tryPromise({
         try: async () => {
-          const existing = await pool.query(
-            `SELECT id FROM custom_roles WHERE org_id = $1 AND name = $2`,
-            [orgId, def.name],
+          await pool.query(
+            `INSERT INTO custom_roles (org_id, name, description, permissions, is_builtin)
+             VALUES ($1, $2, $3, $4, true)
+             ON CONFLICT (org_id, name) DO UPDATE
+                SET permissions = EXCLUDED.permissions,
+                    description = EXCLUDED.description,
+                    updated_at  = now()
+              WHERE custom_roles.is_builtin = true`,
+            [orgId, def.name, def.description, JSON.stringify(def.permissions)],
           );
-          if (existing.rows.length === 0) {
-            await pool.query(
-              `INSERT INTO custom_roles (org_id, name, description, permissions, is_builtin)
-               VALUES ($1, $2, $3, $4, true)`,
-              [orgId, def.name, def.description, JSON.stringify(def.permissions)],
-            );
-          }
         },
         catch: (err) => {
           log.error({ orgId, roleName: def.name, err: err instanceof Error ? err.message : String(err) }, "Failed to seed built-in role");

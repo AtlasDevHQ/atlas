@@ -1374,7 +1374,13 @@ describe("dashboard routes", () => {
       expect(response.status).toBe(401);
     });
 
-    it("returns 403 when authenticated but not admin", async () => {
+    // #5189 — this test used to assert 403 for a `member`, which is the posture
+    // the issue exists to remove: dashboards were gated by `adminAuth`, so a
+    // non-admin was denied before any permission flag was consulted. A `member`
+    // carries `dashboards:write` in `LEGACY_ROLE_PERMISSIONS`, so the correct
+    // answer is now "allowed". The negative moved to the flag, one test down.
+    it("admits a non-admin role carrying dashboards:write", async () => {
+      mockRunUserQueryPipeline.mockClear();
       mockAuthenticateRequest.mockResolvedValueOnce({
         authenticated: true as const,
         mode: "simple-key" as const,
@@ -1387,7 +1393,10 @@ describe("dashboard routes", () => {
           body: JSON.stringify({ sql: "SELECT 1" }),
         }),
       );
-      expect(response.status).toBe(403);
+      expect(response.status).not.toBe(403);
+      // `not.toBe(403)` alone is satisfied by a 404, a 400 or a 500 — assert the
+      // member actually REACHED the handler, which is the claim.
+      expect(mockRunUserQueryPipeline).toHaveBeenCalled();
     });
 
     it("returns 400 invalid_sql when the pipeline rejects mutation SQL", async () => {
@@ -3336,7 +3345,10 @@ describe("dashboard routes", () => {
       expect(mockExportDashboard).not.toHaveBeenCalled();
     });
 
-    it("returns 403 when authenticated but not admin", async () => {
+    // #5189 — was "403 when authenticated but not admin". Export is a READ path
+    // (it is how you download a board you are looking at), so a `member` now
+    // reaches it on `dashboards:read`. See the note on the preview-card sibling.
+    it("admits a non-admin role carrying dashboards:read", async () => {
       mockExportDashboard.mockClear();
       mockAuthenticateRequest.mockResolvedValueOnce({
         authenticated: true as const,
@@ -3350,8 +3362,8 @@ describe("dashboard routes", () => {
           body: JSON.stringify({ format: "pdf" }),
         }),
       );
-      expect(response.status).toBe(403);
-      expect(mockExportDashboard).not.toHaveBeenCalled();
+      expect(response.status).not.toBe(403);
+      expect(mockExportDashboard).toHaveBeenCalled();
     });
 
     it("returns 400 invalid_parameters when an override fails its declared type", async () => {

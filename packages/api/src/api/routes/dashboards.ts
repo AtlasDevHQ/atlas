@@ -1,7 +1,13 @@
 /**
  * Dashboard REST routes — CRUD for dashboards and cards, sharing, refresh.
  *
- * Admin routes use `adminAuth` + `requireOrgContext` middleware.
+ * Authenticated routes use `createWorkspaceRouter()` + `requireOrgContext`,
+ * with a `dashboards:read` / `dashboards:write` gate declared PER ROUTE
+ * (#5189). They are deliberately not admin routes: dashboards are a core
+ * analyst-loop surface linked in every user's sidebar, and gating them behind
+ * `adminAuth` is what denied `member`/`analyst` roles outright and produced
+ * #5188's login-redirect loop for unenrolled owners.
+ *
  * Public shared endpoint bypasses auth (rate limited per IP).
  */
 
@@ -74,7 +80,11 @@ import {
   validateAutoComparison,
 } from "@atlas/api/lib/dashboard-parameters";
 import { ErrorSchema, parsePagination } from "./shared-schemas";
-import { createAdminRouter, requireOrgContext } from "./admin-router";
+import { requireOrgContext } from "./admin-router";
+import {
+  createWorkspaceRouter,
+  requireWorkspacePermission,
+} from "./workspace-router";
 import { validationHook } from "./validation-hook";
 import {
   authenticateRequest,
@@ -87,6 +97,57 @@ import {
 } from "@atlas/api/lib/public-rate-limit";
 
 const log = createLogger("dashboard-routes");
+
+// ---------------------------------------------------------------------------
+// Permission gates (#5189)
+// ---------------------------------------------------------------------------
+
+/**
+ * The line is **does this persist**, not **is this a GET**.
+ *
+ * Read covers the whole VIEWING path, several members of which are POSTs: a
+ * dashboard paints itself through `POST …/render` (explicitly ephemeral — the
+ * result is not written to the card cache), and downloads through
+ * `POST …/export` and `GET …/screenshot`, neither of which writes. Classifying
+ * by HTTP method would put those behind `dashboards:write` and leave a `viewer`
+ * able to list a dashboard and see nothing on it.
+ *
+ * Write is content mutation plus the two authoring assists — `/suggest` (spends
+ * LLM budget on card proposals) and `/preview-card` (composes a card that does
+ * not exist yet). Both exist only to help you author.
+ *
+ * ⚠️ **Two GET-shaped or viewing-shaped routes are WRITEs, and they are where
+ * the two readings disagree.**
+ *
+ *   • `POST …/refresh` (both) — `refreshCard` UPDATEs
+ *     `dashboard_cards.cached_columns/cached_rows`, the PUBLISHED cache every
+ *     other viewer reads. Gating it on `read` would let the least-privileged
+ *     built-in role overwrite shared state under teammates and fan one click
+ *     into N warehouse queries. `refreshAllCards`' own comment already calls
+ *     itself "a WRITE path". A `viewer` still gets live data through `/render`,
+ *     which is why the viewing argument survives without it.
+ *   • `GET …/draft` — reads like a read and is not: the first call FORKS,
+ *     inserting into `dashboard_user_drafts` and then copying every published
+ *     card's cached rows into `dashboard_draft_card_cache`. Forking a draft is
+ *     also the first step of authoring, so it belongs with its four
+ *     `/draft/*` siblings. Its non-forking neighbours stay READ:
+ *     `GET /{id}?view=draft` overlays an existing draft and `/draft/status`
+ *     reports on one, neither creating anything.
+ *
+ * Swept for writes, and clean: `GET /`, `GET /{id}`, `/draft/status`,
+ * `/share`, `/sessions`, `/sessions/{sessionId}`, `/screenshot` (a
+ * process-local LRU, no DB or file write), `POST …/render` (verified ephemeral
+ * — it never reaches `refreshCard` or `saveDraftCardCache`) and `POST …/export`
+ * (renders to bytes, persists nothing).
+ *
+ * Declared per route rather than once on the router: two routers sharing a
+ * mount path do not isolate their `use()` chains — see
+ * `requireWorkspacePermission`. Every authed route in this file must carry
+ * exactly one of these, which `__tests__/dashboards-permission.test.ts` asserts
+ * against the composed app.
+ */
+const DASHBOARD_READ = [requireWorkspacePermission("dashboards:read")];
+const DASHBOARD_WRITE = [requireWorkspacePermission("dashboards:write")];
 
 // ---------------------------------------------------------------------------
 // Zod schemas
@@ -384,9 +445,10 @@ warnIfTrustProxyMissingForPublicShare();
 const listDashboardsRoute = createRoute({
   method: "get",
   path: "/",
+  middleware: DASHBOARD_READ,
   tags: ["Dashboards"],
   summary: "List dashboards",
-  description: "Returns dashboards for the active organization. Requires admin role.",
+  description: "Returns dashboards for the active organization. Requires the `dashboards:read` permission.",
   request: {
     query: z.object({
       limit: z.string().optional().openapi({ param: { name: "limit", in: "query" }, description: "Maximum number of items (1-100, default 20)." }),
@@ -405,9 +467,10 @@ const listDashboardsRoute = createRoute({
 const createDashboardRoute = createRoute({
   method: "post",
   path: "/",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards"],
   summary: "Create a dashboard",
-  description: "Creates a new dashboard. Requires admin role.",
+  description: "Creates a new dashboard. Requires the `dashboards:write` permission.",
   request: { body: { content: { "application/json": { schema: CreateDashboardSchema } }, required: true } },
   responses: {
     201: { description: "Dashboard created", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -423,10 +486,11 @@ const createDashboardRoute = createRoute({
 const getDashboardRoute = createRoute({
   method: "get",
   path: "/{id}",
+  middleware: DASHBOARD_READ,
   tags: ["Dashboards"],
   summary: "Get dashboard with cards",
   description:
-    "Returns a dashboard with all its cards. Requires admin role. Pass `?view=draft` to overlay the caller's per-user draft (#2364) when one exists; the published view is returned otherwise.",
+    "Returns a dashboard with all its cards. Requires the `dashboards:read` permission. Pass `?view=draft` to overlay the caller's per-user draft (#2364) when one exists; the published view is returned otherwise.",
   request: {
     params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }),
     query: z.object({
@@ -453,10 +517,11 @@ const getDashboardRoute = createRoute({
 const getDraftRoute = createRoute({
   method: "get",
   path: "/{id}/draft",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards", "Drafts"],
   summary: "Get (or fork) the caller's draft for a dashboard",
   description:
-    "Returns the current user's draft for this dashboard, forking from published on first call. Requires admin role.",
+    "Returns the current user's draft for this dashboard, forking from published on first call. Requires the `dashboards:write` permission — the first call FORKS a draft, which inserts rows.",
   request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
   responses: {
     200: { description: "Draft snapshot + materialized DashboardWithCards", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -478,10 +543,11 @@ const getDraftRoute = createRoute({
 const getDraftStatusRoute = createRoute({
   method: "get",
   path: "/{id}/draft/status",
+  middleware: DASHBOARD_READ,
   tags: ["Dashboards", "Drafts"],
   summary: "Check whether the caller has an active draft for this dashboard",
   description:
-    "Non-forking presence check. Returns 200 with `{ hasDraft: true, publishedBaselineAt, dashboardUpdatedAt }` when the caller's draft exists, or 200 with `{ hasDraft: false }` when not. The client uses `publishedBaselineAt !== dashboardUpdatedAt` to surface the stale-baseline banner.",
+    "Non-forking presence check. Returns 200 with `{ hasDraft: true, publishedBaselineAt, dashboardUpdatedAt }` when the caller's draft exists, or 200 with `{ hasDraft: false }` when not. The client uses `publishedBaselineAt !== dashboardUpdatedAt` to surface the stale-baseline banner. Requires the `dashboards:read` permission.",
   request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
   responses: {
     200: { description: "Draft presence + baseline timestamps", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -496,10 +562,11 @@ const getDraftStatusRoute = createRoute({
 const publishDraftRoute = createRoute({
   method: "post",
   path: "/{id}/draft/publish",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards", "Drafts"],
   summary: "Publish the caller's draft to the live dashboard",
   description:
-    "Diff-merges the caller's draft into the live dashboard in a single transaction. Returns 409 when a teammate has published since the draft was forked (with `reason: \"stale_baseline\"`) or when both sides edited the same card (with `reason: \"conflict\"`).",
+    "Diff-merges the caller's draft into the live dashboard in a single transaction. Returns 409 when a teammate has published since the draft was forked (with `reason: \"stale_baseline\"`) or when both sides edited the same card (with `reason: \"conflict\"`). Requires the `dashboards:write` permission.",
   request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
   responses: {
     200: { description: "Published — number of merge ops applied", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -515,9 +582,10 @@ const publishDraftRoute = createRoute({
 const discardDraftRoute = createRoute({
   method: "post",
   path: "/{id}/draft/discard",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards", "Drafts"],
   summary: "Discard the caller's draft",
-  description: "Idempotently drops the caller's draft for this dashboard. No-op if no draft exists.",
+  description: "Idempotently drops the caller's draft for this dashboard. No-op if no draft exists. Requires the `dashboards:write` permission.",
   request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
   responses: {
     204: { description: "Draft discarded (or already absent)" },
@@ -531,10 +599,11 @@ const discardDraftRoute = createRoute({
 const rebaseDraftRoute = createRoute({
   method: "post",
   path: "/{id}/draft/rebase",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards", "Drafts"],
   summary: "Rebase the caller's draft onto the latest published baseline",
   description:
-    "Fast-forwards the draft onto the latest published row when there are no conflicts; returns 409 with the conflict set when both sides edited the same card.",
+    "Fast-forwards the draft onto the latest published row when there are no conflicts; returns 409 with the conflict set when both sides edited the same card. Requires the `dashboards:write` permission.",
   request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
   responses: {
     200: { description: "Rebased draft", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -593,10 +662,11 @@ export type _DraftUndoCardCoversSnapshot = _Expect<
 const undoDraftRoute = createRoute({
   method: "post",
   path: "/{id}/draft/undo",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards", "Drafts"],
   summary: "Undo a bound-editor destructive edit in the caller's draft",
   description:
-    "Applies the inverse of a bound-editor destructive edit to the caller's draft: `restore_card` re-adds a removed card (verbatim, same id), `revert_sql` restores a card's prior SQL. An ordinary draft edit — nothing touches the published board until publish. Idempotent: restoring a card that already exists in the draft is a no-op.",
+    "Applies the inverse of a bound-editor destructive edit to the caller's draft: `restore_card` re-adds a removed card (verbatim, same id), `revert_sql` restores a card's prior SQL. An ordinary draft edit — nothing touches the published board until publish. Idempotent: restoring a card that already exists in the draft is a no-op. Requires the `dashboards:write` permission.",
   request: {
     params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }),
     body: { content: { "application/json": { schema: DraftUndoBodySchema } }, required: true },
@@ -615,9 +685,10 @@ const undoDraftRoute = createRoute({
 const updateDashboardRoute = createRoute({
   method: "patch",
   path: "/{id}",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards"],
   summary: "Update a dashboard",
-  description: "Updates dashboard title, description, or refresh schedule. Requires admin role.",
+  description: "Updates dashboard title, description, or refresh schedule. Requires the `dashboards:write` permission.",
   request: {
     params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }),
     body: { content: { "application/json": { schema: UpdateDashboardSchema } }, required: true },
@@ -638,9 +709,10 @@ const updateDashboardRoute = createRoute({
 const deleteDashboardRoute = createRoute({
   method: "delete",
   path: "/{id}",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards"],
   summary: "Delete a dashboard",
-  description: "Soft-deletes a dashboard and its cards. Requires admin role.",
+  description: "Soft-deletes a dashboard and its cards. Requires the `dashboards:write` permission.",
   request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
   responses: {
     204: { description: "Dashboard deleted" },
@@ -655,9 +727,10 @@ const deleteDashboardRoute = createRoute({
 const addCardRoute = createRoute({
   method: "post",
   path: "/{id}/cards",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards"],
   summary: "Add a card to a dashboard",
-  description: "Adds a query result card with optional cached data. Requires admin role.",
+  description: "Adds a query result card with optional cached data. Requires the `dashboards:write` permission.",
   request: {
     params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }),
     body: { content: { "application/json": { schema: AddCardSchema } }, required: true },
@@ -677,9 +750,10 @@ const addCardRoute = createRoute({
 const updateCardRoute = createRoute({
   method: "patch",
   path: "/{id}/cards/{cardId}",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards"],
   summary: "Update a card",
-  description: "Updates card title, chart config, or position. Requires admin role.",
+  description: "Updates card title, chart config, or position. Requires the `dashboards:write` permission.",
   request: {
     params: z.object({
       id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
@@ -703,9 +777,10 @@ const updateCardRoute = createRoute({
 const removeCardRoute = createRoute({
   method: "delete",
   path: "/{id}/cards/{cardId}",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards"],
   summary: "Remove a card",
-  description: "Removes a card from a dashboard. Requires admin role.",
+  description: "Removes a card from a dashboard. Requires the `dashboards:write` permission.",
   request: {
     params: z.object({
       id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
@@ -731,10 +806,11 @@ const PreviewCardSchema = z.object({
 const previewCardRoute = createRoute({
   method: "post",
   path: "/preview-card",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards"],
   summary: "Preview a card query without saving",
   description:
-    "Validates and executes SQL against the analytics datasource through the full Atlas pipeline (validation, approval, RLS, auto-LIMIT, audit, masking). Used by the chat-side dashboard canvas to render live previews of cards the agent has proposed but the user has not yet saved. Requires admin role.",
+    "Validates and executes SQL against the analytics datasource through the full Atlas pipeline (validation, approval, RLS, auto-LIMIT, audit, masking). Used by the chat-side dashboard canvas to render live previews of cards the agent has proposed but the user has not yet saved. Requires the `dashboards:write` permission.",
   request: { body: { content: { "application/json": { schema: PreviewCardSchema } }, required: true } },
   responses: {
     200: { description: "Query results", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -752,9 +828,10 @@ const previewCardRoute = createRoute({
 const refreshCardRoute = createRoute({
   method: "post",
   path: "/{id}/cards/{cardId}/refresh",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards"],
   summary: "Refresh a card",
-  description: "Re-executes the card's SQL through the full Atlas pipeline and updates cached results. Requires admin role.",
+  description: "Re-executes the card's SQL through the full Atlas pipeline and updates cached results. Requires the `dashboards:write` permission.",
   request: {
     params: z.object({
       id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
@@ -779,10 +856,11 @@ const refreshCardRoute = createRoute({
 const renderCardRoute = createRoute({
   method: "post",
   path: "/{id}/cards/{cardId}/render",
+  middleware: DASHBOARD_READ,
   tags: ["Dashboards"],
   summary: "Render a card with parameters",
   description:
-    "Executes the card's SQL through the full Atlas pipeline with the supplied dashboard parameter values bound server-side (#2267). Values reach SQL only via parameterized queries — never string-interpolated. Omitted parameters fall back to their server-resolved defaults. The result is NOT persisted to the card cache; it's an ephemeral, per-viewer render for the parameter bar. With `?format=csv` (#3210) the SAME parameter-bound result is streamed as a `text/csv` attachment (auto-LIMIT still applies; truncation is surfaced via the `X-Atlas-Truncated` header). Requires admin role.",
+    "Executes the card's SQL through the full Atlas pipeline with the supplied dashboard parameter values bound server-side (#2267). Values reach SQL only via parameterized queries — never string-interpolated. Omitted parameters fall back to their server-resolved defaults. The result is NOT persisted to the card cache; it's an ephemeral, per-viewer render for the parameter bar. With `?format=csv` (#3210) the SAME parameter-bound result is streamed as a `text/csv` attachment (auto-LIMIT still applies; truncation is surfaced via the `X-Atlas-Truncated` header). Requires the `dashboards:read` permission.",
   request: {
     params: z.object({
       id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
@@ -816,10 +894,11 @@ const renderCardRoute = createRoute({
 const refreshAllCardsRoute = createRoute({
   method: "post",
   path: "/{id}/refresh",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards"],
   summary: "Refresh all cards",
   description:
-    "Re-executes SQL for all cards in a dashboard. Requires admin role. " +
+    "Re-executes SQL for all cards in a dashboard. Requires the `dashboards:write` permission. " +
     "Pass `?view=draft` (#4559) to run the caller's DRAFT cards' SQL and persist each result to the caller's private draft cache — the published cards' cached data is left untouched. Omitted/`published` runs the published definitions and writes the shared published cache as before; a caller with no draft always falls back to published.",
   request: {
     params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }),
@@ -840,10 +919,11 @@ const refreshAllCardsRoute = createRoute({
 const shareDashboardRoute = createRoute({
   method: "post",
   path: "/{id}/share",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards"],
   summary: "Share a dashboard",
   description:
-    "Generates (or updates) a share token for public or org-scoped access. Requires admin role. " +
+    "Generates (or updates) a share token for public or org-scoped access. Requires the `dashboards:write` permission. " +
     "Optional JSON body: `{ expiresIn?: '1h'|'24h'|'7d'|'30d'|'never'|null, shareMode?: 'public'|'org', rotate?: boolean }`. " +
     "An absent/empty body uses safe defaults (public, no rotation); a present-but-invalid body returns 400 and never downgrades the share to public (#4317). " +
     "`rotate` is opt-in: without it, editing expiry/visibility PRESERVES the existing token so prior links keep working; with it, a new token is minted and prior links die.",
@@ -867,9 +947,10 @@ const shareDashboardRoute = createRoute({
 const unshareDashboardRoute = createRoute({
   method: "delete",
   path: "/{id}/share",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards"],
   summary: "Revoke dashboard share",
-  description: "Revokes the share token. Requires admin role.",
+  description: "Revokes the share token. Requires the `dashboards:write` permission.",
   request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
   responses: {
     204: { description: "Share revoked" },
@@ -884,9 +965,10 @@ const unshareDashboardRoute = createRoute({
 const getShareStatusRoute = createRoute({
   method: "get",
   path: "/{id}/share",
+  middleware: DASHBOARD_READ,
   tags: ["Dashboards"],
   summary: "Get share status",
-  description: "Returns the current share status of a dashboard. Requires admin role.",
+  description: "Returns the current share status of a dashboard. Requires the `dashboards:read` permission.",
   request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
   responses: {
     200: { description: "Share status", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -901,9 +983,10 @@ const getShareStatusRoute = createRoute({
 const suggestCardsRoute = createRoute({
   method: "post",
   path: "/{id}/suggest",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards"],
   summary: "Suggest new cards via AI",
-  description: "Analyzes existing dashboard cards and proposes 2-3 complementary cards using the AI model and semantic layer. Requires admin role.",
+  description: "Analyzes existing dashboard cards and proposes 2-3 complementary cards using the AI model and semantic layer. Requires the `dashboards:write` permission.",
   request: {
     params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }),
   },
@@ -920,10 +1003,11 @@ const suggestCardsRoute = createRoute({
 const listDashboardSessionsRoute = createRoute({
   method: "get",
   path: "/{id}/sessions",
+  middleware: DASHBOARD_READ,
   tags: ["Dashboards"],
   summary: "List archived bound chat sessions for a dashboard",
   description:
-    "Returns past chat sessions bound to this dashboard (one row per drawer-open). Workspace-wide visibility: any user who can view the dashboard sees every session. Used by the bound chat drawer's History tab (#2368).",
+    "Returns past chat sessions bound to this dashboard (one row per drawer-open). Workspace-wide visibility: any user who can view the dashboard sees every session. Used by the bound chat drawer's History tab (#2368). Requires the `dashboards:read` permission.",
   request: {
     params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }),
   },
@@ -940,10 +1024,11 @@ const listDashboardSessionsRoute = createRoute({
 const getDashboardSessionRoute = createRoute({
   method: "get",
   path: "/{id}/sessions/{sessionId}",
+  middleware: DASHBOARD_READ,
   tags: ["Dashboards"],
   summary: "Read a bound chat session transcript",
   description:
-    "Returns the read-only transcript (messages) for one bound session. Workspace-wide visibility: gated by dashboard ACL + binding match, not per-user ownership. Used by the bound chat drawer's History tab transcript panel (#2368).",
+    "Returns the read-only transcript (messages) for one bound session. Workspace-wide visibility: gated by dashboard ACL + binding match, not per-user ownership. Used by the bound chat drawer's History tab transcript panel (#2368). Requires the `dashboards:read` permission.",
   request: {
     params: z.object({
       id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
@@ -963,10 +1048,11 @@ const getDashboardSessionRoute = createRoute({
 const screenshotDashboardRoute = createRoute({
   method: "get",
   path: "/{id}/screenshot",
+  middleware: DASHBOARD_READ,
   tags: ["Dashboards"],
   summary: "Render a PNG screenshot of the dashboard",
   description:
-    "Renders the dashboard in a headless Chromium and returns the captured PNG. Scoped to the calling user — when #2364 (drafts foundation) lands, draft views are returned per-user, otherwise the published baseline is captured. Output is cached by (dashboardId, userId, snapshotHash) and invalidated on every mutation. Used internally by the bound agent's `screenshotDashboard` tool (#2367); also exposable to UI for in-conversation previews.",
+    "Renders the dashboard in a headless Chromium and returns the captured PNG. Scoped to the calling user — when #2364 (drafts foundation) lands, draft views are returned per-user, otherwise the published baseline is captured. Output is cached by (dashboardId, userId, snapshotHash) and invalidated on every mutation. Used internally by the bound agent's `screenshotDashboard` tool (#2367); also exposable to UI for in-conversation previews. Requires the `dashboards:read` permission.",
   request: {
     params: z.object({
       id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
@@ -986,10 +1072,11 @@ const screenshotDashboardRoute = createRoute({
 const exportDashboardRoute = createRoute({
   method: "post",
   path: "/{id}/export",
+  middleware: DASHBOARD_READ,
   tags: ["Dashboards"],
   summary: "Export the whole dashboard as PNG or PDF",
   description:
-    "Renders the full dashboard at the caller's current parameter values in a headless Chromium and returns the artifact as a downloadable attachment (filename = dashboard title + UTC timestamp). Reuses the screenshot pipeline (#2367) rather than a second headless path. A single tile that fails to render does NOT abort the export — the response carries `X-Atlas-Export-Partial: 1` and the partial board is still returned. `format` defaults to `pdf`. Requires admin role.",
+    "Renders the full dashboard at the caller's current parameter values in a headless Chromium and returns the artifact as a downloadable attachment (filename = dashboard title + UTC timestamp). Reuses the screenshot pipeline (#2367) rather than a second headless path. A single tile that fails to render does NOT abort the export — the response carries `X-Atlas-Export-Partial: 1` and the partial board is still returned. `format` defaults to `pdf`. Requires the `dashboards:read` permission.",
   request: {
     params: z.object({
       id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
@@ -1037,7 +1124,7 @@ const getSharedDashboardRoute = createRoute({
 // Router setup
 // ---------------------------------------------------------------------------
 
-const authed = createAdminRouter();
+const authed = createWorkspaceRouter();
 authed.use(requireOrgContext());
 
 // ---------------------------------------------------------------------------

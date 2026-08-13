@@ -14,6 +14,33 @@
  * non-enrollment redirect would mislead readers and shadow the existing
  * one when both codes coexist on the wire.
  */
+/**
+ * A same-origin path, or `null` if the input is anything else.
+ *
+ * ⚠️ **Parsed, not prefix-matched, and the difference is exploitable.** The
+ * obvious `startsWith("/") && !startsWith("//")` check was measured wrong:
+ * WHATWG URL parsing normalizes `\` to `/` for special schemes and strips
+ * TAB/LF/CR *before* authority detection, so `/\evil.example.com`,
+ * `/\/evil.com` and `/<TAB>/evil.com` all pass it and all navigate off-site.
+ * Resolving against a known base and comparing origins has no such arms to
+ * enumerate — it answers the question directly.
+ */
+export function sameOriginPath(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const base = "https://atlas.invalid";
+  try {
+    const u = new URL(raw, base);
+    return u.origin === base ? `${u.pathname}${u.search}${u.hash}` : null;
+  } catch (err) {
+    // A URL the parser rejects outright is not a destination either.
+    console.warn(
+      "[fetch-error] unparseable redirect target:",
+      err instanceof Error ? err.message : String(err),
+    );
+    return null;
+  }
+}
+
 export interface FetchError {
   message: string;
   status?: number;
@@ -176,7 +203,23 @@ export async function extractFetchError(res: Response): Promise<FetchError> {
       if (typeof obj.requestId === "string") requestId = obj.requestId;
       if (typeof obj.error === "string") code = obj.error;
       if (typeof obj.enrollmentUrl === "string" && obj.enrollmentUrl.length > 0) {
-        enrollmentUrl = obj.enrollmentUrl;
+        // Sanitize HERE, at the one place the value enters `FetchError`, so the
+        // consumers that read it off a `FetchError` inherit the guard:
+        // `use-admin-fetch` / `use-admin-mutation` (which hand it to
+        // `mfa-enrollment-dialog`'s `router.push`) and the dashboards index's
+        // `router.replace`. #5189 round 1 guarded only the last of those.
+        //
+        // ⚠️ `admin-layout`'s `<Link href>` and its `trigger()` do NOT come
+        // through here — they read `enrollmentUrl` from `usePasswordStatus`,
+        // which parses the body itself. That hook applies `sameOriginPath`
+        // directly for the same reason.
+        enrollmentUrl = sameOriginPath(obj.enrollmentUrl) ?? undefined;
+        if (enrollmentUrl === undefined) {
+          console.warn(
+            "[fetch-error] rejected an off-origin enrollmentUrl:",
+            obj.enrollmentUrl,
+          );
+        }
       }
       // 409 `entity_ambiguous` payload (#2412). The picker UI keys on
       // `groups`; preserve null entries (legacy / `__global__`) so the

@@ -207,10 +207,14 @@ const ROUTES: ReadonlyArray<{
   { method: "POST", path: `/${VALID_ID}/draft/publish`, permission: "dashboards:write", body: {} },
   { method: "POST", path: `/${VALID_ID}/draft/discard`, permission: "dashboards:write", body: {} },
   { method: "POST", path: `/${VALID_ID}/draft/rebase`, permission: "dashboards:write", body: {} },
-  { method: "POST", path: `/${VALID_ID}/draft/undo`, permission: "dashboards:write", body: {} },
+  // Same: `DraftUndoBodySchema` is a discriminated union on `kind`, so `{}` 422s.
+  { method: "POST", path: `/${VALID_ID}/draft/undo`, permission: "dashboards:write", body: { kind: "revert_sql", cardId: "c", sql: "SELECT 1" } },
   { method: "PATCH", path: `/${VALID_ID}`, permission: "dashboards:write", body: { title: "T2" } },
   { method: "DELETE", path: `/${VALID_ID}`, permission: "dashboards:write" },
-  { method: "POST", path: `/${VALID_ID}/cards`, permission: "dashboards:write", body: {} },
+  // A body the schema ACCEPTS. `{}` 422s at `AddCardSchema`, so the handler
+  // never ran and the exact-set assertion could not see an in-handler gate —
+  // the same class as the ULID ids, one field over.
+  { method: "POST", path: `/${VALID_ID}/cards`, permission: "dashboards:write", body: { title: "T", sql: "SELECT 1" } },
   { method: "PATCH", path: `/${VALID_ID}/cards/${VALID_CARD_ID}`, permission: "dashboards:write", body: {} },
   { method: "DELETE", path: `/${VALID_ID}/cards/${VALID_CARD_ID}`, permission: "dashboards:write" },
   {
@@ -373,6 +377,55 @@ describe("#5189 — no dashboards route may exist without a permission decision"
     expect(wrong).toEqual([]);
   });
 
+  /**
+   * #5191 round 2 — the write lock's causes must be PUBLISHED on every route
+   * that can emit them, and on no route that cannot.
+   *
+   * ⚠️ This is a mechanical check because the class bit twice. Round 1 declared
+   * the two statuses by spreading a shared object into each `responses` — and
+   * object spread never warns on a key collision, so on TEN routes a route's
+   * own 409/503 silently overwrote the lock's. The published contract then told
+   * a client that a 409 during a region migration meant "a teammate published
+   * first" (remedy: rebase and retry, which cannot succeed) or that a 503 meant
+   * "internal database not configured" — a specific, WRONG answer, which is
+   * worse than the generic one the spread was added to prevent.
+   *
+   * Asserted against the emitted document, keyed on the same ROUTES table that
+   * drives the enforcement tests, so neither direction can drift: a write route
+   * that loses the cause reddens, and a READ route that gains one reddens too
+   * (the lock keys on the HTTP method, so a 409 on a read is a contract for
+   * something that cannot happen).
+   */
+  it("publishes the migration-lock causes on exactly the routes that can emit them", () => {
+    const doc = app.getOpenAPI31Document({
+      openapi: "3.1.0",
+      info: { title: "t", version: "0" },
+    }) as { paths?: Record<string, Record<string, { responses?: Record<string, { description?: string }> }>> };
+
+    const wrong: string[] = [];
+    for (const r of ROUTES) {
+      const path = `${MOUNT}${r.path === "/" ? "" : r.path}`
+        .replace(VALID_ID, "{id}")
+        .replace(VALID_CARD_ID, "{cardId}")
+        .replace(VALID_SESSION_ID, "{sessionId}");
+      const op = doc.paths?.[path]?.[r.method.toLowerCase()];
+      // `migrationWriteLock` fires on WRITE METHODS only, and rides on the
+      // write gate — so `GET /{id}/draft` is write-classified and still cannot
+      // emit either status.
+      const lockable = r.permission === "dashboards:write" && r.method !== "GET";
+      for (const [status, code] of [["409", "workspace_migrating"], ["503", "migration_check_failed"]] as const) {
+        const desc = op?.responses?.[status]?.description ?? "";
+        const declared = desc.includes(code);
+        if (declared !== lockable) {
+          wrong.push(
+            `${r.method} ${path} ${status}: ${declared ? "declares" : "omits"} ${code}, expected ${lockable ? "declared" : "omitted"} — got ${JSON.stringify(desc)}`,
+          );
+        }
+      }
+    }
+    expect(wrong).toEqual([]);
+  });
+
   it("leaves the public share route outside the gated mount", () => {
     // `/{token}` lives on `publicDashboards` at `/api/public/dashboards` and
     // must never acquire a workspace permission gate — the whole point of a
@@ -402,6 +455,17 @@ describe("#5189 — each route enforces its OWN flag", () => {
       // reversal would mean the handler had started authorizing before the
       // route gate, which is a real defect wearing the right set of flags.
       expect([...new Set(seen)]).toEqual(declared);
+      // ⚠️ …AND the fixture actually reached the handler. This is the class
+      // behind two separate round findings: a ULID id, then a body the schema
+      // rejects. Either way the request dies at validation, the handler never
+      // runs, and an in-handler gate is invisible while the test reports
+      // coverage. Asserting the fixture is VALID is the check that generalises
+      // — a future body that stops parsing fails loudly instead of quietly.
+      const res = await app.fetch(req(r.path, r.method, r.body));
+      expect(
+        [400, 422].includes(res.status),
+        `${r.method} ${r.path}: fixture rejected at validation (${res.status}) — the handler never ran, so this assertion measures nothing`,
+      ).toBe(false);
     });
   }
 

@@ -290,8 +290,16 @@ export type WorkspaceGate = MiddlewareHandler<OrgContextEnv> & {
  * convert here, and every other middleware in the tree is rejected at all 26
  * call sites.
  *
- * Do NOT export this. The value of the brand is exactly that it cannot be
- * minted outside this module.
+ * Do NOT export this. ⚠️ The brand cannot be minted ACCIDENTALLY outside this
+ * module — it is not unforgeable, and an earlier draft of this line said it
+ * was. Measured: `requireOrgContext() as WorkspaceGate` compiles in one token,
+ * with no `unknown` hop, because `WorkspaceGate` is a subtype of
+ * `MiddlewareHandler<OrgContextEnv>` and a downcast `as` is always permitted.
+ *
+ * What the brand does buy is verified: `middleware: [requireOrgContext()]`
+ * WITHOUT a cast is now rejected (TS2322), and that bare form is the mistake
+ * that was actually made. It stops the accident, not an author who decides to
+ * cast.
  */
 function asWorkspaceGate(
   m: MiddlewareHandler<AuthEnv> | MiddlewareHandler<WorkspaceGateEnv>,
@@ -320,9 +328,13 @@ function asWorkspaceGate(
  *
  * Two constraints found while probing, both load-bearing:
  *
- *   • `middleware` must be a MUTABLE array type. `readonly WorkspaceGate[]` is
- *     not assignable to hono's `H[]`, so `DASHBOARD_READ`/`DASHBOARD_WRITE`
- *     cannot become `as const`.
+ *   • `middleware` must be a MUTABLE array type, so `DASHBOARD_READ` /
+ *     `DASHBOARD_WRITE` cannot become `as const`. ⚠️ The rejecting party is
+ *     THIS function's own `middleware: WorkspaceGate[]` constraint (TS4104,
+ *     *"is 'readonly' and cannot be assigned to the mutable type"*), not
+ *     hono's `H[]` further down — an earlier draft named hono, which would
+ *     mislead anyone relaxing the local constraint and expecting the framework
+ *     to still refuse.
  *   • This proves a REAL gate is present — see `WorkspaceGate`'s brand — never
  *     that it is the RIGHT one. Read-vs-write correctness stays with the
  *     runtime route table, which is the right division of labour: the compiler

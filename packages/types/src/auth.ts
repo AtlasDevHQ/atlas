@@ -74,7 +74,9 @@ export type AdminRole = (typeof ADMIN_ROLES)[number];
  *   • `PERMISSION_LABELS` / `PERMISSION_GROUPS` in the roles editor were
  *     `Record<string, …>`, so a flag with no label rendered as a raw id in a
  *     badge instead of failing the build.
- *   • Six API test mocks hand-enumerated it and every one was stale.
+ *   • SEVEN API test mocks hand-enumerated it and every one was stale (the
+ *     issue said six; `admin-residency.test.ts` is the seventh — counted with
+ *     `git grep -l 'PERMISSIONS: \[' origin/main`).
  *
  * The web resolves this package as `workspace:*`, so no npm publish is needed
  * for a consumer to see a new flag — publishing happens on `/publish`'s own

@@ -72,7 +72,7 @@ export function sameOriginPath(raw: string | undefined): string | null {
  * origin, percent-encoding adjustments) is not ours to apply to someone else's
  * endpoint.
  */
-export function externalRedirectUrl(raw: unknown, field = "external redirect URL"): string | null {
+export function externalRedirectUrl(raw: unknown, field = "ssoRedirectUrl"): string | null {
   if (typeof raw !== "string" || raw.length === 0) return null;
   try {
     const u = new URL(raw);
@@ -80,11 +80,16 @@ export function externalRedirectUrl(raw: unknown, field = "external redirect URL
     return raw;
   } catch (err) {
     // Same shape as its sibling above: tagged with THIS module, carrying the
-    // rejected value AND the parser's reason, and naming the field so the two
-    // call sites are distinguishable from a log line. The pre-extraction
-    // version said "Malformed ssoRedirectUrl"; going generic on the move would
-    // have made the shared helper a worse debugging handle than the copy it
-    // replaced.
+    // rejected value AND the parser's reason, and naming the field.
+    //
+    // ⚠️ The default is the real field name, not a generic phrase. Round 1
+    // added `field` with a comment claiming it kept the two call sites
+    // distinguishable — and then NEITHER call site passed it, so every log line
+    // read "external redirect URL", strictly less specific than the
+    // "Malformed ssoRedirectUrl" the comment said must not regress. A parameter
+    // nobody passes is documentation of an intention, not an implementation of
+    // one; defaulting it to the only field that reaches here today makes the
+    // common case right and leaves the argument available for the second one.
     console.warn(
       `[redirect-target] malformed ${field} from server:`,
       raw,

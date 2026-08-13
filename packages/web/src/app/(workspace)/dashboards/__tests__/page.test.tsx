@@ -309,6 +309,9 @@ describe("DashboardsPage (redirect index)", () => {
         name: "Sign in with your identity provider",
       });
       expect(link.getAttribute("href")).toBe("https://idp.example.com/sso/saml");
+      // Without it the full workspace URL travels to a third-party IdP as
+      // `Referer`. The code carries a comment saying so; nothing asserted it.
+      expect(link.getAttribute("rel")).toBe("noreferrer");
       // The server's own sentence still renders — the link is an addition, not
       // a replacement for the explanation. Matched on the whole sentence, not
       // on `/identity provider/`: that substring is also in the link's own

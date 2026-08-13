@@ -8,7 +8,7 @@
  */
 
 import { createConnectionMock } from "@atlas/api/testing/connection";
-import { PERMISSIONS as REAL_PERMISSIONS } from "@useatlas/types/auth";
+import { PERMISSIONS as REAL_PERMISSIONS, isValidPermission as realIsValidPermission } from "@useatlas/types/auth";
 import {
   makeQueryEffectMock,
   MockInternalDB,
@@ -194,7 +194,12 @@ void mock.module("@atlas/ee/auth/roles", () => ({
   // fixture that disagrees with production is worse than no fixture: it
   // asserts a permission model nobody ships.
   PERMISSIONS: [...REAL_PERMISSIONS],
-  isValidPermission: () => true,
+  // The REAL predicate — the twin of the tuple above, in the same object
+  // literal. Round 1 fixed it in the shared factory and left it here in all
+  // six per-file copies: a validator that CANNOT FAIL, three lines from the
+  // fixture whose whole point was that a fixture disagreeing with production
+  // is worse than none.
+  isValidPermission: realIsValidPermission,
   isValidRoleName: () => true,
   BUILTIN_ROLES: [],
   resolvePermissions: () => F53Effect.succeed(new Set()),

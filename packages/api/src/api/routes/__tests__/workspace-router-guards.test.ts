@@ -25,7 +25,7 @@
  * because of ordering would still be present in the source.
  */
 
-import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
 import { Effect } from "effect";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 
@@ -42,18 +42,29 @@ const mocks = createApiTestMocks({
 // Drives the migration write-lock. `false` by default so the bucket assertions
 // below are not silently answering a 409 instead of reaching the handler.
 const mockIsWorkspaceMigrating = mock(async () => false);
+const realReadonly = await import("@atlas/api/lib/residency/readonly");
 void mock.module("@atlas/api/lib/residency/readonly", () => ({
+  // Spread the real module: correct today (it has one export), but a partial
+  // factory breaks at LOAD time the moment a second export lands, which is the
+  // trap this repo has already been bitten by.
+  ...realReadonly,
   isWorkspaceMigrating: mockIsWorkspaceMigrating,
 }));
 
-// Allow every permission — this file is about the guards in FRONT of the
-// permission gate, and a 403 would mask both properties under test.
+// Allows every permission by DEFAULT — this file is mostly about the guards in
+// FRONT of the permission gate, and a 403 would mask those properties. Drivable
+// so the gate-ORDER test below can deny one.
+type CheckPermissionResult = { body: Record<string, unknown>; status: 403 | 503 } | null;
+const mockCheckPermission: Mock<
+  (user: unknown, permission: string, requestId: string) => Effect.Effect<CheckPermissionResult>
+> = mock(() => Effect.succeed(null as CheckPermissionResult));
+
 void mock.module("@atlas/api/lib/effect/enterprise-layer", () => {
   const { makeTestEnterpriseLayer } =
     // oxlint-disable-next-line @typescript-eslint/no-require-imports -- `mock.module()` factory must be synchronous (feedback_bun_test_async_mock_module)
     require("@atlas/api/__test-utils__/makeTestEnterpriseLayer") as typeof import("@atlas/api/__test-utils__/makeTestEnterpriseLayer");
   return makeTestEnterpriseLayer({
-    RolesPolicy: { checkPermission: (() => Effect.succeed(null)) as never },
+    RolesPolicy: { checkPermission: mockCheckPermission as never },
   });
 });
 
@@ -91,6 +102,8 @@ beforeEach(() => {
   mocks.mockCheckRateLimit.mockImplementation(() => ({ allowed: true }));
   mockIsWorkspaceMigrating.mockReset();
   mockIsWorkspaceMigrating.mockImplementation(async () => false);
+  mockCheckPermission.mockReset();
+  mockCheckPermission.mockImplementation(() => Effect.succeed(null as CheckPermissionResult));
 });
 
 // ── The rate-limit bucket ────────────────────────────────────────────
@@ -211,6 +224,68 @@ describe("#5191 — writes are locked while the workspace is migrating", () => {
     const res = await app.fetch(req("/", "POST", { title: "T" }));
     expect(res.status).toBe(201);
   });
+
+  it("answers 403, not 409, when the caller lacks the flag AND a migration is active", async () => {
+    // `workspaceWriteGate` returns [permission gate, migrationWriteLock] and its
+    // docstring calls the order load-bearing. Nothing asserted it: the only
+    // check was `toHaveLength(2)`, which is order-blind, and neither behavioural
+    // suite could see it (this one always allows the permission; the permission
+    // suite never has a migration in flight).
+    //
+    // Swapped, an UNAUTHORIZED caller would be told the workspace is migrating —
+    // the wrong remedy, and a small leak of migration state to someone with no
+    // permission on this workspace at all.
+    mockCheckPermission.mockImplementation((_u, permission, requestId) =>
+      Effect.succeed(
+        permission === "dashboards:write"
+          ? {
+              body: {
+                error: "insufficient_permissions",
+                message: 'This action requires the "dashboards:write" permission.',
+                requestId,
+              },
+              status: 403 as const,
+            }
+          : null,
+      ),
+    );
+    mockIsWorkspaceMigrating.mockImplementation(async () => true);
+
+    const res = await app.fetch(req("/", "POST", { title: "T" }));
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error: string }).error).toBe("insufficient_permissions");
+    // The lock was never reached, which is the ordering property itself.
+    expect(mockIsWorkspaceMigrating).not.toHaveBeenCalled();
+  });
+
+  for (const [label, message] of [
+    ["a missing COLUMN (a partially-applied migration set)", 'column "workspace_id" does not exist'],
+    ["a type-mismatch query bug", "operator does not exist: uuid = text"],
+    ["a wrong search_path", 'schema "atlas" does not exist'],
+    ["a mispointed DATABASE_URL", 'database "atlas_wrong" does not exist'],
+    ["rotated internal-DB credentials", 'role "atlas" does not exist'],
+  ] as const) {
+    it(`still fails CLOSED on ${label}`, async () => {
+      // ⚠️ THE NEGATIVE CONTROLS, and the reason the narrowing is keyed on the
+      // RELATION rather than on a bare `does not exist`.
+      //
+      // Every message here contains that substring. Under the broad match all
+      // five answered "no migration in flight" — during an ACTIVE migration
+      // that allows the write, which lands in the source region and is silently
+      // lost. That is precisely the failure the lock exists to prevent, so the
+      // round-1 fix had inverted the failure mode for this whole class.
+      //
+      // Measured: with the broad predicate restored, the table-absent test
+      // above still passes — both predicates accept it — so the positive case
+      // alone certifies nothing. These are what can fail.
+      mockIsWorkspaceMigrating.mockImplementation(async () => {
+        throw new Error(message);
+      });
+      const res = await app.fetch(req("/", "POST", { title: "T" }));
+      expect(res.status).toBe(503);
+      expect(((await res.json()) as { error: string }).error).toBe("migration_check_failed");
+    });
+  }
 
   it("fails CLOSED with 503 when migration status cannot be read", async () => {
     // "We could not check" must never be reported as "not migrating" — that is

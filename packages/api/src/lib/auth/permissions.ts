@@ -37,11 +37,12 @@ const log = createLogger("auth:permissions");
  * `@useatlas/types/auth` in #5191, alongside `ATLAS_ROLES` — the web package
  * speaks HTTP and cannot import from `@atlas/api`, so a shared tuple has to
  * live in a published package or be hand-copied, and it was being hand-copied
- * in seven places.
+ * in EIGHT places — the seven API test mocks plus the web's own
+ * `permission-grouping.test.ts`, which had a comment admitting it.
  *
  * Re-exported here rather than moving every call site, exactly as
  * `lib/auth/types.ts` already does for the role tuples: `@atlas/api/lib/auth/
- * permissions` is the import path ~40 modules and `@atlas/ee` use, and
+ * permissions` is the import path 20 modules and `@atlas/ee` use directly, and
  * churning them would bury the actual change. New code may import from either.
  */
 export {

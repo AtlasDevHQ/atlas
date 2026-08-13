@@ -4971,7 +4971,7 @@
             }
           },
           "409": {
-            "description": "Workspace is being migrated to another region — write operations are temporarily disabled (`workspace_migrating`)",
+            "description": "Write refused: the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
             "content": {
               "application/json": {
                 "schema": {
@@ -5050,7 +5050,7 @@
             }
           },
           "503": {
-            "description": "Migration status could not be verified, so the write was refused as a precaution (`migration_check_failed`)",
+            "description": "Write refused: migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -5405,7 +5405,7 @@
             }
           },
           "409": {
-            "description": "Workspace is being migrated to another region — write operations are temporarily disabled (`workspace_migrating`)",
+            "description": "Write refused: the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
             "content": {
               "application/json": {
                 "schema": {
@@ -5484,7 +5484,7 @@
             }
           },
           "503": {
-            "description": "Drafts unavailable — internal database not configured",
+            "description": "Drafts unavailable — internal database not configured, OR migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -5605,7 +5605,7 @@
             }
           },
           "409": {
-            "description": "Workspace is being migrated to another region — write operations are temporarily disabled (`workspace_migrating`)",
+            "description": "Write refused: the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
             "content": {
               "application/json": {
                 "schema": {
@@ -5655,7 +5655,7 @@
             }
           },
           "503": {
-            "description": "Migration status could not be verified, so the write was refused as a precaution (`migration_check_failed`)",
+            "description": "Write refused: migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -5786,58 +5786,8 @@
               }
             }
           },
-          "409": {
-            "description": "Workspace is being migrated to another region — write operations are temporarily disabled (`workspace_migrating`)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          },
           "500": {
             "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Migration status could not be verified, so the write was refused as a precaution (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -6101,7 +6051,7 @@
             }
           },
           "409": {
-            "description": "Stale baseline or merge conflict",
+            "description": "Stale baseline or merge conflict, OR the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
             "content": {
               "application/json": {
                 "schema": {
@@ -6151,7 +6101,7 @@
             }
           },
           "503": {
-            "description": "Migration status could not be verified, so the write was refused as a precaution (`migration_check_failed`)",
+            "description": "Write refused: migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -6250,7 +6200,7 @@
             }
           },
           "409": {
-            "description": "Workspace is being migrated to another region — write operations are temporarily disabled (`workspace_migrating`)",
+            "description": "Write refused: the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
             "content": {
               "application/json": {
                 "schema": {
@@ -6300,7 +6250,7 @@
             }
           },
           "503": {
-            "description": "Migration status could not be verified, so the write was refused as a precaution (`migration_check_failed`)",
+            "description": "Write refused: migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -6432,7 +6382,7 @@
             }
           },
           "409": {
-            "description": "Rebase conflict",
+            "description": "Rebase conflict, OR the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
             "content": {
               "application/json": {
                 "schema": {
@@ -6482,7 +6432,7 @@
             }
           },
           "503": {
-            "description": "Migration status could not be verified, so the write was refused as a precaution (`migration_check_failed`)",
+            "description": "Write refused: migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -6888,7 +6838,7 @@
             }
           },
           "409": {
-            "description": "Workspace is being migrated to another region — write operations are temporarily disabled (`workspace_migrating`)",
+            "description": "Write refused: the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
             "content": {
               "application/json": {
                 "schema": {
@@ -6967,7 +6917,7 @@
             }
           },
           "503": {
-            "description": "Migration status could not be verified, so the write was refused as a precaution (`migration_check_failed`)",
+            "description": "Write refused: migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -7352,7 +7302,7 @@
             }
           },
           "409": {
-            "description": "Workspace is being migrated to another region — write operations are temporarily disabled (`workspace_migrating`)",
+            "description": "Write refused: the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
             "content": {
               "application/json": {
                 "schema": {
@@ -7431,7 +7381,7 @@
             }
           },
           "503": {
-            "description": "Drafts unavailable — internal database not configured",
+            "description": "Drafts unavailable — internal database not configured, OR migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -7793,7 +7743,7 @@
             }
           },
           "409": {
-            "description": "Workspace is being migrated to another region — write operations are temporarily disabled (`workspace_migrating`)",
+            "description": "Write refused: the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
             "content": {
               "application/json": {
                 "schema": {
@@ -7872,7 +7822,7 @@
             }
           },
           "503": {
-            "description": "Drafts unavailable — internal database not configured",
+            "description": "Drafts unavailable — internal database not configured, OR migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -8002,7 +7952,7 @@
             }
           },
           "409": {
-            "description": "Workspace is being migrated to another region — write operations are temporarily disabled (`workspace_migrating`)",
+            "description": "Write refused: the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
             "content": {
               "application/json": {
                 "schema": {
@@ -8052,7 +8002,7 @@
             }
           },
           "503": {
-            "description": "Drafts unavailable — internal database not configured",
+            "description": "Drafts unavailable — internal database not configured, OR migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -8172,7 +8122,7 @@
             }
           },
           "409": {
-            "description": "Approval required before execution",
+            "description": "Approval required before execution, OR the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
             "content": {
               "application/json": {
                 "schema": {
@@ -8276,7 +8226,7 @@
             }
           },
           "503": {
-            "description": "Connection or approval system unavailable",
+            "description": "Connection or approval system unavailable, OR migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -8431,7 +8381,7 @@
             }
           },
           "409": {
-            "description": "Approval required before execution, or the draft was published/discarded mid-refresh (`draft_gone`)",
+            "description": "Approval required before execution, or the draft was published/discarded mid-refresh (`draft_gone`), OR the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
             "content": {
               "application/json": {
                 "schema": {
@@ -8506,7 +8456,7 @@
             }
           },
           "503": {
-            "description": "Connection or approval system unavailable",
+            "description": "Connection or approval system unavailable, OR migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -8922,7 +8872,7 @@
             }
           },
           "409": {
-            "description": "The draft was published or discarded mid-refresh (`draft_gone`)",
+            "description": "The draft was published or discarded mid-refresh (`draft_gone`), OR the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
             "content": {
               "application/json": {
                 "schema": {
@@ -8972,7 +8922,7 @@
             }
           },
           "503": {
-            "description": "Draft cache unavailable — internal database not configured",
+            "description": "Draft cache unavailable — internal database not configured, OR migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -9103,7 +9053,7 @@
             }
           },
           "409": {
-            "description": "Workspace is being migrated to another region — write operations are temporarily disabled (`workspace_migrating`)",
+            "description": "Write refused: the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
             "content": {
               "application/json": {
                 "schema": {
@@ -9153,7 +9103,7 @@
             }
           },
           "503": {
-            "description": "Authorization service unavailable — the permission check could not be completed",
+            "description": "Authorization service unavailable — the permission check could not be completed, OR migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -9260,7 +9210,7 @@
             }
           },
           "409": {
-            "description": "Workspace is being migrated to another region — write operations are temporarily disabled (`workspace_migrating`)",
+            "description": "Write refused: the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
             "content": {
               "application/json": {
                 "schema": {
@@ -9310,7 +9260,7 @@
             }
           },
           "503": {
-            "description": "Migration status could not be verified, so the write was refused as a precaution (`migration_check_failed`)",
+            "description": "Write refused: migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -9570,7 +9520,7 @@
             }
           },
           "409": {
-            "description": "Workspace is being migrated to another region — write operations are temporarily disabled (`workspace_migrating`)",
+            "description": "Write refused: the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
             "content": {
               "application/json": {
                 "schema": {
@@ -9620,7 +9570,7 @@
             }
           },
           "503": {
-            "description": "Migration status could not be verified, so the write was refused as a precaution (`migration_check_failed`)",
+            "description": "Write refused: migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {

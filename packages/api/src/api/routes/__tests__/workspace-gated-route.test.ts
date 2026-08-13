@@ -67,8 +67,12 @@ void createGatedRoute({
 void createGatedRoute({
   method: "get",
   path: "/{id}/not-a-gate",
-  // @ts-expect-error -- not a WorkspaceGate: the brand is unforgeable outside
-  // `workspace-router.ts`.
+  // @ts-expect-error -- not a WorkspaceGate. ⚠️ The brand cannot be minted
+  // ACCIDENTALLY outside `workspace-router.ts`; it is not unforgeable, and an
+  // earlier version of this comment said it was. Measured:
+  // `requireOrgContext() as WorkspaceGate` compiles in one token, no `unknown`
+  // needed. The brand stops the mistake that was actually made, not an author
+  // who decides to cast.
   middleware: [requireOrgContext()],
   request: PARAMS,
   responses: RESPONSES,

@@ -1121,19 +1121,22 @@ describe("checkRateLimit() — workspace bucket (#5191)", () => {
   });
 
   it("treats an explicit 0 or negative as invalid, not as 'disabled'", () => {
+    // Both values, or the title names an arm the body never drives.
     // Surprising and worth pinning: `ATLAS_RATE_LIMIT_RPM_WORKSPACE=0` does NOT
     // disable the bucket — it takes the `n <= 0` arm and falls back to the
     // derived `max(60, RPM)`. The warn text says so ("set ATLAS_RATE_LIMIT_RPM=0
     // to disable rate limiting entirely"), and the admin bucket behaves the same
     // way, but an operator reaching for `…_WORKSPACE=0` will not guess it.
     process.env.ATLAS_RATE_LIMIT_RPM = "30";
-    process.env.ATLAS_RATE_LIMIT_RPM_WORKSPACE = "0";
-    resetRateLimits();
+    for (const value of ["0", "-5"]) {
+      process.env.ATLAS_RATE_LIMIT_RPM_WORKSPACE = value;
+      resetRateLimits();
 
-    for (let i = 0; i < 60; i++) {
-      expect(checkRateLimit("u", { bucket: "workspace" }).allowed).toBe(true);
+      for (let i = 0; i < 60; i++) {
+        expect(checkRateLimit("u", { bucket: "workspace" }).allowed, value).toBe(true);
+      }
+      expect(checkRateLimit("u", { bucket: "workspace" }).allowed, value).toBe(false);
     }
-    expect(checkRateLimit("u", { bucket: "workspace" }).allowed).toBe(false);
   });
 });
 

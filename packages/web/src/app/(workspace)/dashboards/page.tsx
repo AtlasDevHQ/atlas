@@ -158,13 +158,21 @@ export default function DashboardsPage() {
     // cross-origin bounce out of a page the user asked for is not ours to
     // perform. `extractFetchError` has already restricted it to an
     // `http(s)` absolute URL.
-    // ⚠️ Keyed on the CODE, not the bare status — the same argument the
+    // ⚠️ Keyed on the CODE as well as the status — the same argument the
     // `isPermissionDenial` comment above makes at length, which an earlier
     // draft of this line ignored three lines below it. `authErrorCode` rewrites
-    // the SSO-enforcement failure to `auth_error`, so that is the discriminator.
-    // The bare status would offer "sign in with your identity provider" to a
-    // user whose real remedy is a role grant, the moment any other gate starts
-    // attaching the field.
+    // the SSO-enforcement failure to `auth_error`, so that is the discriminator
+    // available today, and it excludes the codes minted directly
+    // (`insufficient_permissions`, `ip_not_allowed`, `forbidden_role`).
+    //
+    // ⚠️ It is NOT a strong discriminator, and an earlier comment overclaimed
+    // that it was: `authErrorCode` maps everything except four session-expiry
+    // strings to `auth_error`, so a future gate attaching `ssoRedirectUrl`
+    // would most likely also be `auth_error`. The real guarantee is that only
+    // the SSO-enforcement branch sets the field at all. A dedicated
+    // `sso_required` code would collapse these three conjuncts into one honest
+    // predicate; until then this narrows the blast radius rather than closing
+    // it.
     const ssoUrl =
       error.status === 403 && error.code === "auth_error"
         ? error.ssoRedirectUrl

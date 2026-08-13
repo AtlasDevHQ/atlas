@@ -124,7 +124,13 @@ export function isSaasDeployMode(): boolean {
     if (mode === "self-hosted") return false;
     return unknownDeployMode(`config resolved deployMode=${String(mode)}`);
   } catch (err) {
-    // Not `// intentionally ignored:` — this catch emits a signal, and it must.
+    // Not `// intentionally ignored:` — this catch routes to
+    // `unknownDeployMode`, which logs, so it is not silent and must not take
+    // the marker. ⚠️ One path is the exception: `unknownDeployMode` returns
+    // early WITHOUT logging when `ATLAS_DEPLOY_MODE === "saas"`, because there
+    // the answer is determined rather than guessed. So "always emits" would be
+    // an overclaim; "emits whenever the answer is a guess" is the true one, and
+    // that is the case the marker is about.
     return unknownDeployMode(
       `config lookup threw: ${err instanceof Error ? err.message : String(err)}`,
     );
@@ -351,6 +357,12 @@ async function checkMisrouting(
 // Migration write-lock — reject writes during active region migration
 // ---------------------------------------------------------------------------
 
+/**
+ * Once-per-process flag for the `region_migrations`-absent warn below. Module
+ * scope so the warn is per PROCESS, not per request — see the branch.
+ */
+let warnedRegionMigrationsAbsent = false;
+
 const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 async function checkMigrationWriteLock(
@@ -389,12 +401,49 @@ async function checkMigrationWriteLock(
     // against is unrepresentable when the table does not exist, and blocking
     // every write on a self-hosted deploy that never enabled residency would
     // be a self-inflicted outage attributed to a subsystem the operator has
-    // never configured. `resolvePermissions` narrows the identical way on
-    // `custom_roles`, for the identical reason.
+    // never configured.
     //
-    // `debug`, not `warn`: on those deploys it is the steady state, and a
-    // per-write warn would be noise that trains operators to ignore the log.
-    if (msg.includes("does not exist")) {
+    // ⚠️ **Matched on THE RELATION, never on a bare `does not exist`.** Review
+    // round 2 measured what the bare substring admits, and every one of these
+    // would have answered "no migration in flight" DURING an active migration,
+    // losing the write the lock exists to protect:
+    //
+    //   `column "workspace_id" does not exist`   (42703) — the partially-applied
+    //                                             set this branch names as its
+    //                                             own justification
+    //   `operator does not exist: uuid = text`   (42883) — a real query bug
+    //   `schema "atlas" does not exist`          (3F000) — wrong search_path
+    //   `database "…" does not exist`            (3D000) — mispointed DATABASE_URL
+    //   `role "…" does not exist`                (28000) — rotated credentials
+    //
+    // `backups/health.ts` already argues exactly this and matches the relation;
+    // `integrations/operator-credentials/resolver.ts` keys on SQLSTATE. Both
+    // are better instruments than `permission-resolve.ts`'s broad match, which
+    // an earlier draft of this comment cited as precedent — it is the loosest
+    // of the three and carries the same latent fail-open on `custom_roles`.
+    //
+    // SQLSTATE first because it is exact; the regex is the fallback for
+    // wrappers that drop `.code`.
+    const code = err && typeof err === "object" && "code" in err
+      ? (err as { code?: unknown }).code
+      : undefined;
+    const missingRegionMigrations =
+      (code === "42P01" && /region_migrations/.test(msg)) ||
+      /relation "?region_migrations"? does not exist/i.test(msg);
+
+    if (missingRegionMigrations) {
+      // ⚠️ WARN, once per process, and then debug. This branch DISABLES a
+      // data-integrity gate; a permanently silent one is the shape CLAUDE.md
+      // forbids. Per-write it would be noise that trains operators to ignore
+      // the log, so the honest compromise is to say once that the lock is
+      // inactive for this process, then stay quiet.
+      if (!warnedRegionMigrationsAbsent) {
+        warnedRegionMigrationsAbsent = true;
+        log.warn(
+          { requestId, orgId },
+          "region_migrations table absent (internal DB predates migration 0012) — the region-migration write lock is INACTIVE for this process",
+        );
+      }
       log.debug(
         { requestId, orgId },
         "region_migrations table absent — no migration can be in flight, allowing the write",
@@ -632,13 +681,41 @@ export const workspaceAuth = makeStandardAuth("workspace");
  * Opt-in middleware that rejects write operations (POST, PUT, PATCH, DELETE)
  * when the workspace is actively being migrated between regions.
  *
- * Apply to routes where writes would cause data loss during migration
- * (chat, conversations). Don't apply to admin routes — admins need to
- * manage the workspace during migration (retry, cancel, configure).
+ * ⚠️ **Mounted in exactly ONE place: `workspaceWriteGate` (#5191).** An earlier
+ * version of this docstring read as though chat and conversations used it;
+ * neither does — `chat.ts` calls `isWorkspaceMigrating` directly. It was
+ * mounted on NO router at all until #5191, and the commit that fixed that claim
+ * in `workspace-router.ts` left this, its own sibling, un-swept.
+ *
+ * Apply to routes where a write would be silently lost during a migration
+ * (chat and conversations would both benefit, and neither opts in today).
+ * Don't apply to admin routes — admins need to manage the workspace during
+ * migration (retry, cancel, configure).
  */
 export const migrationWriteLock = createMiddleware<AuthEnv>(async (c, next) => {
   const authResult = c.get("authResult");
   const requestId = c.get("requestId");
+
+  // Same middleware-order contract `workspaceActorGuard` documents and fails
+  // closed on — and since #5191 the two sit in the SAME gate array, so the
+  // asymmetry was the odd one out. Without this, a bare `authResult.user` read
+  // is an unlogged TypeError surfacing as an opaque 500 with no statement of
+  // which contract broke.
+  if (!authResult) {
+    log.error(
+      { requestId },
+      "migrationWriteLock ran before the auth middleware — no authResult; failing closed",
+    );
+    return c.json(
+      {
+        error: "auth_misconfigured",
+        message:
+          "Request context is incomplete — the request-authentication middleware did not run. This is a server wiring fault, not a credential problem; retrying will not help.",
+        requestId,
+      },
+      500,
+    );
+  }
 
   const locked = await checkMigrationWriteLock(c.req.method, authResult, requestId);
   if (locked) {

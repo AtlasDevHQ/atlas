@@ -32,6 +32,8 @@ import {
 } from "react";
 import { usePathname } from "next/navigation";
 import { useMfaGateStore } from "@/lib/stores/mfa-gate-store";
+import { sameOriginPath } from "@/ui/lib/redirect-target";
+import { DEFAULT_ENROLLMENT_URL } from "@/ui/hooks/use-admin-fetch";
 
 const ENROLLMENT_PATH_PREFIX = "/admin/account-security";
 
@@ -114,7 +116,17 @@ function useTrigger(): (enrollmentUrl: string) => void {
         }
       }
 
-      setState({ enrollmentUrl });
+      // #5191 round 2 — sanitize at the SINK as well as the seam.
+      //
+      // Every producer today is guarded (`extractFetchError` and
+      // `usePasswordStatus` both run `sameOriginPath`), so this is idempotent
+      // for them. It matters because this store is THREE hops from any guard —
+      // `trigger(enrollmentUrl: string)` takes a bare string, and
+      // `mfa-enrollment-dialog` does `router.push(state.enrollmentUrl)` — so a
+      // fourth producer added later inherits nothing. Guarding the one place
+      // the value is committed makes the open redirect unreachable regardless
+      // of who calls in.
+      setState({ enrollmentUrl: sameOriginPath(enrollmentUrl) ?? DEFAULT_ENROLLMENT_URL });
     },
     [pathname, state, setState],
   );

@@ -166,7 +166,8 @@ const DASHBOARD_WRITE = workspaceWriteGate("dashboards:write");
 
 /**
  * The two statuses `migrationWriteLock` adds to every route carrying
- * `DASHBOARD_WRITE`, spread into their `responses` (#5191).
+ * `DASHBOARD_WRITE` **with a write METHOD**, spread into their `responses`
+ * (#5191).
  *
  * ⚠️ Declaring them is not bookkeeping. `409 workspace_migrating` is a STATE a
  * client must branch on — it is temporary, it says so, and retrying later is
@@ -175,19 +176,28 @@ const DASHBOARD_WRITE = workspaceWriteGate("dashboards:write");
  * `@useatlas/sdk` client or in `apps/docs/openapi.json`, so both collapse into
  * "some error" at exactly the boundary where the difference matters.
  *
- * Only on WRITE routes, because the lock only fires on write METHODS —
- * declaring a 409 on `GET /` would be a contract stating something that cannot
- * happen.
+ * ⚠️ The rule is write-gate AND write-method, and the two disagree exactly
+ * once. `GET /{id}/draft` carries `DASHBOARD_WRITE` — it forks a draft, which
+ * is authoring — but the lock keys on the verb, so it can never fire there and
+ * the spread is deliberately absent. Declaring a 409 on it would be a contract
+ * for something that cannot happen. An earlier draft of this paragraph stated
+ * the rule as "write routes only" and illustrated it with `GET /`, which is a
+ * READ route — so it demonstrated the gate split rather than the method rule
+ * that actually drives the decision, and did not describe its own one
+ * exception.
  */
+const LOCK_409_CAUSE =
+  "the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes";
+const LOCK_503_CAUSE =
+  "migration status could not be verified so the write was refused (`migration_check_failed`)";
+
 const WORKSPACE_LOCK_RESPONSES = {
   409: {
-    description:
-      "Workspace is being migrated to another region — write operations are temporarily disabled (`workspace_migrating`)",
+    description: `Write refused: ${LOCK_409_CAUSE}`,
     content: { "application/json": { schema: ErrorSchema } },
   },
   503: {
-    description:
-      "Migration status could not be verified, so the write was refused as a precaution (`migration_check_failed`)",
+    description: `Write refused: ${LOCK_503_CAUSE}`,
     content: { "application/json": { schema: ErrorSchema } },
   },
 } as const;
@@ -568,7 +578,6 @@ const getDraftRoute = createGatedRoute({
     "Returns the current user's draft for this dashboard, forking from published on first call. Requires the `dashboards:write` permission — the first call FORKS a draft, which inserts rows.",
   request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
   responses: {
-    ...WORKSPACE_LOCK_RESPONSES,
     200: { description: "Draft snapshot + materialized DashboardWithCards", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -620,7 +629,7 @@ const publishDraftRoute = createGatedRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     404: { description: "Dashboard or draft not found", content: { "application/json": { schema: ErrorSchema } } },
-    409: { description: "Stale baseline or merge conflict", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: `Stale baseline or merge conflict, OR ${LOCK_409_CAUSE}`, content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -659,7 +668,7 @@ const rebaseDraftRoute = createGatedRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     404: { description: "Dashboard or draft not found", content: { "application/json": { schema: ErrorSchema } } },
-    409: { description: "Rebase conflict", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: `Rebase conflict, OR ${LOCK_409_CAUSE}`, content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -752,7 +761,7 @@ const updateDashboardRoute = createGatedRoute({
     404: { description: "Not found", content: { "application/json": { schema: ErrorSchema } } },
     422: { description: "Validation error", content: { "application/json": { schema: ErrorSchema.extend({ details: z.array(z.unknown()).optional() }) } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-    503: { description: "Drafts unavailable — internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: `Drafts unavailable — internal database not configured, OR ${LOCK_503_CAUSE}`, content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -795,7 +804,7 @@ const addCardRoute = createGatedRoute({
     404: { description: "Dashboard not found", content: { "application/json": { schema: ErrorSchema } } },
     422: { description: "Validation error", content: { "application/json": { schema: ErrorSchema.extend({ details: z.array(z.unknown()).optional() }) } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-    503: { description: "Drafts unavailable — internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: `Drafts unavailable — internal database not configured, OR ${LOCK_503_CAUSE}`, content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -823,7 +832,7 @@ const updateCardRoute = createGatedRoute({
     404: { description: "Card not found", content: { "application/json": { schema: ErrorSchema } } },
     422: { description: "Validation error", content: { "application/json": { schema: ErrorSchema.extend({ details: z.array(z.unknown()).optional() }) } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-    503: { description: "Drafts unavailable — internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: `Drafts unavailable — internal database not configured, OR ${LOCK_503_CAUSE}`, content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -848,7 +857,7 @@ const removeCardRoute = createGatedRoute({
     403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     404: { description: "Card not found", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-    503: { description: "Drafts unavailable — internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: `Drafts unavailable — internal database not configured, OR ${LOCK_503_CAUSE}`, content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -872,11 +881,11 @@ const previewCardRoute = createGatedRoute({
     400: { description: "Invalid SQL, plugin rejection, or query failure", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     403: { description: "Forbidden or blocked by RLS", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    409: { description: "Approval required before execution", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: `Approval required before execution, OR ${LOCK_409_CAUSE}`, content: { "application/json": { schema: ErrorSchema } } },
     422: { description: "Validation error", content: { "application/json": { schema: ErrorSchema.extend({ details: z.array(z.unknown()).optional() }) } } },
     429: { description: "Rate or concurrency limit", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-    503: { description: "Connection or approval system unavailable", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: `Connection or approval system unavailable, OR ${LOCK_503_CAUSE}`, content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -902,10 +911,10 @@ const refreshCardRoute = createGatedRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     403: { description: "Forbidden or blocked by RLS", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     404: { description: "Card not found", content: { "application/json": { schema: ErrorSchema } } },
-    409: { description: "Approval required before execution, or the draft was published/discarded mid-refresh (`draft_gone`)", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: `Approval required before execution, or the draft was published/discarded mid-refresh (\`draft_gone\`), OR ${LOCK_409_CAUSE}`, content: { "application/json": { schema: ErrorSchema } } },
     429: { description: "Rate or concurrency limit", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-    503: { description: "Connection or approval system unavailable", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: `Connection or approval system unavailable, OR ${LOCK_503_CAUSE}`, content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -967,9 +976,9 @@ const refreshAllCardsRoute = createGatedRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     404: { description: "Dashboard not found", content: { "application/json": { schema: ErrorSchema } } },
-    409: { description: "The draft was published or discarded mid-refresh (`draft_gone`)", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: `The draft was published or discarded mid-refresh (\`draft_gone\`), OR ${LOCK_409_CAUSE}`, content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-    503: { description: "Draft cache unavailable — internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: `Draft cache unavailable — internal database not configured, OR ${LOCK_503_CAUSE}`, content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -1007,7 +1016,7 @@ const shareDashboardRoute = createGatedRoute({
     // response union and has to be declared. Every gated route can emit it from
     // middleware; here it is visible to the compiler, which is why only this one
     // says so.
-    503: { description: "Authorization service unavailable — the permission check could not be completed", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    503: { description: `Authorization service unavailable — the permission check could not be completed, OR ${LOCK_503_CAUSE}`, content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
   },
 });
 

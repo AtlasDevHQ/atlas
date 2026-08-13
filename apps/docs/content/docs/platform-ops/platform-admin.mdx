@@ -195,8 +195,32 @@ First, a region **import** cannot produce a false positive here — it writes in
 
 Second, ⚠️ **that does not make every hit a deleted organization.** An earlier version of this paragraph claimed "the orphan signal really does mean the organization row is gone"; the 2026-08-12 sweep falsified it. Sentinel scope values (`_default`, `<atlas-operator>`, `''`) are not organization ids, so they match no `organization` row and are reported identically to real residue — and two of them are deployment-wide config whose deletion is destructive. Resolve the ids and cross-check `lib/db/purge-scope.ts` first; see the callout above the query.
 
-Third, what survives that check is a deletion list against real customer data with no undo, so run it through the operator binary's double-gating (`ATLAS_*_OK=1` plus `--confirm`) and take a `pg_dump` first, exactly as with `ops wipe`. Never hand-run the delete against a region database.
+Third, what survives that check is a deletion list against real customer data with no undo. **Do not hand-run the delete — run `atlas-operator ops sweep-residue`,** below. It applies the same reasoning this section describes, and does not depend on you remembering to.
 </Callout>
+
+#### Clearing it: `atlas-operator ops sweep-residue`
+
+```bash
+# 1. Preview. DRY RUN is the default — no gate, no deletes.
+atlas-operator ops sweep-residue --region us
+
+# 2. Back the region up, then execute.
+pg_dump "$ATLAS_REGION_US_DB_URL" -Fc -f residue-us.dump
+ATLAS_RESIDUE_OK=1 atlas-operator ops sweep-residue \
+  --region us --confirm --pg-dump residue-us.dump
+```
+
+One region per invocation (`--region us|eu|apac`, resolving `ATLAS_REGION_<R>_DB_URL`, or `--database-url`). There is **no `DATABASE_URL` fallback** — the region is always explicit.
+
+What the command does that a hand-written query does not:
+
+- **Its table set comes from `lib/db/purge-scope.ts`, filtered to `decision: "purged"`.** A table added to the registry enters the sweep with no edit here, and `anonymized` / `retained` / `user_scoped` tables never enter it at all — so the `admin_action_log` and `user_trial_grants` rows that are *meant* to outlive a purge are not candidates in the first place.
+- **It never deletes a sentinel.** `_default`, `<atlas-operator>` and the empty string are denylisted by value; anything else that is whitespace-only, `_`-prefixed, or not shaped like a workspace id is withheld too. Withheld values are printed with the reason they were withheld — the guard can only ever *withhold*, so an unrecognized value is surfaced for you rather than swept.
+- **It deletes the exact values it printed**, enumerated first and named in the `DELETE`, so the preview and the destruction cannot diverge.
+- **Nothing is filtered silently.** A table absent from the region's schema, a table with no scope column of its own (`messages` and the eight others the purge reaches through a parent), and a scope column of an uncomparable type are each reported with their own reason, because each implies a different next move.
+- **EXECUTE is triple-gated**: `ATLAS_RESIDUE_OK=1`, `--confirm`, and `--pg-dump <path>` naming a backup that exists and is non-empty. There is no undo, and a path that is merely recorded is a string that can lie.
+
+Deletes are per (table, scope column) and not atomic across tables — a residue sweep is a cleanup taken against a backup, and one table's foreign key must not roll back the tables that succeeded. Statements that a `RESTRICT` blocks are retried until nothing more can progress; whatever is still failing is printed with its Postgres message and the command exits non-zero.
 
 #### Prerequisites
 
@@ -260,7 +284,7 @@ The `purged` object carries a row count per table, useful for audit purposes. Th
 
 **Always check `complete`.** When it is `false`, the purge ran but did not finish: `skippedTables` names the work that did not run — relations absent from this region's schema, plus the deletes and writes gated behind them — and it reported `0` for each, which reads exactly like "there were none". `complete` is also `false` when the Stripe teardown left a warning.
 
-Run the region's migrations, then clear the residue with the orphaned-workspace sweep above. **Do not try to purge again** — the organization record is already gone, so the endpoint answers `404`.
+Run the region's migrations, then clear the residue with `atlas-operator ops sweep-residue --region <r>` (above). **Do not try to purge again** — the organization record is already gone, so the endpoint answers `404`.
 
 ## Noisy Neighbor Detection
 

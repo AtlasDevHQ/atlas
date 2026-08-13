@@ -31,11 +31,32 @@ export default function DashboardsPage() {
     dashboards: Dashboard[];
   }>("/api/v1/dashboards");
 
-  // 401/403 is the genuine auth gate. Preserve the original /login bounce so an
-  // unauthenticated visitor still lands on sign-in. (AuthGuard also recovers
-  // unauthenticated users globally in managed mode; keeping this explicit makes
-  // the gate mode-agnostic and independent of that backstop.)
-  const isAuthError = error?.status === 401 || error?.status === 403;
+  // #5188 — 401 and 403 mean DIFFERENT things and used to share one branch.
+  //
+  // 401 is "not signed in", and the /login bounce resolves it. 403 is
+  // "signed in, not permitted", which signing in again cannot fix — so
+  // bouncing a 403 to /login produces an unbreakable loop: log in, land back
+  // here, 403, bounce. Confirmed live in US prod, repeating every ~5s.
+  //
+  // The 403 that mattered was the admin-MFA enrollment gate firing on brand-new
+  // owners; #5189 has since moved dashboards off `createAdminRouter()`, so it
+  // can no longer originate here. This branch stays because it is the residual
+  // path for ANY future 403 carrying that code, and because the enrollment URL
+  // is the one destination that can actually clear it — `MfaGateProvider` is
+  // mounted only in `admin-layout.tsx`, so on this `(workspace)` route
+  // `useAdminFetch`'s `mfaGate.trigger()` resolves to a NO-OP and no dialog
+  // ever appears.
+  //
+  // Everything else 403 (e.g. `forbidden_role`) falls through to the error card
+  // below, which names the problem instead of navigating away from it.
+  const isUnauthenticated = error?.status === 401;
+  const mfaEnrollmentUrl =
+    error?.status === 403 && error.code === "mfa_enrollment_required"
+      ? (error.enrollmentUrl ?? "/admin/account-security")
+      : null;
+  // Drives the skeleton + the redirect effect: both 401 and the MFA case
+  // navigate away, so neither should paint the error card on the way out.
+  const isNavigatingAway = isUnauthenticated || mfaEnrollmentUrl !== null;
 
   const targetId = data
     ? selectMostRecentDashboardId(data.dashboards ?? [])
@@ -50,8 +71,12 @@ export default function DashboardsPage() {
   const [creationHandoff, setCreationHandoff] = useState(false);
 
   useEffect(() => {
-    if (isAuthError) {
+    if (isUnauthenticated) {
       router.replace("/login?redirect=/dashboards");
+      return;
+    }
+    if (mfaEnrollmentUrl) {
+      router.replace(mfaEnrollmentUrl);
       return;
     }
     if (!targetId) return;
@@ -66,31 +91,43 @@ export default function DashboardsPage() {
         ? `/dashboards/${targetId}?${OPEN_CHAT_PARAM}=true`
         : `/dashboards/${targetId}`,
     );
-  }, [isAuthError, targetId, router, creationHandoff]);
+  }, [isUnauthenticated, mfaEnrollmentUrl, targetId, router, creationHandoff]);
 
-  // Auth bounce, dashboard redirect, or creation handoff in flight — show the
-  // layout-matching skeleton (not a blank frame) so the redirect never flashes
-  // an empty screen (#4323). The empty/error chrome is still gated below so it
-  // can't flash before navigation lands.
-  if (isAuthError || targetId || creationHandoff) return <DashboardListSkeleton />;
+  // Auth bounce, MFA-enrollment hand-off, dashboard redirect, or creation
+  // handoff in flight — show the layout-matching skeleton (not a blank frame)
+  // so the redirect never flashes an empty screen (#4323). The empty/error
+  // chrome is still gated below so it can't flash before navigation lands.
+  if (isNavigatingAway || targetId || creationHandoff)
+    return <DashboardListSkeleton />;
 
   if (error) {
+    // A residual 403 is a permission answer, not a transient failure. Naming it
+    // as one matters twice over: "Couldn't load" invites a retry that cannot
+    // work, and "Try again" is the affordance that used to be the only thing on
+    // screen for a user who needs an administrator, not another attempt.
+    const isForbidden = error.status === 403;
     return (
       <div className="mx-auto w-full max-w-2xl flex-1 px-4 py-16 text-center">
         <h1 className="text-base font-medium text-zinc-900 dark:text-zinc-100">
-          Couldn&rsquo;t load your dashboards
+          {isForbidden
+            ? "You don’t have access to dashboards"
+            : "Couldn’t load your dashboards"}
         </h1>
         <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
-          {friendlyError(error)}
+          {isForbidden
+            ? "Ask a workspace administrator to grant your role access to dashboards."
+            : friendlyError(error)}
         </p>
-        <Button
-          size="sm"
-          variant="outline"
-          className="mt-6"
-          onClick={() => refetch()}
-        >
-          Try again
-        </Button>
+        {!isForbidden && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="mt-6"
+            onClick={() => refetch()}
+          >
+            Try again
+          </Button>
+        )}
       </div>
     );
   }

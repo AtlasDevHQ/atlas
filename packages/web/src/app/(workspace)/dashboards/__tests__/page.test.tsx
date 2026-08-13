@@ -138,14 +138,60 @@ describe("DashboardsPage (redirect index)", () => {
     );
   });
 
-  test("bounces a forbidden visitor (403) to /login", async () => {
-    stubDashboardsStatus(403, { error: "forbidden", message: "Access denied" });
+  // #5188 — these three replace a single test that asserted ALL 403s bounce to
+  // /login. That assertion is what shipped the prod loop green: signing in
+  // again cannot clear a 403, so the bounce returned the user to the page that
+  // 403'd them, every ~5s, with no error and no way forward.
+  //
+  // 401 keeps the bounce (above). The two 403 shapes below must NOT bounce, and
+  // they must not share an outcome either — one has a destination that resolves
+  // it, the other has none.
+
+  test("routes an MFA-enrollment 403 to the enrollment URL, never to /login", async () => {
+    stubDashboardsStatus(403, {
+      error: "mfa_enrollment_required",
+      message: "Enroll a second factor to continue.",
+      enrollmentUrl: "/admin/account-security",
+    });
 
     render(<DashboardsPage />, { wrapper: dashboardsWrapper });
 
     await waitFor(() =>
-      expect(replaceCalls).toContain("/login?redirect=/dashboards"),
+      expect(replaceCalls).toContain("/admin/account-security"),
     );
+    expect(replaceCalls).not.toContain("/login?redirect=/dashboards");
+  });
+
+  test("falls back to the default enrollment URL when the 403 body omits one", async () => {
+    // The body is well-formed today, but `enrollmentUrl` is optional on
+    // FetchError — a server that stops sending it must not strand the user on a
+    // page whose only recovery path is the URL that went missing.
+    stubDashboardsStatus(403, {
+      error: "mfa_enrollment_required",
+      message: "Enroll a second factor to continue.",
+    });
+
+    render(<DashboardsPage />, { wrapper: dashboardsWrapper });
+
+    await waitFor(() =>
+      expect(replaceCalls).toContain("/admin/account-security"),
+    );
+  });
+
+  test("shows an access card for a role 403 — no navigation, no retry button", async () => {
+    stubDashboardsStatus(403, {
+      error: "insufficient_permissions",
+      message: 'This action requires the "dashboards:read" permission.',
+    });
+
+    render(<DashboardsPage />, { wrapper: dashboardsWrapper });
+
+    await screen.findByText("You don’t have access to dashboards");
+    // Navigating away is the bug. Staying put with an explanation is the fix.
+    expect(replaceCalls).toHaveLength(0);
+    // "Try again" cannot resolve a permission answer — offering it is the
+    // affordance that made the old dead end feel like a transient failure.
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
   });
 
   test("shows an error card (not a /login bounce) on a server error", async () => {

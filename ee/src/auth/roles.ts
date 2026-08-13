@@ -69,13 +69,20 @@ export const BUILTIN_ROLES: readonly BuiltinRoleDefinition[] = [
   },
   {
     name: "analyst",
-    description: "Can query data (including raw data) and view audit logs",
-    permissions: ["query", "query:raw_data", "admin:audit"],
+    description:
+      "Can query data (including raw data), build dashboards, and view audit logs",
+    permissions: [
+      "query",
+      "query:raw_data",
+      "dashboards:read",
+      "dashboards:write",
+      "admin:audit",
+    ],
   },
   {
     name: "viewer",
-    description: "Can query data with aggregate results only",
-    permissions: ["query"],
+    description: "Can query data with aggregate results only, and view dashboards",
+    permissions: ["query", "dashboards:read"],
   },
 ] as const;
 

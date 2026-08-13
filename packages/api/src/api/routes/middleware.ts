@@ -98,7 +98,7 @@ function denyApiKeyOnAdmin(
  * returning false if config isn't ready yet is the safe default (the gate
  * is only *stricter* in SaaS; self-hosted behaviour is unchanged).
  */
-function isSaasDeployMode(): boolean {
+export function isSaasDeployMode(): boolean {
   try {
     // oxlint-disable-next-line @typescript-eslint/no-require-imports
     const { getConfig } = require("@atlas/api/lib/config") as {

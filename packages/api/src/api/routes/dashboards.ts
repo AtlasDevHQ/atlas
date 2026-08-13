@@ -1,7 +1,13 @@
 /**
  * Dashboard REST routes — CRUD for dashboards and cards, sharing, refresh.
  *
- * Admin routes use `adminAuth` + `requireOrgContext` middleware.
+ * Authenticated routes use `createWorkspaceRouter()` + `requireOrgContext`,
+ * with a `dashboards:read` / `dashboards:write` gate declared PER ROUTE
+ * (#5189). They are deliberately not admin routes: dashboards are a core
+ * analyst-loop surface linked in every user's sidebar, and gating them behind
+ * `adminAuth` is what denied `member`/`analyst` roles outright and produced
+ * #5188's login-redirect loop for unenrolled owners.
+ *
  * Public shared endpoint bypasses auth (rate limited per IP).
  */
 
@@ -74,7 +80,11 @@ import {
   validateAutoComparison,
 } from "@atlas/api/lib/dashboard-parameters";
 import { ErrorSchema, parsePagination } from "./shared-schemas";
-import { createAdminRouter, requireOrgContext } from "./admin-router";
+import { requireOrgContext } from "./admin-router";
+import {
+  createWorkspaceRouter,
+  requireWorkspacePermission,
+} from "./workspace-router";
 import { validationHook } from "./validation-hook";
 import {
   authenticateRequest,
@@ -87,6 +97,30 @@ import {
 } from "@atlas/api/lib/public-rate-limit";
 
 const log = createLogger("dashboard-routes");
+
+// ---------------------------------------------------------------------------
+// Permission gates (#5189)
+// ---------------------------------------------------------------------------
+
+/**
+ * Read covers the whole VIEWING path, which is not the same as the GET routes:
+ * a dashboard renders every card through `POST …/render`, refreshes through
+ * `POST …/refresh`, and downloads through `POST …/export`. Classifying by HTTP
+ * method would put those behind `dashboards:write` and leave a `viewer` role
+ * able to list a dashboard but not see anything on it.
+ *
+ * Write is content mutation plus the two authoring assists — `/suggest` (spends
+ * LLM budget on card proposals) and `/preview-card` (composes a card that does
+ * not exist yet). Both exist only to help you author.
+ *
+ * Declared per route rather than once on the router: two routers sharing a
+ * mount path do not isolate their `use()` chains — see
+ * `requireWorkspacePermission`. Every authed route in this file must carry
+ * exactly one of these, which `__tests__/dashboards-permission-coverage.test.ts`
+ * asserts against the composed app.
+ */
+const DASHBOARD_READ = [requireWorkspacePermission("dashboards:read")];
+const DASHBOARD_WRITE = [requireWorkspacePermission("dashboards:write")];
 
 // ---------------------------------------------------------------------------
 // Zod schemas
@@ -384,6 +418,7 @@ warnIfTrustProxyMissingForPublicShare();
 const listDashboardsRoute = createRoute({
   method: "get",
   path: "/",
+  middleware: DASHBOARD_READ,
   tags: ["Dashboards"],
   summary: "List dashboards",
   description: "Returns dashboards for the active organization. Requires admin role.",
@@ -405,6 +440,7 @@ const listDashboardsRoute = createRoute({
 const createDashboardRoute = createRoute({
   method: "post",
   path: "/",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards"],
   summary: "Create a dashboard",
   description: "Creates a new dashboard. Requires admin role.",
@@ -423,6 +459,7 @@ const createDashboardRoute = createRoute({
 const getDashboardRoute = createRoute({
   method: "get",
   path: "/{id}",
+  middleware: DASHBOARD_READ,
   tags: ["Dashboards"],
   summary: "Get dashboard with cards",
   description:
@@ -453,6 +490,7 @@ const getDashboardRoute = createRoute({
 const getDraftRoute = createRoute({
   method: "get",
   path: "/{id}/draft",
+  middleware: DASHBOARD_READ,
   tags: ["Dashboards", "Drafts"],
   summary: "Get (or fork) the caller's draft for a dashboard",
   description:
@@ -478,6 +516,7 @@ const getDraftRoute = createRoute({
 const getDraftStatusRoute = createRoute({
   method: "get",
   path: "/{id}/draft/status",
+  middleware: DASHBOARD_READ,
   tags: ["Dashboards", "Drafts"],
   summary: "Check whether the caller has an active draft for this dashboard",
   description:
@@ -496,6 +535,7 @@ const getDraftStatusRoute = createRoute({
 const publishDraftRoute = createRoute({
   method: "post",
   path: "/{id}/draft/publish",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards", "Drafts"],
   summary: "Publish the caller's draft to the live dashboard",
   description:
@@ -515,6 +555,7 @@ const publishDraftRoute = createRoute({
 const discardDraftRoute = createRoute({
   method: "post",
   path: "/{id}/draft/discard",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards", "Drafts"],
   summary: "Discard the caller's draft",
   description: "Idempotently drops the caller's draft for this dashboard. No-op if no draft exists.",
@@ -531,6 +572,7 @@ const discardDraftRoute = createRoute({
 const rebaseDraftRoute = createRoute({
   method: "post",
   path: "/{id}/draft/rebase",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards", "Drafts"],
   summary: "Rebase the caller's draft onto the latest published baseline",
   description:
@@ -593,6 +635,7 @@ export type _DraftUndoCardCoversSnapshot = _Expect<
 const undoDraftRoute = createRoute({
   method: "post",
   path: "/{id}/draft/undo",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards", "Drafts"],
   summary: "Undo a bound-editor destructive edit in the caller's draft",
   description:
@@ -615,6 +658,7 @@ const undoDraftRoute = createRoute({
 const updateDashboardRoute = createRoute({
   method: "patch",
   path: "/{id}",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards"],
   summary: "Update a dashboard",
   description: "Updates dashboard title, description, or refresh schedule. Requires admin role.",
@@ -638,6 +682,7 @@ const updateDashboardRoute = createRoute({
 const deleteDashboardRoute = createRoute({
   method: "delete",
   path: "/{id}",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards"],
   summary: "Delete a dashboard",
   description: "Soft-deletes a dashboard and its cards. Requires admin role.",
@@ -655,6 +700,7 @@ const deleteDashboardRoute = createRoute({
 const addCardRoute = createRoute({
   method: "post",
   path: "/{id}/cards",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards"],
   summary: "Add a card to a dashboard",
   description: "Adds a query result card with optional cached data. Requires admin role.",
@@ -677,6 +723,7 @@ const addCardRoute = createRoute({
 const updateCardRoute = createRoute({
   method: "patch",
   path: "/{id}/cards/{cardId}",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards"],
   summary: "Update a card",
   description: "Updates card title, chart config, or position. Requires admin role.",
@@ -703,6 +750,7 @@ const updateCardRoute = createRoute({
 const removeCardRoute = createRoute({
   method: "delete",
   path: "/{id}/cards/{cardId}",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards"],
   summary: "Remove a card",
   description: "Removes a card from a dashboard. Requires admin role.",
@@ -731,6 +779,7 @@ const PreviewCardSchema = z.object({
 const previewCardRoute = createRoute({
   method: "post",
   path: "/preview-card",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards"],
   summary: "Preview a card query without saving",
   description:
@@ -752,6 +801,7 @@ const previewCardRoute = createRoute({
 const refreshCardRoute = createRoute({
   method: "post",
   path: "/{id}/cards/{cardId}/refresh",
+  middleware: DASHBOARD_READ,
   tags: ["Dashboards"],
   summary: "Refresh a card",
   description: "Re-executes the card's SQL through the full Atlas pipeline and updates cached results. Requires admin role.",
@@ -779,6 +829,7 @@ const refreshCardRoute = createRoute({
 const renderCardRoute = createRoute({
   method: "post",
   path: "/{id}/cards/{cardId}/render",
+  middleware: DASHBOARD_READ,
   tags: ["Dashboards"],
   summary: "Render a card with parameters",
   description:
@@ -816,6 +867,7 @@ const renderCardRoute = createRoute({
 const refreshAllCardsRoute = createRoute({
   method: "post",
   path: "/{id}/refresh",
+  middleware: DASHBOARD_READ,
   tags: ["Dashboards"],
   summary: "Refresh all cards",
   description:
@@ -840,6 +892,7 @@ const refreshAllCardsRoute = createRoute({
 const shareDashboardRoute = createRoute({
   method: "post",
   path: "/{id}/share",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards"],
   summary: "Share a dashboard",
   description:
@@ -867,6 +920,7 @@ const shareDashboardRoute = createRoute({
 const unshareDashboardRoute = createRoute({
   method: "delete",
   path: "/{id}/share",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards"],
   summary: "Revoke dashboard share",
   description: "Revokes the share token. Requires admin role.",
@@ -884,6 +938,7 @@ const unshareDashboardRoute = createRoute({
 const getShareStatusRoute = createRoute({
   method: "get",
   path: "/{id}/share",
+  middleware: DASHBOARD_READ,
   tags: ["Dashboards"],
   summary: "Get share status",
   description: "Returns the current share status of a dashboard. Requires admin role.",
@@ -901,6 +956,7 @@ const getShareStatusRoute = createRoute({
 const suggestCardsRoute = createRoute({
   method: "post",
   path: "/{id}/suggest",
+  middleware: DASHBOARD_WRITE,
   tags: ["Dashboards"],
   summary: "Suggest new cards via AI",
   description: "Analyzes existing dashboard cards and proposes 2-3 complementary cards using the AI model and semantic layer. Requires admin role.",
@@ -920,6 +976,7 @@ const suggestCardsRoute = createRoute({
 const listDashboardSessionsRoute = createRoute({
   method: "get",
   path: "/{id}/sessions",
+  middleware: DASHBOARD_READ,
   tags: ["Dashboards"],
   summary: "List archived bound chat sessions for a dashboard",
   description:
@@ -940,6 +997,7 @@ const listDashboardSessionsRoute = createRoute({
 const getDashboardSessionRoute = createRoute({
   method: "get",
   path: "/{id}/sessions/{sessionId}",
+  middleware: DASHBOARD_READ,
   tags: ["Dashboards"],
   summary: "Read a bound chat session transcript",
   description:
@@ -963,6 +1021,7 @@ const getDashboardSessionRoute = createRoute({
 const screenshotDashboardRoute = createRoute({
   method: "get",
   path: "/{id}/screenshot",
+  middleware: DASHBOARD_READ,
   tags: ["Dashboards"],
   summary: "Render a PNG screenshot of the dashboard",
   description:
@@ -986,6 +1045,7 @@ const screenshotDashboardRoute = createRoute({
 const exportDashboardRoute = createRoute({
   method: "post",
   path: "/{id}/export",
+  middleware: DASHBOARD_READ,
   tags: ["Dashboards"],
   summary: "Export the whole dashboard as PNG or PDF",
   description:
@@ -1037,7 +1097,7 @@ const getSharedDashboardRoute = createRoute({
 // Router setup
 // ---------------------------------------------------------------------------
 
-const authed = createAdminRouter();
+const authed = createWorkspaceRouter();
 authed.use(requireOrgContext());
 
 // ---------------------------------------------------------------------------

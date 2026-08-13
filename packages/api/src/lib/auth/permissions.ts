@@ -52,6 +52,16 @@ const log = createLogger("auth:permissions");
 export const PERMISSIONS = [
   "query",
   "query:raw_data",
+  // #5189 — the first NON-admin permission pair. Everything below this line is
+  // gated by `adminAuth` upstream, so its flags can only ever *subtract* from
+  // admin; these two are enforced by `requireWorkspacePermission` outside the
+  // admin perimeter and can therefore GRANT to an analyst/viewer/member who is
+  // not an org admin. Read covers list/get/render/refresh/export — the whole
+  // viewing path, including the POST-shaped reads. Write covers authoring:
+  // create/update/delete, the draft lifecycle, cards, share links, and the
+  // authoring assists (`/suggest`, `/preview-card`).
+  "dashboards:read",
+  "dashboards:write",
   "admin:users",
   "admin:connections",
   "admin:settings",

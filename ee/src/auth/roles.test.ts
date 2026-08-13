@@ -106,7 +106,12 @@ describe("Permission validation", () => {
     expect(PERMISSIONS).toContain("admin:audit");
     expect(PERMISSIONS).toContain("admin:roles");
     expect(PERMISSIONS).toContain("admin:semantic");
-    expect(PERMISSIONS.length).toBe(8);
+    // #5189 — the first non-admin pair. Enforced by
+    // `requireWorkspacePermission` outside the admin perimeter, so unlike
+    // every flag above them they can GRANT to a non-admin role.
+    expect(PERMISSIONS).toContain("dashboards:read");
+    expect(PERMISSIONS).toContain("dashboards:write");
+    expect(PERMISSIONS.length).toBe(10);
   });
 });
 
@@ -143,19 +148,29 @@ describe("Built-in roles", () => {
     expect(adminRole!.permissions.length).toBe(PERMISSIONS.length);
   });
 
-  it("viewer has only query permission", () => {
+  it("viewer can query and VIEW dashboards, and nothing else", () => {
+    // #5189 — `viewer` gained `dashboards:read` and deliberately NOT
+    // `dashboards:write`: it is the one built-in role that can see a board and
+    // cannot author one. Asserting the exact set is what makes an accidental
+    // `dashboards:write` here fail rather than quietly grant authoring to the
+    // least-privileged role.
     const viewer = BUILTIN_ROLES.find((r) => r.name === "viewer");
     expect(viewer).toBeDefined();
-    expect(viewer!.permissions).toEqual(["query"]);
+    expect(viewer!.permissions).toEqual(["query", "dashboards:read"]);
   });
 
-  it("analyst has query, raw_data, and audit", () => {
+  it("analyst has query, raw_data, audit, and both dashboards flags", () => {
     const analyst = BUILTIN_ROLES.find((r) => r.name === "analyst");
     expect(analyst).toBeDefined();
     expect(analyst!.permissions).toContain("query");
     expect(analyst!.permissions).toContain("query:raw_data");
     expect(analyst!.permissions).toContain("admin:audit");
-    expect(analyst!.permissions.length).toBe(3);
+    // #5189 — `analyst` is the persona the issue exists to serve: it can both
+    // read and author dashboards, which is what a permission gate outside the
+    // admin perimeter finally makes expressible.
+    expect(analyst!.permissions).toContain("dashboards:read");
+    expect(analyst!.permissions).toContain("dashboards:write");
+    expect(analyst!.permissions.length).toBe(5);
   });
 });
 

@@ -51,15 +51,21 @@ interface CustomRoleRow {
 
 /**
  * Legacy role-to-permission mapping. `platform_admin` and `admin` get
- * every flag; `member` gets the query read pair; unknown roles fall
- * through to `member`. Adding a new built-in role to `ATLAS_ROLES`
- * requires a matching entry here.
+ * every flag; `member` gets the query read pair plus the dashboards pair;
+ * unknown roles fall through to `member`. Adding a new built-in role to
+ * `ATLAS_ROLES` requires a matching entry here.
+ *
+ * #5189 — `member` carries BOTH dashboards flags because a non-EE deploy has
+ * no way to express a `viewer`: `member` is the analyst persona there, and
+ * read-only would leave such a deploy with no author below admin. This is an
+ * expansion from nothing rather than a relaxation — before #5189 `adminAuth`
+ * denied `member` the dashboards surface outright.
  */
 const LEGACY_ROLE_PERMISSIONS: Record<string, readonly Permission[]> = {
   owner: [...PERMISSIONS],
   admin: [...PERMISSIONS],
   platform_admin: [...PERMISSIONS],
-  member: ["query", "query:raw_data"],
+  member: ["query", "query:raw_data", "dashboards:read", "dashboards:write"],
 };
 
 /**

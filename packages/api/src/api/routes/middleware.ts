@@ -104,10 +104,49 @@ export function isSaasDeployMode(): boolean {
     const { getConfig } = require("@atlas/api/lib/config") as {
       getConfig: () => { deployMode?: string } | null;
     };
-    return getConfig()?.deployMode === "saas";
-  } catch {
-    return false;
+    const cfg = getConfig();
+    if (cfg !== null) return cfg.deployMode === "saas";
+    // Config not initialized yet — reachable, because routes can be served
+    // before `initConfig` completes.
+    log.warn(
+      { requestId: undefined },
+      "deploy-mode lookup ran before config init — assuming SaaS so the mode:\"none\" guards stay armed",
+    );
+    return assumeSaasWhenUnknown();
+  } catch (err) {
+    // Not `// intentionally ignored:` — this catch emits a signal, and it must.
+    log.error(
+      { err: err instanceof Error ? err.message : String(err) },
+      "deploy-mode lookup threw — assuming SaaS so the mode:\"none\" guards stay armed",
+    );
+    return assumeSaasWhenUnknown();
   }
+}
+
+/**
+ * What to answer when the deploy mode cannot be determined.
+ *
+ * ⚠️ **Not `ATLAS_DEPLOY_MODE === "saas"`, and that is the whole point.** The
+ * first attempt at this fix read that env var and was measured wrong on the one
+ * deploy it exists to protect: production SaaS regions set
+ * `deployMode: "saas"` in `deploy/api/atlas.config.ts` and leave
+ * `ATLAS_DEPLOY_MODE` **unset** (`lib/effect/saas-env.ts` says so outright), and
+ * the `auto` branch can resolve to SaaS from enterprise + internal-DB detection
+ * with no env var involved at all. So an env-only fallback returns `false` for a
+ * real SaaS region — the original silent-false-negative with an extra step.
+ *
+ * Both callers are guards that become **no-ops** when this says false, and the
+ * thing they refuse (`mode: "none"`) resolves to the FULL permission set. So the
+ * conservative answer is SaaS, and the only thing that overrides it is an
+ * operator stating self-hosted explicitly. Unknown fails closed.
+ *
+ * The cost is bounded and lands where it should: a self-hosted **no-auth**
+ * deploy whose config is faulted or still booting gets a 500 on admin/workspace
+ * routes instead of implicit-admin access. That is a broken deploy either way,
+ * and refusing is the better half of it.
+ */
+function assumeSaasWhenUnknown(): boolean {
+  return process.env.ATLAS_DEPLOY_MODE !== "self-hosted";
 }
 
 // ---------------------------------------------------------------------------

@@ -67,6 +67,8 @@ const RolesResponseSchema = z.object({
 const PERMISSION_LABELS: Record<string, string> = {
   "query": "Query data",
   "query:raw_data": "View raw row data",
+  "dashboards:read": "View dashboards",
+  "dashboards:write": "Create and edit dashboards",
   "admin:users": "Manage users",
   "admin:connections": "Manage connections",
   "admin:settings": "Manage settings",
@@ -75,13 +77,57 @@ const PERMISSION_LABELS: Record<string, string> = {
   "admin:semantic": "Edit semantic layer",
 };
 
+/**
+ * Display ORDER only — not the set of grantable flags.
+ *
+ * #5189 — this used to be the set, because the editor iterates these groups and
+ * filters them by what the server returned. A flag the server offers but this
+ * map omits was therefore invisible and ungrantable, which is exactly what
+ * happened to the dashboards pair: the API listed them, the checkbox list did
+ * not, and an EE admin had no way to author a dashboard-capable role. Anything
+ * unclaimed here now falls into "Other" rather than disappearing.
+ */
 const PERMISSION_GROUPS: Record<string, string[]> = {
   "Data Access": ["query", "query:raw_data"],
+  "Dashboards": ["dashboards:read", "dashboards:write"],
   "Administration": ["admin:users", "admin:connections", "admin:settings", "admin:audit", "admin:roles", "admin:semantic"],
 };
 
-function PermissionBadges({ permissions }: { permissions: string[] }) {
-  if (permissions.length === Object.keys(PERMISSION_LABELS).length) {
+/**
+ * Groups every server-known permission, with anything this file has no opinion
+ * about collected under "Other". Takes the API's list as the source of truth so
+ * a newly shipped flag degrades to "shown with its raw id" instead of "silently
+ * not offered".
+ */
+export function groupPermissions(allPermissions: string[]): Array<[string, string[]]> {
+  const claimed = new Set(Object.values(PERMISSION_GROUPS).flat());
+  const groups: Array<[string, string[]]> = Object.entries(PERMISSION_GROUPS).map(
+    ([name, perms]) => [name, perms.filter((p) => allPermissions.includes(p))],
+  );
+  const unclaimed = allPermissions.filter((p) => !claimed.has(p));
+  if (unclaimed.length > 0) groups.push(["Other", unclaimed]);
+  return groups.filter(([, perms]) => perms.length > 0);
+}
+
+function PermissionBadges({
+  permissions,
+  allPermissions,
+}: {
+  permissions: string[];
+  allPermissions: string[];
+}) {
+  // #5189 — was `permissions.length === Object.keys(PERMISSION_LABELS).length`,
+  // which compared a role's size against a HARDCODED label map. It was correct
+  // only while the two lists happened to be the same length, so adding two
+  // server flags broke it in both directions at once: a genuinely
+  // all-permissions role stopped showing the badge, and any unrelated role
+  // holding as many flags as the map had labels started showing it falsely.
+  const all = new Set(allPermissions);
+  if (
+    all.size > 0 &&
+    permissions.length === all.size &&
+    permissions.every((p) => all.has(p))
+  ) {
     return <Badge variant="default" className="text-[10px]">All permissions</Badge>;
   }
   return (
@@ -225,7 +271,7 @@ function RoleDialog({
 
             <div className="space-y-3">
               <FormLabel>Permissions</FormLabel>
-              {Object.entries(PERMISSION_GROUPS).map(([group, perms]) => (
+              {groupPermissions(allPermissions).map(([group, perms]) => (
                 <div key={group} className="space-y-2">
                   <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{group}</p>
                   {/* Don't wrap <Checkbox> in <label> — Radix Checkbox is a button, and
@@ -233,7 +279,7 @@ function RoleDialog({
                       labelable descendant when the descendant itself is clicked, double-
                       firing onCheckedChange and net-toggling back. Use htmlFor. (#2170) */}
                   <div className="space-y-1.5">
-                    {perms.filter((p) => allPermissions.includes(p)).map((perm) => (
+                    {perms.map((perm) => (
                       <div
                         key={perm}
                         className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-muted/50"
@@ -415,7 +461,7 @@ export default function RolesPage() {
                               {role.description}
                             </TableCell>
                             <TableCell>
-                              <PermissionBadges permissions={role.permissions} />
+                              <PermissionBadges permissions={role.permissions} allPermissions={allPermissions} />
                             </TableCell>
                           </TableRow>
                         ))}
@@ -479,7 +525,7 @@ export default function RolesPage() {
                               {role.description || "-"}
                             </TableCell>
                             <TableCell>
-                              <PermissionBadges permissions={role.permissions} />
+                              <PermissionBadges permissions={role.permissions} allPermissions={allPermissions} />
                             </TableCell>
                             <TableCell>
                               <div className="flex items-center gap-1">

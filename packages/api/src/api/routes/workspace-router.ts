@@ -60,10 +60,21 @@ import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import type { Permission } from "@atlas/api/lib/auth/permissions";
 import { validationHook } from "./validation-hook";
 import { eeOnError } from "./ee-error-handler";
-import { standardAuth, requestContext, isSaasDeployMode, type AuthEnv } from "./middleware";
+import { standardAuth, requestContext, isSaasDeployMode } from "./middleware";
 import { enforcePermission, type OrgContextEnv } from "./admin-router";
 
 const log = createLogger("workspace-router");
+
+/**
+ * `OrgContextEnv` plus the flag `workspaceActorGuard` sets and
+ * `requireWorkspacePermission` requires. Declaring it makes the dependency a
+ * fact about the type rather than a sentence in a docstring.
+ */
+type WorkspaceGateEnv = OrgContextEnv & {
+  Variables: OrgContextEnv["Variables"] & {
+    workspaceActorChecked?: boolean;
+  };
+};
 
 /**
  * The two checks `standardAuth` does not do and `adminAuth` does, kept because
@@ -83,9 +94,28 @@ const log = createLogger("workspace-router");
  *     the guard exists precisely because the weaker tier was the unguarded one,
  *     and this router is a weaker tier.
  */
-export const workspaceActorGuard = createMiddleware<AuthEnv>(async (c, next) => {
+export const workspaceActorGuard = createMiddleware<WorkspaceGateEnv>(async (c, next) => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
+
+  // Middleware-order contract, same guard `mfaRequired` carries for the same
+  // reason: `authResult` is set by `standardAuth`, and if this ever runs first a
+  // bare property read is an unlogged TypeError surfacing as an opaque 500.
+  // Fail closed and say which contract broke.
+  if (!authResult) {
+    log.error(
+      { requestId },
+      "workspaceActorGuard ran before standardAuth — no authResult; failing closed",
+    );
+    return c.json(
+      {
+        error: "auth_misconfigured",
+        message: "Workspace authorization is not configured.",
+        requestId,
+      },
+      500,
+    );
+  }
 
   if (resolveActorKind(authResult.user?.claims) === "api_key") {
     log.warn(
@@ -117,6 +147,14 @@ export const workspaceActorGuard = createMiddleware<AuthEnv>(async (c, next) => 
       500,
     );
   }
+
+  // Read by `requireWorkspacePermission`. The gate is mounted PER ROUTE and this
+  // guard PER ROUTER, so the middleware that grants is not the middleware that
+  // guards — a future file composing `standardAuth` + `requireWorkspacePermission`
+  // by hand would silently lose both checks above and pass every test written
+  // against the composed dashboards app. This makes that misuse fail closed on
+  // the first request instead of shipping as a bypass.
+  c.set("workspaceActorChecked", true);
 
   await next();
 });
@@ -152,9 +190,24 @@ export const workspaceActorGuard = createMiddleware<AuthEnv>(async (c, next) => 
  * holds read.
  */
 export function requireWorkspacePermission(permission: Permission) {
-  return createMiddleware<OrgContextEnv>(async (c, next) => {
+  return createMiddleware<WorkspaceGateEnv>(async (c, next) => {
     const requestId = c.get("requestId");
     const authResult = c.get("authResult");
+
+    if (!c.get("workspaceActorChecked")) {
+      log.error(
+        { requestId, permission },
+        "requireWorkspacePermission mounted without workspaceActorGuard — failing closed",
+      );
+      return c.json(
+        {
+          error: "auth_misconfigured",
+          message: "Workspace authorization is not configured.",
+          requestId,
+        },
+        500,
+      );
+    }
 
     const denied = await enforcePermission(
       authResult.user as AtlasUser | undefined,
@@ -179,7 +232,7 @@ export function requireWorkspacePermission(permission: Permission) {
  * Note the absence of `mfaRequired` — see the module docstring.
  */
 export function createWorkspaceRouter() {
-  const router = new OpenAPIHono<OrgContextEnv>({ defaultHook: validationHook });
+  const router = new OpenAPIHono<WorkspaceGateEnv>({ defaultHook: validationHook });
   router.use(standardAuth);
   router.use(workspaceActorGuard);
   router.use(requestContext);

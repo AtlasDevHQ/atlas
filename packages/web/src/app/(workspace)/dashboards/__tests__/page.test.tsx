@@ -147,11 +147,37 @@ describe("DashboardsPage (redirect index)", () => {
   // they must not share an outcome either — one has a destination that resolves
   // it, the other has none.
 
-  test("routes an MFA-enrollment 403 to the enrollment URL, never to /login", async () => {
+  test("routes an MFA-enrollment 403 to the SERVER's enrollment URL, never to /login", async () => {
+    // Deliberately NOT "/admin/account-security". Stubbing the same string the
+    // `??` fallback uses makes "used the server's value" and "used the default"
+    // indistinguishable — deleting `error.enrollmentUrl ??` would then keep both
+    // this test and the fallback test below green, which is the pair they exist
+    // to tell apart.
     stubDashboardsStatus(403, {
       error: "mfa_enrollment_required",
       message: "Enroll a second factor to continue.",
-      enrollmentUrl: "/admin/account-security",
+      enrollmentUrl: "/admin/account-security?from=dashboards",
+    });
+
+    render(<DashboardsPage />, { wrapper: dashboardsWrapper });
+
+    await waitFor(() =>
+      expect(replaceCalls).toContain("/admin/account-security?from=dashboards"),
+    );
+    expect(replaceCalls).not.toContain("/admin/account-security");
+    expect(replaceCalls).not.toContain("/login?redirect=/dashboards");
+    // On the way out it must show the skeleton, never flash the error card —
+    // `isNavigatingAway` is what gates that, and nothing else asserts it.
+    expect(screen.queryByText("You don’t have access to dashboards")).toBeNull();
+  });
+
+  test("refuses an off-origin enrollment URL and uses the default instead", async () => {
+    // `enrollmentUrl` is copied verbatim from a response body and handed to
+    // `router.replace()`. An absolute URL there is an open redirect.
+    stubDashboardsStatus(403, {
+      error: "mfa_enrollment_required",
+      message: "Enroll a second factor to continue.",
+      enrollmentUrl: "https://evil.example.com/harvest",
     });
 
     render(<DashboardsPage />, { wrapper: dashboardsWrapper });
@@ -159,7 +185,24 @@ describe("DashboardsPage (redirect index)", () => {
     await waitFor(() =>
       expect(replaceCalls).toContain("/admin/account-security"),
     );
-    expect(replaceCalls).not.toContain("/login?redirect=/dashboards");
+    expect(replaceCalls).not.toContain("https://evil.example.com/harvest");
+  });
+
+  test("refuses a protocol-relative enrollment URL", async () => {
+    // `//evil.example.com` starts with "/" and is still off-origin — the arm a
+    // `startsWith("/")` check alone lets through.
+    stubDashboardsStatus(403, {
+      error: "mfa_enrollment_required",
+      message: "Enroll a second factor to continue.",
+      enrollmentUrl: "//evil.example.com/harvest",
+    });
+
+    render(<DashboardsPage />, { wrapper: dashboardsWrapper });
+
+    await waitFor(() =>
+      expect(replaceCalls).toContain("/admin/account-security"),
+    );
+    expect(replaceCalls).not.toContain("//evil.example.com/harvest");
   });
 
   test("falls back to the default enrollment URL when the 403 body omits one", async () => {
@@ -178,7 +221,7 @@ describe("DashboardsPage (redirect index)", () => {
     );
   });
 
-  test("shows an access card for a role 403 — no navigation, no retry button", async () => {
+  test("shows an access card for a permission 403 — no navigation, no retry button", async () => {
     stubDashboardsStatus(403, {
       error: "insufficient_permissions",
       message: 'This action requires the "dashboards:read" permission.',
@@ -192,7 +235,60 @@ describe("DashboardsPage (redirect index)", () => {
     // "Try again" cannot resolve a permission answer — offering it is the
     // affordance that made the old dead end feel like a transient failure.
     expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    // The server's own sentence survives, so the user learns WHICH permission
+    // and support gets the requestId `friendlyError` appends.
+    await screen.findByText(/dashboards:read/);
   });
+
+  // #5188 round 1 — `GET /api/v1/dashboards` answers 403 for at least four
+  // reasons, and only the permission ones are about roles. Collapsing them all
+  // into "ask an administrator" reproduces this issue's defect one level down:
+  // a user who could fix it themselves is sent to someone else, and the
+  // server's remedy is thrown away.
+  // ⚠️ The `error` codes below are the WIRE shapes, not the internal names.
+  // `authErrorCode` rewrites the auth-gate failures to `auth_error` /
+  // `session_expired` before they leave the server, so a fixture built from the
+  // internal name (`password_change_required`) tests a body that never occurs.
+  // `ip_not_allowed` is minted directly and does reach the client under its own
+  // name — the two are not symmetric, which is exactly why they are both here.
+  for (const tc of [
+    {
+      name: "a password-change gate (arrives as auth_error)",
+      body: {
+        error: "auth_error",
+        message:
+          "Your password must be changed before continuing. Change it via the web app.",
+      },
+      expect: /password must be changed/,
+    },
+    {
+      name: "ip_not_allowed",
+      body: {
+        error: "ip_not_allowed",
+        message: "Your IP address is not in the workspace's allowlist.",
+      },
+      expect: /allowlist/,
+    },
+  ]) {
+    test(`renders the server's own remedy for ${tc.name}`, async () => {
+      stubDashboardsStatus(403, tc.body);
+
+      render(<DashboardsPage />, { wrapper: dashboardsWrapper });
+
+      await screen.findByText("Couldn’t load your dashboards");
+      await screen.findByText(tc.expect);
+      expect(
+        screen.queryByText("You don’t have access to dashboards"),
+      ).toBeNull();
+      expect(replaceCalls).toHaveLength(0);
+      // No retry on ANY 403 — none of them are transient, and offering the
+      // button is handing the user an action that re-fails identically. This is
+      // the arm the first version of the fix got wrong: `ip_not_allowed` is
+      // clearable only from an admin-only page, so "Try again" was a dead end
+      // wearing the same shape as the loop this issue exists to remove.
+      expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    });
+  }
 
   test("shows an error card (not a /login bounce) on a server error", async () => {
     stubDashboardsStatus(500, { message: "Internal error" });

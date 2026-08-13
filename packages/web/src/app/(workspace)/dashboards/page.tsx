@@ -3,7 +3,10 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
+import {
+  useAdminFetch,
+  DEFAULT_ENROLLMENT_URL,
+} from "@/ui/hooks/use-admin-fetch";
 import { friendlyError } from "@/ui/lib/fetch-error";
 import { DashboardsEmptyState } from "./empty-state";
 import { DashboardListSkeleton } from "@/ui/components/dashboards/dashboard-skeleton";
@@ -47,12 +50,24 @@ export default function DashboardsPage() {
   // `useAdminFetch`'s `mfaGate.trigger()` resolves to a NO-OP and no dialog
   // ever appears.
   //
-  // Everything else 403 (e.g. `forbidden_role`) falls through to the error card
-  // below, which names the problem instead of navigating away from it.
+  // Everything else 403 falls through to the error card below, which renders
+  // what the SERVER said rather than a guess — see the card for why that
+  // distinction is load-bearing.
   const isUnauthenticated = error?.status === 401;
+  const rawEnrollmentUrl =
+    error?.status === 403 && error.code === "mfa_enrollment_required"
+      ? error.enrollmentUrl
+      : undefined;
   const mfaEnrollmentUrl =
     error?.status === 403 && error.code === "mfa_enrollment_required"
-      ? (error.enrollmentUrl ?? "/admin/account-security")
+      ? // Same-origin path only. `enrollmentUrl` is copied verbatim out of a
+        // response body, and `router.replace()` on an absolute or
+        // protocol-relative URL is a real off-site navigation — an open redirect
+        // driven by whatever answered the request. The producer is a constant
+        // today; this is what keeps that from being load-bearing.
+        rawEnrollmentUrl?.startsWith("/") && !rawEnrollmentUrl.startsWith("//")
+        ? rawEnrollmentUrl
+        : DEFAULT_ENROLLMENT_URL
       : null;
   // Drives the skeleton + the redirect effect: both 401 and the MFA case
   // navigate away, so neither should paint the error card on the way out.
@@ -101,24 +116,51 @@ export default function DashboardsPage() {
     return <DashboardListSkeleton />;
 
   if (error) {
-    // A residual 403 is a permission answer, not a transient failure. Naming it
-    // as one matters twice over: "Couldn't load" invites a retry that cannot
-    // work, and "Try again" is the affordance that used to be the only thing on
-    // screen for a user who needs an administrator, not another attempt.
-    const isForbidden = error.status === 403;
+    // A PERMISSION 403 is an answer, not a transient failure: "Couldn't load"
+    // invites a retry that cannot work, and offering "Try again" is what made
+    // the dead end read as a glitch.
+    //
+    // ⚠️ Keyed on `code`, not on the bare status. `GET /api/v1/dashboards`
+    // answers 403 for several reasons and only the permission ones are about
+    // roles: `ip_not_allowed`, the SSO-enforcement 403 and the
+    // password-change gate all carry a remedy the CALLER can act on, authored by
+    // the gate that knows it. Telling those users to go find an administrator is
+    // this issue's own defect one level down, and swapping in canned copy loses
+    // both the server's sentence and the requestId `friendlyError` appends.
+    //
+    // Enumerated post-#5189: `insufficient_permissions` is minted directly by
+    // `permission-resolve`, so it reaches the client under its own name.
+    // `api_key_not_permitted` cannot arise from a browser session, and
+    // `forbidden_role` comes only from `adminAuth`, which dashboards no longer
+    // use — it is kept here as the defensive arm for a future route, not because
+    // this one can produce it. Everything else is rewritten by `authErrorCode`
+    // to `auth_error` / `session_expired` and lands, correctly, in the
+    // server-message branch.
+    const isPermissionDenial =
+      error.status === 403 &&
+      (error.code === "insufficient_permissions" || error.code === "forbidden_role");
+    // ⚠️ Retry is for TRANSIENT failures, and no 403 is transient. The first
+    // version of this fix removed the button only for the permission arm, which
+    // reproduced the finding one arm over: `ip_not_allowed` (clearable only from
+    // an admin-only page) and the SSO-enforcement 403 were handed the one action
+    // that re-fails identically forever. Their server messages already name the
+    // real remedy — rendering that and offering nothing false is the honest
+    // pair. Routing an SSO 403 to its `ssoRedirectUrl` needs `FetchError` to
+    // carry the field and is filed as follow-up rather than added here.
+    const isRetryable = error.status !== 403;
     return (
       <div className="mx-auto w-full max-w-2xl flex-1 px-4 py-16 text-center">
         <h1 className="text-base font-medium text-zinc-900 dark:text-zinc-100">
-          {isForbidden
+          {isPermissionDenial
             ? "You don’t have access to dashboards"
             : "Couldn’t load your dashboards"}
         </h1>
         <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
-          {isForbidden
-            ? "Ask a workspace administrator to grant your role access to dashboards."
+          {isPermissionDenial
+            ? `${friendlyError(error)} Ask a workspace administrator to grant your role access to dashboards.`
             : friendlyError(error)}
         </p>
-        {!isForbidden && (
+        {isRetryable && (
           <Button
             size="sm"
             variant="outline"

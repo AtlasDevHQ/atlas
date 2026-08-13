@@ -172,6 +172,56 @@ describe("Built-in roles", () => {
     expect(analyst!.permissions).toContain("dashboards:write");
     expect(analyst!.permissions.length).toBe(5);
   });
+
+  /**
+   * #5189 — `BUILTIN_ROLES` is not self-enforcing: the DB row wins at resolution
+   * time, and a row is only reconciled when `seedBuiltinRoles` runs (call site:
+   * `listRoles`). Orgs that never open /admin/roles are repaired by a BACKFILL
+   * migration instead, and that migration spells the permission arrays out as
+   * SQL literals — correctly, because a migration must mean the same thing
+   * whenever it runs.
+   *
+   * The cost of that correctness is a second copy, so this asserts the newest
+   * backfill still agrees with the definitions. Adding a flag to `BUILTIN_ROLES`
+   * without writing the next backfill reddens here — which is the whole point,
+   * because the alternative is a silent 403 for every already-seeded workspace.
+   */
+  it("the newest built-in-roles backfill migration matches BUILTIN_ROLES", async () => {
+    const { readdir, readFile } = await import("node:fs/promises");
+    const dir = new URL(
+      "../../../packages/api/src/lib/db/migrations/",
+      import.meta.url,
+    ).pathname;
+
+    const backfills = (await readdir(dir))
+      .filter((f) => /^\d+_builtin_roles_.*\.sql$/.test(f))
+      .sort();
+    // A zero-length list would make every assertion below vacuous — the exact
+    // shape this test exists to prevent.
+    expect(backfills.length).toBeGreaterThan(0);
+
+    const sql = await readFile(`${dir}${backfills[backfills.length - 1]}`, "utf8");
+
+    // Split into statements FIRST, then read each one whole. Scanning the file
+    // for `SET permissions = … name = '<role>'` looks equivalent and is not:
+    // the gap is non-greedy across statement boundaries, so every role after
+    // the first matches the FIRST statement's array. Measured — it reported
+    // `analyst` as holding admin's ten flags and passed `admin` by luck of
+    // ordering.
+    const byRole = new Map<string, string[]>();
+    for (const stmt of sql.split(";")) {
+      const perms = /SET permissions = '(\[[^']*\])'/.exec(stmt);
+      const name = /name = '([a-z_]+)'/.exec(stmt);
+      if (perms && name) byRole.set(name[1], JSON.parse(perms[1]) as string[]);
+    }
+
+    expect([...byRole.keys()].sort()).toEqual(
+      BUILTIN_ROLES.map((r) => r.name).sort(),
+    );
+    for (const def of BUILTIN_ROLES) {
+      expect(byRole.get(def.name)?.sort()).toEqual([...def.permissions].sort());
+    }
+  });
 });
 
 describe("resolvePermissions", () => {
@@ -580,27 +630,56 @@ describe("Role assignment", () => {
 describe("seedBuiltinRoles", () => {
   beforeEach(resetMocks);
 
-  it("seeds all three built-in roles when none exist", async () => {
-    // Three existence checks, all empty
+  it("writes one upsert per built-in role, with no read-then-write race", async () => {
     ee.queueMockRows([], [], []);
 
     await run(seedBuiltinRoles("org-1"));
 
-    // 3 SELECTs + 3 INSERTs = 6 queries
+    // #5189 — was 3 SELECTs + 3 INSERTs. The existence probe is gone: it made
+    // the seeder insert-if-absent, and two callers racing it could both see an
+    // empty probe. One upsert per role, and the unique index decides.
     const selects = ee.capturedQueries.filter((q) => q.sql.includes("SELECT"));
     const inserts = ee.capturedQueries.filter((q) => q.sql.includes("INSERT"));
-    expect(selects.length).toBe(3);
-    expect(inserts.length).toBe(3);
+    expect(selects.length).toBe(0);
+    expect(inserts.length).toBe(BUILTIN_ROLES.length);
   });
 
-  it("skips roles that already exist", async () => {
-    // First two exist, third doesn't
+  it("RECONCILES a role that already exists, instead of skipping it", async () => {
+    // The behaviour this replaces is the defect: skipping froze a built-in
+    // role's permission set at whatever it was when first seeded, and
+    // `resolvePermissions` returns that stored set as the live answer while
+    // `updateRole` refuses `is_builtin` rows. Adding a flag then silently
+    // denied it to every already-seeded workspace (#5189).
     ee.queueMockRows([{ id: "existing" }], [{ id: "existing" }], []);
 
     await run(seedBuiltinRoles("org-1"));
 
-    const inserts = ee.capturedQueries.filter((q) => q.sql.includes("INSERT"));
-    expect(inserts.length).toBe(1);
+    const writes = ee.capturedQueries.filter((q) => q.sql.includes("INSERT"));
+    expect(writes.length).toBe(BUILTIN_ROLES.length);
+    for (const w of writes) {
+      expect(w.sql).toContain("ON CONFLICT (org_id, name) DO UPDATE");
+      // Scoped to rows we own — a customer's own role named `analyst` is
+      // `is_builtin = false` and must survive untouched.
+      expect(w.sql).toContain("WHERE custom_roles.is_builtin = true");
+    }
+  });
+
+  it("sends the CURRENT definition, not a stale one", async () => {
+    // Without this the upsert could carry any array and both tests above stay
+    // green — they count statements and match SQL text, never the payload.
+    ee.queueMockRows([], [], []);
+
+    await run(seedBuiltinRoles("org-1"));
+
+    for (const def of BUILTIN_ROLES) {
+      const write = ee.capturedQueries.find(
+        (q) => q.sql.includes("INSERT") && q.params?.[1] === def.name,
+      );
+      expect(write, `no upsert for built-in role "${def.name}"`).toBeDefined();
+      expect(JSON.parse(String(write!.params?.[3])).sort()).toEqual(
+        [...def.permissions].sort(),
+      );
+    }
   });
 });
 

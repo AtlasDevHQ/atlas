@@ -31,6 +31,7 @@ import {
   type Permission,
 } from "@atlas/api/lib/auth/permissions";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
+import type { AtlasRole } from "@useatlas/types";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 
@@ -61,12 +62,18 @@ interface CustomRoleRow {
  * expansion from nothing rather than a relaxation — before #5189 `adminAuth`
  * denied `member` the dashboards surface outright.
  */
-const LEGACY_ROLE_PERMISSIONS: Record<string, readonly Permission[]> = {
+const LEGACY_ROLE_PERMISSIONS = {
   owner: [...PERMISSIONS],
   admin: [...PERMISSIONS],
   platform_admin: [...PERMISSIONS],
   member: ["query", "query:raw_data", "dashboards:read", "dashboards:write"],
-};
+  // `satisfies`, not an annotation: it makes a missing `AtlasRole` and a typo'd
+  // key compile errors while the inferred type stays indexable by `string` for
+  // the deliberate unknown-role fall-through below. Annotated as
+  // `Record<string, …>` neither was caught — and since the fall-through target
+  // is `member`, a typo in the `admin` key would have handed every admin on a
+  // self-hosted deploy the member set with no test going red.
+} satisfies Record<AtlasRole, readonly Permission[]>;
 
 /**
  * Permissions for a user using only the legacy role mapping — no DB
@@ -91,8 +98,21 @@ const resolveLegacyPermissions = (
       return new Set<Permission>();
     }
     const role = user.role ?? "member";
-    const perms = LEGACY_ROLE_PERMISSIONS[role] ?? LEGACY_ROLE_PERMISSIONS.member;
-    return new Set(perms);
+    const mapped = (LEGACY_ROLE_PERMISSIONS as Record<string, readonly Permission[]>)[role];
+    if (!mapped) {
+      // #5189 — the fall-through is deliberate, but it is now a GRANT: `member`
+      // carries `dashboards:write`, so an unrecognized role name (a custom EE
+      // role deleted while members still carry it) silently acquires dashboard
+      // authoring. Before the dashboards flags it fell through to two harmless
+      // query flags and saying nothing was defensible. Its sibling deny-path a
+      // few lines up already logs; an authorization decision made on a name
+      // nobody recognizes should not be the quiet one.
+      log.warn(
+        { userId: user.id, role, orgId: user.activeOrganizationId },
+        "Unrecognized role — falling through to the `member` permission set (which includes dashboards:write)",
+      );
+    }
+    return new Set(mapped ?? LEGACY_ROLE_PERMISSIONS.member);
   });
 
 /**

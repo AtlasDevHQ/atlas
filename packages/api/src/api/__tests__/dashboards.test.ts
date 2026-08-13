@@ -1380,6 +1380,7 @@ describe("dashboard routes", () => {
     // carries `dashboards:write` in `LEGACY_ROLE_PERMISSIONS`, so the correct
     // answer is now "allowed". The negative moved to the flag, one test down.
     it("admits a non-admin role carrying dashboards:write", async () => {
+      mockRunUserQueryPipeline.mockClear();
       mockAuthenticateRequest.mockResolvedValueOnce({
         authenticated: true as const,
         mode: "simple-key" as const,
@@ -1393,6 +1394,9 @@ describe("dashboard routes", () => {
         }),
       );
       expect(response.status).not.toBe(403);
+      // `not.toBe(403)` alone is satisfied by a 404, a 400 or a 500 — assert the
+      // member actually REACHED the handler, which is the claim.
+      expect(mockRunUserQueryPipeline).toHaveBeenCalled();
     });
 
     it("returns 400 invalid_sql when the pipeline rejects mutation SQL", async () => {

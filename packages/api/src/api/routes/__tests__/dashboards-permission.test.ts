@@ -26,10 +26,15 @@ import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
 import { Effect } from "effect";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 
-// A brand-new SaaS signup: `owner` role, and NO `twoFactorEnabled` claim. The
-// helper defaults admin-ish roles to `{ twoFactorEnabled: true }` precisely so
-// unrelated suites clear the MFA gate — passing an explicit empty `claims`
-// re-creates the unenrolled state that #5188 reproduced in US prod.
+// A brand-new SaaS signup: `owner` role, no second factor on file.
+//
+// ⚠️ `claims: {}` does NOT produce that — `createApiTestMocks` merges its own
+// `defaultClaims` FIRST for admin-ish roles, so an empty object comes back as
+// `{ twoFactorEnabled: true }`, i.e. an ENROLLED owner. The unenrolled state is
+// established by `authAs()` in `beforeEach` below, and this factory config only
+// sets the identity. Stating it explicitly here so a reader does not delete that
+// `beforeEach` line on the strength of this block and silently stop reproducing
+// #5188.
 const mocks = createApiTestMocks({
   authUser: {
     id: "owner-fresh",
@@ -37,7 +42,7 @@ const mocks = createApiTestMocks({
     label: "new@signup.test",
     role: "owner",
     activeOrganizationId: "org-dash",
-    claims: {},
+    claims: { twoFactorEnabled: false },
   },
 });
 
@@ -106,11 +111,17 @@ const VALID_ID = "01JQ0000000000000000000000";
 /**
  * The full route table, with the flag each route is expected to enforce.
  *
- * READ is the whole VIEWING path, which is deliberately not the same as "the
- * GET routes": a dashboard paints itself by POSTing `/render` per card, and
- * `/refresh` and `/export` are likewise things you do to a board you are
- * looking at. Classifying by HTTP method would leave a read-only `viewer` able
+ * The line is **does this persist**, not **is this a GET**. READ is the whole
+ * VIEWING path, several members of which are POSTs: `/render` per card (the
+ * result is explicitly not written to the card cache) and `/export`, neither of
+ * which writes. Classifying by HTTP method would leave a read-only `viewer` able
  * to list a dashboard and unable to see anything on it.
+ *
+ * Two routes go the other way and are WRITEs despite their shape: `/refresh`
+ * UPDATEs the PUBLISHED `dashboard_cards` cache every other viewer reads, and
+ * `GET /{id}/draft` FORKS on first call — two INSERTs, and the first step of
+ * authoring. Its non-forking neighbours (`GET /{id}?view=draft`,
+ * `/draft/status`) stay READ.
  */
 const ROUTES: ReadonlyArray<{
   method: string;
@@ -120,15 +131,15 @@ const ROUTES: ReadonlyArray<{
 }> = [
   { method: "GET", path: "/", permission: "dashboards:read" },
   { method: "GET", path: `/${VALID_ID}`, permission: "dashboards:read" },
-  { method: "GET", path: `/${VALID_ID}/draft`, permission: "dashboards:read" },
+  { method: "GET", path: `/${VALID_ID}/draft`, permission: "dashboards:write" },
   { method: "GET", path: `/${VALID_ID}/draft/status`, permission: "dashboards:read" },
   { method: "GET", path: `/${VALID_ID}/share`, permission: "dashboards:read" },
   { method: "GET", path: `/${VALID_ID}/sessions`, permission: "dashboards:read" },
   { method: "GET", path: `/${VALID_ID}/sessions/s-1`, permission: "dashboards:read" },
   { method: "GET", path: `/${VALID_ID}/screenshot`, permission: "dashboards:read" },
   { method: "POST", path: `/${VALID_ID}/cards/c-1/render`, permission: "dashboards:read", body: {} },
-  { method: "POST", path: `/${VALID_ID}/cards/c-1/refresh`, permission: "dashboards:read", body: {} },
-  { method: "POST", path: `/${VALID_ID}/refresh`, permission: "dashboards:read", body: {} },
+  { method: "POST", path: `/${VALID_ID}/cards/c-1/refresh`, permission: "dashboards:write", body: {} },
+  { method: "POST", path: `/${VALID_ID}/refresh`, permission: "dashboards:write", body: {} },
   { method: "POST", path: `/${VALID_ID}/export`, permission: "dashboards:read", body: { format: "pdf" } },
   { method: "POST", path: "/", permission: "dashboards:write", body: { title: "T" } },
   { method: "POST", path: `/${VALID_ID}/draft/publish`, permission: "dashboards:write", body: {} },
@@ -158,7 +169,9 @@ function authAs(user: {
   id: string;
   role: string;
   claims?: Record<string, unknown>;
+  orgId?: string | null;
 }): void {
+  const orgId = user.orgId === undefined ? "org-dash" : user.orgId;
   mocks.mockAuthenticateRequest.mockImplementation(() =>
     Promise.resolve({
       authenticated: true as const,
@@ -168,7 +181,7 @@ function authAs(user: {
         mode: "managed" as const,
         label: `${user.id}@test.com`,
         role: user.role,
-        activeOrganizationId: "org-dash",
+        ...(orgId ? { activeOrganizationId: orgId } : {}),
         claims: user.claims ?? {},
       },
     } as never),
@@ -248,10 +261,14 @@ describe("#5189 — no dashboards route may exist without a permission decision"
 
 describe("#5189 — each route enforces its OWN flag", () => {
   for (const r of ROUTES) {
-    it(`${r.method} ${r.path} → checkPermission("${r.permission}")`, async () => {
+    it(`${r.method} ${r.path} → checkPermission("${r.permission}") and nothing else`, async () => {
       await app.fetch(req(r.path, r.method, r.body));
       const seen = mockCheckPermission.mock.calls.map((c) => c[1]);
-      expect(seen).toContain(r.permission);
+      // The exact set, not `toContain`. A route carrying BOTH gates — the
+      // precise failure the two-routers-at-one-mount-path shape produces, which
+      // is why the gate is per route — satisfies `toContain` for either flag and
+      // passes the 403 loop below as well. Only this assertion sees it.
+      expect([...new Set(seen)]).toEqual([r.permission]);
     });
   }
 
@@ -282,8 +299,13 @@ describe("#5189 — read and write gates do not leak into each other", () => {
    * role happens to also hold read. Declaring the gate per route is what makes
    * these two tests possible at all.
    */
-  const READ_ROUTE = ROUTES.find((r) => r.permission === "dashboards:read")!;
-  const WRITE_ROUTE = ROUTES.find((r) => r.permission === "dashboards:write")!;
+  // The two routes whose handlers are mocked, so the allowed outcome is an
+  // exact known status rather than "not 403". `not.toBe(403)` is satisfied by a
+  // 404 from a renamed path, a 400 from a schema change and a 500 from an
+  // unmocked seam — and these two tests are the ONLY check on cross-gate
+  // leakage, so a weak assertion here is the whole property going unmeasured.
+  const READ_ROUTE = { method: "GET", path: "/", status: 200 } as const;
+  const WRITE_ROUTE = { method: "POST", path: "/", body: { title: "T" }, status: 201 } as const;
 
   it("denying read does not block a write route", async () => {
     mockCheckPermission.mockImplementation((_u, permission, requestId) =>
@@ -292,7 +314,7 @@ describe("#5189 — read and write gates do not leak into each other", () => {
       ),
     );
     const res = await app.fetch(req(WRITE_ROUTE.path, WRITE_ROUTE.method, WRITE_ROUTE.body));
-    expect(res.status).not.toBe(403);
+    expect(res.status).toBe(WRITE_ROUTE.status);
   });
 
   it("denying write does not block a read route", async () => {
@@ -301,8 +323,8 @@ describe("#5189 — read and write gates do not leak into each other", () => {
         permission === "dashboards:write" ? denialFor(permission, requestId) : null,
       ),
     );
-    const res = await app.fetch(req(READ_ROUTE.path, READ_ROUTE.method, READ_ROUTE.body));
-    expect(res.status).not.toBe(403);
+    const res = await app.fetch(req(READ_ROUTE.path, READ_ROUTE.method));
+    expect(res.status).toBe(READ_ROUTE.status);
   });
 });
 
@@ -332,7 +354,12 @@ describe("#5188 — an unenrolled owner is no longer blocked from dashboards", (
 });
 
 describe("#5189 — a non-admin role reaches dashboards", () => {
-  it("admits a member whose resolved permissions carry the flag", async () => {
+  // Named for what it PROVES: no coarse role gate stands in front any more.
+  // It does not prove the member's resolved set carries the flag —
+  // `checkPermission` is mocked to allow, so the role string is decorative here.
+  // That half is `lib/auth/__tests__/dashboards-legacy-permissions.test.ts`,
+  // which exists because a mutation showed this suite could not see it.
+  it("does not refuse a member on ROLE before consulting permissions", async () => {
     authAs({ id: "u-member", role: "member" });
     const res = await app.fetch(req("/"));
     expect(res.status).toBe(200);
@@ -340,6 +367,21 @@ describe("#5189 — a non-admin role reaches dashboards", () => {
     // different (worse) bug wearing the same status code.
     expect(mockCheckPermission).toHaveBeenCalled();
     expect(mockCheckPermission.mock.calls.map((c) => c[1])).toContain("dashboards:read");
+  });
+});
+
+describe("#5189 — org context is established BEFORE the permission gate", () => {
+  it("400s a caller with no active organization, without consulting permissions", async () => {
+    // Ordering is load-bearing and unenforced: `requireOrgContext()` is mounted
+    // on the router, the gates per route. If the gate ran first, an org-less
+    // caller would be authorized against a workspace nobody selected.
+    authAs({ id: "u-noorg", role: "owner", orgId: null });
+
+    const res = await app.fetch(req("/"));
+
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("bad_request");
+    expect(mockCheckPermission).not.toHaveBeenCalled();
   });
 });
 

@@ -331,7 +331,15 @@ describe("runMigrations", () => {
     //   guesses, and seeding the curated vocabulary from them would launder the
     //   stochastic input #5027 made unrepresentable into the decision that
     //   replaced it, #5028) = 196.
-    expect(count).toBe(196);
+    //   Plus 0196 (builtin_roles_dashboards_flags — a backfill-only reconcile of
+    //   seeded `custom_roles` rows to the #5189 BUILTIN_ROLES definitions.
+    //   `seedBuiltinRoles` was insert-if-absent, so a built-in role's permission
+    //   set was frozen at first seed while `resolvePermissions` returned that
+    //   stored set as the live answer — leaving existing org admins without
+    //   `dashboards:read` and 403'd off dashboards. The seeder now reconciles,
+    //   but its only call site is `listRoles`, which the 403'd user has no
+    //   reason to visit) = 197.
+    expect(count).toBe(197);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -556,6 +564,7 @@ describe("runMigrations", () => {
         "0193_brain_fact_subject_cmp.sql",
         "0194_brain_fact_slot_keys_not_null.sql",
         "0195_brain_facts_drop_predicate_cardinality.sql",
+        "0196_builtin_roles_dashboards_flags.sql",
       ],
     });
 

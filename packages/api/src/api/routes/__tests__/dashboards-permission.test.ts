@@ -8,8 +8,8 @@
  *   1. **Non-admins were denied outright.** `adminAuth` 403'd anyone outside
  *      {admin, owner, platform_admin} before `checkPermission` ever ran, so the
  *      permission system could only ever subtract from admin. An `analyst` —
- *      whose entire job description is querying data — could not open a
- *      dashboard. The tests below prove a non-admin now can.
+ *      a built-in role whose purpose is the analyst loop, and which this change
+ *      gives both dashboards flags — could not open a dashboard. The tests below prove a non-admin now can.
  *   2. **Admins were denied by the MFA gate.** `mfaRequired` fires for an
  *      unenrolled owner, which is #5188's prod loop: every fresh SaaS signup is
  *      their org's `owner` (Better Auth `creatorRole`) with no second factor on
@@ -28,13 +28,12 @@ import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 
 // A brand-new SaaS signup: `owner` role, no second factor on file.
 //
-// ⚠️ `claims: {}` does NOT produce that — `createApiTestMocks` merges its own
+// ⚠️ `claims: {}` would NOT produce that — `createApiTestMocks` merges its own
 // `defaultClaims` FIRST for admin-ish roles, so an empty object comes back as
-// `{ twoFactorEnabled: true }`, i.e. an ENROLLED owner. The unenrolled state is
-// established by `authAs()` in `beforeEach` below, and this factory config only
-// sets the identity. Stating it explicitly here so a reader does not delete that
-// `beforeEach` line on the strength of this block and silently stop reproducing
-// #5188.
+// `{ twoFactorEnabled: true }`, i.e. an ENROLLED owner. Hence the explicit
+// `false`. Note that `beforeEach` replaces `mockAuthenticateRequest` wholesale
+// for every test, so this block documents the shape rather than driving it —
+// the state under test is established by `authAs()`.
 const mocks = createApiTestMocks({
   authUser: {
     id: "owner-fresh",
@@ -210,9 +209,10 @@ describe("#5189 — no dashboards route may exist without a permission decision"
    *
    * Tagging the gate closure and looking for the tag was tried first and does
    * NOT work: `app.route()` WRAPS a sub-app's handlers, so the property is gone
-   * by the time the route is mounted. Measured — that version found zero tags
-   * across all 26 routes, which is to say it would have passed by finding
-   * nothing, on any tree, forever.
+   * by the time the route is mounted. Measured at the time — that version found zero
+   * tags across all 26 routes, which is to say it would have passed by finding
+   * nothing, on any tree, forever. (The tagging code was deleted rather than
+   * shipped unused, so the measurement is not reproducible from this tree.)
    */
   const registered = new Set<string>();
   for (const entry of app.routes) {
@@ -247,6 +247,41 @@ describe("#5189 — no dashboards route may exist without a permission decision"
 
   it("covers 26 routes", () => {
     expect(registered.size).toBe(26);
+  });
+
+  it("publishes the enforced flag in every route's OpenAPI description", () => {
+    // The descriptions are the PUBLISHED contract — `apps/docs/openapi.json` and
+    // the generated reference pages — so a wrong one tells an integrator the
+    // opposite of what the gate does. Round 1 rewrote the 18 that said
+    // "Requires admin role." and verified 0 mismatches; that was a one-time
+    // measurement, and it missed 8 routes that had never carried an
+    // authorization sentence at all, including `POST /{id}/draft/publish`.
+    //
+    // This asserts it instead, against the doc the app actually emits, keyed on
+    // the same ROUTES table that drives the enforcement tests above.
+    const doc = app.getOpenAPI31Document({
+      openapi: "3.1.0",
+      info: { title: "t", version: "0" },
+    }) as {
+      paths?: Record<string, Record<string, { description?: string }>>;
+    };
+
+    const wrong: string[] = [];
+    for (const r of ROUTES) {
+      const path = `${MOUNT}${r.path === "/" ? "" : r.path}`
+        .replace(VALID_ID, "{id}")
+        .replace("/cards/c-1", "/cards/{cardId}")
+        .replace("/sessions/s-1", "/sessions/{sessionId}");
+      const op = doc.paths?.[path]?.[r.method.toLowerCase()];
+      const desc = op?.description ?? "";
+      const found = [...desc.matchAll(/Requires the `(dashboards:\w+)` permission/g)].map(
+        (m) => m[1],
+      );
+      if (found.length !== 1 || found[0] !== r.permission) {
+        wrong.push(`${r.method} ${path}: doc says ${JSON.stringify(found)}, gate is ${r.permission}`);
+      }
+    }
+    expect(wrong).toEqual([]);
   });
 
   it("leaves the public share route outside the gated mount", () => {

@@ -54,20 +54,17 @@ export default function DashboardsPage() {
   // what the SERVER said rather than a guess — see the card for why that
   // distinction is load-bearing.
   const isUnauthenticated = error?.status === 401;
-  const rawEnrollmentUrl =
-    error?.status === 403 && error.code === "mfa_enrollment_required"
-      ? error.enrollmentUrl
-      : undefined;
+  // `enrollmentUrl` is sanitized to a same-origin path by `extractFetchError`,
+  // the one place it enters `FetchError` — so every consumer that reads it off a
+  // `FetchError` inherits the guard rather than each re-deriving one. An earlier
+  // version of this fix guarded HERE instead, which protected only this page's
+  // `router.replace` and left `mfa-enrollment-dialog`'s `router.push`
+  // unguarded. (`admin-layout` reads the field from `usePasswordStatus`, which
+  // parses the body itself and never enters `FetchError` — sanitized there
+  // separately.)
   const mfaEnrollmentUrl =
     error?.status === 403 && error.code === "mfa_enrollment_required"
-      ? // Same-origin path only. `enrollmentUrl` is copied verbatim out of a
-        // response body, and `router.replace()` on an absolute or
-        // protocol-relative URL is a real off-site navigation — an open redirect
-        // driven by whatever answered the request. The producer is a constant
-        // today; this is what keeps that from being load-bearing.
-        rawEnrollmentUrl?.startsWith("/") && !rawEnrollmentUrl.startsWith("//")
-        ? rawEnrollmentUrl
-        : DEFAULT_ENROLLMENT_URL
+      ? (error.enrollmentUrl ?? DEFAULT_ENROLLMENT_URL)
       : null;
   // Drives the skeleton + the redirect effect: both 401 and the MFA case
   // navigate away, so neither should paint the error card on the way out.
@@ -131,11 +128,12 @@ export default function DashboardsPage() {
     // Enumerated post-#5189: `insufficient_permissions` is minted directly by
     // `permission-resolve`, so it reaches the client under its own name.
     // `api_key_not_permitted` cannot arise from a browser session, and
-    // `forbidden_role` comes only from `adminAuth`, which dashboards no longer
-    // use — it is kept here as the defensive arm for a future route, not because
-    // this one can produce it. Everything else is rewritten by `authErrorCode`
-    // to `auth_error` / `session_expired` and lands, correctly, in the
-    // server-message branch.
+    // `forbidden_role` comes only from the admin/platform-admin role checks
+    // (`adminAuth`, `platformAdminAuth`, `billing`'s inline BYOT gate), none of
+    // which dashboards traverse — it is kept here as the defensive arm for a
+    // future route, not because this one can produce it. Everything else is
+    // rewritten by `authErrorCode` to `auth_error` / `session_expired` and
+    // lands, correctly, in the server-message branch.
     const isPermissionDenial =
       error.status === 403 &&
       (error.code === "insufficient_permissions" || error.code === "forbidden_role");

@@ -209,10 +209,26 @@ describe("Built-in roles", () => {
     // `analyst` as holding admin's ten flags and passed `admin` by luck of
     // ordering.
     const byRole = new Map<string, string[]>();
-    for (const stmt of sql.split(";")) {
+    // Strip `--` comments before splitting: the author has already been bitten
+    // once by regexing SQL as text, and a comment restating a stale array would
+    // otherwise fail this loudly for no reason.
+    for (const stmt of sql.replace(/--[^\n]*/g, "").split(";")) {
       const perms = /SET permissions = '(\[[^']*\])'/.exec(stmt);
-      const name = /name = '([a-z_]+)'/.exec(stmt);
-      if (perms && name) byRole.set(name[1], JSON.parse(perms[1]) as string[]);
+      // `[a-z0-9_-]`, not `[a-z_]` — `ROLE_NAME_RE` allows digits and hyphens,
+      // so a future built-in named `data-engineer` would silently not parse.
+      const name = /name = '([a-z0-9_-]+)'/.exec(stmt);
+      if (!perms || !name) continue;
+      // ⚠️ Assert the SCOPE, not just the payload. Measured: mutating the
+      // migration's `WHERE is_builtin = true` to `WHERE true` left this guard
+      // GREEN, because it only ever read `SET permissions` and `name`. That
+      // clause is the sole thing stopping the backfill rewriting a CUSTOMER's
+      // own `custom_roles` row that happens to share a built-in name — the one
+      // property here with a customer-data blast radius, and the one the
+      // seeder's sibling test does assert.
+      expect(stmt, `backfill for "${name[1]}" is not scoped to is_builtin`).toContain(
+        "is_builtin = true",
+      );
+      byRole.set(name[1], JSON.parse(perms[1]) as string[]);
     }
 
     expect([...byRole.keys()].sort()).toEqual(
@@ -364,8 +380,8 @@ describe("CRUD operations", () => {
     });
 
     it("returns roles from DB", async () => {
-      // seedBuiltinRoles: 3 built-in roles × (SELECT existence check + INSERT if needed)
-      // Each SELECT returns a row (already exists), so no INSERT needed
+      // seedBuiltinRoles: one upsert per built-in role (3), each consuming one
+      // queued result. The SELECT existence probe is gone — see #5189.
       ee.queueMockRows([{ id: "r1" }]); // admin exists
       ee.queueMockRows([{ id: "r2" }]); // analyst exists
       ee.queueMockRows([{ id: "r3" }]); // viewer exists

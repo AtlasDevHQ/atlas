@@ -22,6 +22,7 @@ import { Hono } from "hono";
 let deployMode = "self-hosted";
 let configThrows = false;
 let configIsNull = false;
+let deployModeAbsent = false;
 
 // Spread the real module. `mock.module` REPLACES it wholesale, so a factory
 // returning only `getConfig` passes today purely because nothing in this
@@ -32,8 +33,36 @@ void mock.module("@atlas/api/lib/config", () => ({
   ...realConfig,
   getConfig: () => {
     if (configThrows) throw new Error("config module exploded");
-    return configIsNull ? null : { deployMode };
+    if (configIsNull) return null;
+    return deployModeAbsent ? {} : { deployMode };
   },
+}));
+
+// The unknown-deploy-mode arms all RESOLVE the same way (permissive), so the
+// log is the only thing that distinguishes "determined self-hosted" from "could
+// not determine, proceeding anyway". Measured: without capturing it, collapsing
+// the three states back into `mode !== "saas"` passes every behavioural
+// assertion in this file — the fix would be unfalsifiable.
+const warnings: Array<{ obj: Record<string, unknown>; msg: string }> = [];
+const realLogger = await import("@atlas/api/lib/logger");
+void mock.module("@atlas/api/lib/logger", () => ({
+  ...realLogger,
+  createLogger: () => ({
+    info: () => {},
+    debug: () => {},
+    trace: () => {},
+    fatal: () => {},
+    error: () => {},
+    warn: (obj: unknown, msg?: unknown) => {
+      warnings.push({
+        obj: (typeof obj === "object" && obj !== null ? obj : {}) as Record<string, unknown>,
+        msg: typeof msg === "string" ? msg : typeof obj === "string" ? obj : "",
+      });
+    },
+    child() {
+      return this;
+    },
+  }),
 }));
 
 const { workspaceActorGuard, requireWorkspacePermission } = await import(
@@ -61,6 +90,8 @@ beforeEach(() => {
   deployMode = "self-hosted";
   configThrows = false;
   configIsNull = false;
+  deployModeAbsent = false;
+  warnings.length = 0;
   delete process.env.ATLAS_DEPLOY_MODE;
 });
 
@@ -118,50 +149,71 @@ describe('workspaceActorGuard — mode:"none" under SaaS', () => {
     expect(res.status).toBe(200);
   });
 
-  // The deploy-mode predicate used to answer `false` on any fault — a silent
-  // false negative on a security check, which is the one shape CLAUDE.md names
-  // outright. When it says "not SaaS", this guard becomes a no-op and
-  // `mode:"none"` resolves to the FULL permission set, so a wrong `false` is not
-  // a degraded check, it is no check.
+  // ── The unknown-deploy-mode arms ────────────────────────────────
+  //
+  // The predicate used to answer `false` on any fault, SILENTLY, and had a
+  // third state (`deployMode === undefined`) that fell through the same way.
+  //
+  // ⚠️ Fail-closed on unknown was implemented and then WITHDRAWN, measured: it
+  // reddened `dashboards`, `integrations-discord`,
+  // `integrations-slack-install-cap` and `admin-router` — the supported
+  // self-hosted no-auth configuration.
+  // `mode: "none"` means no auth is configured, which is a documented
+  // self-hosted posture and a catastrophically broken SaaS region — so unknown
+  // resolves permissive, and what changed is that it now says so in the log.
+  // These tests pin the resolution rather than the aspiration.
 
-  it("stays armed when the config module THROWS", async () => {
+  // Each arm asserts BOTH halves: it proceeds, AND it says why it could not
+  // determine the mode. The status alone is identical to a determined
+  // self-hosted answer, so without the log assertion these three cannot fail.
+
+  it("does not refuse when the config module THROWS, and warns with the cause", async () => {
     configThrows = true;
+    const res = await appWith({ mode: "none" }).request("/");
+    expect(res.status).toBe(200);
+    const w = warnings.find((x) => x.msg.includes("deploy-mode unresolved"));
+    expect(w, "no deploy-mode warning was emitted").toBeDefined();
+    expect(String(w!.obj.reason)).toContain("config module exploded");
+  });
+
+  it("does not refuse when config is not initialized yet, and warns", async () => {
+    configIsNull = true;
+    const res = await appWith({ mode: "none" }).request("/");
+    expect(res.status).toBe(200);
+    expect(warnings.some((x) => x.msg.includes("deploy-mode unresolved"))).toBe(true);
+  });
+
+  it("stays SILENT when the mode is genuinely determined", async () => {
+    // The other half — a predicate that warned unconditionally would satisfy
+    // every assertion above while making the log useless.
+    const res = await appWith({ mode: "none" }).request("/");
+    expect(res.status).toBe(200);
+    expect(warnings.filter((x) => x.msg.includes("deploy-mode unresolved"))).toEqual([]);
+  });
+
+  it("does not refuse when config resolved but deployMode is ABSENT, and warns", async () => {
+    // The third input shape, and the one the type itself says is possible:
+    // `ResolvedConfig.deployMode` is optional. The first version of this fix
+    // narrowed on `cfg !== null` and left this arm on the old permissive path
+    // with no log at all — so a `_setConfigForTest(Partial<…>)` fixture could
+    // assert the guard and pass for the wrong reason.
+    deployModeAbsent = true;
+    const res = await appWith({ mode: "none" }).request("/");
+    expect(res.status).toBe(200);
+    const w = warnings.find((x) => x.msg.includes("deploy-mode unresolved"));
+    expect(w, "an absent deployMode was treated as a determined answer").toBeDefined();
+    expect(w!.obj.reason).toBe("config resolved deployMode=undefined");
+  });
+
+  it("STILL refuses when the env states saas and config is unavailable", async () => {
+    // The one positive signal available without config. Without this arm the
+    // three tests above would be satisfied by a predicate hardcoded to false,
+    // which is exactly what they are meant to rule out.
+    configThrows = true;
+    process.env.ATLAS_DEPLOY_MODE = "saas";
     const res = await appWith({ mode: "none" }).request("/");
     expect(res.status).toBe(500);
     expect(((await res.json()) as { error: string }).error).toBe("auth_misconfigured");
-  });
-
-  it("stays armed when config is not initialized yet", async () => {
-    // Reachable: routes can be served before `initConfig` completes, and a null
-    // config read as "self-hosted" is indistinguishable from the real thing.
-    configIsNull = true;
-    const res = await appWith({ mode: "none" }).request("/");
-    expect(res.status).toBe(500);
-  });
-
-  // ⚠️ These two are the ones that matter, and the first version of this fix
-  // failed both. The fallback used to be `ATLAS_DEPLOY_MODE === "saas"` — but a
-  // production SaaS region sets `deployMode` in `deploy/api/atlas.config.ts` and
-  // leaves that env var UNSET, so the fallback answered "self-hosted" for
-  // exactly the deploy it protects. Fixtures that set the env var to "saas"
-  // could not see it: they exercised the one input shape a narrow fallback gets
-  // right.
-
-  it("stays armed on a config-file SaaS region, where ATLAS_DEPLOY_MODE is unset", async () => {
-    configThrows = true;
-    // Deliberately NOT setting the env var — this is the prod shape.
-    expect(process.env.ATLAS_DEPLOY_MODE).toBeUndefined();
-    const res = await appWith({ mode: "none" }).request("/");
-    expect(res.status).toBe(500);
-  });
-
-  it("honours an explicit self-hosted declaration when config is unavailable", async () => {
-    // The other direction, and it is what keeps the fallback from being an
-    // unconditional refusal: an operator who has SAID self-hosted is believed.
-    configThrows = true;
-    process.env.ATLAS_DEPLOY_MODE = "self-hosted";
-    const res = await appWith({ mode: "none" }).request("/");
-    expect(res.status).toBe(200);
   });
 });
 
@@ -170,11 +222,12 @@ describe("workspaceActorGuard — middleware-order contract", () => {
     // A reorder that put this before `standardAuth` would otherwise be an
     // unlogged TypeError surfacing as an opaque 500 with no cause. Same guard
     // `mfaRequired` carries, for the same once-observed reason.
+    // Deliberately NO `requestId` seeded by the fixture. `standardAuth` sets
+    // BOTH `requestId` and `authResult`, so this branch's own precondition
+    // guarantees there is none to read — a fixture that sets one tests a state
+    // production cannot reach, and an earlier version of this test passed only
+    // because of that.
     const app = new Hono();
-    app.use(async (c, next) => {
-      c.set("requestId" as never, "req-test" as never);
-      await next();
-    });
     app.use(workspaceActorGuard as never);
     app.get("/", (c) => c.json({ reached: true }));
 
@@ -182,7 +235,21 @@ describe("workspaceActorGuard — middleware-order contract", () => {
     expect(res.status).toBe(500);
     const body = (await res.json()) as { error: string; requestId: string };
     expect(body.error).toBe("auth_misconfigured");
-    expect(body.requestId).toBe("req-test");
+    // CLAUDE.md: every 500 carries a requestId. Seeded here, not read — the
+    // first version READ one and shipped a 500 with no correlation handle, on
+    // the one path built to be a debugging aid.
+    expect(body.requestId).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it("honours an inbound x-request-id when seeding", async () => {
+    const app = new Hono();
+    app.use(workspaceActorGuard as never);
+    app.get("/", (c) => c.json({ reached: true }));
+
+    const res = await app.request("/", {
+      headers: { "x-request-id": "trace-abc" },
+    });
+    expect(((await res.json()) as { requestId: string }).requestId).toBe("trace-abc");
   });
 });
 
@@ -222,8 +289,11 @@ describe("requireWorkspacePermission — refuses to run un-guarded", () => {
     app.get("/", (c) => c.json({ reached: true }));
 
     const res = await app.request("/");
-    // 503 is the self-hosted no-op RolesPolicy answering `permissions_unavailable`
-    // — the point here is that it got PAST the ordering refusal, which is a 500.
-    expect(res.status).not.toBe(500);
+    // 200, measured. The self-hosted no-op RolesPolicy delegates to
+    // `checkPermissionLegacy`, and a role-less user defaults to `member`,
+    // which now carries `dashboards:read` — so it ALLOWS. (`not.toBe(500)`
+    // would also pass on a 404 or a 503; the exact status additionally pins
+    // the member grant end to end.)
+    expect(res.status).toBe(200);
   });
 });

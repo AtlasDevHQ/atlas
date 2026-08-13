@@ -2,6 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useAtlasConfig } from "@/ui/context";
+import { sameOriginPath } from "@/ui/lib/fetch-error";
 
 /**
  * Discriminated result so consumers can distinguish a "not admin" 403 from
@@ -92,7 +93,13 @@ export function usePasswordStatus(enabled: boolean) {
         if (body.error === "mfa_enrollment_required") {
           return {
             kind: "mfa-required",
-            enrollmentUrl: body.enrollmentUrl ?? DEFAULT_ENROLLMENT_URL,
+            // #5189 — sanitized like every other enrollment-URL consumer.
+            // This hook parses the body ITSELF and never goes through
+            // `extractFetchError`, so it does not inherit that guard — and it
+            // feeds `admin-layout`'s `<Link href>` and `trigger()`, both of
+            // which navigate.
+            enrollmentUrl:
+              sameOriginPath(body.enrollmentUrl) ?? DEFAULT_ENROLLMENT_URL,
           };
         }
         return { kind: "denied" };
@@ -126,7 +133,8 @@ export function usePasswordStatus(enabled: boolean) {
       if (data.mfaRequired) {
         return {
           kind: "mfa-required",
-          enrollmentUrl: data.enrollmentUrl ?? DEFAULT_ENROLLMENT_URL,
+          enrollmentUrl:
+            sameOriginPath(data.enrollmentUrl) ?? DEFAULT_ENROLLMENT_URL,
         };
       }
       return {

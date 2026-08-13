@@ -9,8 +9,9 @@
  * ran and 403'd anyone outside `{admin, owner, platform_admin}`. The
  * consequence is structural: **the permission system could only ever subtract
  * from admin, never grant to a non-admin.** An `analyst` — a first-class
- * built-in role in `ee/src/auth/roles.ts`, whose entire description is querying
- * data — was 403'd by `adminAuth` before `checkPermission` was ever consulted.
+ * built-in role in `ee/src/auth/roles.ts` whose purpose is the analyst loop,
+ * and which this change gives both dashboards flags — was 403'd by `adminAuth`
+ * before `checkPermission` was ever consulted.
  *
  * So a core analyst-loop surface had exactly two options: admin-only, or
  * ungated. Dashboards took the first and that is what produced #5188's login
@@ -19,8 +20,9 @@
  * ## What it is NOT
  *
  * Not a relaxation of the admin perimeter. The admin console, connections,
- * audit, billing, roles and settings keep `createAdminRouter()` and every gate
- * that comes with it. This is for surfaces that were never admin surfaces and
+ * audit, roles and settings keep `createAdminRouter()` and every gate that
+ * comes with it. (`billing` and `wizard` sit on bare `adminAuth` and never
+ * carried `mfaRequired` — see `middleware.ts` §#4110.) This is for surfaces that were never admin surfaces and
  * were only sitting behind the admin gate because it was the only gate wired to
  * the permission system.
  *
@@ -89,13 +91,13 @@ type WorkspaceGateEnv = OrgContextEnv & {
  *     is what the caller actually hit.
  *  2. **`mode: "none"` may not reach a permission gate under SaaS.** The
  *     no-auth local-dev carve-out resolves to the FULL permission set
- *     (`resolveLegacyPermissions`), so in SaaS it would be a total bypass.
+ *     (`resolveLegacyPermissions`, on its undefined-user branch), so in SaaS
+ *     it would be a total bypass.
  *     `adminAuth` carries this guard (#3342 L-1) and `standardAuth` does not —
  *     the guard exists precisely because the weaker tier was the unguarded one,
  *     and this router is a weaker tier.
  */
 export const workspaceActorGuard = createMiddleware<WorkspaceGateEnv>(async (c, next) => {
-  const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
   // Middleware-order contract, same guard `mfaRequired` carries for the same
@@ -103,19 +105,34 @@ export const workspaceActorGuard = createMiddleware<WorkspaceGateEnv>(async (c, 
   // bare property read is an unlogged TypeError surfacing as an opaque 500.
   // Fail closed and say which contract broke.
   if (!authResult) {
+    // ⚠️ SEED the request id, don't read one. There is no global request-id
+    // middleware, and `standardAuth` — which sets both `requestId` and
+    // `authResult` — cannot have run if `authResult` is missing. Reading it
+    // emitted a 500 with no correlation handle and a log line with nothing to
+    // grep, on the one path built to be a debugging aid. `region-routing.ts`
+    // records the same lesson for the same reason.
+    //
+    // (`withRequestId` is the one opt-in middleware that sets `requestId`
+    // ALONE; behind it this mints a second id, accepted as the cost of never
+    // emitting a 500 with no handle at all.)
+    const seeded = c.req.header("x-request-id") ?? crypto.randomUUID();
+    c.set("requestId", seeded);
     log.error(
-      { requestId },
+      { requestId: seeded },
       "workspaceActorGuard ran before standardAuth — no authResult; failing closed",
     );
     return c.json(
       {
         error: "auth_misconfigured",
-        message: "Workspace authorization is not configured.",
-        requestId,
+        message:
+          "Workspace authorization is not configured — the request-authentication middleware did not run. This is a server wiring fault, not a credential problem; retrying will not help.",
+        requestId: seeded,
       },
       500,
     );
   }
+
+  const requestId = c.get("requestId");
 
   if (resolveActorKind(authResult.user?.claims) === "api_key") {
     log.warn(
@@ -172,8 +189,10 @@ export const workspaceActorGuard = createMiddleware<WorkspaceGateEnv>(async (c, 
  *
  *   • `enforcePermission` runs `checkPermission` through the `RolesPolicy` Tag,
  *     so EE's custom-role resolver and the self-hosted no-op behave here
- *     exactly as they do on admin routes — including the
- *     `permissions_unavailable` 503 when no real implementation is bound.
+ *     exactly as they do on admin routes — including the legacy-mapping
+ *     fall-through the self-hosted no-op provides, and the
+ *     `permissions_unavailable` 503 that a THROWN authorization layer
+ *     produces (next bullet). The no-op itself answers allow/403, not 503.
  *   • A throw inside the Effect fails closed with that same 503 rather than a
  *     403, so "the authorization layer crashed" is never reported as
  *     "you lack permission".

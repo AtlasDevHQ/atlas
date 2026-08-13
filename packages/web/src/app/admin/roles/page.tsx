@@ -94,6 +94,24 @@ const PERMISSION_GROUPS: Record<string, string[]> = {
 };
 
 /**
+ * The permission set the editor may offer, from a fetch that may not have
+ * landed.
+ *
+ * ⚠️ Exists so this decision is TESTABLE. It was inline as
+ * `data?.permissions ?? Object.keys(PERMISSION_LABELS)`, and the fallback was
+ * the hardcoded-map-as-truth coupling this file exists to remove, surviving on
+ * the error path — a failed fetch, a schema mismatch and the loading state were
+ * indistinguishable from success. Measured: with the decision inline, restoring
+ * that `??` broke NO test, because the only coverage was of `groupPermissions`
+ * one layer down.
+ */
+export function offerablePermissions(
+  serverPermissions: string[] | undefined,
+): string[] {
+  return serverPermissions ?? [];
+}
+
+/**
  * Groups every server-known permission, with anything this file has no opinion
  * about collected under "Other". Takes the API's list as the source of truth so
  * a newly shipped flag degrades to "shown with its raw id" instead of "silently
@@ -118,10 +136,11 @@ function PermissionBadges({
 }) {
   // #5189 — was `permissions.length === Object.keys(PERMISSION_LABELS).length`,
   // which compared a role's size against a HARDCODED label map. It was correct
-  // only while the two lists happened to be the same length, so adding two
-  // server flags broke it in both directions at once: a genuinely
-  // all-permissions role stopped showing the badge, and any unrelated role
-  // holding as many flags as the map had labels started showing it falsely.
+  // only while the two lists happened to be the same length. Adding two server
+  // flags WITHOUT also adding two labels — one careless edit away, and this
+  // change had to add both — breaks it in either direction: a genuinely
+  // all-permissions role stops showing the badge, and any role holding as many
+  // flags as the map has labels starts showing it falsely.
   const all = new Set(allPermissions);
   if (
     all.size > 0 &&
@@ -387,7 +406,8 @@ export default function RolesPage() {
   );
 
   const roles = data?.roles ?? [];
-  const allPermissions = data?.permissions ?? Object.keys(PERMISSION_LABELS);
+  // NO fallback to a client-side list — see `offerablePermissions`.
+  const allPermissions = offerablePermissions(data?.permissions);
   const builtinRoles = roles.filter((r) => r.isBuiltin);
   const customRoles = roles.filter((r) => !r.isBuiltin);
 
@@ -400,7 +420,19 @@ export default function RolesPage() {
             Manage roles and permissions (enterprise)
           </p>
         </div>
-        <Button onClick={() => setCreateDialogOpen(true)} size="sm">
+        {/* Disabled until the server's permission list arrives: the editor
+            offers exactly what the server knows, so opening it with an empty
+            list would present a role form that can grant nothing. */}
+        <Button
+          onClick={() => setCreateDialogOpen(true)}
+          size="sm"
+          disabled={allPermissions.length === 0}
+          title={
+            allPermissions.length === 0
+              ? "Permissions are still loading, or could not be fetched"
+              : undefined
+          }
+        >
           <Plus className="mr-1 size-3.5" />
           Create Role
         </Button>

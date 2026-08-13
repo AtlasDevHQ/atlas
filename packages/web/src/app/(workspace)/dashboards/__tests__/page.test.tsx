@@ -172,8 +172,10 @@ describe("DashboardsPage (redirect index)", () => {
   });
 
   test("refuses an off-origin enrollment URL and uses the default instead", async () => {
-    // `enrollmentUrl` is copied verbatim from a response body and handed to
-    // `router.replace()`. An absolute URL there is an open redirect.
+    // `enrollmentUrl` reaches `router.replace()` from a response body.
+    // `extractFetchError`'s `sameOriginPath` is what refuses an off-origin
+    // value; this asserts the page's end-to-end OUTCOME — the default is used
+    // and the hostile URL is never navigated to.
     stubDashboardsStatus(403, {
       error: "mfa_enrollment_required",
       message: "Enroll a second factor to continue.",

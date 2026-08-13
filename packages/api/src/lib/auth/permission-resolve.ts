@@ -76,6 +76,15 @@ const LEGACY_ROLE_PERMISSIONS = {
 } satisfies Record<AtlasRole, readonly Permission[]>;
 
 /**
+ * The same mapping, keyed for a free-string lookup. `resolveLegacyPermissions`
+ * is handed `user.role`, which is typed `AtlasRole` but at runtime carries EE
+ * custom-role names — so the lookup key is genuinely a string, and a plain
+ * object index would expose `Object.prototype` members to it.
+ */
+const LEGACY_ROLE_PERMISSION_LOOKUP: ReadonlyMap<string, readonly Permission[]> =
+  new Map(Object.entries(LEGACY_ROLE_PERMISSIONS));
+
+/**
  * Permissions for a user using only the legacy role mapping — no DB
  * read. Returns the full PERMISSIONS set for the `mode === "none"`
  * (no-auth dev) path so local development keeps working.
@@ -98,7 +107,14 @@ const resolveLegacyPermissions = (
       return new Set<Permission>();
     }
     const role = user.role ?? "member";
-    const mapped = (LEGACY_ROLE_PERMISSIONS as Record<string, readonly Permission[]>)[role];
+    // Look up through a Map, not by indexing the object literal. `role` is a
+    // session-derived free string (it carries EE custom-role names), so
+    // `role === "toString"` would index `Object.prototype` and return a
+    // truthy FUNCTION — skipping the warn below and then throwing inside
+    // `new Set(...)`, which surfaces as a 503 rather than the intended
+    // fall-through. A Map has no prototype keys, and it drops the cast that was
+    // re-widening what `satisfies` had just narrowed.
+    const mapped = LEGACY_ROLE_PERMISSION_LOOKUP.get(role);
     if (!mapped) {
       // #5189 — the fall-through is deliberate, but it is now a GRANT: `member`
       // carries `dashboards:write`, so an unrecognized role name (a custom EE

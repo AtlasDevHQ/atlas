@@ -15,11 +15,20 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import { groupPermissions } from "../page";
+import { groupPermissions, offerablePermissions } from "../page";
 
-// The real shipped list, not a hand-copied one. A local literal here would
-// agree with itself forever and could not detect the drift this file exists to
-// detect.
+// ⚠️ This IS a hand-copied list, and an earlier version of this comment claimed
+// the opposite directly above it. Stating the constraint honestly instead:
+// `PERMISSIONS` lives in `packages/api/src/lib/auth/permissions.ts` and is
+// exported from no published package, and the web package speaks HTTP rather
+// than importing from `@atlas/api` — so it genuinely cannot be reached here.
+//
+// Drift is therefore possible and DELIBERATELY SAFE: `groupPermissions` is
+// driven by the server's list, so a flag this copy has never heard of still
+// reaches the editor via "Other" — which is what the third test pins, and which
+// is the real guarantee. This literal only fixes the input to the other cases.
+// Making the copy unnecessary means promoting `PERMISSIONS` to
+// `@useatlas/types` alongside `ATLAS_ROLES`; filed as follow-up.
 const PERMISSIONS = [
   "query",
   "query:raw_data",
@@ -63,5 +72,24 @@ describe("groupPermissions", () => {
 
   it("returns nothing for an empty server list", () => {
     expect(groupPermissions([])).toEqual([]);
+  });
+});
+
+describe("offerablePermissions — no client-side substitute for the server list", () => {
+  it("returns the server's list when it arrived", () => {
+    expect(offerablePermissions(PERMISSIONS)).toEqual(PERMISSIONS);
+  });
+
+  it("returns EMPTY when the fetch has not landed or failed", () => {
+    // The regression this pins: the fallback used to be
+    // `Object.keys(PERMISSION_LABELS)`, so a failed fetch silently offered a
+    // hardcoded list and an admin authored a role from stale data with no
+    // signal. Empty is what makes the editor degrade to an explicit empty
+    // state instead of a confident wrong one.
+    expect(offerablePermissions(undefined)).toEqual([]);
+  });
+
+  it("an empty offer groups to nothing, so the editor has nothing to show", () => {
+    expect(groupPermissions(offerablePermissions(undefined))).toEqual([]);
   });
 });

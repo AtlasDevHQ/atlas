@@ -6,7 +6,8 @@
  * mock `checkPermission` at the `RolesPolicy` seam, so they exercise the GATE
  * and never reach the mapping behind it — measured: stripping both dashboards
  * flags out of `LEGACY_ROLE_PERMISSIONS` left `dashboards-permission.test.ts`
- * at 64/64 green. The decision that a non-EE `member` can author dashboards was
+ * fully green (re-measured at 66/66 after round 2
+ * added a test — the count moves, the property does not). The decision that a non-EE `member` can author dashboards was
  * unfalsified by anything until this file.
  *
  * It matters most on exactly the deploys that have no EE custom-role table:
@@ -80,5 +81,27 @@ describe("#5189 — legacy role mapping carries the dashboards flags", () => {
     const perms = await resolve("data-scientist");
     expect(perms.has("dashboards:read")).toBe(true);
     expect(perms.has("dashboards:write")).toBe(true);
+  });
+});
+
+describe("#5189 round 2 — the lookup key is a free string", () => {
+  it("does not resolve a prototype member as a role", async () => {
+    // `role` carries EE custom-role names at runtime, so indexing the mapping
+    // object exposed `Object.prototype` to it: `"toString"` returned a truthy
+    // FUNCTION, which skipped the unknown-role warn and then threw inside
+    // `new Set(...)` — surfacing as a 503 instead of the member fall-through.
+    const perms = await resolve("toString");
+    expect([...perms].sort()).toEqual([
+      "dashboards:read",
+      "dashboards:write",
+      "query",
+      "query:raw_data",
+    ]);
+  });
+
+  it("does not resolve `constructor` either", async () => {
+    const perms = await resolve("constructor");
+    expect(perms.has("dashboards:read")).toBe(true);
+    expect([...perms].filter((p) => p.startsWith("admin:"))).toEqual([]);
   });
 });

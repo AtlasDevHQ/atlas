@@ -547,7 +547,7 @@ const getDraftStatusRoute = createRoute({
   tags: ["Dashboards", "Drafts"],
   summary: "Check whether the caller has an active draft for this dashboard",
   description:
-    "Non-forking presence check. Returns 200 with `{ hasDraft: true, publishedBaselineAt, dashboardUpdatedAt }` when the caller's draft exists, or 200 with `{ hasDraft: false }` when not. The client uses `publishedBaselineAt !== dashboardUpdatedAt` to surface the stale-baseline banner.",
+    "Non-forking presence check. Returns 200 with `{ hasDraft: true, publishedBaselineAt, dashboardUpdatedAt }` when the caller's draft exists, or 200 with `{ hasDraft: false }` when not. The client uses `publishedBaselineAt !== dashboardUpdatedAt` to surface the stale-baseline banner. Requires the `dashboards:read` permission.",
   request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
   responses: {
     200: { description: "Draft presence + baseline timestamps", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -566,7 +566,7 @@ const publishDraftRoute = createRoute({
   tags: ["Dashboards", "Drafts"],
   summary: "Publish the caller's draft to the live dashboard",
   description:
-    "Diff-merges the caller's draft into the live dashboard in a single transaction. Returns 409 when a teammate has published since the draft was forked (with `reason: \"stale_baseline\"`) or when both sides edited the same card (with `reason: \"conflict\"`).",
+    "Diff-merges the caller's draft into the live dashboard in a single transaction. Returns 409 when a teammate has published since the draft was forked (with `reason: \"stale_baseline\"`) or when both sides edited the same card (with `reason: \"conflict\"`). Requires the `dashboards:write` permission.",
   request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
   responses: {
     200: { description: "Published — number of merge ops applied", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -585,7 +585,7 @@ const discardDraftRoute = createRoute({
   middleware: DASHBOARD_WRITE,
   tags: ["Dashboards", "Drafts"],
   summary: "Discard the caller's draft",
-  description: "Idempotently drops the caller's draft for this dashboard. No-op if no draft exists.",
+  description: "Idempotently drops the caller's draft for this dashboard. No-op if no draft exists. Requires the `dashboards:write` permission.",
   request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
   responses: {
     204: { description: "Draft discarded (or already absent)" },
@@ -603,7 +603,7 @@ const rebaseDraftRoute = createRoute({
   tags: ["Dashboards", "Drafts"],
   summary: "Rebase the caller's draft onto the latest published baseline",
   description:
-    "Fast-forwards the draft onto the latest published row when there are no conflicts; returns 409 with the conflict set when both sides edited the same card.",
+    "Fast-forwards the draft onto the latest published row when there are no conflicts; returns 409 with the conflict set when both sides edited the same card. Requires the `dashboards:write` permission.",
   request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
   responses: {
     200: { description: "Rebased draft", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -666,7 +666,7 @@ const undoDraftRoute = createRoute({
   tags: ["Dashboards", "Drafts"],
   summary: "Undo a bound-editor destructive edit in the caller's draft",
   description:
-    "Applies the inverse of a bound-editor destructive edit to the caller's draft: `restore_card` re-adds a removed card (verbatim, same id), `revert_sql` restores a card's prior SQL. An ordinary draft edit — nothing touches the published board until publish. Idempotent: restoring a card that already exists in the draft is a no-op.",
+    "Applies the inverse of a bound-editor destructive edit to the caller's draft: `restore_card` re-adds a removed card (verbatim, same id), `revert_sql` restores a card's prior SQL. An ordinary draft edit — nothing touches the published board until publish. Idempotent: restoring a card that already exists in the draft is a no-op. Requires the `dashboards:write` permission.",
   request: {
     params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }),
     body: { content: { "application/json": { schema: DraftUndoBodySchema } }, required: true },
@@ -1007,7 +1007,7 @@ const listDashboardSessionsRoute = createRoute({
   tags: ["Dashboards"],
   summary: "List archived bound chat sessions for a dashboard",
   description:
-    "Returns past chat sessions bound to this dashboard (one row per drawer-open). Workspace-wide visibility: any user who can view the dashboard sees every session. Used by the bound chat drawer's History tab (#2368).",
+    "Returns past chat sessions bound to this dashboard (one row per drawer-open). Workspace-wide visibility: any user who can view the dashboard sees every session. Used by the bound chat drawer's History tab (#2368). Requires the `dashboards:read` permission.",
   request: {
     params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }),
   },
@@ -1028,7 +1028,7 @@ const getDashboardSessionRoute = createRoute({
   tags: ["Dashboards"],
   summary: "Read a bound chat session transcript",
   description:
-    "Returns the read-only transcript (messages) for one bound session. Workspace-wide visibility: gated by dashboard ACL + binding match, not per-user ownership. Used by the bound chat drawer's History tab transcript panel (#2368).",
+    "Returns the read-only transcript (messages) for one bound session. Workspace-wide visibility: gated by dashboard ACL + binding match, not per-user ownership. Used by the bound chat drawer's History tab transcript panel (#2368). Requires the `dashboards:read` permission.",
   request: {
     params: z.object({
       id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
@@ -1052,7 +1052,7 @@ const screenshotDashboardRoute = createRoute({
   tags: ["Dashboards"],
   summary: "Render a PNG screenshot of the dashboard",
   description:
-    "Renders the dashboard in a headless Chromium and returns the captured PNG. Scoped to the calling user — when #2364 (drafts foundation) lands, draft views are returned per-user, otherwise the published baseline is captured. Output is cached by (dashboardId, userId, snapshotHash) and invalidated on every mutation. Used internally by the bound agent's `screenshotDashboard` tool (#2367); also exposable to UI for in-conversation previews.",
+    "Renders the dashboard in a headless Chromium and returns the captured PNG. Scoped to the calling user — when #2364 (drafts foundation) lands, draft views are returned per-user, otherwise the published baseline is captured. Output is cached by (dashboardId, userId, snapshotHash) and invalidated on every mutation. Used internally by the bound agent's `screenshotDashboard` tool (#2367); also exposable to UI for in-conversation previews. Requires the `dashboards:read` permission.",
   request: {
     params: z.object({
       id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),

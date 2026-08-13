@@ -52,14 +52,23 @@ const log = createLogger("auth:permissions");
 export const PERMISSIONS = [
   "query",
   "query:raw_data",
-  // #5189 — the first NON-admin permission pair. Everything below this line is
-  // gated by `adminAuth` upstream, so its flags can only ever *subtract* from
-  // admin; these two are enforced by `requireWorkspacePermission` outside the
-  // admin perimeter and can therefore GRANT to an analyst/viewer/member who is
-  // not an org admin. Read covers list/get/render/refresh/export — the whole
-  // viewing path, including the POST-shaped reads. Write covers authoring:
-  // create/update/delete, the draft lifecycle, cards, share links, and the
-  // authoring assists (`/suggest`, `/preview-card`).
+  // #5189 — the first pair ENFORCED outside the admin perimeter. Every
+  // `admin:*` flag below is gated by `adminAuth` upstream, so those can only
+  // ever *subtract* from admin; these two are enforced by
+  // `requireWorkspacePermission` and can therefore GRANT to an
+  // analyst/viewer/member who is not an org admin. (`query`/`query:raw_data`
+  // above are non-admin-named but are not enforced at any route today.)
+  //
+  // The split is **does this persist**, not **is this a GET**. Read covers
+  // non-persisting viewing: list/get/render/export/screenshot. Write covers
+  // anything that persists — create/update/delete, cards, share links, BOTH
+  // refresh routes (they UPDATE the published card cache) and `GET /{id}/draft`
+  // (the first call forks) — plus the authoring assists `/suggest` and
+  // `/preview-card`. The per-route table and the full sweep live in
+  // `api/routes/dashboards.ts`; keep the rule stated in one place and this
+  // pointing at it, because an earlier draft of this comment stated the
+  // method-based rule that was rejected, at the definition site a reader
+  // reaches first.
   "dashboards:read",
   "dashboards:write",
   "admin:users",

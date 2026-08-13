@@ -93,10 +93,18 @@ function denyApiKeyOnAdmin(
 }
 
 /**
- * Whether the current deploy mode is SaaS. Lazy-imported to avoid fighting
- * the module graph; getConfig() is a cheap singleton read after boot and
- * returning false if config isn't ready yet is the safe default (the gate
- * is only *stricter* in SaaS; self-hosted behaviour is unchanged).
+ * Whether the current deploy mode is SaaS — or, when that cannot be
+ * determined, whether to ACT as though it is.
+ *
+ * ⚠️ The old body was `catch { return false }` — a SILENT false on a predicate
+ * that arms three `mode: "none"` refusals, where `mode: "none"` resolves to the
+ * FULL `PERMISSIONS` set. So a wrong `false` does not make a gate less strict,
+ * it removes the gate, and it did so without a word in the log. Every arm now
+ * determines the answer from `deployMode` or WARNS with the reason; see
+ * {@link unknownDeployMode} for why unknown still resolves permissive and what
+ * was measured to get there.
+ *
+ * Lazy-imported via `require` to avoid a module cycle with `lib/config`.
  */
 export function isSaasDeployMode(): boolean {
   try {
@@ -104,49 +112,69 @@ export function isSaasDeployMode(): boolean {
     const { getConfig } = require("@atlas/api/lib/config") as {
       getConfig: () => { deployMode?: string } | null;
     };
-    const cfg = getConfig();
-    if (cfg !== null) return cfg.deployMode === "saas";
-    // Config not initialized yet — reachable, because routes can be served
-    // before `initConfig` completes.
-    log.warn(
-      { requestId: undefined },
-      "deploy-mode lookup ran before config init — assuming SaaS so the mode:\"none\" guards stay armed",
-    );
-    return assumeSaasWhenUnknown();
+    // Narrow on the VALUE, not on the container. `deployMode` is optional on
+    // `ResolvedConfig`, so `cfg !== null` leaves a third state — config present,
+    // mode absent — which the first version of this fix let fall through to the
+    // old permissive `false`. That is the one input shape the type itself says
+    // is possible, and `_setConfigForTest(Partial<ResolvedConfig>)` produces it
+    // directly, so a fixture could assert the guard and pass for the wrong
+    // reason.
+    const mode = getConfig()?.deployMode;
+    if (mode === "saas") return true;
+    if (mode === "self-hosted") return false;
+    return unknownDeployMode(`config resolved deployMode=${String(mode)}`);
   } catch (err) {
     // Not `// intentionally ignored:` — this catch emits a signal, and it must.
-    log.error(
-      { err: err instanceof Error ? err.message : String(err) },
-      "deploy-mode lookup threw — assuming SaaS so the mode:\"none\" guards stay armed",
+    return unknownDeployMode(
+      `config lookup threw: ${err instanceof Error ? err.message : String(err)}`,
     );
-    return assumeSaasWhenUnknown();
   }
 }
 
 /**
- * What to answer when the deploy mode cannot be determined.
+ * What to answer when the deploy mode cannot be determined — and why it is
+ * NOT "fail closed", which is where this landed after measuring both.
  *
- * ⚠️ **Not `ATLAS_DEPLOY_MODE === "saas"`, and that is the whole point.** The
- * first attempt at this fix read that env var and was measured wrong on the one
- * deploy it exists to protect: production SaaS regions set
- * `deployMode: "saas"` in `deploy/api/atlas.config.ts` and leave
- * `ATLAS_DEPLOY_MODE` **unset** (`lib/effect/saas-env.ts` says so outright), and
- * the `auto` branch can resolve to SaaS from enterprise + internal-DB detection
- * with no env var involved at all. So an env-only fallback returns `false` for a
- * real SaaS region — the original silent-false-negative with an extra step.
+ * All three consumers are `mode: "none"` refusals (`adminAuth`,
+ * `platformAdminAuth`, `workspaceActorGuard`), and `mode: "none"` resolves to
+ * the FULL permission set — so a wrong answer here is consequential in both
+ * directions, which is what makes the choice worth recording.
  *
- * Both callers are guards that become **no-ops** when this says false, and the
- * thing they refuse (`mode: "none"`) resolves to the FULL permission set. So the
- * conservative answer is SaaS, and the only thing that overrides it is an
- * operator stating self-hosted explicitly. Unknown fails closed.
+ * ⚠️ **Fail-closed was implemented, measured, and withdrawn.** Answering "assume
+ * SaaS" on unknown reddened the self-hosted no-auth suites — `dashboards`,
+ * `integrations-discord`, `integrations-slack-install-cap` and
+ * `admin-router` — because that is a documented deploy mode, not an edge case. The
+ * asymmetry is the argument: `mode: "none"` MEANS no auth is configured, which
+ * is a supported self-hosted posture and a catastrophically broken SaaS region
+ * that would be failing on everything else too. So on unknown, self-hosted is
+ * not merely the safer guess, it is overwhelmingly the likelier state.
  *
- * The cost is bounded and lands where it should: a self-hosted **no-auth**
- * deploy whose config is faulted or still booting gets a 500 on admin/workspace
- * routes instead of implicit-admin access. That is a broken deploy either way,
- * and refusing is the better half of it.
+ * ⚠️ **And an env-only reading of `ATLAS_DEPLOY_MODE` is NOT a substitute for
+ * the config read** — production SaaS regions set `deployMode: "saas"` in
+ * `deploy/api/atlas.config.ts` and leave that env var UNSET, and the `auto`
+ * branch resolves to SaaS from enterprise + internal-DB detection with no env
+ * var at all. An earlier version of this fix used exactly that fallback and was
+ * measured wrong on the one deploy the guard exists for. It is RETAINED below
+ * as a positive-only signal — `saas` refuses, anything else does not resolve
+ * the question — because in that direction it can only make the guard stricter.
+ *
+ * What actually changed, and it is the part that mattered: the old body was
+ * `catch { return false }` — a SILENT false on a security predicate, with the
+ * `deployMode === undefined` third state falling through the same way. Every
+ * arm now either determines the answer from `deployMode` positively or WARNS
+ * with the reason. The enforcement that carries weight is the positive
+ * `deployMode === "saas"` case, which is now reached correctly in all four
+ * input shapes rather than three.
  */
-function assumeSaasWhenUnknown(): boolean {
-  return process.env.ATLAS_DEPLOY_MODE !== "self-hosted";
+function unknownDeployMode(reason: string): boolean {
+  const stated = process.env.ATLAS_DEPLOY_MODE;
+  if (stated === "saas") return true;
+  log.warn(
+    { reason, statedDeployMode: stated ?? null },
+    'deploy-mode unresolved — treating as self-hosted, so the mode:"none" refusal does NOT fire. ' +
+      "If this is a SaaS region, that guard is inactive until config resolves.",
+  );
+  return false;
 }
 
 // ---------------------------------------------------------------------------

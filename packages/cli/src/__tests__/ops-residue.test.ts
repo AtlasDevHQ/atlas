@@ -617,7 +617,13 @@ describe("handleSweepResidue", () => {
   beforeEach(() => {
     errors = [];
     exitCalls = [];
-    process.exitCode = undefined;
+    // ⚠️ 0, NOT `undefined`. Assigning `undefined` does not clear bun's exit
+    // code — it stays whatever it was, so the FILE exits 1 while reporting
+    // "52 pass, 0 fail" and the isolated runner marks it failed. Measured: this
+    // exact leak turned `test-others` red on a green-looking suite. These tests
+    // drive `residueExitCode`, whose whole job is setting a non-zero code, so
+    // the leak is inherent to the fixture rather than incidental.
+    process.exitCode = 0;
     console.error = (...args: unknown[]) => void errors.push(args.map(String).join(" "));
     console.log = () => {};
     console.warn = () => {};
@@ -632,7 +638,7 @@ describe("handleSweepResidue", () => {
     console.error = savedError;
     console.log = savedLog;
     console.warn = savedWarn;
-    process.exitCode = undefined;
+    process.exitCode = 0;
   });
 
   /** Deps that answer current_database() for the scratch URL and fake the sweep. */

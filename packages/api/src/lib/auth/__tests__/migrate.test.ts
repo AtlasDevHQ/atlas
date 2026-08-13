@@ -592,6 +592,16 @@ describe("migrateAuthTables", () => {
             // Auth owns nothing on that table either — it is an Atlas EE table
             // — so it belongs in the already-applied set on the same grounds.
             { name: "0196_builtin_roles_dashboards_flags.sql" },
+            // 0197 is 0196's sibling one flag later (`dashboards:share`, #5192)
+            // and belongs here on identical grounds: same table, same owner.
+            //
+            // ⚠️ This list is the SECOND hardcoded applied-migrations fixture in
+            // the tree, and it is `--affected`-blind: nothing in its source
+            // graph changes when a migration file is ADDED, so a local
+            // `--affected` run stays green and remote CI is where it surfaces.
+            // `db/__tests__/migrate.test.ts` carries the other one (a count).
+            // Adding a migration means updating both.
+            { name: "0197_builtin_roles_dashboards_share.sql" },
           ],
         };
       }

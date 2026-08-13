@@ -354,6 +354,26 @@ describe("DashboardsPage (redirect index)", () => {
       ).toBeNull();
     });
 
+    test("offers no link when a PERMISSION 403 carries an ssoRedirectUrl", async () => {
+      // ⚠️ The gate is keyed on the CODE, not the bare status. A future gate
+      // attaching `ssoRedirectUrl` to a permission denial must not make the
+      // card offer "sign in with your identity provider" to a user whose real
+      // remedy is a role grant — a false remedy is the defect class this whole
+      // error card was rewritten to remove.
+      stubDashboardsStatus(403, {
+        error: "insufficient_permissions",
+        message: 'This action requires the "dashboards:read" permission.',
+        ssoRedirectUrl: "https://idp.example.com/sso/saml",
+      });
+
+      render(<DashboardsPage />, { wrapper: dashboardsWrapper });
+
+      await screen.findByText("You don’t have access to dashboards");
+      expect(
+        screen.queryByRole("link", { name: "Sign in with your identity provider" }),
+      ).toBeNull();
+    });
+
     test("offers no link when the 403 carries no ssoRedirectUrl", async () => {
       // The negative control: without it, a link rendered unconditionally would
       // pass the first test.

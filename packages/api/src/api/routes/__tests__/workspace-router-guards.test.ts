@@ -9,11 +9,16 @@
  *      `POST …/render` on load moved onto the same budget as chat and every
  *      cheap read, and the user-visible failure is a 429 rendered in the
  *      dashboards error card #5188 had just rewritten.
- *   2. **`migrationWriteLock`.** `adminAuth` omits it deliberately — admins
- *      need to manage a workspace DURING its migration. That rationale is
- *      about admin work and does not transfer: a `member` editing a dashboard
+ *   2. **`migrationWriteLock`.** A `member` editing a dashboard
  *      mid-region-migration has the edit land in the source region and
  *      silently lost, reported as a 200.
+ *
+ * ⚠️ **The lock had never been mounted on ANY router before this change.** An
+ * earlier draft of this file said `adminAuth` "omits it deliberately" and that
+ * dashboards "left it behind"; both are false, and `git grep migrationWriteLock`
+ * on the parent commit returns only the definition. Recorded because the false
+ * version invites less scrutiny — a restored invariant reads safer than a first
+ * mount, and this is a first mount.
  *
  * Both are asserted against the composed app rather than the factory, because
  * the factory is not what serves the request — a `use()` that never runs
@@ -65,6 +70,12 @@ void mock.module("@atlas/api/lib/dashboards", () => ({
 const { app } = await import("../../index");
 
 const MOUNT = "/api/v1/dashboards";
+
+// Real UUIDs — every dashboards handler 400s at `UUID_RE` on anything else, so
+// a placeholder id would make the read-classified-POST test below assert
+// against a 400 rather than against the lock.
+const VALID_ID = "00000000-0000-4000-8000-000000000000";
+const VALID_CARD_ID = "00000000-0000-4000-8000-000000000001";
 
 function req(path: string, method = "GET", body?: unknown): Request {
   const init: RequestInit = {
@@ -141,17 +152,62 @@ describe("#5191 — writes are locked while the workspace is migrating", () => {
   });
 
   it("leaves READS working during a migration", async () => {
-    // The lock is scoped to write METHODS. A read-only dashboard view during a
-    // migration is exactly what a user should still get, and locking it would
-    // be a worse outage than the one being prevented.
+    // A read-only dashboard view during a migration is exactly what a user
+    // should still get; locking it would be a worse outage than the one being
+    // prevented.
     mockIsWorkspaceMigrating.mockImplementation(async () => true);
     const res = await app.fetch(req("/"));
     expect(res.status).toBe(200);
   });
 
+  it("leaves a read-classified POST working during a migration", async () => {
+    // ⚠️ The regression review round 1 caught, and the reason the lock rides on
+    // the WRITE GATE rather than on the router.
+    //
+    // `checkMigrationWriteLock` keys on the HTTP METHOD, and this surface has
+    // read-classified POSTs: `…/cards/{id}/render` and `…/export`. Mounted
+    // router-wide, a region migration 409'd every card of a dashboard anybody
+    // merely OPENED — an outage strictly worse than the lost write the lock
+    // exists to prevent, and the previous version of this file certified it as
+    // correct because its only read fixture was a GET.
+    mockIsWorkspaceMigrating.mockImplementation(async () => true);
+    const res = await app.fetch(
+      req(`/${VALID_ID}/cards/${VALID_CARD_ID}/render`, "POST", {}),
+    );
+    // The lock was never CONSULTED — the exact assertion, not `not.toBe(409)`.
+    // The render handler is unmocked here, so its status is whatever the
+    // absent DB produces; `not.toBe(409)` would be satisfied by that failure
+    // just as well as by the property under test. Whether the gate ran is the
+    // property, and it is directly observable.
+    expect(mockIsWorkspaceMigrating).not.toHaveBeenCalled();
+    expect(res.status).not.toBe(409);
+  });
+
+  it("does not even CONSULT migration status on a read", async () => {
+    // The stronger form: a read must not reach the lock at all. Asserting only
+    // the status would pass if the lock ran and happened to allow — which is
+    // what a router-wide mount plus a `false` stub looks like.
+    mockIsWorkspaceMigrating.mockImplementation(async () => true);
+    await app.fetch(req("/"));
+    expect(mockIsWorkspaceMigrating).not.toHaveBeenCalled();
+  });
+
   it("does not lock writes when no migration is active", async () => {
     // The negative control. Without it, a lock that returned 409
     // unconditionally would pass the two tests above.
+    const res = await app.fetch(req("/", "POST", { title: "T" }));
+    expect(res.status).toBe(201);
+  });
+
+  it("allows the write when the region_migrations table does not exist", async () => {
+    // #5191 round 2 — an unmigrated internal DB (the table arrives in 0012)
+    // cannot have a migration in flight, so refusing every write there would be
+    // a self-inflicted outage naming a subsystem the operator never configured.
+    // The narrowing is deliberately MORE permissive than the arm below, which
+    // is why it gets its own test rather than riding on the 503 one.
+    mockIsWorkspaceMigrating.mockImplementation(async () => {
+      throw new Error('relation "region_migrations" does not exist');
+    });
     const res = await app.fetch(req("/", "POST", { title: "T" }));
     expect(res.status).toBe(201);
   });
@@ -164,7 +220,10 @@ describe("#5191 — writes are locked while the workspace is migrating", () => {
     });
     const res = await app.fetch(req("/", "POST", { title: "T" }));
     expect(res.status).toBe(503);
-    const body = (await res.json()) as { error: string };
+    const body = (await res.json()) as { error: string; requestId: string };
     expect(body.error).toBe("migration_check_failed");
+    // A 5xx without a correlation handle is the one shape CLAUDE.md forbids
+    // outright, and the 503 is the harder of the two to diagnose.
+    expect(body.requestId).toBeTruthy();
   });
 });

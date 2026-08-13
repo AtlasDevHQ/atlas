@@ -22,7 +22,8 @@
 
 import { describe, it, expect } from "bun:test";
 import { z } from "@hono/zod-openapi";
-import { createGatedRoute, requireWorkspacePermission } from "../workspace-router";
+import { createGatedRoute, requireWorkspacePermission, workspaceWriteGate } from "../workspace-router";
+import { requireOrgContext } from "../admin-router";
 
 const GATE = [requireWorkspacePermission("dashboards:read")];
 
@@ -51,6 +52,28 @@ void createGatedRoute({
   responses: RESPONSES,
 });
 
+// An arbitrary middleware is NOT a gate. Review round 1 measured the unbranded
+// version accepting `[requireOrgContext()]` — a real, importable middleware
+// used in `workspace-router.ts` itself — which reduced the compile-time
+// property to "someone typed the word `middleware`". The brand on
+// `WorkspaceGate` is what closes that, and this directive is what proves the
+// brand does work rather than decorating the type.
+//
+// ⚠️ The directive sits on the `middleware:` LINE, not on the call. A MISSING
+// property is reported at the argument (so the directive above goes on the
+// call); a property of the WRONG TYPE is reported at the property itself.
+// Placing it by analogy with the block above left the directive unused and the
+// real error unsuppressed — measured, not reasoned.
+void createGatedRoute({
+  method: "get",
+  path: "/{id}/not-a-gate",
+  // @ts-expect-error -- not a WorkspaceGate: the brand is unforgeable outside
+  // `workspace-router.ts`.
+  middleware: [requireOrgContext()],
+  request: PARAMS,
+  responses: RESPONSES,
+});
+
 // An EMPTY gate array is not the same hole and is deliberately allowed by the
 // type: `middleware: []` is a route someone typed a gate list for and left
 // empty, which the runtime route table in `dashboards-permission.test.ts`
@@ -75,7 +98,24 @@ const gatedRoute = createGatedRoute({
   responses: RESPONSES,
 });
 
+// The WRITE gate is a gate list too — both members must satisfy the brand, or
+// `migrationWriteLock` could not ride along with the permission check.
+const writeRoute = createGatedRoute({
+  method: "post",
+  path: "/{id}/written",
+  middleware: workspaceWriteGate("dashboards:write"),
+  request: PARAMS,
+  responses: RESPONSES,
+});
+
 describe("#5191 — createGatedRoute", () => {
+  it("accepts a write gate list carrying the migration lock", () => {
+    // Two entries: the permission gate, then `migrationWriteLock`. If the
+    // second were dropped, every dashboards write would silently lose the
+    // region-migration lock while every type assertion above still held.
+    expect(writeRoute.middleware).toHaveLength(2);
+  });
+
   it("still produces a real route config", () => {
     // Without this the wrapper could return anything and the type assertions
     // above would still hold — `createRoute`'s contribution is `getRoutingPath`

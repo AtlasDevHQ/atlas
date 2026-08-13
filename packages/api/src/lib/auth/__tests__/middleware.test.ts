@@ -997,6 +997,14 @@ describe("checkRateLimit() — workspace bucket (#5191)", () => {
   const origRpm = process.env.ATLAS_RATE_LIMIT_RPM;
   const origWorkspaceRpm = process.env.ATLAS_RATE_LIMIT_RPM_WORKSPACE;
   const origAdminRpm = process.env.ATLAS_RATE_LIMIT_RPM_ADMIN;
+  // ⚠️ CHAT belongs here too. The last test in this block sets it and cleaned
+  // up with an inline `delete` as its final statement — unreachable if any
+  // assertion above it throws, so one real red leaked
+  // `ATLAS_RATE_LIMIT_RPM_CHAT=2` into every later test in the FILE, including
+  // the pre-existing chat-bucket describes. A cascade of unrelated reds with
+  // the true cause scrolled off is the diagnostic failure this whole axis is
+  // about.
+  const origChatRpm = process.env.ATLAS_RATE_LIMIT_RPM_CHAT;
 
   beforeEach(() => {
     resetRateLimits();
@@ -1011,6 +1019,8 @@ describe("checkRateLimit() — workspace bucket (#5191)", () => {
     else delete process.env.ATLAS_RATE_LIMIT_RPM_WORKSPACE;
     if (origAdminRpm !== undefined) process.env.ATLAS_RATE_LIMIT_RPM_ADMIN = origAdminRpm;
     else delete process.env.ATLAS_RATE_LIMIT_RPM_ADMIN;
+    if (origChatRpm !== undefined) process.env.ATLAS_RATE_LIMIT_RPM_CHAT = origChatRpm;
+    else delete process.env.ATLAS_RATE_LIMIT_RPM_CHAT;
     resetRateLimits();
   });
 
@@ -1108,8 +1118,22 @@ describe("checkRateLimit() — workspace bucket (#5191)", () => {
     expect(checkRateLimit("u", { bucket: "chat" }).allowed).toBe(true);
     expect(checkRateLimit("u", { bucket: "chat" }).allowed).toBe(true);
     expect(checkRateLimit("u", { bucket: "chat" }).allowed).toBe(false);
+  });
 
-    delete process.env.ATLAS_RATE_LIMIT_RPM_CHAT;
+  it("treats an explicit 0 or negative as invalid, not as 'disabled'", () => {
+    // Surprising and worth pinning: `ATLAS_RATE_LIMIT_RPM_WORKSPACE=0` does NOT
+    // disable the bucket — it takes the `n <= 0` arm and falls back to the
+    // derived `max(60, RPM)`. The warn text says so ("set ATLAS_RATE_LIMIT_RPM=0
+    // to disable rate limiting entirely"), and the admin bucket behaves the same
+    // way, but an operator reaching for `…_WORKSPACE=0` will not guess it.
+    process.env.ATLAS_RATE_LIMIT_RPM = "30";
+    process.env.ATLAS_RATE_LIMIT_RPM_WORKSPACE = "0";
+    resetRateLimits();
+
+    for (let i = 0; i < 60; i++) {
+      expect(checkRateLimit("u", { bucket: "workspace" }).allowed).toBe(true);
+    }
+    expect(checkRateLimit("u", { bucket: "workspace" }).allowed).toBe(false);
   });
 });
 

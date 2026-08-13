@@ -200,7 +200,12 @@ async function authenticate(
   requestId: string,
 ): Promise<
   | { ok: true; authResult: AuthResult & { authenticated: true } }
-  | { ok: false; body: Record<string, unknown>; status: number; headers?: Record<string, string> }
+  // #5191 — the exact union, not `number`. `AuthResult` already types the
+  // failure status as `401 | 403 | 500` (`lib/auth/types.ts`), and widening it
+  // here is what forced `auth.status as 401` at every call site — a cast
+  // asserting this middleware only ever emits 401s, in the middleware whose 403
+  // the SSO redirect and the whole workspace surface depend on.
+  | { ok: false; body: Record<string, unknown>; status: 401 | 403 | 500; headers?: Record<string, string> }
 > {
   let authResult: AuthResult;
   try {
@@ -234,7 +239,10 @@ async function rateLimitAndIPCheck(
   authResult: AuthResult & { authenticated: true },
   requestId: string,
   bucket: RateLimitBucket = "default",
-): Promise<{ body: Record<string, unknown>; status: number; headers?: Record<string, string> } | null> {
+  // 429 from the rate limiter, 503 from a fail-closed IP-allowlist evaluation,
+  // 403 when the allowlist denies. `as 429` at the call sites claimed only the
+  // first, while the other two demonstrably occur below.
+): Promise<{ body: Record<string, unknown>; status: 403 | 429 | 503; headers?: Record<string, string> } | null> {
   const ip = getClientIP(req);
   const rateLimitKey = authResult.user?.id ?? (ip ? `ip:${ip}` : "anon");
   const rateCheck = checkRateLimit(rateLimitKey, { bucket, orgId: authResult.user?.activeOrganizationId });
@@ -316,7 +324,7 @@ async function checkMisrouting(
   c: Context,
   authResult: AuthResult & { authenticated: true },
   requestId: string,
-): Promise<{ body: Record<string, unknown>; status: number } | null> {
+): Promise<{ body: Record<string, unknown>; status: 421 } | null> {
   const orgId = authResult.user?.activeOrganizationId;
   const result = await detectMisrouting(orgId, requestId);
   if (!result) return null;
@@ -349,7 +357,7 @@ async function checkMigrationWriteLock(
   method: string,
   authResult: AuthResult & { authenticated: true },
   requestId: string,
-): Promise<{ body: Record<string, unknown>; status: number } | null> {
+): Promise<{ body: Record<string, unknown>; status: 409 | 503 } | null> {
   if (!WRITE_METHODS.has(method)) return null;
 
   const orgId = authResult.user?.activeOrganizationId;
@@ -369,9 +377,34 @@ async function checkMigrationWriteLock(
       };
     }
   } catch (err) {
-    // Fail closed — if we can't verify migration status, block writes to prevent data loss
+    const msg = err instanceof Error ? err.message : String(err);
+    // #5191 — an ABSENT `region_migrations` table is not a failure to verify;
+    // it is proof that no migration can be in flight. The table arrives in
+    // migration 0012, so this is an internal DB configured but not yet
+    // migrated — first boot before `runMigrations`, an operator repointing
+    // `DATABASE_URL` at a fresh database, a partially-applied set.
+    //
+    // ⚠️ This branch is MORE PERMISSIVE than the fail-closed one below, so it
+    // owes an argument rather than a convenience: the state the lock protects
+    // against is unrepresentable when the table does not exist, and blocking
+    // every write on a self-hosted deploy that never enabled residency would
+    // be a self-inflicted outage attributed to a subsystem the operator has
+    // never configured. `resolvePermissions` narrows the identical way on
+    // `custom_roles`, for the identical reason.
+    //
+    // `debug`, not `warn`: on those deploys it is the steady state, and a
+    // per-write warn would be noise that trains operators to ignore the log.
+    if (msg.includes("does not exist")) {
+      log.debug(
+        { requestId, orgId },
+        "region_migrations table absent — no migration can be in flight, allowing the write",
+      );
+      return null;
+    }
+    // Everything else fails closed — if we can't verify migration status, block
+    // writes to prevent data loss.
     log.error(
-      { err: err instanceof Error ? err.message : String(err), requestId, orgId },
+      { err: msg, requestId, orgId, method },
       "Migration write-lock check failed — rejecting write as a precaution",
     );
     return {
@@ -409,7 +442,7 @@ function makeAdminAuth(opts: { allowApiKey?: boolean } = {}) {
 
     const auth = await authenticate(c.req.raw, requestId);
     if (!auth.ok) {
-      return c.json(auth.body, auth.status as 401, auth.headers);
+      return c.json(auth.body, auth.status, auth.headers);
     }
     const { authResult } = auth;
 
@@ -449,12 +482,12 @@ function makeAdminAuth(opts: { allowApiKey?: boolean } = {}) {
     // from depleting the cheap-read budget shared with chat.
     const blocked = await rateLimitAndIPCheck(c.req.raw, authResult, requestId, "admin");
     if (blocked) {
-      return c.json(blocked.body, blocked.status as 429, blocked.headers);
+      return c.json(blocked.body, blocked.status, blocked.headers);
     }
 
     const misrouted = await checkMisrouting(c, authResult, requestId);
     if (misrouted) {
-      return c.json(misrouted.body, misrouted.status as 421);
+      return c.json(misrouted.body, misrouted.status);
     }
 
     // No migration write-lock for admin routes — admins need to manage
@@ -488,7 +521,7 @@ export const platformAdminAuth = createMiddleware<AuthEnv>(async (c, next) => {
 
   const auth = await authenticate(c.req.raw, requestId);
   if (!auth.ok) {
-    return c.json(auth.body, auth.status as 401, auth.headers);
+    return c.json(auth.body, auth.status, auth.headers);
   }
   const { authResult } = auth;
 
@@ -523,12 +556,12 @@ export const platformAdminAuth = createMiddleware<AuthEnv>(async (c, next) => {
   // pattern (#2485). Cross-tenant operations still rate-limit per identity.
   const blocked = await rateLimitAndIPCheck(c.req.raw, authResult, requestId, "admin");
   if (blocked) {
-    return c.json(blocked.body, blocked.status as 429, blocked.headers);
+    return c.json(blocked.body, blocked.status, blocked.headers);
   }
 
   const misrouted = await checkMisrouting(c, authResult, requestId);
   if (misrouted) {
-    return c.json(misrouted.body, misrouted.status as 421);
+    return c.json(misrouted.body, misrouted.status);
   }
 
   c.set("authResult", authResult);
@@ -556,18 +589,18 @@ function makeStandardAuth(bucket: RateLimitBucket) {
 
     const auth = await authenticate(c.req.raw, requestId);
     if (!auth.ok) {
-      return c.json(auth.body, auth.status as 401, auth.headers);
+      return c.json(auth.body, auth.status, auth.headers);
     }
     const { authResult } = auth;
 
     const blocked = await rateLimitAndIPCheck(c.req.raw, authResult, requestId, bucket);
     if (blocked) {
-      return c.json(blocked.body, blocked.status as 429, blocked.headers);
+      return c.json(blocked.body, blocked.status, blocked.headers);
     }
 
     const misrouted = await checkMisrouting(c, authResult, requestId);
     if (misrouted) {
-      return c.json(misrouted.body, misrouted.status as 421);
+      return c.json(misrouted.body, misrouted.status);
     }
 
     c.set("authResult", authResult);
@@ -609,7 +642,7 @@ export const migrationWriteLock = createMiddleware<AuthEnv>(async (c, next) => {
 
   const locked = await checkMigrationWriteLock(c.req.method, authResult, requestId);
   if (locked) {
-    return c.json(locked.body, locked.status as 409);
+    return c.json(locked.body, locked.status);
   }
 
   await next();

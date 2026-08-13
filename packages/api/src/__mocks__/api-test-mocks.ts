@@ -25,7 +25,7 @@
 import { mock, type Mock } from "bun:test";
 import { Context, Effect, Layer } from "effect";
 import { asRatio } from "@useatlas/types";
-import { PERMISSIONS as REAL_PERMISSIONS } from "@useatlas/types/auth";
+import { PERMISSIONS as REAL_PERMISSIONS, isValidPermission as realIsValidPermission } from "@useatlas/types/auth";
 // The REAL error class, re-exported through the mocked `db/internal` surface
 // (#5160). The purge route maps it with `domainError`, which matches by
 // `instanceof` — a hand-rolled stand-in here would never match, and the route's
@@ -949,7 +949,12 @@ export function createApiTestMocks(
     // fixture that disagrees with production is worse than no fixture: it
     // asserts a permission model nobody ships.
     PERMISSIONS: [...REAL_PERMISSIONS],
-    isValidPermission: () => true,
+    // The REAL predicate, for the same reason as the tuple above and caught in
+    // the same object literal one line down from it. `() => true` is a
+    // validator that CANNOT FAIL, so no suite using this shared factory could
+    // ever observe a route that stopped validating — and this is the factory
+    // dozens of suites build on.
+    isValidPermission: realIsValidPermission,
     isValidRoleName: () => true,
     BUILTIN_ROLES: [],
     resolvePermissions: mock(() => Effect.succeed(new Set())),

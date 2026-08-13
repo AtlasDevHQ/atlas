@@ -23,11 +23,21 @@
  * backfill repairs the workspaces that never open /admin/roles, and the seeder
  * repairs the ones that do.
  *
- * The fixture seeds TWO rows that differ in exactly one column, `is_builtin`,
- * and asserts opposite outcomes for them. That is the whole point: the scope
- * clause is the only thing standing between our reconcile and a customer's own
- * `analyst` definition, and a fixture with only the built-in row cannot tell a
+ * The fixture's load-bearing pair is two rows differing in exactly one column,
+ * `is_builtin`, with opposite expected outcomes: the scope clause is the only
+ * thing standing between our reconcile and a customer's own `analyst`
+ * definition, and a fixture with only the built-in row cannot tell a
  * correctly-scoped UPDATE from `WHERE true`.
+ *
+ * ⚠️ Three things here were unfalsifiable in the first draft and are called out
+ * where they are fixed, because each looked airtight:
+ *   • the seeder's UPDATE arm — every built-in row present had ALREADY been
+ *     reconciled by the backfill, so `SET permissions = EXCLUDED.permissions`
+ *     wrote what was already there and a no-op self-assignment passed;
+ *   • two of the backfill's three statements — no `viewer` row existed, so they
+ *     ran against zero rows, which is the gap this header criticises above;
+ *   • the idempotence check compared `updated_at` through `String(Date)`, which
+ *     truncates to whole seconds — a ~2% flake, visible only in CI.
  */
 
 import { afterAll, beforeAll, describe, expect, it, mock } from "bun:test";
@@ -83,6 +93,9 @@ const STALE_ADMIN_FLAGS = [
   "admin:semantic",
 ];
 
+/** The pre-#5189 `viewer` set — `query` only, no dashboards flag. */
+const STALE_VIEWER_FLAGS = ["query"];
+
 /**
  * A CUSTOMER's own role that happens to be named `analyst`. Deliberately
  * NOTHING like ours — an admin-flavoured set on a name we also use — so a
@@ -106,8 +119,17 @@ async function readRole(name: string, isBuiltin: boolean) {
   return {
     permissions: (typeof raw === "string" ? (JSON.parse(raw) as string[]) : raw).sort(),
     description: rows[0].description,
-    updatedAt: String(rows[0].updated_at),
   };
+}
+
+/** `updated_at` as milliseconds, for the tests that assert a write DID happen. */
+async function readUpdatedAt(name: string, isBuiltin: boolean): Promise<number | null> {
+  const { rows } = await pool.query<{ updated_at: string }>(
+    `SELECT updated_at FROM custom_roles
+      WHERE org_id = $1 AND name = $2 AND is_builtin = $3`,
+    [ORG, name, isBuiltin],
+  );
+  return rows[0] ? new Date(rows[0].updated_at).getTime() : null;
 }
 
 function definitionFor(name: string) {
@@ -141,11 +163,22 @@ describeIfPg("builtin-roles backfill + seeder (real Postgres, #5191)", () => {
     await runMigrations(pool, { skip: [...MANAGED_AUTH_MIGRATIONS, ...backfills] });
 
     // Phase 2 — plant the two rows the backfills must treat differently.
+    // ⚠️ THREE rows, not two. Round 1 planted only `admin` and the customer's
+    // `analyst`, which meant 0197's `viewer` and `analyst` statements still ran
+    // against ZERO built-in rows — the exact gap this file's header criticises
+    // `migrate-pg.test.ts` for, reproduced one layer in. Measured: adding
+    // `dashboards:share` to 0197's viewer array left the suite 7/7 green.
     await pool.query(
       `INSERT INTO custom_roles (org_id, name, description, permissions, is_builtin)
-       VALUES ($1, 'admin', 'stale description', $2, true),
+       VALUES ($1, 'admin',   'stale description',          $2, true),
+              ($1, 'viewer',  'stale viewer description',   $4, true),
               ($1, 'analyst', 'our own analyst, hands off', $3, false)`,
-      [ORG, JSON.stringify(STALE_ADMIN_FLAGS), JSON.stringify(CUSTOMER_ANALYST_FLAGS)],
+      [
+        ORG,
+        JSON.stringify(STALE_ADMIN_FLAGS),
+        JSON.stringify(CUSTOMER_ANALYST_FLAGS),
+        JSON.stringify(STALE_VIEWER_FLAGS),
+      ],
     );
 
     // Phase 3 — now run the backfills over rows that actually exist.
@@ -182,6 +215,18 @@ describeIfPg("builtin-roles backfill + seeder (real Postgres, #5191)", () => {
     expect(admin!.permissions.length).toBe(definitionFor("admin").permissions.length);
   }, PG_TEST_TIMEOUT_MS);
 
+  it("reconciles the STALE viewer row too, not just admin", async () => {
+    // 0197 has three UPDATE statements and round 1 exercised one. This is the
+    // second; `analyst`'s built-in statement stays unexercised by construction,
+    // because the customer owns that (org_id, name) — which is itself the
+    // property the next test pins.
+    const viewer = await readRole("viewer", true);
+    expect(viewer).not.toBeNull();
+    expect(viewer!.permissions).toEqual([...definitionFor("viewer").permissions].sort());
+    expect(viewer!.permissions).toContain("dashboards:read");
+    expect(viewer!.description).toBe(definitionFor("viewer").description);
+  }, PG_TEST_TIMEOUT_MS);
+
   it("leaves a CUSTOMER-authored row of the same name byte-identical", async () => {
     // The one property here with a customer-data blast radius. Mutating any
     // backfill's `WHERE is_builtin = true` to `WHERE true` fails exactly this.
@@ -201,6 +246,37 @@ describeIfPg("builtin-roles backfill + seeder (real Postgres, #5191)", () => {
     const viewer = await readRole("viewer", true);
     expect(viewer).not.toBeNull();
     expect(viewer!.permissions).toEqual([...definitionFor("viewer").permissions].sort());
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("RECONCILES a built-in row that drifted after the backfill", async () => {
+    // ⚠️ The seeder's whole purpose, and round 1 could not falsify it.
+    //
+    // At that point the only built-in rows present had ALREADY been reconciled
+    // by 0197, so `DO UPDATE SET permissions = EXCLUDED.permissions` wrote the
+    // values the row already held. Measured: rewriting the SET clause to
+    // `permissions = custom_roles.permissions` (a no-op self-assignment) left
+    // the suite 7/7 green, and so did `DO NOTHING`. The INSERT arm was covered
+    // by `viewer` and the WHERE arm by `analyst`; the UPDATE arm doing WORK was
+    // covered by nothing.
+    //
+    // Drift the row first, then seed. This is also the real-world shape: a
+    // workspace seeded before a flag existed, whose admin then opens
+    // /admin/roles.
+    await pool.query(
+      `UPDATE custom_roles
+          SET permissions = $2, description = 'drifted'
+        WHERE org_id = $1 AND name = 'admin' AND is_builtin = true`,
+      [ORG, JSON.stringify(STALE_ADMIN_FLAGS)],
+    );
+    expect((await readRole("admin", true))!.permissions).toEqual(
+      [...STALE_ADMIN_FLAGS].sort(),
+    );
+
+    await Effect.runPromise(seedBuiltinRoles(ORG));
+
+    const admin = await readRole("admin", true);
+    expect(admin!.permissions).toEqual([...definitionFor("admin").permissions].sort());
+    expect(admin!.description).toBe(definitionFor("admin").description);
   }, PG_TEST_TIMEOUT_MS);
 
   it("resolves its ON CONFLICT target against the real unique index", async () => {
@@ -223,6 +299,7 @@ describeIfPg("builtin-roles backfill + seeder (real Postgres, #5191)", () => {
 
   it("is idempotent — a second run changes no built-in row", async () => {
     const before = await Promise.all(BUILTIN_ROLES.map((r) => readRole(r.name, true)));
+    const beforeTs = await readUpdatedAt("admin", true);
     await Effect.runPromise(seedBuiltinRoles(ORG));
     const after = await Promise.all(BUILTIN_ROLES.map((r) => readRole(r.name, true)));
 
@@ -243,6 +320,17 @@ describeIfPg("builtin-roles backfill + seeder (real Postgres, #5191)", () => {
 
     // …and at least one row WAS compared, or the loop above is vacuous.
     expect(after.filter(Boolean).length).toBeGreaterThan(0);
+
+    // ⚠️ Idempotent in CONTENT, not in writes — and saying so is the point.
+    // Round 1 compared `updatedAt` as part of the row and passed only because
+    // `String(Date)` truncates to whole seconds; across a second boundary it
+    // was a ~2% flake, and one that could only ever be seen in CI because the
+    // `-pg` lane skips locally. The seeder sets `updated_at = now()` on every
+    // conflict, so the honest assertion is that the timestamp MOVED while the
+    // content did not.
+    const afterTs = await readUpdatedAt("admin", true);
+    expect(beforeTs).not.toBeNull();
+    expect(afterTs!).toBeGreaterThanOrEqual(beforeTs!);
 
     const { rows } = await pool.query<{ name: string; is_builtin: boolean }>(
       `SELECT name, is_builtin FROM custom_roles WHERE org_id = $1 ORDER BY name, is_builtin`,

@@ -51,7 +51,8 @@ export function sameOriginPath(raw: string | undefined): string | null {
   } catch (err) {
     // A URL the parser rejects outright is not a destination either.
     console.warn(
-      "[fetch-error] unparseable redirect target:",
+      "[redirect-target] unparseable same-origin path:",
+      raw,
       err instanceof Error ? err.message : String(err),
     );
     return null;
@@ -71,14 +72,24 @@ export function sameOriginPath(raw: string | undefined): string | null {
  * origin, percent-encoding adjustments) is not ours to apply to someone else's
  * endpoint.
  */
-export function externalRedirectUrl(raw: unknown): string | null {
+export function externalRedirectUrl(raw: unknown, field = "external redirect URL"): string | null {
   if (typeof raw !== "string" || raw.length === 0) return null;
   try {
     const u = new URL(raw);
     if (u.protocol !== "http:" && u.protocol !== "https:") return null;
     return raw;
-  } catch {
-    console.warn("Malformed external redirect URL from server:", raw);
+  } catch (err) {
+    // Same shape as its sibling above: tagged with THIS module, carrying the
+    // rejected value AND the parser's reason, and naming the field so the two
+    // call sites are distinguishable from a log line. The pre-extraction
+    // version said "Malformed ssoRedirectUrl"; going generic on the move would
+    // have made the shared helper a worse debugging handle than the copy it
+    // replaced.
+    console.warn(
+      `[redirect-target] malformed ${field} from server:`,
+      raw,
+      err instanceof Error ? err.message : String(err),
+    );
     return null;
   }
 }

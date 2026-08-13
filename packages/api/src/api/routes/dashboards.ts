@@ -92,6 +92,7 @@ import {
   createWorkspaceRouter,
   createGatedRoute,
   requireWorkspacePermission,
+  workspaceWriteGate,
 } from "./workspace-router";
 import { validationHook } from "./validation-hook";
 import {
@@ -155,7 +156,41 @@ const log = createLogger("dashboard-routes");
  * against the composed app.
  */
 const DASHBOARD_READ = [requireWorkspacePermission("dashboards:read")];
-const DASHBOARD_WRITE = [requireWorkspacePermission("dashboards:write")];
+// #5191 — WRITE additionally carries `migrationWriteLock` (409 during an active
+// region migration). It rides on the WRITE gate rather than on the router
+// because the lock keys on the HTTP method, and READ here includes POSTs
+// (`…/render`, `…/export`): router-wide it would 409 every card of a dashboard
+// somebody merely opened. Write routes therefore also declare
+// `WORKSPACE_LOCK_RESPONSES` below.
+const DASHBOARD_WRITE = workspaceWriteGate("dashboards:write");
+
+/**
+ * The two statuses `migrationWriteLock` adds to every route carrying
+ * `DASHBOARD_WRITE`, spread into their `responses` (#5191).
+ *
+ * ⚠️ Declaring them is not bookkeeping. `409 workspace_migrating` is a STATE a
+ * client must branch on — it is temporary, it says so, and retrying later is
+ * the correct response — while `503 migration_check_failed` is not retryable at
+ * the same cadence. An undeclared status has no arm in the generated
+ * `@useatlas/sdk` client or in `apps/docs/openapi.json`, so both collapse into
+ * "some error" at exactly the boundary where the difference matters.
+ *
+ * Only on WRITE routes, because the lock only fires on write METHODS —
+ * declaring a 409 on `GET /` would be a contract stating something that cannot
+ * happen.
+ */
+const WORKSPACE_LOCK_RESPONSES = {
+  409: {
+    description:
+      "Workspace is being migrated to another region — write operations are temporarily disabled (`workspace_migrating`)",
+    content: { "application/json": { schema: ErrorSchema } },
+  },
+  503: {
+    description:
+      "Migration status could not be verified, so the write was refused as a precaution (`migration_check_failed`)",
+    content: { "application/json": { schema: ErrorSchema } },
+  },
+} as const;
 
 // ---------------------------------------------------------------------------
 // Zod schemas
@@ -481,6 +516,7 @@ const createDashboardRoute = createGatedRoute({
   description: "Creates a new dashboard. Requires the `dashboards:write` permission.",
   request: { body: { content: { "application/json": { schema: CreateDashboardSchema } }, required: true } },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     201: { description: "Dashboard created", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     400: { description: "Invalid request", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -532,6 +568,7 @@ const getDraftRoute = createGatedRoute({
     "Returns the current user's draft for this dashboard, forking from published on first call. Requires the `dashboards:write` permission — the first call FORKS a draft, which inserts rows.",
   request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     200: { description: "Draft snapshot + materialized DashboardWithCards", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -577,6 +614,7 @@ const publishDraftRoute = createGatedRoute({
     "Diff-merges the caller's draft into the live dashboard in a single transaction. Returns 409 when a teammate has published since the draft was forked (with `reason: \"stale_baseline\"`) or when both sides edited the same card (with `reason: \"conflict\"`). Requires the `dashboards:write` permission.",
   request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     200: { description: "Published — number of merge ops applied", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -596,6 +634,7 @@ const discardDraftRoute = createGatedRoute({
   description: "Idempotently drops the caller's draft for this dashboard. No-op if no draft exists. Requires the `dashboards:write` permission.",
   request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     204: { description: "Draft discarded (or already absent)" },
     400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -614,6 +653,7 @@ const rebaseDraftRoute = createGatedRoute({
     "Fast-forwards the draft onto the latest published row when there are no conflicts; returns 409 with the conflict set when both sides edited the same card. Requires the `dashboards:write` permission.",
   request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     200: { description: "Rebased draft", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -680,6 +720,7 @@ const undoDraftRoute = createGatedRoute({
     body: { content: { "application/json": { schema: DraftUndoBodySchema } }, required: true },
   },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     204: { description: "Undo applied to the caller's draft (or a no-op)" },
     400: { description: "Invalid ID or payload", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -702,6 +743,7 @@ const updateDashboardRoute = createGatedRoute({
     body: { content: { "application/json": { schema: UpdateDashboardSchema } }, required: true },
   },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     200: { description: "Updated dashboard", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     204: { description: "Update succeeded (re-fetch failed)" },
     400: { description: "Invalid request", content: { "application/json": { schema: ErrorSchema } } },
@@ -723,6 +765,7 @@ const deleteDashboardRoute = createGatedRoute({
   description: "Soft-deletes a dashboard and its cards. Requires the `dashboards:write` permission.",
   request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     204: { description: "Dashboard deleted" },
     400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -744,6 +787,7 @@ const addCardRoute = createGatedRoute({
     body: { content: { "application/json": { schema: AddCardSchema } }, required: true },
   },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     201: { description: "Card added", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     400: { description: "Invalid request", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -770,6 +814,7 @@ const updateCardRoute = createGatedRoute({
     body: { content: { "application/json": { schema: UpdateCardSchema } }, required: true },
   },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     200: { description: "Card updated", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     204: { description: "Update succeeded (re-fetch failed)" },
     400: { description: "Invalid request", content: { "application/json": { schema: ErrorSchema } } },
@@ -796,6 +841,7 @@ const removeCardRoute = createGatedRoute({
     }),
   },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     204: { description: "Card removed" },
     400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -821,6 +867,7 @@ const previewCardRoute = createGatedRoute({
     "Validates and executes SQL against the analytics datasource through the full Atlas pipeline (validation, approval, RLS, auto-LIMIT, audit, masking). Used by the chat-side dashboard canvas to render live previews of cards the agent has proposed but the user has not yet saved. Requires the `dashboards:write` permission.",
   request: { body: { content: { "application/json": { schema: PreviewCardSchema } }, required: true } },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     200: { description: "Query results", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     400: { description: "Invalid SQL, plugin rejection, or query failure", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -848,6 +895,7 @@ const refreshCardRoute = createGatedRoute({
     query: refreshCardQuerySchema,
   },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     200: { description: "Card refreshed with new data", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     204: { description: "Refresh succeeded (re-fetch failed)" },
     400: { description: "Invalid ID, SQL validation failure, plugin rejection, or query failure", content: { "application/json": { schema: ErrorSchema } } },
@@ -913,6 +961,7 @@ const refreshAllCardsRoute = createGatedRoute({
     query: refreshCardQuerySchema,
   },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     200: { description: "All cards refreshed", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -935,7 +984,7 @@ const shareDashboardRoute = createGatedRoute({
     "Minting a PUBLIC link is gated a second time, because such a token is served with no authentication at all. " +
     "Requires the `dashboards:share` permission on that branch only (#5192) — an org-scoped share needs `dashboards:write` alone, as does revoking a link. " +
     "Optional JSON body: `{ expiresIn?: '1h'|'24h'|'7d'|'30d'|'never'|null, shareMode?: 'public'|'org', rotate?: boolean }`. " +
-    "An absent/empty body uses safe defaults (public, no rotation) and therefore takes the public branch; a present-but-invalid body returns 400 and never downgrades the share to public (#4317). " +
+    "An absent/empty body defaults to `shareMode: 'public'`, NO expiry and no rotation — i.e. a permanent link readable by anyone who has the URL — and therefore takes the public branch. Send `{ shareMode: 'org' }` for a workspace-only link. A present-but-invalid body returns 400 and never downgrades the share to public (#4317). " +
     "`rotate` is opt-in: without it, editing expiry/visibility PRESERVES the existing token so prior links keep working; with it, a new token is minted and prior links die.",
   // The body is validated in-handler (fail closed → 400) rather than via the
   // framework's json validator, so a malformed/invalid body returns a 400
@@ -945,6 +994,7 @@ const shareDashboardRoute = createGatedRoute({
     params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }),
   },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     200: { description: "Share token generated", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -970,6 +1020,7 @@ const unshareDashboardRoute = createGatedRoute({
   description: "Revokes the share token. Requires the `dashboards:write` permission.",
   request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     204: { description: "Share revoked" },
     400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -1008,6 +1059,7 @@ const suggestCardsRoute = createGatedRoute({
     params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }),
   },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     200: { description: "Suggested cards", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     400: { description: "Invalid ID or dashboard has no cards", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -2805,7 +2857,7 @@ authed.openapi(
       }
 
       // Fail CLOSED on the share config (#4317). The body is optional — an
-      // ABSENT/empty body uses the safe defaults — but a PRESENT-yet-invalid
+      // ABSENT/empty body takes the documented defaults — but a PRESENT-yet-invalid
       // body must return 400, never fall through to defaults. The old
       // parse-then-swallow path silently downgraded an org-intended share to
       // `shareMode: "public"` on any validation error.

@@ -68,8 +68,10 @@ import {
   requestContext,
   isSaasDeployMode,
   migrationWriteLock,
+  type AuthEnv,
 } from "./middleware";
 import { enforcePermission, type OrgContextEnv } from "./admin-router";
+
 
 const log = createLogger("workspace-router");
 
@@ -214,8 +216,12 @@ export const workspaceActorGuard = createMiddleware<WorkspaceGateEnv>(async (c, 
  * require BOTH flags — passing today only because every write-capable role also
  * holds read.
  */
-export function requireWorkspacePermission(permission: Permission) {
-  return createMiddleware<WorkspaceGateEnv>(async (c, next) => {
+export function requireWorkspacePermission(permission: Permission): WorkspaceGate {
+  // The ONE place a `WorkspaceGate` is minted, and therefore the one cast.
+  // `createMiddleware` cannot know about the brand; confining the assertion
+  // here is what makes `middleware: [someOtherMiddleware]` a compile error at
+  // all 26 call sites without a rule anybody has to remember.
+  return asWorkspaceGate(createMiddleware<WorkspaceGateEnv>(async (c, next) => {
     const requestId = c.get("requestId");
     const authResult = c.get("authResult");
 
@@ -244,14 +250,54 @@ export function requireWorkspacePermission(permission: Permission) {
     }
 
     await next();
-  });
+  }));
 }
+
+declare const workspaceGateBrand: unique symbol;
 
 /**
  * A route-level gate for a workspace router — i.e. what
  * `requireWorkspacePermission(flag)` returns.
+ *
+ * ⚠️ **BRANDED, and the brand is the whole guarantee.** Round 1 of review
+ * measured the unbranded version: `MiddlewareHandler<OrgContextEnv>` is
+ * satisfied by *any* middleware, so `middleware: [requireOrgContext()]`
+ * compiled — with a real, importable, plausible-looking middleware already
+ * used in this very file. The compile-time property had degraded to
+ * *"someone typed the word `middleware`"*, which is materially weaker than
+ * what the docstring below claimed, and the docstring is what the next author
+ * trusts.
+ *
+ * The brand is minted in exactly one place — `requireWorkspacePermission`, the
+ * only function allowed to produce a gate — so there is one cast in the module
+ * rather than a rule everyone has to remember. This is the repo's own recorded
+ * lesson (*brand the OUTPUT, not just the parameter*) applied to the shape it
+ * was written for.
  */
-export type WorkspaceGate = MiddlewareHandler<OrgContextEnv>;
+export type WorkspaceGate = MiddlewareHandler<OrgContextEnv> & {
+  readonly [workspaceGateBrand]: true;
+};
+
+/**
+ * The ONE place the brand is applied, and therefore the only cast.
+ *
+ * It has to be a double assertion: the brand is a phantom property no runtime
+ * value carries, and hono's `MiddlewareHandler` is effectively invariant in its
+ * Env, so `migrationWriteLock` (declared over `AuthEnv`) and
+ * `requireWorkspacePermission`'s handler (over `WorkspaceGateEnv`) have no
+ * common supertype to widen through. Confining that to one private function
+ * with a named parameter type is the trade: two module-owned middlewares
+ * convert here, and every other middleware in the tree is rejected at all 26
+ * call sites.
+ *
+ * Do NOT export this. The value of the brand is exactly that it cannot be
+ * minted outside this module.
+ */
+function asWorkspaceGate(
+  m: MiddlewareHandler<AuthEnv> | MiddlewareHandler<WorkspaceGateEnv>,
+): WorkspaceGate {
+  return m as unknown as WorkspaceGate;
+}
 
 /**
  * `createRoute`, with `middleware` REQUIRED (#5191).
@@ -277,9 +323,16 @@ export type WorkspaceGate = MiddlewareHandler<OrgContextEnv>;
  *   • `middleware` must be a MUTABLE array type. `readonly WorkspaceGate[]` is
  *     not assignable to hono's `H[]`, so `DASHBOARD_READ`/`DASHBOARD_WRITE`
  *     cannot become `as const`.
- *   • This proves a gate is PRESENT, never that it is the RIGHT one. Read-vs-
- *     write correctness stays with the runtime route table, which is the right
- *     division of labour: the compiler cannot know that `/refresh` is a write.
+ *   • This proves a REAL gate is present — see `WorkspaceGate`'s brand — never
+ *     that it is the RIGHT one. Read-vs-write correctness stays with the
+ *     runtime route table, which is the right division of labour: the compiler
+ *     cannot know that `/refresh` is a write.
+ *
+ * ⚠️ An EMPTY `middleware: []` still type-checks, and that is deliberate: it is
+ * a route someone typed a gate list for and left empty, which the runtime table
+ * in `dashboards-permission.test.ts` catches by seeing zero `checkPermission`
+ * calls. Do not "fix" the type to reject it and assume the runtime check is
+ * therefore redundant — the two guards cover different mistakes.
  */
 export function createGatedRoute<
   P extends string,
@@ -294,35 +347,62 @@ export function createGatedRoute<
 /**
  * Create a pre-configured org-scoped workspace router.
  *
- * Wires up: validationHook, workspaceAuth, workspaceActorGuard,
- * migrationWriteLock, requestContext, eeOnError. Add
- * `router.use(requireOrgContext())` for org-scoped routes, and
+ * Wires up: validationHook, workspaceAuth, workspaceActorGuard, requestContext,
+ * eeOnError. Add `router.use(requireOrgContext())` for org-scoped routes, and
  * `requireWorkspacePermission(flag)` per route.
  *
  * Note the absence of `mfaRequired` — see the module docstring.
  *
- * ⚠️ #5191 — two things `adminAuth` did that this router inherited the ABSENCE
- * of by silence when dashboards moved to `standardAuth`. Neither was decided:
+ * ⚠️ #5191 — the rate-limit bucket this router uses is `workspace`, carried by
+ * `workspaceAuth`. `adminAuth` passes `bucket: "admin"`; when dashboards moved
+ * to `standardAuth` (#5190) the bucket silently became `default`, i.e. the same
+ * budget as chat, for a surface that fires one render per card on every load.
+ * That was not a decision anyone took.
  *
- *   • **`migrationWriteLock`.** `adminAuth` omits it on purpose —
- *     `middleware.ts` says *"admins need to manage the workspace during
- *     migration (retry, cancel, configure)"*. That rationale is about admins
- *     doing migration work and does not transfer. A `member` editing a
- *     dashboard mid-region-migration has the edit land in the SOURCE region
- *     and silently lost, reported as a 200. The lock answers 409 with a
- *     requestId and copy that says what to do.
- *   • **The rate-limit bucket**, which `workspaceAuth` now carries.
- *
- * Order is load-bearing: the lock reads `authResult`, which `workspaceAuth`
- * sets, so it must run after it — the same contract `workspaceActorGuard`
- * documents and fails closed on.
+ * ⚠️ **`migrationWriteLock` is mounted PER WRITE GATE, not here** — see
+ * {@link workspaceWriteGate}. Mounting it on the router looks equivalent and is
+ * not: the lock keys on the HTTP METHOD, and this surface has read-classified
+ * POSTs (`…/cards/{id}/render`, `…/export`). Router-wide, a region migration
+ * would 409 every card on a dashboard anyone merely OPENED — an outage strictly
+ * worse than the lost write it exists to prevent. Measured in review round 1.
  */
 export function createWorkspaceRouter() {
   const router = new OpenAPIHono<WorkspaceGateEnv>({ defaultHook: validationHook });
   router.use(workspaceAuth);
   router.use(workspaceActorGuard);
-  router.use(migrationWriteLock);
   router.use(requestContext);
   router.onError(eeOnError);
   return router;
+}
+
+/**
+ * The gate list for a WRITE route on a workspace router: the permission flag,
+ * then the region-migration write lock.
+ *
+ * ⚠️ **`migrationWriteLock` had never been mounted on ANY router before #5191.**
+ * An earlier draft of this comment said `adminAuth` "omits it on purpose" and
+ * that this router "inherited the absence" — both false, and verifiable in one
+ * command (`git grep migrationWriteLock` on the parent commit returns only the
+ * definition). The `middleware.ts` line about admins managing a workspace
+ * during migration is guidance on where to OPT IN, not evidence that anything
+ * ever did. This is therefore the middleware's first production mount, and it
+ * deserves the scrutiny of new code rather than of a restored invariant.
+ *
+ * What it buys: a `member` editing a dashboard mid-region-migration currently
+ * has the edit land in the SOURCE region and silently lost, reported as a 200.
+ * The lock answers 409 with a requestId and copy that says what to do.
+ *
+ * ⚠️ Known gap, stated rather than papered over: `GET /{id}/draft` is
+ * WRITE-classified (its first call forks a draft — two INSERTs) but the lock
+ * skips it, because `checkMigrationWriteLock` keys on the method and that route
+ * is a GET. It was equally unlocked before this change, so this is an unclosed
+ * gap rather than a regression. Closing it means teaching the lock about the
+ * route's classification instead of its verb.
+ */
+export function workspaceWriteGate(permission: Permission): WorkspaceGate[] {
+  // `migrationWriteLock` reads `authResult`, which `workspaceAuth` sets on the
+  // router, so ordering within the request is already satisfied. Within this
+  // array the permission check runs first: an unauthorized caller should be
+  // told they lack the flag, not that the workspace is migrating.
+  return [requireWorkspacePermission(permission), asWorkspaceGate(migrationWriteLock)];
 }

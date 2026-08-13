@@ -158,7 +158,17 @@ export default function DashboardsPage() {
     // cross-origin bounce out of a page the user asked for is not ours to
     // perform. `extractFetchError` has already restricted it to an
     // `http(s)` absolute URL.
-    const ssoUrl = error.status === 403 ? error.ssoRedirectUrl : undefined;
+    // ⚠️ Keyed on the CODE, not the bare status — the same argument the
+    // `isPermissionDenial` comment above makes at length, which an earlier
+    // draft of this line ignored three lines below it. `authErrorCode` rewrites
+    // the SSO-enforcement failure to `auth_error`, so that is the discriminator.
+    // The bare status would offer "sign in with your identity provider" to a
+    // user whose real remedy is a role grant, the moment any other gate starts
+    // attaching the field.
+    const ssoUrl =
+      error.status === 403 && error.code === "auth_error"
+        ? error.ssoRedirectUrl
+        : undefined;
     return (
       <div className="mx-auto w-full max-w-2xl flex-1 px-4 py-16 text-center">
         <h1 className="text-base font-medium text-zinc-900 dark:text-zinc-100">
@@ -175,7 +185,10 @@ export default function DashboardsPage() {
           <Button size="sm" className="mt-6" asChild>
             {/* A plain anchor, not `router.push`: the destination is a
                 third-party origin, which the Next router does not handle. */}
-            <a href={ssoUrl}>Sign in with your identity provider</a>
+            {/* `noreferrer`: the full workspace URL would otherwise travel to
+                a third-party IdP as `Referer`. No `target="_blank"`, so there
+                is no `window.opener` exposure to close as well. */}
+            <a href={ssoUrl} rel="noreferrer">Sign in with your identity provider</a>
           </Button>
         )}
         {isRetryable && (

@@ -66,20 +66,21 @@ const RolesResponseSchema = z.object({
 // ── Permission labels ────────────────────────────────────────────
 
 /**
- * ⚠️ `Record<Permission, string>`, not `Record<string, string>` (#5191).
+ * ⚠️ `satisfies Record<Permission, string>`, not `Record<string, string>`
+ * (#5191).
  *
- * Keyed by the flag union, a permission with no label is a COMPILE error. As
- * `Record<string, …>` it was a raw id rendered inside a badge — which is how
- * `dashboards:read`/`dashboards:write` reached the editor as literal strings
- * before anyone noticed. The union only became reachable here when
- * `PERMISSIONS` moved to `@useatlas/types`; the web speaks HTTP and cannot
+ * Keyed by the flag union, a permission with no label is a COMPILE error, and
+ * `satisfies` keeps that in BOTH directions — a label for a flag that no longer
+ * exists is an excess-property error — while leaving the literal's own key type
+ * intact for the `Map` below.
+ *
+ * As `Record<string, …>` a missing label was a raw id rendered inside a badge —
+ * which is how `dashboards:read`/`dashboards:write` reached the editor as
+ * literal strings before anyone noticed. The union only became reachable here
+ * when `PERMISSIONS` moved to `@useatlas/types`; the web speaks HTTP and cannot
  * import from `@atlas/api`.
- *
- * The exhaustiveness runs in the OTHER direction too: a label for a flag that
- * no longer exists is also an error, so deleting a flag cannot leave dead copy
- * behind.
  */
-const PERMISSION_LABELS: Record<Permission, string> = {
+const PERMISSION_LABELS = {
   "query": "Query data",
   "query:raw_data": "View raw row data",
   "dashboards:read": "View dashboards",
@@ -95,7 +96,22 @@ const PERMISSION_LABELS: Record<Permission, string> = {
   "admin:audit": "View audit logs",
   "admin:roles": "Manage roles",
   "admin:semantic": "Edit semantic layer",
-};
+} satisfies Record<Permission, string>;
+
+/**
+ * The label map keyed for a FREE-STRING lookup.
+ *
+ * ⚠️ A `Map`, not the object — for the same reason `permission-resolve.ts`
+ * looks legacy roles up through one. `PERMISSION_LABELS[p]` on an object
+ * literal reaches `Object.prototype`, so `permissionLabel("toString")` returned
+ * a **Function** and `permissionLabel("__proto__")` an **Object**, past a
+ * `?? p` fallback that can never fire for an inherited key — from a function
+ * declaring `: string`. React then throws *"Objects are not valid as a React
+ * child"* and takes out the roles page instead of rendering an unknown badge.
+ * A `Map` has no prototype keys, and `.get()` is typed `string | undefined`, so
+ * the fallback becomes honest rather than dead-per-the-type.
+ */
+const LABEL_BY_ID: ReadonlyMap<string, string> = new Map(Object.entries(PERMISSION_LABELS));
 
 /**
  * A label for a flag the SERVER named, which is a `string` and not a
@@ -110,7 +126,7 @@ const PERMISSION_LABELS: Record<Permission, string> = {
  * to paper over the gap.
  */
 export function permissionLabel(p: string): string {
-  return (PERMISSION_LABELS as Record<string, string>)[p] ?? p;
+  return LABEL_BY_ID.get(p) ?? p;
 }
 
 /**

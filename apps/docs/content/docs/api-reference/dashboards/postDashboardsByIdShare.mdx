@@ -16,9 +16,11 @@ _openapi:
           that branch only (#5192) — an org-scoped share needs
           `dashboards:write` alone, as does revoking a link. Optional JSON body:
           `{ expiresIn?: '1h'|'24h'|'7d'|'30d'|'never'|null, shareMode?:
-          'public'|'org', rotate?: boolean }`. An absent/empty body uses safe
-          defaults (public, no rotation) and therefore takes the public branch;
-          a present-but-invalid body returns 400 and never downgrades the share
+          'public'|'org', rotate?: boolean }`. An absent/empty body defaults to
+          `shareMode: 'public'`, NO expiry and no rotation — i.e. a permanent
+          link readable by anyone who has the URL — and therefore takes the
+          public branch. Send `{ shareMode: 'org' }` for a workspace-only link.
+          A present-but-invalid body returns 400 and never downgrades the share
           to public (#4317). `rotate` is opt-in: without it, editing
           expiry/visibility PRESERVES the existing token so prior links keep
           working; with it, a new token is minted and prior links die.

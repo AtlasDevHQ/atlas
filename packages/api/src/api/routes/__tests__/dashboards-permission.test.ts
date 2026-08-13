@@ -72,6 +72,22 @@ void mock.module("@atlas/api/lib/effect/enterprise-layer", () => {
   });
 });
 
+/**
+ * Hoisted so the org-branch test can assert what the handler PASSED, not just
+ * that it returned 200. Without it the suite cannot tell "took the org branch"
+ * from "took the org branch and minted a public token anyway" — which is the
+ * #4317 silent-downgrade class the route's own description says it prevents.
+ */
+type ShareOpts = { expiresIn: string | null; shareMode: string; rotate: boolean };
+const mockShareDashboard = mock(
+  // Typed with the real parameter list, or `.mock.calls[n][2]` is a
+  // zero-length tuple and the assertion below cannot be written at all.
+  async (_id: string, _ctx: { orgId: string; viewerId: string }, _opts: ShareOpts) => ({
+    ok: true as const,
+    data: { token: "tok", shareMode: "public", expiresAt: null },
+  }),
+);
+
 // Keep the handlers off the DB — every assertion here is about the gate in
 // front of them, and a handler that 500s on a missing table would mask the
 // difference between "allowed through" and "denied".
@@ -90,10 +106,7 @@ void mock.module("@atlas/api/lib/dashboards", () => ({
   // status. The branch tests below would otherwise rest on `not.toBe(403)`,
   // which a 404 from a renamed path or a 500 from the unmocked DB satisfies
   // just as well as the success they mean to assert.
-  shareDashboard: mock(async () => ({
-    ok: true as const,
-    data: { token: "tok", shareMode: "public", expiresAt: null },
-  })),
+  shareDashboard: mockShareDashboard,
 }));
 
 const { app } = await import("../../index");
@@ -123,6 +136,13 @@ function req(path: string, method = "GET", body?: unknown): Request {
  * never consulted and the branch tests below measured the 400 instead.
  */
 const VALID_ID = "00000000-0000-4000-8000-000000000000";
+// ⚠️ Round 2: fixing `VALID_ID` alone fixed the INSTANCE, not the class. The
+// card and session ids were still `c-1` / `s-1`, and their handlers 400 at the
+// same `UUID_RE` — so on those FIVE routes the exact-set assertion below could
+// not see an undeclared second gate either. Measured: injecting a stray
+// `enforcePermission` into the update-card handler left the suite 69/69 green.
+const VALID_CARD_ID = "00000000-0000-4000-8000-000000000001";
+const VALID_SESSION_ID = "00000000-0000-4000-8000-000000000002";
 
 /**
  * The full route table, with the flag each route is expected to enforce.
@@ -177,10 +197,10 @@ const ROUTES: ReadonlyArray<{
   { method: "GET", path: `/${VALID_ID}/draft/status`, permission: "dashboards:read" },
   { method: "GET", path: `/${VALID_ID}/share`, permission: "dashboards:read" },
   { method: "GET", path: `/${VALID_ID}/sessions`, permission: "dashboards:read" },
-  { method: "GET", path: `/${VALID_ID}/sessions/s-1`, permission: "dashboards:read" },
+  { method: "GET", path: `/${VALID_ID}/sessions/${VALID_SESSION_ID}`, permission: "dashboards:read" },
   { method: "GET", path: `/${VALID_ID}/screenshot`, permission: "dashboards:read" },
-  { method: "POST", path: `/${VALID_ID}/cards/c-1/render`, permission: "dashboards:read", body: {} },
-  { method: "POST", path: `/${VALID_ID}/cards/c-1/refresh`, permission: "dashboards:write", body: {} },
+  { method: "POST", path: `/${VALID_ID}/cards/${VALID_CARD_ID}/render`, permission: "dashboards:read", body: {} },
+  { method: "POST", path: `/${VALID_ID}/cards/${VALID_CARD_ID}/refresh`, permission: "dashboards:write", body: {} },
   { method: "POST", path: `/${VALID_ID}/refresh`, permission: "dashboards:write", body: {} },
   { method: "POST", path: `/${VALID_ID}/export`, permission: "dashboards:read", body: { format: "pdf" } },
   { method: "POST", path: "/", permission: "dashboards:write", body: { title: "T" } },
@@ -191,8 +211,8 @@ const ROUTES: ReadonlyArray<{
   { method: "PATCH", path: `/${VALID_ID}`, permission: "dashboards:write", body: { title: "T2" } },
   { method: "DELETE", path: `/${VALID_ID}`, permission: "dashboards:write" },
   { method: "POST", path: `/${VALID_ID}/cards`, permission: "dashboards:write", body: {} },
-  { method: "PATCH", path: `/${VALID_ID}/cards/c-1`, permission: "dashboards:write", body: {} },
-  { method: "DELETE", path: `/${VALID_ID}/cards/c-1`, permission: "dashboards:write" },
+  { method: "PATCH", path: `/${VALID_ID}/cards/${VALID_CARD_ID}`, permission: "dashboards:write", body: {} },
+  { method: "DELETE", path: `/${VALID_ID}/cards/${VALID_CARD_ID}`, permission: "dashboards:write" },
   {
     method: "POST",
     path: `/${VALID_ID}/share`,
@@ -248,6 +268,7 @@ function authAs(user: {
 }
 
 beforeEach(() => {
+  mockShareDashboard.mockClear();
   mockCheckPermission.mockReset();
   mockCheckPermission.mockImplementation(() => Effect.succeed(null as CheckPermissionResult));
   authAs({ id: "owner-fresh", role: "owner" });
@@ -290,8 +311,8 @@ describe("#5189 — no dashboards route may exist without a permission decision"
       (r) =>
         `${r.method} ${MOUNT}${r.path === "/" ? "" : r.path}`
           .replace(VALID_ID, ":id")
-          .replace("/cards/c-1", "/cards/:cardId")
-          .replace("/sessions/s-1", "/sessions/:sessionId"),
+          .replace(`/cards/${VALID_CARD_ID}`, "/cards/:cardId")
+          .replace(`/sessions/${VALID_SESSION_ID}`, "/sessions/:sessionId"),
     ),
   );
 
@@ -330,8 +351,8 @@ describe("#5189 — no dashboards route may exist without a permission decision"
     for (const r of ROUTES) {
       const path = `${MOUNT}${r.path === "/" ? "" : r.path}`
         .replace(VALID_ID, "{id}")
-        .replace("/cards/c-1", "/cards/{cardId}")
-        .replace("/sessions/s-1", "/sessions/{sessionId}");
+        .replace(`/cards/${VALID_CARD_ID}`, "/cards/{cardId}")
+        .replace(`/sessions/${VALID_SESSION_ID}`, "/sessions/{sessionId}");
       const op = doc.paths?.[path]?.[r.method.toLowerCase()];
       const desc = op?.description ?? "";
       const found = [...desc.matchAll(/Requires the `(dashboards:\w+)` permission/g)].map(
@@ -431,6 +452,30 @@ describe("#5189 — each route enforces its OWN flag", () => {
       expect([...new Set(seen)]).toEqual([r.permission]);
     });
 
+    it(`${r.method} ${r.path} → 503, not 403, when ${cond.permission} cannot be RESOLVED`, async () => {
+      // The in-handler gate re-derives the status from `enforcePermission`,
+      // which is the only place in the tree that does. Measured in review:
+      // collapsing that ternary to a bare `c.json(denied.body, 403)` left this
+      // whole suite green, so "we could not determine your permissions" was
+      // reportable as "you lack them" — the exact confusion
+      // `permissionLoadFailedResponse` exists to prevent, and the reason the
+      // route declares a 503 at all.
+      mockCheckPermission.mockImplementation((_u, permission, requestId) =>
+        Effect.succeed(
+          permission === cond.permission
+            ? {
+                body: { error: "permissions_unavailable", message: "unavailable", requestId },
+                status: 503 as const,
+              }
+            : null,
+        ),
+      );
+      const res = await app.fetch(req(r.path, r.method, r.body));
+      expect(res.status).toBe(503);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("permissions_unavailable");
+    });
+
     it(`${r.method} ${r.path} → denying ${cond.permission} leaves the other branch working`, async () => {
       mockCheckPermission.mockImplementation((_u, permission, requestId) =>
         Effect.succeed(
@@ -441,6 +486,13 @@ describe("#5189 — each route enforces its OWN flag", () => {
       // An exact status, not `not.toBe(403)`: `shareDashboard` is mocked, so
       // the allowed outcome is a known 200 and a 404/500 cannot pass for it.
       expect(res.status).toBe(200);
+      // …and it minted the mode the caller asked for. A 200 alone cannot tell
+      // "took the org branch" from "took the org branch and minted a PUBLIC
+      // token anyway", which is the silent-downgrade class #4317 closed and
+      // the one this gate must not reopen from the other side.
+      expect(mockShareDashboard.mock.calls.at(-1)?.[2]).toMatchObject({
+        shareMode: "org",
+      });
     });
   }
 });
@@ -502,12 +554,20 @@ describe("#5188 — an unenrolled owner is no longer blocked from dashboards", (
     // The MFA scope decision, asserted rather than described: dashboards left
     // the admin perimeter, so this code cannot originate here. If a future
     // change remounts them on `createAdminRouter()`, this reddens.
+    //
+    // ⚠️ Counted, not `continue`d past. On a green tree no route 403s, so the
+    // loop's body used to run ZERO times and the test reported coverage it was
+    // not providing — an assertion that cannot fail. Collecting every response
+    // and asserting over the whole set keeps the property while making the
+    // vacuous case visible.
+    const codes: Array<string | undefined> = [];
     for (const r of ROUTES) {
       const res = await app.fetch(req(r.path, r.method, r.body));
-      if (res.status !== 403) continue;
-      const body = (await res.json()) as { error?: string };
-      expect(body.error).not.toBe("mfa_enrollment_required");
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      codes.push(body.error);
     }
+    expect(codes).toHaveLength(ROUTES.length);
+    expect(codes.filter((c) => c === "mfa_enrollment_required")).toEqual([]);
   });
 });
 

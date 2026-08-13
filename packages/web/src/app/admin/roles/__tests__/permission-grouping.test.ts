@@ -65,6 +65,23 @@ describe("groupPermissions", () => {
     expect(permissionLabel("reports:export")).toBe("reports:export");
   });
 
+  it("returns a STRING for a prototype key, not a Function or an Object", () => {
+    // ⚠️ The label map is looked up through a `Map`, not by indexing the object
+    // literal. Indexed, `permissionLabel("toString")` returned a **Function**
+    // and `"__proto__"` an **Object** — past a `?? p` fallback that can never
+    // fire for an inherited key — from a function declaring `: string`. React
+    // then throws "Objects are not valid as a React child" and takes out the
+    // whole roles page instead of rendering an unknown badge.
+    //
+    // `permissions` is a free string from a `custom_roles` row, so this is
+    // reachable by data, not only by a hostile server. Same class as the
+    // prototype hole `permission-resolve.ts` closed with a Map.
+    for (const key of ["toString", "constructor", "__proto__", "valueOf"]) {
+      expect(typeof permissionLabel(key), `${key} did not return a string`).toBe("string");
+      expect(permissionLabel(key)).toBe(key);
+    }
+  });
+
   it("collects an unrecognised flag under Other rather than dropping it", () => {
     // The failure mode this replaces, driven directly: a flag the server ships
     // and this file has never heard of.

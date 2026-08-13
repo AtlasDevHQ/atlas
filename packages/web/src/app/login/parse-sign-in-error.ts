@@ -6,6 +6,8 @@
  * still routes to `rate_limited`, not `invalid_credentials`.
  */
 
+import { externalRedirectUrl } from "@/ui/lib/redirect-target";
+
 export type SignInErrorKind =
   | "network"
   | "invalid_credentials"
@@ -73,19 +75,16 @@ const UNKNOWN_FALLBACK = {
   body: "We couldn't sign you in. Try again, or contact your workspace admin if it persists.",
 } as const;
 
-function safeRedirectUrl(raw: unknown): string | null {
-  if (typeof raw !== "string" || raw.length === 0) return null;
-  try {
-    // F-56 IdP redirects are always absolute http(s) URLs. Parsing without a
-    // base rejects relative paths and garbage like "[object Object]".
-    const u = new URL(raw);
-    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
-    return raw;
-  } catch {
-    console.warn("Malformed ssoRedirectUrl from server:", raw);
-    return null;
-  }
-}
+/**
+ * #5191 — this WAS the local `safeRedirectUrl`, and it is now the shared
+ * `externalRedirectUrl` in `@/ui/lib/redirect-target`, unchanged.
+ *
+ * It was extracted rather than copied because the dashboards error card needed
+ * exactly this rule for exactly this field (`ssoRedirectUrl`), and a second
+ * implementation of "which redirect targets are safe" is how the two rules
+ * drift apart. The alias keeps this file's call sites reading the way they did.
+ */
+const safeRedirectUrl = externalRedirectUrl;
 
 export function parseSignInError(input: SignInErrorInput): SignInErrorState {
   if (input.thrown !== undefined) {

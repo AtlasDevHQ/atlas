@@ -33,73 +33,22 @@ const log = createLogger("auth:permissions");
 // ---------------------------------------------------------------------------
 
 /**
- * Granular permission flags consumed by the enterprise custom-role surface
- * (`@atlas/ee/auth/roles`) and the `admin-router.ts` permission middleware.
+ * `PERMISSIONS` / `Permission` / `isValidPermission` moved to
+ * `@useatlas/types/auth` in #5191, alongside `ATLAS_ROLES` — the web package
+ * speaks HTTP and cannot import from `@atlas/api`, so a shared tuple has to
+ * live in a published package or be hand-copied, and it was being hand-copied
+ * in seven places.
  *
- * Hosted here (rather than in `@atlas/ee/auth/roles`) so core route handlers
- * can import the type without taking a hard dep on `@atlas/ee` —
- * see #2563 (slice 1/11 of #2017, inverting the core → ee dependency).
- * EE re-exports `PERMISSIONS`, `Permission`, and `isValidPermission` from
- * `ee/src/auth/roles.ts` for back-compat through slice 11.
- *
- * Adding a flag requires:
- *   1. Appending it here
- *   2. Adding it to the appropriate `BUILTIN_ROLES` entries in
- *      `ee/src/auth/roles.ts` so seeded org rows pick it up
- *   3. (Optional) Mapping it into `LEGACY_ROLE_PERMISSIONS` in the same
- *      file for non-enterprise deployments
+ * Re-exported here rather than moving every call site, exactly as
+ * `lib/auth/types.ts` already does for the role tuples: `@atlas/api/lib/auth/
+ * permissions` is the import path ~40 modules and `@atlas/ee` use, and
+ * churning them would bury the actual change. New code may import from either.
  */
-export const PERMISSIONS = [
-  "query",
-  "query:raw_data",
-  // #5189 — the first pair ENFORCED outside the admin perimeter. Every
-  // `admin:*` flag below is gated by `adminAuth` upstream, so those can only
-  // ever *subtract* from admin; these two are enforced by
-  // `requireWorkspacePermission` and can therefore GRANT to an
-  // analyst/viewer/member who is not an org admin. (`query`/`query:raw_data`
-  // above are non-admin-named but are not enforced at any route today.)
-  //
-  // The split is **does this persist**, not **is this a GET**. Read covers
-  // non-persisting viewing: list/get/render/export/screenshot. Write covers
-  // anything that persists — create/update/delete, cards, share links, BOTH
-  // refresh routes (they UPDATE the published card cache) and `GET /{id}/draft`
-  // (the first call forks) — plus the authoring assists `/suggest` and
-  // `/preview-card`. The per-route table and the full sweep live in
-  // `api/routes/dashboards.ts`; keep the rule stated in one place and this
-  // pointing at it, because an earlier draft of this comment stated the
-  // method-based rule that was rejected, at the definition site a reader
-  // reaches first.
-  "dashboards:read",
-  "dashboards:write",
-  // #5192 — a THIRD dashboards flag, and the reason it is not a finer slice of
-  // authoring: `POST /{id}/share` in `shareMode: "public"` mints a token served
-  // by `publicDashboards` at `/api/public/dashboards/{token}`, which bypasses
-  // auth entirely. That is publishing workspace data to the unauthenticated
-  // internet — a distinct authority from "can edit a dashboard", not a degree
-  // of it. #5189's two-flags-not-three decision was about read-vs-write
-  // granularity within authoring and still stands for that.
-  //
-  // Withheld from `member`, `analyst` and `viewer`; admin/owner/platform_admin
-  // pick it up through the `[...PERMISSIONS]` spreads. Enforced in the share
-  // handler on the PUBLIC branch only — an `org`-mode share re-checks org
-  // membership on read, so it is authoring-adjacent and stays on
-  // `dashboards:write`, as does REVOKING a link (de-escalation must never be
-  // harder than escalation).
-  "dashboards:share",
-  "admin:users",
-  "admin:connections",
-  "admin:settings",
-  "admin:audit",
-  "admin:roles",
-  "admin:semantic",
-] as const;
-
-export type Permission = (typeof PERMISSIONS)[number];
-
-/** Validate that a string is a known permission flag. */
-export function isValidPermission(p: string): p is Permission {
-  return (PERMISSIONS as readonly string[]).includes(p);
-}
+export {
+  PERMISSIONS,
+  isValidPermission,
+  type Permission,
+} from "@useatlas/types/auth";
 
 // ---------------------------------------------------------------------------
 // Role hierarchy

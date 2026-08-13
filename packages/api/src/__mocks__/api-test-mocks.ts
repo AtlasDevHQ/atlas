@@ -25,6 +25,7 @@
 import { mock, type Mock } from "bun:test";
 import { Context, Effect, Layer } from "effect";
 import { asRatio } from "@useatlas/types";
+import { PERMISSIONS as REAL_PERMISSIONS } from "@useatlas/types/auth";
 // The REAL error class, re-exported through the mocked `db/internal` surface
 // (#5160). The purge route maps it with `domainError`, which matches by
 // `instanceof` — a hand-rolled stand-in here would never match, and the route's
@@ -943,16 +944,11 @@ export function createApiTestMocks(
   }));
 
   void mock.module("@atlas/ee/auth/roles", () => ({
-    PERMISSIONS: [
-      "query",
-      "query:raw_data",
-      "admin:users",
-      "admin:connections",
-      "admin:settings",
-      "admin:audit",
-      "admin:roles",
-      "admin:semantic",
-    ] as const,
+    // #5191 — the REAL tuple, spread rather than restated. Every copy of this
+    // literal in the tree was stale (none carried the dashboards flags), and a
+    // fixture that disagrees with production is worse than no fixture: it
+    // asserts a permission model nobody ships.
+    PERMISSIONS: [...REAL_PERMISSIONS],
     isValidPermission: () => true,
     isValidRoleName: () => true,
     BUILTIN_ROLES: [],

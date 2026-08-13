@@ -15,49 +15,61 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import { groupPermissions, offerablePermissions } from "../page";
+import { PERMISSIONS } from "@useatlas/types/auth";
+import { groupPermissions, offerablePermissions, permissionLabel } from "../page";
 
-// ⚠️ This IS a hand-copied list, and an earlier version of this comment claimed
-// the opposite directly above it. Stating the constraint honestly instead:
-// `PERMISSIONS` lives in `packages/api/src/lib/auth/permissions.ts` and is
-// exported from no published package, and the web package speaks HTTP rather
-// than importing from `@atlas/api` — so it genuinely cannot be reached here.
+// #5191 — the REAL tuple, not a hand-copy. The previous version of this file
+// restated all ten flags with a comment admitting it, because `PERMISSIONS`
+// lived in `packages/api` and the web speaks HTTP. It now lives in
+// `@useatlas/types` beside `ATLAS_ROLES`, which the web already imports in ~69
+// files, so the copy is simply unnecessary.
 //
-// Drift is therefore possible and DELIBERATELY SAFE: `groupPermissions` is
-// driven by the server's list, so a flag this copy has never heard of still
-// reaches the editor via "Other" — which is what the third test pins, and which
-// is the real guarantee. This literal only fixes the input to the other cases.
-// Making the copy unnecessary means promoting `PERMISSIONS` to
-// `@useatlas/types` alongside `ATLAS_ROLES`; filed as follow-up.
-const PERMISSIONS = [
-  "query",
-  "query:raw_data",
-  "dashboards:read",
-  "dashboards:write",
-  "admin:users",
-  "admin:connections",
-  "admin:settings",
-  "admin:audit",
-  "admin:roles",
-  "admin:semantic",
-];
+// What that buys is not tidiness: the "offers every server-known permission"
+// test below is only meaningful if its input is what the server will actually
+// send. Against a stale copy it proved that the editor handles a list from
+// 2026, which is the shape of a fixture agreeing with itself by construction.
+
+const ALL = [...PERMISSIONS];
 
 describe("groupPermissions", () => {
   it("offers every server-known permission exactly once", () => {
-    const offered = groupPermissions(PERMISSIONS).flatMap(([, perms]) => perms);
-    expect(offered.sort()).toEqual([...PERMISSIONS].sort());
+    const offered = groupPermissions(ALL).flatMap(([, perms]) => perms);
+    expect(offered.sort()).toEqual([...ALL].sort());
   });
 
-  it("puts the dashboards pair in its own group", () => {
-    const groups = Object.fromEntries(groupPermissions(PERMISSIONS));
-    expect(groups["Dashboards"]).toEqual(["dashboards:read", "dashboards:write"]);
+  it("puts all three dashboards flags in their own group", () => {
+    const groups = Object.fromEntries(groupPermissions(ALL));
+    expect(groups["Dashboards"]).toEqual([
+      "dashboards:read",
+      "dashboards:write",
+      // #5192 — grantable in the editor, or an EE admin has no way to author a
+      // role that can publish a public link and the flag is admin-only by
+      // accident of the UI rather than by decision.
+      "dashboards:share",
+    ]);
+  });
+
+  it("labels every flag the server can send", () => {
+    // #5191 — `PERMISSION_LABELS` is now exhaustive over `Permission` at the
+    // TYPE level, which catches a missing label at build time. This is the
+    // runtime half: it proves the labels are real copy rather than the raw id
+    // the `?? p` fallback would render, which type-checks perfectly.
+    for (const p of ALL) {
+      expect(permissionLabel(p), `${p} has no label`).not.toBe(p);
+      expect(permissionLabel(p).length).toBeGreaterThan(0);
+    }
+  });
+
+  it("falls back to the raw id for a flag this build has never heard of", () => {
+    // The other side of the same coin — a newer server must not render blank.
+    expect(permissionLabel("reports:export")).toBe("reports:export");
   });
 
   it("collects an unrecognised flag under Other rather than dropping it", () => {
     // The failure mode this replaces, driven directly: a flag the server ships
     // and this file has never heard of.
     const groups = Object.fromEntries(
-      groupPermissions([...PERMISSIONS, "reports:export"]),
+      groupPermissions([...ALL, "reports:export"]),
     );
     expect(groups["Other"]).toEqual(["reports:export"]);
   });
@@ -77,7 +89,7 @@ describe("groupPermissions", () => {
 
 describe("offerablePermissions — no client-side substitute for the server list", () => {
   it("returns the server's list when it arrived", () => {
-    expect(offerablePermissions(PERMISSIONS)).toEqual(PERMISSIONS);
+    expect(offerablePermissions(ALL)).toEqual(ALL);
   });
 
   it("returns EMPTY when the fetch has not landed or failed", () => {

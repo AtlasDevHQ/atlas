@@ -541,31 +541,55 @@ export const platformAdminAuth = createMiddleware<AuthEnv>(async (c, next) => {
 // standardAuth — authenticate + rate limit + IP allowlist (no admin check)
 // ---------------------------------------------------------------------------
 
-export const standardAuth = createMiddleware<AuthEnv>(async (c, next) => {
-  const requestId = crypto.randomUUID();
-  c.set("requestId", requestId);
+/**
+ * The `standardAuth` body, parameterised by rate-limit bucket (#5191).
+ *
+ * The bucket is the ONLY thing that varies. It is a parameter rather than a
+ * second copy because these two middlewares must not drift: every other line
+ * here (misrouting, IP allowlist, mode resolution, trust-device) is a security
+ * behaviour that a forked copy would eventually lose on one side only.
+ */
+function makeStandardAuth(bucket: RateLimitBucket) {
+  return createMiddleware<AuthEnv>(async (c, next) => {
+    const requestId = crypto.randomUUID();
+    c.set("requestId", requestId);
 
-  const auth = await authenticate(c.req.raw, requestId);
-  if (!auth.ok) {
-    return c.json(auth.body, auth.status as 401, auth.headers);
-  }
-  const { authResult } = auth;
+    const auth = await authenticate(c.req.raw, requestId);
+    if (!auth.ok) {
+      return c.json(auth.body, auth.status as 401, auth.headers);
+    }
+    const { authResult } = auth;
 
-  const blocked = await rateLimitAndIPCheck(c.req.raw, authResult, requestId);
-  if (blocked) {
-    return c.json(blocked.body, blocked.status as 429, blocked.headers);
-  }
+    const blocked = await rateLimitAndIPCheck(c.req.raw, authResult, requestId, bucket);
+    if (blocked) {
+      return c.json(blocked.body, blocked.status as 429, blocked.headers);
+    }
 
-  const misrouted = await checkMisrouting(c, authResult, requestId);
-  if (misrouted) {
-    return c.json(misrouted.body, misrouted.status as 421);
-  }
+    const misrouted = await checkMisrouting(c, authResult, requestId);
+    if (misrouted) {
+      return c.json(misrouted.body, misrouted.status as 421);
+    }
 
-  c.set("authResult", authResult);
-  resolveModeForRequest(c, authResult, requestId);
-  setTrustDeviceIdentifier(c);
-  await next();
-});
+    c.set("authResult", authResult);
+    resolveModeForRequest(c, authResult, requestId);
+    setTrustDeviceIdentifier(c);
+    await next();
+  });
+}
+
+export const standardAuth = makeStandardAuth("default");
+
+/**
+ * `standardAuth` on the `workspace` rate-limit bucket (#5191).
+ *
+ * Mounted by `createWorkspaceRouter()`. Dashboards used to sit behind
+ * `adminAuth`, which passes `bucket: "admin"`; #5190 moved them onto
+ * `standardAuth` and the bucket silently became `default` — i.e. the same
+ * budget as chat, for a surface that fires one `POST …/render` per card on
+ * every load. See `RateLimitBucket` for why this is its own bucket rather than
+ * a return to `admin`.
+ */
+export const workspaceAuth = makeStandardAuth("workspace");
 
 // ---------------------------------------------------------------------------
 // migrationWriteLock — rejects writes during active region migration

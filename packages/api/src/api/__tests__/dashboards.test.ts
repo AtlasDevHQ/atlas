@@ -95,6 +95,20 @@ void mock.module("@atlas/ee/auth/ip-allowlist", () => ({
   checkIPAllowlist: mock(() => EffectLib.succeed({ allowed: true })),
 }));
 
+// #5191 — `createWorkspaceRouter()` now mounts `migrationWriteLock`, so every
+// WRITE in this file passes through `isWorkspaceMigrating`. Unstubbed it
+// reaches the real internal DB, which this suite does not provide, and the
+// lock fails CLOSED — correctly — with a 503 `migration_check_failed` on every
+// POST/PATCH/DELETE. That is the same stub `chat.test.ts` and the other
+// suites for lock-carrying routers already carry.
+//
+// ⚠️ `async () => false`, never a throw: "not migrating" is the state under
+// test here, and a suite that stubbed the failure arm would be asserting the
+// 503 path in every write test without saying so.
+void mock.module("@atlas/api/lib/residency/readonly", () => ({
+  isWorkspaceMigrating: mock(async () => false),
+}));
+
 // --- Dashboard CRUD mocks ---
 
 const VALID_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";

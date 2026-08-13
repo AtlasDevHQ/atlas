@@ -6,6 +6,7 @@
  */
 
 import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
+import { PERMISSIONS as REAL_PERMISSIONS } from "@useatlas/types/auth";
 
 // Real ADMIN_ACTIONS values so assertions pin to the canonical strings.
 import { ADMIN_ACTIONS as REAL_ADMIN_ACTIONS } from "@atlas/api/lib/audit/actions";
@@ -554,10 +555,11 @@ void mock.module("@atlas/ee/auth/ip-allowlist", () => ({
 // must be stubbed: a partial mock surfaces as "Export named 'X' not
 // found" at module load time and the admin tree fails to register.
 void mock.module("@atlas/ee/auth/roles", () => ({
-  PERMISSIONS: [
-    "query", "query:raw_data", "admin:users", "admin:connections",
-    "admin:settings", "admin:audit", "admin:roles", "admin:semantic",
-  ] as const,
+  // #5191 — the REAL tuple, spread rather than restated. Every copy of this
+  // literal in the tree was stale (none carried the dashboards flags), and a
+  // fixture that disagrees with production is worse than no fixture: it
+  // asserts a permission model nobody ships.
+  PERMISSIONS: [...REAL_PERMISSIONS],
   isValidPermission: () => true,
   isValidRoleName: () => true,
   BUILTIN_ROLES: [],

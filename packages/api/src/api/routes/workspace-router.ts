@@ -54,15 +54,21 @@
  * ```
  */
 
-import { OpenAPIHono } from "@hono/zod-openapi";
+import { OpenAPIHono, createRoute, type RouteConfig } from "@hono/zod-openapi";
 import { createMiddleware } from "hono/factory";
+import type { MiddlewareHandler } from "hono";
 import { resolveActorKind } from "@atlas/api/lib/auth/api-key-metadata";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import type { Permission } from "@atlas/api/lib/auth/permissions";
 import { validationHook } from "./validation-hook";
 import { eeOnError } from "./ee-error-handler";
-import { standardAuth, requestContext, isSaasDeployMode } from "./middleware";
+import {
+  workspaceAuth,
+  requestContext,
+  isSaasDeployMode,
+  migrationWriteLock,
+} from "./middleware";
 import { enforcePermission, type OrgContextEnv } from "./admin-router";
 
 const log = createLogger("workspace-router");
@@ -242,18 +248,80 @@ export function requireWorkspacePermission(permission: Permission) {
 }
 
 /**
+ * A route-level gate for a workspace router — i.e. what
+ * `requireWorkspacePermission(flag)` returns.
+ */
+export type WorkspaceGate = MiddlewareHandler<OrgContextEnv>;
+
+/**
+ * `createRoute`, with `middleware` REQUIRED (#5191).
+ *
+ * Every route on a workspace router must declare its permission gate, and
+ * before this "every route has one" was enforced only by the runtime tripwire
+ * in `__tests__/dashboards-permission.test.ts`. A route added without a gate
+ * therefore shipped ungated until that test ran — and it is the kind of test
+ * that runs late.
+ *
+ * ⚠️ **The obvious fix does not work, and it was measured.** Making
+ * `workspaceActorChecked` a required context variable produces no error at any
+ * call site: `@hono/zod-openapi` types `openapi()`'s env as
+ * `RouteMiddlewareParams<R>["env"] & E`, so the route middleware's Env is
+ * INTERSECTED into the handler env rather than checked against the app's. It
+ * adds a type lie, not a gate.
+ *
+ * Requiring the field at the DEFINITION site does work, because that is the one
+ * place the config object is checked structurally.
+ *
+ * Two constraints found while probing, both load-bearing:
+ *
+ *   • `middleware` must be a MUTABLE array type. `readonly WorkspaceGate[]` is
+ *     not assignable to hono's `H[]`, so `DASHBOARD_READ`/`DASHBOARD_WRITE`
+ *     cannot become `as const`.
+ *   • This proves a gate is PRESENT, never that it is the RIGHT one. Read-vs-
+ *     write correctness stays with the runtime route table, which is the right
+ *     division of labour: the compiler cannot know that `/refresh` is a write.
+ */
+export function createGatedRoute<
+  P extends string,
+  R extends Omit<RouteConfig, "path" | "middleware"> & {
+    path: P;
+    middleware: WorkspaceGate[];
+  },
+>(config: R) {
+  return createRoute(config);
+}
+
+/**
  * Create a pre-configured org-scoped workspace router.
  *
- * Wires up: validationHook, standardAuth, workspaceActorGuard, requestContext,
- * eeOnError. Add `router.use(requireOrgContext())` for org-scoped routes, and
+ * Wires up: validationHook, workspaceAuth, workspaceActorGuard,
+ * migrationWriteLock, requestContext, eeOnError. Add
+ * `router.use(requireOrgContext())` for org-scoped routes, and
  * `requireWorkspacePermission(flag)` per route.
  *
  * Note the absence of `mfaRequired` — see the module docstring.
+ *
+ * ⚠️ #5191 — two things `adminAuth` did that this router inherited the ABSENCE
+ * of by silence when dashboards moved to `standardAuth`. Neither was decided:
+ *
+ *   • **`migrationWriteLock`.** `adminAuth` omits it on purpose —
+ *     `middleware.ts` says *"admins need to manage the workspace during
+ *     migration (retry, cancel, configure)"*. That rationale is about admins
+ *     doing migration work and does not transfer. A `member` editing a
+ *     dashboard mid-region-migration has the edit land in the SOURCE region
+ *     and silently lost, reported as a 200. The lock answers 409 with a
+ *     requestId and copy that says what to do.
+ *   • **The rate-limit bucket**, which `workspaceAuth` now carries.
+ *
+ * Order is load-bearing: the lock reads `authResult`, which `workspaceAuth`
+ * sets, so it must run after it — the same contract `workspaceActorGuard`
+ * documents and fails closed on.
  */
 export function createWorkspaceRouter() {
   const router = new OpenAPIHono<WorkspaceGateEnv>({ defaultHook: validationHook });
-  router.use(standardAuth);
+  router.use(workspaceAuth);
   router.use(workspaceActorGuard);
+  router.use(migrationWriteLock);
   router.use(requestContext);
   router.onError(eeOnError);
   return router;

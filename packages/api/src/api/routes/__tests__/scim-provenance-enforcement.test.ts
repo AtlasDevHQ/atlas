@@ -24,6 +24,7 @@
  * F-53 chokepoint; this suite covers the F-57 chokepoint that runs after.
  */
 
+import { PERMISSIONS as REAL_PERMISSIONS } from "@useatlas/types/auth";
 import {
   describe,
   it,
@@ -173,16 +174,11 @@ void mock.module("@atlas/api/lib/effect/enterprise-layer", () => {
 });
 
 void mock.module("@atlas/ee/auth/roles", () => ({
-  PERMISSIONS: [
-    "query",
-    "query:raw_data",
-    "admin:users",
-    "admin:connections",
-    "admin:settings",
-    "admin:audit",
-    "admin:roles",
-    "admin:semantic",
-  ] as const,
+  // #5191 — the REAL tuple, spread rather than restated. Every copy of this
+  // literal in the tree was stale (none carried the dashboards flags), and a
+  // fixture that disagrees with production is worse than no fixture: it
+  // asserts a permission model nobody ships.
+  PERMISSIONS: [...REAL_PERMISSIONS],
   isValidPermission: () => true,
   isValidRoleName: () => true,
   BUILTIN_ROLES: [],

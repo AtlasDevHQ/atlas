@@ -143,9 +143,22 @@ export default function DashboardsPage() {
     // an admin-only page) and the SSO-enforcement 403 were handed the one action
     // that re-fails identically forever. Their server messages already name the
     // real remedy — rendering that and offering nothing false is the honest
-    // pair. Routing an SSO 403 to its `ssoRedirectUrl` needs `FetchError` to
-    // carry the field and is filed as follow-up rather than added here.
+    // pair.
     const isRetryable = error.status !== 403;
+    // #5191 — the one 403 that DOES have an action, now that `FetchError`
+    // carries the field. `ssoRedirectUrl` is the workspace's own identity
+    // provider, and signing in there is exactly what clears the enforcement.
+    // Without it this user reads a sentence about their IdP and has nowhere to
+    // go — which is the same dead end the retry button was removed for, minus
+    // the false hope.
+    //
+    // ⚠️ NOT navigated automatically. The MFA arm above `router.replace`s
+    // because that gate is unconditional and the destination is our own page;
+    // this one leaves the workspace for a third-party login, and a silent
+    // cross-origin bounce out of a page the user asked for is not ours to
+    // perform. `extractFetchError` has already restricted it to an
+    // `http(s)` absolute URL.
+    const ssoUrl = error.status === 403 ? error.ssoRedirectUrl : undefined;
     return (
       <div className="mx-auto w-full max-w-2xl flex-1 px-4 py-16 text-center">
         <h1 className="text-base font-medium text-zinc-900 dark:text-zinc-100">
@@ -158,6 +171,13 @@ export default function DashboardsPage() {
             ? `${friendlyError(error)} Ask a workspace administrator to grant your role access to dashboards.`
             : friendlyError(error)}
         </p>
+        {ssoUrl && (
+          <Button size="sm" className="mt-6" asChild>
+            {/* A plain anchor, not `router.push`: the destination is a
+                third-party origin, which the Next router does not handle. */}
+            <a href={ssoUrl}>Sign in with your identity provider</a>
+          </Button>
+        )}
         {isRetryable && (
           <Button
             size="sm"

@@ -24,6 +24,7 @@ import {
   FormDescription,
 } from "@/components/form-dialog";
 import { z } from "zod";
+import type { Permission } from "@useatlas/types/auth";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -64,7 +65,21 @@ const RolesResponseSchema = z.object({
 
 // ── Permission labels ────────────────────────────────────────────
 
-const PERMISSION_LABELS: Record<string, string> = {
+/**
+ * ⚠️ `Record<Permission, string>`, not `Record<string, string>` (#5191).
+ *
+ * Keyed by the flag union, a permission with no label is a COMPILE error. As
+ * `Record<string, …>` it was a raw id rendered inside a badge — which is how
+ * `dashboards:read`/`dashboards:write` reached the editor as literal strings
+ * before anyone noticed. The union only became reachable here when
+ * `PERMISSIONS` moved to `@useatlas/types`; the web speaks HTTP and cannot
+ * import from `@atlas/api`.
+ *
+ * The exhaustiveness runs in the OTHER direction too: a label for a flag that
+ * no longer exists is also an error, so deleting a flag cannot leave dead copy
+ * behind.
+ */
+const PERMISSION_LABELS: Record<Permission, string> = {
   "query": "Query data",
   "query:raw_data": "View raw row data",
   "dashboards:read": "View dashboards",
@@ -83,6 +98,22 @@ const PERMISSION_LABELS: Record<string, string> = {
 };
 
 /**
+ * A label for a flag the SERVER named, which is a `string` and not a
+ * `Permission` (#5191).
+ *
+ * The two facts sit in tension and both are deliberate: `PERMISSION_LABELS` is
+ * exhaustive over the compile-time union so a missing label fails the build,
+ * while the editor is driven by the list the API returned — which may name a
+ * flag this build has never heard of, and must still render it rather than
+ * dropping it (that silent drop is the #5189 defect this file exists to
+ * prevent). One narrowing point, so `Record<string, …>` does not creep back in
+ * to paper over the gap.
+ */
+export function permissionLabel(p: string): string {
+  return (PERMISSION_LABELS as Record<string, string>)[p] ?? p;
+}
+
+/**
  * Display ORDER only — not the set of grantable flags.
  *
  * #5189 — this used to be the set, because the editor iterates these groups and
@@ -92,7 +123,7 @@ const PERMISSION_LABELS: Record<string, string> = {
  * not, and an EE admin had no way to author a dashboard-capable role. Anything
  * unclaimed here now falls into "Other" rather than disappearing.
  */
-const PERMISSION_GROUPS: Record<string, string[]> = {
+const PERMISSION_GROUPS: Record<string, Permission[]> = {
   "Data Access": ["query", "query:raw_data"],
   "Dashboards": ["dashboards:read", "dashboards:write", "dashboards:share"],
   "Administration": ["admin:users", "admin:connections", "admin:settings", "admin:audit", "admin:roles", "admin:semantic"],
@@ -123,7 +154,10 @@ export function offerablePermissions(
  * not offered".
  */
 export function groupPermissions(allPermissions: string[]): Array<[string, string[]]> {
-  const claimed = new Set(Object.values(PERMISSION_GROUPS).flat());
+  // `Set<string>`, not the inferred `Set<Permission>`: it is tested against the
+  // SERVER's list, which may name a flag outside this build's union — and that
+  // is precisely the "Other" case two lines down.
+  const claimed = new Set<string>(Object.values(PERMISSION_GROUPS).flat());
   const groups: Array<[string, string[]]> = Object.entries(PERMISSION_GROUPS).map(
     ([name, perms]) => [name, perms.filter((p) => allPermissions.includes(p))],
   );
@@ -158,7 +192,7 @@ function PermissionBadges({
     <div className="flex flex-wrap gap-1">
       {permissions.map((p) => (
         <Badge key={p} variant="secondary" className="text-[10px]">
-          {PERMISSION_LABELS[p] ?? p}
+          {permissionLabel(p)}
         </Badge>
       ))}
     </div>
@@ -317,7 +351,7 @@ function RoleDialog({
                           htmlFor={`perm-${perm}`}
                           className="flex flex-1 items-center gap-2 cursor-pointer select-none"
                         >
-                          <span className="text-sm">{PERMISSION_LABELS[perm] ?? perm}</span>
+                          <span className="text-sm">{permissionLabel(perm)}</span>
                           <span className="text-xs text-muted-foreground font-mono ml-auto">{perm}</span>
                         </label>
                       </div>

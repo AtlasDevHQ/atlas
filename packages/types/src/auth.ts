@@ -59,6 +59,93 @@ export type AtlasMode = (typeof ATLAS_MODES)[number];
 export const ADMIN_ROLES = ["owner", "admin", "platform_admin"] as const;
 export type AdminRole = (typeof ADMIN_ROLES)[number];
 
+// ── Permission flags (granular RBAC) ───────────────────────────────
+
+/**
+ * Granular permission flags — the sibling of `ATLAS_ROLES` above, and here for
+ * the same reason (#5191).
+ *
+ * This lived in `packages/api/src/lib/auth/permissions.ts` and was exported
+ * from no published package, so the web could not reach it. The cost was three
+ * separate defects that all reduce to "a hand-written second copy":
+ *
+ *   • `packages/web/src/app/admin/roles/__tests__/permission-grouping.test.ts`
+ *     restated the tuple, with a comment saying so.
+ *   • `PERMISSION_LABELS` / `PERMISSION_GROUPS` in the roles editor were
+ *     `Record<string, …>`, so a flag with no label rendered as a raw id in a
+ *     badge instead of failing the build.
+ *   • Six API test mocks hand-enumerated it and every one was stale.
+ *
+ * The web resolves this package as `workspace:*`, so no npm publish is needed
+ * for a consumer to see a new flag — publishing happens on `/publish`'s own
+ * cadence.
+ *
+ * ⚠️ Adding a flag still requires three more edits, and the FIRST is the one
+ * that bites:
+ *   1. A **backfill migration** reconciling seeded `custom_roles` rows.
+ *      Without it the flag is silently absent for every workspace that has
+ *      ever opened /admin/roles, because `resolvePermissions` returns the
+ *      stored set rather than unioning it with the code definitions.
+ *      `ee/src/auth/roles.test.ts` has a drift guard that reddens if the
+ *      newest backfill disagrees with `BUILTIN_ROLES`.
+ *   2. The right `BUILTIN_ROLES` entries in `ee/src/auth/roles.ts`. Only
+ *      `admin` picks a new flag up automatically (`[...PERMISSIONS]`); the
+ *      others are hand-listed, which is deliberate — see `dashboards:share`.
+ *   3. `LEGACY_ROLE_PERMISSIONS` in
+ *      `packages/api/src/lib/auth/permission-resolve.ts` for non-EE deploys.
+ */
+export const PERMISSIONS = [
+  "query",
+  "query:raw_data",
+  // #5189 — the first pair ENFORCED outside the admin perimeter. Every
+  // `admin:*` flag below is gated by `adminAuth` upstream, so those can only
+  // ever *subtract* from admin; these are enforced by
+  // `requireWorkspacePermission` and can therefore GRANT to an
+  // analyst/viewer/member who is not an org admin. (`query`/`query:raw_data`
+  // above are non-admin-named but are not enforced at any route today.)
+  //
+  // The read/write split is **does this persist**, not **is this a GET**. Read
+  // covers non-persisting viewing: list/get/render/export/screenshot. Write
+  // covers anything that persists — create/update/delete, cards, org share
+  // links, BOTH refresh routes (they UPDATE the published card cache) and
+  // `GET /{id}/draft` (the first call forks) — plus the authoring assists
+  // `/suggest` and `/preview-card`. The per-route table and the full sweep
+  // live in `api/routes/dashboards.ts`; keep the rule stated in one place and
+  // this pointing at it, because an earlier draft of this comment stated the
+  // method-based rule that was rejected, at the definition site a reader
+  // reaches first.
+  "dashboards:read",
+  "dashboards:write",
+  // #5192 — a THIRD dashboards flag, and the reason it is not a finer slice of
+  // authoring: `POST /{id}/share` in `shareMode: "public"` mints a token
+  // served by `publicDashboards` at `/api/public/dashboards/{token}`, which
+  // bypasses auth entirely. That is publishing workspace data to the
+  // unauthenticated internet — a distinct authority from "can edit a
+  // dashboard", not a degree of it. #5189's two-flags-not-three decision was
+  // about read-vs-write granularity within authoring and still stands.
+  //
+  // Withheld from `member`, `analyst` and `viewer`; admin/owner/platform_admin
+  // pick it up through the `[...PERMISSIONS]` spreads. Enforced in the share
+  // handler on the PUBLIC branch only — an `org`-mode share re-checks org
+  // membership on read, so it is authoring-adjacent and stays on
+  // `dashboards:write`, as does REVOKING a link (de-escalation must never be
+  // harder than escalation).
+  "dashboards:share",
+  "admin:users",
+  "admin:connections",
+  "admin:settings",
+  "admin:audit",
+  "admin:roles",
+  "admin:semantic",
+] as const;
+
+export type Permission = (typeof PERMISSIONS)[number];
+
+/** Validate that a string is a known permission flag. */
+export function isValidPermission(p: string): p is Permission {
+  return (PERMISSIONS as readonly string[]).includes(p);
+}
+
 // ── Client-side auth interfaces ────────────────────────────────────
 // Shared between @atlas/web and @useatlas/react so each package has
 // a single source of truth for auth client shapes.

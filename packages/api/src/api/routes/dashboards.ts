@@ -11,7 +11,14 @@
  * Public shared endpoint bypasses auth (rate limited per IP).
  */
 
-import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+// #5191 — the bare name `createRoute` is deliberately NOT in scope in this file.
+// Every workspace route goes through `createGatedRoute`, which makes omitting
+// the permission gate a COMPILE error rather than something the runtime route
+// table catches later. The one genuinely ungated route here is the public
+// share-token view, and it has to say so out loud: `createPublicRoute` is the
+// same function under a name nobody reaches for by accident, so a new ungated
+// route is a visible, deliberate act in review rather than a missing line.
+import { OpenAPIHono, createRoute as createPublicRoute } from "@hono/zod-openapi";
 import { randomUUID } from "node:crypto";
 import { Effect } from "effect";
 import { runEffect } from "@atlas/api/lib/effect/hono";
@@ -83,6 +90,7 @@ import { ErrorSchema, parsePagination } from "./shared-schemas";
 import { requireOrgContext, enforcePermission } from "./admin-router";
 import {
   createWorkspaceRouter,
+  createGatedRoute,
   requireWorkspacePermission,
 } from "./workspace-router";
 import { validationHook } from "./validation-hook";
@@ -442,7 +450,7 @@ warnIfTrustProxyMissingForPublicShare();
 // Route definitions
 // ---------------------------------------------------------------------------
 
-const listDashboardsRoute = createRoute({
+const listDashboardsRoute = createGatedRoute({
   method: "get",
   path: "/",
   middleware: DASHBOARD_READ,
@@ -464,7 +472,7 @@ const listDashboardsRoute = createRoute({
   },
 });
 
-const createDashboardRoute = createRoute({
+const createDashboardRoute = createGatedRoute({
   method: "post",
   path: "/",
   middleware: DASHBOARD_WRITE,
@@ -483,7 +491,7 @@ const createDashboardRoute = createRoute({
   },
 });
 
-const getDashboardRoute = createRoute({
+const getDashboardRoute = createGatedRoute({
   method: "get",
   path: "/{id}",
   middleware: DASHBOARD_READ,
@@ -514,7 +522,7 @@ const getDashboardRoute = createRoute({
 // Draft routes (#2364) — per-user dashboard drafts
 // ---------------------------------------------------------------------------
 
-const getDraftRoute = createRoute({
+const getDraftRoute = createGatedRoute({
   method: "get",
   path: "/{id}/draft",
   middleware: DASHBOARD_WRITE,
@@ -540,7 +548,7 @@ const getDraftRoute = createRoute({
 // the publish-button enabled state, and the stale-baseline check
 // without paying for the full materialized view. 404 when no draft
 // exists; the publish/discard/rebase buttons stay hidden.
-const getDraftStatusRoute = createRoute({
+const getDraftStatusRoute = createGatedRoute({
   method: "get",
   path: "/{id}/draft/status",
   middleware: DASHBOARD_READ,
@@ -559,7 +567,7 @@ const getDraftStatusRoute = createRoute({
   },
 });
 
-const publishDraftRoute = createRoute({
+const publishDraftRoute = createGatedRoute({
   method: "post",
   path: "/{id}/draft/publish",
   middleware: DASHBOARD_WRITE,
@@ -579,7 +587,7 @@ const publishDraftRoute = createRoute({
   },
 });
 
-const discardDraftRoute = createRoute({
+const discardDraftRoute = createGatedRoute({
   method: "post",
   path: "/{id}/draft/discard",
   middleware: DASHBOARD_WRITE,
@@ -596,7 +604,7 @@ const discardDraftRoute = createRoute({
   },
 });
 
-const rebaseDraftRoute = createRoute({
+const rebaseDraftRoute = createGatedRoute({
   method: "post",
   path: "/{id}/draft/rebase",
   middleware: DASHBOARD_WRITE,
@@ -659,7 +667,7 @@ export type _DraftUndoCardCoversSnapshot = _Expect<
   keyof DashboardSnapshotCard extends keyof z.infer<typeof DraftUndoCardSchema> ? true : false
 >;
 
-const undoDraftRoute = createRoute({
+const undoDraftRoute = createGatedRoute({
   method: "post",
   path: "/{id}/draft/undo",
   middleware: DASHBOARD_WRITE,
@@ -682,7 +690,7 @@ const undoDraftRoute = createRoute({
   },
 });
 
-const updateDashboardRoute = createRoute({
+const updateDashboardRoute = createGatedRoute({
   method: "patch",
   path: "/{id}",
   middleware: DASHBOARD_WRITE,
@@ -706,7 +714,7 @@ const updateDashboardRoute = createRoute({
   },
 });
 
-const deleteDashboardRoute = createRoute({
+const deleteDashboardRoute = createGatedRoute({
   method: "delete",
   path: "/{id}",
   middleware: DASHBOARD_WRITE,
@@ -724,7 +732,7 @@ const deleteDashboardRoute = createRoute({
   },
 });
 
-const addCardRoute = createRoute({
+const addCardRoute = createGatedRoute({
   method: "post",
   path: "/{id}/cards",
   middleware: DASHBOARD_WRITE,
@@ -747,7 +755,7 @@ const addCardRoute = createRoute({
   },
 });
 
-const updateCardRoute = createRoute({
+const updateCardRoute = createGatedRoute({
   method: "patch",
   path: "/{id}/cards/{cardId}",
   middleware: DASHBOARD_WRITE,
@@ -774,7 +782,7 @@ const updateCardRoute = createRoute({
   },
 });
 
-const removeCardRoute = createRoute({
+const removeCardRoute = createGatedRoute({
   method: "delete",
   path: "/{id}/cards/{cardId}",
   middleware: DASHBOARD_WRITE,
@@ -803,7 +811,7 @@ const PreviewCardSchema = z.object({
   connectionId: z.string().nullable().optional(),
 });
 
-const previewCardRoute = createRoute({
+const previewCardRoute = createGatedRoute({
   method: "post",
   path: "/preview-card",
   middleware: DASHBOARD_WRITE,
@@ -825,7 +833,7 @@ const previewCardRoute = createRoute({
   },
 });
 
-const refreshCardRoute = createRoute({
+const refreshCardRoute = createGatedRoute({
   method: "post",
   path: "/{id}/cards/{cardId}/refresh",
   middleware: DASHBOARD_WRITE,
@@ -853,7 +861,7 @@ const refreshCardRoute = createRoute({
   },
 });
 
-const renderCardRoute = createRoute({
+const renderCardRoute = createGatedRoute({
   method: "post",
   path: "/{id}/cards/{cardId}/render",
   middleware: DASHBOARD_READ,
@@ -891,7 +899,7 @@ const renderCardRoute = createRoute({
   },
 });
 
-const refreshAllCardsRoute = createRoute({
+const refreshAllCardsRoute = createGatedRoute({
   method: "post",
   path: "/{id}/refresh",
   middleware: DASHBOARD_WRITE,
@@ -916,7 +924,7 @@ const refreshAllCardsRoute = createRoute({
   },
 });
 
-const shareDashboardRoute = createRoute({
+const shareDashboardRoute = createGatedRoute({
   method: "post",
   path: "/{id}/share",
   middleware: DASHBOARD_WRITE,
@@ -953,7 +961,7 @@ const shareDashboardRoute = createRoute({
   },
 });
 
-const unshareDashboardRoute = createRoute({
+const unshareDashboardRoute = createGatedRoute({
   method: "delete",
   path: "/{id}/share",
   middleware: DASHBOARD_WRITE,
@@ -971,7 +979,7 @@ const unshareDashboardRoute = createRoute({
   },
 });
 
-const getShareStatusRoute = createRoute({
+const getShareStatusRoute = createGatedRoute({
   method: "get",
   path: "/{id}/share",
   middleware: DASHBOARD_READ,
@@ -989,7 +997,7 @@ const getShareStatusRoute = createRoute({
   },
 });
 
-const suggestCardsRoute = createRoute({
+const suggestCardsRoute = createGatedRoute({
   method: "post",
   path: "/{id}/suggest",
   middleware: DASHBOARD_WRITE,
@@ -1009,7 +1017,7 @@ const suggestCardsRoute = createRoute({
   },
 });
 
-const listDashboardSessionsRoute = createRoute({
+const listDashboardSessionsRoute = createGatedRoute({
   method: "get",
   path: "/{id}/sessions",
   middleware: DASHBOARD_READ,
@@ -1030,7 +1038,7 @@ const listDashboardSessionsRoute = createRoute({
   },
 });
 
-const getDashboardSessionRoute = createRoute({
+const getDashboardSessionRoute = createGatedRoute({
   method: "get",
   path: "/{id}/sessions/{sessionId}",
   middleware: DASHBOARD_READ,
@@ -1054,7 +1062,7 @@ const getDashboardSessionRoute = createRoute({
   },
 });
 
-const screenshotDashboardRoute = createRoute({
+const screenshotDashboardRoute = createGatedRoute({
   method: "get",
   path: "/{id}/screenshot",
   middleware: DASHBOARD_READ,
@@ -1078,7 +1086,7 @@ const screenshotDashboardRoute = createRoute({
   },
 });
 
-const exportDashboardRoute = createRoute({
+const exportDashboardRoute = createGatedRoute({
   method: "post",
   path: "/{id}/export",
   middleware: DASHBOARD_READ,
@@ -1110,7 +1118,7 @@ const exportDashboardRoute = createRoute({
   },
 });
 
-const getSharedDashboardRoute = createRoute({
+const getSharedDashboardRoute = createPublicRoute({
   method: "get",
   path: "/{token}",
   tags: ["Dashboards"],

@@ -86,7 +86,39 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   },
 }));
 
-const { seedBuiltinRoles, BUILTIN_ROLES } = await import("@atlas/ee/auth/roles");
+/**
+ * The EE surface under test, loaded through a VARIABLE specifier so the type
+ * checker never resolves `@atlas/ee`.
+ *
+ * ⚠️ `packages/api/src/**` must compile STANDALONE, without the EE package —
+ * `check-ee-imports.sh` enforces that for source, and CI's "Symlink Stub Build"
+ * proves it for the whole package, TESTS INCLUDED. A plain
+ * `await import("@atlas/ee/auth/roles")` type-checks locally, because the api
+ * tsconfig maps `@atlas/ee/*` to `../../ee/src/*` — and then fails in the stub
+ * build with `TS2307: Cannot find module`. That is where this was caught; the
+ * local `bun run type` cannot see it.
+ *
+ * ⚠️ And it must stay in `packages/api`, not move to `ee/`, even though the
+ * import direction would be legal there: `test-others` deliberately does not
+ * set `TEST_DATABASE_URL`, so a `-pg` suite under `ee/` would SKIP in CI
+ * forever — a test that silently never runs, which is worse than the boundary
+ * problem it would solve.
+ *
+ * Typed with the shape this file actually uses, so a change to either export
+ * still surfaces here rather than degrading to `any`.
+ */
+interface BuiltinRoleDefinition {
+  name: string;
+  description: string;
+  permissions: readonly string[];
+}
+// `: string`, not the inferred literal — a literal specifier is still resolved
+// statically by TypeScript, which is the whole thing being avoided.
+const EE_ROLES_MODULE: string = "@atlas/ee/auth/roles";
+const { seedBuiltinRoles, BUILTIN_ROLES } = (await import(EE_ROLES_MODULE)) as {
+  seedBuiltinRoles: (orgId: string) => Effect.Effect<void, Error>;
+  BUILTIN_ROLES: readonly BuiltinRoleDefinition[];
+};
 
 const ORG = "org-backfill-test";
 /**

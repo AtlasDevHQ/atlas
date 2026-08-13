@@ -4970,6 +4970,31 @@
               }
             }
           },
+          "409": {
+            "description": "Write refused: the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation error",
             "content": {
@@ -5001,6 +5026,31 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Write refused: migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -5354,6 +5404,31 @@
               }
             }
           },
+          "409": {
+            "description": "Write refused: the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation error",
             "content": {
@@ -5409,7 +5484,7 @@
             }
           },
           "503": {
-            "description": "Drafts unavailable — internal database not configured",
+            "description": "Drafts unavailable — internal database not configured, OR migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -5529,8 +5604,58 @@
               }
             }
           },
+          "409": {
+            "description": "Write refused: the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Write refused: migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -5926,7 +6051,7 @@
             }
           },
           "409": {
-            "description": "Stale baseline or merge conflict",
+            "description": "Stale baseline or merge conflict, OR the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
             "content": {
               "application/json": {
                 "schema": {
@@ -5952,6 +6077,31 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Write refused: migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -6049,8 +6199,58 @@
               }
             }
           },
+          "409": {
+            "description": "Write refused: the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Write refused: migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -6182,7 +6382,7 @@
             }
           },
           "409": {
-            "description": "Rebase conflict",
+            "description": "Rebase conflict, OR the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
             "content": {
               "application/json": {
                 "schema": {
@@ -6208,6 +6408,31 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Write refused: migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -6612,6 +6837,31 @@
               }
             }
           },
+          "409": {
+            "description": "Write refused: the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation error",
             "content": {
@@ -6643,6 +6893,31 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Write refused: migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -7026,6 +7301,31 @@
               }
             }
           },
+          "409": {
+            "description": "Write refused: the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation error",
             "content": {
@@ -7081,7 +7381,7 @@
             }
           },
           "503": {
-            "description": "Drafts unavailable — internal database not configured",
+            "description": "Drafts unavailable — internal database not configured, OR migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -7442,6 +7742,31 @@
               }
             }
           },
+          "409": {
+            "description": "Write refused: the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation error",
             "content": {
@@ -7497,7 +7822,7 @@
             }
           },
           "503": {
-            "description": "Drafts unavailable — internal database not configured",
+            "description": "Drafts unavailable — internal database not configured, OR migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -7626,6 +7951,31 @@
               }
             }
           },
+          "409": {
+            "description": "Write refused: the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -7652,7 +8002,7 @@
             }
           },
           "503": {
-            "description": "Drafts unavailable — internal database not configured",
+            "description": "Drafts unavailable — internal database not configured, OR migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -7772,7 +8122,7 @@
             }
           },
           "409": {
-            "description": "Approval required before execution",
+            "description": "Approval required before execution, OR the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
             "content": {
               "application/json": {
                 "schema": {
@@ -7876,7 +8226,7 @@
             }
           },
           "503": {
-            "description": "Connection or approval system unavailable",
+            "description": "Connection or approval system unavailable, OR migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -8031,7 +8381,7 @@
             }
           },
           "409": {
-            "description": "Approval required before execution, or the draft was published/discarded mid-refresh (`draft_gone`)",
+            "description": "Approval required before execution, or the draft was published/discarded mid-refresh (`draft_gone`), OR the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
             "content": {
               "application/json": {
                 "schema": {
@@ -8106,7 +8456,7 @@
             }
           },
           "503": {
-            "description": "Connection or approval system unavailable",
+            "description": "Connection or approval system unavailable, OR migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -8522,7 +8872,7 @@
             }
           },
           "409": {
-            "description": "The draft was published or discarded mid-refresh (`draft_gone`)",
+            "description": "The draft was published or discarded mid-refresh (`draft_gone`), OR the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
             "content": {
               "application/json": {
                 "schema": {
@@ -8572,7 +8922,7 @@
             }
           },
           "503": {
-            "description": "Draft cache unavailable — internal database not configured",
+            "description": "Draft cache unavailable — internal database not configured, OR migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -8606,7 +8956,7 @@
           "Dashboards"
         ],
         "summary": "Share a dashboard",
-        "description": "Generates (or updates) a share token for public or org-scoped access. Requires the `dashboards:write` permission. Optional JSON body: `{ expiresIn?: '1h'|'24h'|'7d'|'30d'|'never'|null, shareMode?: 'public'|'org', rotate?: boolean }`. An absent/empty body uses safe defaults (public, no rotation); a present-but-invalid body returns 400 and never downgrades the share to public (#4317). `rotate` is opt-in: without it, editing expiry/visibility PRESERVES the existing token so prior links keep working; with it, a new token is minted and prior links die.",
+        "description": "Generates (or updates) a share token for public or org-scoped access. Requires the `dashboards:write` permission. Minting a PUBLIC link is gated a second time, because such a token is served with no authentication at all. Requires the `dashboards:share` permission on that branch only (#5192) — an org-scoped share needs `dashboards:write` alone, as does revoking a link. Optional JSON body: `{ expiresIn?: '1h'|'24h'|'7d'|'30d'|'never'|null, shareMode?: 'public'|'org', rotate?: boolean }`. An absent/empty body defaults to `shareMode: 'public'`, NO expiry and no rotation — i.e. a permanent link readable by anyone who has the URL — and therefore takes the public branch. Send `{ shareMode: 'org' }` for a workspace-only link. A present-but-invalid body returns 400 and never downgrades the share to public (#4317). `rotate` is opt-in: without it, editing expiry/visibility PRESERVES the existing token so prior links keep working; with it, a new token is minted and prior links die.",
         "parameters": [
           {
             "schema": {
@@ -8702,6 +9052,31 @@
               }
             }
           },
+          "409": {
+            "description": "Write refused: the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -8723,6 +9098,17 @@
                     "error",
                     "message"
                   ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Authorization service unavailable — the permission check could not be completed, OR migration status could not be verified so the write was refused (`migration_check_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
                 }
               }
             }
@@ -8823,8 +9209,58 @@
               }
             }
           },
+          "409": {
+            "description": "Write refused: the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Write refused: migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -9083,8 +9519,58 @@
               }
             }
           },
+          "409": {
+            "description": "Write refused: the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Write refused: migration status could not be verified so the write was refused (`migration_check_failed`)",
             "content": {
               "application/json": {
                 "schema": {

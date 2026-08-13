@@ -64,11 +64,36 @@ const RolesResponseSchema = z.object({
 
 // ── Permission labels ────────────────────────────────────────────
 
-const PERMISSION_LABELS: Record<string, string> = {
+/**
+ * ⚠️ NOT exhaustive over the flag union, and that is a KNOWN GAP rather than a
+ * choice (#5191).
+ *
+ * `Record<Permission, string>` would make a missing label a COMPILE error in
+ * both directions, which is what this map wants — as `Record<string, …>` a
+ * missing label is a raw id rendered inside a badge, which is how
+ * `dashboards:read`/`dashboards:write` reached the editor as literal strings
+ * before anyone noticed.
+ *
+ * The union is not reachable here: the web speaks HTTP and cannot import from
+ * `@atlas/api`, and moving `PERMISSIONS` to `@useatlas/types` is gated on a
+ * `/publish` of that package landing first — `create-atlas` builds
+ * `packages/api` against the PUBLISHED copy, so the move failed Deploy
+ * Validation with `Export PERMISSIONS doesn't exist in target module`. See the
+ * note in `lib/auth/permissions.ts` and the follow-up issue.
+ *
+ * Until then the runtime test in `__tests__/permission-grouping.test.ts` is
+ * what holds the map honest — it asserts every known flag has real copy.
+ */
+const PERMISSION_LABELS = {
   "query": "Query data",
   "query:raw_data": "View raw row data",
   "dashboards:read": "View dashboards",
   "dashboards:write": "Create and edit dashboards",
+  // #5192 — the label says "public" because that is the whole of what this
+  // grants and the part an admin must weigh. Sharing to the workspace rides on
+  // "Create and edit dashboards"; this one puts a dashboard on a URL that
+  // anyone can open with no account.
+  "dashboards:share": "Publish dashboards to a public link",
   "admin:users": "Manage users",
   "admin:connections": "Manage connections",
   "admin:settings": "Manage settings",
@@ -76,6 +101,37 @@ const PERMISSION_LABELS: Record<string, string> = {
   "admin:roles": "Manage roles",
   "admin:semantic": "Edit semantic layer",
 };
+
+/**
+ * The label map keyed for a FREE-STRING lookup.
+ *
+ * ⚠️ A `Map`, not the object — for the same reason `permission-resolve.ts`
+ * looks legacy roles up through one. `PERMISSION_LABELS[p]` on an object
+ * literal reaches `Object.prototype`, so `permissionLabel("toString")` returned
+ * a **Function** and `permissionLabel("__proto__")` an **Object**, past a
+ * `?? p` fallback that can never fire for an inherited key — from a function
+ * declaring `: string`. React then throws *"Objects are not valid as a React
+ * child"* and takes out the roles page instead of rendering an unknown badge.
+ * A `Map` has no prototype keys, and `.get()` is typed `string | undefined`, so
+ * the fallback becomes honest rather than dead-per-the-type.
+ */
+const LABEL_BY_ID: ReadonlyMap<string, string> = new Map(Object.entries(PERMISSION_LABELS));
+
+/**
+ * A label for a flag the SERVER named, which is a `string` and not a
+ * `Permission` (#5191).
+ *
+ * The two facts sit in tension and both are deliberate: `PERMISSION_LABELS` is
+ * exhaustive over the compile-time union so a missing label fails the build,
+ * while the editor is driven by the list the API returned — which may name a
+ * flag this build has never heard of, and must still render it rather than
+ * dropping it (that silent drop is the #5189 defect this file exists to
+ * prevent). One narrowing point, so `Record<string, …>` does not creep back in
+ * to paper over the gap.
+ */
+export function permissionLabel(p: string): string {
+  return LABEL_BY_ID.get(p) ?? p;
+}
 
 /**
  * Display ORDER only — not the set of grantable flags.
@@ -89,7 +145,7 @@ const PERMISSION_LABELS: Record<string, string> = {
  */
 const PERMISSION_GROUPS: Record<string, string[]> = {
   "Data Access": ["query", "query:raw_data"],
-  "Dashboards": ["dashboards:read", "dashboards:write"],
+  "Dashboards": ["dashboards:read", "dashboards:write", "dashboards:share"],
   "Administration": ["admin:users", "admin:connections", "admin:settings", "admin:audit", "admin:roles", "admin:semantic"],
 };
 
@@ -118,7 +174,7 @@ export function offerablePermissions(
  * not offered".
  */
 export function groupPermissions(allPermissions: string[]): Array<[string, string[]]> {
-  const claimed = new Set(Object.values(PERMISSION_GROUPS).flat());
+  const claimed = new Set<string>(Object.values(PERMISSION_GROUPS).flat());
   const groups: Array<[string, string[]]> = Object.entries(PERMISSION_GROUPS).map(
     ([name, perms]) => [name, perms.filter((p) => allPermissions.includes(p))],
   );
@@ -153,7 +209,7 @@ function PermissionBadges({
     <div className="flex flex-wrap gap-1">
       {permissions.map((p) => (
         <Badge key={p} variant="secondary" className="text-[10px]">
-          {PERMISSION_LABELS[p] ?? p}
+          {permissionLabel(p)}
         </Badge>
       ))}
     </div>
@@ -312,7 +368,7 @@ function RoleDialog({
                           htmlFor={`perm-${perm}`}
                           className="flex flex-1 items-center gap-2 cursor-pointer select-none"
                         >
-                          <span className="text-sm">{PERMISSION_LABELS[perm] ?? perm}</span>
+                          <span className="text-sm">{permissionLabel(perm)}</span>
                           <span className="text-xs text-muted-foreground font-mono ml-auto">{perm}</span>
                         </label>
                       </div>

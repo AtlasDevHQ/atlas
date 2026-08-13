@@ -292,6 +292,108 @@ describe("DashboardsPage (redirect index)", () => {
     });
   }
 
+  // #5191 — the one 403 that has an action after all.
+  describe("SSO-enforcement 403", () => {
+    const SSO_BODY = {
+      error: "auth_error",
+      message: "Your workspace requires SSO. Sign in with your identity provider.",
+      ssoRedirectUrl: "https://idp.example.com/sso/saml",
+    };
+
+    test("offers the workspace's identity provider as a link", async () => {
+      stubDashboardsStatus(403, SSO_BODY);
+
+      render(<DashboardsPage />, { wrapper: dashboardsWrapper });
+
+      const link = await screen.findByRole("link", {
+        name: "Sign in with your identity provider",
+      });
+      expect(link.getAttribute("href")).toBe("https://idp.example.com/sso/saml");
+      // Without it the full workspace URL travels to a third-party IdP as
+      // `Referer`. The code carries a comment saying so; nothing asserted it.
+      expect(link.getAttribute("rel")).toBe("noreferrer");
+      // The server's own sentence still renders — the link is an addition, not
+      // a replacement for the explanation. Matched on the whole sentence, not
+      // on `/identity provider/`: that substring is also in the link's own
+      // label, so the loose regex passed by finding the element it was meant
+      // to be independent of.
+      await screen.findByText(/Your workspace requires SSO\./);
+      // And no automatic bounce: leaving the workspace for a third party is
+      // the user's click to make.
+      expect(replaceCalls).toHaveLength(0);
+      expect(pushCalls).toHaveLength(0);
+      // Still no "Try again" — this 403 is no more transient than the others.
+      expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    });
+
+    test("refuses a javascript: redirect target", async () => {
+      // `externalRedirectUrl` allows an EXTERNAL origin, which is the whole
+      // reason it is not `sameOriginPath` — so the protocol allowlist is the
+      // only thing standing between it and `javascript:`, and it parses as a
+      // perfectly valid absolute URL.
+      stubDashboardsStatus(403, {
+        ...SSO_BODY,
+        ssoRedirectUrl: "javascript:alert(1)",
+      });
+
+      render(<DashboardsPage />, { wrapper: dashboardsWrapper });
+
+      await screen.findByText("Couldn’t load your dashboards");
+      expect(
+        screen.queryByRole("link", { name: "Sign in with your identity provider" }),
+      ).toBeNull();
+    });
+
+    test("refuses a relative path", async () => {
+      // The mirror of the `enrollmentUrl` rule: a RELATIVE value here means the
+      // server sent something that is not an IdP, so it is not a destination.
+      stubDashboardsStatus(403, { ...SSO_BODY, ssoRedirectUrl: "/admin/settings" });
+
+      render(<DashboardsPage />, { wrapper: dashboardsWrapper });
+
+      await screen.findByText("Couldn’t load your dashboards");
+      expect(
+        screen.queryByRole("link", { name: "Sign in with your identity provider" }),
+      ).toBeNull();
+    });
+
+    test("offers no link when a PERMISSION 403 carries an ssoRedirectUrl", async () => {
+      // ⚠️ The gate is keyed on the CODE, not the bare status. A future gate
+      // attaching `ssoRedirectUrl` to a permission denial must not make the
+      // card offer "sign in with your identity provider" to a user whose real
+      // remedy is a role grant — a false remedy is the defect class this whole
+      // error card was rewritten to remove.
+      stubDashboardsStatus(403, {
+        error: "insufficient_permissions",
+        message: 'This action requires the "dashboards:read" permission.',
+        ssoRedirectUrl: "https://idp.example.com/sso/saml",
+      });
+
+      render(<DashboardsPage />, { wrapper: dashboardsWrapper });
+
+      await screen.findByText("You don’t have access to dashboards");
+      expect(
+        screen.queryByRole("link", { name: "Sign in with your identity provider" }),
+      ).toBeNull();
+    });
+
+    test("offers no link when the 403 carries no ssoRedirectUrl", async () => {
+      // The negative control: without it, a link rendered unconditionally would
+      // pass the first test.
+      stubDashboardsStatus(403, {
+        error: "auth_error",
+        message: "Your workspace requires SSO.",
+      });
+
+      render(<DashboardsPage />, { wrapper: dashboardsWrapper });
+
+      await screen.findByText("Couldn’t load your dashboards");
+      expect(
+        screen.queryByRole("link", { name: "Sign in with your identity provider" }),
+      ).toBeNull();
+    });
+  });
+
   test("shows an error card (not a /login bounce) on a server error", async () => {
     stubDashboardsStatus(500, { message: "Internal error" });
 

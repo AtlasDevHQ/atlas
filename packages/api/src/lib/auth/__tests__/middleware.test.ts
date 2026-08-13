@@ -990,6 +990,157 @@ describe("checkRateLimit() — admin bucket (#2485)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// #5191 — workspace bucket isolation
+// ---------------------------------------------------------------------------
+
+describe("checkRateLimit() — workspace bucket (#5191)", () => {
+  const origRpm = process.env.ATLAS_RATE_LIMIT_RPM;
+  const origWorkspaceRpm = process.env.ATLAS_RATE_LIMIT_RPM_WORKSPACE;
+  const origAdminRpm = process.env.ATLAS_RATE_LIMIT_RPM_ADMIN;
+  // ⚠️ CHAT belongs here too. The last test in this block sets it and cleaned
+  // up with an inline `delete` as its final statement — unreachable if any
+  // assertion above it throws, so one real red leaked
+  // `ATLAS_RATE_LIMIT_RPM_CHAT=2` into every later test in the FILE, including
+  // the pre-existing chat-bucket describes. A cascade of unrelated reds with
+  // the true cause scrolled off is the diagnostic failure this whole axis is
+  // about.
+  const origChatRpm = process.env.ATLAS_RATE_LIMIT_RPM_CHAT;
+
+  beforeEach(() => {
+    resetRateLimits();
+    process.env.ATLAS_RATE_LIMIT_RPM = "30";
+    delete process.env.ATLAS_RATE_LIMIT_RPM_WORKSPACE;
+  });
+
+  afterEach(() => {
+    if (origRpm !== undefined) process.env.ATLAS_RATE_LIMIT_RPM = origRpm;
+    else delete process.env.ATLAS_RATE_LIMIT_RPM;
+    if (origWorkspaceRpm !== undefined) process.env.ATLAS_RATE_LIMIT_RPM_WORKSPACE = origWorkspaceRpm;
+    else delete process.env.ATLAS_RATE_LIMIT_RPM_WORKSPACE;
+    if (origAdminRpm !== undefined) process.env.ATLAS_RATE_LIMIT_RPM_ADMIN = origAdminRpm;
+    else delete process.env.ATLAS_RATE_LIMIT_RPM_ADMIN;
+    if (origChatRpm !== undefined) process.env.ATLAS_RATE_LIMIT_RPM_CHAT = origChatRpm;
+    else delete process.env.ATLAS_RATE_LIMIT_RPM_CHAT;
+    resetRateLimits();
+  });
+
+  it("derives default workspace ceiling as max(60, RPM) when override unset", () => {
+    process.env.ATLAS_RATE_LIMIT_RPM = "30";
+    resetRateLimits();
+
+    // 60, not 30 — a 20-card dashboard fires 20 renders on load, and
+    // refresh-all fires 20 more.
+    for (let i = 0; i < 60; i++) {
+      expect(checkRateLimit("u", { bucket: "workspace" }).allowed).toBe(true);
+    }
+    expect(checkRateLimit("u", { bucket: "workspace" }).allowed).toBe(false);
+  });
+
+  it("ATLAS_RATE_LIMIT_RPM_WORKSPACE override wins over the derived default", () => {
+    process.env.ATLAS_RATE_LIMIT_RPM_WORKSPACE = "3";
+    resetRateLimits();
+
+    expect(checkRateLimit("u", { bucket: "workspace" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { bucket: "workspace" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { bucket: "workspace" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { bucket: "workspace" }).allowed).toBe(false);
+  });
+
+  it("invalid ATLAS_RATE_LIMIT_RPM_WORKSPACE falls back to derived default", () => {
+    process.env.ATLAS_RATE_LIMIT_RPM_WORKSPACE = "abc";
+    resetRateLimits();
+
+    for (let i = 0; i < 60; i++) {
+      expect(checkRateLimit("u", { bucket: "workspace" }).allowed).toBe(true);
+    }
+    expect(checkRateLimit("u", { bucket: "workspace" }).allowed).toBe(false);
+  });
+
+  it("disables the workspace bucket when ATLAS_RATE_LIMIT_RPM=0", () => {
+    process.env.ATLAS_RATE_LIMIT_RPM = "0";
+    process.env.ATLAS_RATE_LIMIT_RPM_WORKSPACE = "5";
+    resetRateLimits();
+
+    for (let i = 0; i < 50; i++) {
+      expect(checkRateLimit("u", { bucket: "workspace" }).allowed).toBe(true);
+    }
+  });
+
+  // The whole point of #5191's bucket choice. Ceilings are deliberately
+  // DIFFERENT per bucket here so exhausting one cannot be mistaken for the
+  // other still having budget by coincidence of equal sizes.
+  it("a workspace burst does not deplete the ADMIN budget for the same key", () => {
+    process.env.ATLAS_RATE_LIMIT_RPM = "20";
+    process.env.ATLAS_RATE_LIMIT_RPM_WORKSPACE = "2";
+    process.env.ATLAS_RATE_LIMIT_RPM_ADMIN = "5";
+    resetRateLimits();
+
+    expect(checkRateLimit("u", { bucket: "workspace" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { bucket: "workspace" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { bucket: "workspace" }).allowed).toBe(false);
+
+    // The operator can still reach the admin surface to FIX the workspace —
+    // which is exactly what reusing the `admin` bucket would have cost.
+    for (let i = 0; i < 5; i++) {
+      expect(checkRateLimit("u", { bucket: "admin" }).allowed).toBe(true);
+    }
+    expect(checkRateLimit("u", { bucket: "admin" }).allowed).toBe(false);
+  });
+
+  it("a workspace burst does not deplete the DEFAULT budget for the same key", () => {
+    // The regression #5190 shipped: dashboards on `default` shares the budget
+    // with chat and every cheap read.
+    process.env.ATLAS_RATE_LIMIT_RPM = "4";
+    process.env.ATLAS_RATE_LIMIT_RPM_WORKSPACE = "2";
+    resetRateLimits();
+
+    expect(checkRateLimit("u", { bucket: "workspace" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { bucket: "workspace" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { bucket: "workspace" }).allowed).toBe(false);
+
+    for (let i = 0; i < 4; i++) {
+      expect(checkRateLimit("u").allowed).toBe(true);
+    }
+    expect(checkRateLimit("u").allowed).toBe(false);
+  });
+
+  it("workspace and chat buckets are independent", () => {
+    process.env.ATLAS_RATE_LIMIT_RPM = "20";
+    process.env.ATLAS_RATE_LIMIT_RPM_WORKSPACE = "3";
+    process.env.ATLAS_RATE_LIMIT_RPM_CHAT = "2";
+    resetRateLimits();
+
+    for (let i = 0; i < 3; i++) {
+      expect(checkRateLimit("u", { bucket: "workspace" }).allowed).toBe(true);
+    }
+    expect(checkRateLimit("u", { bucket: "workspace" }).allowed).toBe(false);
+
+    expect(checkRateLimit("u", { bucket: "chat" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { bucket: "chat" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { bucket: "chat" }).allowed).toBe(false);
+  });
+
+  it("treats an explicit 0 or negative as invalid, not as 'disabled'", () => {
+    // Both values, or the title names an arm the body never drives.
+    // Surprising and worth pinning: `ATLAS_RATE_LIMIT_RPM_WORKSPACE=0` does NOT
+    // disable the bucket — it takes the `n <= 0` arm and falls back to the
+    // derived `max(60, RPM)`. The warn text says so ("set ATLAS_RATE_LIMIT_RPM=0
+    // to disable rate limiting entirely"), and the admin bucket behaves the same
+    // way, but an operator reaching for `…_WORKSPACE=0` will not guess it.
+    process.env.ATLAS_RATE_LIMIT_RPM = "30";
+    for (const value of ["0", "-5"]) {
+      process.env.ATLAS_RATE_LIMIT_RPM_WORKSPACE = value;
+      resetRateLimits();
+
+      for (let i = 0; i < 60; i++) {
+        expect(checkRateLimit("u", { bucket: "workspace" }).allowed, value).toBe(true);
+      }
+      expect(checkRateLimit("u", { bucket: "workspace" }).allowed, value).toBe(false);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // rateLimitCleanupTick
 // ---------------------------------------------------------------------------
 

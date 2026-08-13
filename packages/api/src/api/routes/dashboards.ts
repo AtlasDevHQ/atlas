@@ -11,7 +11,14 @@
  * Public shared endpoint bypasses auth (rate limited per IP).
  */
 
-import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+// #5191 — the bare name `createRoute` is deliberately NOT in scope in this file.
+// Every workspace route goes through `createGatedRoute`, which makes omitting
+// the permission gate a COMPILE error rather than something the runtime route
+// table catches later. The one genuinely ungated route here is the public
+// share-token view, and it has to say so out loud: `createPublicRoute` is the
+// same function under a name nobody reaches for by accident, so a new ungated
+// route is a visible, deliberate act in review rather than a missing line.
+import { OpenAPIHono, createRoute as createPublicRoute } from "@hono/zod-openapi";
 import { randomUUID } from "node:crypto";
 import { Effect } from "effect";
 import { runEffect } from "@atlas/api/lib/effect/hono";
@@ -80,10 +87,12 @@ import {
   validateAutoComparison,
 } from "@atlas/api/lib/dashboard-parameters";
 import { ErrorSchema, parsePagination } from "./shared-schemas";
-import { requireOrgContext } from "./admin-router";
+import { requireOrgContext, enforcePermission } from "./admin-router";
 import {
   createWorkspaceRouter,
+  createGatedRoute,
   requireWorkspacePermission,
+  workspaceWriteGate,
 } from "./workspace-router";
 import { validationHook } from "./validation-hook";
 import {
@@ -147,7 +156,51 @@ const log = createLogger("dashboard-routes");
  * against the composed app.
  */
 const DASHBOARD_READ = [requireWorkspacePermission("dashboards:read")];
-const DASHBOARD_WRITE = [requireWorkspacePermission("dashboards:write")];
+// #5191 — WRITE additionally carries `migrationWriteLock` (409 during an active
+// region migration). It rides on the WRITE gate rather than on the router
+// because the lock keys on the HTTP method, and READ here includes POSTs
+// (`…/render`, `…/export`): router-wide it would 409 every card of a dashboard
+// somebody merely opened. Write routes therefore also declare
+// `WORKSPACE_LOCK_RESPONSES` below.
+const DASHBOARD_WRITE = workspaceWriteGate("dashboards:write");
+
+/**
+ * The two statuses `migrationWriteLock` adds to every route carrying
+ * `DASHBOARD_WRITE` **with a write METHOD**, spread into their `responses`
+ * (#5191).
+ *
+ * ⚠️ Declaring them is not bookkeeping. `409 workspace_migrating` is a STATE a
+ * client must branch on — it is temporary, it says so, and retrying later is
+ * the correct response — while `503 migration_check_failed` is not retryable at
+ * the same cadence. An undeclared status has no arm in the generated
+ * `@useatlas/sdk` client or in `apps/docs/openapi.json`, so both collapse into
+ * "some error" at exactly the boundary where the difference matters.
+ *
+ * ⚠️ The rule is write-gate AND write-method, and the two disagree exactly
+ * once. `GET /{id}/draft` carries `DASHBOARD_WRITE` — it forks a draft, which
+ * is authoring — but the lock keys on the verb, so it can never fire there and
+ * the spread is deliberately absent. Declaring a 409 on it would be a contract
+ * for something that cannot happen. An earlier draft of this paragraph stated
+ * the rule as "write routes only" and illustrated it with `GET /`, which is a
+ * READ route — so it demonstrated the gate split rather than the method rule
+ * that actually drives the decision, and did not describe its own one
+ * exception.
+ */
+const LOCK_409_CAUSE =
+  "the workspace is being migrated to another region (`workspace_migrating`) — temporary; retry after the migration completes";
+const LOCK_503_CAUSE =
+  "migration status could not be verified so the write was refused (`migration_check_failed`)";
+
+const WORKSPACE_LOCK_RESPONSES = {
+  409: {
+    description: `Write refused: ${LOCK_409_CAUSE}`,
+    content: { "application/json": { schema: ErrorSchema } },
+  },
+  503: {
+    description: `Write refused: ${LOCK_503_CAUSE}`,
+    content: { "application/json": { schema: ErrorSchema } },
+  },
+} as const;
 
 // ---------------------------------------------------------------------------
 // Zod schemas
@@ -442,7 +495,7 @@ warnIfTrustProxyMissingForPublicShare();
 // Route definitions
 // ---------------------------------------------------------------------------
 
-const listDashboardsRoute = createRoute({
+const listDashboardsRoute = createGatedRoute({
   method: "get",
   path: "/",
   middleware: DASHBOARD_READ,
@@ -464,7 +517,7 @@ const listDashboardsRoute = createRoute({
   },
 });
 
-const createDashboardRoute = createRoute({
+const createDashboardRoute = createGatedRoute({
   method: "post",
   path: "/",
   middleware: DASHBOARD_WRITE,
@@ -473,6 +526,7 @@ const createDashboardRoute = createRoute({
   description: "Creates a new dashboard. Requires the `dashboards:write` permission.",
   request: { body: { content: { "application/json": { schema: CreateDashboardSchema } }, required: true } },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     201: { description: "Dashboard created", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     400: { description: "Invalid request", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -483,7 +537,7 @@ const createDashboardRoute = createRoute({
   },
 });
 
-const getDashboardRoute = createRoute({
+const getDashboardRoute = createGatedRoute({
   method: "get",
   path: "/{id}",
   middleware: DASHBOARD_READ,
@@ -514,7 +568,7 @@ const getDashboardRoute = createRoute({
 // Draft routes (#2364) — per-user dashboard drafts
 // ---------------------------------------------------------------------------
 
-const getDraftRoute = createRoute({
+const getDraftRoute = createGatedRoute({
   method: "get",
   path: "/{id}/draft",
   middleware: DASHBOARD_WRITE,
@@ -540,7 +594,7 @@ const getDraftRoute = createRoute({
 // the publish-button enabled state, and the stale-baseline check
 // without paying for the full materialized view. 404 when no draft
 // exists; the publish/discard/rebase buttons stay hidden.
-const getDraftStatusRoute = createRoute({
+const getDraftStatusRoute = createGatedRoute({
   method: "get",
   path: "/{id}/draft/status",
   middleware: DASHBOARD_READ,
@@ -559,7 +613,7 @@ const getDraftStatusRoute = createRoute({
   },
 });
 
-const publishDraftRoute = createRoute({
+const publishDraftRoute = createGatedRoute({
   method: "post",
   path: "/{id}/draft/publish",
   middleware: DASHBOARD_WRITE,
@@ -569,17 +623,18 @@ const publishDraftRoute = createRoute({
     "Diff-merges the caller's draft into the live dashboard in a single transaction. Returns 409 when a teammate has published since the draft was forked (with `reason: \"stale_baseline\"`) or when both sides edited the same card (with `reason: \"conflict\"`). Requires the `dashboards:write` permission.",
   request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     200: { description: "Published — number of merge ops applied", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     404: { description: "Dashboard or draft not found", content: { "application/json": { schema: ErrorSchema } } },
-    409: { description: "Stale baseline or merge conflict", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: `Stale baseline or merge conflict, OR ${LOCK_409_CAUSE}`, content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
-const discardDraftRoute = createRoute({
+const discardDraftRoute = createGatedRoute({
   method: "post",
   path: "/{id}/draft/discard",
   middleware: DASHBOARD_WRITE,
@@ -588,6 +643,7 @@ const discardDraftRoute = createRoute({
   description: "Idempotently drops the caller's draft for this dashboard. No-op if no draft exists. Requires the `dashboards:write` permission.",
   request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     204: { description: "Draft discarded (or already absent)" },
     400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -596,7 +652,7 @@ const discardDraftRoute = createRoute({
   },
 });
 
-const rebaseDraftRoute = createRoute({
+const rebaseDraftRoute = createGatedRoute({
   method: "post",
   path: "/{id}/draft/rebase",
   middleware: DASHBOARD_WRITE,
@@ -606,12 +662,13 @@ const rebaseDraftRoute = createRoute({
     "Fast-forwards the draft onto the latest published row when there are no conflicts; returns 409 with the conflict set when both sides edited the same card. Requires the `dashboards:write` permission.",
   request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     200: { description: "Rebased draft", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     404: { description: "Dashboard or draft not found", content: { "application/json": { schema: ErrorSchema } } },
-    409: { description: "Rebase conflict", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: `Rebase conflict, OR ${LOCK_409_CAUSE}`, content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -659,7 +716,7 @@ export type _DraftUndoCardCoversSnapshot = _Expect<
   keyof DashboardSnapshotCard extends keyof z.infer<typeof DraftUndoCardSchema> ? true : false
 >;
 
-const undoDraftRoute = createRoute({
+const undoDraftRoute = createGatedRoute({
   method: "post",
   path: "/{id}/draft/undo",
   middleware: DASHBOARD_WRITE,
@@ -672,6 +729,7 @@ const undoDraftRoute = createRoute({
     body: { content: { "application/json": { schema: DraftUndoBodySchema } }, required: true },
   },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     204: { description: "Undo applied to the caller's draft (or a no-op)" },
     400: { description: "Invalid ID or payload", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -682,7 +740,7 @@ const undoDraftRoute = createRoute({
   },
 });
 
-const updateDashboardRoute = createRoute({
+const updateDashboardRoute = createGatedRoute({
   method: "patch",
   path: "/{id}",
   middleware: DASHBOARD_WRITE,
@@ -694,6 +752,7 @@ const updateDashboardRoute = createRoute({
     body: { content: { "application/json": { schema: UpdateDashboardSchema } }, required: true },
   },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     200: { description: "Updated dashboard", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     204: { description: "Update succeeded (re-fetch failed)" },
     400: { description: "Invalid request", content: { "application/json": { schema: ErrorSchema } } },
@@ -702,11 +761,11 @@ const updateDashboardRoute = createRoute({
     404: { description: "Not found", content: { "application/json": { schema: ErrorSchema } } },
     422: { description: "Validation error", content: { "application/json": { schema: ErrorSchema.extend({ details: z.array(z.unknown()).optional() }) } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-    503: { description: "Drafts unavailable — internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: `Drafts unavailable — internal database not configured, OR ${LOCK_503_CAUSE}`, content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
-const deleteDashboardRoute = createRoute({
+const deleteDashboardRoute = createGatedRoute({
   method: "delete",
   path: "/{id}",
   middleware: DASHBOARD_WRITE,
@@ -715,6 +774,7 @@ const deleteDashboardRoute = createRoute({
   description: "Soft-deletes a dashboard and its cards. Requires the `dashboards:write` permission.",
   request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     204: { description: "Dashboard deleted" },
     400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -724,7 +784,7 @@ const deleteDashboardRoute = createRoute({
   },
 });
 
-const addCardRoute = createRoute({
+const addCardRoute = createGatedRoute({
   method: "post",
   path: "/{id}/cards",
   middleware: DASHBOARD_WRITE,
@@ -736,6 +796,7 @@ const addCardRoute = createRoute({
     body: { content: { "application/json": { schema: AddCardSchema } }, required: true },
   },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     201: { description: "Card added", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     400: { description: "Invalid request", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -743,11 +804,11 @@ const addCardRoute = createRoute({
     404: { description: "Dashboard not found", content: { "application/json": { schema: ErrorSchema } } },
     422: { description: "Validation error", content: { "application/json": { schema: ErrorSchema.extend({ details: z.array(z.unknown()).optional() }) } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-    503: { description: "Drafts unavailable — internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: `Drafts unavailable — internal database not configured, OR ${LOCK_503_CAUSE}`, content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
-const updateCardRoute = createRoute({
+const updateCardRoute = createGatedRoute({
   method: "patch",
   path: "/{id}/cards/{cardId}",
   middleware: DASHBOARD_WRITE,
@@ -762,6 +823,7 @@ const updateCardRoute = createRoute({
     body: { content: { "application/json": { schema: UpdateCardSchema } }, required: true },
   },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     200: { description: "Card updated", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     204: { description: "Update succeeded (re-fetch failed)" },
     400: { description: "Invalid request", content: { "application/json": { schema: ErrorSchema } } },
@@ -770,11 +832,11 @@ const updateCardRoute = createRoute({
     404: { description: "Card not found", content: { "application/json": { schema: ErrorSchema } } },
     422: { description: "Validation error", content: { "application/json": { schema: ErrorSchema.extend({ details: z.array(z.unknown()).optional() }) } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-    503: { description: "Drafts unavailable — internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: `Drafts unavailable — internal database not configured, OR ${LOCK_503_CAUSE}`, content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
-const removeCardRoute = createRoute({
+const removeCardRoute = createGatedRoute({
   method: "delete",
   path: "/{id}/cards/{cardId}",
   middleware: DASHBOARD_WRITE,
@@ -788,13 +850,14 @@ const removeCardRoute = createRoute({
     }),
   },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     204: { description: "Card removed" },
     400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     404: { description: "Card not found", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-    503: { description: "Drafts unavailable — internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: `Drafts unavailable — internal database not configured, OR ${LOCK_503_CAUSE}`, content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -803,7 +866,7 @@ const PreviewCardSchema = z.object({
   connectionId: z.string().nullable().optional(),
 });
 
-const previewCardRoute = createRoute({
+const previewCardRoute = createGatedRoute({
   method: "post",
   path: "/preview-card",
   middleware: DASHBOARD_WRITE,
@@ -813,19 +876,20 @@ const previewCardRoute = createRoute({
     "Validates and executes SQL against the analytics datasource through the full Atlas pipeline (validation, approval, RLS, auto-LIMIT, audit, masking). Used by the chat-side dashboard canvas to render live previews of cards the agent has proposed but the user has not yet saved. Requires the `dashboards:write` permission.",
   request: { body: { content: { "application/json": { schema: PreviewCardSchema } }, required: true } },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     200: { description: "Query results", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     400: { description: "Invalid SQL, plugin rejection, or query failure", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     403: { description: "Forbidden or blocked by RLS", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    409: { description: "Approval required before execution", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: `Approval required before execution, OR ${LOCK_409_CAUSE}`, content: { "application/json": { schema: ErrorSchema } } },
     422: { description: "Validation error", content: { "application/json": { schema: ErrorSchema.extend({ details: z.array(z.unknown()).optional() }) } } },
     429: { description: "Rate or concurrency limit", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-    503: { description: "Connection or approval system unavailable", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: `Connection or approval system unavailable, OR ${LOCK_503_CAUSE}`, content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
-const refreshCardRoute = createRoute({
+const refreshCardRoute = createGatedRoute({
   method: "post",
   path: "/{id}/cards/{cardId}/refresh",
   middleware: DASHBOARD_WRITE,
@@ -840,20 +904,21 @@ const refreshCardRoute = createRoute({
     query: refreshCardQuerySchema,
   },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     200: { description: "Card refreshed with new data", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     204: { description: "Refresh succeeded (re-fetch failed)" },
     400: { description: "Invalid ID, SQL validation failure, plugin rejection, or query failure", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     403: { description: "Forbidden or blocked by RLS", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     404: { description: "Card not found", content: { "application/json": { schema: ErrorSchema } } },
-    409: { description: "Approval required before execution, or the draft was published/discarded mid-refresh (`draft_gone`)", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: `Approval required before execution, or the draft was published/discarded mid-refresh (\`draft_gone\`), OR ${LOCK_409_CAUSE}`, content: { "application/json": { schema: ErrorSchema } } },
     429: { description: "Rate or concurrency limit", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-    503: { description: "Connection or approval system unavailable", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: `Connection or approval system unavailable, OR ${LOCK_503_CAUSE}`, content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
-const renderCardRoute = createRoute({
+const renderCardRoute = createGatedRoute({
   method: "post",
   path: "/{id}/cards/{cardId}/render",
   middleware: DASHBOARD_READ,
@@ -891,7 +956,7 @@ const renderCardRoute = createRoute({
   },
 });
 
-const refreshAllCardsRoute = createRoute({
+const refreshAllCardsRoute = createGatedRoute({
   method: "post",
   path: "/{id}/refresh",
   middleware: DASHBOARD_WRITE,
@@ -905,18 +970,19 @@ const refreshAllCardsRoute = createRoute({
     query: refreshCardQuerySchema,
   },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     200: { description: "All cards refreshed", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     404: { description: "Dashboard not found", content: { "application/json": { schema: ErrorSchema } } },
-    409: { description: "The draft was published or discarded mid-refresh (`draft_gone`)", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: `The draft was published or discarded mid-refresh (\`draft_gone\`), OR ${LOCK_409_CAUSE}`, content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-    503: { description: "Draft cache unavailable — internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: `Draft cache unavailable — internal database not configured, OR ${LOCK_503_CAUSE}`, content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
-const shareDashboardRoute = createRoute({
+const shareDashboardRoute = createGatedRoute({
   method: "post",
   path: "/{id}/share",
   middleware: DASHBOARD_WRITE,
@@ -924,8 +990,10 @@ const shareDashboardRoute = createRoute({
   summary: "Share a dashboard",
   description:
     "Generates (or updates) a share token for public or org-scoped access. Requires the `dashboards:write` permission. " +
+    "Minting a PUBLIC link is gated a second time, because such a token is served with no authentication at all. " +
+    "Requires the `dashboards:share` permission on that branch only (#5192) — an org-scoped share needs `dashboards:write` alone, as does revoking a link. " +
     "Optional JSON body: `{ expiresIn?: '1h'|'24h'|'7d'|'30d'|'never'|null, shareMode?: 'public'|'org', rotate?: boolean }`. " +
-    "An absent/empty body uses safe defaults (public, no rotation); a present-but-invalid body returns 400 and never downgrades the share to public (#4317). " +
+    "An absent/empty body defaults to `shareMode: 'public'`, NO expiry and no rotation — i.e. a permanent link readable by anyone who has the URL — and therefore takes the public branch. Send `{ shareMode: 'org' }` for a workspace-only link. A present-but-invalid body returns 400 and never downgrades the share to public (#4317). " +
     "`rotate` is opt-in: without it, editing expiry/visibility PRESERVES the existing token so prior links keep working; with it, a new token is minted and prior links die.",
   // The body is validated in-handler (fail closed → 400) rather than via the
   // framework's json validator, so a malformed/invalid body returns a 400
@@ -935,16 +1003,24 @@ const shareDashboardRoute = createRoute({
     params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }),
   },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     200: { description: "Share token generated", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     404: { description: "Dashboard not found", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+    // #5192 — the `dashboards:share` check runs IN the handler (it depends on
+    // the parsed `shareMode`), so unlike the per-route gates its
+    // `permissions_unavailable` fail-closed answer is part of this route's own
+    // response union and has to be declared. Every gated route can emit it from
+    // middleware; here it is visible to the compiler, which is why only this one
+    // says so.
+    503: { description: `Authorization service unavailable — the permission check could not be completed, OR ${LOCK_503_CAUSE}`, content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
   },
 });
 
-const unshareDashboardRoute = createRoute({
+const unshareDashboardRoute = createGatedRoute({
   method: "delete",
   path: "/{id}/share",
   middleware: DASHBOARD_WRITE,
@@ -953,6 +1029,7 @@ const unshareDashboardRoute = createRoute({
   description: "Revokes the share token. Requires the `dashboards:write` permission.",
   request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     204: { description: "Share revoked" },
     400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -962,7 +1039,7 @@ const unshareDashboardRoute = createRoute({
   },
 });
 
-const getShareStatusRoute = createRoute({
+const getShareStatusRoute = createGatedRoute({
   method: "get",
   path: "/{id}/share",
   middleware: DASHBOARD_READ,
@@ -980,7 +1057,7 @@ const getShareStatusRoute = createRoute({
   },
 });
 
-const suggestCardsRoute = createRoute({
+const suggestCardsRoute = createGatedRoute({
   method: "post",
   path: "/{id}/suggest",
   middleware: DASHBOARD_WRITE,
@@ -991,6 +1068,7 @@ const suggestCardsRoute = createRoute({
     params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }),
   },
   responses: {
+    ...WORKSPACE_LOCK_RESPONSES,
     200: { description: "Suggested cards", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     400: { description: "Invalid ID or dashboard has no cards", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -1000,7 +1078,7 @@ const suggestCardsRoute = createRoute({
   },
 });
 
-const listDashboardSessionsRoute = createRoute({
+const listDashboardSessionsRoute = createGatedRoute({
   method: "get",
   path: "/{id}/sessions",
   middleware: DASHBOARD_READ,
@@ -1021,7 +1099,7 @@ const listDashboardSessionsRoute = createRoute({
   },
 });
 
-const getDashboardSessionRoute = createRoute({
+const getDashboardSessionRoute = createGatedRoute({
   method: "get",
   path: "/{id}/sessions/{sessionId}",
   middleware: DASHBOARD_READ,
@@ -1045,7 +1123,7 @@ const getDashboardSessionRoute = createRoute({
   },
 });
 
-const screenshotDashboardRoute = createRoute({
+const screenshotDashboardRoute = createGatedRoute({
   method: "get",
   path: "/{id}/screenshot",
   middleware: DASHBOARD_READ,
@@ -1069,7 +1147,7 @@ const screenshotDashboardRoute = createRoute({
   },
 });
 
-const exportDashboardRoute = createRoute({
+const exportDashboardRoute = createGatedRoute({
   method: "post",
   path: "/{id}/export",
   middleware: DASHBOARD_READ,
@@ -1101,7 +1179,7 @@ const exportDashboardRoute = createRoute({
   },
 });
 
-const getSharedDashboardRoute = createRoute({
+const getSharedDashboardRoute = createPublicRoute({
   method: "get",
   path: "/{token}",
   tags: ["Dashboards"],
@@ -2788,7 +2866,7 @@ authed.openapi(
       }
 
       // Fail CLOSED on the share config (#4317). The body is optional — an
-      // ABSENT/empty body uses the safe defaults — but a PRESENT-yet-invalid
+      // ABSENT/empty body takes the documented defaults — but a PRESENT-yet-invalid
       // body must return 400, never fall through to defaults. The old
       // parse-then-swallow path silently downgraded an org-intended share to
       // `shareMode: "public"` on any validation error.
@@ -2833,9 +2911,40 @@ authed.openapi(
         parsed = validated.data;
       }
 
+      // #5192 — the PUBLIC branch needs a second, stronger flag.
+      //
+      // `public` mints a token served by `publicDashboards` at
+      // `/api/public/dashboards/{token}`, which bypasses auth entirely
+      // (rate-limited per IP only). `org` re-checks that the reader is a member
+      // of the dashboard's org, so it is authoring-adjacent and stays on the
+      // route's `dashboards:write` gate alone.
+      //
+      // Resolved from `parsed` AFTER the body has been validated, which is why
+      // this is in the handler rather than a second route middleware: the
+      // default is `public`, so an ABSENT or empty body — a bare `POST` with
+      // nothing in it — takes this branch. That is the exact regression #5190
+      // shipped, and a gate that only fired on an explicit
+      // `shareMode: "public"` would miss it entirely.
+      const shareMode = parsed.shareMode ?? "public";
+      if (shareMode === "public") {
+        const denied = yield* Effect.promise(() =>
+          enforcePermission(user, "dashboards:share", requestId),
+        );
+        // Split on the status rather than passing `denied.status` through. The
+        // typed-response union wants a LITERAL status per `c.json` call: a
+        // `403 | 503` argument matches neither arm and fails to compile. The
+        // two statuses stay genuinely distinct — 503 is "we could not decide",
+        // never "you may not" (`permissionLoadFailedResponse`).
+        if (denied) {
+          return denied.status === 503
+            ? c.json(denied.body, 503)
+            : c.json(denied.body, 403);
+        }
+      }
+
       const result = yield* Effect.promise(() => shareDashboard(id, { orgId, viewerId: user?.id ?? "anonymous" }, {
         expiresIn: parsed.expiresIn ?? null,
-        shareMode: parsed.shareMode ?? "public",
+        shareMode,
         rotate: parsed.rotate ?? false,
       }));
 

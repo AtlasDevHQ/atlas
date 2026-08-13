@@ -61,6 +61,15 @@ interface CustomRoleRow {
  * read-only would leave such a deploy with no author below admin. This is an
  * expansion from nothing rather than a relaxation — before #5189 `adminAuth`
  * denied `member` the dashboards surface outright.
+ *
+ * ⚠️ #5192 — `member` does NOT carry `dashboards:share`, and the omission is
+ * the fix, not an oversight. That flag gates minting a PUBLIC share link, which
+ * is readable by anyone on the internet with no account; #5190 moved the route
+ * off `adminAuth` onto `dashboards:write` and thereby handed every `member` on
+ * every non-EE self-hosted deploy a capability that had been admin-only. The
+ * three `[...PERMISSIONS]` spreads above pick the flag up automatically; this
+ * entry is hand-listed, so leaving it out is what withholds it. Adding it here
+ * re-opens #5192.
  */
 const LEGACY_ROLE_PERMISSIONS = {
   owner: [...PERMISSIONS],

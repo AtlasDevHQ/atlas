@@ -95,6 +95,26 @@ void mock.module("@atlas/ee/auth/ip-allowlist", () => ({
   checkIPAllowlist: mock(() => EffectLib.succeed({ allowed: true })),
 }));
 
+// #5191 — the WRITE gate returned by `workspaceWriteGate` carries
+// `migrationWriteLock`, so every WRITE in this file passes through
+// `isWorkspaceMigrating`. Unstubbed it reaches the real internal DB, which this
+// suite does not provide, and the lock fails CLOSED — correctly — with a 503
+// `migration_check_failed` on every POST/PATCH/DELETE.
+//
+// ⚠️ NOT "the router mounts it", and NOT "the other lock-carrying suites do the
+// same". Both were in an earlier draft and both are false: the lock rides on
+// the write GATE precisely so it cannot fire on this surface's read-classified
+// POSTs, and before #5191 it was mounted on no router anywhere. `chat.test.ts`
+// stubs `isWorkspaceMigrating` because `chat.ts` calls it DIRECTLY, not through
+// this middleware.
+//
+// ⚠️ `async () => false`, never a throw: "not migrating" is the state under
+// test here, and a suite that stubbed the failure arm would be asserting the
+// 503 path in every write test without saying so.
+void mock.module("@atlas/api/lib/residency/readonly", () => ({
+  isWorkspaceMigrating: mock(async () => false),
+}));
+
 // --- Dashboard CRUD mocks ---
 
 const VALID_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";

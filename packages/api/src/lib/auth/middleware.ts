@@ -57,6 +57,7 @@ const windows = new Map<string, number[]>();
 let lastWarnedRpmValue: string | undefined;
 let lastWarnedChatRpmValue: string | undefined;
 let lastWarnedAdminRpmValue: string | undefined;
+let lastWarnedWorkspaceRpmValue: string | undefined;
 // Separate dedup slot for the SaaS prod-floor warn (#3687): an explicit
 // `ATLAS_RATE_LIMIT_RPM_CHAT` in (0, 5) is a VALID-but-suspiciously-low
 // override that's silently accepted (unlike the `n <= 0` branch which falls
@@ -105,6 +106,12 @@ function getRpmLimit(orgId?: string): number {
  * a single dogfood session (#2485). Admin requests bucket separately so
  * a sequence of DELETE + Test + Add doesn't deplete the same budget that
  * serves chat / cheap reads.
+ *
+ * `workspace` reads `ATLAS_RATE_LIMIT_RPM_WORKSPACE`, otherwise derives the
+ * same `max(60, RPM)` as `admin` (#5191). It covers the permission-gated
+ * non-admin surface — dashboards today — whose burst shape is a 20-card board
+ * firing 20 `POST …/render` on load. Separate from `admin` so a dashboard load
+ * cannot deplete the budget an operator needs to fix the workspace.
  *
  * Returning 0 means "disabled" (matching the existing semantics on the
  * default bucket); when the global limit is disabled all sub-buckets are
@@ -192,7 +199,31 @@ function getRpmLimitForBucket(bucket: RateLimitBucket, orgId?: string): number {
     return Math.floor(n);
   }
 
-  // Exhaustiveness gate — adding a fourth bucket to `RateLimitBucket`
+  if (bucket === "workspace") {
+    // #5191 — same derived shape as `admin`, and deliberately the same
+    // DEFAULT: `max(60, RPM)`. The two surfaces are separated so they cannot
+    // deplete each other, not because one deserves a smaller ceiling, and
+    // picking a different number here would be a tuning decision nobody has
+    // data for. Operators who want them to differ set the env var.
+    const raw = getSetting("ATLAS_RATE_LIMIT_RPM_WORKSPACE", orgId);
+    if (raw === undefined || raw === "") {
+      return Math.max(60, baseLimit);
+    }
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) {
+      if (raw !== lastWarnedWorkspaceRpmValue) {
+        log.warn(
+          { value: raw },
+          "ATLAS_RATE_LIMIT_RPM_WORKSPACE must be positive (set ATLAS_RATE_LIMIT_RPM=0 to disable rate limiting entirely); falling back to derived default max(60, RPM)",
+        );
+        lastWarnedWorkspaceRpmValue = raw;
+      }
+      return Math.max(60, baseLimit);
+    }
+    return Math.floor(n);
+  }
+
+  // Exhaustiveness gate — adding a further bucket to `RateLimitBucket`
   // without adding an arm here is a TS error. Without it the new bucket
   // would silently fall through to whatever the last branch happened to
   // return (the admin path used to be a comment-only fall-through; this
@@ -201,8 +232,28 @@ function getRpmLimitForBucket(bucket: RateLimitBucket, orgId?: string): number {
   throw new Error(`Unhandled rate-limit bucket: ${String(_exhaustive)}`);
 }
 
-/** Bucket categories for `checkRateLimit`. */
-export type RateLimitBucket = "default" | "chat" | "admin";
+/**
+ * Bucket categories for `checkRateLimit`.
+ *
+ * #5191 — `workspace` is the permission-gated, non-admin surface
+ * (`createWorkspaceRouter`, today: dashboards). It exists rather than reusing
+ * `admin` for two reasons, and the second is the load-bearing one:
+ *
+ *   • The populations are different. An admin burst is a human filling in
+ *     forms; a workspace burst is a 20-card dashboard firing 20
+ *     `POST …/render` on load, plus refresh-all.
+ *   • Reusing `admin` would let a dashboard load deplete the budget an
+ *     operator needs to FIX the workspace. The whole reason the admin bucket
+ *     exists (#2485) is that a noisy surface must not eat someone else's
+ *     allowance, and folding a noisier surface into it reproduces the defect
+ *     one level up.
+ *
+ * Leaving it on `default` — which is what #5190 silently did by moving these
+ * routes from `adminAuth` to `standardAuth` — puts that render burst on the
+ * same budget as chat, and the user-visible failure is a 429 in the dashboards
+ * error card #5188 had just rewritten.
+ */
+export type RateLimitBucket = "default" | "chat" | "admin" | "workspace";
 
 // `\x00` is illegal in user ids, IPs, and the "anon" fallback used by
 // chat.ts — so the chat-bucket prefix can never collide with a
@@ -212,6 +263,7 @@ const BUCKET_PREFIX: Record<RateLimitBucket, string> = {
   default: "",
   chat: "\x00chat:",
   admin: "\x00admin:",
+  workspace: "\x00workspace:",
 };
 
 /**

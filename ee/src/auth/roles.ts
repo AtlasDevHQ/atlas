@@ -61,6 +61,15 @@ export interface BuiltinRoleDefinition {
   permissions: readonly Permission[];
 }
 
+/**
+ * ⚠️ #5192 — `analyst` and `viewer` deliberately do NOT carry
+ * `dashboards:share`. Only `admin` does, and only because its entry is the
+ * `[...PERMISSIONS]` spread — every other entry here is hand-listed, so a new
+ * flag reaches them only if someone types it. That is the intended asymmetry:
+ * `dashboards:share` mints a link readable by anyone on the internet with no
+ * account, which is an admin authority rather than an authoring one. Adding it
+ * to either role below re-opens #5192.
+ */
 export const BUILTIN_ROLES: readonly BuiltinRoleDefinition[] = [
   {
     name: "admin",

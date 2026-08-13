@@ -143,9 +143,40 @@ export default function DashboardsPage() {
     // an admin-only page) and the SSO-enforcement 403 were handed the one action
     // that re-fails identically forever. Their server messages already name the
     // real remedy — rendering that and offering nothing false is the honest
-    // pair. Routing an SSO 403 to its `ssoRedirectUrl` needs `FetchError` to
-    // carry the field and is filed as follow-up rather than added here.
+    // pair.
     const isRetryable = error.status !== 403;
+    // #5191 — the one 403 that DOES have an action, now that `FetchError`
+    // carries the field. `ssoRedirectUrl` is the workspace's own identity
+    // provider, and signing in there is exactly what clears the enforcement.
+    // Without it this user reads a sentence about their IdP and has nowhere to
+    // go — which is the same dead end the retry button was removed for, minus
+    // the false hope.
+    //
+    // ⚠️ NOT navigated automatically. The MFA arm above `router.replace`s
+    // because that gate is unconditional and the destination is our own page;
+    // this one leaves the workspace for a third-party login, and a silent
+    // cross-origin bounce out of a page the user asked for is not ours to
+    // perform. `extractFetchError` has already restricted it to an
+    // `http(s)` absolute URL.
+    // ⚠️ Keyed on the CODE as well as the status — the same argument the
+    // `isPermissionDenial` comment above makes at length, which an earlier
+    // draft of this line ignored three lines below it. `authErrorCode` rewrites
+    // the SSO-enforcement failure to `auth_error`, so that is the discriminator
+    // available today, and it excludes the codes minted directly
+    // (`insufficient_permissions`, `ip_not_allowed`, `forbidden_role`).
+    //
+    // ⚠️ It is NOT a strong discriminator, and an earlier comment overclaimed
+    // that it was: `authErrorCode` maps everything except four session-expiry
+    // strings to `auth_error`, so a future gate attaching `ssoRedirectUrl`
+    // would most likely also be `auth_error`. The real guarantee is that only
+    // the SSO-enforcement branch sets the field at all. A dedicated
+    // `sso_required` code would collapse these three conjuncts into one honest
+    // predicate; until then this narrows the blast radius rather than closing
+    // it.
+    const ssoUrl =
+      error.status === 403 && error.code === "auth_error"
+        ? error.ssoRedirectUrl
+        : undefined;
     return (
       <div className="mx-auto w-full max-w-2xl flex-1 px-4 py-16 text-center">
         <h1 className="text-base font-medium text-zinc-900 dark:text-zinc-100">
@@ -158,6 +189,16 @@ export default function DashboardsPage() {
             ? `${friendlyError(error)} Ask a workspace administrator to grant your role access to dashboards.`
             : friendlyError(error)}
         </p>
+        {ssoUrl && (
+          <Button size="sm" className="mt-6" asChild>
+            {/* A plain anchor, not `router.push`: the destination is a
+                third-party origin, which the Next router does not handle. */}
+            {/* `noreferrer`: the full workspace URL would otherwise travel to
+                a third-party IdP as `Referer`. No `target="_blank"`, so there
+                is no `window.opener` exposure to close as well. */}
+            <a href={ssoUrl} rel="noreferrer">Sign in with your identity provider</a>
+          </Button>
+        )}
         {isRetryable && (
           <Button
             size="sm"

@@ -124,7 +124,13 @@ export function isSaasDeployMode(): boolean {
     if (mode === "self-hosted") return false;
     return unknownDeployMode(`config resolved deployMode=${String(mode)}`);
   } catch (err) {
-    // Not `// intentionally ignored:` — this catch emits a signal, and it must.
+    // Not `// intentionally ignored:` — this catch routes to
+    // `unknownDeployMode`, which logs, so it is not silent and must not take
+    // the marker. ⚠️ One path is the exception: `unknownDeployMode` returns
+    // early WITHOUT logging when `ATLAS_DEPLOY_MODE === "saas"`, because there
+    // the answer is determined rather than guessed. So "always emits" would be
+    // an overclaim; "emits whenever the answer is a guess" is the true one, and
+    // that is the case the marker is about.
     return unknownDeployMode(
       `config lookup threw: ${err instanceof Error ? err.message : String(err)}`,
     );
@@ -200,7 +206,12 @@ async function authenticate(
   requestId: string,
 ): Promise<
   | { ok: true; authResult: AuthResult & { authenticated: true } }
-  | { ok: false; body: Record<string, unknown>; status: number; headers?: Record<string, string> }
+  // #5191 — the exact union, not `number`. `AuthResult` already types the
+  // failure status as `401 | 403 | 500` (`lib/auth/types.ts`), and widening it
+  // here is what forced `auth.status as 401` at every call site — a cast
+  // asserting this middleware only ever emits 401s, in the middleware whose 403
+  // the SSO redirect and the whole workspace surface depend on.
+  | { ok: false; body: Record<string, unknown>; status: 401 | 403 | 500; headers?: Record<string, string> }
 > {
   let authResult: AuthResult;
   try {
@@ -234,7 +245,10 @@ async function rateLimitAndIPCheck(
   authResult: AuthResult & { authenticated: true },
   requestId: string,
   bucket: RateLimitBucket = "default",
-): Promise<{ body: Record<string, unknown>; status: number; headers?: Record<string, string> } | null> {
+  // 429 from the rate limiter, 503 from a fail-closed IP-allowlist evaluation,
+  // 403 when the allowlist denies. `as 429` at the call sites claimed only the
+  // first, while the other two demonstrably occur below.
+): Promise<{ body: Record<string, unknown>; status: 403 | 429 | 503; headers?: Record<string, string> } | null> {
   const ip = getClientIP(req);
   const rateLimitKey = authResult.user?.id ?? (ip ? `ip:${ip}` : "anon");
   const rateCheck = checkRateLimit(rateLimitKey, { bucket, orgId: authResult.user?.activeOrganizationId });
@@ -316,7 +330,7 @@ async function checkMisrouting(
   c: Context,
   authResult: AuthResult & { authenticated: true },
   requestId: string,
-): Promise<{ body: Record<string, unknown>; status: number } | null> {
+): Promise<{ body: Record<string, unknown>; status: 421 } | null> {
   const orgId = authResult.user?.activeOrganizationId;
   const result = await detectMisrouting(orgId, requestId);
   if (!result) return null;
@@ -343,13 +357,19 @@ async function checkMisrouting(
 // Migration write-lock — reject writes during active region migration
 // ---------------------------------------------------------------------------
 
+/**
+ * Once-per-process flag for the `region_migrations`-absent warn below. Module
+ * scope so the warn is per PROCESS, not per request — see the branch.
+ */
+let warnedRegionMigrationsAbsent = false;
+
 const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 async function checkMigrationWriteLock(
   method: string,
   authResult: AuthResult & { authenticated: true },
   requestId: string,
-): Promise<{ body: Record<string, unknown>; status: number } | null> {
+): Promise<{ body: Record<string, unknown>; status: 409 | 503 } | null> {
   if (!WRITE_METHODS.has(method)) return null;
 
   const orgId = authResult.user?.activeOrganizationId;
@@ -369,9 +389,71 @@ async function checkMigrationWriteLock(
       };
     }
   } catch (err) {
-    // Fail closed — if we can't verify migration status, block writes to prevent data loss
+    const msg = err instanceof Error ? err.message : String(err);
+    // #5191 — an ABSENT `region_migrations` table is not a failure to verify;
+    // it is proof that no migration can be in flight. The table arrives in
+    // migration 0012, so this is an internal DB configured but not yet
+    // migrated — first boot before `runMigrations`, an operator repointing
+    // `DATABASE_URL` at a fresh database, a partially-applied set.
+    //
+    // ⚠️ This branch is MORE PERMISSIVE than the fail-closed one below, so it
+    // owes an argument rather than a convenience: the state the lock protects
+    // against is unrepresentable when the table does not exist, and blocking
+    // every write on a self-hosted deploy that never enabled residency would
+    // be a self-inflicted outage attributed to a subsystem the operator has
+    // never configured.
+    //
+    // ⚠️ **Matched on THE RELATION, never on a bare `does not exist`.** Review
+    // round 2 measured what the bare substring admits, and every one of these
+    // would have answered "no migration in flight" DURING an active migration,
+    // losing the write the lock exists to protect:
+    //
+    //   `column "workspace_id" does not exist`   (42703) — the partially-applied
+    //                                             set this branch names as its
+    //                                             own justification
+    //   `operator does not exist: uuid = text`   (42883) — a real query bug
+    //   `schema "atlas" does not exist`          (3F000) — wrong search_path
+    //   `database "…" does not exist`            (3D000) — mispointed DATABASE_URL
+    //   `role "…" does not exist`                (28000) — rotated credentials
+    //
+    // `backups/health.ts` already argues exactly this and matches the relation;
+    // `integrations/operator-credentials/resolver.ts` keys on SQLSTATE. Both
+    // are better instruments than `permission-resolve.ts`'s broad match, which
+    // an earlier draft of this comment cited as precedent — it is the loosest
+    // of the three and carries the same latent fail-open on `custom_roles`.
+    //
+    // SQLSTATE first because it is exact; the regex is the fallback for
+    // wrappers that drop `.code`.
+    const code = err && typeof err === "object" && "code" in err
+      ? (err as { code?: unknown }).code
+      : undefined;
+    const missingRegionMigrations =
+      (code === "42P01" && /region_migrations/.test(msg)) ||
+      /relation "?region_migrations"? does not exist/i.test(msg);
+
+    if (missingRegionMigrations) {
+      // ⚠️ WARN, once per process, and then debug. This branch DISABLES a
+      // data-integrity gate; a permanently silent one is the shape CLAUDE.md
+      // forbids. Per-write it would be noise that trains operators to ignore
+      // the log, so the honest compromise is to say once that the lock is
+      // inactive for this process, then stay quiet.
+      if (!warnedRegionMigrationsAbsent) {
+        warnedRegionMigrationsAbsent = true;
+        log.warn(
+          { requestId, orgId },
+          "region_migrations table absent (internal DB predates migration 0012) — the region-migration write lock is INACTIVE for this process",
+        );
+      }
+      log.debug(
+        { requestId, orgId },
+        "region_migrations table absent — no migration can be in flight, allowing the write",
+      );
+      return null;
+    }
+    // Everything else fails closed — if we can't verify migration status, block
+    // writes to prevent data loss.
     log.error(
-      { err: err instanceof Error ? err.message : String(err), requestId, orgId },
+      { err: msg, requestId, orgId, method },
       "Migration write-lock check failed — rejecting write as a precaution",
     );
     return {
@@ -409,7 +491,7 @@ function makeAdminAuth(opts: { allowApiKey?: boolean } = {}) {
 
     const auth = await authenticate(c.req.raw, requestId);
     if (!auth.ok) {
-      return c.json(auth.body, auth.status as 401, auth.headers);
+      return c.json(auth.body, auth.status, auth.headers);
     }
     const { authResult } = auth;
 
@@ -449,12 +531,12 @@ function makeAdminAuth(opts: { allowApiKey?: boolean } = {}) {
     // from depleting the cheap-read budget shared with chat.
     const blocked = await rateLimitAndIPCheck(c.req.raw, authResult, requestId, "admin");
     if (blocked) {
-      return c.json(blocked.body, blocked.status as 429, blocked.headers);
+      return c.json(blocked.body, blocked.status, blocked.headers);
     }
 
     const misrouted = await checkMisrouting(c, authResult, requestId);
     if (misrouted) {
-      return c.json(misrouted.body, misrouted.status as 421);
+      return c.json(misrouted.body, misrouted.status);
     }
 
     // No migration write-lock for admin routes — admins need to manage
@@ -488,7 +570,7 @@ export const platformAdminAuth = createMiddleware<AuthEnv>(async (c, next) => {
 
   const auth = await authenticate(c.req.raw, requestId);
   if (!auth.ok) {
-    return c.json(auth.body, auth.status as 401, auth.headers);
+    return c.json(auth.body, auth.status, auth.headers);
   }
   const { authResult } = auth;
 
@@ -523,12 +605,12 @@ export const platformAdminAuth = createMiddleware<AuthEnv>(async (c, next) => {
   // pattern (#2485). Cross-tenant operations still rate-limit per identity.
   const blocked = await rateLimitAndIPCheck(c.req.raw, authResult, requestId, "admin");
   if (blocked) {
-    return c.json(blocked.body, blocked.status as 429, blocked.headers);
+    return c.json(blocked.body, blocked.status, blocked.headers);
   }
 
   const misrouted = await checkMisrouting(c, authResult, requestId);
   if (misrouted) {
-    return c.json(misrouted.body, misrouted.status as 421);
+    return c.json(misrouted.body, misrouted.status);
   }
 
   c.set("authResult", authResult);
@@ -541,31 +623,55 @@ export const platformAdminAuth = createMiddleware<AuthEnv>(async (c, next) => {
 // standardAuth — authenticate + rate limit + IP allowlist (no admin check)
 // ---------------------------------------------------------------------------
 
-export const standardAuth = createMiddleware<AuthEnv>(async (c, next) => {
-  const requestId = crypto.randomUUID();
-  c.set("requestId", requestId);
+/**
+ * The `standardAuth` body, parameterised by rate-limit bucket (#5191).
+ *
+ * The bucket is the ONLY thing that varies. It is a parameter rather than a
+ * second copy because these two middlewares must not drift: every other line
+ * here (misrouting, IP allowlist, mode resolution, trust-device) is a security
+ * behaviour that a forked copy would eventually lose on one side only.
+ */
+function makeStandardAuth(bucket: RateLimitBucket) {
+  return createMiddleware<AuthEnv>(async (c, next) => {
+    const requestId = crypto.randomUUID();
+    c.set("requestId", requestId);
 
-  const auth = await authenticate(c.req.raw, requestId);
-  if (!auth.ok) {
-    return c.json(auth.body, auth.status as 401, auth.headers);
-  }
-  const { authResult } = auth;
+    const auth = await authenticate(c.req.raw, requestId);
+    if (!auth.ok) {
+      return c.json(auth.body, auth.status, auth.headers);
+    }
+    const { authResult } = auth;
 
-  const blocked = await rateLimitAndIPCheck(c.req.raw, authResult, requestId);
-  if (blocked) {
-    return c.json(blocked.body, blocked.status as 429, blocked.headers);
-  }
+    const blocked = await rateLimitAndIPCheck(c.req.raw, authResult, requestId, bucket);
+    if (blocked) {
+      return c.json(blocked.body, blocked.status, blocked.headers);
+    }
 
-  const misrouted = await checkMisrouting(c, authResult, requestId);
-  if (misrouted) {
-    return c.json(misrouted.body, misrouted.status as 421);
-  }
+    const misrouted = await checkMisrouting(c, authResult, requestId);
+    if (misrouted) {
+      return c.json(misrouted.body, misrouted.status);
+    }
 
-  c.set("authResult", authResult);
-  resolveModeForRequest(c, authResult, requestId);
-  setTrustDeviceIdentifier(c);
-  await next();
-});
+    c.set("authResult", authResult);
+    resolveModeForRequest(c, authResult, requestId);
+    setTrustDeviceIdentifier(c);
+    await next();
+  });
+}
+
+export const standardAuth = makeStandardAuth("default");
+
+/**
+ * `standardAuth` on the `workspace` rate-limit bucket (#5191).
+ *
+ * Mounted by `createWorkspaceRouter()`. Dashboards used to sit behind
+ * `adminAuth`, which passes `bucket: "admin"`; #5190 moved them onto
+ * `standardAuth` and the bucket silently became `default` — i.e. the same
+ * budget as chat, for a surface that fires one `POST …/render` per card on
+ * every load. See `RateLimitBucket` for why this is its own bucket rather than
+ * a return to `admin`.
+ */
+export const workspaceAuth = makeStandardAuth("workspace");
 
 // ---------------------------------------------------------------------------
 // migrationWriteLock — rejects writes during active region migration
@@ -575,17 +681,45 @@ export const standardAuth = createMiddleware<AuthEnv>(async (c, next) => {
  * Opt-in middleware that rejects write operations (POST, PUT, PATCH, DELETE)
  * when the workspace is actively being migrated between regions.
  *
- * Apply to routes where writes would cause data loss during migration
- * (chat, conversations). Don't apply to admin routes — admins need to
- * manage the workspace during migration (retry, cancel, configure).
+ * ⚠️ **Mounted in exactly ONE place: `workspaceWriteGate` (#5191).** An earlier
+ * version of this docstring read as though chat and conversations used it;
+ * neither does — `chat.ts` calls `isWorkspaceMigrating` directly. It was
+ * mounted on NO router at all until #5191, and the commit that fixed that claim
+ * in `workspace-router.ts` left this, its own sibling, un-swept.
+ *
+ * Apply to routes where a write would be silently lost during a migration
+ * (chat and conversations would both benefit, and neither opts in today).
+ * Don't apply to admin routes — admins need to manage the workspace during
+ * migration (retry, cancel, configure).
  */
 export const migrationWriteLock = createMiddleware<AuthEnv>(async (c, next) => {
   const authResult = c.get("authResult");
   const requestId = c.get("requestId");
 
+  // Same middleware-order contract `workspaceActorGuard` documents and fails
+  // closed on — and since #5191 the two sit in the SAME gate array, so the
+  // asymmetry was the odd one out. Without this, a bare `authResult.user` read
+  // is an unlogged TypeError surfacing as an opaque 500 with no statement of
+  // which contract broke.
+  if (!authResult) {
+    log.error(
+      { requestId },
+      "migrationWriteLock ran before the auth middleware — no authResult; failing closed",
+    );
+    return c.json(
+      {
+        error: "auth_misconfigured",
+        message:
+          "Request context is incomplete — the request-authentication middleware did not run. This is a server wiring fault, not a credential problem; retrying will not help.",
+        requestId,
+      },
+      500,
+    );
+  }
+
   const locked = await checkMigrationWriteLock(c.req.method, authResult, requestId);
   if (locked) {
-    return c.json(locked.body, locked.status as 409);
+    return c.json(locked.body, locked.status);
   }
 
   await next();

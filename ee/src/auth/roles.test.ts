@@ -111,7 +111,10 @@ describe("Permission validation", () => {
     // every flag above them they can GRANT to a non-admin role.
     expect(PERMISSIONS).toContain("dashboards:read");
     expect(PERMISSIONS).toContain("dashboards:write");
-    expect(PERMISSIONS.length).toBe(10);
+    // #5192 — the third, and the only dashboards flag no non-admin built-in
+    // holds: it gates minting a link served with no authentication at all.
+    expect(PERMISSIONS).toContain("dashboards:share");
+    expect(PERMISSIONS.length).toBe(11);
   });
 });
 
@@ -159,6 +162,17 @@ describe("Built-in roles", () => {
     expect(viewer!.permissions).toEqual(["query", "dashboards:read"]);
   });
 
+  it("admin is the ONLY built-in role carrying dashboards:share", () => {
+    // #5192 — the flag's whole value is that it is withheld. `admin` picks it
+    // up through the `[...PERMISSIONS]` spread; every other entry is
+    // hand-listed, so this reddens the moment someone types it into one.
+    expect(
+      BUILTIN_ROLES.filter((r) => r.permissions.includes("dashboards:share")).map(
+        (r) => r.name,
+      ),
+    ).toEqual(["admin"]);
+  });
+
   it("analyst has query, raw_data, audit, and both dashboards flags", () => {
     const analyst = BUILTIN_ROLES.find((r) => r.name === "analyst");
     expect(analyst).toBeDefined();
@@ -170,6 +184,11 @@ describe("Built-in roles", () => {
     // admin perimeter finally makes expressible.
     expect(analyst!.permissions).toContain("dashboards:read");
     expect(analyst!.permissions).toContain("dashboards:write");
+    // #5192 — and NOT `dashboards:share`. An analyst authors dashboards; they
+    // do not publish workspace data to an unauthenticated URL. Asserted
+    // explicitly rather than left to the length below, because the length is
+    // the assertion someone bumps when they add a flag.
+    expect(analyst!.permissions).not.toContain("dashboards:share");
     expect(analyst!.permissions.length).toBe(5);
   });
 

@@ -1,3 +1,11 @@
+// Both redirect guards live in `redirect-target.ts` now (#5191) — that
+// module's docstring is where the "two rules, two fields" distinction is
+// recorded, next to the two functions it distinguishes. Re-exported because
+// `sameOriginPath` is imported from here by `use-password-status` and by its
+// own test file.
+export { sameOriginPath, externalRedirectUrl } from "./redirect-target";
+import { sameOriginPath, externalRedirectUrl } from "./redirect-target";
+
 /**
  * Structured error from a failed fetch operation.
  * May represent an HTTP error response (with status and optional requestId)
@@ -8,45 +16,32 @@
  * the human-facing `message`.
  *
  * `enrollmentUrl` is enrollment-specific — populated only when `code` is
- * `mfa_enrollment_required`. A future typed code that needs its own
- * redirect target (e.g. `payment_required` → upgrade URL) should add a
- * dedicated field rather than reuse this one. Reusing the field for a
- * non-enrollment redirect would mislead readers and shadow the existing
- * one when both codes coexist on the wire.
+ * `mfa_enrollment_required`. A typed code that needs its own redirect target
+ * gets a DEDICATED field rather than reusing this one; reusing it would
+ * mislead readers and shadow the existing value when both codes coexist on the
+ * wire. `ssoRedirectUrl` (#5191) is the first case to follow that rule, and it
+ * also demonstrates why the rule is not merely tidiness: the two fields need
+ * OPPOSITE validation, so a shared field could not have been guarded correctly
+ * for either.
  */
-/**
- * A same-origin path, or `null` if the input is anything else.
- *
- * ⚠️ **Parsed, not prefix-matched, and the difference is exploitable.** The
- * obvious `startsWith("/") && !startsWith("//")` check was measured wrong:
- * WHATWG URL parsing normalizes `\` to `/` for special schemes and strips
- * TAB/LF/CR *before* authority detection, so `/\evil.example.com`,
- * `/\/evil.com` and `/<TAB>/evil.com` all pass it and all navigate off-site.
- * Resolving against a known base and comparing origins has no such arms to
- * enumerate — it answers the question directly.
- */
-export function sameOriginPath(raw: string | undefined): string | null {
-  if (!raw) return null;
-  const base = "https://atlas.invalid";
-  try {
-    const u = new URL(raw, base);
-    return u.origin === base ? `${u.pathname}${u.search}${u.hash}` : null;
-  } catch (err) {
-    // A URL the parser rejects outright is not a destination either.
-    console.warn(
-      "[fetch-error] unparseable redirect target:",
-      err instanceof Error ? err.message : String(err),
-    );
-    return null;
-  }
-}
-
 export interface FetchError {
   message: string;
   status?: number;
   requestId?: string;
   code?: string;
   enrollmentUrl?: string;
+  /**
+   * The workspace's identity provider, returned with an SSO-enforcement 403
+   * (#5191). It is the ONE destination that clears that error, and until this
+   * field existed the web could not offer it: the error card rendered the
+   * server's prose about the user's identity provider and gave them nowhere to
+   * go.
+   *
+   * ⚠️ Validated by `externalRedirectUrl`, NOT `sameOriginPath` — the opposite
+   * rule from its `enrollmentUrl` sibling above, and deliberately so. See
+   * `redirect-target.ts`.
+   */
+  ssoRedirectUrl?: string;
   /**
    * Candidate groups returned with a 409 `entity_ambiguous` response
    * (#2412). The UI uses this to render a disambiguation picker
@@ -136,6 +131,7 @@ export function buildFetchError(input: {
   code?: string;
   requestId?: string;
   enrollmentUrl?: string;
+  ssoRedirectUrl?: string;
   groups?: ReadonlyArray<string | null>;
   workspaces?: ReadonlyArray<{ id: string; name: string | null }>;
   stale?: { diff: string; baselineHash: string };
@@ -158,6 +154,7 @@ export function buildFetchError(input: {
       ...(input.code && { code: input.code }),
       ...(input.requestId && { requestId: input.requestId }),
       ...(input.enrollmentUrl && { enrollmentUrl: input.enrollmentUrl }),
+      ...(input.ssoRedirectUrl && { ssoRedirectUrl: input.ssoRedirectUrl }),
       ...(input.groups && { groups: input.groups }),
       ...(input.workspaces && { workspaces: input.workspaces }),
       ...(input.stale && { stale: input.stale }),
@@ -169,6 +166,7 @@ export function buildFetchError(input: {
     ...(input.code && { code: input.code }),
     ...(input.requestId && { requestId: input.requestId }),
     ...(input.enrollmentUrl && { enrollmentUrl: input.enrollmentUrl }),
+    ...(input.ssoRedirectUrl && { ssoRedirectUrl: input.ssoRedirectUrl }),
     ...(input.groups && { groups: input.groups }),
     ...(input.workspaces && { workspaces: input.workspaces }),
     ...(input.stale && { stale: input.stale }),
@@ -185,6 +183,7 @@ export async function extractFetchError(res: Response): Promise<FetchError> {
   let requestId: string | undefined;
   let code: string | undefined;
   let enrollmentUrl: string | undefined;
+  let ssoRedirectUrl: string | undefined;
   let groups: ReadonlyArray<string | null> | undefined;
   let workspaces: ReadonlyArray<{ id: string; name: string | null }> | undefined;
   let stale: { diff: string; baselineHash: string } | undefined;
@@ -218,6 +217,19 @@ export async function extractFetchError(res: Response): Promise<FetchError> {
           console.warn(
             "[fetch-error] rejected an off-origin enrollmentUrl:",
             obj.enrollmentUrl,
+          );
+        }
+      }
+      if (typeof obj.ssoRedirectUrl === "string" && obj.ssoRedirectUrl.length > 0) {
+        // #5191 — sanitized with the EXTERNAL rule, at the same seam and for
+        // the same reason its sibling above uses the internal one: every
+        // consumer that reads it off a `FetchError` inherits the guard.
+        // Applying `sameOriginPath` here would reject every real IdP.
+        ssoRedirectUrl = externalRedirectUrl(obj.ssoRedirectUrl) ?? undefined;
+        if (ssoRedirectUrl === undefined) {
+          console.warn(
+            "[fetch-error] rejected an unusable ssoRedirectUrl:",
+            obj.ssoRedirectUrl,
           );
         }
       }
@@ -275,6 +287,7 @@ export async function extractFetchError(res: Response): Promise<FetchError> {
     code,
     requestId,
     enrollmentUrl,
+    ssoRedirectUrl,
     groups,
     workspaces,
     stale,

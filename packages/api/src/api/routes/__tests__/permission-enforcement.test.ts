@@ -24,6 +24,7 @@
  * `resolvePermissions` — that is exercised by `ee/__tests__/roles.test.ts`.
  */
 
+import { PERMISSIONS as REAL_PERMISSIONS, isValidPermission as realIsValidPermission } from "@atlas/api/lib/auth/permissions";
 import {
   describe,
   it,
@@ -104,17 +105,17 @@ void mock.module("@atlas/api/lib/effect/enterprise-layer", () => {
 // Legacy module-mock stub — slice 11 closeout #2573 will drop entirely.
 void mock.module("@atlas/ee/auth/roles", () => ({
   RoleError: MockRoleError,
-  PERMISSIONS: [
-    "query",
-    "query:raw_data",
-    "admin:users",
-    "admin:connections",
-    "admin:settings",
-    "admin:audit",
-    "admin:roles",
-    "admin:semantic",
-  ] as const,
-  isValidPermission: () => true,
+  // #5191 — the REAL tuple, spread rather than restated. Every copy of this
+  // literal in the tree was stale (none carried the dashboards flags), and a
+  // fixture that disagrees with production is worse than no fixture: it
+  // asserts a permission model nobody ships.
+  PERMISSIONS: [...REAL_PERMISSIONS],
+  // The REAL predicate — the twin of the tuple above, in the same object
+  // literal. Round 1 fixed it in the shared factory and left it here in all
+  // six per-file copies: a validator that CANNOT FAIL, three lines from the
+  // fixture whose whole point was that a fixture disagreeing with production
+  // is worse than none.
+  isValidPermission: realIsValidPermission,
   isValidRoleName: () => true,
   BUILTIN_ROLES: [],
   resolvePermissions: mock(() => Effect.succeed(new Set())),

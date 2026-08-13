@@ -223,6 +223,16 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     envVar: "ATLAS_RATE_LIMIT_RPM_ADMIN",
     scope: "workspace",
   },
+  {
+    key: "ATLAS_RATE_LIMIT_RPM_WORKSPACE",
+    section: "Rate Limiting",
+    label: "Workspace Rate Limit (RPM)",
+    description:
+      "Max permission-gated non-admin requests per minute per user — dashboards today (defaults to max(60, RPM); a 20-card dashboard fires 20 render calls on load, and bucketing them separately keeps that burst from depleting the budget an operator needs to fix the workspace)",
+    type: "number",
+    envVar: "ATLAS_RATE_LIMIT_RPM_WORKSPACE",
+    scope: "workspace",
+  },
 
   // Security
   {

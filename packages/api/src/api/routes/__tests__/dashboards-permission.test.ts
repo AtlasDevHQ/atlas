@@ -72,6 +72,22 @@ void mock.module("@atlas/api/lib/effect/enterprise-layer", () => {
   });
 });
 
+/**
+ * Hoisted so the org-branch test can assert what the handler PASSED, not just
+ * that it returned 200. Without it the suite cannot tell "took the org branch"
+ * from "took the org branch and minted a public token anyway" — which is the
+ * #4317 silent-downgrade class the route's own description says it prevents.
+ */
+type ShareOpts = { expiresIn: string | null; shareMode: string; rotate: boolean };
+const mockShareDashboard = mock(
+  // Typed with the real parameter list, or `.mock.calls[n][2]` is a
+  // zero-length tuple and the assertion below cannot be written at all.
+  async (_id: string, _ctx: { orgId: string; viewerId: string }, _opts: ShareOpts) => ({
+    ok: true as const,
+    data: { token: "tok", shareMode: "public", expiresAt: null },
+  }),
+);
+
 // Keep the handlers off the DB — every assertion here is about the gate in
 // front of them, and a handler that 500s on a missing table would mask the
 // difference between "allowed through" and "denied".
@@ -86,6 +102,11 @@ void mock.module("@atlas/api/lib/dashboards", () => ({
     ok: true as const,
     data: { id: "d-1", title: "T", updatedAt: "2026-08-13T00:00:00Z", cardCount: 0 },
   })),
+  // #5192 — mocked so the ALLOWED outcome on each share branch is an exact
+  // status. The branch tests below would otherwise rest on `not.toBe(403)`,
+  // which a 404 from a renamed path or a 500 from the unmocked DB satisfies
+  // just as well as the success they mean to assert.
+  shareDashboard: mockShareDashboard,
 }));
 
 const { app } = await import("../../index");
@@ -105,7 +126,23 @@ function req(path: string, method = "GET", body?: unknown): Request {
   return new Request(`http://localhost${MOUNT}${suffix}`, init);
 }
 
-const VALID_ID = "01JQ0000000000000000000000";
+/**
+ * ⚠️ A real UUID, and it has to be. The name was already `VALID_ID` when the
+ * value was a ULID — which every dashboards handler rejects with a 400 via
+ * `UUID_RE`, so no handler BODY in this suite was ever reached. That was
+ * invisible while every assertion here was about middleware, and it stopped
+ * being invisible with #5192: the `dashboards:share` check lives in the handler
+ * (it depends on the parsed `shareMode`), so with a ULID the second flag was
+ * never consulted and the branch tests below measured the 400 instead.
+ */
+const VALID_ID = "00000000-0000-4000-8000-000000000000";
+// ⚠️ Round 2: fixing `VALID_ID` alone fixed the INSTANCE, not the class. The
+// card and session ids were still `c-1` / `s-1`, and their handlers 400 at the
+// same `UUID_RE` — so on those FIVE routes the exact-set assertion below could
+// not see an undeclared second gate either. Measured: injecting a stray
+// `enforcePermission` into the update-card handler left the suite 69/69 green.
+const VALID_CARD_ID = "00000000-0000-4000-8000-000000000001";
+const VALID_SESSION_ID = "00000000-0000-4000-8000-000000000002";
 
 /**
  * The full route table, with the flag each route is expected to enforce.
@@ -122,11 +159,37 @@ const VALID_ID = "01JQ0000000000000000000000";
  * authoring. Its non-forking neighbours (`GET /{id}?view=draft`,
  * `/draft/status`) stay READ.
  */
+/**
+ * #5192 — a route may declare ONE conditional second flag, consulted on a
+ * named branch only.
+ *
+ * The exact-set assertion below (`toEqual([r.permission])`) is what stops a
+ * double-gated route hiding, and it is deliberately NOT weakened to
+ * `toContain` for the one route that legitimately consults two. Instead the
+ * table expresses the second flag, so the assertion still names an exact,
+ * ordered set — and a route that grew a second gate nobody declared still
+ * reddens.
+ *
+ * `body` drives the branch, so it is stated here rather than derived: for
+ * `POST /{id}/share` the conditional branch is taken by an ABSENT or empty
+ * body, because `shareMode` defaults to `"public"`. `bodyWithout` is a body
+ * that must take the OTHER branch, which is the half that proves the condition
+ * is a condition and not just a second unconditional gate.
+ */
+type DashboardPermission = "dashboards:read" | "dashboards:write" | "dashboards:share";
+
 const ROUTES: ReadonlyArray<{
   method: string;
   path: string;
-  permission: "dashboards:read" | "dashboards:write";
+  permission: DashboardPermission;
   body?: unknown;
+  alsoEnforces?: {
+    permission: DashboardPermission;
+    /** Prose for the test name — what makes the second flag apply. */
+    when: string;
+    /** A body that must NOT reach the second flag. */
+    bodyWithout: unknown;
+  };
 }> = [
   { method: "GET", path: "/", permission: "dashboards:read" },
   { method: "GET", path: `/${VALID_ID}`, permission: "dashboards:read" },
@@ -134,23 +197,44 @@ const ROUTES: ReadonlyArray<{
   { method: "GET", path: `/${VALID_ID}/draft/status`, permission: "dashboards:read" },
   { method: "GET", path: `/${VALID_ID}/share`, permission: "dashboards:read" },
   { method: "GET", path: `/${VALID_ID}/sessions`, permission: "dashboards:read" },
-  { method: "GET", path: `/${VALID_ID}/sessions/s-1`, permission: "dashboards:read" },
+  { method: "GET", path: `/${VALID_ID}/sessions/${VALID_SESSION_ID}`, permission: "dashboards:read" },
   { method: "GET", path: `/${VALID_ID}/screenshot`, permission: "dashboards:read" },
-  { method: "POST", path: `/${VALID_ID}/cards/c-1/render`, permission: "dashboards:read", body: {} },
-  { method: "POST", path: `/${VALID_ID}/cards/c-1/refresh`, permission: "dashboards:write", body: {} },
+  { method: "POST", path: `/${VALID_ID}/cards/${VALID_CARD_ID}/render`, permission: "dashboards:read", body: {} },
+  { method: "POST", path: `/${VALID_ID}/cards/${VALID_CARD_ID}/refresh`, permission: "dashboards:write", body: {} },
   { method: "POST", path: `/${VALID_ID}/refresh`, permission: "dashboards:write", body: {} },
   { method: "POST", path: `/${VALID_ID}/export`, permission: "dashboards:read", body: { format: "pdf" } },
   { method: "POST", path: "/", permission: "dashboards:write", body: { title: "T" } },
   { method: "POST", path: `/${VALID_ID}/draft/publish`, permission: "dashboards:write", body: {} },
   { method: "POST", path: `/${VALID_ID}/draft/discard`, permission: "dashboards:write", body: {} },
   { method: "POST", path: `/${VALID_ID}/draft/rebase`, permission: "dashboards:write", body: {} },
-  { method: "POST", path: `/${VALID_ID}/draft/undo`, permission: "dashboards:write", body: {} },
+  // Same: `DraftUndoBodySchema` is a discriminated union on `kind`, so `{}` 422s.
+  { method: "POST", path: `/${VALID_ID}/draft/undo`, permission: "dashboards:write", body: { kind: "revert_sql", cardId: "c", sql: "SELECT 1" } },
   { method: "PATCH", path: `/${VALID_ID}`, permission: "dashboards:write", body: { title: "T2" } },
   { method: "DELETE", path: `/${VALID_ID}`, permission: "dashboards:write" },
-  { method: "POST", path: `/${VALID_ID}/cards`, permission: "dashboards:write", body: {} },
-  { method: "PATCH", path: `/${VALID_ID}/cards/c-1`, permission: "dashboards:write", body: {} },
-  { method: "DELETE", path: `/${VALID_ID}/cards/c-1`, permission: "dashboards:write" },
-  { method: "POST", path: `/${VALID_ID}/share`, permission: "dashboards:write", body: {} },
+  // A body the schema ACCEPTS. `{}` 422s at `AddCardSchema`, so the handler
+  // never ran and the exact-set assertion could not see an in-handler gate —
+  // the same class as the ULID ids, one field over.
+  { method: "POST", path: `/${VALID_ID}/cards`, permission: "dashboards:write", body: { title: "T", sql: "SELECT 1" } },
+  { method: "PATCH", path: `/${VALID_ID}/cards/${VALID_CARD_ID}`, permission: "dashboards:write", body: {} },
+  { method: "DELETE", path: `/${VALID_ID}/cards/${VALID_CARD_ID}`, permission: "dashboards:write" },
+  {
+    method: "POST",
+    path: `/${VALID_ID}/share`,
+    permission: "dashboards:write",
+    // ⚠️ An EMPTY body on purpose — `{}` is what a bare `POST` with no
+    // configuration looks like once parsed, and `shareMode` defaults to
+    // `"public"`. Driving `{ shareMode: "public" }` here would test the gate
+    // against the caller who asked for it explicitly and miss the exact
+    // regression, which is that asking for nothing gets you a public link.
+    body: {},
+    alsoEnforces: {
+      permission: "dashboards:share",
+      when: "the share is PUBLIC (which an absent/empty body defaults to)",
+      bodyWithout: { shareMode: "org" },
+    },
+  },
+  // Revoking stays on `dashboards:write` alone (#5192): unsharing REDUCES
+  // exposure, and de-escalation must never be harder than escalation.
   { method: "DELETE", path: `/${VALID_ID}/share`, permission: "dashboards:write" },
   { method: "POST", path: `/${VALID_ID}/suggest`, permission: "dashboards:write", body: {} },
   { method: "POST", path: "/preview-card", permission: "dashboards:write", body: { sql: "SELECT 1" } },
@@ -188,6 +272,7 @@ function authAs(user: {
 }
 
 beforeEach(() => {
+  mockShareDashboard.mockClear();
   mockCheckPermission.mockReset();
   mockCheckPermission.mockImplementation(() => Effect.succeed(null as CheckPermissionResult));
   authAs({ id: "owner-fresh", role: "owner" });
@@ -230,8 +315,8 @@ describe("#5189 — no dashboards route may exist without a permission decision"
       (r) =>
         `${r.method} ${MOUNT}${r.path === "/" ? "" : r.path}`
           .replace(VALID_ID, ":id")
-          .replace("/cards/c-1", "/cards/:cardId")
-          .replace("/sessions/s-1", "/sessions/:sessionId"),
+          .replace(`/cards/${VALID_CARD_ID}`, "/cards/:cardId")
+          .replace(`/sessions/${VALID_SESSION_ID}`, "/sessions/:sessionId"),
     ),
   );
 
@@ -270,15 +355,72 @@ describe("#5189 — no dashboards route may exist without a permission decision"
     for (const r of ROUTES) {
       const path = `${MOUNT}${r.path === "/" ? "" : r.path}`
         .replace(VALID_ID, "{id}")
-        .replace("/cards/c-1", "/cards/{cardId}")
-        .replace("/sessions/s-1", "/sessions/{sessionId}");
+        .replace(`/cards/${VALID_CARD_ID}`, "/cards/{cardId}")
+        .replace(`/sessions/${VALID_SESSION_ID}`, "/sessions/{sessionId}");
       const op = doc.paths?.[path]?.[r.method.toLowerCase()];
       const desc = op?.description ?? "";
       const found = [...desc.matchAll(/Requires the `(dashboards:\w+)` permission/g)].map(
         (m) => m[1],
       );
-      if (found.length !== 1 || found[0] !== r.permission) {
-        wrong.push(`${r.method} ${path}: doc says ${JSON.stringify(found)}, gate is ${r.permission}`);
+      // #5192 — a conditional second flag must be PUBLISHED too, and in the
+      // same sentence form. An integrator reading the reference page has no
+      // other way to learn that a bare POST needs a flag their `analyst` token
+      // does not carry; a description naming only `dashboards:write` would tell
+      // them the opposite of what the route does.
+      const expected = [r.permission, ...(r.alsoEnforces ? [r.alsoEnforces.permission] : [])];
+      if (found.length !== expected.length || found.some((f, i) => f !== expected[i])) {
+        wrong.push(
+          `${r.method} ${path}: doc says ${JSON.stringify(found)}, gate is ${JSON.stringify(expected)}`,
+        );
+      }
+    }
+    expect(wrong).toEqual([]);
+  });
+
+  /**
+   * #5191 round 2 — the write lock's causes must be PUBLISHED on every route
+   * that can emit them, and on no route that cannot.
+   *
+   * ⚠️ This is a mechanical check because the class bit twice. Round 1 declared
+   * the two statuses by spreading a shared object into each `responses` — and
+   * object spread never warns on a key collision, so on TEN routes a route's
+   * own 409/503 silently overwrote the lock's. The published contract then told
+   * a client that a 409 during a region migration meant "a teammate published
+   * first" (remedy: rebase and retry, which cannot succeed) or that a 503 meant
+   * "internal database not configured" — a specific, WRONG answer, which is
+   * worse than the generic one the spread was added to prevent.
+   *
+   * Asserted against the emitted document, keyed on the same ROUTES table that
+   * drives the enforcement tests, so neither direction can drift: a write route
+   * that loses the cause reddens, and a READ route that gains one reddens too
+   * (the lock keys on the HTTP method, so a 409 on a read is a contract for
+   * something that cannot happen).
+   */
+  it("publishes the migration-lock causes on exactly the routes that can emit them", () => {
+    const doc = app.getOpenAPI31Document({
+      openapi: "3.1.0",
+      info: { title: "t", version: "0" },
+    }) as { paths?: Record<string, Record<string, { responses?: Record<string, { description?: string }> }>> };
+
+    const wrong: string[] = [];
+    for (const r of ROUTES) {
+      const path = `${MOUNT}${r.path === "/" ? "" : r.path}`
+        .replace(VALID_ID, "{id}")
+        .replace(VALID_CARD_ID, "{cardId}")
+        .replace(VALID_SESSION_ID, "{sessionId}");
+      const op = doc.paths?.[path]?.[r.method.toLowerCase()];
+      // `migrationWriteLock` fires on WRITE METHODS only, and rides on the
+      // write gate — so `GET /{id}/draft` is write-classified and still cannot
+      // emit either status.
+      const lockable = r.permission === "dashboards:write" && r.method !== "GET";
+      for (const [status, code] of [["409", "workspace_migrating"], ["503", "migration_check_failed"]] as const) {
+        const desc = op?.responses?.[status]?.description ?? "";
+        const declared = desc.includes(code);
+        if (declared !== lockable) {
+          wrong.push(
+            `${r.method} ${path} ${status}: ${declared ? "declares" : "omits"} ${code}, expected ${lockable ? "declared" : "omitted"} — got ${JSON.stringify(desc)}`,
+          );
+        }
       }
     }
     expect(wrong).toEqual([]);
@@ -296,14 +438,34 @@ describe("#5189 — no dashboards route may exist without a permission decision"
 
 describe("#5189 — each route enforces its OWN flag", () => {
   for (const r of ROUTES) {
-    it(`${r.method} ${r.path} → checkPermission("${r.permission}") and nothing else`, async () => {
+    const declared = [r.permission, ...(r.alsoEnforces ? [r.alsoEnforces.permission] : [])];
+    it(`${r.method} ${r.path} → checkPermission(${declared.map((p) => `"${p}"`).join(", ")}) and nothing else`, async () => {
       await app.fetch(req(r.path, r.method, r.body));
       const seen = mockCheckPermission.mock.calls.map((c) => c[1]);
-      // The exact set, not `toContain`. A route carrying BOTH gates — the
-      // precise failure the two-routers-at-one-mount-path shape produces, which
-      // is why the gate is per route — satisfies `toContain` for either flag and
-      // passes the 403 loop below as well. Only this assertion sees it.
-      expect([...new Set(seen)]).toEqual([r.permission]);
+      // The exact ORDERED set, not `toContain`. A route carrying BOTH gates —
+      // the precise failure the two-routers-at-one-mount-path shape produces,
+      // which is why the gate is per route — satisfies `toContain` for either
+      // flag and passes the 403 loop below as well. Only this assertion sees it.
+      //
+      // #5192 kept it exact rather than relaxing it for the one route that
+      // legitimately consults two flags: the second is DECLARED in the table,
+      // so an undeclared second gate still reddens here. Order is meaningful
+      // and asserted — the route gate runs as middleware, the conditional flag
+      // inside the handler, so the middleware flag always comes first. A
+      // reversal would mean the handler had started authorizing before the
+      // route gate, which is a real defect wearing the right set of flags.
+      expect([...new Set(seen)]).toEqual(declared);
+      // ⚠️ …AND the fixture actually reached the handler. This is the class
+      // behind two separate round findings: a ULID id, then a body the schema
+      // rejects. Either way the request dies at validation, the handler never
+      // runs, and an in-handler gate is invisible while the test reports
+      // coverage. Asserting the fixture is VALID is the check that generalises
+      // — a future body that stops parsing fails loudly instead of quietly.
+      const res = await app.fetch(req(r.path, r.method, r.body));
+      expect(
+        [400, 422].includes(res.status),
+        `${r.method} ${r.path}: fixture rejected at validation (${res.status}) — the handler never ran, so this assertion measures nothing`,
+      ).toBe(false);
     });
   }
 
@@ -318,6 +480,83 @@ describe("#5189 — each route enforces its OWN flag", () => {
       expect(res.status).toBe(403);
       const body = (await res.json()) as { error: string };
       expect(body.error).toBe("insufficient_permissions");
+    });
+  }
+
+  // ── #5192 — the conditional flag, both branches ────────────────────
+  for (const r of ROUTES) {
+    const cond = r.alsoEnforces;
+    if (!cond) continue;
+
+    it(`${r.method} ${r.path} → 403 when ${cond.permission} is denied and ${cond.when}`, async () => {
+      // The regression test, stated as the issue states it: a caller holding
+      // `dashboards:write` and NOT `dashboards:share` is denied.
+      mockCheckPermission.mockImplementation((_u, permission, requestId) =>
+        Effect.succeed(
+          permission === cond.permission ? denialFor(permission, requestId) : null,
+        ),
+      );
+      const res = await app.fetch(req(r.path, r.method, r.body));
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error: string; message: string };
+      expect(body.error).toBe("insufficient_permissions");
+      // Name the flag that actually denied. Both gates answer 403 with the
+      // same code, so without this the test passes when the WRITE gate denies
+      // — i.e. when the conditional branch was never reached at all.
+      expect(body.message).toContain(cond.permission);
+    });
+
+    it(`${r.method} ${r.path} → does NOT consult ${cond.permission} on the other branch`, async () => {
+      // The half that proves the condition is a condition. Without it, an
+      // unconditional second gate passes every assertion above — and it would
+      // be a real regression in the other direction, taking org-scoped sharing
+      // away from the analyst the flag was never meant to affect.
+      await app.fetch(req(r.path, r.method, cond.bodyWithout));
+      const seen = mockCheckPermission.mock.calls.map((c) => c[1]);
+      expect([...new Set(seen)]).toEqual([r.permission]);
+    });
+
+    it(`${r.method} ${r.path} → 503, not 403, when ${cond.permission} cannot be RESOLVED`, async () => {
+      // The in-handler gate re-derives the status from `enforcePermission`,
+      // which is the only place in the tree that does. Measured in review:
+      // collapsing that ternary to a bare `c.json(denied.body, 403)` left this
+      // whole suite green, so "we could not determine your permissions" was
+      // reportable as "you lack them" — the exact confusion
+      // `permissionLoadFailedResponse` exists to prevent, and the reason the
+      // route declares a 503 at all.
+      mockCheckPermission.mockImplementation((_u, permission, requestId) =>
+        Effect.succeed(
+          permission === cond.permission
+            ? {
+                body: { error: "permissions_unavailable", message: "unavailable", requestId },
+                status: 503 as const,
+              }
+            : null,
+        ),
+      );
+      const res = await app.fetch(req(r.path, r.method, r.body));
+      expect(res.status).toBe(503);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("permissions_unavailable");
+    });
+
+    it(`${r.method} ${r.path} → denying ${cond.permission} leaves the other branch working`, async () => {
+      mockCheckPermission.mockImplementation((_u, permission, requestId) =>
+        Effect.succeed(
+          permission === cond.permission ? denialFor(permission, requestId) : null,
+        ),
+      );
+      const res = await app.fetch(req(r.path, r.method, cond.bodyWithout));
+      // An exact status, not `not.toBe(403)`: `shareDashboard` is mocked, so
+      // the allowed outcome is a known 200 and a 404/500 cannot pass for it.
+      expect(res.status).toBe(200);
+      // …and it minted the mode the caller asked for. A 200 alone cannot tell
+      // "took the org branch" from "took the org branch and minted a PUBLIC
+      // token anyway", which is the silent-downgrade class #4317 closed and
+      // the one this gate must not reopen from the other side.
+      expect(mockShareDashboard.mock.calls.at(-1)?.[2]).toMatchObject({
+        shareMode: "org",
+      });
     });
   }
 });
@@ -379,12 +618,20 @@ describe("#5188 — an unenrolled owner is no longer blocked from dashboards", (
     // The MFA scope decision, asserted rather than described: dashboards left
     // the admin perimeter, so this code cannot originate here. If a future
     // change remounts them on `createAdminRouter()`, this reddens.
+    //
+    // ⚠️ Counted, not `continue`d past. On a green tree no route 403s, so the
+    // loop's body used to run ZERO times and the test reported coverage it was
+    // not providing — an assertion that cannot fail. Collecting every response
+    // and asserting over the whole set keeps the property while making the
+    // vacuous case visible.
+    const codes: Array<string | undefined> = [];
     for (const r of ROUTES) {
       const res = await app.fetch(req(r.path, r.method, r.body));
-      if (res.status !== 403) continue;
-      const body = (await res.json()) as { error?: string };
-      expect(body.error).not.toBe("mfa_enrollment_required");
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      codes.push(body.error);
     }
+    expect(codes).toHaveLength(ROUTES.length);
+    expect(codes.filter((c) => c === "mfa_enrollment_required")).toEqual([]);
   });
 });
 

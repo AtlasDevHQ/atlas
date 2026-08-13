@@ -36,11 +36,15 @@
  *   never outrun the implementation.
  *
  *   There is deliberately NO "reached by cascade" decision. Every
- *   workspace-scoped table is deleted explicitly — including the EIGHT with no
+ *   workspace-scoped table is deleted explicitly — including the TEN with no
  *   scope column of their own, which go via a parent subquery (`messages`,
  *   `slack_threads`, `dashboard_cards`, `dashboard_user_drafts`,
  *   `dashboard_draft_card_cache`, `knowledge_links`, `suggestion_user_clicks`,
- *   `prompt_items`, `scheduled_task_runs`). Several SCOPED tables would cascade
+ *   `prompt_items`, `scheduled_task_runs`, `stripe_webhook_events`). This said
+ *   EIGHT while listing NINE and omitting `stripe_webhook_events`; measured
+ *   2026-08-12 by enumerating the Drizzle schema, there are ELEVEN scope-less
+ *   `purged` tables — the ten above plus `chat_cache`, which is scoped by an
+ *   expression rather than a parent (see its entry). Several SCOPED tables would cascade
  *   too — `agent_runs`, `agent_session_memory`, `learned_pattern_injections` —
  *   and are deleted explicitly all the same.
  *

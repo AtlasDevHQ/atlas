@@ -195,7 +195,7 @@ export const OPERATOR_SUBCOMMAND_HELP = {
     description:
       "Operator-only tools that touch tenant data. Destructive subcommands require an explicit double-confirm flag.",
     usage:
-      "ops <wipe|backfill-crm-leads|smoke-crm|teardown-verify-accounts> [options]",
+      "ops <wipe|backfill-crm-leads|smoke-crm|teardown-verify-accounts|sweep-residue> [options]",
     subcommands: [
       {
         name: "wipe",
@@ -217,6 +217,11 @@ export const OPERATOR_SUBCOMMAND_HELP = {
         description:
           "Surgically delete throwaway /verify-prod-signup accounts (user + org + Stripe customer) from one region's internal DB. DRY RUN by default; EXECUTE requires ATLAS_TEARDOWN_OK=1 + --confirm. Flags: --email <addr[,addr]> (required, repeatable), --region <us|eu|apac> OR --database-url <url>, --dry-run, --force (allow non-plus-addressed emails).",
       },
+      {
+        name: "sweep-residue",
+        description:
+          "Delete orphaned-workspace residue — rows whose organization row is already gone, left behind by a purge that predated the table entering the purge path (#5185). The normal purge cannot reach them: it requires the workspace to exist and be soft-deleted. Candidate tables are derived from lib/db/purge-scope.ts (decision: purged only) and sentinel scope values (_default, <atlas-operator>, empty) are never deleted. DRY RUN by default; EXECUTE requires ATLAS_RESIDUE_OK=1 + --confirm + --pg-dump <path> naming a real, recent backup. Exits non-zero if anything survived or could not be checked. Flags: --region <us|eu|apac> OR --database-url <url>, --pg-dump <path>, --confirm, --dry-run.",
+      },
     ],
     flags: [
       {
@@ -232,7 +237,12 @@ export const OPERATOR_SUBCOMMAND_HELP = {
       {
         flag: "--database-url <url>",
         description:
-          "Override the target Postgres URL (defaults to ATLAS_TEAM_PG_URL, then DATABASE_URL).",
+          "Override the target Postgres URL (defaults to ATLAS_TEAM_PG_URL, then DATABASE_URL). teardown-verify-accounts and sweep-residue have NO DATABASE_URL fallback — one of --region / --database-url is required.",
+      },
+      {
+        flag: "--pg-dump <path>",
+        description:
+          "sweep-residue: path to the backup taken before the sweep. Required to execute; the file must exist, be a regular file, be non-empty, and be less than 6 hours old — the delete has no undo, and a stale path is usually another region's dump.",
       },
     ],
     examples: [
@@ -241,6 +251,8 @@ export const OPERATOR_SUBCOMMAND_HELP = {
       "atlas-operator ops backfill-crm-leads --dry-run",
       "atlas-operator ops smoke-crm --personas ./fixtures/personas.yml",
       "ATLAS_SMOKE_WIPE_OK=1 atlas-operator ops smoke-crm --personas ./fixtures/personas.yml --wipe-twenty",
+      "atlas-operator ops sweep-residue --region us",
+      "ATLAS_RESIDUE_OK=1 atlas-operator ops sweep-residue --region us --confirm --pg-dump ./residue-us.dump",
     ],
   },
 } satisfies Record<OperatorCommand, SubcommandHelp>;
@@ -258,7 +270,7 @@ export function printOperatorOverviewHelp(): void {
       "DATABASE_URL); export and learn read Atlas's internal DB via DATABASE_URL.\n\n" +
       "Usage: atlas-operator <command> [options]\n\n" +
       "Commands:\n" +
-      "  ops              Operator-only destructive tools (wipe, backfill-crm-leads, smoke-crm, teardown-verify-accounts)\n" +
+      "  ops              Operator-only destructive tools (wipe, backfill-crm-leads, smoke-crm, teardown-verify-accounts, sweep-residue)\n" +
       "  seed             Seed durable workspace data — prompts, connection groups\n" +
       "  proactive        Enable/disable proactive chat for a workspace\n" +
       "  export           Export workspace data to a migration bundle\n" +

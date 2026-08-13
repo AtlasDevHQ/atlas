@@ -25,6 +25,16 @@
  *                          DRY RUN by default; EXECUTE is double-gated by
  *                          `ATLAS_TEARDOWN_OK=1` + `--confirm`. One region DB per
  *                          invocation. See ./ops-teardown-verify.ts.
+ *   sweep-residue          Clear orphaned-workspace residue — rows whose
+ *                          `organization` row is already gone, left behind by a
+ *                          purge that predated the table entering the purge path
+ *                          (#5185). The normal purge cannot reach them (it
+ *                          requires the workspace to exist). Candidate tables are
+ *                          derived from `lib/db/purge-scope.ts`; sentinel scope
+ *                          values are never deleted. DRY RUN by default; EXECUTE
+ *                          is double-gated by `ATLAS_RESIDUE_OK=1` + `--confirm`
+ *                          and requires `--pg-dump <path>`. One region DB per
+ *                          invocation. See ./ops-residue.ts.
  *
  * Wipe replaces internal/wipe-prod.sh's per-DB logic; the script's
  * Railway-credential fetching and 3-region orchestration are operator concerns
@@ -280,9 +290,13 @@ export async function handleOps(args: string[]): Promise<void> {
     const { handleTeardownVerifyAccounts } = await import("./ops-teardown-verify");
     return handleTeardownVerifyAccounts(args);
   }
+  if (subcommand === "sweep-residue") {
+    const { handleSweepResidue } = await import("./ops-residue");
+    return handleSweepResidue(args);
+  }
 
   console.error(
-    "Usage: atlas-operator ops <wipe|backfill-crm-leads|smoke-crm|teardown-verify-accounts> [options]\n\n" +
+    "Usage: atlas-operator ops <wipe|backfill-crm-leads|smoke-crm|teardown-verify-accounts|sweep-residue> [options]\n\n" +
       "Subcommands:\n" +
       "  wipe                 TRUNCATE every public table in the tenant DB. DESTRUCTIVE — requires ATLAS_WIPE_OK=1 + --confirm.\n" +
       "  backfill-crm-leads   Enqueue every demo_leads row into crm_outbox for dispatch to Twenty.\n" +
@@ -294,7 +308,11 @@ export async function handleOps(args: string[]): Promise<void> {
       "  teardown-verify-accounts  Surgically delete throwaway /verify-prod-signup accounts (user + org + Stripe customer)\n" +
       "                       from one region's internal DB. DRY RUN by default; EXECUTE requires ATLAS_TEARDOWN_OK=1 + --confirm.\n" +
       "                       Flags: --email <addr[,addr]> (required, repeatable), --region <us|eu|apac> OR --database-url <url>,\n" +
-      "                              --dry-run, --force (allow non-plus-addressed emails)\n",
+      "                              --dry-run, --force (allow non-plus-addressed emails)\n" +
+      "  sweep-residue        Delete orphaned-workspace residue (rows whose organization row is already gone) from one\n" +
+      "                       region's internal DB. Tables derive from lib/db/purge-scope.ts; sentinel scope values are\n" +
+      "                       never deleted. DRY RUN by default; EXECUTE requires ATLAS_RESIDUE_OK=1 + --confirm + --pg-dump.\n" +
+      "                       Flags: --region <us|eu|apac> OR --database-url <url>, --pg-dump <path>, --confirm, --dry-run\n",
   );
   process.exit(1);
 }

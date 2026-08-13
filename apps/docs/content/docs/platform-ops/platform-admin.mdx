@@ -100,39 +100,102 @@ A third case is worth naming because it looks like an omission: the one-trial-pe
 
 #### Residue from purges performed before this coverage existed
 
-Purges run before the brain and Knowledge Base tables entered the purge path left their rows behind. Those rows are identifiable: a `workspace_id` present in one of these tables with **no matching `organization` row** is orphaned, and orphaned tenant data should not exist.
+Purges run before a table entered the purge path left its rows behind. Those rows are identifiable: a scope column (`org_id` / `workspace_id`) whose value matches **no `organization` row**, in a table `lib/db/purge-scope.ts` marks `purged`. Orphaned tenant data should not exist.
+
+The brain and Knowledge Base tables are the best-known case ([#5160](https://github.com/AtlasDevHQ/atlas/issues/5160)), but they are not the only one — do not scope the search to them.
 
 The decision: **a sweep is required where the detection query returns anything, and it must be run per region** — there are three independent region databases, and a workspace purged in one leaves nothing in the others. Run the detection first; do not run a blind delete.
 
 <Callout type="warn">
-**An orphan does not prove a purge happened, and the difference changes what you should do.** Two code paths delete an `organization` row: this GDPR purge, and Better Auth's own `POST /api/auth/organization/delete`, which a workspace **owner** can call (the `owner` role carries `organization: ["delete"]`) and which runs **no Atlas cascade at all**. A workspace removed that way orphans *every* one of the ~95 tables, not just the brain and KB ones — so a large, broad result set here is more likely a self-service deletion than pre-fix purge residue. Both are data that should be gone, but the second is a wider gap; check the admin action log for a `workspace.purge` entry on that id before assuming which you are looking at.
+**An orphan does not prove a purge happened, and the difference changes what you should do.** Historically two code paths deleted an `organization` row: this GDPR purge, and Better Auth's own `POST /api/auth/organization/delete`, which a workspace **owner** could call (the `owner` role carries `organization: ["delete"]`) and which ran **no Atlas cascade at all** — orphaning *every* one of the ~95 tables, not just the brain and KB ones.
+
+**That second path is closed** as of [#5175](https://github.com/AtlasDevHQ/atlas/issues/5175): the org plugin sets `disableOrganizationDeletion: true`, so the endpoint now returns `404 ORGANIZATION_DELETION_DISABLED` before it reads the session. It remains relevant for reading *historical* residue, not for new data.
+
+Telling them apart, in order of cost: check the admin action log for a `workspace.purge` entry on that id — the purge path logs `workspace.delete` then `workspace.purge`, the self-service path logs neither. **Breadth is the other tell**: a self-service deletion orphans ~95 tables, so a result set confined to two or three is pre-fix purge residue.
+
+Measured across all three prod regions on 2026-08-12: **no evidence the self-service path was ever used.** The single genuine orphan carried a logged `workspace.delete` → `workspace.purge` pair from 2026-06-25 — a legitimate operator purge that predated the table entering the purge path.
+</Callout>
+
+<Callout type="warn">
+**Do not hand-list the tables.** This section used to carry a four-table query
+(`brain_facts`, `brain_episodes`, `knowledge_documents`,
+`knowledge_sync_credentials`). Run against all three prod regions on 2026-08-12
+it returned **0 rows everywhere** — while the sweep below found genuine
+`purged`-class residue in every one of them, in `workspace_proactive_config`,
+`crm_outbox` and `sla_thresholds`. None of those three was in the hand-written
+list, and a hand-written list is stale the moment a table is added.
+
+The query below discovers its own table set from `information_schema`, so a new
+workspace-scoped table enters the sweep with no edit here.
 </Callout>
 
 ```sql
--- Per region. Any row returned is data a completed GDPR purge should have removed.
-SELECT 'brain_facts' AS table_name, b.workspace_id, count(*) AS rows
-  FROM brain_facts b
- WHERE NOT EXISTS (SELECT 1 FROM organization o WHERE o.id = b.workspace_id)
- GROUP BY b.workspace_id
-UNION ALL
-SELECT 'brain_episodes', b.workspace_id, count(*)
-  FROM brain_episodes b
- WHERE NOT EXISTS (SELECT 1 FROM organization o WHERE o.id = b.workspace_id)
- GROUP BY b.workspace_id
-UNION ALL
-SELECT 'knowledge_documents', k.workspace_id, count(*)
-  FROM knowledge_documents k
- WHERE NOT EXISTS (SELECT 1 FROM organization o WHERE o.id = k.workspace_id)
- GROUP BY k.workspace_id
-UNION ALL
-SELECT 'knowledge_sync_credentials', k.workspace_id, count(*)
-  FROM knowledge_sync_credentials k
- WHERE NOT EXISTS (SELECT 1 FROM organization o WHERE o.id = k.workspace_id)
- GROUP BY k.workspace_id;
+-- Per region. Discovers every org-scoped table, then counts rows whose scope
+-- value matches no organization. Read-only.
+--
+-- The data_type filter is load-bearing: `subscriptions.organization_id` is an
+-- INTEGER (a Stripe-plugin surrogate key, not the org's text id), and without
+-- it the whole query aborts with `operator does not exist: text = integer`.
+SELECT s.table_name, s.col,
+       (xpath('/row/cnt/text()', s.x))[1]::text::bigint AS orphan_rows
+FROM (
+  SELECT c.table_name, c.column_name AS col,
+         query_to_xml(format(
+           'SELECT count(*) AS cnt FROM public.%I t WHERE t.%I IS NOT NULL '
+           'AND NOT EXISTS (SELECT 1 FROM public.organization o WHERE o.id = t.%I)',
+           c.table_name, c.column_name, c.column_name), false, true, '') AS x
+  FROM information_schema.columns c
+  JOIN information_schema.tables tb
+    ON tb.table_schema = c.table_schema
+   AND tb.table_name  = c.table_name
+   AND tb.table_type  = 'BASE TABLE'
+  WHERE c.table_schema = 'public'
+    AND c.column_name IN ('org_id','workspace_id','organization_id')
+    AND c.data_type   IN ('text','character varying','uuid')
+    AND c.table_name <> 'organization'
+) s
+WHERE (xpath('/row/cnt/text()', s.x))[1]::text::bigint > 0
+ORDER BY orphan_rows DESC;
 ```
 
+Then resolve the actual ids before treating anything as deletable — the count
+alone cannot tell a tenant from a sentinel:
+
+```sql
+SELECT workspace_id, count(*) FROM <table>
+ WHERE NOT EXISTS (SELECT 1 FROM organization o WHERE o.id = workspace_id)
+ GROUP BY 1;
+```
+
+<Callout type="error">
+**Most rows this returns are NOT orphaned tenant data.** Measured across all
+three prod regions, 2026-08-12 — of 9 flagged rows, **1** was genuine residue:
+
+| Value | What it is | Deleting it would… |
+|---|---|---|
+| `_default` (`sla_thresholds`, all 3 regions) | the deployment-wide default tier row | destroy SLA defaults for every workspace |
+| `<atlas-operator>` (`crm_outbox`, EU + APAC) | operator-originated CRM events, no tenant | drop unsent operator events |
+| `''` empty (`admin_action_log`) | deployment-scoped entries (`brain.extraction_cycle`, `oauth_token.refresh`) | erase operator history; also `anonymized`, so retained **by design** |
+| a 32-char nanoid | a real workspace | correct — this is the residue |
+
+A sentinel is not an organization id, so `NOT EXISTS (… o.id = workspace_id)` is
+true for it and it looks exactly like an orphan. This is the same failure shape
+as broadening `DELETE FROM settings` to `OR org_id IS NULL`, which destroys the
+deployment-wide settings tier ([#5160](https://github.com/AtlasDevHQ/atlas/issues/5160)).
+
+**Cross-check every id against `lib/db/purge-scope.ts` before deleting.** Only
+`decision: "purged"` tables are candidates; `anonymized` rows are meant to
+survive, and `user_scoped` rows belong to the orphaned-user arm.
+</Callout>
+
 <Callout type="warn">
-Two things to hold before running a deletion. First, a region **import** cannot produce a false positive here — it writes into an already-active organization, so it never leaves rows without one; the orphan signal really does mean "the organization row is gone" — see the caveat above for *which* deletion put it there. Second, that makes the query's output a deletion list against real customer data with no undo, so run it through the operator binary's double-gating (`ATLAS_*_OK=1` plus `--confirm`) and take a `pg_dump` first, exactly as with `ops wipe`. Never hand-run the delete against a region database.
+Three things to hold before running a deletion.
+
+First, a region **import** cannot produce a false positive here — it writes into an already-active organization, so it never leaves rows without one.
+
+Second, ⚠️ **that does not make every hit a deleted organization.** An earlier version of this paragraph claimed "the orphan signal really does mean the organization row is gone"; the 2026-08-12 sweep falsified it. Sentinel scope values (`_default`, `<atlas-operator>`, `''`) are not organization ids, so they match no `organization` row and are reported identically to real residue — and two of them are deployment-wide config whose deletion is destructive. Resolve the ids and cross-check `lib/db/purge-scope.ts` first; see the callout above the query.
+
+Third, what survives that check is a deletion list against real customer data with no undo, so run it through the operator binary's double-gating (`ATLAS_*_OK=1` plus `--confirm`) and take a `pg_dump` first, exactly as with `ops wipe`. Never hand-run the delete against a region database.
 </Callout>
 
 #### Prerequisites

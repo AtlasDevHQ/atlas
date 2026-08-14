@@ -181,5 +181,61 @@ T=$(make_tree "$GOOD_TARGET" '"  return 42;"' \
    'git branch base-ref HEAD && echo note > ../../notes.md && git add -A >/dev/null && git commit --quiet -m irrelevant')
 check 0 "HEAD ahead of base, no spec dep touched — still a genuine PASS" "$T" --affected base-ref
 
+# 7. The shard partition is TOTAL and DISJOINT.
+#
+# The threat is a spec that lands on no shard: verified by nothing, green
+# forever — the same outcome as the four stale tables in this file's header,
+# reached through a new door. Enumerating spec names in the CI matrix would
+# produce exactly that the next time someone adds a spec, which is why the
+# partition is round-robin by position and why this fixture exists to hold it.
+#
+# Cheap on purpose. `--list-only` prints the selection without running a
+# mutation, so the property is checked in milliseconds; proving it against the
+# real specs would cost a full sweep per shard, and a test that expensive is one
+# nobody runs. 13 specs over 4 shards also leaves the count indivisible, so an
+# off-by-one in the modulo cannot hide behind an even split.
+make_spec_tree() { # $1 = how many empty spec files
+  local n="$1" tmp i; tmp="$(mktemp -d)"
+  mkdir -p "$tmp/packages/api/scripts/mutations" "$tmp/scripts"
+  cp "$SCRIPT" "$tmp/scripts/check-mutation-tables.sh"
+  for i in $(seq 1 "$n"); do : >"$tmp/packages/api/scripts/mutations/s$i.mutations.ts"; done
+  echo "$tmp"
+}
+
+shard_selection() { # $1 tree  $2 shard  $3 total
+  ( cd "$1" && TEST_DATABASE_URL=x MUTATION_SPEC_GLOB="scripts/mutations/*.mutations.ts" \
+      bash scripts/check-mutation-tables.sh --all --list-only --shard "$2/$3" 2>/dev/null \
+      | sed -n 's/^SELECTED //p' )
+}
+
+SPEC_N=13
+SHARD_N=4
+T=$(make_spec_tree "$SPEC_N")
+UNION=""
+for s in $(seq 1 "$SHARD_N"); do UNION="${UNION}$(shard_selection "$T" "$s" "$SHARD_N")"$'\n'; done
+TOTAL=$(printf '%s' "$UNION" | grep -c . || true)
+DISTINCT=$(printf '%s' "$UNION" | sort -u | grep -c . || true)
+if [ "$TOTAL" = "$SPEC_N" ] && [ "$DISTINCT" = "$SPEC_N" ]; then
+  echo "  ok    shard partition is total and disjoint ($SPEC_N specs over $SHARD_N shards)"; PASS=$((PASS + 1))
+else
+  echo "  FAIL  shard partition — expected $SPEC_N selections and $SPEC_N distinct, got $TOTAL and $DISTINCT"
+  FAIL=$((FAIL + 1))
+fi
+rm -rf "$T"
+
+# A malformed --shard must be a hard error. Falling through to "no sharding"
+# would run every spec on every shard (slow, green, unnoticed); falling through
+# to "empty" would verify NOTHING on all four and still exit 0.
+T=$(make_spec_tree 2)
+rc=0
+( cd "$T" && TEST_DATABASE_URL=x MUTATION_SPEC_GLOB="scripts/mutations/*.mutations.ts" \
+    bash scripts/check-mutation-tables.sh --all --list-only --shard 9/4 >/dev/null 2>&1 ) || rc=$?
+if [ "$rc" = "1" ]; then
+  echo "  ok    --shard 9/4 (index past total) is a hard error, not a silent no-op (exit $rc)"; PASS=$((PASS + 1))
+else
+  echo "  FAIL  --shard 9/4 — expected exit 1, got $rc"; FAIL=$((FAIL + 1))
+fi
+rm -rf "$T"
+
 echo ":: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

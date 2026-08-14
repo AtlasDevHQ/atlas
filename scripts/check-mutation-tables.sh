@@ -31,13 +31,21 @@
 #   --affected [base]   Verify only the specs whose dependency set the branch
 #                       touched. The common PR touches none and the gate is
 #                       instant. This is what ci-local.sh runs.
-#   --all               Every spec. What CI runs, and still FREE at 15m48s
-#                       (thirteen specs): jobs run in parallel and `Built image
-#                       (docs)` takes ~25 minutes, so this finishes inside the
-#                       existing critical path. It stays free only while that
-#                       holds — past the docs image this job IS the critical
-#                       path, and the header's argument starts applying to this
-#                       gate rather than to `/ci`.
+#   --all               Every spec. What CI runs.
+#   --shard I/N         Only this shard's slice of the selection, round-robin by
+#                       position, 1-based. CI runs four in parallel; the slices
+#                       are disjoint and their union is the whole selection.
+#   --list-only         Print the selection and exit 0 without verifying. A seam
+#                       for testing the partition — see the fixture suite.
+#
+# ⚠️ The "still FREE" claim that stood here was already conditional on `Built
+# image (docs)` running, and that condition does NOT hold on an ordinary PR: the
+# docs image is path-gated and skips, which this job's own run-step comment says
+# in the workflow. Measured on four PRs from this batch — 15.6, 15.9, 18.4 and
+# 31.0 minutes for `mutation-tables`, against 3.9 for the next slowest job in
+# the same runs. It was not free; it was the entire critical path. Hence the
+# shard: the work is unchanged and spread over four machines. Re-read those
+# numbers off a real run before trusting them again.
 #
 # A spec's dependencies come from `mutate.ts --files` — the loaded spec's own
 # target and edit paths — rather than from a grep, because they sit behind
@@ -69,6 +77,9 @@ ROOT="$SCRIPT_DIR/.."
 
 MODE="all"
 BASE="origin/main"
+SHARD_INDEX=""
+SHARD_TOTAL=""
+LIST_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --all) MODE="all"; shift ;;
@@ -76,6 +87,31 @@ while [ $# -gt 0 ]; do
       MODE="affected"; shift
       if [ $# -gt 0 ] && [ "${1#--}" = "$1" ]; then BASE="$1"; shift; fi
       ;;
+    --shard)
+      shift
+      if [ $# -eq 0 ]; then echo "check-mutation-tables: --shard needs I/N (1-based)" >&2; exit 1; fi
+      # ⚠️ Validate LOUDLY. A malformed --shard that fell through to "no
+      # sharding" would run every spec on every shard — slow but green, so
+      # nobody would notice; one that fell through to "empty" would verify
+      # NOTHING on every shard and still exit 0. Both are false-cleans of the
+      # exact class this whole file exists to refuse, so an unparseable value
+      # is a hard error rather than a default.
+      case "$1" in
+        [1-9]*/[1-9]*) : ;;
+        *) echo "check-mutation-tables: --shard expects I/N with I,N >= 1 (got '$1')" >&2; exit 1 ;;
+      esac
+      SHARD_INDEX="${1%%/*}"; SHARD_TOTAL="${1##*/}"
+      if [ "$SHARD_INDEX" -gt "$SHARD_TOTAL" ]; then
+        echo "check-mutation-tables: --shard $1 — index exceeds total." >&2; exit 1
+      fi
+      shift
+      ;;
+    # Print the selection and exit without running any mutation. The partition
+    # below has to be TOTAL — every spec on exactly one shard — and proving that
+    # against the real specs would cost a full sweep per shard, so the property
+    # gets a seam of its own rather than going untested. Same reasoning as
+    # MUTATION_SPEC_GLOB.
+    --list-only) LIST_ONLY=1; shift ;;
     *) echo "check-mutation-tables: unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -223,6 +259,44 @@ $UNTRACKED"
   fi
 fi
 if [ "$MODE" = "all" ]; then SELECTED=("${SPECS[@]}"); fi
+
+# --- Shard ------------------------------------------------------------------
+# AFTER selection, deliberately. Sharding is a way to spend the same work on
+# more machines; it must not change WHICH specs are in scope, and every
+# widen-never-narrow and exit-3 decision above stays the sole authority on that.
+#
+# Round-robin by position, so the matrix is N fixed entries and never names a
+# spec. A shard list that enumerated spec names would leave a NEWLY ADDED spec
+# on no shard at all — verified by nothing, green forever — which is the same
+# defect as the four stale tables in this file's header, arriving by a new door.
+# `SPECS` is a sorted glob, so position is stable within a run.
+#
+# Balance is lumpy on purpose: cost tracks a spec's mutation COUNT, not its
+# existence, so the long pole is whichever single spec has the most mutations
+# and no assignment can beat it. Sharding finer than "by spec" needs mutate.ts
+# to partition its own mutation list.
+if [ -n "$SHARD_TOTAL" ]; then
+  SHARDED=()
+  for i in "${!SELECTED[@]}"; do
+    if [ $(( i % SHARD_TOTAL )) -eq $(( SHARD_INDEX - 1 )) ]; then SHARDED+=("${SELECTED[$i]}"); fi
+  done
+  echo "check-mutation-tables: shard $SHARD_INDEX/$SHARD_TOTAL — ${#SHARDED[@]} of ${#SELECTED[@]} selected spec(s)."
+  SELECTED=(${SHARDED[@]+"${SHARDED[@]}"})
+fi
+
+if [ "$LIST_ONLY" -eq 1 ]; then
+  for spec in ${SELECTED[@]+"${SELECTED[@]}"}; do echo "SELECTED $spec"; done
+  echo "check-mutation-tables: --list-only, ${#SELECTED[@]} spec(s) listed, nothing verified."
+  exit 0
+fi
+
+# An empty shard is honest work: the specs exist and another shard has them.
+# This is NOT the empty-affected-set case above, which exits 3 because nothing
+# anywhere would verify them.
+if [ ${#SELECTED[@]} -eq 0 ]; then
+  echo "check-mutation-tables: shard ${SHARD_INDEX:-1}/${SHARD_TOTAL:-1} has no specs — verified by its siblings."
+  exit 0
+fi
 
 echo "check-mutation-tables: verifying ${#SELECTED[@]} generated table(s)…"
 echo "  (each spec re-runs its suites under every mutation — minutes, not seconds)"

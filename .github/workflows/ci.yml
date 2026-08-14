@@ -561,25 +561,39 @@ jobs:
     # `escapeCell` row had been a dead ANCHOR since #5060/#4389 rewrote the
     # escape it pointed at.
     #
-    # ⚠️ Its OWN job rather than a step in `api-tests`, which is a 4-way shard
-    # matrix and would run this four times over. The full sweep is 15m48s
-    # measured at thirteen specs (PR #5222; it was 832s at eight, #5077 —
-    # `scripts/check-mutation-tables.sh`'s header carries both). That is FREE
-    # here: jobs run in parallel and `Built image (docs)` already takes ~25
-    # minutes, so this lands inside the existing critical path. `ci-local.sh`
-    # runs the `--affected` subset instead, because ~16 minutes added to a
-    # ~10-minute pre-PR loop is how a gate gets deleted.
+    # ⚠️ Its OWN job rather than a step in `api-tests`, which would run the sweep
+    # once per api-tests shard.
     #
-    # Re-take the measurement whenever a spec is added; the "free" claim is the
-    # half that expires, and it rests on a number rather than on an argument.
+    # It landed last, which the previous version of this comment named as the
+    # signal that the "free" claim had expired: that claim rested on `Built
+    # image (docs)` taking ~25 minutes, and the docs image is path-gated and
+    # SKIPS on an ordinary PR. Measured across four PRs from one batch —
+    # 15.6, 15.9, 18.4 and 31.0 minutes here against 3.9 for the next slowest
+    # job in the same runs. So it was the whole critical path, not a passenger
+    # on someone else's.
+    #
+    # Hence the shard. Same specs, same work, four machines: the selection is
+    # unchanged and `--shard` only slices what `--affected`/`--all` already
+    # chose. Expect the long pole to be whichever single spec has the most
+    # mutations — cost tracks mutation count, not spec count, so no assignment
+    # beats it. Going below that needs `mutate.ts` to partition its own mutation
+    # list, which is a change to the runner and wants its own PR.
+    #
+    # `ci-local.sh` still runs the `--affected` subset unsharded, because
+    # ~16 minutes added to a ~10-minute pre-PR loop is how a gate gets deleted.
     #
     # There is deliberately no `timeout-minutes` here: a sweep killed halfway
-    # reports nothing while looking like a verdict. Without one, outgrowing the
-    # docs image shows up as slow CI rather than a red gate. If this job starts
-    # landing last, it has outgrown it, and that script's header ("a gate that
-    # doubles the loop gets commented out") has begun applying to this one.
-    name: mutation-tables
+    # reports nothing while looking like a verdict. Slow shows up as slow.
+    name: mutation-tables (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
+    strategy:
+      # ⚠️ false, so one stale table does not cancel the siblings still
+      # measuring. A cancelled shard reports nothing, and "nothing" next to a
+      # real failure reads as "only one table drifted" when three more might
+      # have.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
@@ -605,6 +619,7 @@ jobs:
           TEST_DATABASE_URL: postgresql://atlas:atlas@localhost:5432/atlas
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          SHARD: ${{ matrix.shard }}
         run: |
           set -euo pipefail
           # ⚠️ The SWEEP still happens — it MOVED, it was not deleted. #5077's
@@ -622,9 +637,9 @@ jobs:
           # unresolvable diff, so the narrow path can never silently verify
           # nothing.
           if [ "$EVENT_NAME" = "pull_request" ]; then
-            bash scripts/check-mutation-tables.sh --affected "$BASE_SHA"
+            bash scripts/check-mutation-tables.sh --affected "$BASE_SHA" --shard "$SHARD/4"
           else
-            bash scripts/check-mutation-tables.sh --all
+            bash scripts/check-mutation-tables.sh --all --shard "$SHARD/4"
           fi
     services:
       postgres:

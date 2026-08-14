@@ -4,14 +4,22 @@
  *
  * ## Why a seam and not just a sort
  *
- * ADR-0036 stages retrieval: M1 is FTS-first, M4 adds dense embeddings, RRF,
- * and an optional rerank — with **FTS-only as the permanent self-host floor**,
- * not a degraded mode. The thing that has to be additive across that boundary
- * is the MERGE, so it lives here as one function over a list-of-ranked-lists
- * rather than inline in the query layer.
+ * ADR-0036 staged retrieval: M1 is FTS-first, and a later milestone adds dense
+ * embeddings, RRF, and an optional rerank — with **FTS-only as the permanent
+ * self-host floor**, not a degraded mode. The thing that has to be additive
+ * across that boundary is the MERGE, so it lives here as one function over a
+ * list-of-ranked-lists rather than inline in the query layer.
  *
- * What M4 changes: the number and provenance of the input lists (a dense list
- * per store joins the lexical one), and an optional rerank pass AFTER this
+ * ⚠️ **That deepening is DESCHEDULED as of 2026-08-13** and is not "the next
+ * milestone" — see ADR-0036 §The milestone cut's 2026-08-13 amendment. It
+ * advances none of the PRD's eight finish conditions, so it returns to the cut
+ * only when a real customer's retrieval demonstrably fails. This seam stays
+ * because the argument for it (the merge must be additive) is independent of
+ * when the deepening lands — not because the deepening is imminent.
+ *
+ * What that deepening would change: the number and provenance of the input
+ * lists (a dense list per store joins the lexical one), and an optional rerank
+ * pass AFTER this
  * function. What M4 does NOT change: this signature, or the formula. That is
  * the whole point of the shape.
  *

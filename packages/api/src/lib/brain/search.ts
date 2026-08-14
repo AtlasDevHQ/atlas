@@ -92,9 +92,12 @@
  *
  * ## Scope
  *
- * FTS-first, per the M1 cut. Embeddings, RRF over dense lists, and rerank are
- * M4 — `fusion.ts` is the seam they extend, and there is no disabled embedding
- * path here to switch on. `in-tension-with` is surfaced as a conflict CLUSTER
+ * FTS-first, per the M1 cut — and FTS-first is the shipped answer, not an
+ * interim one. Embeddings, RRF over dense lists, and rerank were scoped as a
+ * later milestone and are **descheduled as of 2026-08-13** (ADR-0036 §The
+ * milestone cut, 2026-08-13 amendment): they advance none of the PRD's eight
+ * finish conditions. `fusion.ts` is the seam they would extend, and there is
+ * no disabled embedding path here to switch on. `in-tension-with` is surfaced as a conflict CLUSTER
  * (#4913): both directions, each visible counterpart with its own provenance,
  * invisible ones as a withheld count — and never ranked; arbitration belongs
  * to the human gate.

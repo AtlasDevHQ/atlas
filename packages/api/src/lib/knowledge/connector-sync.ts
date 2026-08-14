@@ -674,15 +674,18 @@ export interface ConnectorSyncStateWrite {
  * failure must not fail a sync that already committed (logged at error so a
  * persistently broken state table is visible).
  *
- * `anchor` picks the existence guard: `"install"` (the default) skips the
- * write when the `workspace_plugins` row is gone, `"workspace"` writes
- * unguarded for `per-workspace` brain sources that never had one (#5203). A
- * write that lands ZERO rows is logged at error either way: for the install
- * anchor it is expected only in the narrow uninstall race, and a caller
- * hitting it EVERY cycle is the #5203 defect — bookkeeping keyed to an
- * install that does not exist, every outcome (revoked token included)
- * silently discarded while the admin surface shows the last row that ever
- * landed.
+ * `anchor` picks the existence guard: `"install"` skips the write when the
+ * `workspace_plugins` row is gone, `"workspace"` writes unguarded for
+ * `per-workspace` brain sources that never had one (#5203). REQUIRED, with no
+ * default — a default of `"install"` would let the next per-workspace caller
+ * say nothing and reproduce round-1 C1 (every write dropped), downgraded from
+ * silent-forever to an error log nobody may be watching; the compiler forcing
+ * the decision is the cheaper guard. A write that lands ZERO rows is logged
+ * at error either way: for the install anchor it is expected only in the
+ * narrow uninstall race, and a caller hitting it EVERY cycle is the #5203
+ * defect — bookkeeping keyed to an install that does not exist, every outcome
+ * (revoked token included) silently discarded while the admin surface shows
+ * the last row that ever landed.
  *
  * Exported alongside {@link readConnectorSyncState} for the brain episode
  * engine (#4770); see that function's comment for why the bookkeeping is
@@ -692,7 +695,7 @@ export async function upsertConnectorSyncState(
   workspaceId: string,
   collectionSlug: string,
   write: ConnectorSyncStateWrite,
-  anchor: ConnectorSyncStateAnchor = "install",
+  anchor: ConnectorSyncStateAnchor,
 ): Promise<void> {
   try {
     const rows = await internalQuery(
@@ -745,12 +748,19 @@ async function recordConnectorSyncState(
       : outcome.rejected.length > 0
         ? { mode: outcome.mode, rejected: outcome.rejected.slice(0, REPORT_REJECTED_CAP) }
         : { mode: outcome.mode };
-  await upsertConnectorSyncState(workspaceId, collectionSlug, {
-    status: outcome.status,
-    error: outcome.error,
-    report,
-    highWaterMark: outcome.highWaterMark,
-    cursor: bookkeeping.cursor,
-    reconciledAt: bookkeeping.reconciledAt,
-  });
+  await upsertConnectorSyncState(
+    workspaceId,
+    collectionSlug,
+    {
+      status: outcome.status,
+      error: outcome.error,
+      report,
+      highWaterMark: outcome.highWaterMark,
+      cursor: bookkeeping.cursor,
+      reconciledAt: bookkeeping.reconciledAt,
+    },
+    // This engine syncs INSTALLS of registered connector catalog rows — the
+    // install-anchored arm is definitionally correct here.
+    "install",
+  );
 }

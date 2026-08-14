@@ -63,6 +63,8 @@ import {
   excludeSlackChannel,
   includeSlackChannel,
   listSlackChannels,
+  normalizeSlackChannelId,
+  readSlackEpisodeSyncStatus,
   resolveSlackPollScope,
 } from "@atlas/api/lib/brain/ingest/slack/scope";
 import { createAdminRouter, noActiveOrgBody, requireOrgContext } from "./admin-router";
@@ -91,6 +93,20 @@ const ChannelSchema = z.object({
   lastSeenAt: z.string().nullable(),
 });
 
+/**
+ * The per-workspace sync's last recorded attempt. This block is what makes a
+ * revoked Slack token VISIBLE: the retired install's collection card used to
+ * render this row through the admin-knowledge list, and the retirement removed
+ * that surface — without it, the sync's actionable error message would be
+ * recorded every cycle and read by nobody.
+ */
+const SyncStatusSchema = z.object({
+  lastSyncAt: z.string().nullable(),
+  status: z.enum(["success", "error"]),
+  error: z.string().nullable(),
+  coverageIncomplete: z.boolean(),
+});
+
 const ChannelListSchema = z.object({
   /**
    * `legacy-pending` means this workspace had a `slack-history` install and the
@@ -102,6 +118,8 @@ const ChannelListSchema = z.object({
   scopeMode: z.enum(["membership", "legacy-pending"]),
   /** In-scope channel count — what the next scheduled pass will read. */
   inScopeCount: z.number().int().nonnegative(),
+  /** Null until the first sync attempt has been recorded for this workspace. */
+  sync: SyncStatusSchema.nullable(),
   channels: z.array(ChannelSchema),
 });
 
@@ -128,7 +146,8 @@ const channelsRoute = createRoute({
   description:
     "Every Slack channel Atlas has observed the bot in, plus any an admin excluded. `health` carries " +
     "the per-channel two-probe verification (conversations.info + a one-message conversations.history " +
-    "read); it is null until the rotation reaches that channel.",
+    "read); it is null until the rotation reaches that channel. `sync` carries the last recorded " +
+    "history-sync attempt — its `error` is where a revoked or under-scoped Slack credential surfaces.",
   responses: {
     200: { description: "Channel list", content: { "application/json": { schema: ChannelListSchema } } },
     400: { description: "No active organization", content: { "application/json": { schema: ErrorSchema } } },
@@ -209,14 +228,16 @@ adminBrainSlack.openapi(channelsRoute, async (c) => {
           // nothing to do with `is_member`/`excluded_at`, so a client-side
           // `isMember && !excludedAt` would show a reconciling workspace a scope
           // it does not have.
-          const [rows, scope] = await Promise.all([
+          const [rows, scope, sync] = await Promise.all([
             listSlackChannels(orgId),
             resolveSlackPollScope(orgId),
+            readSlackEpisodeSyncStatus(orgId),
           ]);
           const inScope = new Set(scope.channels);
           return {
             scopeMode: scope.mode,
             inScopeCount: scope.channels.length,
+            sync,
             channels: rows.map((r) => ({
               channelId: r.channelId,
               name: r.name,
@@ -279,13 +300,14 @@ adminBrainSlack.openapi(excludeRoute, async (c) => {
 
       const result = yield* Effect.tryPromise({
         try: async () => {
-          await excludeSlackChannel({
+          const channelId = normalizeSlackChannelId(body.channelId);
+          const changed = await excludeSlackChannel({
             workspaceId: orgId,
-            channelId: body.channelId,
+            channelId,
             reason: body.reason ?? null,
             actor: author,
           });
-          return { channelId: body.channelId.trim().toUpperCase(), changed: true };
+          return { channelId, changed };
         },
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       }).pipe(
@@ -293,24 +315,20 @@ adminBrainSlack.openapi(excludeRoute, async (c) => {
         // so it is a 400 carrying the seam's own sentence rather than a 500 with
         // a request id and nothing to act on. Matched by TYPE, not message
         // substring — a reworded message must not silently turn the 400 into a
-        // 500.
+        // 500 — and the message travels FROM the error, so the route cannot
+        // drift from the validator's wording.
         Effect.catchAll((err) =>
-          err instanceof InvalidSlackChannelIdError ? Effect.succeed(null) : Effect.fail(err),
+          err instanceof InvalidSlackChannelIdError
+            ? Effect.succeed({ invalid: err.message })
+            : Effect.fail(err),
         ),
       );
-      if (result === null) {
-        return c.json(
-          errorBody(
-            "invalid-channel-id",
-            `"${body.channelId.slice(0, 40)}" is not a Slack channel ID — IDs start with C or G (e.g. C01ABCDEF).`,
-            requestId,
-          ),
-          400,
-        );
+      if ("invalid" in result) {
+        return c.json(errorBody("invalid-channel-id", result.invalid, requestId), 400);
       }
 
       log.info(
-        { workspaceId: orgId, channelId: result.channelId, requestId },
+        { workspaceId: orgId, channelId: result.channelId, changed: result.changed, requestId },
         "Slack channel excluded from brain ingest",
       );
       return c.json(MutationResultSchema.parse(result), 200);
@@ -352,22 +370,32 @@ adminBrainSlack.openapi(includeRoute, async (c) => {
         );
       }
 
-      const changed = yield* Effect.tryPromise({
-        try: () => includeSlackChannel({ workspaceId: orgId, channelId: body.channelId }),
+      // The include verb WIDENS retention scope, so it gets the same typed 400
+      // as exclude — the route's contract already documented an invalid-id 400
+      // it previously could never produce.
+      const result = yield* Effect.tryPromise({
+        try: async () => {
+          const channelId = normalizeSlackChannelId(body.channelId);
+          const changed = await includeSlackChannel({ workspaceId: orgId, channelId });
+          return { channelId, changed };
+        },
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      });
+      }).pipe(
+        Effect.catchAll((err) =>
+          err instanceof InvalidSlackChannelIdError
+            ? Effect.succeed({ invalid: err.message })
+            : Effect.fail(err),
+        ),
+      );
+      if ("invalid" in result) {
+        return c.json(errorBody("invalid-channel-id", result.invalid, requestId), 400);
+      }
 
       log.info(
-        { workspaceId: orgId, channelId: body.channelId, changed, requestId },
+        { workspaceId: orgId, channelId: result.channelId, changed: result.changed, requestId },
         "Slack channel returned to brain ingest scope",
       );
-      return c.json(
-        MutationResultSchema.parse({
-          channelId: body.channelId.trim().toUpperCase(),
-          changed,
-        }),
-        200,
-      );
+      return c.json(MutationResultSchema.parse(result), 200);
     }),
     { label: "include brain slack channel" },
   );

@@ -1989,23 +1989,45 @@ export async function importBundle(
   // the row in the destination's poll scope the moment someone un-excluded it.
   // The first sync sets it from `users.conversations`.
   for (const exclusion of bundle.brainSlackChannelExclusions ?? []) {
+    // ⚠️ NOT `DO NOTHING`. A `brain_slack_channel` row is ALSO created by the
+    // membership walk with `excluded_at IS NULL` — and if the destination's
+    // Slack sync ran before this import (chat installs travel independently of
+    // the bundle), every exclusion for a channel the bot is a member of — i.e.
+    // exactly the ones that matter — would hit the conflict and be DROPPED
+    // while being counted `skipped`. A lost exclusion is over-disclosure, the
+    // direction the export type's own docstring calls unrecoverable. So the
+    // conflict arm mirrors `excludeSlackChannel`'s upsert: the exclusion lands
+    // on an unexcluded row, and a row a destination admin ALREADY excluded
+    // keeps its own author and reason (first attribution wins). `prior` reads
+    // the pre-statement snapshot so the imported/skipped split reports what
+    // actually happened: `imported` = the exclusion took effect here,
+    // `skipped` = the channel was already excluded. There is no `refused` arm
+    // today; the counter exists so a future conflict rule has somewhere to
+    // report that is not `skipped`.
     const { rows } = await client.query(
-      `INSERT INTO brain_slack_channel
+      `WITH prior AS (
+         SELECT excluded_at FROM brain_slack_channel
+          WHERE workspace_id = $1 AND channel_id = $2
+       )
+       INSERT INTO brain_slack_channel
          (workspace_id, channel_id, is_member, excluded_at, exclusion_reason, excluded_by,
           created_at, updated_at)
        VALUES ($1, $2, false, $3, $4, $5, now(), now())
-       ON CONFLICT (workspace_id, channel_id) DO NOTHING
-       RETURNING channel_id`,
+       ON CONFLICT (workspace_id, channel_id) DO UPDATE
+         SET excluded_at = COALESCE(brain_slack_channel.excluded_at, EXCLUDED.excluded_at),
+             exclusion_reason = CASE WHEN brain_slack_channel.excluded_at IS NULL
+                                     THEN EXCLUDED.exclusion_reason
+                                     ELSE brain_slack_channel.exclusion_reason END,
+             excluded_by = CASE WHEN brain_slack_channel.excluded_at IS NULL
+                                THEN EXCLUDED.excluded_by
+                                ELSE brain_slack_channel.excluded_by END,
+             updated_at = now()
+       RETURNING (SELECT excluded_at IS NOT NULL FROM prior) AS was_excluded`,
       [orgId, exclusion.channelId, exclusion.excludedAt, exclusion.exclusionReason, exclusion.excludedBy],
     );
-    // `DO NOTHING` + RETURNING gives the split for free: a row already here is
-    // `skipped` (an idempotent re-import, or a destination admin who excluded
-    // the same channel first — either way the channel IS excluded, which is the
-    // outcome that matters). There is no `refused` arm today; the counter exists
-    // so a future conflict rule has somewhere to report that is not `skipped`,
-    // which would conflate "already correct" with "we dropped a human decision".
-    if (rows.length > 0) result.brainSlackChannelExclusions.imported++;
-    else result.brainSlackChannelExclusions.skipped++;
+    const wasExcluded = (rows[0] as { was_excluded: boolean | null } | undefined)?.was_excluded;
+    if (wasExcluded === true) result.brainSlackChannelExclusions.skipped++;
+    else result.brainSlackChannelExclusions.imported++;
   }
 
   if (bundle.brainSlackIngestScope !== undefined) {
@@ -2017,7 +2039,11 @@ export async function importBundle(
       `INSERT INTO brain_slack_ingest_scope (workspace_id, legacy_channels, created_at, updated_at)
        VALUES ($1, $2::text[], now(), now())
        ON CONFLICT (workspace_id) DO NOTHING`,
-      [orgId, bundle.brainSlackIngestScope.legacyChannels],
+      // Deduped: a bundle with a repeated id would otherwise have the
+      // legacy-pending poll walk the channel twice per pass (deduped
+      // downstream, so waste and skewed exclusion arithmetic, not
+      // corruption).
+      [orgId, [...new Set(bundle.brainSlackIngestScope.legacyChannels)]],
     );
   }
 

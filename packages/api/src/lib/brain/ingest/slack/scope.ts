@@ -641,8 +641,56 @@ function historyProbeMessage(channelId: string, error: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Admin surface: the exclusion list
+// Admin surface: the exclusion list + the sync verdict
 // ---------------------------------------------------------------------------
+
+/** The per-workspace Slack sync's last recorded attempt, for the admin surface. */
+export interface SlackEpisodeSyncStatus {
+  readonly lastSyncAt: string | null;
+  readonly status: "success" | "error";
+  readonly error: string | null;
+  readonly coverageIncomplete: boolean;
+}
+
+/**
+ * Read the brain's Slack sync bookkeeping for one workspace — the row the
+ * per-workspace dispatch books under {@link SLACK_EPISODE_SYNC_ID}.
+ *
+ * This reader exists because the retirement removed the surface that used to
+ * show it: the `slack-history` install's collection card rendered
+ * `knowledge_sync_state` through the admin-knowledge list, and that list
+ * enumerates installs, which this source no longer has. Without a reader, a
+ * revoked token's carefully-worded "reconnect Slack under Admin →
+ * Integrations" error would be RECORDED every cycle and READ by nobody — the
+ * green-but-frozen surface this whole ticket exists to end, one layer up.
+ *
+ * `null` means no attempt has been recorded yet (a fresh workspace before its
+ * first cycle) — distinct from an error, and the surface says so.
+ */
+export async function readSlackEpisodeSyncStatus(
+  workspaceId: string,
+): Promise<SlackEpisodeSyncStatus | null> {
+  const rows = await internalQuery<Record<string, unknown>>(
+    `SELECT last_sync_at, status, error, report
+       FROM knowledge_sync_state
+      WHERE workspace_id = $1 AND collection_id = $2`,
+    [workspaceId, SLACK_EPISODE_SYNC_ID],
+  );
+  const row = rows[0];
+  if (row === undefined) return null;
+  const report =
+    typeof row.report === "object" && row.report !== null
+      ? (row.report as Record<string, unknown>)
+      : {};
+  return {
+    lastSyncAt: isoOrNull(row.last_sync_at),
+    // Narrowed fail-closed: an unrecognized status renders as an error, never
+    // as a green the writer did not record.
+    status: row.status === "success" ? "success" : "error",
+    error: typeof row.error === "string" && row.error !== "" ? row.error : null,
+    coverageIncomplete: report.coverageIncomplete === true,
+  };
+}
 
 export interface SlackChannelRow {
   readonly channelId: string;
@@ -697,7 +745,26 @@ function isoOrNull(value: unknown): string | null {
  * Its own class so the admin route can map it to a 400 by TYPE — matching the
  * message text would silently become a 500 the day the wording changes.
  */
-export class InvalidSlackChannelIdError extends Error {}
+export class InvalidSlackChannelIdError extends Error {
+  override readonly name = "InvalidSlackChannelIdError";
+}
+
+/**
+ * Normalize a caller-supplied channel id, or throw
+ * {@link InvalidSlackChannelIdError}. ONE normalizer for both scope verbs and
+ * the route, so "exclude validates but include doesn't" cannot recur — the
+ * include verb WIDENS retention scope, which makes it the more consequential
+ * of the pair to hand a garbage id to.
+ */
+export function normalizeSlackChannelId(raw: string): string {
+  const channelId = raw.trim().toUpperCase();
+  if (!SLACK_CHANNEL_ID_PATTERN.test(channelId)) {
+    throw new InvalidSlackChannelIdError(
+      `"${raw.slice(0, 40)}" is not a Slack channel ID — IDs start with C or G (e.g. C01ABCDEF).`,
+    );
+  }
+  return channelId;
+}
 
 /**
  * Exclude a channel from ingest. Idempotent, and it does NOT overwrite an
@@ -707,27 +774,36 @@ export class InvalidSlackChannelIdError extends Error {}
  * A channel the bot has never been seen in may be excluded: the row is created
  * with `is_member = false`, which is out of scope for the poll anyway and
  * becomes the thing that keeps it out when the bot IS eventually invited.
+ *
+ * Returns whether a NEW exclusion was written — `false` means the channel was
+ * already excluded and nothing (author and reason included) changed. The route
+ * schema promises exactly that split, and hardcoding `true` there told an
+ * admin their re-exclusion took effect while the recorded author stayed
+ * someone else's.
  */
 export async function excludeSlackChannel(params: {
   readonly workspaceId: string;
   readonly channelId: string;
   readonly reason: string | null;
   readonly actor: string;
-}): Promise<void> {
-  const channelId = params.channelId.trim().toUpperCase();
-  if (!SLACK_CHANNEL_ID_PATTERN.test(channelId)) {
-    throw new InvalidSlackChannelIdError(
-      `"${params.channelId.slice(0, 40)}" is not a Slack channel ID — IDs start with C or G (e.g. C01ABCDEF).`,
-    );
-  }
+}): Promise<boolean> {
+  const channelId = normalizeSlackChannelId(params.channelId);
   if (params.actor.trim() === "") {
     // The CHECK would reject it, but a constraint violation surfaces as a 500
     // with a Postgres message. An exclusion is a confidentiality decision and
     // its author is not optional; say so where the caller can act on it.
     throw new Error("An exclusion must record who made it.");
   }
-  await internalQuery(
-    `INSERT INTO brain_slack_channel
+  // The pre-statement state is read through a CTE (a CTE sees the snapshot
+  // BEFORE the INSERT runs), because RETURNING alone only shows the post-write
+  // row and this verb's no-op case — "already excluded" — is defined by what
+  // was there before.
+  const rows = await internalQuery<{ was_excluded: boolean | null }>(
+    `WITH prior AS (
+       SELECT excluded_at FROM brain_slack_channel
+        WHERE workspace_id = $1 AND channel_id = $2
+     )
+     INSERT INTO brain_slack_channel
        (workspace_id, channel_id, is_member, excluded_at, exclusion_reason, excluded_by,
         created_at, updated_at)
      VALUES ($1, $2, false, now(), $3, $4, now(), now())
@@ -743,17 +819,26 @@ export async function excludeSlackChannel(params: {
            excluded_by = CASE WHEN brain_slack_channel.excluded_at IS NULL
                               THEN EXCLUDED.excluded_by
                               ELSE brain_slack_channel.excluded_by END,
-           updated_at = now()`,
+           updated_at = now()
+     RETURNING (SELECT excluded_at IS NOT NULL FROM prior) AS was_excluded`,
     [params.workspaceId, channelId, params.reason, params.actor.trim()],
   );
+  // NULL = no prior row at all (fresh insert) — a change, like a prior
+  // unexcluded row. Only a prior row that was ALREADY excluded is the no-op.
+  return rows[0]?.was_excluded !== true;
 }
 
-/** Return a channel to ingest scope. Clears the whole exclusion, attribution included. */
+/**
+ * Return a channel to ingest scope. Clears the whole exclusion, attribution
+ * included. Validates through the same normalizer as the exclude verb — this
+ * one WIDENS what Atlas retains, so a garbage id answering `changed: false`
+ * instead of a 400 would be the laxer half of the pair.
+ */
 export async function includeSlackChannel(params: {
   readonly workspaceId: string;
   readonly channelId: string;
 }): Promise<boolean> {
-  const channelId = params.channelId.trim().toUpperCase();
+  const channelId = normalizeSlackChannelId(params.channelId);
   const rows = await internalQuery<{ channel_id: string }>(
     `UPDATE brain_slack_channel
         SET excluded_at = NULL, exclusion_reason = NULL, excluded_by = NULL, updated_at = now()

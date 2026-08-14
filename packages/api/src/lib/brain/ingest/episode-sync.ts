@@ -71,6 +71,7 @@ import {
   readConnectorSyncState,
   upsertConnectorSyncState,
   withRateLimitBackoff,
+  type ConnectorSyncStateAnchor,
 } from "@atlas/api/lib/knowledge/connector-sync";
 import { ingestEpisodes, type EpisodeIngestReport } from "./episodes";
 import type {
@@ -81,6 +82,24 @@ import type {
 } from "./types";
 
 const log = createLogger("brain.ingest.episode-sync");
+
+/**
+ * Map a dispatch scope to its sync-state anchor, exhaustively. The `never`
+ * default is the point: a third `BrainSourceScope` kind added later must be a
+ * compile error at this seam, not a silent fall-through into the
+ * install-anchored arm — the arm whose `WHERE EXISTS` guard drops every write
+ * for a source with no install row (#5203 round-1 C1).
+ */
+function anchorForScope(kind: BrainSourceConnector["scope"]["kind"]): ConnectorSyncStateAnchor {
+  switch (kind) {
+    case "per-workspace":
+      return "workspace";
+    case "per-install":
+      return "install";
+    default:
+      return kind satisfies never;
+  }
+}
 
 /** Bound the warning list persisted in the state report. */
 const REPORT_WARNINGS_CAP = 20;
@@ -214,7 +233,9 @@ export async function syncBrainEpisodeSource(
   // upsert's WHERE EXISTS guard would drop every write — success and error
   // alike — and a revoked token would present as a green-but-frozen source.
   // That is the four-day M1 outage rebuilt one layer down, which is why this
-  // is derived from the scope discriminator rather than left to the caller.
+  // is derived from the scope discriminator rather than left to the caller —
+  // and derived EXHAUSTIVELY: a third scope kind must fail to compile here
+  // rather than fall silently into the arm that drops writes.
   await upsertConnectorSyncState(workspaceId, installId, {
     status: outcome.status,
     error: outcome.error,
@@ -239,7 +260,7 @@ export async function syncBrainEpisodeSource(
       attempt.kind === "ok" && attempt.mode === "reconciliation" && !attempt.coverageIncomplete
         ? syncedAt
         : null,
-  }, connector.scope.kind === "per-workspace" ? "workspace" : "install");
+  }, anchorForScope(connector.scope.kind));
 
   if (outcome.status === "success") {
     log.info(

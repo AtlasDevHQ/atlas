@@ -127,7 +127,8 @@ export const SYNC_STATE_UPSERT_SQL = `INSERT INTO knowledge_sync_state
              status = EXCLUDED.status,
              error = EXCLUDED.error,
              report = EXCLUDED.report,
-             updated_at = NOW()`;
+             updated_at = NOW()
+       RETURNING collection_id`;
 
 /** Per-sync fetch time budget (ms), settings-registry driven. */
 export function getKnowledgeSyncFetchTimeoutMs(): number {
@@ -522,13 +523,23 @@ async function recordSyncState(
         ? { rejected: outcome.rejected.slice(0, REPORT_REJECTED_CAP) }
         : null;
   try {
-    await internalQuery(SYNC_STATE_UPSERT_SQL, [
+    const rows = await internalQuery(SYNC_STATE_UPSERT_SQL, [
       workspaceId,
       collectionSlug,
       outcome.status,
       outcome.error,
       report === null ? null : JSON.stringify(report),
     ]);
+    if (rows.length === 0) {
+      // The connector engine's rule (#5203), mirrored: a zero-row write is
+      // DETECTED, never inferred from an admin surface that stopped moving.
+      // Expected only in the uninstall race this guard exists for; recurring,
+      // it means bookkeeping keyed to an install that does not exist.
+      log.error(
+        { workspaceId, collectionSlug, status: outcome.status },
+        "Knowledge sync state write landed no row — the attempt's outcome was NOT recorded. Expected only when an uninstall raced this sync",
+      );
+    }
   } catch (err) {
     log.error(
       { workspaceId, collectionSlug, err: err instanceof Error ? err.message : String(err) },

@@ -27,13 +27,14 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import type {
-  KnowledgeCollectionListResponse,
-  KnowledgeCollectionSource,
-  KnowledgeDocumentListResponse,
-  KnowledgeIngestSummary,
-  KnowledgeSyncRunResponse,
-  KnowledgeUninstallResponse,
+import {
+  KNOWLEDGE_COLLECTION_SOURCES,
+  type KnowledgeCollectionListResponse,
+  type KnowledgeCollectionSource,
+  type KnowledgeDocumentListResponse,
+  type KnowledgeIngestSummary,
+  type KnowledgeSyncRunResponse,
+  type KnowledgeUninstallResponse,
 } from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, logAdminActionAwait, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
@@ -212,7 +213,9 @@ const CollectionListResponseSchema = z.object({
   collections: z.array(
     z.object({
       slug: z.string(),
-      source: z.enum(["upload", "bundle-sync", "notion", "confluence", "confluence-datacenter", "gitbook", "zendesk", "salesforce-knowledge", "intercom", "front", "helpscout", "freshdesk", "zoom-transcripts", "outlook-mail"]),
+      // Fed from the wire type's own values array — #5203 had to remove a
+      // member from three hand-synchronized spellings of this set.
+      source: z.enum(KNOWLEDGE_COLLECTION_SOURCES),
       description: z.string().nullable(),
       installedAt: z.string().nullable(),
       endpointUrl: z.string().nullable(),

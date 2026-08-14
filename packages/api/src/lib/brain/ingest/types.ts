@@ -491,6 +491,12 @@ function isBrainSourceScope(value: unknown): value is BrainSourceScope {
   const kind = (value as { kind?: unknown }).kind;
   if (kind === "per-install") return true;
   if (kind !== "per-workspace") return false;
+  // syncId is part of the claim this predicate makes: `BrainSourceScope`'s
+  // per-workspace arm carries a non-empty string, and a predicate that
+  // returned true without checking would be lying as a standalone artifact
+  // even while registration re-checks it for a better message.
+  const syncId = (value as { syncId?: unknown }).syncId;
+  if (typeof syncId !== "string" || syncId === "") return false;
   return typeof (value as { listWorkspaces?: unknown }).listWorkspaces === "function";
 }
 
@@ -673,6 +679,25 @@ export function registerBrainSourceConnector<const S extends EpisodeSource>(
   // the lane where the type is not enforcing — a plain-object connector from a
   // test, a cast, a plugin. A ternary on `connector.scope` would be inert.
   const scope: unknown = connector.scope;
+  // The empty-syncId case gets its own message BEFORE the generic predicate,
+  // because the predicate (honestly) refuses it too and a generic "no usable
+  // dispatch scope" would bury the one field the author actually got wrong.
+  // `knowledge_sync_state` is keyed `(workspace_id, collection_id)`: an empty
+  // syncId would file every per-workspace source's bookkeeping under one row,
+  // so two of them would overwrite each other's high-water mark and cursor —
+  // each reporting green while skipping what the other had already advanced
+  // past.
+  if (
+    typeof scope === "object" &&
+    scope !== null &&
+    (scope as { kind?: unknown }).kind === "per-workspace" &&
+    (typeof (scope as { syncId?: unknown }).syncId !== "string" ||
+      (scope as { syncId?: unknown }).syncId === "")
+  ) {
+    throw new Error(
+      `Per-workspace brain source "${connector.source}" declared no syncId — it is the collection_id its knowledge_sync_state is booked under and cannot be empty`,
+    );
+  }
   if (!isBrainSourceScope(scope)) {
     throw new Error(
       `Brain source connector for catalog id "${connector.catalogId}" declared no usable dispatch scope — it must be { kind: "per-install" } or { kind: "per-workspace", syncId, listWorkspaces } (see BrainSourceScope in lib/brain/ingest/types.ts)`,
@@ -683,15 +708,21 @@ export function registerBrainSourceConnector<const S extends EpisodeSource>(
       `Brain source "${connector.source}" is chat-class, so the vendor already has a Chat Platform pillar install — it MUST declare scope: { kind: "per-workspace" }. A per-install chat source is a SECOND install of an already-connected vendor: it carries no credential, nobody knows to make it, and the sync cycle reports a clean pass while ingesting nothing (#5203, #5200)`,
     );
   }
-  if (scope.kind === "per-workspace" && (typeof scope.syncId !== "string" || scope.syncId === "")) {
-    // `knowledge_sync_state` is keyed `(workspace_id, collection_id)`. An empty
-    // syncId would file every per-workspace source's bookkeeping under one row,
-    // so two of them would overwrite each other's high-water mark and cursor —
-    // each reporting green while skipping what the other had already advanced
-    // past.
-    throw new Error(
-      `Per-workspace brain source "${connector.source}" declared no syncId — it is the collection_id its knowledge_sync_state is booked under and cannot be empty`,
+  if (scope.kind === "per-workspace") {
+    // A DUPLICATE syncId is the same collision as the empty one, arriving
+    // sideways: two per-workspace sources booking under one collection_id
+    // overwrite each other's high-water mark and cursor, each reporting green
+    // while skipping what the other advanced past. The collection-slug guard
+    // (`knowledge-collection-slug.ts`) closes the collection↔brain arm of this
+    // class; this is the brain↔brain arm.
+    const holder = [...registry.values()].find(
+      (c) => c.scope.kind === "per-workspace" && c.scope.syncId === scope.syncId,
     );
+    if (holder !== undefined) {
+      throw new Error(
+        `Per-workspace brain source "${connector.source}" declared syncId "${scope.syncId}", already claimed by "${holder.source}" (${holder.catalogId}) — two sources booking knowledge_sync_state under one collection_id would clobber each other's cursor and high-water mark`,
+      );
+    }
   }
 
   // The re-verifier's duplicate check, fused to the only thing that installs it.

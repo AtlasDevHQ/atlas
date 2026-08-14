@@ -204,9 +204,11 @@ export const SAAS_ENV_KEYS = [
 // SaasEnv but not appended to SAAS_ENV_KEYS.
 type _ExhaustiveCheck = Exclude<keyof SaasEnv, (typeof SAAS_ENV_KEYS)[number]>;
 const _exhaustive: _ExhaustiveCheck extends never ? true : false = true;
-// `void` is load-bearing — silences `noUnusedLocals` without disabling
-// the compile-time check. Do not delete `_exhaustive` even though it
-// looks dead; the assignment is the gate.
+// `void` marks the binding as deliberately consumed, for readers. Do not
+// delete `_exhaustive` even though it looks dead; the ASSIGNMENT is the
+// gate. (No tsconfig in this repo sets `noUnusedLocals`, and oxlint's
+// no-unused-vars already exempts `^_` names, so nothing would flag its
+// removal — which is exactly why the comment has to.)
 void _exhaustive;
 
 /** Read `process.env` (or an injected env object) into a typed `SaasEnv`. */

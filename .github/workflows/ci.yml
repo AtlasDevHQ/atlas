@@ -233,6 +233,15 @@ jobs:
       - name: Adversarial fixtures for the web vacuous-type-program guard (#4447/#4450)
         run: bash scripts/__tests__/check-type-program-not-vacuous.test.sh
 
+      # The scripts/ gate has no script of its own — it is `type:scripts` inside
+      # `bun run type` plus `scripts/` in the two lint path lists, all of which
+      # the `type`, `lint` and `lint-type-aware` jobs already run. This suite is
+      # what makes that arrangement non-silent: it reintroduces #5169's defect
+      # into a real scripts/ file and requires the gate to go red, and it fails
+      # if the include glob narrows or a path list drops scripts/.
+      - name: Adversarial fixtures for the scripts/ type + lint gate (#5173)
+        run: bash scripts/__tests__/check-scripts-typecheck.test.sh
+
       - name: Check streaming agent responses attach CORS headers (#2037)
         run: bash scripts/check-streaming-cors.sh
 
@@ -369,9 +378,11 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
 
       # `bun run type` builds the SDK packages it needs internally
-      # (@useatlas/types, plugin-sdk, sdk, react), runs tsgo --noEmit, and
-      # finishes with `@atlas/web type` + `@atlas/www type` — self-contained,
-      # no pre-build.
+      # (@useatlas/types, plugin-sdk, sdk, react), runs tsgo --noEmit, then
+      # `type:scripts` (tsconfig.scripts.json — the repo-root scripts/ dir,
+      # excluded from the root program and unchecked by anything until #5173),
+      # and finishes with `@atlas/web type` + `@atlas/www type` —
+      # self-contained, no pre-build.
       #
       # tsgo parallelism (--checkers/--builders) was benchmarked and declined
       # (#4446): on this 4-vCPU runner class the tsgo default (4 checkers, as

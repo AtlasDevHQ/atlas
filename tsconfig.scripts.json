@@ -1,0 +1,95 @@
+// Type-check program for the repo-root `scripts/` directory (#5173).
+//
+// WHY A SEPARATE PROGRAM. The root `tsconfig.json` lists "scripts" in its
+// `exclude`, so until this file existed `bun run type` never saw a single
+// line of it — and `scripts/` is where every TypeScript CI guard lives. The
+// cost was measured, not theoretical: `scripts/check-docs-brain-snippets.ts`
+// (#5169) landed with 9 `TS18048` errors because `Map.has()` does not narrow
+// `Map.get()`, and nothing noticed. `scripts/twenty-mcp.ts` carried a
+// compile-time drift check that had never once compiled, and was asserting
+// the wrong invariant.
+//
+// The directory stays out of the root program rather than being un-excluded,
+// because these two programs want different settings. Root scripts reach
+// ACROSS workspace boundaries by relative path (`../packages/api/src/...`,
+// `../apps/docs/src/...`) — including into `apps/docs`, which the root
+// program also excludes and which needs the `@/*` alias below. Folding
+// `scripts/` back into the root program would drag those trees in with it.
+//
+// SCOPE: every top-level script, `.ts` and `.tsx` alike, not just the
+// `check-*` guards. The issue priced the narrow `check-*.ts` scope at 1 error
+// and the full top-level scope at 26; the 26 turned out to be two files (25 of
+// them a single `readonly`-assignment line in `saas-env-fixture.ts`), so the
+// wider scope was affordable and is what ships.
+//
+// `.tsx` is in scope: adding it to the glob compiles with zero errors, because
+// `@vercel/og`'s `ImageResponse` takes a `React.ReactElement` and `jsx:
+// react-jsx` below is the right setting for it. An earlier draft excluded
+// `scripts/generate-brand-assets.tsx` on the theory that Satori's JSX types are
+// not React's; that exclusion bought nothing and cost the file the only
+// type-checking it will ever get, since the root program excludes `scripts` too.
+//
+// `scripts/ee-stub/**` is deliberately NOT here, and is not an exemption: the
+// `Symlink Stub Build` job in ci.yml copies that tree over `ee/` and runs the
+// full `bun run type` against it, so it is already type-checked — as the ee
+// package it stands in for, which is the only configuration in which its
+// `@atlas/*` imports resolve.
+//
+// SUBDIRECTORIES are out of scope by design (the glob is one level deep), and
+// `check-scripts-typecheck.test.sh` fails if a `.ts` OR `.tsx` file appears in
+// one, so the omission cannot go silent.
+//
+// Including `.tsx` pulls `@vercel/og`'s `declare module 'react'` augmentation
+// into the program, which widens `React.HTMLAttributes` with an optional `tw`
+// for every file here. Module augmentations are program-global; this one only
+// ever ADDS an optional property, so it can make code compile that otherwise
+// would not, never the reverse, and no `.ts` script references that type.
+//
+// This program resolves `@useatlas/*` through each package's BUILT `dist/`.
+// `bun install` produces them via `prepare` — but only `@useatlas/types` and
+// `@useatlas/plugin-sdk` HAVE a `prepare` script; `sdk` and `react` do not, and
+// would need an explicit `bun run --filter '<pkg>' build` if a script ever
+// imports one. Today the program reaches only the first two. A tree without
+// those dists yields hundreds of unrelated `TS2307`s; the fixture suite
+// recognises that case and says which command fixes it, rather than reporting
+// it as a failure of the tree.
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["esnext"],
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    // `check-docs-links.ts` imports `apps/docs/src/lib/audience-markdown.ts`,
+    // which imports `@/lib/audience` — a `.tsx` module. Both entries below
+    // exist to let that one import resolve; `paths` is relative to THIS file,
+    // so it names the same directory `apps/docs/tsconfig.json` does.
+    //
+    // Only `paths` matches that config, though. This program has no `dom` in
+    // `lib`, no `next` plugin and no `.source/**` types, and it is now the only
+    // type-check that docs subgraph gets IN CI — `apps/docs` has no `type`
+    // script, the root program excludes it, and `next build` only type-checks it
+    // at deploy time. Being stricter than the docs app cannot
+    // hide a bug, but it does impose a real constraint: any `apps/docs` helper
+    // a scripts/ guard imports must be DOM-free, or `bun run type:scripts` goes
+    // red with no scripts/ file named in the error. Do NOT add `dom` to `lib`
+    // to make such an error go away — that would let a script reference
+    // `document` and compile, which weakens the gate to fix a diagnostic.
+    //
+    // `paths` is also program-GLOBAL, not scoped to apps/docs: every file here,
+    // including everything reached under `packages/api/src/**`, resolves `@/…`
+    // into the docs app. No such import exists in those trees today, and
+    // CLAUDE.md scopes `@/*` to web, so this is inert — but a future `@/`
+    // import reached from a script would misresolve rather than fail.
+    "jsx": "react-jsx",
+    "paths": {
+      "@/*": ["./apps/docs/src/*"]
+    }
+  },
+  "include": ["scripts/*.ts", "scripts/*.tsx"]
+}

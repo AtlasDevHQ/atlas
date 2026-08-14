@@ -48,6 +48,116 @@ export type AtlasEventSource =
   | "CONVERSION"
   | "OTHER";
 
+/**
+ * Channels the platform stamps on a user's behalf, which an agent must never
+ * set by hand. `MCP_SIGNUP` is written by the self-serve trial provisioner;
+ * exposing it to a tool would let a chat turn forge a trial attribution.
+ *
+ * A tuple with `satisfies` buys two things a bare literal union does not. It
+ * constrains the list to real `AtlasEventSource`
+ * members, so a name that is not one — a typo, or a channel someone forgot to
+ * add — cannot sit here silently protecting nothing (measured: a typo'd entry
+ * reds here with `TS2820: Did you mean "MCP_SIGNUP"?`). And when `MCP_SIGNUP`
+ * is renamed it reds HERE, in addition to and above `_AgentSourcesExhaustive`
+ * — whose comment tells you to append the member to the agent-facing tuple,
+ * which is precisely the edit that would hand agents the provisioner-only
+ * source. A bare union would red only there, so the only guidance a reader got
+ * would be the wrong guidance.
+ */
+export const INTERNAL_ONLY_EVENT_SOURCES = [
+  "MCP_SIGNUP",
+] as const satisfies readonly AtlasEventSource[];
+
+type InternalOnlyEventSource = (typeof INTERNAL_ONLY_EVENT_SOURCES)[number];
+
+/** Exactly the sources an agent-facing tool may accept. */
+export type AgentEventSource = Exclude<
+  AtlasEventSource,
+  InternalOnlyEventSource
+>;
+
+/**
+ * SSOT for the agent-facing `eventSource` enum. Both tool surfaces build their
+ * Zod enum from this tuple instead of re-listing the members: the
+ * `upsertTwentyPerson` plugin tool in `index.ts`, and `upsertPerson` in the
+ * internal-tools MCP server at `scripts/twenty-mcp.ts`.
+ *
+ * The two directions are pinned separately. `satisfies` rejects a member that
+ * is not an `AgentEventSource`; `_AgentSourcesExhaustive` rejects an
+ * `AgentEventSource` that is missing here. So adding a public member to
+ * `AtlasEventSource` fails to compile until it is either listed here or added to
+ * `INTERNAL_ONLY_EVENT_SOURCES`, so the choice must be made explicitly.
+ *
+ * Both pins are relative to the DERIVED `AgentEventSource`, so neither can
+ * protect a NAMED member on its own — `_McpSignupIsInternal` below does that,
+ * and the runtime assertions in `lead-normalizer.test.ts` cover the one shape
+ * no compile-time pin can reach.
+ */
+export const AGENT_EVENT_SOURCES = [
+  "DEMO",
+  "SIGNUP",
+  "SALES_FORM",
+  "CONVERSION",
+  "OTHER",
+] as const satisfies readonly AgentEventSource[];
+
+// Compile-time exhaustiveness, mirroring the SAAS_ENV_KEYS idiom in
+// `packages/api/src/lib/effect/saas-env.ts`. A `false` here means an
+// `AgentEventSource` member was added without being appended above.
+//
+// ⚠️ If this reds alongside the `INTERNAL_ONLY_EVENT_SOURCES` declaration
+// above, fix THAT one — appending the member here is the wrong edit.
+type _AgentSourcesExhaustive = Exclude<
+  AgentEventSource,
+  (typeof AGENT_EVENT_SOURCES)[number]
+>;
+const _agentSourcesExhaustive: _AgentSourcesExhaustive extends never
+  ? true
+  : false = true;
+// `void` marks the binding as deliberately consumed, for readers. Do not
+// delete `_agentSourcesExhaustive` even though it looks dead — the ASSIGNMENT
+// is the gate. (No tsconfig in this repo sets `noUnusedLocals`, and oxlint's
+// no-unused-vars already exempts `^_` names, so nothing would flag its
+// removal.)
+void _agentSourcesExhaustive;
+
+/**
+ * The security invariant, pinned by NAME: `MCP_SIGNUP` must never be reachable
+ * from `AgentEventSource`.
+ *
+ * The two pins above cannot express this. Both are relative to
+ * `AgentEventSource`, which is itself derived by subtraction — so they hold for
+ * ANY value of `INTERNAL_ONLY_EVENT_SOURCES`, including an empty one. Emptying
+ * it and appending `MCP_SIGNUP` to the agent tuple is two edits that compiled
+ * clean before this pin existed, and it hands a chat turn the ability to forge
+ * a self-serve-trial attribution.
+ *
+ * ⚠️ `satisfies AtlasEventSource` on the anchor is load-bearing, and the naive
+ * form of this pin is worse than none. `"MCP_SIGNUP" extends AgentEventSource
+ * ? … : true` written against a bare literal survives a full rename of the
+ * member and then protects nothing — a guard that reads green over the very
+ * state it exists to refuse. Anchoring the string means a rename reds here too.
+ *
+ * The failure message is the type: TypeScript prints it verbatim.
+ */
+const MCP_SIGNUP_SOURCE = "MCP_SIGNUP" satisfies AtlasEventSource;
+type _McpSignupIsInternal = typeof MCP_SIGNUP_SOURCE extends AgentEventSource
+  ? "MCP_SIGNUP is agent-facing; it must stay internal-only"
+  : true;
+const _mcpSignupIsInternal: _McpSignupIsInternal = true;
+void _mcpSignupIsInternal;
+
+/**
+ * The agent-facing enum itself, so no surface reconstructs it.
+ *
+ * Both tool sites — `upsertTwentyPerson` in `index.ts` and `upsertPerson` in
+ * `scripts/twenty-mcp.ts` — import this rather than calling `z.enum` themselves,
+ * so the enum is constructed once, here. A hand-rolled `z.enum([...])` at either
+ * site is the one mutation every pin above is blind to, and
+ * `scripts/twenty-mcp.ts` has no test file that could catch it.
+ */
+export const agentEventSourceSchema = z.enum(AGENT_EVENT_SOURCES);
+
 /** Demo signup variant — captured at the `/demo` gate on useatlas.dev. */
 const demoLeadEventSchema = z.object({
   source: z.literal("demo"),

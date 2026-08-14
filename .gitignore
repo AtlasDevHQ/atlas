@@ -79,3 +79,13 @@ lighthouse-reports/
 # Ignored so a SIGKILLed run cannot leave one committable in a shared worktree —
 # CLAUDE.md's "never `git add -A`" rule exists for exactly this shape.
 apps/docs/content/**/__fixture-*.mdx
+
+# Same shape, for the scripts/ type + lint gate's fixture suite
+# (scripts/__tests__/check-scripts-typecheck.test.sh). Its last-written body is
+# deliberately broken, so a SIGKILLed run must not leave one committable.
+#
+# ⚠️ The `.fixture.ts` suffix keeps this to the TYPE probe only. That suite's
+# LINT probe must stay visible to git — oxlint honours `.gitignore` and tsgo does
+# not, so ignoring it would make both lint cases measure nothing. See the suite's
+# own header before widening this pattern.
+scripts/zz-*.fixture.ts

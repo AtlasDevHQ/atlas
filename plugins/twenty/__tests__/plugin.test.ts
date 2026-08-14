@@ -76,6 +76,28 @@ describe("twentyPlugin — upsertTwentyPerson action metadata", () => {
       "apiKey",
     ]);
   });
+
+  // The privilege boundary at the tool's WIRE surface. `lead-normalizer.ts`
+  // pins the type; this pins that the tool actually uses it — a hand-rolled
+  // `z.enum([...])` here would satisfy every compile-time pin in that file.
+  test("the agent-facing eventSource enum REJECTS MCP_SIGNUP", () => {
+    const schema = twentyPlugin(VALID_CONFIG).actions[0].tool.inputSchema as {
+      safeParse: (v: unknown) => { success: boolean };
+    };
+    // Asserted before the two parses so a change to where the tool keeps its
+    // schema reds HERE, attributably, instead of throwing a TypeError inside
+    // an assertion and looking like the enum defect.
+    expect(typeof schema?.safeParse).toBe("function");
+
+    expect(
+      schema.safeParse({ email: "a@b.com", eventSource: "MCP_SIGNUP" }).success,
+    ).toBe(false);
+    // The paired positive: without it, a schema that rejects EVERYTHING would
+    // satisfy the assertion above.
+    expect(
+      schema.safeParse({ email: "a@b.com", eventSource: "SIGNUP" }).success,
+    ).toBe(true);
+  });
 });
 
 describe("twentyPlugin — stampStripeCustomerId action metadata", () => {

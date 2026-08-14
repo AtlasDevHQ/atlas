@@ -4,6 +4,8 @@
  */
 import { describe, test, expect } from "bun:test";
 import {
+  AGENT_EVENT_SOURCES,
+  INTERNAL_ONLY_EVENT_SOURCES,
   LeadEventSchema,
   normalizeConversionLead,
   normalizeDemoLead,
@@ -562,5 +564,40 @@ describe("LeadEventSchema — parse at the crm_outbox flush boundary", () => {
   test("rejects a non-object / null payload", () => {
     expect(() => LeadEventSchema.parse(null)).toThrow();
     expect(() => LeadEventSchema.parse("nope")).toThrow();
+  });
+});
+
+/**
+ * The agent/internal split, asserted at runtime.
+ *
+ * `MCP_SIGNUP` itself is pinned by name in `lead-normalizer.ts`
+ * (`_McpSignupIsInternal`), so emptying `INTERNAL_ONLY_EVENT_SOURCES` and
+ * appending it to the agent tuple is a compile error.
+ *
+ * What no compile-time pin catches is a FUTURE internal channel: both pins on
+ * `AGENT_EVENT_SOURCES` are relative to the derived `AgentEventSource`, so a new
+ * member added to `AtlasEventSource` and to `AGENT_EVENT_SOURCES` — but never to
+ * `INTERNAL_ONLY_EVENT_SOURCES` — satisfies both tuples' types. Pinning exact
+ * membership here turns that into a test failure. Exact membership rather than
+ * just the exclusion, because a list that quietly GAINS a channel is the same
+ * defect in the other direction.
+ */
+describe("agent-facing event sources", () => {
+  test("AGENT_EVENT_SOURCES is exactly the five public channels", () => {
+    expect([...AGENT_EVENT_SOURCES].sort()).toEqual([
+      "CONVERSION",
+      "DEMO",
+      "OTHER",
+      "SALES_FORM",
+      "SIGNUP",
+    ]);
+  });
+
+  test("no internal-only channel is reachable from an agent-facing enum", () => {
+    // Pinned first, so an emptied list cannot vacuously satisfy the loop.
+    expect([...INTERNAL_ONLY_EVENT_SOURCES]).toEqual(["MCP_SIGNUP"]);
+    for (const internal of INTERNAL_ONLY_EVENT_SOURCES) {
+      expect(AGENT_EVENT_SOURCES).not.toContain(internal);
+    }
   });
 });

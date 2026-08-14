@@ -2192,13 +2192,16 @@ function rekeyDriftedFactsSql(position: SlotPosition): string {
   // rather than repeating the expression, and `r.new_key` IS that expression —
   // the projection above is `${identityKeySql(aliased)} AS new_key`, unchanged
   // character for character. Dropping this arm still writes NULL into a
-  // `NOT NULL` column and still raises `23502`, which is what row 26 of this
-  // module's mutation table measures.
+  // `NOT NULL` column and still raises `23502`, which is what the
+  // `IS NOT NULL` arm on the recomputed key row of
+  // `scripts/mutations/vocabulary-rekey.md` measures. Named, not numbered: that
+  // table is generated as of #5061 and its rows carry no numbers to cite.
   //
   // ⚠️ The workspace scope MOVED to the CTE and did not weaken. `f.id = r.id`
   // joins on the primary key against a set already scoped to `$1`, so no
   // foreign row is reachable; the mutation that weakens the scope is caught in
-  // the CTE exactly as it was on the `UPDATE` (row 6).
+  // the CTE exactly as it was on the `UPDATE` — the workspace-scope row of
+  // `scripts/mutations/vocabulary-rekey.md`.
   //
   // ⚠️ The CTE's own `WHERE` is deliberately UNQUALIFIED (`workspace_id`, not
   // `f.workspace_id`). `vocabulary-decide-pg.test.ts` finds this statement's

@@ -43,153 +43,46 @@
  *
  * ## MUTATIONS THIS CATCHES
  *
- * Measured against THIS tree, one mutation at a time, in a single run — not
- * carried forward from an earlier draft.
+ * **GENERATED — see `packages/api/scripts/mutations/vocabulary-decide.md`**,
+ * from `packages/api/scripts/mutations/vocabulary-decide.mutations.ts`:
  *
- * | Mutation | Tests it kills |
- * |---|---|
- * | rejection memory dropped (`rejected` falls through to the insert) | 4 |
- * | rejection-memory identity made ORDERED | 2 |
- * | the `rejected` arm reports `already_pending` instead of refusing | 4 |
- * | removal stops writing `rejected` (edge dropped, row left `approved`) | 6 |
- * | `removeAliasEdge` dropped from the reject arm | 4 |
- * | the removal's did-nothing THROW downgraded to a silent stamp | 1 |
- * | the pending-dedup arm dropped | 3 |
- * | `autoApproveEligible`'s entity-position conjunct dropped | 1 |
- * | `autoApproveEligible`'s source-class conjunct dropped | 3 |
- * | `autoApproveEligible`'s threshold conjunct dropped | 4 |
- * | the threshold's 0–1 range guard dropped | 1 |
- * | the knob read platform-wide (`workspaceId` dropped from both reads) | 1 |
- * | the `warehouse_key`-at-predicate refusal dropped | 1 |
- * | the auto arm's re-check at decide time dropped | 1 |
- * | `direction-required` dropped | 1 |
- * | `direction-not-in-pair` dropped | 2 |
- * | `direction-conflict` dropped | 1 |
- * | `lexicalNorm` dropped from the supplied direction | 1 |
- * | the approval STAMPS the proposed direction instead of the resolved one | 1 |
- * | the EDGE is written in the proposed direction instead of the resolved one | 2 |
- * | `approverEntitled`'s entity-position owner/admin bar dropped | 3 |
- * | `approverEntitled` made owner/admin at EVERY position | 2 |
- * | the `unresolved`-origin arm admitted | 1 |
- * | the `unauthenticated-local` arm dropped (the local operator locked out) | 1 |
- * | the workspace-mismatch guard dropped | 2 |
- * | the machine-may-not-reject backstop dropped | 1 |
- * | the local operator recorded as a machine | 1 |
- * | the human approver never recorded (`approved_by`/`reviewed_by` always NULL) | 4 |
- * | the apply refusal RETURNED instead of thrown | 4 |
- * | the catch broadened — every error becomes a refusal | 3 |
- * | the claim's `status = 'pending'` predicate dropped | 1 |
- * | the `applying`-not-rejectable arm dropped | 2 |
- * | the vocabulary lock taken AFTER the proposal read | 1 |
- * | the lock taken in the WRONG namespace | 2 |
- * | the lock keyed on a CONSTANT instead of the workspace | 2 |
- * | `slot_position` asserted instead of narrowed | 1 |
- * | the eligible-but-refused row stops counting as `queued` | 1 |
- * | `deduped` and `refused` swapped | 1 |
- * | the ingest path reverts to `identityVocabulary` | 3 |
- * | the correctFact TOOL reverts to `identityVocabulary` | 2 |
- * | the admin route reverts to `identityVocabulary` | 2 |
- * | the pair lookup loses its `slot_position` arm | 1 |
- * | `approverEntitled` narrowed to owner only (admins locked out) | 1 |
- * | `resolveDirection`'s same-norm conjunct dropped | 1 |
- * | the ingest load DEGRADED to the empty vocabulary on failure | 2 |
- * | the correctFact TOOL hands over an inline identity vocabulary | 2 |
- * | the admin route hands over an inline identity vocabulary | 2 |
- * | `recordedApprover` collapses every human onto the local-operator sentinel | 3 |
- * | the machine-may-not-reject refusal downgraded to `not-entitled` | 1 |
- * | the entitlement bar scoped to the APPROVE verb only | 1 |
- * | the workspace-mismatch guard scoped to the APPROVE verb only | 1 |
- * | the unreadable-settings-tier latch dropped (#5162) | 1 |
- * | the settings-unreadable refusal message replaced by the policy one (#5162) | 1 |
+ *     cd packages/api && bun run db:up
+ *     export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5433/brain_5061_scratch
+ *     bun run scripts/mutate.ts scripts/mutations/vocabulary-decide.mutations.ts
  *
- * 53 mutations against the DECISION LOGIC, 53 caught, zero survivors.
+ * Fifty-three numbers used to live here by hand, and **eleven of them had gone
+ * wrong** (#5061). That is the largest drift any of the six tables converted in
+ * that slice showed, and it is the one worth reading the reason for.
  *
- * ⚠️ TWO SCOPE CAVEATS, because "53 caught" otherwise reads as completeness
- * over the whole seam and it is not.
+ * ⚠️ **This docstring carried an argument that no cell could have FALLEN, and
+ * five of them had.** The claim was that the rows were lower bounds: #5162 added
+ * tests, "so a mutation can only be killed by more tests, never fewer — no row
+ * above can have fallen". The reasoning holds only while tests are ADDED. Tests
+ * get REWRITTEN, and a rewritten test can stop reaching a mutation it used to
+ * kill. Four of the five falls are spelling-dependence the mutation list now
+ * declares outright; the fifth — `autoApproveEligible`'s threshold conjunct,
+ * `4 → 1` — is genuine drift, confirmed against a second spelling of the same
+ * mutation before it was written down.
  *
- * **The counts are LOWER BOUNDS.** The last two rows were measured at #5162,
- * the other 51 at #5023, and the two are not one run. #5162 added a conjunct
- * to `autoApproveEligible`, three tests to this file and two assertions to an
- * existing one, so a mutation can only be killed by more tests, never fewer —
- * no row above can have fallen, but the
- * threshold and source-class rows may kill more than they say, since the new
- * opt-out test exercises both. Re-measure the whole table, not one cell,
- * before treating any number here as exact again.
+ * A docstring cannot notice that its own escape clause has been falsified.
+ * That is the whole argument for #5060's runner, and this table is the sharpest
+ * instance of it in the tree.
  *
- * **The table covers the decision, not the diagnostics.** #5162 also added a
- * once-per-process warn latch (`settingsTierWarned`) and the human-path
- * short-circuit at the decide call site. Neither has a row, and both would
- * SURVIVE — but NOT for want of a seam, and the distinction is what makes this
- * gap cheap to close. `vocabulary-rekey-logging.test.ts` already mocks the
- * logger process-wide and drives this very module through it; it just filters
- * for "Drift re-key complete" and only ever approves as a human, so neither
- * #5162 line is reached, let alone asserted. Falsifying them is a matter of
- * adding cases there, not of building capture. Stated rather than papered over:
- * the refusal MESSAGE is falsified (the row above), the log LINE is not.
+ * ## Three columns, because the alternative was two justified zeros
  *
- * TWELVE of the #5023 rows, in five groups, need reading with care rather than
- * at face value:
+ * `decide-pg` (here) is joined by `correct-fact-tool` and `admin-route`. The
+ * two inline-identity rows are the revert this suite's source-level tripwire
+ * structurally cannot see — it fires on the IMPORT, and those mutations leave
+ * the import in place. Measured against this suite alone they are `0`, with a
+ * note naming the two files that DO catch them: a justified zero pointing at a
+ * test that exists, which is the one shape #5061 says to close rather than
+ * annotate. As columns they are `1` apiece.
  *
- * **The ordered-identity row** is NOT caught by the headline producer test:
- * that one re-emits the pair in the same order it was removed in, so an ordered
- * identity still suppresses it and the test passes. The reverse-direction case
- * is the only thing separating them, which is why it exists as its own `test()`
- * instead of an extra assertion.
- *
- * **The entity-position conjunct** is DEAD CODE under the shipped knob — the
- * only eligible source class is `warehouse_key`, and that is refused at the
- * predicate position before eligibility is consulted. The one test that kills
- * it widens the knob AND carries confidence 1; at this suite's default 0.8 the
- * threshold conjunct refuses first and the mutation survives, which is what the
- * first cut of that test did.
- *
- * **The three lock rows** are caught STRUCTURALLY, by recording each
- * transaction's first statement AND ITS PARAMS. The text alone could not tell a
- * correctly-keyed lock from one in the wrong namespace or on a constant key —
- * which is the failure that matters, since a wrong namespace stops the seam
- * being mutually exclusive with `approveAliasEdge` and the region importer. The
- * ordering row is separate again, and structural for a different reason: what
- * it guards is an invariant, not a deadlock a single-process test can provoke.
- *
- * **`slot_position` asserted instead of narrowed** is reachable only by
- * DROPPING 0190's CHECK, which its test does — the same move
- * `vocabulary-pg.test.ts` makes to write a cyclic pair the primitives refuse
- * to. Simulating a row written outside this seam is the point: the mutation's
- * failure direction is permissive (an unknown position takes the PREDICATE
- * entitlement bar), so leaving it unreachable-and-untested would have left an
- * entitlement bypass behind a constraint nobody re-checks.
- *
- * **The six `identityVocabulary` rows are the PR's other half** — the four call
- * sites that used to name it, plus the two ways to revert one (a reverted
- * import, and an inline identity vocabulary at the call site). Named by their
- * content rather than by position, because they are not contiguous in the table
- * and an earlier version of this line said "the last six rows", which points at
- * a different set. Before these
- * landed, reverting ANY of them left every suite in this repo green: every
- * fixture workspace had an empty vocabulary, so the loaded answer and the empty
- * one were byte-identical and no assertion could tell them apart. The ingest
- * revert and its degrade-on-failure twin are caught behaviourally; the two
- * `correctFact` sites are caught by asserting the vocabulary the caller
- * actually handed over, which is why the inline-identity mutation dies too — a
- * source-level import tripwire alone would not have caught it, and the suite
- * keeps one anyway as the cheap backstop for a fifth site.
- *
- * NOT in the table, deliberately — two spellings whose mutations kill NOTHING
- * and cannot, listed so a later reader does not mistake the silence for an
- * oversight:
- *
- *   - the eligibility threshold `!(confidence >= t)` vs `confidence < t`. The
- *     two differ only on NaN, which propose refuses outright and the stored
- *     column cannot hold (Postgres orders NaN above every value, so 0190's
- *     `confidence <= 1` CHECK rejects it — and unlike the position CHECK,
- *     dropping this one does not make the value storable).
- *   - a threshold above 1, and an unparseable one. `confidence` is bounded at 1,
- *     so "disabled" and "compares against an impossible bar" are
- *     observationally identical; only the `-1` case can kill the range guard,
- *     and it has its own `test()` for that reason.
- *
- * Both are defensive style, not tested properties. A row claiming otherwise
- * would be a fabricated measurement.
+ * The scope caveats, the five groups of rows that need reading with care, and
+ * the two spellings deliberately left out of the table (the `!(a >= b)` NaN
+ * form and an out-of-range threshold, neither of which can kill anything) all
+ * live in the generated file's preamble — beside the numbers rather than three
+ * paragraphs away from them.
  *
  * Opt in locally with the same scratch database as its sibling brain suites —
  * every one of them creates and drops its OWN schema, so they share it safely:

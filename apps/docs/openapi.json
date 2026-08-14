@@ -29599,7 +29599,7 @@
           "Admin — Brain"
         ],
         "summary": "List the workspace's Slack channels and their ingest scope",
-        "description": "Every Slack channel Atlas has observed the bot in, plus any an admin excluded. `health` carries the per-channel two-probe verification (conversations.info + a one-message conversations.history read); it is null until the rotation reaches that channel.",
+        "description": "Every Slack channel Atlas has observed the bot in, plus any an admin excluded. `health` carries the per-channel two-probe verification (conversations.info + a one-message conversations.history read); it is null until the rotation reaches that channel. `sync` carries the last recorded history-sync attempt — its `error` is where a revoked or under-scoped Slack credential surfaces.",
         "responses": {
           "200": {
             "description": "Channel list",
@@ -29618,6 +29618,42 @@
                     "inScopeCount": {
                       "type": "integer",
                       "minimum": 0
+                    },
+                    "sync": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "lastSyncAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "success",
+                            "error"
+                          ]
+                        },
+                        "error": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "coverageIncomplete": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "lastSyncAt",
+                        "status",
+                        "error",
+                        "coverageIncomplete"
+                      ]
                     },
                     "channels": {
                       "type": "array",
@@ -29717,6 +29753,7 @@
                   "required": [
                     "scopeMode",
                     "inScopeCount",
+                    "sync",
                     "channels"
                   ]
                 }

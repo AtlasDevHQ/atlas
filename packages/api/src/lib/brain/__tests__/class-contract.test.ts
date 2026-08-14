@@ -44,8 +44,11 @@ import {
   coverageLabelPolicy,
   stalenessVerdict,
   type ClassContract,
+  type ClassContractLogMeta,
   type ClassCoverageContract,
   type ClassDenominator,
+  type CoverageLabelDecision,
+  type StalenessVerdict,
   type SurveyUnitDisclosureFacts,
 } from "@atlas/api/lib/brain/class-contract";
 import {
@@ -91,7 +94,25 @@ const UNRESOLVABLE: readonly unknown[] = [
   42,
   { class: "chat" },
   ["chat"],
+  // ⚠️ `ToPrimitive` THROWS on this one — both own props shadow
+  // `Object.prototype` and neither is callable — so `String(value)` cannot
+  // render it. It survives `JSON.parse`, so a region import really can carry
+  // it, and `sources.test.ts` uses the same family for the same lane. It could
+  // not be listed here until the labeller below stopped using `String()`.
+  JSON.parse(String.raw`{"toString": 1, "valueOf": 2}`),
 ];
+
+/**
+ * A label for one hostile fixture that cannot itself throw.
+ *
+ * `String(value)` is the obvious spelling and it takes the suite down on the
+ * `ToPrimitive` trap above — the harness failing on the input the module
+ * survives. `typeof` never throws, and `JSON.stringify` returns `undefined`
+ * rather than throwing for a symbol or a function, so the `??` covers it.
+ */
+function label(value: unknown): string {
+  return `${typeof value}:${JSON.stringify(value) ?? "?"}`;
+}
 
 /** Both per-unit inputs, every combination — the label policy's whole domain. */
 const UNIT_FACTS: readonly SurveyUnitDisclosureFacts[] = [
@@ -188,6 +209,41 @@ describe("the class contract Record (#5212)", () => {
     void lvl3;
   });
 
+  test("log meta is optional-or-COMPLETE — a partial one is refused", () => {
+    // Round 1 made `workspaceId` required on the argument that a warn with no
+    // tenant cannot explain why a class went quiet in a 3-region deploy. That
+    // argument had no guard: reverting the field to optional is a pure widening,
+    // so `tsc` and both suites stayed green. `oversight.ts`'s `CountMeta` draws
+    // the same line — the PARAMETER is what a caller omits, never a field.
+    // @ts-expect-error a meta without its workspace is not a meta
+    const partialMeta: ClassContractLogMeta = { requestId: "req_5212" };
+    void partialMeta;
+    // …and the parameter itself stays optional, which is the half that must NOT
+    // break: a pure derivation that needed request context to answer would fail
+    // open in exactly the callers least likely to have it.
+    expect(classDenominator("docs")).toEqual({
+      surveyable: false,
+      reason: "unresolvable-class",
+    });
+  });
+
+  test("the decision vocabularies are CLOSED — a fourth reason must be handled", () => {
+    // Each reason is asserted as a distinct value elsewhere, but nothing pinned
+    // the unions' MEMBERSHIP — so a fourth reason could arrive with no consumer
+    // forced to handle it, which is what the "three different sentences to an
+    // admin" argument exists to protect. `@ts-expect-error` is the only
+    // instrument for it: the assignment is legal the moment the union widens.
+    // @ts-expect-error `count-only` admits exactly three reasons
+    const invented: CoverageLabelDecision = { policy: "count-only", reason: "invented" };
+    // @ts-expect-error a denominator refusal admits exactly two reasons
+    const inventedDenominator: ClassDenominator = { surveyable: false, reason: "invented" };
+    // @ts-expect-error `unverified-since` admits exactly two reasons
+    const inventedStaleness: StalenessVerdict = { kind: "unverified-since", reason: "invented" };
+    void invented;
+    void inventedDenominator;
+    void inventedStaleness;
+  });
+
   test("carries a `satisfies` at EVERY level — pinned in source text", () => {
     // The one guard here that is not about values, because it CANNOT be. A
     // `satisfies` is erased at runtime and asserts nothing about itself, so
@@ -213,7 +269,10 @@ describe("the class contract Record (#5212)", () => {
     )?.[1];
     // Not vacuous: a rename or a reshape must fail here rather than silently
     // running every assertion below against `undefined`.
-    expect(map).toBeDefined();
+    expect(
+      map,
+      "could not find the CLASS_CONTRACTS literal — if you renamed or reshaped the declaration, update this regex; nothing is actually broken",
+    ).toBeDefined();
     const body = map ?? "";
     // One `satisfies` per level per entry. COUNTED rather than merely present,
     // so deleting ONE of the five at any level is red — which is precisely the
@@ -226,9 +285,26 @@ describe("the class contract Record (#5212)", () => {
     ] as const) {
       expect([level, body.split(annotation).length - 1]).toEqual([level, classCount]);
     }
+    // ⚠️ The three levels above are TODAY's shape, and this file's own header
+    // schedules more: ADR-0040's arms join as siblings of `coverage`. A pin that
+    // only counts the levels it knows about stays green when a fourth arrives
+    // unannotated — the same "guard that lies about its own scope" this test was
+    // written to end.
+    //
+    // So pair the counts instead: every `Object.freeze(` inside the map must
+    // have an `as const satisfies` of its own. That holds for any depth, and a
+    // new frozen sibling added without an annotation breaks it without anyone
+    // having to remember this test exists.
+    expect([
+      "frozen literals",
+      body.split("Object.freeze(").length - 1,
+    ]).toEqual(["frozen literals", body.split("as const satisfies").length - 1]);
     // …and the map-level totality annotation, a different guarantee (every
-    // class present) held by a different construct.
-    expect(code).toContain("satisfies Record<EpisodeSourceClass, ClassContract>");
+    // class present) held by a different construct. Whitespace-normalised so a
+    // human reflow across lines is not a false failure on a claim about types.
+    expect(code.replace(/\s+/g, " ")).toContain(
+      "satisfies Record<EpisodeSourceClass, ClassContract>",
+    );
   });
 
   test("declares EXACTLY the three coverage properties — no invented field", () => {
@@ -242,6 +318,14 @@ describe("the class contract Record (#5212)", () => {
       expect([cls, Object.keys(CLASS_CONTRACTS[cls].coverage).toSorted()]).toEqual([
         cls,
         ["activityMetadata", "denominator", "vendorPublic"],
+      ]);
+      // Level 3 too — the thinnest level, and the one where an invented field
+      // (`weight: 3`) would be the first step toward the blended score
+      // ADR-0041 refuses.
+      const denominator = CLASS_CONTRACTS[cls].coverage.denominator;
+      expect([cls, Object.keys(denominator).toSorted()]).toEqual([
+        cls,
+        denominator.surveyable ? ["enumeratedFrom", "surveyable"] : ["reason", "surveyable"],
       ]);
     }
   });
@@ -330,6 +414,15 @@ describe("the three coverage answers, per class", () => {
     // fail-closed one have to differ in the RETURN VALUE or the surface cannot
     // render "cannot establish" for the second.
     expect(classDenominator("human")).not.toEqual(classDenominator("docs"));
+    // …and no DECLARED denominator may carry the fail-closed reason. That value
+    // means "this deploy could not resolve the class", which is never a true
+    // statement about an entry that is sitting right there in the map.
+    for (const cls of EPISODE_SOURCE_CLASSES) {
+      const denominator = CLASS_CONTRACTS[cls].coverage.denominator;
+      if (!denominator.surveyable) {
+        expect([cls, denominator.reason]).toEqual([cls, "not-a-surveyable-region"]);
+      }
+    }
   });
 
   test("the denominator DERIVATION returns each class's declared universe", () => {
@@ -511,8 +604,8 @@ describe("the fail-closed arms — a class this deploy cannot resolve", () => {
     // that does not exist.
     for (const cls of UNRESOLVABLE) {
       for (const unit of UNIT_FACTS) {
-        expect([String(cls), unit.deliberateAct, coverageLabelPolicy(cls, unit)]).toEqual([
-          String(cls),
+        expect([label(cls), unit.deliberateAct, coverageLabelPolicy(cls, unit)]).toEqual([
+          label(cls),
           unit.deliberateAct,
           { policy: "count-only", reason: "unresolvable-class" },
         ]);
@@ -541,8 +634,8 @@ describe("the fail-closed arms — a class this deploy cannot resolve", () => {
 
   test("never yields a staleness verdict that could read as `stale`", () => {
     for (const cls of UNRESOLVABLE) {
-      expect([String(cls), stalenessVerdict(cls)]).toEqual([
-        String(cls),
+      expect([label(cls), stalenessVerdict(cls)]).toEqual([
+        label(cls),
         { kind: "unverified-since", reason: "unresolvable-class" },
       ]);
     }
@@ -553,8 +646,8 @@ describe("the fail-closed arms — a class this deploy cannot resolve", () => {
 
   test("has no denominator — a count with no universe behind it is a fabrication", () => {
     for (const cls of UNRESOLVABLE) {
-      expect([String(cls), classDenominator(cls)]).toEqual([
-        String(cls),
+      expect([label(cls), classDenominator(cls)]).toEqual([
+        label(cls),
         { surveyable: false, reason: "unresolvable-class" },
       ]);
     }

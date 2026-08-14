@@ -129,20 +129,38 @@ describe("the fail-closed arms log, one line per derivation", () => {
     }
   });
 
-  test("correlation context survives the spread, and a caller cannot shadow the diagnostics", () => {
+  test("correlation context travels, and a wider caller object cannot leak or shadow", () => {
     // `workspaceId` is required on the meta type precisely so this line can do
-    // its job in a 3-region multi-tenant deploy. The shadow half matters
-    // because the diagnostic fields come AFTER `...meta` in the spread: a
-    // caller passing its own `derivation` must not be able to relabel which
-    // derivation reported.
-    const hostile = { ...META, derivation: "not-this-one", classValue: "not-this-either" };
+    // its job in a 3-region multi-tenant deploy.
+    //
+    // The other half is that the two context fields are NAMED rather than
+    // spread. Excess-property checking only fires on a fresh literal, so a
+    // caller passing a WIDER variable — a request context, a job record — used
+    // to put every field it happened to carry into a line whose stated job is
+    // to stay small enough that `workspaceId` survives aggregation limits. That
+    // also makes "a caller cannot shadow the diagnostics" structural instead of
+    // a fact about spread order.
+    const hostile = {
+      ...META,
+      derivation: "not-this-one",
+      classValue: "not-this-either",
+      sessionToken: "should-never-be-logged",
+    };
     classDenominator("docs", hostile as typeof META);
 
     const [warn] = warns();
     expect(warn?.payload.workspaceId).toBe("ws_5212");
     expect(warn?.payload.requestId).toBe("req_5212");
     expect(warn?.payload.derivation).toBe("classDenominator");
-    expect(warn?.payload.classValue).toBe("docs");
+    expect(warn?.payload.classValue).toBe('"docs"');
+    // The extra field never reaches the payload at all.
+    expect(Object.keys(warn?.payload ?? {}).toSorted()).toEqual([
+      "classValue",
+      "classValueLength",
+      "derivation",
+      "requestId",
+      "workspaceId",
+    ]);
   });
 });
 
@@ -164,6 +182,11 @@ describe("the logged class value is legible and bounded", () => {
       "object",
       "undefined",
     ]);
+    // The sentinels are deliberately UNQUOTED while strings are quoted — that
+    // asymmetry is what makes them tell each other apart at a glance.
+    for (const warn of warns()) {
+      expect(warn.payload.classValue?.startsWith('"')).toBe(false);
+    }
   });
 
   test("an unbounded stored value is TRUNCATED, and its true length still travels", () => {
@@ -177,20 +200,70 @@ describe("the logged class value is legible and bounded", () => {
 
     const [warn] = warns();
     const logged = warn?.payload.classValue ?? "";
-    expect(logged.length).toBeLessThan(200);
-    expect(logged.startsWith("zzz")).toBe(true);
-    expect(logged.endsWith("…")).toBe(true);
+    // EXACT, not an upper bound. The rationale is a log-aggregation size limit,
+    // so the constant is the thing that matters — `toBeLessThan(200)` let it
+    // move to 190 silently. 128 chars + the ellipsis, then JSON quotes.
+    expect(logged).toBe(`"${"z".repeat(128)}…"`);
+    expect(logged.startsWith('"zzz')).toBe(true);
+    expect(logged.endsWith('…"')).toBe(true);
     // The length is what makes the truncation diagnosable rather than
     // misleading: without it an operator cannot tell a 129-char value from a
     // 5,000-char one.
     expect(warn?.payload.classValueLength).toBe(5_000);
   });
 
-  test("a short value is logged whole, with no length field to read as truncation", () => {
+  test("truncation fires just PAST the bound, not at it", () => {
+    // The only fixture was 5,000 chars, so `>` → `>=` was silent. Both sides of
+    // the boundary, so the comparison itself is pinned.
+    const atBound = "a".repeat(128);
+    const overBound = "b".repeat(129);
+    classDenominator(atBound, META);
+    classDenominator(overBound, META);
+
+    const [at, over] = warns();
+    expect(at?.payload.classValue).toBe(`"${atBound}"`);
+    expect(at?.payload.classValueLength).toBe(128);
+    expect(over?.payload.classValue).toBe(`"${"b".repeat(128)}…"`);
+    expect(over?.payload.classValueLength).toBe(129);
+  });
+
+  test("a short value is logged whole, and its length travels with it", () => {
+    // The name used to say "with no length field", which its own last line
+    // measures to be false — the field IS emitted for short values, and that is
+    // correct: it is what tells an operator a value was not truncated.
     classDenominator("docs", META);
     const [warn] = warns();
-    expect(warn?.payload.classValue).toBe("docs");
+    expect(warn?.payload.classValue).toBe('"docs"');
     expect(warn?.payload.classValueLength).toBe(4);
+  });
+
+  test("a string is QUOTED, so it can never be read as one of the sentinels", () => {
+    // The `null` spelling fixed one instance; these are the rest of the class.
+    // Unquoted, each of these was unreadable: an empty string looked like a
+    // missing field, the whitespace near-miss looked like the real class name,
+    // and a stored value of literally `null` was the sentinel for a real one.
+    classDenominator("", META);
+    classDenominator("human ", META);
+    classDenominator("null", META);
+    classDenominator(null, META);
+
+    expect(warns().map((w) => w.payload.classValue)).toEqual(['""', '"human "', '"null"', "null"]);
+    // The sentinel and the string that spells it are now distinguishable, which
+    // is the whole point and is what an operator actually needs.
+    const [, , asString, asSentinel] = warns();
+    expect(asString?.payload.classValue).not.toBe(asSentinel?.payload.classValue);
+  });
+
+  test("the length field is ABSENT for a non-string, never zero", () => {
+    // `0` would read to an operator as "an empty string", which is the exact
+    // legibility failure the `null` spelling was written to prevent. Measured
+    // through the real logger, pino drops an `undefined` key entirely.
+    classDenominator(null, META);
+    classDenominator({ class: "chat" }, META);
+    classDenominator(42, META);
+    for (const warn of warns()) {
+      expect(warn.payload.classValueLength).toBeUndefined();
+    }
   });
 });
 
@@ -209,6 +282,14 @@ describe("a RESOLVABLE class is silent", () => {
       classDenominator(cls, META);
     }
     expect(logCalls).toEqual([]);
+    // ⚠️ NON-VACUITY. `toEqual([])` alone passes whenever log capture is
+    // BROKEN — a mock that never installed, a recorder wired to nothing — which
+    // is the single condition this assertion would need to survive. Measured:
+    // with the recorder made a no-op, 8 of this file's 10 tests fail and the
+    // silence assertions are the survivors. So every silence claim fires a
+    // deliberately loud call afterwards and checks the SAME array fills.
+    classDenominator("docs", META);
+    expect(warns().length).toBe(1);
   });
 
   test("the non-surveyable refusal is silent too — it is a decision, not a degradation", () => {
@@ -237,6 +318,10 @@ describe("a RESOLVABLE class is silent", () => {
       reason: "no-clause",
     });
     expect(logCalls).toEqual([]);
+    // Non-vacuity, same reason as above — an empty array has to mean silence
+    // rather than a dead recorder.
+    coverageLabelPolicy("docs", UNIT, META);
+    expect(warns().length).toBe(1);
   });
 });
 

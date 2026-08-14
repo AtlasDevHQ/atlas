@@ -163,6 +163,16 @@ export type ClassDenominator =
  * sentence, and the second one is a bug the page must be able to see.
  */
 export type StalenessVerdict =
+  /**
+   * A lag is COMPUTABLE for this class — not "this unit is stale", and not a
+   * lag anyone has measured yet.
+   *
+   * ⚠️ The threshold it would be measured against is NOT in this contract. See
+   * {@link stalenessVerdict} — the cadence ADR-0041 says the class contract owns
+   * has no declaration site yet, and a consumer must not substitute one. Stated
+   * on the member as well as on the function because a consumer that destructures
+   * the union never reads the function's docstring.
+   */
   | { readonly kind: "measured-lag" }
   | {
       readonly kind: "unverified-since";
@@ -417,13 +427,19 @@ export interface ClassContractLogMeta {
  *
  * ⚠️ **What happens next was MEASURED, and it is not what it looks like.** The
  * obvious reading is that the derivations would read `undefined` and fail closed
- * by accident — `vendorPublic` falsy, `activityMetadata` unequal to `"reports"`.
- * They would not. Dropping the narrow and indexing bare gives
- * `TypeError: undefined is not an object (evaluating 'contract.coverage.vendorPublic')`,
- * because the missing property is `coverage` and every derivation reaches
- * through it. So the cost of losing this narrow is a THROWN page render, not a
+ * by accident — a falsy flag here, an unequal comparison there. They would not.
+ * The missing property is `coverage` ITSELF, and every derivation reaches
+ * through it, so dropping the narrow and indexing bare gives a
+ * `TypeError: undefined is not an object` while evaluating `contract.coverage.*`
+ * in all three. The cost of losing this narrow is a THROWN page render, not a
  * withheld label — worse than fail-closed, and worth knowing before anyone
  * decides the narrow is redundant.
+ *
+ * Deliberately NOT quoting which property the message names. An earlier draft
+ * did, and the guard added one commit later (the non-surveyable refusal, which
+ * reads `denominator` before anything else) silently made the quote wrong — a
+ * measurement invalidated by an edit two functions away. The claim that survives
+ * reordering is the one about `coverage`.
  *
  * So there is deliberately no `Object.hasOwn` guard on the index, the way
  * `specOf` carries one in `sources.ts`. That function's parameter is typed
@@ -458,7 +474,18 @@ const FAIL_CLOSED_CONSEQUENCE = {
   classDenominator: "this class has no enumerable universe, so it falls out of every ratio",
 } as const;
 
-/** The derivations that can meet an unresolvable class — a closed set, so a rename cannot desync the log. */
+/**
+ * The derivations that can meet an unresolvable class.
+ *
+ * ⚠️ This closed set ties the call sites to the MAP above — NOT to the function
+ * names. On its own it lets a rename of `coverageLabelPolicy` leave the map key,
+ * the call-site literal and the logged `derivation` all spelling the dead name,
+ * with `tsc` clean and the logging test green (it asserts the string, not the
+ * binding). `_DERIVATION_NAMES_IN_SYNC` below is what actually closes that, and
+ * it is there rather than here because a comment claiming the tie was this
+ * module's third measured-false guarantee — the ratchet says the third one gets
+ * a mechanism.
+ */
 type ClassContractDerivation = keyof typeof FAIL_CLOSED_CONSEQUENCE;
 
 /** How long a stored class value may be before the log line truncates it. */
@@ -480,11 +507,21 @@ const CLASS_VALUE_LOG_MAX = 128;
  * `error-scrub.ts` truncates for the same stated reason — an oversized field
  * pushes the structured ones past log-aggregation size limits, which loses the
  * `workspaceId` this line exists to carry.
+ *
+ * ⚠️ **Strings are QUOTED, which is the same argument as the `null` spelling
+ * applied to the whole class rather than to one instance.** Unquoted, three real
+ * inputs were unreadable: `""` looked like a missing field, `"human "` (the
+ * whitespace near-miss that is exactly what an operator is debugging) looked
+ * like `human`, and a stored value of literally `"null"` was the sentinel for a
+ * real `null`. The only discriminant was whether `classValueLength` happened to
+ * be present — a rule nobody reading a log knows.
  */
 function describeClassValue(value: unknown): string {
   if (value === null) return "null";
   if (typeof value !== "string") return typeof value;
-  return value.length > CLASS_VALUE_LOG_MAX ? `${value.slice(0, CLASS_VALUE_LOG_MAX)}…` : value;
+  const shown =
+    value.length > CLASS_VALUE_LOG_MAX ? `${value.slice(0, CLASS_VALUE_LOG_MAX)}…` : value;
+  return JSON.stringify(shown);
 }
 
 /**
@@ -497,8 +534,12 @@ function describeClassValue(value: unknown): string {
  * rendering — but it is the line an operator needs to explain why a class went
  * quiet after a deploy.
  *
- * The diagnostic fields come AFTER the caller's `meta` in the spread, so a
- * caller cannot shadow them with its own `derivation` or `classValue`.
+ * The two context fields are named rather than spread. Excess-property checking
+ * only fires on a fresh literal, so `{...meta}` let a caller passing a WIDER
+ * variable — a request context, a job record — put every field it happened to
+ * carry into a line whose stated job is to stay small enough that `workspaceId`
+ * survives aggregation limits. Naming them also makes "a caller cannot shadow
+ * the diagnostics" structural instead of a fact about spread order.
  */
 function warnUnresolvable(
   value: unknown,
@@ -507,7 +548,8 @@ function warnUnresolvable(
 ): void {
   log.warn(
     {
-      ...meta,
+      workspaceId: meta?.workspaceId,
+      requestId: meta?.requestId,
       derivation,
       classValue: describeClassValue(value),
       classValueLength: typeof value === "string" ? value.length : undefined,
@@ -633,18 +675,9 @@ export function coverageLabelPolicy(
   unit: SurveyUnitDisclosureFacts,
   meta?: ClassContractLogMeta,
 ): CoverageLabelDecision {
-  // BEHAVIOUR DELTA — input classes × old vs new. Every changed row moves toward
-  // withholding; no row moves toward disclosure, and the new arm is an ADDITIVE
-  // refusal in front of the clauses rather than an edit to either one, so it
-  // cannot permit anything the old code refused.
-  //
-  //                                          old                      new
-  //   surveyable, deliberateAct              name/deliberate-act      unchanged
-  //   surveyable, class+unit both public     name/vendor-public       unchanged
-  //   surveyable, neither                    count/no-clause          unchanged
-  //   NON-surveyable, deliberateAct          name/deliberate-act  →   count/non-surveyable-class  ← CHANGED
-  //   NON-surveyable, neither                count/no-clause      →   count/non-surveyable-class  ← CHANGED (reason only)
-  //   unresolvable, any                      count/unresolvable       unchanged
+  // Order is load-bearing: see § "A NON-SURVEYABLE class gets no label either".
+  // The full old-vs-new input-class table lives in the commit that introduced
+  // the refusal, which is where "old" is unambiguous.
   const contract = contractOf(cls);
   if (!contract) {
     warnUnresolvable(cls, "coverageLabelPolicy", meta);
@@ -730,3 +763,31 @@ export function classDenominator(cls: unknown, meta?: ClassContractLogMeta): Cla
   }
   return contract.coverage.denominator;
 }
+
+
+/**
+ * Ties every {@link FAIL_CLOSED_CONSEQUENCE} key to the EXPORT that logs under
+ * it — SHORTHAND properties, so renaming a derivation without renaming its key
+ * is a `TS2304: Cannot find name`.
+ *
+ * The mechanism the type alias above cannot be. `ClassContractDerivation` is
+ * `keyof typeof FAIL_CLOSED_CONSEQUENCE`, which ties the call sites to the MAP
+ * and says nothing about the functions: rename `coverageLabelPolicy` and the
+ * key, the call-site literal and the logged `derivation` all keep the dead name
+ * with `tsc` clean and the logging test green, because that test asserts the
+ * string `"coverageLabelPolicy"` rather than the binding. An operator then greps
+ * a `derivation` field naming a function that no longer exists.
+ *
+ * Written as a mechanism rather than as a warning because a comment asserting
+ * this tie was the third measured-false guarantee in this module, and the repo's
+ * rule is that a principle violated twice gets a check rather than a third
+ * comment.
+ *
+ * Function declarations hoist, so this sits below them and still binds.
+ */
+const _DERIVATION_NAMES_IN_SYNC: Record<ClassContractDerivation, unknown> = {
+  coverageLabelPolicy,
+  stalenessVerdict,
+  classDenominator,
+};
+void _DERIVATION_NAMES_IN_SYNC;

@@ -104,9 +104,20 @@ describe("bundle-scope drift tripwire (#4460)", () => {
     // deletion (#4458) so the source's copy would be destroyed in the same move.
     // Only the exclusion HALF of `brain_slack_channel` rides; the observed
     // membership beside it is re-derived on the target's first sync.
+    //
+    // Extended again by #5196 (ADR-0039) with the warehouse producer's enrolled
+    // reach, and the reasoning turns the other way round again. The Slack rows
+    // above travel because losing a NARROWING makes the destination ingest more
+    // than a human agreed to; an enrollment travels because losing it makes the
+    // destination's producer reach NOTHING — and that failure is silent, since
+    // an unenrolled workspace and a working one are indistinguishable from
+    // inside the code. Same asset class as `brain_vocabulary_edge`: a deliberate
+    // human decision about the brain's shape, so 'stays' would be deletion of
+    // one.
     expect([...EXPORTED_TABLES].toSorted()).toEqual([
       "agent_session_memory",
       "brain_edges",
+      "brain_enrollment",
       "brain_episodes",
       "brain_facts",
       "brain_slack_channel",

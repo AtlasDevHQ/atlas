@@ -4141,3 +4141,44 @@ export const brainSlackIngestScope = pgTable(
     ),
   ],
 );
+
+// brain_enrollment (0199) — the `(entity, dimension)` pairs a human named as the
+// tier-1 warehouse producer's reach (#5196, ADR-0039). The producer (#5042)
+// emits for enrolled pairs and for nothing else; an unenrolled dimension is
+// outside its reach rather than hidden, filtered, or pending.
+//
+// NOT a content-mode table and NOT an invalidation authority: it carries no
+// `status` column, and un-enrolling deletes a row here while leaving every
+// already-published fact exactly as it was. See the migration header for why
+// un-enrolment is a hard DELETE with no rejection memory — there is no producer
+// that could re-propose an enrollment, and ADR-0039 forbids one existing.
+export const brainEnrollment = pgTable(
+  "brain_enrollment",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    // `semantic_entities.name`, not the row id: an entity is re-published on
+    // every semantic-layer sync, so an id reference would silently un-enroll a
+    // workspace on its next `atlas init`.
+    entity: text("entity").notNull(),
+    // The BARE dimension/measure/metric name, matching ADR-0037 §4's emission
+    // contract exactly. Entity qualification lives in `entity` beside it, where
+    // it scopes the enrollment without entering the emitted surface.
+    dimension: text("dimension").notNull(),
+    enrolledAt: timestamp("enrolled_at", { withTimezone: true }).notNull().defaultNow(),
+    enrolledBy: text("enrolled_by").notNull(),
+    note: text("note"),
+  },
+  (t) => [
+    // The pair IS the identity, which is what makes the region import a plain
+    // union rather than a reconciliation.
+    primaryKey({ columns: [t.workspaceId, t.entity, t.dimension] }),
+    // `''` on either half is a pair the producer can never match, so it would
+    // sit in the list looking enrolled and reach nothing.
+    check("ck_brain_enrollment_names_present", sql`entity <> '' AND dimension <> ''`),
+    // An enrollment with no author is not one — `brainPredicateCardinality`'s
+    // rule. `NOT NULL` alone would admit `''`.
+    check("ck_brain_enrollment_attributed", sql`enrolled_by <> ''`),
+    // No secondary index: the PK above IS `(workspace_id, entity, dimension)`,
+    // which is the producer's listing order. See the migration header.
+  ],
+);

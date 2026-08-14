@@ -71,6 +71,14 @@ const RECONCILED_SECTIONS = [
   // unreconciled scope row has, by definition, not yet turned its allowlist into
   // exclusions, so there is nothing for the counted section to under-report.
   "brainSlackChannelExclusions",
+  // #5196, ADR-0039. Reconciled for the mirror image of the reason above: a
+  // dropped exclusion makes the destination ingest MORE than a human agreed to,
+  // and a dropped enrollment makes its warehouse producer reach NOTHING. The
+  // second is the silent one — an unenrolled workspace and a working one are
+  // indistinguishable from inside the code, which is exactly why the ADR makes
+  // the milestone's proof a prod row count — so a target that quietly landed
+  // none of them would otherwise report a clean cutover.
+  "brainEnrollments",
 ] as const satisfies readonly (keyof ExportManifest["counts"] & keyof ImportResult)[];
 
 type RefusalCapableSection = {
@@ -116,11 +124,13 @@ const REFUSAL_ACCOUNTING_SECTIONS: ReadonlySet<string> = new Set(REFUSAL_ACCOUNT
  * exactly when `ImportResult` gives it a REQUIRED `refused: number`. An OPTIONAL
  * one falls out of the conditional below and would be missed — which is the
  * argument for declaring the counter required on the wire type in the first
- * place. Only
- * `brainVocabularyEdges` does — an alias edge is a human review decision and two
- * regions can hold contradictory ones, so the destination refuses one and logs
- * it. Everywhere else `imported + skipped` accounts for every row and a
- * `refused` in the response is a target bug.
+ * place. TWO sections do — `brainVocabularyEdges` and, since #5203,
+ * `brainSlackChannelExclusions`; both are listed in `REFUSAL_ACCOUNTING` below.
+ * An alias edge is a human review decision and two regions can hold
+ * contradictory ones, so the destination refuses one and logs it. Everywhere
+ * else — `brainEnrollments` included, whose pair IS its whole key so two regions
+ * cannot contradict each other — `imported + skipped` accounts for every row and
+ * a `refused` in the response is a target bug.
  *
  * The distinction decides whether a shortfall ABORTS a cutover, so a second
  * section growing the counter has to be a deliberate decision rather than a

@@ -351,7 +351,12 @@ describe("runMigrations", () => {
     //   `catalog:slack-history`, the second credential-free Slack install whose
     //   absence let the brain report green while ingesting nothing for four
     //   days, and moves ingest scope onto the bot's channel membership) = 199.
-    expect(count).toBe(199);
+    //   Plus 0199 (brain_enrollment — #5196 / ADR-0039's enrollment surface, the
+    //   `(entity, dimension)` pairs a human names as the tier-1 warehouse
+    //   producer's reach. Not a content-mode table and not an invalidation
+    //   authority: un-enrolling deletes a row here and leaves every published
+    //   fact untouched) = 200.
+    expect(count).toBe(200);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -579,6 +584,7 @@ describe("runMigrations", () => {
         "0196_builtin_roles_dashboards_flags.sql",
         "0197_builtin_roles_dashboards_share.sql",
         "0198_brain_slack_membership_scope.sql",
+        "0199_brain_enrollment.sql",
       ],
     });
 

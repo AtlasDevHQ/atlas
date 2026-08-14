@@ -6,6 +6,7 @@
  */
 
 import { describe, it, expect } from "bun:test";
+import { BRAIN_ENROLLMENT_NAME_MAX } from "@useatlas/schemas";
 import type {
   ExportBundle,
   ExportedLearnedPattern,
@@ -263,6 +264,7 @@ describe("bundle round-trip shape", () => {
       // Three counters here alone (#5036).
       brainVocabularyEdges: { imported: 1, skipped: 4, refused: 6 },
       brainSlackChannelExclusions: { imported: 2, skipped: 1, refused: 0 },
+      brainEnrollments: { imported: 3, skipped: 1 },
     };
 
     const total = (r: { imported: number; skipped: number }) => r.imported + r.skipped;
@@ -1534,6 +1536,153 @@ describe("validateBundle — the vocabulary (#5022)", () => {
   it("accepts a bundle with no vocabulary section at all", () => {
     // A pre-#5022 producer. The section is optional on the wire for the same
     // reason every other v2 section is.
+    expect(validateBundle(validV2Bundle()).ok).toBe(true);
+  });
+});
+
+/**
+ * The enrolled reach's validation arm (#5196, ADR-0039).
+ *
+ * The region import is the SECOND write door into `brain_enrollment` — the admin
+ * route is the first, and it goes through `normalizeEnrollmentPair`, which this
+ * path does not. So these branches are the only thing standing between a bundle
+ * and a row, and each one exists to stop a specific bad row:
+ *
+ *   - an empty half hits `ck_brain_enrollment_names_present` as a 23514
+ *     **mid-transaction**, aborting an entire live region cutover over one row;
+ *   - an UNTRIMMED half satisfies that CHECK (`entity <> ''` admits `"   "`)
+ *     and lands a pair that sits in the destination's list looking live while
+ *     the producer's `has()` can never match it;
+ *   - an empty `enrolledBy` hits `ck_brain_enrollment_attributed` — authority
+ *     nobody can be shown to have granted.
+ */
+describe("validateBundle — the enrolled reach (#5196)", () => {
+  const enrollmentBundle = (rows: unknown[]): unknown => ({
+    ...validV2Bundle(),
+    brainEnrollments: rows,
+  });
+
+  const validEnrollment = () => ({
+    entity: "accounts",
+    dimension: "arr_band",
+    enrolledAt: "2026-08-14T00:00:00Z",
+    enrolledBy: "user-1",
+    note: null,
+  });
+
+  it("accepts a well-formed enrollment section (the control)", () => {
+    // Without this, every refusal below is satisfied by a validator that
+    // rejects the section unconditionally.
+    const result = validateBundle(
+      enrollmentBundle([validEnrollment(), { ...validEnrollment(), dimension: "status", note: "why" }]),
+    );
+    expect(result.ok).toBe(true);
+    // …and the section SURVIVED. `ok: true` alone would pass a validator that
+    // accepted the bundle while silently dropping the reach — which lands a
+    // destination whose producer emits nothing, indistinguishable from a
+    // working one.
+    if (result.ok) expect(result.bundle.brainEnrollments).toHaveLength(2);
+  });
+
+  it("refuses a non-array section", () => {
+    for (const bad of ["nope", 42, {}]) {
+      const result = validateBundle(enrollmentBundle(bad as never));
+      expect(result.ok, `section ${JSON.stringify(bad)} was accepted`).toBe(false);
+      if (!result.ok) expect(result.error).toContain("brainEnrollments");
+    }
+  });
+
+  it("refuses a non-object element", () => {
+    for (const bad of [null, 42, "row", []]) {
+      const result = validateBundle(enrollmentBundle([bad]));
+      expect(result.ok, `element ${JSON.stringify(bad)} was accepted`).toBe(false);
+      if (!result.ok) expect(result.error).toContain("brainEnrollments[0]");
+    }
+  });
+
+  it("refuses an empty or non-string half, naming the field AND the row", () => {
+    for (const field of ["entity", "dimension"] as const) {
+      for (const bad of ["", 42, null, undefined]) {
+        // Row INDEX 1, so an `i`-vs-`0` slip in the loop goes red. A validator
+        // that always reported row 0 would pass a bare field-name assertion.
+        const result = validateBundle(
+          enrollmentBundle([validEnrollment(), { ...validEnrollment(), [field]: bad }]),
+        );
+        expect(result.ok, `${field}=${JSON.stringify(bad)} was accepted`).toBe(false);
+        if (!result.ok) expect(result.error).toContain(`brainEnrollments[1].${field}`);
+      }
+    }
+  });
+
+  it("refuses an untrimmed half — the CHECK would admit it and the producer never would", () => {
+    for (const field of ["entity", "dimension"] as const) {
+      for (const bad of ["  accounts", "accounts  ", "   "]) {
+        const result = validateBundle(enrollmentBundle([{ ...validEnrollment(), [field]: bad }]));
+        expect(result.ok, `${field}=${JSON.stringify(bad)} was accepted`).toBe(false);
+      }
+    }
+    // The control: the same names WITHOUT surrounding whitespace are fine, so
+    // this is a whitespace rule rather than a validator that refuses everything.
+    expect(validateBundle(enrollmentBundle([validEnrollment()])).ok).toBe(true);
+  });
+
+  it("refuses an over-long half at the same bound the seam enforces", () => {
+    const tooLong = "x".repeat(BRAIN_ENROLLMENT_NAME_MAX + 1);
+    const atBound = "x".repeat(BRAIN_ENROLLMENT_NAME_MAX);
+    expect(validateBundle(enrollmentBundle([{ ...validEnrollment(), entity: tooLong }])).ok).toBe(false);
+    // The off-by-one control — `>` vs `>=` is the mistake this branch makes, and
+    // without the at-bound case both spellings pass.
+    expect(validateBundle(enrollmentBundle([{ ...validEnrollment(), entity: atBound }])).ok).toBe(true);
+  });
+
+  it("refuses an unattributed enrollment, whitespace included", () => {
+    // ⚠️ `"   "` is the one that matters and the one a bare `=== ""` admits.
+    // It passes `ck_brain_enrollment_attributed` (`enrolled_by <> ''`) too, so
+    // it lands STORED — an enrollment that looks attributed and names nobody,
+    // on the column an audit of "who authorized this?" reads first.
+    for (const bad of ["", "   ", "\t", 42, null, undefined]) {
+      const result = validateBundle(enrollmentBundle([{ ...validEnrollment(), enrolledBy: bad }]));
+      expect(result.ok, `enrolledBy=${JSON.stringify(bad)} was accepted`).toBe(false);
+      if (!result.ok) expect(result.error).toContain("enrolledBy");
+    }
+    // The control: a real author is accepted, so this is an attribution rule
+    // rather than a validator that refuses the field outright.
+    expect(validateBundle(enrollmentBundle([validEnrollment()])).ok).toBe(true);
+  });
+
+  it("refuses a NUL byte — the rule lives in the seam and reaches this door", () => {
+    // The falsifier for the two doors sharing ONE rule set. The seam's
+    // `normalizeEnrollmentPair` owns this rule; this arm never restates it, so
+    // the test goes red the moment the import stops calling the seam. That is
+    // exactly the regression the previous cut shipped: a rule added at one door
+    // under a comment claiming both doors carried it.
+    for (const field of ["entity", "dimension"] as const) {
+      const result = validateBundle(
+        enrollmentBundle([{ ...validEnrollment(), [field]: "acc\u0000ounts" }]),
+      );
+      expect(result.ok, `${field} with a NUL was accepted`).toBe(false);
+      // The seam's own sentence travels out, rather than a second wording here.
+      if (!result.ok) expect(result.error).toContain("NUL");
+    }
+  });
+
+  it("accepts an absent or null note and refuses a non-string one", () => {
+    const { note: _dropped, ...noNote } = validEnrollment();
+    expect(validateBundle(enrollmentBundle([noNote])).ok).toBe(true);
+    expect(validateBundle(enrollmentBundle([{ ...validEnrollment(), note: null }])).ok).toBe(true);
+    expect(validateBundle(enrollmentBundle([{ ...validEnrollment(), note: 42 }])).ok).toBe(false);
+  });
+
+  it("refuses a missing or unparseable enrolledAt", () => {
+    const { enrolledAt: _dropped, ...noStamp } = validEnrollment();
+    expect(validateBundle(enrollmentBundle([noStamp])).ok).toBe(false);
+    expect(validateBundle(enrollmentBundle([{ ...validEnrollment(), enrolledAt: "yesterday" }])).ok).toBe(
+      false,
+    );
+  });
+
+  it("accepts a bundle with no enrollment section at all", () => {
+    // A pre-#5196 producer. Optional on the wire like every other v2 section.
     expect(validateBundle(validV2Bundle()).ok).toBe(true);
   });
 });

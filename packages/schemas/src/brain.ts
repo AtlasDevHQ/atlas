@@ -37,6 +37,14 @@ import type {
   BrainFactEpisodeView,
   BrainFactOversight,
   BrainFactOversightBucket,
+  BrainEnrollmentCandidateKind,
+  BrainEnrollmentDimensionOption,
+  BrainEnrollmentDimensionsResponse,
+  BrainEnrollmentEntitiesResponse,
+  BrainEnrollmentEntityOption,
+  BrainEnrollmentEntry,
+  BrainEnrollmentListResponse,
+  BrainEnrollmentWriteResponse,
   BrainFactOversightBucketKind,
   BrainFactOversightLabelPolicy,
   BrainFactOversightTotals,
@@ -1448,3 +1456,118 @@ export const BrainSlackScopeVitalsSchema = z.object({
   // probe verdict, and the manager surface will own the rest.
   channels: z.array(z.object({ health: z.enum(["ok", "error"]).nullable() })),
 });
+
+// ---------------------------------------------------------------------------
+// Enrollment — the warehouse producer's reach (#5196, ADR-0039)
+// ---------------------------------------------------------------------------
+
+/**
+ * Length bound on either half of a pair.
+ *
+ * **The only DECLARATION.** `lib/brain/enrollment.ts` re-exports it as
+ * `ENROLLMENT_NAME_MAX` rather than declaring its own — the forbidden direction
+ * is `@useatlas/schemas` → `@atlas/api`, and the one used here is the reverse,
+ * which `lib/` already takes in a dozen places.
+ *
+ * An earlier cut declared the number twice and claimed a test pinned them
+ * together; no such test existed. Its only other appearance was a literal inside
+ * a `mock.module()` factory replacing the real module — a fixture that agrees by
+ * construction and can never disagree — and that copy now imports this constant
+ * too. "Declaration" rather than "spelling" is deliberate: a mock is free to
+ * state a DIFFERENT bound on purpose, and this comment should not read as a
+ * promise that no test ever will.
+ */
+export const BRAIN_ENROLLMENT_NAME_MAX = 200;
+
+export const BRAIN_ENROLLMENT_CANDIDATE_KINDS = [
+  "dimension",
+  "measure",
+] as const satisfies readonly BrainEnrollmentCandidateKind[];
+
+/**
+ * Compile error if a kind is added to the union without joining the tuple.
+ *
+ * The load-bearing pin, not decoration: `satisfies z.ZodType<T, unknown>` below
+ * is covariant in the output type, so a schema enum that is a strict SUBSET of
+ * the wire union still compiles — and then throws at the route's response parse.
+ */
+type _BrainEnrollmentKindsCovered = [
+  Exclude<BrainEnrollmentCandidateKind, (typeof BRAIN_ENROLLMENT_CANDIDATE_KINDS)[number]>,
+] extends [never]
+  ? true
+  : never;
+const _brainEnrollmentKindsCovered: _BrainEnrollmentKindsCovered = true;
+void _brainEnrollmentKindsCovered;
+
+export const BrainEnrollmentEntrySchema = z.strictObject({
+  entity: z.string(),
+  dimension: z.string(),
+  enrolledAt: z.string(),
+  enrolledBy: z.string(),
+  note: z.string().nullable(),
+}) satisfies z.ZodType<BrainEnrollmentEntry, unknown>;
+
+export const BrainEnrollmentListResponseSchema = z.strictObject({
+  enrollments: z.array(BrainEnrollmentEntrySchema),
+  entityCount: z.number().int().nonnegative(),
+}) satisfies z.ZodType<BrainEnrollmentListResponse, unknown>;
+
+export const BrainEnrollmentEntityOptionSchema = z.strictObject({
+  name: z.string(),
+  table: z.string(),
+  description: z.string().nullable(),
+}) satisfies z.ZodType<BrainEnrollmentEntityOption, unknown>;
+
+export const BrainEnrollmentEntitiesResponseSchema = z.strictObject({
+  entities: z.array(BrainEnrollmentEntityOptionSchema),
+}) satisfies z.ZodType<BrainEnrollmentEntitiesResponse, unknown>;
+
+export const BrainEnrollmentDimensionOptionSchema = z.strictObject({
+  name: z.string(),
+  kind: z.enum(BRAIN_ENROLLMENT_CANDIDATE_KINDS),
+  type: z.string().nullable(),
+  description: z.string().nullable(),
+  enrolled: z.boolean(),
+}) satisfies z.ZodType<BrainEnrollmentDimensionOption, unknown>;
+
+export const BrainEnrollmentDimensionsResponseSchema = z.strictObject({
+  entity: z.string(),
+  dimensions: z.array(BrainEnrollmentDimensionOptionSchema),
+}) satisfies z.ZodType<BrainEnrollmentDimensionsResponse, unknown>;
+
+/**
+ * The enroll/un-enroll request body.
+ *
+ * `min(1)` on both halves, and it is the schema's real work rather than
+ * boilerplate: `''` is a pair the producer can never match, so a tolerated empty
+ * half would store an enrollment that sits in the list looking live and reaches
+ * nothing. The destination's `ck_brain_enrollment_names_present` refuses it too,
+ * as a 500 with a Postgres message.
+ */
+export const BrainEnrollmentWriteRequestSchema = z.strictObject({
+  entity: z.string().min(1).max(BRAIN_ENROLLMENT_NAME_MAX),
+  dimension: z.string().min(1).max(BRAIN_ENROLLMENT_NAME_MAX),
+  /** Why this pair is worth holding claims about. Absent on the un-enroll verb. */
+  note: z.string().max(500).nullish(),
+});
+
+/**
+ * The un-enroll body — the same pair, and deliberately NO `note`.
+ *
+ * `strictObject` makes the omission a 422 rather than a silent discard. An
+ * earlier cut shared one schema across both verbs, so un-enrolling with a
+ * reason was accepted and the reason thrown away — which reads as "Atlas
+ * recorded why I stopped this" and is the one thing this table does not store.
+ * Un-enrolment leaves no row behind to carry a note, by design (migration
+ * 0199's header), so the honest answer is to refuse the field.
+ */
+export const BrainEnrollmentUnenrollRequestSchema = z.strictObject({
+  entity: z.string().min(1).max(BRAIN_ENROLLMENT_NAME_MAX),
+  dimension: z.string().min(1).max(BRAIN_ENROLLMENT_NAME_MAX),
+});
+
+export const BrainEnrollmentWriteResponseSchema = z.strictObject({
+  entity: z.string(),
+  dimension: z.string(),
+  changed: z.boolean(),
+}) satisfies z.ZodType<BrainEnrollmentWriteResponse, unknown>;

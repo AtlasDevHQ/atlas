@@ -30081,6 +30081,749 @@
         "operationId": "postAdminBrainSlackChannelsInclude"
       }
     },
+    "/api/v1/admin/brain-enrollment": {
+      "get": {
+        "tags": [
+          "Admin — Brain"
+        ],
+        "summary": "List the workspace's enrolled (entity, dimension) pairs",
+        "description": "The warehouse producer's reach (ADR-0039). It emits claims for these pairs and for no others; an unenrolled dimension is outside its reach rather than hidden or pending. `entityCount` is the distinct entity set the producer evaluates its fail-closed ambiguity rule across.",
+        "responses": {
+          "200": {
+            "description": "Enrolled pairs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "enrollments": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "entity": {
+                            "type": "string"
+                          },
+                          "dimension": {
+                            "type": "string"
+                          },
+                          "enrolledAt": {
+                            "type": "string"
+                          },
+                          "enrolledBy": {
+                            "type": "string"
+                          },
+                          "note": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "entity",
+                          "dimension",
+                          "enrolledAt",
+                          "enrolledBy",
+                          "note"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "entityCount": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "enrollments",
+                    "entityCount"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminBrainEnrollment"
+      }
+    },
+    "/api/v1/admin/brain-enrollment/entities": {
+      "get": {
+        "tags": [
+          "Admin — Brain"
+        ],
+        "summary": "List the entities a pair could be enrolled from",
+        "description": "The published semantic layer's entities. ENUMERATION ONLY — listing an entity enrolls nothing, and there is no endpoint that enrolls a set the server chose.",
+        "responses": {
+          "200": {
+            "description": "Enrollable entities",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "entities": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "table": {
+                            "type": "string"
+                          },
+                          "description": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "table",
+                          "description"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "entities"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminBrainEnrollmentEntities"
+      }
+    },
+    "/api/v1/admin/brain-enrollment/dimensions": {
+      "get": {
+        "tags": [
+          "Admin — Brain"
+        ],
+        "summary": "List one entity's enrollable dimensions and measures",
+        "description": "Each carries whether it is already enrolled, computed server-side against the same rows the list endpoint returns. An entity with no dimensions answers 200 with an empty list; an entity this workspace's published semantic layer has never heard of answers 404 — they are different facts and only one of them is a mistake the caller made.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "example": "accounts"
+            },
+            "required": true,
+            "name": "entity",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Enrollable dimensions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "entity": {
+                      "type": "string"
+                    },
+                    "dimensions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "dimension",
+                              "measure"
+                            ]
+                          },
+                          "type": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "description": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "enrolled": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "kind",
+                          "type",
+                          "description",
+                          "enrolled"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "entity",
+                    "dimensions"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such entity in the published semantic layer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The entity name resolves in more than one connection group (#2412), so which one to enroll from is ambiguous. Enrollment stores `(workspace, entity, dimension)` with no group column, so this surface cannot express the choice.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminBrainEnrollmentDimensions"
+      }
+    },
+    "/api/v1/admin/brain-enrollment/enroll": {
+      "post": {
+        "tags": [
+          "Admin — Brain"
+        ],
+        "summary": "Bring one (entity, dimension) pair into the producer's reach",
+        "description": "Idempotent. `changed: false` means the pair was already enrolled and nothing — recorded author and note included — changed. The pair must exist in the published semantic layer: an enrollment for a dimension Atlas cannot see inserts cleanly and reaches nothing, which looks exactly like success.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "entity": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "dimension": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "note": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "maxLength": 500
+                  }
+                },
+                "required": [
+                  "entity",
+                  "dimension"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Enrolled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "entity": {
+                      "type": "string"
+                    },
+                    "dimension": {
+                      "type": "string"
+                    },
+                    "changed": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "entity",
+                    "dimension",
+                    "changed"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid pair or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not entitled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such (entity, dimension) in the published semantic layer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The entity name resolves in more than one connection group (#2412). Declared on this WRITE route because the pre-write semantic-layer check runs the same lookup as `GET /dimensions`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminBrainEnrollmentEnroll"
+      }
+    },
+    "/api/v1/admin/brain-enrollment/unenroll": {
+      "post": {
+        "tags": [
+          "Admin — Brain"
+        ],
+        "summary": "Take one (entity, dimension) pair out of the producer's reach",
+        "description": "Stops FUTURE emission and does nothing else. Facts the producer already emitted and a human already published stay published, stay visible, and keep their validity windows — un-enrolling is not an invalidation authority. `changed: false` means the pair was not enrolled.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "entity": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "dimension": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  }
+                },
+                "required": [
+                  "entity",
+                  "dimension"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Un-enrolled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "entity": {
+                      "type": "string"
+                    },
+                    "dimension": {
+                      "type": "string"
+                    },
+                    "changed": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "entity",
+                    "dimension",
+                    "changed"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid pair or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not entitled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminBrainEnrollmentUnenroll"
+      }
+    },
     "/api/v1/admin/sessions": {
       "get": {
         "tags": [
@@ -57385,6 +58128,9 @@
                           },
                           "brainSlackChannelExclusions": {
                             "type": "number"
+                          },
+                          "brainEnrollments": {
+                            "type": "number"
                           }
                         },
                         "required": [
@@ -57455,7 +58201,11 @@
                     "type": "array",
                     "items": {}
                   },
-                  "brainSlackIngestScope": {}
+                  "brainSlackIngestScope": {},
+                  "brainEnrollments": {
+                    "type": "array",
+                    "items": {}
+                  }
                 },
                 "required": [
                   "manifest",
@@ -57693,6 +58443,21 @@
                         "skipped",
                         "refused"
                       ]
+                    },
+                    "brainEnrollments": {
+                      "type": "object",
+                      "properties": {
+                        "imported": {
+                          "type": "number"
+                        },
+                        "skipped": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "imported",
+                        "skipped"
+                      ]
                     }
                   },
                   "required": [
@@ -57709,7 +58474,8 @@
                     "brainEdges",
                     "factAudienceMembers",
                     "brainVocabularyEdges",
-                    "brainSlackChannelExclusions"
+                    "brainSlackChannelExclusions",
+                    "brainEnrollments"
                   ]
                 }
               }

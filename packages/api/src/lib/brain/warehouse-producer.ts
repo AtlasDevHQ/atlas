@@ -90,6 +90,21 @@ import { WAREHOUSE_SOURCE } from "@atlas/api/lib/brain/sources";
 const log = createLogger("brain.warehouse-producer");
 
 /**
+ * The producer's own contract broke — a statement and its reader disagree.
+ *
+ * ⚠️ Its own class because the per-entity `catch` that turns a transaction failure
+ * into a refusal would otherwise SWALLOW it. A database failure is an operational
+ * event and refusing that entity is right; a `RETURNING` clause the reader cannot
+ * parse is a DEFECT, and turning it into a per-entity refusal would make every
+ * entity of every run refuse quietly, forever, on a producer that looks merely
+ * unlucky. It is the one error that catch RE-THROWS; reach and vocabulary failures
+ * propagate too, from outside the loop.
+ */
+export class WarehouseProducerContractError extends Error {
+  override readonly name = "WarehouseProducerContractError";
+}
+
+/**
  * The `producer` label stamped into every fact's provenance.
  *
  * Versioned like `extraction:v1` rather than bare, because the emission contract
@@ -239,7 +254,18 @@ function namedEntries(raw: unknown): { name: string; entry: Record<string, unkno
 export type WarehouseEntityLookup =
   | { readonly kind: "found"; readonly entity: WarehouseEntity }
   | { readonly kind: "not-published" }
-  | { readonly kind: "unreadable"; readonly why: string };
+  /**
+   * `cause` beside `why`, and the split earns its two lines. `why` is the sentence
+   * the operator reads; `cause` is what the plan, a test, and any future consumer
+   * branch on — without it, asserting WHICH cause fired means matching prose, and
+   * the refusal could not withhold the driver's text on one arm while keeping it on
+   * the other.
+   */
+  | {
+      readonly kind: "unreadable";
+      readonly cause: "load-threw" | "no-table";
+      readonly why: string;
+    };
 
 /**
  * Narrow one entity's YAML to {@link WarehouseEntity}, or `null` when it carries
@@ -521,7 +547,7 @@ export function planWarehouseEmission(
 /** The column alias the subject arrives under. */
 export const SUBJECT_ALIAS = "atlas_brain_subject";
 
-/** The per-dimension alias prefix — positional, so no warehouse identifier is interpolated twice. */
+/** The per-dimension alias prefix — positional; see {@link buildSnapshotSql}. */
 export const DIMENSION_ALIAS_PREFIX = "atlas_brain_d";
 
 /**
@@ -586,7 +612,13 @@ export function warehouseSurface(value: unknown): string | null {
   switch (typeof value) {
     case "string": {
       const trimmed = value.trim();
-      return trimmed === "" ? null : trimmed;
+      if (trimmed === "") return null;
+      // ⚠️ NUL is not whitespace, so it survives the trim — and Postgres refuses it
+      // (22021), which aborts the whole entity's transaction rather than dropping one
+      // cell. MySQL and ClickHouse `text` both admit it, so this is reachable for two
+      // of the three supported dialects. It also silently breaks `ID_SEPARATOR`'s
+      // uniqueness argument, which assumes no component can contain one.
+      return trimmed.includes("\u0000") ? null : trimmed;
     }
     case "number":
       return Number.isFinite(value) ? String(value) : null;
@@ -618,6 +650,11 @@ export function warehouseSurface(value: unknown): string | null {
  */
 function isAbsentCell(value: unknown): boolean {
   if (value === null || value === undefined) return true;
+  // ⚠️ A NON-FINITE number and an Invalid Date are ordinary too. `NaN` out of a
+  // `double precision` column is that column's null; `0000-00-00` out of MySQL is an
+  // Invalid Date. The COLUMN is fine and one row is bad.
+  if (typeof value === "number" && !Number.isFinite(value)) return true;
+  if (value instanceof Date && Number.isNaN(value.getTime())) return true;
   // ⚠️ A BLANK STRING is absent, not unsurfaceable, and leaving it on the other
   // side reproduced the exact defect this split exists to remove — one layer in.
   // `''` and `'   '` are what a CSV or ETL load writes where a source system has a
@@ -657,10 +694,7 @@ const ID_SEPARATOR = "\u0000";
  * on every run, which is what makes a re-emission corroborate its predecessor
  * instead of contradicting it.
  *
- * NUL-separated for `enrollment.ts`'s reason exactly: it is the one byte a
- * Postgres `text` value cannot hold, so no pair of components can be re-cut to
- * build another pair's id. With a printable separator, entity `a` + key `b:c` and
- * entity `a:b` + key `c` would be one identity.
+ * NUL-separated — see {@link ID_SEPARATOR}.
  *
  * The id reaches `subject_cmp` and NOTHING else — no slot key, no surface column,
  * no join arm. An id at a slot would orphan the existing corpus the moment it
@@ -720,6 +754,14 @@ export interface WarehouseClaims {
    * for why this is NOT the same number as "cells that were empty".
    */
   readonly unsurfaceableCells: number;
+  /**
+   * Rows whose PRIMARY KEY held such a value — the same distinction at the subject
+   * position, where it means the enrolled entity's key column is an unusable type
+   * and NOTHING about that entity can ever be emitted.
+   */
+  readonly unsurfaceableKeyRows: number;
+  /** Which dimension each unsurfaceable cell belonged to — the log's actionable half. */
+  readonly unsurfaceableByDimension: ReadonlyMap<string, number>;
 }
 
 /**
@@ -771,24 +813,29 @@ export function buildWarehouseClaims(params: {
   let unidentifiedRows = 0;
   let collidingSubjectRows = 0;
   let unsurfaceableCells = 0;
+  let unsurfaceableKeyRows = 0;
+  const unsurfaceableByDimension = new Map<string, number>();
 
   for (const row of rows) {
     const rawKey = row[SUBJECT_ALIAS];
     const subject = warehouseSurface(rawKey);
     if (subject === null) {
-      // A row whose primary key is NULL, blank, or a shape no surface can be made
-      // of. It is not an error — it is a row nothing can be said ABOUT — so it is
-      // counted and reported rather than logged per row or thrown on.
-      unidentifiedRows++;
+      // The SAME split the cell position makes, and leaving it folded here was the
+      // cell fix closing its column rather than its class: a `bytea` primary key
+      // produces `unidentifiedRows: 900`, no refusal and no log, which is the
+      // "reads nine hundred rows and is indistinguishable from an empty column"
+      // sentence this was all written against.
+      if (isAbsentCell(rawKey)) unidentifiedRows++;
+      else unsurfaceableKeyRows++;
       continue;
     }
-    // ⚠️ The id is derived from the RAW key and the subject SURFACE is trimmed, so
-    // the two deliberately disagree for `42` beside ` 42 `. That disagreement is
-    // the detection: those are two different warehouse rows, and deriving the id
-    // from the trimmed surface would give them one identity silently — a false
-    // `same` at `subject_cmp`, which is the direction that MERGES two entities
-    // with no inverse. Passing the raw key makes the collision visible to the
-    // guard below instead.
+    // The id is minted from the RAW key while the subject surface is trimmed, so
+    // `42` and ` 42 ` mint different ids. That does NOT drive collision detection —
+    // the guard below drops the second row on the trimmed surface and never looks at
+    // an id. It decides only which raw spelling the surviving row's id carries, and
+    // it is deliberate: deriving the id from the trimmed surface would give two
+    // genuinely different warehouse rows one identity, which is a false `same` at
+    // `subject_cmp` and the direction that MERGES two entities with no inverse.
     const rowId = warehouseRowId(
       workspaceId,
       plan.entity.name,
@@ -822,8 +869,11 @@ export function buildWarehouseClaims(params: {
       const object = warehouseSurface(cell);
       if (object === null) {
         // A value that EXISTS and cannot be made into a claim — the enrollment
-        // mistake. Counted, reported and logged, because it is silent otherwise.
+        // mistake. Counted PER DIMENSION as well as in total: the operator's action
+        // is to un-enroll ONE pair, and a warn naming all eight enrolled dimensions
+        // stops one step short of telling them which.
         unsurfaceableCells++;
+        unsurfaceableByDimension.set(dim.name, (unsurfaceableByDimension.get(dim.name) ?? 0) + 1);
         continue;
       }
       candidates.push({
@@ -855,7 +905,15 @@ export function buildWarehouseClaims(params: {
     }
   }
 
-  return { candidates, subjectIds, unidentifiedRows, collidingSubjectRows, unsurfaceableCells };
+  return {
+    candidates,
+    subjectIds,
+    unidentifiedRows,
+    collidingSubjectRows,
+    unsurfaceableCells,
+    unsurfaceableKeyRows,
+    unsurfaceableByDimension,
+  };
 }
 
 /**
@@ -929,16 +987,32 @@ declare const snapshotSqlBrand: unique symbol;
  * {@link defaultValidateSnapshotSql}, or from a cast — and a cast is greppable,
  * deliberate, and has to be argued for in review, which is exactly the difference
  * between an invariant enforced by the type and one enforced by convention.
- * `grep 'as SnapshotSqlVerdict'` is the whole list of places the gate is bypassed:
- * one production mint here, and three test harnesses that must bypass the real
- * gate because it is whitelist-scoped and a test schema has no whitelist.
+ *
+ * ⚠️ **What the brand does and does not close, measured rather than asserted.**
+ * REFUSED with no cast: an object literal, `as const`, `satisfies`, a spread of the
+ * refusing arm, `unknown`, generic-inference laundering — and, the useful one,
+ * `(async () => ({valid: true})) as SnapshotSqlValidator`, which does not compile
+ * either. ACCEPTED without a `as SnapshotSqlVerdict` hit: `as unknown as`, and any
+ * `any`-typed wiring (`JSON.parse`, an untyped mock, a dynamic `import()` of a
+ * plugin). So the bypass list is `as SnapshotSqlVerdict` plus `as unknown as` plus
+ * `any` — an earlier draft of this line claimed the first alone was the whole list,
+ * which was a comment stating a universal the type does not deliver.
+ *
+ * `__tests__/warehouse-producer-bypass.test.ts` pins the `as SnapshotSqlVerdict`
+ * sites, which is the half a grep can actually hold.
  *
  * The REFUSING arm is deliberately unbranded: refusing more is always safe, so
  * there is no property to forge.
  */
 export type SnapshotSqlVerdict =
   | { readonly valid: true; readonly [snapshotSqlBrand]: true }
-  | { readonly valid: false; readonly error?: string };
+  // ⚠️ `error` is REQUIRED. The wrapped `SQLValidationResult` makes it required on
+  // its failing arm, so an optional here made the seam weaker than the thing it
+  // wraps — and the run loop paid for it with a `?? "no reason given"` fallback, on
+  // a PERMANENT refusal whose whole message is "re-running will not change this".
+  // A generic message is exactly what CLAUDE.md forbids, and the illegal state that
+  // produced it is removable for free: every producer already supplies a reason.
+  | { readonly valid: false; readonly error: string };
 
 /** The SELECT-only / single-statement / whitelist gate, as a seam. */
 export type SnapshotSqlValidator = (
@@ -994,6 +1068,8 @@ export interface WarehouseEntityOutcome {
   readonly collidingSubjectRows: number;
   /** See {@link WarehouseClaims.unsurfaceableCells}. */
   readonly unsurfaceableCells: number;
+  /** See {@link WarehouseClaims.unsurfaceableKeyRows}. */
+  readonly unsurfaceableKeyRows: number;
   /** Predicates whose `warehouse_structural` cardinality proposal was newly raised. */
   readonly cardinalityProposed: readonly string[];
 }
@@ -1067,7 +1143,7 @@ async function insertSnapshotEpisode(
   if (rows.length === 0) return null;
   const row = rows[0];
   if (!isRecord(row) || typeof row.id !== "string") {
-    throw new Error(
+    throw new WarehouseProducerContractError(
       "WAREHOUSE_EPISODE_INSERT_SQL returned a row with no string id — its RETURNING clause and this " +
         "reader disagree. Refusing to continue: the alternative is reporting the entity as already " +
         "recorded, which is not what happened.",
@@ -1086,13 +1162,13 @@ async function insertSnapshotEpisode(
  * its cardinality proposals are atomic, which is what stops a snapshot episode
  * existing with no claims hanging off it.
  *
- * Errors from a snapshot, from its validation, and from an entity lookup are
- * caught PER ENTITY and become a typed refusal — the run continues, nothing is
- * stamped, and every pair of that entity is accounted for. Errors from the reach,
- * the vocabulary or a transaction PROPAGATE: an empty reach and a failed reach read
- * produce identical silence (ADR-0039's *"a producer nobody enrolls anything into
- * leaves M4 exactly as dead as it is today, with every test green"*), and a
- * swallowed one would be indistinguishable from the honest zero.
+ * Errors from a snapshot, from its validation, from an entity lookup and from an
+ * entity's TRANSACTION are caught PER ENTITY and become a typed refusal — the run
+ * continues, nothing is stamped, and every pair of that entity is accounted for.
+ * Errors from the reach and the vocabulary PROPAGATE: an empty reach and a failed
+ * reach read produce identical silence (ADR-0039's *"a producer nobody enrolls
+ * anything into leaves M4 exactly as dead as it is today, with every test green"*),
+ * and a swallowed one would be indistinguishable from the honest zero.
  */
 export async function runWarehouseProducer(
   context: WarehouseRunContext,
@@ -1135,11 +1211,20 @@ export async function runWarehouseProducer(
           { ...runLog, entity: name, err },
           "Warehouse producer: the entity lookup failed — its pairs are refused, the rest of the run continues",
         );
+        // ⚠️ TWO things this no longer does. It does not interpolate the caught
+        // error's text — that is an internal-DB-backed loader, so a pg failure would put a host,
+        // a role or a stack on the wire, and the `snapshot-failed` arm sixty lines
+        // down explicitly refuses to do exactly that. And it does not ASSERT the
+        // multi-group cause: the cause here is whatever threw, so volunteering the
+        // common one sent an admin auditing connection groups after an internal-DB
+        // blip. The Error is in the log above; the wire gets advice and a pointer.
         entityShapes.set(name, {
           kind: "unreadable",
+          cause: "load-threw",
           why:
-            `${errorText(err)}. A name that resolves in more than one connection group is the common ` +
-            "cause; enrollment stores no group, so the two cannot be told apart at this surface.",
+            "looking it up failed. A name that resolves in more than one connection group is one " +
+            "cause — enrollment stores no group, so this surface cannot tell the two apart — but the " +
+            "lookup can also fail transiently. The server log for this run carries the reason.",
         });
         return;
       }
@@ -1153,6 +1238,7 @@ export async function runWarehouseProducer(
         entity === null
           ? {
               kind: "unreadable",
+              cause: "no-table",
               why: "its YAML declares no `table:`, so there is nothing to read FROM. Fix the entity YAML.",
             }
           : { kind: "found", entity },
@@ -1217,7 +1303,24 @@ export async function runWarehouseProducer(
     try {
       validation = await validateSnapshotSql(request);
     } catch (err) {
-      validation = { valid: false, error: errorText(err) };
+      // ⚠️ A THROW IS NOT A VERDICT OF INVALID, and routing it to
+      // `snapshot-rejected` inverted this file's own permanence split. The gate's
+      // shipped implementation dynamically imports a module and reads settings, so
+      // a module-init failure or a briefly-unavailable internal DB throws here —
+      // TRANSIENT, and the rejected arm's message says "re-running will not change
+      // this" and tells the admin to un-enroll a pair that is fine.
+      log.warn(
+        { ...runLog, entity: entityPlan.entity.name, err },
+        "Warehouse producer: the SQL gate threw rather than answering — the entity's pairs produced nothing and are retried",
+      );
+      refuseEntity(
+        entityPlan,
+        "snapshot-failed",
+        `Atlas could not check the query it would run against "${entityPlan.entity.table}", so nothing ` +
+          "was emitted for it this run. Nothing was invalidated and no window was stamped; the next run " +
+          "tries again.",
+      );
+      continue;
     }
     if (!validation.valid) {
       log.warn(
@@ -1228,7 +1331,7 @@ export async function runWarehouseProducer(
         entityPlan,
         "snapshot-rejected",
         `The query Atlas would run against "${entityPlan.entity.table}" does not pass its SQL gate: ` +
-          `${validation.error ?? "no reason given"}. The table is probably outside this workspace's ` +
+          `${validation.error}. The table is probably outside this workspace's ` +
           "whitelist, or a dimension's `sql:` expression is malformed. **Re-running will not change " +
           "this** — fix the entity or un-enroll the pair.",
       );
@@ -1252,7 +1355,15 @@ export async function runWarehouseProducer(
         entityPlan,
         "snapshot-failed",
         `Reading "${entityPlan.entity.table}" failed, so nothing was emitted for it this run. ` +
-          "Nothing was invalidated and no window was stamped; the next run retries the pair.",
+          "Nothing was invalidated and no window was stamped; the next run tries again. " +
+          // ⚠️ The message no longer PROMISES that retrying will work, and the
+          // difference is not cosmetic. The SQL gate checks SELECT-only,
+          // single-statement and the whitelist — it does NOT check that the table or
+          // column exists — so a dropped table or a renamed column throws HERE, on
+          // every run, forever. "The next run retries the pair" was true and useless;
+          // an operator seeing it repeat needs to know the cause may be permanent.
+          "If it fails the same way on every run the cause is permanent — usually a table or a " +
+          "dimension's column that no longer exists. Fix the entity YAML, or un-enroll the pair.",
       );
       continue;
     }
@@ -1290,9 +1401,42 @@ export async function runWarehouseProducer(
           ...runLog,
           entity: entityPlan.entity.name,
           unsurfaceableCells: claims.unsurfaceableCells,
-          dimensions: entityPlan.dimensions.map((d) => d.name),
+          // ⚠️ The GUILTY dimensions, not every enrolled one. The operator's action
+          // is to un-enroll ONE pair, so listing all eight stopped one step short of
+          // telling them which — and the message no longer names three specific
+          // types, because a non-finite number is now absent and the remaining
+          // members are open-ended.
+          unsurfaceableByDimension: Object.fromEntries(claims.unsurfaceableByDimension),
         },
-        "Warehouse producer: cells held values no claim can be made of — a jsonb, an array or a bytea column is probably enrolled",
+        "Warehouse producer: cells held values no claim surface can be made of — the named dimensions are probably a jsonb, array or bytea column",
+      );
+    }
+
+    // ⚠️ Both of these were REPORTED and never LOGGED, while their sibling in the
+    // same object literal got a warn. Dropping a row is a data-affecting decision,
+    // and an operator asking "why is account 4471 missing from the queue" had
+    // nothing to grep — and under a degraded response the counters are withheld
+    // too, which made the drop fully silent.
+    if (claims.collidingSubjectRows > 0) {
+      log.warn(
+        {
+          ...runLog,
+          entity: entityPlan.entity.name,
+          collidingSubjectRows: claims.collidingSubjectRows,
+          primaryKeyDimension: entityPlan.primaryKey.name,
+        },
+        "Warehouse producer: rows dropped — their primary key resolves to a surface an earlier row already owns, so the declared key is not unique",
+      );
+    }
+    if (claims.unsurfaceableKeyRows > 0) {
+      log.warn(
+        {
+          ...runLog,
+          entity: entityPlan.entity.name,
+          unsurfaceableKeyRows: claims.unsurfaceableKeyRows,
+          primaryKeyDimension: entityPlan.primaryKey.name,
+        },
+        "Warehouse producer: rows had a primary key of a type no claim surface can be made of — nothing about this entity can be emitted until its key column changes",
       );
     }
 
@@ -1312,6 +1456,7 @@ export async function runWarehouseProducer(
         unidentifiedRows: claims.unidentifiedRows,
         collidingSubjectRows: claims.collidingSubjectRows,
         unsurfaceableCells: claims.unsurfaceableCells,
+        unsurfaceableKeyRows: claims.unsurfaceableKeyRows,
         cardinalityProposed: [],
       });
       continue;
@@ -1382,20 +1527,35 @@ export async function runWarehouseProducer(
           proposed.push(dim.name);
           continue;
         }
-        // ⚠️ `correction.ts`'s proposer logs exactly this split, and the
-        // ordinary-case argument covers only ONE of the four refusals.
-        // `already-decided` is genuinely routine — it is what makes a re-run a
-        // no-op and what makes a human's `rejected` stick. `degenerate-key` is
-        // reachable from real data (a dimension whose norm collapses to nothing)
-        // and means this predicate will never get a `single` entry, so the
-        // machinery this producer exists to wake up stays dormant for it. The other
-        // two are unreachable from a typed caller, which is precisely why they are
-        // worth a `warn`: reaching one means this call site drifted.
-        const line = { ...runLog, entity: entityPlan.entity.name, dimension: dim.name, refusal: result.refusal };
+        // ⚠️ THREE arms. `cardinality.ts`'s correction-event proposer splits only
+        // two ways (`already-decided` at `debug`, everything else at `warn`), and
+        // that is not enough here. `already-decided` is genuinely routine — it is
+        // what makes a re-run a no-op and what makes a human's `rejected` stick.
+        // `degenerate-key` is reachable from real data (a dimension whose norm
+        // collapses to nothing) and means this predicate will never get a `single`
+        // entry, so the machinery this producer exists to wake up stays dormant for
+        // it — that is neither routine nor drift. The remaining two are unreachable
+        // from THIS call site (the cardinality is a literal and the producer id is a
+        // const), which is why reaching one means the call site drifted.
+        //
+        // `result.message` travels too: `cardinality.ts` puts the operator-facing
+        // text there.
+        const line = {
+          ...runLog,
+          entity: entityPlan.entity.name,
+          dimension: dim.name,
+          refusal: result.refusal,
+          detail: result.message,
+        };
         if (result.refusal === "already-decided") {
           log.debug(line, "Warehouse producer: predicate cardinality already adjudicated, no proposal");
+        } else if (result.refusal === "degenerate-key") {
+          log.warn(
+            line,
+            "Warehouse producer: this dimension's name normalizes away to nothing, so it can never carry a `single` cardinality entry — supersession stays dormant for it",
+          );
         } else {
-          log.warn(line, "Warehouse producer: cardinality proposal refused unexpectedly");
+          log.warn(line, "Warehouse producer: cardinality proposal refused unexpectedly — this call site drifted");
         }
       }
 
@@ -1418,14 +1578,29 @@ export async function runWarehouseProducer(
         unidentifiedRows: claims.unidentifiedRows,
         collidingSubjectRows: claims.collidingSubjectRows,
         unsurfaceableCells: claims.unsurfaceableCells,
+        unsurfaceableKeyRows: claims.unsurfaceableKeyRows,
         cardinalityProposed: proposed,
       } satisfies WarehouseEntityOutcome;
     }).catch((err: unknown) => {
-      // ⚠️ RE-THROWN — a transaction failure propagates, which is the stated
-      // decision. What is added is the forensics: entities 1..N-1 have already
-      // COMMITTED their drafts, and without this line the only record of them dies
-      // with the discarded `outcomes` array while the operator is told the run
-      // failed. The success log at the end of the run is never reached.
+      // A defect in this module's own contract stays FATAL — see
+      // `WarehouseProducerContractError`. Everything below is for OPERATIONAL
+      // failures, where refusing one entity is the proportionate answer.
+      if (err instanceof WarehouseProducerContractError) throw err;
+      // ⚠️ **REFUSED PER ENTITY, NOT RE-THROWN — and this reverses an earlier
+      // decision in this file rather than extending it.**
+      //
+      // "A transaction failure PROPAGATES" was stated before its consequence was
+      // traced. The throw reaches `runEffect`, which answers `500 "Failed to run
+      // brain warehouse producer."` — while entities 1..N-1 have COMMITTED their
+      // episodes, facts and cardinality proposals. The admin reads "failed",
+      // presses Run again, `now()` yields a fresh snapshot instant so `ON CONFLICT`
+      // dedupes nothing, and every already-committed entity files a second full
+      // round of drafts into the queue this producer's whole design exists to keep
+      // reviewable. That is verbatim the argument `checkedRun` makes one layer up
+      // for the response — left unclosed one function down.
+      //
+      // It was also the only per-entity failure that refused NOTHING: every other
+      // one calls `refuseEntity`, so the pairs are accounted for.
       log.error(
         {
           ...runLog,
@@ -1434,10 +1609,20 @@ export async function runWarehouseProducer(
           committedCreated: outcomes.reduce((sum, o) => sum + o.created, 0),
           err,
         },
-        "Warehouse producer: a transaction failed — the run aborts, but these entities had already committed drafts",
+        "Warehouse producer: a transaction failed and rolled back — its entity produced nothing; earlier entities had already committed",
       );
-      throw err;
+      refuseEntity(
+        entityPlan,
+        "snapshot-failed",
+        `Writing "${entityPlan.entity.table}"'s claims failed and its transaction rolled back, so ` +
+          "nothing at all was recorded for it — no episode, no drafts, no proposals. Entities earlier " +
+          "in this run DID commit, so a blind re-run re-files their drafts: drain the review queue " +
+          "first, then re-run.",
+      );
+      return "aborted" as const;
     });
+
+    if (outcome === "aborted") continue;
 
     if (outcome === null) {
       // The entity is reported rather than omitted. An entity that vanishes from
@@ -1545,13 +1730,16 @@ export async function defaultValidateSnapshotSql(
 ): Promise<SnapshotSqlVerdict> {
   const { validateSQL } = await import("@atlas/api/lib/tools/sql");
   const result = await validateSQL(request.sql, request.connectionId, request.workspaceId);
-  // THE cast, and the only one in production code. This is the single point where
+  // THE cast — the only `as SnapshotSqlVerdict` in production code, which is what
+  // `warehouse-producer-bypass.test.ts` pins. This is the single point where
   // "the product's SQL gate said yes" becomes a value the run will act on — see
   // {@link SnapshotSqlVerdict} for why that has to be unforgeable by an object
   // literal rather than merely documented.
   return result.valid
     ? ({ valid: true } as SnapshotSqlVerdict)
-    : { valid: false, ...(result.error === undefined ? {} : { error: result.error }) };
+    : // `error` is required on both sides — `SQLValidationResult`'s failing arm and
+      // this one — so there is nothing to conditionally spread.
+      { valid: false, error: result.error };
 }
 
 /**
@@ -1570,13 +1758,3 @@ async function defaultRunSnapshot(
   return result.rows;
 }
 
-/**
- * A caught value as operator-facing text.
- *
- * Type-narrowed per CLAUDE.md. Used only where the text lands in a REFUSAL that a
- * human reads; every log line passes the Error itself, so `scrubErrSerializer` can
- * emit the stack and pg's `code` with credentials already stripped.
- */
-function errorText(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}

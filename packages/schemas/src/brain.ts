@@ -1587,7 +1587,7 @@ export const BrainEnrollmentWriteResponseSchema = z.strictObject({
  * own arms drift, and the failure is a 500 on the response parse rather than a
  * red build.
  *
- * Each arm, in the order the producer evaluates them:
+ * Each arm:
  *
  *   - `entity-not-published` — enrolled, but not in the published semantic layer.
  *   - `entity-unreadable` — the entity IS published and still could not be read:
@@ -1609,11 +1609,14 @@ export const BrainEnrollmentWriteResponseSchema = z.strictObject({
  *     SELECT-only, single-statement, whitelist-scoped gate. **Permanent**: the
  *     table is outside the whitelist or a `sql:` expression is malformed, and
  *     re-running changes nothing.
- *   - `snapshot-failed` — the datasource read itself failed. **Transient**: nothing
- *     was stamped and the next run retries the pair. Split from
- *     `snapshot-rejected` because one message cannot carry both *"retry"* and
- *     *"retrying will never work"*, and the reassuring half is the wrong default
- *     for a permanently mis-configured pair.
+ *   - `snapshot-failed` — the run could not complete for this entity: the
+ *     datasource read failed, the SQL gate threw rather than answering, or the
+ *     entity's transaction rolled back. Nothing was stamped. Retryable, but not
+ *     always usefully so — a dropped table fails the same way forever, and after a
+ *     rolled-back transaction earlier entities have already COMMITTED, so that
+ *     message tells the operator to drain the review queue before re-running. Split
+ *     from `snapshot-rejected` because one message cannot carry both *"retry"* and
+ *     *"retrying will never work"*.
  *   - `snapshot-already-recorded` — this exact snapshot instant is already in
  *     `brain_episodes`, so its claims are too and the entity was skipped. Reported
  *     rather than omitted: an entity that vanishes from BOTH lists is the silence
@@ -1673,6 +1676,13 @@ export const BrainWarehouseEntityOutcomeSchema = z.strictObject({
    * a column that happens to be empty.
    */
   unsurfaceableCells: z.number().int().nonnegative(),
+  /**
+   * Rows whose PRIMARY KEY held such a value — the same distinction at the subject
+   * position. Separate from {@link unsurfaceableCells} because it is categorically
+   * worse: a bad cell costs one claim, a bad key column means NOTHING about that
+   * entity can ever be emitted.
+   */
+  unsurfaceableKeyRows: z.number().int().nonnegative(),
   cardinalityProposed: z.array(z.string()).readonly(),
 });
 
@@ -1713,11 +1723,14 @@ export const BrainWarehouseRunReportSchema = z.strictObject({
  * mistake it for a result, and cannot read a zero out of it.
  *
  * The same shape three siblings in this file already use (`BrainFactEpisodeView`,
- * `BrainFactAttributionView`, `BrainVocabularyBlastRadius`): a discriminated
- * withheld arm is what makes the numbers UNREADABLE on the branch where they are
- * meaningless, rather than readable and wrong.
+ * `BrainFactAttributionView`, `BrainVocabularyBlastRadius`): a withheld arm is what
+ * makes the numbers UNREADABLE on the branch where they are meaningless, rather
+ * than readable and wrong. Two of those three use `z.discriminatedUnion` and so
+ * does this — a plain `z.union` reports a failure as ONE `invalid_union` issue at
+ * `path: []`, which collapses every consumer's diagnostic to nothing, and renders
+ * as `anyOf` with no discriminator for every generated client.
  */
-export const BrainWarehouseRunResponseSchema = z.union([
+export const BrainWarehouseRunResponseSchema = z.discriminatedUnion("reportComplete", [
   BrainWarehouseRunReportSchema.extend({ reportComplete: z.literal(true) }),
   z.strictObject({
     reportComplete: z.literal(false),

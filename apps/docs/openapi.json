@@ -30837,7 +30837,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "anyOf": [
+                  "oneOf": [
                     {
                       "type": "object",
                       "properties": {
@@ -30895,6 +30895,10 @@
                                 "type": "integer",
                                 "minimum": 0
                               },
+                              "unsurfaceableKeyRows": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
                               "cardinalityProposed": {
                                 "type": "array",
                                 "items": {
@@ -30913,6 +30917,7 @@
                               "unidentifiedRows",
                               "collidingSubjectRows",
                               "unsurfaceableCells",
+                              "unsurfaceableKeyRows",
                               "cardinalityProposed"
                             ],
                             "additionalProperties": false

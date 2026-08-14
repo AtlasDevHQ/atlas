@@ -1,9 +1,8 @@
 /**
  * The warehouse producer's OPERATOR-FACING lines (#5042, ADR-0037 §4).
  *
- * Four of this module's log statements are the only record of something that is
- * otherwise invisible to every caller, and each was deletable — or demotable —
- * green before this file existed:
+ * Every line below is the only record of something otherwise invisible to a caller,
+ * and each was deletable — or demotable — green before this file existed:
  *
  *   - the **snapshot-failure `warn`**. The refusal deliberately keeps the driver's
  *     text off the wire, so this line is the ONLY place `42P01 undefined_table`
@@ -15,12 +14,18 @@
  *     produces a run that reads nine hundred rows, emits nothing, refuses nothing
  *     and — without this line — logs nothing. It is indistinguishable from an
  *     empty column, and re-runnable forever.
- *   - the **cardinality-refusal split**. `already-decided` is routine and belongs
- *     at `debug`; the other three mean the call site drifted and belong at `warn`.
- *     One level for both is a producer whose proposals silently stopped landing.
- *   - the **transaction-failure `error`**. The run re-throws, so the `outcomes`
- *     array is discarded — this line is the only record that entities 1..N-1 had
- *     already COMMITTED drafts while the operator was told the run failed.
+ *   - the **two row-drop `warn`s**. `collidingSubjectRows` and
+ *     `unsurfaceableKeyRows` both reached the report and no log at all, and the
+ *     degraded response withholds counters — so an operator asking why account 4471
+ *     is missing from the queue had nothing to grep.
+ *   - the **cardinality-refusal split, three ways**. `already-decided` is routine
+ *     (`debug`); `degenerate-key` is reachable from real data and means the
+ *     predicate can never carry a `single` entry (`warn`, its own message); the
+ *     remaining two mean the call site drifted (`warn`). One level for all of them
+ *     is a producer whose proposals silently stopped landing.
+ *   - the **transaction-failure `error`**. The entity is REFUSED rather than
+ *     re-thrown, so the response is a 200 naming one refusal — and this line is the
+ *     only record that entities 1..N-1 had already COMMITTED drafts.
  *
  * ## ⚠️ Why per-level sinks, and not one array
  *
@@ -216,7 +221,12 @@ describe("warehouse producer logging", () => {
       ],
     });
 
-    expect(payloadOf(warns, "no claim can be made of").unsurfaceableCells).toBe(2);
+    const cellWarn = payloadOf(warns, "no claim surface can be made of");
+    expect(cellWarn.unsurfaceableCells).toBe(2);
+    // ⚠️ And it must name the GUILTY dimension. The first cut listed every enrolled
+    // dimension, which stops one step short of the operator's actual action —
+    // un-enrolling ONE pair.
+    expect(cellWarn.unsurfaceableByDimension).toEqual({ status: 2 });
   });
 
   it("does NOT warn when the cells are merely NULL", async () => {
@@ -228,7 +238,7 @@ describe("warehouse producer logging", () => {
         { [producer.SUBJECT_ALIAS]: "Acme Corp", [`${producer.DIMENSION_ALIAS_PREFIX}0`]: null },
       ],
     });
-    expect(warns.filter((c) => c.message.includes("no claim can be made of"))).toEqual([]);
+    expect(warns.filter((c) => c.message.includes("no claim surface can be made of"))).toEqual([]);
   });
 
   it("splits the cardinality refusal — `already-decided` at DEBUG, anything else at WARN", async () => {
@@ -241,16 +251,69 @@ describe("warehouse producer logging", () => {
     expect(warns.filter((c) => c.message.includes("cardinality"))).toEqual([]);
   });
 
-  it("logs the committed entities at ERROR before re-throwing a transaction failure", async () => {
-    // The run re-throws, so `outcomes` is discarded — this line is the only record
-    // that anything committed while the operator was told the run failed.
-    await expect(
-      run({
-        withTransaction: async () => {
-          throw new Error("40001 serialization failure");
-        },
+  it("logs the two row-drop counters at WARN — both were reported and never logged", async () => {
+    // ⚠️ Dropping a row is a data-affecting decision. Both of these were counted
+    // into the report and logged NOWHERE, while their sibling in the same object
+    // literal got a warn — so an operator asking "why is account 4471 missing from
+    // the queue" had nothing to grep, and under a degraded response the counters are
+    // withheld too, which makes the drop fully silent.
+    await run({
+      runSnapshot: async () => [
+        { [producer.SUBJECT_ALIAS]: "dup", [`${producer.DIMENSION_ALIAS_PREFIX}0`]: "active" },
+        { [producer.SUBJECT_ALIAS]: " dup ", [`${producer.DIMENSION_ALIAS_PREFIX}0`]: "churned" },
+        { [producer.SUBJECT_ALIAS]: { bad: "key" }, [`${producer.DIMENSION_ALIAS_PREFIX}0`]: "active" },
+      ],
+    });
+
+    expect(payloadOf(warns, "the declared key is not unique").collidingSubjectRows).toBe(1);
+    expect(payloadOf(warns, "nothing about this entity can be emitted").unsurfaceableKeyRows).toBe(1);
+  });
+
+  it("logs a degenerate predicate at WARN, with its own message — not `refused unexpectedly`", async () => {
+    // ⚠️ The warn side of the cardinality split had NO test: every fixture produced
+    // `already-decided`, so demoting this arm to `debug` was green. `degenerate-key`
+    // is reachable from real data — `lexicalNorm` collapses `_`/`-`/whitespace — and
+    // it means this predicate can never carry a `single` entry, so supersession
+    // stays dormant for it. That is not "unexpected", and it is not routine either.
+    await run({
+      loadReach: async () => ({
+        pairs: [{ entity: "Accounts", dimension: "__" }],
+        entities: ["Accounts"],
+        has: () => true,
       }),
-    ).rejects.toThrow("40001");
+      loadEntity: async () => ({
+        table: "accounts",
+        dimensions: [
+          { name: "id", sql: "account_id", primary_key: true },
+          { name: "__", sql: "weird_column" },
+        ],
+      }),
+      runSnapshot: async () => [
+        { [producer.SUBJECT_ALIAS]: "Acme Corp", [`${producer.DIMENSION_ALIAS_PREFIX}0`]: "active" },
+      ],
+    });
+
+    const payload = payloadOf(warns, "can never carry a `single` cardinality entry");
+    expect(payload.refusal).toBe("degenerate-key");
+    expect(payload.dimension).toBe("__");
+    // `cardinality.ts` puts the operator-facing text on `message`; the first cut
+    // discarded it.
+    expect(String(payload.detail ?? "")).not.toBe("");
+    // And it must NOT be filed as drift — that arm's remedy is "this call site
+    // changed", which is wrong advice for a workspace's own column name.
+    expect(warns.filter((c) => c.message.includes("call site drifted"))).toEqual([]);
+  });
+
+  it("logs the committed entities at ERROR when a transaction fails, and refuses rather than re-throwing", async () => {
+    // The run no longer PROPAGATES — it refuses that entity, because a 500 while
+    // earlier entities have committed invites the retry that doubles the queue. The
+    // error line is what survives, and it is the only record that anything committed.
+    const report = await run({
+      withTransaction: async () => {
+        throw new Error("40001 serialization failure");
+      },
+    });
+    expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-failed"]);
 
     const payload = payloadOf(errors, "transaction failed");
     expect(payload.committedEntities).toEqual([]);
@@ -266,8 +329,17 @@ describe("warehouse producer logging", () => {
         throw new Error("connection refused");
       },
     });
-    for (const line of [...warns, ...infos]) {
-      expect(line.payload).toMatchObject({ workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-1" });
+    // ⚠️ The count assertion first. `for (const line of [...warns, ...infos])` over
+    // two EMPTY sinks passes while proving nothing, which is the shape this file
+    // exists to refuse.
+    const lines = [...warns, ...infos];
+    expect(lines.length).toBeGreaterThanOrEqual(2);
+    for (const line of lines) {
+      expect(line.payload).toMatchObject({
+        workspaceId: WORKSPACE,
+        triggeredBy: "user-1",
+        requestId: "req-1",
+      });
     }
   });
 });

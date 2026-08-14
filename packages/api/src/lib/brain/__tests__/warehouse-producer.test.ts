@@ -28,7 +28,7 @@
  * every fixture in the file rather than by one test that remembers to.
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { makeProducerReach } from "@atlas/api/lib/brain/enrollment";
 import { identityKey, identityVocabulary, type ClaimVocabulary } from "@atlas/api/lib/brain/identity";
 import {
@@ -420,7 +420,7 @@ describe("planWarehouseEmission — ADR-0037 §4's fail-closed ambiguity rule", 
         { entity: "Accounts", dimension: "tier" },
       ]),
       new Map<string, WarehouseEntityLookup>([
-        ["Broken", { kind: "unreadable", why: "it resolves in two connection groups." }],
+        ["Broken", { kind: "unreadable", cause: "load-threw", why: "it resolves in two connection groups." }],
         ["Accounts", { kind: "found", entity: accounts }],
       ]),
     );
@@ -469,27 +469,65 @@ describe("buildSnapshotSql", () => {
   });
 
   /**
-   * ⚠️ The POSITIVE CONTROL for the whole SQL gate, and the one nothing else
-   * covers: both producer suites inject `runSnapshot`, so without this the repo has
-   * never shown that what this builder produces actually reaches `validateSQL` in a
-   * usable form. If the statement's FORM were wrong — a stray semicolon, an
-   * unparseable alias, a shape the parser rejects — every production run would
-   * refuse `snapshot-rejected` and every test would stay green, which is verbatim
-   * ADR-0039's dead producer.
+   * ⚠️ **The POSITIVE CONTROL for the whole SQL gate — and its first version could
+   * never reach the gate at all.**
+   *
+   * `test-setup.ts` strips every `ATLAS_*` var in the global preload, so
+   * `detectDBType()` throws and `validateSQL` returns *"No valid datasource
+   * configured"* BEFORE the empty-query check, the forbidden-pattern regex, the
+   * parser and the whitelist. The first cut asserted inside `if (!result.valid)`
+   * against a regex that string can never match — so it passed for `DROP TABLE
+   * users; SELECT 1` as readily as for a real statement, and DELETING THE PRODUCTION
+   * GATE ENTIRELY left every suite green.
+   *
+   * Two things fix it. `ATLAS_DATASOURCE_URL` is set for this block so the gate is
+   * actually reached (inside the hooks and restored after — the test-discipline
+   * rule). And the assertions are UNCONDITIONAL, because an assertion inside
+   * `if (!valid)` reports "pass" for exactly the case it was written to exclude.
    */
-  test("what it builds is rejected only for its TABLE, never for its form", async () => {
-    const result = await defaultValidateSnapshotSql({
-      workspaceId: WORKSPACE,
-      entity: "Accounts",
-      connectionId: undefined,
-      sql: buildSnapshotSql(planFor(accounts, ["status", "tier"]), 10),
+  describe("against the product's real SQL gate", () => {
+    let priorDatasourceUrl: string | undefined;
+    beforeAll(() => {
+      priorDatasourceUrl = process.env.ATLAS_DATASOURCE_URL;
+      process.env.ATLAS_DATASOURCE_URL = "postgresql://u:p@localhost:5432/never_connected";
     });
-    // The whitelist is workspace-scoped and this workspace has none, so a rejection
-    // naming the TABLE is expected here. What must not happen is a rejection about
-    // the statement's form — that one would reject in every workspace.
-    if (!result.valid) {
-      expect(result.error ?? "").not.toMatch(/semicolon|multiple statement|parse|syntax/i);
-    }
+    afterAll(() => {
+      if (priorDatasourceUrl === undefined) delete process.env.ATLAS_DATASOURCE_URL;
+      else process.env.ATLAS_DATASOURCE_URL = priorDatasourceUrl;
+    });
+
+    const validate = (sql: string) =>
+      defaultValidateSnapshotSql({
+        workspaceId: WORKSPACE,
+        entity: "Accounts",
+        connectionId: undefined,
+        sql,
+      });
+    const reason = (r: Awaited<ReturnType<typeof validate>>) => (r.valid ? "" : r.error);
+
+    test("what it builds is never rejected for its FORM", async () => {
+      const result = await validate(buildSnapshotSql(planFor(accounts, ["status", "tier"]), 10));
+      // The tripwire the first version lacked: the gate must have been REACHED.
+      // "No valid datasource" means it returned before reading the statement.
+      expect(reason(result)).not.toContain("No valid datasource");
+      // The whitelist is workspace-scoped and this workspace has none, so a
+      // table-scoped rejection is the expected shape here. A FORM rejection would
+      // reject in EVERY workspace — ADR-0039's dead producer.
+      expect(reason(result)).not.toMatch(/semicolon|multiple statement|parse|syntax/i);
+    });
+
+    test("and a malformed statement IS rejected — the negative control", async () => {
+      // Without this, "never rejected for its form" is satisfied by a gate that
+      // rejects nothing for its form, ever.
+      const result = await validate("SELECT 1; DROP TABLE accounts");
+      expect(result.valid).toBe(false);
+      expect(reason(result)).not.toContain("No valid datasource");
+      // ⚠️ And the REASON survives the mint. `SQLValidationResult` makes `error`
+      // required on its failing arm; while the verdict type made it optional, the
+      // mint could drop it and every production refusal read "no reason given" —
+      // absorbed at both ends by a `??`, so nothing went red.
+      expect(reason(result).length).toBeGreaterThan(0);
+    });
   });
 });
 
@@ -513,6 +551,11 @@ describe("warehouseSurface", () => {
     expect(warehouseSurface(Number.NaN)).toBeNull();
     // A jsonb column, an array, a bytea. `String(…)` would land `[object Object]`
     // in a reviewer's queue as a fact about their company.
+    // A NUL survives `trim()` and Postgres refuses it (22021), which aborts the
+    // whole entity's transaction rather than dropping one cell. MySQL and
+    // ClickHouse `text` both admit one, so this is reachable for two of the three
+    // supported dialects.
+    expect(warehouseSurface("acme\u0000corp")).toBeNull();
     expect(warehouseSurface({ a: 1 })).toBeNull();
     expect(warehouseSurface([1, 2])).toBeNull();
     expect(warehouseSurface(new Date("nonsense"))).toBeNull();
@@ -621,25 +664,39 @@ describe("buildWarehouseClaims", () => {
     // it — while the warn sent the operator hunting a `jsonb` column that need not
     // exist.
     //
-    // Two blanks and ONE genuine mistake, so the counter cannot pass by counting
-    // either all abstains or none of them.
+    // The same argument covers a NON-FINITE number and an Invalid Date: `NaN` out of
+    // a `double precision` column is that column's null, `0000-00-00` out of MySQL
+    // is an Invalid Date, and in both the COLUMN is fine while one row is bad.
+    //
+    // Four ordinary-empty values and ONE genuine mistake, so the counter cannot pass
+    // by counting all abstains (5) or none (0).
     const { candidates, unsurfaceableCells } = claimsFor([
       { [SUBJECT_ALIAS]: "Acme Corp", [`${DIMENSION_ALIAS_PREFIX}0`]: "", [`${DIMENSION_ALIAS_PREFIX}1`]: "   " },
+      { [SUBJECT_ALIAS]: "Initech", [`${DIMENSION_ALIAS_PREFIX}0`]: Number.NaN, [`${DIMENSION_ALIAS_PREFIX}1`]: new Date("nonsense") },
       { [SUBJECT_ALIAS]: "Globex", [`${DIMENSION_ALIAS_PREFIX}0`]: { nested: true }, [`${DIMENSION_ALIAS_PREFIX}1`]: "gold" },
     ]);
     expect(candidates.map((c) => `${c.subject}/${c.predicate}`)).toEqual(["Globex/tier"]);
     expect(unsurfaceableCells).toBe(1);
   });
 
-  test("a row with no usable primary key is counted, not emitted and not thrown on", () => {
-    const { candidates, unidentifiedRows, collidingSubjectRows, unsurfaceableCells } = claimsFor([
-      { [SUBJECT_ALIAS]: null, [`${DIMENSION_ALIAS_PREFIX}0`]: "active" },
-      { [SUBJECT_ALIAS]: "Acme Corp", [`${DIMENSION_ALIAS_PREFIX}0`]: "active" },
-      { [SUBJECT_ALIAS]: { json: true }, [`${DIMENSION_ALIAS_PREFIX}0`]: "active" },
-    ]);
+  test("a row with no usable primary key is counted — and an UNUSABLE key is counted apart from an absent one", () => {
+    // ⚠️ The same split the cell position makes. Folded, a `bytea` primary key
+    // reports `unidentifiedRows: 900` with no refusal and no log — the "reads nine
+    // hundred rows and is indistinguishable from an empty column" failure, at the
+    // position where it is worse, because nothing about that entity can EVER be
+    // emitted.
+    //
+    // Two absent keys, one unusable, one good — four different numbers below.
+    const { candidates, unidentifiedRows, collidingSubjectRows, unsurfaceableCells, unsurfaceableKeyRows } =
+      claimsFor([
+        { [SUBJECT_ALIAS]: null, [`${DIMENSION_ALIAS_PREFIX}0`]: "active" },
+        { [SUBJECT_ALIAS]: "", [`${DIMENSION_ALIAS_PREFIX}0`]: "active" },
+        { [SUBJECT_ALIAS]: "Acme Corp", [`${DIMENSION_ALIAS_PREFIX}0`]: "active" },
+        { [SUBJECT_ALIAS]: { json: true }, [`${DIMENSION_ALIAS_PREFIX}0`]: "active" },
+      ]);
     expect(candidates).toHaveLength(1);
-    // Three counters at three DIFFERENT values, so no two can be swapped.
     expect(unidentifiedRows).toBe(2);
+    expect(unsurfaceableKeyRows).toBe(1);
     expect(collidingSubjectRows).toBe(0);
     expect(unsurfaceableCells).toBe(0);
   });
@@ -857,7 +914,84 @@ describe("runWarehouseProducer", () => {
     expect(refusalKeys(report.refusals)).toEqual(["Blocked.status:snapshot-rejected"]);
     // ⚠️ The refusal must NOT promise a retry — this failure is permanent.
     expect(report.refusals[0]?.message).toContain("Re-running will not change");
+    // …and it must carry the GATE'S OWN reason. Making `error` optional on the
+    // verdict left every production refusal reading "no reason given" while this
+    // test stayed green, because both sides absorbed the absence with a `??`.
+    expect(report.refusals[0]?.message).toContain('Table "Blocked" is not in the whitelist');
     expect(report.created).toBe(1);
+  });
+
+  test("a validator that THROWS refuses transiently — a throw is not a verdict of invalid", async () => {
+    // ⚠️ TWO properties, and the second is the one that was wrong. A throw must be
+    // CAUGHT (the shipped gate dynamically imports a module and reads settings, so
+    // a module-init failure or a briefly-unavailable internal DB throws here) — and
+    // it must land on the TRANSIENT arm, because `snapshot-rejected` says
+    // "re-running will not change this" and tells the admin to un-enroll a pair
+    // that is fine.
+    const h = harness({
+      pairs: [
+        { entity: "Throws", dimension: "status" },
+        { entity: "Small", dimension: "tier" },
+      ],
+      entities: {
+        Throws: entityYaml({ table: "throws", primaryKey: "id", dimensions: ["id", "status"] }),
+        Small: entityYaml({ table: "small", primaryKey: "id", dimensions: ["id", "tier"] }),
+      },
+      rows: { Small: [snapshotRow("Acme Corp", "gold")] },
+    });
+
+    const report = await runWarehouseProducer(
+      { workspaceId: WORKSPACE, triggeredBy: "user-1" },
+      {
+        ...h.deps,
+        // SYNCHRONOUS, and deliberately not an `async` function: a sync throw
+        // happens before the promise exists, so `.catch(…)` never sees it and the
+        // throw escaped the entire run as a 500. An `async` double cannot falsify
+        // that.
+        validateSnapshotSql: (request) => {
+          if (request.entity === "Throws") throw new Error("module init failed");
+          return Promise.resolve({ valid: true } as SnapshotSqlVerdict);
+        },
+      },
+    );
+
+    expect(refusalKeys(report.refusals)).toEqual(["Throws.status:snapshot-failed"]);
+    expect(report.refusals[0]?.reason).not.toBe("snapshot-rejected");
+    expect(report.refusals[0]?.message).not.toContain("Re-running will not change");
+    // The positive control: one entity throwing costs one entity.
+    expect(report.created).toBe(1);
+  });
+
+  test("a validator that REJECTS is caught on the same arm", async () => {
+    const h = harness({
+      pairs: [{ entity: "Rejects", dimension: "status" }],
+      entities: {
+        Rejects: entityYaml({ table: "rejects", primaryKey: "id", dimensions: ["id", "status"] }),
+      },
+    });
+    const report = await runWarehouseProducer(
+      { workspaceId: WORKSPACE, triggeredBy: "user-1" },
+      { ...h.deps, validateSnapshotSql: async () => Promise.reject(new Error("settings unavailable")) },
+    );
+    expect(refusalKeys(report.refusals)).toEqual(["Rejects.status:snapshot-failed"]);
+  });
+
+  test("an entity-lookup failure keeps the driver's text OFF the wire", async () => {
+    // The `snapshot-failed` arm states this policy explicitly; this arm did the
+    // opposite and interpolated the caught error, so a pg failure would put an
+    // internal host or role into a refusal an operator reads.
+    const h = harness({
+      pairs: [{ entity: "Ambiguous", dimension: "status" }],
+      entities: {},
+      lookupThrows: ["Ambiguous"],
+    });
+    const report = await run(h);
+    expect(refusalKeys(report.refusals)).toEqual(["Ambiguous.status:entity-unreadable"]);
+    // The harness throws `"Ambiguous" resolves in 2 connection groups` — the shape a
+    // driver message would take. None of it may appear.
+    expect(report.refusals[0]?.message).not.toContain("resolves in 2");
+    // …and it must still be actionable.
+    expect(report.refusals[0]?.message).toContain("server log");
   });
 
   test("stamps the snapshot episode by REFERENCE — locator, never body", async () => {
@@ -1014,7 +1148,12 @@ describe("runWarehouseProducer", () => {
     // about a failed producer is whether it retired anything — and unlike
     // `snapshot-rejected`, retrying this one is genuinely worth it.
     expect(report.refusals[0]?.message).toContain("Nothing was invalidated");
-    expect(report.refusals[0]?.message).toContain("next run retries");
+    // ⚠️ It says the next run TRIES, and warns that a repeat means the cause is
+    // permanent. The gate checks SELECT-only / single-statement / whitelist and NOT
+    // that the table exists, so a dropped table throws here on every run forever —
+    // "the next run retries the pair" was true and useless.
+    expect(report.refusals[0]?.message).toContain("next run tries again");
+    expect(report.refusals[0]?.message).toContain("cause is permanent");
   });
 
   test("an entity lookup that THROWS costs that entity, not the run", async () => {
@@ -1067,13 +1206,38 @@ describe("runWarehouseProducer", () => {
     // about still appears in `entities`, and no snapshot episode is written for it
     // (an episode with nothing hanging off it is what the transaction exists to
     // prevent).
+    //
+    // ⚠️ This is ALSO the path the canonical enrollment mistake takes — an enrolled
+    // `jsonb` column yields zero candidates for every row, so it flows through THIS
+    // outcome literal and not the one the counters are otherwise tested on. Every
+    // number below is DIFFERENT (10 rows, 4 unidentified, 2 colliding, 3
+    // unsurfaceable, 1 bad key), so no two fields can be swapped and none can be
+    // hardcoded to zero.
+    //
+    // ⚠️ This comment has now been WRONG TWICE, which is why the numbers are spelled
+    // out above rather than trusted. The first cut used `rows: 2` beside
+    // `unidentifiedRows: 2`; the second separated those and left `unidentifiedRows`
+    // and `unsurfaceableKeyRows` both at 1 — the two counters that ARE the split
+    // this fixture exists to pin, so a swap between exactly them survived. Count the
+    // values before believing the sentence.
     const h = harness({
       pairs: [{ entity: "Empty", dimension: "status" }],
       entities: {
         Empty: entityYaml({ table: "empty", primaryKey: "id", dimensions: ["id", "status"] }),
       },
       rows: {
-        Empty: [snapshotRow("", "active"), snapshotRow(null, "active")],
+        Empty: [
+          snapshotRow(null, { j: 1 }),
+          snapshotRow(null, { j: 7 }),
+          snapshotRow(null, { j: 8 }),
+          snapshotRow(null, { j: 9 }),
+          snapshotRow({ bad: "key" }, "active"),
+          snapshotRow("dup", { j: 2 }),
+          snapshotRow("dup", { j: 3 }),
+          snapshotRow(" dup ", { j: 4 }),
+          snapshotRow("a", { j: 5 }),
+          snapshotRow("b", { j: 6 }),
+        ],
       },
     });
 
@@ -1081,20 +1245,19 @@ describe("runWarehouseProducer", () => {
 
     expect(h.store.paramsFor(WAREHOUSE_EPISODE_INSERT_SQL)).toEqual([]);
     expect(h.store.transactions).toBe(0);
-    // Every counter at a value that differs from its neighbours, so no two can be
-    // swapped in the wiring from `claims` into the outcome.
     expect(report.entities).toEqual([
       {
         entity: "Empty",
-        rows: 2,
+        rows: 10,
         candidates: 0,
         created: 0,
         corroborated: 0,
         blocked: 0,
         comparable: 0,
-        unidentifiedRows: 2,
-        collidingSubjectRows: 0,
-        unsurfaceableCells: 0,
+        unidentifiedRows: 4,
+        collidingSubjectRows: 2,
+        unsurfaceableCells: 3,
+        unsurfaceableKeyRows: 1,
         cardinalityProposed: [],
       },
     ]);
@@ -1152,22 +1315,6 @@ describe("runWarehouseProducer", () => {
     expect(report.entities).toEqual([]);
   });
 
-  test("an episode row this reader cannot use THROWS rather than reporting a conflict", async () => {
-    // Folded together, a statement edited to drop or rename its RETURNING makes
-    // every entity of every run report "already recorded" — a false sentence, at
-    // info, on a producer that then looks like a well-behaved no-op forever.
-    const h = harness({
-      pairs: [{ entity: "Accounts", dimension: "tier" }],
-      entities: {
-        Accounts: entityYaml({ table: "accounts", primaryKey: "id", dimensions: ["id", "tier"] }),
-      },
-      rows: { Accounts: [snapshotRow("Acme Corp", "gold")] },
-    });
-    h.store.episodeReturnsGarbage = true;
-
-    await expect(run(h)).rejects.toThrow("RETURNING clause and this reader disagree");
-  });
-
   test("an empty reach opens no transaction and reads no entity", async () => {
     const h = harness({ pairs: [], entities: {} });
     const report = await run(h);
@@ -1195,7 +1342,52 @@ describe("runWarehouseProducer", () => {
     ).rejects.toThrow("internal DB is down");
   });
 
-  test("a transaction failure PROPAGATES rather than becoming a refusal", async () => {
+  test("a transaction failure REFUSES that entity rather than 500ing the run", async () => {
+    // ⚠️ This REVERSES the producer's first stated decision, deliberately. A
+    // propagated failure reaches `runEffect` as `500 "Failed to run…"` — while
+    // earlier entities have COMMITTED. The admin reads "failed", presses Run again,
+    // `now()` yields a fresh instant so `ON CONFLICT` dedupes nothing, and every
+    // committed entity files a second full round of drafts into the queue this
+    // producer exists to keep reviewable.
+    const h = harness({
+      pairs: [
+        { entity: "Broken", dimension: "status" },
+        { entity: "Small", dimension: "tier" },
+      ],
+      entities: {
+        Broken: entityYaml({ table: "broken", primaryKey: "id", dimensions: ["id", "status"] }),
+        Small: entityYaml({ table: "small", primaryKey: "id", dimensions: ["id", "tier"] }),
+      },
+      rows: {
+        Broken: [snapshotRow("Acme Corp", "active")],
+        Small: [snapshotRow("Globex", "gold")],
+      },
+    });
+    let calls = 0;
+    const report = await runWarehouseProducer(
+      { workspaceId: WORKSPACE, triggeredBy: "user-1" },
+      {
+        ...h.deps,
+        withTransaction: async (fn) => {
+          if (++calls === 1) throw new Error("40001 serialization failure");
+          return h.store.runner(fn);
+        },
+      },
+    );
+
+    expect(refusalKeys(report.refusals)).toEqual(["Broken.status:snapshot-failed"]);
+    // The refusal warns against the blind retry, which is the whole point.
+    expect(report.refusals[0]?.message).toContain("drain the review queue");
+    // The positive control: the run CONTINUED and the second entity committed.
+    expect(report.created).toBe(1);
+    expect(report.entities.map((e) => e.entity)).toEqual(["Small"]);
+  });
+
+  test("a defect in this module's OWN contract still propagates", async () => {
+    // The counterpart of the test above, and the reason the per-entity catch
+    // re-throws one class: a `RETURNING` clause the reader cannot parse is a defect,
+    // and turning it into a per-entity refusal would make every entity of every run
+    // refuse quietly forever on a producer that merely looks unlucky.
     const h = harness({
       pairs: [{ entity: "Accounts", dimension: "tier" }],
       entities: {
@@ -1203,16 +1395,7 @@ describe("runWarehouseProducer", () => {
       },
       rows: { Accounts: [snapshotRow("Acme Corp", "gold")] },
     });
-    await expect(
-      runWarehouseProducer(
-        { workspaceId: WORKSPACE, triggeredBy: "user-1" },
-        {
-          ...h.deps,
-          withTransaction: async () => {
-            throw new Error("40001 serialization failure");
-          },
-        },
-      ),
-    ).rejects.toThrow("40001");
+    h.store.episodeReturnsGarbage = true;
+    await expect(run(h)).rejects.toThrow("RETURNING clause and this reader disagree");
   });
 });

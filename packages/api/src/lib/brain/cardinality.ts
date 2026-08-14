@@ -573,10 +573,15 @@ export async function proposePredicateCardinality(
  * then never reads — a silent no-op wearing a successful proposal's face.
  *
  * The return type is {@link CardinalityWriteResult} unnarrowed, unlike the
- * declaration sibling: every one of the four refusals is reachable from a
- * producer (`already-decided` is the COMMON one — it is what makes a re-run a
- * no-op and what makes a human's `rejected` stick), so there is nothing to
- * exclude and no unreachable arm to throw on.
+ * declaration sibling. `already-decided` is the producer's COMMON case — it is what
+ * makes a re-run a no-op and what makes a human's `rejected` stick — and
+ * `degenerate-key` is reachable from real data. `producer-proposed-multi` and
+ * `unattributed` stay in the union because {@link proposePredicateCardinality}
+ * still refuses them at runtime for a caller arriving through a cast or from
+ * untyped data; narrowing would delete an arm the runtime still produces. (A TYPED
+ * caller cannot reach either — `cardinality` is the literal `"single"` — which is
+ * why `warehouse-producer.ts` treats reaching one as evidence its call site
+ * drifted.)
  */
 export async function proposePredicateCardinalityForSurface(
   executor: CardinalityExecutor,

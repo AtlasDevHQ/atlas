@@ -145,7 +145,7 @@ describeIfPg("warehouse producer (real Postgres)", () => {
       loadEntity: async () => ACCOUNTS_YAML,
       // The SQL gate is workspace-whitelist-scoped and this schema has no
       // whitelist, so it is stubbed here and driven for real in the unit suite
-      // (`what it builds is rejected only for its TABLE, never for its form`).
+      // (`what it builds is never rejected for its FORM`).
       // The cast is required: `SnapshotSqlVerdict`'s passing arm is branded so an
       // object literal cannot assert the gate passed, which makes every bypass in
       // the tree greppable as `as SnapshotSqlVerdict`.

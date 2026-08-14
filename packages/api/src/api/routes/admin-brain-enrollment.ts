@@ -28,7 +28,7 @@
  * ## Why the surface exists
  *
  * Every fact lands as a `draft` needing a human publish — migration 0180's
- * default IS the review gate (`reconcile.ts:777`). A warehouse producer emitting
+ * default IS the review gate (`reconcile.ts`'s `INSERT_FACT_SQL`, #4769). A warehouse producer emitting
  * one fact per row per dimension on a schedule would put an unreviewable queue
  * behind the one gate the product is differentiated by; ADR-0039's arithmetic is
  * ten thousand accounts across eight dimensions being eighty thousand drafts.
@@ -176,10 +176,27 @@ void _reportMatchesWireSchema;
  * un-validated is re-emitted.
  */
 function checkedRun(report: WarehouseProducerReport, workspaceId: string, requestId: string) {
-  const parsed = BrainWarehouseRunResponseSchema.safeParse({ ...report, reportComplete: true });
-  if (parsed.success) return parsed.data;
+  // ⚠️ Parsed against the REPORT schema, not the response UNION, and the difference
+  // is the whole diagnostic. A zod union failure is a single `invalid_union` issue
+  // at `path: []` — the per-arm detail lives in `issue.errors` — so mapping
+  // `i.path.join(".")` over a union's issues yields `[""]` for every possible
+  // drift. That is the one record of a post-commit, deterministic-under-retry
+  // failure, and the response tells the operator to go read it.
+  const parsed = BrainWarehouseRunReportSchema.safeParse(report);
+  if (parsed.success) return { ...parsed.data, reportComplete: true as const };
   log.error(
-    { requestId, workspaceId, issues: parsed.error.issues.map((i) => i.path.join(".")) },
+    {
+      requestId,
+      workspaceId,
+      // The ZodError itself AND a flattened summary: the first survives whatever
+      // the serializer does with it, the second is greppable.
+      err: parsed.error,
+      issues: parsed.error.issues.map((i) => ({
+        path: i.path.join("."),
+        code: i.code,
+        message: i.message,
+      })),
+    },
     "Warehouse producer report failed its own response schema — the run COMMITTED; the report shape drifted",
   );
   return {
@@ -211,7 +228,8 @@ function checkedRun(report: WarehouseProducerReport, workspaceId: string, reques
  * fails the same parse, so an admin sees "failed" forever while the pair is
  * enrolled and the producer's reach is genuinely wider. Grow the response, take
  * `checkedWrite` (and lift it somewhere shared rather than copying it a third
- * time).
+ * time). (`/produce` takes {@link checkedRun} — it IS the post-commit case this
+ * block says to take `checkedWrite` for.)
  */
 
 const listRoute = createRoute({

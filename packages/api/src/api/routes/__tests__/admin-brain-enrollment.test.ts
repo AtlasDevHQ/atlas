@@ -48,9 +48,25 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
 
 // Mock-ALL-exports — a partial factory link-fails the moment the route reaches
 // for anything else in the module.
+/**
+ * Captured `log.error` payloads.
+ *
+ * The logger was all-noop here, which made one line un-assertable: `checkedRun`'s
+ * drift log is the ONLY record of a post-commit serialization failure, and the
+ * response it returns tells the operator to go and read it. A version of that line
+ * that logged `issues: [""]` for every possible drift was green against this suite.
+ */
+const loggedErrors: { payload: unknown; message: string }[] = [];
 void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
-  const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
+  const logger = {
+    info: noop,
+    warn: noop,
+    error: (payload: unknown, message?: unknown) =>
+      loggedErrors.push({ payload, message: typeof message === "string" ? message : "" }),
+    debug: noop,
+    child: () => logger,
+  };
   return {
     createLogger: () => logger,
     getLogger: () => logger,
@@ -241,6 +257,7 @@ beforeEach(() => {
   enrollCalls.length = 0;
   unenrollCalls.length = 0;
   dimensionCalls.length = 0;
+  loggedErrors.length = 0;
   produceCalls = [];
   produceReport = {
     workspaceId: CURRENT_ORG,
@@ -526,6 +543,7 @@ describe("POST /produce — running the producer", () => {
           unidentifiedRows: 1,
           collidingSubjectRows: 0,
           unsurfaceableCells: 3,
+          unsurfaceableKeyRows: 2,
           cardinalityProposed: ["arr_band"],
         },
       ],
@@ -549,7 +567,11 @@ describe("POST /produce — running the producer", () => {
     // 500 saying "Failed to run" invites the one retry that doubles the queue —
     // and the drift is deterministic, so the admin would see it forever.
     produceReport = {
-      workspaceId: CURRENT_ORG,
+      // ⚠️ DIFFERENT from `CURRENT_ORG`, deliberately. A drifted report is this
+      // arm's own premise, so while the two were equal, taking `workspaceId` from
+      // the REPORT — which is what the version this fix condemned did — was
+      // indistinguishable from taking it from the route.
+      workspaceId: "org-drifted",
       snapshotAt: "2026-08-14T10:00:00.000Z",
       enrolled: 2,
       entities: [{ nonsense: true }],
@@ -565,14 +587,26 @@ describe("POST /produce — running the producer", () => {
     const body = (await res.json()) as Record<string, unknown>;
     // The degraded arm says NOTHING about the run — no counts to misread, no empty
     // lists to mistake for "nothing was refused". Only what the ROUTE knows.
+    // The ROUTE's workspace, never the drifted report's.
     expect(body).toEqual({
       reportComplete: false,
       workspaceId: CURRENT_ORG,
       requestId: "test-req",
       message: expect.stringContaining("could not"),
     });
-    expect(body.created).toBeUndefined();
-    expect(body.refusals).toBeUndefined();
+    expect(body.workspaceId).not.toBe("org-drifted");
+
+    // ⚠️ And the log the response points at must actually NAME the drift. Parsing
+    // the response UNION instead of the report schema yields a single
+    // `invalid_union` issue at `path: []`, so every drift logs `[""]` — the one
+    // diagnostic for a deterministic-under-retry failure, empty.
+    const drifts = loggedErrors.filter((l) => l.message.includes("report shape drifted"));
+    expect(drifts).toHaveLength(1);
+    const [drift] = drifts;
+    if (drift === undefined) throw new Error("no drift line was logged");
+    const { issues } = drift.payload as { issues: { path: string }[] };
+    expect(issues.length).toBeGreaterThan(0);
+    expect(issues.map((i) => i.path).join(",")).toContain("entities");
   });
 });
 

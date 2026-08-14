@@ -736,6 +736,9 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         // A merge that counted every conflict as a refusal would report two
         // dropped approvals on the most routine path there is.
         brainVocabularyEdges: { imported: 0, skipped: 2, refused: 0 },
+        // #5203: the bundle in this round trip carries no exclusions, so a
+        // second import has nothing to skip either.
+        brainSlackChannelExclusions: { imported: 0, skipped: 0, refused: 0 },
       });
 
       // ── Catch-up import: an episode the target already has, carrying a

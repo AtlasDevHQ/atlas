@@ -50,7 +50,6 @@ import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context"
 import type { BrainCandidateReader } from "@atlas/api/lib/brain/candidates";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 import {
-  SLACK_HISTORY_CATALOG_ID,
   SLACK_HISTORY_SOURCE,
 } from "@atlas/api/lib/brain/ingest/slack/config";
 import {

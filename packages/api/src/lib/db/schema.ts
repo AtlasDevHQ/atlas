@@ -4132,7 +4132,7 @@ export const brainSlackIngestScope = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [
+  () => [
     // A NULL element reads as a channel id matching nothing, silently narrowing
     // the legacy allowlist by one.
     check(

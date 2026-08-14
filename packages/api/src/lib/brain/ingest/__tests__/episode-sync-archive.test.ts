@@ -28,6 +28,7 @@ import {
   findBrainSourceConnectors,
   getBrainSourceConnector,
   listBrainSourceCatalogIds,
+  listPerWorkspaceBrainSources,
   registerBrainSourceConnector,
   type BrainSourceAudienceFor,
   type BrainSourceConnector,
@@ -197,7 +198,18 @@ describe("the brain source registry", () => {
     _resetBrainSourceConnectors();
     registerBrainSourceConnector(connector());
     expect(getBrainSourceConnector("catalog:fixture")?.source).toBe(SLACK_SOURCE);
-    expect(listBrainSourceCatalogIds()).toEqual(["catalog:fixture"]);
+    // ⚠️ The default fixture is CHAT-class, so since #5203 it is per-workspace
+    // and deliberately absent from the install-walk filter — a catalog id in
+    // there matches no install row, and the cycle would report a clean pass
+    // having synced nothing. Asserted on BOTH listings rather than just the
+    // per-workspace one: `toEqual([])` alone would also pass against a filter
+    // that had stopped returning anything at all.
+    expect(listBrainSourceCatalogIds()).toEqual([]);
+    expect(listPerWorkspaceBrainSources().map((c) => c.catalogId)).toEqual(["catalog:fixture"]);
+
+    // A per-install source still lands in the install-walk filter.
+    registerBrainSourceConnector({ ...connector(), catalogId: "catalog:zoomish", source: ZOOM_SOURCE, scope: { kind: "per-install" }, audience: { kind: "reverified", reverifier: async () => ({ ...ZERO_REVERIFY }) } });
+    expect(listBrainSourceCatalogIds()).toEqual(["catalog:zoomish"]);
     _resetBrainSourceConnectors();
   });
 

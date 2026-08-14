@@ -253,6 +253,7 @@ describe("migration types", () => {
       factAudienceMembers: { imported: 3, skipped: 1 },
       // The one section with a THIRD counter (#5036).
       brainVocabularyEdges: { imported: 2, skipped: 1, refused: 4 },
+      brainSlackChannelExclusions: { imported: 3, skipped: 2, refused: 0 },
     };
 
     expect(result.conversations.imported + result.conversations.skipped).toBe(7);

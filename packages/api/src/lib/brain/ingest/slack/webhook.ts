@@ -127,7 +127,7 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
-import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { getSettingAuto } from "@atlas/api/lib/settings";
 import { getInstallation } from "@atlas/api/lib/slack/store";
 import type { SlackHistoryMessage } from "@atlas/api/lib/slack/api";

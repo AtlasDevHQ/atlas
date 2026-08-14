@@ -30889,6 +30889,10 @@
                             "type": "integer",
                             "minimum": 0
                           },
+                          "unsurfaceableCells": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
                           "cardinalityProposed": {
                             "type": "array",
                             "items": {
@@ -30906,6 +30910,7 @@
                           "comparable",
                           "unidentifiedRows",
                           "collidingSubjectRows",
+                          "unsurfaceableCells",
                           "cardinalityProposed"
                         ],
                         "additionalProperties": false
@@ -30927,12 +30932,15 @@
                             "enum": [
                               "ambiguous-dimension",
                               "entity-not-published",
+                              "entity-unreadable",
                               "dimension-not-found",
                               "measure-not-per-row",
                               "no-primary-key",
                               "composite-primary-key",
                               "row-cap-exceeded",
-                              "snapshot-failed"
+                              "snapshot-rejected",
+                              "snapshot-failed",
+                              "snapshot-already-recorded"
                             ]
                           },
                           "message": {

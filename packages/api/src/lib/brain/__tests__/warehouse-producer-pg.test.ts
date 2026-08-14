@@ -51,13 +51,21 @@ const WORKSPACE = "ws-brain-5042";
 const ENTITY = "Accounts";
 const SUBJECT = "Acme Corp";
 
-/** The published entity the producer reads. One key, one enrollable dimension. */
+/**
+ * The published entity the producer reads. One key, two enrollable dimensions.
+ *
+ * ⚠️ Every `sql:` differs from its `name:`, deliberately. With them equal —
+ * the profiler's own default — `predicate: dim.name` and `predicate: dim.sql` are
+ * the same string, and emitting a COLUMN EXPRESSION as a predicate is exactly the
+ * "can never lexically match anything an LLM emits" failure the bare name exists to
+ * prevent. The unit suite makes the same choice for the same reason.
+ */
 const ACCOUNTS_YAML: Record<string, unknown> = {
   table: "accounts",
   dimensions: [
-    { name: "name", sql: "name", primary_key: true },
-    { name: "status", sql: "status" },
-    { name: "tier", sql: "tier" },
+    { name: "name", sql: "account_name", primary_key: true },
+    { name: "status", sql: "lifecycle_status" },
+    { name: "tier", sql: "plan_tier" },
   ],
 };
 
@@ -134,6 +142,10 @@ describeIfPg("warehouse producer (real Postgres)", () => {
   function deps(snapshotAt: Date, rows: readonly Record<string, unknown>[]): WarehouseProducerDeps {
     return {
       loadEntity: async () => ACCOUNTS_YAML,
+      // The SQL gate is workspace-whitelist-scoped and this schema has no
+      // whitelist, so it is stubbed here and driven for real in the unit suite
+      // (`what it builds is rejected only for its TABLE, never for its form`).
+      validateSnapshotSql: async () => ({ valid: true }),
       runSnapshot: async () => rows,
       now: () => snapshotAt,
     };
@@ -192,8 +204,9 @@ describeIfPg("warehouse producer (real Postgres)", () => {
       expect(report.created).toBe(1);
       const [fact] = await facts();
       expect(fact?.subject).toBe(SUBJECT);
-      // THE BARE NAME — not `accounts.status`, not `analytics.accounts.status`.
+      // THE BARE NAME — not `accounts.status`, not the COLUMN `lifecycle_status`.
       expect(fact?.predicate).toBe("status");
+      expect(fact?.predicate).not.toBe("lifecycle_status");
       expect(fact?.object).toBe("active");
       // The review gate applying itself. Asserted against the STORED row, because
       // the insert never names the column.
@@ -201,6 +214,13 @@ describeIfPg("warehouse producer (real Postgres)", () => {
       expect(fact?.valid_to).toBeNull();
       // The column that was permanently NULL before this producer existed.
       expect(fact?.subject_cmp).toBe(`entity:${warehouseRowId(WORKSPACE, ENTITY, SUBJECT)}`);
+      // ⚠️ `comparable` counts a non-null `object_cmp` and is legitimately 0 here —
+      // `active` is an unparseable string. Asserted BESIDE the non-null
+      // `subject_cmp` above, at a different value, so the two can never be read as
+      // one number again: an earlier docstring claimed this field counted
+      // `subject_cmp`, which would have made a working producer look idle.
+      expect(report.entities[0]?.comparable).toBe(0);
+      expect(fact?.subject_cmp).not.toBeNull();
       expect(fact?.provenance.producer).toBe(WAREHOUSE_PRODUCER);
       // Qualification rides here and NOWHERE ELSE.
       expect(fact?.provenance.entity).toBe(ENTITY);
@@ -294,6 +314,10 @@ describeIfPg("warehouse producer (real Postgres)", () => {
 
       expect(report.created).toBe(0);
       expect(report.corroborated).toBe(1);
+      // ⚠️ `already-decided` is the ordinary refusal, and this is what pins it: an
+      // unconditional push into `cardinalityProposed` survives every other
+      // assertion in both suites.
+      expect(report.entities[0]?.cardinalityProposed).toEqual([]);
       expect(await facts()).toHaveLength(1);
       expect(await tensionEdges()).toEqual([]);
       // The second snapshot IS recorded as evidence — corroboration is the claim

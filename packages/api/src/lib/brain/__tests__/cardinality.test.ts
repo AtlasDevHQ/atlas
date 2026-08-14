@@ -32,9 +32,11 @@ import {
   decidePredicateCardinality,
   proposeFromCorrectionEvents,
   proposePredicateCardinality,
+  proposePredicateCardinalityForSurface,
   readPredicateCardinality,
   type CardinalityExecutor,
 } from "@atlas/api/lib/brain/cardinality";
+import { identityKey } from "@atlas/api/lib/brain/identity";
 
 const WS = "ws-cardinality";
 const KEY = "reports to";
@@ -195,6 +197,63 @@ describe("proposePredicateCardinality — the producer door", () => {
 
     expect(result).toMatchObject({ ok: false, refusal: "degenerate-key" });
     expect(sql).toEqual([]);
+  });
+});
+
+describe("proposePredicateCardinalityForSurface — the producer's door (#5042)", () => {
+  it("derives the key through the workspace's PREDICATE vocabulary, not the identity", async () => {
+    // The whole reason the vocabulary is a required parameter. Curating `is priced
+    // at` after `is priced at → priced at` is approved must land on `priced at` —
+    // the slot the claims actually occupy. An identity default writes an entry
+    // keyed on a norm no live claim carries, which `cardinalitySingleSql` then
+    // never reads: a silent no-op wearing a successful proposal's face.
+    const { exec, params } = executor([{ match: "INSERT INTO", rows: [{ inserted: 1 }] }]);
+    const result = await proposePredicateCardinalityForSurface(exec, WS, {
+      predicateSurface: "is priced at",
+      cardinality: "single",
+      sourceClass: "warehouse_structural",
+      proposedBy: "warehouse:v1",
+      predicateAlias: (norm) => (norm === "is priced at" ? "priced at" : norm),
+    });
+
+    expect(result).toEqual({ ok: true, cardinality: "single" });
+    expect(params[0]?.[1]).toBe(identityKey("priced at"));
+    expect(params[0]?.[1]).not.toBe(identityKey("is priced at"));
+    expect(params[0]?.[3]).toBe("warehouse_structural");
+  });
+
+  it("refuses a surface that normalizes away, rather than writing an empty key", async () => {
+    // Reachable from real data: `lexicalNorm` collapses `[ \t\n\v\f\r_-]`, so a
+    // dimension named `_` or `--` keys to null. An entry written under an empty key
+    // would describe EVERY degenerate predicate in the workspace at once.
+    const { exec, sql } = executor([{ match: "INSERT INTO", rows: [{ inserted: 1 }] }]);
+    const result = await proposePredicateCardinalityForSurface(exec, WS, {
+      predicateSurface: "__",
+      cardinality: "single",
+      sourceClass: "warehouse_structural",
+      proposedBy: "warehouse:v1",
+      predicateAlias: (norm) => norm,
+    });
+
+    expect(result).toMatchObject({ ok: false, refusal: "degenerate-key" });
+    // Refused BEFORE the statement — the assertion that separates a refusal from a
+    // write that happened to fail.
+    expect(sql).toEqual([]);
+  });
+
+  it("reports `already-decided` on a suppressed conflict — the producer's ordinary case", async () => {
+    // `ON CONFLICT DO NOTHING` returns no row. This is what makes a re-run a no-op
+    // and what makes a human's `rejected` stick, and the warehouse producer logs it
+    // at `debug` rather than `warn` on exactly this verdict.
+    const { exec } = executor();
+    const result = await proposePredicateCardinalityForSurface(exec, WS, {
+      predicateSurface: "status",
+      cardinality: "single",
+      sourceClass: "warehouse_structural",
+      proposedBy: "warehouse:v1",
+      predicateAlias: (norm) => norm,
+    });
+    expect(result).toMatchObject({ ok: false, refusal: "already-decided" });
   });
 });
 

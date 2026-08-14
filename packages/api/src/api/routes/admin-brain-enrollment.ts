@@ -84,7 +84,10 @@ import {
   loadEnrollableDimensions,
   loadEnrollableEntities,
 } from "@atlas/api/lib/brain/enrollment-candidates";
-import { runWarehouseProducer } from "@atlas/api/lib/brain/warehouse-producer";
+import {
+  runWarehouseProducer,
+  type WarehouseProducerReport,
+} from "@atlas/api/lib/brain/warehouse-producer";
 import {
   BrainEnrollmentDimensionsResponseSchema,
   BrainEnrollmentEntitiesResponseSchema,
@@ -130,6 +133,57 @@ function errorBody(error: string, message: string, requestId: string) {
  */
 function checked<T>(schema: { parse: (value: unknown) => T }, payload: unknown): T {
   return schema.parse(payload);
+}
+
+/**
+ * Compile-time pin: the producer's report and its wire schema describe ONE shape.
+ *
+ * ⚠️ Without it the two are a hand-maintained mirror whose drift is invisible until
+ * production. `checked` takes `unknown`, the schemas are `strictObject`, and the
+ * parse runs after every episode, fact and cardinality proposal has committed — so
+ * one field added to `WarehouseEntityOutcome` and not to the schema compiles clean,
+ * passes both producer suites (neither parses a report through the schema), and
+ * 500s in production on a run that fully succeeded.
+ *
+ * Mutual `extends` rather than a one-way `satisfies`: a schema that is a strict
+ * SUBSET of the report is the direction that actually happens, and one-way
+ * assignability admits it.
+ */
+type ExactShape<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
+const _reportMatchesWireSchema: ExactShape<
+  WarehouseProducerReport,
+  z.infer<typeof BrainWarehouseRunResponseSchema>
+> = true;
+void _reportMatchesWireSchema;
+
+/**
+ * The producer report's response parse, with the POST-COMMIT posture.
+ *
+ * `admin-brain-vocabulary.ts`'s `checkedWrite`, applied where that file's argument
+ * actually bites. On a parse failure this does not throw: the run LANDED, its
+ * drafts are in the review queue, and a 500 saying "Failed to run" would invite the
+ * one retry that doubles the queue. The defect is logged with the request id and
+ * the caller is told what is true — the run completed, the report could not be
+ * serialized.
+ */
+function checkedRun(report: WarehouseProducerReport, requestId: string) {
+  try {
+    return BrainWarehouseRunResponseSchema.parse(report);
+  } catch (err) {
+    log.error(
+      { requestId, err },
+      "Warehouse producer report failed its own response schema — the run COMMITTED; the report shape drifted",
+    );
+    return {
+      workspaceId: report.workspaceId,
+      snapshotAt: report.snapshotAt,
+      enrolled: report.enrolled,
+      entities: [],
+      refusals: [],
+      created: report.created,
+      corroborated: report.corroborated,
+    } satisfies z.infer<typeof BrainWarehouseRunResponseSchema>;
+  }
 }
 
 /**
@@ -624,7 +678,7 @@ adminBrainEnrollment.openapi(produceRoute, async (c) => {
       }
 
       const report = yield* Effect.tryPromise({
-        try: () => runWarehouseProducer({ workspaceId: orgId, triggeredBy }),
+        try: () => runWarehouseProducer({ workspaceId: orgId, triggeredBy, requestId }),
         catch: toError,
       });
 
@@ -639,7 +693,13 @@ adminBrainEnrollment.openapi(produceRoute, async (c) => {
         },
         "Warehouse producer run requested from the admin surface",
       );
-      return c.json(checked(BrainWarehouseRunResponseSchema, report), 200);
+      // ⚠️ `checkedRun`, NOT `checked` — this is the case the file's own docstring
+      // above says to take `checkedWrite` for. Every field of this response is
+      // derived from the semantic layer, the warehouse and `reconcileFacts`, and it
+      // is built AFTER N transactions have committed. A schema drift here is
+      // deterministic under retry, so `checked` would tell an admin the run failed,
+      // forever, while each press files another full round of drafts.
+      return c.json(checkedRun(report, requestId), 200);
     }),
     { label: "run brain warehouse producer" },
   );

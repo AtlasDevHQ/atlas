@@ -72,8 +72,8 @@ import { BRAIN_WAREHOUSE_REFUSAL_REASONS } from "@useatlas/schemas";
 import { createLogger } from "@atlas/api/lib/logger";
 import { ORG_PRINCIPAL } from "@atlas/api/lib/brain/acl";
 import {
-  CARDINALITY_SOURCE_CLASSES,
   proposePredicateCardinalityForSurface,
+  type CardinalityProposerClass,
 } from "@atlas/api/lib/brain/cardinality";
 import { loadProducerReach, type ProducerReach } from "@atlas/api/lib/brain/enrollment";
 import type { ClaimVocabulary } from "@atlas/api/lib/brain/identity";
@@ -138,8 +138,18 @@ export const WAREHOUSE_PRODUCER_PRINCIPAL = "system:warehouse-producer";
  */
 export const WAREHOUSE_ROW_CAP = 1_000;
 
-/** The source class {@link proposePredicateCardinalityForSurface} is called with. */
-const WAREHOUSE_CARDINALITY_SOURCE = CARDINALITY_SOURCE_CLASSES[0];
+/**
+ * The source class {@link proposePredicateCardinalityForSurface} is called with.
+ *
+ * ⚠️ The LITERAL, not `CARDINALITY_SOURCE_CLASSES[0]`. That tuple is documented as
+ * being *"in the order the ADR names them"* — an ordering kept for readability and
+ * therefore one nobody is forbidden from changing. Reordering `correction_event`
+ * to the front compiles clean (`CardinalityProposerClass` only excludes `human`)
+ * and silently stamps every warehouse proposal with the wrong `source_class`, which
+ * is the field a reviewer reads to judge how much authority the row has. `satisfies`
+ * keeps the membership check without the positional coupling.
+ */
+const WAREHOUSE_CARDINALITY_SOURCE = "warehouse_structural" satisfies CardinalityProposerClass;
 
 // ---------------------------------------------------------------------------
 // The semantic-layer shape this producer needs
@@ -215,6 +225,23 @@ function namedEntries(raw: unknown): { name: string; entry: Record<string, unkno
 }
 
 /**
+ * What one enrolled name resolved to.
+ *
+ * THREE arms, not two, and the third is the one this type exists for. An entity
+ * that is published and still unreadable — its name resolves in more than one
+ * connection group, or its YAML declares no `table:` — is not
+ * `entity-not-published`, and reporting it as such hands the admin the remedy
+ * *"publish the entity"* for an entity that is already published. They publish it
+ * again, nothing changes, and the actual defect is never named. That is the same
+ * distinction this module already insists on between `measure-not-per-row` and
+ * `dimension-not-found`.
+ */
+export type WarehouseEntityLookup =
+  | { readonly kind: "found"; readonly entity: WarehouseEntity }
+  | { readonly kind: "not-published" }
+  | { readonly kind: "unreadable"; readonly why: string };
+
+/**
  * Narrow one entity's YAML to {@link WarehouseEntity}, or `null` when it carries
  * no usable table.
  *
@@ -279,7 +306,17 @@ export interface WarehouseRefusal {
 export interface WarehouseEntityPlan {
   readonly entity: WarehouseEntity;
   readonly primaryKey: WarehouseDimension;
-  readonly dimensions: readonly WarehouseDimension[];
+  /**
+   * NON-EMPTY, and the tuple says so.
+   *
+   * `readonly WarehouseDimension[]` admits `[]`, which builds
+   * `SELECT pk AS … FROM t LIMIT 1001` — a real read against a customer warehouse
+   * that can produce no claim. {@link planWarehouseEmission} never mints one (a
+   * bucket is created with its first dimension already in hand), so this costs
+   * nothing today; it is written down because the type is EXPORTED and
+   * {@link buildSnapshotSql} interpolates its members into SQL.
+   */
+  readonly dimensions: readonly [WarehouseDimension, ...WarehouseDimension[]];
 }
 
 export interface WarehousePlan {
@@ -329,7 +366,7 @@ function refusal(
  */
 export function planWarehouseEmission(
   reach: ProducerReach,
-  entities: ReadonlyMap<string, WarehouseEntity | null>,
+  entities: ReadonlyMap<string, WarehouseEntityLookup>,
 ): WarehousePlan {
   const refused: WarehouseRefusal[] = [];
   /** Structurally producible pairs, before the ambiguity pass. */
@@ -337,8 +374,8 @@ export function planWarehouseEmission(
     [];
 
   for (const pair of reach.pairs) {
-    const entity = entities.get(pair.entity) ?? null;
-    if (entity === null) {
+    const lookup = entities.get(pair.entity) ?? { kind: "not-published" as const };
+    if (lookup.kind === "not-published") {
       refused.push(
         refusal(
           pair.entity,
@@ -350,6 +387,20 @@ export function planWarehouseEmission(
       );
       continue;
     }
+    if (lookup.kind === "unreadable") {
+      // ⚠️ NOT `entity-not-published`. This entity IS published; telling the admin
+      // to publish it is advice they can follow forever without anything changing.
+      refused.push(
+        refusal(
+          pair.entity,
+          pair.dimension,
+          "entity-unreadable",
+          `"${pair.entity}" is published but could not be read: ${lookup.why}`,
+        ),
+      );
+      continue;
+    }
+    const entity = lookup.entity;
     const primaryKeys = entity.dimensions.filter((d) => d.primaryKey);
     if (primaryKeys.length === 0) {
       refused.push(
@@ -396,7 +447,12 @@ export function planWarehouseEmission(
       );
       continue;
     }
-    producible.push({ plan: entity, pk: primaryKeys[0]!, dim: dimension });
+    // Destructured rather than `primaryKeys[0]!` — both `length === 0` and
+    // `length > 1` refused above, so the assertion was provably safe, and this
+    // costs nothing while keeping the file's non-null-assertion count at zero.
+    const [primaryKey] = primaryKeys;
+    if (primaryKey === undefined) continue;
+    producible.push({ plan: entity, pk: primaryKey, dim: dimension });
   }
 
   // The ambiguity pass, over the producible set and nothing else.
@@ -410,7 +466,18 @@ export function planWarehouseEmission(
     owners.add(item.plan.name);
   }
 
-  const byEntity = new Map<string, { entity: WarehouseEntity; pk: WarehouseDimension; dims: WarehouseDimension[] }>();
+  const byEntity = new Map<
+    string,
+    {
+      entity: WarehouseEntity;
+      pk: WarehouseDimension;
+      // The non-empty tuple `WarehouseEntityPlan.dimensions` declares, built here
+      // rather than asserted at the `return` — a bucket is only ever created with
+      // its first dimension already in hand, which is what makes the tuple true by
+      // construction instead of by cast.
+      dims: [WarehouseDimension, ...WarehouseDimension[]];
+    }
+  >();
   for (const item of producible) {
     const owners = entitiesByDimension.get(item.dim.name);
     if (owners !== undefined && owners.size > 1) {
@@ -429,10 +496,10 @@ export function planWarehouseEmission(
       );
       continue;
     }
-    let bucket = byEntity.get(item.plan.name);
+    const bucket = byEntity.get(item.plan.name);
     if (bucket === undefined) {
-      bucket = { entity: item.plan, pk: item.pk, dims: [] };
-      byEntity.set(item.plan.name, bucket);
+      byEntity.set(item.plan.name, { entity: item.plan, pk: item.pk, dims: [item.dim] });
+      continue;
     }
     bucket.dims.push(item.dim);
   }
@@ -490,7 +557,6 @@ export function buildSnapshotSql(plan: WarehouseEntityPlan, rowCap = WAREHOUSE_R
 export interface WarehouseSnapshotRequest {
   readonly workspaceId: string;
   readonly entity: string;
-  readonly table: string;
   /** The connection the entity's group routes to; `undefined` is the default connection. */
   readonly connectionId: string | undefined;
   readonly sql: string;
@@ -534,6 +600,27 @@ export function warehouseSurface(value: unknown): string | null {
 }
 
 /**
+ * Did this cell hold NOTHING, as opposed to something no claim can be made of?
+ *
+ * ⚠️ The two are the same `null` out of {@link warehouseSurface} and they are NOT
+ * the same event, which is why this exists as a separate question rather than a
+ * second return arm. A SQL `NULL` asserts nothing and is the ordinary case — a
+ * column is empty for most rows and nobody should hear about it. A `jsonb`, a
+ * `bytea`, an array or a `NaN` is an **enrollment mistake**: `GET /dimensions`
+ * offers every dimension regardless of type, so an admin can enroll
+ * `(accounts, metadata)` and get a run that reads nine hundred rows, emits nothing,
+ * files no refusal and logs nothing at all — indistinguishable from a column that
+ * happens to be empty, and re-runnable forever.
+ *
+ * Folded together, the module's own rule — *every arm is a REFUSAL that reaches
+ * the caller, never a silent drop* — is false for the commonest way an enrollment
+ * can be wrong.
+ */
+function isAbsentCell(value: unknown): boolean {
+  return value === null || value === undefined;
+}
+
+/**
  * The component separator inside a row id's digest input.
  *
  * NUL, for `enrollment.ts`'s reason exactly: it is the one byte a Postgres `text`
@@ -571,31 +658,59 @@ const ID_SEPARATOR = "\u0000";
  * started answering (ADR-0037 §5), and that is the resolver seam's rule rather
  * than this function's.
  */
-export function warehouseRowId(workspaceId: string, entity: string, primaryKey: string): string {
+export function warehouseRowId(
+  workspaceId: string,
+  entity: string,
+  primaryKey: string,
+): WarehouseRowId {
   const digest = createHash("sha256")
     .update([workspaceId, entity, primaryKey].join(ID_SEPARATOR))
     .digest("hex");
-  return `wh_${digest}`;
+  return `wh_${digest}` as WarehouseRowId;
 }
+
+/**
+ * An id {@link warehouseRowId} minted — i.e. one the uniqueness argument above
+ * actually applies to.
+ *
+ * ⚠️ **A brand, and it is the repo's own lesson rather than decoration.** The
+ * resolver seam states global uniqueness as a CONTRACT CLAUSE (`reconcile.ts`'s
+ * `ResolvedEntity`), warning that an id colliding across regions for two different
+ * rows is *"a false `same` at the publish gate: two distinct entities merged, with
+ * no inverse"*. With `subjectIds` typed `ReadonlyMap<string, string>`, the exported
+ * {@link warehouseEntityResolver} accepts `new Map([["Acme Corp", "1"]])` — an
+ * unbranded door straight onto `subject_cmp`, which is exactly how #5032's guard
+ * was bypassed one column over once the parameter alone was branded.
+ *
+ * The brand terminates at `ResolvedEntity.entityId: string`; its job is not to
+ * travel, it is to make this function the only thing that can build a value the
+ * resolver will accept.
+ */
+export type WarehouseRowId = string & { readonly __warehouseRowId: unique symbol };
 
 /** One row's worth of claims, plus the id its subject resolves to. */
 export interface WarehouseClaims {
   readonly candidates: readonly FactCandidate[];
   /** Subject surface → row id, for the episode's {@link EntityResolver}. */
-  readonly subjectIds: ReadonlyMap<string, string>;
+  readonly subjectIds: ReadonlyMap<string, WarehouseRowId>;
   /** Rows whose primary key was not a usable surface and produced nothing. */
   readonly unidentifiedRows: number;
   /**
-   * Rows dropped because their primary key trimmed to a surface an EARLIER row
+   * Rows dropped because their primary key resolves to a surface an EARLIER row
    * already owns.
    *
    * Counted apart from {@link unidentifiedRows} rather than folded in, because the
    * two say different things to whoever reads the run report: the first is a
    * warehouse with null or unusable keys, the second is a warehouse whose keys
-   * differ only in whitespace. One is a data-quality note; the other is the reason
-   * a row a person expected to see is missing.
+   * collide once trimmed, or that has genuine duplicates. One is a data-quality
+   * note; the other is the reason a row a person expected to see is missing.
    */
   readonly collidingSubjectRows: number;
+  /**
+   * Cells holding a value no claim surface can be made of. See {@link isAbsentCell}
+   * for why this is NOT the same number as "cells that were empty".
+   */
+  readonly unsurfaceableCells: number;
 }
 
 /**
@@ -643,9 +758,10 @@ export function buildWarehouseClaims(params: {
 }): WarehouseClaims {
   const { workspaceId, plan, rows, snapshotAt } = params;
   const candidates: FactCandidate[] = [];
-  const subjectIds = new Map<string, string>();
+  const subjectIds = new Map<string, WarehouseRowId>();
   let unidentifiedRows = 0;
   let collidingSubjectRows = 0;
+  let unsurfaceableCells = 0;
 
   for (const row of rows) {
     const rawKey = row[SUBJECT_ALIAS];
@@ -669,23 +785,38 @@ export function buildWarehouseClaims(params: {
       plan.entity.name,
       typeof rawKey === "string" ? rawKey : subject,
     );
-    // ⚠️ First writer wins, and this arm is reachable rather than defensive — see
-    // the id derivation above. One surface cannot resolve to two ids, so the
-    // second row is dropped ENTIRELY: keeping its claims would attach one row's
-    // identity to another row's values, which is worse than losing the row.
-    const existing = subjectIds.get(subject);
-    if (existing !== undefined && existing !== rowId) {
+    // ⚠️ **FIRST WRITER WINS, UNCONDITIONALLY** — the guard does not compare ids,
+    // and comparing them was a real hole rather than a redundancy. Two rows whose
+    // keys differ only in whitespace get DIFFERENT ids and were caught; two rows
+    // with the SAME key get the same id, fell through, and emitted a second full
+    // set of candidates for one subject. Nothing counted them, `single` cardinality
+    // was proposed for those predicates in the same transaction, and the two
+    // candidates either corroborated a fact against itself or landed as a
+    // contradicting draft pair.
+    //
+    // Nothing guarantees a declared primary key is unique: `primary_key: true` is
+    // admin-authored YAML, the table may be a view, and `sql:` may be an expression
+    // (`left(id,3)`). So the invariant this arm establishes — at most one candidate
+    // per `(subject, predicate)` per entity — has to be enforced here or not at all.
+    if (subjectIds.has(subject)) {
       collidingSubjectRows++;
       continue;
     }
     subjectIds.set(subject, rowId);
 
     for (const [index, dim] of plan.dimensions.entries()) {
-      const object = warehouseSurface(row[`${DIMENSION_ALIAS_PREFIX}${index}`]);
-      // A NULL cell asserts nothing. Emitting it as an empty object would be
-      // blocked as a malformed claim anyway; emitting the string "null" would be
-      // a fact about the company that is not true.
-      if (object === null) continue;
+      const cell = row[`${DIMENSION_ALIAS_PREFIX}${index}`];
+      // A NULL cell asserts nothing, and nobody should hear about it. Emitting it
+      // as an empty object would be blocked as a malformed claim anyway; emitting
+      // the string "null" would be a fact about the company that is not true.
+      if (isAbsentCell(cell)) continue;
+      const object = warehouseSurface(cell);
+      if (object === null) {
+        // A value that EXISTS and cannot be made into a claim — the enrollment
+        // mistake. Counted, reported and logged, because it is silent otherwise.
+        unsurfaceableCells++;
+        continue;
+      }
       candidates.push({
         subject,
         // THE BARE NAME. Qualification belongs in `detail` below and nowhere else
@@ -715,7 +846,7 @@ export function buildWarehouseClaims(params: {
     }
   }
 
-  return { candidates, subjectIds, unidentifiedRows, collidingSubjectRows };
+  return { candidates, subjectIds, unidentifiedRows, collidingSubjectRows, unsurfaceableCells };
 }
 
 /**
@@ -735,7 +866,9 @@ export function buildWarehouseClaims(params: {
  * Surfaces it was not handed are ABSENT, never blank: an absent key is the honest
  * abstain, and a blank id is a contract violation the seam flags `provisional`.
  */
-export function warehouseEntityResolver(subjectIds: ReadonlyMap<string, string>): EntityResolver {
+export function warehouseEntityResolver(
+  subjectIds: ReadonlyMap<string, WarehouseRowId>,
+): EntityResolver {
   return (surfaces) => {
     const answer = new Map<string, { entityId: string }>();
     for (const surface of surfaces) {
@@ -758,16 +891,41 @@ export interface WarehouseRunContext {
    * {@link WAREHOUSE_PRODUCER_PRINCIPAL} for why it is not the attribution.
    */
   readonly triggeredBy: string;
+  /**
+   * Correlates every log line this run emits with the request that armed it.
+   *
+   * ⚠️ Not optional decoration. The failures that matter here return **200** — a
+   * `snapshot-failed` refusal is a successful response — and the underlying error
+   * exists nowhere but the log. Without this, an operator holding a refusal has
+   * workspace plus wall-clock and nothing else to give support.
+   */
+  readonly requestId?: string;
 }
+
+/** The SELECT-only / single-statement / whitelist gate, as a seam. */
+export type SnapshotSqlValidator = (
+  request: WarehouseSnapshotRequest,
+) => Promise<{ readonly valid: boolean; readonly error?: string }>;
 
 /** Every I/O seam the run touches, each defaulted to its production wiring. */
 export interface WarehouseProducerDeps {
   readonly loadReach?: (workspaceId: string) => Promise<ProducerReach>;
-  /** The published entity YAML for one enrolled name, or `null` when there is none. */
+  /**
+   * The published entity YAML for one enrolled name, or `null` when there is none.
+   *
+   * ⚠️ It may THROW, and the run treats a throw as `entity-unreadable` for that
+   * entity's pairs rather than letting it escape. The shipped implementation throws
+   * `AmbiguousEntityError` when a name resolves in more than one connection group
+   * (`semantic/entities.ts`), which is an ordinary multi-group workspace — and the
+   * lookups run inside a `Promise.all`, so an uncaught one takes down the whole run
+   * for every unrelated entity and returns a 500 instead of the report that exists
+   * to explain exactly this.
+   */
   readonly loadEntity?: (
     workspaceId: string,
     entity: string,
   ) => Promise<Record<string, unknown> | null>;
+  readonly validateSnapshotSql?: SnapshotSqlValidator;
   readonly runSnapshot?: WarehouseSnapshotRunner;
   readonly loadVocabulary?: (workspaceId: string) => Promise<ClaimVocabulary>;
   readonly withTransaction?: ReconcileTransactionRunner;
@@ -783,11 +941,21 @@ export interface WarehouseEntityOutcome {
   readonly created: number;
   readonly corroborated: number;
   readonly blocked: number;
-  /** Created facts carrying a non-null `subject_cmp` — the column this producer exists to fill. */
+  /**
+   * `ReconcileReport.comparable` — created facts carrying a non-null **`object_cmp`**.
+   *
+   * ⚠️ NOT `subject_cmp`. An earlier version of this line said it was, and that is a
+   * claim a reader would have used to conclude the producer was doing nothing:
+   * warehouse objects are usually unparseable strings, so this number is
+   * legitimately 0 on a run that populated `subject_cmp` for every single row.
+   * `warehouse-producer-pg.test.ts` asserts the two independently.
+   */
   readonly comparable: number;
   readonly unidentifiedRows: number;
   /** See {@link WarehouseClaims.collidingSubjectRows}. */
   readonly collidingSubjectRows: number;
+  /** See {@link WarehouseClaims.unsurfaceableCells}. */
+  readonly unsurfaceableCells: number;
   /** Predicates whose `warehouse_structural` cardinality proposal was newly raised. */
   readonly cardinalityProposed: readonly string[];
 }
@@ -852,8 +1020,22 @@ async function insertSnapshotEpisode(
     params.snapshotAt.toISOString(),
     [ORG_PRINCIPAL],
   ]);
-  const row = rows[0] as { id?: unknown } | undefined;
-  return typeof row?.id === "string" ? { id: row.id, sourceId } : null;
+  // ⚠️ `rows.length === 0` is the ONLY silent arm, and separating it from "a row
+  // came back that this function cannot read" is the point. Folded together, a
+  // statement edited to drop or rename the `RETURNING` makes every entity of every
+  // run report *"this snapshot instant is already recorded"* — a false sentence, at
+  // `info`, on a producer that would then look like a well-behaved no-op forever.
+  // The statement is exported precisely because it is expected to be edited.
+  if (rows.length === 0) return null;
+  const row = rows[0];
+  if (!isRecord(row) || typeof row.id !== "string") {
+    throw new Error(
+      "WAREHOUSE_EPISODE_INSERT_SQL returned a row with no string id — its RETURNING clause and this " +
+        "reader disagree. Refusing to continue: the alternative is reporting the entity as already " +
+        "recorded, which is not what happened.",
+    );
+  }
+  return { id: row.id, sourceId };
 }
 
 /**
@@ -866,37 +1048,77 @@ async function insertSnapshotEpisode(
  * its cardinality proposals are atomic, which is what stops a snapshot episode
  * existing with no claims hanging off it.
  *
- * Errors from a snapshot are caught PER ENTITY and become a
- * `snapshot-failed` refusal — the run continues, nothing is stamped, and the next
- * run retries the pair. Errors from the reach, the vocabulary or a transaction
- * PROPAGATE: an empty reach and a failed reach read produce identical silence
- * (ADR-0039's *"a producer nobody enrolls anything into leaves M4 exactly as dead
- * as it is today, with every test green"*), and a swallowed one would be
- * indistinguishable from the honest zero.
+ * Errors from a snapshot, from its validation, and from an entity lookup are
+ * caught PER ENTITY and become a typed refusal — the run continues, nothing is
+ * stamped, and every pair of that entity is accounted for. Errors from the reach,
+ * the vocabulary or a transaction PROPAGATE: an empty reach and a failed reach read
+ * produce identical silence (ADR-0039's *"a producer nobody enrolls anything into
+ * leaves M4 exactly as dead as it is today, with every test green"*), and a
+ * swallowed one would be indistinguishable from the honest zero.
  */
 export async function runWarehouseProducer(
   context: WarehouseRunContext,
   deps: WarehouseProducerDeps = {},
 ): Promise<WarehouseProducerReport> {
-  const { workspaceId } = context;
+  const { workspaceId, triggeredBy, requestId } = context;
   const now = deps.now ?? (() => new Date());
-  const rowCap = deps.rowCap ?? WAREHOUSE_ROW_CAP;
+  // Clamped: the seam is test-only, but `0` and `-1` reach `LIMIT ${rowCap + 1}`
+  // and a fractional cap reaches it as `LIMIT 2.5`. One expression is cheaper than
+  // a brand for a knob nothing on the wire can set.
+  const rowCap = Math.max(1, Math.trunc(deps.rowCap ?? WAREHOUSE_ROW_CAP));
   const loadReach = deps.loadReach ?? loadProducerReach;
   const loadEntity = deps.loadEntity ?? defaultLoadEntity;
+  const validateSnapshotSql = deps.validateSnapshotSql ?? defaultValidateSnapshotSql;
   const runSnapshot = deps.runSnapshot ?? defaultRunSnapshot;
   const loadVocabulary = deps.loadVocabulary ?? defaultLoadVocabulary;
   const withTransaction = deps.withTransaction ?? withBrainTransaction;
+  /** Every log line this run emits carries these, so a 200 refusal is traceable. */
+  const runLog = { workspaceId, triggeredBy, requestId };
 
   const snapshotAt = now();
   const reach = await loadReach(workspaceId);
 
   // One entity read per DISTINCT entity, not one per pair — `reach.entities` is
   // that set, and it is the same set the fail-closed rule is evaluated across.
-  const entityShapes = new Map<string, WarehouseEntity | null>();
+  const entityShapes = new Map<string, WarehouseEntityLookup>();
   await Promise.all(
     reach.entities.map(async (name) => {
-      const raw = await loadEntity(workspaceId, name);
-      entityShapes.set(name, raw === null ? null : parseWarehouseEntity(name, raw));
+      // ⚠️ CAUGHT, and the `Promise.all` is why. `getAdminEntity` throws
+      // `AmbiguousEntityError` for a name that resolves in more than one connection
+      // group — an ordinary multi-group workspace — and an uncaught throw here
+      // rejects the whole `Promise.all`, killing the run for every unrelated
+      // enrolled entity and returning a 500 in place of the report whose entire job
+      // is explaining why a pair produced nothing.
+      let raw: Record<string, unknown> | null;
+      try {
+        raw = await loadEntity(workspaceId, name);
+      } catch (err) {
+        log.warn(
+          { ...runLog, entity: name, err },
+          "Warehouse producer: the entity lookup failed — its pairs are refused, the rest of the run continues",
+        );
+        entityShapes.set(name, {
+          kind: "unreadable",
+          why:
+            `${errorText(err)}. A name that resolves in more than one connection group is the common ` +
+            "cause; enrollment stores no group, so the two cannot be told apart at this surface.",
+        });
+        return;
+      }
+      if (raw === null) {
+        entityShapes.set(name, { kind: "not-published" });
+        return;
+      }
+      const entity = parseWarehouseEntity(name, raw);
+      entityShapes.set(
+        name,
+        entity === null
+          ? {
+              kind: "unreadable",
+              why: "its YAML declares no `table:`, so there is nothing to read FROM. Fix the entity YAML.",
+            }
+          : { kind: "found", entity },
+      );
     }),
   );
 
@@ -904,9 +1126,20 @@ export async function runWarehouseProducer(
   const refusals: WarehouseRefusal[] = [...plan.refused];
   const outcomes: WarehouseEntityOutcome[] = [];
 
+  /** Refuse every pair of one entity with one reason — the per-entity failure shape. */
+  const refuseEntity = (
+    entityPlan: WarehouseEntityPlan,
+    reason: WarehouseRefusalReason,
+    message: string,
+  ) => {
+    for (const dim of entityPlan.dimensions) {
+      refusals.push(refusal(entityPlan.entity.name, dim.name, reason, message));
+    }
+  };
+
   if (plan.emit.length === 0) {
     log.info(
-      { workspaceId, enrolled: reach.pairs.length, refusals: refusals.length },
+      { ...runLog, enrolled: reach.pairs.length, refusals: refusals.length },
       "Warehouse producer: nothing to emit — every enrolled pair was refused or the reach is empty",
     );
     return {
@@ -924,53 +1157,75 @@ export async function runWarehouseProducer(
 
   for (const entityPlan of plan.emit) {
     const sql = buildSnapshotSql(entityPlan, rowCap);
+    const request: WarehouseSnapshotRequest = {
+      workspaceId,
+      entity: entityPlan.entity.name,
+      connectionId: entityPlan.entity.connection ?? undefined,
+      sql,
+    };
+
+    // ⚠️ The gate runs HERE, before the seam, and that placement is the guarantee.
+    // While it lived inside `defaultRunSnapshot`, any injected runner — a test
+    // harness today, a scheduler or self-hosted variant tomorrow — satisfied
+    // `WarehouseSnapshotRunner` while skipping the SELECT-only, single-statement,
+    // whitelist-scoped check entirely, and nothing in the type said otherwise. The
+    // statement is assembled from admin-authored `table:` and `sql:` expressions, so
+    // it is exactly the input that check exists for.
+    const validation = await validateSnapshotSql(request).catch((err: unknown) => ({
+      valid: false as const,
+      error: errorText(err),
+    }));
+    if (!validation.valid) {
+      log.warn(
+        { ...runLog, entity: entityPlan.entity.name, reason: validation.error },
+        "Warehouse producer: the snapshot query did not pass SQL validation — refused permanently, not retried",
+      );
+      refuseEntity(
+        entityPlan,
+        "snapshot-rejected",
+        `The query Atlas would run against "${entityPlan.entity.table}" does not pass its SQL gate: ` +
+          `${validation.error ?? "no reason given"}. The table is probably outside this workspace's ` +
+          "whitelist, or a dimension's `sql:` expression is malformed. **Re-running will not change " +
+          "this** — fix the entity or un-enroll the pair.",
+      );
+      continue;
+    }
+
     let rows: readonly Record<string, unknown>[];
     try {
-      rows = await runSnapshot({
-        workspaceId,
-        entity: entityPlan.entity.name,
-        table: entityPlan.entity.table,
-        connectionId: entityPlan.entity.connection ?? undefined,
-        sql,
-      });
+      rows = await runSnapshot(request);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      // The Error itself, not `.message`. `scrubErrSerializer` emits type, message,
+      // stack AND pg's `code` with credentials already stripped — and `42P01` vs
+      // `ECONNREFUSED` is the difference between "fix your YAML" and "your warehouse
+      // is down". This log line is the only place that survives, because the
+      // refusal below deliberately keeps the driver's text off the wire.
       log.warn(
-        { workspaceId, entity: entityPlan.entity.name, err: message },
+        { ...runLog, entity: entityPlan.entity.name, table: entityPlan.entity.table, err },
         "Warehouse producer: snapshot failed — the entity's pairs produced nothing this run",
       );
-      for (const dim of entityPlan.dimensions) {
-        refusals.push(
-          refusal(
-            entityPlan.entity.name,
-            dim.name,
-            "snapshot-failed",
-            `Reading "${entityPlan.entity.table}" failed, so nothing was emitted for it this run. ` +
-              "Nothing was invalidated and no window was stamped; the next run retries the pair.",
-          ),
-        );
-      }
+      refuseEntity(
+        entityPlan,
+        "snapshot-failed",
+        `Reading "${entityPlan.entity.table}" failed, so nothing was emitted for it this run. ` +
+          "Nothing was invalidated and no window was stamped; the next run retries the pair.",
+      );
       continue;
     }
 
     if (rows.length > rowCap) {
       // ⚠️ REFUSED, not truncated — see WAREHOUSE_ROW_CAP.
       log.warn(
-        { workspaceId, entity: entityPlan.entity.name, rowCap },
+        { ...runLog, entity: entityPlan.entity.name, rowCap },
         "Warehouse producer: entity exceeds the row cap — refused rather than emitting a truncated snapshot",
       );
-      for (const dim of entityPlan.dimensions) {
-        refusals.push(
-          refusal(
-            entityPlan.entity.name,
-            dim.name,
-            "row-cap-exceeded",
-            `"${entityPlan.entity.table}" holds more than ${rowCap} rows, and every row becomes a draft a ` +
-              "person has to review. The producer refuses rather than emitting an arbitrary subset, which " +
-              "would look at rest exactly like a complete reading of the table.",
-          ),
-        );
-      }
+      refuseEntity(
+        entityPlan,
+        "row-cap-exceeded",
+        `"${entityPlan.entity.table}" holds more than ${rowCap} rows, and every row becomes a draft a ` +
+          "person has to review. The producer refuses rather than emitting an arbitrary subset, which " +
+          "would look at rest exactly like a complete reading of the table.",
+      );
       continue;
     }
 
@@ -981,7 +1236,27 @@ export async function runWarehouseProducer(
       snapshotAt,
     });
 
+    if (claims.unsurfaceableCells > 0) {
+      // An enrollment mistake rather than an empty column — see `isAbsentCell`. It
+      // does not refuse the pair (some rows may still be surfaceable, and those
+      // claims are good), but it must not be silent: the counter reaches the report
+      // and this line reaches an operator.
+      log.warn(
+        {
+          ...runLog,
+          entity: entityPlan.entity.name,
+          unsurfaceableCells: claims.unsurfaceableCells,
+          dimensions: entityPlan.dimensions.map((d) => d.name),
+        },
+        "Warehouse producer: cells held values no claim can be made of — a jsonb, an array or a bytea column is probably enrolled",
+      );
+    }
+
     if (claims.candidates.length === 0) {
+      // No episode is written for an entity with no claims, which is what stops a
+      // snapshot episode existing with nothing hanging off it. The entity is still
+      // REPORTED — an entity that produced nothing and an entity that was never
+      // reached must not look alike.
       outcomes.push({
         entity: entityPlan.entity.name,
         rows: rows.length,
@@ -992,6 +1267,7 @@ export async function runWarehouseProducer(
         comparable: 0,
         unidentifiedRows: claims.unidentifiedRows,
         collidingSubjectRows: claims.collidingSubjectRows,
+        unsurfaceableCells: claims.unsurfaceableCells,
         cardinalityProposed: [],
       });
       continue;
@@ -1009,7 +1285,7 @@ export async function runWarehouseProducer(
         // too. Re-reconciling against a second episode id would attach a fresh
         // evidence pointer to claims that already have one.
         log.info(
-          { workspaceId, entity: entityPlan.entity.name },
+          { ...runLog, entity: entityPlan.entity.name, snapshotAt: snapshotAt.toISOString() },
           "Warehouse producer: this snapshot instant is already recorded — skipping the entity",
         );
         return null;
@@ -1058,9 +1334,34 @@ export async function runWarehouseProducer(
           proposedBy: WAREHOUSE_PRODUCER,
           predicateAlias: vocabulary.predicate,
         });
-        if (result.ok) proposed.push(dim.name);
+        if (result.ok) {
+          proposed.push(dim.name);
+          continue;
+        }
+        // ⚠️ `correction.ts`'s proposer logs exactly this split, and the
+        // ordinary-case argument covers only ONE of the four refusals.
+        // `already-decided` is genuinely routine — it is what makes a re-run a
+        // no-op and what makes a human's `rejected` stick. `degenerate-key` is
+        // reachable from real data (a dimension whose norm collapses to nothing)
+        // and means this predicate will never get a `single` entry, so the
+        // machinery this producer exists to wake up stays dormant for it. The other
+        // two are unreachable from a typed caller, which is precisely why they are
+        // worth a `warn`: reaching one means this call site drifted.
+        const line = { ...runLog, entity: entityPlan.entity.name, dimension: dim.name, refusal: result.refusal };
+        if (result.refusal === "already-decided") {
+          log.debug(line, "Warehouse producer: predicate cardinality already adjudicated, no proposal");
+        } else {
+          log.warn(line, "Warehouse producer: cardinality proposal refused unexpectedly");
+        }
       }
 
+      // ⚠️ One expression, not a ternary on `episodeBlocked`. When an episode is
+      // blocked wholesale, `reconcile.ts` sets `blocked[reason] = candidates.length`
+      // with every other reason at zero — so the sum ALREADY equals
+      // `claims.candidates.length` and the ternary's two arms were the same number.
+      // A branch that looks like it compensates for a contract violation, but does
+      // not, costs the next reader a trip into `reconcile.ts` to discover it is
+      // dead.
       const blocked = Object.values(report.blocked).reduce((sum, n) => sum + n, 0);
       return {
         entity: entityPlan.entity.name,
@@ -1068,23 +1369,54 @@ export async function runWarehouseProducer(
         candidates: claims.candidates.length,
         created: report.created,
         corroborated: report.corroborated,
-        blocked: report.episodeBlocked === undefined ? blocked : claims.candidates.length,
+        blocked,
         comparable: report.comparable,
         unidentifiedRows: claims.unidentifiedRows,
         collidingSubjectRows: claims.collidingSubjectRows,
+        unsurfaceableCells: claims.unsurfaceableCells,
         cardinalityProposed: proposed,
       } satisfies WarehouseEntityOutcome;
+    }).catch((err: unknown) => {
+      // ⚠️ RE-THROWN — a transaction failure propagates, which is the stated
+      // decision. What is added is the forensics: entities 1..N-1 have already
+      // COMMITTED their drafts, and without this line the only record of them dies
+      // with the discarded `outcomes` array while the operator is told the run
+      // failed. The success log at the end of the run is never reached.
+      log.error(
+        {
+          ...runLog,
+          entity: entityPlan.entity.name,
+          committedEntities: outcomes.map((o) => o.entity),
+          committedCreated: outcomes.reduce((sum, o) => sum + o.created, 0),
+          err,
+        },
+        "Warehouse producer: a transaction failed — the run aborts, but these entities had already committed drafts",
+      );
+      throw err;
     });
 
-    if (outcome !== null) outcomes.push(outcome);
+    if (outcome === null) {
+      // The entity is reported rather than omitted. An entity that vanishes from
+      // BOTH lists reads as "never enrolled", which is the silence this report
+      // exists to remove — and a run where every entity conflicted would otherwise
+      // be byte-identical to an empty reach.
+      refuseEntity(
+        entityPlan,
+        "snapshot-already-recorded",
+        `A snapshot of "${entityPlan.entity.table}" at this exact instant is already recorded, so its ` +
+          "claims are too and the entity was skipped. Nothing was lost — re-run to take a fresh " +
+          "snapshot at a new instant.",
+      );
+      continue;
+    }
+    outcomes.push(outcome);
   }
 
   const created = outcomes.reduce((sum, o) => sum + o.created, 0);
   const corroborated = outcomes.reduce((sum, o) => sum + o.corroborated, 0);
   log.info(
     {
-      workspaceId,
-      triggeredBy: context.triggeredBy,
+      ...runLog,
       enrolled: reach.pairs.length,
       entities: outcomes.length,
       created,
@@ -1138,31 +1470,56 @@ async function defaultLoadEntity(
 }
 
 /**
- * The shipped snapshot runner — validate, then read.
+ * The shipped SQL gate — the product's own `validateSQL`, on the BUILT statement.
  *
- * ⚠️ **`validateSQL` runs on the BUILT string, and it is not ceremony.** The
- * statement is assembled from `table` and `sql:` expressions the semantic layer
- * holds, which are admin-authored text rather than values — so the same
- * SELECT-only, single-statement, whitelist-scoped gate every other query in the
- * product passes is the thing standing between a mis-authored entity and a
- * statement this producer would otherwise run unattended, with no user in the
- * loop to notice. A rejection throws, which the run turns into a
- * `snapshot-failed` refusal for that entity.
+ * ⚠️ Not ceremony. The statement is assembled from `table:` and `sql:` expressions
+ * the semantic layer holds, which are admin-authored TEXT rather than values, so no
+ * bind parameter can carry them and this is the same SELECT-only,
+ * single-statement, whitelist-scoped check every other query in the product passes.
+ *
+ * It is a SEPARATE seam from {@link WarehouseSnapshotRunner}, and the split is the
+ * guarantee: while the validation lived inside the shipped runner, any substituted
+ * runner satisfied the runner type while skipping the gate entirely, and nothing in
+ * the type said otherwise. {@link runWarehouseProducer} now calls this before the
+ * runner, so a replacement runner cannot reach a datasource with an unvalidated
+ * statement.
+ *
+ * `defaultValidateSnapshotSql` is exported so a test can drive the REAL gate over a
+ * REAL built statement. That test is the positive control: without it, nothing in
+ * the repo has ever shown that what {@link buildSnapshotSql} produces actually
+ * PASSES validation, and a producer that refuses every entity in production looks
+ * from here exactly like one that works.
+ */
+export async function defaultValidateSnapshotSql(
+  request: WarehouseSnapshotRequest,
+): Promise<{ readonly valid: boolean; readonly error?: string }> {
+  const { validateSQL } = await import("@atlas/api/lib/tools/sql");
+  return validateSQL(request.sql, request.connectionId, request.workspaceId);
+}
+
+/**
+ * The shipped snapshot runner — reads tier-1, and nothing else.
+ *
+ * It deliberately does NOT validate: the gate ran before it was called, and having
+ * it here as well would put the product's one SQL invariant inside a substitutable
+ * implementation. See {@link defaultValidateSnapshotSql}.
  */
 async function defaultRunSnapshot(
   request: WarehouseSnapshotRequest,
 ): Promise<readonly Record<string, unknown>[]> {
-  const [{ validateSQL }, { connections }] = await Promise.all([
-    import("@atlas/api/lib/tools/sql"),
-    import("@atlas/api/lib/db/connection"),
-  ]);
-  const validation = await validateSQL(request.sql, request.connectionId, request.workspaceId);
-  if (!validation.valid) {
-    throw new Error(
-      `The snapshot query for "${request.entity}" did not pass SQL validation: ${validation.error ?? "no reason given"}`,
-    );
-  }
+  const { connections } = await import("@atlas/api/lib/db/connection");
   const connection = connections.getForOrg(request.workspaceId, request.connectionId ?? "default");
   const result = await connection.query(request.sql);
   return result.rows;
+}
+
+/**
+ * A caught value as operator-facing text.
+ *
+ * Type-narrowed per CLAUDE.md. Used only where the text lands in a REFUSAL that a
+ * human reads; every log line passes the Error itself, so `scrubErrSerializer` can
+ * emit the stack and pg's `code` with credentials already stripped.
+ */
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }

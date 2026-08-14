@@ -197,6 +197,23 @@ void mock.module("@atlas/api/lib/effect/hono", () => ({
     ),
 }));
 
+/**
+ * The producer, replaced.
+ *
+ * The route imports exactly two bindings from it — `runWarehouseProducer` and a
+ * TYPE, which is erased — so this factory is complete for the route's graph. It
+ * also keeps `reconcile.ts`/`cardinality.ts` out of this suite's module graph,
+ * which the real import would otherwise pull in for a router test.
+ */
+let produceCalls: { workspaceId: string; triggeredBy: string; requestId?: string }[] = [];
+let produceReport: Record<string, unknown> = {};
+void mock.module("@atlas/api/lib/brain/warehouse-producer", () => ({
+  runWarehouseProducer: async (ctx: { workspaceId: string; triggeredBy: string; requestId?: string }) => {
+    produceCalls.push(ctx);
+    return produceReport;
+  },
+}));
+
 const { adminBrainEnrollment } = await import("../admin-brain-enrollment");
 
 const post = (path: string, body: unknown) =>
@@ -224,6 +241,16 @@ beforeEach(() => {
   enrollCalls.length = 0;
   unenrollCalls.length = 0;
   dimensionCalls.length = 0;
+  produceCalls = [];
+  produceReport = {
+    workspaceId: CURRENT_ORG,
+    snapshotAt: "2026-08-14T10:00:00.000Z",
+    enrolled: 1,
+    entities: [],
+    refusals: [],
+    created: 0,
+    corroborated: 0,
+  };
   entityOptions = [{ name: "accounts", table: "public.accounts", description: null }];
   dimensionOptions = [
     { name: "arr_band", kind: "dimension", type: "string", description: null },
@@ -445,6 +472,91 @@ describe("POST /unenroll", () => {
   });
 });
 
+describe("POST /produce — running the producer", () => {
+  it("403s a member, and does not run the producer", async () => {
+    // ⚠️ The verb that actually READS the customer's warehouse and fills the
+    // review queue an admin has to drain. Both write verbs had a 403 test; this
+    // one had none, so deleting its guard let any authenticated member trigger
+    // both. Asserting the STATUS alone is not enough — a handler that refuses
+    // after running would look identical from the status line.
+    READER_ROLE = "member";
+    const res = await post("/produce", {});
+    expect(res.status).toBe(403);
+    expect(produceCalls).toHaveLength(0);
+  });
+
+  it("403s an unresolved principal", async () => {
+    READER_ORIGIN = "unresolved";
+    const res = await post("/produce", {});
+    expect(res.status).toBe(403);
+    expect(produceCalls).toHaveLength(0);
+  });
+
+  it("runs for an owner and records WHO triggered it", async () => {
+    // The positive control for the two refusals above: without it, a handler that
+    // 403s everyone passes both.
+    const res = await post("/produce", {});
+    expect(res.status).toBe(200);
+    expect(produceCalls).toEqual([
+      { workspaceId: CURRENT_ORG, triggeredBy: "user-1", requestId: "test-req" },
+    ]);
+  });
+
+  it("records the local operator on a no-auth deployment", async () => {
+    READER_ORIGIN = "unauthenticated-local";
+    const res = await post("/produce", {});
+    expect(res.status).toBe(200);
+    expect(produceCalls[0]?.triggeredBy).toBe("local-operator");
+  });
+
+  it("returns the report through its wire schema", async () => {
+    produceReport = {
+      workspaceId: CURRENT_ORG,
+      snapshotAt: "2026-08-14T10:00:00.000Z",
+      enrolled: 3,
+      entities: [
+        {
+          entity: "accounts",
+          rows: 7,
+          candidates: 5,
+          created: 4,
+          corroborated: 1,
+          blocked: 0,
+          comparable: 2,
+          unidentifiedRows: 1,
+          collidingSubjectRows: 0,
+          unsurfaceableCells: 3,
+          cardinalityProposed: ["arr_band"],
+        },
+      ],
+      refusals: [
+        { entity: "contracts", dimension: "status", reason: "ambiguous-dimension", message: "…" },
+      ],
+      created: 4,
+      corroborated: 1,
+    };
+    const res = await post("/produce", {});
+    expect(res.status).toBe(200);
+    // Every distinct number, so a handler that reordered or duplicated fields
+    // cannot pass. The schema is a `strictObject`, so this is also what catches a
+    // report that grew a field the wire does not know about.
+    expect(await res.json()).toEqual(produceReport);
+  });
+
+  it("reports a COMMITTED run rather than a failure when the report cannot be serialized", async () => {
+    // ⚠️ The post-commit posture. The drafts are already in the review queue, so a
+    // 500 saying "Failed to run" invites the one retry that doubles the queue —
+    // and the drift is deterministic, so the admin would see it forever.
+    produceReport = { workspaceId: CURRENT_ORG, snapshotAt: "2026-08-14T10:00:00.000Z", enrolled: 2, entities: [{ nonsense: true }], refusals: [], created: 9, corroborated: 0 };
+    const res = await post("/produce", {});
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { created: number; entities: unknown[] };
+    // The counts a caller acts on survive; the un-serializable detail does not.
+    expect(body.created).toBe(9);
+    expect(body.entities).toEqual([]);
+  });
+});
+
 describe("no active organization", () => {
   it("400s every verb rather than writing against an absent workspace", async () => {
     ORG_ID = undefined;
@@ -454,10 +566,12 @@ describe("no active organization", () => {
       adminBrainEnrollment.request("/dimensions?entity=accounts"),
       post("/enroll", { entity: "accounts", dimension: "arr_band" }),
       post("/unenroll", { entity: "accounts", dimension: "arr_band" }),
+      post("/produce", {}),
     ])) {
       expect(res.status).toBe(400);
     }
     expect(enrollCalls).toHaveLength(0);
     expect(unenrollCalls).toHaveLength(0);
+    expect(produceCalls).toHaveLength(0);
   });
 });

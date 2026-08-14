@@ -1590,6 +1590,12 @@ export const BrainEnrollmentWriteResponseSchema = z.strictObject({
  * Each arm, in the order the producer evaluates them:
  *
  *   - `entity-not-published` — enrolled, but not in the published semantic layer.
+ *   - `entity-unreadable` — the entity IS published and still could not be read:
+ *     its name resolves in more than one connection group, or its YAML declares no
+ *     `table:`. Split from `entity-not-published` because that arm's remedy is
+ *     *publish the entity*, which is a no-op advice for an entity that is already
+ *     published — the admin follows it, nothing changes, and the real defect is
+ *     never named.
  *   - `no-primary-key` / `composite-primary-key` — nothing identifies one row, so
  *     a subject would have to be guessed, and a guessed subject is a homonym.
  *   - `dimension-not-found` — the entity is published and declares no such name.
@@ -1599,18 +1605,32 @@ export const BrainEnrollmentWriteResponseSchema = z.strictObject({
  *     on two entities at once, so one predicate would carry two meanings.
  *   - `row-cap-exceeded` — the table is larger than one review queue, and an
  *     arbitrary subset would look at rest like a complete reading of it.
- *   - `snapshot-failed` — the datasource read failed. Nothing was stamped and the
- *     next run retries the pair.
+ *   - `snapshot-rejected` — the query the producer would run does not pass Atlas's
+ *     SELECT-only, single-statement, whitelist-scoped gate. **Permanent**: the
+ *     table is outside the whitelist or a `sql:` expression is malformed, and
+ *     re-running changes nothing.
+ *   - `snapshot-failed` — the datasource read itself failed. **Transient**: nothing
+ *     was stamped and the next run retries the pair. Split from
+ *     `snapshot-rejected` because one message cannot carry both *"retry"* and
+ *     *"retrying will never work"*, and the reassuring half is the wrong default
+ *     for a permanently mis-configured pair.
+ *   - `snapshot-already-recorded` — this exact snapshot instant is already in
+ *     `brain_episodes`, so its claims are too and the entity was skipped. Reported
+ *     rather than omitted: an entity that vanishes from BOTH lists is the silence
+ *     this response exists to remove.
  */
 export const BRAIN_WAREHOUSE_REFUSAL_REASONS = [
   "ambiguous-dimension",
   "entity-not-published",
+  "entity-unreadable",
   "dimension-not-found",
   "measure-not-per-row",
   "no-primary-key",
   "composite-primary-key",
   "row-cap-exceeded",
+  "snapshot-rejected",
   "snapshot-failed",
+  "snapshot-already-recorded",
 ] as const;
 
 export const BrainWarehouseRefusalSchema = z.strictObject({
@@ -1627,11 +1647,33 @@ export const BrainWarehouseEntityOutcomeSchema = z.strictObject({
   created: z.number().int().nonnegative(),
   corroborated: z.number().int().nonnegative(),
   blocked: z.number().int().nonnegative(),
-  /** Created facts carrying a non-null comparable — the columns M4 built and never filled. */
+  /**
+   * Created facts carrying a non-null **`object_cmp`** — `ReconcileReport.comparable`,
+   * passed through unchanged.
+   *
+   * ⚠️ NOT `subject_cmp`, which is the column this producer is the first thing able
+   * to fill. An earlier version of this comment said it was, which is a claim a
+   * reader would have used to conclude the producer was doing nothing: warehouse
+   * objects are mostly unparseable strings, so this number is legitimately 0 on runs
+   * that populated `subject_cmp` for every row. `warehouse-producer-pg.test.ts`
+   * asserts the two independently, at different values, so they cannot be conflated
+   * again.
+   */
   comparable: z.number().int().nonnegative(),
   unidentifiedRows: z.number().int().nonnegative(),
   collidingSubjectRows: z.number().int().nonnegative(),
-  cardinalityProposed: z.array(z.string()),
+  /**
+   * Cells that held a value no claim surface can be made of — a `jsonb`, a `bytea`,
+   * an array, a `NaN`.
+   *
+   * Counted apart from a SQL `NULL`, which is not counted at all. A NULL asserts
+   * nothing and is the ordinary case; an unsurfaceable cell is an ENROLLMENT
+   * MISTAKE (the surface offers every dimension regardless of type), and folding
+   * the two together makes a pair that can never produce anything look exactly like
+   * a column that happens to be empty.
+   */
+  unsurfaceableCells: z.number().int().nonnegative(),
+  cardinalityProposed: z.array(z.string()).readonly(),
 });
 
 /**
@@ -1647,8 +1689,8 @@ export const BrainWarehouseRunResponseSchema = z.strictObject({
   workspaceId: z.string(),
   snapshotAt: z.string(),
   enrolled: z.number().int().nonnegative(),
-  entities: z.array(BrainWarehouseEntityOutcomeSchema),
-  refusals: z.array(BrainWarehouseRefusalSchema),
+  entities: z.array(BrainWarehouseEntityOutcomeSchema).readonly(),
+  refusals: z.array(BrainWarehouseRefusalSchema).readonly(),
   created: z.number().int().nonnegative(),
   corroborated: z.number().int().nonnegative(),
 });

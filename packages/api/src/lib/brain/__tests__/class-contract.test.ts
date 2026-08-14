@@ -36,12 +36,16 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   CLASS_CONTRACTS,
   classDenominator,
   coverageLabelPolicy,
-  stalenessVerdictKind,
+  stalenessVerdict,
   type ClassContract,
+  type ClassCoverageContract,
+  type ClassDenominator,
   type SurveyUnitDisclosureFacts,
 } from "@atlas/api/lib/brain/class-contract";
 import {
@@ -107,17 +111,24 @@ describe("the class contract Record (#5212)", () => {
     // weakened by a refactor.
     expect(Object.keys(CLASS_CONTRACTS).toSorted()).toEqual([...EPISODE_SOURCE_CLASSES].toSorted());
     for (const cls of EPISODE_SOURCE_CLASSES) {
-      expect([cls, CLASS_CONTRACTS[cls]]).not.toEqual([cls, undefined]);
       expect([cls, typeof CLASS_CONTRACTS[cls].coverage.vendorPublic]).toEqual([cls, "boolean"]);
     }
   });
 
   test("adding a class WITHOUT a contract is a compile error", () => {
-    // The Record's whole structural claim, and the only instrument that can pin
-    // it. Both lines fail to compile TODAY, so weakening the annotation to
-    // `Partial<Record<…>>` — the natural "fix" when a new class does not
-    // compile — turns them into unused-@ts-expect-error errors instead of
-    // silently admitting a class with no coverage answer.
+    // The Record's whole structural claim. Both lines fail to compile TODAY, so
+    // a reshape that made either legal turns them into unused-@ts-expect-error
+    // errors rather than silently admitting a class with no coverage answer.
+    //
+    // ⚠️ These are locally annotated, so they pin the SHAPE and not the map's
+    // own annotation — measured, and the distinction matters because the
+    // obvious escape hatch is on the map. Weakening it to
+    // `satisfies Partial<Record<…>>` keeps `tsc` clean and these two lines
+    // green. What still catches a genuinely missing class is
+    // `_CONTRACT_KEYS_IN_SYNC` (a TS2322 in the module itself) plus every sweep
+    // in this file that indexes `CLASS_CONTRACTS[cls]` over the class set — so
+    // totality survives that edit, by a route this comment used to misattribute
+    // to the pins below.
     // @ts-expect-error a contract map missing a class is not assignable
     const partial: Record<EpisodeSourceClass, ClassContract> = {
       chat: CLASS_CONTRACTS.chat,
@@ -131,6 +142,93 @@ describe("the class contract Record (#5212)", () => {
     const unshipped: ClassContract = CLASS_CONTRACTS.docs;
     void partial;
     void unshipped;
+  });
+
+  test("an invented field is a compile error at EVERY level of the map", () => {
+    // ⚠️ These three lines exist because the guarantee was CLAIMED and did not
+    // hold. The first draft carried one `as const satisfies ClassContract` on
+    // the outer entry literal and a docstring saying it caught invented fields;
+    // measured, `vendorPublik: true` inside `coverage` and `weight: 3` inside
+    // `denominator` both compiled clean. Excess-property checking only fires on
+    // a FRESH object literal, and `Object.freeze(...)` is a call result — so a
+    // `satisfies` guards only the literal it is attached to, and this map is
+    // three levels deep.
+    //
+    // ⚠️ **These pin the TYPES, not the MAP.** Each literal below is annotated
+    // locally, so its error comes from that annotation — none of them reference
+    // `CLASS_CONTRACTS`, and deleting a `satisfies` from an entry in the map
+    // leaves every one of them green. Measured: removing
+    // `as const satisfies ClassCoverageContract` from the `chat` entry keeps
+    // `tsc` clean, and `vendorPublik: true` beside `vendorPublic` then compiles.
+    // An earlier draft of this comment claimed otherwise — the same
+    // false-guarantee defect it was written to fix, one file over.
+    //
+    // What they DO guarantee is worth having and is the other half: that
+    // `ClassCoverageContract` and `ClassDenominator` are CLOSED, so the map's
+    // `satisfies` has something to bite on. The map's own per-level annotations
+    // are pinned by `carries a satisfies at every level` below, which reads the
+    // source text because no type can assert its own annotation.
+    // @ts-expect-error level 1 — an arm that is not part of the contract yet
+    const lvl1: ClassContract = { coverage: CLASS_CONTRACTS.chat.coverage, trigger: "on-connect" };
+    const lvl2: ClassCoverageContract = {
+      vendorPublic: false,
+      // @ts-expect-error level 2 — the typo the disclosure gate would not notice
+      vendorPublik: true,
+      activityMetadata: "absent",
+      denominator: { surveyable: false, reason: "not-a-surveyable-region" },
+    };
+    const lvl3: ClassDenominator = {
+      surveyable: true,
+      enumeratedFrom: "mailbox-list",
+      // @ts-expect-error level 3 — an invented weight is how a blended score starts
+      weight: 3,
+    };
+    void lvl1;
+    void lvl2;
+    void lvl3;
+  });
+
+  test("carries a `satisfies` at EVERY level — pinned in source text", () => {
+    // The one guard here that is not about values, because it CANNOT be. A
+    // `satisfies` is erased at runtime and asserts nothing about itself, so
+    // deleting one from an entry is invisible to every behavioural test and to
+    // `tsc` alike — measured: removing `chat`'s level-2 `satisfies` leaves the
+    // whole suite green AND `tsc` clean, and `vendorPublik: true` then compiles
+    // into the map. Only the runtime key-set test below catches the CONSEQUENCE
+    // (a field that was actually added), never the guard's removal.
+    //
+    // Same instrument and same reason as `sources.test.ts`'s "DELEGATES rather
+    // than re-deriving — pinned in source text". Comments are stripped first,
+    // because the docstring above the map discusses these annotations at length
+    // and a guard that tripped on its own explanation would force the
+    // explanation to be deleted to stay green.
+    const code = readFileSync(join(import.meta.dir, "..", "class-contract.ts"), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|[^:])\/\/.*$/gm, "$1");
+    // Scoped to the map's own literal, not the file: a file-wide count would be
+    // satisfied by any three `satisfies` anywhere, including a future unrelated
+    // constant in the same module.
+    const map = /export const CLASS_CONTRACTS = Object\.freeze\(\{([\s\S]*?)\n\}\) satisfies/.exec(
+      code,
+    )?.[1];
+    // Not vacuous: a rename or a reshape must fail here rather than silently
+    // running every assertion below against `undefined`.
+    expect(map).toBeDefined();
+    const body = map ?? "";
+    // One `satisfies` per level per entry. COUNTED rather than merely present,
+    // so deleting ONE of the five at any level is red — which is precisely the
+    // mutation that is otherwise silent.
+    const classCount = EPISODE_SOURCE_CLASSES.length;
+    for (const [level, annotation] of [
+      ["1 (entry)", "as const satisfies ClassContract"],
+      ["2 (coverage)", "as const satisfies ClassCoverageContract"],
+      ["3 (denominator)", "as const satisfies ClassDenominator"],
+    ] as const) {
+      expect([level, body.split(annotation).length - 1]).toEqual([level, classCount]);
+    }
+    // …and the map-level totality annotation, a different guarantee (every
+    // class present) held by a different construct.
+    expect(code).toContain("satisfies Record<EpisodeSourceClass, ClassContract>");
   });
 
   test("declares EXACTLY the three coverage properties — no invented field", () => {
@@ -218,11 +316,49 @@ describe("the three coverage answers, per class", () => {
     // derivation as well as off the map, because the derivation is what the
     // Coverage Surface will call and it has its own fail-closed arm that could
     // produce the same `{surveyable: false}` for the wrong reason.
-    expect(classDenominator("human")).toEqual({ surveyable: false });
+    expect(classDenominator("human")).toEqual({
+      surveyable: false,
+      reason: "not-a-surveyable-region",
+    });
     const nonSurveyable = EPISODE_SOURCE_CLASSES.filter(
       (cls) => !CLASS_CONTRACTS[cls].coverage.denominator.surveyable,
     );
     expect(nonSurveyable).toEqual(["human"]);
+    // …and the reason is what makes the two refusals distinguishable. Asserted
+    // against each other, because identical objects here were the round-1
+    // defect: a page cannot read a `log.warn`, so a declared refusal and a
+    // fail-closed one have to differ in the RETURN VALUE or the surface cannot
+    // render "cannot establish" for the second.
+    expect(classDenominator("human")).not.toEqual(classDenominator("docs"));
+  });
+
+  test("the denominator DERIVATION returns each class's declared universe", () => {
+    // ⚠️ Added because its absence was measured, not suspected. Every call to
+    // `classDenominator` in the first draft was either `human` or an
+    // unresolvable value, and all of them expected `{surveyable: false}` — so
+    // the derivation's ONLY asserted answer was its fail-closed one, and
+    // replacing its final line with `return { surveyable: false, reason: … }`
+    // left the whole suite green. The production failure that hides: every
+    // class reports no universe, and every ratio on the Coverage Surface
+    // silently disappears — ADR-0041's "a silent zero here is a false
+    // statement, not an error state", arriving through the one function written
+    // to prevent it.
+    //
+    // The other two derivations were already swept over the whole class set;
+    // this one was the asymmetry.
+    for (const cls of EPISODE_SOURCE_CLASSES) {
+      expect([cls, classDenominator(cls)]).toEqual([
+        cls,
+        CLASS_CONTRACTS[cls].coverage.denominator,
+      ]);
+    }
+    // …plus a value anchor, so a coordinated edit of the map and the derivation
+    // cannot pass — the loop above is an agreement assertion and would survive
+    // one.
+    expect(classDenominator(CHAT_CLASS)).toEqual({
+      surveyable: true,
+      enumeratedFrom: "chat-channel-roster",
+    });
   });
 
   test("no two classes share a denominator origin — the layers stay incommensurable", () => {
@@ -243,16 +379,70 @@ describe("the three coverage answers, per class", () => {
 });
 
 describe("the coverage label policy — ADR-0041's two clauses", () => {
-  test("names a unit under the deliberate-act clause, whatever the class", () => {
+  test("names a unit under the deliberate-act clause, for every SURVEYABLE class", () => {
     // The clause that does not depend on any vendor's notion of "public": the
     // admin typed the id, so showing it back discloses nothing they did not
     // supply. True for `email` too, which is the sharp case — a mailbox nobody
     // named stays counted-only, and one an admin entered on the install form
     // does not.
-    for (const cls of EPISODE_SOURCE_CLASSES) {
-      expect([cls, coverageLabelPolicy(cls, { deliberateAct: true, vendorReportsPublic: false })])
-        .toEqual([cls, { policy: "name", clause: "deliberate-act" }]);
+    //
+    // ⚠️ SURVEYABLE classes only, and the narrowing is the round-1 fix. This
+    // loop used to run over every class including `human`, pinning the
+    // permissive answer for the one class whose "units" are PEOPLE.
+    const surveyable = EPISODE_SOURCE_CLASSES.filter(
+      (cls) => CLASS_CONTRACTS[cls].coverage.denominator.surveyable,
+    );
+    expect(surveyable.length).toBeGreaterThan(1);
+    for (const cls of surveyable) {
+      expect([
+        cls,
+        coverageLabelPolicy(cls, { deliberateAct: true, vendorReportsPublic: false }),
+      ]).toEqual([cls, { policy: "name", clause: "deliberate-act" }]);
     }
+  });
+
+  test("a NON-SURVEYABLE class is never named — not even under the deliberate-act clause", () => {
+    // ADR-0041 refuses this population by name: "Everything else is counted,
+    // never named: mailboxes …, recording owners, individual persons." `human`
+    // is the class whose survey units WOULD be persons, and it declares it has
+    // no enumerable units at all — so a caller asking whether to name one is
+    // asking about a unit that should not exist.
+    //
+    // The whole input domain, because the `deliberateAct: true` rows are the
+    // ones that changed: the class-level refusal is checked BEFORE either
+    // clause, so a single caller-supplied boolean can no longer name a person.
+    for (const unit of UNIT_FACTS) {
+      expect([unit.deliberateAct, unit.vendorReportsPublic, coverageLabelPolicy("human", unit)])
+        .toEqual([
+          unit.deliberateAct,
+          unit.vendorReportsPublic,
+          { policy: "count-only", reason: "non-surveyable-class" },
+        ]);
+    }
+    // …and its reason is distinct from BOTH the ordinary withhold and the
+    // fail-closed one. Three different sentences to an admin: "counted and
+    // correctly not named", "this class has no units", "we do not know what
+    // this is" — and collapsing any two would pass every other assertion here.
+    const nonSurveyable = coverageLabelPolicy("human", {
+      deliberateAct: false,
+      vendorReportsPublic: false,
+    });
+    const ordinary = coverageLabelPolicy(EMAIL_CLASS, {
+      deliberateAct: false,
+      vendorReportsPublic: false,
+    });
+    const failClosed = coverageLabelPolicy("docs", {
+      deliberateAct: false,
+      vendorReportsPublic: false,
+    });
+    expect(new Set([nonSurveyable.policy, ordinary.policy, failClosed.policy])).toEqual(
+      new Set(["count-only"]),
+    );
+    expect([nonSurveyable, ordinary, failClosed]).toEqual([
+      { policy: "count-only", reason: "non-surveyable-class" },
+      { policy: "count-only", reason: "no-clause" },
+      { policy: "count-only", reason: "unresolvable-class" },
+    ]);
   });
 
   test("the vendor-public clause needs BOTH halves — class admissibility AND the vendor's answer", () => {
@@ -267,9 +457,14 @@ describe("the coverage label policy — ADR-0041's two clauses", () => {
     // Half two — the vendor says yes, the class says no. No label: a caller's
     // per-unit claim cannot open a class a human declined to open, which is the
     // direction that matters because the claim comes from vendor data.
-    for (const cls of [TRANSCRIPT_CLASS, EMAIL_CLASS, WAREHOUSE_CLASS, "human"] as const) {
-      expect([cls, coverageLabelPolicy(cls, { deliberateAct: false, vendorReportsPublic: true })])
-        .toEqual([cls, { policy: "count-only", reason: "no-clause" }]);
+    // Surveyable classes only — `human` refuses this clause too, but under
+    // `non-surveyable-class`, and it has its own test. Lumping it in here would
+    // assert the wrong reason for the right answer.
+    for (const cls of [TRANSCRIPT_CLASS, EMAIL_CLASS, WAREHOUSE_CLASS] as const) {
+      expect([
+        cls,
+        coverageLabelPolicy(cls, { deliberateAct: false, vendorReportsPublic: true }),
+      ]).toEqual([cls, { policy: "count-only", reason: "no-clause" }]);
     }
     // Both halves — the only combination that labels under this clause.
     expect(coverageLabelPolicy(CHAT_CLASS, { deliberateAct: false, vendorReportsPublic: true }))
@@ -346,13 +541,22 @@ describe("the fail-closed arms — a class this deploy cannot resolve", () => {
 
   test("never yields a staleness verdict that could read as `stale`", () => {
     for (const cls of UNRESOLVABLE) {
-      expect([String(cls), stalenessVerdictKind(cls)]).toEqual([String(cls), "unverified-since"]);
+      expect([String(cls), stalenessVerdict(cls)]).toEqual([
+        String(cls),
+        { kind: "unverified-since", reason: "unresolvable-class" },
+      ]);
     }
+    // The reason separates it from the DECLARED `no-activity-metadata` answer,
+    // which is the same sentence for a completely different cause.
+    expect(stalenessVerdict("docs")).not.toEqual(stalenessVerdict(WAREHOUSE_CLASS));
   });
 
   test("has no denominator — a count with no universe behind it is a fabrication", () => {
     for (const cls of UNRESOLVABLE) {
-      expect([String(cls), classDenominator(cls)]).toEqual([String(cls), { surveyable: false }]);
+      expect([String(cls), classDenominator(cls)]).toEqual([
+        String(cls),
+        { surveyable: false, reason: "unresolvable-class" },
+      ]);
     }
   });
 });
@@ -365,20 +569,26 @@ describe("the staleness capability, per class", () => {
     // `sources.test.ts` guards against — and it would silently exclude the next
     // connector class to arrive.
     for (const cls of EPISODE_SOURCE_CLASSES) {
-      expect([cls, stalenessVerdictKind(cls)]).toEqual([
+      expect([cls, stalenessVerdict(cls)]).toEqual([
         cls,
         CLASS_CONTRACTS[cls].coverage.activityMetadata === "reports"
-          ? "measured-lag"
-          : "unverified-since",
+          ? { kind: "measured-lag" }
+          : { kind: "unverified-since", reason: "no-activity-metadata" },
       ]);
     }
     // …plus the value anchor, so a coordinated rename of the capability arm and
     // the verdict arm cannot pass. `warehouse` is the one worth spelling: it is
     // surveyable AND connect-and-it-works, so "it must be able to report
     // staleness" is the reading someone will have.
-    expect(stalenessVerdictKind(WAREHOUSE_CLASS)).toBe("unverified-since");
-    expect(stalenessVerdictKind("human")).toBe("unverified-since");
-    expect(stalenessVerdictKind(CHAT_CLASS)).toBe("measured-lag");
+    expect(stalenessVerdict(WAREHOUSE_CLASS)).toEqual({
+      kind: "unverified-since",
+      reason: "no-activity-metadata",
+    });
+    expect(stalenessVerdict("human")).toEqual({
+      kind: "unverified-since",
+      reason: "no-activity-metadata",
+    });
+    expect(stalenessVerdict(CHAT_CLASS)).toEqual({ kind: "measured-lag" });
   });
 
   test("a non-surveyable class still answers the staleness question", () => {
@@ -386,7 +596,13 @@ describe("the staleness capability, per class", () => {
     // derivation that short-circuited on `surveyable: false` would return
     // something else here, and the surface would have no sentence for a class it
     // still has to account for.
-    expect(classDenominator("human")).toEqual({ surveyable: false });
-    expect(stalenessVerdictKind("human")).toBe("unverified-since");
+    expect(classDenominator("human")).toEqual({
+      surveyable: false,
+      reason: "not-a-surveyable-region",
+    });
+    expect(stalenessVerdict("human")).toEqual({
+      kind: "unverified-since",
+      reason: "no-activity-metadata",
+    });
   });
 });

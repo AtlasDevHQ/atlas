@@ -44,58 +44,33 @@
  *
  * ## MUTATIONS THIS CATCHES
  *
- * Every count below was measured against THIS tree, one mutation at a time, in
- * a single run. Not carried forward — rounds 2 and 3 of the #5051 panel each
- * caught rows that had been, which is why the whole table is now regenerated
- * rather than edited. 33 mutations, 33 caught.
+ * **GENERATED — see `packages/api/scripts/mutations/vocabulary.md`**, from
+ * `packages/api/scripts/mutations/vocabulary.mutations.ts`:
  *
- * | Mutation | Tests it kills |
- * |---|---|
- * | `alias` answers from the edges alone (LEFT JOIN dropped, `to_norm` selected) | 8 |
- * | the closure join predicate made unsatisfiable (every `effective_target` NULL) | 18 |
- * | the recompute's recursive term dropped (closure is depth-1 only) | 13 |
- * | `ORDER BY norm, depth DESC` → `depth ASC` (the closure keeps the first hop, not the root) | 13 |
- * | `removeAliasEdge` drops its final `recomputeEffectiveTargets` | 2 |
- * | the at-most-one-parent read dropped (the PK still refuses — by THROWING) | 2 |
- * | the cycle walk dropped | 3 |
- * | the cycle walk's `slot_position` arm neutered (a false cycle across positions) | 1 |
- * | `lexicalNorm` dropped from `approveAliasEdge`'s endpoints | 3 |
- * | `lexicalNorm` dropped from `removeAliasEdge`'s argument | 1 |
- * | the self-edge arm dropped (`ck_..._not_self` still refuses — by throwing) | 1 |
- * | the degenerate-norm arm dropped (`ck_..._norms_present` still refuses) | 1 |
- * | `loadClaimVocabulary` reads one position's map for all three | 7 |
- * | `loadClaimVocabulary` loses its `workspace_id` filter | 1 |
- * | the convergence check dropped from `recomputeEffectiveTargets` | 1 |
- * | the completeness check dropped from `loadClaimVocabulary` | 1 |
- * | `VocabularyClosureError` downgraded to a bare `Error` | 1 |
- * | `existingTarget` reports the closure ROOT instead of the raw approved parent | 1 |
- * | the transaction-contract probe dropped | 1 |
- * | the advisory lock keyed on a CONSTANT instead of the workspace | 25 |
+ *     cd packages/api && bun run db:up
+ *     export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5433/brain_5061_scratch
+ *     bun run scripts/mutate.ts scripts/mutations/vocabulary.mutations.ts
  *
- * TWO rows are compound, and it is stated here rather than only in prose. The
- * unsatisfiable-join row (18) also removes the completeness check's input, so it
- * is not a clean "reads the edges" mutation — the 8-kill row above it is.
- * Re-keying the lock to a constant (25) also blinds the probe, because the probe
- * became `objid`-scoped; nothing in this table isolates workspace scoping
- * cleanly, and the different-workspaces control is what does.
+ * Twenty numbers used to live here by hand, under the claim "measured against
+ * THIS tree … in a single run" (#5051). The claim was true when written and
+ * unfalsifiable ever after — this same docstring already recorded that rounds 2
+ * and 3 of that panel each caught rows which had gone stale. Regenerating at
+ * #5061 re-measured all twenty IDENTICAL, which is worth stating plainly: the
+ * conversion is not always a correction, and a table that survives it has
+ * earned something a table nobody can re-run never can.
  *
- * FOUR rows share a shape worth naming — the PK row, `not_self`,
- * `norms_present`, and `existingTarget`: the SCHEMA also refuses, or the code
- * still answers plausibly, so deleting the TypeScript guard does not make the
- * write succeed. It turns a typed refusal into a raw constraint violation, or a
- * correct repair hint into a wrong one. A version of these tests written as
- * `expect(await storedEdges()).toHaveLength(1)` would pass under all four —
- * which is how three were nearly missed, and how `existingTarget` actually was
- * until the panel measured it.
+ * The two COMPOUND rows, the four rows the schema also refuses, and the one
+ * mutation deliberately left out (the probe's `< 1` polarity, which kills
+ * nothing and cannot) are all written up in the generated file's preamble and
+ * notes — beside the numbers rather than three paragraphs from them.
  *
- * NOT in the table, deliberately: loosening the probe's polarity from `< 1` back
- * to `=== 0` kills NOTHING, and cannot. `lockCount` is `count(*)::int` past a
- * `Number.isFinite` guard, so the two are equivalent over the whole reachable
- * domain. The `< 1` spelling is defensive style, not a tested property, and a
- * row claiming otherwise was removed rather than left as a fabricated
- * measurement.
+ * ## Sibling files, same slice — measured ONCE, at #5051, and never since
  *
- * ## Sibling files, same slice — also measured in that run
+ * ⚠️ These are NOT generated and nothing re-runs them, so read them as a record
+ * of what that slice checked rather than as current counts — the distinction the
+ * table above no longer has to make. Converting them means mutation lists for
+ * four more suites, which is a separate slice; the numbers are kept because
+ * *which mutations were applied* is the durable half and does not go stale.
  *
  * `reconcile.test.ts`: the subject slot reading the predicate lookup (2), the
  * object slot reading the subject lookup (1). `correction.test.ts`: the

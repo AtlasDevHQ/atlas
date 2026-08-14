@@ -9,25 +9,25 @@ Your corpus says `is priced at` in a contract, `priced at` in a spreadsheet, and
 
 The **Claim Vocabulary** is where somebody says otherwise. It lives at **`/admin/brain/vocabulary`** in the admin console, and it holds two kinds of decision: an **alias** (two spellings name one thing) and a **curated predicate** (this relation holds one value at a time — see [Conflicts](/guides/brain-conflicts#where-cardinality-comes-from)).
 
-This page is about the alias half, and about the judgement the surface is built to support. Atlas will not make it for you, and the reason is the whole design.
+This page is about the alias half, and about the judgement the surface is built to support.
 
 ---
 
 ## Why a person decides
 
-The obvious mechanism is similarity: `priced at` and `is priced at` differ by a copula, so collapse them. Atlas refuses, and refuses **structurally** — the normalizer that produces a claim's slot key does case-folding, separator unification, trimming and run-collapsing, and **nothing else**. No stemming, no lemmatisation, no copula-stripping, no edit distance.
+The obvious mechanism is similarity: `priced at` and `is priced at` differ by a copula, so collapse them. Atlas refuses, and refuses **structurally** — the normalizer that produces a claim's slot key does ASCII-only case folding (`A`–`Z`; `É` is left exactly as it is), separator unification, trimming and run-collapsing, and **nothing else**. No stemming, no lemmatisation, no copula-stripping, no edit distance.
 
-That refusal is not conservatism about a feature that would mostly work. It is a refusal to ship a rule whose first and highest-ranked output is wrong:
+Atlas refuses because the first and highest-ranked output of any such rule is wrong:
 
 <Callout type="warn" title="A similarity rule ranks `led_by` / `leads` first">
   They share a stem, they are one character apart after stemming, and they are **inverse relations**. `A led_by B` and `B leads A` say the same thing from opposite ends; merging the spellings merges the ends. Every claim in the manager graph moves into one slot, where the two directions now read as rivals rather than as each other.
 
   ADR-0037 states the consequence in one line, in two places: approving that pair **"stamps `valid_to` across the manager graph"**. If the merged predicate is curated single-valued — and *"who does this person report to"* is exactly the relation somebody curates single-valued — then a person's manager and a person's reports collide in one slot, and the [publish gate](/guides/brain-temporal-model) closes the validity window on one of them. There is no un-supersede verb anywhere in Atlas.
 
-  `priced at` / `is priced at` and `led_by` / `leads` are the same distance apart lexically and opposite in meaning. No rule available to Atlas separates them. A person separates them without effort, which is why the person is the mechanism rather than the fallback.
+  `priced at` / `is priced at` and `led_by` / `leads` are the same distance apart lexically and opposite in meaning. No rule available to Atlas separates them. A person separates them without effort.
 </Callout>
 
-So an alias is never inferred from how two strings look. It is proposed from **structural evidence**, or authored by hand — and in both cases the write happens because somebody approved it.
+So an alias is never inferred from how two strings look. It is proposed from **structural evidence**, or authored by hand. Every predicate-position write goes through a person; the one class that does not is the narrow warehouse-key case described [below](#the-auto-approval-boundary).
 
 ## What an alias claims, and what it does not
 
@@ -35,25 +35,32 @@ An alias is a directed edge between two **norms** — the folded spellings — a
 
 | Position | What it merges | Who may approve |
 |---|---|---|
-| `predicate` | Two spellings of a relation (`is priced at` → `priced at`) | Any authenticated member |
-| `subject` | Two spellings of the entity in the subject slot | Owner or admin |
-| `object` | Two spellings of the entity in the object slot | Owner or admin |
+| `predicate` | Two spellings of a relation (`is priced at` → `priced at`) | Any admin or owner — the whole admin console is admin-gated, and this position adds nothing on top |
+| `subject` | Two spellings of the entity in the subject slot | Owner or admin **of this workspace** |
+| `object` | Two spellings of the entity in the object slot | Owner or admin **of this workspace** |
+
+That distinction is easy to skim past and is the real asymmetry: reaching this surface at all requires an admin, owner or platform-admin session, so no ordinary member approves anything here. What the entity positions add is a *second*, workspace-scoped check — your role in the workspace being written, not merely the role your session carries.
 
 Three things it is **not**:
 
-- **Not a claim.** An alias is not a `brain_facts` row. It has no review status of its own, no validity window, and no provenance chain. It is a statement about vocabulary, adjudicated once.
+- **Not a claim.** An alias is not a `brain_facts` row. It carries no claim review status, no validity window and no provenance edges — it is a statement about vocabulary, adjudicated once. (The *proposal* behind it does have its own `pending`/`approved`/`rejected` status; that is the queue below, not the claim lifecycle.)
 - **Not position-portable.** Approving `is priced at → priced at` at the predicate position re-keys predicates only. A predicate decision can never re-key subjects, which is why the position is part of the entry rather than a filter over it.
-- **Not per-team.** The vocabulary is workspace-scoped and carries no access control, permanently and by decision. Per-team terminology is refused by ADR-0037 §6, not merely unimplemented. What *is* scoped is your **visibility of** entity-position entries: you are shown one only where you can read at least one claim on each side, and the counts always disclose how many you cannot see rather than silently omitting them.
+- **Not per-team.** The vocabulary is workspace-scoped and carries no access control, permanently and by decision. Grant-scoped aliasing is refused in ADR-0037's rejected alternatives, with the cost named in §6 — it is not merely unimplemented. What *is* scoped is your **visibility of** entity-position entries: you are shown one only where you can read at least one claim on each side, and the counts always disclose how many you cannot see rather than silently omitting them.
 
 ## What approving one re-keys
 
-Approving an alias rewrites the identity key of **every live claim whose norm at that position folds to the child spelling**, onto the parent's key. Workspace-wide. Retroactively, and for every claim that arrives afterwards.
+Approving an alias rewrites the identity key of **every claim whose norm at that position folds to the child spelling**, onto the parent's key. Workspace-wide. Retroactively, and for every claim that arrives afterwards.
 
 The page says it in the confirmation line before you commit:
 
 > Every claim whose predicate folds to "is priced at" will be re-keyed onto "priced at", and every future one will be too. This is reversible: removing the alias re-keys them back.
 
-The write is atomic — the proposal row, the edge, the closure rebuild and the workspace-wide re-key commit together or not at all. A re-key that fails leaves no proposal row and no edge.
+**"Every claim" includes retracted and superseded rows**, and that is deliberate rather than an oversight — the re-key carries no status, `invalidatedAt` or `validTo` filter. A tombstoned row left on a stale key is one whose surface and key disagree permanently, and removal's undo re-derives each claim's key *from its surface*; skipping the dead rows on the way in would strand them somewhere neither vocabulary ever put them.
+
+The write is atomic — the proposal row, the edge, the closure rebuild and the workspace-wide re-key commit together or not at all. What a failure leaves behind differs by route, and the difference matters if you are deciding whether to retry:
+
+- **A failed approval** rolls back whole: no edge, no partial re-key, and the proposal is left exactly `pending` for somebody to decide again. It is never left half-applied.
+- **A failed authoring** leaves no proposal row either, because authoring created that row in the same transaction.
 
 **What changes downstream depends on the position, and the difference is not cosmetic:**
 
@@ -63,7 +70,7 @@ The write is atomic — the proposal row, the edge, the closure rebuild and the 
 <Callout type="warn" title="An approved object alias does not withdraw the contradiction flags it makes stale">
   Corroboration and tension are evaluated once, at ingest, per episode. The approval rewrites the object's identity key and nothing else — nothing deletes an `in-tension-with` edge. So every advisory contradiction between two claims Atlas now treats as agreeing is **left in place**, still flagging a disagreement that the decision just resolved.
 
-  The blast-radius preview counts them and says so explicitly before you approve. It is the one consequence of this surface that no other page will tell you about later.
+  The blast-radius preview counts them and says so explicitly before you approve. Nothing flags them afterwards — unlike a superseded rival in a [conflict cluster](/guides/brain-conflicts#what-a-conflict-cluster-shows), which at least carries a label saying what happened to it.
 </Callout>
 
 ### Direction is never guessed
@@ -78,11 +85,15 @@ On a workspace with no warehouse producer, **every** proposal is undirected. Tha
 
 ## Reading the blast-radius preview
 
-Every approval and every removal goes behind a preview, and the **Approve** button stays disabled until one has come back successfully. The preview is not advisory: this decision re-keys the corpus, so the blast radius is not optional.
+Every approval and every removal **on this page** goes behind a preview: the **Approve** button stays disabled until one has come back successfully, and a preview that merely failed does not satisfy it.
 
-It does not answer with a number. It answers with one of several **shapes**, and the shapes are not interchangeable — which is the point, because most of them can produce the digit `0` while meaning entirely different things.
+<Callout type="info" title="The preview gate is the console's, not the seam's">
+  `/preview` is a separate endpoint, and `/decide`, `/author` and `/remove` carry no preview token or precondition. A caller going straight at the REST surface can approve a workspace-wide re-key having previewed nothing, and the API will not refuse it. So this is a discipline the admin console imposes on the human path — worth reproducing if you build your own client, because nothing upstream will.
+</Callout>
 
-### "At least N, today"
+The preview does not answer with a number. `BlastRadius` is a discriminated union with **three arms**, and they are not interchangeable — which is the point, because two of them can produce the digit `0` while meaning entirely different things.
+
+### Arm 1 — `computed`: "at least N, today"
 
 The supersession radius has two sides — what **becomes supersedable** if you approve, and what **becomes safe again** — and both are floors, always:
 
@@ -92,7 +103,7 @@ The word *at least* is doing real work. The count is not a batch size. A decisio
 
 If the alias chain was deeper than Atlas walks, the preview says so — both numbers then describe a **smaller** population than you asked about, which is a different fact from the numbers disagreeing.
 
-### The object-position shape
+### Arm 2 — `object-position`
 
 An object-position alias gets a **different query over a different relation**, and it is rendered as one so it can never read like a smaller supersession radius. Three numbers instead of two:
 
@@ -102,27 +113,46 @@ An object-position alias gets a **different query over a different relation**, a
 | **Separating** | The removal's half: pairs that agree today and would stop agreeing. Nothing splits them retroactively either, and no contradiction is flagged for them until one is re-observed |
 | **Tension** | Contradictions Atlas has already flagged that would stop being contradictions — **and whose flags are not withdrawn** |
 
-A pair whose values *prove* they differ appears in none of these. The merge makes the two claims share a slot and they stay in tension, which is correct and is the thing an approver most needs not to be told otherwise.
+A pair whose values *prove* they differ appears in none of these: the merge makes the two claims share a slot and they stay in tension. That is correct, and it is the one thing the preview must not imply it resolved.
 
-### "This cannot produce pairs"
+These three are **floors on the same terms the supersession counts are** — each renders as *"at least N … and this applies to every future claim in the slot"* — and this arm carries the same deep-chain truncation warning. Neither property is weaker here just because the question is a different one.
 
-A `structurally-empty` answer names one of five reasons: an object-position alias, a predicate already curated single-valued, a predicate never curated at all, a surface that normalizes away to nothing, or a removal naming a norm with no approved parent.
+### Arm 3 — `structurally-empty`: "this cannot produce pairs"
+
+Rather than return a zero, the preview returns a **reason**. There are five, and they do not all belong to the same verb — which matters, because only two of them can reach you from an alias decision:
+
+| Reason | Which decision produces it |
+|---|---|
+| `unkeyable-surface` — the surface normalizes away to nothing, so it occupies no slot and can join nothing | **Alias** approval or removal |
+| `no-such-edge` — no approved edge starts at that norm, so the removal would do nothing | **Alias** removal |
+| `already-single` — the predicate is already curated single-valued, so there is nothing to flip | Curated-predicate **flip** |
+| `not-curated` — the predicate has no approved single-valued entry, so there is nothing to un-curate | Curated-predicate **removal** |
+| `object-position` | Reachable only from the supersession planner. An object-position alias takes **arm 2** instead — see above |
 
 <Callout type="warn" title="Zero and cannot-be-non-zero are the same number and opposite facts">
   *"0 pairs"* invites the conclusion that the decision is harmless. *"This decision cannot produce a supersession pair at all"* says its consequences are of a different kind and are not measured by this number. The preview reports the reason rather than a count precisely so those two can never be read as the same answer.
 </Callout>
 
-### "Unknown, not zero"
+Two more things ride on the arms above rather than being arms of their own. Both are easy to mistake for a fourth and fifth answer, and both can appear *alongside* a real count.
 
-When a count could not be established — the two statements Atlas reads disagreed, or a scoped read did not answer — the preview says so in those words and tells you to reload before deciding. It never renders an unestablished count as an all-clear. A failed preview and an empty preview are opposite facts, and this whole surface exists because they are easy to confuse.
+### Riding on the arms — "unknown, not zero"
 
-### The compound case
+Every side of every count carries its own consistency flag, so "Atlas could not establish this" is reported rather than absorbed. **How it reads depends on whether there is a number beside it:**
 
-One warning has no other home. If the predicate you are aliasing **into** is already curated single-valued, the preview says so beside the count:
+- **A side that is zero and unestablished** renders as **unknown, not zero** in those words, and tells you to reload before deciding.
+- **A side with a non-zero total whose statements disagreed** renders instead as *"these two counts disagreed, so treat them as approximate rather than as facts"* — no reload instruction, because there is still a magnitude to read.
+
+What never happens is an unestablished count rendering as an all-clear: every "nothing changes here" sentence on this surface is gated on the zeros being *known*, not merely on their being zero. A failed preview and an empty preview are opposite facts, and this whole surface exists because they are easy to confuse.
+
+### Riding on the arms — the compound case
+
+One warning has no other home, and it arrives **on** a computed count rather than instead of one. If the predicate you are aliasing **into** is already curated single-valued, the preview says so beside the count:
 
 > ⚠️ `priced at` is already curated single-valued. This decision moves the whole population of the aliased predicate into `priced at`'s slot — a slot where supersession is already armed. Any pairs counted above become supersedable not because a claim changed, but because it now shares a slot with a rule that was already in force.
 
-Nothing about those claims changed. They moved into a slot where a rule was waiting. A count alone gives you the magnitude and not the kind, and this is the one interaction where the kind is the surprise.
+A count alone gives you the magnitude and not the kind, and this is the one interaction where the kind is the surprise.
+
+Aliasing into an **uncurated** predicate says nothing here, deliberately — an explicit "the target is not curated" would be an all-clear about a hazard nobody asked about. But note that silence is not the same as the question being inapplicable: at the subject position, and for both cardinality verbs, the question genuinely does not arise, and the wire distinguishes the two cases even though the page renders neither.
 
 ## What the coverage statement means when Pending is empty
 
@@ -143,18 +173,20 @@ The same discipline applies to failure: if the queue could not load, the page sa
 ## Direct authoring is the useful path first
 
 <Callout type="info" title="The honest day-one shape">
-  The structural proposer raises a candidate only where **two distinct subjects** have live claims that agree about a **non-null comparable object** under two different predicate spellings. A comparable object is one Atlas could parse into a typed canonical value — a money amount with an explicit ISO currency code, a bare number, a date, a boolean. The parser is deliberately cowardly: anything ambiguous stores `null`, because refusing to parse costs a missed proposal while parsing wrongly costs an irreversible stamp.
+  The structural proposer raises a candidate only where **two distinct subjects** have live claims that agree about a **non-null comparable object** under two different predicate spellings. A comparable object is one Atlas could parse into a typed canonical value — for example a money amount carrying an explicit ISO currency code, a bare number, a date, an instant with an explicit offset, or a boolean. The parser is deliberately cowardly: anything ambiguous stores `null`, because refusing to parse costs a missed proposal while parsing wrongly costs an irreversible stamp. Bare `$499` does not qualify, since `$` names a dozen currencies.
 
-  Most claims therefore carry no comparable object, and on day one **the proposer returns zero rows**. The cardinality proposer needs three repeated corrections at one predicate before it says anything at all.
+  Most claims therefore carry no comparable object, and on day one **the proposer returns zero rows**. The cardinality proposer needs corrections at one predicate across **three distinct subjects** before it says anything — three corrections to the *same* slot trip nothing, because they tell Atlas about that slot rather than about the predicate.
 
   **Authoring works immediately**, which is why the authoring card sits above the queue rather than as a secondary button under an empty table. It is also the *only* route by which some entries are ever written: the structural proposer covers restatements — two claims that agree — and provably cannot cover contradictions, where the two claims disagree about the object. An alias for a disagreeing pair has to be authored by a person.
 </Callout>
 
-Authoring is a **picker on both sides**, never a text box, and the reason is a specific silent failure. The folded norm is not something a human can reliably predict: `499 a month`, `499 A Month` and `499-a-month` do not all fold the same way. Guess wrong and you author an edge whose child norm no claim has ever produced — it inserts cleanly, the closure recomputes, the re-key moves zero rows and the preview reads `0`. **Indistinguishable from a merge that worked.** So both sides are chosen from the norms your corpus actually contains, each shown with its commonest surface, its live claim count, and how many spellings it already merges. The search box filters that list; it never supplies a value.
+Authoring is a **picker on both sides**, never a text box, and the reason is that you cannot reliably predict what the pipeline produced. The folding is narrower than it looks and surprises in both directions: `499 a month`, `499 A Month` and `499-a-month` all collapse to the **same** norm (`-` and `_` are separators, so `-499` and `499` collide too), while `Café` and `CAFÉ` stay **different**, because only `A`–`Z` folds. Guessing a norm and typing it is how you author an edge whose child side no claim has ever produced.
 
-Authoring is refused outright when either norm has no live claim at that position, and the refusal names **which** side is empty. It is also refused for any pair carrying rejection memory — see below.
+That failure is genuinely closed rather than merely discouraged: authoring is **refused outright** when either norm has no live claim at that position, and the refusal names *which* side is empty. Without it the write would insert cleanly, recompute the closure, move zero rows and preview `0` — indistinguishable from a merge that worked. So both sides are chosen from the norms your corpus actually contains, each shown with its commonest surface, its live claim count, and how many spellings it already merges. The search box filters that list; it never supplies a value.
 
-Two entitlements, and they are deliberately different. **Approving** a predicate alias adjudicates evidence a producer gathered; any authenticated member may do it. **Authoring** one creates the assertion from nothing — no evidence, no producer, no threshold — and produces a workspace-wide re-key, so it takes owner or admin at *every* position. Removal takes the authoring bar too: a reader who could not author an edge must not be able to delete it.
+Authoring is also refused for any pair carrying rejection memory — see below.
+
+Two entitlements, and they are deliberately different. **Approving** a predicate alias adjudicates evidence a producer already gathered, so the seam asks nothing beyond the admin session the console already required. **Authoring** one creates the assertion from nothing — no evidence, no producer, no threshold — and produces a workspace-wide re-key, so it takes owner or admin *of this workspace*, at every position. Removal takes the authoring bar too: a reader who could not author an edge must not be able to delete it.
 
 ## Removing an alias
 
@@ -170,19 +202,40 @@ One hole is fail-closed and worth knowing about: an entity-position edge withhel
 
 ## The auto-approval boundary
 
-Some alias edges skip review. The boundary is narrow on purpose, and it is four conditions, all of which must hold:
+Some alias edges may skip review. The boundary is narrow on purpose, and it is four conditions, all of which must hold:
 
 1. The position is **`subject` or `object`**. A predicate-position proposal can never auto-approve — and since the structural proposer only ever proposes at the predicate position, **nothing it raises is ever eligible.**
 2. The source class is listed in **`ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES`**, which ships as `warehouse_key` alone.
 3. The proposal's confidence clears **`ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD`**, which ships as `1`.
-4. Atlas has successfully read this workspace's settings. If the settings tier never loaded, every proposal queues, because an override that cannot be read is indistinguishable from one that was never written.
+4. Atlas could consult this workspace's setting overrides. On a deployment with an internal DB whose settings never loaded, every proposal queues — an override that cannot be read is indistinguishable from one that was never written. A deployment with **no** internal DB satisfies this by design rather than failing it: there env vars and defaults are the whole configuration, so there is no override tier to miss.
 
-`warehouse_key` means *two surfaces are the same row in your warehouse, joined on a primary key*. That is certain by construction, which is why it is the only class admitted by default. The threshold is `1` rather than a fraction for the same reason: a fraction would let some future producer's merely-probable edge auto-approve on a knob nobody re-read. Leave the threshold **empty** to queue everything, and note that a garbled value **disables** auto-approval rather than falling back to the shipped default.
+There are exactly four source classes, and the knob takes them as a comma-separated list — spell them exactly:
+
+| Class | What it means |
+|---|---|
+| `warehouse_key` | A warehouse primary key: two surfaces are the same row. Certain by construction — the only class admitted by default |
+| `extractor` | A language model's guess that two spellings name one thing |
+| `seam` | The structural proposer's own candidates, raised from your corpus |
+| `human` | Somebody authored the edge directly |
+
+<Callout type="info" title="Today this boundary is a forward guarantee, not a live path">
+  No shipped producer proposes an alias at an entity position. The structural proposer emits `seam` at the **predicate** position only, and direct authoring is a person by definition — nothing in the tree currently emits `warehouse_key` or `extractor` at all. Condition 1 therefore excludes everything that exists, and on a stock deployment **no alias auto-approves**.
+
+  The section is worth reading anyway, because the knobs are live and outlast the gap: they decide what happens the day a warehouse producer or an extractor-backed proposer does ship. Set them for the deployment you will have, not the one you have now.
+</Callout>
+
+Note that `seam` is not on the default list *and* could not benefit from being on it, since condition 1 already excludes everything the structural proposer raises. The threshold is `1` rather than a fraction for the same reason `warehouse_key` stands alone: a fraction would let some future producer's merely-probable edge auto-approve on a knob nobody re-read. Leave the threshold **empty** to queue everything.
+
+<Callout type="warn" title="The two knobs fail differently when you garble them">
+  A **threshold** that is unparseable or outside `0.0`–`1.0` **disables** auto-approval for that workspace rather than falling back to the shipped `1` — a garbled knob must never be more permissive than the operator who garbled it intended.
+
+  A **sources** list behaves differently: an unrecognized token is logged and **dropped**, and the rest of the list still applies. So `warehouse_key,extractr` does not fail closed — it silently means `warehouse_key`. A typo therefore removes a class you meant to add rather than disabling the feature, which is the safe direction but is *not* the same rule as the threshold's. Check the boot logs after editing it.
+</Callout>
 
 <Callout type="warn" title="Widening `..._SOURCES` to `extractor` is a decision, not a tuning step">
   An `extractor` edge is a language model's guess about which two spellings mean the same thing. Auto-approving it **re-keys the record with nobody in front of it**.
 
-  The specific hazard is not that a model is often wrong. It is that an extractor asked *"what is the canonical predicate here"* **cannot abstain** — it always produces one — so it fills the queue with confident, unfalsifiable answers, and `led_by` / `leads` is among the first things it offers. That pair is exactly what the structural proposer is built to never raise and what a person is here to refuse. Widening this knob routes it around both.
+  The specific hazard is not that a model is often wrong. It is that an extractor asked *"what is the canonical predicate here"* **cannot abstain** — it always produces one — so it fills the queue with confident, unfalsifiable answers, and `led_by` / `leads` is among the first things it offers. That pair is exactly what the structural proposer is built to never raise and what a person is here to refuse. Widening this knob would route it around both, the day such a producer exists.
 
   Both knobs are workspace-scoped; the reference rows are in [Environment variables → Company Atlas](/reference/environment-variables#company-atlas).
 </Callout>
@@ -196,6 +249,8 @@ Two proposal kinds share **one queue**, one set of filters and one pair of decid
 | **Alias** | Distinct subjects whose live claims agree about one object under both spellings, with examples | **2** distinct subjects |
 | **Curated predicate** | Distinct subjects a human has superseded at that predicate, *and* how many supersessions produced them | **3** distinct subjects |
 
+Structural evidence exists only for **predicate** pairs — it looks for two claims about one subject that agree about the object under different verbs. At an entity position that question cannot be asked at all, so such a proposal carries none, and the queue says so in as many words rather than showing a zero. *No evidence found* and *the question does not apply here* are different facts; judge the second on where the proposal came from.
+
 Both counts are distinct-subject counts, but they are **not comparable magnitudes**: agreement-without-a-slot is positive and typed evidence, while a correction event is circumstantial. Rendering them in one column at equal weight would invert the ranking those thresholds encode.
 
 Every count travels with its own threshold, because the evidence is **re-derived when you open the page** — nothing is stored at proposal time. The corpus moves, so an entry can honestly read *below* the bar that raised it, and the page says exactly that rather than hiding the discrepancy. A count Atlas could not read is reported as **unknown, not zero**, with no explanation attached — a specific, confident, wrong story about a number nobody read is worse than admitting the read failed.
@@ -203,7 +258,7 @@ Every count travels with its own threshold, because the evidence is **re-derived
 The `rank` on an alias row orders the queue. It is not a probability, and the page says so.
 
 <Callout type="info" title="Entity-position proposals you cannot see are counted, not hidden">
-  Predicate-position proposals are shown to every approver — a verb phrase discloses nothing you could not have guessed. Entity-position ones are gated on your being able to read at least one claim on **each** side, so you are never shown a merge between two populations you have no standing in. The withheld count is always rendered: *"12 entity edges you cannot see"* and *"none"* are opposite facts that a scoped list renders identically.
+  Predicate-position proposals are shown to every approver — a verb phrase discloses nothing you could not have guessed. Entity-position ones are gated on your being able to read at least one claim on **each** side, so you are never shown a merge between two populations you have no standing in. The withheld count is always rendered, as its own badge on the queue and as a sentence in the coverage statement — a list that silently omitted them would render "12 you cannot see" and "none" identically.
 </Callout>
 
 ## Related

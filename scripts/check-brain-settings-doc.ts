@@ -22,7 +22,7 @@
  * Run locally: bun scripts/check-brain-settings-doc.ts
  */
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -40,6 +40,17 @@ const SECTION_HEADING = "## Company Atlas";
 const BRAIN_KEY_PREFIX = "ATLAS_BRAIN_";
 
 const failures: string[] = [];
+
+/** Every `.mdx` under `dir`, recursively — check 4's scan surface. */
+function listMdx(dir: string): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...listMdx(full));
+    else if (entry.name.endsWith(".mdx")) out.push(full);
+  }
+  return out;
+}
 
 const doc = readFileSync(DOC, "utf8");
 
@@ -206,6 +217,57 @@ if (!claimedWorkspace) {
     failures.push(
       `The page says "${claimedWorkspace[1]} are workspace-scoped" but ${actualWorkspace.length} of the ` +
         `documented keys carry scope: "workspace" (${actualWorkspace.join(", ")}).`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 4. Defaults RESTATED IN PROSE elsewhere in the docs (#5158).
+// ---------------------------------------------------------------------------
+// Checks 1-3 hold the reference table to the registry. They do not see a GUIDE
+// that repeats a default in a sentence — `guides/brain-vocabulary.mdx` says the
+// auto-approve knobs "ship as `warehouse_key`" and "ship as `1`" — and that
+// restatement is what a reader acts on, since nobody consults a reference table
+// to learn what the shipped behaviour is. A default changed in the registry
+// updates the table through check 1 and leaves the guide asserting the old
+// value, with every gate green.
+//
+// The matcher is deliberately narrow: a backticked ATLAS_BRAIN_ key, then
+// "ships as", then the first backticked token on the same line. It is a
+// CONCEPT matcher only in that it accepts any key and any value — the phrase is
+// pinned, because a phrase-free version would have to guess which of a
+// sentence's backticks is the default and would answer wrongly rather than not
+// at all.
+const PROSE_DEFAULT_RE = /`(ATLAS_BRAIN_[A-Z0-9_]+)`[^\n]*?\bships as\b[^\n]*?`([^`\n]+)`/g;
+const proseClaims: { file: string; key: string; claimed: string }[] = [];
+for (const rel of listMdx(join(ROOT, "apps/docs/content"))) {
+  const text = readFileSync(rel, "utf8");
+  for (const m of text.matchAll(PROSE_DEFAULT_RE)) {
+    proseClaims.push({ file: rel, key: m[1], claimed: m[2] });
+  }
+}
+
+// ⚠️ VACUITY FLOOR, on this file's standing rule: a matcher that matches
+// nothing must fail rather than report success. Zero is not a legitimate
+// answer while any guide restates a default — and if every such sentence is
+// ever deliberately removed, DELETE this check rather than leaving a pattern
+// that scans the whole docs tree and always passes.
+if (proseClaims.length === 0) {
+  console.error(`FAIL: no "\`ATLAS_BRAIN_…\` … ships as \`value\`" sentence found anywhere in apps/docs/content.`);
+  console.error("      The phrasing changed and this gate went blind — update PROSE_DEFAULT_RE, do not delete this check.");
+  process.exit(1);
+}
+
+for (const { file, key, claimed } of proseClaims) {
+  const def = byKey.get(key);
+  if (!def) {
+    failures.push(`${file} states a shipped default for ${key}, which is not in the settings registry.`);
+    continue;
+  }
+  if (def.default !== claimed) {
+    failures.push(
+      `${file} says ${key} ships as \`${claimed}\`, but the registry default is \`${String(def.default)}\`. ` +
+        `A guide's restatement is what a reader acts on — update the prose, or change the registry deliberately.`,
     );
   }
 }

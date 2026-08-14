@@ -140,9 +140,16 @@ let INSTALL_ROWS: Array<{
 }> = [];
 let installsQueryParams: unknown[] | null = null;
 
+// When false, the state upsert reports ZERO rows landed — the install-anchored
+// WHERE EXISTS guard filtering the write (#5203 round-2's C1 shape).
+let STATE_UPSERT_LANDS = true;
+const stateUpsertSqlSeen: string[] = [];
+
 const internalQuery = mock(async (sql: string, params: unknown[] = []): Promise<unknown[]> => {
   if (internalQueryThrowOn && sql.includes(internalQueryThrowOn)) throw new Error("internal DB unavailable");
   if (sql.includes("INSERT INTO knowledge_sync_state")) {
+    stateUpsertSqlSeen.push(sql);
+    if (!STATE_UPSERT_LANDS) return [];
     const key = stateKey(params[0] as string, params[1] as string);
     const prev = syncState.get(key);
     syncState.set(key, {
@@ -155,7 +162,9 @@ const internalQuery = mock(async (sql: string, params: unknown[] = []): Promise<
       sync_cursor: (params[6] as string | null) ?? prev?.sync_cursor ?? null,
       last_reconciled_at: (params[7] as string | null) ?? prev?.last_reconciled_at ?? null,
     });
-    return [];
+    // The real statements carry RETURNING collection_id; a write that lands
+    // reports one row. The zero-row arm above is what the loud-log test flips.
+    return [{ collection_id: params[1] }];
   }
   if (sql.includes("SELECT high_water_mark")) {
     const row = syncState.get(stateKey(params[0] as string, params[1] as string));
@@ -182,9 +191,18 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   getInternalDB: () => ({ connect: async () => fakeTxClient() }),
 }));
 
+const loggedErrors: string[] = [];
 void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
-  const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
+  const logger = {
+    info: noop,
+    warn: noop,
+    error: (_ctx: unknown, msg?: string) => {
+      loggedErrors.push(typeof msg === "string" ? msg : String(_ctx));
+    },
+    debug: noop,
+    child: () => logger,
+  };
   return { createLogger: () => logger, getRequestContext: () => ({ requestId: "test" }) };
 });
 
@@ -197,6 +215,7 @@ void mock.module("@atlas/api/lib/knowledge/mirror-invalidation", () => ({
 
 const {
   syncConnectorCollection,
+  upsertConnectorSyncState,
   withRateLimitBackoff,
   getKnowledgeSyncReconcileIntervalMs,
   DEFAULT_SYNC_RECONCILE_INTERVAL_HOURS,
@@ -381,6 +400,9 @@ beforeEach(() => {
   MAX_DOCS = 100;
   CAP_TIER = null;
   CAPS_THROW = false;
+  STATE_UPSERT_LANDS = true;
+  stateUpsertSqlSeen.length = 0;
+  loggedErrors.length = 0;
   store = new Map();
   syncState = new Map();
   nextId = 1;
@@ -923,6 +945,46 @@ describe("getKnowledgeSyncReconcileIntervalMs", () => {
 });
 
 // ── AC: no publish path exists on the connector engine (structural pin) ─────
+
+describe("upsertConnectorSyncState — anchors and zero-row loudness (#5203)", () => {
+  const WRITE = {
+    status: "success" as const,
+    error: null,
+    report: { probe: true },
+    highWaterMark: null,
+    cursor: null,
+    reconciledAt: null,
+  };
+
+  it("routes the workspace anchor to the unguarded statement", async () => {
+    await upsertConnectorSyncState("org-1", "slack-history", WRITE, "workspace");
+    expect(stateUpsertSqlSeen).toHaveLength(1);
+    // The workspace-anchored statement carries NO install-existence guard —
+    // that guard filtering per-workspace writes was round-1's C1.
+    expect(stateUpsertSqlSeen[0]).not.toContain("WHERE EXISTS");
+    expect(loggedErrors).toEqual([]);
+  });
+
+  it("routes the install anchor to the guarded statement", async () => {
+    await upsertConnectorSyncState("org-1", "docs", WRITE, "install");
+    expect(stateUpsertSqlSeen).toHaveLength(1);
+    expect(stateUpsertSqlSeen[0]).toContain("WHERE EXISTS");
+  });
+
+  it("logs LOUDLY when a write lands no row — the only witness the drop has", async () => {
+    // Delete the zero-row branch (or the RETURNING that feeds it) and this is
+    // the test that goes red: the outcome was silently discarded and nothing
+    // else in the process can tell.
+    STATE_UPSERT_LANDS = false;
+    await upsertConnectorSyncState("org-1", "docs", WRITE, "install");
+    expect(loggedErrors.some((m) => m.includes("landed no row"))).toBe(true);
+  });
+
+  it("stays quiet when the write lands", async () => {
+    await upsertConnectorSyncState("org-1", "docs", WRITE, "install");
+    expect(loggedErrors).toEqual([]);
+  });
+});
 
 describe("review gate — no publish path on connector sync (ADR-0028 §4)", () => {
   it("the engine modules never reference the content-mode publish machinery", async () => {

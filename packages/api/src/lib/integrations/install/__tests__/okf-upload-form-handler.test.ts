@@ -152,6 +152,15 @@ describe("resolveCollectionSlug", () => {
       );
       // Unreserved ids stay available — the guard is the syncId, not a prefix.
       expect(resolveCollectionSlug("slack-history-notes", "d")).toBe("slack-history-notes");
+      // The DEFAULT-slug arms run through the same guard: a catalog whose
+      // defaultSlug ever collides with a syncId must fail loudly, not silently
+      // share the bookkeeping row because nobody typed anything.
+      expect(() => resolveCollectionSlug(undefined, "slack-history")).toThrow(
+        FormInstallValidationError,
+      );
+      expect(() => resolveCollectionSlug("  ", "slack-history")).toThrow(
+        FormInstallValidationError,
+      );
     } finally {
       _resetBrainSourceConnectors();
     }

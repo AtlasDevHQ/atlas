@@ -158,6 +158,38 @@ describe("#5203 — a chat-class brain source may not be dispatched per install"
       }),
     ).toThrow(/syncId/);
   });
+
+  it("refuses a DUPLICATE syncId across per-workspace sources — the same collision, arriving sideways", () => {
+    // Round 2 of #5209 closed the collection↔brain arm of this class (a
+    // knowledge collection may not take a per-workspace syncId as its slug);
+    // this is the brain↔brain arm. Two sources booking under one
+    // collection_id clobber each other's cursor and high-water mark, each
+    // reporting green while skipping what the other advanced past.
+    registerBrainSourceConnector({
+      catalogId: "catalog:fixture-chat",
+      source: SLACK_SOURCE,
+      scope: {
+        kind: "per-workspace",
+        syncId: "shared-sync-id",
+        listWorkspaces: () => Promise.resolve([]),
+      },
+      audience: { kind: "externally-synced" },
+      createClient: NOOP_CLIENT,
+    });
+    expect(() =>
+      registerBrainSourceConnector({
+        catalogId: "catalog:fixture-chat-2",
+        source: SLACK_SOURCE,
+        scope: {
+          kind: "per-workspace",
+          syncId: "shared-sync-id",
+          listWorkspaces: () => Promise.resolve([]),
+        },
+        audience: { kind: "externally-synced" },
+        createClient: NOOP_CLIENT,
+      }),
+    ).toThrow(/already claimed/);
+  });
 });
 
 describe("#5203 — the two dispatch listings are disjoint and complete", () => {

@@ -272,6 +272,11 @@ describeIfPg("brain source scope (real Postgres, #5203)", () => {
       // Still legacy-pending: the caller must NOT act on membership.
       expect(deferred.mode).toBe("legacy-pending");
       expect(deferred.reconciledExclusions).toBe(0);
+      // The deferral is SAID in the report the admin surface reads, not only
+      // logged — deleting the warnings.push is what this goes red on.
+      expect(deferred.warnings).toContainEqual(
+        expect.stringContaining("was not reconciled this cycle"),
+      );
       // Nothing stamped, nothing excluded. Reconciling here would have
       // computed exclusions from a partial `observed` and let every channel
       // past the page bound into scope unexcluded next cycle (AC-5).
@@ -291,7 +296,10 @@ describeIfPg("brain source scope (real Postgres, #5203)", () => {
         channels: ["C0LEGACY"],
       });
 
-      // ── A complete walk: the bot is in the legacy channel and one more.
+      // ── A complete walk: the bot is in the legacy channel and one more —
+      // plus a DM whose id the stored-key pattern refuses, which must be
+      // COUNTED into the report's warnings rather than dropped in silence
+      // (the round-1 comment claimed counting that the code did not do).
       const completePage: SlackScopeRefreshDeps = {
         ...HEALTHY_PROBES,
         fetchUserConversationsPage: () =>
@@ -300,6 +308,7 @@ describeIfPg("brain source scope (real Postgres, #5203)", () => {
             channels: [
               { id: "C0LEGACY", name: "legacy", isPrivate: false, isMember: true, isArchived: false },
               { id: "C0BEYOND", name: "beyond", isPrivate: false, isMember: true, isArchived: false },
+              { id: "D0DMUSER", name: "dm", isPrivate: true, isMember: true, isArchived: false },
             ],
             nextCursor: null,
           }),
@@ -311,6 +320,10 @@ describeIfPg("brain source scope (real Postgres, #5203)", () => {
       });
       expect(reconciled.membershipIncomplete).toBe(false);
       expect(reconciled.mode).toBe("membership");
+      expect(reconciled.observed).toBe(2);
+      expect(reconciled.warnings).toContainEqual(
+        expect.stringContaining("not a channel"),
+      );
       // Exactly the set difference: observed − legacy.
       expect(reconciled.reconciledExclusions).toBe(1);
       const afterReconcile = await pool.query<{ reconciled_at: Date | null }>(
@@ -325,6 +338,35 @@ describeIfPg("brain source scope (real Postgres, #5203)", () => {
     },
     PG_TEST_TIMEOUT_MS,
   );
+
+  it("lists exactly the live, distinct Slack-installed orgs — the dispatch list for the whole feature", async () => {
+    // `listSlackInstalledOrgIds` is what turns "Slack is connected" into "the
+    // brain reads Slack", so its SQL semantics are behaviour, not plumbing:
+    // an expired install must not dispatch, and one org with several TEAM
+    // installs (a Slack org-wide app) must dispatch ONCE — a DISTINCT
+    // regression double-syncs the workspace per cycle, two syncs clobbering
+    // one cursor, the same collision class the reserved-syncId guards refuse.
+    const { listSlackInstalledOrgIds } = await import("@atlas/api/lib/slack/store");
+
+    // A second team install of the SAME org test 1 installed.
+    await saveInstallation("T5203SECOND", "xoxb-scope-test-2", { orgId: WORKSPACE });
+    // An EXPIRED install for a different org — the predicate must skip it.
+    await pool.query(
+      `INSERT INTO chat_cache (key, value, expires_at)
+       VALUES ('slack:installation:TEXPIRED',
+               jsonb_build_object('orgId', 'ws-5203-expired', 'botToken', 'xoxb-dead'),
+               now() - interval '1 hour')
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, expires_at = EXCLUDED.expires_at`,
+    );
+    // A row with no orgId at all — the env-fallback single-workspace shape.
+    await pool.query(
+      `INSERT INTO chat_cache (key, value)
+       VALUES ('slack:installation:TNOORG', jsonb_build_object('botToken', 'xoxb-anon'))
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+    );
+
+    expect(await listSlackInstalledOrgIds()).toEqual([WORKSPACE]);
+  });
 
   it("applies an admin exclusion under legacy-pending, in both predicates", async () => {
     const ws = "ws-5203-legacy-exclusion";

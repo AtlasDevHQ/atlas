@@ -43,9 +43,9 @@
  * below therefore also carries a runtime arm for a class it cannot resolve — a
  * value arriving through a cast, a separately-compiled plugin, a region import —
  * and every one of those arms fails CLOSED and says so in the log. The posture
- * is `classifyToken`'s unrecognised-principal arm (`oversight.ts`), copied
- * deliberately: withhold, loudly, rather than fall through to a plausible
- * answer.
+ * is the one `classifyToken` takes on an unrecognised principal kind
+ * (`oversight.ts`), copied deliberately: withhold, loudly, rather than fall
+ * through to a plausible answer.
  *
  * ## Why the coverage properties live HERE rather than in `coverage.ts`
  *
@@ -122,34 +122,43 @@ export type SurveyUnitOrigin =
  * A class's denominator, or its explicit refusal to have one.
  *
  * A discriminated union rather than `SurveyUnitOrigin | null`, because
- * `surveyable: false` is a POSITIVE claim this file makes about `human` —
- * ADR-0041's "human: none — not a surveyable region" — and reading it off an
- * absent field would make "we decided there is no universe here" indistinguishable
- * from "nobody has filled this in yet". The Coverage Surface must render those
- * two differently: the first is a class that correctly never appears in a ratio,
- * the second is a bug.
+ * `surveyable: false` is a POSITIVE claim this file makes about `human`.
+ * ADR-0040's contract table gives that class no connector and no perimeter
+ * ("not connectable … the person's own statement"), so no credential enumerates
+ * it; *not a surveyable region* is issue #5212's phrasing for that consequence,
+ * and this module's name for it — NOT a quote from either ADR. Reading the
+ * refusal off an absent field would make "we decided there is no universe here"
+ * indistinguishable from "nobody has filled this in yet". The Coverage Surface
+ * must render those two differently: the first is a class that correctly never
+ * appears in a ratio, the second is a bug.
+ */
+/**
+ * What a class may DECLARE about its universe, in {@link CLASS_CONTRACTS}.
+ *
+ * `non-surveyable-class` is `human`'s declared refusal — an affirmative product
+ * statement, and a class that correctly never appears in a ratio.
+ *
+ * ⚠️ The fail-closed reason is deliberately NOT in this union. "We could not
+ * resolve this class" is never a true statement about an entry sitting in the
+ * map, and the map is the only producer of a declared denominator — so a
+ * contract declaring it is unrepresentable rather than merely untested.
+ */
+export type DeclaredDenominator =
+  | { readonly surveyable: true; readonly enumeratedFrom: SurveyUnitOrigin }
+  | { readonly surveyable: false; readonly reason: "non-surveyable-class" };
+
+/**
+ * What a DERIVATION returns — a declaration, or the fail-closed refusal.
+ *
+ * The reason is what the surface renders differently, and its omission was the
+ * original defect: without it the two refusals are byte-identical and only a
+ * `log.warn` separates them, which a page cannot read. ADR-0041 calls a silent
+ * zero here "a false statement, not an error state", so the page owes a "cannot
+ * establish" arm for the fail-closed one rather than a clean absence.
  */
 export type ClassDenominator =
-  | { readonly surveyable: true; readonly enumeratedFrom: SurveyUnitOrigin }
-  | {
-      readonly surveyable: false;
-      /**
-       * WHY there is no universe, which the surface must render differently.
-       *
-       * `not-a-surveyable-region` is `human`'s declared refusal — an affirmative
-       * product statement, and a class that correctly never appears in a ratio.
-       * `unresolvable-class` is the fail-closed arm: we do not know what this is,
-       * and ADR-0041 calls a silent zero here "a false statement, not an error
-       * state", so the page owes a "cannot establish" arm rather than a clean
-       * absence.
-       *
-       * Carried for the same reason {@link CoverageLabelDecision} carries its
-       * reason, and the omission was the defect: without it the two arms are
-       * byte-identical and only a `log.warn` separates them — and a page cannot
-       * read a log.
-       */
-      readonly reason: "not-a-surveyable-region" | "unresolvable-class";
-    };
+  | DeclaredDenominator
+  | { readonly surveyable: false; readonly reason: "unresolvable-class" };
 
 /**
  * Which staleness sentence a class's units are entitled to.
@@ -200,17 +209,17 @@ export interface ClassCoverageContract {
    *
    * **Defaults closed.** `true` on `chat` alone today, and that entry carries
    * the argument. A class must argue its way open, the same posture
-   * `classifyToken`'s unknown-namespace arm takes: the clause leans on each
-   * vendor's notion of "public", and a class that has not been examined has not
-   * had that notion examined either.
+   * `classifyToken` takes on an unrecognised principal kind: the clause leans on
+   * each vendor's notion of "public", and a class that has not been examined has
+   * not had that notion examined either.
    */
   readonly vendorPublic: boolean;
 
   /** See {@link VendorActivityMetadata} — whether "stale" is computable at all. */
   readonly activityMetadata: VendorActivityMetadata;
 
-  /** See {@link ClassDenominator} — the enumerable universe, or the refusal of one. */
-  readonly denominator: ClassDenominator;
+  /** See {@link DeclaredDenominator} — the enumerable universe, or the refusal of one. */
+  readonly denominator: DeclaredDenominator;
 }
 
 /**
@@ -261,7 +270,7 @@ export interface ClassContract {
  * (`class-contract.test.ts`, "carries a `satisfies` at EVERY level"), because
  * nothing else can: a `satisfies` is erased at runtime and asserts nothing about
  * itself, so deleting one here is invisible to `tsc` and to every behavioural
- * test. Measured — removing this entry's level-2 annotation leaves both clean.
+ * test. Measured — removing an entry's level-2 annotation leaves both clean.
  * The `@ts-expect-error` pins beside it are a DIFFERENT guarantee: they hold
  * that {@link ClassCoverageContract} and {@link ClassDenominator} are closed, so
  * that these annotations have something to bite on.
@@ -271,6 +280,16 @@ export interface ClassContract {
  * true` compiles clean. The defaults are what make that survivable — a class
  * copied from `human` discloses nothing — and `class-contract.test.ts`'s pinned
  * table is what forces an author to confront each answer deliberately.
+ *
+ * ⚠️ **Exported for DECLARATION and for the contract tests, not for lookup.**
+ * Read a class's answer through {@link coverageLabelPolicy},
+ * {@link stalenessVerdict} or {@link classDenominator} — every one of them
+ * carries a fail-closed arm and a log line for a class this deploy cannot
+ * resolve. Indexing this map directly (`CLASS_CONTRACTS[row.source as
+ * EpisodeSourceClass]`) bypasses all three silently, which is precisely the
+ * "each new consumer is a new place the answer could be decided" failure the
+ * unexported {@link contractOf} exists to prevent — arriving through this
+ * export instead.
  */
 export const CLASS_CONTRACTS = Object.freeze({
   /**
@@ -289,7 +308,7 @@ export const CLASS_CONTRACTS = Object.freeze({
       denominator: Object.freeze({
         surveyable: true,
         enumeratedFrom: "chat-channel-roster",
-      } as const satisfies ClassDenominator),
+      } as const satisfies DeclaredDenominator),
     } as const satisfies ClassCoverageContract),
   } as const satisfies ClassContract),
 
@@ -307,7 +326,7 @@ export const CLASS_CONTRACTS = Object.freeze({
       denominator: Object.freeze({
         surveyable: true,
         enumeratedFrom: "granted-recording-scopes",
-      } as const satisfies ClassDenominator),
+      } as const satisfies DeclaredDenominator),
     } as const satisfies ClassCoverageContract),
   } as const satisfies ClassContract),
 
@@ -325,7 +344,7 @@ export const CLASS_CONTRACTS = Object.freeze({
       denominator: Object.freeze({
         surveyable: true,
         enumeratedFrom: "mailbox-list",
-      } as const satisfies ClassDenominator),
+      } as const satisfies DeclaredDenominator),
     } as const satisfies ClassCoverageContract),
   } as const satisfies ClassContract),
 
@@ -347,16 +366,17 @@ export const CLASS_CONTRACTS = Object.freeze({
       denominator: Object.freeze({
         surveyable: true,
         enumeratedFrom: "semantic-layer-enrollment",
-      } as const satisfies ClassDenominator),
+      } as const satisfies DeclaredDenominator),
     } as const satisfies ClassCoverageContract),
   } as const satisfies ClassContract),
 
   /**
    * Explicitly non-surveyable, and present for exactly that reason. A person's
    * own recorded words (`correct_fact`'s correction episode) come from no
-   * connector, no credential enumerates "the set of humans who might state
-   * something", and ADR-0041's map has no cell for them: `human: none — not a
-   * surveyable region`.
+   * connector, and no credential enumerates "the set of humans who might state
+   * something" — ADR-0040's contract table gives the class no perimeter at all
+   * ("not connectable"). ADR-0041 never assigns it a denominator because that
+   * ADR only ever discusses classes a credential can enumerate.
    *
    * Omitting the class would have said the same thing far more weakly — an
    * absent row is indistinguishable from an unfinished one, and the Record's
@@ -370,8 +390,8 @@ export const CLASS_CONTRACTS = Object.freeze({
       activityMetadata: "absent",
       denominator: Object.freeze({
         surveyable: false,
-        reason: "not-a-surveyable-region",
-      } as const satisfies ClassDenominator),
+        reason: "non-surveyable-class",
+      } as const satisfies DeclaredDenominator),
     } as const satisfies ClassCoverageContract),
   } as const satisfies ClassContract),
 }) satisfies Record<EpisodeSourceClass, ClassContract>;
@@ -393,6 +413,51 @@ const _CONTRACT_KEYS_IN_SYNC: MutuallyAssignable<
   EpisodeSourceClass
 > = true;
 void _CONTRACT_KEYS_IN_SYNC;
+
+
+/**
+ * The three reason vocabularies, pinned CLOSED — mutual assignability, so BOTH
+ * growth and shrinkage are errors here rather than somewhere downstream.
+ *
+ * The `@ts-expect-error` pins in `class-contract.test.ts` were believed to do
+ * this and measurably do not: an invented literal is not assignable to a union
+ * whether or not a fourth member exists, so those directives pin only that the
+ * field is not `string`. Adding a fourth reason left `tsc` clean — the module's
+ * fourth measured-false guarantee, and by the same ratchet it gets a mechanism
+ * rather than a corrected comment.
+ *
+ * Why it matters: each reason is a different SENTENCE the Coverage Surface says
+ * to an admin. A fourth arriving with no consumer forced to handle it is how one
+ * of those sentences silently becomes "some other case", which is the fabrication
+ * ADR-0041 refuses.
+ */
+const _LABEL_REASONS_CLOSED: MutuallyAssignable<
+  Extract<CoverageLabelDecision, { policy: "count-only" }>["reason"],
+  "no-clause" | "non-surveyable-class" | "unresolvable-class"
+> = true;
+void _LABEL_REASONS_CLOSED;
+
+const _DENOMINATOR_REASONS_CLOSED: MutuallyAssignable<
+  Extract<ClassDenominator, { surveyable: false }>["reason"],
+  "non-surveyable-class" | "unresolvable-class"
+> = true;
+void _DENOMINATOR_REASONS_CLOSED;
+
+const _STALENESS_REASONS_CLOSED: MutuallyAssignable<
+  Extract<StalenessVerdict, { kind: "unverified-since" }>["reason"],
+  "no-activity-metadata" | "unresolvable-class"
+> = true;
+void _STALENESS_REASONS_CLOSED;
+
+/**
+ * …and the DECLARED denominator's reason, which is narrower than the derived
+ * one on purpose: the map may never declare the fail-closed reason.
+ */
+const _DECLARED_DENOMINATOR_REASON_CLOSED: MutuallyAssignable<
+  Extract<DeclaredDenominator, { surveyable: false }>["reason"],
+  "non-surveyable-class"
+> = true;
+void _DECLARED_DENOMINATOR_REASON_CLOSED;
 
 /**
  * Diagnostic context a caller attaches to the fail-closed log lines.
@@ -425,28 +490,35 @@ export interface ClassContractLogMeta {
  * `"toString"` and `"constructor"`: `CLASS_CONTRACTS["toString"]` resolves up the
  * PROTOTYPE CHAIN to a function, whose `.coverage` is `undefined`.
  *
- * ⚠️ **What happens next was MEASURED, and it is not what it looks like.** The
- * obvious reading is that the derivations would read `undefined` and fail closed
- * by accident — a falsy flag here, an unequal comparison there. They would not.
- * The missing property is `coverage` ITSELF, and every derivation reaches
- * through it, so dropping the narrow and indexing bare gives a
- * `TypeError: undefined is not an object` while evaluating `contract.coverage.*`
- * in all three. The cost of losing this narrow is a THROWN page render, not a
- * withheld label — worse than fail-closed, and worth knowing before anyone
- * decides the narrow is redundant.
+ * ⚠️ **What happens next was MEASURED, and it SPLITS** — which matters, because
+ * both of the tidy one-line answers are wrong. For an unknown slug (`"docs"`),
+ * for `null`, for a number or a plain object, the bare index yields `undefined`,
+ * `!contract` catches it, and the derivations fail closed exactly as they do
+ * today — by accident, but correctly. The PROTOTYPE keys are the other half:
+ * `CLASS_CONTRACTS["toString"]` resolves to a FUNCTION, which is truthy, so
+ * `!contract` misses it and reading through `contract.coverage` throws
+ * `TypeError: undefined is not an object` (bun's wording; V8 says "Cannot read
+ * properties of undefined").
  *
- * Deliberately NOT quoting which property the message names. An earlier draft
+ * Measured over `class-contract.test.ts`'s hostile corpus: 6 throw, 15 fail
+ * closed. So the cost of losing this narrow is a THROWN page render on the six
+ * — worse than fail-closed, and worth knowing before anyone decides the narrow
+ * is redundant.
+ *
+ * Deliberately NOT quoting WHICH property the message names. An earlier draft
  * did, and the guard added one commit later (the non-surveyable refusal, which
- * reads `denominator` before anything else) silently made the quote wrong — a
- * measurement invalidated by an edit two functions away. The claim that survives
- * reordering is the one about `coverage`.
+ * reads `denominator` before anything else) silently made the quote wrong. The
+ * three derivations do not even agree with each other — two throw on
+ * `denominator`, one on `activityMetadata` — so any single property name would
+ * have been wrong for at least one arm from the day it was written.
  *
  * So there is deliberately no `Object.hasOwn` guard on the index, the way
- * `specOf` carries one in `sources.ts`. That function's parameter is typed
- * `EpisodeSource` with no runtime narrow in front of it, so its guard is the
- * only thing standing between a cast and the prototype chain; here the narrow is
- * already that thing, and a second guard behind it would be an arm no input can
- * reach carrying a comment claiming it does work. `class-contract.test.ts` puts
+ * `specOf` carries one in `sources.ts`. That function does not narrow its own
+ * parameter, so its guard is the BACKSTOP for a caller that skipped
+ * `isEpisodeSource` — its own docstring says exactly that, "the backstop, not
+ * the gate". Here the narrow is in front of the index, so a second guard behind
+ * it would be an arm no input can reach, carrying a comment claiming it does
+ * work. `class-contract.test.ts` puts
  * the prototype keys through every derivation, and dropping this narrow reddens
  * exactly three of its tests — which is where the claim is checked rather than
  * asserted.
@@ -466,7 +538,7 @@ function contractOf(value: unknown): ClassContract | null {
  * mechanism. "Failing closed" describes what the code did; an operator needs to
  * know which part of the page just went quiet, and the three are genuinely
  * different. Same posture as `oversight.ts`'s opaque-handle warn, which spells
- * out its consequence and even scopes it ("counts are unaffected").
+ * out its consequence and even scopes it ("Counts are unaffected").
  */
 const FAIL_CLOSED_CONSEQUENCE = {
   coverageLabelPolicy: "no unit of this class will be named; its counts are unaffected",
@@ -478,18 +550,21 @@ const FAIL_CLOSED_CONSEQUENCE = {
  * The derivations that can meet an unresolvable class.
  *
  * ⚠️ This closed set ties the call sites to the MAP above — NOT to the function
- * names. On its own it lets a rename of `coverageLabelPolicy` leave the map key,
- * the call-site literal and the logged `derivation` all spelling the dead name,
- * with `tsc` clean and the logging test green (it asserts the string, not the
- * binding). `_DERIVATION_NAMES_IN_SYNC` below is what actually closes that, and
- * it is there rather than here because a comment claiming the tie was this
- * module's third measured-false guarantee — the ratchet says the third one gets
- * a mechanism.
+ * names. {@link _DERIVATION_NAMES_IN_SYNC} at the bottom of this file is what
+ * closes that, and carries the argument.
  */
 type ClassContractDerivation = keyof typeof FAIL_CLOSED_CONSEQUENCE;
 
-/** How long a stored class value may be before the log line truncates it. */
-const CLASS_VALUE_LOG_MAX = 128;
+/**
+ * How long the EMITTED `classValue` field may be before it truncates.
+ *
+ * On the quoted form, not the raw one — see {@link describeClassValue}. Exported
+ * so `class-contract-logging.test.ts` asserts the bound against the constant
+ * rather than a second copy of the number: a test that spells its own 128 keeps
+ * passing when the constant moves, which is the drift that made an earlier
+ * `toBeLessThan(200)` unable to see a 128 -> 190 change.
+ */
+export const CLASS_VALUE_LOG_MAX = 128;
 
 /**
  * Describe an unresolvable class value for the log, without trusting it.
@@ -504,7 +579,7 @@ const CLASS_VALUE_LOG_MAX = 128;
  *
  * Strings are truncated because `brain_episodes.source` is plain `text` with no
  * CHECK and the region import restores it verbatim, so the value is unbounded.
- * `error-scrub.ts` truncates for the same stated reason — an oversized field
+ * `lib/audit/error-scrub.ts` truncates for the same stated reason — an oversized field
  * pushes the structured ones past log-aggregation size limits, which loses the
  * `workspaceId` this line exists to carry.
  *
@@ -514,14 +589,26 @@ const CLASS_VALUE_LOG_MAX = 128;
  * whitespace near-miss that is exactly what an operator is debugging) looked
  * like `human`, and a stored value of literally `"null"` was the sentinel for a
  * real `null`. The only discriminant was whether `classValueLength` happened to
- * be present — a rule nobody reading a log knows.
+ * be present — a rule nobody reading a log knows. `JSON.stringify` also escapes
+ * control characters and newlines, so a tenant-controlled value cannot forge a
+ * line at a console sink.
+ *
+ * ⚠️ **Quote FIRST, then bound — the order is the whole point of the bound.**
+ * Truncating the input and escaping afterwards bounds the wrong string: escaping
+ * expands, so 128 NUL characters emitted a 770-character field, roughly six
+ * times the intended size and past the 512 the cited precedent holds. The
+ * rationale here is an OUTPUT property, so the bound has to be on the output.
+ * The ellipsis goes inside the closing quote so the field still reads as a
+ * quoted string rather than as truncated JSON.
  */
 function describeClassValue(value: unknown): string {
   if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
   if (typeof value !== "string") return typeof value;
-  const shown =
-    value.length > CLASS_VALUE_LOG_MAX ? `${value.slice(0, CLASS_VALUE_LOG_MAX)}…` : value;
-  return JSON.stringify(shown);
+  const quoted = JSON.stringify(value);
+  return quoted.length > CLASS_VALUE_LOG_MAX
+    ? `${quoted.slice(0, CLASS_VALUE_LOG_MAX)}…"`
+    : quoted;
 }
 
 /**
@@ -675,15 +762,33 @@ export function coverageLabelPolicy(
   unit: SurveyUnitDisclosureFacts,
   meta?: ClassContractLogMeta,
 ): CoverageLabelDecision {
-  // Order is load-bearing: see § "A NON-SURVEYABLE class gets no label either".
-  // The full old-vs-new input-class table lives in the commit that introduced
-  // the refusal, which is where "old" is unambiguous.
+  // Order is load-bearing: the non-surveyable check must precede both clauses,
+  // or a caller-supplied `deliberateAct` names a person. See § "A NON-SURVEYABLE
+  // class gets no label either"; the input-class table is in `db8c5fc85`.
   const contract = contractOf(cls);
   if (!contract) {
     warnUnresolvable(cls, "coverageLabelPolicy", meta);
     return { policy: "count-only", reason: "unresolvable-class" };
   }
   if (!contract.coverage.denominator.surveyable) {
+    if (unit.deliberateAct || unit.vendorReportsPublic) {
+      // A caller ASSERTED a disclosure fact about a unit of a class that
+      // declares it has none — for `human` that unit would be a PERSON.
+      // Refused either way; logged because the assertion cannot have been
+      // computed correctly, and because this arm is otherwise the module's
+      // sharpest attempted disclosure with no trace at all. Predicated on the
+      // assertion rather than on the arm, so the volume is bounded by a caller
+      // bug instead of by unit count.
+      log.warn(
+        {
+          workspaceId: meta?.workspaceId,
+          requestId: meta?.requestId,
+          derivation: "coverageLabelPolicy",
+          classValue: describeClassValue(cls),
+        },
+        "brain class contract: a disclosure fact was asserted for a non-surveyable class — refusing; no unit of this class is ever named",
+      );
+    }
     return { policy: "count-only", reason: "non-surveyable-class" };
   }
   if (unit.deliberateAct) return { policy: "name", clause: "deliberate-act" };
@@ -768,7 +873,9 @@ export function classDenominator(cls: unknown, meta?: ClassContractLogMeta): Cla
 /**
  * Ties every {@link FAIL_CLOSED_CONSEQUENCE} key to the EXPORT that logs under
  * it — SHORTHAND properties, so renaming a derivation without renaming its key
- * is a `TS2304: Cannot find name`.
+ * fails to compile here ("No value exists in scope for the shorthand property").
+ * The diagnostic NUMBER is deliberately not quoted; that is the detail a `tsc`
+ * upgrade renumbers, and this module has already shipped one wrong one.
  *
  * The mechanism the type alias above cannot be. `ClassContractDerivation` is
  * `keyof typeof FAIL_CLOSED_CONSEQUENCE`, which ties the call sites to the MAP
@@ -783,9 +890,20 @@ export function classDenominator(cls: unknown, meta?: ClassContractLogMeta): Cla
  * rule is that a principle violated twice gets a check rather than a third
  * comment.
  *
- * Function declarations hoist, so this sits below them and still binds.
+ * Placed BELOW the declarations it references, so it binds however they are
+ * spelled. (Do not "simplify" by moving it up on the belief that hoisting
+ * protects it: the moment any derivation becomes an arrow const, a reference
+ * above it is a use-before-declaration error. Compile-caught rather than silent,
+ * but there is no reason to invite it.)
+ *
+ * The shorthand is load-bearing and it is a CONVENTION, not a guarantee: writing
+ * `coverageLabelPolicy: "anything"` binds nothing and silently retires the tie.
+ * The function-shaped value type below is what makes that at least type-visible.
  */
-const _DERIVATION_NAMES_IN_SYNC: Record<ClassContractDerivation, unknown> = {
+const _DERIVATION_NAMES_IN_SYNC: Record<
+  ClassContractDerivation,
+  (...args: never[]) => unknown
+> = {
   coverageLabelPolicy,
   stalenessVerdict,
   classDenominator,

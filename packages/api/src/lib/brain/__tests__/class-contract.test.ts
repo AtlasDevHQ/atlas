@@ -122,6 +122,29 @@ const UNIT_FACTS: readonly SurveyUnitDisclosureFacts[] = [
   { deliberateAct: true, vendorReportsPublic: true },
 ];
 
+describe("the hostile corpus itself", () => {
+  test("is NON-EMPTY and covers every family it claims", () => {
+    // ⚠️ The corpus drives three sweeps that carry this module's central claim,
+    // and every one of them passes on zero iterations. Measured: emptying
+    // `UNRESOLVABLE` leaves the file at 24 pass / 0 fail while the `expect()`
+    // count drops from 219 to 93 — 126 assertions vanishing in silence. The
+    // realistic path is not deletion but a stray `.filter(…)` or a move to a
+    // shared fixture. The same instrument is already applied twice in this file
+    // (the origin-uniqueness and surveyable-classes counts); this is its largest
+    // corpus and it had none.
+    expect(UNRESOLVABLE.length).toBeGreaterThan(15);
+    expect(UNIT_FACTS.length).toBe(4);
+    // …and the families, so a future trim cannot quietly drop the one that
+    // matters. Prototype keys are the only inputs that make the derivations
+    // THROW rather than fail closed when the narrow is removed.
+    expect(UNRESOLVABLE.filter((v) => typeof v === "string")).not.toHaveLength(0);
+    expect(UNRESOLVABLE.filter((v) => typeof v !== "string")).not.toHaveLength(0);
+    for (const prototypeKey of ["toString", "constructor", "valueOf", "__proto__"]) {
+      expect([prototypeKey, UNRESOLVABLE.includes(prototypeKey)]).toEqual([prototypeKey, true]);
+    }
+  });
+});
+
 describe("the class contract Record (#5212)", () => {
   test("is TOTAL over the class set — one entry per class, no orphan key", () => {
     // Both directions. A MISSING class is already a compile error (the
@@ -189,14 +212,17 @@ describe("the class contract Record (#5212)", () => {
     // `satisfies` has something to bite on. The map's own per-level annotations
     // are pinned by `carries a satisfies at every level` below, which reads the
     // source text because no type can assert its own annotation.
-    // @ts-expect-error level 1 — an arm that is not part of the contract yet
-    const lvl1: ClassContract = { coverage: CLASS_CONTRACTS.chat.coverage, trigger: "on-connect" };
+    // @ts-expect-error level 1 — a field that is not part of the contract.
+    // Deliberately NOT `trigger`, which is ADR-0040's first scheduled arm: the
+    // day that lands, a pin using its name goes unused and reds the build for a
+    // legitimate change. A permanently-fictional name keeps the pin meaningful.
+    const lvl1: ClassContract = { coverage: CLASS_CONTRACTS.chat.coverage, coverrage: 1 };
     const lvl2: ClassCoverageContract = {
       vendorPublic: false,
       // @ts-expect-error level 2 — the typo the disclosure gate would not notice
       vendorPublik: true,
       activityMetadata: "absent",
-      denominator: { surveyable: false, reason: "not-a-surveyable-region" },
+      denominator: { surveyable: false, reason: "non-surveyable-class" },
     };
     const lvl3: ClassDenominator = {
       surveyable: true,
@@ -227,12 +253,17 @@ describe("the class contract Record (#5212)", () => {
     });
   });
 
-  test("the decision vocabularies are CLOSED — a fourth reason must be handled", () => {
-    // Each reason is asserted as a distinct value elsewhere, but nothing pinned
-    // the unions' MEMBERSHIP — so a fourth reason could arrive with no consumer
-    // forced to handle it, which is what the "three different sentences to an
-    // admin" argument exists to protect. `@ts-expect-error` is the only
-    // instrument for it: the assignment is legal the moment the union widens.
+  test("the decision vocabularies refuse an invented reason, and are pinned CLOSED", () => {
+    // ⚠️ Two different guarantees, and an earlier draft of this test claimed the
+    // second while only delivering the first.
+    //
+    // These directives pin that the unions are not `string` — measured, widening
+    // `reason` to `string` turns each into an unused-directive error. They do
+    // NOT pin MEMBERSHIP: adding a fourth member leaves `tsc` clean, because an
+    // invented literal is still not assignable to the widened union. Membership
+    // is pinned by `_LABEL_REASONS_CLOSED` and its siblings in the module, on
+    // `_CONTRACT_KEYS_IN_SYNC`'s terms — mutual assignability, so BOTH growth
+    // and shrinkage are errors there.
     // @ts-expect-error `count-only` admits exactly three reasons
     const invented: CoverageLabelDecision = { policy: "count-only", reason: "invented" };
     // @ts-expect-error a denominator refusal admits exactly two reasons
@@ -247,11 +278,13 @@ describe("the class contract Record (#5212)", () => {
   test("carries a `satisfies` at EVERY level — pinned in source text", () => {
     // The one guard here that is not about values, because it CANNOT be. A
     // `satisfies` is erased at runtime and asserts nothing about itself, so
-    // deleting one from an entry is invisible to every behavioural test and to
-    // `tsc` alike — measured: removing `chat`'s level-2 `satisfies` leaves the
-    // whole suite green AND `tsc` clean, and `vendorPublik: true` then compiles
-    // into the map. Only the runtime key-set test below catches the CONSEQUENCE
-    // (a field that was actually added), never the guard's removal.
+    // deleting one from an entry is invisible to `tsc` and to every BEHAVIOURAL
+    // test — measured: removing `chat`'s level-2 `satisfies` keeps `tsc` clean
+    // and makes `vendorPublik: true` compile into the map, and this source-text
+    // count is the only assertion in the suite that goes red. (An earlier draft
+    // of this comment said "leaves the whole suite green", which this very test
+    // falsifies.) The runtime key-set test below catches the CONSEQUENCE — a
+    // field actually added — never the guard's removal.
     //
     // Same instrument and same reason as `sources.test.ts`'s "DELEGATES rather
     // than re-deriving — pinned in source text". Comments are stripped first,
@@ -281,7 +314,7 @@ describe("the class contract Record (#5212)", () => {
     for (const [level, annotation] of [
       ["1 (entry)", "as const satisfies ClassContract"],
       ["2 (coverage)", "as const satisfies ClassCoverageContract"],
-      ["3 (denominator)", "as const satisfies ClassDenominator"],
+      ["3 (denominator)", "as const satisfies DeclaredDenominator"],
     ] as const) {
       expect([level, body.split(annotation).length - 1]).toEqual([level, classCount]);
     }
@@ -302,9 +335,19 @@ describe("the class contract Record (#5212)", () => {
     // …and the map-level totality annotation, a different guarantee (every
     // class present) held by a different construct. Whitespace-normalised so a
     // human reflow across lines is not a false failure on a claim about types.
-    expect(code.replace(/\s+/g, " ")).toContain(
-      "satisfies Record<EpisodeSourceClass, ClassContract>",
-    );
+    const flat = code.replace(/\s+/g, " ");
+    expect(flat).toContain("satisfies Record<EpisodeSourceClass, ClassContract>");
+    // The other compile-time ties, for the same reason and by the same
+    // instrument: each is erased at runtime, so deleting any of them is silent
+    // in both suites and in `tsc`. Measured — each deletion was green before
+    // these three lines existed.
+    for (const tie of [
+      "const _CONTRACT_KEYS_IN_SYNC",
+      "const _DERIVATION_NAMES_IN_SYNC",
+      "const _LABEL_REASONS_CLOSED",
+    ]) {
+      expect([tie, flat.includes(tie)]).toEqual([tie, true]);
+    }
   });
 
   test("declares EXACTLY the three coverage properties — no invented field", () => {
@@ -337,6 +380,24 @@ describe("the class contract Record (#5212)", () => {
     // mutated map and stay agreed while all of them were wrong — no log, no
     // throw, no red test. Asserted per level rather than only on the root.
     expect(Object.isFrozen(CLASS_CONTRACTS)).toBe(true);
+    // ⚠️ RECURSIVE, because the enumerated assertions below are depth-blind in
+    // exactly the way the source-text pin used to be. Measured: an unfrozen,
+    // unannotated `trigger:` sibling of `coverage` — which is precisely the
+    // shape ADR-0040's next arm will take — passes every enumerated check and
+    // the paired invariant, and is then mutable at runtime on a map this file
+    // calls a DISCLOSURE gate. This walk holds at any depth and needs no edit
+    // when that arm lands.
+    let walked = 0;
+    const walk = (node: object): void => {
+      walked++;
+      expect(Object.isFrozen(node)).toBe(true);
+      for (const value of Object.values(node)) {
+        if (value !== null && typeof value === "object") walk(value);
+      }
+    };
+    walk(CLASS_CONTRACTS);
+    // Non-vacuity: a walk that visited only the root would assert almost nothing.
+    expect(walked).toBeGreaterThan(EPISODE_SOURCE_CLASSES.length * 3);
     for (const cls of EPISODE_SOURCE_CLASSES) {
       expect([cls, Object.isFrozen(CLASS_CONTRACTS[cls])]).toEqual([cls, true]);
       expect([cls, Object.isFrozen(CLASS_CONTRACTS[cls].coverage)]).toEqual([cls, true]);
@@ -402,7 +463,7 @@ describe("the three coverage answers, per class", () => {
     // produce the same `{surveyable: false}` for the wrong reason.
     expect(classDenominator("human")).toEqual({
       surveyable: false,
-      reason: "not-a-surveyable-region",
+      reason: "non-surveyable-class",
     });
     const nonSurveyable = EPISODE_SOURCE_CLASSES.filter(
       (cls) => !CLASS_CONTRACTS[cls].coverage.denominator.surveyable,
@@ -420,7 +481,7 @@ describe("the three coverage answers, per class", () => {
     for (const cls of EPISODE_SOURCE_CLASSES) {
       const denominator = CLASS_CONTRACTS[cls].coverage.denominator;
       if (!denominator.surveyable) {
-        expect([cls, denominator.reason]).toEqual([cls, "not-a-surveyable-region"]);
+        expect([cls, denominator.reason]).toEqual([cls, "non-surveyable-class"]);
       }
     }
   });
@@ -691,7 +752,7 @@ describe("the staleness capability, per class", () => {
     // still has to account for.
     expect(classDenominator("human")).toEqual({
       surveyable: false,
-      reason: "not-a-surveyable-region",
+      reason: "non-surveyable-class",
     });
     expect(stalenessVerdict("human")).toEqual({
       kind: "unverified-since",

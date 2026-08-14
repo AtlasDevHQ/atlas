@@ -43,7 +43,6 @@
 
 import { describe, expect, test } from "bun:test";
 import * as enrollmentSeam from "@atlas/api/lib/brain/enrollment";
-import { BRAIN_ENROLLMENT_NAME_MAX } from "@useatlas/schemas";
 
 // `src/`, from `src/lib/brain/__tests__/`. Resolved off `import.meta.url` and
 // not `process.cwd()`: the isolated runner and a bare `bun test` disagree about

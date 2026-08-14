@@ -68,14 +68,42 @@ function Wrapper({ children }: { children: ReactNode }) {
 
 const originalFetch = globalThis.fetch;
 
-/** The only endpoint this page is allowed to reach. */
-const ALLOWED = /\/api\/v1\/admin\/brain-facts\/summary$/;
+/**
+ * The only endpoints this page is allowed to reach — both read-only GETs.
+ * `brain-slack/channels` joined in #5203: it is the console's only presenter
+ * of the Slack history-sync verdict, the surface whose install card the
+ * retirement removed.
+ */
+const ALLOWED = /\/api\/v1\/admin\/(brain-facts\/summary|brain-slack\/channels)$/;
 
 const SUMMARY = {
   draftTotal: 7,
   provisionalTotal: 2,
   inTensionTotal: 3,
   publishedTotal: 41,
+};
+
+/** Healthy Slack vitals. `inScopeCount: 0` keeps the digit sweeps honest. */
+const SLACK_VITALS = {
+  scopeMode: "membership",
+  inScopeCount: 0,
+  sync: null,
+  channels: [],
+};
+
+/** The revoked-credential shape — the sync error IN THE SYNC'S OWN WORDS. */
+const SLACK_SYNC_ERROR =
+  "The workspace's Slack credential is no longer valid — reconnect Slack under Admin → Integrations";
+const SLACK_VITALS_FAILING = {
+  scopeMode: "membership",
+  inScopeCount: 0,
+  sync: {
+    lastSyncAt: null,
+    status: "error",
+    error: SLACK_SYNC_ERROR,
+    coverageIncomplete: false,
+  },
+  channels: [],
 };
 
 // A real request id shape: the API stamps `crypto.randomUUID()`. Using a
@@ -146,8 +174,14 @@ function tileValue(container: HTMLElement, label: string): string {
 }
 
 let requested: { url: string; method: string }[] = [];
-/** Resolves the summary request. Overridden per test to fail or to hang. */
+/** Resolves the SUMMARY request. Overridden per test to fail or to hang. */
 let respond: (url: string) => Promise<Response> | Response;
+/** Resolves the SLACK vitals request, independently — the two sections fail
+ * independently in production, and a uniform stub would hand the Slack fetch
+ * a summary body and turn every error-arm assertion into a statement about a
+ * parse failure nobody designed. Defaults healthy; the error arms hang it so
+ * their single-banner/digit-sweep anatomy is untouched. */
+let respondSlack: (url: string) => Promise<Response> | Response;
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -159,13 +193,14 @@ function jsonResponse(body: unknown, status = 200) {
 beforeEach(() => {
   requested = [];
   respond = () => jsonResponse(SUMMARY);
+  respondSlack = () => jsonResponse(SLACK_VITALS);
   testQueryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0, staleTime: 0 } },
   });
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = input instanceof Request ? input.url : String(input);
     requested.push({ url, method: init?.method ?? "GET" });
-    return respond(url);
+    return url.includes("brain-slack") ? respondSlack(url) : respond(url);
   }) as typeof fetch;
 });
 
@@ -204,6 +239,7 @@ describe("Company Atlas overview — counts are never fabricated (#5066)", () =>
     // state instead. That version of this test passed against a page that
     // rendered zeros on error.
     respond = () => jsonResponse(SERVER_ERROR, 500);
+    respondSlack = () => new Promise<Response>(() => {}); // hang: this arm is about the summary
     const view = renderPage();
 
     // ⚠️ Anchored on the request id, NOT on `[role="alert"]`: `ErrorBoundary`'s
@@ -234,6 +270,7 @@ describe("Company Atlas overview — counts are never fabricated (#5066)", () =>
     // the error to a string discards `FetchError.status`. `FeatureGate`'s 404
     // copy is the positive marker that the routing survived.
     respond = () => jsonResponse(NO_INTERNAL_DB, 404);
+    respondSlack = () => new Promise<Response>(() => {}); // hang: this arm is about the summary
     const view = renderPage();
 
     await waitFor(() =>
@@ -266,12 +303,46 @@ describe("Company Atlas overview — counts are never fabricated (#5066)", () =>
     expect(outsideId.textContent ?? "").not.toMatch(/\d/);
   });
 
+  test("a failing Slack sync renders the sync's OWN error words, as an alert (#5203)", async () => {
+    // The presenter this section exists for: the route's `sync.error` is
+    // written to be admin-actionable, and this card is the only console
+    // surface those words reach. Dropping the card, the error branch, or the
+    // fetch itself all go red here — the recorded-but-unread state must not
+    // reappear one layer up.
+    respondSlack = () => jsonResponse(SLACK_VITALS_FAILING);
+    const view = renderPage();
+
+    await waitFor(() => expect(view.container.textContent ?? "").toContain(SLACK_SYNC_ERROR));
+    // Rendered as an ERROR, not as body copy an eye slides past.
+    const alerts = Array.from(view.container.querySelectorAll('[role="alert"]'));
+    expect(alerts.some((a) => (a.textContent ?? "").includes(SLACK_SYNC_ERROR))).toBe(true);
+  });
+
+  test("a healthy Slack scope says so without inventing a sync that never ran", async () => {
+    const view = renderPage();
+    // ⚠️ Anchored on the LOADED card's copy — "Slack ingest" alone also
+    // matches the wrapper's "Loading Slack ingest status..." frame, and a
+    // waitFor satisfied by the loading state lands every assertion below on a
+    // frame where the card has not rendered.
+    // sync: null is "no sync recorded yet" — not an error, not a fabricated
+    // success timestamp.
+    await waitFor(() =>
+      expect(view.container.textContent ?? "").toContain("No history sync recorded yet"),
+    );
+    expect(
+      Array.from(view.container.querySelectorAll('[role="alert"]')).filter((a) =>
+        (a.textContent ?? "").includes("Slack"),
+      ),
+    ).toHaveLength(0);
+  });
+
   test("a PENDING summary renders no number either", async () => {
     // Same hazard as the failed read, different arm: a momentary "0" while the
     // request is in flight reads exactly like a cleared backlog. Waits for the
     // loading state's own copy so this asserts on a frame that definitely
     // rendered, not on whatever was on screen before the effect ran.
     respond = () => new Promise<Response>(() => {}); // never settles
+    respondSlack = () => new Promise<Response>(() => {}); // hang: this arm is about the summary
     const view = renderPage();
 
     await waitFor(() =>
@@ -286,6 +357,7 @@ describe("Company Atlas overview — counts are never fabricated (#5066)", () =>
     // sits outside it: a workspace whose counts won't load is precisely the one
     // whose admin needs to go look at the queue.
     respond = () => jsonResponse(SERVER_ERROR, 500);
+    respondSlack = () => new Promise<Response>(() => {}); // hang: this arm is about the summary
     const view = renderPage();
 
     await waitFor(() => expect(view.container.textContent ?? "").toContain(REQUEST_ID));

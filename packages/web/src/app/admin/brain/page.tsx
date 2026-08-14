@@ -2,15 +2,19 @@
 
 import Link from "next/link";
 import type { z } from "zod";
-import { ArrowRight, Brain, CircleDot, Split, Upload } from "lucide-react";
-import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { AlertTriangle, ArrowRight, Brain, CircleDot, Hash, Split, Upload } from "lucide-react";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
-import { BrainFactCandidateSummarySchema } from "@/ui/lib/admin-schemas";
+import {
+  BrainFactCandidateSummarySchema,
+  BrainSlackScopeVitalsSchema,
+} from "@/ui/lib/admin-schemas";
 
 type BrainSummary = z.infer<typeof BrainFactCandidateSummarySchema>;
+type SlackScopeVitals = z.infer<typeof BrainSlackScopeVitalsSchema>;
 
 /**
  * Landing page for the Company Atlas group (#5066).
@@ -38,8 +42,9 @@ type BrainSummary = z.infer<typeof BrainFactCandidateSummarySchema>;
  * action to this page would make `brain_facts.status` writable from two
  * surfaces, which is the same mistake the facts page documents at length in
  * its "no per-row Approve button" note. `read-only-vitals.test.tsx` pins that
- * structurally — it fails the render if any endpoint outside `GET /summary`
- * is touched.
+ * structurally — it fails the render if any endpoint outside the two
+ * read-only GETs (`brain-facts/summary`, `brain-slack/channels`, #5203) is
+ * touched.
  *
  * ## Why the counts go through AdminContentWrapper rather than an ErrorBanner
  *
@@ -61,6 +66,16 @@ export default function CompanyBrainOverview() {
     refetch,
   } = useAdminFetch<BrainSummary>("/api/v1/admin/brain-facts/summary", {
     schema: BrainFactCandidateSummarySchema,
+  });
+  // The Slack ingest verdict (#5203). This read is what makes a revoked Slack
+  // credential VISIBLE: retiring `catalog:slack-history` removed the
+  // collection card that used to render its sync state, so without this
+  // section the sync's actionable "reconnect Slack…" error would be recorded
+  // every cycle and presented to nobody — the green-but-frozen surface the
+  // retirement exists to end. Read-only, like everything on this page; the
+  // exclusion-manager UI is the admin-console arc's.
+  const slack = useAdminFetch<SlackScopeVitals>("/api/v1/admin/brain-slack/channels", {
+    schema: BrainSlackScopeVitalsSchema,
   });
 
   return (
@@ -84,6 +99,18 @@ export default function CompanyBrainOverview() {
           loadingMessage="Loading Company Atlas vitals..."
         >
           <SummaryGrid summary={summary} />
+        </AdminContentWrapper>
+      </ErrorBoundary>
+
+      <ErrorBoundary>
+        <AdminContentWrapper
+          loading={slack.loading}
+          error={slack.error}
+          feature="Company Atlas"
+          onRetry={slack.refetch}
+          loadingMessage="Loading Slack ingest status..."
+        >
+          <SlackIngestCard vitals={slack.data} />
         </AdminContentWrapper>
       </ErrorBoundary>
 
@@ -151,6 +178,71 @@ function SummaryGrid({ summary }: { summary: BrainSummary | null }) {
         description="Reviewed and live — the agent may repeat these in answers."
       />
     </div>
+  );
+}
+
+/**
+ * The Slack ingest verdict (#5203) — read-only vitals for the source whose
+ * install card the retirement removed.
+ *
+ * The one rule here: **a sync error renders as an error, in the sync's own
+ * words.** The route's `sync.error` is written to be admin-actionable
+ * ("reconnect Slack under Admin → Integrations…"), and this card is the only
+ * console surface those words reach — dropping them would rebuild the
+ * recorded-but-unread state this section exists to end.
+ */
+function SlackIngestCard({ vitals }: { vitals: SlackScopeVitals | null }) {
+  if (!vitals) {
+    // Same shape-guard reasoning as SummaryGrid: unreachable behind the
+    // wrapper for this caller, and rendering fabricated vitals would be worse
+    // than rendering none.
+    return null;
+  }
+  const unhealthy = vitals.channels.filter((c) => c.health === "error").length;
+  return (
+    <Card className="mt-4 shadow-none">
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Hash className="size-4" aria-hidden />
+          Slack ingest
+        </CardTitle>
+        <CardDescription>
+          {vitals.scopeMode === "legacy-pending"
+            ? "This workspace's pre-existing channel scope has not been reconciled against the bot's membership yet — until then, the previously configured channel list is what Atlas reads."
+            : "Atlas reads every channel the bot is a member of, minus any an admin excluded. Adding a channel is inviting the bot."}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2 text-sm">
+        <p className="text-muted-foreground">
+          {vitals.inScopeCount.toLocaleString()} channel{vitals.inScopeCount === 1 ? "" : "s"} in
+          scope
+          {unhealthy > 0
+            ? ` — ${unhealthy} failing the per-channel health check`
+            : ""}
+        </p>
+        {vitals.sync === null ? (
+          <p className="text-muted-foreground">
+            No history sync recorded yet. If Slack is connected as a chat platform, the first
+            cycle runs on its own — there is no second install to make.
+          </p>
+        ) : vitals.sync.status === "error" ? (
+          <p className="flex items-start gap-2 font-medium text-destructive" role="alert">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
+            <span>{vitals.sync.error ?? "The last history sync failed."}</span>
+          </p>
+        ) : (
+          <p className="text-muted-foreground">
+            Last history sync succeeded
+            {vitals.sync.lastSyncAt
+              ? ` (${new Date(vitals.sync.lastSyncAt).toLocaleString()})`
+              : ""}
+            {vitals.sync.coverageIncomplete
+              ? " — the pass could not cover the whole scope and continues next cycle."
+              : "."}
+          </p>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

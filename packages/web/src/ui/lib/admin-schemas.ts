@@ -125,6 +125,8 @@ export {
   SessionMemorySlotSchema,
   SessionMemoryViewSchema,
   SessionMemoryListResponseSchema,
+  BrainSlackSyncStatusSchema,
+  BrainSlackScopeVitalsSchema,
 } from "@useatlas/schemas";
 
 // ── Platform ─────────────────────────────────────────────────────

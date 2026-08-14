@@ -11,6 +11,7 @@
     "brain-temporal-model",
     "brain-corrections",
     "brain-conflicts",
+    "brain-vocabulary",
     "brain-sources",
     "brain-chat-webhook",
     "brain-connector-authoring",

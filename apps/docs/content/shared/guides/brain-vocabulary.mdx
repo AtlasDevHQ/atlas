@@ -35,11 +35,15 @@ An alias is a directed edge between two **norms** — the folded spellings — a
 
 | Position | What it merges | Who may approve |
 |---|---|---|
-| `predicate` | Two spellings of a relation (`is priced at` → `priced at`) | Any admin or owner — the whole admin console is admin-gated, and this position adds nothing on top |
+| `predicate` | Two spellings of a relation (`is priced at` → `priced at`) | Nothing beyond the admin session the console already required |
 | `subject` | Two spellings of the entity in the subject slot | Owner or admin **of this workspace** |
 | `object` | Two spellings of the entity in the object slot | Owner or admin **of this workspace** |
 
-That distinction is easy to skim past and is the real asymmetry: reaching this surface at all requires an admin, owner or platform-admin session, so no ordinary member approves anything here. What the entity positions add is a *second*, workspace-scoped check — your role in the workspace being written, not merely the role your session carries.
+That distinction is easy to skim past and is the real asymmetry. On a deployment with authentication, the admin console admits only an admin, owner or platform-admin session, and the predicate position asks nothing further — note that a platform admin clears it while holding no role in the workspace at all. The entity positions add a *second* check that a platform admin does **not** automatically clear: your role in the workspace being written, rather than the role your session carries.
+
+<Callout type="info" title="On `ATLAS_AUTH_MODE=none` there is no such bar">
+  A self-hosted deployment running without authentication has declared the local operator to be the only identity there is. Every check on this page — approving, authoring, removing, at every position — treats that operator as entitled, because there is no second principal to distinguish them from. If you want the entitlement split described here, you need an auth mode that produces sessions.
+</Callout>
 
 Three things it is **not**:
 
@@ -60,7 +64,7 @@ The page says it in the confirmation line before you commit:
 The write is atomic — the proposal row, the edge, the closure rebuild and the workspace-wide re-key commit together or not at all. What a failure leaves behind differs by route, and the difference matters if you are deciding whether to retry:
 
 - **A failed approval** rolls back whole: no edge, no partial re-key, and the proposal is left exactly `pending` for somebody to decide again. It is never left half-applied.
-- **A failed authoring** leaves no proposal row either, because authoring created that row in the same transaction.
+- **A failed authoring** rolls back whole too, but what survives depends on whether the pair was new. A proposal row this authoring inserted goes with the rollback. A `pending` proposal a producer had already queued for the same pair was committed by an earlier transaction and **stays** — authoring *converges* onto such a row rather than inserting a second one, since the store permits only one row per unordered pair. So authoring a pair already in the queue and approving it from the queue are the same act, and a failure leaves the queue entry where it was.
 
 **What changes downstream depends on the position, and the difference is not cosmetic:**
 
@@ -123,11 +127,11 @@ Rather than return a zero, the preview returns a **reason**. There are five, and
 
 | Reason | Which decision produces it |
 |---|---|
-| `unkeyable-surface` — the surface normalizes away to nothing, so it occupies no slot and can join nothing | **Alias** approval or removal |
+| `unkeyable-surface` — the surface normalizes away to nothing, so it occupies no slot and can join nothing | **Any** of the four decisions — an alias verb or a curated-predicate verb |
 | `no-such-edge` — no approved edge starts at that norm, so the removal would do nothing | **Alias** removal |
 | `already-single` — the predicate is already curated single-valued, so there is nothing to flip | Curated-predicate **flip** |
 | `not-curated` — the predicate has no approved single-valued entry, so there is nothing to un-curate | Curated-predicate **removal** |
-| `object-position` | Reachable only from the supersession planner. An object-position alias takes **arm 2** instead — see above |
+| `object-position` | **Nothing produces it today.** Since object aliases were given arm 2, no live path reaches it; it remains in the contract so the reason has a defined meaning if one ever does |
 
 <Callout type="warn" title="Zero and cannot-be-non-zero are the same number and opposite facts">
   *"0 pairs"* invites the conclusion that the decision is harmless. *"This decision cannot produce a supersession pair at all"* says its consequences are of a different kind and are not measured by this number. The preview reports the reason rather than a count precisely so those two can never be read as the same answer.

@@ -382,8 +382,30 @@ restore_guide
 # so a legitimate reword empties its subject. It must fail loudly rather than
 # scan the whole docs tree and report success.
 mutate "$GUIDE" "$GUIDE_BACKUP" 's/which ships as/which is shipped as/g'
-check fail "REWORDING the shipped-default phrase fails loudly rather than going blind" \
-  'ships as `value`" sentence found anywhere'
+check fail "REWORDING every shipped-default phrase fails loudly rather than going blind" \
+  'no longer carries a'
+restore_guide
+
+# ⚠️ THE GRANULARITY ARM, and the one the first cut of check 4 failed. The
+# fixture above rewords BOTH claims, which is the only shape an aggregate
+# `length === 0` floor can detect — so it proved a floor existed and could not
+# falsify its granularity. Rewording ONE claim is the realistic copy edit, and
+# it used to leave that claim silently unguarded while the other kept the run
+# green. Anchored on THRESHOLD specifically so the SOURCES claim still matches.
+mutate "$GUIDE" "$GUIDE_BACKUP" 's/which ships as `1`/whose shipped value is `1`/'
+check fail "rewording ONE claim is caught — the floor is per-claim, not aggregate" \
+  'ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD` … ships as `value`'
+restore_guide
+
+# The MISPAIRING arm: the spans must not cross another backticked token, or a
+# sentence naming two keys binds the first to the second's value and skips the
+# real pair. Fails as a registry mismatch (`warehouse_key` != `1`) rather than
+# silently — and would NOT fail if the regex used `[^\n]`.
+# With the loose `[^\n]` spans, SOURCES would bind to THRESHOLD's `1` and fail
+# as a mismatch; with `[^`\n]` it cannot reach past THRESHOLD's backticks, so
+# each key binds to its own value and the run stays green.
+mutate "$GUIDE" "$GUIDE_BACKUP" 's/^3\. The proposal.s confidence clears/3. Unlike `ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES`, the confidence clears/'
+check pass "a sentence naming two keys binds each to its OWN value, not the neighbour's"
 restore_guide
 
 # --- restored tree passes again ----------------------------------------------

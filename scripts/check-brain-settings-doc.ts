@@ -238,7 +238,13 @@ if (!claimedWorkspace) {
 // pinned, because a phrase-free version would have to guess which of a
 // sentence's backticks is the default and would answer wrongly rather than not
 // at all.
-const PROSE_DEFAULT_RE = /`(ATLAS_BRAIN_[A-Z0-9_]+)`[^\n]*?\bships as\b[^\n]*?`([^`\n]+)`/g;
+//
+// ⚠️ The spans are `[^`\n]` and NOT `[^\n]`, so a match cannot cross another
+// backticked token. With `[^\n]` the sentence "`KEY_A` is unrelated to `KEY_B`,
+// which ships as `1`" binds KEY_A to KEY_B's value, and `matchAll`'s lastIndex
+// then skips past the real pair — a MISPAIRING that reads as a confident
+// finding about the wrong key, and goes silent whenever the two defaults agree.
+const PROSE_DEFAULT_RE = /`(ATLAS_BRAIN_[A-Z0-9_]+)`[^`\n]*?\bships as\b[^`\n]*?`([^`\n]+)`/g;
 const proseClaims: { file: string; key: string; claimed: string }[] = [];
 for (const rel of listMdx(join(ROOT, "apps/docs/content"))) {
   const text = readFileSync(rel, "utf8");
@@ -247,15 +253,46 @@ for (const rel of listMdx(join(ROOT, "apps/docs/content"))) {
   }
 }
 
-// ⚠️ VACUITY FLOOR, on this file's standing rule: a matcher that matches
-// nothing must fail rather than report success. Zero is not a legitimate
-// answer while any guide restates a default — and if every such sentence is
-// ever deliberately removed, DELETE this check rather than leaving a pattern
-// that scans the whole docs tree and always passes.
-if (proseClaims.length === 0) {
-  console.error(`FAIL: no "\`ATLAS_BRAIN_…\` … ships as \`value\`" sentence found anywhere in apps/docs/content.`);
-  console.error("      The phrasing changed and this gate went blind — update PROSE_DEFAULT_RE, do not delete this check.");
-  process.exit(1);
+// ⚠️ THE CLOSURE, not an aggregate floor — check 1b's lesson applied to check 4.
+//
+// The first cut asked only `proseClaims.length === 0`, which detects TOTAL
+// blindness and nothing finer. With two claims live, rewording ONE of them
+// ("whose shipped value is `1`") leaves the other matching, the floor silent,
+// and that claim unguarded forever — the exact drift this check exists to
+// catch, reproduced inside the check. Caught by a fix-vs-finding pass on the
+// commit that added it, which is the second time that pass has found an
+// assumed closure in this file.
+//
+// So the expected claims are ENUMERATED. A guide that stops restating a default
+// must be removed from this list deliberately, which is a reviewable act;
+// silence is not.
+const EXPECTED_PROSE_CLAIMS: readonly { readonly file: string; readonly key: string }[] = [
+  {
+    file: "apps/docs/content/shared/guides/brain-vocabulary.mdx",
+    key: "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES",
+  },
+  {
+    file: "apps/docs/content/shared/guides/brain-vocabulary.mdx",
+    key: "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD",
+  },
+];
+
+for (const expected of EXPECTED_PROSE_CLAIMS) {
+  const found = proseClaims.some(
+    (c) => c.key === expected.key && c.file === join(ROOT, expected.file),
+  );
+  if (!found) {
+    console.error(
+      `FAIL: ${expected.file} no longer carries a "\`${expected.key}\` … ships as \`value\`" sentence.`,
+    );
+    console.error(
+      "      Either the phrasing drifted (update PROSE_DEFAULT_RE) or the claim was removed on purpose",
+    );
+    console.error(
+      "      (drop its entry from EXPECTED_PROSE_CLAIMS). Do NOT leave the claim unmatched and unchecked.",
+    );
+    process.exit(1);
+  }
 }
 
 for (const { file, key, claimed } of proseClaims) {

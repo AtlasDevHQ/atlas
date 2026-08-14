@@ -1,32 +1,68 @@
 /**
- * The mutation list behind `object-cmp.test.ts`'s table (#5060).
+ * The mutation list behind the two `object_cmp` suites' tables (#5060).
  *
- * This file replaces sixteen hand-typed numbers in that suite's docstring. The
- * numbers now come from running the suite; what lives here is only the exact
- * text of each mutation, which is the one thing a human genuinely has to
- * choose.
+ * This file replaces sixteen hand-typed numbers in `object-cmp.test.ts`'s
+ * docstring and seven more in `object-cmp-pg.test.ts`'s (#5061). The numbers
+ * now come from running the suites; what lives here is only the exact text of
+ * each mutation, which is the one thing a human genuinely has to choose.
+ *
+ * ## Why ONE spec with two columns rather than two specs
+ *
+ * The two tables overlapped on three mutations — the SQL arms — and the unit
+ * table's notes on all three said, in prose, "covered behaviourally by
+ * `object-cmp-pg.test.ts`". A prose cross-reference to another table is a
+ * hand-measured claim wearing a citation: nothing checks it, and the two
+ * tables were free to spell one mutation two ways and publish a number true of
+ * neither. That is the class #5033 hit and the reason
+ * {@link ../mutation-spec.ts} makes the SPELLING the input. With two columns
+ * the cross-reference IS the measurement, and a row non-zero in exactly one
+ * column is that suite's unique contribution rather than a gap in the other.
  *
  * Anchors are deliberately long. An anchor is required to match exactly once,
  * so a short one that later becomes ambiguous ABORTS its row rather than
  * silently mutating whichever site came first.
+ *
+ * The `-pg` column needs a scratch database; without it that column's baseline
+ * is DEFLATED and the runner aborts rather than publishing a column of zeros:
+ *   bun run db:up
+ *   export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:<port>/<any>_scratch
+ * `db:up` maps 5432; the multi-env compose maps 5433/5434/5435. Every brain
+ * suite creates and drops its OWN schema, so one scratch database serves all
+ * of them — but give a long regeneration its own so a concurrent `-pg` run
+ * cannot perturb the counts. docs/development/testing.md has the runbook.
  */
 
 import type { MutationSpec } from "../mutation-spec";
 
 const SOURCE = "src/lib/brain/object-cmp.ts";
+const RECONCILE = "src/lib/brain/reconcile.ts";
+const CORPUS = "src/lib/brain/__tests__/object-cmp-corpus.ts";
+const MIGRATION = "src/lib/db/migrations/0191_brain_fact_object_cmp.sql";
 
 const spec: MutationSpec = {
-  title: "Mutations `object-cmp.test.ts` catches",
+  title: "Mutations the `object_cmp` suites catch",
   out: "scripts/mutations/object-cmp.md",
-  targets: [{ name: "object-cmp.test.ts", file: "src/lib/brain/__tests__/object-cmp.test.ts" }],
+  targets: [
+    { name: "object-cmp.test.ts", file: "src/lib/brain/__tests__/object-cmp.test.ts" },
+    { name: "object-cmp-pg.test.ts", file: "src/lib/brain/__tests__/object-cmp-pg.test.ts" },
+  ],
   preamble: `
-Source: \`${SOURCE}\`. Mutation list: \`scripts/mutations/object-cmp.mutations.ts\`.
+Sources: \`${SOURCE}\`, \`${RECONCILE}\`, \`${CORPUS}\`, \`${MIGRATION}\`.
+Mutation list: \`scripts/mutations/object-cmp.mutations.ts\`.
 
-The load-bearing half of this suite is the REFUSALS — a canonicalizer that
+The load-bearing half of the unit suite is the REFUSALS — a canonicalizer that
 returned the raw surface instead of \`null\` would collapse \`unknown\` to empty
 and restore exact-string matching with extra machinery, while every test that
 only asserted successful parses stayed green. The raw-surface-collapse row
 below is the direct measurement of that.
+
+Read the two columns against each other. The unit suite parses; the \`-pg\` one
+asks POSTGRES the same questions and additionally holds the migration and the
+write path. Of the three SQL-arm rows, only the \`split_part\` equality arm dies
+on the left at all — via the SQL-arms assertion at the bottom of that suite; the
+other two are 0 there and die only on the right. The four rows that touch
+\`INSERT_FACT_SQL\`, \`objectSameSql\`, 0191 or the oracle cannot be seen from
+the left at all.
 `,
   mutations: [
     {
@@ -191,7 +227,7 @@ below is the direct measurement of that.
           newString: "",
         },
       ],
-      note: "Whatever dies here is LEXICAL — the SQL-arms assertion at the bottom of the suite — because `agree` is the TypeScript twin and deleting a SQL arm does not touch it. The behavioural falsifiers live in `identity-consumers-pg.test.ts` and `object-cmp-pg.test.ts`.",
+      note: "Whatever dies in the unit column is LEXICAL — the SQL-arms assertion at the bottom of that suite — because `agree` is the TypeScript twin and deleting a SQL arm does not touch it. The `-pg` column is the behavioural half, and `identity-consumers-pg.test.ts` carries more of it still.",
     },
     {
       label: "`comparableDifferentSql` loses its known-tag `IN` arm",
@@ -202,7 +238,7 @@ below is the direct measurement of that.
           newString: "",
         },
       ],
-      note: "Covered behaviourally by `object-cmp-pg.test.ts`'s unknown-tag test, not here.",
+      note: "The unit column is **0** — the SQL-arms assertion does not pin this arm's text, so nothing there dies. The falsifier is the `-pg` suite's unknown-tag corpus row, which is the column beside it rather than a prose promise.",
     },
     {
       label: "`comparableDifferentSql` loses its `strpos(…) > 0` separator arms",
@@ -215,7 +251,57 @@ below is the direct measurement of that.
           newString: ` IN (\${KNOWN_TAGS_SQL}))\`;`,
         },
       ],
-      note: "Both arms together — they are one guard. `split_part` returns the WHOLE STRING for a separator-less value, so without them the six bare tag names read as provably different from every real value of their own type. Covered behaviourally in `object-cmp-pg.test.ts`.",
+      note: "Both arms together — they are one guard. `split_part` returns the WHOLE STRING for a separator-less value, so without them the six bare tag names read as provably different from every real value of their own type. The BARE-TAG corpus rows are what see it, and they only run against Postgres.",
+    },
+
+    // ── the four the unit suite structurally cannot see (#5061) ──────────────
+
+    {
+      label: "`INSERT_FACT_SQL` binds the object SURFACE into `object_cmp`",
+      edits: [
+        {
+          file: RECONCILE,
+          oldString: "    ...agreementBinds(item.keys, item.comparableAtRest, item.subjectComparable),",
+          newString:
+            "    ...agreementBinds(item.keys, item.object as ComparableValue, item.subjectComparable),",
+        },
+      ],
+      note: "The write path, not the parser: a column filled with raw surfaces makes every pair that differs lexically read as provably DIFFERENT, which is a `valid_to` stamp on values nothing typed. Only the fresh-write control sees it — the pre-store test never inserts, and the two-tier join is 0 either way because its published side has no comparable value to compare.",
+    },
+    {
+      label: "`agree` loses its `tagA !== null` arm (the oracle's half of the same rule)",
+      edits: [
+        {
+          file: CORPUS,
+          oldString: '  return tagA !== null && tagA === comparableTag(b) ? "different" : "unknown";',
+          newString: '  return tagA === comparableTag(b) ? "different" : "unknown";',
+        },
+      ],
+      note: "`agree` is a SECOND implementation of the SQL rule, admissible only because the `-pg` parity tests hold the two to the same answers. Dropping this arm makes two UNRECOGNISED tags agree that they differ — and the mutation is invisible to the unit suite, which never runs the SQL side to disagree with.",
+    },
+    {
+      label: "`objectSameSql` loses its difference VETO",
+      edits: [
+        {
+          file: SOURCE,
+          oldString: `  return \`((\${keyA} = \${keyB} OR \${comparableSameSql(cmpA, cmpB)})
+      AND (\${comparableDifferentSql(cmpA, cmpB)}) IS NOT TRUE)\`;`,
+          newString: "  return `(${keyA} = ${keyB} OR ${comparableSameSql(cmpA, cmpB)})`;",
+        },
+      ],
+      note: "The overlap the veto exists to remove lives in the KEY arm: `lexicalNorm` strips a leading `-`, so `-499` and `499` key IDENTICALLY while their comparable values prove they disagree. Without the veto both verdicts hold at once, corroboration merges a margin with its own negation, and the second claim never gets a row.",
+    },
+    {
+      label: "0191 grows an `UPDATE brain_facts SET object_cmp = object` backfill",
+      edits: [
+        {
+          file: MIGRATION,
+          oldString: "ALTER TABLE brain_facts ADD COLUMN IF NOT EXISTS object_cmp TEXT;",
+          newString:
+            "ALTER TABLE brain_facts ADD COLUMN IF NOT EXISTS object_cmp TEXT;\n\nUPDATE brain_facts SET object_cmp = object;",
+        },
+      ],
+      note: "Dies on the LEXICAL check and nothing else, and that is a limit rather than a redundancy: these suites run migrations into an EMPTY schema, so at 0191's `UPDATE` there are no rows for it to touch. The behavioural half is structurally blind to a backfill, which is exactly why the prohibition is paired with an `adds object_cmp` control — without one, \"runs no UPDATE\" would also be satisfied by a migration that does nothing at all.",
     },
   ],
 };

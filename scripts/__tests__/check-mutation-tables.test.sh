@@ -5,7 +5,8 @@
 # and every one of its false-clean paths is reachable only under conditions
 # nobody hits by accident: an unresolvable base ref, an empty selection, a
 # dependency the selector cannot see. None of that is exercised by running the
-# gate against the real repo, where the honest answer takes 14 minutes.
+# gate against the real repo, where the honest answer takes ~16 minutes
+# (`check-mutation-tables.sh`'s header carries the measurements).
 #
 # So each fixture builds a throwaway packages/api tree with ONE two-test target
 # and ONE spec, points the gate at it via MUTATION_SPEC_GLOB, and runs the real

@@ -61,3 +61,93 @@ bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:543
 Migrations referencing Better Auth tables (`user`, `session`, `organization`, `account`, `verification`) **must** be added to `MANAGED_AUTH_MIGRATIONS` in `packages/api/src/lib/db/internal.ts` — the smoke test fails otherwise, keeping boot-time skip wiring in lockstep with the migration set.
 
 **Any suite that runs Better Auth's real migrator (`migrateAuthTables()`) against shared Postgres needs a dedicated scratch DATABASE, not a scratch schema** (#4647). The migrator's Kysely `getTables()` introspection scans `pg_catalog` across every schema — `search_path` cannot scope it — so concurrent `-pg` tests' temp schemas being created/dropped mid-scan abort the migration with phantom `relation ... does not exist` errors. See the `beforeAll` comment in `staging/__tests__/seed.test.ts` for the full mechanism and the CREATE/DROP DATABASE lifecycle pattern.
+
+## Mutation tables are GENERATED
+
+A "MUTATIONS THIS CATCHES" table is never hand-typed. Each is a checked-in
+mutation list under `packages/api/scripts/mutations/<name>.mutations.ts` — exact
+`oldString`/`newString` pairs plus the suites to measure them against — rendered
+by `scripts/mutate.ts` into `<name>.md`. The test file carries a POINTER, not
+numbers.
+
+```bash
+cd packages/api && bun run scripts/mutate.ts scripts/mutations/<name>.mutations.ts
+cd packages/api && bun run scripts/mutate.ts scripts/mutations/<name>.mutations.ts --check
+```
+
+Hand-editing a cell is the thing this exists to prevent: a stored count is a
+claim nothing can falsify, so adding one test silently makes N cells false.
+`scripts/check-mutation-tables.sh` is the CI gate (`--affected` locally, `--all`
+in CI); it globs the directory, so a new spec is covered the moment it lands.
+
+**`-pg` specs need a scratch database.** Without `TEST_DATABASE_URL` those
+suites self-skip, the baseline is deflated, and the runner ABORTS rather than
+publishing a column of zeros. Every brain suite creates and drops its own schema,
+so one scratch database is safe to share — but give a long regeneration its own
+so a concurrent `-pg` run cannot perturb the counts:
+
+```bash
+bun run db:up   # docker-compose.yml → 127.0.0.1:5432
+psql -h localhost -p 5432 -U atlas -d postgres -c 'CREATE DATABASE brain_5061_scratch'
+export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/brain_5061_scratch
+```
+
+⚠️ **Mind the PORT: the brain suite headers and the mutation specs say `5433`,
+and `bun run db:up` does not give you that.** `db:up` brings up
+`docker-compose.yml`, which maps `5432`. `5433`/`5434`/`5435` are
+`docker-compose.multi-env.yml`'s dev/staging/prod, which is what the
+parallel-session workflow runs and what those headers were written against. Either port works — the URL is the only
+thing that decides — so read the number as "whichever your compose mapped", not
+as part of the instruction.
+
+Things the runner cannot do for you:
+
+- **It measures `bun test`, so a TYPE-level mutation measures 0.** That zero is
+  honest only if the note beside it names the gate that does catch it (`bun run
+  type`), and only if you have RUN that gate rather than reasoned about it. See
+  `episode-source-narrowing.mutations.ts` for the worked example.
+- **⚠️ In a git WORKTREE, root `bun run type` can type-check ANOTHER
+  checkout's copy of a file.** Not the whole tree, and not predictably: it is
+  per-file. A worktree's `node_modules` are usually symlinked to the primary
+  checkout, and `packages/{cli,mcp,ee,…}/node_modules/@atlas/api` points there,
+  so a `lib/**` file reached through an `@atlas/api/*` specifier resolves to the
+  PRIMARY copy while the same file reached relatively resolves to the
+  worktree's. **Which copy a given file ends up as is decided per-file and can
+  flip when an unrelated import moves**, so treat it as unpredictable rather
+  than as a rule you can reason from. Measured here: 1,639 `packages/api/src`
+  files came from the worktree, 480 from the primary, and 179 appeared as BOTH —
+  the two sets are not even cleanly partitioned. `sources.ts` and
+  `ingest/types.ts` were primary-only; `vocabulary-decide.ts`, in the same
+  directory, was worktree-only.
+
+  Edit a shadowed file and the type-check reports green on a change it never
+  saw. `bun` is unaffected — it resolves to the worktree — so `bun test` and
+  every mutation count are sound; only the type gate is exposed. To see the
+  split rather than one file:
+
+  ```bash
+  bun x tsgo --noEmit --listFiles | grep 'packages/api/src' | grep -v "$PWD" | head
+  ```
+
+  Any output means part of your `src` is coming from another checkout. Two ways
+  out: type-check the package's own project, `bun x tsgo --noEmit -p
+  packages/api/tsconfig.json`, whose `@atlas/api/* → ./src/*` mapping is
+  relative and so always reads the worktree; or measure from the primary
+  checkout.
+- **It restores from an in-memory backup, never `git checkout`** — the tree
+  normally carries uncommitted work. Never kill a run mid-flight, and never
+  commit while one is live: `ps -o pid=,args= -C bun | grep 'mutate\.ts'`.
+- **Do not run ANOTHER gate against the tree while one is live, either.** A
+  mutation run has a fault injected on disk for most of its duration, so a
+  concurrent `lint`, `type`, `lint:type-aware` or test run can go red on a line
+  nobody wrote — and the natural reading of that red is a defect in your branch.
+  `scripts/ci-local.sh` already serialises `mutation-tables` for exactly this
+  reason. The tell is the same one-liner above: if it prints a PID, any other
+  gate's verdict is about a tree you did not author.
+- **Never run TWO `mutate.ts` processes in one tree**, which is the likelier
+  footgun here given the parallel-session workflow. There is no cross-process
+  lock: each run backs up the files it touches IN MEMORY, so two runs whose
+  specs share a source file clobber each other's backups and publish numbers
+  measured against a doubly-mutated tree — a wrong number that looks exactly
+  like a right one. Do not rely on two specs touching different files;
+  serialise.

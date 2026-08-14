@@ -38,22 +38,23 @@
  * vocabulary failure as `inherited`. Nothing detects that property moving, so
  * the last case below asserts the shape it depends on rather than assuming it.
  *
- * ## Mutations, measured
+ * ## MUTATIONS THIS CATCHES
  *
- * Each applied one at a time against an otherwise clean tree, all eight tests
- * run, then reverted. Every number below is a count of FAILING tests, not an
- * author's guess about which test ought to have caught it.
+ * **Generated — see `packages/api/scripts/mutations/reconcile-logging.md`**,
+ * from `packages/api/scripts/mutations/reconcile-logging.mutations.ts`:
  *
- * | Mutation | Kills | Note |
- * |---|---|---|
- * | `degenerateSurfaces`' `.filter(cause === "degenerate-surface")` deleted | 4 | ⭐ THE leak. Every unkeyed position's surface is logged, including a real one |
- * | the two non-inherited causes SWAPPED (a `vocabulary-target` labelled `degenerate-surface`) | 5 | the leak reached the other way — the ⭐ falsifier is one of the five |
- * | `cause` gates on the POSITION instead of the CAUSE (`role === "object" ? "degenerate-surface" : …`) | 1 | #5047's own defect, one layer over. ONLY the two-causes-in-one-claim case sees it, which is why that case is not redundant with the single-cause ones |
+ *     cd packages/api && bun run scripts/mutate.ts scripts/mutations/reconcile-logging.mutations.ts
  *
- * The third row is the argument for the multi-position case existing at all:
- * every single-cause test above agrees with a position-based classifier by
- * coincidence, because in each of them the position and the cause happen to
- * line up.
+ * No database needed — every case blocks in the preparation loop.
+ *
+ * The three numbers used to live here by hand (#5047); they are generated as of
+ * #5061 and all three re-measured identical. Add a test here and the table is
+ * stale until you regenerate.
+ *
+ * The position-vs-cause row is the argument for the multi-position case
+ * existing at all: every single-cause test agrees with a position-based
+ * classifier by coincidence, because in each of them the position and the cause
+ * happen to line up.
  *
  * ## Why a separate file
  *

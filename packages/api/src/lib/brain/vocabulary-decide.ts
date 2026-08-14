@@ -585,8 +585,10 @@ function autoApproveEligible(
   // "this could not be read".
   //
   // DEFENSIVE STYLE, NOT A TESTED PROPERTY, and said plainly because the
-  // mutation table in `vocabulary-decide-pg.test.ts` would otherwise be expected
-  // to carry a row for it. NaN is unreachable here from both directions: propose
+  // generated table (`scripts/mutations/vocabulary-decide.md`) would otherwise
+  // be expected to carry a row for it. Its preamble says the same from the
+  // other side, under "NOT here, deliberately". NaN is unreachable here from
+  // both directions: propose
   // refuses it outright (`confidence-out-of-range`), and the stored column
   // cannot hold one — Postgres orders NaN above every value, so 0190's
   // `confidence <= 1` CHECK rejects it. The spelling survives because the two
@@ -2200,13 +2202,18 @@ function rekeyDriftedFactsSql(position: SlotPosition): string {
   // rather than repeating the expression, and `r.new_key` IS that expression —
   // the projection above is `${identityKeySql(aliased)} AS new_key`, unchanged
   // character for character. Dropping this arm still writes NULL into a
-  // `NOT NULL` column and still raises `23502`, which is what row 26 of this
-  // module's mutation table measures.
+  // `NOT NULL` column and still raises `23502`, which is what
+  // `scripts/mutations/vocabulary-rekey.md`'s row
+  // "the `IS NOT NULL` arm on the recomputed key dropped (#5047)" measures.
+  // Quoted verbatim and not numbered: that table is generated as of #5061, its
+  // rows carry no numbers to cite, and a label is at least greppable.
   //
   // ⚠️ The workspace scope MOVED to the CTE and did not weaken. `f.id = r.id`
   // joins on the primary key against a set already scoped to `$1`, so no
   // foreign row is reachable; the mutation that weakens the scope is caught in
-  // the CTE exactly as it was on the `UPDATE` (row 6).
+  // the CTE exactly as it was on the `UPDATE` — `vocabulary-rekey.md`'s row
+  // "re-key's workspace scope weakened to `OR TRUE`", quoted verbatim for
+  // the same reason.
   //
   // ⚠️ The CTE's own `WHERE` is deliberately UNQUALIFIED (`workspace_id`, not
   // `f.workspace_id`). `vocabulary-decide-pg.test.ts` finds this statement's

@@ -455,18 +455,20 @@ describe("the brain source registry", () => {
     // assertion, and the compile-time narrowing degrades SILENTLY and in the
     // permissive direction.
     //
-    // MUTATIONS THIS CATCHES, all three verified by applying them:
-    //   - annotating `EPISODE_SOURCE_SPECS` `Record<EpisodeSource, EpisodeSourceSpec>`,
-    //     which widens `class` off the literal;
-    //   - reverting `BrainSourceAudienceFor` to a bare `BrainSourceAudience`;
-    //   - flipping `AUDIENCE_GRAIN.transcript` to `not-required`.
+    // MUTATIONS THIS CATCHES: GENERATED — `scripts/mutations/episode-source-narrowing.md`,
+    // from `scripts/mutations/episode-source-narrowing.mutations.ts`:
     //
-    // ⚠️ Two nearby edits are NOT caught, and naming them is the point: dropping
-    // an `as const` from an `EPISODE_SOURCE_SPECS` entry does not weaken anything
-    // (its `satisfies EpisodeSourceSpec` supplies the literal contextually), and
-    // neither does dropping the `const` modifier on `registerBrainSourceConnector`'s
-    // type parameter (the constraint is already a literal union). Both were
-    // checked; neither degrades the type, so there is nothing here to catch.
+    //   cd packages/api && bun run scripts/mutate.ts scripts/mutations/episode-source-narrowing.mutations.ts
+    //
+    // ⚠️ Two of its three rows measure ZERO there and that is the honest answer,
+    // not a gap — see the ⚠️ below. The generated file says so beside the number,
+    // and records the tsgo output that IS the falsifier. It also records that the
+    // first mutation had to be RE-SPELLED: the list this replaces named
+    // `Record<EpisodeSource, EpisodeSourceSpec>`, and `EpisodeSource` is
+    // `keyof typeof EPISODE_SOURCE_SPECS`, so that annotation is a circular type
+    // alias — it errors, but for a reason that has nothing to do with the
+    // narrowing the row is about. The two nearby edits that degrade NOTHING are
+    // written up there too, deliberately without rows.
     //
     // `@ts-expect-error` is the instrument — the same one `sources.test.ts` uses
     // for the sibling claim — because it inverts: when the narrowing evaporates
@@ -498,10 +500,21 @@ describe("the brain source registry", () => {
     //
     // Never invoked: it is compiled, which is the whole point, and calling it
     // would just exercise the runtime backstop the sibling test already covers.
+    // ⚠️ `scope` is REQUIRED, and keeping it supplied is what makes the
+    // directive below a clean instrument. TypeScript elaborates ONE diagnostic
+    // per argument: with `scope` absent, elaboration reports the audience
+    // mismatch on this property and silently drops the missing-property error —
+    // so the directive was already absorbing the narrowing, and the unmutated
+    // tree was green either way. What `scope` changes is the MUTATED tree.
+    // Without it, widening the narrowing produces `TS2741` (missing property)
+    // AND `TS2578` (unused directive) together; with it, the signal is `TS2578`
+    // alone. `scripts/mutations/episode-source-narrowing.md`'s two type rows
+    // rest on that signal, so the noise is worth removing.
     const unreachable = (): void => {
       registerBrainSourceConnector({
         catalogId: "catalog:never-registered",
         source: ZOOM_SOURCE,
+        scope: { kind: "per-install" },
         // @ts-expect-error zoom is transcript-class — the inline literal is checked at the CALL
         audience: { kind: "externally-synced" },
         createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),

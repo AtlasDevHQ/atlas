@@ -11,21 +11,33 @@
 # re-runs is back to being a hand-written claim that happens to be formatted
 # like a measurement, which is the whole thing #5060 was an investment against.
 #
-# ## Two modes, because the full sweep is 832 SECONDS
+# ## Two modes, because the full sweep is MINUTES, not seconds
 #
-# Measured, not estimated: verifying all eight specs takes ~14 minutes, because
-# each one re-runs every target suite once per mutation. `/ci` is ~10 minutes in
-# total, so an always-full gate would MORE THAN DOUBLE the pre-PR loop — and a
-# gate that doubles the loop gets commented out inside a week. A disabled gate
-# catches nothing, so cost is a correctness property here, not an optimisation.
+# Two measurements, each read off a real CI run rather than estimated:
+#   - #5077, EIGHT specs:    832s (~14 min)
+#   - #5061, THIRTEEN specs: 948s (15m48s), PR #5222
+#
+# ⚠️ RE-MEASURE WHEN YOU ADD A SPEC; do not scale the number in your head. The
+# two points above are 1.6x the suite-runs apart and only 14% apart in wall
+# clock, so the relationship is not linear and extrapolating from a spec count
+# will mislead you. Both digits are hand-typed and nothing regenerates them;
+# read the duration off the `mutation-tables` job on your own PR.
+#
+# The argument does not depend on the digits: `/ci` is ~10 minutes in total, so
+# an always-full gate would MORE THAN DOUBLE the pre-PR loop — and a gate that
+# doubles the loop gets commented out inside a week. A disabled gate catches
+# nothing, so cost is a correctness property here, not an optimisation.
 #
 #   --affected [base]   Verify only the specs whose dependency set the branch
 #                       touched. The common PR touches none and the gate is
 #                       instant. This is what ci-local.sh runs.
-#   --all               Every spec. What CI runs, where 14 minutes is FREE:
-#                       jobs run in parallel and the docs image already takes
-#                       ~25 minutes, so this finishes inside the existing
-#                       critical path and costs nothing in wall clock.
+#   --all               Every spec. What CI runs, and still FREE at 15m48s
+#                       (thirteen specs): jobs run in parallel and `Built image
+#                       (docs)` takes ~25 minutes, so this finishes inside the
+#                       existing critical path. It stays free only while that
+#                       holds — past the docs image this job IS the critical
+#                       path, and the header's argument starts applying to this
+#                       gate rather than to `/ci`.
 #
 # A spec's dependencies come from `mutate.ts --files` — the loaded spec's own
 # target and edit paths — rather than from a grep, because they sit behind
@@ -73,7 +85,7 @@ cd "$ROOT/packages/api"
 # ⚠️ A SEAM, so the adversarial fixture can point this at a throwaway tree.
 # `scripts/__tests__/check-mutation-tables.test.sh` needs to prove the gate
 # CATCHES a hand-edited table and a skipped target; without an override it could
-# only ever be run against the real specs, which is a 14-minute assertion.
+# only ever be run against the real specs, which is a ~16-minute assertion.
 SPECS=(${MUTATION_SPEC_GLOB:-scripts/mutations/*.mutations.ts})
 if [ ${#SPECS[@]} -eq 0 ] || [ ! -e "${SPECS[0]}" ]; then
   echo "check-mutation-tables: no specs found under packages/api/scripts/mutations/ — did the directory move?" >&2
@@ -180,7 +192,8 @@ $UNTRACKED"
         #     declined to perform, precisely when it was most wanted.
         #
         # Declining (3) rather than widening to --all is deliberate: the full
-        # sweep is 832s MEASURED, more than the rest of ci-local.sh combined,
+        # sweep is 948s MEASURED at thirteen specs (see the header), more
+        # than the rest of ci-local.sh combined,
         # and remote CI already runs --all on every push to main, so widening
         # would re-verify the same SHA at the highest cost for no new coverage.
         # What was missing was not coverage, it was an honest verdict.
@@ -198,7 +211,7 @@ $UNTRACKED"
           echo "check-mutation-tables: HEAD == $BASE, so the affected set is empty BY CONSTRUCTION —"
           echo "  ${#SPECS[@]} spec(s) not verified. This gate cannot check anything via --affected here."
           echo "  Coverage for this SHA is remote CI's --all job on the push to $BASE."
-          echo "  To verify locally instead: bash scripts/check-mutation-tables.sh --all  (~832s measured)."
+          echo "  To verify locally instead: bash scripts/check-mutation-tables.sh --all  (~16 min — see the header)."
           exit 3
         fi
         echo "check-mutation-tables: no spec's targets or sources changed vs $BASE — nothing to verify."

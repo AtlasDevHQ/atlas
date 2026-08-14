@@ -194,6 +194,10 @@ void mock.module("@atlas/api/lib/slack/store", () => ({
   saveInstallation: mock(() => Promise.resolve()),
   deleteInstallationByOrg: mock(() => Promise.resolve(false)),
   getBotToken: mock(() => Promise.resolve(null)),
+  // #5203. `mock.module` REPLACES the module wholesale, so an export missing
+  // here is missing for every importer in the process — the failure is a module
+  // resolution error in an unrelated suite, not a wrong value.
+  listSlackInstalledOrgIds: mock(() => Promise.resolve([])),
   ENV_TEAM_ID: "env",
   KEY_PREFIX: "slack:installation:",
   FIELD: {

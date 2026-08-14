@@ -186,6 +186,9 @@ const mockDeleteInstallationByOrg: Mock<(orgId: string) => Promise<boolean>> = m
 );
 
 void mock.module("@atlas/api/lib/slack/store", () => ({
+  // #5203: `mock.module` replaces the module wholesale, so an export missing
+  // here is missing for every importer in the process.
+  listSlackInstalledOrgIds: mock(() => Promise.resolve([])),
   getInstallation: mock(async () => null),
   getInstallationByOrg: mockGetInstallationByOrg,
   saveInstallation: mock(async () => {}),

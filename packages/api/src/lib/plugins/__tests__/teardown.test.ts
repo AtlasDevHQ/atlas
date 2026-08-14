@@ -31,6 +31,9 @@ const twentyDeletes: string[] = [];
 const discordDeletes: string[] = [];
 
 void mock.module("@atlas/api/lib/slack/store", () => ({
+  // #5203: `mock.module` replaces the module wholesale, so an export missing
+  // here is missing for every importer in the process.
+  listSlackInstalledOrgIds: mock(() => Promise.resolve([])),
   deleteInstallation: async (teamId: string) => {
     slackDeletes.push(teamId);
   },

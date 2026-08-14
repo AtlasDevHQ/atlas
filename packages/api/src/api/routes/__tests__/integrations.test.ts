@@ -199,6 +199,9 @@ void mock.module("@atlas/api/lib/integrations/credentials/store", () => ({
 }));
 
 void mock.module("@atlas/api/lib/slack/store", () => ({
+  // #5203: `mock.module` replaces the module wholesale, so an export missing
+  // here is missing for every importer in the process.
+  listSlackInstalledOrgIds: mock(() => Promise.resolve([])),
   deleteInstallation: mockDeleteInstallation,
   // mock.module() requires every named export to be mocked (CLAUDE.md
   // "Mock all exports"). The disconnect handler only calls

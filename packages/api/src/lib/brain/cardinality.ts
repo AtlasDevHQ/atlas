@@ -551,6 +551,54 @@ export async function proposePredicateCardinality(
 }
 
 /**
+ * {@link proposePredicateCardinality} addressed by SURFACE — the entry point a
+ * PRODUCER uses (#5042).
+ *
+ * `declarePredicateCardinalityForSurface`'s sibling, for its reason exactly and
+ * not by analogy: `keys-not-on-the-wire.test.ts` refuses to see `predicateKey`
+ * named anywhere outside the files allowlisted for naming a column they cannot
+ * avoid naming, and it refuses it as a TOTAL prohibition rather than a projection
+ * scan. The warehouse producer tripped that arm the same way
+ * `admin-brain-vocabulary.ts` did, and the guard was right both times — so the
+ * derivation lives here, in the module keyed on `predicate_key`, and the caller
+ * hands in a surface. The key is derived, used, and never returned.
+ *
+ * ⚠️ The alternative was allowlisting the producer, and it costs more than it
+ * looks: {@link DECLARATION_SITES} exempts a file from the SELECT-projection arm
+ * as well as the ORM one, so a module that reads no `brain_facts` today would
+ * have that guard switched off for whatever it reads tomorrow.
+ *
+ * The vocabulary is REQUIRED for the sibling's reason: an identity default writes
+ * an entry keyed on a norm no live claim carries, which `cardinalitySingleSql`
+ * then never reads — a silent no-op wearing a successful proposal's face.
+ *
+ * The return type is {@link CardinalityWriteResult} unnarrowed, unlike the
+ * declaration sibling: every one of the four refusals is reachable from a
+ * producer (`already-decided` is the COMMON one — it is what makes a re-run a
+ * no-op and what makes a human's `rejected` stick), so there is nothing to
+ * exclude and no unreachable arm to throw on.
+ */
+export async function proposePredicateCardinalityForSurface(
+  executor: CardinalityExecutor,
+  workspaceId: string,
+  input: {
+    readonly predicateSurface: string;
+    readonly cardinality: "single";
+    readonly sourceClass: CardinalityProposerClass;
+    readonly proposedBy: string;
+    /** The workspace's own predicate-position alias lookup. */
+    readonly predicateAlias: AliasLookup;
+  },
+): Promise<CardinalityWriteResult> {
+  return proposePredicateCardinality(executor, workspaceId, {
+    predicateKey: slotKey(input.predicateSurface, input.predicateAlias),
+    cardinality: input.cardinality,
+    sourceClass: input.sourceClass,
+    proposedBy: input.proposedBy,
+  });
+}
+
+/**
  * The shared refusal for a write that named no author.
  *
  * One spelling, two callers, because the two paths differ only in which field

@@ -10,6 +10,20 @@
  *   GET  /dimensions  — one entity's dimensions/measures, each flagged enrolled
  *   POST /enroll      — bring one pair into the producer's reach
  *   POST /unenroll    — take one pair back out
+ *   POST /produce     — run the producer over that reach (#5042)
+ *
+ * ## Why the producer's trigger lives on the ENROLLMENT surface
+ *
+ * Because the reach is what it runs over, and the two questions an operator asks
+ * — *what may it emit?* and *what did it emit?* — are one screen. Keeping the
+ * verb here also keeps it under the same owner/admin bar as the two writes, which
+ * matters: running the producer fills the review queue an admin has to drain, so
+ * it is an authority act wearing a read's shape.
+ *
+ * It is the ONLY trigger that ships. There is no on-connect hook and no cadence
+ * fiber — a schedule is a second trigger with its own enablement, cadence and
+ * audit questions, exactly the deferral `alias-proposal.ts` records for its own
+ * producer.
  *
  * ## Why the surface exists
  *
@@ -70,6 +84,7 @@ import {
   loadEnrollableDimensions,
   loadEnrollableEntities,
 } from "@atlas/api/lib/brain/enrollment-candidates";
+import { runWarehouseProducer } from "@atlas/api/lib/brain/warehouse-producer";
 import {
   BrainEnrollmentDimensionsResponseSchema,
   BrainEnrollmentEntitiesResponseSchema,
@@ -77,6 +92,7 @@ import {
   BrainEnrollmentUnenrollRequestSchema,
   BrainEnrollmentWriteRequestSchema,
   BrainEnrollmentWriteResponseSchema,
+  BrainWarehouseRunResponseSchema,
 } from "@useatlas/schemas";
 import { ErrorSchema } from "./shared-schemas";
 import { createAdminRouter, noActiveOrgBody, requireOrgContext } from "./admin-router";
@@ -221,6 +237,27 @@ const enrollRoute = createRoute({
         "pre-write semantic-layer check runs the same lookup as `GET /dimensions`.",
       content: { "application/json": { schema: ErrorSchema } },
     },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const produceRoute = createRoute({
+  method: "post",
+  path: "/produce",
+  tags: ["Admin — Brain"],
+  summary: "Run the tier-1 warehouse producer over this workspace's reach",
+  description:
+    "Reads every enrolled pair, snapshots the warehouse, and files the claims as DRAFTS for review " +
+    "(#5042, ADR-0037 §4). It emits for enrolled pairs and for no others, and it refuses rather " +
+    "than choosing when a dimension name is enrolled on two entities at once. Nothing it does " +
+    "publishes, retires, or invalidates a fact: a re-run over a changed value files a new draft and " +
+    "an advisory tension edge beside the old one, and stamps no validity window. `enrolled` and " +
+    "`refusals` are both returned because a run that emitted nothing because nothing is enrolled and " +
+    "one that emitted nothing because everything was refused are otherwise the same silence.",
+  responses: {
+    200: { description: "The run report", content: { "application/json": { schema: BrainWarehouseRunResponseSchema } } },
+    400: { description: "No active organization", content: { "application/json": { schema: ErrorSchema } } },
+    403: { description: "Not entitled", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -549,6 +586,62 @@ adminBrainEnrollment.openapi(unenrollRoute, async (c) => {
       );
     }),
     { label: "unenroll brain dimension" },
+  );
+});
+
+adminBrainEnrollment.openapi(produceRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
+      const { mode, user, orgId } = yield* AuthContext;
+      if (!orgId) return c.json(noActiveOrgBody(requestId), 400);
+
+      const ctx = yield* Effect.tryPromise({
+        try: () =>
+          resolveBrainReaderContext(getInternalDB(), { workspaceId: orgId, mode, user, requestId }),
+        catch: toError,
+      });
+      // The SAME owner/admin bar the two write verbs take. Running the producer
+      // writes drafts into the review queue and reads the workspace's warehouse,
+      // so it is not a read even though it takes no body — and a lower bar here
+      // would let a non-admin fill the queue an admin has to drain.
+      const triggeredBy = recordedAuthor(ctx);
+      if (triggeredBy === null) {
+        log.warn(
+          { workspaceId: orgId, origin: ctx.origin, role: ctx.role, requestId },
+          "Warehouse producer run refused — the reader does not clear the owner/admin bar",
+        );
+        return c.json(
+          errorBody(
+            "not-entitled",
+            "Running the warehouse producer files claims into this workspace's review queue, so it " +
+              "is limited to workspace owners and admins.",
+            requestId,
+          ),
+          403,
+        );
+      }
+
+      const report = yield* Effect.tryPromise({
+        try: () => runWarehouseProducer({ workspaceId: orgId, triggeredBy }),
+        catch: toError,
+      });
+
+      log.info(
+        {
+          workspaceId: orgId,
+          requestId,
+          enrolled: report.enrolled,
+          created: report.created,
+          corroborated: report.corroborated,
+          refusals: report.refusals.length,
+        },
+        "Warehouse producer run requested from the admin surface",
+      );
+      return c.json(checked(BrainWarehouseRunResponseSchema, report), 200);
+    }),
+    { label: "run brain warehouse producer" },
   );
 });
 

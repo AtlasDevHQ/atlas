@@ -1571,3 +1571,84 @@ export const BrainEnrollmentWriteResponseSchema = z.strictObject({
   dimension: z.string(),
   changed: z.boolean(),
 }) satisfies z.ZodType<BrainEnrollmentWriteResponse, unknown>;
+
+// ---------------------------------------------------------------------------
+// The warehouse producer's run report (#5042, ADR-0037 §4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Why one enrolled pair produced nothing on a run.
+ *
+ * **The only DECLARATION** — `lib/brain/warehouse-producer.ts` derives
+ * `WarehouseRefusalReason` from this tuple rather than spelling the union a
+ * second time, on `BRAIN_ENROLLMENT_NAME_MAX`'s precedent and for its reason: the
+ * forbidden dependency direction is `@useatlas/schemas` → `@atlas/api`, and this
+ * one is the reverse. Two spellings would let the wire enum and the producer's
+ * own arms drift, and the failure is a 500 on the response parse rather than a
+ * red build.
+ *
+ * Each arm, in the order the producer evaluates them:
+ *
+ *   - `entity-not-published` — enrolled, but not in the published semantic layer.
+ *   - `no-primary-key` / `composite-primary-key` — nothing identifies one row, so
+ *     a subject would have to be guessed, and a guessed subject is a homonym.
+ *   - `dimension-not-found` — the entity is published and declares no such name.
+ *   - `measure-not-per-row` — the name is a MEASURE, an aggregate over rows,
+ *     where every claim the producer emits is about one row.
+ *   - `ambiguous-dimension` — ADR-0037 §4's fail-closed rule: the name is enrolled
+ *     on two entities at once, so one predicate would carry two meanings.
+ *   - `row-cap-exceeded` — the table is larger than one review queue, and an
+ *     arbitrary subset would look at rest like a complete reading of it.
+ *   - `snapshot-failed` — the datasource read failed. Nothing was stamped and the
+ *     next run retries the pair.
+ */
+export const BRAIN_WAREHOUSE_REFUSAL_REASONS = [
+  "ambiguous-dimension",
+  "entity-not-published",
+  "dimension-not-found",
+  "measure-not-per-row",
+  "no-primary-key",
+  "composite-primary-key",
+  "row-cap-exceeded",
+  "snapshot-failed",
+] as const;
+
+export const BrainWarehouseRefusalSchema = z.strictObject({
+  entity: z.string(),
+  dimension: z.string(),
+  reason: z.enum(BRAIN_WAREHOUSE_REFUSAL_REASONS),
+  message: z.string(),
+});
+
+export const BrainWarehouseEntityOutcomeSchema = z.strictObject({
+  entity: z.string(),
+  rows: z.number().int().nonnegative(),
+  candidates: z.number().int().nonnegative(),
+  created: z.number().int().nonnegative(),
+  corroborated: z.number().int().nonnegative(),
+  blocked: z.number().int().nonnegative(),
+  /** Created facts carrying a non-null comparable — the columns M4 built and never filled. */
+  comparable: z.number().int().nonnegative(),
+  unidentifiedRows: z.number().int().nonnegative(),
+  collidingSubjectRows: z.number().int().nonnegative(),
+  cardinalityProposed: z.array(z.string()),
+});
+
+/**
+ * `POST /api/v1/admin/brain-enrollment/produce`.
+ *
+ * `enrolled` and `refusals` are both on the response deliberately: a run that
+ * emitted nothing because the reach is empty and a run that emitted nothing
+ * because every pair was refused are the same silence in `brain_facts`, and
+ * ADR-0039 names that indistinguishability as the milestone's central
+ * invisibility. The two numbers are what separate them.
+ */
+export const BrainWarehouseRunResponseSchema = z.strictObject({
+  workspaceId: z.string(),
+  snapshotAt: z.string(),
+  enrolled: z.number().int().nonnegative(),
+  entities: z.array(BrainWarehouseEntityOutcomeSchema),
+  refusals: z.array(BrainWarehouseRefusalSchema),
+  created: z.number().int().nonnegative(),
+  corroborated: z.number().int().nonnegative(),
+});

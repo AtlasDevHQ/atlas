@@ -536,8 +536,7 @@ describe("registerBuiltinInstallHandlers — BRAIN source connector pairing (#49
     expect(getBrainSourceConnector(ZOOM_TRANSCRIPTS_CATALOG_ID)).toBeDefined();
     expect(getBrainSourceConnector(OUTLOOK_MAIL_CATALOG_ID)).toBeDefined();
 
-    // …its installable card…
-    expect(getInstallHandler({ slug: "slack-history", install_model: "form" }).kind).toBe("form");
+    // …its installable card, for the two that still HAVE one…
     expect(getInstallHandler({ slug: "zoom-transcripts", install_model: "form" }).kind).toBe("form");
     expect(getInstallHandler({ slug: "outlook-mail", install_model: "form" }).kind).toBe("form");
 
@@ -548,6 +547,28 @@ describe("registerBuiltinInstallHandlers — BRAIN source connector pairing (#49
     const sources = listAudienceReverifierSources();
     expect(sources).toContain(ZOOM_TRANSCRIPT_SOURCE);
     expect(sources).toContain(OUTLOOK_MAIL_SOURCE);
+  });
+
+  // ⭐ #5203. The counterpart to the assertions above, and the one that has to
+  // FAIL if someone re-adds the handler out of habit.
+  //
+  // Slack's brain source is registered — it is in the connector registry two
+  // assertions up — but it has NO installable card, and the two facts together
+  // are the change. Through #4770 the card was a second Slack install that
+  // collected no secret and carried only a channel list; nobody made it, and
+  // Atlas's own Slack ran live in three prod regions while the brain ingested
+  // nothing for four days.
+  //
+  // Asserted as a THROW rather than as "not registered", because that is what
+  // `getInstallHandler` does with an unregistered slug — an `undefined` check
+  // would pass against a lookup that silently returned a default.
+  it("⭐ registers NO installable card for the Slack brain source (#5203)", () => {
+    registerBuiltinInstallHandlers();
+
+    expect(getBrainSourceConnector(SLACK_HISTORY_CATALOG_ID)).toBeDefined();
+    expect(() => getInstallHandler({ slug: "slack-history", install_model: "form" })).toThrow(
+      /No form-based install handler registered for catalog slug "slack-history"/,
+    );
   });
 
   it("⭐ a throwing brain registration costs that vendor ONLY — every later handler still registers", () => {

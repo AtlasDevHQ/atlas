@@ -329,7 +329,11 @@ describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
       "front",
       "helpscout",
       "freshdesk",
-      "slack-history",
+      // ⚠️ NO `slack-history` (#5203). It was here through #4770 and its absence
+      // is the assertion: the seeder is insert-only over a hard-coded list, so a
+      // row re-added there would re-create `catalog:slack-history` on the next
+      // boot — the exact catalog row migration 0198 deletes, backing an install
+      // form that no longer exists.
       "zoom-transcripts",
       "outlook-mail",
     ]);
@@ -364,7 +368,6 @@ describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
       "front",
       "helpscout",
       "freshdesk",
-      "slack-history",
       "zoom-transcripts",
       "outlook-mail",
     ]);

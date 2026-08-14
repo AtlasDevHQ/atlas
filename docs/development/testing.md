@@ -77,8 +77,10 @@ cd packages/api && bun run scripts/mutate.ts scripts/mutations/<name>.mutations.
 
 Hand-editing a cell is the thing this exists to prevent: a stored count is a
 claim nothing can falsify, so adding one test silently makes N cells false.
-`scripts/check-mutation-tables.sh` is the CI gate (`--affected` locally, `--all`
-in CI); it globs the directory, so a new spec is covered the moment it lands.
+`scripts/check-mutation-tables.sh` is the CI gate (`--affected` locally and on
+PRs, `--all` on push to `main`, sharded four ways in CI); it globs the directory,
+so a new spec is covered the moment it lands, and shard ownership follows from
+its position in that glob.
 
 **`-pg` specs need a scratch database.** Without `TEST_DATABASE_URL` those
 suites self-skip, the baseline is deflated, and the runner ABORTS rather than

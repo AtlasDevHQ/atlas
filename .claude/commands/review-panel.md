@@ -67,7 +67,7 @@ Every round:
 - `Agent(pr-test-analyzer)` — test coverage & discipline
 
 Final round only (or with `--final`):
-- `Agent(comment-analyzer)` — comment accuracy & idiom
+- `Agent(comment-analyzer)` — comment accuracy, idiom & prose de-slop (concise plain-English comments; the style rules live in the agent definition)
 
 Each is read-only/advisory. Give every agent the same context: the base ref, the changed files, and the scope rule below.
 

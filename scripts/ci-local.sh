@@ -275,9 +275,9 @@ wait
 # on a branch that touches the runner it widens to --all, which is ~16 minutes
 # of continuous mutation.
 #
-# --affected, NOT --all: the full sweep would more than double this script. CI's
-# `mutation-tables` job runs everything in parallel, where that sweep costs no
-# wall clock. Skips entirely without TEST_DATABASE_URL.
+# --affected, NOT --all: the full sweep would more than double this script. CI
+# runs --all sharded four ways on push to main; here there is one machine.
+# Skips entirely without TEST_DATABASE_URL.
 status "stage 2: tree-writing gates (serial — these mutate sources in place) …"
 # ⚠️ `gate-fixtures` MOVED HERE from Stage 1 (#5165), for the same correctness
 # reason as `mutation-tables` above and not for load. Several of the adversarial

@@ -510,8 +510,10 @@ jobs:
   # docs/development/branch-protection.md. `if: always()` so the check is
   # present even when a dependent job fails.
   #
-  # `needs.api-tests.result` aggregates the matrix: it is `success` only if
-  # all four shards succeeded. ee-stub-build may legitimately be `skipped`
+  # `needs.<job>.result` aggregates a matrix: `api-tests` and `mutation-tables`
+  # are each `success` only if all four shards succeeded. Neither is a required
+  # context by name — only `ci` is — so renaming their shards cannot strand
+  # branch protection. ee-stub-build may legitimately be `skipped`
   # (path-gated on the `changes` job — docs-only PRs); everything else must
   # be `success`, including `changes` itself.
   ci:
@@ -564,35 +566,55 @@ jobs:
     # ⚠️ Its OWN job rather than a step in `api-tests`, which would run the sweep
     # once per api-tests shard.
     #
-    # It landed last, which the previous version of this comment named as the
-    # signal that the "free" claim had expired: that claim rested on `Built
-    # image (docs)` taking ~25 minutes, and the docs image is path-gated and
-    # SKIPS on an ordinary PR. Measured across four PRs from one batch —
-    # 15.6, 15.9, 18.4 and 31.0 minutes here against 3.9 for the next slowest
-    # job in the same runs. So it was the whole critical path, not a passenger
-    # on someone else's.
+    # This job is NOT free. The old justification was that `Built image (docs)`
+    # took ~25 minutes anyway, so the sweep ran inside someone else's critical
+    # path. That job lives in image-scan.yml as `built-images`, path-gated on
+    # Dockerfiles / package.json / bun.lock / deploy/, so it skips on most PRs.
     #
-    # Hence the shard. Same specs, same work, four machines: the selection is
-    # unchanged and `--shard` only slices what `--affected`/`--all` already
-    # chose. Expect the long pole to be whichever single spec has the most
-    # mutations — cost tracks mutation count, not spec count, so no assignment
-    # beats it. Going below that needs `mutate.ts` to partition its own mutation
+    # Measured 2026-08-14 via `gh api repos/AtlasDevHQ/atlas/actions/runs/<id>/jobs`.
+    # When the sweep is at `--all` — every push to main, plus a PR touching a
+    # spec's targets — it ran 15.6 and 18.4 min (pushes 31826451943, 31825282540)
+    # and 15.9 and 31.0 min (PR #5222, runs 31825661154, 31822641685), against
+    # ~3.7-4.2 for the next slowest job (`drift`, `test-others`). On a PR that
+    # touches no spec, `--affected` selects nothing and this job is under a
+    # minute. So the cost is real but concentrated: this sets the wall clock
+    # exactly when it widens.
+    #
+    # Sharded four ways. `--shard` slices whatever `--affected`/`--all` already
+    # selected, so the scope is unchanged. Each shard repeats the selection pass
+    # — git plumbing plus `mutate.ts --files`, cheap — and only the mutation runs
+    # are divided.
+    #
+    # Balance is lumpy: cost tracks a spec's mutation COUNT and round-robin
+    # ignores it. Measured by generated table rows (266 mutations over 13 specs)
+    # the shards carry 87 / 53 / 91 / 35, so the long pole is ~34% of the sweep
+    # against a ~20% floor set by the heaviest single spec (vocabulary-decide,
+    # 53). Going under that floor needs `mutate.ts` to partition its own mutation
     # list, which is a change to the runner and wants its own PR.
     #
-    # `ci-local.sh` still runs the `--affected` subset unsharded, because
-    # ~16 minutes added to a ~10-minute pre-PR loop is how a gate gets deleted.
+    # `ci-local.sh` still runs the `--affected` subset unsharded: one machine,
+    # and a full sweep added to a ~10-minute pre-PR loop is how a gate gets
+    # deleted.
     #
     # There is deliberately no `timeout-minutes` here: a sweep killed halfway
-    # reports nothing while looking like a verdict. Slow shows up as slow.
-    name: mutation-tables (${{ matrix.shard }}/4)
+    # reports nothing while looking like a verdict. Without one, a sweep that
+    # outgrows the runner shows up as a slow job rather than a red gate.
+    name: mutation-tables (${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-latest
     strategy:
-      # ⚠️ false, so one stale table does not cancel the siblings still
-      # measuring. A cancelled shard reports nothing, and "nothing" next to a
-      # real failure reads as "only one table drifted" when three more might
-      # have.
+      # fail-fast off: a stale table on one shard must not cancel the other
+      # three. A cancelled shard reports nothing, and nothing beside a real
+      # failure reads as "one table drifted" when four might have.
       fail-fast: false
       matrix:
+        # ⚠️ The ONLY place the shard count is written. The divisor passed to
+        # `--shard` comes from `strategy.job-total`, so resharding is this one
+        # edit. An earlier cut hardcoded `/4` in the job name and both run-step
+        # invocations: growing the matrix then failed loudly ("index exceeds
+        # total"), but SHRINKING it silently orphaned every spec at the dropped
+        # positions — verified by nobody, four green jobs — which is the same
+        # defect the round-robin exists to prevent, moved from spec names to a
+        # hand-copied integer.
         shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -620,26 +642,29 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           SHARD: ${{ matrix.shard }}
+          SHARD_TOTAL: ${{ strategy.job-total }}
+          SHARD_JOB_INDEX: ${{ strategy.job-index }}
         run: |
           set -euo pipefail
           # ⚠️ The SWEEP still happens — it MOVED, it was not deleted. #5077's
           # finding was that four of eight tables were stale on `main` because
           # `--check` existed and nothing ran it; `push: main` below is what
           # keeps that closed. What changed is only WHEN a full sweep blocks:
-          # not on a PR whose diff cannot have touched a table.
+          # not on a PR whose diff cannot have touched a table. `--affected`
+          # widens to `--all` on any unresolvable diff, so the narrow path can
+          # never silently verify nothing.
           #
-          # The `--all` justification this job shipped with was "14 minutes is
-          # FREE, jobs run in parallel and `Built image (docs)` already takes
-          # ~25". That premise is conditional on a job that is itself
-          # path-gated — when the image scan skips, this job IS the critical
-          # path, and it gated every docs-only and ROADMAP-only PR on a
-          # 14-minute Postgres sweep. `--affected` widens to `--all` on any
-          # unresolvable diff, so the narrow path can never silently verify
-          # nothing.
+          # The label must agree with the position the runner actually assigned,
+          # or `shard: [1, 1, 2]` would type-check as a matrix and leave one
+          # residue class unowned while every job went green.
+          if [ "$SHARD" != "$((SHARD_JOB_INDEX + 1))" ]; then
+            echo "::error::matrix.shard $SHARD does not match job-index $SHARD_JOB_INDEX + 1"
+            exit 1
+          fi
           if [ "$EVENT_NAME" = "pull_request" ]; then
-            bash scripts/check-mutation-tables.sh --affected "$BASE_SHA" --shard "$SHARD/4"
+            bash scripts/check-mutation-tables.sh --affected "$BASE_SHA" --shard "$SHARD/$SHARD_TOTAL"
           else
-            bash scripts/check-mutation-tables.sh --all --shard "$SHARD/4"
+            bash scripts/check-mutation-tables.sh --all --shard "$SHARD/$SHARD_TOTAL"
           fi
     services:
       postgres:

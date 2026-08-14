@@ -35,6 +35,7 @@ import {
   upsertPerson,
   type TwentyClientConfig,
 } from "./client";
+import { AGENT_EVENT_SOURCES } from "./lead-normalizer";
 
 // ─────────────────────────────────────────────────────────────────────
 //  Public re-exports — consumed by ee/src/saas-crm/ and tests
@@ -68,11 +69,13 @@ export {
   normalizeConversionLead,
   normalizeLead,
   LeadEventSchema,
+  AGENT_EVENT_SOURCES,
   type DemoLeadEvent,
   type SalesFormLeadEvent,
   type SignupLeadEvent,
   type ConversionLeadEvent,
   type AtlasEventSource,
+  type AgentEventSource,
   type LeadEvent,
   type NormalizedLead,
   type NormalizedNote,
@@ -158,9 +161,11 @@ export const twentyPlugin = createPlugin<
         "Upsert a Person in Twenty CRM by email. Stamps atlasFirstSource (sticky) and atlasLastSource (always).",
       inputSchema: z.object({
         email: z.string().email().describe("Primary email of the Person"),
-        eventSource: z
-          .enum(["DEMO", "SIGNUP", "SALES_FORM", "CONVERSION", "OTHER"])
-          .describe("Source label."),
+        // AGENT_EVENT_SOURCES, not a hand-written copy: `MCP_SIGNUP` is
+        // absent by design (the provisioner stamps it, agents must not), and
+        // that exclusion is only durable if both agent-facing enums read the
+        // same tuple.
+        eventSource: z.enum(AGENT_EVENT_SOURCES).describe("Source label."),
         firstName: z.string().optional(),
         lastName: z.string().optional(),
         atlasIp: z.string().optional(),

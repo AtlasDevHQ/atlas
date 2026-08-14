@@ -1,0 +1,56 @@
+// Type-check program for the repo-root `scripts/` directory (#5173).
+//
+// WHY A SEPARATE PROGRAM. The root `tsconfig.json` lists "scripts" in its
+// `exclude`, so until this file existed `bun run type` never saw a single
+// line of it — and `scripts/` is where every TypeScript CI guard lives. The
+// cost was measured, not theoretical: `scripts/check-docs-brain-snippets.ts`
+// (#5169) landed with 9 `TS18048` errors because `Map.has()` does not narrow
+// `Map.get()`, and nothing noticed. `scripts/twenty-mcp.ts` carried a
+// compile-time drift check that had never once compiled, and was asserting
+// the wrong invariant.
+//
+// The directory stays out of the root program rather than being un-excluded,
+// because these two programs want different settings. Root scripts reach
+// ACROSS workspace boundaries by relative path (`../packages/api/src/...`,
+// `../apps/docs/src/...`) — including into `apps/docs`, which the root
+// program also excludes and which needs the `@/*` alias below. Folding
+// `scripts/` back into the root program would drag those trees in with it.
+//
+// SCOPE: `scripts/*.ts` — every top-level script, not just the `check-*`
+// guards. The issue priced the narrow `check-*.ts` scope at 1 error and the
+// full top-level scope at 26; the 26 turned out to be two files (25 of them a
+// single `readonly`-assignment line in `saas-env-fixture.ts`), so the wider
+// scope was affordable and is what ships. Nothing is scoped out for cost.
+//
+// `scripts/ee-stub/**` is deliberately NOT here, and is not an exemption: the
+// `Symlink Stub Build` job in ci.yml copies that tree over `ee/` and runs the
+// full `bun run type` against it, so it is already type-checked — as the ee
+// package it stands in for, which is the only configuration in which its
+// `@atlas/*` imports resolve.
+//
+// `.tsx` is also out of scope: `scripts/generate-brand-assets.tsx` renders
+// through Satori, whose JSX types are not React's. It is linted (see the
+// `lint` script in package.json) but not type-checked here.
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["esnext"],
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    // `check-docs-links.ts` imports `apps/docs/src/lib/audience-markdown.ts`,
+    // which imports `@/lib/audience` — a `.tsx` module. Both entries exist to
+    // let that one import resolve; `paths` is relative to THIS file, so it
+    // points at the docs app's src root the way apps/docs/tsconfig.json does.
+    "jsx": "react-jsx",
+    "paths": {
+      "@/*": ["./apps/docs/src/*"]
+    }
+  },
+  "include": ["scripts/*.ts"]
+}

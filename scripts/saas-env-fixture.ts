@@ -41,9 +41,19 @@ import {
   type SaasEnv,
 } from "../packages/api/src/lib/effect/saas-env";
 
+/**
+ * Mutable mirror of `Partial<SaasEnv>`. Every `SaasEnv` field is `readonly`
+ * — deliberately, since the interface describes a boot-time snapshot — and
+ * `Partial<>` preserves that, so `parseArgs` cannot accumulate `--override`
+ * flags into a plain `Partial<SaasEnv>`. Stripping `readonly` here is
+ * one-directional: the result is still assignable to the `Partial<SaasEnv>`
+ * that `makeBootSmokeFixture` accepts, so nothing downstream widens.
+ */
+type SaasEnvOverrides = { -readonly [K in keyof SaasEnv]?: SaasEnv[K] };
+
 interface Args {
   databaseUrl?: string;
-  overrides: Partial<SaasEnv>;
+  overrides: SaasEnvOverrides;
   omit: Set<keyof SaasEnv>;
 }
 

@@ -48,6 +48,54 @@ export type AtlasEventSource =
   | "CONVERSION"
   | "OTHER";
 
+/**
+ * Channels the platform stamps on a user's behalf, which an agent must never
+ * set by hand. `MCP_SIGNUP` is written by the self-serve trial provisioner;
+ * exposing it to a tool would let a chat turn forge a trial attribution.
+ */
+type InternalOnlyEventSource = "MCP_SIGNUP";
+
+/** Exactly the sources an agent-facing tool may accept. */
+export type AgentEventSource = Exclude<
+  AtlasEventSource,
+  InternalOnlyEventSource
+>;
+
+/**
+ * SSOT for the agent-facing `eventSource` enum. Both tool surfaces build their
+ * Zod enum from this tuple instead of re-listing the members: the
+ * `upsertTwentyPerson` plugin tool in `index.ts`, and `upsertPerson` in the
+ * internal-tools MCP server at `scripts/twenty-mcp.ts`.
+ *
+ * The two directions are pinned separately. `satisfies` rejects a member that
+ * is not an `AgentEventSource`; `_AgentSourcesExhaustive` rejects an
+ * `AgentEventSource` that is missing here. So adding a public member to
+ * `AtlasEventSource` fails to compile until it is either listed here or
+ * declared `InternalOnlyEventSource` — the decision is forced, not defaulted.
+ */
+export const AGENT_EVENT_SOURCES = [
+  "DEMO",
+  "SIGNUP",
+  "SALES_FORM",
+  "CONVERSION",
+  "OTHER",
+] as const satisfies readonly AgentEventSource[];
+
+// Compile-time exhaustiveness, mirroring the SAAS_ENV_KEYS idiom in
+// `packages/api/src/lib/effect/saas-env.ts`. A `false` here means an
+// `AgentEventSource` member was added without being appended above.
+type _AgentSourcesExhaustive = Exclude<
+  AgentEventSource,
+  (typeof AGENT_EVENT_SOURCES)[number]
+>;
+const _agentSourcesExhaustive: _AgentSourcesExhaustive extends never
+  ? true
+  : false = true;
+// `void` is load-bearing — it silences `noUnusedLocals` without disabling the
+// compile-time check. Do not delete `_agentSourcesExhaustive`; the assignment
+// is the gate.
+void _agentSourcesExhaustive;
+
 /** Demo signup variant — captured at the `/demo` gate on useatlas.dev. */
 const demoLeadEventSchema = z.object({
   source: z.literal("demo"),

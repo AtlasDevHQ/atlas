@@ -50,6 +50,7 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 GUARD="$SCRIPT_DIR/check-brain-settings-doc.ts"
 DOC="$ROOT/apps/docs/content/shared/reference/environment-variables.mdx"
 REG="$ROOT/packages/api/src/lib/settings.ts"
+GUIDE="$ROOT/apps/docs/content/shared/guides/brain-vocabulary.mdx"
 
 if [ ! -f "$GUARD" ]; then
   echo "::error::guard under test not found at $GUARD" >&2
@@ -100,11 +101,16 @@ GUARD_BACKUP="$(mktemp)" || exit 2
 DOC_SHA="$(git -C "$ROOT" hash-object "$DOC")" || exit 2
 REG_SHA="$(git -C "$ROOT" hash-object "$REG")" || exit 2
 GUARD_SHA="$(git -C "$ROOT" hash-object "$GUARD")" || exit 2
-for pair in "$DOC:$DOC_BACKUP" "$REG:$REG_BACKUP" "$GUARD:$GUARD_BACKUP"; do
+# Check 4's subject is a GUIDE, not the reference page — the drift it exists to
+# catch is a default restated in prose somewhere the table-parsing checks above
+# never look.
+GUIDE_BACKUP="$(mktemp)" || exit 2
+GUIDE_SHA="$(git -C "$ROOT" hash-object "$GUIDE")" || exit 2
+for pair in "$DOC:$DOC_BACKUP" "$REG:$REG_BACKUP" "$GUARD:$GUARD_BACKUP" "$GUIDE:$GUIDE_BACKUP"; do
   src="${pair%:*}"; dst="${pair##*:}"
   if ! cp "$src" "$dst" || ! cmp -s "$src" "$dst"; then
     echo "::error::could not take a verified backup of $src (TMPDIR full or read-only?). Refusing to run — nothing has been mutated." >&2
-    rm -f "$DOC_BACKUP" "$REG_BACKUP" "$GUARD_BACKUP"
+    rm -f "$DOC_BACKUP" "$REG_BACKUP" "$GUARD_BACKUP" "$GUIDE_BACKUP"
     exit 2
   fi
 done
@@ -126,10 +132,10 @@ restore() {
   # stay in the tree behind a green run.
   [ "$RESTORED" -eq 1 ] && return 0
   local b
-  for b in "$DOC_BACKUP" "$REG_BACKUP" "$GUARD_BACKUP"; do
+  for b in "$DOC_BACKUP" "$REG_BACKUP" "$GUARD_BACKUP" "$GUIDE_BACKUP"; do
     if [ ! -f "$b" ]; then
       echo "::error::backup $b vanished before restore — the tree may still hold a fixture mutation." >&2
-      echo "::error::Recover with: git checkout -- '$DOC' '$REG' '$GUARD'" >&2
+      echo "::error::Recover with: git checkout -- '$DOC' '$REG' '$GUARD' '$GUIDE'" >&2
       return 1
     fi
   done
@@ -137,18 +143,20 @@ restore() {
   cp --preserve=timestamps "$DOC_BACKUP" "$DOC" || rc=1
   cp --preserve=timestamps "$REG_BACKUP" "$REG" || rc=1
   cp --preserve=timestamps "$GUARD_BACKUP" "$GUARD" || rc=1
+  cp --preserve=timestamps "$GUIDE_BACKUP" "$GUIDE" || rc=1
   if [ "$rc" -ne 0 ] ||
      [ "$(git -C "$ROOT" hash-object "$DOC")" != "$DOC_SHA" ] ||
      [ "$(git -C "$ROOT" hash-object "$REG")" != "$REG_SHA" ] ||
-     [ "$(git -C "$ROOT" hash-object "$GUARD")" != "$GUARD_SHA" ]; then
+     [ "$(git -C "$ROOT" hash-object "$GUARD")" != "$GUARD_SHA" ] ||
+     [ "$(git -C "$ROOT" hash-object "$GUIDE")" != "$GUIDE_SHA" ]; then
     echo "::error::RESTORE FAILED — a fixture mutation may still be in the tree." >&2
     echo "::error::Backups KEPT. Recover NON-DESTRUCTIVELY first:" >&2
-    echo "::error::  cp '$DOC_BACKUP' '$DOC' && cp '$REG_BACKUP' '$REG' && cp '$GUARD_BACKUP' '$GUARD'" >&2
-    echo "::error::Only if those are gone: git checkout -- '$DOC' '$REG' '$GUARD'  (discards any unrelated uncommitted edits to them)" >&2
+    echo "::error::  cp '$DOC_BACKUP' '$DOC' && cp '$REG_BACKUP' '$REG' && cp '$GUARD_BACKUP' '$GUARD' && cp '$GUIDE_BACKUP' '$GUIDE'" >&2
+    echo "::error::Only if those are gone: git checkout -- '$DOC' '$REG' '$GUARD' '$GUIDE'  (discards any unrelated uncommitted edits to them)" >&2
     return 1
   fi
   RESTORED=1
-  rm -f "$DOC_BACKUP" "$REG_BACKUP" "$GUARD_BACKUP"
+  rm -f "$DOC_BACKUP" "$REG_BACKUP" "$GUARD_BACKUP" "$GUIDE_BACKUP"
 }
 
 # ⚠️ `trap restore EXIT` alone is NOT enough. A non-zero RETURN from an EXIT
@@ -228,6 +236,9 @@ restore_verified() {
 }
 restore_doc() {
   restore_verified "$DOC" "$DOC_BACKUP" "$DOC_SHA"
+}
+restore_guide() {
+  restore_verified "$GUIDE" "$GUIDE_BACKUP" "$GUIDE_SHA"
 }
 restore_reg() {
   restore_verified "$REG" "$REG_BACKUP" "$REG_SHA"
@@ -356,6 +367,46 @@ mutate "$GUARD" "$GUARD_BACKUP" 's/^const BRAIN_KEY_PREFIX = "ATLAS_BRAIN_";$/co
 check fail "a stale registry-key prefix trips its own vacuity floor" \
   'no settings-registry keys start with'
 restore_guard
+
+# --- check 4: a default RESTATED IN A GUIDE ----------------------------------
+# Checks 1-3 parse the reference TABLE. A guide that repeats a default in prose
+# is invisible to all of them, and the guide is what a reader acts on. Both arms
+# below were run by hand against the commit that added check 4; they live here
+# so the next change to the registry has to face them.
+mutate "$GUIDE" "$GUIDE_BACKUP" 's/which ships as `1`/which ships as `0.9`/'
+check fail "a guide restating a STALE default is caught" \
+  'ships as `0.9`, but the registry default is `1`'
+restore_guide
+
+# The vacuity twin, on this file's standing rule: the matcher is phrase-pinned,
+# so a legitimate reword empties its subject. It must fail loudly rather than
+# scan the whole docs tree and report success.
+mutate "$GUIDE" "$GUIDE_BACKUP" 's/which ships as/which is shipped as/g'
+check fail "REWORDING every shipped-default phrase fails loudly rather than going blind" \
+  'no longer carries a'
+restore_guide
+
+# ⚠️ THE GRANULARITY ARM, and the one the first cut of check 4 failed. The
+# fixture above rewords BOTH claims, which is the only shape an aggregate
+# `length === 0` floor can detect — so it proved a floor existed and could not
+# falsify its granularity. Rewording ONE claim is the realistic copy edit, and
+# it used to leave that claim silently unguarded while the other kept the run
+# green. Anchored on THRESHOLD specifically so the SOURCES claim still matches.
+mutate "$GUIDE" "$GUIDE_BACKUP" 's/which ships as `1`/whose shipped value is `1`/'
+check fail "rewording ONE claim is caught — the floor is per-claim, not aggregate" \
+  'ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD` … ships as `value`'
+restore_guide
+
+# The MISPAIRING arm: the spans must not cross another backticked token, or a
+# sentence naming two keys binds the first to the second's value and skips the
+# real pair. Fails as a registry mismatch (`warehouse_key` != `1`) rather than
+# silently — and would NOT fail if the regex used `[^\n]`.
+# With the loose `[^\n]` spans, SOURCES would bind to THRESHOLD's `1` and fail
+# as a mismatch; with `[^`\n]` it cannot reach past THRESHOLD's backticks, so
+# each key binds to its own value and the run stays green.
+mutate "$GUIDE" "$GUIDE_BACKUP" 's/^3\. The proposal.s confidence clears/3. Unlike `ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES`, the confidence clears/'
+check pass "a sentence naming two keys binds each to its OWN value, not the neighbour's"
+restore_guide
 
 # --- restored tree passes again ----------------------------------------------
 check pass "restored doc + registry + guard are in sync again"

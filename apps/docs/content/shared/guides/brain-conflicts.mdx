@@ -26,7 +26,7 @@ When a `single`-cardinality claim arrives that disagrees with an existing one, A
 
 ### Where cardinality comes from
 
-Cardinality is a property of the **canonical predicate**, curated by a human on the **Claim Vocabulary** surface. It is not a field on the claim, and there is **no database default** — absence is the ordinary state and it means `multi`.
+Cardinality is a property of the **canonical predicate**, curated by a human on the [Claim Vocabulary](/guides/brain-vocabulary) surface. It is not a field on the claim, and there is **no database default** — absence is the ordinary state and it means `multi`.
 
 A *stored* `multi` is a different fact from absence: it records a human who looked and declined the question, which is what stops the automatic proposer raising it again. Only an **approved** entry counts. A proposer that watches human corrections can suggest `single`; it can never approve one, and nothing autonomous can.
 
@@ -99,4 +99,5 @@ So arbitration stays a **human verb**. Resolving a conflict means [superseding](
 ## Related
 
 - [Company Atlas — Corrections](/guides/brain-corrections) — the verbs that resolve a conflict
+- [Company Atlas — Claim Vocabulary](/guides/brain-vocabulary) — where a predicate is curated `single`, and where two spellings become one slot
 - [Company Atlas — Temporal Model](/guides/brain-temporal-model) — why a superseded claim stays readable

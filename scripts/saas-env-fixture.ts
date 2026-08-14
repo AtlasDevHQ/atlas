@@ -41,10 +41,52 @@ import {
   type SaasEnv,
 } from "../packages/api/src/lib/effect/saas-env";
 
+/**
+ * Mutable mirror of `Partial<SaasEnv>`. Every `SaasEnv` field is `readonly`
+ * — deliberately, since the interface describes a boot-time snapshot — and
+ * `Partial<>` preserves that, so `parseArgs` cannot accumulate `--override`
+ * flags into a plain `Partial<SaasEnv>`. Stripping `readonly` here is
+ * one-directional: the result is still assignable to the `Partial<SaasEnv>`
+ * that `makeBootSmokeFixture` accepts, so nothing downstream widens.
+ */
+type SaasEnvOverrides = { -readonly [K in keyof SaasEnv]?: SaasEnv[K] };
+
 interface Args {
   databaseUrl?: string;
-  overrides: Partial<SaasEnv>;
+  overrides: SaasEnvOverrides;
   omit: Set<keyof SaasEnv>;
+}
+
+/**
+ * Narrowing DERIVED from the membership test rather than asserted beside it.
+ * The previous shape cast to `keyof SaasEnv` first and validated on the next
+ * line — with a second cast nested inside the very check that was meant to
+ * justify the first — so reordering or deleting the check kept compiling.
+ *
+ * Sound by construction: `SAAS_ENV_KEYS` is pinned exhaustive against
+ * `keyof SaasEnv` by the `satisfies` + `_ExhaustiveCheck` pair in
+ * `packages/api/src/lib/effect/saas-env.ts`.
+ */
+function isSaasEnvKey(k: string | undefined): k is keyof SaasEnv {
+  return k !== undefined && (SAAS_ENV_KEYS as readonly string[]).includes(k);
+}
+
+/**
+ * A flag whose value slot swallowed the NEXT FLAG surfaces later as
+ * `Unknown argument` naming an unrelated token. Every value-taking flag routes
+ * through here so none of them can acquire the defect independently.
+ */
+function requireValue(
+  flag: string,
+  value: string | undefined,
+  expected: string,
+): string {
+  if (!value || value.startsWith("--")) {
+    throw new Error(
+      `${flag} expects ${expected}, got ${JSON.stringify(value)}`,
+    );
+  }
+  return value;
 }
 
 function parseArgs(argv: readonly string[]): Args {
@@ -52,18 +94,22 @@ function parseArgs(argv: readonly string[]): Args {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--database-url") {
-      args.databaseUrl = argv[++i];
+      args.databaseUrl = requireValue(
+        "--database-url",
+        argv[++i],
+        "a Postgres URL",
+      );
     } else if (arg === "--override") {
-      const next = argv[++i];
-      if (!next || !next.includes("=")) {
+      const next = requireValue("--override", argv[++i], "KEY=VALUE");
+      if (!next.includes("=")) {
         throw new Error(
           `--override expects KEY=VALUE, got ${JSON.stringify(next)}`,
         );
       }
       const eq = next.indexOf("=");
-      const key = next.slice(0, eq) as keyof SaasEnv;
+      const key = next.slice(0, eq);
       const value = next.slice(eq + 1);
-      if (!SAAS_ENV_KEYS.includes(key as (typeof SAAS_ENV_KEYS)[number])) {
+      if (!isSaasEnvKey(key)) {
         throw new Error(
           `--override key ${JSON.stringify(key)} is not a SaasEnv key. ` +
             `Valid keys: ${SAAS_ENV_KEYS.join(", ")}`,
@@ -71,8 +117,8 @@ function parseArgs(argv: readonly string[]): Args {
       }
       args.overrides[key] = value;
     } else if (arg === "--omit") {
-      const key = argv[++i] as keyof SaasEnv;
-      if (!SAAS_ENV_KEYS.includes(key as (typeof SAAS_ENV_KEYS)[number])) {
+      const key = requireValue("--omit", argv[++i], "a SaasEnv key");
+      if (!isSaasEnvKey(key)) {
         throw new Error(
           `--omit key ${JSON.stringify(key)} is not a SaasEnv key. ` +
             `Valid keys: ${SAAS_ENV_KEYS.join(", ")}`,
@@ -103,8 +149,18 @@ function printHelp(): void {
 function main(): void {
   const args = parseArgs(process.argv.slice(2));
 
+  // The header has said "Required." since this script was written, and the
+  // code did not require it: omitting the flag entirely fell through to
+  // `makeBootSmokeFixture`'s own `postgresql://atlas:atlas@127.0.0.1:5432/atlas`
+  // default. That is the same "fixture built against the wrong database with no
+  // signal" the flag's own value check guards against, reached by not passing
+  // the flag at all. CI always passes it, so this only ever misled a human.
+  if (!args.databaseUrl) {
+    throw new Error("--database-url is required (see --help)");
+  }
+
   const fixture = makeBootSmokeFixture({
-    ...(args.databaseUrl ? { databaseUrl: args.databaseUrl } : {}),
+    databaseUrl: args.databaseUrl,
     overrides: args.overrides,
   });
 

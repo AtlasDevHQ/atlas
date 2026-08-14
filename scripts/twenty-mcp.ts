@@ -35,7 +35,7 @@ import {
   TwentyClientError,
   type TwentyClientConfig,
 } from "../plugins/twenty/src/client.js";
-import type { AtlasEventSource } from "../plugins/twenty/src/lead-normalizer.js";
+import { agentEventSourceSchema } from "../plugins/twenty/src/lead-normalizer.js";
 
 const SERVER_NAME = "atlas-twenty-mcp";
 const SERVER_VERSION = "0.1.0";
@@ -97,23 +97,17 @@ async function run<T>(
   }
 }
 
-const eventSourceSchema = z.enum([
-  "DEMO",
-  "SIGNUP",
-  "SALES_FORM",
-  "CONVERSION",
-  "OTHER",
-]);
-// Fail the build if the Zod enum drifts from the TS union exported by
-// lead-normalizer — the two are parallel definitions and would otherwise
-// silently disagree.
-type _EventSourceDriftCheck = z.infer<typeof eventSourceSchema> extends AtlasEventSource
-  ? AtlasEventSource extends z.infer<typeof eventSourceSchema>
-    ? true
-    : never
-  : never;
-const _eventSourceDriftCheck: _EventSourceDriftCheck = true;
-void _eventSourceDriftCheck;
+// Imports lead-normalizer's schema so this surface cannot drift from the
+// plugin's. The previous hand-written copy carried a drift check asserting
+// MUTUAL assignability with `AtlasEventSource` — the wrong invariant, since
+// `MCP_SIGNUP` is deliberately absent from every agent-facing enum — and it had
+// never once run, because `scripts/` was excluded from every type program until
+// #5173.
+//
+// Importing the schema rather than the tuple is what covers this file: it has no
+// test file of its own (the module self-executes on import), so a hand-rolled
+// enum here would be caught by nothing. There is now no enum to hand-roll.
+const eventSourceSchema = agentEventSourceSchema;
 
 const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
 

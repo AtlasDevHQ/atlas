@@ -76,32 +76,27 @@ export interface KnowledgeDocumentCounts {
  * `confluence-datacenter`, `gitbook`, `zendesk`, `salesforce-knowledge`,
  * `intercom`, `front`, `helpscout`, `freshdesk`) carry neither (their credential is a token — or, for
  * `salesforce-knowledge`, the reused OAuth install — not an endpoint).
+ *
+ * The VALUES tuple for this union lives in `@useatlas/schemas` (`knowledge.ts`),
+ * not here: this package installs from the registry in the template scaffold,
+ * so a new value export forces a publish-first merge dance on every consuming
+ * PR (CLAUDE.md § Publishing). Types only in this file.
  */
-export const KNOWLEDGE_COLLECTION_SOURCES = [
-  "upload",
-  "bundle-sync",
-  "notion",
-  "confluence",
-  "confluence-datacenter",
-  "gitbook",
-  "zendesk",
-  "salesforce-knowledge",
-  "intercom",
-  "front",
-  "helpscout",
-  "freshdesk",
-  "zoom-transcripts",
-  "outlook-mail",
-] as const;
-
-/**
- * Exported as a VALUES ARRAY (above) as well as the union, because two
- * `z.enum`s — the API's collection list and the web's admin schema — must
- * spell the same set, and #5203 had to remove `"slack-history"` from three
- * hand-synchronized copies. Both schemas now consume this array, so the next
- * source change is one edit.
- */
-export type KnowledgeCollectionSource = (typeof KNOWLEDGE_COLLECTION_SOURCES)[number];
+export type KnowledgeCollectionSource =
+  | "upload"
+  | "bundle-sync"
+  | "notion"
+  | "confluence"
+  | "confluence-datacenter"
+  | "gitbook"
+  | "zendesk"
+  | "salesforce-knowledge"
+  | "intercom"
+  | "front"
+  | "helpscout"
+  | "freshdesk"
+  | "zoom-transcripts"
+  | "outlook-mail";
 
 /**
  * Bundle-endpoint auth schemes for `bundle-sync` collections — the one wire

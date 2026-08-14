@@ -15,7 +15,6 @@
  */
 import { z } from "zod";
 import {
-  KNOWLEDGE_COLLECTION_SOURCES,
   type AbuseRestoreStatus,
   type PlanTier,
   type KnowledgeCollectionListResponse,
@@ -28,6 +27,7 @@ import {
 import {
   BackupEntrySchema,
   CustomDomainSchema,
+  KNOWLEDGE_COLLECTION_SOURCES,
   NoisyNeighborSchema,
   PlatformWorkspaceSchema,
   PlatformWorkspaceUserSchema,
@@ -723,8 +723,8 @@ const KnowledgeCollectionSyncStatusSchema = z.object({
 
 export const KnowledgeCollectionSchema = z.object({
   slug: z.string(),
-  // Fed from the wire type's own values array — #5203 had to remove a member
-  // from three hand-synchronized spellings of this set.
+  // Fed from the shared tuple in @useatlas/schemas — #5203 had to remove a
+  // member from three hand-synchronized spellings of this set.
   source: z.enum(KNOWLEDGE_COLLECTION_SOURCES),
   description: z.string().nullable(),
   installedAt: z.string().nullable(),

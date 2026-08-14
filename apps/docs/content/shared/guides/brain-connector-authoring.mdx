@@ -13,12 +13,14 @@ This page is the contract. It is written for whoever adds the next vendor — a 
 
 ## What a vendor directory provides
 
-A connector is one object registered against one catalog row:
+A connector is one object registered under one catalog id:
 
 ```ts
 interface BrainSourceConnector<S extends EpisodeSource = EpisodeSource> {
-  /** The catalog row this connector serves — the dispatch key. */
+  /** The connector's registry key — for a `per-install` source, the catalog row it serves. */
   readonly catalogId: string;
+  /** What one connector instance is dispatched over — see below. */
+  readonly scope: BrainSourceScope;
   /** The source kind stamped onto every episode it produces. */
   readonly source: S;
   /** How this source's `audience:` grants stay inside the staleness bound. */
@@ -27,7 +29,9 @@ interface BrainSourceConnector<S extends EpisodeSource = EpisodeSource> {
 }
 ```
 
-Four members, and `audience` is **not optional**. It is the one a new connector is likeliest to omit: the other three are about producing episodes, and this one is about keeping the grants on them alive. [The audience declaration](#the-audience-declaration-is-required) below is what it means and how to choose an arm; [Registration](#registration) is what happens if you get it wrong.
+Five members, and `audience` is **not optional**. It is the one a new connector is likeliest to omit: the others are about producing episodes, and this one is about keeping the grants on them alive. [The audience declaration](#the-audience-declaration-is-required) below is what it means and how to choose an arm; [Registration](#registration) is what happens if you get it wrong.
+
+`scope` says what the sync cycle walks for this source. `per-install` is the normal case: the connector serves a knowledge-pillar catalog row, admins install it, and ingest dispatches once per install. `per-workspace` is for a source whose class already has a pillar install of its own — Slack, where connecting the chat platform is the only act an admin performs — so ingest dispatches once per workspace that installed that pillar, and there is no knowledge-pillar collection to install at all. A chat-class source declaring `per-install` is **refused at registration**: its install would collect no credential the workspace doesn't already hold, so it exists only as a second act nobody knows to perform, and every surface reports green while it is missing — that is how Atlas's own Slack ran live in three regions for four days while the brain ingested nothing.
 
 `createClient` is handed the install row and nothing else — the workspace id, the install id, and the install's non-secret config. It may throw; a bad config or a disconnected upstream OAuth install becomes that source's error outcome with your message surfaced to the admin, so **write the message for the admin who has to fix it**, not for a log reader.
 
@@ -239,6 +243,7 @@ Register once, at wiring time. Registration fails loudly, and never halfway — 
 | A kind outside the vocabulary | A value no downstream discriminator recognises, making every fact derived from it uncorrectable |
 | A malformed `audience` declaration | A re-verifier registered as `undefined`, which then fails on every cycle forever |
 | **A grant-deriving class that declared no re-verifier** | The 168h-then-invisible decay above |
+| **A chat-class source declaring `per-install`** | A second install that collects no secret and that nobody makes — every surface green over zero episodes |
 | A re-verifier already held for this source | Two of them reconciling against their own rosters, each revoking the loser's members every cycle |
 | **A catalog id already claimed by the knowledge-document registry** | Two ingest targets for one catalog id |
 
@@ -257,6 +262,7 @@ There is a separate, narrower lane where an unrecognised kind *can* reach storag
 - [ ] Its `config.ts` header enumerates the field paths each writer reads the id's parts from.
 - [ ] Transport encoding never reaches the stored id.
 - [ ] The new member declares its class, and the class is the right one.
+- [ ] `scope` matches how the source connects: a vendor whose class has its own pillar install is `per-workspace`; everything that installs through the knowledge pillar is `per-install`.
 - [ ] The grant deriver is your class's, and a class new to Atlas got its own function rather than a new branch.
 - [ ] `audience` is declared. A per-object class (`transcript`, `email`) owes `reverified` and registration refuses it otherwise; a new **chat** vendor owes `reverified` too, and nothing will tell you so.
 - [ ] "The audience could not be established" blocks; "the audience contains no Atlas users" does not.

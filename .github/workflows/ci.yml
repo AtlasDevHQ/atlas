@@ -657,6 +657,16 @@ jobs:
           # The label must agree with the position the runner actually assigned,
           # or `shard: [1, 1, 2]` would type-check as a matrix and leave one
           # residue class unowned while every job went green.
+          #
+          # ⚠️ Check that job-index is a NUMBER first. `set -u` does not catch a
+          # set-but-empty variable in arithmetic — bash reads it as 0 — so an
+          # empty job-index made shard 1 pass this assertion and reddened only
+          # shards 2-4, with a message blaming the wrong thing. Same class as the
+          # `[ 1x -gt 4 ]` bug: a malformed value read as a passing value.
+          if ! [[ "$SHARD_JOB_INDEX" =~ ^[0-9]+$ ]] || ! [[ "$SHARD_TOTAL" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::strategy.job-index / job-total did not render as numbers (got '$SHARD_JOB_INDEX' / '$SHARD_TOTAL')"
+            exit 1
+          fi
           if [ "$SHARD" != "$((SHARD_JOB_INDEX + 1))" ]; then
             echo "::error::matrix.shard $SHARD does not match job-index $SHARD_JOB_INDEX + 1"
             exit 1

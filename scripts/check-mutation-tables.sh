@@ -71,14 +71,6 @@
 
 set -euo pipefail
 
-# ⚠️ Shard ownership is derived from a spec's POSITION in the glob below, and
-# glob expansion is collated. Under en_US.UTF-8 punctuation carries no primary
-# weight, so `vocabulary` sorts before `vocabulary-decide`; under C it does not,
-# and three specs change shard between the two. Runners share an image today, so
-# the order happens to agree — pinning it here makes that constructed rather
-# than ambient, and a workflow-level LANG can no longer repartition the sweep.
-export LC_ALL=C
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$SCRIPT_DIR/.."
 
@@ -86,6 +78,17 @@ MODE="all"
 BASE="origin/main"
 SHARD_INDEX=""
 SHARD_TOTAL=""
+# ⚠️ Initialised, not merely assigned under the shard branch. `PRE_SHARD_COUNT`
+# and `SHARD_OWNED` are written inside `if [ -n "$SHARD_TOTAL" ]` and read below
+# it; that was safe only by an argument about which paths can reach the read,
+# and one of the two supporting branches turned out to be unreachable. Under
+# `set -u` an unbound read exits 1 — which is this script's code for STALE, so a
+# config crash would have rendered as a drifted table.
+PRE_SHARD_COUNT=0
+SHARD_OWNED=0
+SHARD_RESIDUE=0
+SHARD_RESIDUE_OF=1
+SHARD_LABEL="1/1"
 LIST_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -100,23 +103,36 @@ while [ $# -gt 0 ]; do
       if [ -n "$SHARD_TOTAL" ]; then
         echo "check-mutation-tables: --shard given twice; the second would silently win." >&2; exit 1
       fi
-      # ⚠️ ANCHORED, and `[[ =~ ]]` rather than a `case` glob. The first cut used
-      # `case "$1" in [1-9]*/[1-9]*)`, where `*` matches any run of characters
-      # INCLUDING a slash, so it constrained one character per field and nothing
-      # else. Measured: `1x/4` passed the glob, then `[ 1x -gt 4 ]` returned
+      # ⚠️ ANCHORED, and BOUNDED, and `[[ =~ ]]` rather than a `case` glob.
+      #
+      # The first cut used `case "$1" in [1-9]*/[1-9]*)`, where `*` matches any
+      # run of characters INCLUDING a slash, so it constrained one character per
+      # field and nothing else. `1x/4` passed it, then `[ 1x -gt 4 ]` returned
       # status 2 — inside an `if` CONDITION, where set -e does not fire — which
-      # bash read as false, and the `$(( ))` below aborted the shard block while
-      # the script carried on with all 13 specs and exit 0. `1/4/9` became a
-      # 9-way partition because `##*/` takes the last field. Those are the two
-      # false-cleans this comment claims to refuse, and they were both live
-      # under the comment asserting they were not.
-      if ! [[ "$1" =~ ^[1-9][0-9]*/[1-9][0-9]*$ ]]; then
-        echo "check-mutation-tables: --shard expects I/N, both integers >= 1 (got '$1')" >&2; exit 1
+      # bash read as false, and the run carried on with every spec and exit 0.
+      # `1/4/9` became a 9-way partition because `##*/` takes the last field.
+      #
+      # The `{0,3}` bound closes the SAME mechanism one class over: anchoring
+      # constrained syntax but not magnitude, so `1/99999999999999999999` still
+      # overflowed `[`, still returned status 2 in a condition, and still
+      # bypassed the range check below. Bounding the digits here is structural;
+      # a second `[` whose status-2 arm nobody reads would not be.
+      if ! [[ "$1" =~ ^[1-9][0-9]{0,3}/[1-9][0-9]{0,3}$ ]]; then
+        echo "check-mutation-tables: --shard expects I/N, both integers 1-9999 (got '$1')" >&2; exit 1
       fi
       SHARD_INDEX="${1%%/*}"; SHARD_TOTAL="${1##*/}"
       if [ "$SHARD_INDEX" -gt "$SHARD_TOTAL" ]; then
         echo "check-mutation-tables: --shard $1 — index exceeds total." >&2; exit 1
       fi
+      # ⚠️ Normalise ONCE, here, the way packages/api/scripts/test-isolated.ts
+      # does. The 1-based CLI value and the 0-based residue used by the modulo
+      # were previously converted at two separate sites — the predicate and the
+      # operator-facing message — so the two could drift and the message would
+      # misreport which residue class was empty. Below this line there is no
+      # shard arithmetic, only these names.
+      SHARD_RESIDUE=$(( SHARD_INDEX - 1 ))
+      SHARD_RESIDUE_OF="$SHARD_TOTAL"
+      SHARD_LABEL="$SHARD_INDEX/$SHARD_TOTAL"
       shift
       ;;
     # Print the selection and exit without verifying. Seam for the partition
@@ -133,6 +149,21 @@ cd "$ROOT/packages/api"
 # CATCHES a hand-edited table and a skipped target; without an override it could
 # only ever be run against the real specs, which is a ~16-minute assertion.
 SPECS=(${MUTATION_SPEC_GLOB:-scripts/mutations/*.mutations.ts})
+# ⚠️ Shard ownership is a spec's POSITION in this list, so the ORDER is part of
+# the partition's contract and must not depend on the ambient locale. Glob
+# expansion is collated: under glibc's en_US.UTF-8 punctuation carries no
+# primary weight, so `vocabulary.mutations.ts` and `vocabulary-rekey.mutations.ts`
+# compare as `vocabularymutationsts` vs `vocabularyrekeymutationsts` and swap
+# against C, where `-` (0x2D) sorts before `.` (0x2E). Two of the thirteen specs
+# change shard between the two collations.
+#
+# Sorted here rather than by exporting LC_ALL for the whole process: the locale
+# is scoped to the one command whose order matters, ordering becomes a function
+# of the file set rather than of the environment, and nothing else in the script
+# — git, grep, realpath, or the suites `mutate.ts` spawns — changes behaviour.
+if [ ${#SPECS[@]} -gt 0 ]; then
+  mapfile -t SPECS < <(printf '%s\n' "${SPECS[@]}" | LC_ALL=C sort)
+fi
 if [ ${#SPECS[@]} -eq 0 ] || [ ! -e "${SPECS[0]}" ]; then
   echo "check-mutation-tables: no specs found under packages/api/scripts/mutations/ — did the directory move?" >&2
   exit 1
@@ -202,7 +233,17 @@ $UNTRACKED"
     for f in scripts/mutate.ts scripts/mutation-core.ts scripts/mutation-spec.ts scripts/signal-retry.ts; do
       if printf '%s\n' "$CHANGED" | grep -qxF "packages/api/$f"; then RUNNER_TOUCHED=1; fi
     done
-    if [ "$RUNNER_TOUCHED" -eq 1 ]; then
+    if [ "$MODE" = "all" ]; then
+      # ⚠️ A widen above already decided every table is in scope. Without this
+      # arm, execution fell straight into the selector below, which can exit 0
+      # with "nothing to verify" — so the gate ANNOUNCED a widen and then did
+      # the opposite. Only the base-diff widen worked, because it skips this
+      # whole `else`; the working-tree and untracked widens were dead. Measured
+      # with a git shim failing `git diff --name-only --no-renames HEAD` against
+      # an uncommitted target edit: "falling back to --all" followed by "nothing
+      # to verify", exit 0.
+      :
+    elif [ "$RUNNER_TOUCHED" -eq 1 ]; then
       echo "check-mutation-tables: the runner/renderer changed — every table's bytes are in scope."
       MODE="all"
     else
@@ -305,12 +346,13 @@ if [ -n "$SHARD_TOTAL" ]; then
   PRE_SHARD_COUNT=${#SELECTED[@]}
   SHARDED=()
   for i in "${!SPECS[@]}"; do
-    [ $(( i % SHARD_TOTAL )) -eq $(( SHARD_INDEX - 1 )) ] || continue
+    [ $(( i % SHARD_RESIDUE_OF )) -eq "$SHARD_RESIDUE" ] || continue
+    SHARD_OWNED=$(( SHARD_OWNED + 1 ))
     for s in ${SELECTED[@]+"${SELECTED[@]}"}; do
       if [ "$s" = "${SPECS[$i]}" ]; then SHARDED+=("$s"); break; fi
     done
   done
-  echo "check-mutation-tables: shard $SHARD_INDEX/$SHARD_TOTAL — ${#SHARDED[@]} of $PRE_SHARD_COUNT selected spec(s)."
+  echo "check-mutation-tables: shard $SHARD_LABEL — ${#SHARDED[@]} of $PRE_SHARD_COUNT selected spec(s)."
   SELECTED=(${SHARDED[@]+"${SHARDED[@]}"})
 fi
 
@@ -333,19 +375,38 @@ if [ ${#SELECTED[@]} -eq 0 ]; then
     echo "check-mutation-tables: empty selection with no shard in play — declining." >&2
     exit 3
   fi
-  # ⚠️ An empty shard is only legitimate when there were fewer specs than
-  # shards. Round-robin gives every shard at least floor(n/N) >= 1 whenever
-  # n >= N, so an empty slice with n >= N means the partition did not do what
-  # it says — a bad divisor, a mangled index — and every one of those paths
-  # otherwise ends in four green jobs having verified nothing.
-  if [ "$SHARD_TOTAL" -le "$PRE_SHARD_COUNT" ]; then
-    echo "check-mutation-tables: shard $SHARD_INDEX/$SHARD_TOTAL is empty, but $PRE_SHARD_COUNT spec(s) were selected." >&2
-    echo "  Round-robin gives every shard at least one spec when specs >= shards, so the partition is wrong." >&2
+  # ⚠️ THE TEST IS ON OWNERSHIP, NOT ON THE SELECTION COUNT.
+  #
+  # Round-robin partitions `SPECS`, so shard I owns position I-1 whenever there
+  # are at least N specs — that is arithmetic and cannot fail. `SELECTED` is
+  # then a FILTER over those positions, and a filter may legitimately empty any
+  # slice no matter how many specs it kept.
+  #
+  # The first cut compared `SHARD_TOTAL` against the selected count, which is
+  # the pre-fix mental model: correct while ownership came from `SELECTED`,
+  # wrong the moment it came from `SPECS`. Measured — 4 specs, a commit touching
+  # positions 1 and 3, `--shard 2/2`: a CORRECT partition exited 1 with "the
+  # partition is wrong". Any PR with >= 4 affected specs that misses a residue
+  # class would have reddened a shard. It was also inert on the common 1-3 spec
+  # PR, where a genuinely mangled divisor still exited 0 — off where it was
+  # needed, on where it was not.
+  #
+  # ⚠️ NO FIXTURE COVERS THIS ARM, and that is honest rather than an omission.
+  # Validation already forces 1 <= I <= N, so with N <= #SPECS position I-1
+  # always exists and SHARD_OWNED is always >= 1: no CLI input can reach here.
+  # Deleting the whole arm leaves the suite green, and a fixture claiming to
+  # cover it would be asserting nothing — the shape this file deleted two
+  # earlier fixtures for. It stays as a backstop against a future edit to the
+  # residue arithmetic, which is exactly the edit that would otherwise produce
+  # four green jobs having verified nothing.
+  if [ "$SHARD_OWNED" -eq 0 ] && [ "${#SPECS[@]}" -ge "$SHARD_TOTAL" ]; then
+    echo "check-mutation-tables: shard $SHARD_LABEL owns no position among ${#SPECS[@]} spec(s)." >&2
+    echo "  With specs >= shards every shard owns at least one position, so the divisor or index is wrong." >&2
     exit 1
   fi
   # Says only what this process knows. Whether the other slices ran is a
   # property of the matrix wiring, not something this run can observe.
-  echo "check-mutation-tables: shard $SHARD_INDEX/$SHARD_TOTAL — no spec at positions congruent to $(( SHARD_INDEX - 1 )) (mod $SHARD_TOTAL) among ${#SPECS[@]} spec(s)."
+  echo "check-mutation-tables: shard $SHARD_LABEL — no selected spec at positions congruent to $SHARD_RESIDUE (mod $SHARD_RESIDUE_OF) among ${#SPECS[@]} spec(s)."
   exit 0
 fi
 

@@ -275,6 +275,11 @@ shard_reject "three fields"               "1/4/9" "--shard expects I/N"
 shard_reject "zero index"                 "0/4"   "--shard expects I/N"
 shard_reject "no slash"                   "4"     "--shard expects I/N"
 shard_reject "index past total"           "9/4"   "index exceeds total"
+# Anchoring constrained syntax but not magnitude: this overflowed `[`, which
+# returned status 2 inside an `if` condition, which bash read as false — so the
+# range check was bypassed and the run proceeded with a bogus index. The `{0,3}`
+# bound in the pattern is what closes it.
+shard_reject "total out of range"         "1/99999999999999999999" "--shard expects I/N"
 
 # 9. The empty-shard exit 0, which `--list-only` STRUCTURALLY CANNOT REACH — it
 # returns before this branch — so fixture 7 can never cover it however far it is
@@ -284,7 +289,7 @@ T=$(make_spec_tree 2)
 rc=0
 out=$( cd "$T" && TEST_DATABASE_URL=x MUTATION_SPEC_GLOB="scripts/mutations/*.mutations.ts" \
        bash scripts/check-mutation-tables.sh --all --shard 4/4 2>&1 ) || rc=$?
-if [ "$rc" = "0" ] && printf '%s' "$out" | grep -qF "no spec at positions"; then
+if [ "$rc" = "0" ] && printf '%s' "$out" | grep -qF "no selected spec at positions"; then
   echo "  ok    an empty shard (2 specs, 4 shards) exits 0 and says so"; PASS=$((PASS + 1))
 else
   echo "  FAIL  empty shard — expected exit 0 naming the empty residue class, got $rc"
@@ -328,7 +333,8 @@ rm -rf "$T"
 # taken from `SELECTED` it would sit at position 0 of a one-element list and
 # shard 1 would claim it. Asserting the OWNER — not merely that some shard has
 # it — is what discriminates the two implementations.
-make_multi_spec_tree() { # builds 3 real specs; only c is touched
+make_multi_spec_tree() { # $1 = how many specs (default 3)  $2 = which to touch (default "c")
+  local count="${1:-3}" touch_list="${2:-c}"
   local tmp; tmp="$(mktemp -d)"
   mkdir -p "$tmp/packages/api/scripts/mutations" "$tmp/packages/api/src" "$tmp/scripts"
   for f in mutate.ts mutation-core.ts mutation-spec.ts signal-retry.ts; do
@@ -336,8 +342,9 @@ make_multi_spec_tree() { # builds 3 real specs; only c is touched
   done
   ln -s "$REPO_ROOT/node_modules" "$tmp/node_modules"
   cp "$SCRIPT" "$tmp/scripts/check-mutation-tables.sh"
-  local n
-  for n in a b c; do
+  local names n
+  names=$(printf 'a b c d e f g h' | cut -d' ' -f1-"$count")
+  for n in $names; do
     cat >"$tmp/packages/api/src/$n.ts" <<TS
 export function v$n(): number {
   return 1;
@@ -364,28 +371,86 @@ export default spec;
 SPEC
   done
   ( cd "$tmp" && git init --quiet -b main && git config user.email t@t.t && git config user.name t \
-      && git add -A >/dev/null && git commit --quiet -m base && git branch base-ref HEAD \
-      && echo "// touched" >> packages/api/src/c.ts && git add -A >/dev/null \
-      && git commit --quiet -m "touch c only" )
+      && git add -A >/dev/null && git commit --quiet -m base && git branch base-ref HEAD )
+  local t
+  for t in $touch_list; do echo "// touched" >> "$tmp/packages/api/src/$t.ts"; done
+  ( cd "$tmp" && git add -A >/dev/null && git commit --quiet -m "touch $touch_list" )
   echo "$tmp"
 }
 
 T=$(make_multi_spec_tree)
-OWNER=""
+#
+# ⚠️ Collect ALL owners and the union SIZE, not "the last shard that had
+# something". The first cut assigned OWNER inside the loop, so it held the
+# highest-numbered non-empty shard while its FAIL message claimed "sole owner" —
+# an assertion weaker than the message describing it. Dropping the SELECTED
+# intersection entirely (each shard verifies its whole positional slice, turning
+# every PR into a full sweep) left OWNER=3 and reported ok.
+OWNERS=""
 UNION=""
 for s in 1 2 3 4; do
   raw=$( cd "$T" && TEST_DATABASE_URL=x MUTATION_SPEC_GLOB="scripts/mutations/*.mutations.ts" \
          bash scripts/check-mutation-tables.sh --affected base-ref --shard "$s/4" --list-only 2>/dev/null ) || true
   got=$( printf '%s\n' "$raw" | sed -n 's/^SELECTED //p' )
-  if [ -n "$got" ]; then OWNER="$s"; UNION="${UNION}${got}"$'\n'; fi
+  if [ -n "$got" ]; then OWNERS="${OWNERS}${s} "; UNION="${UNION}${got}"$'\n'; fi
 done
+TOTAL=$(printf '%s' "$UNION" | grep -c . || true)
 COVERED=$(printf '%s' "$UNION" | grep -c 'c.mutations.ts' || true)
-if [ "$OWNER" = "3" ] && [ "$COVERED" = "1" ]; then
-  echo "  ok    the affected spec is owned by its SPECS position (shard 3), not its SELECTED position"
+if [ "$OWNERS" = "3 " ] && [ "$TOTAL" = "1" ] && [ "$COVERED" = "1" ]; then
+  echo "  ok    the affected spec is owned by its SPECS position (shard 3 alone), not its SELECTED position"
   PASS=$((PASS + 1))
 else
-  echo "  FAIL  affected-spec ownership — expected sole owner shard 3 and exactly one covering, got owner='$OWNER' covered=$COVERED"
+  echo "  FAIL  affected-spec ownership — expected owners='3 ' union=1 covered=1, got owners='$OWNERS' union=$TOTAL covered=$COVERED"
   FAIL=$((FAIL + 1))
+fi
+rm -rf "$T"
+
+# 11. A LEGITIMATELY empty shard on --affected is a PASS, not an accusation.
+#
+# This is the true negative half of fixture 9, and the one that catches the
+# guard being written against the wrong operand. Ownership ranges over SPECS;
+# SELECTED filters it; so a shard can own positions and legitimately hold none
+# of the affected ones. Four specs, only positions 1 and 3 (b, d) affected:
+# shard 2 of 2 owns positions 1 and 3 and takes both, shard 1 owns 0 and 2 and
+# takes NEITHER — and must say so with exit 0.
+#
+# Measured against the first cut: shard 1 exited 1 with "is empty, but 2 spec(s)
+# were selected — the partition is wrong". The partition was right. Any PR with
+# >= 4 affected specs that missed a residue class would have reddened CI.
+T=$(make_multi_spec_tree 4 "b d")
+rc1=0
+out1=$( cd "$T" && TEST_DATABASE_URL=x MUTATION_SPEC_GLOB="scripts/mutations/*.mutations.ts" \
+        bash scripts/check-mutation-tables.sh --affected base-ref --shard 1/2 --list-only 2>&1 ) || rc1=$?
+if [ "$rc1" = "3" ] && printf '%s' "$out1" | grep -qF "0 of 2 selected"; then
+  echo "  ok    an --affected shard owning no SELECTED spec is honest, not an accusation"; PASS=$((PASS + 1))
+else
+  echo "  FAIL  legitimate empty --affected shard — expected exit 3 and '0 of 2 selected', got $rc1"
+  printf '%s' "$out1" | sed 's/^/        /' | tail -6; FAIL=$((FAIL + 1))
+fi
+rm -rf "$T"
+
+# 12. --list-only declines: exit 3, never 0. Both helpers above discard the
+# status with `|| true`, so nothing observed the 0 -> 3 change until this.
+T=$(make_spec_tree 5)
+rc=0
+out=$( cd "$T" && TEST_DATABASE_URL=x MUTATION_SPEC_GLOB="scripts/mutations/*.mutations.ts" \
+       bash scripts/check-mutation-tables.sh --all --list-only 2>&1 ) || rc=$?
+if [ "$rc" = "3" ] && printf '%s' "$out" | grep -qF "nothing verified"; then
+  echo "  ok    --list-only exits 3 (declined), not 0 (verified)"; PASS=$((PASS + 1))
+else
+  echo "  FAIL  --list-only — expected exit 3 saying nothing verified, got $rc"; FAIL=$((FAIL + 1))
+fi
+rm -rf "$T"
+
+# 13. --shard twice is an error, not last-wins.
+T=$(make_spec_tree 5)
+rc=0
+out=$( cd "$T" && TEST_DATABASE_URL=x MUTATION_SPEC_GLOB="scripts/mutations/*.mutations.ts" \
+       bash scripts/check-mutation-tables.sh --all --list-only --shard 1/4 --shard 2/4 2>&1 ) || rc=$?
+if [ "$rc" = "1" ] && printf '%s' "$out" | grep -qF "given twice"; then
+  echo "  ok    a repeated --shard is rejected rather than silently last-wins"; PASS=$((PASS + 1))
+else
+  echo "  FAIL  repeated --shard — expected exit 1 saying 'given twice', got $rc"; FAIL=$((FAIL + 1))
 fi
 rm -rf "$T"
 

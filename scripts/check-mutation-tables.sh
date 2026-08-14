@@ -11,10 +11,17 @@
 # re-runs is back to being a hand-written claim that happens to be formatted
 # like a measurement, which is the whole thing #5060 was an investment against.
 #
-# ## Two modes, because the full sweep is 832 SECONDS
+# ## Two modes, because the full sweep is MINUTES, not seconds
 #
-# Measured, not estimated: verifying all eight specs takes ~14 minutes, because
-# each one re-runs every target suite once per mutation. `/ci` is ~10 minutes in
+# Measured at #5077, when there were EIGHT specs: 832 seconds — ~14 minutes,
+# because each spec re-runs every target suite once per mutation.
+#
+# ⚠️ That figure describes a tree that no longer exists, and this header is not
+# re-measured on every landing. #5061 added four more specs and roughly a
+# hundred more mutations, so read it as an ORDER OF MAGNITUDE. (It is also the
+# only hand-typed measurement left in this subsystem, which is why it says so
+# rather than being quietly refreshed to a number the next slice would falsify
+# again.) The argument does not depend on the digits: `/ci` is ~10 minutes in
 # total, so an always-full gate would MORE THAN DOUBLE the pre-PR loop — and a
 # gate that doubles the loop gets commented out inside a week. A disabled gate
 # catches nothing, so cost is a correctness property here, not an optimisation.

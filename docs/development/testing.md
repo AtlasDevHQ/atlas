@@ -61,3 +61,43 @@ bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:543
 Migrations referencing Better Auth tables (`user`, `session`, `organization`, `account`, `verification`) **must** be added to `MANAGED_AUTH_MIGRATIONS` in `packages/api/src/lib/db/internal.ts` — the smoke test fails otherwise, keeping boot-time skip wiring in lockstep with the migration set.
 
 **Any suite that runs Better Auth's real migrator (`migrateAuthTables()`) against shared Postgres needs a dedicated scratch DATABASE, not a scratch schema** (#4647). The migrator's Kysely `getTables()` introspection scans `pg_catalog` across every schema — `search_path` cannot scope it — so concurrent `-pg` tests' temp schemas being created/dropped mid-scan abort the migration with phantom `relation ... does not exist` errors. See the `beforeAll` comment in `staging/__tests__/seed.test.ts` for the full mechanism and the CREATE/DROP DATABASE lifecycle pattern.
+
+## Mutation tables are GENERATED
+
+A "MUTATIONS THIS CATCHES" table is never hand-typed. Each is a checked-in
+mutation list under `packages/api/scripts/mutations/<name>.mutations.ts` — exact
+`oldString`/`newString` pairs plus the suites to measure them against — rendered
+by `scripts/mutate.ts` into `<name>.md`. The test file carries a POINTER, not
+numbers.
+
+```bash
+cd packages/api && bun run scripts/mutate.ts scripts/mutations/<name>.mutations.ts
+cd packages/api && bun run scripts/mutate.ts scripts/mutations/<name>.mutations.ts --check
+```
+
+Hand-editing a cell is the thing this exists to prevent: a stored count is a
+claim nothing can falsify, so adding one test silently makes N cells false.
+`scripts/check-mutation-tables.sh` is the CI gate (`--affected` locally, `--all`
+in CI); it globs the directory, so a new spec is covered the moment it lands.
+
+**`-pg` specs need a scratch database.** Without `TEST_DATABASE_URL` those
+suites self-skip, the baseline is deflated, and the runner ABORTS rather than
+publishing a column of zeros. Every brain suite creates and drops its own schema,
+so one scratch database is safe to share — but give a long regeneration its own
+so a concurrent `-pg` run cannot perturb the counts:
+
+```bash
+bun run db:up
+psql -h localhost -p 5433 -U atlas -d postgres -c 'CREATE DATABASE brain_5061_scratch'
+export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5433/brain_5061_scratch
+```
+
+Two things the runner cannot do for you:
+
+- **It measures `bun test`, so a TYPE-level mutation measures 0.** That zero is
+  honest only if the note beside it names the gate that does catch it (`bun run
+  type`), and only if you have RUN that gate rather than reasoned about it. See
+  `episode-source-narrowing.mutations.ts` for the worked example.
+- **It restores from an in-memory backup, never `git checkout`** — the tree
+  normally carries uncommitted work. Never kill a run mid-flight, and never
+  commit while one is live: `ps -o pid=,args= -C bun | grep 'mutate\.ts'`.

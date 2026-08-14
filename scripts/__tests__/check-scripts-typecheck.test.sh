@@ -27,11 +27,12 @@
 # adding `--ignore-pattern 'scripts/**'` to both lint scripts turned linting of
 # `scripts/` completely off while the suite reported 12 passed, 0 failed.
 #
-# ⚠️ Every fail-case goes through `names_on_one_line`: the rule or error code
-# must appear on a line that ALSO names the probe. Two independent greps are not
-# that — the type program spans ~2000 files and the lint scans are repo-wide, so
-# "the token appears somewhere" plus "the probe appears somewhere" is satisfied
-# by two unrelated diagnostics, and the case passes having measured nothing.
+# ⚠️ No fail-case is allowed to rest on "the token appears somewhere in the
+# output". The type program spans ~2000 files and the lint scans are repo-wide,
+# so a pre-existing diagnostic satisfies that on a run that compiled or linted
+# nothing. The type cases use `names_on_one_line` (tsgo's format is stable);
+# the lint cases use a probe-free baseline comparison, because oxlint's format
+# is NOT stable — see `lint_probe`.
 #
 # The probes write a file into scripts/ and trap-remove it. That is why this
 # suite belongs in ci-local.sh's Stage 2 (serial, tree-writing) alongside the
@@ -181,27 +182,45 @@ probe_case() {
   fi
 }
 
-# lint_probe NAME BODY RULE CMD… — write BODY into the LINT probe, run a shipped
-# lint script, and require the rule and the probe file in ONE diagnostic.
+# lint_probe NAME BODY RULE CMD… — run a shipped lint script twice, once without
+# the probe and once with it, and require that the probe CAUSED a new diagnostic
+# of RULE and flipped the exit status.
 #
 # ⚠️ CMD is `bun run --silent lint…`, not a hand-rolled `oxlint --config … scripts/`.
 # The hand-rolled form is blind to everything about the shipped command except
 # the presence of the token `scripts/` in its path list — measured, adding
 # `--ignore-pattern 'scripts/**'` to both lint scripts turned linting of
 # `scripts/` completely off while this suite reported 12 passed, 0 failed.
-# Whole-repo cost is 1.7s for `lint` and 12.4s for `lint:type-aware`.
+#
+# ⚠️ The assertion is DIFFERENTIAL, not same-line, and that is not a weakening.
+# oxlint switches to GitHub Actions' annotation reporter under CI — `##[error]
+# Promises must be awaited.` — where the path is annotation metadata and never
+# appears on the message line. A same-line grep therefore passed locally and
+# failed on the runner, on a run where the probe HAD been caught. Comparing
+# against a probe-free baseline is format-independent, and it asserts something
+# the same-line form only approximated: that this probe produced this finding.
+#
+# Cost is two whole-repo runs per probe — measured 1.7s each for `lint` and
+# 12.4s each for `lint:type-aware`.
 lint_probe() {
   local name="$1" body="$2" rule="$3"
   shift 3
-  local status=0 out
+  local base_status=0 base_out base_hits
+  base_out="$("$@" 2>&1)" || base_status=$?
+  # `grep -c` exits 1 for zero matches, which is the value being counted rather
+  # than a failure; `|| true` keeps that from aborting under `set -e`.
+  base_hits="$(grep -cF "$rule" <<<"$base_out" || true)"
+
+  local status=0 out hits
   printf '%s' "$body" > "$PROBE_LINT"
   out="$("$@" 2>&1)" || status=$?
   rm -f "$PROBE_LINT"
-  if [ "$status" -ne 0 ] &&
-    names_on_one_line "$PROBE_LINT_BASE" "$rule" <<<"$out"; then
-    pass "$name (probe caught by the shipped command)"
+  hits="$(grep -cF "$rule" <<<"$out" || true)"
+
+  if [ "$base_status" -eq 0 ] && [ "$status" -ne 0 ] && [ "$hits" -gt "$base_hits" ]; then
+    pass "$name (probe caused a new '$rule' from the shipped command)"
   else
-    fail "$name — no '$rule' diagnostic naming $PROBE_LINT_BASE; status=$status, output:"
+    fail "$name — expected a probe-free baseline to be clean and the probe to add a '$rule'; got baseline status=$base_status hits=$base_hits, with-probe status=$status hits=$hits. With-probe output:"
     sed 's/^/    /' <<<"$out" >&2
   fi
 }

@@ -185,6 +185,12 @@ describeIfPg("Slack brain webhook fast-path (real Postgres)", () => {
     await pool.query("DELETE FROM brain_facts");
     await pool.query("DELETE FROM brain_episodes");
     await pool.query("DELETE FROM workspace_plugins");
+    // The #5203 scope tables. A leaked `brain_slack_ingest_scope` row flips
+    // every later test's workspace to `legacy-pending`, and a leaked exclusion
+    // silently narrows its scope — both make unrelated tests fail on state a
+    // different test wrote.
+    await pool.query("DELETE FROM brain_slack_channel");
+    await pool.query("DELETE FROM brain_slack_ingest_scope");
     process.env.ATLAS_BRAIN_CHAT_WEBHOOK_ENABLED = "true";
   });
 

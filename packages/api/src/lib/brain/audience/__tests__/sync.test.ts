@@ -619,10 +619,39 @@ describe("runAudienceSyncCycle", () => {
       }),
     );
     expect(reconciled).toHaveLength(0);
-    // The scope read happens in the scan, so an unreadable scope faults the
-    // whole scan rather than one workspace — reported as the cycle's failure.
-    expect(result.status).toBe("failure");
-    expect(result.error).toContain("scope read failed");
+    // A per-workspace failure, counted — NOT the cycle's failure. The first
+    // cut resolved every workspace's scope under one Promise.all inside the
+    // scan's catch, so one broken scope row zeroed Slack reconciliation for
+    // the whole region and reported it as a scan fault.
+    expect(result.status).toBe("degraded");
+    expect(result.workspacesFailed).toBe(1);
+  });
+
+  // The isolation half of the same finding: the workspace AFTER the broken one
+  // still reconciles. This is the assertion that goes red if the scope reads
+  // ever move back under a single all-or-nothing await.
+  it("still reconciles the other workspaces when one workspace's scope read rejects", async () => {
+    const { deps, reconciled } = harness();
+    const result = await withDatabaseUrl(() =>
+      runAudienceSyncCycle({
+        ...deps,
+        listWorkspaces: () => Promise.resolve(["org_broken", WORKSPACE]),
+        resolvePollScope: (workspaceId) =>
+          workspaceId === "org_broken"
+            ? Promise.reject(new Error("scope read failed"))
+            : Promise.resolve({
+                mode: "membership" as const,
+                channels: [PRIVATE_CHANNEL],
+                excludedInMembership: 0,
+              }),
+      }),
+    );
+    expect(result.status).toBe("degraded");
+    expect(result.workspacesFailed).toBe(1);
+    expect(result.workspacesInspected).toBe(2);
+    // The healthy workspace's audience actually reconciled.
+    expect(reconciled).toHaveLength(1);
+    expect(reconciled[0]?.workspaceId).toBe(WORKSPACE);
   });
 
   it("reports a scan failure as failure rather than as an empty successful cycle", async () => {

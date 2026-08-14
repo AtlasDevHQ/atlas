@@ -131,7 +131,6 @@ import { SLACK_HISTORY_SOURCE } from "@atlas/api/lib/brain/ingest/slack/config";
 import { chatChannelAudienceId } from "@atlas/api/lib/brain/ingest/grant";
 import {
   AUDIENCE_STALENESS_SQL,
-  AUDIENCE_SYNC_INSTALLS_SQL,
   runAudienceSyncCycle,
   type AudienceSyncCycleResult,
   type AudienceSyncDeps,
@@ -571,14 +570,18 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
       coverageIncomplete: false,
       warnings: [],
     });
-    // The cursor-less premise the `duplicate` counts below rest on — see the
-    // header's fixture-discipline bullet and the wedge suite's fuller note.
+    // No install row, and the bookkeeping row LANDS anyway — the per-workspace
+    // anchor (#5203) writes unguarded, and a zero here was round-1 C1's silent
+    // drop. Then reset it so the `duplicate` counts below stay a statement
+    // about the ingest core's dedupe, not about an emptied incremental window
+    // — see the wedge suite's "Cursor round-trips" note.
     const { rows: premise } = await pool.query<{ installs: string; state: string }>(
       `SELECT (SELECT count(*)::text FROM workspace_plugins WHERE workspace_id = $1 AND install_id = $2) AS installs,
               (SELECT count(*)::text FROM knowledge_sync_state WHERE workspace_id = $1) AS state`,
       [WORKSPACE, INSTALL_ID],
     );
-    expect(premise[0]).toEqual({ installs: "0", state: "0" });
+    expect(premise[0]).toEqual({ installs: "0", state: "1" });
+    await pool.query(`DELETE FROM knowledge_sync_state WHERE workspace_id = $1`, [WORKSPACE]);
     return outcome;
   }
 
@@ -705,24 +708,22 @@ describeIfPg("brain M2 temporal loop (real Postgres)", () => {
             dropped: 0,
           }),
       },
-      // `deps.query` has TWO consumers — the install scan and the staleness
-      // sweep — so a stub that ignores `sql` hands the sweep an install row,
-      // which it defensively reports as "counters unavailable" and warns
-      // about. That is a production degradation path running silently under a
-      // green test, and it is exactly the plausible-fallback shape the
-      // `oldest` guard above refuses.
-      //
-      // Dispatched on statement IDENTITY (both constants are exported), so a
-      // paraphrase fails loudly instead of falling into the wrong arm — the
-      // same seam `correction.test.ts` uses. Only the INSTALL scan is faked,
-      // and only because this suite deliberately seeds no `workspace_plugins`
-      // row; the sweep runs for real against the scratch schema.
+      // The #5203 dispatch seams, supplied directly: this suite has no
+      // `chat_cache` install row and no `brain_slack_channel` scope rows, and
+      // neither the workspace walk nor scope resolution is under test here.
+      listWorkspaces: () => Promise.resolve([WORKSPACE]),
+      resolvePollScope: () =>
+        Promise.resolve({
+          mode: "membership" as const,
+          channels: [PUBLIC_CHANNEL, EXEC_CHANNEL],
+          excludedInMembership: 0,
+        }),
+      // `deps.query`'s one remaining consumer is the staleness sweep (#5203
+      // retired the Slack install scan). Still dispatched on statement
+      // IDENTITY, so a NEW consumer fails loudly instead of silently reading
+      // whatever the sweep's arm returns — the same seam `correction.test.ts`
+      // uses. The sweep runs for real against the scratch schema.
       query: (async <T extends Record<string, unknown>>(sql: string, params?: unknown[]) => {
-        if (sql === AUDIENCE_SYNC_INSTALLS_SQL) {
-          return [
-            { workspace_id: WORKSPACE, install_id: INSTALL_ID, config: { channels: [PUBLIC_CHANNEL, EXEC_CHANNEL] } },
-          ] as unknown as T[];
-        }
         if (sql === AUDIENCE_STALENESS_SQL) return poolQuery<T>(sql, params);
         throw new Error(
           `fixture: unstubbed AudienceSyncDeps.query — a new consumer appeared: ${sql.slice(0, 120)}`,

@@ -52,10 +52,7 @@ import {
 } from "@atlas/api/lib/content-mode/adapters/brain-facts";
 import { aclVisibilityClause, type BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 import { chatChannelAudienceId } from "@atlas/api/lib/brain/ingest/grant";
-import {
-  SLACK_HISTORY_CATALOG_ID,
-  SLACK_HISTORY_SOURCE,
-} from "@atlas/api/lib/brain/ingest/slack/config";
+import { SLACK_HISTORY_SOURCE } from "@atlas/api/lib/brain/ingest/slack/config";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -392,34 +389,35 @@ describeIfPg("brain fact oversight aggregate (real Postgres)", () => {
   );
 
   it(
-    "reads a REAL install row through the whole configured-⇒-nameable chain",
+    "reads REAL brain_slack_channel rows through the whole configured-⇒-nameable chain",
     async () => {
       // Against an empty table this proves only that the columns exist. The
-      // thing that actually breaks is the CONFIG SHAPE: if what the installer
-      // persists differs from what `parseSlackHistoryConfig` expects, every
-      // audience goes opaque — fail-closed, and per the module's own comment
-      // undiagnosable from the UI. So insert the row and walk the whole chain.
+      // thing that actually breaks is the ROW SHAPE: if what the scope refresh
+      // and the exclusion route persist differs from what
+      // `OVERSIGHT_NAMED_CHANNELS_SQL` selects, every audience goes opaque —
+      // fail-closed, and per the module's own comment undiagnosable from the
+      // UI. So insert real rows and walk the whole chain. Both predicate arms
+      // are seeded: an observed member AND an excluded non-member — an
+      // exclusion is precisely the channel an admin knows by name, and the
+      // `OR excluded_at IS NOT NULL` arm is what keeps its label after the bot
+      // leaves.
       const ws = "ws-oversight-configs";
       await pool.query(
-        `INSERT INTO plugin_catalog (id, slug, name, type, pillar)
-         VALUES ($1, 'slack-history', 'Company Brain (Slack history)', 'context', 'knowledge')
-         ON CONFLICT (id) DO NOTHING`,
-        [SLACK_HISTORY_CATALOG_ID],
+        `INSERT INTO brain_slack_channel (workspace_id, channel_id, is_member)
+         VALUES ($1, 'C0PRIVATE1', true)`,
+        [ws],
       );
       await pool.query(
-        `INSERT INTO workspace_plugins
-           (id, workspace_id, catalog_id, install_id, pillar, config)
-         VALUES ($1, $2, $3, $1, 'knowledge', $4::jsonb)`,
-        [
-          `wp-${ws}`,
-          ws,
-          SLACK_HISTORY_CATALOG_ID,
-          JSON.stringify({ channels: ["C0PRIVATE1"] }),
-        ],
+        `INSERT INTO brain_slack_channel
+           (workspace_id, channel_id, is_member, excluded_at, excluded_by)
+         VALUES ($1, 'C0LEFTBEHIND', false, now(), 'user-oversight')`,
+        [ws],
       );
 
       const configured = await loadConfiguredChannels({ query: (sql, params) => pool.query(sql, params) }, ws);
-      expect(configured.get(SLACK_HISTORY_SOURCE)).toEqual(new Set(["C0PRIVATE1"]));
+      expect(configured.get(SLACK_HISTORY_SOURCE)).toEqual(
+        new Set(["C0PRIVATE1", "C0LEFTBEHIND"]),
+      );
 
       // …and the classification that hangs off it.
       expect(classifyToken(PRIVATE_AUDIENCE, configured).labelPolicy).toBe("configured");

@@ -61,16 +61,17 @@
  *
  * ## Two seams deliberately NOT on this path
  *
- *   - **Sync-state persistence.** `upsertConnectorSyncState` only writes when a
- *     matching `workspace_plugins` install row exists, and this test seeds none
- *     — so no `knowledge_sync_state` row is ever written, every pass reads a
- *     null cursor, and the high-water-mark round trip is inert here. That is
+ *   - **Cursor round-trips.** The per-workspace anchor (#5203) means
+ *     `upsertConnectorSyncState` writes WITHOUT an install row, so every sync
+ *     here lands a `knowledge_sync_state` row — `syncHistory()` asserts it
+ *     landed (the write silently dropping was exactly the C1 defect of #5209's
+ *     round 1) and then DELETES it, so every pass still reads a null cursor
+ *     and the high-water-mark round trip stays inert. That reset is
  *     load-bearing for how the re-sync assertions below read: `duplicate: 4`
- *     proves the ingest core's source-id dedupe (`ON CONFLICT DO NOTHING`), NOT
- *     the client's mark discipline, which `slack-client.test.ts` owns. The
- *     idempotence test PINS the absence with an assertion rather than trusting
- *     this paragraph, because seeding an install row later would silently
- *     change what `duplicate: 4` means.
+ *     proves the ingest core's source-id dedupe (`ON CONFLICT DO NOTHING`),
+ *     NOT the client's mark discipline, which `slack-client.test.ts` owns. A
+ *     persisted cursor would make the second sync fetch an empty window and
+ *     let the idempotence test pass for free.
  *   - **Grant-derivation FAILURE.** `client.ts` throws when
  *     `deriveChatChannelGrant` returns null, which degrades that channel and
  *     sets `coverageIncomplete`. `syncHistory()` hard-asserts
@@ -478,9 +479,9 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
       }
       const all = [...known, ...(extraMessages[params.channel] ?? [])];
       // `oldest` is honoured so the fixture is a faithful stand-in for Slack.
-      // Note what it does NOT buy here: with no `workspace_plugins` install row
-      // the cursor is never persisted (see the header), so `oldest` is always
-      // the backfill floor and this filter never actually narrows a page.
+      // Note what it does NOT buy here: `syncHistory()` clears the sync-state
+      // row after every pass (see the header), so `oldest` is always the
+      // backfill floor and this filter never actually narrows a page.
       const oldest = params.oldest === undefined ? null : Number(params.oldest);
       if (oldest !== null && Number.isNaN(oldest)) {
         // `x > NaN` is false for every x, so a non-numeric bound would filter
@@ -551,19 +552,22 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
       warnings: [],
     });
 
-    // The cursor-less premise, checked on EVERY sync rather than once in the
-    // last test — the corroboration test's `inserted: 1, duplicate: 4` rests on
-    // it just as hard, and is declared first. Both halves are asserted because
-    // they fail differently: no install row is the CAUSE (the upsert's `WHERE
-    // EXISTS` guard skips), and an empty `knowledge_sync_state` is the SYMPTOM
-    // — which `upsertConnectorSyncState` would also produce by logging and
-    // swallowing a genuine write error.
+    // Checked on EVERY sync rather than once in the last test. `installs: "0"`
+    // pins the per-workspace premise (this suite seeds no install row);
+    // `state: "1"` pins that the bookkeeping write LANDED anyway — with the
+    // workspace anchor (#5203) there is no `WHERE EXISTS` guard to skip it,
+    // and a zero here is the C1 defect from #5209's round 1: every outcome
+    // silently dropped, a revoked token reading as a green-but-frozen source.
     const { rows: premise } = await pool.query<{ installs: string; state: string }>(
       `SELECT (SELECT count(*)::text FROM workspace_plugins WHERE workspace_id = $1 AND install_id = $2) AS installs,
               (SELECT count(*)::text FROM knowledge_sync_state WHERE workspace_id = $1) AS state`,
       [WORKSPACE, INSTALL_ID],
     );
-    expect(premise[0]).toEqual({ installs: "0", state: "0" });
+    expect(premise[0]).toEqual({ installs: "0", state: "1" });
+    // Then RESET it, so every pass reads a null cursor and the re-sync
+    // assertions keep proving the ingest core's dedupe rather than an empty
+    // incremental window — see the module header's "Cursor round-trips".
+    await pool.query(`DELETE FROM knowledge_sync_state WHERE workspace_id = $1`, [WORKSPACE]);
     return outcome;
   }
 
@@ -728,13 +732,19 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
             dropped: 0,
           }),
       },
-      // One install row, supplied directly: this suite deliberately persists no
-      // `workspace_plugins` row (see the header), and the scan is not what is
-      // under test here.
-      query: (<T extends Record<string, unknown>>() =>
-        Promise.resolve([
-          { workspace_id: WORKSPACE, install_id: INSTALL_ID, config: { channels: [PUBLIC_CHANNEL, EXEC_CHANNEL] } },
-        ] as unknown as T[])) as AudienceSyncDeps["query"],
+      // The #5203 dispatch seams, supplied directly: this suite has no
+      // `chat_cache` install row and no `brain_slack_channel` scope rows, and
+      // neither the workspace walk nor scope resolution is what is under test
+      // here. `query` stays the REAL pool for the staleness sweep — it reads
+      // `fact_audience_member`, which this suite genuinely populates.
+      listWorkspaces: () => Promise.resolve([WORKSPACE]),
+      resolvePollScope: () =>
+        Promise.resolve({
+          mode: "membership" as const,
+          channels: [PUBLIC_CHANNEL, EXEC_CHANNEL],
+          excludedInMembership: 0,
+        }),
+      query: poolQuery,
       resolveToken: () => Promise.resolve("xoxb-test"),
       resolve: (workspaceId, principals) =>
         resolvePrincipals(workspaceId, principals, { query: poolQuery }),

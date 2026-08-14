@@ -30,9 +30,13 @@
  *
  * **Generated — see `packages/api/scripts/mutations/object-cmp.md`.** The
  * mutation list is `packages/api/scripts/mutations/object-cmp.mutations.ts`,
- * and the table is produced by running each mutation against this suite:
+ * and the table is produced by running each mutation against this suite AND
+ * against `object-cmp-pg.test.ts`, which is the second column:
  *
  *     cd packages/api && bun run scripts/mutate.ts scripts/mutations/object-cmp.mutations.ts
+ *
+ * The `-pg` column needs `TEST_DATABASE_URL`; without it the runner aborts on a
+ * deflated baseline rather than publishing that column as zeros.
  *
  * The numbers used to live here, by hand, and they did not survive contact
  * with the review rounds: four rows had already gone stale (20→22, 11→13,
@@ -48,7 +52,8 @@
  * ⚠️ **Three SQL arms have no behavioural falsifier in this file, and none can
  * have one.** {@link agree} is the TypeScript twin; deleting a SQL arm does not
  * touch it, so the only thing that can die here is the SQL-arms assertion at the
- * bottom. All three are covered elsewhere:
+ * bottom. All three are covered elsewhere, and that cover is now a MEASURED cell
+ * in the second column rather than a prose promise:
  *
  *   - the **`split_part` tag equality arm** — `identity-consumers-pg.test.ts`'s
  *     `cross-type-rival`, and `object-cmp-pg.test.ts`'s per-row parity tests
@@ -60,6 +65,9 @@
  *     population that only exists once #5035 makes the region importer a second
  *     writer of this column. Unreachable is not the same as unnecessary, and an
  *     unfalsifiable guard is one somebody deletes.
+ *
+ * The columns are how you read a `0`: a row that is 0 here and non-zero beside
+ * it is this file being lexical, not a gap. A row that is 0 in BOTH is a gap.
  *
  * Do not delete either the lexical or the behavioural half on the grounds that
  * the other covers it: one pins the string, the other pins what Postgres does

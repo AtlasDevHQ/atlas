@@ -40,17 +40,22 @@
  *
  * ## MUTATIONS THIS CATCHES
  *
- * MEASURED on the final tree, one at a time, against this file alone.
+ * **Generated — see `packages/api/scripts/mutations/object-cmp.md`**, the
+ * `object-cmp-pg.test.ts` column. The mutation list is
+ * `packages/api/scripts/mutations/object-cmp.mutations.ts`:
  *
- * | Mutation | Dies on |
- * |---|---|
- * | `INSERT_FACT_SQL` binds the object SURFACE into `object_cmp` | 1 — the fresh-write control, and only it: the pre-store test never inserts, and the two-tier join is 0 either way |
- * | `comparableDifferentSql` loses its `split_part` tag EQUALITY arm | 2 — `cross-type`, `date-vs-instant` |
- * | `comparableDifferentSql` loses its known-tag `IN` arm | 1 — the unknown-tag pair |
- * | `comparableDifferentSql` loses its `strpos(…) > 0` separator arms | 1 — the same test, via the BARE-TAG fixtures |
- * | `agree` loses its `tagA !== null` arm (the oracle's half of the same rule) | 1 — the same test |
- * | `objectSameSql` loses its difference VETO | 1 — `sign-flip` |
- * | 0191 grows an `UPDATE brain_facts SET object_cmp = object` backfill | 1 — the lexical check |
+ *     cd packages/api && bun run db:up
+ *     export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5433/brain_5061_scratch
+ *     bun run scripts/mutate.ts scripts/mutations/object-cmp.mutations.ts
+ *
+ * The seven numbers used to live here by hand (#5030); they are generated as of
+ * #5061 and all seven re-measured identical, which is the one outcome worth
+ * recording explicitly — the conversion is not always a correction.
+ *
+ * The table is SHARED with `object-cmp.test.ts` rather than being this file's
+ * own, and the sharing is the point: the three SQL-arm rows had a note in the
+ * unit spec reading "covered behaviourally by `object-cmp-pg.test.ts`", which is
+ * a hand-measured claim wearing a citation. As a second column it is a number.
  *
  * ⚠️ **The migration backfill dies on the LEXICAL check and nothing else, and
  * that is a limit rather than a redundancy.** These suites run migrations into

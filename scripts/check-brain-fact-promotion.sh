@@ -259,7 +259,32 @@
 # a suspiciously clean result on a file with odd comment syntax with suspicion.
 #
 # Tests are excluded by filename pattern: a fixture must be able to construct a
-# published row. `db/migrations/` is NOT excluded by directory — the `.sql`
+# published row.
+#
+# `*.mutations.ts` is excluded for the SAME reason, one step further out (#5061).
+# A mutation spec under `packages/api/scripts/mutations/` is a test fixture that
+# happens to live outside `__tests__`: it holds the exact before/after strings
+# `scripts/mutate.ts` applies to real source and then reverts from an in-memory
+# backup. Writing the violation down is the entire job — `object-cmp.mutations.ts`
+# carries `UPDATE brain_facts SET object_cmp = object` precisely because
+# `object-cmp-pg.test.ts` asserts migration 0191 must never grow that backfill,
+# and the only way to measure what that assertion is worth is to perform it.
+#
+# ⚠️ EXCLUDED BY PATTERN RATHER THAN ALLOWLISTED BY PATH, deliberately. An
+# ALLOWLIST entry exempts one FILE for all four gated columns and would have to
+# be re-added per spec; this is the fourth mutation spec to trip a lexical brain
+# guard (`keys-not-on-the-wire.test.ts` already carries three by path), so the
+# recurrence has cleared the bar for a mechanical rule over a fourth carve-out.
+# The suffix is the narrow part: a real writer has to be named `*.mutations.ts`
+# to inherit it, which no production module in this tree is. Excluding the
+# DIRECTORY was rejected — `mutations/` is an ordinary name a GraphQL or
+# migration module could take, and that carve-out any package could adopt.
+#
+# Both directions are pinned in the adversarial fixture suite: a spec quoting the
+# forbidden statement must PASS, and a same-directory `.ts` that is not a spec
+# must still FAIL.
+#
+# `db/migrations/` is NOT excluded by directory — the `.sql`
 # migrations are already out of scope via `--include`, and excluding the
 # directory would have let a one-shot backfill under
 # `db/migrations/scripts/*.ts` (where CLAUDE.md says they live) write this
@@ -349,6 +374,7 @@ CANDIDATES=$(grep -rlE 'brain_facts|\bbrainFacts\b' "${EXISTING_ROOTS[@]}" \
   --exclude='*.test.tsx' \
   --exclude='*.spec.ts' \
   --exclude='*.spec.tsx' \
+  --exclude='*.mutations.ts' \
   --exclude-dir='__tests__' \
   --exclude-dir='__mocks__' \
   --exclude-dir='__test-utils__' \

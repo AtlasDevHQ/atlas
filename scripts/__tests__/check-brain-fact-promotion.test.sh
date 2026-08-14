@@ -210,6 +210,25 @@ run_fixture "a .test.ts fixture is excluded" pass \
   "packages/api/src/lib/brain/__tests__/seed.test.ts" \
 'await pool.query(`UPDATE brain_facts SET status = '"'"'published'"'"' WHERE id = $1`);'
 
+# (j2) A MUTATION SPEC quoting the forbidden statement → must PASS (#5061).
+#      `scripts/mutate.ts` applies these before/after strings to real source and
+#      reverts them; writing the violation down is the whole job, and this exact
+#      string is how `object-cmp-pg.test.ts` measures what "0191 never grows a
+#      backfill" is worth. Excluded by the `*.mutations.ts` pattern.
+run_fixture "a .mutations.ts spec quoting the forbidden statement is excluded" pass \
+  "packages/api/scripts/mutations/object-cmp.mutations.ts" \
+'export const EDIT = { newString: `UPDATE brain_facts SET object_cmp = object;` };'
+
+# (j3) THE NEGATIVE CONTROL for (j2), and the reason the carve-out is a SUFFIX
+#      rather than a directory: a file in the same directory that is not a spec
+#      must still FAIL. Without this, `--exclude-dir='mutations'` would pass the
+#      suite identically while exempting every `mutations/` directory in the
+#      tree — including a GraphQL or migration module that happens to take the
+#      name.
+run_fixture "a non-spec .ts beside the mutation specs still fails" fail \
+  "packages/api/scripts/mutations/helper.ts" \
+'await db.query(`UPDATE brain_facts SET object_cmp = object`);'
+
 # (k) LOWERCASE SQL → must FAIL. Keyword casing is a style choice, not a
 #     security boundary; a case-sensitive guard would be trivially evaded.
 run_fixture "lowercase SQL still fails" fail \

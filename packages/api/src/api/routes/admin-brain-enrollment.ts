@@ -10,11 +10,25 @@
  *   GET  /dimensions  — one entity's dimensions/measures, each flagged enrolled
  *   POST /enroll      — bring one pair into the producer's reach
  *   POST /unenroll    — take one pair back out
+ *   POST /produce     — run the producer over that reach (#5042)
+ *
+ * ## Why the producer's trigger lives on the ENROLLMENT surface
+ *
+ * Because the reach is what it runs over, and the two questions an operator asks
+ * — *what may it emit?* and *what did it emit?* — are one screen. Keeping the
+ * verb here also keeps it under the same owner/admin bar as the two writes, which
+ * matters: running the producer fills the review queue an admin has to drain, so
+ * it is an authority act wearing a read's shape.
+ *
+ * It is the ONLY trigger that ships. There is no on-connect hook and no cadence
+ * fiber — a schedule is a second trigger with its own enablement, cadence and
+ * audit questions, exactly the deferral `alias-proposal.ts` records for its own
+ * producer.
  *
  * ## Why the surface exists
  *
  * Every fact lands as a `draft` needing a human publish — migration 0180's
- * default IS the review gate (`reconcile.ts:777`). A warehouse producer emitting
+ * default IS the review gate (`reconcile.ts`'s `INSERT_FACT_SQL`, #4769). A warehouse producer emitting
  * one fact per row per dimension on a schedule would put an unreviewable queue
  * behind the one gate the product is differentiated by; ADR-0039's arithmetic is
  * ten thousand accounts across eight dimensions being eighty thousand drafts.
@@ -71,12 +85,18 @@ import {
   loadEnrollableEntities,
 } from "@atlas/api/lib/brain/enrollment-candidates";
 import {
+  runWarehouseProducer,
+  type WarehouseProducerReport,
+} from "@atlas/api/lib/brain/warehouse-producer";
+import {
   BrainEnrollmentDimensionsResponseSchema,
   BrainEnrollmentEntitiesResponseSchema,
   BrainEnrollmentListResponseSchema,
   BrainEnrollmentUnenrollRequestSchema,
   BrainEnrollmentWriteRequestSchema,
   BrainEnrollmentWriteResponseSchema,
+  BrainWarehouseRunReportSchema,
+  BrainWarehouseRunResponseSchema,
 } from "@useatlas/schemas";
 import { ErrorSchema } from "./shared-schemas";
 import { createAdminRouter, noActiveOrgBody, requireOrgContext } from "./admin-router";
@@ -117,6 +137,80 @@ function checked<T>(schema: { parse: (value: unknown) => T }, payload: unknown):
 }
 
 /**
+ * Compile-time pin: the producer's report and its wire schema describe ONE shape.
+ *
+ * ⚠️ Without it the two are a hand-maintained mirror whose drift is invisible until
+ * production. `checked` takes `unknown`, the schemas are `strictObject`, and the
+ * parse runs after every episode, fact and cardinality proposal has committed — so
+ * one field added to `WarehouseEntityOutcome` and not to the schema compiles clean,
+ * passes both producer suites (neither parses a report through the schema), and
+ * 500s in production on a run that fully succeeded.
+ *
+ * Mutual `extends` rather than a one-way `satisfies`: a schema that is a strict
+ * SUBSET of the report is the direction that actually happens, and one-way
+ * assignability admits it.
+ */
+type ExactShape<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
+const _reportMatchesWireSchema: ExactShape<
+  WarehouseProducerReport,
+  z.infer<typeof BrainWarehouseRunReportSchema>
+> = true;
+void _reportMatchesWireSchema;
+
+/**
+ * The producer report's response parse, with the POST-COMMIT posture.
+ *
+ * `admin-brain-vocabulary.ts`'s `checkedWrite`, applied where that file's argument
+ * actually bites. On a parse failure this does not throw: the run LANDED, its
+ * drafts are in the review queue, and a 500 saying "Failed to run" would invite the
+ * one retry that doubles the queue.
+ *
+ * ⚠️ **The degraded arm says NOTHING about the run, and the first cut of it was
+ * worse than the 500 it replaced.** That version returned the counts with
+ * `entities: []` and `refusals: []` — so `{enrolled: 8, created: 0, refusals: []}`,
+ * a confident all-clear for a run that may have refused every pair, handed to the
+ * one operator whose next action is to press Run again. It also copied four fields
+ * verbatim out of the object whose parse had just failed, without knowing which
+ * field failed. Now the arm carries only what the ROUTE knows — the workspace, the
+ * request id, and a sentence — so a caller cannot read a zero out of it and nothing
+ * un-validated is re-emitted.
+ */
+function checkedRun(report: WarehouseProducerReport, workspaceId: string, requestId: string) {
+  // ⚠️ Parsed against the REPORT schema, not the response UNION, and the difference
+  // is the whole diagnostic. A zod union failure is a single `invalid_union` issue
+  // at `path: []` — the per-arm detail lives in `issue.errors` — so mapping
+  // `i.path.join(".")` over a union's issues yields `[""]` for every possible
+  // drift. That is the one record of a post-commit, deterministic-under-retry
+  // failure, and the response tells the operator to go read it.
+  const parsed = BrainWarehouseRunReportSchema.safeParse(report);
+  if (parsed.success) return { ...parsed.data, reportComplete: true as const };
+  log.error(
+    {
+      requestId,
+      workspaceId,
+      // The ZodError itself AND a flattened summary: the first survives whatever
+      // the serializer does with it, the second is greppable.
+      err: parsed.error,
+      issues: parsed.error.issues.map((i) => ({
+        path: i.path.join("."),
+        code: i.code,
+        message: i.message,
+      })),
+    },
+    "Warehouse producer report failed its own response schema — the run COMMITTED; the report shape drifted",
+  );
+  return {
+    reportComplete: false,
+    workspaceId,
+    requestId,
+    message:
+      "The producer run completed and its claims are in the review queue, but this server could not " +
+      "serialize the report of it. Nothing was retried, nothing was lost, and re-running would file a " +
+      "second round of drafts — check the review queue and the server log for this request id instead.",
+  } satisfies z.infer<typeof BrainWarehouseRunResponseSchema>;
+}
+
+/**
  * ⚠️ **Why the two WRITE routes use `checked` and not `admin-brain-vocabulary`'s
  * `checkedWrite` — a deliberate divergence, recorded rather than assumed.**
  *
@@ -134,7 +228,8 @@ function checked<T>(schema: { parse: (value: unknown) => T }, payload: unknown):
  * fails the same parse, so an admin sees "failed" forever while the pair is
  * enrolled and the producer's reach is genuinely wider. Grow the response, take
  * `checkedWrite` (and lift it somewhere shared rather than copying it a third
- * time).
+ * time). (`/produce` takes {@link checkedRun} — it IS the post-commit case this
+ * block says to take `checkedWrite` for.)
  */
 
 const listRoute = createRoute({
@@ -221,6 +316,27 @@ const enrollRoute = createRoute({
         "pre-write semantic-layer check runs the same lookup as `GET /dimensions`.",
       content: { "application/json": { schema: ErrorSchema } },
     },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const produceRoute = createRoute({
+  method: "post",
+  path: "/produce",
+  tags: ["Admin — Brain"],
+  summary: "Run the tier-1 warehouse producer over this workspace's reach",
+  description:
+    "Reads every enrolled pair, snapshots the warehouse, and files the claims as DRAFTS for review " +
+    "(#5042, ADR-0037 §4). It emits for enrolled pairs and for no others, and it refuses rather " +
+    "than choosing when a dimension name is enrolled on two entities at once. Nothing it does " +
+    "publishes, retires, or invalidates a fact: a re-run over a changed value files a new draft and " +
+    "an advisory tension edge beside the old one, and stamps no validity window. `enrolled` and " +
+    "`refusals` are both returned because a run that emitted nothing because nothing is enrolled and " +
+    "one that emitted nothing because everything was refused are otherwise the same silence.",
+  responses: {
+    200: { description: "The run report", content: { "application/json": { schema: BrainWarehouseRunResponseSchema } } },
+    400: { description: "No active organization", content: { "application/json": { schema: ErrorSchema } } },
+    403: { description: "Not entitled", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -549,6 +665,68 @@ adminBrainEnrollment.openapi(unenrollRoute, async (c) => {
       );
     }),
     { label: "unenroll brain dimension" },
+  );
+});
+
+adminBrainEnrollment.openapi(produceRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
+      const { mode, user, orgId } = yield* AuthContext;
+      if (!orgId) return c.json(noActiveOrgBody(requestId), 400);
+
+      const ctx = yield* Effect.tryPromise({
+        try: () =>
+          resolveBrainReaderContext(getInternalDB(), { workspaceId: orgId, mode, user, requestId }),
+        catch: toError,
+      });
+      // The SAME owner/admin bar the two write verbs take. Running the producer
+      // writes drafts into the review queue and reads the workspace's warehouse,
+      // so it is not a read even though it takes no body — and a lower bar here
+      // would let a non-admin fill the queue an admin has to drain.
+      const triggeredBy = recordedAuthor(ctx);
+      if (triggeredBy === null) {
+        log.warn(
+          { workspaceId: orgId, origin: ctx.origin, role: ctx.role, requestId },
+          "Warehouse producer run refused — the reader does not clear the owner/admin bar",
+        );
+        return c.json(
+          errorBody(
+            "not-entitled",
+            "Running the warehouse producer files claims into this workspace's review queue, so it " +
+              "is limited to workspace owners and admins.",
+            requestId,
+          ),
+          403,
+        );
+      }
+
+      const report = yield* Effect.tryPromise({
+        try: () => runWarehouseProducer({ workspaceId: orgId, triggeredBy, requestId }),
+        catch: toError,
+      });
+
+      log.info(
+        {
+          workspaceId: orgId,
+          requestId,
+          enrolled: report.enrolled,
+          created: report.created,
+          corroborated: report.corroborated,
+          refusals: report.refusals.length,
+        },
+        "Warehouse producer run requested from the admin surface",
+      );
+      // ⚠️ `checkedRun`, NOT `checked` — this is the case the file's own docstring
+      // above says to take `checkedWrite` for. Every field of this response is
+      // derived from the semantic layer, the warehouse and `reconcileFacts`, and it
+      // is built AFTER N transactions have committed. A schema drift here is
+      // deterministic under retry, so `checked` would tell an admin the run failed,
+      // forever, while each press files another full round of drafts.
+      return c.json(checkedRun(report, orgId, requestId), 200);
+    }),
+    { label: "run brain warehouse producer" },
   );
 });
 

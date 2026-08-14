@@ -1571,3 +1571,171 @@ export const BrainEnrollmentWriteResponseSchema = z.strictObject({
   dimension: z.string(),
   changed: z.boolean(),
 }) satisfies z.ZodType<BrainEnrollmentWriteResponse, unknown>;
+
+// ---------------------------------------------------------------------------
+// The warehouse producer's run report (#5042, ADR-0037 §4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Why one enrolled pair produced nothing on a run.
+ *
+ * **The only DECLARATION** — `lib/brain/warehouse-producer.ts` derives
+ * `WarehouseRefusalReason` from this tuple rather than spelling the union a
+ * second time, on `BRAIN_ENROLLMENT_NAME_MAX`'s precedent and for its reason: the
+ * forbidden dependency direction is `@useatlas/schemas` → `@atlas/api`, and this
+ * one is the reverse. Two spellings would let the wire enum and the producer's
+ * own arms drift, and the failure is a 500 on the response parse rather than a
+ * red build.
+ *
+ * Each arm:
+ *
+ *   - `entity-not-published` — enrolled, but not in the published semantic layer.
+ *   - `entity-unreadable` — the entity IS published and still could not be read:
+ *     its name resolves in more than one connection group, or its YAML declares no
+ *     `table:`. Split from `entity-not-published` because that arm's remedy is
+ *     *publish the entity*, which is a no-op advice for an entity that is already
+ *     published — the admin follows it, nothing changes, and the real defect is
+ *     never named.
+ *   - `no-primary-key` / `composite-primary-key` — nothing identifies one row, so
+ *     a subject would have to be guessed, and a guessed subject is a homonym.
+ *   - `dimension-not-found` — the entity is published and declares no such name.
+ *   - `measure-not-per-row` — the name is a MEASURE, an aggregate over rows,
+ *     where every claim the producer emits is about one row.
+ *   - `ambiguous-dimension` — ADR-0037 §4's fail-closed rule: the name is enrolled
+ *     on two entities at once, so one predicate would carry two meanings.
+ *   - `row-cap-exceeded` — the table is larger than one review queue, and an
+ *     arbitrary subset would look at rest like a complete reading of it.
+ *   - `snapshot-rejected` — the query the producer would run does not pass Atlas's
+ *     SELECT-only, single-statement, whitelist-scoped gate. **Permanent**: the
+ *     table is outside the whitelist or a `sql:` expression is malformed, and
+ *     re-running changes nothing.
+ *   - `snapshot-failed` — the run could not complete for this entity: the
+ *     datasource read failed, the SQL gate threw rather than answering, or the
+ *     entity's transaction rolled back. Nothing was stamped. Retryable, but not
+ *     always usefully so — a dropped table fails the same way forever, and after a
+ *     rolled-back transaction earlier entities have already COMMITTED, so that
+ *     message tells the operator to drain the review queue before re-running. Split
+ *     from `snapshot-rejected` because one message cannot carry both *"retry"* and
+ *     *"retrying will never work"*.
+ *   - `snapshot-already-recorded` — this exact snapshot instant is already in
+ *     `brain_episodes`, so its claims are too and the entity was skipped. Reported
+ *     rather than omitted: an entity that vanishes from BOTH lists is the silence
+ *     this response exists to remove.
+ */
+export const BRAIN_WAREHOUSE_REFUSAL_REASONS = [
+  "ambiguous-dimension",
+  "entity-not-published",
+  "entity-unreadable",
+  "dimension-not-found",
+  "measure-not-per-row",
+  "no-primary-key",
+  "composite-primary-key",
+  "row-cap-exceeded",
+  "snapshot-rejected",
+  "snapshot-failed",
+  "snapshot-already-recorded",
+] as const;
+
+export const BrainWarehouseRefusalSchema = z.strictObject({
+  entity: z.string(),
+  dimension: z.string(),
+  reason: z.enum(BRAIN_WAREHOUSE_REFUSAL_REASONS),
+  message: z.string(),
+});
+
+export const BrainWarehouseEntityOutcomeSchema = z.strictObject({
+  entity: z.string(),
+  rows: z.number().int().nonnegative(),
+  candidates: z.number().int().nonnegative(),
+  created: z.number().int().nonnegative(),
+  corroborated: z.number().int().nonnegative(),
+  blocked: z.number().int().nonnegative(),
+  /**
+   * Created facts carrying a non-null **`object_cmp`** — `ReconcileReport.comparable`,
+   * passed through unchanged.
+   *
+   * ⚠️ NOT `subject_cmp`, which is the column this producer is the first thing able
+   * to fill. An earlier version of this comment said it was, which is a claim a
+   * reader would have used to conclude the producer was doing nothing: warehouse
+   * objects are mostly unparseable strings, so this number is legitimately 0 on runs
+   * that populated `subject_cmp` for every row. `warehouse-producer-pg.test.ts`
+   * asserts the two independently, at different values, so they cannot be conflated
+   * again.
+   */
+  comparable: z.number().int().nonnegative(),
+  unidentifiedRows: z.number().int().nonnegative(),
+  collidingSubjectRows: z.number().int().nonnegative(),
+  /**
+   * Cells that held a value no claim surface can be made of — a `jsonb`, a `bytea`,
+   * an array, a `NaN`.
+   *
+   * Counted apart from a SQL `NULL`, which is not counted at all. A NULL asserts
+   * nothing and is the ordinary case; an unsurfaceable cell is an ENROLLMENT
+   * MISTAKE (the surface offers every dimension regardless of type), and folding
+   * the two together makes a pair that can never produce anything look exactly like
+   * a column that happens to be empty.
+   */
+  unsurfaceableCells: z.number().int().nonnegative(),
+  /**
+   * Rows whose PRIMARY KEY held such a value — the same distinction at the subject
+   * position. Separate from {@link unsurfaceableCells} because it is categorically
+   * worse: a bad cell costs one claim, a bad key column means NOTHING about that
+   * entity can ever be emitted.
+   */
+  unsurfaceableKeyRows: z.number().int().nonnegative(),
+  cardinalityProposed: z.array(z.string()).readonly(),
+});
+
+/**
+ * The producer's run report — what `runWarehouseProducer` returns.
+ *
+ * `enrolled` and `refusals` are both on it deliberately: a run that emitted
+ * nothing because the reach is empty and a run that emitted nothing because every
+ * pair was refused are the same silence in `brain_facts`, and ADR-0039 names that
+ * indistinguishability as the milestone's central invisibility. The two numbers are
+ * what separate them.
+ */
+export const BrainWarehouseRunReportSchema = z.strictObject({
+  workspaceId: z.string(),
+  snapshotAt: z.string(),
+  enrolled: z.number().int().nonnegative(),
+  entities: z.array(BrainWarehouseEntityOutcomeSchema).readonly(),
+  refusals: z.array(BrainWarehouseRefusalSchema).readonly(),
+  created: z.number().int().nonnegative(),
+  corroborated: z.number().int().nonnegative(),
+});
+
+/**
+ * `POST /api/v1/admin/brain-enrollment/produce`.
+ *
+ * ⚠️ **A UNION, because the degraded branch must not be able to SAY anything about
+ * the run.** The route's response is built after N transactions have committed, so
+ * a serialization failure there cannot report "failed" — the drafts are in the
+ * queue and the retry files another round. The first cut absorbed it by returning
+ * the counts with `entities: []` and `refusals: []`, which is worse than the 500 it
+ * replaced: `{enrolled: 8, created: 0, refusals: []}` is a confident all-clear for a
+ * run that may have refused every pair, handed to the one operator whose next
+ * action is to press Run again. That is exactly the pair-of-numbers argument above,
+ * defeated by the branch that has established neither number.
+ *
+ * So the unavailable arm carries ONLY route-known facts — the workspace, the
+ * request id, and a sentence — and no field of the report at all. A caller cannot
+ * mistake it for a result, and cannot read a zero out of it.
+ *
+ * The same shape three siblings in this file already use (`BrainFactEpisodeView`,
+ * `BrainFactAttributionView`, `BrainVocabularyBlastRadius`): a withheld arm is what
+ * makes the numbers UNREADABLE on the branch where they are meaningless, rather
+ * than readable and wrong. Two of those three use `z.discriminatedUnion` and so
+ * does this — a plain `z.union` reports a failure as ONE `invalid_union` issue at
+ * `path: []`, which collapses every consumer's diagnostic to nothing, and renders
+ * as `anyOf` with no discriminator for every generated client.
+ */
+export const BrainWarehouseRunResponseSchema = z.discriminatedUnion("reportComplete", [
+  BrainWarehouseRunReportSchema.extend({ reportComplete: z.literal(true) }),
+  z.strictObject({
+    reportComplete: z.literal(false),
+    workspaceId: z.string(),
+    requestId: z.string(),
+    message: z.string(),
+  }),
+]);

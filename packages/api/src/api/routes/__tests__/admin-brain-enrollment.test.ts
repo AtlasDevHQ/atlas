@@ -48,9 +48,25 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
 
 // Mock-ALL-exports — a partial factory link-fails the moment the route reaches
 // for anything else in the module.
+/**
+ * Captured `log.error` payloads.
+ *
+ * The logger was all-noop here, which made one line un-assertable: `checkedRun`'s
+ * drift log is the ONLY record of a post-commit serialization failure, and the
+ * response it returns tells the operator to go and read it. A version of that line
+ * that logged `issues: [""]` for every possible drift was green against this suite.
+ */
+const loggedErrors: { payload: unknown; message: string }[] = [];
 void mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
-  const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
+  const logger = {
+    info: noop,
+    warn: noop,
+    error: (payload: unknown, message?: unknown) =>
+      loggedErrors.push({ payload, message: typeof message === "string" ? message : "" }),
+    debug: noop,
+    child: () => logger,
+  };
   return {
     createLogger: () => logger,
     getLogger: () => logger,
@@ -197,6 +213,23 @@ void mock.module("@atlas/api/lib/effect/hono", () => ({
     ),
 }));
 
+/**
+ * The producer, replaced.
+ *
+ * The route imports exactly two bindings from it — `runWarehouseProducer` and a
+ * TYPE, which is erased — so this factory is complete for the route's graph. It
+ * also keeps `reconcile.ts`/`cardinality.ts` out of this suite's module graph,
+ * which the real import would otherwise pull in for a router test.
+ */
+let produceCalls: { workspaceId: string; triggeredBy: string; requestId?: string }[] = [];
+let produceReport: Record<string, unknown> = {};
+void mock.module("@atlas/api/lib/brain/warehouse-producer", () => ({
+  runWarehouseProducer: async (ctx: { workspaceId: string; triggeredBy: string; requestId?: string }) => {
+    produceCalls.push(ctx);
+    return produceReport;
+  },
+}));
+
 const { adminBrainEnrollment } = await import("../admin-brain-enrollment");
 
 const post = (path: string, body: unknown) =>
@@ -224,6 +257,17 @@ beforeEach(() => {
   enrollCalls.length = 0;
   unenrollCalls.length = 0;
   dimensionCalls.length = 0;
+  loggedErrors.length = 0;
+  produceCalls = [];
+  produceReport = {
+    workspaceId: CURRENT_ORG,
+    snapshotAt: "2026-08-14T10:00:00.000Z",
+    enrolled: 1,
+    entities: [],
+    refusals: [],
+    created: 0,
+    corroborated: 0,
+  };
   entityOptions = [{ name: "accounts", table: "public.accounts", description: null }];
   dimensionOptions = [
     { name: "arr_band", kind: "dimension", type: "string", description: null },
@@ -445,6 +489,127 @@ describe("POST /unenroll", () => {
   });
 });
 
+describe("POST /produce — running the producer", () => {
+  it("403s a member, and does not run the producer", async () => {
+    // ⚠️ The verb that actually READS the customer's warehouse and fills the
+    // review queue an admin has to drain. Both write verbs had a 403 test; this
+    // one had none, so deleting its guard let any authenticated member trigger
+    // both. Asserting the STATUS alone is not enough — a handler that refuses
+    // after running would look identical from the status line.
+    READER_ROLE = "member";
+    const res = await post("/produce", {});
+    expect(res.status).toBe(403);
+    expect(produceCalls).toHaveLength(0);
+  });
+
+  it("403s an unresolved principal", async () => {
+    READER_ORIGIN = "unresolved";
+    const res = await post("/produce", {});
+    expect(res.status).toBe(403);
+    expect(produceCalls).toHaveLength(0);
+  });
+
+  it("runs for an owner and records WHO triggered it", async () => {
+    // The positive control for the two refusals above: without it, a handler that
+    // 403s everyone passes both.
+    const res = await post("/produce", {});
+    expect(res.status).toBe(200);
+    expect(produceCalls).toEqual([
+      { workspaceId: CURRENT_ORG, triggeredBy: "user-1", requestId: "test-req" },
+    ]);
+  });
+
+  it("records the local operator on a no-auth deployment", async () => {
+    READER_ORIGIN = "unauthenticated-local";
+    const res = await post("/produce", {});
+    expect(res.status).toBe(200);
+    expect(produceCalls[0]?.triggeredBy).toBe("local-operator");
+  });
+
+  it("returns the report through its wire schema", async () => {
+    produceReport = {
+      workspaceId: CURRENT_ORG,
+      snapshotAt: "2026-08-14T10:00:00.000Z",
+      enrolled: 3,
+      entities: [
+        {
+          entity: "accounts",
+          rows: 7,
+          candidates: 5,
+          created: 4,
+          corroborated: 1,
+          blocked: 0,
+          comparable: 2,
+          unidentifiedRows: 1,
+          collidingSubjectRows: 0,
+          unsurfaceableCells: 3,
+          unsurfaceableKeyRows: 2,
+          cardinalityProposed: ["arr_band"],
+        },
+      ],
+      refusals: [
+        { entity: "contracts", dimension: "status", reason: "ambiguous-dimension", message: "…" },
+      ],
+      created: 4,
+      corroborated: 1,
+    };
+    const res = await post("/produce", {});
+    expect(res.status).toBe(200);
+    // Every distinct number, so a handler that reordered or duplicated fields
+    // cannot pass. `reportComplete: true` is the discriminant that makes this arm
+    // distinguishable from the degraded one below — without it a caller cannot tell
+    // a real result from a report the server could not serialize.
+    expect(await res.json()).toEqual({ ...produceReport, reportComplete: true });
+  });
+
+  it("reports a COMMITTED run rather than a failure when the report cannot be serialized", async () => {
+    // ⚠️ The post-commit posture. The drafts are already in the review queue, so a
+    // 500 saying "Failed to run" invites the one retry that doubles the queue —
+    // and the drift is deterministic, so the admin would see it forever.
+    produceReport = {
+      // ⚠️ DIFFERENT from `CURRENT_ORG`, deliberately. A drifted report is this
+      // arm's own premise, so while the two were equal, taking `workspaceId` from
+      // the REPORT — which is what the version this fix condemned did — was
+      // indistinguishable from taking it from the route.
+      workspaceId: "org-drifted",
+      snapshotAt: "2026-08-14T10:00:00.000Z",
+      enrolled: 2,
+      entities: [{ nonsense: true }],
+      // A NON-EMPTY refusals list, deliberately: the first cut of this arm returned
+      // `refusals: []` and the counts, which is a confident all-clear for a run that
+      // may have refused every pair — worse than the 500 it replaced.
+      refusals: [{ entity: "accounts", dimension: "tier", reason: "snapshot-failed", message: "…" }],
+      created: 9,
+      corroborated: 0,
+    };
+    const res = await post("/produce", {});
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    // The degraded arm says NOTHING about the run — no counts to misread, no empty
+    // lists to mistake for "nothing was refused". Only what the ROUTE knows.
+    // The ROUTE's workspace, never the drifted report's.
+    expect(body).toEqual({
+      reportComplete: false,
+      workspaceId: CURRENT_ORG,
+      requestId: "test-req",
+      message: expect.stringContaining("could not"),
+    });
+    expect(body.workspaceId).not.toBe("org-drifted");
+
+    // ⚠️ And the log the response points at must actually NAME the drift. Parsing
+    // the response UNION instead of the report schema yields a single
+    // `invalid_union` issue at `path: []`, so every drift logs `[""]` — the one
+    // diagnostic for a deterministic-under-retry failure, empty.
+    const drifts = loggedErrors.filter((l) => l.message.includes("report shape drifted"));
+    expect(drifts).toHaveLength(1);
+    const [drift] = drifts;
+    if (drift === undefined) throw new Error("no drift line was logged");
+    const { issues } = drift.payload as { issues: { path: string }[] };
+    expect(issues.length).toBeGreaterThan(0);
+    expect(issues.map((i) => i.path).join(",")).toContain("entities");
+  });
+});
+
 describe("no active organization", () => {
   it("400s every verb rather than writing against an absent workspace", async () => {
     ORG_ID = undefined;
@@ -454,10 +619,12 @@ describe("no active organization", () => {
       adminBrainEnrollment.request("/dimensions?entity=accounts"),
       post("/enroll", { entity: "accounts", dimension: "arr_band" }),
       post("/unenroll", { entity: "accounts", dimension: "arr_band" }),
+      post("/produce", {}),
     ])) {
       expect(res.status).toBe(400);
     }
     expect(enrollCalls).toHaveLength(0);
     expect(unenrollCalls).toHaveLength(0);
+    expect(produceCalls).toHaveLength(0);
   });
 });

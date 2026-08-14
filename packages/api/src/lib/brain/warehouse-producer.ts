@@ -617,7 +617,16 @@ export function warehouseSurface(value: unknown): string | null {
  * can be wrong.
  */
 function isAbsentCell(value: unknown): boolean {
-  return value === null || value === undefined;
+  if (value === null || value === undefined) return true;
+  // ⚠️ A BLANK STRING is absent, not unsurfaceable, and leaving it on the other
+  // side reproduced the exact defect this split exists to remove — one layer in.
+  // `''` and `'   '` are what a CSV or ETL load writes where a source system has a
+  // NOT NULL text default, i.e. the ordinary empty cell by any reading; the
+  // enumerated mistakes are a `jsonb`, a `bytea`, an array, a `NaN`. Counted as
+  // mistakes, a perfectly benign column inflates `unsurfaceableCells` on every run
+  // forever AND makes a real `jsonb` enrollment indistinguishable from it — while
+  // the warn sends the operator hunting a `jsonb` column that need not exist.
+  return typeof value === "string" && value.trim() === "";
 }
 
 /**
@@ -902,10 +911,39 @@ export interface WarehouseRunContext {
   readonly requestId?: string;
 }
 
+declare const snapshotSqlBrand: unique symbol;
+
+/**
+ * The SQL gate's verdict — and the PASSING arm is branded.
+ *
+ * ⚠️ **The brand is the guarantee; without it the seam is the defect it replaced.**
+ * Moving `validateSQL` out of `defaultRunSnapshot` stopped a substituted RUNNER
+ * from skipping the gate — but with an unbranded `{ valid: boolean }`,
+ * `async () => ({ valid: true })` satisfies {@link SnapshotSqlValidator} and skips
+ * the whole SELECT-only / single-statement / whitelist invariant, which is the same
+ * sentence one field further down the same `deps` literal. `WarehouseRowId` states
+ * the repo's answer and cites where ignoring it cost a round (#5032): an unbranded
+ * value is an unbranded door.
+ *
+ * A `valid: true` cannot be written as an object literal. It comes from
+ * {@link defaultValidateSnapshotSql}, or from a cast — and a cast is greppable,
+ * deliberate, and has to be argued for in review, which is exactly the difference
+ * between an invariant enforced by the type and one enforced by convention.
+ * `grep 'as SnapshotSqlVerdict'` is the whole list of places the gate is bypassed:
+ * one production mint here, and three test harnesses that must bypass the real
+ * gate because it is whitelist-scoped and a test schema has no whitelist.
+ *
+ * The REFUSING arm is deliberately unbranded: refusing more is always safe, so
+ * there is no property to forge.
+ */
+export type SnapshotSqlVerdict =
+  | { readonly valid: true; readonly [snapshotSqlBrand]: true }
+  | { readonly valid: false; readonly error?: string };
+
 /** The SELECT-only / single-statement / whitelist gate, as a seam. */
 export type SnapshotSqlValidator = (
   request: WarehouseSnapshotRequest,
-) => Promise<{ readonly valid: boolean; readonly error?: string }>;
+) => Promise<SnapshotSqlVerdict>;
 
 /** Every I/O seam the run touches, each defaulted to its production wiring. */
 export interface WarehouseProducerDeps {
@@ -1171,10 +1209,16 @@ export async function runWarehouseProducer(
     // whitelist-scoped check entirely, and nothing in the type said otherwise. The
     // statement is assembled from admin-authored `table:` and `sql:` expressions, so
     // it is exactly the input that check exists for.
-    const validation = await validateSnapshotSql(request).catch((err: unknown) => ({
-      valid: false as const,
-      error: errorText(err),
-    }));
+    // `try`/`catch` rather than `.catch(…)`: a validator that throws SYNCHRONOUSLY
+    // does so before the promise exists, so `.catch` never sees it and the throw
+    // escaped the whole run as a 500 — contradicting this function's own "caught
+    // PER ENTITY" contract two paragraphs up.
+    let validation: SnapshotSqlVerdict;
+    try {
+      validation = await validateSnapshotSql(request);
+    } catch (err) {
+      validation = { valid: false, error: errorText(err) };
+    }
     if (!validation.valid) {
       log.warn(
         { ...runLog, entity: entityPlan.entity.name, reason: validation.error },
@@ -1484,17 +1528,30 @@ async function defaultLoadEntity(
  * runner, so a replacement runner cannot reach a datasource with an unvalidated
  * statement.
  *
- * `defaultValidateSnapshotSql` is exported so a test can drive the REAL gate over a
- * REAL built statement. That test is the positive control: without it, nothing in
- * the repo has ever shown that what {@link buildSnapshotSql} produces actually
- * PASSES validation, and a producer that refuses every entity in production looks
- * from here exactly like one that works.
+ * Exported so a test can drive the REAL gate over a REAL built statement.
+ *
+ * ⚠️ **What that test can and cannot show, stated because the difference matters.**
+ * The gate's table check is workspace-whitelist-scoped, so a test workspace with no
+ * whitelist is rejected on the TABLE no matter how well-formed the statement is —
+ * the test therefore cannot assert `valid === true`. What it does assert is that
+ * the statement is never rejected for its FORM (a stray semicolon, an unparseable
+ * alias, a non-SELECT), which is the half that would fail in EVERY workspace and
+ * would make a producer that refuses every entity in production look from here
+ * exactly like one that works. The whitelist half is only observable against a
+ * workspace that has one, and it is #5197's prod row count that closes it.
  */
 export async function defaultValidateSnapshotSql(
   request: WarehouseSnapshotRequest,
-): Promise<{ readonly valid: boolean; readonly error?: string }> {
+): Promise<SnapshotSqlVerdict> {
   const { validateSQL } = await import("@atlas/api/lib/tools/sql");
-  return validateSQL(request.sql, request.connectionId, request.workspaceId);
+  const result = await validateSQL(request.sql, request.connectionId, request.workspaceId);
+  // THE cast, and the only one in production code. This is the single point where
+  // "the product's SQL gate said yes" becomes a value the run will act on — see
+  // {@link SnapshotSqlVerdict} for why that has to be unforgeable by an object
+  // literal rather than merely documented.
+  return result.valid
+    ? ({ valid: true } as SnapshotSqlVerdict)
+    : { valid: false, ...(result.error === undefined ? {} : { error: result.error }) };
 }
 
 /**

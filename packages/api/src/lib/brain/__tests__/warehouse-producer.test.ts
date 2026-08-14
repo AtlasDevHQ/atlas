@@ -59,6 +59,7 @@ import {
   type WarehouseEntityLookup,
   type WarehouseEntityPlan,
   type WarehouseProducerDeps,
+  type SnapshotSqlVerdict,
   type WarehouseSnapshotRequest,
 } from "@atlas/api/lib/brain/warehouse-producer";
 
@@ -611,6 +612,25 @@ describe("buildWarehouseClaims", () => {
     expect(unsurfaceableCells).toBe(2);
   });
 
+  test("a BLANK string is absent, not a mistake — the split's own second layer", () => {
+    // ⚠️ The first cut of the absent/unsurfaceable split put `''` and `'   '` on the
+    // MISTAKE side, which re-instantiated the very collapse the split removes: an
+    // empty string is what a CSV or ETL load writes where a source system has a NOT
+    // NULL text default, so a perfectly benign column would inflate the counter on
+    // every run forever AND make a real `jsonb` enrollment indistinguishable from
+    // it — while the warn sent the operator hunting a `jsonb` column that need not
+    // exist.
+    //
+    // Two blanks and ONE genuine mistake, so the counter cannot pass by counting
+    // either all abstains or none of them.
+    const { candidates, unsurfaceableCells } = claimsFor([
+      { [SUBJECT_ALIAS]: "Acme Corp", [`${DIMENSION_ALIAS_PREFIX}0`]: "", [`${DIMENSION_ALIAS_PREFIX}1`]: "   " },
+      { [SUBJECT_ALIAS]: "Globex", [`${DIMENSION_ALIAS_PREFIX}0`]: { nested: true }, [`${DIMENSION_ALIAS_PREFIX}1`]: "gold" },
+    ]);
+    expect(candidates.map((c) => `${c.subject}/${c.predicate}`)).toEqual(["Globex/tier"]);
+    expect(unsurfaceableCells).toBe(1);
+  });
+
   test("a row with no usable primary key is counted, not emitted and not thrown on", () => {
     const { candidates, unidentifiedRows, collidingSubjectRows, unsurfaceableCells } = claimsFor([
       { [SUBJECT_ALIAS]: null, [`${DIMENSION_ALIAS_PREFIX}0`]: "active" },
@@ -754,7 +774,13 @@ function harness(options: {
         validations.push(request);
         return rejected.has(request.entity)
           ? { valid: false, error: `Table "${request.entity}" is not in the whitelist` }
-          : { valid: true };
+      // ⚠️ A CAST, and it has to be. `SnapshotSqlVerdict`'s passing arm is branded
+      // so no object literal can assert that the product's SQL gate said yes —
+      // which is the whole point, since an unbranded `{valid: true}` made the seam
+      // the same convention-enforced hole it replaced. The real gate is
+      // workspace-whitelist-scoped and this suite has no whitelist, so the bypass
+      // is deliberate, named here, and greppable as `as SnapshotSqlVerdict`.
+          : ({ valid: true } as SnapshotSqlVerdict);
       },
       runSnapshot: async (request) => {
         snapshots.push(request);

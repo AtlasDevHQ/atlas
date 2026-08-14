@@ -90,6 +90,7 @@ void mock.module("@atlas/api/lib/logger", () => {
 });
 
 type ProducerModule = typeof import("@atlas/api/lib/brain/warehouse-producer");
+type SnapshotSqlVerdict = import("@atlas/api/lib/brain/warehouse-producer").SnapshotSqlVerdict;
 type ReconcileModule = typeof import("@atlas/api/lib/brain/reconcile");
 
 let producer: ProducerModule;
@@ -150,7 +151,8 @@ function deps(over: Partial<Parameters<ProducerModule["runWarehouseProducer"]>[1
       has: () => true,
     }),
     loadEntity: async () => ACCOUNTS_YAML,
-    validateSnapshotSql: async () => ({ valid: true }),
+    // Cast because the passing verdict is branded — see the unit suite's note.
+    validateSnapshotSql: async () => ({ valid: true }) as SnapshotSqlVerdict,
     runSnapshot: async () => [
       { [producer.SUBJECT_ALIAS]: "Acme Corp", [`${producer.DIMENSION_ALIAS_PREFIX}0`]: "active" },
     ],

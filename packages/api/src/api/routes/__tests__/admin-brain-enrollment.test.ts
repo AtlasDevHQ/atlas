@@ -538,22 +538,41 @@ describe("POST /produce — running the producer", () => {
     const res = await post("/produce", {});
     expect(res.status).toBe(200);
     // Every distinct number, so a handler that reordered or duplicated fields
-    // cannot pass. The schema is a `strictObject`, so this is also what catches a
-    // report that grew a field the wire does not know about.
-    expect(await res.json()).toEqual(produceReport);
+    // cannot pass. `reportComplete: true` is the discriminant that makes this arm
+    // distinguishable from the degraded one below — without it a caller cannot tell
+    // a real result from a report the server could not serialize.
+    expect(await res.json()).toEqual({ ...produceReport, reportComplete: true });
   });
 
   it("reports a COMMITTED run rather than a failure when the report cannot be serialized", async () => {
     // ⚠️ The post-commit posture. The drafts are already in the review queue, so a
     // 500 saying "Failed to run" invites the one retry that doubles the queue —
     // and the drift is deterministic, so the admin would see it forever.
-    produceReport = { workspaceId: CURRENT_ORG, snapshotAt: "2026-08-14T10:00:00.000Z", enrolled: 2, entities: [{ nonsense: true }], refusals: [], created: 9, corroborated: 0 };
+    produceReport = {
+      workspaceId: CURRENT_ORG,
+      snapshotAt: "2026-08-14T10:00:00.000Z",
+      enrolled: 2,
+      entities: [{ nonsense: true }],
+      // A NON-EMPTY refusals list, deliberately: the first cut of this arm returned
+      // `refusals: []` and the counts, which is a confident all-clear for a run that
+      // may have refused every pair — worse than the 500 it replaced.
+      refusals: [{ entity: "accounts", dimension: "tier", reason: "snapshot-failed", message: "…" }],
+      created: 9,
+      corroborated: 0,
+    };
     const res = await post("/produce", {});
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { created: number; entities: unknown[] };
-    // The counts a caller acts on survive; the un-serializable detail does not.
-    expect(body.created).toBe(9);
-    expect(body.entities).toEqual([]);
+    const body = (await res.json()) as Record<string, unknown>;
+    // The degraded arm says NOTHING about the run — no counts to misread, no empty
+    // lists to mistake for "nothing was refused". Only what the ROUTE knows.
+    expect(body).toEqual({
+      reportComplete: false,
+      workspaceId: CURRENT_ORG,
+      requestId: "test-req",
+      message: expect.stringContaining("could not"),
+    });
+    expect(body.created).toBeUndefined();
+    expect(body.refusals).toBeUndefined();
   });
 });
 

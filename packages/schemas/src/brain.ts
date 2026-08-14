@@ -1677,15 +1677,15 @@ export const BrainWarehouseEntityOutcomeSchema = z.strictObject({
 });
 
 /**
- * `POST /api/v1/admin/brain-enrollment/produce`.
+ * The producer's run report — what `runWarehouseProducer` returns.
  *
- * `enrolled` and `refusals` are both on the response deliberately: a run that
- * emitted nothing because the reach is empty and a run that emitted nothing
- * because every pair was refused are the same silence in `brain_facts`, and
- * ADR-0039 names that indistinguishability as the milestone's central
- * invisibility. The two numbers are what separate them.
+ * `enrolled` and `refusals` are both on it deliberately: a run that emitted
+ * nothing because the reach is empty and a run that emitted nothing because every
+ * pair was refused are the same silence in `brain_facts`, and ADR-0039 names that
+ * indistinguishability as the milestone's central invisibility. The two numbers are
+ * what separate them.
  */
-export const BrainWarehouseRunResponseSchema = z.strictObject({
+export const BrainWarehouseRunReportSchema = z.strictObject({
   workspaceId: z.string(),
   snapshotAt: z.string(),
   enrolled: z.number().int().nonnegative(),
@@ -1694,3 +1694,35 @@ export const BrainWarehouseRunResponseSchema = z.strictObject({
   created: z.number().int().nonnegative(),
   corroborated: z.number().int().nonnegative(),
 });
+
+/**
+ * `POST /api/v1/admin/brain-enrollment/produce`.
+ *
+ * ⚠️ **A UNION, because the degraded branch must not be able to SAY anything about
+ * the run.** The route's response is built after N transactions have committed, so
+ * a serialization failure there cannot report "failed" — the drafts are in the
+ * queue and the retry files another round. The first cut absorbed it by returning
+ * the counts with `entities: []` and `refusals: []`, which is worse than the 500 it
+ * replaced: `{enrolled: 8, created: 0, refusals: []}` is a confident all-clear for a
+ * run that may have refused every pair, handed to the one operator whose next
+ * action is to press Run again. That is exactly the pair-of-numbers argument above,
+ * defeated by the branch that has established neither number.
+ *
+ * So the unavailable arm carries ONLY route-known facts — the workspace, the
+ * request id, and a sentence — and no field of the report at all. A caller cannot
+ * mistake it for a result, and cannot read a zero out of it.
+ *
+ * The same shape three siblings in this file already use (`BrainFactEpisodeView`,
+ * `BrainFactAttributionView`, `BrainVocabularyBlastRadius`): a discriminated
+ * withheld arm is what makes the numbers UNREADABLE on the branch where they are
+ * meaningless, rather than readable and wrong.
+ */
+export const BrainWarehouseRunResponseSchema = z.union([
+  BrainWarehouseRunReportSchema.extend({ reportComplete: z.literal(true) }),
+  z.strictObject({
+    reportComplete: z.literal(false),
+    workspaceId: z.string(),
+    requestId: z.string(),
+    message: z.string(),
+  }),
+]);

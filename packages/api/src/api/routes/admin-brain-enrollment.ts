@@ -95,6 +95,7 @@ import {
   BrainEnrollmentUnenrollRequestSchema,
   BrainEnrollmentWriteRequestSchema,
   BrainEnrollmentWriteResponseSchema,
+  BrainWarehouseRunReportSchema,
   BrainWarehouseRunResponseSchema,
 } from "@useatlas/schemas";
 import { ErrorSchema } from "./shared-schemas";
@@ -152,7 +153,7 @@ function checked<T>(schema: { parse: (value: unknown) => T }, payload: unknown):
 type ExactShape<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
 const _reportMatchesWireSchema: ExactShape<
   WarehouseProducerReport,
-  z.infer<typeof BrainWarehouseRunResponseSchema>
+  z.infer<typeof BrainWarehouseRunReportSchema>
 > = true;
 void _reportMatchesWireSchema;
 
@@ -162,28 +163,34 @@ void _reportMatchesWireSchema;
  * `admin-brain-vocabulary.ts`'s `checkedWrite`, applied where that file's argument
  * actually bites. On a parse failure this does not throw: the run LANDED, its
  * drafts are in the review queue, and a 500 saying "Failed to run" would invite the
- * one retry that doubles the queue. The defect is logged with the request id and
- * the caller is told what is true — the run completed, the report could not be
- * serialized.
+ * one retry that doubles the queue.
+ *
+ * ⚠️ **The degraded arm says NOTHING about the run, and the first cut of it was
+ * worse than the 500 it replaced.** That version returned the counts with
+ * `entities: []` and `refusals: []` — so `{enrolled: 8, created: 0, refusals: []}`,
+ * a confident all-clear for a run that may have refused every pair, handed to the
+ * one operator whose next action is to press Run again. It also copied four fields
+ * verbatim out of the object whose parse had just failed, without knowing which
+ * field failed. Now the arm carries only what the ROUTE knows — the workspace, the
+ * request id, and a sentence — so a caller cannot read a zero out of it and nothing
+ * un-validated is re-emitted.
  */
-function checkedRun(report: WarehouseProducerReport, requestId: string) {
-  try {
-    return BrainWarehouseRunResponseSchema.parse(report);
-  } catch (err) {
-    log.error(
-      { requestId, err },
-      "Warehouse producer report failed its own response schema — the run COMMITTED; the report shape drifted",
-    );
-    return {
-      workspaceId: report.workspaceId,
-      snapshotAt: report.snapshotAt,
-      enrolled: report.enrolled,
-      entities: [],
-      refusals: [],
-      created: report.created,
-      corroborated: report.corroborated,
-    } satisfies z.infer<typeof BrainWarehouseRunResponseSchema>;
-  }
+function checkedRun(report: WarehouseProducerReport, workspaceId: string, requestId: string) {
+  const parsed = BrainWarehouseRunResponseSchema.safeParse({ ...report, reportComplete: true });
+  if (parsed.success) return parsed.data;
+  log.error(
+    { requestId, workspaceId, issues: parsed.error.issues.map((i) => i.path.join(".")) },
+    "Warehouse producer report failed its own response schema — the run COMMITTED; the report shape drifted",
+  );
+  return {
+    reportComplete: false,
+    workspaceId,
+    requestId,
+    message:
+      "The producer run completed and its claims are in the review queue, but this server could not " +
+      "serialize the report of it. Nothing was retried, nothing was lost, and re-running would file a " +
+      "second round of drafts — check the review queue and the server log for this request id instead.",
+  } satisfies z.infer<typeof BrainWarehouseRunResponseSchema>;
 }
 
 /**
@@ -699,7 +706,7 @@ adminBrainEnrollment.openapi(produceRoute, async (c) => {
       // is built AFTER N transactions have committed. A schema drift here is
       // deterministic under retry, so `checked` would tell an admin the run failed,
       // forever, while each press files another full round of drafts.
-      return c.json(checkedRun(report, requestId), 200);
+      return c.json(checkedRun(report, orgId, requestId), 200);
     }),
     { label: "run brain warehouse producer" },
   );

@@ -30837,144 +30837,182 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "workspaceId": {
-                      "type": "string"
-                    },
-                    "snapshotAt": {
-                      "type": "string"
-                    },
-                    "enrolled": {
-                      "type": "integer",
-                      "minimum": 0
-                    },
-                    "entities": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "entity": {
-                            "type": "string"
-                          },
-                          "rows": {
-                            "type": "integer",
-                            "minimum": 0
-                          },
-                          "candidates": {
-                            "type": "integer",
-                            "minimum": 0
-                          },
-                          "created": {
-                            "type": "integer",
-                            "minimum": 0
-                          },
-                          "corroborated": {
-                            "type": "integer",
-                            "minimum": 0
-                          },
-                          "blocked": {
-                            "type": "integer",
-                            "minimum": 0
-                          },
-                          "comparable": {
-                            "type": "integer",
-                            "minimum": 0
-                          },
-                          "unidentifiedRows": {
-                            "type": "integer",
-                            "minimum": 0
-                          },
-                          "collidingSubjectRows": {
-                            "type": "integer",
-                            "minimum": 0
-                          },
-                          "unsurfaceableCells": {
-                            "type": "integer",
-                            "minimum": 0
-                          },
-                          "cardinalityProposed": {
-                            "type": "array",
-                            "items": {
-                              "type": "string"
-                            }
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "workspaceId": {
+                          "type": "string"
+                        },
+                        "snapshotAt": {
+                          "type": "string"
+                        },
+                        "enrolled": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "entities": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "entity": {
+                                "type": "string"
+                              },
+                              "rows": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "candidates": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "created": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "corroborated": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "blocked": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "comparable": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "unidentifiedRows": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "collidingSubjectRows": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "unsurfaceableCells": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "cardinalityProposed": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              }
+                            },
+                            "required": [
+                              "entity",
+                              "rows",
+                              "candidates",
+                              "created",
+                              "corroborated",
+                              "blocked",
+                              "comparable",
+                              "unidentifiedRows",
+                              "collidingSubjectRows",
+                              "unsurfaceableCells",
+                              "cardinalityProposed"
+                            ],
+                            "additionalProperties": false
                           }
                         },
-                        "required": [
-                          "entity",
-                          "rows",
-                          "candidates",
-                          "created",
-                          "corroborated",
-                          "blocked",
-                          "comparable",
-                          "unidentifiedRows",
-                          "collidingSubjectRows",
-                          "unsurfaceableCells",
-                          "cardinalityProposed"
-                        ],
-                        "additionalProperties": false
-                      }
-                    },
-                    "refusals": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "entity": {
-                            "type": "string"
-                          },
-                          "dimension": {
-                            "type": "string"
-                          },
-                          "reason": {
-                            "type": "string",
-                            "enum": [
-                              "ambiguous-dimension",
-                              "entity-not-published",
-                              "entity-unreadable",
-                              "dimension-not-found",
-                              "measure-not-per-row",
-                              "no-primary-key",
-                              "composite-primary-key",
-                              "row-cap-exceeded",
-                              "snapshot-rejected",
-                              "snapshot-failed",
-                              "snapshot-already-recorded"
-                            ]
-                          },
-                          "message": {
-                            "type": "string"
+                        "refusals": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "entity": {
+                                "type": "string"
+                              },
+                              "dimension": {
+                                "type": "string"
+                              },
+                              "reason": {
+                                "type": "string",
+                                "enum": [
+                                  "ambiguous-dimension",
+                                  "entity-not-published",
+                                  "entity-unreadable",
+                                  "dimension-not-found",
+                                  "measure-not-per-row",
+                                  "no-primary-key",
+                                  "composite-primary-key",
+                                  "row-cap-exceeded",
+                                  "snapshot-rejected",
+                                  "snapshot-failed",
+                                  "snapshot-already-recorded"
+                                ]
+                              },
+                              "message": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "entity",
+                              "dimension",
+                              "reason",
+                              "message"
+                            ],
+                            "additionalProperties": false
                           }
                         },
-                        "required": [
-                          "entity",
-                          "dimension",
-                          "reason",
-                          "message"
-                        ],
-                        "additionalProperties": false
-                      }
+                        "created": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "corroborated": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "reportComplete": {
+                          "type": "boolean",
+                          "enum": [
+                            true
+                          ]
+                        }
+                      },
+                      "required": [
+                        "workspaceId",
+                        "snapshotAt",
+                        "enrolled",
+                        "entities",
+                        "refusals",
+                        "created",
+                        "corroborated",
+                        "reportComplete"
+                      ],
+                      "additionalProperties": false
                     },
-                    "created": {
-                      "type": "integer",
-                      "minimum": 0
-                    },
-                    "corroborated": {
-                      "type": "integer",
-                      "minimum": 0
+                    {
+                      "type": "object",
+                      "properties": {
+                        "reportComplete": {
+                          "type": "boolean",
+                          "enum": [
+                            false
+                          ]
+                        },
+                        "workspaceId": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "reportComplete",
+                        "workspaceId",
+                        "requestId",
+                        "message"
+                      ],
+                      "additionalProperties": false
                     }
-                  },
-                  "required": [
-                    "workspaceId",
-                    "snapshotAt",
-                    "enrolled",
-                    "entities",
-                    "refusals",
-                    "created",
-                    "corroborated"
-                  ],
-                  "additionalProperties": false
+                  ]
                 }
               }
             }

@@ -372,6 +372,19 @@ export interface SlackHistoryClientOptions {
   readonly channels: readonly string[];
   /** How far back a never-synced channel backfills. */
   readonly backfillWindowMs: number;
+  /**
+   * Warnings raised while RESOLVING the channel set, prepended to this pass's
+   * own (#5203).
+   *
+   * Since scope became the bot's membership rather than a stored channel list,
+   * the things that can go wrong before a single message is read — a truncated
+   * membership enumeration, a channel whose health probe failed — happen
+   * OUTSIDE this client. They still belong in the sync report, because that is
+   * where an admin looks to find out why a channel is quiet, and a warning
+   * dropped on the way in is indistinguishable from a channel with nothing to
+   * say.
+   */
+  readonly scopeWarnings?: readonly string[];
   /** Test-only injection. */
   readonly api?: SlackHistoryApi;
   /** Test-only clock. */
@@ -655,7 +668,7 @@ export function createSlackHistoryClient(
 
       const nextMarks = new Map<string, SlackChannelMark>();
       const episodes: BrainEpisodeRecord[] = [];
-      const warnings: string[] = [];
+      const warnings: string[] = [...(options.scopeWarnings ?? [])];
       let coverageIncomplete = false;
       let remainingEpisodes = params.maxEpisodes;
       let remainingPages = HISTORY_MAX_PAGES_PER_PASS;

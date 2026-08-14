@@ -79,6 +79,7 @@ import { syncConnectorCollection } from "./connector-sync";
 import {
   getBrainSourceConnector,
   listBrainSourceCatalogIds,
+  listPerWorkspaceBrainSources,
 } from "@atlas/api/lib/brain/ingest/types";
 import { syncBrainEpisodeSource } from "@atlas/api/lib/brain/ingest/episode-sync";
 import {
@@ -608,15 +609,22 @@ export async function runKnowledgeSyncCycle(options?: {
     ...listKnowledgeSyncConnectorCatalogIds(),
     ...listBrainSourceCatalogIds(),
   ];
-  let installs: SyncInstallRow[];
+  // RECORDED AND FALLEN THROUGH, never returned on (#5203). The install walk
+  // and the per-workspace walk read DIFFERENT tables — `workspace_plugins` and,
+  // for Slack, `chat_cache` — so a failure here says nothing about whether the
+  // per-workspace sources can run. An early return would have one arm's query
+  // fault silently retire the other's entire cycle; `brain/audience/sync.ts`
+  // carries the same rule at length, for the same reason.
+  let installs: SyncInstallRow[] = [];
+  let queryFailed = false;
   try {
     installs = await internalQuery<SyncInstallRow>(SYNC_CYCLE_INSTALLS_SQL, [catalogIds]);
   } catch (err) {
+    queryFailed = true;
     log.error(
       { err: err instanceof Error ? err.message : String(err) },
-      "Knowledge sync cycle: failed to query synced installs",
+      "Knowledge sync cycle: failed to query synced installs — the per-workspace brain sources still run; the cycle reports queryFailed at the end",
     );
-    return { inspected: 0, succeeded: 0, failed: 0, queryFailed: true };
   }
 
   let succeeded = 0;
@@ -642,10 +650,106 @@ export async function runKnowledgeSyncCycle(options?: {
     }
   }
 
-  if (installs.length > 0) {
-    log.info({ inspected: installs.length, succeeded, failed }, "Knowledge sync cycle complete");
+  // ── The per-workspace arm (#5203) ────────────────────────────────────────
+  // A brain source whose scope is `per-workspace` has NO install row, so the
+  // walk above cannot see it: its catalog id is absent from
+  // `listBrainSourceCatalogIds()` by construction. It is dispatched over the
+  // workspaces that installed its PILLAR instead.
+  //
+  // Its failures are counted into the SAME totals rather than a parallel set.
+  // The cycle's counters are what the scheduler span and the heartbeat log
+  // present as "did the sync work", and a source with its own quiet tally is
+  // how a source ends up ingesting nothing while everything reports green —
+  // which is the failure this arm exists to have prevented.
+  const perWorkspace = await runPerWorkspaceBrainSources();
+  succeeded += perWorkspace.succeeded;
+  failed += perWorkspace.failed;
+  const inspected = installs.length + perWorkspace.inspected;
+
+  if (inspected > 0) {
+    log.info(
+      { inspected, succeeded, failed, perWorkspace: perWorkspace.inspected },
+      "Knowledge sync cycle complete",
+    );
   }
-  return { inspected: installs.length, succeeded, failed, queryFailed: false };
+  return {
+    inspected,
+    succeeded,
+    failed,
+    queryFailed: queryFailed || perWorkspace.queryFailed,
+  };
+}
+
+/**
+ * Dispatch every `per-workspace` brain source over the workspaces that
+ * installed its pillar (#5203).
+ *
+ * A workspace-listing failure is reported as `queryFailed`, NOT as zero
+ * workspaces. The distinction is the whole lesson of M1: "couldn't look" and
+ * "nothing to sync" produce identical counters, and only one of them is fine.
+ */
+async function runPerWorkspaceBrainSources(): Promise<{
+  inspected: number;
+  succeeded: number;
+  failed: number;
+  queryFailed: boolean;
+}> {
+  let inspected = 0;
+  let succeeded = 0;
+  let failed = 0;
+  let queryFailed = false;
+
+  for (const connector of listPerWorkspaceBrainSources()) {
+    // Narrowed off the discriminant rather than asserted: `listPerWorkspaceBrainSources`
+    // filters on it, but the filter's return type does not carry the narrowing.
+    if (connector.scope.kind !== "per-workspace") continue;
+    const { syncId, listWorkspaces } = connector.scope;
+
+    let workspaceIds: readonly string[];
+    try {
+      workspaceIds = await listWorkspaces();
+    } catch (err) {
+      queryFailed = true;
+      log.error(
+        {
+          catalogId: connector.catalogId,
+          source: connector.source,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "Knowledge sync cycle: could not list the workspaces for a per-workspace brain source — none of them synced this cycle",
+      );
+      continue;
+    }
+
+    for (const workspaceId of workspaceIds) {
+      inspected++;
+      try {
+        const outcome = await syncBrainEpisodeSource({
+          connector,
+          workspaceId,
+          installId: syncId,
+          // No install row, so no stored config. Scope is resolved by the
+          // connector from live state — which is the point of the change.
+          config: null,
+        });
+        if (outcome.status === "success") succeeded++;
+        else failed++;
+      } catch (err) {
+        failed++;
+        log.error(
+          {
+            workspaceId,
+            catalogId: connector.catalogId,
+            source: connector.source,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "Knowledge sync cycle: a per-workspace brain source threw past its internal catch",
+        );
+      }
+    }
+  }
+
+  return { inspected, succeeded, failed, queryFailed };
 }
 
 /**

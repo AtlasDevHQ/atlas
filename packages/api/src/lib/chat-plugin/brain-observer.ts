@@ -37,9 +37,10 @@ const log = createLogger("chat-plugin.brain-observer");
 /**
  * Skip reasons where there was genuinely nothing to store, so nothing was lost.
  *
- * They are steady-state for any deployment running Atlas chat without a
- * Slack-history source, or with one scoped to a subset of channels — which is
- * the normal case, not a fault. They must not reach the `pollBackstopped: false`
+ * `channel_not_configured` is steady-state for any deployment whose admin has
+ * excluded a channel the bot is nonetheless in, or whose first post-#5203 sync
+ * has not yet reconciled a pre-existing scope — which is the normal case, not a
+ * fault. They must not reach the `pollBackstopped: false`
  * warn arm in {@link reportNotStored}: that arm says "this evidence is LOST",
  * and for a thread reply in a channel the admin deliberately never scoped,
  * nothing was lost — there was nothing to store. Left as a warn it fires once
@@ -58,12 +59,23 @@ const log = createLogger("chat-plugin.brain-observer");
  * ⚠️ `unknown_workspace` is deliberately NOT here, and it is the member a reader
  * expects to find. See its own arm in {@link reportNotStored}.
  *
+ * ⚠️ `scope_unreadable` is deliberately NOT here either, and it is the newer
+ * trap (#5203). It LOOKS like `channel_not_configured` — both end with nothing
+ * stored for a channel — but one is the workspace saying no and the other is a
+ * failed read, and a failed read on a thread reply IS lost evidence. Putting it
+ * here would silence exactly the alert that says the brain has stopped ingesting.
+ *
+ * ⚠️ `no_install` is GONE, not moved (#5203). Slack no longer has an install to
+ * be missing: the source is dispatched over the chat-pillar install, so a
+ * workspace with Slack connected always has the source. That reason existing at
+ * all was the bug — a steady-state "nothing to store" for the state that WAS the
+ * four-day outage.
+ *
  * Typed against the union rather than left as bare strings: a renamed reason
  * must break the BUILD, not silently stop matching and quietly restore the
  * warn-spam this exists to prevent.
  */
 const NOTHING_TO_STORE: ReadonlySet<SlackWebhookSkipReason> = new Set<SlackWebhookSkipReason>([
-  "no_install",
   "channel_not_configured",
   "unmintable_subtype",
 ]);
@@ -166,13 +178,14 @@ function reportNotStored(
   // observer cannot tell them apart from here.
   //
   // The benign one: the Slack team has no Atlas workspace mapped — steady state
-  // for any deployment running Atlas chat without slack-history, so warning
-  // would be the same per-reply forever spam the arm above exists to prevent.
+  // for any deployment running the chat adapter against a team that was never
+  // bound to an org, so warning would be the same per-reply forever spam the arm
+  // above exists to prevent.
   //
   // The other one: `webhook.ts` documents that the installation store's
   // decrypt-or-hide-row policy hides the WHOLE row when the bot token will not
-  // decrypt, so a rotated envelope key on a deployment that DOES run
-  // slack-history reads here as `unknown_workspace` too. In that state a thread
+  // decrypt, so a rotated envelope key on a deployment whose brain IS reading
+  // Slack reads here as `unknown_workspace` too. In that state a thread
   // reply genuinely is lost — `conversations.history` never returns replies, and
   // the poll needs the same token this path could not decrypt, so it is not a
   // backstop. Telling an operator "nothing was lost" there would be false in the

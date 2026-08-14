@@ -48,6 +48,7 @@ import {
   HUMAN_SOURCE,
   OUTLOOK_SOURCE,
   SLACK_SOURCE,
+  episodeSourceClass,
   WAREHOUSE_CLASS,
   WAREHOUSE_SOURCE,
   ZOOM_SOURCE,
@@ -176,6 +177,13 @@ describe("the brain source registry", () => {
     return {
       catalogId: "catalog:fixture",
       source: SLACK_SOURCE,
+      // Chat-class ⇒ per-workspace (#5203); registration refuses per-install
+      // for the chat class, which is the whole falsification.
+      scope: {
+        kind: "per-workspace" as const,
+        syncId: "fixture-sync",
+        listWorkspaces: () => Promise.resolve([]),
+      },
       // Chat grants are reconciled by the install-driven Slack walk, so the
       // default fixture registers no re-verifier. The tests below that DO care
       // override it.
@@ -529,6 +537,12 @@ describe("resolving connectors by class + vendor (#4963)", () => {
     const make = (catalogId: string, source: EpisodeSource): BrainSourceConnector => ({
       catalogId,
       source,
+      // Chat-class sources may only be per-workspace (#5203); everything else
+      // in this fixture keeps the install-driven shape.
+      scope:
+        episodeSourceClass(source) === "chat"
+          ? { kind: "per-workspace", syncId: `${catalogId}-sync`, listWorkspaces: () => Promise.resolve([]) }
+          : { kind: "per-install" },
       audience: { kind: "externally-synced" },
       createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
     });
@@ -629,6 +643,7 @@ describe("resolving connectors by class + vendor (#4963)", () => {
     registerBrainSourceConnector({
       catalogId: "catalog:only",
       source: WAREHOUSE_SOURCE,
+      scope: { kind: "per-install" },
       audience: { kind: "externally-synced" },
       createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
     });

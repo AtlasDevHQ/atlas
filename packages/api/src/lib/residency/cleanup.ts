@@ -189,6 +189,14 @@ export const CLEANUP_TABLE_RULES = {
   // — `brain_vocabulary_target`, a RESTRICT FK — is deleted in the earlier
   // phase; see its rule below.
   brain_vocabulary_edge: { kind: "column", column: "workspace_id" },
+  // The Slack ingest scope (#5203). Plain column rules — no FK in either
+  // direction, and no ordering constraint between them: `brain_slack_channel` is
+  // keyed `(workspace_id, channel_id)` and `brain_slack_ingest_scope` on
+  // `workspace_id` alone, with nothing referencing either. Both are `exported`,
+  // so by the #4458 contract the source's rows go after the grace period and the
+  // decisions they carry live on in the target's copy.
+  brain_slack_channel: { kind: "column", column: "workspace_id" },
+  brain_slack_ingest_scope: { kind: "column", column: "workspace_id" },
 
   // ── Stays residue (region-local; registry says NOT retained) ─────────────
   // The vocabulary's derived closure (#5022). `expression` rather than

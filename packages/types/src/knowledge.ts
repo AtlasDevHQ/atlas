@@ -50,17 +50,24 @@ export interface KnowledgeDocumentCounts {
  *     Help Scout Docs API via a single Docs API key; one collection per Docs
  *     site, one document per published article).
  *
- *   - `slack-history` — the #4770 company-brain CHAT SOURCE (ADR-0036). The
- *     first member that does not mirror DOCUMENTS: it reads Slack channel
- *     history into `brain_episodes` as immutable tier-3 evidence, so its
- *     collection always reports zero documents. It is listed here because it
- *     installs and syncs through the same knowledge-pillar spine; the brain's
- *     own review surface is #4772.
  *   - `zoom-transcripts` — the #4965 company-brain TRANSCRIPT SOURCE, and
- *     `outlook-mail` — the #4966 EMAIL SOURCE. Same episode-not-document shape
- *     as `slack-history`, so all three report zero documents; they are separate
- *     members because ADR-0036 §T6 is class-major and vendor-minor, and each
- *     class derives its access grant differently.
+ *     `outlook-mail` — the #4966 EMAIL SOURCE. Neither mirrors DOCUMENTS: they
+ *     read into `brain_episodes` as immutable tier-3 evidence, so both report
+ *     zero documents. They are listed here because they install and sync
+ *     through the same knowledge-pillar spine, and are separate members because
+ *     ADR-0036 §T6 is class-major and vendor-minor, with each class deriving its
+ *     access grant differently.
+ *
+ *     ⚠️ There is deliberately NO `slack-history` member (#5203, grill #5200
+ *     T3). It was here through #4770, and it was the mistake this union is now
+ *     evidence of: Slack ALREADY had a Chat Platform pillar install, so its
+ *     knowledge-pillar install collected no credential and existed only to
+ *     carry a channel list — a second act nobody knew to perform. Slack ingest
+ *     is now dispatched per WORKSPACE off the chat install, with no
+ *     knowledge-pillar collection of its own, so no install of this source can
+ *     appear in a collection listing and the value can never travel. Zoom and
+ *     Outlook keep their installs because each COLLECTS A SECRET and has no
+ *     pillar install to inherit a connection from.
  *
  * Every value except `upload` is a "synced" collection: its content is owned by
  * an external source, it has last-sync bookkeeping, and it can be re-pulled with
@@ -83,7 +90,6 @@ export type KnowledgeCollectionSource =
   | "front"
   | "helpscout"
   | "freshdesk"
-  | "slack-history"
   | "zoom-transcripts"
   | "outlook-mail";
 

@@ -205,6 +205,11 @@ export function createOutlookMailConnector(
   return {
     catalogId: OUTLOOK_MAIL_CATALOG_ID,
     source: OUTLOOK_MAIL_SOURCE,
+    // Per-install for `zoom/connector.ts`'s reason: this connector collects a
+    // secret (an Entra app registration's client id + secret) and there is no
+    // Atlas pillar install for Outlook to inherit a connection from, so its
+    // install IS the connection rather than a second act on top of one.
+    scope: { kind: "per-install" },
     // Mail is a grant-DERIVING class: a message's audience comes from its own
     // headers, so nothing but this re-verifier can refresh it and
     // `BrainSourceAudienceFor<"outlook">` admits no other arm. Built here, beside

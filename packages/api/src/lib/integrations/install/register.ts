@@ -63,10 +63,6 @@ import { HelpScoutFormInstallHandler, HELPSCOUT_SLUG } from "./helpscout-form-ha
 import { registerHelpScoutKnowledgeConnector } from "@atlas/api/lib/knowledge/helpscout/connector";
 import { FreshdeskFormInstallHandler, FRESHDESK_SLUG } from "./freshdesk-form-handler";
 import { registerFreshdeskKnowledgeConnector } from "@atlas/api/lib/knowledge/freshdesk/connector";
-import {
-  SlackHistoryFormInstallHandler,
-  SLACK_HISTORY_SLUG,
-} from "./slack-history-form-handler";
 import { registerSlackHistoryConnector } from "@atlas/api/lib/brain/ingest/slack/connector";
 import {
   ZoomTranscriptsFormInstallHandler,
@@ -450,21 +446,27 @@ export function registerBuiltinInstallHandlers(): void {
   registerFormHandler(FRESHDESK_SLUG, new FreshdeskFormInstallHandler());
   registerStep("freshdesk knowledge connector", registerFreshdeskKnowledgeConnector);
   log.info("Registered FreshdeskFormInstallHandler + knowledge sync connector");
-  // Company Brain (Slack history) — the built-in `slack-history` BRAIN SOURCE
-  // install (#4770, ADR-0036 §Ingestion & connectors). Knowledge-pillar like
-  // its neighbours (which is what lets it reuse the collection install spine,
-  // the sync bookkeeping, and the one cycle walk verbatim), but it ingests
-  // tier-3 EPISODES rather than knowledge documents — the cycle walk routes it
-  // on that ingest target. Like `salesforce-knowledge` it collects NO secret:
-  // the connector reuses the workspace's existing Slack OAuth install
-  // (`chat_cache`), so no new Slack app is registered. Registering the FORM
-  // handler + the SOURCE together keeps a half-wired deploy from having an
-  // installable card whose scheduled sync has no registered client. No env
-  // gate: the install fails loudly and actionably ("connect Slack first",
-  // "invite the bot to the channel") on a workspace that isn't ready.
-  registerFormHandler(SLACK_HISTORY_SLUG, new SlackHistoryFormInstallHandler());
+  // Company Brain (Slack history) — the SOURCE only, with NO form handler and
+  // no catalog row (#5203, grill #5200 T3).
+  //
+  // ⚠️ The missing `registerFormHandler` is the change, not an omission.
+  // Through #4770 this source had its own `slack-history` install: knowledge
+  // pillar, credential-free, carrying a channel list and nothing else. It
+  // reused the workspace's EXISTING Slack OAuth install for its token, which is
+  // precisely what made it redundant — connecting Slack already established
+  // everything the second install needed, so the second install's only job was
+  // to be remembered, and nobody remembered it. Atlas's own Slack ran live as a
+  // chat platform in three prod regions with extraction on while the brain
+  // ingested nothing for four days, every surface green.
+  //
+  // The connector now declares `scope: { kind: "per-workspace" }` and is
+  // dispatched over the workspaces that installed the CHAT PILLAR, resolving
+  // its channel scope from the bot's membership minus an admin exclusion list
+  // (`lib/brain/ingest/slack/scope.ts`). Migration 0198 deleted
+  // `catalog:slack-history` and its installs; `seed-builtin-knowledge-catalog.ts`
+  // no longer carries the row, so nothing re-creates it on boot.
   registerStep("slack-history brain source", registerSlackHistoryConnector);
-  log.info("Registered SlackHistoryFormInstallHandler + brain source connector");
+  log.info("Registered Slack brain source connector (per-workspace; no install)");
   // Zoom transcripts (#4965) — ADR-0036 §T6's SECOND brain source class, and
   // the first connector built on #4963's generalized seam rather than extracted
   // from one. Same form-handler + source pairing as `slack-history` and for the

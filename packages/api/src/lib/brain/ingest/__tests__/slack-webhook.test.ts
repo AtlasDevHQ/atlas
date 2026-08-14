@@ -46,6 +46,13 @@ const TS = "1750000000.000100";
 const CONNECTOR: BrainSourceConnector<typeof SLACK_SOURCE> = {
   catalogId: SLACK_HISTORY_CATALOG_ID,
   source: SLACK_SOURCE,
+  // Chat-class ⇒ per-workspace (#5203). The webhook path never dispatches,
+  // so `listWorkspaces` is unreachable here.
+  scope: {
+    kind: "per-workspace",
+    syncId: "slack-history",
+    listWorkspaces: () => Promise.resolve([]),
+  },
   audience: { kind: "externally-synced" },
   createClient() {
     throw new Error("the webhook path never builds a vendor client");

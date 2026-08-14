@@ -851,6 +851,14 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
   const slackConnector: BrainSourceConnector<typeof SLACK_HISTORY_SOURCE> = {
     catalogId: "slack-history-multisource-test",
     source: SLACK_HISTORY_SOURCE,
+    // Chat-class, so per-workspace is the only legal declaration (#5203).
+    // This suite drives `syncBrainEpisodeSource` directly, so `listWorkspaces`
+    // is never called — it is present because the shape requires it.
+    scope: {
+      kind: "per-workspace",
+      syncId: "slack-history",
+      listWorkspaces: () => Promise.resolve([]),
+    },
     // Channel-scoped grants, reconciled by the Slack-scoped walk in
     // `audience/sync.ts` rather than by a registered re-verifier.
     audience: { kind: "externally-synced" },
@@ -889,6 +897,7 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
   const zoomConnector: BrainSourceConnector<typeof ZOOM_TRANSCRIPT_SOURCE> = {
     catalogId: "zoom-transcripts-multisource-test",
     source: ZOOM_TRANSCRIPT_SOURCE,
+    scope: { kind: "per-install" },
     // A transcript audience is derived per meeting, so the type admits no arm
     // but this one. NEVER DRIVEN here: this connector goes to `syncSource` and
     // never to `registerBrainSourceConnector`, and the suite asserts
@@ -934,6 +943,7 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
   const outlookConnector: BrainSourceConnector<typeof OUTLOOK_MAIL_SOURCE> = {
     catalogId: "outlook-mail-multisource-test",
     source: OUTLOOK_MAIL_SOURCE,
+    scope: { kind: "per-install" },
     // Same as Zoom above: a mail audience is derived per message, so the type
     // admits no other arm — and this one is equally never driven.
     audience: {

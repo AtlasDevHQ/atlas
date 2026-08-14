@@ -46,6 +46,13 @@ function brainConnector(catalogId = CATALOG): BrainSourceConnector {
   return {
     catalogId,
     source: SLACK_SOURCE,
+    // Chat-class ⇒ per-workspace (#5203). This suite is about catalog-id
+    // claim disjointness, which the scope discriminator does not affect.
+    scope: {
+      kind: "per-workspace",
+      syncId: `${catalogId}-sync`,
+      listWorkspaces: () => Promise.resolve([]),
+    },
     audience: { kind: "externally-synced" },
     createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
   };

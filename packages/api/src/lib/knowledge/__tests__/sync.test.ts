@@ -881,6 +881,7 @@ describe("runKnowledgeSyncCycle", () => {
     registerBrainSourceConnector({
       catalogId: "catalog:fixture-brain",
       source: HUMAN_SOURCE,
+      scope: { kind: "per-install" },
       audience: { kind: "externally-synced" },
       createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
     });
@@ -905,6 +906,7 @@ describe("runKnowledgeSyncCycle", () => {
     registerBrainSourceConnector({
       catalogId: "catalog:fixture-brain",
       source: HUMAN_SOURCE,
+      scope: { kind: "per-install" },
       audience: { kind: "externally-synced" },
       createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
     });
@@ -923,6 +925,7 @@ describe("runKnowledgeSyncCycle", () => {
     registerBrainSourceConnector({
       catalogId: "catalog:fixture-brain",
       source: HUMAN_SOURCE,
+      scope: { kind: "per-install" },
       audience: { kind: "externally-synced" },
       createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
     });

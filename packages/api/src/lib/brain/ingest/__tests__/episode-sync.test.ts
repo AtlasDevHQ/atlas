@@ -158,6 +158,7 @@ function connectorReturning(
   return {
     catalogId: "catalog:fixture",
     source: HUMAN_SOURCE,
+    scope: { kind: "per-install" },
     // `human` is not a grant-deriving class, so either arm type-checks; this
     // suite drives the ingest engine and never the audience seam.
     audience: { kind: "externally-synced" },
@@ -374,6 +375,7 @@ describe("bookkeeping", () => {
       connector: {
         catalogId: "catalog:fixture",
         source: HUMAN_SOURCE,
+        scope: { kind: "per-install" },
         audience: { kind: "externally-synced" },
         createClient: () => {
           throw new Error("unreachable");

@@ -107,9 +107,7 @@ import {
   supersessionCollisionJoin,
 } from "@atlas/api/lib/content-mode/adapters/brain-facts";
 import {
-  SLACK_HISTORY_CATALOG_ID,
   SLACK_HISTORY_SOURCE,
-  parseSlackHistoryConfig,
 } from "@atlas/api/lib/brain/ingest/slack/config";
 import type {
   BrainFactOversight,
@@ -165,25 +163,43 @@ export const OVERSIGHT_BUCKET_MAX = 200;
 export type ConfiguredChannels = ReadonlyMap<string, ReadonlySet<string>>;
 
 /**
- * Every Slack chat-history install's stored config, regardless of enabled or
- * archived state.
+ * Every Slack channel this workspace has NAMED — the label-policy input.
  *
- * DELIBERATELY WIDER than `AUDIENCE_SYNC_INSTALLS_SQL` ON THE ENABLED/ARCHIVED
- * AXIS: that statement filters `enabled = true AND status <> 'archived'`
- * because it answers a different question — "which installs should be syncing
- * right now". This one answers "which channels has an admin of this workspace
- * ever named", and disabling a source does not un-name them. Reusing the sync
- * predicate would make a label silently flip to opaque the moment somebody
- * toggled the install off, which reads as Atlas hiding something at exactly the
- * wrong moment.
+ * ## What "named" means after #5203
  *
- * It also drops that statement's `pillar = 'knowledge'`, which is not a
- * widening in practice: `catalog_id` already pins a single catalog row, and
- * `pillar` is denormalized FROM that row, so the predicate is implied.
+ * It used to mean "typed into the `slack-history` install form", and the query
+ * read `workspace_plugins.config`. That install is gone (migration 0198), so
+ * this reads `brain_slack_channel` instead — and the question it answers has to
+ * be re-derived rather than translated, because the two are not the same set.
+ *
+ * A channel is named here when an admin performed a DELIBERATE ACT that
+ * identifies it:
+ *
+ *   - the bot is a member — someone invited it, which under the membership
+ *     model IS the act that puts a channel in scope; or
+ *   - it carries an exclusion — someone named it in order to keep it OUT.
+ *
+ * Both are admin-visible facts about a channel an admin already knows exists,
+ * which is the ORIGINAL argument for the label policy: the existence and
+ * activity level of `#project-severance` is sensitive, but an admin who invited
+ * Atlas into it learns nothing from seeing it named back.
+ *
+ * DELIBERATELY WIDER than the poll scope on the membership/exclusion axis, and
+ * for the pre-#5203 reason restated: the poll scope answers "what should be
+ * read right now", this answers "what has this workspace's admin ever named",
+ * and excluding a channel does not un-name it. Reusing the scope predicate
+ * would flip a label to opaque the moment somebody excluded a channel — which
+ * reads as Atlas hiding something at exactly the wrong moment.
+ *
+ * ⚠️ It does NOT include the `legacy_channels` allowlist of an unreconciled
+ * workspace. That set was named under the old model and the first sync writes
+ * its complement as exclusions, so those channels acquire rows — and therefore
+ * labels — the moment the reconcile runs. Until then a pre-#5203 workspace
+ * reports opaque handles, which is the fail-closed direction and self-resolving.
  */
-export const OVERSIGHT_INSTALL_CONFIGS_SQL = `SELECT config
-         FROM workspace_plugins
-        WHERE workspace_id = $1 AND catalog_id = $2`;
+export const OVERSIGHT_NAMED_CHANNELS_SQL = `SELECT channel_id
+         FROM brain_slack_channel
+        WHERE workspace_id = $1 AND (is_member = true OR excluded_at IS NOT NULL)`;
 
 /**
  * Load the configured channel set for one workspace.
@@ -203,10 +219,7 @@ export async function loadConfiguredChannels(
   const bySource = new Map<string, Set<string>>();
   let rows: readonly unknown[];
   try {
-    const result = await db.query(OVERSIGHT_INSTALL_CONFIGS_SQL, [
-      workspaceId,
-      SLACK_HISTORY_CATALOG_ID,
-    ]);
+    const result = await db.query(OVERSIGHT_NAMED_CHANNELS_SQL, [workspaceId]);
     rows = result.rows;
   } catch (err) {
     // `errorMessage`, not a raw ternary: this wraps a bare `db.query`, which is
@@ -216,39 +229,34 @@ export async function loadConfiguredChannels(
     // serializer keys on.
     log.warn(
       { workspaceId, requestId, err: errorMessage(err) },
-      "brain oversight: could not read install configs — every audience will be reported with an opaque handle. Counts are unaffected",
+      "brain oversight: could not read the workspace's named Slack channels — every audience will be reported with an opaque handle. Counts are unaffected",
     );
     return bySource;
   }
 
   const channels = new Set<string>();
-  let unparseableConfigs = 0;
+  let unusableRows = 0;
   for (const raw of rows) {
-    const config =
+    const channelId =
       typeof raw === "object" && raw !== null
-        ? (raw as { config?: unknown }).config
+        ? (raw as { channel_id?: unknown }).channel_id
         : undefined;
-    const parsed = parseSlackHistoryConfig(
-      typeof config === "object" && config !== null && !Array.isArray(config)
-        ? (config as Record<string, unknown>)
-        : null,
-    );
-    // intentionally ignored: an unparseable config is already surfaced as an
-    // actionable sync error by the connector and the audience sync, which both
-    // `throw new Error(parsed.error)` on it. Here it only means those channels
-    // cannot be shown to have been configured, so their label is withheld —
-    // the fail-closed outcome. Counted below so "why is every label opaque?" is
-    // a log line rather than an inference.
-    if (!parsed.ok) {
-      unparseableConfigs++;
+    // A row whose id is not a usable string cannot be matched against a grant
+    // token, so it can only ever withhold a label — the fail-closed outcome.
+    // Counted rather than dropped in silence, because "why is every label
+    // opaque?" should be a log line rather than an inference. (The column is
+    // NOT NULL under a CHECK, so a non-empty count here means the shape changed
+    // out from under this reader.)
+    if (typeof channelId !== "string" || channelId === "") {
+      unusableRows++;
       continue;
     }
-    for (const channelId of parsed.channels) channels.add(channelId);
+    channels.add(channelId);
   }
-  if (unparseableConfigs > 0) {
+  if (unusableRows > 0) {
     log.debug(
-      { workspaceId, requestId, unparseableConfigs, configuredChannels: channels.size },
-      "brain oversight: some install configs did not parse — their channels cannot be shown as configured, so those audiences report an opaque handle",
+      { workspaceId, requestId, unusableRows, configuredChannels: channels.size },
+      "brain oversight: some named-channel rows were unusable — their audiences report an opaque handle",
     );
   }
   if (channels.size > 0) bySource.set(SLACK_HISTORY_SOURCE, channels);
@@ -298,10 +306,15 @@ interface TokenClass {
  *
  * ## Case sensitivity, stated because it is load-bearing and invisible
  *
- * `parseSlackHistoryConfig` upper-cases channel ids at parse
- * (`.trim().toUpperCase()`); `deriveChatChannelGrant` only trims, and the
+ * The named set now comes from `brain_slack_channel`, whose ids arrive from two
+ * writers: the membership refresh stores Slack's own ids verbatim, and
+ * `excludeSlackChannel` upper-cases what an admin typed
+ * (`.trim().toUpperCase()`). `deriveChatChannelGrant` only trims, and the
  * comparison below is a case-SENSITIVE `Set.has`. Slack ids are uppercase, so
- * the two agree today. A vendor whose ids are not would fall through to
+ * all three agree today — and the table's `ck_brain_slack_channel_id_shape`
+ * CHECK (`^[CG][A-Z0-9]{2,}$`) is what keeps a lowercase id from being stored
+ * at all, which is a stronger guarantee than the old parse-time upper-casing
+ * gave. A vendor whose ids are not uppercase would fall through to
  * `discovered` — fail-closed, and undiagnosable from the UI, so a source that
  * adds one owns normalising both sides.
  */

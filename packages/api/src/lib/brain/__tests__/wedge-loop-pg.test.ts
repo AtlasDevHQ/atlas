@@ -502,6 +502,13 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
   const connector: BrainSourceConnector<typeof SLACK_HISTORY_SOURCE> = {
     catalogId: CATALOG_ID,
     source: SLACK_HISTORY_SOURCE,
+    // Chat-class ⇒ per-workspace (#5203). This suite drives
+    // `syncBrainEpisodeSource` directly, so `listWorkspaces` is unreachable.
+    scope: {
+      kind: "per-workspace",
+      syncId: "slack-history",
+      listWorkspaces: () => Promise.resolve([]),
+    },
     // Channel-scoped grants: `audience/sync.ts` reconciles them off the install,
     // so this source registers no re-verifier.
     audience: { kind: "externally-synced" },

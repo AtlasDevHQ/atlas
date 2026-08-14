@@ -58,6 +58,19 @@ const RECONCILED_SECTIONS = [
   "brainEdges",
   "factAudienceMembers",
   "brainVocabularyEdges",
+  // #5203. Listed for the reason the doc comment gives — it has both a manifest
+  // count and an ImportResult counter, so leaving it off would make "the target
+  // silently dropped every exclusion" a successful migration. That is the one
+  // failure this section cannot afford: a dropped exclusion does not degrade the
+  // destination, it makes it ingest a channel a human removed from scope.
+  //
+  // `brainSlackIngestScope` is deliberately NOT here and cannot be: it is a
+  // single optional OBJECT, not a counted array, so it has no manifest count and
+  // no ImportResult counter, and the type bound above rejects it. Its loss is
+  // bounded by the same reconciliation from the other side — a workspace with an
+  // unreconciled scope row has, by definition, not yet turned its allowlist into
+  // exclusions, so there is nothing for the counted section to under-report.
+  "brainSlackChannelExclusions",
 ] as const satisfies readonly (keyof ExportManifest["counts"] & keyof ImportResult)[];
 
 type RefusalCapableSection = {
@@ -66,6 +79,15 @@ type RefusalCapableSection = {
 
 const REFUSAL_ACCOUNTING = [
   "brainVocabularyEdges",
+  // #5203. Its `refused` counter is structurally zero today — the import's only
+  // non-imported arm is `DO NOTHING` on an existing row, which is `skipped`.
+  // Listed anyway, and deliberately: the pin below makes a section growing
+  // `refused` a COMPILE error precisely so the accounting-versus-loss decision
+  // is made when the counter is introduced rather than discovered during a live
+  // migration. The decision, made here: a refused exclusion is LOST SCOPE
+  // NARROWING and must count toward the reconciled total, so a future conflict
+  // rule cannot fail a cutover merely by exercising itself.
+  "brainSlackChannelExclusions",
 ] as const satisfies readonly RefusalCapableSection[];
 
 const REFUSAL_ACCOUNTING_SECTIONS: ReadonlySet<string> = new Set(REFUSAL_ACCOUNTING);

@@ -2,9 +2,8 @@
  * never rendered by React: @vercel/og hands it to Satori, whose renderer
  * understands a fixed subset of HTML elements (div, span, img, svg) and has no
  * concept of a component. `next/image` would emit nothing. The rule fires only
- * because this file is .tsx and the nextjs plugin is enabled repo-wide; it is
- * inapplicable here rather than unfixed. Scoped to this file so the rule keeps
- * working on every real Next surface. */
+ * because this file is .tsx and the nextjs plugin is enabled repo-wide. Scoped
+ * to this file so the rule keeps working on every real Next surface. */
 /**
  * Generate brand assets for social media (LinkedIn, GitHub, Twitter/X).
  *

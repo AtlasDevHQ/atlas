@@ -53,13 +53,13 @@ export type AtlasEventSource =
  * set by hand. `MCP_SIGNUP` is written by the self-serve trial provisioner;
  * exposing it to a tool would let a chat turn forge a trial attribution.
  *
- * A tuple with `satisfies`, not a bare literal union, and the difference is
- * load-bearing in two ways. It constrains the list to real `AtlasEventSource`
+ * A tuple with `satisfies` buys two things a bare literal union does not. It
+ * constrains the list to real `AtlasEventSource`
  * members, so a name that is not one — a typo, or a channel someone forgot to
  * add — cannot sit here silently protecting nothing (measured: a typo'd entry
  * reds here with `TS2820: Did you mean "MCP_SIGNUP"?`). And when `MCP_SIGNUP`
  * is renamed it reds HERE, in addition to and above `_AgentSourcesExhaustive`
- * — whose own message asks you to append the member to the agent-facing tuple,
+ * — whose comment tells you to append the member to the agent-facing tuple,
  * which is precisely the edit that would hand agents the provisioner-only
  * source. A bare union would red only there, so the only guidance a reader got
  * would be the wrong guidance.
@@ -85,9 +85,8 @@ export type AgentEventSource = Exclude<
  * The two directions are pinned separately. `satisfies` rejects a member that
  * is not an `AgentEventSource`; `_AgentSourcesExhaustive` rejects an
  * `AgentEventSource` that is missing here. So adding a public member to
- * `AtlasEventSource` fails to compile until it is either listed here or
- * added to `INTERNAL_ONLY_EVENT_SOURCES` — the decision is forced, not
- * defaulted.
+ * `AtlasEventSource` fails to compile until it is either listed here or added to
+ * `INTERNAL_ONLY_EVENT_SOURCES`, so the choice must be made explicitly.
  *
  * Both pins are relative to the DERIVED `AgentEventSource`, so neither can
  * protect a NAMED member on its own — `_McpSignupIsInternal` below does that,
@@ -152,11 +151,10 @@ void _mcpSignupIsInternal;
  * The agent-facing enum itself, so no surface reconstructs it.
  *
  * Both tool sites — `upsertTwentyPerson` in `index.ts` and `upsertPerson` in
- * `scripts/twenty-mcp.ts` — import this rather than calling `z.enum` on the
- * tuple. That takes the number of enum-construction sites from two to zero: a
- * hand-rolled `z.enum([...])` at either site is the one mutation every pin
- * above is blind to, and `scripts/twenty-mcp.ts` has no test file that could
- * catch it.
+ * `scripts/twenty-mcp.ts` — import this rather than calling `z.enum` themselves,
+ * so the enum is constructed once, here. A hand-rolled `z.enum([...])` at either
+ * site is the one mutation every pin above is blind to, and
+ * `scripts/twenty-mcp.ts` has no test file that could catch it.
  */
 export const agentEventSourceSchema = z.enum(AGENT_EVENT_SOURCES);
 

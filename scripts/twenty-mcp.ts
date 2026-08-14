@@ -97,16 +97,16 @@ async function run<T>(
   }
 }
 
-// The schema lead-normalizer exports, not a re-listed `z.enum([...])`, so this
-// surface cannot drift from the plugin's. The previous hand-written copy
-// carried a drift check asserting MUTUAL assignability with `AtlasEventSource`
-// — the wrong invariant, since `MCP_SIGNUP` is deliberately absent from every
-// agent-facing enum — and it had never once run, because `scripts/` was
-// excluded from every type program until #5173.
+// Imports lead-normalizer's schema so this surface cannot drift from the
+// plugin's. The previous hand-written copy carried a drift check asserting
+// MUTUAL assignability with `AtlasEventSource` — the wrong invariant, since
+// `MCP_SIGNUP` is deliberately absent from every agent-facing enum — and it had
+// never once run, because `scripts/` was excluded from every type program until
+// #5173.
 //
-// Importing the schema rather than the tuple is what covers this file: nothing
-// under `scripts/` has a test lane, so a hand-rolled enum here would be caught
-// by nothing. There is now no enum to hand-roll.
+// Importing the schema rather than the tuple is what covers this file: it has no
+// test file of its own (the module self-executes on import), so a hand-rolled
+// enum here would be caught by nothing. There is now no enum to hand-roll.
 const eventSourceSchema = agentEventSourceSchema;
 
 const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });

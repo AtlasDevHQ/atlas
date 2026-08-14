@@ -72,9 +72,9 @@ function isSaasEnvKey(k: string | undefined): k is keyof SaasEnv {
 }
 
 /**
- * A flag whose value slot swallowed the NEXT FLAG is the failure that reports
- * itself three tokens later as `Unknown argument`. Every value-taking flag
- * routes through here so none of them can acquire the defect independently.
+ * A flag whose value slot swallowed the NEXT FLAG surfaces later as
+ * `Unknown argument` naming an unrelated token. Every value-taking flag routes
+ * through here so none of them can acquire the defect independently.
  */
 function requireValue(
   flag: string,

@@ -81,17 +81,11 @@ lighthouse-reports/
 apps/docs/content/**/__fixture-*.mdx
 
 # Same shape, for the scripts/ type + lint gate's fixture suite
-# (scripts/__tests__/check-scripts-typecheck.test.sh). Worse if leaked: the
-# probe's last-written body is DELIBERATELY broken — an implicit any — so a
-# committed leftover reds `bun run type` for everyone, in exactly the directory
-# this gate was added to protect. (The suite's OTHER probe, the un-ignored lint
-# one, reds `bun run type` as well as `bun run lint` while it is on disk — the
-# ignore here is about what can be COMMITTED, not about what breaks locally.)
+# (scripts/__tests__/check-scripts-typecheck.test.sh). Its last-written body is
+# deliberately broken, so a SIGKILLed run must not leave one committable.
 #
-# ⚠️ Covers only the TYPE probe, and the `.fixture.ts` suffix is what keeps the
-# pattern narrow enough to do that. tsgo does not read `.gitignore`, so an
-# ignored file is still type-checked; oxlint DOES, and listing that suite's LINT
-# probe here made both lint probes report zero findings and exit 0 — a green
-# meaning "not scanned", which is precisely what those probes exist to detect.
-# The lint probe therefore stays visible to git on purpose. Do not "fix" that.
+# ⚠️ The `.fixture.ts` suffix keeps this to the TYPE probe only. That suite's
+# LINT probe must stay visible to git — oxlint honours `.gitignore` and tsgo does
+# not, so ignoring it would make both lint cases measure nothing. See the suite's
+# own header before widening this pattern.
 scripts/zz-*.fixture.ts

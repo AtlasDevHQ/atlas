@@ -77,13 +77,9 @@ describe("twentyPlugin — upsertTwentyPerson action metadata", () => {
     ]);
   });
 
-  // The privilege boundary, asserted at runtime because the type layer cannot
-  // hold it alone. `AgentEventSource` is derived by subtracting
-  // INTERNAL_ONLY_EVENT_SOURCES from AtlasEventSource, so emptying that list
-  // and appending MCP_SIGNUP to AGENT_EVENT_SOURCES is two edits that compile
-  // clean — indistinguishable, to the compiler, from a deliberate
-  // reclassification. Measured: that mutation passed `bun run type` and all
-  // 217 plugin tests before these two assertions existed.
+  // The privilege boundary at the tool's WIRE surface. `lead-normalizer.ts`
+  // pins the type; this pins that the tool actually uses it — a hand-rolled
+  // `z.enum([...])` here would satisfy every compile-time pin in that file.
   test("the agent-facing eventSource enum REJECTS MCP_SIGNUP", () => {
     const schema = twentyPlugin(VALID_CONFIG).actions[0].tool.inputSchema as {
       safeParse: (v: unknown) => { success: boolean };

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Adversarial fixture suite for the scripts/ type + lint gate (#5173).
 #
-# The gate is not a script — it is three lines of wiring in package.json:
-# `type:scripts` called from `bun run type`, and `scripts/` appended to the
-# `lint` and `lint:type-aware` path lists. That shape is cheap and correct, and
-# it is also invisible: nothing about it announces itself if a later edit takes
-# it back out. Ways it can silently stop working, all one character of diff:
+# The gate is package.json wiring: a `type:scripts` script called from
+# `bun run type`, plus `scripts/` in the two lint path lists. That shape is cheap
+# and correct, and it is also invisible — nothing about it announces itself if a
+# later edit takes it back out. Ways it can silently stop working, all one
+# character of diff:
 #
 #   1. `tsconfig.scripts.json`'s `include` narrows, or a file lands somewhere
 #      the glob does not reach, and those files go unchecked again.
@@ -19,34 +19,35 @@
 # REINTRODUCING #5169's exact defect into a real `scripts/` file and requiring
 # the gate to go red on it.
 #
-# ⚠️ Every probe runs a SHIPPED command — `bun run type:scripts`,
-# `bun run lint`, `bun run lint:type-aware` — never a hand-rolled `tsgo -p …` or
-# `oxlint --config … scripts/`. Re-implementing the gate is the failure this
-# file exists to catch, one level up, and both halves were measured failing it:
-# rewriting `type:scripts` to `echo skipped` left all ten cases green, and
-# adding `--ignore-pattern 'scripts/**'` to both lint scripts turned linting of
-# `scripts/` completely off while the suite reported 12 passed, 0 failed.
+# ⚠️ Every probe runs a SHIPPED command — `bun run type:scripts`, `bun run lint`,
+# `bun run lint:type-aware`. Re-implementing the gate is the failure this file
+# exists to catch, one level up, and an earlier revision that hand-rolled
+# `tsgo -p …` and `oxlint --config … scripts/` was measured failing it twice:
+# rewriting `type:scripts` to `echo skipped` left every case green, and adding
+# `--ignore-pattern 'scripts/**'` to both lint scripts turned linting of
+# `scripts/` completely off while the suite still reported no failures. The
+# shipped suite fails 3 and 2 cases on those. The one hand-rolled invocation
+# that remains is `--listFiles`, which is not a flag `type:scripts` passes —
+# hence the separate case pinning `type:scripts` at this same config.
 #
-# ⚠️ No fail-case is allowed to rest on "the token appears somewhere in the
-# output". The type program spans ~2000 files and the lint scans are repo-wide,
-# so a pre-existing diagnostic satisfies that on a run that compiled or linted
-# nothing. The type cases use `names_on_one_line` (tsgo's format is stable);
-# the lint cases use a probe-free baseline comparison, because oxlint's format
-# is NOT stable — see `lint_probe`.
+# No fail-case rests on "the token appears somewhere in the output". The type
+# program spans ~2000 files and the lint scans are repo-wide, so a pre-existing
+# diagnostic satisfies that on a run that compiled or linted nothing. The type
+# cases use `names_on_one_line` (tsgo's format is stable); the lint cases
+# compare against a probe-free baseline, because oxlint's is not — see
+# `lint_probe`.
 #
 # The probes write a file into scripts/ and trap-remove it. That is why this
 # suite belongs in ci-local.sh's Stage 2 (serial, tree-writing) alongside the
 # other fixture suites that rewrite tracked source — a probe on disk while a
-# Stage 1 gate is scanning makes it go red on a line nobody wrote, and
-# `oxlint --type-aware` has been observed panicking outright on exactly that
-# collision. In remote CI the `drift` job runs on its own runner.
+# Stage 1 gate is scanning makes it go red on a line nobody wrote. In remote CI
+# the `drift` job runs on its own runner.
 #
-# ⚠️ Stage-2 serialisation does NOT cover two agents in two worktrees of one
+# Stage-2 serialisation does NOT cover two agents in two worktrees of one
 # checkout, which is this repo's normal working mode. While this suite runs, a
-# concurrent `bun run type` or `bun run lint` in the same worktree WILL go red
-# on a probe — observed three times during this PR's own review. There is no
-# lock yet; if you are bisecting a mystery red, check for a `scripts/zz-*` file
-# first.
+# concurrent `bun run type` or `bun run lint` in the same worktree will go red on
+# a probe. There is no lock yet; if you are bisecting a mystery red, look for a
+# `scripts/zz-*` file first.
 
 set -euo pipefail
 
@@ -60,6 +61,8 @@ if [ ! -f "$TSCONFIG" ]; then
 fi
 
 TSGO="$REPO_ROOT/node_modules/.bin/tsgo"
+# OXLINT is a pre-flight existence check only — the lint cases reach oxlint
+# through the shipped `bun run lint…` scripts, not through this path.
 OXLINT="$REPO_ROOT/node_modules/.bin/oxlint"
 for bin in "$TSGO" "$OXLINT"; do
   if [ ! -x "$bin" ]; then
@@ -72,13 +75,12 @@ done
 # the real glob and the real lint path list, and a predictable name is one a
 # human can grep for and delete if a run is killed between write and cleanup.
 #
-# ⚠️ TWO names, because gitignoring the lint probe would SILENTLY DISABLE it.
-# The type probe is gitignored — tsgo does not consult `.gitignore`, so it is
-# still type-checked, and a leftover (whose last-written body is deliberately
-# broken) can never be staged by an errant `git add -A`. oxlint DOES honour
-# `.gitignore`: measured, a gitignored probe produced zero findings and exit 0
-# from both lint probes — a green that means "not scanned", which is the exact
-# failure those probes exist to detect. So the lint probe must stay visible to
+# ⚠️ TWO names, because the two tools disagree about `.gitignore`. oxlint honours
+# it — measured, an ignored probe yields zero findings and exit 0, so both lint
+# cases would measure nothing (and fail). tsgo does not, so the type probe can be
+# ignored and still be type-checked. The type probe is therefore gitignored,
+# which keeps a leftover — whose last-written body is deliberately broken — from
+# being staged by an errant `git add -A`; the lint probe must stay visible to
 # git, and its leftover risk is carried by the guards below instead.
 PROBE_TYPE="$REPO_ROOT/scripts/zz-typecheck-probe.fixture.ts"
 PROBE_LINT="$REPO_ROOT/scripts/zz-lint-probe.ts"
@@ -129,11 +131,11 @@ FAIL=0
 pass() { echo "  ok   $1"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL $1" >&2; FAIL=$((FAIL + 1)); }
 
-# ─── the two rules every assertion in this file goes through ───────────────────
+# ─── two helpers the probe cases share ────────────────────────────────────────
 #
-# Both exist because writing them out by hand recurred: round 1 fixed each at
-# one site and reintroduced it at the next one written. A helper is the only
-# form that a new site cannot get wrong.
+# Both are helpers rather than inline greps because writing them by hand
+# recurred: each was fixed at one site and reintroduced at the next site
+# written. A helper is the only form a new site cannot get wrong.
 
 # names_on_one_line FILE TOKEN < output — TOKEN must appear on a line that also
 # names FILE. Two independent greps are NOT this: the program spans ~2000 files
@@ -186,22 +188,25 @@ probe_case() {
 # the probe and once with it, and require that the probe CAUSED a new diagnostic
 # of RULE and flipped the exit status.
 #
-# ⚠️ CMD is `bun run --silent lint…`, not a hand-rolled `oxlint --config … scripts/`.
-# The hand-rolled form is blind to everything about the shipped command except
-# the presence of the token `scripts/` in its path list — measured, adding
-# `--ignore-pattern 'scripts/**'` to both lint scripts turned linting of
-# `scripts/` completely off while this suite reported 12 passed, 0 failed.
+# CMD is `bun run --silent lint…`. A hand-rolled `oxlint --config … scripts/` is
+# blind to everything about the shipped command except the presence of the token
+# `scripts/` in its path list — see the `--ignore-pattern` measurement in the
+# file header.
 #
-# ⚠️ The assertion is DIFFERENTIAL, not same-line, and that is not a weakening.
-# oxlint switches to GitHub Actions' annotation reporter under CI — `##[error]
-# Promises must be awaited.` — where the path is annotation metadata and never
-# appears on the message line. A same-line grep therefore passed locally and
-# failed on the runner, on a run where the probe HAD been caught. Comparing
-# against a probe-free baseline is format-independent, and it asserts something
-# the same-line form only approximated: that this probe produced this finding.
+# The assertion compares against a probe-free baseline rather than grepping one
+# line, because oxlint's output format is not stable. On the runner it emits
+# GitHub annotations — `::error file=<path>,line=N,…,title=eslint(<rule>)::<msg>`
+# — where the path is followed by `,line=` rather than `:N:`, so
+# `names_on_one_line`'s `<file>[:(]<digits>` anchor cannot match even though the
+# probe WAS caught. That is how this suite went green locally and red on the
+# runner. (Not reproducible locally by setting `GITHUB_ACTIONS` or `CI`; the
+# runner's detection does something else.)
 #
-# Cost is two whole-repo runs per probe — measured 1.7s each for `lint` and
-# 12.4s each for `lint:type-aware`.
+# The baseline comparison is format-independent, and it measures what the
+# same-line form only approximated: that THIS probe produced THIS finding.
+#
+# Cost is two whole-repo runs per probe — ~2s each for `lint` and ~11s each for
+# `lint:type-aware`, measured 2026-08.
 lint_probe() {
   local name="$1" body="$2" rule="$3"
   shift 3
@@ -241,10 +246,12 @@ echo "check-scripts-typecheck.test.sh — scripts/ type + lint gate (#5173)"
 status=0
 out="$(run_gate)" || status=$?
 if [ "$status" -ne 0 ]; then
-  if names_on_one_line "TS2307" "@useatlas/" <<<"$out" ||
-    grep -qE 'error TS2307:.*@useatlas/' <<<"$out"; then
+  # Same-line, but NOT via names_on_one_line — that helper's first argument is a
+  # FILE and its anchor is `<file>[:(]<digits>`, which an error code can never
+  # satisfy. Written that way it was a dead branch carried entirely by this grep.
+  if grep -qE 'error TS2307:.*@useatlas/' <<<"$out"; then
     echo "::error::the scripts/ type program cannot resolve @useatlas/* — those resolve through each package's BUILT dist/. Run 'bun install' (which builds @useatlas/types and @useatlas/plugin-sdk via their prepare scripts). @useatlas/sdk and @useatlas/react have NO prepare script — if one of those is unresolved, build it explicitly: bun run --filter '<pkg>' build." >&2
-    sed 's/^/    /' <<<"$out" >&2 | head -20
+    head -20 <<<"$out" | sed 's/^/    /' >&2
   elif ! grep -qE '(^|/)scripts/[^:(]*[:(][0-9]+' <<<"$out"; then
     echo "::error::the scripts/ type PROGRAM is red but NO diagnostic names a scripts/ file. This is a repo-wide breakage or a weakened compilerOption (strict / strictNullChecks), not a scripts/ defect — the program reaches packages/api, ee/ and apps/docs transitively. First 20 lines:" >&2
     head -20 <<<"$out" | sed 's/^/    /' >&2
@@ -342,13 +349,15 @@ fi
 
 # The glob is one level deep, so a file in a subdirectory is invisible to both
 # the program AND to the comparison above — under-coverage that looks identical
-# to full coverage. `ee-stub` is type-checked by the Symlink Stub Build job and
-# `__tests__` holds only .sh, so anything else appearing there is unchecked.
+# to full coverage. `ee-stub` is type-checked by the Symlink Stub Build job; no
+# other `scripts/` subdirectory holds TypeScript today, so anything appearing
+# there is unchecked.
 #
-# ⚠️ `.tsx` is in this pattern because `.tsx` is in the include glob. The
-# coverage loop above was widened when `.tsx` entered scope and this one was
-# not, which reopened the exact defect one directory down: a `scripts/brand/*.tsx`
-# carrying #5169's shape passed the whole suite.
+# `.tsx` is in this pattern because `.tsx` is in the include glob. An earlier
+# revision widened the coverage loop above and not this one, which reopened the
+# defect one directory down: a `scripts/<dir>/*.tsx` carrying #5169's shape
+# passed the whole suite.
+#
 # ⚠️ The parentheses are load-bearing — without them `find` binds `-not -path`
 # to the last `-name` only, and `ee-stub/**/*.ts` gets falsely flagged.
 capture_status stray find_status \
@@ -394,10 +403,10 @@ else
   fail "package.json type no longer runs type:scripts — value: ${value:-<missing>}"
 fi
 
-# Cases 6 and 7 measure $TSCONFIG DIRECTLY (--listFiles is not a flag
-# `type:scripts` passes), so if `type:scripts` were repointed at a different
-# config they would go on validating an orphaned file forever. Nothing else
-# asserts the two are the same file.
+# The --listFiles and stray-subdirectory cases measure $TSCONFIG DIRECTLY
+# (--listFiles is not a flag `type:scripts` passes), so if `type:scripts` were
+# repointed at another config they would go on validating an orphaned file
+# forever. Nothing else asserts the two are the same file.
 value="$(read_script type:scripts)"
 if grep -qF "tsconfig.scripts.json" <<<"$value"; then
   pass "type:scripts points at the config this suite audits"
@@ -433,9 +442,9 @@ export function go(): void {
 
 # --- the gated scripts still behave --------------------------------------------
 
-# `saas-env-fixture.ts` is the file this PR's type gate surfaced 25 errors in,
-# and the round-2 fixes made `--database-url` mandatory. `scripts/` has no unit
-# test lane; this is three lines here rather than standing one up.
+# `saas-env-fixture.ts` is the file this gate surfaced 25 errors in, and
+# `--database-url` is now mandatory; this pins that. There is no unit-test lane
+# for `scripts/*.ts`, so it lives here rather than standing one up.
 status=0
 out="$(bun run "$REPO_ROOT/scripts/saas-env-fixture.ts" --database-url 2>&1)" || status=$?
 if [ "$status" -ne 0 ] && grep -qF "expects a Postgres URL" <<<"$out"; then

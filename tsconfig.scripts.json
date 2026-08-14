@@ -20,15 +20,14 @@
 // `check-*` guards. The issue priced the narrow `check-*.ts` scope at 1 error
 // and the full top-level scope at 26; the 26 turned out to be two files (25 of
 // them a single `readonly`-assignment line in `saas-env-fixture.ts`), so the
-// wider scope was affordable and is what ships. Nothing is scoped out for cost.
+// wider scope was affordable and is what ships.
 //
-// `.tsx` is in scope because it MEASURES clean, not because it was assumed to.
-// An earlier draft of this file excluded `scripts/generate-brand-assets.tsx`
-// on the theory that Satori's JSX types are not React's; adding it to the glob
-// compiles with zero errors, because `@vercel/og`'s `ImageResponse` takes a
-// `React.ReactElement` and `jsx: react-jsx` below is the right setting for it.
-// The exclusion would have bought nothing and cost that file the only
-// type-checking it will ever get — the root program excludes `scripts` too.
+// `.tsx` is in scope: adding it to the glob compiles with zero errors, because
+// `@vercel/og`'s `ImageResponse` takes a `React.ReactElement` and `jsx:
+// react-jsx` below is the right setting for it. An earlier draft excluded
+// `scripts/generate-brand-assets.tsx` on the theory that Satori's JSX types are
+// not React's; that exclusion bought nothing and cost the file the only
+// type-checking it will ever get, since the root program excludes `scripts` too.
 //
 // `scripts/ee-stub/**` is deliberately NOT here, and is not an exemption: the
 // `Symlink Stub Build` job in ci.yml copies that tree over `ee/` and runs the
@@ -72,9 +71,10 @@
     // so it names the same directory `apps/docs/tsconfig.json` does.
     //
     // Only `paths` matches that config, though. This program has no `dom` in
-    // `lib`, no `next` plugin and no `.source/**` types, and it is now the ONLY
-    // type-check that docs subgraph gets — `apps/docs` has no `type` script and
-    // the root program excludes it. Being stricter than the docs app cannot
+    // `lib`, no `next` plugin and no `.source/**` types, and it is now the only
+    // type-check that docs subgraph gets IN CI — `apps/docs` has no `type`
+    // script, the root program excludes it, and `next build` only type-checks it
+    // at deploy time. Being stricter than the docs app cannot
     // hide a bug, but it does impose a real constraint: any `apps/docs` helper
     // a scripts/ guard imports must be DOM-free, or `bun run type:scripts` goes
     // red with no scripts/ file named in the error. Do NOT add `dom` to `lib`

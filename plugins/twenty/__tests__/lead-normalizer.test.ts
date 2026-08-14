@@ -570,16 +570,17 @@ describe("LeadEventSchema — parse at the crm_outbox flush boundary", () => {
 /**
  * The agent/internal split, asserted at runtime.
  *
- * `AgentEventSource` is `Exclude<AtlasEventSource, InternalOnlyEventSource>`,
- * and both compile-time pins on `AGENT_EVENT_SOURCES` are relative to that
- * DERIVED type — so they hold for any value of `INTERNAL_ONLY_EVENT_SOURCES`,
- * including an empty one. Emptying the internal list and appending
- * `MCP_SIGNUP` to the agent tuple therefore compiles clean, and would hand a
- * chat turn the ability to forge a self-serve-trial attribution.
+ * `MCP_SIGNUP` itself is pinned by name in `lead-normalizer.ts`
+ * (`_McpSignupIsInternal`), so emptying `INTERNAL_ONLY_EVENT_SOURCES` and
+ * appending it to the agent tuple is a compile error.
  *
- * These assertions are the only thing that fails on that mutation. Exact
- * membership is pinned rather than just the exclusion: a list that quietly
- * GAINS a channel is the same defect in the other direction.
+ * What no compile-time pin catches is a FUTURE internal channel: both pins on
+ * `AGENT_EVENT_SOURCES` are relative to the derived `AgentEventSource`, so a new
+ * member added to `AtlasEventSource` and to `AGENT_EVENT_SOURCES` — but never to
+ * `INTERNAL_ONLY_EVENT_SOURCES` — satisfies both tuples' types. Pinning exact
+ * membership here turns that into a test failure. Exact membership rather than
+ * just the exclusion, because a list that quietly GAINS a channel is the same
+ * defect in the other direction.
  */
 describe("agent-facing event sources", () => {
   test("AGENT_EVENT_SOURCES is exactly the five public channels", () => {

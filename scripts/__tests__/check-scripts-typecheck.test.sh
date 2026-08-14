@@ -1,31 +1,39 @@
 #!/usr/bin/env bash
 # Adversarial fixture suite for the scripts/ type + lint gate (#5173).
 #
-# The gate is not a script — it is three edits that put scripts/ inside gates
-# that already block merges: `type:scripts` inside `bun run type`, and
-# `scripts/` appended to the `lint` and `lint:type-aware` path lists. That
-# shape is cheap and correct, and it is also invisible: nothing about it
-# announces itself if a future edit takes it back out. Three ways it can
-# silently stop working, all of them one character of diff:
+# The gate is not a script — it is three lines of wiring in package.json:
+# `type:scripts` called from `bun run type`, and `scripts/` appended to the
+# `lint` and `lint:type-aware` path lists. That shape is cheap and correct, and
+# it is also invisible: nothing about it announces itself if a later edit takes
+# it back out. Ways it can silently stop working, all one character of diff:
 #
-#   1. `tsconfig.scripts.json`'s `include` narrows (say back to
-#      `scripts/check-*.ts`) and the un-included files go unchecked again.
-#   2. `strict` weakens, so the program still runs and still passes while
-#      catching nothing. #5169's defect — `Map.has()` does not narrow
-#      `Map.get()` — is only an error under `strictNullChecks`.
-#   3. `scripts/` is dropped from a lint path list, or `type:scripts` from
-#      `bun run type`, and every finding disappears at once.
+#   1. `tsconfig.scripts.json`'s `include` narrows, or a file lands somewhere
+#      the glob does not reach, and those files go unchecked again.
+#   2. `strict` (or just `strictNullChecks`) weakens, so the program still runs
+#      and still passes while catching nothing. #5169's defect — `Map.has()`
+#      does not narrow `Map.get()` — is only an error under strictNullChecks.
+#   3. A path list drops `scripts/`, or `type:scripts` stops pointing at this
+#      config, and every finding disappears at once.
 #
-# Case 2 is the one this file exists for and the one that cannot be checked
-# by reading: it is asserted by REINTRODUCING #5169's exact defect into a real
-# `scripts/` file and requiring the gate to go red on it. A gate believed to
-# catch a defect and a gate measured catching it are different claims.
+# Case 2 is the one that cannot be checked by reading, and it is asserted by
+# REINTRODUCING #5169's exact defect into a real `scripts/` file and requiring
+# the gate to go red on it.
+#
+# ⚠️ Every probe runs the SHIPPED command — `bun run type:scripts`, not a
+# hand-rolled `tsgo -p …`. Re-implementing the gate is the failure this file
+# exists to catch, one level up: with a direct tsgo call, rewriting
+# `type:scripts` to `echo skipped` left all ten cases green. Measured.
+#
+# ⚠️ Fail-cases require the PROBE'S OWN PATH in the diagnostic, not just the
+# error code. This program spans ~2000 files, so a pre-existing TS18048
+# anywhere in it would otherwise satisfy a fail-case that compiled nothing.
 #
 # The probes write a file into scripts/ and trap-remove it. That is why this
 # suite belongs in ci-local.sh's Stage 2 (serial, tree-writing) alongside the
 # other fixture suites that rewrite tracked source — a probe on disk while a
-# Stage 1 gate is scanning would go red on a line nobody wrote. In remote CI
-# the `drift` job runs on its own runner, so there is no overlap at all.
+# Stage 1 gate is scanning makes it go red on a line nobody wrote, and
+# `oxlint --type-aware` has been observed panicking outright on exactly that
+# collision. In remote CI the `drift` job runs on its own runner.
 
 set -euo pipefail
 
@@ -47,20 +55,56 @@ for bin in "$TSGO" "$OXLINT"; do
   fi
 done
 
-# A fixed name, not mktemp: the probe must live INSIDE scripts/ to be claimed
-# by the real `include` glob, and a predictable name is one a human can grep
-# for and delete if a run is killed between write and trap.
-PROBE="$REPO_ROOT/scripts/zz-typecheck-probe.fixture.ts"
-cleanup() { rm -f "$PROBE"; }
-trap cleanup EXIT
+# Fixed names, not mktemp: a probe must live INSIDE scripts/ to be claimed by
+# the real glob and the real lint path list, and a predictable name is one a
+# human can grep for and delete if a run is killed between write and cleanup.
+#
+# ⚠️ TWO names, because gitignoring the lint probe would SILENTLY DISABLE it.
+# The type probe is gitignored — tsgo does not consult `.gitignore`, so it is
+# still type-checked, and a leftover (whose last-written body is deliberately
+# broken) can never be staged by an errant `git add -A`. oxlint DOES honour
+# `.gitignore`: measured, a gitignored probe produced zero findings and exit 0
+# from both lint probes — a green that means "not scanned", which is the exact
+# failure those probes exist to detect. So the lint probe must stay visible to
+# git, and its leftover risk is carried by the guards below instead.
+PROBE_TYPE="$REPO_ROOT/scripts/zz-typecheck-probe.fixture.ts"
+PROBE_LINT="$REPO_ROOT/scripts/zz-lint-probe.ts"
+PROBE_TYPE_BASE="$(basename "$PROBE_TYPE")"
+PROBE_LINT_BASE="$(basename "$PROBE_LINT")"
 
-# Refuse to start if the probe already exists — an earlier interrupted run's
-# leftover would be silently overwritten and then deleted, and the developer
-# would never learn a stray file had been sitting in a gated directory.
-if [ -e "$PROBE" ]; then
-  echo "::error::$PROBE already exists — a previous run left it behind. Inspect and delete it, then re-run." >&2
-  exit 2
-fi
+# ⚠️ The pre-existence guard runs BEFORE the trap is installed, and the order is
+# the whole point. With the trap first, this `exit 2` fires it and deletes the
+# leftover the message tells you to inspect — so the evidence is destroyed and
+# the re-run is silently green. The sibling suite
+# `check-docs-brain-snippets.test.sh` carries the same ordering for the same
+# measured reason.
+for existing in "$PROBE_TYPE" "$PROBE_LINT"; do
+  if [ -e "$existing" ]; then
+    echo "::error::$existing already exists — a previous run left it behind. Inspect and delete it, then re-run." >&2
+    exit 2
+  fi
+done
+
+# A cleanup that fails must SAY so. Bash discards a non-zero return from an
+# EXIT trap, so `trap cleanup EXIT` alone would leave a probe in a gated
+# directory and still exit green; `|| exit 2` is what makes the check mean
+# anything. INT/TERM are trapped separately because EXIT's behaviour on a
+# signal is bash-version-dependent, and a cancelled CI run must not leave the
+# tree dirty.
+cleanup() {
+  local rc=0 p
+  rm -f "$PROBE_TYPE" "$PROBE_LINT"
+  for p in "$PROBE_TYPE" "$PROBE_LINT"; do
+    if [ -e "$p" ]; then
+      echo "::error::failed to remove $p — a probe is still in scripts/. Delete it before re-running." >&2
+      rc=1
+    fi
+  done
+  return "$rc"
+}
+trap 'cleanup || exit 2' EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 PASS=0
 FAIL=0
@@ -68,23 +112,27 @@ FAIL=0
 pass() { echo "  ok   $1"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL $1" >&2; FAIL=$((FAIL + 1)); }
 
-# probe_case EXPECTED NAME EXPECTED_CODE BODY — write BODY into the probe
-# file, run the real type gate, and assert pass/fail. For fail-cases,
-# EXPECTED_CODE must appear in the output, so a case cannot drift into
-# tripping a DIFFERENT error (or a harness fault) while staying green — a
-# bare non-zero exit is not attributable.
+# Run the gate exactly as CI runs it. `--silent` keeps bun's own `$ …` echo out
+# of the output the assertions grep.
+run_gate() { bun run --silent type:scripts 2>&1; }
+
+# probe_case EXPECTED NAME EXPECTED_CODE BODY — write BODY into the probe file,
+# run the real gate, assert pass/fail. Fail-cases must name the probe file AND
+# the expected code ON THE SAME LINE, so a case cannot drift into tripping a
+# different error, a different file, or a harness fault while staying green.
 probe_case() {
   local expected="$1" name="$2" code="$3" body="$4"
   local status=0 out
-  printf '%s' "$body" > "$PROBE"
-  out="$("$TSGO" --noEmit -p "$TSCONFIG" 2>&1)" || status=$?
-  rm -f "$PROBE"
+  printf '%s' "$body" > "$PROBE_TYPE"
+  out="$(run_gate)" || status=$?
+  rm -f "$PROBE_TYPE"
   if [ "$expected" = pass ] && [ "$status" -eq 0 ]; then
     pass "$name (expected pass)"
-  elif [ "$expected" = fail ] && [ "$status" -ne 0 ] && grep -qF "$code" <<<"$out"; then
-    pass "$name (expected fail: $code)"
+  elif [ "$expected" = fail ] && [ "$status" -ne 0 ] &&
+    grep -qE "${PROBE_TYPE_BASE//./\\.}\(.*$code" <<<"$out"; then
+    pass "$name (expected fail: $code in $PROBE_TYPE_BASE)"
   else
-    fail "$name — expected $expected${code:+ ($code)}, got status=$status, output:"
+    fail "$name — expected $expected${code:+ ($code in $PROBE_TYPE_BASE)}, got status=$status, output:"
     sed 's/^/    /' <<<"$out" >&2
   fi
 }
@@ -93,16 +141,21 @@ echo "check-scripts-typecheck.test.sh — scripts/ type + lint gate (#5173)"
 
 # --- the real tree ------------------------------------------------------------
 
-# Sanity: scripts/ type-checks clean today. If this fails, everything below is
-# reporting on a tree that is already broken.
+# Sanity, and it is FATAL rather than a countable failure: every case below
+# assumes a clean baseline, so continuing past a dirty one reports on a tree
+# that invalidates the whole run.
 status=0
-out="$("$TSGO" --noEmit -p "$TSCONFIG" 2>&1)" || status=$?
-if [ "$status" -eq 0 ]; then
-  pass "real scripts/ tree type-checks clean"
-else
-  fail "real scripts/ tree does not type-check — status=$status, output:"
-  sed 's/^/    /' <<<"$out" >&2
+out="$(run_gate)" || status=$?
+if [ "$status" -ne 0 ]; then
+  if grep -qF "TS2307" <<<"$out" && grep -qF "@useatlas/" <<<"$out"; then
+    echo "::error::the scripts/ type program cannot resolve @useatlas/* — those resolve through each package's built dist/, produced by bun install's prepare scripts. Run 'bun install' and re-run." >&2
+  else
+    echo "::error::the real scripts/ tree does not type-check; fix that before this suite can measure anything:" >&2
+    sed 's/^/    /' <<<"$out" >&2
+  fi
+  exit 2
 fi
+pass "real scripts/ tree type-checks clean"
 
 # --- the harness can be green -------------------------------------------------
 
@@ -133,8 +186,8 @@ export function go(k: string): number {
 
 # Same defect where the map value is itself nullable: a different diagnostic
 # code (TS18049 covers "null or undefined"), the same missing narrowing. Both
-# arms are asserted because a config change that re-admitted one could leave
-# the other tripping and look half-green.
+# arms are asserted because a config change that re-admitted one could leave the
+# other tripping and look half-green.
 probe_case fail "#5169: nullable map value read via has()+get() — null arm" "TS18049" \
 'const m = new Map<string, { n: number } | null>();
 export function go(k: string): number {
@@ -156,57 +209,108 @@ probe_case fail "strict rejects an implicit any parameter" "TS7006" \
 # --- non-vacuity: the glob covers what it claims -------------------------------
 
 # The failure this catches is the one that looks like success: narrowing
-# `include` makes the gate green by checking less. Compare the program''s file
+# `include` makes the gate green by checking less. Compare the program's file
 # list against what is actually on disk, so shrinking the glob fails the suite
 # instead of quietly shrinking the gate.
-missing=""
-program_files="$("$TSGO" --noEmit --listFiles -p "$TSCONFIG" 2>/dev/null || true)"
-for f in "$REPO_ROOT"/scripts/*.ts; do
-  [ -e "$f" ] || continue
-  grep -qxF "$f" <<<"$program_files" || missing="$missing $f"
-done
-if [ -z "$missing" ]; then
-  pass "every scripts/*.ts on disk is in the type program"
+#
+# `--listFiles` needs the config directly; it is not a flag `type:scripts`
+# passes. A tsgo fault here must NOT be reported as a narrowed glob — an empty
+# file list would otherwise produce a confident, wrong diagnosis with the real
+# error discarded.
+lf_status=0
+program_files="$("$TSGO" --noEmit --listFiles -p "$TSCONFIG" 2>&1)" || lf_status=$?
+if ! grep -qF "$REPO_ROOT/scripts/" <<<"$program_files"; then
+  fail "tsgo --listFiles produced no scripts/ entries (status=$lf_status) — harness fault, not a narrowed glob:"
+  sed 's/^/    /' <<<"$program_files" >&2
 else
-  fail "these scripts/*.ts files are NOT in the type program (include glob narrowed?):$missing"
+  missing=""
+  for f in "$REPO_ROOT"/scripts/*.ts "$REPO_ROOT"/scripts/*.tsx; do
+    [ -e "$f" ] || continue
+    grep -qxF "$f" <<<"$program_files" || missing="$missing $f"
+  done
+  if [ -z "$missing" ]; then
+    pass "every top-level scripts/*.ts and *.tsx is in the type program"
+  else
+    fail "these scripts/ files are NOT in the type program (include glob narrowed?):$missing"
+  fi
 fi
 
-# --- non-vacuity: lint still names scripts/ ------------------------------------
+# The glob is one level deep, so a file in a subdirectory is invisible to both
+# the program AND to the comparison above — under-coverage that looks identical
+# to full coverage. `ee-stub` is type-checked by the Symlink Stub Build job and
+# `__tests__` holds only .sh, so anything else appearing there is unchecked.
+stray="$(find "$REPO_ROOT/scripts" -mindepth 2 -name '*.ts' -not -path '*/ee-stub/*' 2>/dev/null || true)"
+if [ -z "$stray" ]; then
+  pass "no scripts/ subdirectory .ts file sits outside the type program"
+else
+  fail "scripts/ subdirectory .ts files are outside the one-level include glob:$stray"
+fi
 
-# `type:scripts` and the two lint path lists are the whole gate. A grep is a
-# weak instrument in general, but here the thing being asserted IS a literal
-# path in a command string, so there is nothing stronger to reach for.
-for key in '"lint"' '"lint:type-aware"'; do
-  line="$(grep -F "    $key: \"oxlint" package.json || true)"
-  if [ -n "$line" ] && grep -qF " scripts/" <<<"$line"; then
-    pass "package.json $key lints scripts/"
+# --- non-vacuity: the package.json wiring --------------------------------------
+
+# Read the VALUES, not the file. A grep over package.json is satisfied by any
+# line that happens to contain the string — including a sibling script — and it
+# is hostage to indentation. Word-anchored so narrowing `scripts/` to
+# `scripts/__tests__/` (a directory with no .ts source) fails instead of
+# prefix-matching its way to green. Measured: with a substring grep, that
+# narrowing left all ten cases passing.
+read_script() {
+  SCRIPT_KEY="$1" bun -e 'const p = JSON.parse(await Bun.file("package.json").text()); console.log(p.scripts?.[Bun.env.SCRIPT_KEY] ?? "")'
+}
+
+for key in lint lint:type-aware; do
+  value="$(read_script "$key")"
+  if grep -qE '(^| )scripts/( |$|")' <<<"$value"; then
+    pass "package.json $key lints scripts/ (exactly, not a subdirectory)"
   else
-    fail "package.json $key no longer lints scripts/ — line: ${line:-<not found>}"
+    fail "package.json $key no longer lints scripts/ — value: ${value:-<missing>}"
   fi
 done
 
-line="$(grep -F '"type":' package.json || true)"
-if grep -qF "bun run type:scripts" <<<"$line"; then
+value="$(read_script type)"
+if grep -qF "bun run type:scripts" <<<"$value"; then
   pass "package.json type runs type:scripts"
 else
-  fail "package.json type no longer runs type:scripts — line: ${line:-<not found>}"
+  fail "package.json type no longer runs type:scripts — value: ${value:-<missing>}"
 fi
 
-# --- non-vacuity: type-aware lint actually ROUTES scripts/ ---------------------
+# --- non-vacuity: lint reaches scripts/ ----------------------------------------
 
-# Naming a directory in the path list is not the same as tsgolint being able to
-# build a program for it. If routing fails, oxlint reports nothing for those
-# files and exits 0 — a green that means "not checked". Probe it with a
-# `no-floating-promises` violation, which .oxlintrc.json rates "error".
+# Two probes, because the two lint gates fail independently. Both assert the
+# diagnostic names the probe file: a real violation elsewhere in scripts/ would
+# otherwise make either probe permanently green.
+
+# Plain `lint`. A `correctness`-category rule is an error, so this also pins
+# that nothing has scoped the category off for scripts/ or added the directory
+# to `ignorePatterns`.
+printf '%s' 'const dup = { a: 1, a: 2 };
+export const out = dup;
+' > "$PROBE_LINT"
+status=0
+out="$("$OXLINT" --config "$REPO_ROOT/.oxlintrc.json" scripts/ 2>&1)" || status=$?
+rm -f "$PROBE_LINT"
+if [ "$status" -ne 0 ] && grep -qF "$PROBE_LINT_BASE" <<<"$out" &&
+  grep -qF "no-dupe-keys" <<<"$out"; then
+  pass "lint reaches scripts/ (probe caught)"
+else
+  fail "oxlint did not flag a correctness violation in scripts/ — status=$status, output:"
+  sed 's/^/    /' <<<"$out" >&2
+fi
+
+# Type-aware lint. Naming a directory in the path list is not the same as
+# tsgolint being able to build a program for it; if routing fails, oxlint
+# reports nothing for those files and exits 0 — a green that means "not
+# checked". `no-floating-promises` is rated "error" in .oxlintrc.json.
 printf '%s' 'async function thing(): Promise<void> {}
 export function go(): void {
   thing();
 }
-' > "$PROBE"
+' > "$PROBE_LINT"
 status=0
 out="$("$OXLINT" --type-aware --config "$REPO_ROOT/.oxlintrc.json" scripts/ 2>&1)" || status=$?
-rm -f "$PROBE"
-if [ "$status" -ne 0 ] && grep -qF "no-floating-promises" <<<"$out"; then
+rm -f "$PROBE_LINT"
+if [ "$status" -ne 0 ] && grep -qF "$PROBE_LINT_BASE" <<<"$out" &&
+  grep -qF "no-floating-promises" <<<"$out"; then
   pass "type-aware lint routes scripts/ into a program (probe caught)"
 else
   fail "type-aware lint did not flag a floating promise in scripts/ — status=$status, output:"

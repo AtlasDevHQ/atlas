@@ -52,8 +52,21 @@ export type AtlasEventSource =
  * Channels the platform stamps on a user's behalf, which an agent must never
  * set by hand. `MCP_SIGNUP` is written by the self-serve trial provisioner;
  * exposing it to a tool would let a chat turn forge a trial attribution.
+ *
+ * A tuple with `satisfies`, not a bare literal union, and the difference is
+ * load-bearing in two ways. It constrains the list to real `AtlasEventSource`
+ * members, so a name that is not one — a typo, or a channel someone forgot to
+ * add — cannot sit here silently protecting nothing. And it puts the error on
+ * THIS declaration when `MCP_SIGNUP` is renamed: a bare union would compile
+ * fine here and red on `_AgentSourcesExhaustive` instead, whose message asks
+ * you to append the member to the agent-facing tuple — which is precisely the
+ * edit that would hand agents the provisioner-only source.
  */
-type InternalOnlyEventSource = "MCP_SIGNUP";
+export const INTERNAL_ONLY_EVENT_SOURCES = [
+  "MCP_SIGNUP",
+] as const satisfies readonly AtlasEventSource[];
+
+type InternalOnlyEventSource = (typeof INTERNAL_ONLY_EVENT_SOURCES)[number];
 
 /** Exactly the sources an agent-facing tool may accept. */
 export type AgentEventSource = Exclude<
@@ -71,7 +84,14 @@ export type AgentEventSource = Exclude<
  * is not an `AgentEventSource`; `_AgentSourcesExhaustive` rejects an
  * `AgentEventSource` that is missing here. So adding a public member to
  * `AtlasEventSource` fails to compile until it is either listed here or
- * declared `InternalOnlyEventSource` — the decision is forced, not defaulted.
+ * added to `INTERNAL_ONLY_EVENT_SOURCES` — the decision is forced, not
+ * defaulted.
+ *
+ * Neither pin can protect `MCP_SIGNUP` on its own, and that is why
+ * `lead-normalizer.test.ts` asserts the membership at runtime too. Widening
+ * `INTERNAL_ONLY_EVENT_SOURCES` to `never` and appending `MCP_SIGNUP` here is
+ * two edits that compile clean — the type layer has no way to distinguish it
+ * from a deliberate reclassification. The runtime assertion does.
  */
 export const AGENT_EVENT_SOURCES = [
   "DEMO",
@@ -91,9 +111,11 @@ type _AgentSourcesExhaustive = Exclude<
 const _agentSourcesExhaustive: _AgentSourcesExhaustive extends never
   ? true
   : false = true;
-// `void` is load-bearing — it silences `noUnusedLocals` without disabling the
-// compile-time check. Do not delete `_agentSourcesExhaustive`; the assignment
-// is the gate.
+// `void` marks the binding as deliberately consumed, for readers. Do not
+// delete `_agentSourcesExhaustive` even though it looks dead — the ASSIGNMENT
+// is the gate. (No tsconfig in this repo sets `noUnusedLocals`, and oxlint's
+// no-unused-vars already exempts `^_` names, so nothing would flag its
+// removal.)
 void _agentSourcesExhaustive;
 
 /** Demo signup variant — captured at the `/demo` gate on useatlas.dev. */

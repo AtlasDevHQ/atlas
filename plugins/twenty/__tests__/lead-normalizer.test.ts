@@ -4,6 +4,8 @@
  */
 import { describe, test, expect } from "bun:test";
 import {
+  AGENT_EVENT_SOURCES,
+  INTERNAL_ONLY_EVENT_SOURCES,
   LeadEventSchema,
   normalizeConversionLead,
   normalizeDemoLead,
@@ -562,5 +564,39 @@ describe("LeadEventSchema — parse at the crm_outbox flush boundary", () => {
   test("rejects a non-object / null payload", () => {
     expect(() => LeadEventSchema.parse(null)).toThrow();
     expect(() => LeadEventSchema.parse("nope")).toThrow();
+  });
+});
+
+/**
+ * The agent/internal split, asserted at runtime.
+ *
+ * `AgentEventSource` is `Exclude<AtlasEventSource, InternalOnlyEventSource>`,
+ * and both compile-time pins on `AGENT_EVENT_SOURCES` are relative to that
+ * DERIVED type — so they hold for any value of `INTERNAL_ONLY_EVENT_SOURCES`,
+ * including an empty one. Emptying the internal list and appending
+ * `MCP_SIGNUP` to the agent tuple therefore compiles clean, and would hand a
+ * chat turn the ability to forge a self-serve-trial attribution.
+ *
+ * These assertions are the only thing that fails on that mutation. Exact
+ * membership is pinned rather than just the exclusion: a list that quietly
+ * GAINS a channel is the same defect in the other direction.
+ */
+describe("agent-facing event sources", () => {
+  test("AGENT_EVENT_SOURCES is exactly the five public channels", () => {
+    expect([...AGENT_EVENT_SOURCES].sort()).toEqual([
+      "CONVERSION",
+      "DEMO",
+      "OTHER",
+      "SALES_FORM",
+      "SIGNUP",
+    ]);
+  });
+
+  test("no internal-only channel is reachable from an agent-facing enum", () => {
+    // Pinned first, so an emptied list cannot vacuously satisfy the loop.
+    expect([...INTERNAL_ONLY_EVENT_SOURCES]).toEqual(["MCP_SIGNUP"]);
+    for (const internal of INTERNAL_ONLY_EVENT_SOURCES) {
+      expect(AGENT_EVENT_SOURCES).not.toContain(internal);
+    }
   });
 });

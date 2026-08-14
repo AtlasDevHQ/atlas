@@ -16,11 +16,19 @@
 // program also excludes and which needs the `@/*` alias below. Folding
 // `scripts/` back into the root program would drag those trees in with it.
 //
-// SCOPE: `scripts/*.ts` — every top-level script, not just the `check-*`
-// guards. The issue priced the narrow `check-*.ts` scope at 1 error and the
-// full top-level scope at 26; the 26 turned out to be two files (25 of them a
-// single `readonly`-assignment line in `saas-env-fixture.ts`), so the wider
-// scope was affordable and is what ships. Nothing is scoped out for cost.
+// SCOPE: every top-level script, `.ts` and `.tsx` alike, not just the
+// `check-*` guards. The issue priced the narrow `check-*.ts` scope at 1 error
+// and the full top-level scope at 26; the 26 turned out to be two files (25 of
+// them a single `readonly`-assignment line in `saas-env-fixture.ts`), so the
+// wider scope was affordable and is what ships. Nothing is scoped out for cost.
+//
+// `.tsx` is in scope because it MEASURES clean, not because it was assumed to.
+// An earlier draft of this file excluded `scripts/generate-brand-assets.tsx`
+// on the theory that Satori's JSX types are not React's; adding it to the glob
+// compiles with zero errors, because `@vercel/og`'s `ImageResponse` takes a
+// `React.ReactElement` and `jsx: react-jsx` below is the right setting for it.
+// The exclusion would have bought nothing and cost that file the only
+// type-checking it will ever get — the root program excludes `scripts` too.
 //
 // `scripts/ee-stub/**` is deliberately NOT here, and is not an exemption: the
 // `Symlink Stub Build` job in ci.yml copies that tree over `ee/` and runs the
@@ -28,9 +36,15 @@
 // package it stands in for, which is the only configuration in which its
 // `@atlas/*` imports resolve.
 //
-// `.tsx` is also out of scope: `scripts/generate-brand-assets.tsx` renders
-// through Satori, whose JSX types are not React's. It is linted (see the
-// `lint` script in package.json) but not type-checked here.
+// SUBDIRECTORIES are out of scope by design (the glob is one level deep), and
+// `check-scripts-typecheck.test.sh` fails if a `.ts` file appears in one, so
+// the omission cannot go silent.
+//
+// This program resolves `@useatlas/*` through each package's BUILT `dist/`,
+// which `bun install` produces via their `prepare` scripts. A tree without
+// those dists yields hundreds of unrelated `TS2307`s; the fixture suite
+// detects that case and tells you to re-install rather than reporting it as a
+// failure of the tree.
 {
   "compilerOptions": {
     "target": "ES2022",
@@ -44,13 +58,29 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     // `check-docs-links.ts` imports `apps/docs/src/lib/audience-markdown.ts`,
-    // which imports `@/lib/audience` — a `.tsx` module. Both entries exist to
-    // let that one import resolve; `paths` is relative to THIS file, so it
-    // points at the docs app's src root the way apps/docs/tsconfig.json does.
+    // which imports `@/lib/audience` — a `.tsx` module. Both entries below
+    // exist to let that one import resolve; `paths` is relative to THIS file,
+    // so it names the same directory `apps/docs/tsconfig.json` does.
+    //
+    // Only `paths` matches that config, though. This program has no `dom` in
+    // `lib`, no `next` plugin and no `.source/**` types, and it is now the ONLY
+    // type-check that docs subgraph gets — `apps/docs` has no `type` script and
+    // the root program excludes it. Being stricter than the docs app cannot
+    // hide a bug, but it does impose a real constraint: any `apps/docs` helper
+    // a scripts/ guard imports must be DOM-free, or `bun run type:scripts` goes
+    // red with no scripts/ file named in the error. Do NOT add `dom` to `lib`
+    // to make such an error go away — that would let a script reference
+    // `document` and compile, which weakens the gate to fix a diagnostic.
+    //
+    // `paths` is also program-GLOBAL, not scoped to apps/docs: every file here,
+    // including everything reached under `packages/api/src/**`, resolves `@/…`
+    // into the docs app. No such import exists in those trees today, and
+    // CLAUDE.md scopes `@/*` to web, so this is inert — but a future `@/`
+    // import reached from a script would misresolve rather than fail.
     "jsx": "react-jsx",
     "paths": {
       "@/*": ["./apps/docs/src/*"]
     }
   },
-  "include": ["scripts/*.ts"]
+  "include": ["scripts/*.ts", "scripts/*.tsx"]
 }

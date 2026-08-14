@@ -62,7 +62,15 @@ function parseArgs(argv: readonly string[]): Args {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--database-url") {
-      args.databaseUrl = argv[++i];
+      // `--database-url` as the final argument yields undefined, and `main`
+      // then silently falls back to the fixture default — an operator gets a
+      // fixture built against the wrong database with no signal. Its two twins
+      // below both throw on a missing value; this one did not.
+      const next = argv[++i];
+      if (!next) {
+        throw new Error("--database-url expects a Postgres URL, got nothing");
+      }
+      args.databaseUrl = next;
     } else if (arg === "--override") {
       const next = argv[++i];
       if (!next || !next.includes("=")) {

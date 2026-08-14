@@ -79,3 +79,17 @@ lighthouse-reports/
 # Ignored so a SIGKILLed run cannot leave one committable in a shared worktree —
 # CLAUDE.md's "never `git add -A`" rule exists for exactly this shape.
 apps/docs/content/**/__fixture-*.mdx
+
+# Same shape, for the scripts/ type + lint gate's fixture suite
+# (scripts/__tests__/check-scripts-typecheck.test.sh). Worse if leaked: the
+# probe's last-written body is DELIBERATELY broken — an implicit any — so a
+# committed leftover reds `bun run type` for everyone, in exactly the directory
+# this gate was added to protect.
+#
+# ⚠️ Covers only the TYPE probe, and the `.fixture.ts` suffix is what keeps the
+# pattern narrow enough to do that. tsgo does not read `.gitignore`, so an
+# ignored file is still type-checked; oxlint DOES, and listing that suite's LINT
+# probe here made both lint probes report zero findings and exit 0 — a green
+# meaning "not scanned", which is precisely what those probes exist to detect.
+# The lint probe therefore stays visible to git on purpose. Do not "fix" that.
+scripts/zz-*.fixture.ts

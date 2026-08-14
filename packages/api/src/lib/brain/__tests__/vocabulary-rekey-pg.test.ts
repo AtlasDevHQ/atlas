@@ -32,116 +32,67 @@
  *      `promoteBrainFacts`. And NOT that the 5022 → 5024 order is deadlock-free;
  *      see the last section.
  *
- * ## Mutation table
+ * ## MUTATIONS THIS CATCHES
  *
- * Twenty-nine mutations, all twenty-nine caught. Rows 1-25 were regenerated in
- * ONE pass against the tree that shipped them, rather than edited row by row —
- * #5022's review found numbers carried forward under a header claiming they had
- * been re-measured, twice.
+ * **GENERATED — see `packages/api/scripts/mutations/vocabulary-rekey.md`**, from
+ * `packages/api/scripts/mutations/vocabulary-rekey.mutations.ts`:
  *
- * ⚠️ ROWS 26-29 ARE THE EXCEPTIONS AND ARE SAID OUT LOUD, because a header
- * whose whole point is that carried-forward numbers are worthless cannot quietly
- * carry one. All four were added by hand and measured INDIVIDUALLY rather than by
- * a table-wide regeneration; their "first test to die" cells are those
- * measurements.
+ *     cd packages/api && bun run db:up
+ *     export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5433/brain_5061_scratch
+ *     bun run scripts/mutate.ts scripts/mutations/vocabulary-rekey.mutations.ts
  *
- * ⚠️ ROW 28 IS #5109'S OWN FIRST CUT, kept as a row rather than quietly fixed.
- * That cut reported the declined rows as ONE number, which re-collapsed the very
- * distinction #5109 was filed to draw: a tombstoned row needing nothing and a
- * LIVE row whose vocabulary entry is the defect have different remedies. The
- * review that caught it asked one question — *does this fix exhibit the defect it
- * fixes, one layer over?* — and the answer was yes.
+ * ⚠️ **The column means something different from the table it replaces, and the
+ * change is a gain.** That table's column was *"first test to die"* — a NAME.
+ * The generated one is a COUNT per suite. A name is one datum from a run nobody
+ * can reproduce: which assertion happened to be reached first depends on file
+ * order and on tests that have nothing to do with the mutation. A count is
+ * reproducible, and `--check` recomputes it, so a row that stops being true
+ * fails CI instead of sitting there reading like a measurement. The old
+ * header's own defence of that column was that the name was *"that recorded
+ * name, not an author's guess"* — precisely the property a generated table has
+ * by construction rather than by promise.
  *
- * ⚠️ ROWS 6 AND 26 WERE RE-MEASURED FOR #5109, not carried. That slice lifted
- * this statement's scan into a `MATERIALIZED` CTE so the declined rows could be
- * counted without a second workspace-wide pass, which moved the workspace scope
- * onto the CTE and respelled the refusal arm as `r.new_key IS NOT NULL` over the
- * same expression. A restructure is exactly the change under which a carried
- * number is worthless, so both were re-applied against the new shape: row 26
- * still dies on the same test with the same `23502`, and row 6 still dies on the
- * foreign-row test. Row 27 is the one the restructure ADDED — the counts are
- * computed in SQL and pinned there, but nothing read the number, so dropping it
- * from the line left all 26 rows above green.
- * The
- * harness applies each mutation, runs all three suites, records the first
- * failing test, and reverts; the "first test to die" column is that recorded
- * name, not an author's guess about which test ought to have caught it.
- *
- * Three suites are in the harness's scope: this one,
- * `vocabulary-decide-pg.test.ts` (the lock bracket and the column-scoped
- * allowlist assertion), and `content-mode/adapters/__tests__/brain-facts.test.ts`
- * (the publish lock, its bound and reset, the `55P03` classification, and the
- * two stamp arbitrations).
- *
- * `content-mode/__tests__/registry.test.ts` is deliberately NOT in that scope
- * and is worth naming: it pins the brain phase's whole statement PLAN by index,
- * so it fails on any statement added, removed or MOVED. That makes it a real
- * fourth backstop — but a table measured over it would credit kills to a plan
- * assertion rather than to a test of the property, which is exactly the
- * attribution problem round 3 caught in row 6.
- *
- * | # | Mutation | First test to die |
- * |---|---|---|
- * | 1 | `rekeyDriftedFacts` call deleted from `approveProposal` | an approval re-keys an existing fact onto the target the new vocabulary decides |
- * | 2 | `rekeyDriftedFacts` call deleted from `rejectProposal` | a REMOVAL returns each row to the target the post-removal vocabulary decides |
- * | 3 | re-key gains `AND f.invalidated_at IS NULL` | covers TOMBSTONED rows — the partial index excludes them, the re-key must not |
- * | 4 | re-key gains `AND f.valid_to IS NULL` | covers SUPERSEDED rows — same exclusion, same requirement |
- * | 5 | re-key gains `, updated_at = now()` | does NOT stamp `updated_at` — it sorts the reviewer's queue, and a re-key moved nothing |
- * | 6 | re-key's workspace scope weakened to `OR TRUE` | is workspace-scoped — a foreign row with a STALE key stays stale |
- * | 7 | every position uses the `subject` columns | an approval re-keys an existing fact onto the target the new vocabulary decides |
- * | 8 | outer `identityKeySql` dropped from the assignment | re-norms the vocabulary's answer rather than trusting it |
- * | 9 | closure subquery's position pinned to `'predicate'` | re-keys at the SUBJECT position, reading that position's closure only |
- * | 10 | closure subquery's position filter DELETED | reads ONLY its own position's closure when one norm is aliased at two positions |
- * | 11 | `COALESCE(closure, norm)` -> the closure alone | …and does NOT move a row the approval says nothing about (the control) |
- * | 12 | `row.slot_position` -> hardcoded `"predicate"` (both call sites) | re-keys at the SUBJECT position, reading that position's closure only |
- * | 13 | `EXISTS` arm removed from the collision stamp | stamps the rival when the collision still holds (the positive control) |
- * | 14 | `EXISTS` arm's `$3` -> `$2` | stamps the rival when the collision still holds (the positive control) |
- * | 15 | collision predicate -> `TRUE` inside the `EXISTS` | does NOT stamp when the collision was de-merged between the SELECT and the UPDATE |
- * | 16 | publish's identity-lock call deleted | takes the identity-mutation lock BEFORE reading the drafts (#5024) |
- * | 17 | publish's `SET LOCAL lock_timeout` deleted | bounds the lock wait BEFORE taking it — an unbounded wait hangs publish with no requestId |
- * | 18 | publish's lock_timeout RESET deleted (bound leaks to the txn) | RESETS the bound immediately — `SET LOCAL` reverts at COMMIT, not at the next statement |
- * | 19 | publish's namespace -> 5022 | takes the identity-mutation lock BEFORE reading the drafts (#5024) |
- * | 20 | `isLockTimeout` always false (55P03 relayed raw) | names the contending operation when the bound expires, instead of relaying a bare 55P03 |
- * | 21 | decide's lock order flipped (5024 before 5022) | decide locks first |
- * | 22 | decide's lock_timeout RESET deleted (bound leaks past 5024) | decide locks first |
- * | 23 | `lexicalNormSql`'s `translate()` -> `lower()` | `lexicalNormSql` agrees with `lexicalNorm` on every corpus row |
- * | 24 | `chr(11)` dropped from the separator class | `lexicalNormSql` agrees with `lexicalNorm` on every corpus row |
- * | 25 | `identityKeySql`'s `NULLIF(..., '')` dropped | SKIPS a row whose surface norms away, leaving 0194's placeholder untouched |
- * | 26 | the `IS NOT NULL` arm on the recomputed key dropped (#5047) | SKIPS a row whose surface norms away, leaving 0194's placeholder untouched |
- * | 27 | a skip count dropped from the completion line (#5109) | carries BOTH counts — the declined rows beside the moved ones (`vocabulary-rekey-logging.test.ts`) |
- * | 28 | the two skip causes MERGED into one count (#5109 round 1's own defect) | splits the declined rows BY CAUSE — a vocabulary target that norms away is not a tombstone |
- * | 29 | the completion message stops being conditional on `skippedVocabularyTarget` | says so IN THE MESSAGE when a live row was declined by a vocabulary target (`vocabulary-rekey-logging.test.ts`) |
+ * All four suites are columns, so *which* suite catches a mutation is now read
+ * off the table rather than asserted in prose. The header this replaces had
+ * grown three separate exceptions to stay honest — rows 1-25 regenerated in one
+ * pass, rows 26-29 applied by hand one at a time, two rows re-measured for
+ * #5109 because that slice restructured the statement under them. One run
+ * retires all three.
  *
  * ## Three rounds, and what each one caught that the previous missed
  *
- * **Round 1 (19 mutations) left ONE survivor: dropping the outer
- * `identityKeySql`.** Every closure row this suite wrote went through
- * `approveAliasEdge`, which re-norms both endpoints — so the outer re-norm was a
- * no-op on every fixture. The defence is reachable from outside the seam (0189's
- * CHECKs do not constrain `effective_target` to being a norm, and the region
- * import rebuilds that table), so the fix was a test that writes the two
- * relations DIRECTLY. **A fixture built entirely through the sanctioned seam
- * cannot falsify the guards that exist for writers which bypass it.**
+ * Kept because the MUTATIONS encode it — each lesson below is why a particular
+ * row exists, and the rows are named rather than numbered since a generated
+ * table numbers nothing.
+ *
+ * **Round 1 left ONE survivor: dropping the outer `identityKeySql`.** Every
+ * closure row this suite wrote went through `approveAliasEdge`, which re-norms
+ * both endpoints — so the outer re-norm was a no-op on every fixture. The
+ * defence is reachable from outside the seam (0189's CHECKs do not constrain
+ * `effective_target` to being a norm, and the region import rebuilds that
+ * table), so the fix was a test that writes the two relations DIRECTLY. **A
+ * fixture built entirely through the sanctioned seam cannot falsify the guards
+ * that exist for writers which bypass it.**
  *
  * **Round 2 was a review panel, and it found a hole the table had not probed at
  * all.** Every `approve()` in this file was at the `predicate` position, so
- * `rekeyDriftedFacts(tx, ws, "predicate", id)` — hardcoded — passed all 100
- * tests across this suite and `vocabulary-decide-pg` (18 + 82, counted at the
- * tree that carried the bug — not at HEAD, where it is 104). That is subject and object
- * approvals re-keying NOTHING, with a success line in the log. Rows 10 and 12
- * exist because of it. **A mutation table only covers the mutations someone
- * thought to write, and a suite whose fixtures all share one value of a
+ * `rekeyDriftedFacts(tx, ws, "predicate", id)` — hardcoded — passed every test
+ * across this suite and `vocabulary-decide-pg`. That is subject and object
+ * approvals re-keying NOTHING, with a success line in the log. The two position
+ * rows exist because of it. **A mutation table only covers the mutations
+ * someone thought to write, and a suite whose fixtures all share one value of a
  * parameter cannot probe that parameter at all.**
  *
- * **Round 3 was a second panel over round 2's fixes, and it caught two of them.**
- * Row 6 did not reproduce: with two identical unaliased rows, weakening the
- * statement's own `WHERE f.workspace_id = $1` changed nothing, because the
- * closure subquery carries `t.workspace_id = f.workspace_id` of its own. The row
- * had been dying on an unrelated string anchor in another suite — a measured
- * kill for the wrong reason, which is the failure mode this table's whole
- * regeneration discipline exists to catch, appearing inside the discipline. The
- * test now uses a foreign row whose stored key DISAGREES with its own
- * workspace's closure, which is the only shape an unscoped statement moves.
+ * **Round 3 was a second panel over round 2's fixes, and it caught two of
+ * them.** The workspace-scope row did not reproduce: with two identical
+ * unaliased rows, weakening the statement's own `WHERE f.workspace_id = $1`
+ * changed nothing, because the closure subquery carries
+ * `t.workspace_id = f.workspace_id` of its own. The row had been dying on an
+ * unrelated string anchor in another suite — a measured kill for the wrong
+ * reason, which is the failure mode this table's whole regeneration discipline
+ * exists to catch, appearing inside the discipline. The test now uses a foreign
+ * row whose stored key DISAGREES with its own workspace's closure, which is the
+ * only shape an unscoped statement moves.
  *
  * The reset tests then needed strengthening for the same reason one layer up:
  * they pinned the reset's PRESENCE (`precededLocks === 1`,
@@ -156,24 +107,25 @@
  * governed every later lock wait in both transactions — `DRAFT_FACTS_SQL`'s
  * `FOR UPDATE` (which exists to WAIT), the re-key's row locks, and
  * `admin-publish.ts`'s phase-4 archive loop. **A fix that turns a wait into a
- * failure is a behaviour change, not a hardening.** Rows 18 and 22 pin the reset.
+ * failure is a behaviour change, not a hardening.** The two RESET rows pin it.
  *
- * ## What this suite does NOT cover, stated so the 25 are not over-read
+ * ## What this suite does NOT cover, stated so the table is not over-read
  *
  * The 5022 → 5024 ORDER is asserted as an invariant in
- * `vocabulary-decide-pg.test.ts` (row 21), not provoked as a deadlock. No
- * wait-for cycle is reachable for either ordering today: publish and the decide
- * seam take their advisory locks before they UPDATE, and the region importer —
- * which INSERTs `brain_facts` well before it takes 5022 — only ever INSERTs, and
- * an uncommitted INSERT blocks no UPDATE. The inverted order becomes real the
+ * `vocabulary-decide-pg.test.ts`, not provoked as a deadlock. No wait-for cycle
+ * is reachable for either ordering today: publish and the decide seam take their
+ * advisory locks before they UPDATE, and the region importer — which INSERTs
+ * `brain_facts` well before it takes 5022 — only ever INSERTs, and an
+ * uncommitted INSERT blocks no UPDATE. The inverted order becomes real the
  * moment the importer UPDATEs an existing fact row. #5022's review is explicit
  * that an interleaving which cannot form a cycle passes against a broken
  * implementation, so claiming otherwise would be the same mistake one slice
  * later.
  *
  * WHICH code paths take the namespace is likewise not pinned here — nothing in
- * this file calls `promoteBrainFacts`. Rows 16–20 all die in
- * `content-mode/adapters/__tests__/brain-facts.test.ts`.
+ * this file calls `promoteBrainFacts`. The publish-lock rows are the
+ * `brain-facts` column's contribution, which the table now shows rather than
+ * says.
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";

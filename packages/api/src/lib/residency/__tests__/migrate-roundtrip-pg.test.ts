@@ -279,6 +279,22 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       [SOURCE_ORG],
     );
 
+    // ── The warehouse producer's enrolled reach (#5196, ADR-0039) ──
+    // THREE pairs, and one of them is pre-seeded at the TARGET below so the
+    // import's two counters land on different numbers (2 imported / 1 skipped).
+    // A fixture where every pair was new would be satisfied by an importer with
+    // no conflict arm at all, and one where the counts matched would not tell
+    // the two apart. The two `accounts` rows also pin that the pair — not the
+    // entity — is the unit: enrolling `accounts/arr_band` says nothing about
+    // `accounts/status`, which is the whole bound the ADR argues for.
+    await pool.query(
+      `INSERT INTO brain_enrollment (workspace_id, entity, dimension, enrolled_by, note)
+       VALUES ($1, 'accounts', 'arr_band', 'user-1', 'revenue tiering'),
+              ($1, 'accounts', 'status', 'user-1', NULL),
+              ($1, 'subscriptions', 'plan', 'user-2', NULL)`,
+      [SOURCE_ORG],
+    );
+
     // ── The curated identity vocabulary (#5022, ADR-0037 §6/§8) ──
     // A COMPRESSED chain, which is the only shape that can tell "the closure
     // was recomputed" from "the closure was copied": the bundle carries no
@@ -372,6 +388,10 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         // The EXCLUSIONS only (#5203) — the observed C0GENERAL member row
         // stays; membership is re-derived on the target's first sync.
         brainSlackChannelExclusions: 2,
+        // All three enrolled pairs (#5196). No predicate narrows this section —
+        // unlike the exclusions above, every row here is a human act and there
+        // is no observed half to leave behind.
+        brainEnrollments: 3,
       });
 
       // ── Simulate the cross-region hop on one DB: preserved UUIDs would
@@ -391,6 +411,7 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       await pool.query(`DELETE FROM fact_audience_member WHERE workspace_id = $1`, [SOURCE_ORG]);
       await pool.query(`DELETE FROM brain_slack_channel WHERE workspace_id = $1`, [SOURCE_ORG]);
       await pool.query(`DELETE FROM brain_slack_ingest_scope WHERE workspace_id = $1`, [SOURCE_ORG]);
+      await pool.query(`DELETE FROM brain_enrollment WHERE workspace_id = $1`, [SOURCE_ORG]);
       await pool.query(`DELETE FROM semantic_entities WHERE org_id = $1`, [SOURCE_ORG]);
       await pool.query(`DELETE FROM learned_patterns WHERE org_id = $1`, [SOURCE_ORG]);
       await pool.query(`DELETE FROM settings WHERE org_id = $1`, [SOURCE_ORG]);
@@ -403,6 +424,18 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       await pool.query(
         `INSERT INTO brain_slack_channel (workspace_id, channel_id, name, is_member)
          VALUES ($1, 'C0LEGAL', 'legal-privileged', true)`,
+        [TARGET_ORG],
+      );
+
+      // The destination ALREADY enrolled one of the three pairs, under its own
+      // author (#5196). This is what makes the split assertion below say
+      // something: `imported: 2, skipped: 1` is only reachable by an importer
+      // whose conflict arm fires, and the author check afterwards is what
+      // distinguishes `DO NOTHING` from a `DO UPDATE` that would re-attribute a
+      // local admin's decision to the source region's.
+      await pool.query(
+        `INSERT INTO brain_enrollment (workspace_id, entity, dimension, enrolled_by, note)
+         VALUES ($1, 'accounts', 'status', 'target-admin', 'decided here first')`,
         [TARGET_ORG],
       );
 
@@ -426,6 +459,11 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       // C0LEGAL's exclusion (over-disclosure, the unrecoverable direction) and
       // this split assertion is what goes red.
       expect(result.brainSlackChannelExclusions).toEqual({ imported: 2, skipped: 0, refused: 0 });
+      // Two new pairs landed; the one the destination already held is `skipped`
+      // (#5196). Different numbers deliberately — `{2, 1}` cannot be satisfied
+      // by an importer that counts every row into one bucket, and `{3, 0}` or
+      // `{0, 3}` each go red on exactly one half.
+      expect(result.brainEnrollments).toEqual({ imported: 2, skipped: 1 });
 
       // C0PAYROLL landed fresh with `is_member` FALSE — the bundle carries no
       // membership, and claiming one would put the channel in the poll scope
@@ -466,6 +504,33 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         [TARGET_ORG],
       );
       expect(targetScope.rows).toEqual([{ legacy_channels: ["C0GENERAL"], reconciled_at: null }]);
+
+      // The producer's reach landed as a UNION, and the destination's own
+      // decision kept its author (#5196, ADR-0039).
+      //
+      // ⚠️ `enrolled_by` is the assertion that matters and it is the one a
+      // reader skips. The three rows alone are satisfied by a `DO UPDATE`
+      // conflict arm — which would land `accounts/status` attributed to
+      // `user-1`, silently re-filing a target admin's authorization under
+      // someone in the region they migrated away from. The mixed authors are
+      // what make the two arms distinguishable at all.
+      const targetEnrollments = await pool.query<{
+        entity: string;
+        dimension: string;
+        enrolled_by: string;
+        note: string | null;
+      }>(
+        `SELECT entity, dimension, enrolled_by, note
+           FROM brain_enrollment WHERE workspace_id = $1 ORDER BY entity, dimension`,
+        [TARGET_ORG],
+      );
+      expect(targetEnrollments.rows).toEqual([
+        { entity: "accounts", dimension: "arr_band", enrolled_by: "user-1", note: "revenue tiering" },
+        // NOT `user-1`, and NOT "revenue tiering" — the destination's own row,
+        // untouched by the arriving one.
+        { entity: "accounts", dimension: "status", enrolled_by: "target-admin", note: "decided here first" },
+        { entity: "subscriptions", dimension: "plan", enrolled_by: "user-2", note: null },
+      ]);
 
       // The vocabulary's closure is REBUILT in the target, not carried. Nothing
       // in the bundle says `is priced at` resolves to `unit price` — the export
@@ -823,6 +888,9 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         // vocabulary edges' reasoning above: the channels ARE excluded,
         // nothing was lost.
         brainSlackChannelExclusions: { imported: 0, skipped: 2, refused: 0 },
+        // All THREE now, including the pair that was `skipped` on the first
+        // pass: a re-import of an already-landed reach is entirely no-op.
+        brainEnrollments: { imported: 0, skipped: 3 },
       });
 
       // ── Catch-up import: an episode the target already has, carrying a

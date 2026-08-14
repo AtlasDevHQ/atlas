@@ -1929,3 +1929,88 @@ export type BrainVocabularyRemoveResponse =
 export interface BrainVocabularyCardinalityWriteResponse {
   readonly cardinality: BrainVocabularyCardinality;
 }
+
+// ---------------------------------------------------------------------------
+// Enrollment — the warehouse producer's reach (#5196, ADR-0039)
+// ---------------------------------------------------------------------------
+
+/**
+ * One `(entity, dimension)` pair a human enrolled.
+ *
+ * An enrollment is a statement about what the tier-1 warehouse producer MAY emit
+ * claims about. It is not itself a claim, carries no review status, and grants
+ * nothing: what the producer emits still lands as a `draft` and still needs a
+ * human publish.
+ */
+export interface BrainEnrollmentEntry {
+  readonly entity: string;
+  /** The bare dimension/measure name — ADR-0037 §4's emission contract. */
+  readonly dimension: string;
+  readonly enrolledAt: string;
+  readonly enrolledBy: string;
+  readonly note: string | null;
+}
+
+/** `GET /api/v1/admin/brain-enrollment` — what this workspace has enrolled. */
+export interface BrainEnrollmentListResponse {
+  readonly enrollments: readonly BrainEnrollmentEntry[];
+  /**
+   * Distinct entities with at least one enrolled pair.
+   *
+   * Derived here rather than left to the client, because it is the set the
+   * producer evaluates ADR-0037 §4's fail-closed ambiguity rule ACROSS — a
+   * dimension name appearing under two enrolled entities is what makes the
+   * producer refuse — so an admin reading this page should see the same number
+   * the producer will use.
+   */
+  readonly entityCount: number;
+}
+
+/** One entity a human could enroll a pair from. */
+export interface BrainEnrollmentEntityOption {
+  readonly name: string;
+  readonly table: string;
+  readonly description: string | null;
+}
+
+/** `GET /api/v1/admin/brain-enrollment/entities` — the pickable entities. */
+export interface BrainEnrollmentEntitiesResponse {
+  readonly entities: readonly BrainEnrollmentEntityOption[];
+}
+
+/**
+ * One enrollable dimension or measure, with whether it is already enrolled.
+ *
+ * The `enrolled` flag is computed SERVER-SIDE against the same rows the list
+ * endpoint returns, rather than joined in the browser: the client would have to
+ * re-implement the pair's identity to do it, and a mismatch there renders an
+ * enrolled pair as un-enrolled — an offer to enroll something already enrolled,
+ * whose click is a silent no-op.
+ */
+export interface BrainEnrollmentDimensionOption {
+  readonly name: string;
+  readonly kind: "dimension" | "measure";
+  readonly type: string | null;
+  readonly description: string | null;
+  readonly enrolled: boolean;
+}
+
+/** `GET /api/v1/admin/brain-enrollment/dimensions` — one entity's candidates. */
+export interface BrainEnrollmentDimensionsResponse {
+  readonly entity: string;
+  readonly dimensions: readonly BrainEnrollmentDimensionOption[];
+}
+
+/**
+ * `POST /api/v1/admin/brain-enrollment/{enroll,unenroll}`.
+ *
+ * `changed: false` is a NO-OP, not a failure: the pair was already enrolled (or
+ * already absent), so the caller's intent already holds. Reported rather than
+ * flattened into success because on the enroll verb it means the recorded author
+ * and note are someone else's and did not change.
+ */
+export interface BrainEnrollmentWriteResponse {
+  readonly entity: string;
+  readonly dimension: string;
+  readonly changed: boolean;
+}

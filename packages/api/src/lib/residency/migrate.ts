@@ -71,6 +71,14 @@ const RECONCILED_SECTIONS = [
   // unreconciled scope row has, by definition, not yet turned its allowlist into
   // exclusions, so there is nothing for the counted section to under-report.
   "brainSlackChannelExclusions",
+  // #5196, ADR-0039. Reconciled for the mirror image of the reason above: a
+  // dropped exclusion makes the destination ingest MORE than a human agreed to,
+  // and a dropped enrollment makes its warehouse producer reach NOTHING. The
+  // second is the silent one — an unenrolled workspace and a working one are
+  // indistinguishable from inside the code, which is exactly why the ADR makes
+  // the milestone's proof a prod row count — so a target that quietly landed
+  // none of them would otherwise report a clean cutover.
+  "brainEnrollments",
 ] as const satisfies readonly (keyof ExportManifest["counts"] & keyof ImportResult)[];
 
 type RefusalCapableSection = {

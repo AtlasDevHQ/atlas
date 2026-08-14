@@ -197,6 +197,11 @@ export const CLEANUP_TABLE_RULES = {
   // decisions they carry live on in the target's copy.
   brain_slack_channel: { kind: "column", column: "workspace_id" },
   brain_slack_ingest_scope: { kind: "column", column: "workspace_id" },
+  // The warehouse producer's enrolled reach (#5196, ADR-0039). Plain column
+  // rule: no FK in either direction, and deliberately none to the semantic layer
+  // — `entity` stores a NAME rather than a `semantic_entities` id, so there is
+  // no ordering constraint against the entity phase either.
+  brain_enrollment: { kind: "column", column: "workspace_id" },
 
   // ── Stays residue (region-local; registry says NOT retained) ─────────────
   // The vocabulary's derived closure (#5022). `expression` rather than

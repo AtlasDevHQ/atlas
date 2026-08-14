@@ -71,6 +71,13 @@ export const navGroups: NavGroup[] = [
       // vocabulary — a fixed enum shipped in code that no customer touches and
       // that has no admin surface to be confused with this one.
       { href: "/admin/brain/vocabulary", label: "Vocabulary" },
+      // "Enrollment", not "Warehouse" or "Sources": the page is about which
+      // (entity, dimension) pairs a human authorized the Atlas to hold claims
+      // about (#5196, ADR-0039), and naming it after the source would put it in
+      // the same mental slot as the Data pillar's connections — which is the one
+      // reading ADR-0040 exists to prevent. Connecting a warehouse is the
+      // availability arm and happens elsewhere; this is the authority arm.
+      { href: "/admin/brain/enrollment", label: "Enrollment" },
     ],
   },
   {

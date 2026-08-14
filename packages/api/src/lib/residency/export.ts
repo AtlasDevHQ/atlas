@@ -38,6 +38,7 @@ import {
   type ExportedBrainVocabularyEdge,
   type ExportedBrainSlackChannelExclusion,
   type ExportedBrainSlackIngestScope,
+  type ExportedBrainEnrollment,
   type ExportedVocabularySlotPosition,
 } from "@useatlas/types";
 
@@ -203,6 +204,7 @@ export async function exportWorkspaceBundle(
     vocabularyEdgeResult,
     slackExclusionResult,
     slackScopeResult,
+    enrollmentResult,
   ] = await Promise.all([
     // --- 1. Conversations + Messages (2 queries, no N+1) ---
     pool.query(
@@ -475,6 +477,17 @@ export async function exportWorkspaceBundle(
        FROM brain_slack_ingest_scope
        WHERE ${scopeClause("workspace_id", orgScope)} AND reconciled_at IS NULL
        LIMIT 1`,
+      params,
+    ),
+    // The warehouse producer's enrolled reach (#5196, ADR-0039). The WHOLE row,
+    // unfiltered — unlike the two sections above there is no observed half to
+    // leave behind and no predicate that carries meaning: nothing derives an
+    // enrollment, so every row here is a human act and every one of them is the
+    // decision.
+    pool.query(
+      `SELECT entity, dimension, enrolled_at, enrolled_by, note
+       FROM brain_enrollment WHERE ${scopeClause("workspace_id", orgScope)}
+       ORDER BY entity, dimension ASC`,
       params,
     ),
   ]);
@@ -842,6 +855,19 @@ export async function exportWorkspaceBundle(
               [],
         };
 
+  const brainEnrollments: ExportedBrainEnrollment[] = enrollmentResult.rows.map((r) => ({
+    entity: r.entity as string,
+    dimension: r.dimension as string,
+    enrolledAt: toISO(r.enrolled_at),
+    // Not defaulted to `""`, on `excludedBy`'s reasoning exactly:
+    // `ck_brain_enrollment_attributed` makes an unattributed enrollment
+    // unstorable, so a null here is a shape change rather than a missing value —
+    // and `""` would land in the destination as authority nobody can be shown to
+    // have granted. Let the import's own validation refuse it.
+    enrolledBy: r.enrolled_by as string,
+    note: (r.note as string | null) ?? null,
+  }));
+
   // --- Build bundle ---
   const bundle: ExportBundle = {
     manifest: {
@@ -870,6 +896,7 @@ export async function exportWorkspaceBundle(
         factAudienceMembers: factAudienceMembers.length,
         brainVocabularyEdges: brainVocabularyEdges.length,
         brainSlackChannelExclusions: brainSlackChannelExclusions.length,
+        brainEnrollments: brainEnrollments.length,
       },
     },
     conversations,
@@ -886,6 +913,7 @@ export async function exportWorkspaceBundle(
     brainVocabularyEdges,
     brainSlackChannelExclusions,
     ...(brainSlackIngestScope !== undefined ? { brainSlackIngestScope } : {}),
+    brainEnrollments,
   };
 
   log.info(

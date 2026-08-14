@@ -37,6 +37,13 @@ import type {
   BrainFactEpisodeView,
   BrainFactOversight,
   BrainFactOversightBucket,
+  BrainEnrollmentDimensionOption,
+  BrainEnrollmentDimensionsResponse,
+  BrainEnrollmentEntitiesResponse,
+  BrainEnrollmentEntityOption,
+  BrainEnrollmentEntry,
+  BrainEnrollmentListResponse,
+  BrainEnrollmentWriteResponse,
   BrainFactOversightBucketKind,
   BrainFactOversightLabelPolicy,
   BrainFactOversightTotals,
@@ -1448,3 +1455,76 @@ export const BrainSlackScopeVitalsSchema = z.object({
   // probe verdict, and the manager surface will own the rest.
   channels: z.array(z.object({ health: z.enum(["ok", "error"]).nullable() })),
 });
+
+// ---------------------------------------------------------------------------
+// Enrollment — the warehouse producer's reach (#5196, ADR-0039)
+// ---------------------------------------------------------------------------
+
+/**
+ * Length bound on either half of a pair, mirroring `ENROLLMENT_NAME_MAX` in
+ * `lib/brain/enrollment.ts`.
+ *
+ * Spelled twice on purpose rather than imported: `@useatlas/schemas` must not
+ * depend on `@atlas/api`, and the api-side constant is the one the storage seam
+ * enforces for callers that never come through this schema (the region import).
+ * The two are pinned together by `admin-brain-enrollment.test.ts`.
+ */
+export const BRAIN_ENROLLMENT_NAME_MAX = 200;
+
+export const BrainEnrollmentEntrySchema = z.strictObject({
+  entity: z.string(),
+  dimension: z.string(),
+  enrolledAt: z.string(),
+  enrolledBy: z.string(),
+  note: z.string().nullable(),
+}) satisfies z.ZodType<BrainEnrollmentEntry, unknown>;
+
+export const BrainEnrollmentListResponseSchema = z.strictObject({
+  enrollments: z.array(BrainEnrollmentEntrySchema),
+  entityCount: z.number().int().nonnegative(),
+}) satisfies z.ZodType<BrainEnrollmentListResponse, unknown>;
+
+export const BrainEnrollmentEntityOptionSchema = z.strictObject({
+  name: z.string(),
+  table: z.string(),
+  description: z.string().nullable(),
+}) satisfies z.ZodType<BrainEnrollmentEntityOption, unknown>;
+
+export const BrainEnrollmentEntitiesResponseSchema = z.strictObject({
+  entities: z.array(BrainEnrollmentEntityOptionSchema),
+}) satisfies z.ZodType<BrainEnrollmentEntitiesResponse, unknown>;
+
+export const BrainEnrollmentDimensionOptionSchema = z.strictObject({
+  name: z.string(),
+  kind: z.enum(["dimension", "measure"]),
+  type: z.string().nullable(),
+  description: z.string().nullable(),
+  enrolled: z.boolean(),
+}) satisfies z.ZodType<BrainEnrollmentDimensionOption, unknown>;
+
+export const BrainEnrollmentDimensionsResponseSchema = z.strictObject({
+  entity: z.string(),
+  dimensions: z.array(BrainEnrollmentDimensionOptionSchema),
+}) satisfies z.ZodType<BrainEnrollmentDimensionsResponse, unknown>;
+
+/**
+ * The enroll/un-enroll request body.
+ *
+ * `min(1)` on both halves, and it is the schema's real work rather than
+ * boilerplate: `''` is a pair the producer can never match, so a tolerated empty
+ * half would store an enrollment that sits in the list looking live and reaches
+ * nothing. The destination's `ck_brain_enrollment_names_present` refuses it too,
+ * as a 500 with a Postgres message.
+ */
+export const BrainEnrollmentWriteRequestSchema = z.strictObject({
+  entity: z.string().min(1).max(BRAIN_ENROLLMENT_NAME_MAX),
+  dimension: z.string().min(1).max(BRAIN_ENROLLMENT_NAME_MAX),
+  /** Why this pair is worth holding claims about. Absent on the un-enroll verb. */
+  note: z.string().max(500).nullish(),
+});
+
+export const BrainEnrollmentWriteResponseSchema = z.strictObject({
+  entity: z.string(),
+  dimension: z.string(),
+  changed: z.boolean(),
+}) satisfies z.ZodType<BrainEnrollmentWriteResponse, unknown>;

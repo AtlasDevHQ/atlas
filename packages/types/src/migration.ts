@@ -84,6 +84,8 @@ export interface ExportManifest {
     /** The curated identity vocabulary's approved edges (#5022, ADR-0037 §6). */
     brainVocabularyEdges?: number;
     brainSlackChannelExclusions?: number;
+    /** The warehouse producer's enrolled reach (#5196, ADR-0039). */
+    brainEnrollments?: number;
   };
 }
 
@@ -610,6 +612,33 @@ export interface ExportedBrainSlackIngestScope {
   legacyChannels: string[];
 }
 
+/**
+ * One `(entity, dimension)` pair a human enrolled as the tier-1 warehouse
+ * producer's reach (#5196, ADR-0039).
+ *
+ * The whole row travels — there is no observed half to leave behind, because
+ * nothing derives an enrollment. It is a deliberate human act end to end, which
+ * is what puts it in the same asset class as `ExportedBrainVocabularyEdge`.
+ *
+ * ⚠️ **`entity` is a semantic-layer NAME, and it lands unresolved.** It is not a
+ * `semantic_entities` id and is not checked against the destination's semantic
+ * layer at import: a workspace's entities travel on the same bundle, and an
+ * enrollment naming one that failed to travel is a pair the destination's
+ * producer simply never matches — the fail-closed direction, and visible on the
+ * enrollment surface beside the entity list. Refusing the row instead would
+ * discard a human decision over an ordering accident.
+ */
+export interface ExportedBrainEnrollment {
+  entity: string;
+  /** The bare dimension/measure/metric name — ADR-0037 §4's emission contract. */
+  dimension: string;
+  enrolledAt: string;
+  /** Who enrolled it. Never empty — the table's CHECK refuses an unattributed row. */
+  enrolledBy: string;
+  /** Why, as the admin wrote it. `null` when they gave no reason. */
+  note: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Full bundle
 // ---------------------------------------------------------------------------
@@ -661,6 +690,18 @@ export interface ExportBundle {
   brainSlackChannelExclusions?: ExportedBrainSlackChannelExclusion[];
   /** Absent unless the workspace migrated mid-reconcile — see the type. */
   brainSlackIngestScope?: ExportedBrainSlackIngestScope;
+  /**
+   * The warehouse producer's enrolled reach (#5196, ADR-0039). Same
+   * optional-on-the-wire shape as the sections above.
+   *
+   * A NARROWING like the Slack sections, but its loss fails in the opposite
+   * direction and that is why it is easy to under-rate: losing an exclusion
+   * makes the destination ingest MORE than a human agreed to, while losing an
+   * enrollment makes its producer reach NOTHING. The second is silent — an
+   * unenrolled workspace and a working one are indistinguishable from inside the
+   * code — so it travels for the same reason, discovered the hard way.
+   */
+  brainEnrollments?: ExportedBrainEnrollment[];
 }
 
 // ---------------------------------------------------------------------------
@@ -718,6 +759,18 @@ export interface ImportResult {
    */
   brainVocabularyEdges: { imported: number; skipped: number; refused: number };
   brainSlackChannelExclusions: { imported: number; skipped: number; refused: number };
+  /**
+   * The warehouse producer's enrolled reach (#5196, ADR-0039).
+   *
+   * TWO counters, not three, and the contrast with the pair above is the reason
+   * to state it. An alias edge earns `refused` because two regions can hold
+   * CONTRADICTORY approved decisions — a second parent, a cycle — so a discarded
+   * one is an event someone must act on. An enrollment has no such conflict to
+   * have: the pair is the whole key, both regions' rows are human acts of the
+   * same kind, and a pair enrolled in both is the same decision twice. So the
+   * merge is a union, and `skipped` means exactly what it means everywhere else.
+   */
+  brainEnrollments: { imported: number; skipped: number };
 }
 
 // ---------------------------------------------------------------------------

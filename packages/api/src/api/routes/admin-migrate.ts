@@ -809,6 +809,41 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
     }
   }
 
+  if ("brainEnrollments" in obj && obj.brainEnrollments !== undefined) {
+    if (!Array.isArray(obj.brainEnrollments)) {
+      return { ok: false, error: "Invalid 'brainEnrollments' field. Expected an array." };
+    }
+    for (let i = 0; i < obj.brainEnrollments.length; i++) {
+      const x = obj.brainEnrollments[i] as Record<string, unknown> | null;
+      if (!x || typeof x !== "object") {
+        return { ok: false, error: `brainEnrollments[${i}]: must be an object.` };
+      }
+      // EMPTY is refused as well as absent, because the destination's
+      // `ck_brain_enrollment_names_present` would refuse it as a 23514
+      // mid-transaction and abort the whole cutover over one row. An empty half
+      // is also not a lesser version of a real pair — it can never match
+      // anything the producer emits, so it would sit in the destination's list
+      // looking enrolled and reach nothing.
+      for (const field of ["entity", "dimension"] as const) {
+        if (typeof x[field] !== "string" || x[field] === "") {
+          return { ok: false, error: `brainEnrollments[${i}].${field}: must be a non-empty string.` };
+        }
+      }
+      // `brainSlackChannelExclusions.excludedBy`'s rule, for the same reason one
+      // authority arm over: enrollment is the act that authorizes the Atlas to
+      // hold claims about a pair, and an unattributed one is authority nobody
+      // can be shown to have granted.
+      if (typeof x.enrolledBy !== "string" || x.enrolledBy === "") {
+        return { ok: false, error: `brainEnrollments[${i}].enrolledBy: must be a non-empty string — an enrollment records who made it.` };
+      }
+      if ("note" in x && x.note !== null && typeof x.note !== "string") {
+        return { ok: false, error: `brainEnrollments[${i}].note: must be a string or null.` };
+      }
+      const tsError = missingTimestamps(x, ["enrolledAt"]);
+      if (tsError) return { ok: false, error: `brainEnrollments[${i}].${tsError}` };
+    }
+  }
+
   return { ok: true, bundle: obj as unknown as ExportBundle };
 }
 
@@ -847,6 +882,13 @@ const ImportResultSchema = z.object({
     skipped: z.number(),
     refused: z.number(),
   }),
+  // TWO counters, back to the norm, and deliberately so beside the pair above
+  // (#5196). An alias edge earns `refused` because two regions can hold
+  // CONTRADICTORY approved decisions; an enrollment has no such conflict to have
+  // — the pair is the whole key and both regions' rows are the same kind of
+  // human act — so the merge is a union and `skipped` means what it means
+  // everywhere else.
+  brainEnrollments: z.object({ imported: z.number(), skipped: z.number() }),
 });
 
 /**
@@ -938,6 +980,7 @@ const importRoute = createRoute({
                 factAudienceMembers: z.number().optional(),
                 brainVocabularyEdges: z.number().optional(),
                 brainSlackChannelExclusions: z.number().optional(),
+                brainEnrollments: z.number().optional(),
               }),
             }),
             conversations: z.array(z.unknown()),
@@ -963,6 +1006,13 @@ const importRoute = createRoute({
             brainVocabularyEdges: z.array(z.unknown()).optional(),
             brainSlackChannelExclusions: z.array(z.unknown()).optional(),
             brainSlackIngestScope: z.unknown().optional(),
+            // The warehouse producer's enrolled reach (#5196, ADR-0039), and
+            // the strip-unknown-keys reason bites hardest here: undeclared, the
+            // whole section is dropped before the importer runs and the target
+            // region's producer reaches NOTHING — silently, with a green
+            // cutover, because an unenrolled workspace and a working one are
+            // indistinguishable from inside the code.
+            brainEnrollments: z.array(z.unknown()).optional(),
           }),
         },
       },
@@ -1527,6 +1577,7 @@ export async function importBundle(
     factAudienceMembers: { imported: 0, skipped: 0 },
     brainVocabularyEdges: { imported: 0, skipped: 0, refused: 0 },
     brainSlackChannelExclusions: { imported: 0, skipped: 0, refused: 0 },
+    brainEnrollments: { imported: 0, skipped: 0 },
   };
 
   // --- 1. Conversations + Messages ---
@@ -2045,6 +2096,42 @@ export async function importBundle(
       // corruption).
       [orgId, [...new Set(bundle.brainSlackIngestScope.legacyChannels)]],
     );
+  }
+
+  // --- 9c. The warehouse producer's enrolled reach (#5196, ADR-0039) ---
+  //
+  // Restored INLINE rather than delegated to a `lib/brain/` merge the way
+  // `brainVocabularyEdges` is, and the contrast is the argument. An arriving
+  // alias edge has to be screened against this region's own approved edges for
+  // at-most-one-parent and for cycles — four rules that would drift if spelled
+  // twice — so it earns a shared implementation. An arriving enrollment has
+  // nothing to screen: the pair IS the primary key, both regions' rows are the
+  // same kind of deliberate human act, and a pair enrolled in both regions is
+  // one decision made twice. The union is the whole merge.
+  //
+  // `DO NOTHING` rather than `DO UPDATE`, on the enroll verb's own rule: the
+  // destination's row, if it has one, carries ITS OWN author and timestamp, and
+  // overwriting them would re-attribute a local admin's decision to whoever
+  // happened to enroll the same pair in the source region.
+  for (const enrollment of bundle.brainEnrollments ?? []) {
+    const { rows } = await client.query(
+      `INSERT INTO brain_enrollment (workspace_id, entity, dimension, enrolled_at, enrolled_by, note)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (workspace_id, entity, dimension) DO NOTHING
+       RETURNING entity`,
+      [
+        orgId,
+        enrollment.entity,
+        enrollment.dimension,
+        enrollment.enrolledAt,
+        enrollment.enrolledBy,
+        enrollment.note ?? null,
+      ],
+    );
+    // `DO NOTHING` returns no row for the conflict case, which is exactly the
+    // "this region already holds it" split `skipped` reports.
+    if (rows.length > 0) result.brainEnrollments.imported++;
+    else result.brainEnrollments.skipped++;
   }
 
   // --- 10. Company brain (#4767, ADR-0036) — facts ride inside their episode ---

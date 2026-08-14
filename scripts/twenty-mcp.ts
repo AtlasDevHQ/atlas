@@ -35,7 +35,7 @@ import {
   TwentyClientError,
   type TwentyClientConfig,
 } from "../plugins/twenty/src/client.js";
-import { AGENT_EVENT_SOURCES } from "../plugins/twenty/src/lead-normalizer.js";
+import { agentEventSourceSchema } from "../plugins/twenty/src/lead-normalizer.js";
 
 const SERVER_NAME = "atlas-twenty-mcp";
 const SERVER_VERSION = "0.1.0";
@@ -97,13 +97,17 @@ async function run<T>(
   }
 }
 
-// Built from the tuple lead-normalizer exports rather than re-listing the
-// members, so this enum cannot drift from the plugin's. The previous hand-
-// written copy carried a drift check asserting MUTUAL assignability with
-// `AtlasEventSource`, which was the wrong invariant — `MCP_SIGNUP` is
-// deliberately absent from every agent-facing enum — and it had never once
-// run, because `scripts/` was excluded from every type program until #5173.
-const eventSourceSchema = z.enum(AGENT_EVENT_SOURCES);
+// The schema lead-normalizer exports, not a re-listed `z.enum([...])`, so this
+// surface cannot drift from the plugin's. The previous hand-written copy
+// carried a drift check asserting MUTUAL assignability with `AtlasEventSource`
+// — the wrong invariant, since `MCP_SIGNUP` is deliberately absent from every
+// agent-facing enum — and it had never once run, because `scripts/` was
+// excluded from every type program until #5173.
+//
+// Importing the schema rather than the tuple is what covers this file: nothing
+// under `scripts/` has a test lane, so a hand-rolled enum here would be caught
+// by nothing. There is now no enum to hand-roll.
+const eventSourceSchema = agentEventSourceSchema;
 
 const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
 

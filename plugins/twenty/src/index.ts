@@ -35,7 +35,7 @@ import {
   upsertPerson,
   type TwentyClientConfig,
 } from "./client";
-import { AGENT_EVENT_SOURCES } from "./lead-normalizer";
+import { agentEventSourceSchema } from "./lead-normalizer";
 
 // ─────────────────────────────────────────────────────────────────────
 //  Public re-exports — consumed by ee/src/saas-crm/ and tests
@@ -69,11 +69,19 @@ export {
   normalizeConversionLead,
   normalizeLead,
   LeadEventSchema,
+  // Already published surface: package.json exports `./lead-normalizer` as a
+  // subpath with `files: ["src/"]`, so these ship whether or not the barrel
+  // re-exports them. Listing them here makes them discoverable rather than
+  // reachable-only-if-you-know.
+  AGENT_EVENT_SOURCES,
+  INTERNAL_ONLY_EVENT_SOURCES,
+  agentEventSourceSchema,
   type DemoLeadEvent,
   type SalesFormLeadEvent,
   type SignupLeadEvent,
   type ConversionLeadEvent,
   type AtlasEventSource,
+  type AgentEventSource,
   type LeadEvent,
   type NormalizedLead,
   type NormalizedNote,
@@ -159,11 +167,11 @@ export const twentyPlugin = createPlugin<
         "Upsert a Person in Twenty CRM by email. Stamps atlasFirstSource (sticky) and atlasLastSource (always).",
       inputSchema: z.object({
         email: z.string().email().describe("Primary email of the Person"),
-        // AGENT_EVENT_SOURCES, not a hand-written copy: `MCP_SIGNUP` is
-        // absent by design (the provisioner stamps it, agents must not), and
-        // that exclusion is only durable if both agent-facing enums read the
-        // same tuple.
-        eventSource: z.enum(AGENT_EVENT_SOURCES).describe("Source label."),
+        // The shared schema, not a hand-rolled `z.enum([...])`: `MCP_SIGNUP` is
+        // absent by design (the provisioner stamps it, agents must not), and a
+        // re-listed enum here is the one mutation every compile-time pin in
+        // lead-normalizer.ts is blind to.
+        eventSource: agentEventSourceSchema.describe("Source label."),
         firstName: z.string().optional(),
         lastName: z.string().optional(),
         atlasIp: z.string().optional(),

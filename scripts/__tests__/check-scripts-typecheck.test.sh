@@ -19,14 +19,19 @@
 # REINTRODUCING #5169's exact defect into a real `scripts/` file and requiring
 # the gate to go red on it.
 #
-# ⚠️ Every probe runs the SHIPPED command — `bun run type:scripts`, not a
-# hand-rolled `tsgo -p …`. Re-implementing the gate is the failure this file
-# exists to catch, one level up: with a direct tsgo call, rewriting
-# `type:scripts` to `echo skipped` left all ten cases green. Measured.
+# ⚠️ Every probe runs a SHIPPED command — `bun run type:scripts`,
+# `bun run lint`, `bun run lint:type-aware` — never a hand-rolled `tsgo -p …` or
+# `oxlint --config … scripts/`. Re-implementing the gate is the failure this
+# file exists to catch, one level up, and both halves were measured failing it:
+# rewriting `type:scripts` to `echo skipped` left all ten cases green, and
+# adding `--ignore-pattern 'scripts/**'` to both lint scripts turned linting of
+# `scripts/` completely off while the suite reported 12 passed, 0 failed.
 #
-# ⚠️ Fail-cases require the PROBE'S OWN PATH in the diagnostic, not just the
-# error code. This program spans ~2000 files, so a pre-existing TS18048
-# anywhere in it would otherwise satisfy a fail-case that compiled nothing.
+# ⚠️ Every fail-case goes through `names_on_one_line`: the rule or error code
+# must appear on a line that ALSO names the probe. Two independent greps are not
+# that — the type program spans ~2000 files and the lint scans are repo-wide, so
+# "the token appears somewhere" plus "the probe appears somewhere" is satisfied
+# by two unrelated diagnostics, and the case passes having measured nothing.
 #
 # The probes write a file into scripts/ and trap-remove it. That is why this
 # suite belongs in ci-local.sh's Stage 2 (serial, tree-writing) alongside the
@@ -34,6 +39,13 @@
 # Stage 1 gate is scanning makes it go red on a line nobody wrote, and
 # `oxlint --type-aware` has been observed panicking outright on exactly that
 # collision. In remote CI the `drift` job runs on its own runner.
+#
+# ⚠️ Stage-2 serialisation does NOT cover two agents in two worktrees of one
+# checkout, which is this repo's normal working mode. While this suite runs, a
+# concurrent `bun run type` or `bun run lint` in the same worktree WILL go red
+# on a probe — observed three times during this PR's own review. There is no
+# lock yet; if you are bisecting a mystery red, check for a `scripts/zz-*` file
+# first.
 
 set -euo pipefail
 
@@ -102,9 +114,13 @@ cleanup() {
   done
   return "$rc"
 }
+# `|| true` on the signal traps: `cleanup` is the left operand of `||` in the
+# EXIT trap, which suspends `set -e` for its body, but a bare `cleanup;` in a
+# signal trap runs with `-e` live — a failing `rm` would kill the shell before
+# `exit 130` and the signal-attributable code would be lost.
 trap 'cleanup || exit 2' EXIT
-trap 'cleanup; exit 130' INT
-trap 'cleanup; exit 143' TERM
+trap 'cleanup || true; exit 130' INT
+trap 'cleanup || true; exit 143' TERM
 
 PASS=0
 FAIL=0
@@ -112,14 +128,42 @@ FAIL=0
 pass() { echo "  ok   $1"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL $1" >&2; FAIL=$((FAIL + 1)); }
 
+# ─── the two rules every assertion in this file goes through ───────────────────
+#
+# Both exist because writing them out by hand recurred: round 1 fixed each at
+# one site and reintroduced it at the next one written. A helper is the only
+# form that a new site cannot get wrong.
+
+# names_on_one_line FILE TOKEN < output — TOKEN must appear on a line that also
+# names FILE. Two independent greps are NOT this: the program spans ~2000 files
+# and the lint scan spans the repo, so "the probe appears somewhere" plus "the
+# code appears somewhere" is satisfied by two unrelated diagnostics, and the
+# case then passes having compiled or linted nothing.
+names_on_one_line() {
+  local file="$1" token="$2"
+  grep -qE "${file//./\\.}[:(][0-9]+.*${token//./\\.}"
+}
+
+# capture_status VAR_OUT VAR_STATUS CMD… — run CMD, keep BOTH its output and its
+# exit status. Every caller must branch on the status FIRST, before inferring
+# anything from the content: an empty or truncated output from a crashed tool
+# otherwise reads as a meaningful measurement. `2>/dev/null || true` is the
+# shape this replaces, and it produced a confident, wrong diagnosis every time.
+capture_status() {
+  local -n _out="$1" _st="$2"
+  shift 2
+  _st=0
+  _out="$("$@" 2>&1)" || _st=$?
+}
+
 # Run the gate exactly as CI runs it. `--silent` keeps bun's own `$ …` echo out
 # of the output the assertions grep.
 run_gate() { bun run --silent type:scripts 2>&1; }
 
 # probe_case EXPECTED NAME EXPECTED_CODE BODY — write BODY into the probe file,
-# run the real gate, assert pass/fail. Fail-cases must name the probe file AND
-# the expected code ON THE SAME LINE, so a case cannot drift into tripping a
-# different error, a different file, or a harness fault while staying green.
+# run the real gate, assert pass/fail. Fail-cases go through names_on_one_line,
+# so a case cannot drift into tripping a different error, a different file, or a
+# harness fault while staying green.
 probe_case() {
   local expected="$1" name="$2" code="$3" body="$4"
   local status=0 out
@@ -129,10 +173,35 @@ probe_case() {
   if [ "$expected" = pass ] && [ "$status" -eq 0 ]; then
     pass "$name (expected pass)"
   elif [ "$expected" = fail ] && [ "$status" -ne 0 ] &&
-    grep -qE "${PROBE_TYPE_BASE//./\\.}\(.*$code" <<<"$out"; then
+    names_on_one_line "$PROBE_TYPE_BASE" "$code" <<<"$out"; then
     pass "$name (expected fail: $code in $PROBE_TYPE_BASE)"
   else
     fail "$name — expected $expected${code:+ ($code in $PROBE_TYPE_BASE)}, got status=$status, output:"
+    sed 's/^/    /' <<<"$out" >&2
+  fi
+}
+
+# lint_probe NAME BODY RULE CMD… — write BODY into the LINT probe, run a shipped
+# lint script, and require the rule and the probe file in ONE diagnostic.
+#
+# ⚠️ CMD is `bun run --silent lint…`, not a hand-rolled `oxlint --config … scripts/`.
+# The hand-rolled form is blind to everything about the shipped command except
+# the presence of the token `scripts/` in its path list — measured, adding
+# `--ignore-pattern 'scripts/**'` to both lint scripts turned linting of
+# `scripts/` completely off while this suite reported 12 passed, 0 failed.
+# Whole-repo cost is 1.7s for `lint` and 12.4s for `lint:type-aware`.
+lint_probe() {
+  local name="$1" body="$2" rule="$3"
+  shift 3
+  local status=0 out
+  printf '%s' "$body" > "$PROBE_LINT"
+  out="$("$@" 2>&1)" || status=$?
+  rm -f "$PROBE_LINT"
+  if [ "$status" -ne 0 ] &&
+    names_on_one_line "$PROBE_LINT_BASE" "$rule" <<<"$out"; then
+    pass "$name (probe caught by the shipped command)"
+  else
+    fail "$name — no '$rule' diagnostic naming $PROBE_LINT_BASE; status=$status, output:"
     sed 's/^/    /' <<<"$out" >&2
   fi
 }
@@ -144,14 +213,25 @@ echo "check-scripts-typecheck.test.sh — scripts/ type + lint gate (#5173)"
 # Sanity, and it is FATAL rather than a countable failure: every case below
 # assumes a clean baseline, so continuing past a dirty one reports on a tree
 # that invalidates the whole run.
+#
+# ⚠️ The DIAGNOSIS must name where the errors are, and it must show them. A
+# weakened `strict` reds this program with ~356 diagnostics of which ZERO are in
+# `scripts/` — reported as "the scripts/ tree does not type-check", it sends a
+# reader into a directory with nothing wrong in it, while the three cases
+# actually written to measure strictness never run.
 status=0
 out="$(run_gate)" || status=$?
 if [ "$status" -ne 0 ]; then
-  if grep -qF "TS2307" <<<"$out" && grep -qF "@useatlas/" <<<"$out"; then
-    echo "::error::the scripts/ type program cannot resolve @useatlas/* — those resolve through each package's built dist/, produced by bun install's prepare scripts. Run 'bun install' and re-run." >&2
+  if names_on_one_line "TS2307" "@useatlas/" <<<"$out" ||
+    grep -qE 'error TS2307:.*@useatlas/' <<<"$out"; then
+    echo "::error::the scripts/ type program cannot resolve @useatlas/* — those resolve through each package's BUILT dist/. Run 'bun install' (which builds @useatlas/types and @useatlas/plugin-sdk via their prepare scripts). @useatlas/sdk and @useatlas/react have NO prepare script — if one of those is unresolved, build it explicitly: bun run --filter '<pkg>' build." >&2
+    sed 's/^/    /' <<<"$out" >&2 | head -20
+  elif ! grep -qE '(^|/)scripts/[^:(]*[:(][0-9]+' <<<"$out"; then
+    echo "::error::the scripts/ type PROGRAM is red but NO diagnostic names a scripts/ file. This is a repo-wide breakage or a weakened compilerOption (strict / strictNullChecks), not a scripts/ defect — the program reaches packages/api, ee/ and apps/docs transitively. First 20 lines:" >&2
+    head -20 <<<"$out" | sed 's/^/    /' >&2
   else
-    echo "::error::the real scripts/ tree does not type-check; fix that before this suite can measure anything:" >&2
-    sed 's/^/    /' <<<"$out" >&2
+    echo "::error::the real scripts/ tree does not type-check; fix that before this suite can measure anything. Diagnostics naming a scripts/ file:" >&2
+    grep -E '(^|/)scripts/[^:(]*[:(][0-9]+' <<<"$out" | sed 's/^/    /' >&2
   fi
   exit 2
 fi
@@ -217,10 +297,16 @@ probe_case fail "strict rejects an implicit any parameter" "TS7006" \
 # passes. A tsgo fault here must NOT be reported as a narrowed glob — an empty
 # file list would otherwise produce a confident, wrong diagnosis with the real
 # error discarded.
-lf_status=0
-program_files="$("$TSGO" --noEmit --listFiles -p "$TSCONFIG" 2>&1)" || lf_status=$?
-if ! grep -qF "$REPO_ROOT/scripts/" <<<"$program_files"; then
-  fail "tsgo --listFiles produced no scripts/ entries (status=$lf_status) — harness fault, not a narrowed glob:"
+capture_status program_files lf_status "$TSGO" --noEmit --listFiles -p "$TSCONFIG"
+if [ "$lf_status" -ne 0 ]; then
+  # Status FIRST. `--listFiles` streams paths as it loads them, so a fault
+  # partway through leaves a list that still contains scripts/ entries and would
+  # route into the comparison below — passing or misdiagnosing on a program that
+  # never finished.
+  fail "tsgo --listFiles failed (status=$lf_status) — harness fault, not a narrowed glob:"
+  sed 's/^/    /' <<<"$program_files" >&2
+elif ! grep -qF "$REPO_ROOT/scripts/" <<<"$program_files"; then
+  fail "tsgo --listFiles exited 0 but named no scripts/ file at all — harness fault, not a narrowed glob:"
   sed 's/^/    /' <<<"$program_files" >&2
 else
   missing=""
@@ -239,11 +325,23 @@ fi
 # the program AND to the comparison above — under-coverage that looks identical
 # to full coverage. `ee-stub` is type-checked by the Symlink Stub Build job and
 # `__tests__` holds only .sh, so anything else appearing there is unchecked.
-stray="$(find "$REPO_ROOT/scripts" -mindepth 2 -name '*.ts' -not -path '*/ee-stub/*' 2>/dev/null || true)"
-if [ -z "$stray" ]; then
-  pass "no scripts/ subdirectory .ts file sits outside the type program"
+#
+# ⚠️ `.tsx` is in this pattern because `.tsx` is in the include glob. The
+# coverage loop above was widened when `.tsx` entered scope and this one was
+# not, which reopened the exact defect one directory down: a `scripts/brand/*.tsx`
+# carrying #5169's shape passed the whole suite.
+# ⚠️ The parentheses are load-bearing — without them `find` binds `-not -path`
+# to the last `-name` only, and `ee-stub/**/*.ts` gets falsely flagged.
+capture_status stray find_status \
+  find "$REPO_ROOT/scripts" -mindepth 2 \
+  \( -name '*.ts' -o -name '*.tsx' \) -not -path '*/ee-stub/*'
+if [ "$find_status" -ne 0 ]; then
+  fail "find over scripts/ failed (status=$find_status) — harness fault, not a clean tree:"
+  sed 's/^/    /' <<<"$stray" >&2
+elif [ -z "$stray" ]; then
+  pass "no scripts/ subdirectory .ts/.tsx file sits outside the type program"
 else
-  fail "scripts/ subdirectory .ts files are outside the one-level include glob:$stray"
+  fail "scripts/ subdirectory .ts/.tsx files are outside the one-level include glob:$stray"
 fi
 
 # --- non-vacuity: the package.json wiring --------------------------------------
@@ -255,7 +353,10 @@ fi
 # prefix-matching its way to green. Measured: with a substring grep, that
 # narrowing left all ten cases passing.
 read_script() {
-  SCRIPT_KEY="$1" bun -e 'const p = JSON.parse(await Bun.file("package.json").text()); console.log(p.scripts?.[Bun.env.SCRIPT_KEY] ?? "")'
+  SCRIPT_KEY="$1" bun -e 'const p = JSON.parse(await Bun.file("package.json").text()); console.log(p.scripts?.[Bun.env.SCRIPT_KEY] ?? "")' || {
+    echo "::error::could not read package.json scripts.$1 — package.json is unparseable or bun failed. This suite cannot verify the wiring." >&2
+    exit 2
+  }
 }
 
 for key in lint lint:type-aware; do
@@ -274,46 +375,54 @@ else
   fail "package.json type no longer runs type:scripts — value: ${value:-<missing>}"
 fi
 
+# Cases 6 and 7 measure $TSCONFIG DIRECTLY (--listFiles is not a flag
+# `type:scripts` passes), so if `type:scripts` were repointed at a different
+# config they would go on validating an orphaned file forever. Nothing else
+# asserts the two are the same file.
+value="$(read_script type:scripts)"
+if grep -qF "tsconfig.scripts.json" <<<"$value"; then
+  pass "type:scripts points at the config this suite audits"
+else
+  fail "type:scripts no longer points at tsconfig.scripts.json — value: ${value:-<missing>}; the --listFiles and stray cases are auditing a config nothing runs"
+fi
+
 # --- non-vacuity: lint reaches scripts/ ----------------------------------------
 
-# Two probes, because the two lint gates fail independently. Both assert the
-# diagnostic names the probe file: a real violation elsewhere in scripts/ would
-# otherwise make either probe permanently green.
+# Two probes, because the two lint gates fail independently — and both run the
+# SHIPPED script, so a change to the invocation (a swapped `--config`, an added
+# `--ignore-pattern`, a wrapper binary) is caught rather than only a change to
+# the path list. The `read_script` assertions above cannot see any of that.
 
 # Plain `lint`. A `correctness`-category rule is an error, so this also pins
 # that nothing has scoped the category off for scripts/ or added the directory
 # to `ignorePatterns`.
-printf '%s' 'const dup = { a: 1, a: 2 };
+lint_probe "lint reaches scripts/" \
+  'const dup = { a: 1, a: 2 };
 export const out = dup;
-' > "$PROBE_LINT"
-status=0
-out="$("$OXLINT" --config "$REPO_ROOT/.oxlintrc.json" scripts/ 2>&1)" || status=$?
-rm -f "$PROBE_LINT"
-if [ "$status" -ne 0 ] && grep -qF "$PROBE_LINT_BASE" <<<"$out" &&
-  grep -qF "no-dupe-keys" <<<"$out"; then
-  pass "lint reaches scripts/ (probe caught)"
-else
-  fail "oxlint did not flag a correctness violation in scripts/ — status=$status, output:"
-  sed 's/^/    /' <<<"$out" >&2
-fi
+' "no-dupe-keys" bun run --silent lint
 
 # Type-aware lint. Naming a directory in the path list is not the same as
 # tsgolint being able to build a program for it; if routing fails, oxlint
 # reports nothing for those files and exits 0 — a green that means "not
 # checked". `no-floating-promises` is rated "error" in .oxlintrc.json.
-printf '%s' 'async function thing(): Promise<void> {}
+lint_probe "type-aware lint routes scripts/ into a program" \
+  'async function thing(): Promise<void> {}
 export function go(): void {
   thing();
 }
-' > "$PROBE_LINT"
+' "no-floating-promises" bun run --silent lint:type-aware
+
+# --- the gated scripts still behave --------------------------------------------
+
+# `saas-env-fixture.ts` is the file this PR's type gate surfaced 25 errors in,
+# and the round-2 fixes made `--database-url` mandatory. `scripts/` has no unit
+# test lane; this is three lines here rather than standing one up.
 status=0
-out="$("$OXLINT" --type-aware --config "$REPO_ROOT/.oxlintrc.json" scripts/ 2>&1)" || status=$?
-rm -f "$PROBE_LINT"
-if [ "$status" -ne 0 ] && grep -qF "$PROBE_LINT_BASE" <<<"$out" &&
-  grep -qF "no-floating-promises" <<<"$out"; then
-  pass "type-aware lint routes scripts/ into a program (probe caught)"
+out="$(bun run "$REPO_ROOT/scripts/saas-env-fixture.ts" --database-url 2>&1)" || status=$?
+if [ "$status" -ne 0 ] && grep -qF "expects a Postgres URL" <<<"$out"; then
+  pass "saas-env-fixture rejects --database-url with no value"
 else
-  fail "type-aware lint did not flag a floating promise in scripts/ — status=$status, output:"
+  fail "saas-env-fixture did not reject a valueless --database-url — status=$status, output:"
   sed 's/^/    /' <<<"$out" >&2
 fi
 

@@ -84,7 +84,9 @@ apps/docs/content/**/__fixture-*.mdx
 # (scripts/__tests__/check-scripts-typecheck.test.sh). Worse if leaked: the
 # probe's last-written body is DELIBERATELY broken — an implicit any — so a
 # committed leftover reds `bun run type` for everyone, in exactly the directory
-# this gate was added to protect.
+# this gate was added to protect. (The suite's OTHER probe, the un-ignored lint
+# one, reds `bun run type` as well as `bun run lint` while it is on disk — the
+# ignore here is about what can be COMMITTED, not about what breaks locally.)
 #
 # ⚠️ Covers only the TYPE probe, and the `.fixture.ts` suffix is what keeps the
 # pattern narrow enough to do that. tsgo does not read `.gitignore`, so an

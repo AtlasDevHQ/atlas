@@ -37,14 +37,23 @@
 // `@atlas/*` imports resolve.
 //
 // SUBDIRECTORIES are out of scope by design (the glob is one level deep), and
-// `check-scripts-typecheck.test.sh` fails if a `.ts` file appears in one, so
-// the omission cannot go silent.
+// `check-scripts-typecheck.test.sh` fails if a `.ts` OR `.tsx` file appears in
+// one, so the omission cannot go silent.
 //
-// This program resolves `@useatlas/*` through each package's BUILT `dist/`,
-// which `bun install` produces via their `prepare` scripts. A tree without
+// Including `.tsx` pulls `@vercel/og`'s `declare module 'react'` augmentation
+// into the program, which widens `React.HTMLAttributes` with an optional `tw`
+// for every file here. Module augmentations are program-global; this one only
+// ever ADDS an optional property, so it can make code compile that otherwise
+// would not, never the reverse, and no `.ts` script references that type.
+//
+// This program resolves `@useatlas/*` through each package's BUILT `dist/`.
+// `bun install` produces them via `prepare` — but only `@useatlas/types` and
+// `@useatlas/plugin-sdk` HAVE a `prepare` script; `sdk` and `react` do not, and
+// would need an explicit `bun run --filter '<pkg>' build` if a script ever
+// imports one. Today the program reaches only the first two. A tree without
 // those dists yields hundreds of unrelated `TS2307`s; the fixture suite
-// detects that case and tells you to re-install rather than reporting it as a
-// failure of the tree.
+// recognises that case and says which command fixes it, rather than reporting
+// it as a failure of the tree.
 {
   "compilerOptions": {
     "target": "ES2022",

@@ -22,28 +22,42 @@ they stop matching the source — which is the failure a three-bullet comment
 could not detect, and which the comment had already suffered once (see the
 mutation list's header on the circular spelling).
 
-⚠️ **The two zeros were MEASURED against `tsgo --noEmit`, not reasoned about**
-(#5061). Applied one at a time, each reds the type-check with
-`TS2578: Unused '@ts-expect-error' directive` on the target suite: the
-directives invert, so the evaporated narrowing is exactly what gets reported. A
-note claiming "nothing here can catch this" is a claim, and this repo has been
-wrong about one before; running it costs a minute.
+⚠️ **The two zeros were MEASURED, not reasoned about** — and re-measured at
+review round 2, after the fixture below gained the `scope` it was missing and
+after the worktree trap in the next paragraph was understood. Applied one at a
+time against `bun x tsgo --noEmit -p packages/api/tsconfig.json` (the project
+whose relative `@atlas/api/* → ./src/*` mapping reads THIS tree), each reds the
+type-check with `TS2578: Unused '@ts-expect-error' directive` on the target
+suite and nothing else: the directives invert, so the evaporated narrowing is
+exactly what gets reported. A note claiming "nothing here can catch this" is a
+claim, and this repo has been wrong about one before; running it costs a
+minute.
 
 The per-code COUNTS are deliberately not recorded. They are a hand-typed
 measurement of a diagnostic list that moves whenever a directive is added or an
 elaboration order changes — the thing this file exists to stop — and unlike a
 cell nothing regenerates them, because `--check` compares the rendered BYTES
 and would freeze a wrong count in as the expected output. The property is what
-is stable and what the row actually claims.
+is stable, and a property is what the row claims.
 
-⚠️ **YOU CANNOT MEASURE THIS FROM A GIT WORKTREE.** `tsgo` resolves
-`@atlas/api/lib/*` through `packages/*/node_modules/@atlas/api` and
-REALPATHS it, so in a worktree whose `node_modules` are symlinked to the
-primary checkout the program contains the PARENT's `lib/**` — mutate
-`sources.ts` there and the type-check reports a clean tree for a mutation that
-is applied on disk. `bun` is unaffected (it resolves to the worktree), so every
-`bun test` cell in this repo is sound; only the type-gate claims are exposed.
-Measure type-level mutations from the primary checkout.
+⚠️ **THE ROOT `bun run type` CANNOT MEASURE THESE TWO FROM A GIT WORKTREE.**
+Both files they mutate — `sources.ts` and `ingest/types.ts` — reach the root
+program through an `@atlas/api/*` specifier, and the
+`packages/*/node_modules/@atlas/api` symlink points at the primary checkout, so
+those copies win TypeScript's package-ID dedup and the worktree's are dropped.
+Mutate them here and the root type-check reports a clean tree for a change that
+is applied on disk.
+
+It is per-FILE, not per-tree: most of `packages/api/src` is read from the
+worktree, and `vocabulary-decide.ts` — same directory, mutated by the sibling
+spec — is worktree-only. Which copy wins depends on program order and can flip
+when an unrelated import moves.
+
+Measure with `bun x tsgo --noEmit -p packages/api/tsconfig.json`, whose
+`@atlas/api/* → ./src/*` mapping is relative and so always reads this tree, or
+from the primary checkout. `bun` itself is unaffected, so every `bun test`
+cell in this repo is sound; only the type-gate claims are exposed.
+`docs/development/testing.md` carries the general form.
 
 Every number is the count of tests that FAIL in that suite under that mutation, measured one mutation at a time against an otherwise clean tree. A `0` means the suite does not catch it — see the notes for whether that is honest or a gap.
 

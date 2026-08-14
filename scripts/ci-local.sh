@@ -272,11 +272,11 @@ wait
 # `lint-type-aware` and the rest read those very files — so they go red on a line
 # the developer never wrote, the developer re-runs, it passes, and they learn the
 # gate is flaky. The hazard is worst exactly when the gate is doing its job:
-# on a branch that touches the runner it widens to --all, which is 832 seconds
+# on a branch that touches the runner it widens to --all, which is ~16 minutes
 # of continuous mutation.
 #
 # --affected, NOT --all: the full sweep would more than double this script. CI's
-# `mutation-tables` job runs everything in parallel, where 14 minutes costs no
+# `mutation-tables` job runs everything in parallel, where that sweep costs no
 # wall clock. Skips entirely without TEST_DATABASE_URL.
 status "stage 2: tree-writing gates (serial — these mutate sources in place) …"
 # ⚠️ `gate-fixtures` MOVED HERE from Stage 1 (#5165), for the same correctness

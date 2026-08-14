@@ -25,7 +25,11 @@
  * The `-pg` column needs a scratch database; without it that column's baseline
  * is DEFLATED and the runner aborts rather than publishing a column of zeros:
  *   bun run db:up
- *   export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5433/brain_5061_scratch
+ *   export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:<port>/<any>_scratch
+ * `db:up` maps 5432; the multi-env compose maps 5433/5434/5435. Every brain
+ * suite creates and drops its OWN schema, so one scratch database serves all
+ * of them — but give a long regeneration its own so a concurrent `-pg` run
+ * cannot perturb the counts. docs/development/testing.md has the runbook.
  */
 
 import type { MutationSpec } from "../mutation-spec";

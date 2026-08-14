@@ -586,8 +586,9 @@ function autoApproveEligible(
   //
   // DEFENSIVE STYLE, NOT A TESTED PROPERTY, and said plainly because the
   // generated table (`scripts/mutations/vocabulary-decide.md`) would otherwise
-  // be expected to carry a row for it. Its preamble says the same from the other
-  // side, under "NOT here, deliberately". NaN is unreachable here from both directions: propose
+  // be expected to carry a row for it. Its preamble says the same from the
+  // other side, under "NOT here, deliberately". NaN is unreachable here from
+  // both directions: propose
   // refuses it outright (`confidence-out-of-range`), and the stored column
   // cannot hold one — Postgres orders NaN above every value, so 0190's
   // `confidence <= 1` CHECK rejects it. The spelling survives because the two

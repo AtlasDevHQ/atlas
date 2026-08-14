@@ -37,8 +37,11 @@
  * **GENERATED — see `packages/api/scripts/mutations/vocabulary-rekey.md`**, from
  * `packages/api/scripts/mutations/vocabulary-rekey.mutations.ts`:
  *
- *     cd packages/api && bun run db:up
- *     export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5433/brain_5061_scratch
+ *     bun run db:up                 # from the repo ROOT — db:up is a root script
+ *     cd packages/api
+ *     export TEST_DATABASE_URL=…   # any scratch DB; every brain suite creates
+ *                                  # and drops its OWN schema, so they share one
+ *                                  # safely. Port: see docs/development/testing.md
  *     bun run scripts/mutate.ts scripts/mutations/vocabulary-rekey.mutations.ts
  *
  * ⚠️ **The column means something different from the table it replaces, and the

@@ -562,25 +562,22 @@ jobs:
     # escape it pointed at.
     #
     # ⚠️ Its OWN job rather than a step in `api-tests`, which is a 4-way shard
-    # matrix and would run this four times over. ~14 minutes measured for the
-    # full sweep, which is FREE here: jobs run in parallel and `Built image
-    # (docs)` already takes ~25, so this lands well inside the existing critical
-    # path. `ci-local.sh` runs the `--affected` subset instead, because 14
-    # minutes added to a ~10-minute pre-PR loop is how a gate gets deleted.
+    # matrix and would run this four times over. The full sweep is 15m48s
+    # measured at thirteen specs (PR #5222; it was 832s at eight, #5077 —
+    # `scripts/check-mutation-tables.sh`'s header carries both). That is FREE
+    # here: jobs run in parallel and `Built image (docs)` already takes ~25
+    # minutes, so this lands inside the existing critical path. `ci-local.sh`
+    # runs the `--affected` subset instead, because ~16 minutes added to a
+    # ~10-minute pre-PR loop is how a gate gets deleted.
     #
-    # ⚠️ THE ~14 MINUTES WAS AN EIGHT-SPEC TREE (#5077). #5061 took it to
-    # thirteen specs and ~110 more mutations, and the sweep was RE-MEASURED off
-    # this job rather than extrapolated: 15m48s (PR #5222). Still inside the
-    # docs image, so the "free" claim holds — but it holds by measurement, not
-    # by argument, and it is the half to re-check whenever a spec is added.
-    # `scripts/check-mutation-tables.sh` carries both data points.
+    # Re-take the measurement whenever a spec is added; the "free" claim is the
+    # half that expires, and it rests on a number rather than on an argument.
     #
     # There is deliberately no `timeout-minutes` here: a sweep killed halfway
-    # reports nothing while looking like a verdict. So the failure mode when
-    # this outgrows the docs image is slow CI rather than a red gate, which is
-    # the quiet direction — if this job starts landing last, the argument in
-    # that script's header ("a gate that doubles the loop gets commented out")
-    # has begun applying to this one.
+    # reports nothing while looking like a verdict. Without one, outgrowing the
+    # docs image shows up as slow CI rather than a red gate. If this job starts
+    # landing last, it has outgrown it, and that script's header ("a gate that
+    # doubles the loop gets commented out") has begun applying to this one.
     name: mutation-tables
     runs-on: ubuntu-latest
     steps:
@@ -588,7 +585,7 @@ jobs:
         with:
           # Full history: `--affected` diffs against the PR base SHA, which is
           # not reachable from a shallow clone. The script widens to `--all` if
-          # the diff fails, so a shallow clone would silently cost 14 minutes
+          # the diff fails, so a shallow clone would silently cost ~16 minutes
           # rather than break — which is exactly the failure nobody notices.
           fetch-depth: 0
 

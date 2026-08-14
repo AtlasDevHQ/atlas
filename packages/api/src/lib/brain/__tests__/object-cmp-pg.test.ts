@@ -44,8 +44,9 @@
  * `object-cmp-pg.test.ts` column. The mutation list is
  * `packages/api/scripts/mutations/object-cmp.mutations.ts`:
  *
- *     cd packages/api && bun run db:up
- *     export TEST_DATABASE_URL=…   # any scratch DB; see "Opt in locally" below
+ *     bun run db:up                 # from the repo ROOT — db:up is a root script
+ *     cd packages/api
+ *     export TEST_DATABASE_URL=…   # any scratch DB; see "Opt in locally" above
  *     bun run scripts/mutate.ts scripts/mutations/object-cmp.mutations.ts
  *
  * The seven numbers used to live here by hand (#5030); they are generated as of

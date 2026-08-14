@@ -500,14 +500,16 @@ describe("the brain source registry", () => {
     //
     // Never invoked: it is compiled, which is the whole point, and calling it
     // would just exercise the runtime backstop the sibling test already covers.
-    // ⚠️ `scope` is REQUIRED (#5203) and was missing here until #5061, which
-    // mattered for a reason unrelated to what it configures: TypeScript
-    // elaborates ONE error per argument, so the directive below absorbed
-    // whichever surfaced first. With `scope` absent that was the MISSING
-    // PROPERTY, not the audience narrowing this test exists for — the directive
-    // stayed "used" either way, so nothing said so. Supplying it makes the
-    // directive report the narrowing, which is what
-    // `scripts/mutations/episode-source-narrowing.md`'s two type rows rest on.
+    // ⚠️ `scope` is REQUIRED, and keeping it supplied is what makes the
+    // directive below a clean instrument. TypeScript elaborates ONE diagnostic
+    // per argument: with `scope` absent, elaboration reports the audience
+    // mismatch on this property and silently drops the missing-property error —
+    // so the directive was already absorbing the narrowing, and the unmutated
+    // tree was green either way. What `scope` changes is the MUTATED tree.
+    // Without it, widening the narrowing produces `TS2741` (missing property)
+    // AND `TS2578` (unused directive) together; with it, the signal is `TS2578`
+    // alone. `scripts/mutations/episode-source-narrowing.md`'s two type rows
+    // rest on that signal, so the noise is worth removing.
     const unreachable = (): void => {
       registerBrainSourceConnector({
         catalogId: "catalog:never-registered",

@@ -65,7 +65,11 @@
  * (guardrail 4). Its sibling brain suites each create and drop their own
  * schema, so one scratch database serves them all:
  *   bun run db:up
- *   export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5433/brain_5061_scratch
+ *   export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:<port>/<any>_scratch
+ * `db:up` maps 5432; the multi-env compose maps 5433/5434/5435. Every brain
+ * suite creates and drops its OWN schema, so one scratch database serves all
+ * of them — but give a long regeneration its own so a concurrent `-pg` run
+ * cannot perturb the counts. docs/development/testing.md has the runbook.
  */
 
 import type { MutationSpec } from "../mutation-spec";
@@ -564,7 +568,7 @@ be a fabricated measurement.
       return null;`,
         },
       ],
-      note: "`null` is the value migration 0189 defines as *auto-approved, no human* at the column it calls the one an audit of a workspace-wide re-key reads first. Scoped to the DECIDE stamp: both call sites spell `recordedApprover(…) ?? LOCAL_OPERATOR_ACTOR`, so what the injected `null` actually changes is the approver recorded on `approved_by`/`reviewed_by` — the propose and remove authorship paths are untouched.",
+      note: "`null` is the value migration 0189 defines as *auto-approved, no human* at the column it calls the one an audit of a workspace-wide re-key reads first. Scoped to the DECIDE STAMPS, which are the three of `recordedApprover`'s five call sites that pass the value through unchanged; the other two — propose and remove — spell `recordedApprover(…) ?? LOCAL_OPERATOR_ACTOR`, so the injected `null` is coalesced straight back there and their authorship is untouched.",
     },
     {
       label: "the human approver never recorded (`approved_by`/`reviewed_by` always NULL)",
@@ -575,7 +579,7 @@ be a fabricated measurement.
           newString: `  return null;`,
         },
       ],
-      note: "The broader form of the row above: every arm of `recordedApprover` returns NULL, so `approved_by`/`reviewed_by` are never stamped with a human. Not 'every path in the module' — the two call sites coalesce to `LOCAL_OPERATOR_ACTOR`, which is why the label names the two columns rather than the function. The `switch` below is left statically unreachable, which is fine: the runner's instrument strips types.",
+      note: "The broader form of the row above: every arm of `recordedApprover` returns NULL, so the decide stamps never record a human. Not 'every path in the module' — the propose and remove sites coalesce to `LOCAL_OPERATOR_ACTOR`, which is why the label names the two columns rather than the function. The `switch` below is left statically unreachable, which is fine: the runner's instrument strips types.",
     },
     {
       label: "the apply refusal RETURNED instead of thrown",

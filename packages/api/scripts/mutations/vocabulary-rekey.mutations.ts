@@ -39,7 +39,11 @@
  * baseline is DEFLATED and the runner aborts rather than publishing a table of
  * zeros (guardrail 4):
  *   bun run db:up
- *   export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5433/brain_5061_scratch
+ *   export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:<port>/<any>_scratch
+ * `db:up` maps 5432; the multi-env compose maps 5433/5434/5435. Every brain
+ * suite creates and drops its OWN schema, so one scratch database serves all
+ * of them — but give a long regeneration its own so a concurrent `-pg` run
+ * cannot perturb the counts. docs/development/testing.md has the runbook.
  */
 
 import type { MutationSpec } from "../mutation-spec";
@@ -256,7 +260,7 @@ fixes, one layer over?* — and the answer was yes.
           newString: '  const { surface, key } = SLOT_COLUMNS["subject"];',
         },
       ],
-      note: "Both the read column and the key column, since the destructure supplies both. The closure subquery still interpolates `position`, so this isolates the COLUMN pair rather than the whole statement. ⚠️ The `rekey-pg` count is a large fraction of that suite and is NOT a compound row: the mutation produces valid SQL that writes the wrong column pair, and nearly every test in the file exercises a re-key and then asserts the key it produced. Contrast the advisory-lock row of `vocabulary.md`, where a comparable fraction IS compounding — there the probe fails and every mutating test throws.",
+      note: "Both the read column and the key column, since the destructure supplies both. The closure subquery still interpolates `position`, so this isolates the COLUMN pair rather than the whole statement. The `rekey-pg` count is a large fraction of that suite and is NOT a compound row: the mutation produces valid SQL that writes the wrong column pair, and nearly every test in the file exercises a re-key and then asserts the key it produced. Contrast the advisory-lock row of `vocabulary.md`, where a comparable fraction IS compounding — there the probe fails and every mutating test throws.",
     },
     {
       label: "outer `identityKeySql` dropped from the assignment",

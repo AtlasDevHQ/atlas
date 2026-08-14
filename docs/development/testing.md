@@ -94,30 +94,46 @@ export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/brain_5061_scra
 
 ⚠️ **Mind the PORT: the brain suite headers and the mutation specs say `5433`,
 and `bun run db:up` does not give you that.** `db:up` brings up
-`docker-compose.yml`, which maps `5432`. `5433` is `docker-compose.multi-env.yml`
-(and `5434` for a third), which is what the parallel-session workflow runs and
-what those headers were written against. Either port works — the URL is the only
+`docker-compose.yml`, which maps `5432`. `5433`/`5434`/`5435` are
+`docker-compose.multi-env.yml`'s dev/staging/prod, which is what the
+parallel-session workflow runs and what those headers were written against. Either port works — the URL is the only
 thing that decides — so read the number as "whichever your compose mapped", not
 as part of the instruction.
 
-Two things the runner cannot do for you:
+Things the runner cannot do for you:
 
 - **It measures `bun test`, so a TYPE-level mutation measures 0.** That zero is
   honest only if the note beside it names the gate that does catch it (`bun run
   type`), and only if you have RUN that gate rather than reasoned about it. See
   `episode-source-narrowing.mutations.ts` for the worked example.
-- **⚠️ `bun run type` in a git WORKTREE type-checks the PRIMARY checkout's
-  `lib/**`, not the worktree's.** `tsgo` resolves `@atlas/api/lib/*` through
-  `packages/*/node_modules/@atlas/api` and REALPATHS it, so when a worktree's
-  `node_modules` are symlinked to the primary checkout — which is how they are
-  usually set up — the program contains the parent's sources. Edit a file under
-  `packages/api/src/lib/` in a worktree and the type-check can report a clean
-  tree for a change that is plainly on disk. `bun` is unaffected: it resolves to
-  the worktree, so `bun test` and the mutation runner's counts are sound. Only
-  the type gate is exposed, and the failure is silent in the reassuring
-  direction. Verify with `tsgo --noEmit --listFiles | grep lib/brain/sources.ts`
-  — if it prints a path outside your worktree, you are checking someone else's
-  tree. Measure type-level claims from the primary checkout.
+- **⚠️ In a git WORKTREE, root `bun run type` can type-check ANOTHER
+  checkout's copy of a file.** Not the whole tree, and not predictably: it is
+  per-file. A worktree's `node_modules` are usually symlinked to the primary
+  checkout, and `packages/{cli,mcp,ee,…}/node_modules/@atlas/api` points there,
+  so a `lib/**` file reached through an `@atlas/api/*` specifier resolves to the
+  PRIMARY copy while the same file reached relatively resolves to the
+  worktree's. **Which copy a given file ends up as is decided per-file and can
+  flip when an unrelated import moves**, so treat it as unpredictable rather
+  than as a rule you can reason from. Measured here: 1,639 `packages/api/src`
+  files came from the worktree, 480 from the primary, and 179 appeared as BOTH —
+  the two sets are not even cleanly partitioned. `sources.ts` and
+  `ingest/types.ts` were primary-only; `vocabulary-decide.ts`, in the same
+  directory, was worktree-only.
+
+  Edit a shadowed file and the type-check reports green on a change it never
+  saw. `bun` is unaffected — it resolves to the worktree — so `bun test` and
+  every mutation count are sound; only the type gate is exposed. To see the
+  split rather than one file:
+
+  ```bash
+  bun x tsgo --noEmit --listFiles | grep 'packages/api/src' | grep -v "$PWD" | head
+  ```
+
+  Any output means part of your `src` is coming from another checkout. Two ways
+  out: type-check the package's own project, `bun x tsgo --noEmit -p
+  packages/api/tsconfig.json`, whose `@atlas/api/* → ./src/*` mapping is
+  relative and so always reads the worktree; or measure from the primary
+  checkout.
 - **It restores from an in-memory backup, never `git checkout`** — the tree
   normally carries uncommitted work. Never kill a run mid-flight, and never
   commit while one is live: `ps -o pid=,args= -C bun | grep 'mutate\.ts'`.
@@ -133,4 +149,5 @@ Two things the runner cannot do for you:
   lock: each run backs up the files it touches IN MEMORY, so two runs whose
   specs share a source file clobber each other's backups and publish numbers
   measured against a doubly-mutated tree — a wrong number that looks exactly
-  like a right one. Disjoint file sets are luck, not a guarantee; serialise.
+  like a right one. Do not rely on two specs touching different files;
+  serialise.

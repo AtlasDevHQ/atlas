@@ -19,10 +19,9 @@
 #
 # ⚠️ RE-MEASURE WHEN YOU ADD A SPEC; do not scale the number in your head. The
 # two points above are 1.6x the suite-runs apart and only 14% apart in wall
-# clock, because the cost is dominated by a few `-pg` targets rather than by the
-# mutation count. Both digits are hand-typed and nothing regenerates them —
-# reading the duration off the `mutation-tables` job on your own PR is free, and
-# is what these two lines are.
+# clock, so the relationship is not linear and extrapolating from a spec count
+# will mislead you. Both digits are hand-typed and nothing regenerates them;
+# read the duration off the `mutation-tables` job on your own PR.
 #
 # The argument does not depend on the digits: `/ci` is ~10 minutes in total, so
 # an always-full gate would MORE THAN DOUBLE the pre-PR loop — and a gate that
@@ -86,7 +85,7 @@ cd "$ROOT/packages/api"
 # ⚠️ A SEAM, so the adversarial fixture can point this at a throwaway tree.
 # `scripts/__tests__/check-mutation-tables.test.sh` needs to prove the gate
 # CATCHES a hand-edited table and a skipped target; without an override it could
-# only ever be run against the real specs, which is a 14-minute assertion.
+# only ever be run against the real specs, which is a ~16-minute assertion.
 SPECS=(${MUTATION_SPEC_GLOB:-scripts/mutations/*.mutations.ts})
 if [ ${#SPECS[@]} -eq 0 ] || [ ! -e "${SPECS[0]}" ]; then
   echo "check-mutation-tables: no specs found under packages/api/scripts/mutations/ — did the directory move?" >&2
@@ -193,7 +192,8 @@ $UNTRACKED"
         #     declined to perform, precisely when it was most wanted.
         #
         # Declining (3) rather than widening to --all is deliberate: the full
-        # sweep is 832s MEASURED, more than the rest of ci-local.sh combined,
+        # sweep is 948s MEASURED at thirteen specs (see the header), more
+        # than the rest of ci-local.sh combined,
         # and remote CI already runs --all on every push to main, so widening
         # would re-verify the same SHA at the highest cost for no new coverage.
         # What was missing was not coverage, it was an honest verdict.

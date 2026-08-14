@@ -46,7 +46,8 @@
  * **GENERATED — see `packages/api/scripts/mutations/vocabulary-decide.md`**,
  * from `packages/api/scripts/mutations/vocabulary-decide.mutations.ts`:
  *
- *     cd packages/api && bun run db:up
+ *     bun run db:up                 # from the repo ROOT — db:up is a root script
+ *     cd packages/api
  *     export TEST_DATABASE_URL=…   # any scratch DB; see "Opt in locally" below
  *     bun run scripts/mutate.ts scripts/mutations/vocabulary-decide.mutations.ts
  *

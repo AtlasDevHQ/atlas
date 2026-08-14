@@ -98,7 +98,9 @@ interface Options {
    * Print the files this spec's verdict DEPENDS ON, then exit. Runs nothing.
    *
    * Exists so `check-mutation-tables.sh` can verify only the specs a branch
-   * could actually have invalidated. The full sweep is 832s measured — more
+   * could actually have invalidated. The full sweep is ~16 min measured at
+   * thirteen specs (`check-mutation-tables.sh`'s header carries both data
+   * points) — more
    * than the entire rest of `/ci` — so a gate that always ran everything would
    * be disabled inside a week, and a disabled gate catches nothing.
    *

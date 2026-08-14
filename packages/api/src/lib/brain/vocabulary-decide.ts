@@ -1371,7 +1371,15 @@ function authorEntitled(ctx: BrainPrincipalContext): boolean {
  *
  * @throws when the underlying write fails — including a closure that does not
  *   converge (`VocabularyClosureError`). The transaction has already rolled
- *   back, so there is no proposal row and no edge.
+ *   back, so there is no edge, and no proposal row THIS CALL inserted.
+ *
+ *   ⚠️ Not "no proposal row". On the convergence path the row was committed by
+ *   an earlier `proposeAliasEdge` transaction, so it survives the rollback and
+ *   stays `pending` — which is correct (a producer's queue entry is not this
+ *   caller's to destroy) but is the opposite of what the flat sentence says.
+ *   The flat version was copied verbatim into a customer-facing guide, where a
+ *   fix-vs-finding pass caught it; corrected at the source so the next copy is
+ *   right.
  */
 export async function authorAliasEdge(
   workspaceId: string,

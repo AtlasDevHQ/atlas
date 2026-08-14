@@ -87,9 +87,29 @@ The install **handler** it uses (OAuth, Form, Static-bot per "Install models" be
   _Avoid_: bare **"vocabulary"** in cross-subsystem prose (say Claim Vocabulary); **"curator"** for the actor (say approver — it implies a role that does not exist); **"synonym"** (an alias is directed and position-scoped, a synonym is neither); treating the approved edges and the effective target as one thing (that conflation is the forest invariant ADR-0037 §6 had to retire).
 
 
+- **Coverage Surface** — the one page where an admin states what Atlas knows, how much of what its credentials can see it covers, and what it does not know (PRD condition 6, [ADR-0041](./docs/adr/0041-the-coverage-surface-counts-what-it-can-see.md)). It is the **evolved `/admin/brain` overview**, not a new sibling page, structured by the ingest contract's two arms: the availability arm's half (what is surveyed at all) beside the authority arm's half (what is observed but awaiting review — the former backlog counts).
+
+  Its unit is the **survey unit** — the enumerable atom of evidence-side coverage: a chat channel, a mailbox, an enrolled (entity, dimension) pair. Survey units are **evidence-side**, never organization-side: "parts of the company" on this surface means parts of the company's record-producing surface. A department/team reading is refused unless a human authors the mapping — an org-chart denominator is a guess wearing a UI.
+
+  Every survey unit is in exactly one of **three states**:
+
+  | State | Meaning |
+  |---|---|
+  | **Surveyed** | inside the perimeter, with evidence actually observed (green-is-evidence) |
+  | **Enumerated** | the credentials can see it exists; nobody put it in the perimeter |
+  | **Unenumerable** | beyond granted scopes or unconnected sources — the map edge, shown as a **mark, never a number** ("terra incognita" is the product copy for this state) |
+
+  Denominators are always **credential-relative** ("of what Atlas's credentials can see"), so widening scopes legitimately makes a ratio *drop* — correct behavior the UI must not smooth over. **There is no single coverage number, permanently**: ratios exist only where numerator and denominator share a real unit; blending channels, mailboxes and entities needs invented weights, and a headline gauge rewards narrowing the denominator. The page's strongest statement is a composed paragraph, not a KPI.
+
+  **Stale** is a **measured lag** — the vendor's own activity metadata shows source movement newer than our newest evidence by more than the class's sync cadence. Where the vendor can't report activity, or the pipe is sick, the unit is **"unverified since \<date\>"**, never "stale". **Quiet ≠ stale**: a source that hasn't moved is current however old its evidence. **"Thin" has no computed badge** — counts are shown; the judgment is the reader's.
+
+  Labels follow the counts/labels split: **counts are always disclosable** (extending the unscoped-count sanction from facts to survey units); a **label** appears only by **deliberate act** (membership, exclusion, enrollment, install form) or **vendor-public existence** (a per-class contract property, default closed). Persons and mailboxes are counted, never listed.
+
+  _Avoid_: **"coverage score"** / any blended percentage (refused, not deferred); "region" for a survey unit (residency owns that word); a company-wide denominator in any phrasing ("of the company" — the honest phrase is "of what the credentials can see"); a staleness threshold knob (the only constant in staleness is the class cadence); calling an unmoved source stale.
+
 Every brain surface lives under `/admin/brain`, and none is a member of **Intelligence** — the sidebar group holding model configuration, prompt authoring and agent behaviour, which is a grab-bag the brain was wrongly filed into until #5066.
 
-- `/admin/brain` — overview: the backlog counts, read-only.
+- `/admin/brain` — overview: the **Coverage Surface** (above). Read-only; carries the backlog counts as its authority-arm half.
 - `/admin/brain/facts` — the review queue: reject what you don't trust, then publish, and what survived is promoted. **The only console surface carrying brain-fact review verbs.** Promotion itself is not exclusive to it: the shared publish modal hangs off `PendingChangesPill` in the admin top bar, so any admin can publish from any `/admin/*` route without ever opening this page — which is exactly why the publish preview discloses a workspace-wide supersession count. `brain_facts.status` is grep-guarded by `scripts/check-brain-fact-promotion.sh` to a named allowlist (today: the content-mode adapter, the region import, the correction verbs, the vocabulary re-key); the guard exempts a FILE, not a column, and records that cost itself. Was `/admin/brain-facts`, which now 308s here.
 - `/admin/brain/vocabulary` — the **Claim Vocabulary**, in two panes. **Pending**: one queue holding both alias proposals and cardinality decisions together (a person is deciding about a predicate, not visiting queue A vs queue B), each with the blast-radius preview it is decided against, plus direct human authoring. **In force**: the approved edges and curated cardinalities currently shaping identity, each removable. Removal belongs on this surface rather than in a follow-up because ADR-0037 §6 makes reversibility the sole thing that renders a bad alias undoable, and a pending queue structurally cannot show an edge already approved. Nav label is **Vocabulary**; the route keeps the `brain` noun per ADR-0038.
 

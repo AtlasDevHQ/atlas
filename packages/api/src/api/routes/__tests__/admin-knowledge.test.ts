@@ -270,6 +270,10 @@ void mock.module("@atlas/api/lib/brain/ingest/types", () => ({
   getBrainSourceConnector,
   registerBrainSourceConnector: () => {},
   listBrainSourceCatalogIds: () => (BRAIN_SOURCE ? [BRAIN_SOURCE.catalogId] : []),
+  // #5203: `knowledge-collection-slug.ts` imports this for the reserved-syncId
+  // guard, and a partial mock missing it SyntaxErrors every importer in the
+  // process (the wholesale-replacement class the PR body documents).
+  listPerWorkspaceBrainSources: () => [],
   _resetBrainSourceConnectors: () => {},
 }));
 const syncBrainEpisodeSource = mock(async (params: { installId: string }) => ({

@@ -144,6 +144,18 @@ function BrainEnrollment() {
   });
 
   const enrollments = list?.enrollments ?? [];
+  /**
+   * Whether the reach is KNOWN — not whether it is empty.
+   *
+   * ⚠️ Three states, not two. `useAdminFetch` returns
+   * `{ data: null, error: null, loading: true }` on first mount, so a guard
+   * written as `listError !== null` leaves the loading window rendering `0` —
+   * the page asserting an empty reach while the prose eighteen lines below still
+   * says "Loading what is enrolled…". That was the first fix for this defect and
+   * it reproduced it one state over, which is why the condition is derived once
+   * here rather than spelled at each chip.
+   */
+  const reachKnown = listError === null && !listLoading && list !== null && list !== undefined;
   const entityOptions = entities?.entities ?? [];
   const dimensionOptions = dimensions?.dimensions ?? [];
   const picked = dimensionOptions.find((d) => d.name === dimension) ?? null;
@@ -374,20 +386,19 @@ function BrainEnrollment() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {/* ⚠️ An em-dash, never a number, when the read failed.
-              `useAdminFetch` nulls `data` on error, so both chips evaluated to
-              `0` and rendered ABOVE the failure prose — the two numbers an
-              admin's eye lands on first asserting an empty reach at the moment
-              nobody knows what the reach is. `entityCount` is the worse of the
-              two: it is the set the producer evaluates its fail-closed
+          {/* ⚠️ An em-dash, never a number, until the reach is actually KNOWN.
+              Both chips render above the failure prose, so a `0` here is the
+              first thing an admin reads — and `entityCount` is the worse of the
+              two, being the set the producer evaluates its fail-closed
               ambiguity rule across, so a rendered `0` is a claim about producer
-              behaviour. This is the same failed-vs-empty rule the prose below
-              already obeys. */}
+              behaviour. `reachKnown` covers loading AND failure because the
+              prose below splits three ways and an earlier two-way guard here
+              did not. */}
           <div className="flex flex-wrap gap-2 text-xs">
             <div className="border-border flex items-center gap-2 rounded-md border px-2 py-1">
               <span className="font-medium">Pairs</span>
               <span className="text-muted-foreground">
-                {listError !== null ? "—" : enrollments.length}
+                {reachKnown ? enrollments.length : "—"}
               </span>
             </div>
             <div className="border-border flex items-center gap-2 rounded-md border px-2 py-1">
@@ -396,7 +407,7 @@ function BrainEnrollment() {
                   set the producer evaluates its ambiguity rule across, and a
                   client-side count would be a second spelling of it. */}
               <span className="text-muted-foreground">
-                {listError !== null ? "—" : (list?.entityCount ?? 0)}
+                {reachKnown ? list.entityCount : "—"}
               </span>
             </div>
           </div>

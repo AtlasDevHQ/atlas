@@ -1464,14 +1464,18 @@ export const BrainSlackScopeVitalsSchema = z.object({
 /**
  * Length bound on either half of a pair.
  *
- * **This is the only spelling.** `lib/brain/enrollment.ts` re-exports it as
+ * **The only DECLARATION.** `lib/brain/enrollment.ts` re-exports it as
  * `ENROLLMENT_NAME_MAX` rather than declaring its own — the forbidden direction
  * is `@useatlas/schemas` → `@atlas/api`, and the one used here is the reverse,
- * which `lib/` already takes in a dozen places. An earlier cut declared the
- * number twice and claimed a test pinned them together; no such test existed,
- * and the only place the second `200` appeared was inside a `mock.module()`
- * factory that replaces the real module — a fixture that agrees by
- * construction and can never disagree.
+ * which `lib/` already takes in a dozen places.
+ *
+ * An earlier cut declared the number twice and claimed a test pinned them
+ * together; no such test existed. Its only other appearance was a literal inside
+ * a `mock.module()` factory replacing the real module — a fixture that agrees by
+ * construction and can never disagree — and that copy now imports this constant
+ * too. "Declaration" rather than "spelling" is deliberate: a mock is free to
+ * state a DIFFERENT bound on purpose, and this comment should not read as a
+ * promise that no test ever will.
  */
 export const BRAIN_ENROLLMENT_NAME_MAX = 200;
 

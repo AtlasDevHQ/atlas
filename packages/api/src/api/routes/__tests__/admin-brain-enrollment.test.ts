@@ -32,6 +32,7 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { Effect, Layer } from "effect";
+import { BRAIN_ENROLLMENT_NAME_MAX } from "@useatlas/schemas";
 import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
 import { validationHook } from "../validation-hook";
 import type { EnrollmentRow } from "@atlas/api/lib/brain/enrollment";
@@ -103,7 +104,11 @@ void mock.module("@atlas/api/lib/brain/enrollment", () => ({
   // Mock-ALL-exports, and this list is pinned against the real module's by
   // `lib/brain/__tests__/enrollment-writers.test.ts` — so a new export breaks
   // that tripwire rather than link-failing here at some later date.
-  ENROLLMENT_NAME_MAX: 200,
+  // NOT a literal `200`. This factory replaces the real module, so a
+  // hand-written number here is a fixture that agrees by construction and can
+  // never disagree — which is exactly the defect the seam's own docstring
+  // records, reproduced in the file that mocks it.
+  ENROLLMENT_NAME_MAX: BRAIN_ENROLLMENT_NAME_MAX,
   InvalidEnrollmentPairError: TestInvalidEnrollmentPairError,
   UnattributedEnrollmentError: class extends Error {},
   makeProducerReach: (pairs: readonly unknown[]) => ({

@@ -309,6 +309,32 @@ describe("the counters are the server's, and never a number nobody knows", () =>
     expect(text).toContain("Entities2");
   });
 
+  test("a read still IN FLIGHT shows an em-dash, never a zero", async () => {
+    // ⚠️ The state the first fix for this defect missed. `useAdminFetch` returns
+    // `{ data: null, error: null, loading: true }` on first mount, so a guard
+    // written as `listError !== null` leaves the loading window rendering `0` —
+    // the page asserting an empty reach while the prose below still says
+    // "Loading what is enrolled…". Three states, not two.
+    enrollments = THREE_PAIRS_TWO_ENTITIES;
+    const { container } = renderPage();
+    // Assert BEFORE the fetch settles. The loading prose is the proof we are in
+    // that window rather than past it — without it this test would silently
+    // become a second copy of the settled-state one.
+    await waitFor(() =>
+      expect(container.textContent ?? "").toContain("Loading what is enrolled…"),
+    );
+    const loadingText = container.textContent ?? "";
+    expect(loadingText).toContain("Pairs—");
+    expect(loadingText).not.toContain("Pairs0");
+    expect(loadingText).not.toContain("Entities0");
+
+    // …and the control: once it settles, the real numbers appear. Without this
+    // the assertions above are satisfied by a page that renders an em-dash
+    // forever.
+    await waitFor(() => expect(container.textContent ?? "").toContain("Pairs3"));
+    expect(container.textContent ?? "").toContain("Entities2");
+  });
+
   test("a failed read shows an em-dash, never a zero", async () => {
     // ⚠️ `useAdminFetch` nulls `data` on error, so both chips evaluated to `0`
     // and rendered ABOVE the failure prose — the two numbers an admin's eye

@@ -122,14 +122,22 @@ export type EnrollmentRow = BrainEnrollmentEntry;
  * `changed: false` instead of a 400 tells an admin their un-enrolment took
  * effect when it matched nothing.
  *
- * ⚠️ **The region import does NOT come through here**, and an earlier version of
- * this line claimed it did. `admin-migrate.ts` inserts its rows directly, so its
- * `validateBundle` arm carries the same trim, length and non-empty rules
- * explicitly — checked against this function by
- * `__tests__/enrollment-writers.test.ts`. Two doors, one rule set, stated rather
- * than assumed: the destination's CHECK is weaker than this function (`entity
- * <> ''` admits `"   "`), so a bundle validated only by the CHECK lands pairs
- * that look enrolled and reach nothing.
+ * ⚠️ **The region import CALLS this function, and that is load-bearing.**
+ * `admin-migrate.ts` inserts its rows directly rather than through
+ * {@link enrollPair}, so its `validateBundle` arm is a second write door — and
+ * the destination's CHECK is weaker than this function (`entity <> ''` admits
+ * `"   "`), so a bundle policed only by the CHECK lands pairs that look enrolled
+ * and reach nothing.
+ *
+ * It ran its own copy of the rules for exactly one commit, and that commit added
+ * a NUL check HERE and not there, under a comment asserting the two carried one
+ * rule set. Calling this function makes the claim structural instead:
+ * `__tests__/enrollment-writers.test.ts` pins the CALL rather than a list of
+ * rules, so a rule added here applies at both doors on the same commit.
+ *
+ * The import door is stricter on one axis only — it REFUSES what this function
+ * repairs, because an untrimmed pair in a bundle is a defect in the source
+ * region and silently trimming it would land a pair the source does not have.
  *
  * ⚠️ **Case is preserved, not folded.** A warehouse column set may legitimately
  * contain `status` and `Status` as different columns, and folding would merge

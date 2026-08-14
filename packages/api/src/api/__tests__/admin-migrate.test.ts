@@ -1635,11 +1635,34 @@ describe("validateBundle — the enrolled reach (#5196)", () => {
     expect(validateBundle(enrollmentBundle([{ ...validEnrollment(), entity: atBound }])).ok).toBe(true);
   });
 
-  it("refuses an unattributed enrollment", () => {
-    for (const bad of ["", 42, null, undefined]) {
+  it("refuses an unattributed enrollment, whitespace included", () => {
+    // ⚠️ `"   "` is the one that matters and the one a bare `=== ""` admits.
+    // It passes `ck_brain_enrollment_attributed` (`enrolled_by <> ''`) too, so
+    // it lands STORED — an enrollment that looks attributed and names nobody,
+    // on the column an audit of "who authorized this?" reads first.
+    for (const bad of ["", "   ", "\t", 42, null, undefined]) {
       const result = validateBundle(enrollmentBundle([{ ...validEnrollment(), enrolledBy: bad }]));
       expect(result.ok, `enrolledBy=${JSON.stringify(bad)} was accepted`).toBe(false);
       if (!result.ok) expect(result.error).toContain("enrolledBy");
+    }
+    // The control: a real author is accepted, so this is an attribution rule
+    // rather than a validator that refuses the field outright.
+    expect(validateBundle(enrollmentBundle([validEnrollment()])).ok).toBe(true);
+  });
+
+  it("refuses a NUL byte — the rule lives in the seam and reaches this door", () => {
+    // The falsifier for the two doors sharing ONE rule set. The seam's
+    // `normalizeEnrollmentPair` owns this rule; this arm never restates it, so
+    // the test goes red the moment the import stops calling the seam. That is
+    // exactly the regression the previous cut shipped: a rule added at one door
+    // under a comment claiming both doors carried it.
+    for (const field of ["entity", "dimension"] as const) {
+      const result = validateBundle(
+        enrollmentBundle([{ ...validEnrollment(), [field]: "acc\u0000ounts" }]),
+      );
+      expect(result.ok, `${field} with a NUL was accepted`).toBe(false);
+      // The seam's own sentence travels out, rather than a second wording here.
+      if (!result.ok) expect(result.error).toContain("NUL");
     }
   });
 

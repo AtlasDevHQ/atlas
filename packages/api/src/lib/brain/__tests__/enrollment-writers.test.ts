@@ -155,13 +155,47 @@ describe("brain_enrollment writer set (#5196, ADR-0039)", () => {
     // (which is `entity <> ''` and admits whitespace), and the pair would sit in
     // the destination's list looking live while the producer never matches it.
     const source = await Bun.file(`${SRC_ROOT}api/routes/admin-migrate.ts`).text();
-    const arm = source.slice(source.indexOf('"brainEnrollments" in obj'));
-    expect(arm.length, "the brainEnrollments validation arm is gone").toBeGreaterThan(0);
+    // ⚠️ Asserted on the INDEX, not on the slice's length. `indexOf` answers
+    // `-1` when the arm is gone and `slice(-1)` then returns the file's last
+    // character — length 1, which is `toBeGreaterThan(0)`. The guard's stated
+    // failure mode was unreachable, so a deleted arm would have surfaced as a
+    // confusing `toContain` failure below instead of as "the arm is gone".
+    const armStart = source.indexOf('"brainEnrollments" in obj');
+    expect(armStart, "the brainEnrollments validation arm is gone").toBeGreaterThanOrEqual(0);
+    const arm = source.slice(armStart);
     const enrollmentArm = arm.slice(0, arm.indexOf("return { ok: true"));
+
+    // ⚠️ It CALLS the seam. It does not restate the seam's rules.
+    //
+    // The first version of this test grepped for `value.trim()` and
+    // `BRAIN_ENROLLMENT_NAME_MAX` — the two rules that commit had just added —
+    // so it could only ever check rules that already existed on both sides. The
+    // same commit added a NUL check to the seam alone and this test stayed
+    // green, under a docstring asserting the two doors carried one rule set.
+    // Pinning the CALL is what makes a rule added to the seam tomorrow apply
+    // here today.
+    expect(
+      enrollmentArm,
+      "the region import no longer derives its pair rules from the seam — a rule added to " +
+        "`normalizeEnrollmentPair` would now apply at one write door and not the other",
+    ).toContain("normalizeEnrollmentPair(");
+    // The one axis on which the import door is deliberately STRICTER: it refuses
+    // what the seam repairs.
     expect(enrollmentArm).toContain("value.trim()");
-    expect(enrollmentArm).toContain("BRAIN_ENROLLMENT_NAME_MAX");
-    // And the seam's own bound is the SAME constant, not a second literal.
-    expect(enrollmentSeam.ENROLLMENT_NAME_MAX).toBe(BRAIN_ENROLLMENT_NAME_MAX);
+    // And the attribution field is trimmed before its emptiness test, exactly as
+    // `enrollPair` trims its actor — `"   "` otherwise satisfies both this arm
+    // and `ck_brain_enrollment_attributed`.
+    expect(enrollmentArm).toContain("x.enrolledBy.trim()");
+    // ⚠️ NOT `expect(seam.ENROLLMENT_NAME_MAX).toBe(BRAIN_ENROLLMENT_NAME_MAX)`.
+    // After the re-export that compares a value to itself — `x === x`, green for
+    // every possible edit — so it could not detect the re-introduced literal it
+    // was written to catch. Identity is what the claim actually is: the seam must
+    // EXPORT the schemas constant rather than hold an equal copy of it.
+    const seamSource = await Bun.file(`${SRC_ROOT}lib/brain/enrollment.ts`).text();
+    expect(
+      seamSource,
+      "the seam declares its own bound again instead of re-exporting the schemas constant",
+    ).toContain("export const ENROLLMENT_NAME_MAX = BRAIN_ENROLLMENT_NAME_MAX;");
   });
 
   test("the patterns actually match the statements they claim to — the tripwire's own falsifier", () => {

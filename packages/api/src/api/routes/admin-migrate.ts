@@ -35,7 +35,7 @@ import {
   type RegionPortableComparable,
 } from "@atlas/api/lib/brain/object-cmp";
 
-import { BRAIN_ENROLLMENT_NAME_MAX } from "@useatlas/schemas";
+import { normalizeEnrollmentPair } from "@atlas/api/lib/brain/enrollment";
 import type { ExportBundle, ExportedBrainFact, ImportResult, SupportedBundleVersion } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -819,41 +819,57 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
       if (!x || typeof x !== "object") {
         return { ok: false, error: `brainEnrollments[${i}]: must be an object.` };
       }
-      // EMPTY is refused as well as absent, because the destination's
-      // `ck_brain_enrollment_names_present` would refuse it as a 23514
-      // mid-transaction and abort the whole cutover over one row. An empty half
-      // is also not a lesser version of a real pair — it can never match
-      // anything the producer emits, so it would sit in the destination's list
-      // looking enrolled and reach nothing.
+      // ⚠️ This is the SECOND write door into `brain_enrollment`, and the
+      // destination's CHECK is weaker than the application rule.
+      //
+      // An EMPTY half trips `ck_brain_enrollment_names_present` as a 23514
+      // mid-transaction, aborting a whole cutover over one row. An UNTRIMMED one
+      // is worse, because the CHECK is `entity <> ''` and `"   "` satisfies it
+      // on a `text` column: the pair imports cleanly, then sits in the
+      // destination's list looking live while the producer's `has()` can never
+      // match it — the stored-but-unreachable row this whole surface exists to
+      // prevent.
+      //
+      // The rules are taken FROM THE SEAM rather than restated here, and that is
+      // the point rather than a shortcut. An earlier cut spelled trim and length
+      // out inline; the very same commit then added a NUL check to the seam and
+      // not to this arm, under a comment asserting the two doors carried one
+      // rule set. Calling the seam makes that claim structural: a rule added
+      // there is enforced here on the same commit, with no test to remember.
       for (const field of ["entity", "dimension"] as const) {
         const value = x[field];
         if (typeof value !== "string" || value === "") {
           return { ok: false, error: `brainEnrollments[${i}].${field}: must be a non-empty string.` };
         }
-        // ⚠️ TRIM AND LENGTH, matching `normalizeEnrollmentPair`, because this
-        // is the SECOND write door and the destination's CHECK is weaker than
-        // the seam. `ck_brain_enrollment_names_present` is `entity <> ''`, which
-        // `"   "` satisfies on a `text` column — so an untrimmed pair imports
-        // cleanly and then sits in the destination's list looking live while the
-        // producer's `has()` can never match it. That is exactly the
-        // stored-but-unreachable row this whole surface is built to prevent, and
-        // the region import is the one path that does not go through the seam.
-        //
-        // REFUSED rather than silently repaired: a bundle carrying an untrimmed
-        // or over-long pair is a defect in the source region, and quietly
-        // fixing it here would land a pair the source does not have.
+        // The ONE axis on which this door is deliberately STRICTER: it refuses
+        // what the seam would repair. A bundle carrying an untrimmed pair is a
+        // defect in the source region, and silently trimming it here would land
+        // a pair the source does not have.
         if (value !== value.trim()) {
           return { ok: false, error: `brainEnrollments[${i}].${field}: must not have leading or trailing whitespace.` };
         }
-        if (value.length > BRAIN_ENROLLMENT_NAME_MAX) {
-          return { ok: false, error: `brainEnrollments[${i}].${field}: must be at most ${BRAIN_ENROLLMENT_NAME_MAX} characters.` };
-        }
+      }
+      try {
+        normalizeEnrollmentPair(x.entity as string, x.dimension as string);
+      } catch (err) {
+        // The seam's own sentence, verbatim — a second wording here would drift
+        // from the rule it describes.
+        return {
+          ok: false,
+          error: `brainEnrollments[${i}]: ${err instanceof Error ? err.message : String(err)}`,
+        };
       }
       // `brainSlackChannelExclusions.excludedBy`'s rule, for the same reason one
       // authority arm over: enrollment is the act that authorizes the Atlas to
       // hold claims about a pair, and an unattributed one is authority nobody
       // can be shown to have granted.
-      if (typeof x.enrolledBy !== "string" || x.enrolledBy === "") {
+      // TRIMMED before the emptiness test, matching `enrollPair`'s
+      // `params.actor.trim()`. Without it `"   "` passes here, passes
+      // `ck_brain_enrollment_attributed` (`enrolled_by <> ''`), and lands stored
+      // — an enrollment that looks attributed and names nobody, on the column an
+      // audit of "who authorized this?" reads first. The universal the whitespace
+      // rule above exists for, applied to the field one line below it.
+      if (typeof x.enrolledBy !== "string" || x.enrolledBy.trim() === "") {
         return { ok: false, error: `brainEnrollments[${i}].enrolledBy: must be a non-empty string — an enrollment records who made it.` };
       }
       if ("note" in x && x.note !== null && typeof x.note !== "string") {

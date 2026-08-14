@@ -54,9 +54,11 @@ below is the direct measurement of that.
 
 Read the two columns against each other. The unit suite parses; the \`-pg\` one
 asks POSTGRES the same questions and additionally holds the migration and the
-write path. So the SQL-arm rows are lexical-only on the left and behavioural on
-the right, and the four rows that touch \`INSERT_FACT_SQL\`, \`objectSameSql\`,
-0191 or the oracle cannot be seen from the left at all.
+write path. Of the three SQL-arm rows, only the \`split_part\` equality arm dies
+on the left at all — via the SQL-arms assertion at the bottom of that suite; the
+other two are 0 there and die only on the right. The four rows that touch
+\`INSERT_FACT_SQL\`, \`objectSameSql\`, 0191 or the oracle cannot be seen from
+the left at all.
 `,
   mutations: [
     {
@@ -232,7 +234,7 @@ the right, and the four rows that touch \`INSERT_FACT_SQL\`, \`objectSameSql\`,
           newString: "",
         },
       ],
-      note: "The unit column is lexical; the behavioural falsifier is the `-pg` suite's unknown-tag corpus row, which is now the column beside it rather than a prose promise.",
+      note: "The unit column is **0** — the SQL-arms assertion does not pin this arm's text, so nothing there dies. The falsifier is the `-pg` suite's unknown-tag corpus row, which is the column beside it rather than a prose promise.",
     },
     {
       label: "`comparableDifferentSql` loses its `strpos(…) > 0` separator arms",

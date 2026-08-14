@@ -39,8 +39,9 @@ first statement AND ITS PARAMS. The text alone could not tell a correctly-keyed
 lock from one in the wrong namespace or on a constant key — which is the failure
 that matters, since a wrong namespace stops the seam being mutually exclusive
 with `approveAliasEdge` and the region importer. The ordering row is separate
-again, and structural for a different reason: what it guards is an invariant,
-not a deadlock a single-process test can provoke.
+again: the 5022 → 5024 ORDER row lives in `vocabulary-rekey.md`, not this
+table, and is structural for a different reason — what it guards is an
+invariant, not a deadlock a single-process test can provoke.
 
 **`slot_position` asserted instead of narrowed** is reachable only by DROPPING
 0190's CHECK, which its test does — the same move `vocabulary-pg.test.ts`
@@ -176,8 +177,8 @@ Suite sizes: **decide-pg** 85 tests (`src/lib/brain/__tests__/vocabulary-decide-
 - **the `unauthenticated-local` arm dropped (the local operator locked out)** — The fail-closed direction, and it is still a defect: a self-hosted no-auth deployment has DECLARED the local operator is the only identity there is, so this locks the only reader out of the vocabulary entirely.
 - **the workspace-mismatch guard dropped** — The proposal read below is workspace-scoped, so the row is still not FOUND — what is lost is refusing a scope escalation BEFORE the row is read under another workspace's identity, and the distinction between `workspace-mismatch` and `not_decidable` that says which happened.
 - **the machine-may-not-reject backstop dropped** — The RUNTIME half of a guard the type already makes unconstructible — #5025's route builds a decision out of a parsed HTTP body, where the compiler is not in the room. `rejectProposal`'s signature is narrowed to a human approver too, so the write itself still refuses; what this measures is whether the seam refuses at its entry.
-- **the local operator recorded as a machine** — `null` is the value migration 0189 defines as *auto-approved, no human* at the column it calls the one an audit of a workspace-wide re-key reads first. On a no-auth deployment every human approval would land there, permanently indistinguishable from a machine one.
-- **the human approver never recorded (`approved_by`/`reviewed_by` always NULL)** — The broader form of the row above: every path records NULL. The `switch` below is left statically unreachable, which is fine — the runner's instrument strips types.
+- **the local operator recorded as a machine** — `null` is the value migration 0189 defines as *auto-approved, no human* at the column it calls the one an audit of a workspace-wide re-key reads first. Scoped to the DECIDE stamp: both call sites spell `recordedApprover(…) ?? LOCAL_OPERATOR_ACTOR`, so what the injected `null` actually changes is the approver recorded on `approved_by`/`reviewed_by` — the propose and remove authorship paths are untouched.
+- **the human approver never recorded (`approved_by`/`reviewed_by` always NULL)** — The broader form of the row above: every arm of `recordedApprover` returns NULL, so `approved_by`/`reviewed_by` are never stamped with a human. Not 'every path in the module' — the two call sites coalesce to `LOCAL_OPERATOR_ACTOR`, which is why the label names the two columns rather than the function. The `switch` below is left statically unreachable, which is fine: the runner's instrument strips types.
 - **the apply refusal RETURNED instead of thrown** — The claim onto `applying` is already written in this transaction and only a ROLLBACK undoes it, so returning the refusal COMMITS the claim and strands the row `applying` — invisible to the queue and undecidable forever. The throw's only job is to reach the rollback first.
 - **the catch broadened — every error becomes a refusal** — Anchored with the comment line because `authorAliasEdge` carries the same `instanceof` one seam over. Broadened, an unreachable database or a non-converging closure is reported as a typed refusal — the one class a caller must be able to tell apart from a decision.
 - **the claim's `status = 'pending'` predicate dropped** — The claim then takes an already-`approved` row and re-applies it, so an approved pair's only remaining transition stops being removal. The stamp's own `status = 'applying'` arm is untouched — this row measures the CLAIM's conditionality alone.

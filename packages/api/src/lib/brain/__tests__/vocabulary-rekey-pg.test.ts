@@ -78,8 +78,9 @@
  * all.** Every `approve()` in this file was at the `predicate` position, so
  * `rekeyDriftedFacts(tx, ws, "predicate", id)` — hardcoded — passed every test
  * across this suite and `vocabulary-decide-pg`. That is subject and object
- * approvals re-keying NOTHING, with a success line in the log. The two position
- * rows exist because of it. **A mutation table only covers the mutations
+ * approvals re-keying NOTHING, with a success line in the log. The
+ * closure-subquery position rows and the hardcoded-`slot_position` row exist
+ * because of it. **A mutation table only covers the mutations
  * someone thought to write, and a suite whose fixtures all share one value of a
  * parameter cannot probe that parameter at all.**
  *

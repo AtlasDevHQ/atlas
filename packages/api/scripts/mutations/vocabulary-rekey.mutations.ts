@@ -24,11 +24,14 @@
  *
  * ## SQL rows keep every bind parameter bound
  *
- * `AND FALSE` / `$n::type IS NOT NULL` rather than deleting a predicate that
- * carries the only reference to a parameter. Postgres refuses a statement whose
- * parameter arity disagrees with the bind message, and a suite that dies on a
- * bind error has measured the runner's spelling rather than the property under
- * test. Rows 13 and 14 are the two that need it.
+ * `$n::type IS NOT NULL` rather than deleting a predicate that carries the only
+ * reference to a parameter. Postgres refuses a statement whose parameter arity
+ * disagrees with the bind message, and a suite that dies on a bind error has
+ * measured the runner's spelling rather than the property under test. The two
+ * collision-stamp `EXISTS` rows are the ones that need it — named rather than
+ * numbered, because the generated table numbers nothing and a positional
+ * citation is falsified by inserting any mutation above it. (`AND FALSE` is the
+ * sibling spelling, used in `vocabulary.mutations.ts`; no row here needs it.)
  *
  * ## Needs a scratch database
  *
@@ -141,7 +144,8 @@ DIRECTLY.
 parameter at all.** Every \`approve()\` was at the \`predicate\` position, so
 hardcoding the position argument passed every test across two suites — subject
 and object approvals re-keying NOTHING, with a success line in the log. The
-position rows below exist because of it.
+closure-subquery position rows and the hardcoded-\`slot_position\` row exist
+because of it.
 
 **For a guard, the mutation that matters is rarely "delete it" — it is "move
 it".** The reset tests pinned the reset's PRESENCE and not its POSITION, so
@@ -252,7 +256,7 @@ fixes, one layer over?* — and the answer was yes.
           newString: '  const { surface, key } = SLOT_COLUMNS["subject"];',
         },
       ],
-      note: "Both the read column and the key column, since the destructure supplies both. The closure subquery still interpolates `position`, so this isolates the COLUMN pair rather than the whole statement.",
+      note: "Both the read column and the key column, since the destructure supplies both. The closure subquery still interpolates `position`, so this isolates the COLUMN pair rather than the whole statement. ⚠️ The `rekey-pg` count is a large fraction of that suite and is NOT a compound row: the mutation produces valid SQL that writes the wrong column pair, and nearly every test in the file exercises a re-key and then asserts the key it produced. Contrast the advisory-lock row of `vocabulary.md`, where a comparable fraction IS compounding — there the probe fails and every mutating test throws.",
     },
     {
       label: "outer `identityKeySql` dropped from the assignment",

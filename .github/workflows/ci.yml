@@ -556,6 +556,20 @@ jobs:
     # (docs)` already takes ~25, so this lands well inside the existing critical
     # path. `ci-local.sh` runs the `--affected` subset instead, because 14
     # minutes added to a ~10-minute pre-PR loop is how a gate gets deleted.
+    #
+    # ⚠️ THE ~14 MINUTES WAS AN EIGHT-SPEC TREE (#5077). #5061 took it to
+    # thirteen specs and ~110 more mutations, and the sweep was RE-MEASURED off
+    # this job rather than extrapolated: 15m48s (PR #5222). Still inside the
+    # docs image, so the "free" claim holds — but it holds by measurement, not
+    # by argument, and it is the half to re-check whenever a spec is added.
+    # `scripts/check-mutation-tables.sh` carries both data points.
+    #
+    # There is deliberately no `timeout-minutes` here: a sweep killed halfway
+    # reports nothing while looking like a verdict. So the failure mode when
+    # this outgrows the docs image is slow CI rather than a red gate, which is
+    # the quiet direction — if this job starts landing last, the argument in
+    # that script's header ("a gate that doubles the loop gets commented out")
+    # has begun applying to this one.
     name: mutation-tables
     runs-on: ubuntu-latest
     steps:

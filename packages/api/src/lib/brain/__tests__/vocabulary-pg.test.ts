@@ -48,16 +48,15 @@
  * `packages/api/scripts/mutations/vocabulary.mutations.ts`:
  *
  *     cd packages/api && bun run db:up
- *     export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5433/brain_5061_scratch
+ *     export TEST_DATABASE_URL=…   # any scratch DB; see "Opt in locally" below
  *     bun run scripts/mutate.ts scripts/mutations/vocabulary.mutations.ts
  *
  * Twenty numbers used to live here by hand, under the claim "measured against
  * THIS tree … in a single run" (#5051). The claim was true when written and
  * unfalsifiable ever after — this same docstring already recorded that rounds 2
  * and 3 of that panel each caught rows which had gone stale. Regenerating at
- * #5061 re-measured all twenty IDENTICAL, which is worth stating plainly: the
- * conversion is not always a correction, and a table that survives it has
- * earned something a table nobody can re-run never can.
+ * #5061 re-measured all twenty IDENTICAL — the conversion is not always a
+ * correction.
  *
  * The two COMPOUND rows, the four rows the schema also refuses, and the one
  * mutation deliberately left out (the probe's `< 1` polarity, which kills

@@ -13,26 +13,32 @@
 #
 # ## Two modes, because the full sweep is MINUTES, not seconds
 #
-# Measured at #5077, when there were EIGHT specs: 832 seconds — ~14 minutes,
-# because each spec re-runs every target suite once per mutation.
+# Two measurements, each read off a real CI run rather than estimated:
+#   - #5077, EIGHT specs:    832s (~14 min)
+#   - #5061, THIRTEEN specs: 948s (15m48s), PR #5222
 #
-# ⚠️ That figure describes a tree that no longer exists, and this header is not
-# re-measured on every landing. #5061 added four more specs and roughly a
-# hundred more mutations, so read it as an ORDER OF MAGNITUDE. (It is also the
-# only hand-typed measurement left in this subsystem, which is why it says so
-# rather than being quietly refreshed to a number the next slice would falsify
-# again.) The argument does not depend on the digits: `/ci` is ~10 minutes in
-# total, so an always-full gate would MORE THAN DOUBLE the pre-PR loop — and a
-# gate that doubles the loop gets commented out inside a week. A disabled gate
-# catches nothing, so cost is a correctness property here, not an optimisation.
+# ⚠️ RE-MEASURE WHEN YOU ADD A SPEC; do not scale the number in your head. The
+# two points above are 1.6x the suite-runs apart and only 14% apart in wall
+# clock, because the cost is dominated by a few `-pg` targets rather than by the
+# mutation count. Both digits are hand-typed and nothing regenerates them —
+# reading the duration off the `mutation-tables` job on your own PR is free, and
+# is what these two lines are.
+#
+# The argument does not depend on the digits: `/ci` is ~10 minutes in total, so
+# an always-full gate would MORE THAN DOUBLE the pre-PR loop — and a gate that
+# doubles the loop gets commented out inside a week. A disabled gate catches
+# nothing, so cost is a correctness property here, not an optimisation.
 #
 #   --affected [base]   Verify only the specs whose dependency set the branch
 #                       touched. The common PR touches none and the gate is
 #                       instant. This is what ci-local.sh runs.
-#   --all               Every spec. What CI runs, where 14 minutes is FREE:
-#                       jobs run in parallel and the docs image already takes
-#                       ~25 minutes, so this finishes inside the existing
-#                       critical path and costs nothing in wall clock.
+#   --all               Every spec. What CI runs, and still FREE at 15m48s
+#                       (thirteen specs): jobs run in parallel and `Built image
+#                       (docs)` takes ~25 minutes, so this finishes inside the
+#                       existing critical path. It stays free only while that
+#                       holds — past the docs image this job IS the critical
+#                       path, and the header's argument starts applying to this
+#                       gate rather than to `/ci`.
 #
 # A spec's dependencies come from `mutate.ts --files` — the loaded spec's own
 # target and edit paths — rather than from a grep, because they sit behind
@@ -205,7 +211,7 @@ $UNTRACKED"
           echo "check-mutation-tables: HEAD == $BASE, so the affected set is empty BY CONSTRUCTION —"
           echo "  ${#SPECS[@]} spec(s) not verified. This gate cannot check anything via --affected here."
           echo "  Coverage for this SHA is remote CI's --all job on the push to $BASE."
-          echo "  To verify locally instead: bash scripts/check-mutation-tables.sh --all  (~832s measured)."
+          echo "  To verify locally instead: bash scripts/check-mutation-tables.sh --all  (~16 min — see the header)."
           exit 3
         fi
         echo "check-mutation-tables: no spec's targets or sources changed vs $BASE — nothing to verify."

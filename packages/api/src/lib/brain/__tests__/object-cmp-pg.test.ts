@@ -45,12 +45,11 @@
  * `packages/api/scripts/mutations/object-cmp.mutations.ts`:
  *
  *     cd packages/api && bun run db:up
- *     export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5433/brain_5061_scratch
+ *     export TEST_DATABASE_URL=…   # any scratch DB; see "Opt in locally" below
  *     bun run scripts/mutate.ts scripts/mutations/object-cmp.mutations.ts
  *
  * The seven numbers used to live here by hand (#5030); they are generated as of
- * #5061 and all seven re-measured identical, which is the one outcome worth
- * recording explicitly — the conversion is not always a correction.
+ * #5061 and all seven re-measured identical.
  *
  * The table is SHARED with `object-cmp.test.ts` rather than being this file's
  * own, and the sharing is the point: the three SQL-arm rows had a note in the

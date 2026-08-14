@@ -48,9 +48,8 @@
  * No database needed — every case blocks in the preparation loop.
  *
  * The three numbers used to live here by hand (#5047); they are generated as of
- * #5061 and all three re-measured identical. Add a test to this file and the
- * table is wrong until it is regenerated, and nothing in this docstring could
- * ever have told you so — which is the whole argument for the runner.
+ * #5061 and all three re-measured identical. Add a test here and the table is
+ * stale until you regenerate.
  *
  * The position-vs-cause row is the argument for the multi-position case
  * existing at all: every single-cause test agrees with a position-based

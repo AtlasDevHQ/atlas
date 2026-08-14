@@ -14,9 +14,11 @@ below is the direct measurement of that.
 
 Read the two columns against each other. The unit suite parses; the `-pg` one
 asks POSTGRES the same questions and additionally holds the migration and the
-write path. So the SQL-arm rows are lexical-only on the left and behavioural on
-the right, and the four rows that touch `INSERT_FACT_SQL`, `objectSameSql`,
-0191 or the oracle cannot be seen from the left at all.
+write path. Of the three SQL-arm rows, only the `split_part` equality arm dies
+on the left at all — via the SQL-arms assertion at the bottom of that suite; the
+other two are 0 there and die only on the right. The four rows that touch
+`INSERT_FACT_SQL`, `objectSameSql`, 0191 or the oracle cannot be seen from
+the left at all.
 
 Every number is the count of tests that FAIL in that suite under that mutation, measured one mutation at a time against an otherwise clean tree. A `0` means the suite does not catch it — see the notes for whether that is honest or a gap.
 
@@ -56,7 +58,7 @@ Suite sizes: **object-cmp.test.ts** 64 tests (`src/lib/brain/__tests__/object-cm
 - **`comparableValueWithReason` collapses `declaration-rejected` into `abstained`** — Both return sites, because collapsing only one leaves the other still reporting the distinction — which is not what the label says. Measured: both sites 3, the final return alone 2. The docstring this table replaced carried 2 without recording which spelling it meant, and that ambiguity is the whole reason the spelling is now the input rather than a description of it.
 - **`comparableValue` prefers the surface parse over `entityId`** — Demotes the entity store below the parser, so a resolved `Enterprise tier` / `Enterprise Plan` pair stops comparing equal the moment either surface happens to parse.
 - **`comparableDifferentSql` loses its `split_part` tag equality arm** — Whatever dies in the unit column is LEXICAL — the SQL-arms assertion at the bottom of that suite — because `agree` is the TypeScript twin and deleting a SQL arm does not touch it. The `-pg` column is the behavioural half, and `identity-consumers-pg.test.ts` carries more of it still.
-- **`comparableDifferentSql` loses its known-tag `IN` arm** — The unit column is lexical; the behavioural falsifier is the `-pg` suite's unknown-tag corpus row, which is now the column beside it rather than a prose promise.
+- **`comparableDifferentSql` loses its known-tag `IN` arm** — The unit column is **0** — the SQL-arms assertion does not pin this arm's text, so nothing there dies. The falsifier is the `-pg` suite's unknown-tag corpus row, which is the column beside it rather than a prose promise.
 - **`comparableDifferentSql` loses its `strpos(…) > 0` separator arms** — Both arms together — they are one guard. `split_part` returns the WHOLE STRING for a separator-less value, so without them the six bare tag names read as provably different from every real value of their own type. The BARE-TAG corpus rows are what see it, and they only run against Postgres.
 - **`INSERT_FACT_SQL` binds the object SURFACE into `object_cmp`** — The write path, not the parser: a column filled with raw surfaces makes every pair that differs lexically read as provably DIFFERENT, which is a `valid_to` stamp on values nothing typed. Only the fresh-write control sees it — the pre-store test never inserts, and the two-tier join is 0 either way because its published side has no comparable value to compare.
 - **`agree` loses its `tagA !== null` arm (the oracle's half of the same rule)** — `agree` is a SECOND implementation of the SQL rule, admissible only because the `-pg` parity tests hold the two to the same answers. Dropping this arm makes two UNRECOGNISED tags agree that they differ — and the mutation is invisible to the unit suite, which never runs the SQL side to disagree with.

@@ -24,11 +24,26 @@ mutation list's header on the circular spelling).
 
 ⚠️ **The two zeros were MEASURED against `tsgo --noEmit`, not reasoned about**
 (#5061). Applied one at a time, each reds the type-check with
-`TS2578: Unused '@ts-expect-error' directive` on the target suite — three of
-them for the widened-key row, two for the reverted-conditional row, plus a
-`TS2741` where the inline-literal case stops narrowing. A note claiming
-"nothing here can catch this" is a claim, and this repo has been wrong about one
-before; running it costs a minute.
+`TS2578: Unused '@ts-expect-error' directive` on the target suite: the
+directives invert, so the evaporated narrowing is exactly what gets reported. A
+note claiming "nothing here can catch this" is a claim, and this repo has been
+wrong about one before; running it costs a minute.
+
+The per-code COUNTS are deliberately not recorded. They are a hand-typed
+measurement of a diagnostic list that moves whenever a directive is added or an
+elaboration order changes — the thing this file exists to stop — and unlike a
+cell nothing regenerates them, because `--check` compares the rendered BYTES
+and would freeze a wrong count in as the expected output. The property is what
+is stable and what the row actually claims.
+
+⚠️ **YOU CANNOT MEASURE THIS FROM A GIT WORKTREE.** `tsgo` resolves
+`@atlas/api/lib/*` through `packages/*/node_modules/@atlas/api` and
+REALPATHS it, so in a worktree whose `node_modules` are symlinked to the
+primary checkout the program contains the PARENT's `lib/**` — mutate
+`sources.ts` there and the type-check reports a clean tree for a mutation that
+is applied on disk. `bun` is unaffected (it resolves to the worktree), so every
+`bun test` cell in this repo is sound; only the type-gate claims are exposed.
+Measure type-level mutations from the primary checkout.
 
 Every number is the count of tests that FAIL in that suite under that mutation, measured one mutation at a time against an otherwise clean tree. A `0` means the suite does not catch it — see the notes for whether that is honest or a gap.
 

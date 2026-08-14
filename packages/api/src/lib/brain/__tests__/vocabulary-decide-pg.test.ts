@@ -47,7 +47,7 @@
  * from `packages/api/scripts/mutations/vocabulary-decide.mutations.ts`:
  *
  *     cd packages/api && bun run db:up
- *     export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5433/brain_5061_scratch
+ *     export TEST_DATABASE_URL=…   # any scratch DB; see "Opt in locally" below
  *     bun run scripts/mutate.ts scripts/mutations/vocabulary-decide.mutations.ts
  *
  * Fifty-three numbers used to live here by hand, and **eleven of them had gone
@@ -65,8 +65,6 @@
  * mutation before it was written down.
  *
  * A docstring cannot notice that its own escape clause has been falsified.
- * That is the whole argument for #5060's runner, and this table is the sharpest
- * instance of it in the tree.
  *
  * ## Three columns, because the alternative was two justified zeros
  *
@@ -1412,8 +1410,10 @@ describeIfPg("the alias decision seam (#5023)", () => {
       // against a broken implementation. Stated plainly because it is a real
       // limit — nothing here would notice if publish stopped taking 5024
       // altogether. `content-mode/adapters/__tests__/brain-facts.test.ts` carries
-      // that half (the mutation table credits it for rows 16–18);
-      // `vocabulary-rekey-pg.test.ts` never calls `promoteBrainFacts` at all.
+      // that half — it is the `brain-facts` column of
+      // `scripts/mutations/vocabulary-rekey.md`, which is non-zero on every
+      // publish-lock row. `vocabulary-rekey-pg.test.ts` never calls
+      // `promoteBrainFacts` at all.
       const touching = statements.filter((s) => !isBound(s.sql));
       expect(touching[1]?.sql).toContain("pg_advisory_xact_lock");
       expect(touching[1]?.params).toEqual([IDENTITY_MUTATION_LOCK_NAMESPACE, WS]);

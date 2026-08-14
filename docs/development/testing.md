@@ -87,10 +87,18 @@ so one scratch database is safe to share — but give a long regeneration its ow
 so a concurrent `-pg` run cannot perturb the counts:
 
 ```bash
-bun run db:up
-psql -h localhost -p 5433 -U atlas -d postgres -c 'CREATE DATABASE brain_5061_scratch'
-export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5433/brain_5061_scratch
+bun run db:up   # docker-compose.yml → 127.0.0.1:5432
+psql -h localhost -p 5432 -U atlas -d postgres -c 'CREATE DATABASE brain_5061_scratch'
+export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/brain_5061_scratch
 ```
+
+⚠️ **Mind the PORT: the brain suite headers and the mutation specs say `5433`,
+and `bun run db:up` does not give you that.** `db:up` brings up
+`docker-compose.yml`, which maps `5432`. `5433` is `docker-compose.multi-env.yml`
+(and `5434` for a third), which is what the parallel-session workflow runs and
+what those headers were written against. Either port works — the URL is the only
+thing that decides — so read the number as "whichever your compose mapped", not
+as part of the instruction.
 
 Two things the runner cannot do for you:
 
@@ -98,6 +106,31 @@ Two things the runner cannot do for you:
   honest only if the note beside it names the gate that does catch it (`bun run
   type`), and only if you have RUN that gate rather than reasoned about it. See
   `episode-source-narrowing.mutations.ts` for the worked example.
+- **⚠️ `bun run type` in a git WORKTREE type-checks the PRIMARY checkout's
+  `lib/**`, not the worktree's.** `tsgo` resolves `@atlas/api/lib/*` through
+  `packages/*/node_modules/@atlas/api` and REALPATHS it, so when a worktree's
+  `node_modules` are symlinked to the primary checkout — which is how they are
+  usually set up — the program contains the parent's sources. Edit a file under
+  `packages/api/src/lib/` in a worktree and the type-check can report a clean
+  tree for a change that is plainly on disk. `bun` is unaffected: it resolves to
+  the worktree, so `bun test` and the mutation runner's counts are sound. Only
+  the type gate is exposed, and the failure is silent in the reassuring
+  direction. Verify with `tsgo --noEmit --listFiles | grep lib/brain/sources.ts`
+  — if it prints a path outside your worktree, you are checking someone else's
+  tree. Measure type-level claims from the primary checkout.
 - **It restores from an in-memory backup, never `git checkout`** — the tree
   normally carries uncommitted work. Never kill a run mid-flight, and never
   commit while one is live: `ps -o pid=,args= -C bun | grep 'mutate\.ts'`.
+- **Do not run ANOTHER gate against the tree while one is live, either.** A
+  mutation run has a fault injected on disk for most of its duration, so a
+  concurrent `lint`, `type`, `lint:type-aware` or test run can go red on a line
+  nobody wrote — and the natural reading of that red is a defect in your branch.
+  `scripts/ci-local.sh` already serialises `mutation-tables` for exactly this
+  reason. The tell is the same one-liner above: if it prints a PID, any other
+  gate's verdict is about a tree you did not author.
+- **Never run TWO `mutate.ts` processes in one tree**, which is the likelier
+  footgun here given the parallel-session workflow. There is no cross-process
+  lock: each run backs up the files it touches IN MEMORY, so two runs whose
+  specs share a source file clobber each other's backups and publish numbers
+  measured against a doubly-mutated tree — a wrong number that looks exactly
+  like a right one. Disjoint file sets are luck, not a guarantee; serialise.

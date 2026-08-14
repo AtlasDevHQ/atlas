@@ -500,10 +500,19 @@ describe("the brain source registry", () => {
     //
     // Never invoked: it is compiled, which is the whole point, and calling it
     // would just exercise the runtime backstop the sibling test already covers.
+    // ⚠️ `scope` is REQUIRED (#5203) and was missing here until #5061, which
+    // mattered for a reason unrelated to what it configures: TypeScript
+    // elaborates ONE error per argument, so the directive below absorbed
+    // whichever surfaced first. With `scope` absent that was the MISSING
+    // PROPERTY, not the audience narrowing this test exists for — the directive
+    // stayed "used" either way, so nothing said so. Supplying it makes the
+    // directive report the narrowing, which is what
+    // `scripts/mutations/episode-source-narrowing.md`'s two type rows rest on.
     const unreachable = (): void => {
       registerBrainSourceConnector({
         catalogId: "catalog:never-registered",
         source: ZOOM_SOURCE,
+        scope: { kind: "per-install" },
         // @ts-expect-error zoom is transcript-class — the inline literal is checked at the CALL
         audience: { kind: "externally-synced" },
         createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),

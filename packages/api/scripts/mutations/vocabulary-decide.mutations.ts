@@ -188,8 +188,9 @@ first statement AND ITS PARAMS. The text alone could not tell a correctly-keyed
 lock from one in the wrong namespace or on a constant key — which is the failure
 that matters, since a wrong namespace stops the seam being mutually exclusive
 with \`approveAliasEdge\` and the region importer. The ordering row is separate
-again, and structural for a different reason: what it guards is an invariant,
-not a deadlock a single-process test can provoke.
+again: the 5022 → 5024 ORDER row lives in \`vocabulary-rekey.md\`, not this
+table, and is structural for a different reason — what it guards is an
+invariant, not a deadlock a single-process test can provoke.
 
 **\`slot_position\` asserted instead of narrowed** is reachable only by DROPPING
 0190's CHECK, which its test does — the same move \`vocabulary-pg.test.ts\`
@@ -563,7 +564,7 @@ be a fabricated measurement.
       return null;`,
         },
       ],
-      note: "`null` is the value migration 0189 defines as *auto-approved, no human* at the column it calls the one an audit of a workspace-wide re-key reads first. On a no-auth deployment every human approval would land there, permanently indistinguishable from a machine one.",
+      note: "`null` is the value migration 0189 defines as *auto-approved, no human* at the column it calls the one an audit of a workspace-wide re-key reads first. Scoped to the DECIDE stamp: both call sites spell `recordedApprover(…) ?? LOCAL_OPERATOR_ACTOR`, so what the injected `null` actually changes is the approver recorded on `approved_by`/`reviewed_by` — the propose and remove authorship paths are untouched.",
     },
     {
       label: "the human approver never recorded (`approved_by`/`reviewed_by` always NULL)",
@@ -574,7 +575,7 @@ be a fabricated measurement.
           newString: `  return null;`,
         },
       ],
-      note: "The broader form of the row above: every path records NULL. The `switch` below is left statically unreachable, which is fine — the runner's instrument strips types.",
+      note: "The broader form of the row above: every arm of `recordedApprover` returns NULL, so `approved_by`/`reviewed_by` are never stamped with a human. Not 'every path in the module' — the two call sites coalesce to `LOCAL_OPERATOR_ACTOR`, which is why the label names the two columns rather than the function. The `switch` below is left statically unreachable, which is fine: the runner's instrument strips types.",
     },
     {
       label: "the apply refusal RETURNED instead of thrown",

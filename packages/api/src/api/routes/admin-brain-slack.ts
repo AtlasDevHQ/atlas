@@ -59,6 +59,7 @@ import { getInternalDB } from "@atlas/api/lib/db/internal";
 import { resolveBrainReaderContext } from "@atlas/api/lib/brain/reader-context";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 import {
+  InvalidSlackChannelIdError,
   excludeSlackChannel,
   includeSlackChannel,
   listSlackChannels,
@@ -290,11 +291,11 @@ adminBrainSlack.openapi(excludeRoute, async (c) => {
       }).pipe(
         // A malformed channel id is the caller's mistake and names its own fix,
         // so it is a 400 carrying the seam's own sentence rather than a 500 with
-        // a request id and nothing to act on.
+        // a request id and nothing to act on. Matched by TYPE, not message
+        // substring — a reworded message must not silently turn the 400 into a
+        // 500.
         Effect.catchAll((err) =>
-          err.message.includes("is not a Slack channel ID")
-            ? Effect.succeed(null)
-            : Effect.fail(err),
+          err instanceof InvalidSlackChannelIdError ? Effect.succeed(null) : Effect.fail(err),
         ),
       );
       if (result === null) {

@@ -209,6 +209,12 @@ export async function syncBrainEpisodeSource(
           highWaterMark: null,
         };
 
+  // The anchor follows the connector's declared dispatch scope (#5203). A
+  // per-workspace source has NO workspace_plugins row, so the install-anchored
+  // upsert's WHERE EXISTS guard would drop every write — success and error
+  // alike — and a revoked token would present as a green-but-frozen source.
+  // That is the four-day M1 outage rebuilt one layer down, which is why this
+  // is derived from the scope discriminator rather than left to the caller.
   await upsertConnectorSyncState(workspaceId, installId, {
     status: outcome.status,
     error: outcome.error,
@@ -233,7 +239,7 @@ export async function syncBrainEpisodeSource(
       attempt.kind === "ok" && attempt.mode === "reconciliation" && !attempt.coverageIncomplete
         ? syncedAt
         : null,
-  });
+  }, connector.scope.kind === "per-workspace" ? "workspace" : "install");
 
   if (outcome.status === "success") {
     log.info(

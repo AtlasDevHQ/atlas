@@ -50,12 +50,18 @@
  * transaction, resolving membership at migration time for a scope defined at
  * sync time).
  *
- *   | scope row            | `reconciled_at` | `legacy_channels` | effective scope              |
- *   |----------------------|-----------------|-------------------|------------------------------|
- *   | absent               | —               | —                 | membership − exclusions      |
- *   | present              | NULL            | non-empty         | exactly `legacy_channels`    |
- *   | present              | NULL            | **empty**         | **nothing**                  |
- *   | present              | set             | (kept, unread)    | membership − exclusions      |
+ *   | scope row            | `reconciled_at` | `legacy_channels` | effective scope                  |
+ *   |----------------------|-----------------|-------------------|----------------------------------|
+ *   | absent               | —               | —                 | membership − exclusions          |
+ *   | present              | NULL            | non-empty         | `legacy_channels` − exclusions   |
+ *   | present              | NULL            | **empty**         | **nothing**                      |
+ *   | present              | set             | (kept, unread)    | membership − exclusions          |
+ *
+ * Exclusions apply in EVERY state — an admin exclusion takes effect when the
+ * route writes it, never "after the first reconcile". Both predicates below
+ * subtract it before anything else, because an exclusion that waits on a
+ * reconcile is inert exactly as long as the workspace's Slack read keeps
+ * failing, while the admin who made it has already been told it changed.
  *
  * The empty row is the workspace that had an install which contributed no
  * usable scope — an unparseable config, or every install disabled/archived. It
@@ -100,7 +106,11 @@ export interface SlackIngestScope {
   readonly mode: SlackScopeMode;
   /** The channels a scheduled pass should read. Ordered for deterministic walks. */
   readonly channels: readonly string[];
-  /** Excluded channels the bot is nonetheless a member of. */
+  /**
+   * Exclusions that actually narrowed this scope: under `membership`, excluded
+   * channels the bot is nonetheless a member of; under `legacy-pending`,
+   * captured-allowlist channels an admin has since excluded.
+   */
   readonly excludedInMembership: number;
 }
 
@@ -187,14 +197,32 @@ async function readScopeMode(
   return { mode: "legacy-pending", legacyChannels: row.legacy_channels ?? [] };
 }
 
+/** Every excluded channel id for one workspace — the set BOTH scope modes subtract. */
+const EXCLUDED_CHANNEL_IDS_SQL = `SELECT channel_id
+         FROM brain_slack_channel
+        WHERE workspace_id = $1 AND excluded_at IS NOT NULL`;
+
 /** Which channels the scheduled pass should read for this workspace. */
 export async function resolveSlackPollScope(workspaceId: string): Promise<SlackIngestScope> {
   const { mode, legacyChannels } = await readScopeMode(workspaceId);
   if (mode === "legacy-pending") {
-    return { mode, channels: [...legacyChannels].sort(), excludedInMembership: 0 };
+    // The captured allowlist MINUS exclusions — not the allowlist alone. An
+    // admin exclusion always writes a row, whether or not the workspace has
+    // reconciled yet, and an exclusion that only takes effect after the first
+    // successful reconcile is one that never takes effect at all for a
+    // workspace whose Slack read keeps failing — while the route that recorded
+    // it has already answered 200 {changed: true}.
+    const excluded = await internalQuery<{ channel_id: string }>(EXCLUDED_CHANNEL_IDS_SQL, [
+      workspaceId,
+    ]);
+    const excludedIds = new Set(excluded.map((r) => r.channel_id));
+    const channels = [...legacyChannels].filter((c) => !excludedIds.has(c)).sort();
+    return { mode, channels, excludedInMembership: legacyChannels.length - channels.length };
   }
-  const rows = await internalQuery<{ channel_id: string }>(POLL_SCOPE_SQL, [workspaceId]);
-  const counted = await internalQuery<{ n: number }>(EXCLUDED_IN_MEMBERSHIP_SQL, [workspaceId]);
+  const [rows, counted] = await Promise.all([
+    internalQuery<{ channel_id: string }>(POLL_SCOPE_SQL, [workspaceId]),
+    internalQuery<{ n: number }>(EXCLUDED_IN_MEMBERSHIP_SQL, [workspaceId]),
+  ]);
   return {
     mode,
     channels: rows.map((r) => r.channel_id),
@@ -212,21 +240,27 @@ const IS_EXCLUDED_SQL = `SELECT 1
  *
  * Reads exclusions, NOT membership — see the module header's two-predicate
  * section for why that is correct rather than lax. Under `legacy-pending` it
- * falls back to the captured allowlist, so a workspace mid-upgrade cannot
- * broaden through the fast path either; that arm is the reason this cannot
- * simply be "not excluded".
+ * additionally requires the captured allowlist, so a workspace mid-upgrade
+ * cannot broaden through the fast path either; that arm is the reason this
+ * cannot simply be "not excluded".
+ *
+ * The exclusion is consulted in BOTH modes, and first. An admin exclusion is a
+ * confidentiality decision that took effect the moment the route wrote it;
+ * making it wait on the first successful reconcile would keep ingesting the
+ * channel — indefinitely, for a workspace whose Slack read keeps failing —
+ * after the admin was told 200 {changed: true}.
  */
 export async function isEventChannelInScope(
   workspaceId: string,
   channelId: string,
 ): Promise<boolean> {
-  const { mode, legacyChannels } = await readScopeMode(workspaceId);
-  if (mode === "legacy-pending") return legacyChannels.includes(channelId);
-  const rows = await internalQuery<Record<string, unknown>>(IS_EXCLUDED_SQL, [
-    workspaceId,
-    channelId,
+  const [excludedRows, scope] = await Promise.all([
+    internalQuery<Record<string, unknown>>(IS_EXCLUDED_SQL, [workspaceId, channelId]),
+    readScopeMode(workspaceId),
   ]);
-  return rows.length === 0;
+  if (excludedRows.length > 0) return false;
+  if (scope.mode === "legacy-pending") return scope.legacyChannels.includes(channelId);
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -280,6 +314,7 @@ export async function refreshSlackIngestScope(params: {
   // ── 1. Enumerate the bot's memberships ──────────────────────────────────
   const observed: SlackConversationInfo[] = [];
   const seen = new Set<string>();
+  const unusableIds: string[] = [];
   let cursor: string | undefined;
   let membershipIncomplete = false;
   for (let page = 0; ; page++) {
@@ -309,13 +344,21 @@ export async function refreshSlackIngestScope(params: {
       // the id is interpolated into a `source_id` and an `audience:` grant, and
       // the table's CHECK would reject the row anyway. Counted as a warning so
       // "why is that channel not in scope?" has an answer.
-      if (!SLACK_CHANNEL_ID_PATTERN.test(channel.id)) continue;
+      if (!SLACK_CHANNEL_ID_PATTERN.test(channel.id)) {
+        unusableIds.push(channel.id);
+        continue;
+      }
       if (seen.has(channel.id)) continue;
       seen.add(channel.id);
       observed.push(channel);
     }
     if (result.nextCursor === null) break;
     cursor = result.nextCursor;
+  }
+  if (unusableIds.length > 0) {
+    warnings.push(
+      `Slack returned ${unusableIds.length} conversation${unusableIds.length === 1 ? "" : "s"} whose id is not a channel (e.g. ${unusableIds[0].slice(0, 12)}) — DMs and other non-channel conversations are never in ingest scope.`,
+    );
   }
 
   // ── 2 + 3. Persist membership and reconcile, in ONE transaction ──────────
@@ -380,17 +423,29 @@ export async function refreshSlackIngestScope(params: {
     // stated as a set difference rather than an enumeration: a workspace scoped
     // to 3 of 100 gets 97 exclusions and keeps reading exactly its 3.
     //
+    // ⚠️ Guarded on a COMPLETE membership walk, exactly like the retire above
+    // and for the same reason pointed the other way. The exclusion set is
+    // `observed − legacy`, so a truncated enumeration computes exclusions from
+    // a partial `observed`: every channel past the page bound gets NO exclusion
+    // row, and stamping `reconciled_at` off that walk flips the workspace onto
+    // membership mode with those channels in scope unexcluded — silent
+    // broadening, through the reconcile that exists to prevent it (AC-5). An
+    // incomplete walk leaves the workspace `legacy-pending`; the captured
+    // allowlist stays the scope and the next complete walk reconciles.
+    //
     // `NOT EXISTS` rather than `ON CONFLICT DO NOTHING`, because an ADMIN
     // exclusion written between the migration and this reconcile must keep its
     // own author and reason. `DO NOTHING` would preserve it too, but only by
     // accident of ordering; this says so.
     const scopeRows = await tx.query(SCOPE_ROW_SQL, [workspaceId]);
     let reconciledExclusions = 0;
-    let mode: SlackScopeMode = "membership";
+    let wasPending = false;
+    let reconciledThisPass = false;
     if (scopeRows.rows.length > 0) {
       const row = scopeRows.rows[0] as ScopeRow;
-      if (row.reconciled_at === null) {
-        mode = "legacy-pending";
+      if (row.reconciled_at === null) wasPending = true;
+      if (row.reconciled_at === null && !membershipIncomplete) {
+        reconciledThisPass = true;
         const legacy = row.legacy_channels ?? [];
         const inserted = await tx.query(
           `INSERT INTO brain_slack_channel
@@ -423,10 +478,10 @@ export async function refreshSlackIngestScope(params: {
         );
       }
     }
-    return { retired, reconciledExclusions, mode };
+    return { retired, reconciledExclusions, wasPending, reconciledThisPass };
   });
 
-  if (outcome.mode === "legacy-pending") {
+  if (outcome.reconciledThisPass) {
     log.info(
       {
         workspaceId,
@@ -435,17 +490,29 @@ export async function refreshSlackIngestScope(params: {
       },
       "brain slack scope: reconciled a pre-#5203 workspace — the channels it had configured stay in scope, every other channel the bot is in was excluded",
     );
+  } else if (outcome.wasPending) {
+    // Skipped BECAUSE the walk was incomplete — say so where the sync report
+    // can carry it, not only in a log line. The workspace keeps its captured
+    // allowlist (fail-closed) and the next complete enumeration reconciles.
+    warnings.push(
+      "This workspace's pre-#5203 channel scope was not reconciled this cycle: the membership enumeration hit its page bound, and reconciling against a partial membership would let channels past the bound into scope unexcluded. The captured channel list remains the scope until a complete enumeration.",
+    );
+    log.warn(
+      { workspaceId, observed: observed.length },
+      "brain slack scope: reconcile deferred — membership enumeration was incomplete; the workspace stays legacy-pending",
+    );
   }
 
   // ── 4. The surviving two-probe verification, as a bounded rotation ───────
   const probe = await probeChannelHealth({ workspaceId, token, deps, now });
 
   return {
-    // The mode a CALLER should act on is the post-reconcile one: this pass has
-    // already moved the workspace onto membership, so reporting
-    // `legacy-pending` here would have the poll read the allowlist one last
-    // time and disagree with what the exclusions now say.
-    mode: "membership",
+    // The mode a CALLER should act on is the post-reconcile one. When this pass
+    // reconciled (or the workspace never was pending), that is membership;
+    // when the reconcile was deferred on an incomplete walk, the workspace is
+    // STILL legacy-pending and reporting membership here would have the caller
+    // act on the broadened scope the deferral just refused to stamp.
+    mode: outcome.wasPending && !outcome.reconciledThisPass ? "legacy-pending" : "membership",
     observed: observed.length,
     retired: outcome.retired,
     reconciledExclusions: outcome.reconciledExclusions,
@@ -626,6 +693,13 @@ function isoOrNull(value: unknown): string | null {
 }
 
 /**
+ * A caller handed the scope writers something that is not a Slack channel id.
+ * Its own class so the admin route can map it to a 400 by TYPE — matching the
+ * message text would silently become a 500 the day the wording changes.
+ */
+export class InvalidSlackChannelIdError extends Error {}
+
+/**
  * Exclude a channel from ingest. Idempotent, and it does NOT overwrite an
  * existing exclusion's author or reason — re-excluding an excluded channel is a
  * no-op rather than a silent re-attribution of someone else's decision.
@@ -642,7 +716,7 @@ export async function excludeSlackChannel(params: {
 }): Promise<void> {
   const channelId = params.channelId.trim().toUpperCase();
   if (!SLACK_CHANNEL_ID_PATTERN.test(channelId)) {
-    throw new Error(
+    throw new InvalidSlackChannelIdError(
       `"${params.channelId.slice(0, 40)}" is not a Slack channel ID — IDs start with C or G (e.g. C01ABCDEF).`,
     );
   }

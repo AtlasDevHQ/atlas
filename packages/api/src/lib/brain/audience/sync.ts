@@ -984,25 +984,17 @@ export async function runAudienceSyncCycle(
   // suppresses it and those facts read as absent — with the staleness sweep that
   // would have WARNED about it skipped by the same return. The cycle still
   // reports `failure`; it just does the work it can first.
-  // The workspace listing and each workspace's channel scope are resolved
-  // TOGETHER here rather than inside `syncInstall`, so a scope read that throws
-  // is a per-workspace failure the loop below counts — not a cycle abort.
-  let installs: WorkspaceRow[] = [];
+  //
+  // ONLY the workspace listing lives under this catch. Each workspace's channel
+  // scope is resolved INSIDE the per-workspace try below, so one workspace's
+  // scope read throwing is a counted `workspacesFailed` — not a cycle abort. A
+  // first cut resolved every scope up front under one `Promise.all` inside THIS
+  // catch, which meant one workspace's broken scope row zeroed Slack audience
+  // reconciliation for the whole region while the log blamed "the scan".
+  let workspaceIds: readonly string[] = [];
   let scanError: string | null = null;
   try {
-    const workspaceIds = await listWorkspaces();
-    installs = await Promise.all(
-      workspaceIds.map(async (workspaceId) => ({
-        workspace_id: workspaceId,
-        // ⚠️ The POLL scope, deliberately — the same set the ingest cycle reads.
-        // An audience is the membership of a channel Atlas actually ingests, so
-        // reconciling a wider set would mint `fact_audience_member` rows for
-        // channels no fact is ever granted on, and a narrower one would let a
-        // live channel's grants age out. The two cycles reading one function is
-        // what makes that agreement structural instead of hand-kept.
-        channels: (await resolvePollScope(workspaceId)).channels,
-      })),
-    );
+    workspaceIds = await listWorkspaces();
   } catch (err) {
     scanError = err instanceof Error ? err.message : String(err);
     log.error(
@@ -1012,14 +1004,25 @@ export async function runAudienceSyncCycle(
   }
 
   let result = { ...ZERO };
-  for (const row of installs) {
-    if (!isEnabled(row.workspace_id)) {
+  for (const workspaceId of workspaceIds) {
+    if (!isEnabled(workspaceId)) {
       result = { ...result, workspacesSkippedDisabled: result.workspacesSkippedDisabled + 1 };
       continue;
     }
     result = { ...result, workspacesInspected: result.workspacesInspected + 1 };
     try {
-      const out = await syncInstall(row, resolved, tally);
+      // ⚠️ The POLL scope, deliberately — the same set the ingest cycle reads.
+      // An audience is the membership of a channel Atlas actually ingests, so
+      // reconciling a wider set would mint `fact_audience_member` rows for
+      // channels no fact is ever granted on, and a narrower one would let a
+      // live channel's grants age out. The two cycles reading one function is
+      // what makes that agreement structural instead of hand-kept.
+      const scope = await resolvePollScope(workspaceId);
+      const out = await syncInstall(
+        { workspace_id: workspaceId, channels: scope.channels },
+        resolved,
+        tally,
+      );
       result = {
         ...result,
         audiencesReconciled: result.audiencesReconciled + out.audiencesReconciled,
@@ -1032,8 +1035,7 @@ export async function runAudienceSyncCycle(
     } catch (err) {
       log.warn(
         {
-          workspaceId: row.workspace_id,
-          channels: row.channels.length,
+          workspaceId,
           err: err instanceof Error ? err.message : String(err),
         },
         "brain audience: workspace sync failed — membership unchanged, retrying next cycle",
@@ -1090,7 +1092,7 @@ export async function runAudienceSyncCycle(
   // 0/0 and says nothing, which is precisely when an operator wants to see the
   // fiber is alive. A registered re-verifier means the cycle had work in scope,
   // whether or not that work turned anything up.
-  if (installs.length > 0 || listAudienceReverifierSources().length > 0) {
+  if (workspaceIds.length > 0 || listAudienceReverifierSources().length > 0) {
     log.info({ ...result }, "brain audience: membership sync cycle complete");
   }
   if (staleness.staleAudiences !== null && staleness.staleAudiences > 0) {

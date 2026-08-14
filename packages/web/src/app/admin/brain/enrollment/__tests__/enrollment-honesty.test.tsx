@@ -1,5 +1,5 @@
 import { describe, expect, test, afterEach, beforeEach, mock } from "bun:test";
-import { render, cleanup, waitFor } from "@testing-library/react";
+import { render, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
@@ -43,10 +43,47 @@ const stubAuthClient: AtlasAuthClient = {
 let listFails = false;
 /** Whether `GET /brain-enrollment/entities` succeeds. */
 let entitiesFail = false;
+/** What the write verbs answer, so both halves of the no-op split are reachable. */
+let writeChanged = true;
+/** Whether the write verbs 403, so the error surfaces are reachable. */
+let writeFails = false;
 /** The enrolled rows the list endpoint answers with. */
 let enrollments: unknown[] = [];
 /** The entities the picker endpoint answers with. */
 let entities: unknown[] = [{ name: "accounts", table: "public.accounts", description: null }];
+
+/**
+ * THREE pairs across TWO entities, deliberately unequal.
+ *
+ * The page renders `enrollments.length` beside the server's `entityCount`, with
+ * a comment claiming the second is the server's number rather than a client-side
+ * `new Set(...)`. A one-pair/one-entity fixture makes those two values equal by
+ * construction, so no assertion written against it could tell the claim from its
+ * opposite.
+ */
+const THREE_PAIRS_TWO_ENTITIES = [
+  {
+    entity: "accounts",
+    dimension: "arr_band",
+    enrolledAt: "2026-08-14T00:00:00.000Z",
+    enrolledBy: "user-1",
+    note: null,
+  },
+  {
+    entity: "accounts",
+    dimension: "tier",
+    enrolledAt: "2026-08-14T00:00:00.000Z",
+    enrolledBy: "user-1",
+    note: null,
+  },
+  {
+    entity: "subscriptions",
+    dimension: "plan",
+    enrolledAt: "2026-08-14T00:00:00.000Z",
+    enrolledBy: "user-2",
+    note: null,
+  },
+];
 
 const originalFetch = globalThis.fetch;
 
@@ -94,6 +131,26 @@ function installFetchStub() {
             },
           ],
         }),
+      );
+    }
+    if (url.includes("/brain-enrollment/enroll")) {
+      return Promise.resolve(
+        writeFails
+          ? jsonResponse(
+              { error: "not-entitled", message: "you may not enroll", requestId: "req-1" },
+              403,
+            )
+          : jsonResponse({ entity: "accounts", dimension: "arr_band", changed: writeChanged }),
+      );
+    }
+    if (url.includes("/brain-enrollment/unenroll")) {
+      return Promise.resolve(
+        writeFails
+          ? jsonResponse(
+              { error: "not-entitled", message: "you may not un-enroll", requestId: "req-1" },
+              403,
+            )
+          : jsonResponse({ entity: "accounts", dimension: "arr_band", changed: writeChanged }),
       );
     }
     if (url.includes("/brain-enrollment")) {
@@ -168,6 +225,8 @@ async function settledText(): Promise<string> {
 beforeEach(() => {
   listFails = false;
   entitiesFail = false;
+  writeChanged = true;
+  writeFails = false;
   enrollments = [];
   entities = [{ name: "accounts", table: "public.accounts", description: null }];
   installFetchStub();
@@ -224,15 +283,7 @@ describe("an unreadable semantic layer is not an empty one", () => {
     // would put the semantic layer's availability in front of the reach an admin
     // came to read.
     entitiesFail = true;
-    enrollments = [
-      {
-        entity: "accounts",
-        dimension: "arr_band",
-        enrolledAt: "2026-08-14T00:00:00.000Z",
-        enrolledBy: "user-1",
-        note: null,
-      },
-    ];
+    enrollments = THREE_PAIRS_TWO_ENTITIES;
     const text = await settledText();
     expect(text).toContain("Your semantic layer could not be read");
     // The reach still renders, with its row.
@@ -241,6 +292,81 @@ describe("an unreadable semantic layer is not an empty one", () => {
     // reason the first test records: the picker's error legitimately contains
     // "the request failed", so that phrase cannot separate the two panes.
     expect(text).not.toContain("not because your workspace has enrolled nothing");
+  });
+});
+
+describe("the counters are the server's, and never a number nobody knows", () => {
+  test("pairs and entities are counted separately", async () => {
+    enrollments = THREE_PAIRS_TWO_ENTITIES;
+    const { container } = renderPage();
+    await waitFor(() =>
+      expect(container.textContent ?? "").not.toContain("Loading what is enrolled…"),
+    );
+    const text = container.textContent ?? "";
+    // Unequal, so a page rendering `enrollments.length` for both goes red on
+    // one of them.
+    expect(text).toContain("Pairs3");
+    expect(text).toContain("Entities2");
+  });
+
+  test("a failed read shows an em-dash, never a zero", async () => {
+    // ⚠️ `useAdminFetch` nulls `data` on error, so both chips evaluated to `0`
+    // and rendered ABOVE the failure prose — the two numbers an admin's eye
+    // lands on first asserting an empty reach at the moment nobody knows what
+    // the reach is.
+    listFails = true;
+    const text = await settledText();
+    expect(text).toContain("Pairs—");
+    expect(text).toContain("Entities—");
+    expect(text).not.toContain("Pairs0");
+    expect(text).not.toContain("Entities0");
+  });
+});
+
+describe("the write verbs report what actually happened", () => {
+  async function renderWithOneEnrollment() {
+    enrollments = [THREE_PAIRS_TWO_ENTITIES[0]!];
+    const { container } = renderPage();
+    await waitFor(() =>
+      expect(container.textContent ?? "").not.toContain("Loading what is enrolled…"),
+    );
+    return container;
+  }
+
+  test("a real removal says published claims are untouched", async () => {
+    const container = await renderWithOneEnrollment();
+    fireEvent.click(screen.getByRole("button", { name: /Un-enroll/i }));
+    await waitFor(() =>
+      expect(container.textContent ?? "").toContain("still published, still visible, still valid"),
+    );
+    // The other half of the ternary must NOT also be on screen — an inverted
+    // condition would otherwise be half-caught.
+    expect(container.textContent ?? "").not.toContain("was not enrolled");
+  });
+
+  test("a no-op removal says the pair was not enrolled", async () => {
+    // The paired arm. Without it, an inverted ternary passes the test above by
+    // rendering the reassurance on every path.
+    writeChanged = false;
+    const container = await renderWithOneEnrollment();
+    fireEvent.click(screen.getByRole("button", { name: /Un-enroll/i }));
+    await waitFor(() => expect(container.textContent ?? "").toContain("was not enrolled"));
+    expect(container.textContent ?? "").not.toContain("still published, still visible, still valid");
+  });
+
+  test("a failed removal reports in the reach card, not under 'Enroll a dimension'", async () => {
+    // The message used to land in the enroll form's error slot — a destructive
+    // alert under a heading about enrolling, while the affected row got a bare
+    // badge with no reason.
+    writeFails = true;
+    const container = await renderWithOneEnrollment();
+    fireEvent.click(screen.getByRole("button", { name: /Un-enroll/i }));
+    await waitFor(() => expect(container.textContent ?? "").toContain("you may not un-enroll"));
+
+    // It is rendered AFTER the reach card's heading, which is what places it
+    // with the row it belongs to rather than in the authoring form above.
+    const text = container.textContent ?? "";
+    expect(text.indexOf("you may not un-enroll")).toBeGreaterThan(text.indexOf("In the producer"));
   });
 });
 

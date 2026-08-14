@@ -35,6 +35,7 @@ import {
   type RegionPortableComparable,
 } from "@atlas/api/lib/brain/object-cmp";
 
+import { BRAIN_ENROLLMENT_NAME_MAX } from "@useatlas/schemas";
 import type { ExportBundle, ExportedBrainFact, ImportResult, SupportedBundleVersion } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -825,8 +826,27 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
       // anything the producer emits, so it would sit in the destination's list
       // looking enrolled and reach nothing.
       for (const field of ["entity", "dimension"] as const) {
-        if (typeof x[field] !== "string" || x[field] === "") {
+        const value = x[field];
+        if (typeof value !== "string" || value === "") {
           return { ok: false, error: `brainEnrollments[${i}].${field}: must be a non-empty string.` };
+        }
+        // ⚠️ TRIM AND LENGTH, matching `normalizeEnrollmentPair`, because this
+        // is the SECOND write door and the destination's CHECK is weaker than
+        // the seam. `ck_brain_enrollment_names_present` is `entity <> ''`, which
+        // `"   "` satisfies on a `text` column — so an untrimmed pair imports
+        // cleanly and then sits in the destination's list looking live while the
+        // producer's `has()` can never match it. That is exactly the
+        // stored-but-unreachable row this whole surface is built to prevent, and
+        // the region import is the one path that does not go through the seam.
+        //
+        // REFUSED rather than silently repaired: a bundle carrying an untrimmed
+        // or over-long pair is a defect in the source region, and quietly
+        // fixing it here would land a pair the source does not have.
+        if (value !== value.trim()) {
+          return { ok: false, error: `brainEnrollments[${i}].${field}: must not have leading or trailing whitespace.` };
+        }
+        if (value.length > BRAIN_ENROLLMENT_NAME_MAX) {
+          return { ok: false, error: `brainEnrollments[${i}].${field}: must be at most ${BRAIN_ENROLLMENT_NAME_MAX} characters.` };
         }
       }
       // `brainSlackChannelExclusions.excludedBy`'s rule, for the same reason one

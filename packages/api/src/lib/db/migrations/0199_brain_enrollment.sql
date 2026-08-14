@@ -98,9 +98,11 @@ CREATE TABLE IF NOT EXISTS brain_enrollment (
     CHECK (enrolled_by <> '')
 );
 
--- The producer's read: one workspace's whole enrolled set, ordered for a stable
--- listing. Small by construction — that is the entire point of the ADR — so
--- this is a listing index rather than a lookup one, and the PK already serves
--- the per-pair identity check.
-CREATE INDEX IF NOT EXISTS idx_brain_enrollment_workspace
-  ON brain_enrollment (workspace_id, entity, dimension);
+-- NO SECONDARY INDEX, deliberately.
+--
+-- The producer's read is one workspace's whole enrolled set ordered by
+-- `(entity, dimension)`, and the PRIMARY KEY is already exactly that btree on
+-- exactly those columns in exactly that order. An earlier cut added
+-- `idx_brain_enrollment_workspace (workspace_id, entity, dimension)` beside it,
+-- which is the PK duplicated verbatim: no read it could serve that the PK does
+-- not, and a second tree to maintain on every write.

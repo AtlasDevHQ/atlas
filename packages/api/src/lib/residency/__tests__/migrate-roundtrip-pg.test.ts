@@ -287,11 +287,18 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
     // the two apart. The two `accounts` rows also pin that the pair — not the
     // entity — is the unit: enrolling `accounts/arr_band` says nothing about
     // `accounts/status`, which is the whole bound the ADR argues for.
+    // `enrolled_at` seeded EXPLICITLY, and to a date nothing else would produce.
+    // The importer binds this column from the bundle rather than letting the
+    // DEFAULT fire, and that is the half a projection without it cannot see:
+    // drop `enrolled_at` from the INSERT's column list and every migrated
+    // workspace's reach reports as enrolled TODAY — the record of when authority
+    // was granted silently rewritten across the cutover, with all three rows
+    // present, both counters right, and `enrolled_by` and `note` matching.
     await pool.query(
-      `INSERT INTO brain_enrollment (workspace_id, entity, dimension, enrolled_by, note)
-       VALUES ($1, 'accounts', 'arr_band', 'user-1', 'revenue tiering'),
-              ($1, 'accounts', 'status', 'user-1', NULL),
-              ($1, 'subscriptions', 'plan', 'user-2', NULL)`,
+      `INSERT INTO brain_enrollment (workspace_id, entity, dimension, enrolled_at, enrolled_by, note)
+       VALUES ($1, 'accounts', 'arr_band', '2026-03-01T00:00:00Z', 'user-1', 'revenue tiering'),
+              ($1, 'accounts', 'status', '2026-03-02T00:00:00Z', 'user-1', NULL),
+              ($1, 'subscriptions', 'plan', '2026-03-03T00:00:00Z', 'user-2', NULL)`,
       [SOURCE_ORG],
     );
 
@@ -434,8 +441,8 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       // distinguishes `DO NOTHING` from a `DO UPDATE` that would re-attribute a
       // local admin's decision to the source region's.
       await pool.query(
-        `INSERT INTO brain_enrollment (workspace_id, entity, dimension, enrolled_by, note)
-         VALUES ($1, 'accounts', 'status', 'target-admin', 'decided here first')`,
+        `INSERT INTO brain_enrollment (workspace_id, entity, dimension, enrolled_at, enrolled_by, note)
+         VALUES ($1, 'accounts', 'status', '2026-07-01T00:00:00Z', 'target-admin', 'decided here first')`,
         [TARGET_ORG],
       );
 
@@ -517,19 +524,42 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       const targetEnrollments = await pool.query<{
         entity: string;
         dimension: string;
+        enrolled_at: Date;
         enrolled_by: string;
         note: string | null;
       }>(
-        `SELECT entity, dimension, enrolled_by, note
+        `SELECT entity, dimension, enrolled_at, enrolled_by, note
            FROM brain_enrollment WHERE workspace_id = $1 ORDER BY entity, dimension`,
         [TARGET_ORG],
       );
-      expect(targetEnrollments.rows).toEqual([
-        { entity: "accounts", dimension: "arr_band", enrolled_by: "user-1", note: "revenue tiering" },
-        // NOT `user-1`, and NOT "revenue tiering" — the destination's own row,
-        // untouched by the arriving one.
-        { entity: "accounts", dimension: "status", enrolled_by: "target-admin", note: "decided here first" },
-        { entity: "subscriptions", dimension: "plan", enrolled_by: "user-2", note: null },
+      expect(
+        targetEnrollments.rows.map((r) => ({ ...r, enrolled_at: r.enrolled_at.toISOString() })),
+      ).toEqual([
+        {
+          entity: "accounts",
+          dimension: "arr_band",
+          // The SOURCE's timestamp, carried. A default-fired `now()` lands
+          // today's date here, which is the silent audit rewrite.
+          enrolled_at: "2026-03-01T00:00:00.000Z",
+          enrolled_by: "user-1",
+          note: "revenue tiering",
+        },
+        // NOT `user-1`, NOT "revenue tiering", and NOT March — the destination's
+        // own row in all three columns, untouched by the arriving one.
+        {
+          entity: "accounts",
+          dimension: "status",
+          enrolled_at: "2026-07-01T00:00:00.000Z",
+          enrolled_by: "target-admin",
+          note: "decided here first",
+        },
+        {
+          entity: "subscriptions",
+          dimension: "plan",
+          enrolled_at: "2026-03-03T00:00:00.000Z",
+          enrolled_by: "user-2",
+          note: null,
+        },
       ]);
 
       // The vocabulary's closure is REBUILT in the target, not carried. Nothing

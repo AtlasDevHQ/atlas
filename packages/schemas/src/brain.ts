@@ -37,6 +37,7 @@ import type {
   BrainFactEpisodeView,
   BrainFactOversight,
   BrainFactOversightBucket,
+  BrainEnrollmentCandidateKind,
   BrainEnrollmentDimensionOption,
   BrainEnrollmentDimensionsResponse,
   BrainEnrollmentEntitiesResponse,
@@ -1461,15 +1462,38 @@ export const BrainSlackScopeVitalsSchema = z.object({
 // ---------------------------------------------------------------------------
 
 /**
- * Length bound on either half of a pair, mirroring `ENROLLMENT_NAME_MAX` in
- * `lib/brain/enrollment.ts`.
+ * Length bound on either half of a pair.
  *
- * Spelled twice on purpose rather than imported: `@useatlas/schemas` must not
- * depend on `@atlas/api`, and the api-side constant is the one the storage seam
- * enforces for callers that never come through this schema (the region import).
- * The two are pinned together by `admin-brain-enrollment.test.ts`.
+ * **This is the only spelling.** `lib/brain/enrollment.ts` re-exports it as
+ * `ENROLLMENT_NAME_MAX` rather than declaring its own — the forbidden direction
+ * is `@useatlas/schemas` → `@atlas/api`, and the one used here is the reverse,
+ * which `lib/` already takes in a dozen places. An earlier cut declared the
+ * number twice and claimed a test pinned them together; no such test existed,
+ * and the only place the second `200` appeared was inside a `mock.module()`
+ * factory that replaces the real module — a fixture that agrees by
+ * construction and can never disagree.
  */
 export const BRAIN_ENROLLMENT_NAME_MAX = 200;
+
+export const BRAIN_ENROLLMENT_CANDIDATE_KINDS = [
+  "dimension",
+  "measure",
+] as const satisfies readonly BrainEnrollmentCandidateKind[];
+
+/**
+ * Compile error if a kind is added to the union without joining the tuple.
+ *
+ * The load-bearing pin, not decoration: `satisfies z.ZodType<T, unknown>` below
+ * is covariant in the output type, so a schema enum that is a strict SUBSET of
+ * the wire union still compiles — and then throws at the route's response parse.
+ */
+type _BrainEnrollmentKindsCovered = [
+  Exclude<BrainEnrollmentCandidateKind, (typeof BRAIN_ENROLLMENT_CANDIDATE_KINDS)[number]>,
+] extends [never]
+  ? true
+  : never;
+const _brainEnrollmentKindsCovered: _BrainEnrollmentKindsCovered = true;
+void _brainEnrollmentKindsCovered;
 
 export const BrainEnrollmentEntrySchema = z.strictObject({
   entity: z.string(),
@@ -1496,7 +1520,7 @@ export const BrainEnrollmentEntitiesResponseSchema = z.strictObject({
 
 export const BrainEnrollmentDimensionOptionSchema = z.strictObject({
   name: z.string(),
-  kind: z.enum(["dimension", "measure"]),
+  kind: z.enum(BRAIN_ENROLLMENT_CANDIDATE_KINDS),
   type: z.string().nullable(),
   description: z.string().nullable(),
   enrolled: z.boolean(),
@@ -1521,6 +1545,21 @@ export const BrainEnrollmentWriteRequestSchema = z.strictObject({
   dimension: z.string().min(1).max(BRAIN_ENROLLMENT_NAME_MAX),
   /** Why this pair is worth holding claims about. Absent on the un-enroll verb. */
   note: z.string().max(500).nullish(),
+});
+
+/**
+ * The un-enroll body — the same pair, and deliberately NO `note`.
+ *
+ * `strictObject` makes the omission a 422 rather than a silent discard. An
+ * earlier cut shared one schema across both verbs, so un-enrolling with a
+ * reason was accepted and the reason thrown away — which reads as "Atlas
+ * recorded why I stopped this" and is the one thing this table does not store.
+ * Un-enrolment leaves no row behind to carry a note, by design (migration
+ * 0199's header), so the honest answer is to refuse the field.
+ */
+export const BrainEnrollmentUnenrollRequestSchema = z.strictObject({
+  entity: z.string().min(1).max(BRAIN_ENROLLMENT_NAME_MAX),
+  dimension: z.string().min(1).max(BRAIN_ENROLLMENT_NAME_MAX),
 });
 
 export const BrainEnrollmentWriteResponseSchema = z.strictObject({

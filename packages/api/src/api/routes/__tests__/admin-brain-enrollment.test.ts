@@ -100,8 +100,17 @@ class TestInvalidEnrollmentPairError extends Error {
 }
 
 void mock.module("@atlas/api/lib/brain/enrollment", () => ({
+  // Mock-ALL-exports, and this list is pinned against the real module's by
+  // `lib/brain/__tests__/enrollment-writers.test.ts` — so a new export breaks
+  // that tripwire rather than link-failing here at some later date.
   ENROLLMENT_NAME_MAX: 200,
   InvalidEnrollmentPairError: TestInvalidEnrollmentPairError,
+  UnattributedEnrollmentError: class extends Error {},
+  makeProducerReach: (pairs: readonly unknown[]) => ({
+    pairs,
+    entities: [],
+    has: () => false,
+  }),
   normalizeEnrollmentPair: (entity: string, dimension: string) => {
     const e = entity.trim();
     const d = dimension.trim();
@@ -228,9 +237,23 @@ describe("GET / — what is enrolled", () => {
     ];
     const res = await adminBrainEnrollment.request("/");
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { enrollments: unknown[]; entityCount: number };
+    const body = (await res.json()) as {
+      enrollments: Record<string, unknown>[];
+      entityCount: number;
+    };
     expect(body.enrollments).toHaveLength(3);
     expect(body.entityCount).toBe(2);
+    // The whole row reaches the client, not just its count. `strictObject`
+    // throws on a MISSING key, so this is about the values arriving intact —
+    // `enrolledBy` in particular, which is the column an audit of "who
+    // authorized this?" reads first.
+    expect(body.enrollments[0]).toEqual({
+      entity: "accounts",
+      dimension: "arr_band",
+      enrolledAt: "2026-08-14T00:00:00.000Z",
+      enrolledBy: "user-1",
+      note: null,
+    });
   });
 });
 
@@ -281,10 +304,27 @@ describe("POST /enroll", () => {
   it("refuses a pair the published semantic layer does not contain, and writes nothing", async () => {
     const res = await post("/enroll", { entity: "accounts", dimension: "not_a_column" });
     expect(res.status).toBe(404);
-    expect((await res.json()) as { error: string }).toMatchObject({ error: "pair-not-found" });
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body).toMatchObject({ error: "pair-not-found" });
+    // The DIMENSION half failed, so the case-sensitivity advice is the right
+    // advice — see the sibling test for why it is wrong on the other half.
+    expect(body.message).toContain("case-sensitive");
     // ⚠️ The assertion that matters. A 404 returned AFTER the write would look
     // identical from the status line and would have stored a pair that reaches
     // nothing.
+    expect(enrollCalls).toHaveLength(0);
+  });
+
+  it("does not blame case when the ENTITY is what failed to resolve", async () => {
+    // One message for two causes sent an admin hunting a dimension typo that
+    // does not exist, while the real causes — not published, or ambiguous
+    // across connection groups — went unnamed.
+    dimensionOptions = null;
+    const res = await post("/enroll", { entity: "ghosts", dimension: "arr_band" });
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { message: string };
+    expect(body.message).toContain("is not an entity");
+    expect(body.message).not.toContain("case-sensitive");
     expect(enrollCalls).toHaveLength(0);
   });
 
@@ -302,6 +342,12 @@ describe("POST /enroll", () => {
       note: "why",
       actor: "user-1",
     });
+    // The control for the un-enroll asymmetry test's `dimensionCalls` zero. That
+    // assertion says "it did not even ASK"; without a run in which the counter
+    // DOES populate, it is satisfied by a harness where nothing ever records —
+    // a renamed export in the candidates factory, or a `beforeEach` reset moved
+    // after the request.
+    expect(dimensionCalls).toEqual(["accounts"]);
   });
 
   it("reports the no-op rather than flattening it into success", async () => {
@@ -369,6 +415,19 @@ describe("POST /unenroll", () => {
     unenrollChanged = false;
     const res = await post("/unenroll", { entity: "accounts", dimension: "arr_band" });
     expect((await res.json()) as { changed: boolean }).toMatchObject({ changed: false });
+  });
+
+  it("refuses a note rather than silently discarding it", async () => {
+    // Un-enrolment leaves no row behind to carry a reason (migration 0199), so
+    // accepting the field and dropping it would read as "Atlas recorded why I
+    // stopped this" — the one thing this table does not store.
+    const res = await post("/unenroll", {
+      entity: "accounts",
+      dimension: "arr_band",
+      note: "because",
+    });
+    expect(res.status).toBe(422);
+    expect(unenrollCalls).toHaveLength(0);
   });
 
   it("403s a member on the NARROWING verb too, and does not write", async () => {

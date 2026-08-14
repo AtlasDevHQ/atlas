@@ -38,10 +38,14 @@ import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS, _resetPool } from "@atlas/api/lib/db/internal";
 import { identityAlias, slotKey } from "@atlas/api/lib/brain/identity";
 import {
+  ENROLLMENT_NAME_MAX,
   InvalidEnrollmentPairError,
+  UnattributedEnrollmentError,
   enrollPair,
   listEnrollments,
   loadProducerReach,
+  makeProducerReach,
+  normalizeEnrollmentPair,
   unenrollPair,
 } from "@atlas/api/lib/brain/enrollment";
 
@@ -267,6 +271,11 @@ describeIfPg("enrollment — the warehouse producer's reach (#5196)", () => {
       // assertion would pass against the conflation this split exists to stop.
       expect(rows[0]?.enrolledBy).toBe("user-1");
       expect(rows[0]?.note).toBe("revenue tiering");
+      // ISO, not `String(Date)`. The wire schema types this as a bare
+      // `z.string()`, so the `Date`-branch falling through to the `String(...)`
+      // fallback would ship "Thu Aug 14 2026 …" to the page and pass every
+      // schema between here and the browser.
+      expect(rows[0]?.enrolledAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     },
     PG_TEST_TIMEOUT_MS,
   );
@@ -298,6 +307,17 @@ describeIfPg("enrollment — the warehouse producer's reach (#5196)", () => {
   it(
     "an empty half is refused before it reaches the table",
     async () => {
+      // A REAL enrollment first, so the count below is a control rather than a
+      // bare zero: `listEnrollments` scoped to the wrong workspace, or one whose
+      // query silently returns nothing, satisfies `toHaveLength(0)` perfectly.
+      await enrollPair({
+        workspaceId: WORKSPACE,
+        entity: "accounts",
+        dimension: "arr_band",
+        note: null,
+        actor: "user-1",
+      });
+
       await expect(
         enrollPair({
           workspaceId: WORKSPACE,
@@ -310,16 +330,81 @@ describeIfPg("enrollment — the warehouse producer's reach (#5196)", () => {
       // An unattributed enrollment is refused by the seam, not left to the
       // table's CHECK — a constraint violation surfaces as a 500 carrying a
       // Postgres message.
+      //
+      // ⚠️ A DIFFERENT class from the two above, and the split is load-bearing:
+      // the route maps `InvalidEnrollmentPairError` to a 400 by type, and an
+      // empty actor is a server invariant rather than caller input, so sharing
+      // one class would answer 400 for a request body with no author field to
+      // fix. Asserting the class here is what stops the two being merged again.
       await expect(
         enrollPair({
           workspaceId: WORKSPACE,
           entity: "accounts",
-          dimension: "arr_band",
+          dimension: "tier",
           note: null,
           actor: "  ",
         }),
+      ).rejects.toBeInstanceOf(UnattributedEnrollmentError);
+
+      // Only the one legitimate pair landed.
+      expect(await listEnrollments(WORKSPACE)).toHaveLength(1);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "the length bound admits its own maximum and refuses one past it",
+    async () => {
+      const atBound = "a".repeat(ENROLLMENT_NAME_MAX);
+      // The off-by-one control FIRST — `>` vs `>=` is the mistake this branch
+      // makes, and without the at-bound case both spellings pass.
+      expect(normalizeEnrollmentPair(atBound, "arr_band").entity).toHaveLength(ENROLLMENT_NAME_MAX);
+      await expect(
+        enrollPair({
+          workspaceId: WORKSPACE,
+          entity: "accounts",
+          dimension: "a".repeat(ENROLLMENT_NAME_MAX + 1),
+          note: null,
+          actor: "user-1",
+        }),
       ).rejects.toBeInstanceOf(InvalidEnrollmentPairError);
       expect(await listEnrollments(WORKSPACE)).toHaveLength(0);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "a NUL byte is refused by the seam rather than by Postgres",
+    async () => {
+      // The un-enroll verb has no semantic-layer check by design, so this is the
+      // only door between a caller's NUL and a 22021 surfacing as a generic 500.
+      // It is also the assumption `PAIR_SEPARATOR` rests on.
+      await expect(
+        unenrollPair({ workspaceId: WORKSPACE, entity: "acc\u0000ounts", dimension: "arr_band" }),
+      ).rejects.toBeInstanceOf(InvalidEnrollmentPairError);
+      // Control: the same verb on a clean pair answers rather than throwing.
+      expect(
+        await unenrollPair({ workspaceId: WORKSPACE, entity: "accounts", dimension: "arr_band" }),
+      ).toBe(false);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "makeProducerReach derives the same reach the query does",
+    async () => {
+      // The pure derivation and the loading one must not drift: #5042 holds the
+      // reach across a run, and a second derivation is how `has()` and `pairs`
+      // start to disagree.
+      await seedEnrollment(WORKSPACE, "accounts", "arr_band");
+      await seedEnrollment(WORKSPACE, "subscriptions", "plan");
+      const loaded = await loadProducerReach(WORKSPACE);
+      const derived = makeProducerReach(loaded.pairs);
+      expect(derived.entities).toEqual(loaded.entities);
+      expect(derived.has("accounts", "arr_band")).toBe(loaded.has("accounts", "arr_band"));
+      // Both arms, so a `has` hardcoded either way goes red on one of them.
+      expect(derived.has("accounts", "status")).toBe(false);
+      expect(derived.has("accounts", "arr_band")).toBe(true);
     },
     PG_TEST_TIMEOUT_MS,
   );

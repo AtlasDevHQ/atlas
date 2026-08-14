@@ -4178,6 +4178,7 @@ export const brainEnrollment = pgTable(
     // An enrollment with no author is not one — `brainPredicateCardinality`'s
     // rule. `NOT NULL` alone would admit `''`.
     check("ck_brain_enrollment_attributed", sql`enrolled_by <> ''`),
-    index("idx_brain_enrollment_workspace").on(t.workspaceId, t.entity, t.dimension),
+    // No secondary index: the PK above IS `(workspace_id, entity, dimension)`,
+    // which is the producer's listing order. See the migration header.
   ],
 );

@@ -43,6 +43,7 @@
 
 import { describe, expect, test } from "bun:test";
 import * as enrollmentSeam from "@atlas/api/lib/brain/enrollment";
+import { BRAIN_ENROLLMENT_NAME_MAX } from "@useatlas/schemas";
 
 // `src/`, from `src/lib/brain/__tests__/`. Resolved off `import.meta.url` and
 // not `process.cwd()`: the isolated runner and a bare `bun test` disagree about
@@ -76,6 +77,14 @@ const KNOWN_INSERT_WRITERS: readonly string[] = [
  * That is a real blind spot rather than an oversight, and it is the acceptable
  * one — a registry-driven sweep deletes a departed workspace's rows wholesale
  * and cannot single out an enrollment.
+ *
+ * ⚠️ **The second blind spot is `ee/`.** `SRC_ROOT` is `packages/api/src`, so a
+ * writer landing in `@atlas/ee` — where the residency and proactive seams
+ * already live — would not be seen. Named here rather than left implicit,
+ * because the header above claims this is a fact about the tree and a reader
+ * checking that claim deserves its edges. `fact-writers.test.ts` has the same
+ * root and the same gap; widening both is one change and belongs in whichever
+ * PR first puts brain code in `ee/`.
  */
 const KNOWN_DELETE_WRITERS: readonly string[] = [
   // The storage seam's `unenrollPair` — the admin's own act.
@@ -138,6 +147,23 @@ describe("brain_enrollment writer set (#5196, ADR-0039)", () => {
     ).toEqual([...KNOWN_DELETE_WRITERS].sort());
   });
 
+  test("the region import enforces the same pair rules as the seam", async () => {
+    // `normalizeEnrollmentPair`'s docstring says the region import does NOT come
+    // through it and carries the rules itself. That is a claim about another
+    // file, so it is checked rather than asserted: an importer that dropped the
+    // trim would land `"  accounts"` past `ck_brain_enrollment_names_present`
+    // (which is `entity <> ''` and admits whitespace), and the pair would sit in
+    // the destination's list looking live while the producer never matches it.
+    const source = await Bun.file(`${SRC_ROOT}api/routes/admin-migrate.ts`).text();
+    const arm = source.slice(source.indexOf('"brainEnrollments" in obj'));
+    expect(arm.length, "the brainEnrollments validation arm is gone").toBeGreaterThan(0);
+    const enrollmentArm = arm.slice(0, arm.indexOf("return { ok: true"));
+    expect(enrollmentArm).toContain("value.trim()");
+    expect(enrollmentArm).toContain("BRAIN_ENROLLMENT_NAME_MAX");
+    // And the seam's own bound is the SAME constant, not a second literal.
+    expect(enrollmentSeam.ENROLLMENT_NAME_MAX).toBe(BRAIN_ENROLLMENT_NAME_MAX);
+  });
+
   test("the patterns actually match the statements they claim to — the tripwire's own falsifier", () => {
     // ⚠️ Both scans above are satisfied by a pattern that matches NOTHING, as
     // long as the allowlists were emptied to match. These are the arms that
@@ -172,9 +198,15 @@ describe("brain_enrollment writer set (#5196, ADR-0039)", () => {
     expect(Object.keys(enrollmentSeam).toSorted()).toEqual([
       "ENROLLMENT_NAME_MAX",
       "InvalidEnrollmentPairError",
+      "UnattributedEnrollmentError",
       "enrollPair",
       "listEnrollments",
       "loadProducerReach",
+      // A PURE DERIVATION, not a writer: it takes pairs the caller already holds
+      // and returns a value. It exists so a reach can be built without a
+      // database — the alternative was every consumer hand-building the three
+      // fields, which is how an inconsistent one gets made.
+      "makeProducerReach",
       "normalizeEnrollmentPair",
       "unenrollPair",
     ]);

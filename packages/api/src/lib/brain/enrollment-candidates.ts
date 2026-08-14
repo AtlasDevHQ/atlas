@@ -30,7 +30,11 @@
  * when the draft is discarded.
  */
 
+import type { BrainEnrollmentCandidateKind } from "@useatlas/types";
+import { createLogger } from "@atlas/api/lib/logger";
 import { listAdminEntities, getAdminEntity } from "@atlas/api/lib/semantic/admin-source";
+
+const log = createLogger("brain.enrollment-candidates");
 
 /** One thing the producer could emit for, if a human enrolled it. */
 export interface EnrollmentCandidate {
@@ -43,7 +47,7 @@ export interface EnrollmentCandidate {
    * admin deciding what the Atlas should hold claims about needs to know which
    * one they are looking at.
    */
-  readonly kind: "dimension" | "measure";
+  readonly kind: BrainEnrollmentCandidateKind;
   readonly type: string | null;
   readonly description: string | null;
 }
@@ -107,12 +111,39 @@ function namedEntries(raw: unknown, kind: EnrollmentCandidate["kind"]): Enrollme
 export async function loadEnrollableEntities(
   orgId: string,
 ): Promise<readonly EnrollmentCandidateEntity[]> {
-  const { entities } = await listAdminEntities({ orgId, mode: "published" });
-  return entities.map((e) => ({
-    name: e.name,
-    table: e.table,
-    description: e.description === "" ? null : e.description,
-  }));
+  const { entities, warnings } = await listAdminEntities({ orgId, mode: "published" });
+  if (warnings.length > 0) {
+    // LOGGED rather than destructured away. On the DB path these are always
+    // empty and the per-row drops log themselves; on a pure-YAML self-hosted
+    // deploy `discoverEntities`' warnings are the ONLY record that an entity was
+    // skipped, and this is where they would die. The symptom without them is a
+    // picker quietly missing entities with nothing anywhere to explain it.
+    log.warn(
+      { orgId, warnings },
+      "Enrollment candidates: semantic-layer entries were skipped, so the picker offers fewer entities than the workspace authored",
+    );
+  }
+  // ⚠️ De-duplicated ON NAME, and this is a correctness fix rather than tidying.
+  // A multi-connection-group workspace (#2412) holds one entity NAME in several
+  // groups and `listAdminEntities` returns a row per group. Offered as separate
+  // options they are indistinguishable — same label, same value — so the picker
+  // renders duplicate React keys and asks the admin to choose between two
+  // identical entries. The pair this surface stores is
+  // `(workspace_id, entity, dimension)` with NO group column, so the duplicates
+  // are not a distinction the storage could record even if they picked one.
+  //
+  // Collapsing to one is the honest shape: `loadEnrollableDimensions` then
+  // surfaces the 409 that names the real problem. Dropping the name entirely
+  // would hide an enrollable entity; keeping both offers a choice that does not
+  // exist.
+  const seen = new Set<string>();
+  return entities
+    .filter((e) => (seen.has(e.name) ? false : (seen.add(e.name), true)))
+    .map((e) => ({
+      name: e.name,
+      table: e.table,
+      description: e.description === "" ? null : e.description,
+    }));
 }
 
 /**

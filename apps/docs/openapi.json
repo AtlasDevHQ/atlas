@@ -30433,6 +30433,31 @@
               }
             }
           },
+          "409": {
+            "description": "The entity name resolves in more than one connection group (#2412), so which one to enroll from is ambiguous. Enrollment stores `(workspace, entity, dimension)` with no group column, so this surface cannot express the choice.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -30605,6 +30630,31 @@
               }
             }
           },
+          "409": {
+            "description": "The entity name resolves in more than one connection group (#2412). Declared on this WRITE route because the pre-write semantic-layer check runs the same lookup as `GET /dimensions`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -30656,13 +30706,6 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 200
-                  },
-                  "note": {
-                    "type": [
-                      "string",
-                      "null"
-                    ],
-                    "maxLength": 500
                   }
                 },
                 "required": [

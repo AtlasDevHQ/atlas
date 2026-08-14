@@ -45,6 +45,8 @@
  * indistinguishable from the honest zero.
  */
 
+import { BRAIN_ENROLLMENT_NAME_MAX } from "@useatlas/schemas";
+import type { BrainEnrollmentEntry } from "@useatlas/types";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 
 /**
@@ -56,12 +58,42 @@ import { internalQuery } from "@atlas/api/lib/db/internal";
  * table has no length constraint of its own, deliberately, because a stored row
  * that a future looser bound would reject is worse than a bound enforced at the
  * one door.
+ *
+ * ⚠️ The number lives in `@useatlas/schemas` and this is an ALIAS. It was
+ * briefly declared here as a second `200`, on the reasoning that schemas must
+ * not depend on `@atlas/api` — true, but the dependency runs the other way and
+ * `lib/` already imports from `@useatlas/schemas` in a dozen places. Two
+ * constants plus a docstring claiming a test pinned them was the worst of both:
+ * the claim was false, and the only other `200` in the tree sat inside a
+ * `mock.module()` factory that replaces this module — a fixture that agrees by
+ * construction and can never disagree.
  */
-export const ENROLLMENT_NAME_MAX = 200;
+export const ENROLLMENT_NAME_MAX = BRAIN_ENROLLMENT_NAME_MAX;
 
-/** Thrown by {@link normalizeEnrollmentPair}; the route maps it to a 400. */
+/**
+ * The CALLER's input is malformed. {@link normalizeEnrollmentPair} throws it and
+ * the route maps it to a 400 carrying the rule.
+ */
 export class InvalidEnrollmentPairError extends Error {
   override readonly name = "InvalidEnrollmentPairError";
+}
+
+/**
+ * A SERVER invariant broke — {@link enrollPair} was called with no actor.
+ *
+ * ⚠️ Deliberately NOT an {@link InvalidEnrollmentPairError}, and the split is
+ * the point. The route matches that class BY TYPE to answer 400, and its
+ * `catchAll` spans the write as well as the normalize — so one class covering
+ * both conditions surfaces *"An enrollment must record who made it"* as a 400
+ * for a request body that has no author field to fix. Unactionable, and a
+ * 500-class condition wearing a 4xx.
+ *
+ * The route resolves the principal and refuses before reaching here, so this is
+ * unreachable today. It exists so that when it stops being unreachable the
+ * answer is a logged 500 with a request id rather than advice nobody can act on.
+ */
+export class UnattributedEnrollmentError extends Error {
+  override readonly name = "UnattributedEnrollmentError";
 }
 
 /** One `(entity, dimension)` pair — the unit of the producer's reach. */
@@ -70,21 +102,34 @@ export interface EnrolledPair {
   readonly dimension: string;
 }
 
-/** An enrollment as the admin surface sees it. */
-export interface EnrollmentRow extends EnrolledPair {
-  readonly enrolledAt: string;
-  readonly enrolledBy: string;
-  readonly note: string | null;
-}
+/**
+ * An enrollment as the admin surface sees it.
+ *
+ * An ALIAS of the wire type rather than a fourth spelling of the same five
+ * fields. The list route hands these rows straight into
+ * `BrainEnrollmentListResponseSchema`, and `checked()` takes `unknown` — so a
+ * field added to one shape and not the other is a runtime 500 on the list
+ * endpoint rather than a red build.
+ */
+export type EnrollmentRow = BrainEnrollmentEntry;
 
 /**
  * Trim and validate a caller-supplied pair.
  *
- * ONE normalizer for both verbs and the region import, so "enroll validates but
- * un-enroll doesn't" cannot recur. The verbs are asymmetric in consequence —
- * enrolling WIDENS the producer's reach — but a garbage id on the narrowing verb
- * answering `changed: false` instead of a 400 tells an admin their un-enrolment
- * took effect when it matched nothing.
+ * ONE normalizer for BOTH VERBS, so "enroll validates but un-enroll doesn't"
+ * cannot recur. The verbs are asymmetric in consequence — enrolling WIDENS the
+ * producer's reach — but a garbage id on the narrowing verb answering
+ * `changed: false` instead of a 400 tells an admin their un-enrolment took
+ * effect when it matched nothing.
+ *
+ * ⚠️ **The region import does NOT come through here**, and an earlier version of
+ * this line claimed it did. `admin-migrate.ts` inserts its rows directly, so its
+ * `validateBundle` arm carries the same trim, length and non-empty rules
+ * explicitly — checked against this function by
+ * `__tests__/enrollment-writers.test.ts`. Two doors, one rule set, stated rather
+ * than assumed: the destination's CHECK is weaker than this function (`entity
+ * <> ''` admits `"   "`), so a bundle validated only by the CHECK lands pairs
+ * that look enrolled and reach nothing.
  *
  * ⚠️ **Case is preserved, not folded.** A warehouse column set may legitimately
  * contain `status` and `Status` as different columns, and folding would merge
@@ -109,6 +154,17 @@ export function normalizeEnrollmentPair(entity: string, dimension: string): Enro
       `An entity or dimension name may be at most ${ENROLLMENT_NAME_MAX} characters.`,
     );
   }
+  // NUL is refused HERE rather than left to Postgres, and the reason is the
+  // separator below: this module's pair key uses NUL precisely because a `text`
+  // column cannot hold one. Postgres agrees — it answers 22021 — but only after
+  // the statement is sent, which surfaces a caller's bad input as a generic 500.
+  // The enroll verb never reaches it (the semantic-layer check refuses first);
+  // the un-enroll verb deliberately has no such check, so this is the door.
+  if (trimmedEntity.includes("\u0000") || trimmedDimension.includes("\u0000")) {
+    throw new InvalidEnrollmentPairError(
+      "An entity or dimension name may not contain a NUL byte — Postgres cannot store one.",
+    );
+  }
   return { entity: trimmedEntity, dimension: trimmedDimension };
 }
 
@@ -129,7 +185,14 @@ export function normalizeEnrollmentPair(entity: string, dimension: string): Enro
 export interface ProducerReach {
   readonly pairs: readonly EnrolledPair[];
   readonly entities: readonly string[];
-  has(entity: string, dimension: string): boolean;
+  /**
+   * `readonly` and a property, NOT method shorthand.
+   *
+   * Method shorthand declares a MUTABLE member, so `reach.has = () => true`
+   * compiled — a caller could keep `pairs` and swap the membership test, which
+   * is the exact split putting `has` on the object was meant to prevent.
+   */
+  readonly has: (entity: string, dimension: string) => boolean;
 }
 
 /**
@@ -149,17 +212,24 @@ function pairKey(entity: string, dimension: string): string {
   return `${entity}${PAIR_SEPARATOR}${dimension}`;
 }
 
-interface EnrollmentDbRow {
+/**
+ * A `type` alias, not an `interface`, and that is what removes the index
+ * signature.
+ *
+ * `internalQuery<T>` bounds `T` by `Record<string, unknown>`, which a closed
+ * INTERFACE does not satisfy — so the first cut added `readonly [key: string]:
+ * unknown` to get past it. A type alias gets an implicit index signature and
+ * satisfies the same bound with none written, which is strictly better: an
+ * explicit one types every misspelled column read as `unknown` instead of
+ * erroring, and turns off excess-property checking for any literal of this type.
+ */
+type EnrollmentDbRow = {
   readonly entity: string;
   readonly dimension: string;
   readonly enrolled_at: Date | string;
   readonly enrolled_by: string;
   readonly note: string | null;
-  // `internalQuery`'s row parameter is bounded by `Record<string, unknown>`, and
-  // a closed interface does not satisfy it. Declared rather than reaching for
-  // `Record<string, unknown>` outright, so the five columns above stay typed.
-  readonly [key: string]: unknown;
-}
+};
 
 const LIST_SQL = `SELECT entity, dimension, enrolled_at, enrolled_by, note
                     FROM brain_enrollment
@@ -200,7 +270,25 @@ export async function loadProducerReach(workspaceId: string): Promise<ProducerRe
       ORDER BY entity, dimension`,
     [workspaceId],
   );
-  const pairs: EnrolledPair[] = rows.map((r) => ({ entity: r.entity, dimension: r.dimension }));
+  return makeProducerReach(rows.map((r) => ({ entity: r.entity, dimension: r.dimension })));
+}
+
+/**
+ * Derive a reach from a pair list. **Pure — it writes nothing.**
+ *
+ * Split out of {@link loadProducerReach} so there is exactly ONE derivation of
+ * `entities` and the membership index, reachable without a database. Before the
+ * split the only way to obtain a reach was a live query, so every test and every
+ * consumer fixture had to hand-build the three fields — and a hand-built one can
+ * disagree with itself in precisely the way the type exists to forbid (the route
+ * test's `{ pairs: [], entities: [], has: () => false }` is that shape).
+ *
+ * It is named in `__tests__/enrollment-writers.test.ts`'s export pin as a
+ * derivation rather than a writer: it takes pairs a caller already holds and
+ * returns a value. Nothing here reaches `brain_enrollment`, so it is not a path
+ * by which anything can enroll.
+ */
+export function makeProducerReach(pairs: readonly EnrolledPair[]): ProducerReach {
   const index = new Set(pairs.map((p) => pairKey(p.entity, p.dimension)));
   const entities = [...new Set(pairs.map((p) => p.entity))];
   return {
@@ -237,7 +325,9 @@ export async function enrollPair(params: {
   const pair = normalizeEnrollmentPair(params.entity, params.dimension);
   const actor = params.actor.trim();
   if (actor === "") {
-    throw new InvalidEnrollmentPairError("An enrollment must record who made it.");
+    throw new UnattributedEnrollmentError(
+      "enrollPair was called with an empty actor — the route must resolve a principal before writing.",
+    );
   }
   const rows = await internalQuery<{ entity: string }>(
     `INSERT INTO brain_enrollment (workspace_id, entity, dimension, enrolled_by, note)

@@ -74,6 +74,7 @@ import {
   BrainEnrollmentDimensionsResponseSchema,
   BrainEnrollmentEntitiesResponseSchema,
   BrainEnrollmentListResponseSchema,
+  BrainEnrollmentUnenrollRequestSchema,
   BrainEnrollmentWriteRequestSchema,
   BrainEnrollmentWriteResponseSchema,
 } from "@useatlas/schemas";
@@ -114,6 +115,27 @@ function errorBody(error: string, message: string, requestId: string) {
 function checked<T>(schema: { parse: (value: unknown) => T }, payload: unknown): T {
   return schema.parse(payload);
 }
+
+/**
+ * ⚠️ **Why the two WRITE routes use `checked` and not `admin-brain-vocabulary`'s
+ * `checkedWrite` — a deliberate divergence, recorded rather than assumed.**
+ *
+ * `checkedWrite` exists there because a response-schema throw AFTER a committed
+ * write reports a landed write as *"Failed to author…"*. The same shape exists
+ * here in principle. It is not reachable in practice today:
+ * `BrainEnrollmentWriteResponseSchema` is a three-key `strictObject` built from
+ * a literal whose values were already validated on the way in — two trimmed
+ * strings and a boolean — so there is no DB-derived field that could fail the
+ * parse.
+ *
+ * The reason to state it rather than leave it: the moment that response grows a
+ * field derived from anything but the request, the failure lands post-commit and
+ * is DETERMINISTIC under retry — the same request rebuilds the same payload and
+ * fails the same parse, so an admin sees "failed" forever while the pair is
+ * enrolled and the producer's reach is genuinely wider. Grow the response, take
+ * `checkedWrite` (and lift it somewhere shared rather than copying it a third
+ * time).
+ */
 
 const listRoute = createRoute({
   method: "get",
@@ -165,6 +187,12 @@ const dimensionsRoute = createRoute({
     200: { description: "Enrollable dimensions", content: { "application/json": { schema: BrainEnrollmentDimensionsResponseSchema } } },
     400: { description: "No active organization", content: { "application/json": { schema: ErrorSchema } } },
     404: { description: "No such entity in the published semantic layer", content: { "application/json": { schema: ErrorSchema } } },
+    409: {
+      description:
+        "The entity name resolves in more than one connection group (#2412), so which one to enroll from is ambiguous. " +
+        "Enrollment stores `(workspace, entity, dimension)` with no group column, so this surface cannot express the choice.",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -187,6 +215,12 @@ const enrollRoute = createRoute({
     400: { description: "Invalid pair or no active organization", content: { "application/json": { schema: ErrorSchema } } },
     403: { description: "Not entitled", content: { "application/json": { schema: ErrorSchema } } },
     404: { description: "No such (entity, dimension) in the published semantic layer", content: { "application/json": { schema: ErrorSchema } } },
+    409: {
+      description:
+        "The entity name resolves in more than one connection group (#2412). Declared on this WRITE route because the " +
+        "pre-write semantic-layer check runs the same lookup as `GET /dimensions`.",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -201,7 +235,7 @@ const unenrollRoute = createRoute({
     "already published stay published, stay visible, and keep their validity windows — un-enrolling " +
     "is not an invalidation authority. `changed: false` means the pair was not enrolled.",
   request: {
-    body: { content: { "application/json": { schema: BrainEnrollmentWriteRequestSchema } } },
+    body: { content: { "application/json": { schema: BrainEnrollmentUnenrollRequestSchema } } },
   },
   responses: {
     200: { description: "Un-enrolled", content: { "application/json": { schema: BrainEnrollmentWriteResponseSchema } } },
@@ -358,8 +392,9 @@ adminBrainEnrollment.openapi(enrollRoute, async (c) => {
           // enrolment leaves a stale pair, and that is the coverage surface's
           // question (ADR-0041) rather than a reason to re-validate on read.
           const candidates = await loadEnrollableDimensions(orgId, pair.entity);
-          if (candidates === null || !candidates.some((cnd) => cnd.name === pair.dimension)) {
-            return { kind: "missing", pair } as const;
+          if (candidates === null) return { kind: "missing", pair, entityResolved: false } as const;
+          if (!candidates.some((cnd) => cnd.name === pair.dimension)) {
+            return { kind: "missing", pair, entityResolved: true } as const;
           }
           const changed = await enrollPair({
             workspaceId: orgId,
@@ -386,18 +421,27 @@ adminBrainEnrollment.openapi(enrollRoute, async (c) => {
         return c.json(errorBody("invalid-pair", outcome.message, requestId), 400);
       }
       if (outcome.kind === "missing") {
-        return c.json(
-          errorBody(
-            "pair-not-found",
-            `"${outcome.pair.dimension}" is not a dimension or measure of "${outcome.pair.entity}" ` +
-              "in this workspace's published semantic layer. Names are case-sensitive, because a " +
-              "warehouse may hold two columns that differ only in case.",
-            requestId,
-          ),
-          404,
-        );
+        // ⚠️ TWO messages, because the two halves fail for different reasons and
+        // one sentence sent an admin hunting the wrong one. When the ENTITY did
+        // not resolve, "names are case-sensitive" is advice about the dimension
+        // — a typo that does not exist — and the real causes (not published, or
+        // ambiguous across connection groups) go unnamed.
+        const message = outcome.entityResolved
+          ? `"${outcome.pair.dimension}" is not a dimension or measure of "${outcome.pair.entity}" ` +
+            "in this workspace's published semantic layer. Names are case-sensitive, because a " +
+            "warehouse may hold two columns that differ only in case."
+          : `"${outcome.pair.entity}" is not an entity in this workspace's published semantic layer. ` +
+            "A draft entity is deliberately not enrollable — the producer reads what is live.";
+        return c.json(errorBody("pair-not-found", message, requestId), 404);
       }
 
+      // ⚠️ The two guards above `return`, so control reaching here is the
+      // WRITTEN arm — but TypeScript only notices a new arm that lacks `pair` or
+      // `changed`. An arm like `{ kind: "conflict", pair, changed }` would
+      // narrow in silently and be logged as "Enrolled a pair" with a 200. On a
+      // surface whose thesis is that a no-op must never wear success, the
+      // default has to be a compile error instead.
+      outcome satisfies { readonly kind: "written" };
       log.info(
         {
           workspaceId: orgId,
@@ -483,6 +527,8 @@ adminBrainEnrollment.openapi(unenrollRoute, async (c) => {
         return c.json(errorBody("invalid-pair", outcome.message, requestId), 400);
       }
 
+      // The enroll verb's pin, for its reason. See there.
+      outcome satisfies { readonly kind: "written" };
       log.info(
         {
           workspaceId: orgId,

@@ -1966,6 +1966,23 @@ export interface BrainEnrollmentListResponse {
   readonly entityCount: number;
 }
 
+/**
+ * What kind of semantic-layer declaration a candidate came from.
+ *
+ * ⚠️ **Spelled ONCE, and the tuple beside it in `@useatlas/schemas` is what
+ * keeps it that way.** `satisfies z.ZodType<T, unknown>` does NOT pin an inline
+ * union: zod's `ZodType` is covariant in `Output`, so a schema whose enum is a
+ * SUBSET of the wire type stays assignable and compiles. Adding a third arm to
+ * the type without adding it to the schema therefore builds green and then
+ * throws at the route's response `.parse()` — a 500 on the picker for every
+ * entity that declares one.
+ *
+ * That third arm is not hypothetical: ADR-0037 §4's emission contract is *"the
+ * bare dimension name, measure name, **or metric id**"*, and migration 0199's
+ * header says the same. `metric` is the arm this union will grow.
+ */
+export type BrainEnrollmentCandidateKind = "dimension" | "measure";
+
 /** One entity a human could enroll a pair from. */
 export interface BrainEnrollmentEntityOption {
   readonly name: string;
@@ -1989,7 +2006,7 @@ export interface BrainEnrollmentEntitiesResponse {
  */
 export interface BrainEnrollmentDimensionOption {
   readonly name: string;
-  readonly kind: "dimension" | "measure";
+  readonly kind: BrainEnrollmentCandidateKind;
   readonly type: string | null;
   readonly description: string | null;
   readonly enrolled: boolean;

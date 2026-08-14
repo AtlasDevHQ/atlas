@@ -77,6 +77,17 @@ function BrainEnrollment() {
   const [dimension, setDimension] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const [writeError, setWriteError] = useState<string | null>(null);
+  /**
+   * Un-enrol's own error, rendered in the REACH card beside the row it belongs
+   * to.
+   *
+   * It used to land in `writeError`, which is rendered only inside the *Enroll a
+   * dimension* card — so a failed un-enrol painted a destructive alert under a
+   * heading about enrolling, while the affected row further down got a bare
+   * "not removed" badge with no reason. Picking a different entity then cleared
+   * a message the admin had not read.
+   */
+  const [unenrollError, setUnenrollError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const {
@@ -167,14 +178,14 @@ function BrainEnrollment() {
   }
 
   async function onUnenroll(target: BrainEnrollmentEntry) {
-    setWriteError(null);
+    setUnenrollError(null);
     setNotice(null);
     const result = await unenrollMutation.mutate({
       itemId: `${target.entity}/${target.dimension}`,
       body: { entity: target.entity, dimension: target.dimension },
     });
     if (!result.ok) {
-      setWriteError(friendlyError(result.error));
+      setUnenrollError(friendlyError(result.error));
       return;
     }
     setNotice(
@@ -241,6 +252,9 @@ function BrainEnrollment() {
                     setEntity(next);
                     setDimension(null);
                     setWriteError(null);
+                    // NOT `setUnenrollError(null)` — picking an entity to enrol
+                    // says nothing about a removal that failed, and clearing it
+                    // here is how the message vanished before it was read.
                   }}
                   disabled={entitiesLoading || entityOptions.length === 0}
                 >
@@ -360,19 +374,39 @@ function BrainEnrollment() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          {/* ⚠️ An em-dash, never a number, when the read failed.
+              `useAdminFetch` nulls `data` on error, so both chips evaluated to
+              `0` and rendered ABOVE the failure prose — the two numbers an
+              admin's eye lands on first asserting an empty reach at the moment
+              nobody knows what the reach is. `entityCount` is the worse of the
+              two: it is the set the producer evaluates its fail-closed
+              ambiguity rule across, so a rendered `0` is a claim about producer
+              behaviour. This is the same failed-vs-empty rule the prose below
+              already obeys. */}
           <div className="flex flex-wrap gap-2 text-xs">
             <div className="border-border flex items-center gap-2 rounded-md border px-2 py-1">
               <span className="font-medium">Pairs</span>
-              <span className="text-muted-foreground">{enrollments.length}</span>
+              <span className="text-muted-foreground">
+                {listError !== null ? "—" : enrollments.length}
+              </span>
             </div>
             <div className="border-border flex items-center gap-2 rounded-md border px-2 py-1">
               <span className="font-medium">Entities</span>
               {/* The SERVER's number, not `new Set(...)` over the rows. It is the
                   set the producer evaluates its ambiguity rule across, and a
                   client-side count would be a second spelling of it. */}
-              <span className="text-muted-foreground">{list?.entityCount ?? 0}</span>
+              <span className="text-muted-foreground">
+                {listError !== null ? "—" : (list?.entityCount ?? 0)}
+              </span>
             </div>
           </div>
+
+          {unenrollError !== null ? (
+            <Alert variant="destructive">
+              <AlertTriangle className="size-4" aria-hidden />
+              <AlertDescription>{unenrollError}</AlertDescription>
+            </Alert>
+          ) : null}
 
           <Separator />
 

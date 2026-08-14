@@ -76,6 +76,10 @@ One GitHub catalog row, `pillars: ["action", "datasource"]`, single install gran
 - Onboarding a new third-party system starts with the pillar question, not the install-handler question. "Is this something Atlas reads from, something customers talk to Atlas through, or something Atlas acts on?" Answer determines admin surface; install model is a follow-on.
 - Multi-pillar systems are explicitly supported — `github-data`, `linear-data` are future catalog slugs that don't require revisiting this ADR.
 
+## Amendments
+
+- **2026-08-14 — [ADR-0040](./0040-the-class-major-ingest-contract.md) widens the Knowledge pillar's charter** (added as the fourth pillar by [ADR-0028](./0028-knowledge-base-fourth-pillar.md)) from "descriptive document corpora" to **"content corpora Atlas reads"**: what a corpus lands — knowledge documents, brain episodes, or both — is decided by its source's class contract, not by the pillar or the admin. The three-then-four-pillar structure, the CHECK-level mutual exclusivity, the one-surface-per-pillar rule, and the multi-pillar-systems pattern are all unchanged.
+
 ## References
 
 - Pillar definitions: `CONTEXT.md` → "Pillars" section

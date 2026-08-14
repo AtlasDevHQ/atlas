@@ -62,7 +62,7 @@ Eight capabilities. Each is stated as something a named kind of person does, not
 
 6. **See what the company disagrees with itself about.** Contradictions are surfaced as contradictions, with both claims and both sources, and Atlas does not pick a winner.
 
-7. **Look at one page and understand the shape and the limits of what is known** — which parts of the company are well surveyed, which are thin, which are stale, and which have never been surveyed at all. This page is honest when coverage is poor, and it is *most* useful then.
+7. **Look at one page and understand the shape and the limits of what is known** — which parts of the company are well surveyed, which are thin, which are stale, and which have never been surveyed at all. This page is honest when coverage is poor, and it is *most* useful then. *(Stale is a measured lag behind the source, never a guess; thin is the reader's judgment from honest counts, not a computed verdict — [ADR-0041](../adr/0041-the-coverage-surface-counts-what-it-can-see.md).)*
 
 8. **Let other tools consult it.** Another agent — a coding assistant, a chat client, something not built by Atlas — can query the same record and receives the same labels and the same limits. It cannot get a cleaner-looking answer than a person would.
 
@@ -122,7 +122,7 @@ Not "M6 closed." Eight conditions, each written so a person could sit down and c
 
 5. **The past is legible.** Someone asks a question whose answer changed three months ago. They get today's answer, can see the previous answer, and can see who changed it and when.
 
-6. **The limits are visible and honest.** An admin looks at one page and states what Atlas knows, how much of the company it covers, and what it does not know — and every part of that statement is correct. This holds when coverage is 4% as clearly as when it is 80%.
+6. **The limits are visible and honest.** An admin looks at one page and states what Atlas knows, how much of the company it covers, and what it does not know — and every part of that statement is correct. This holds when coverage is 4% as clearly as when it is 80%. *"How much" is a composed statement over what Atlas's credentials can see — never a single company-wide percentage, because no company-wide denominator exists to be correct about ([ADR-0041](../adr/0041-the-coverage-surface-counts-what-it-can-see.md)).*
 
 7. **Revocation is real.** Someone loses access to a source. Within one sync cycle, claims scoped to that source stop being visible to them — with no manual step, and without an admin having maintained a list.
 

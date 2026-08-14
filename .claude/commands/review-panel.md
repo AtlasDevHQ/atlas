@@ -67,7 +67,7 @@ Every round:
 - `Agent(pr-test-analyzer)` — test coverage & discipline
 
 Final round only (or with `--final`):
-- `Agent(comment-analyzer)` — comment accuracy, idiom & prose de-slop (concise plain-English comments; the style rules live in the agent definition)
+- `Agent(comment-analyzer)` — comment accuracy, idiom & prose de-slop (concise plain-English comments; the style rules live in the agent definition). Also returns capped, advisory **Adjacent candidates** for the enclosing block, which never gate the verdict
 
 Each is read-only/advisory. Give every agent the same context: the base ref, the changed files, and the scope rule below.
 
@@ -100,9 +100,14 @@ Merge the four reports. Drop duplicates (e.g. an untested error path flagged by 
 
 ### Comment sweep
 - <`run` with its findings folded in above · or `deferred — not the final round`>
+
+### Adjacent candidates (advisory)
+- <comment-analyzer's out-of-diff de-slop suggestions, verbatim · or `none`>
 ```
 
 End with a one-line verdict: **CLEAN** (nothing must-fix) or **CHANGES REQUESTED** (≥1 must-fix). Callers gate on this verdict. A **CLEAN** verdict asserts the comment sweep ran on this diff — if it didn't, the verdict is not CLEAN yet.
+
+**Adjacent candidates never count toward the verdict.** They are `comment-analyzer`'s de-slop suggestions for the enclosing block, outside the diff, capped at five. Pass them through for the author to take or drop; a round is never held open for one, and taking one is never required to reach CLEAN. Fixing them is optional even when the fix is obvious — an adjacent comment describes code this diff did not touch, so a rewrite there is an unreviewed claim about unread code.
 
 **Step 5: Triage each must-fix BEFORE fixing it**
 

@@ -51,7 +51,6 @@ const SLUG_TO_SOURCE: Readonly<Record<string, KnowledgeCollectionSource>> = {
   front: "front",
   helpscout: "helpscout",
   freshdesk: "freshdesk",
-  "slack-history": "slack-history",
   "zoom-transcripts": "zoom-transcripts",
   "outlook-mail": "outlook-mail",
 };
@@ -83,7 +82,6 @@ const CONNECTOR_ICONS: Readonly<Record<string, LucideIcon>> = {
   front: Inbox,
   helpscout: LifeBuoy,
   freshdesk: Headset,
-  "slack-history": Brain,
   "zoom-transcripts": Brain,
   "outlook-mail": Brain,
 };
@@ -131,11 +129,15 @@ export const KNOWLEDGE_DISPLAY_ORDER: readonly string[] = [
   "front",
   "helpscout",
   "freshdesk",
-  // #4770 / #4965 / #4966: brain SOURCES, not document mirrors. Last in the
-  // picker because they are the odd ones out — their collections report zero
+  // #4965 / #4966: brain SOURCES, not document mirrors. Last in the picker
+  // because they are the odd ones out — their collections report zero
   // documents, since their rows land in `brain_episodes` rather than
   // `knowledge_documents`.
-  "slack-history",
+  //
+  // ⚠️ Slack is NOT here, and its absence is the point (#5203). It had a card
+  // through #4770 — a second Slack install, after the Chat Platform one, whose
+  // only payload was a channel list. Its scope is the bot's channel membership
+  // now, managed under Admin → Brain rather than installed here.
   "zoom-transcripts",
   "outlook-mail",
 ];

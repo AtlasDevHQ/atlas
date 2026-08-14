@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
   fetchConversationHistoryPage,
   fetchConversationMembersPage,
+  fetchUserConversationsPage,
   fetchUsersListPage,
   getConversationInfo,
 } from "@atlas/api/lib/slack/api";
@@ -332,5 +333,91 @@ describe("fetchUsersListPage", () => {
     expect(seen).not.toContain("cursor=");
     await fetchUsersListPage("t", { limit: 200, cursor: "c9" });
     expect(seen).toContain("cursor=c9");
+  });
+});
+
+describe("fetchUserConversationsPage (#5203)", () => {
+  // Since #5203 this method's result IS the brain's ingest scope, and the
+  // caller RETIRES stored channels absent from a complete walk — so every
+  // refusal branch here is a channel-retirement guard, not politeness.
+
+  it("returns the bot's memberships with isMember pinned true and archived kept", async () => {
+    respondWith({
+      ok: true,
+      channels: [
+        { id: "C1", name: "general", is_private: false },
+        { id: "G2", name: "exec", is_private: true, is_archived: true },
+      ],
+      response_metadata: { next_cursor: "" },
+    });
+    const result = await fetchUserConversationsPage("t", { limit: 200 });
+    expect(result).toEqual({
+      ok: true,
+      channels: [
+        { id: "C1", name: "general", isPrivate: false, isMember: true, isArchived: false },
+        { id: "G2", name: "exec", isPrivate: true, isMember: true, isArchived: true },
+      ],
+      nextCursor: null,
+    });
+  });
+
+  it("requests both channel types, keeps archived channels, and forwards the cursor", async () => {
+    let seen = "";
+    globalThis.fetch = (async (url: string | URL) => {
+      seen = String(url);
+      return new Response(JSON.stringify({ ok: true, channels: [] }), {
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    await fetchUserConversationsPage("t", { limit: 200 });
+    expect(seen).toContain("types=public_channel%2Cprivate_channel");
+    // Archived channels stay in scope — their history is still evidence.
+    expect(seen).toContain("exclude_archived=false");
+    expect(seen).not.toContain("cursor=");
+    await fetchUserConversationsPage("t", { limit: 200, cursor: "c7" });
+    expect(seen).toContain("cursor=c7");
+  });
+
+  it("refuses a page whose entry lacks is_private — the org-wide-publish guard", async () => {
+    respondWith({
+      ok: true,
+      channels: [
+        { id: "C1", name: "general", is_private: false },
+        { id: "G2", name: "exec" }, // no is_private — defaulting it false would publish it
+      ],
+    });
+    const result = await fetchUserConversationsPage("t", { limit: 200 });
+    expect(result.ok === false && result.error).toBe("malformed_conversations_page");
+  });
+
+  it("refuses a page whose entry has no usable id — an understated page RETIRES channels", async () => {
+    respondWith({
+      ok: true,
+      channels: [{ id: "", name: "ghost", is_private: false }],
+    });
+    const result = await fetchUserConversationsPage("t", { limit: 200 });
+    expect(result.ok === false && result.error).toBe("malformed_conversations_page");
+  });
+
+  it("refuses ok:true with a non-array channels rather than reading an empty membership", async () => {
+    respondWith({ ok: true, channels: "surprise" });
+    const result = await fetchUserConversationsPage("t", { limit: 200 });
+    expect(result.ok === false && result.error).toBe("malformed_conversations_page");
+  });
+
+  it("surfaces missing_scope instead of retrying public-only — partial scope is silent narrowing", async () => {
+    respondWith({ ok: false, error: "missing_scope" });
+    const result = await fetchUserConversationsPage("t", { limit: 200 });
+    expect(result.ok === false && result.error).toBe("missing_scope");
+  });
+
+  it("carries a non-empty next_cursor through", async () => {
+    respondWith({
+      ok: true,
+      channels: [{ id: "C1", name: "a", is_private: false }],
+      response_metadata: { next_cursor: "page-2" },
+    });
+    const result = await fetchUserConversationsPage("t", { limit: 200 });
+    expect(result.ok === true && result.nextCursor).toBe("page-2");
   });
 });

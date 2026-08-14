@@ -881,6 +881,7 @@ describe("runKnowledgeSyncCycle", () => {
     registerBrainSourceConnector({
       catalogId: "catalog:fixture-brain",
       source: HUMAN_SOURCE,
+      scope: { kind: "per-install" },
       audience: { kind: "externally-synced" },
       createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
     });
@@ -905,6 +906,7 @@ describe("runKnowledgeSyncCycle", () => {
     registerBrainSourceConnector({
       catalogId: "catalog:fixture-brain",
       source: HUMAN_SOURCE,
+      scope: { kind: "per-install" },
       audience: { kind: "externally-synced" },
       createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
     });
@@ -918,11 +920,97 @@ describe("runKnowledgeSyncCycle", () => {
     _resetBrainSourceConnectors();
   });
 
+  // ── The per-workspace arm (#5203) — its error paths, unit-level ───────────
+  // The happy path (a chat_cache install ALONE dispatches the source and its
+  // state row lands) is `brain-source-scope-pg.test.ts`'s; these pin the
+  // counters that only the failure shapes exercise, because every one of them
+  // is a green-and-silent regression if it breaks.
+
+  it("reports queryFailed when a per-workspace listWorkspaces rejects — and still walks the install arm", async () => {
+    _resetBrainSourceConnectors();
+    registerBrainSourceConnector({
+      catalogId: "catalog:fixture-slack",
+      source: "slack",
+      scope: {
+        kind: "per-workspace",
+        syncId: "fixture-sync",
+        listWorkspaces: () => Promise.reject(new Error("chat_cache read failed")),
+      },
+      audience: { kind: "externally-synced" },
+      createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
+    });
+    INSTALL_ROWS = [
+      { workspace_id: ORG, install_id: "good", catalog_id: "catalog:bundle-sync", config: baseConfig() },
+    ];
+    const { impl } = fetchReturning(fakeResponse({ bytes: zipBundle({ "a.md": "# a" }) }));
+
+    const result = await runKnowledgeSyncCycle({ fetchImpl: impl });
+    // "Couldn't look" ≠ "nothing to sync": the workspace listing failing is
+    // queryFailed, never a quiet zero — and the INSTALL arm's work still ran.
+    expect(result).toEqual({ inspected: 1, succeeded: 1, failed: 0, queryFailed: true });
+  });
+
+  it("counts a failing per-workspace sync into the SHARED totals", async () => {
+    _resetBrainSourceConnectors();
+    registerBrainSourceConnector({
+      catalogId: "catalog:fixture-slack",
+      source: "slack",
+      scope: {
+        kind: "per-workspace",
+        syncId: "fixture-sync",
+        listWorkspaces: () => Promise.resolve([ORG, "org-second"]),
+      },
+      audience: { kind: "externally-synced" },
+      createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
+    });
+    BRAIN_SYNC_STATUS = "error";
+    brainSyncCalls.length = 0;
+
+    const result = await runKnowledgeSyncCycle();
+    // Both workspaces inspected and both failures counted in the cycle's own
+    // counters — a per-workspace source with a parallel quiet tally is how a
+    // source ingests nothing while everything reports green.
+    expect(result).toEqual({ inspected: 2, succeeded: 0, failed: 2, queryFailed: false });
+    // Dispatched under the declared syncId with no install config.
+    expect(brainSyncCalls).toEqual([
+      { workspaceId: ORG, installId: "fixture-sync", source: "slack" },
+      { workspaceId: "org-second", installId: "fixture-sync", source: "slack" },
+    ]);
+  });
+
+  it("still runs the per-workspace arm when the INSTALL query throws", async () => {
+    // The two arms read DIFFERENT tables (workspace_plugins vs, for Slack,
+    // chat_cache) — an early return on the install-query fault would have one
+    // arm's failure silently retire the other's entire cycle. The comment in
+    // the source says exactly this; this is what enforces it.
+    _resetBrainSourceConnectors();
+    registerBrainSourceConnector({
+      catalogId: "catalog:fixture-slack",
+      source: "slack",
+      scope: {
+        kind: "per-workspace",
+        syncId: "fixture-sync",
+        listWorkspaces: () => Promise.resolve([ORG]),
+      },
+      audience: { kind: "externally-synced" },
+      createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
+    });
+    INSTALLS_QUERY_THROWS = true;
+    brainSyncCalls.length = 0;
+
+    const result = await runKnowledgeSyncCycle();
+    expect(result).toEqual({ inspected: 1, succeeded: 1, failed: 0, queryFailed: true });
+    expect(brainSyncCalls).toEqual([
+      { workspaceId: ORG, installId: "fixture-sync", source: "slack" },
+    ]);
+  });
+
   it("counts a failing brain source without sinking the rest of the cycle", async () => {
     _resetBrainSourceConnectors();
     registerBrainSourceConnector({
       catalogId: "catalog:fixture-brain",
       source: HUMAN_SOURCE,
+      scope: { kind: "per-install" },
       audience: { kind: "externally-synced" },
       createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
     });

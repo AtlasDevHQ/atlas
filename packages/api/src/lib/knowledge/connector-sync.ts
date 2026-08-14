@@ -123,12 +123,26 @@ export const CONNECTOR_SYNC_STATE_SELECT_SQL = `SELECT high_water_mark, sync_cur
         WHERE workspace_id = $1 AND collection_id = $2`;
 
 /**
- * The connector-sync bookkeeping upsert. Same install-existence guard as the
- * bundle-sync upsert (a sync racing an uninstall must not re-create the row
- * the uninstall just deleted); additionally COALESCEs the incremental
- * bookkeeping forward — the engine passes non-null values only on success, so
- * an error attempt records its status/error WITHOUT regressing the high-water
- * mark, cursor, or reconciliation clock. Exported for the real-Postgres test.
+ * The connector-sync bookkeeping upsert, INSTALL-anchored. Same
+ * install-existence guard as the bundle-sync upsert (a sync racing an
+ * uninstall must not re-create the row the uninstall just deleted);
+ * additionally COALESCEs the incremental bookkeeping forward — the engine
+ * passes non-null values only on success, so an error attempt records its
+ * status/error WITHOUT regressing the high-water mark, cursor, or
+ * reconciliation clock.
+ *
+ * ⚠️ The guard is the reason this statement can write NOTHING: `INSERT …
+ * SELECT … WHERE EXISTS` inserts zero rows when the install is gone, and with
+ * zero rows inserted `ON CONFLICT` never fires either — the existing row is
+ * not updated. That is intended for the uninstall race and catastrophic for a
+ * caller with no install row at all: a `per-workspace` brain source (#5203)
+ * has none BY DESIGN, so anchoring its bookkeeping here would drop every
+ * write, success and error alike, forever — a revoked token would read as a
+ * quietly stale "success" while the cycle logs errors nobody surfaces. Such
+ * callers use {@link CONNECTOR_SYNC_STATE_UPSERT_WORKSPACE_SQL} via the
+ * `anchor` parameter of {@link upsertConnectorSyncState}. `RETURNING` exists
+ * so a zero-row write is DETECTED and logged loudly rather than inferred from
+ * an admin surface that stopped moving. Exported for the real-Postgres test.
  */
 export const CONNECTOR_SYNC_STATE_UPSERT_SQL = `INSERT INTO knowledge_sync_state
          (workspace_id, collection_id, last_sync_at, status, error, report,
@@ -145,7 +159,42 @@ export const CONNECTOR_SYNC_STATE_UPSERT_SQL = `INSERT INTO knowledge_sync_state
              high_water_mark = COALESCE(EXCLUDED.high_water_mark, knowledge_sync_state.high_water_mark),
              sync_cursor = COALESCE(EXCLUDED.sync_cursor, knowledge_sync_state.sync_cursor),
              last_reconciled_at = COALESCE(EXCLUDED.last_reconciled_at, knowledge_sync_state.last_reconciled_at),
-             updated_at = NOW()`;
+             updated_at = NOW()
+       RETURNING collection_id`;
+
+/**
+ * The WORKSPACE-anchored variant (#5203): identical bookkeeping, no
+ * `workspace_plugins` guard. A `per-workspace` brain source has no install row
+ * to check — the guard's uninstall race cannot happen because there is no
+ * install to uninstall. The analogous teardown (the workspace itself being
+ * purged) hard-deletes `knowledge_sync_state` by workspace id, and the
+ * sub-millisecond race the install guard tolerates for bundle-sync — one
+ * unreferenced state row surviving a concurrent delete — is exactly as
+ * invisible and harmless here (nothing joins these rows except by a live
+ * workspace). Exported for the real-Postgres test.
+ */
+export const CONNECTOR_SYNC_STATE_UPSERT_WORKSPACE_SQL = `INSERT INTO knowledge_sync_state
+         (workspace_id, collection_id, last_sync_at, status, error, report,
+          high_water_mark, sync_cursor, last_reconciled_at, created_at, updated_at)
+       VALUES ($1, $2, NOW(), $3, $4, $5::jsonb, $6, $7, $8, NOW(), NOW())
+       ON CONFLICT (workspace_id, collection_id) DO UPDATE
+         SET last_sync_at = NOW(),
+             status = EXCLUDED.status,
+             error = EXCLUDED.error,
+             report = EXCLUDED.report,
+             high_water_mark = COALESCE(EXCLUDED.high_water_mark, knowledge_sync_state.high_water_mark),
+             sync_cursor = COALESCE(EXCLUDED.sync_cursor, knowledge_sync_state.sync_cursor),
+             last_reconciled_at = COALESCE(EXCLUDED.last_reconciled_at, knowledge_sync_state.last_reconciled_at),
+             updated_at = NOW()
+       RETURNING collection_id`;
+
+/**
+ * What the sync-state row is keyed against — which existence guard applies.
+ * `"install"` is the default and the historical behaviour; `"workspace"` is
+ * for `per-workspace` brain sources, whose bookkeeping has no install row
+ * behind it (#5203).
+ */
+export type ConnectorSyncStateAnchor = "install" | "workspace";
 
 interface ConnectorSyncStateRow extends Record<string, unknown> {
   high_water_mark: Date | string | null;
@@ -625,6 +674,19 @@ export interface ConnectorSyncStateWrite {
  * failure must not fail a sync that already committed (logged at error so a
  * persistently broken state table is visible).
  *
+ * `anchor` picks the existence guard: `"install"` skips the write when the
+ * `workspace_plugins` row is gone, `"workspace"` writes unguarded for
+ * `per-workspace` brain sources that never had one (#5203). REQUIRED, with no
+ * default — a default of `"install"` would let the next per-workspace caller
+ * say nothing and reproduce round-1 C1 (every write dropped), downgraded from
+ * silent-forever to an error log nobody may be watching; the compiler forcing
+ * the decision is the cheaper guard. A write that lands ZERO rows is logged
+ * at error either way: for the install anchor it is expected only in the
+ * narrow uninstall race, and a caller hitting it EVERY cycle is the #5203
+ * defect — bookkeeping keyed to an install that does not exist, every outcome
+ * (revoked token included) silently discarded while the admin surface shows
+ * the last row that ever landed.
+ *
  * Exported alongside {@link readConnectorSyncState} for the brain episode
  * engine (#4770); see that function's comment for why the bookkeeping is
  * shared rather than forked.
@@ -633,21 +695,33 @@ export async function upsertConnectorSyncState(
   workspaceId: string,
   collectionSlug: string,
   write: ConnectorSyncStateWrite,
+  anchor: ConnectorSyncStateAnchor,
 ): Promise<void> {
   try {
-    await internalQuery(CONNECTOR_SYNC_STATE_UPSERT_SQL, [
-      workspaceId,
-      collectionSlug,
-      write.status,
-      write.error,
-      JSON.stringify(write.report),
-      write.highWaterMark,
-      write.cursor,
-      write.reconciledAt,
-    ]);
+    const rows = await internalQuery(
+      anchor === "workspace"
+        ? CONNECTOR_SYNC_STATE_UPSERT_WORKSPACE_SQL
+        : CONNECTOR_SYNC_STATE_UPSERT_SQL,
+      [
+        workspaceId,
+        collectionSlug,
+        write.status,
+        write.error,
+        JSON.stringify(write.report),
+        write.highWaterMark,
+        write.cursor,
+        write.reconciledAt,
+      ],
+    );
+    if (rows.length === 0) {
+      log.error(
+        { workspaceId, collectionSlug, anchor, status: write.status },
+        "Knowledge connector sync state write landed no row — the attempt's outcome was NOT recorded. Expected only when an uninstall raced this sync; recurring, it means the bookkeeping is anchored to an install row that does not exist and every outcome is being dropped",
+      );
+    }
   } catch (err) {
     log.error(
-      { workspaceId, collectionSlug, err: err instanceof Error ? err.message : String(err) },
+      { workspaceId, collectionSlug, anchor, err: err instanceof Error ? err.message : String(err) },
       "Failed to record knowledge connector sync state — the sync outcome itself is unaffected",
     );
   }
@@ -674,12 +748,19 @@ async function recordConnectorSyncState(
       : outcome.rejected.length > 0
         ? { mode: outcome.mode, rejected: outcome.rejected.slice(0, REPORT_REJECTED_CAP) }
         : { mode: outcome.mode };
-  await upsertConnectorSyncState(workspaceId, collectionSlug, {
-    status: outcome.status,
-    error: outcome.error,
-    report,
-    highWaterMark: outcome.highWaterMark,
-    cursor: bookkeeping.cursor,
-    reconciledAt: bookkeeping.reconciledAt,
-  });
+  await upsertConnectorSyncState(
+    workspaceId,
+    collectionSlug,
+    {
+      status: outcome.status,
+      error: outcome.error,
+      report,
+      highWaterMark: outcome.highWaterMark,
+      cursor: bookkeeping.cursor,
+      reconciledAt: bookkeeping.reconciledAt,
+    },
+    // This engine syncs INSTALLS of registered connector catalog rows — the
+    // install-anchored arm is definitionally correct here.
+    "install",
+  );
 }

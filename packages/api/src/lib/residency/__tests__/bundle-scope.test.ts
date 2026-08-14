@@ -94,11 +94,23 @@ describe("bundle-scope drift tripwire (#4460)", () => {
     // the decisions at source AND leave the imported keys un-re-derivable.
     // `brain_vocabulary_target` is deliberately NOT here — it is the derived
     // closure, and §8 has the import recompute it rather than carry it.
+    //
+    // Extended again by #5203 with the brain's Slack ingest scope, on the same
+    // reasoning pointed the other way. The tables carry a NARROWING — which
+    // channels a human took OUT of scope — and since scope is now "every channel
+    // the bot is in, minus exclusions", losing that narrowing does not degrade
+    // the destination, it makes the destination ingest a channel a human
+    // removed. Over-DISCLOSURE, the unrecoverable direction, and 'stays' is
+    // deletion (#4458) so the source's copy would be destroyed in the same move.
+    // Only the exclusion HALF of `brain_slack_channel` rides; the observed
+    // membership beside it is re-derived on the target's first sync.
     expect([...EXPORTED_TABLES].toSorted()).toEqual([
       "agent_session_memory",
       "brain_edges",
       "brain_episodes",
       "brain_facts",
+      "brain_slack_channel",
+      "brain_slack_ingest_scope",
       "brain_vocabulary_edge",
       "conversations",
       "dashboard_cards",

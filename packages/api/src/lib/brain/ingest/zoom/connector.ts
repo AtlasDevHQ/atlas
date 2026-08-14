@@ -243,6 +243,13 @@ export function createZoomTranscriptConnector(
   return {
     catalogId: ZOOM_TRANSCRIPTS_CATALOG_ID,
     source: ZOOM_TRANSCRIPT_SOURCE,
+    // Per-install, and unlike Slack that is not a second act: this connector
+    // COLLECTS A SECRET (a Server-to-Server OAuth app's client id + secret) and
+    // Zoom has no Atlas pillar install to inherit one from, so its install is
+    // the only place the connection exists. #5203 retired the Slack install
+    // precisely because it carried no secret and duplicated a pillar install
+    // that already existed; neither is true here.
+    scope: { kind: "per-install" },
     // Transcripts are a grant-DERIVING class: a meeting's audience comes from its
     // own participant list, so nothing but this re-verifier can refresh it and
     // `BrainSourceAudienceFor<"zoom">` admits no other arm. Built here, beside the

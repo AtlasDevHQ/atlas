@@ -124,4 +124,45 @@ describe("resolveCollectionSlug", () => {
     expect(() => resolveCollectionSlug("a b", "d")).toThrow(FormInstallValidationError);
     expect(() => resolveCollectionSlug("x".repeat(200), "d")).toThrow(FormInstallValidationError);
   });
+
+  it("rejects a per-workspace brain source's syncId (#5203)", async () => {
+    // A per-workspace source's syncId is a `knowledge_sync_state`
+    // collection_id with no install row, so the cross-catalog install guard
+    // cannot see it — a collection under that id would share the brain's
+    // bookkeeping row and clobber its cursor. Registry-driven: register one,
+    // watch the slug become unavailable.
+    const { registerBrainSourceConnector, _resetBrainSourceConnectors } = await import(
+      "@atlas/api/lib/brain/ingest/types"
+    );
+    _resetBrainSourceConnectors();
+    try {
+      registerBrainSourceConnector({
+        catalogId: "catalog:test-slug-guard",
+        source: "slack",
+        scope: {
+          kind: "per-workspace",
+          syncId: "slack-history",
+          listWorkspaces: () => Promise.resolve([]),
+        },
+        audience: { kind: "externally-synced" },
+        createClient: () => Promise.reject(new Error("not under test")),
+      });
+      expect(() => resolveCollectionSlug("slack-history", "d")).toThrow(
+        FormInstallValidationError,
+      );
+      // Unreserved ids stay available — the guard is the syncId, not a prefix.
+      expect(resolveCollectionSlug("slack-history-notes", "d")).toBe("slack-history-notes");
+      // The DEFAULT-slug arms run through the same guard: a catalog whose
+      // defaultSlug ever collides with a syncId must fail loudly, not silently
+      // share the bookkeeping row because nobody typed anything.
+      expect(() => resolveCollectionSlug(undefined, "slack-history")).toThrow(
+        FormInstallValidationError,
+      );
+      expect(() => resolveCollectionSlug("  ", "slack-history")).toThrow(
+        FormInstallValidationError,
+      );
+    } finally {
+      _resetBrainSourceConnectors();
+    }
+  });
 });

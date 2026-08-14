@@ -22,6 +22,7 @@ import {
   slotKey,
   type ClaimVocabulary,
 } from "@atlas/api/lib/brain/identity";
+import { SLACK_CHANNEL_ID_PATTERN } from "@atlas/api/lib/brain/ingest/slack/config";
 import {
   VOCABULARY_LOCK_NAMESPACE,
   VOCABULARY_LOCK_SQL,
@@ -755,6 +756,59 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
     }
   }
 
+  // --- The company brain's Slack ingest-scope narrowings (#5203) ---
+  if ("brainSlackChannelExclusions" in obj && obj.brainSlackChannelExclusions !== undefined) {
+    if (!Array.isArray(obj.brainSlackChannelExclusions)) {
+      return { ok: false, error: "Invalid 'brainSlackChannelExclusions' field. Expected an array." };
+    }
+    for (let i = 0; i < obj.brainSlackChannelExclusions.length; i++) {
+      const x = obj.brainSlackChannelExclusions[i] as Record<string, unknown> | null;
+      if (!x || typeof x !== "object" || typeof x.channelId !== "string") {
+        return { ok: false, error: `brainSlackChannelExclusions[${i}]: must have a 'channelId' (string).` };
+      }
+      // The destination's `ck_brain_slack_channel_id_shape` would refuse this
+      // anyway — as a 23514 mid-transaction, aborting the whole region import
+      // over one row. Refused here instead, naming the row and the rule.
+      if (!SLACK_CHANNEL_ID_PATTERN.test(x.channelId)) {
+        return { ok: false, error: `brainSlackChannelExclusions[${i}].channelId: "${x.channelId.slice(0, 40)}" is not a Slack channel ID — IDs start with C or G and are uppercase.` };
+      }
+      // OMITTED is refused, not read as "unattributed", on
+      // `brainVocabularyEdges.approvedBy`'s reasoning and with more force: the
+      // destination's CHECK makes an unattributed exclusion unstorable, so a
+      // tolerated omission here would abort a cutover at the INSERT rather than
+      // at validation. An exclusion is a confidentiality decision and its author
+      // is the first thing an audit reads.
+      if (typeof x.excludedBy !== "string" || x.excludedBy === "") {
+        return { ok: false, error: `brainSlackChannelExclusions[${i}].excludedBy: must be a non-empty string — an exclusion records who made it.` };
+      }
+      if ("exclusionReason" in x && x.exclusionReason !== null && typeof x.exclusionReason !== "string") {
+        return { ok: false, error: `brainSlackChannelExclusions[${i}].exclusionReason: must be a string or null.` };
+      }
+      const tsError = missingTimestamps(x, ["excludedAt"]);
+      if (tsError) return { ok: false, error: `brainSlackChannelExclusions[${i}].${tsError}` };
+    }
+  }
+  if ("brainSlackIngestScope" in obj && obj.brainSlackIngestScope !== undefined) {
+    const scope = obj.brainSlackIngestScope as Record<string, unknown> | null;
+    if (!scope || typeof scope !== "object" || Array.isArray(scope)) {
+      return { ok: false, error: "Invalid 'brainSlackIngestScope' field. Expected an object." };
+    }
+    if (!Array.isArray(scope.legacyChannels)) {
+      // NOT defaulted to `[]`. The empty array is a REAL state ("had an install,
+      // no usable scope" → ingest nothing) and an absent section is a DIFFERENT
+      // real state ("never had one" → ingest everything the bot is in), so
+      // coercing a malformed value into either one silently picks a scope for
+      // the destination. Refuse and let the operator re-export.
+      return { ok: false, error: "brainSlackIngestScope.legacyChannels: must be an array (it may be empty — that means the workspace had a slack-history install with no usable scope, which is not the same as having had none)." };
+    }
+    for (let i = 0; i < scope.legacyChannels.length; i++) {
+      const channelId = scope.legacyChannels[i];
+      if (typeof channelId !== "string" || !SLACK_CHANNEL_ID_PATTERN.test(channelId)) {
+        return { ok: false, error: `brainSlackIngestScope.legacyChannels[${i}]: "${String(channelId).slice(0, 40)}" is not a Slack channel ID.` };
+      }
+    }
+  }
+
   return { ok: true, bundle: obj as unknown as ExportBundle };
 }
 
@@ -781,6 +835,14 @@ const ImportResultSchema = z.object({
   // closed a cycle or taken a second parent. `ImportResult` carries the argument
   // for why the two must not be one number.
   brainVocabularyEdges: z.object({
+    imported: z.number(),
+    skipped: z.number(),
+    refused: z.number(),
+  }),
+  // Three counters for `brainVocabularyEdges`' reason, one arm over. `skipped`
+  // is an exclusion this region already holds — an idempotent re-import.
+  // `refused` is a source-region decision this region could not land.
+  brainSlackChannelExclusions: z.object({
     imported: z.number(),
     skipped: z.number(),
     refused: z.number(),
@@ -875,6 +937,7 @@ const importRoute = createRoute({
                 brainEdges: z.number().optional(),
                 factAudienceMembers: z.number().optional(),
                 brainVocabularyEdges: z.number().optional(),
+                brainSlackChannelExclusions: z.number().optional(),
               }),
             }),
             conversations: z.array(z.unknown()),
@@ -898,6 +961,8 @@ const importRoute = createRoute({
             // dropped before the importer runs and the target region keeps the
             // imported facts' keys with nothing that explains them.
             brainVocabularyEdges: z.array(z.unknown()).optional(),
+            brainSlackChannelExclusions: z.array(z.unknown()).optional(),
+            brainSlackIngestScope: z.unknown().optional(),
           }),
         },
       },
@@ -1461,6 +1526,7 @@ export async function importBundle(
     brainEdges: { imported: 0, skipped: 0 },
     factAudienceMembers: { imported: 0, skipped: 0 },
     brainVocabularyEdges: { imported: 0, skipped: 0, refused: 0 },
+    brainSlackChannelExclusions: { imported: 0, skipped: 0, refused: 0 },
   };
 
   // --- 1. Conversations + Messages ---
@@ -1908,6 +1974,78 @@ export async function importBundle(
   result.brainVocabularyEdges.imported = vocabularyMerge.applied;
   result.brainVocabularyEdges.skipped = vocabularyMerge.duplicate;
   result.brainVocabularyEdges.refused = vocabularyMerge.refusals.length;
+
+  // --- 9b. The Slack ingest-scope narrowings (#5203) ---
+  // Written BEFORE the episodes below, and that ordering is load-bearing: the
+  // destination's first sync resolves scope from this table, and an exclusion
+  // that landed after a sync had already run would be an exclusion applied to
+  // channels already ingested. Nothing in the import triggers a sync, so the
+  // window is theoretical today — but the cheap ordering is the one that stays
+  // correct when it is not.
+  //
+  // `is_member = false` on insert, deliberately: this bundle carries no
+  // membership (see `ExportedBrainSlackChannelExclusion`), and claiming the bot
+  // is in a channel it may have been removed from before the migration would put
+  // the row in the destination's poll scope the moment someone un-excluded it.
+  // The first sync sets it from `users.conversations`.
+  for (const exclusion of bundle.brainSlackChannelExclusions ?? []) {
+    // ⚠️ NOT `DO NOTHING`. A `brain_slack_channel` row is ALSO created by the
+    // membership walk with `excluded_at IS NULL` — and if the destination's
+    // Slack sync ran before this import (chat installs travel independently of
+    // the bundle), every exclusion for a channel the bot is a member of — i.e.
+    // exactly the ones that matter — would hit the conflict and be DROPPED
+    // while being counted `skipped`. A lost exclusion is over-disclosure, the
+    // direction the export type's own docstring calls unrecoverable. So the
+    // conflict arm mirrors `excludeSlackChannel`'s upsert: the exclusion lands
+    // on an unexcluded row, and a row a destination admin ALREADY excluded
+    // keeps its own author and reason (first attribution wins). `prior` reads
+    // the pre-statement snapshot so the imported/skipped split reports what
+    // actually happened: `imported` = the exclusion took effect here,
+    // `skipped` = the channel was already excluded. There is no `refused` arm
+    // today; the counter exists so a future conflict rule has somewhere to
+    // report that is not `skipped`.
+    const { rows } = await client.query(
+      `WITH prior AS (
+         SELECT excluded_at FROM brain_slack_channel
+          WHERE workspace_id = $1 AND channel_id = $2
+       )
+       INSERT INTO brain_slack_channel
+         (workspace_id, channel_id, is_member, excluded_at, exclusion_reason, excluded_by,
+          created_at, updated_at)
+       VALUES ($1, $2, false, $3, $4, $5, now(), now())
+       ON CONFLICT (workspace_id, channel_id) DO UPDATE
+         SET excluded_at = COALESCE(brain_slack_channel.excluded_at, EXCLUDED.excluded_at),
+             exclusion_reason = CASE WHEN brain_slack_channel.excluded_at IS NULL
+                                     THEN EXCLUDED.exclusion_reason
+                                     ELSE brain_slack_channel.exclusion_reason END,
+             excluded_by = CASE WHEN brain_slack_channel.excluded_at IS NULL
+                                THEN EXCLUDED.excluded_by
+                                ELSE brain_slack_channel.excluded_by END,
+             updated_at = now()
+       RETURNING (SELECT excluded_at IS NOT NULL FROM prior) AS was_excluded`,
+      [orgId, exclusion.channelId, exclusion.excludedAt, exclusion.exclusionReason, exclusion.excludedBy],
+    );
+    const wasExcluded = (rows[0] as { was_excluded: boolean | null } | undefined)?.was_excluded;
+    if (wasExcluded === true) result.brainSlackChannelExclusions.skipped++;
+    else result.brainSlackChannelExclusions.imported++;
+  }
+
+  if (bundle.brainSlackIngestScope !== undefined) {
+    // `DO NOTHING`: a destination that already has a scope row has its own
+    // reconcile state, and overwriting it with the source's could un-reconcile a
+    // workspace — putting a spent allowlist back in charge of a scope the
+    // exclusions above already express.
+    await client.query(
+      `INSERT INTO brain_slack_ingest_scope (workspace_id, legacy_channels, created_at, updated_at)
+       VALUES ($1, $2::text[], now(), now())
+       ON CONFLICT (workspace_id) DO NOTHING`,
+      // Deduped: a bundle with a repeated id would otherwise have the
+      // legacy-pending poll walk the channel twice per pass (deduped
+      // downstream, so waste and skewed exclusion arithmetic, not
+      // corruption).
+      [orgId, [...new Set(bundle.brainSlackIngestScope.legacyChannels)]],
+    );
+  }
 
   // --- 10. Company brain (#4767, ADR-0036) — facts ride inside their episode ---
   // Ordering is load-bearing, and it is the reason facts are NESTED rather

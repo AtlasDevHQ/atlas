@@ -235,7 +235,8 @@ export type SlackReadErrorCode =
   | "missing_visibility"
   | "malformed_history_page"
   | "malformed_members_page"
-  | "malformed_users_page";
+  | "malformed_users_page"
+  | "malformed_conversations_page";
 
 export interface SlackReadError {
   readonly ok: false;
@@ -479,6 +480,117 @@ export async function fetchConversationHistoryPage(
     );
   }
   return { ok: true, messages, nextCursor, dropped };
+}
+
+// ---------------------------------------------------------------------------
+// Read method for membership-derived ingest scope (#5203)
+// ---------------------------------------------------------------------------
+
+/** One page of `users.conversations` — the channels the BOT is a member of. */
+export interface SlackUserConversationsPage {
+  readonly ok: true;
+  readonly channels: readonly SlackConversationInfo[];
+  readonly nextCursor: string | null;
+}
+
+/**
+ * One page of the calling token's own conversations — i.e. the bot's channel
+ * membership, which since #5203 IS the brain's ingest scope (minus the admin
+ * exclusion list).
+ *
+ * ## Why `users.conversations` and not `listChannels`
+ *
+ * `listChannels` (`conversations.list`) enumerates the WORKSPACE and filters
+ * client-side on `is_member`. Two properties make it wrong for scope
+ * resolution, and both fail in the silent direction:
+ *
+ *   - it is page-capped at 5 × 200, so a workspace with more than 1000
+ *     conversations would resolve a scope missing whatever fell off the end —
+ *     channels the bot IS in, reading as channels it is not, i.e. ingest
+ *     quietly narrower than the admin's own invitations. The cap is defensible
+ *     for a picker that degrades to manual entry; it is not defensible for the
+ *     set that decides what gets read.
+ *   - it passes `exclude_archived=true`. An archived channel's history is
+ *     still readable and still evidence — the install handler admitted one
+ *     with a warning — so excluding it here would drop a channel's history
+ *     from scope the moment someone archived it.
+ *
+ * `users.conversations` returns only the token's own memberships, so the set is
+ * bounded by what the bot was actually invited to rather than by workspace
+ * size, and there is no client-side membership filter to get wrong.
+ *
+ * Scopes: `channels:read` + `groups:read`, both already granted at chat-install
+ * time (`slack-oauth-handler.ts`). Unlike `listChannels` this does NOT retry
+ * public-only on `missing_scope` — a partial scope resolution is the silent
+ * narrowing above, and a caller that cannot see private channels must be told
+ * rather than handed a set that looks complete.
+ *
+ * `is_private` is REQUIRED on every entry, for `getConversationInfo`'s reason:
+ * defaulting a missing field to `false` publishes an invite-only channel's
+ * contents org-wide. A page carrying one unusable entry is refused whole, on
+ * `fetchConversationMembersPage`'s reasoning — the caller reconciles the
+ * returned set against stored rows and marks absentees out of scope, so an
+ * understated page does not merely miss a channel, it RETIRES one.
+ */
+export async function fetchUserConversationsPage(
+  token: string,
+  params: { readonly cursor?: string; readonly limit: number },
+): Promise<SlackUserConversationsPage | SlackReadError> {
+  const query = new URLSearchParams({
+    types: "public_channel,private_channel",
+    // Archived channels stay IN the listing — see the header. Slack's default
+    // is already `false`; it is spelled out because the default is the whole
+    // decision and a reader should not have to know it.
+    exclude_archived: "false",
+    limit: String(params.limit),
+  });
+  if (params.cursor !== undefined) query.set("cursor", params.cursor);
+
+  const result = await slackReadGet("users.conversations", token, query);
+  if (!result.ok) return result;
+
+  if (!Array.isArray(result.data.channels)) {
+    log.error(
+      { method: "users.conversations" },
+      "Slack returned ok:true with a non-array `channels` — refusing to read it as an empty membership",
+    );
+    return { ok: false, error: "malformed_conversations_page", retryAfterSeconds: null };
+  }
+
+  const channels: SlackConversationInfo[] = [];
+  for (const raw of result.data.channels) {
+    if (raw === null || typeof raw !== "object") continue;
+    const ch = raw as Record<string, unknown>;
+    if (typeof ch.id !== "string" || ch.id === "") continue;
+    if (typeof ch.is_private !== "boolean") continue;
+    channels.push({
+      id: ch.id,
+      name: typeof ch.name === "string" ? ch.name : ch.id,
+      isPrivate: ch.is_private,
+      // Every entry `users.conversations` returns is one the token is a member
+      // of — that is what the method means — so this is not read off the
+      // payload. `conversations.list` needs the flag because it enumerates the
+      // workspace; here a `false` would contradict the endpoint.
+      isMember: true,
+      isArchived: ch.is_archived === true,
+    });
+  }
+  if (channels.length !== result.data.channels.length) {
+    log.error(
+      {
+        method: "users.conversations",
+        returned: result.data.channels.length,
+        usable: channels.length,
+      },
+      "Slack membership page contained unusable channel entries — refusing a partial page rather than retiring the channels it omits",
+    );
+    return { ok: false, error: "malformed_conversations_page", retryAfterSeconds: null };
+  }
+
+  const meta = result.data.response_metadata as { next_cursor?: unknown } | undefined;
+  const nextCursor =
+    typeof meta?.next_cursor === "string" && meta.next_cursor.length > 0 ? meta.next_cursor : null;
+  return { ok: true, channels, nextCursor };
 }
 
 // ---------------------------------------------------------------------------

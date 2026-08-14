@@ -424,9 +424,97 @@ export type BrainSourceAudienceFor<S extends EpisodeSource> =
  * connectors (the registry, the cycle walk, the webhook fast-path) uses the
  * unparameterised form and sees the widest shape.
  */
+/**
+ * WHAT the cycle walk dispatches this connector OVER (#5203, grill #5200 T3).
+ *
+ * ## Why this is a required field and not a default
+ *
+ * Every brain source used to be dispatched per INSTALL: the cycle listed
+ * `workspace_plugins` rows whose `catalog_id` was in the registry and ran one
+ * sync per row. That model requires the source to HAVE an install, and for
+ * Slack that install was a second, credential-free one carrying nothing but a
+ * channel list — which nobody knew to make. Atlas's own Slack was live as a
+ * chat platform in three prod regions with extraction on, and the brain
+ * ingested nothing for four days, every surface green (#5200).
+ *
+ * `"per-workspace"` is the shape that removes the second act: the source is
+ * dispatched over the workspaces that installed its PILLAR, so connecting Slack
+ * once is the whole gesture.
+ *
+ * Making it REQUIRED — rather than defaulting to `per-install` — is the point.
+ * A default would let the next chat vendor reintroduce the double-install by
+ * saying nothing, which is exactly how this one arrived. `brain-source-scope.test.ts`
+ * pins the stronger form: a CHAT-class source that declares `per-install` is a
+ * build failure, because for the chat class the pillar install is already the
+ * connection and a second one can only be the same bug again.
+ */
+export type BrainSourceScope =
+  | {
+      /** Dispatched once per `workspace_plugins` install of {@link BrainSourceConnector.catalogId}. */
+      readonly kind: "per-install";
+    }
+  | {
+      /**
+       * Dispatched once per workspace that installed the source's PILLAR — no
+       * knowledge-pillar install of its own, and therefore no second act.
+       */
+      readonly kind: "per-workspace";
+      /**
+       * The stable id this source books its `knowledge_sync_state` under
+       * (`collection_id`). There is no install row to take it from, so it is
+       * declared here; it must be unique across per-workspace sources, since
+       * the state table is keyed `(workspace_id, collection_id)`.
+       */
+      readonly syncId: string;
+      /**
+       * The workspaces to dispatch over — i.e. the ones that installed the
+       * pillar. Resolved by the connector because "what counts as installed"
+       * is vendor-specific (Slack reads `chat_cache`, not `workspace_plugins`).
+       *
+       * ⚠️ It must NOT filter on the brain's own readiness. Returning only
+       * workspaces that already have episodes, or already have a scope row,
+       * would make the source invisible on exactly the workspace that has never
+       * ingested anything — which is the state M1 sat in for four days.
+       */
+      listWorkspaces(): Promise<readonly string[]>;
+    };
+
+/**
+ * Runtime narrowing for {@link BrainSourceScope} — the data-lane check the type
+ * cannot make. `listWorkspaces` is verified to be callable rather than merely
+ * present: a `per-workspace` source registered without one would throw on every
+ * cycle, in the arm whose whole purpose is to notice a source that is silently
+ * doing nothing.
+ */
+function isBrainSourceScope(value: unknown): value is BrainSourceScope {
+  if (typeof value !== "object" || value === null) return false;
+  const kind = (value as { kind?: unknown }).kind;
+  if (kind === "per-install") return true;
+  if (kind !== "per-workspace") return false;
+  // syncId is part of the claim this predicate makes: `BrainSourceScope`'s
+  // per-workspace arm carries a non-empty string, and a predicate that
+  // returned true without checking would be lying as a standalone artifact
+  // even while registration re-checks it for a better message.
+  const syncId = (value as { syncId?: unknown }).syncId;
+  if (typeof syncId !== "string" || syncId === "") return false;
+  return typeof (value as { listWorkspaces?: unknown }).listWorkspaces === "function";
+}
+
 export interface BrainSourceConnector<S extends EpisodeSource = EpisodeSource> {
-  /** The catalog row this connector serves — the cycle-walk dispatch key. */
+  /**
+   * The connector's registry key, and — for a `per-install` source — the
+   * catalog row it serves and the cycle-walk dispatch key.
+   *
+   * For a `per-workspace` source it is an INTERNAL identifier only: there is no
+   * catalog row behind it (`catalog:slack-history` was deleted by migration
+   * 0198) and no install to route. It stays because the class+vendor lookup and
+   * the webhook fast-path resolve connectors through this registry, and a
+   * second identity scheme for one of them would be a way for the two to
+   * disagree about the same connector.
+   */
   readonly catalogId: string;
+  /** Per-install or per-workspace — see {@link BrainSourceScope}. Required. */
+  readonly scope: BrainSourceScope;
   /**
    * The source KIND stamped into `brain_episodes.source` — ADR-0036 is
    * class-major, vendor-minor, and the closed vocabulary lives in
@@ -570,6 +658,73 @@ export function registerBrainSourceConnector<const S extends EpisodeSource>(
       `Brain source "${connector.source}" is ${episodeSourceClass(connector.source)}-class, whose audiences are derived per object — it MUST declare audience: { kind: "reverified", reverifier }. Declaring "externally-synced" would ingest content whose audience: grants nothing refreshes; they stop granting at ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS and every fact behind them then reads as ABSENT rather than denied`,
     );
   }
+  // ── #5203: a CHAT-class source may not be dispatched per install ─────────
+  // The falsification the ticket is actually for. A chat vendor ALREADY has an
+  // Atlas pillar install — that is what ADR-0006's Chat Platform pillar is —
+  // so a knowledge-pillar install of its own can only be a second act on top of
+  // a connection that already exists, carrying no credential and no new grant.
+  // That is precisely what `catalog:slack-history` was, and it is why Atlas's
+  // own Slack sat live in three prod regions ingesting nothing for four days
+  // with every surface green (#5200).
+  //
+  // Checked at REGISTRATION rather than left to review, because the defect is
+  // invisible at every surface that would catch an ordinary bug: the install
+  // query succeeds, returns no rows, and the cycle reports a clean pass. A
+  // structural refusal is the only thing that fails while the bug is still
+  // cheap. This is the structural half of #5203's falsification; the
+  // behavioural half — a Slack chat install existing while its episode source
+  // does not — is `brain-source-scope-pg.test.ts`.
+  // Read through `unknown` and narrowed by a predicate, on `isBrainSourceAudience`'s
+  // reasoning: the type says this field is present, and the check is here for
+  // the lane where the type is not enforcing — a plain-object connector from a
+  // test, a cast, a plugin. A ternary on `connector.scope` would be inert.
+  const scope: unknown = connector.scope;
+  // The empty-syncId case gets its own message BEFORE the generic predicate,
+  // because the predicate (honestly) refuses it too and a generic "no usable
+  // dispatch scope" would bury the one field the author actually got wrong.
+  // `knowledge_sync_state` is keyed `(workspace_id, collection_id)`: an empty
+  // syncId would file every per-workspace source's bookkeeping under one row,
+  // so two of them would overwrite each other's high-water mark and cursor —
+  // each reporting green while skipping what the other had already advanced
+  // past.
+  if (
+    typeof scope === "object" &&
+    scope !== null &&
+    (scope as { kind?: unknown }).kind === "per-workspace" &&
+    (typeof (scope as { syncId?: unknown }).syncId !== "string" ||
+      (scope as { syncId?: unknown }).syncId === "")
+  ) {
+    throw new Error(
+      `Per-workspace brain source "${connector.source}" declared no syncId — it is the collection_id its knowledge_sync_state is booked under and cannot be empty`,
+    );
+  }
+  if (!isBrainSourceScope(scope)) {
+    throw new Error(
+      `Brain source connector for catalog id "${connector.catalogId}" declared no usable dispatch scope — it must be { kind: "per-install" } or { kind: "per-workspace", syncId, listWorkspaces } (see BrainSourceScope in lib/brain/ingest/types.ts)`,
+    );
+  }
+  if (episodeSourceClass(connector.source) === "chat" && scope.kind === "per-install") {
+    throw new Error(
+      `Brain source "${connector.source}" is chat-class, so the vendor already has a Chat Platform pillar install — it MUST declare scope: { kind: "per-workspace" }. A per-install chat source is a SECOND install of an already-connected vendor: it carries no credential, nobody knows to make it, and the sync cycle reports a clean pass while ingesting nothing (#5203, #5200)`,
+    );
+  }
+  if (scope.kind === "per-workspace") {
+    // A DUPLICATE syncId is the same collision as the empty one, arriving
+    // sideways: two per-workspace sources booking under one collection_id
+    // overwrite each other's high-water mark and cursor, each reporting green
+    // while skipping what the other advanced past. The collection-slug guard
+    // (`knowledge-collection-slug.ts`) closes the collection↔brain arm of this
+    // class; this is the brain↔brain arm.
+    const holder = [...registry.values()].find(
+      (c) => c.scope.kind === "per-workspace" && c.scope.syncId === scope.syncId,
+    );
+    if (holder !== undefined) {
+      throw new Error(
+        `Per-workspace brain source "${connector.source}" declared syncId "${scope.syncId}", already claimed by "${holder.source}" (${holder.catalogId}) — two sources booking knowledge_sync_state under one collection_id would clobber each other's cursor and high-water mark`,
+      );
+    }
+  }
+
   // The re-verifier's duplicate check, fused to the only thing that installs it.
   // Keyed on `connector.source`, so the connector and its re-verifier cannot be
   // wired to different sources. The `externally-synced` arm gets a real no-op
@@ -683,9 +838,28 @@ export function findBrainSourceConnectors(
   });
 }
 
-/** The catalog ids with a registered brain source — the cycle walk's filter. */
+/**
+ * The catalog ids the cycle walk should list `workspace_plugins` installs for.
+ *
+ * ⚠️ PER-INSTALL SOURCES ONLY (#5203). A `per-workspace` source has no install
+ * row, so including it here would filter the install query by a catalog id that
+ * matches nothing — the query would succeed, return no rows for it, and the
+ * cycle would report a clean pass having synced nothing. That is M1's failure
+ * mode exactly: green on the absence of the thing being looked for. Those
+ * sources are dispatched by {@link listPerWorkspaceBrainSources} instead.
+ */
 export function listBrainSourceCatalogIds(): string[] {
-  return [...registry.keys()];
+  return [...registry.values()]
+    .filter((c) => c.scope.kind === "per-install")
+    .map((c) => c.catalogId);
+}
+
+/**
+ * The sources dispatched over PILLAR installs rather than over their own
+ * (#5203). The cycle walk runs this arm beside the install walk.
+ */
+export function listPerWorkspaceBrainSources(): BrainSourceConnector[] {
+  return [...registry.values()].filter((c) => c.scope.kind === "per-workspace");
 }
 
 /**

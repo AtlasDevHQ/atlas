@@ -14,19 +14,20 @@
  * `packages/schemas/README.md`.
  */
 import { z } from "zod";
-import type {
-  AbuseRestoreStatus,
-  PlanTier,
-  KnowledgeCollectionListResponse,
-  KnowledgeCollectionSource,
-  KnowledgeDocumentListResponse,
-  KnowledgeIngestSummary,
-  KnowledgeSyncRunResponse,
-  KnowledgeUninstallResponse,
+import {
+  type AbuseRestoreStatus,
+  type PlanTier,
+  type KnowledgeCollectionListResponse,
+  type KnowledgeCollectionSource,
+  type KnowledgeDocumentListResponse,
+  type KnowledgeIngestSummary,
+  type KnowledgeSyncRunResponse,
+  type KnowledgeUninstallResponse,
 } from "@useatlas/types";
 import {
   BackupEntrySchema,
   CustomDomainSchema,
+  KNOWLEDGE_COLLECTION_SOURCES,
   NoisyNeighborSchema,
   PlatformWorkspaceSchema,
   PlatformWorkspaceUserSchema,
@@ -124,6 +125,8 @@ export {
   SessionMemorySlotSchema,
   SessionMemoryViewSchema,
   SessionMemoryListResponseSchema,
+  BrainSlackSyncStatusSchema,
+  BrainSlackScopeVitalsSchema,
 } from "@useatlas/schemas";
 
 // ── Platform ─────────────────────────────────────────────────────
@@ -720,7 +723,9 @@ const KnowledgeCollectionSyncStatusSchema = z.object({
 
 export const KnowledgeCollectionSchema = z.object({
   slug: z.string(),
-  source: z.enum(["upload", "bundle-sync", "notion", "confluence", "confluence-datacenter", "gitbook", "zendesk", "salesforce-knowledge", "intercom", "front", "helpscout", "freshdesk", "slack-history", "zoom-transcripts", "outlook-mail"]),
+  // Fed from the shared tuple in @useatlas/schemas — #5203 had to remove a
+  // member from three hand-synchronized spellings of this set.
+  source: z.enum(KNOWLEDGE_COLLECTION_SOURCES),
   description: z.string().nullable(),
   installedAt: z.string().nullable(),
   endpointUrl: z.string().nullable(),

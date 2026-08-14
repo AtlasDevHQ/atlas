@@ -258,6 +258,27 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       [SOURCE_ORG],
     );
 
+    // ── The brain's Slack ingest scope (#5203) — two exclusions that RIDE
+    // (one landing fresh at the target, one landing ON a membership row the
+    // target's own sync wrote first — the conflict arm), one observed member
+    // that STAYS (membership is re-derived on the target's first sync), and a
+    // mid-reconcile legacy allowlist. Seeded non-empty so the export/import
+    // wiring is exercised with data: a zero-count fixture would pass unchanged
+    // through an exporter that stopped emitting the section entirely.
+    await pool.query(
+      `INSERT INTO brain_slack_channel
+         (workspace_id, channel_id, name, is_member, excluded_at, exclusion_reason, excluded_by)
+       VALUES ($1, 'C0PAYROLL', 'finance-payroll', true, '2026-06-01T00:00:00Z', 'payroll detail', 'user-1'),
+              ($1, 'C0LEGAL', 'legal-privileged', true, '2026-06-02T00:00:00Z', 'privileged', 'user-1'),
+              ($1, 'C0GENERAL', 'general', true, NULL, NULL, NULL)`,
+      [SOURCE_ORG],
+    );
+    await pool.query(
+      `INSERT INTO brain_slack_ingest_scope (workspace_id, legacy_channels)
+       VALUES ($1, ARRAY['C0GENERAL'])`,
+      [SOURCE_ORG],
+    );
+
     // ── The curated identity vocabulary (#5022, ADR-0037 §6/§8) ──
     // A COMPRESSED chain, which is the only shape that can tell "the closure
     // was recomputed" from "the closure was copied": the bundle carries no
@@ -348,6 +369,9 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         // because the derived closure does not ride the bundle — §8 has the
         // import recompute it, and the assertion below is what proves it did.
         brainVocabularyEdges: 2,
+        // The EXCLUSIONS only (#5203) — the observed C0GENERAL member row
+        // stays; membership is re-derived on the target's first sync.
+        brainSlackChannelExclusions: 2,
       });
 
       // ── Simulate the cross-region hop on one DB: preserved UUIDs would
@@ -365,9 +389,22 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       await pool.query(`DELETE FROM brain_facts WHERE workspace_id = $1`, [SOURCE_ORG]);
       await pool.query(`DELETE FROM brain_episodes WHERE workspace_id = $1`, [SOURCE_ORG]);
       await pool.query(`DELETE FROM fact_audience_member WHERE workspace_id = $1`, [SOURCE_ORG]);
+      await pool.query(`DELETE FROM brain_slack_channel WHERE workspace_id = $1`, [SOURCE_ORG]);
+      await pool.query(`DELETE FROM brain_slack_ingest_scope WHERE workspace_id = $1`, [SOURCE_ORG]);
       await pool.query(`DELETE FROM semantic_entities WHERE org_id = $1`, [SOURCE_ORG]);
       await pool.query(`DELETE FROM learned_patterns WHERE org_id = $1`, [SOURCE_ORG]);
       await pool.query(`DELETE FROM settings WHERE org_id = $1`, [SOURCE_ORG]);
+
+      // The destination's own Slack sync ran FIRST and observed membership of
+      // C0LEGAL — the exact interleaving that made a `DO NOTHING` exclusion
+      // import silently drop the exclusion while counting it `skipped` (chat
+      // installs travel independently of the bundle, so nothing serializes the
+      // two). The import below must land the exclusion ON this row.
+      await pool.query(
+        `INSERT INTO brain_slack_channel (workspace_id, channel_id, name, is_member)
+         VALUES ($1, 'C0LEGAL', 'legal-privileged', true)`,
+        [TARGET_ORG],
+      );
 
       // ── Import: real INSERTs against the real schema ──
       const result = await runImport(bundle);
@@ -384,6 +421,51 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       expect(result.brainEdges).toEqual({ imported: 2, skipped: 0 });
       expect(result.factAudienceMembers).toEqual({ imported: 1, skipped: 0 });
       expect(result.brainVocabularyEdges).toEqual({ imported: 2, skipped: 0, refused: 0 });
+      // Both exclusions IMPORTED — including the one that hit an existing
+      // membership row. A `DO NOTHING` conflict arm would have dropped
+      // C0LEGAL's exclusion (over-disclosure, the unrecoverable direction) and
+      // this split assertion is what goes red.
+      expect(result.brainSlackChannelExclusions).toEqual({ imported: 2, skipped: 0, refused: 0 });
+
+      // C0PAYROLL landed fresh with `is_member` FALSE — the bundle carries no
+      // membership, and claiming one would put the channel in the poll scope
+      // the moment someone un-excluded it. C0LEGAL's exclusion landed ON the
+      // destination's own membership row, which KEEPS its observed
+      // `is_member = true` — the import speaks only about exclusion. The
+      // observed-only C0GENERAL row did NOT ride: membership is re-derived by
+      // the target's first sync, and importing it would assert the bot is in a
+      // channel it may have left before the cutover.
+      const targetChannels = await pool.query<{
+        channel_id: string;
+        is_member: boolean;
+        excluded_by: string | null;
+        exclusion_reason: string | null;
+      }>(
+        `SELECT channel_id, is_member, excluded_by, exclusion_reason
+           FROM brain_slack_channel WHERE workspace_id = $1 ORDER BY channel_id`,
+        [TARGET_ORG],
+      );
+      expect(targetChannels.rows).toEqual([
+        {
+          channel_id: "C0LEGAL",
+          is_member: true,
+          excluded_by: "user-1",
+          exclusion_reason: "privileged",
+        },
+        {
+          channel_id: "C0PAYROLL",
+          is_member: false,
+          excluded_by: "user-1",
+          exclusion_reason: "payroll detail",
+        },
+      ]);
+      // The mid-reconcile allowlist landed unreconciled — the target's first
+      // sync owns turning it into exclusions against live membership.
+      const targetScope = await pool.query<{ legacy_channels: string[]; reconciled_at: Date | null }>(
+        `SELECT legacy_channels, reconciled_at FROM brain_slack_ingest_scope WHERE workspace_id = $1`,
+        [TARGET_ORG],
+      );
+      expect(targetScope.rows).toEqual([{ legacy_channels: ["C0GENERAL"], reconciled_at: null }]);
 
       // The vocabulary's closure is REBUILT in the target, not carried. Nothing
       // in the bundle says `is priced at` resolves to `unit price` — the export
@@ -736,6 +818,11 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         // A merge that counted every conflict as a refusal would report two
         // dropped approvals on the most routine path there is.
         brainVocabularyEdges: { imported: 0, skipped: 2, refused: 0 },
+        // #5203: both exclusions are already here from the first import, so
+        // the re-import skips them — `skipped`, not `refused`, on the
+        // vocabulary edges' reasoning above: the channels ARE excluded,
+        // nothing was lost.
+        brainSlackChannelExclusions: { imported: 0, skipped: 2, refused: 0 },
       });
 
       // ── Catch-up import: an episode the target already has, carrying a

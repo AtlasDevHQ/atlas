@@ -9,6 +9,7 @@
  * @module
  */
 
+import { listPerWorkspaceBrainSources } from "@atlas/api/lib/brain/ingest/types";
 import { FormInstallValidationError } from "./email-form-handler";
 
 /**
@@ -39,7 +40,7 @@ const COLLECTION_SLUG_PATTERN = /^[A-Za-z0-9._-]+$/;
  * silently coerced.
  */
 export function resolveCollectionSlug(raw: unknown, defaultSlug: string): string {
-  if (raw === undefined || raw === null) return defaultSlug;
+  if (raw === undefined || raw === null) return refuseReservedSyncId(defaultSlug);
   if (typeof raw !== "string") {
     throw new FormInstallValidationError({
       fieldErrors: { [KNOWLEDGE_INSTALL_ID_FIELD]: ["Collection id must be a string."] },
@@ -47,7 +48,7 @@ export function resolveCollectionSlug(raw: unknown, defaultSlug: string): string
     });
   }
   const trimmed = raw.trim();
-  if (trimmed.length === 0) return defaultSlug;
+  if (trimmed.length === 0) return refuseReservedSyncId(defaultSlug);
   if (trimmed.length > COLLECTION_SLUG_MAX) {
     throw new FormInstallValidationError({
       fieldErrors: {
@@ -66,5 +67,33 @@ export function resolveCollectionSlug(raw: unknown, defaultSlug: string): string
       formErrors: [],
     });
   }
-  return trimmed;
+  return refuseReservedSyncId(trimmed);
+}
+
+/**
+ * A per-workspace brain source's syncId (#5203) is a `knowledge_sync_state`
+ * collection_id with NO install row behind it, so the install-time
+ * cross-catalog slug guard cannot see it — a collection named after one would
+ * silently share a bookkeeping row with the brain's sync, each clobbering the
+ * other's high-water mark and cursor. Resolved from the registry rather than
+ * a hand-kept list so the next per-workspace vendor's syncId is reserved the
+ * day it registers. EVERY arm of the resolver runs through this — the
+ * default-slug arms included, so a catalog whose `defaultSlug` ever collides
+ * fails loudly here instead of silently sharing the row.
+ */
+function refuseReservedSyncId(slug: string): string {
+  const reservedBy = listPerWorkspaceBrainSources().find(
+    (c) => c.scope.kind === "per-workspace" && c.scope.syncId === slug,
+  );
+  if (reservedBy !== undefined) {
+    throw new FormInstallValidationError({
+      fieldErrors: {
+        [KNOWLEDGE_INSTALL_ID_FIELD]: [
+          `"${slug}" is reserved — the ${reservedBy.source} company-brain source books its sync state under that id. Pick another collection id.`,
+        ],
+      },
+      formErrors: [],
+    });
+  }
+  return slug;
 }

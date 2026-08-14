@@ -36,6 +36,8 @@ import {
   type ExportedBrainEdge,
   type ExportedFactAudienceMember,
   type ExportedBrainVocabularyEdge,
+  type ExportedBrainSlackChannelExclusion,
+  type ExportedBrainSlackIngestScope,
   type ExportedVocabularySlotPosition,
 } from "@useatlas/types";
 
@@ -199,6 +201,8 @@ export async function exportWorkspaceBundle(
     brainEdgeResult,
     factAudienceResult,
     vocabularyEdgeResult,
+    slackExclusionResult,
+    slackScopeResult,
   ] = await Promise.all([
     // --- 1. Conversations + Messages (2 queries, no N+1) ---
     pool.query(
@@ -447,6 +451,30 @@ export async function exportWorkspaceBundle(
       `SELECT slot_position, from_norm, to_norm, approved_by, approved_at
        FROM brain_vocabulary_edge WHERE ${scopeClause("workspace_id", orgScope)}
        ORDER BY slot_position, from_norm ASC`,
+      params,
+    ),
+    // The company brain's Slack ingest-scope NARROWINGS (#5203). Only the rows
+    // an admin excluded: the predicate is the section's whole meaning, and a
+    // query without it would carry observed membership the destination must
+    // re-derive anyway. The projection omits `is_member`/`name`/`is_private`
+    // and the health verdicts for the same reason.
+    pool.query(
+      `SELECT channel_id, excluded_at, exclusion_reason, excluded_by
+       FROM brain_slack_channel
+       WHERE ${scopeClause("workspace_id", orgScope)} AND excluded_at IS NOT NULL
+       ORDER BY channel_id ASC`,
+      params,
+    ),
+    // Present only for a workspace caught mid-reconcile — see the type. The
+    // `reconciled_at IS NULL` predicate is what makes it "mid-reconcile" rather
+    // than "ever had a legacy scope": a reconciled workspace's narrowing already
+    // travels as exclusions above, and carrying its spent allowlist would land a
+    // second, contradictory scope authority in the destination.
+    pool.query(
+      `SELECT legacy_channels
+       FROM brain_slack_ingest_scope
+       WHERE ${scopeClause("workspace_id", orgScope)} AND reconciled_at IS NULL
+       LIMIT 1`,
       params,
     ),
   ]);
@@ -785,6 +813,35 @@ export async function exportWorkspaceBundle(
     approvedAt: toISO(e.approved_at),
   }));
 
+  const brainSlackChannelExclusions: ExportedBrainSlackChannelExclusion[] =
+    slackExclusionResult.rows.map((r) => ({
+      channelId: r.channel_id as string,
+      excludedAt: toISO(r.excluded_at),
+      exclusionReason: (r.exclusion_reason as string | null) ?? null,
+      // Not defaulted to `""`. `ck_brain_slack_channel_exclusion_attributed`
+      // makes an unattributed exclusion unstorable, so a null here means the
+      // shape changed out from under this reader — and `""` would land in the
+      // destination as an exclusion nobody can be shown to have asked for, on
+      // the column an audit of "why did we stop reading that channel?" reads
+      // first. Let the import's own validation refuse it.
+      excludedBy: r.excluded_by as string,
+    }));
+
+  const legacyScopeRow = slackScopeResult.rows[0];
+  const brainSlackIngestScope: ExportedBrainSlackIngestScope | undefined =
+    legacyScopeRow === undefined
+      ? undefined
+      : {
+          legacyChannels: Array.isArray(legacyScopeRow.legacy_channels)
+            ? (legacyScopeRow.legacy_channels as string[])
+            : // NOT coerced to "no legacy scope". The column is NOT NULL, so a
+              // non-array here is a shape change; landing `[]` would mean
+              // "ingest nothing", and landing the section absent would mean
+              // "ingest everything". `[]` is the fail-closed reading and the one
+              // that matches the column's own three-state contract.
+              [],
+        };
+
   // --- Build bundle ---
   const bundle: ExportBundle = {
     manifest: {
@@ -812,6 +869,7 @@ export async function exportWorkspaceBundle(
         brainEdges: brainEdges.length,
         factAudienceMembers: factAudienceMembers.length,
         brainVocabularyEdges: brainVocabularyEdges.length,
+        brainSlackChannelExclusions: brainSlackChannelExclusions.length,
       },
     },
     conversations,
@@ -826,6 +884,8 @@ export async function exportWorkspaceBundle(
     brainEdges,
     factAudienceMembers,
     brainVocabularyEdges,
+    brainSlackChannelExclusions,
+    ...(brainSlackIngestScope !== undefined ? { brainSlackIngestScope } : {}),
   };
 
   log.info(

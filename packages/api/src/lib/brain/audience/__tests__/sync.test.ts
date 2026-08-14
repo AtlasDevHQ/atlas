@@ -75,10 +75,15 @@ function harness(overrides: Partial<AudienceSyncDeps["api"]> = {}, channels = [P
       fetchUsersListPage: () => ok({ users: DIRECTORY, nextCursor: null, dropped: 0 }),
       ...overrides,
     } as NonNullable<AudienceSyncDeps["api"]>,
+    // #5203: the cycle walks Slack CHAT installs and resolves each workspace's
+    // ingest scope, rather than scanning `workspace_plugins` for the retired
+    // `catalog:slack-history` rows. `query` survives for the staleness sweep,
+    // which is the only reader left on it.
+    listWorkspaces: () => Promise.resolve([WORKSPACE]),
+    resolvePollScope: () =>
+      Promise.resolve({ mode: "membership" as const, channels, excludedInMembership: 0 }),
     query: (<T extends Record<string, unknown>>() =>
-      Promise.resolve([
-        { workspace_id: WORKSPACE, install_id: "i1", config: { channels } },
-      ] as unknown as T[])) as AudienceSyncDeps["query"],
+      Promise.resolve([] as unknown as T[])) as AudienceSyncDeps["query"],
     resolveToken: () => Promise.resolve("xoxb-test"),
     resolve: (_ws, principals) =>
       Promise.resolve({
@@ -208,13 +213,13 @@ describe("runAudienceSyncCycle", () => {
       const sweptWith: unknown[][] = [];
       const failing: AudienceSyncDeps = {
         ...deps,
-        // Throws for the INSTALL scan only. The staleness sweep shares this
-        // dep, so failing everything would prove nothing about which of the two
-        // ran — the whole point is that one faults and the other still runs.
-        query: (<T extends Record<string, unknown>>(sql: string, params?: unknown[]) => {
-          if (sql.includes("workspace_plugins")) {
-            return Promise.reject(new Error("statement timeout"));
-          }
+        // Faults the WORKSPACE SCAN only (#5203 — it used to be the
+        // `workspace_plugins` install scan). The staleness sweep runs on
+        // `query`, which is left healthy, so failing everything would prove
+        // nothing about which of the two ran — the whole point is that one
+        // faults and the other still runs.
+        listWorkspaces: () => Promise.reject(new Error("statement timeout")),
+        query: (<T extends Record<string, unknown>>(_sql: string, params?: unknown[]) => {
           sweptWith.push(params ?? []);
           return Promise.resolve([] as unknown as T[]);
         }) as AudienceSyncDeps["query"],
@@ -599,25 +604,65 @@ describe("runAudienceSyncCycle", () => {
     expect(result.audiencesFailed).toBe(1);
   });
 
-  it("counts an unusable install config as a workspace failure", async () => {
+  // #5203: there is no install config left to be unusable. What replaced it is
+  // a failed SCOPE READ for one workspace — and it must stay a counted
+  // workspace failure rather than a zero-channel success, for the same reason
+  // the old test existed: "this workspace's scope is unreadable" and "this
+  // workspace has nothing to reconcile" produce identical membership outcomes
+  // and only one of them is fine.
+  it("counts an unreadable ingest scope as a workspace failure", async () => {
     const { deps, reconciled } = harness();
     const result = await withDatabaseUrl(() =>
       runAudienceSyncCycle({
         ...deps,
-        query: (<T extends Record<string, unknown>>() =>
-          Promise.resolve([
-            { workspace_id: WORKSPACE, install_id: "i1", config: { channels: [] } },
-          ] as unknown as T[])) as AudienceSyncDeps["query"],
+        resolvePollScope: () => Promise.reject(new Error("scope read failed")),
       }),
     );
     expect(reconciled).toHaveLength(0);
+    // A per-workspace failure, counted — NOT the cycle's failure. The first
+    // cut resolved every workspace's scope under one Promise.all inside the
+    // scan's catch, so one broken scope row zeroed Slack reconciliation for
+    // the whole region and reported it as a scan fault.
+    expect(result.status).toBe("degraded");
     expect(result.workspacesFailed).toBe(1);
+  });
+
+  // The isolation half of the same finding: the workspace AFTER the broken one
+  // still reconciles. This is the assertion that goes red if the scope reads
+  // ever move back under a single all-or-nothing await.
+  it("still reconciles the other workspaces when one workspace's scope read rejects", async () => {
+    const { deps, reconciled } = harness();
+    const result = await withDatabaseUrl(() =>
+      runAudienceSyncCycle({
+        ...deps,
+        listWorkspaces: () => Promise.resolve(["org_broken", WORKSPACE]),
+        resolvePollScope: (workspaceId) =>
+          workspaceId === "org_broken"
+            ? Promise.reject(new Error("scope read failed"))
+            : Promise.resolve({
+                mode: "membership" as const,
+                channels: [PRIVATE_CHANNEL],
+                excludedInMembership: 0,
+              }),
+      }),
+    );
+    expect(result.status).toBe("degraded");
+    expect(result.workspacesFailed).toBe(1);
+    expect(result.workspacesInspected).toBe(2);
+    // The healthy workspace's audience actually reconciled.
+    expect(reconciled).toHaveLength(1);
+    expect(reconciled[0]?.workspaceId).toBe(WORKSPACE);
   });
 
   it("reports a scan failure as failure rather than as an empty successful cycle", async () => {
     const result = await withDatabaseUrl(() =>
       runAudienceSyncCycle({
-        query: (() => Promise.reject(new Error("relation does not exist"))) as AudienceSyncDeps["query"],
+        listWorkspaces: () => Promise.reject(new Error("relation does not exist")),
+        // The staleness sweep still runs — that is the point of the arm — and it
+        // reads through `query`. Left to default it would reach the real
+        // internal DB and hang the test rather than fail it.
+        query: (<T extends Record<string, unknown>>() =>
+          Promise.resolve([] as unknown as T[])) as AudienceSyncDeps["query"],
       }),
     );
     expect(result.status).toBe("failure");

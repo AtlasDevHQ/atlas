@@ -133,34 +133,74 @@ describe("resolveSlackHistoryToken", () => {
 });
 
 describe("createClient", () => {
-  it("refuses a stored config with no usable channels, actionably", async () => {
-    const connector = createSlackHistoryConnector({ store: store() });
-    await expect(
-      connector.createClient({ workspaceId: "ws-1", installId: "i", config: {} }),
-    ).rejects.toThrow(/re-install/i);
-  });
-
+  // #5203: there is no stored config left to refuse. `config` is null on every
+  // per-workspace dispatch, and scope comes from the resolver — so the old
+  // "refuses a config with no usable channels" test has no subject. What
+  // replaced it is the arm below: a membership read that FAILS must reject
+  // rather than build a client over a stale or empty channel set.
   it("surfaces the token failure rather than building a client that cannot fetch", async () => {
-    const connector = createSlackHistoryConnector({ store: store({ installation: false }) });
+    const connector = createSlackHistoryConnector({
+      store: store({ installation: false }),
+      refreshScope: scopeRefresh(),
+      resolvePollScope: pollScope(),
+    });
     await expect(
-      connector.createClient({
-        workspaceId: "ws-1",
-        installId: "i",
-        config: { channels: ["C01ABCDEF"] },
-      }),
+      connector.createClient({ workspaceId: "ws-1", installId: "i", config: null }),
     ).rejects.toThrow(/connect Slack/i);
   });
 
-  it("builds a client for a valid config", async () => {
-    const connector = createSlackHistoryConnector({ store: store() });
+  it("⭐ REJECTS when the membership read fails — never polls a stale scope", async () => {
+    // The load-bearing arm (#5203). `episode-sync.ts` turns this throw into a
+    // recorded `status: "error"` attempt. If it resolved to an empty or
+    // last-known scope instead, a cycle that could not read Slack would poll
+    // nothing and report itself green — which is M1's failure shape exactly,
+    // rebuilt one layer down.
+    const connector = createSlackHistoryConnector({
+      store: store(),
+      refreshScope: () => Promise.reject(new Error("Could not read this workspace's Slack channel membership (invalid_auth)")),
+      resolvePollScope: pollScope(),
+    });
+    await expect(
+      connector.createClient({ workspaceId: "ws-1", installId: "i", config: null }),
+    ).rejects.toThrow(/channel membership/i);
+  });
+
+  it("builds a client over the RESOLVED scope, with no stored config", async () => {
+    const connector = createSlackHistoryConnector({
+      store: store(),
+      refreshScope: scopeRefresh(),
+      resolvePollScope: pollScope(["C01ABCDEF", "C02GHIJKL"]),
+    });
     const client = await connector.createClient({
       workspaceId: "ws-1",
       installId: "i",
-      config: { channels: ["C01ABCDEF"] },
+      config: null,
     });
     expect(typeof client.fetchEpisodes).toBe("function");
   });
 });
+
+/** A scope refresh that observed everything and changed nothing. */
+function scopeRefresh(warnings: readonly string[] = []) {
+  return async () => ({
+    mode: "membership" as const,
+    observed: 2,
+    retired: 0,
+    reconciledExclusions: 0,
+    membershipIncomplete: false,
+    probed: 0,
+    unhealthy: 0,
+    warnings,
+  });
+}
+
+function pollScope(channels: readonly string[] = ["C01ABCDEF"]) {
+  return async () => ({
+    mode: "membership" as const,
+    channels,
+    excludedInMembership: 0,
+  });
+}
 
 describe("registerSlackHistoryConnector", () => {
   it("registers once and is idempotent", () => {

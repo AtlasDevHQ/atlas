@@ -34,7 +34,6 @@ import {
   deriveSlackWebhookEpisode,
   readSlackWebhookMessage,
   resolveWebhookChannelVisibility,
-  type SlackWebhookInstall,
   type SlackWebhookMessageEvent,
 } from "@atlas/api/lib/brain/ingest/slack/webhook";
 
@@ -46,20 +45,18 @@ const TS = "1750000000.000100";
 const CONNECTOR: BrainSourceConnector<typeof SLACK_SOURCE> = {
   catalogId: SLACK_HISTORY_CATALOG_ID,
   source: SLACK_SOURCE,
+  // Chat-class ⇒ per-workspace (#5203). The webhook path never dispatches,
+  // so `listWorkspaces` is unreachable here.
+  scope: {
+    kind: "per-workspace",
+    syncId: "slack-history",
+    listWorkspaces: () => Promise.resolve([]),
+  },
   audience: { kind: "externally-synced" },
   createClient() {
     throw new Error("the webhook path never builds a vendor client");
   },
 };
-
-function install(channels: readonly string[], overrides: Partial<SlackWebhookInstall> = {}): SlackWebhookInstall {
-  return {
-    installId: "install-1",
-    catalogId: SLACK_HISTORY_CATALOG_ID,
-    config: { channels },
-    ...overrides,
-  };
-}
 
 /** A plain `message.channels` event, as Slack's Events API delivers it. */
 function rawMessageEvent(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -99,11 +96,13 @@ function readMessage(raw: unknown): SlackWebhookMessageEvent {
   return read.event;
 }
 
-function derive(
-  event: SlackWebhookMessageEvent,
-  installs: readonly SlackWebhookInstall[] = [install([CHANNEL])],
-) {
-  return deriveSlackWebhookEpisode({ event, connectors: [CONNECTOR], installs });
+/**
+ * #5203: the deriver takes a resolved `inScope` boolean, not install rows.
+ * Scope is the bot's channel membership minus admin exclusions, resolved by the
+ * SHELL (`isEventChannelInScope`) so this function stays I/O-free.
+ */
+function derive(event: SlackWebhookMessageEvent, inScope = true) {
+  return deriveSlackWebhookEpisode({ event, connectors: [CONNECTOR], inScope });
 }
 
 // ---------------------------------------------------------------------------
@@ -152,8 +151,8 @@ describe("source-id parity between the webhook and the poll", () => {
   });
 
   it("channel-scopes the id, so one ts in two channels is two episodes", () => {
-    const a = derive(eventOf({ channel: CHANNEL }), [install([CHANNEL, "C09OTHER"])]);
-    const b = derive(eventOf({ channel: "C09OTHER" }), [install([CHANNEL, "C09OTHER"])]);
+    const a = derive(eventOf({ channel: CHANNEL }), true);
+    const b = derive(eventOf({ channel: "C09OTHER" }), true);
     expect(a.kind).toBe("episode");
     expect(b.kind).toBe("episode");
     if (a.kind !== "episode" || b.kind !== "episode") return;
@@ -250,7 +249,7 @@ describe("readSlackWebhookMessage: which field the ts comes from", () => {
         message: { ts: TS, user: "U123", text: "corrected", edited: { ts: "1750008888.1" } },
       }),
       connectors: [CONNECTOR],
-      installs: [install([CHANNEL])],
+      inScope: true,
     });
     expect(original.kind).toBe("episode");
     expect(edited.kind).toBe("episode");
@@ -384,7 +383,7 @@ describe("grant derivation matches the poll's", () => {
     // stored rows.
     const derived = derive(
       eventOf({ channel: PRIVATE_CHANNEL, channel_type: "group" }),
-      [install([PRIVATE_CHANNEL])],
+      true,
     );
     if (derived.kind !== "episode") throw new Error("expected an episode");
     expect(derived.record.visibleTo).toEqual(
@@ -404,7 +403,7 @@ describe("grant derivation matches the poll's", () => {
     // contents org-wide permanently. Nothing is derived at all.
     const derived = derive(
       eventOf({ channel: PRIVATE_CHANNEL, channel_type: undefined }),
-      [install([PRIVATE_CHANNEL])],
+      true,
     );
     expect(derived).toEqual({ kind: "skipped", reason: "unresolvable_visibility" });
   });
@@ -444,123 +443,73 @@ describe("what the fast path declines to store", () => {
 // ---------------------------------------------------------------------------
 
 describe("configured-channel scoping", () => {
-  it("refuses a channel the install did not configure", () => {
-    // Slack delivers events for every channel the bot is in, which is strictly
-    // wider than the channels an admin picked. Storing outside that set ingests
-    // content the workspace never consented to — and the poll never would, so
-    // the two writers' contents would diverge by construction.
-    expect(derive(eventOf({ channel: "C09UNSCOPED" }))).toEqual({
+  it("refuses a channel outside the workspace's resolved scope", () => {
+    // Slack delivers events for every channel the bot is in, which since #5203
+    // is a strictly WIDER set than what the workspace consented to retain: an
+    // admin may exclude a channel the bot must stay in for chat. Storing outside
+    // the resolved scope would ingest content the poll never would, so the two
+    // writers' contents would diverge by construction.
+    expect(derive(eventOf({ channel: "C09UNSCOPED" }), false)).toEqual({
       kind: "skipped",
       reason: "channel_not_configured",
     });
   });
 
-  it("⭐ does not blame a DIFFERENT catalog id's install for failing a schema that is not its own", () => {
-    // `findBrainSourceConnectors` returns an ARRAY and `ingest/types.ts`
-    // explicitly disclaims uniqueness, so a second chat-vendor brain source
-    // would put foreign installs in this list. Parsing those with
-    // `parseSlackHistoryConfig` — a schema that is not theirs — reported
-    // `install_config_unreadable` for a config that is perfectly valid for its
-    // own connector, sending an admin to fix a row that was never broken.
-    //
-    // Latent today (one catalog id maps to the slack vendor), which is exactly
-    // why it needs pinning: nothing else would notice the day that changes.
-    //
-    // The distinction under test is the REASON, not the refusal. Both outcomes
-    // decline to store; only one of them tells the admin to go repair a healthy
-    // row.
-    //
-    // ⚠️ The fixture below is one the production shell CAN produce, and that is
-    // the point. An earlier version of this guard tested "is this install's
-    // catalog id one of the connectors we resolved" and was pinned with a
-    // catalog id outside that set — which the shell cannot emit, because it
-    // queries BY those ids. The test passed and the guard defended nothing: the
-    // real foreign row, belonging to a second slack-vendor source, IS in the
-    // resolved set and was still blamed. So this fixture uses a foreign catalog
-    // id that the vendor lookup WOULD return.
-    //
-    // MUTATION THIS CATCHES: dropping the `!== SLACK_HISTORY_CATALOG_ID` guard,
-    // or restoring the `ownCatalogIds` form of it.
-    const foreign = install([CHANNEL], {
-      installId: "install-foreign",
-      // A second slack-vendor brain source: resolved alongside slack-history,
-      // so its rows reach here, and its config is not slack-history's schema.
-      catalogId: "catalog:some-other-chat-source",
-      config: { rooms: [CHANNEL] },
-    });
-    expect(derive(eventOf(), [foreign])).toEqual({
+  // ⚠️ #5203 REPLACED THIS WHOLE GROUP, and what it replaced is worth naming.
+  //
+  // These tests used to pin install-config parsing: which of several installs
+  // covered a channel, that a hand-edited `channels` field reported
+  // `install_config_unreadable` rather than out-of-scope, and that a FOREIGN
+  // slack-vendor install's config was not diagnosed with slack-history's
+  // schema. None of it has a subject any more — `catalog:slack-history` and its
+  // installs were deleted by migration 0198, so there is no stored config to
+  // parse, no second install to disambiguate against, and no unreadable-config
+  // state to reach.
+  //
+  // What survives is the DISTINCTION those tests were really protecting: a
+  // channel the workspace said no to, and a scope Atlas could not read, must
+  // not share a counter. One is ordinary traffic; the other silently drops 100%
+  // of a workspace's messages. That split now lives on the reason vocabulary as
+  // `channel_not_configured` vs `scope_unreadable`, and the shell owns it —
+  // `deriveSlackWebhookEpisode` never sees a failed read, because a failed read
+  // never reaches it as `true`.
+
+  it("refuses a channel outside the workspace's ingest scope", () => {
+    expect(derive(eventOf(), false)).toEqual({
       kind: "skipped",
       reason: "channel_not_configured",
     });
   });
 
-  it("still reports install_config_unreadable for OUR OWN unparseable install", () => {
-    // The guard above must not silence the diagnosis it was narrowing. A
-    // hand-edited slack-history row is a real misconfiguration and has to stay
-    // distinguishable from ordinary out-of-scope traffic.
-    expect(
-      derive(eventOf(), [install([CHANNEL], { config: { channels: "not-a-list" } })]),
-    ).toEqual({ kind: "skipped", reason: "install_config_unreadable" });
-  });
-
-  it("matches the install whose scope covers the channel when several are installed", () => {
-    const derived = derive(eventOf(), [
-      install(["C09OTHER"], { installId: "install-other" }),
-      install([CHANNEL], { installId: "install-target" }),
-    ]);
+  it("stores a channel inside it, naming the per-workspace sync id", () => {
+    const derived = derive(eventOf(), true);
     if (derived.kind !== "episode") throw new Error("expected an episode");
-    expect(derived.installId).toBe("install-target");
+    // The `installId` field survives the retirement as the sync-state key, and
+    // for a per-workspace source it is the connector's declared `syncId` rather
+    // than any install's slug. Asserted because it is what
+    // `knowledge_sync_state` is booked under.
+    expect(derived.installId).toBe("slack-history");
   });
 
-  it("reports an unreadable install config as ITS OWN reason, not as out-of-scope", () => {
-    // `parseSlackHistoryConfig` refuses rather than narrowing silently, and the
-    // refusal has to survive out to here — an install whose config was edited
-    // out of band must not fall through to "no scope, store everything".
+  it("refuses when no Slack brain source is registered at all", () => {
+    expect(deriveSlackWebhookEpisode({ event: eventOf(), connectors: [], inScope: true })).toEqual({
+      kind: "skipped",
+      reason: "no_connector",
+    });
+  });
+
+  it("⭐ refuses rather than GUESSING when two Slack sources are registered", () => {
+    // With no install row left, nothing disambiguates a vendor lookup that
+    // returns more than one connector. Resolving to `connectors[0]` would file a
+    // second Slack source's events under this one's source-id namespace — a
+    // silent cross-source collision the poll, dispatched per connector, would
+    // never produce.
     //
-    // And it must not be reported as `channel_not_configured` either. That code
-    // means "Slack delivered more than the admin asked for", which is ordinary
-    // traffic; this means "the admin's own scope is unreadable", which silently
-    // drops 100% of a workspace's messages until someone re-installs. One is
-    // noise, the other is an incident, and a counter that merges them reports
-    // the incident as noise.
-    expect(derive(eventOf(), [install([], { config: { channels: "not-an-array" } })])).toEqual({
-      kind: "skipped",
-      reason: "install_config_unreadable",
-    });
-    expect(derive(eventOf(), [install([], { config: null })])).toEqual({
-      kind: "skipped",
-      reason: "install_config_unreadable",
-    });
-  });
-
-  it("prefers the unreadable-config reason when a healthy install also misses", () => {
-    // The two conditions coexist: one install is corrupt, another is fine but
-    // does not cover this channel. Precedence is pinned so it is a decision
-    // rather than an accident of `find` ordering — the corrupt install is a
-    // genuine reason this workspace may be dropping messages it should store,
-    // and that outranks "Slack sent us a channel nobody asked for".
+    // MUTATION THIS CATCHES: replacing the length check with `connectors[0]`.
+    const second = { ...CONNECTOR, catalogId: "catalog:some-other-chat-source" };
     expect(
-      derive(eventOf({ channel: "C09UNSCOPED" }), [
-        install(["C09OTHER"], { installId: "healthy" }),
-        install([], { installId: "corrupt", config: { channels: 42 } }),
-      ]),
-    ).toEqual({ kind: "skipped", reason: "install_config_unreadable" });
-  });
-
-  it("refuses when no install exists at all", () => {
-    expect(derive(eventOf(), [])).toEqual({
-      kind: "skipped",
-      reason: "channel_not_configured",
-    });
-  });
-
-  it("refuses when the matched install's catalog id has no registered connector", () => {
-    const derived = deriveSlackWebhookEpisode({
-      event: eventOf(),
-      connectors: [CONNECTOR],
-      installs: [install([CHANNEL], { catalogId: "catalog:some-other-slack-source" })],
-    });
-    expect(derived).toEqual({ kind: "skipped", reason: "no_connector" });
+      deriveSlackWebhookEpisode({ event: eventOf(), connectors: [CONNECTOR, second], inScope: true }),
+    ).toEqual({ kind: "skipped", reason: "ambiguous_connector" });
   });
 });
 
@@ -613,28 +562,27 @@ describe("1:1 DMs", () => {
     team_id: "T0ABC",
   };
 
-  it("cannot be brought into scope at all — a D-id makes the whole install config unreadable", () => {
-    // The strongest of the three layers, and the one worth pinning because it
-    // is the least obvious. Even a HAND-EDITED install row naming a DM does not
-    // open a path: `SLACK_CHANNEL_ID_PATTERN` admits only `C…`/`G…`, so
-    // `parseSlackHistoryConfig` refuses the whole config rather than dropping
-    // the offending entry — the refusal-not-narrowing choice `config.ts` makes
-    // for exactly this reason. So the DM is out of scope AND the tampering is
-    // reported, instead of the row quietly working for its other channels.
-    expect(derive(readMessage(dmEvent), [install(["D01USER"])])).toEqual({
+  // ⚠️ #5203 collapsed this pair into one. The first used to assert that a
+  // `D…` id in an install's `channels` list made the WHOLE config unreadable —
+  // a claim about `parseSlackHistoryConfig`, which no longer parses anything
+  // because there is no stored config. The DM defence that survives is
+  // structural and stronger than the parse ever was:
+  //
+  //   - `SLACK_CHANNEL_ID_PATTERN` refuses `D…` in the shell before the
+  //     workspace lookup;
+  //   - `ck_brain_slack_channel_id_shape` refuses it at the TABLE, so a DM
+  //     cannot be stored as in-scope even by a hand-written INSERT;
+  //   - and the visibility layer below blocks it regardless.
+  //
+  // Three independent refusals where there used to be a config parse.
+  it("is blocked on visibility even if it somehow reaches an in-scope decision", () => {
+    // The layer that does not depend on scope at all. `channel_type: "im"`
+    // blocks — a DM's audience is two people and ADR-0036 §T6 puts
+    // source-principal-resolution failure on the BLOCK side, so there is no arm
+    // that could mint a grant here.
+    expect(derive(readMessage(dmEvent), true)).toEqual({
       kind: "skipped",
-      reason: "install_config_unreadable",
-    });
-  });
-
-  it("is blocked on visibility even if it reaches a validly-scoped install", () => {
-    // The second layer, reached by giving the install a legitimate channel so
-    // the config parses. `channel_type: "im"` blocks — DM audiences are two
-    // people and ADR-0036 §T6 puts source-principal-resolution failure on the
-    // BLOCK side, so there is no arm that could mint a grant here.
-    expect(derive(readMessage(dmEvent), [install([CHANNEL])])).toEqual({
-      kind: "skipped",
-      reason: "channel_not_configured",
+      reason: "unresolvable_visibility",
     });
     // ...and nothing about a DM can produce a usable visibility, which is what
     // makes the layer above a backstop rather than the only guard.

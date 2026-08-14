@@ -602,6 +602,7 @@ describe("migrateAuthTables", () => {
             // `db/__tests__/migrate.test.ts` carries the other one (a count).
             // Adding a migration means updating both.
             { name: "0197_builtin_roles_dashboards_share.sql" },
+            { name: "0198_brain_slack_membership_scope.sql" },
           ],
         };
       }

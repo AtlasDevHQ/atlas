@@ -4039,3 +4039,105 @@ export const brainPredicateCardinality = pgTable(
       .where(sql`status = 'pending'`),
   ],
 );
+
+// brain_slack_channel (0198) — the brain's Slack ingest scope after #5203
+// retired `catalog:slack-history`. One row per channel the workspace's bot has
+// been seen in OR an admin has excluded; scope is `is_member AND excluded_at IS
+// NULL`, which is why the two halves live in one relation.
+//
+// The observed half is refreshed from `users.conversations` every sync; the
+// intent half is durable and survives the bot leaving and rejoining. The health
+// columns carry the two-probe verification the retired install handler ran
+// before persisting — see the migration's header for why it had to survive.
+export const brainSlackChannel = pgTable(
+  "brain_slack_channel",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    channelId: text("channel_id").notNull(),
+    // Observed. Nullable because an admin may exclude a channel before the bot
+    // has ever been seen in it — intent with nothing observed yet.
+    name: text("name"),
+    // ⚠️ DISPLAY ONLY. Grant derivation reads the LIVE `conversations.info` per
+    // channel per pass (`brain/ingest/slack/client.ts`); a stale `false` here
+    // would publish an invite-only channel's contents org-wide.
+    isPrivate: boolean("is_private"),
+    isArchived: boolean("is_archived").notNull().default(false),
+    // The scope predicate's first half. Defaults `false` so a row created by an
+    // exclusion is out of scope until membership is actually observed.
+    isMember: boolean("is_member").notNull().default(false),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true }),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+    // Admin intent — durable, NOT derived from membership.
+    excludedAt: timestamp("excluded_at", { withTimezone: true }),
+    exclusionReason: text("exclusion_reason"),
+    excludedBy: text("excluded_by"),
+    // The surviving two-probe verification, as a per-channel health check.
+    healthStatus: text("health_status"),
+    healthError: text("health_error"),
+    healthCheckedAt: timestamp("health_checked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.workspaceId, t.channelId] }),
+    // Mirrors `SLACK_CHANNEL_ID_PATTERN`. `D…` (1:1 DM) ids are refused as they
+    // were at the retired install's form — a DM's audience is two people, and
+    // ADR-0036 puts source-principal-resolution failure on the BLOCK side.
+    check("ck_brain_slack_channel_id_shape", sql`channel_id ~ '^[CG][A-Z0-9]{2,}$'`),
+    check(
+      "ck_brain_slack_channel_health_status",
+      sql`health_status IS NULL OR health_status IN ('ok', 'error')`,
+    ),
+    // An `error` health with no message is a red dot an admin cannot act on.
+    check(
+      "ck_brain_slack_channel_health_error_present",
+      sql`health_status <> 'error' OR (health_error IS NOT NULL AND health_error <> '')`,
+    ),
+    // An exclusion is a confidentiality decision, so it carries its author.
+    // `NOT NULL` alone would admit `''` — `brainPredicateCardinality`'s rule.
+    check(
+      "ck_brain_slack_channel_exclusion_attributed",
+      sql`excluded_at IS NULL OR (excluded_by IS NOT NULL AND excluded_by <> '')`,
+    ),
+    // The scope read. Partial, because out-of-scope rows are read by IDENTITY
+    // through the PK (the webhook's per-event check) and never listed.
+    index("idx_brain_slack_channel_in_scope")
+      .on(t.workspaceId, t.channelId)
+      .where(sql`is_member = true AND excluded_at IS NULL`),
+    index("idx_brain_slack_channel_excluded")
+      .on(t.workspaceId, t.excludedAt.desc())
+      .where(sql`excluded_at IS NOT NULL`),
+  ],
+);
+
+// brain_slack_ingest_scope (0198) — the per-workspace reconcile state that
+// stops #5203's retirement from silently broadening an existing workspace's
+// ingest scope.
+//
+// Three states, and the EMPTY array is a real one — see the migration header:
+// row absent means "never had a `slack-history` install" (new default), a
+// present row with `reconciledAt` NULL means the legacy allowlist still
+// governs, and an EMPTY `legacyChannels` on such a row means the workspace had
+// an install that contributed no usable scope, so it ingests nothing until
+// reconcile. Forbidding the empty array is what made an earlier cut broaden
+// exactly the workspaces it meant to protect.
+export const brainSlackIngestScope = pgTable(
+  "brain_slack_ingest_scope",
+  {
+    workspaceId: text("workspace_id").primaryKey(),
+    legacyChannels: text("legacy_channels").array().notNull(),
+    // NULL until the first sync has reconciled this workspace against live
+    // membership. While NULL, `legacyChannels` IS the scope.
+    reconciledAt: timestamp("reconciled_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  () => [
+    // A NULL element reads as a channel id matching nothing, silently narrowing
+    // the legacy allowlist by one.
+    check(
+      "ck_brain_slack_ingest_scope_no_null_channels",
+      sql`array_position(legacy_channels, NULL) IS NULL`,
+    ),
+  ],
+);

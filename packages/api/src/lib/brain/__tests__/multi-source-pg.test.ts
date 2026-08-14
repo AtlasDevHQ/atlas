@@ -72,9 +72,11 @@
  *   - Every audience token is built through the production id helper
  *     (`meetingAudienceId`, `emailMessageAudienceId` + `emailParticipantsDigest`),
  *     so the grant grammar cannot drift out from under the assertions.
- *   - NO `workspace_plugins` install row is seeded, so `upsertConnectorSyncState`
- *     silently no-ops. The premise is PINNED per sync (`syncSource`), because the
- *     `duplicate` counts below rest on it.
+ *   - NO `workspace_plugins` install row is seeded. Per #5203's anchor split,
+ *     the per-workspace Slack source's bookkeeping write lands anyway while the
+ *     per-install sources' writes are guard-skipped — `syncSource` PINS that
+ *     split per sync, then clears the state row so every pass stays cursor-less,
+ *     because the `duplicate` counts below rest on it.
  *   - The clock is INJECTED and MOVES (`clockAt`). It is load-bearing twice: the
  *     backfill floors would exclude every fixture record against the real clock,
  *     and the Outlook walk resumes at PASS-START rather than at the newest
@@ -851,6 +853,14 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
   const slackConnector: BrainSourceConnector<typeof SLACK_HISTORY_SOURCE> = {
     catalogId: "slack-history-multisource-test",
     source: SLACK_HISTORY_SOURCE,
+    // Chat-class, so per-workspace is the only legal declaration (#5203).
+    // This suite drives `syncBrainEpisodeSource` directly, so `listWorkspaces`
+    // is never called — it is present because the shape requires it.
+    scope: {
+      kind: "per-workspace",
+      syncId: "slack-history",
+      listWorkspaces: () => Promise.resolve([]),
+    },
     // Channel-scoped grants, reconciled by the Slack-scoped walk in
     // `audience/sync.ts` rather than by a registered re-verifier.
     audience: { kind: "externally-synced" },
@@ -889,6 +899,7 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
   const zoomConnector: BrainSourceConnector<typeof ZOOM_TRANSCRIPT_SOURCE> = {
     catalogId: "zoom-transcripts-multisource-test",
     source: ZOOM_TRANSCRIPT_SOURCE,
+    scope: { kind: "per-install" },
     // A transcript audience is derived per meeting, so the type admits no arm
     // but this one. NEVER DRIVEN here: this connector goes to `syncSource` and
     // never to `registerBrainSourceConnector`, and the suite asserts
@@ -934,6 +945,7 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
   const outlookConnector: BrainSourceConnector<typeof OUTLOOK_MAIL_SOURCE> = {
     catalogId: "outlook-mail-multisource-test",
     source: OUTLOOK_MAIL_SOURCE,
+    scope: { kind: "per-install" },
     // Same as Zoom above: a mail audience is derived per message, so the type
     // admits no other arm — and this one is equally never driven.
     audience: {
@@ -1001,14 +1013,15 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
       warnings: [],
     });
     // The CURSOR-LESS premise, and it is load-bearing for every `duplicate`
-    // count below rather than decoration. With no install row,
-    // `upsertConnectorSyncState` silently no-ops, so `knowledge_sync_state` stays
-    // empty and EVERY pass reads a null cursor and a null high-water mark: each
-    // source re-walks its whole backfill window and re-offers records it has
-    // already stored, which the source-id dedupe absorbs. Both counts are
-    // asserted because they fail independently — an install row would restore
-    // the cursor, a state row alone would restore the mark — and either would
-    // silently rewrite what the numbers in this file mean.
+    // count below rather than decoration: each source must re-walk its whole
+    // backfill window every pass and re-offer records it has already stored,
+    // which the source-id dedupe absorbs. What the state count PROVES split in
+    // two with #5203's anchor: a per-workspace source's bookkeeping write now
+    // lands WITHOUT an install row (a zero there was round-1 C1's silent
+    // drop), while a per-install source with no install row is still skipped
+    // by the `WHERE EXISTS` guard. Asserting the split pins the anchor
+    // dispatch itself; the DELETE after it restores the cursor-less premise
+    // either way.
     const { rows: premise } = await pool.query<{ installs: string; state: string }>(
       `SELECT (SELECT count(*)::text FROM workspace_plugins
                 WHERE workspace_id = $1 AND install_id = $2) AS installs,
@@ -1016,7 +1029,11 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
                 WHERE workspace_id = $1) AS state`,
       [WORKSPACE, installId],
     );
-    expect(premise[0]).toEqual({ installs: "0", state: "0" });
+    expect(premise[0]).toEqual({
+      installs: "0",
+      state: connector.scope.kind === "per-workspace" ? "1" : "0",
+    });
+    await pool.query(`DELETE FROM knowledge_sync_state WHERE workspace_id = $1`, [WORKSPACE]);
     return outcome;
   }
 

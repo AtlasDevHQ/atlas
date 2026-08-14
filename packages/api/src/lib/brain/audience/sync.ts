@@ -79,7 +79,11 @@ import {
 } from "@atlas/api/lib/slack/api";
 import { ConnectorRateLimitError } from "@atlas/api/lib/knowledge/connectors";
 import { withRateLimitBackoff } from "@atlas/api/lib/knowledge/connector-sync";
-import { getBotToken, getInstallationByOrg } from "@atlas/api/lib/slack/store";
+import {
+  getBotToken,
+  getInstallationByOrg,
+  listSlackInstalledOrgIds,
+} from "@atlas/api/lib/slack/store";
 import {
   DEFAULT_AUDIENCE_MAX_STALENESS_HOURS,
   getAudienceMaxStalenessSeconds,
@@ -89,11 +93,8 @@ import {
   deriveChatChannelGrant,
   type ChatChannelVisibility,
 } from "@atlas/api/lib/brain/ingest/grant";
-import {
-  SLACK_HISTORY_CATALOG_ID,
-  SLACK_HISTORY_SOURCE,
-  parseSlackHistoryConfig,
-} from "@atlas/api/lib/brain/ingest/slack/config";
+import { SLACK_HISTORY_SOURCE } from "@atlas/api/lib/brain/ingest/slack/config";
+import { resolveSlackPollScope } from "@atlas/api/lib/brain/ingest/slack/scope";
 import { resolveSlackHistoryToken } from "@atlas/api/lib/brain/ingest/slack/connector";
 import { reconcileAudienceMembership } from "./membership";
 import { listAudienceReverifierSources, runRegisteredAudienceReverifiers } from "./reverify";
@@ -265,7 +266,35 @@ export function getAudienceSyncIntervalMs(): number {
 }
 
 /**
- * Every enabled, non-archived Slack chat-history install.
+ * The workspaces whose Slack membership this cycle reconciles.
+ *
+ * ## What replaced the install scan (#5203)
+ *
+ * This used to be `AUDIENCE_SYNC_INSTALLS_SQL` — a `workspace_plugins` scan for
+ * `catalog:slack-history` rows, hand-kept in agreement with the ingest cycle's
+ * own predicate. Migration 0198 deleted that catalog row and its installs, so
+ * the query would now return zero rows for every workspace: a cycle reporting
+ * `success` with `workspacesInspected: 0` while every `audience:` grant in the
+ * deployment quietly aged past `ATLAS_BRAIN_AUDIENCE_MAX_STALENESS_HOURS` and
+ * `acl.ts` began suppressing the facts behind them. That is a WORSE version of
+ * M1 — not "nothing ingested" but "everything already ingested stops being
+ * visible" — which is why this had to move rather than be left to return empty.
+ *
+ * The hand-kept-agreement hazard is gone with it: both cycles now dispatch over
+ * the SAME function, `listSlackInstalledOrgIds`, so they cannot disagree about
+ * which workspaces have Slack.
+ */
+
+/**
+ * The PER-INSTALL audience scan, still used by the sources that still have
+ * installs — Zoom (`ingest/zoom/audience.ts`) and Outlook
+ * (`ingest/outlook/audience.ts`), each passing its own catalog id.
+ *
+ * ⚠️ Slack no longer uses it (#5203) and must not: `catalog:slack-history` was
+ * deleted by migration 0198, so this query answers zero rows for it — silently,
+ * and a cycle that reported `success` on that zero would let every Slack
+ * `audience:` grant in the deployment age past the staleness bound and start
+ * reading as absent.
  *
  * Deliberately mirrors `SYNC_CYCLE_INSTALLS_SQL`'s filter (`knowledge` pillar,
  * enabled, non-archived) so this cycle and the ingest cycle agree about which
@@ -280,10 +309,10 @@ export const AUDIENCE_SYNC_INSTALLS_SQL = `SELECT workspace_id, install_id, conf
           AND enabled = true AND status <> 'archived'
         ORDER BY workspace_id ASC, install_id ASC`;
 
-interface InstallRow extends Record<string, unknown> {
+interface WorkspaceRow {
   readonly workspace_id: string;
-  readonly install_id: string;
-  readonly config: Record<string, unknown> | null;
+  /** The channels to reconcile — the workspace's resolved ingest scope. */
+  readonly channels: readonly string[];
 }
 
 /**
@@ -480,6 +509,13 @@ export interface AudienceSyncDeps {
     sql: string,
     params?: unknown[],
   ) => Promise<T[]>;
+  /**
+   * The Slack-installed workspaces to walk (#5203). Injectable so the cycle
+   * tests do not need a `chat_cache` fixture.
+   */
+  readonly listWorkspaces?: () => Promise<readonly string[]>;
+  /** One workspace's resolved ingest scope — the channels to reconcile. */
+  readonly resolvePollScope?: typeof resolveSlackPollScope;
   readonly resolveToken?: (workspaceId: string) => Promise<string>;
   readonly reconcile?: typeof reconcileAudienceMembership;
   readonly resolve?: typeof resolvePrincipals;
@@ -756,21 +792,13 @@ const ZERO_WORKSPACE: WorkspaceOutcome = {
  * channel faults are isolated and counted.
  */
 async function syncInstall(
-  row: InstallRow,
+  row: WorkspaceRow,
   deps: Required<Pick<AudienceSyncDeps, "api" | "resolveToken" | "reconcile" | "resolve">> & {
     readonly sleep?: Sleep;
   },
   tally: ThrottleTally,
 ): Promise<WorkspaceOutcome> {
   const workspaceId = row.workspace_id;
-  const parsed = parseSlackHistoryConfig(row.config);
-  if (!parsed.ok) {
-    // The ingest cycle surfaces this same condition per sync; here it means the
-    // install has no channel scope to sync membership for. Counted as a
-    // workspace failure by the caller, never as "zero channels, all good".
-    throw new Error(parsed.error);
-  }
-
   const token = await deps.resolveToken(workspaceId);
   const loaded = await loadDirectory(deps.api, token, workspaceId, tally, deps.sleep);
   if (!loaded.ok) throw new Error(`Slack directory unavailable — ${loaded.reason}`);
@@ -809,7 +837,7 @@ async function syncInstall(
   }
 
   let out = { ...ZERO_WORKSPACE };
-  for (const channelId of parsed.channels) {
+  for (const channelId of row.channels) {
     try {
       const info = await deps.api.getConversationInfo(token, channelId);
       if (!info.ok) {
@@ -923,6 +951,8 @@ export async function runAudienceSyncCycle(
   if (!hasInternalDB()) return { status: "success", ...ZERO };
 
   const query = deps.query ?? internalQuery;
+  const listWorkspaces = deps.listWorkspaces ?? listSlackInstalledOrgIds;
+  const resolvePollScope = deps.resolvePollScope ?? resolveSlackPollScope;
   const resolved = {
     api: deps.api ?? {
       getConversationInfo,
@@ -943,9 +973,9 @@ export async function runAudienceSyncCycle(
   const isEnabled = deps.isEnabled ?? isAudienceSyncEnabled;
 
   // RECORDED AND FALLEN THROUGH, never returned on. (Recorded in `scanError`
-  // and returned as the cycle's `error` — there is no counter for it.) This scan is Slack-scoped —
-  // `AUDIENCE_SYNC_INSTALLS_SQL` takes `SLACK_HISTORY_CATALOG_ID` and nothing
-  // else — so its failure says nothing about the OTHER sources' audiences. Both
+  // and returned as the cycle's `error` — there is no counter for it.) This scan
+  // is Slack-scoped — it lists Slack chat installs and nothing else — so its
+  // failure says nothing about the OTHER sources' audiences. Both
   // `runRegisteredAudienceReverifiers` and `sweepStaleness` below are documented
   // as running UNCONDITIONALLY for exactly that reason, and an early return here
   // silently skipped both: every Zoom meeting and Outlook message audience in
@@ -954,27 +984,45 @@ export async function runAudienceSyncCycle(
   // suppresses it and those facts read as absent — with the staleness sweep that
   // would have WARNED about it skipped by the same return. The cycle still
   // reports `failure`; it just does the work it can first.
-  let installs: InstallRow[] = [];
+  //
+  // ONLY the workspace listing lives under this catch. Each workspace's channel
+  // scope is resolved INSIDE the per-workspace try below, so one workspace's
+  // scope read throwing is a counted `workspacesFailed` — not a cycle abort. A
+  // first cut resolved every scope up front under one `Promise.all` inside THIS
+  // catch, which meant one workspace's broken scope row zeroed Slack audience
+  // reconciliation for the whole region while the log blamed "the scan".
+  let workspaceIds: readonly string[] = [];
   let scanError: string | null = null;
   try {
-    installs = await query<InstallRow>(AUDIENCE_SYNC_INSTALLS_SQL, [SLACK_HISTORY_CATALOG_ID]);
+    workspaceIds = await listWorkspaces();
   } catch (err) {
     scanError = err instanceof Error ? err.message : String(err);
     log.error(
       { err: scanError },
-      "brain audience: the Slack install scan failed — no Slack membership will be reconciled this cycle. The other sources' re-verifiers and the staleness sweep still run; the cycle reports failure at the end",
+      "brain audience: the Slack workspace scan failed — no Slack membership will be reconciled this cycle. The other sources' re-verifiers and the staleness sweep still run; the cycle reports failure at the end",
     );
   }
 
   let result = { ...ZERO };
-  for (const row of installs) {
-    if (!isEnabled(row.workspace_id)) {
+  for (const workspaceId of workspaceIds) {
+    if (!isEnabled(workspaceId)) {
       result = { ...result, workspacesSkippedDisabled: result.workspacesSkippedDisabled + 1 };
       continue;
     }
     result = { ...result, workspacesInspected: result.workspacesInspected + 1 };
     try {
-      const out = await syncInstall(row, resolved, tally);
+      // ⚠️ The POLL scope, deliberately — the same set the ingest cycle reads.
+      // An audience is the membership of a channel Atlas actually ingests, so
+      // reconciling a wider set would mint `fact_audience_member` rows for
+      // channels no fact is ever granted on, and a narrower one would let a
+      // live channel's grants age out. The two cycles reading one function is
+      // what makes that agreement structural instead of hand-kept.
+      const scope = await resolvePollScope(workspaceId);
+      const out = await syncInstall(
+        { workspace_id: workspaceId, channels: scope.channels },
+        resolved,
+        tally,
+      );
       result = {
         ...result,
         audiencesReconciled: result.audiencesReconciled + out.audiencesReconciled,
@@ -987,8 +1035,7 @@ export async function runAudienceSyncCycle(
     } catch (err) {
       log.warn(
         {
-          workspaceId: row.workspace_id,
-          installId: row.install_id,
+          workspaceId,
           err: err instanceof Error ? err.message : String(err),
         },
         "brain audience: workspace sync failed — membership unchanged, retrying next cycle",
@@ -1045,7 +1092,7 @@ export async function runAudienceSyncCycle(
   // 0/0 and says nothing, which is precisely when an operator wants to see the
   // fiber is alive. A registered re-verifier means the cycle had work in scope,
   // whether or not that work turned anything up.
-  if (installs.length > 0 || listAudienceReverifierSources().length > 0) {
+  if (workspaceIds.length > 0 || listAudienceReverifierSources().length > 0) {
     log.info({ ...result }, "brain audience: membership sync cycle complete");
   }
   if (staleness.staleAudiences !== null && staleness.staleAudiences > 0) {

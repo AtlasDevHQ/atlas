@@ -27,14 +27,15 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import type {
-  KnowledgeCollectionListResponse,
-  KnowledgeCollectionSource,
-  KnowledgeDocumentListResponse,
-  KnowledgeIngestSummary,
-  KnowledgeSyncRunResponse,
-  KnowledgeUninstallResponse,
+import {
+  type KnowledgeCollectionListResponse,
+  type KnowledgeCollectionSource,
+  type KnowledgeDocumentListResponse,
+  type KnowledgeIngestSummary,
+  type KnowledgeSyncRunResponse,
+  type KnowledgeUninstallResponse,
 } from "@useatlas/types";
+import { KNOWLEDGE_COLLECTION_SOURCES } from "@useatlas/schemas";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, logAdminActionAwait, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { internalQuery } from "@atlas/api/lib/db/internal";
@@ -63,7 +64,6 @@ import { CONFLUENCE_DC_CATALOG_ID } from "@atlas/api/lib/knowledge/confluence/co
 import { GITBOOK_CATALOG_ID } from "@atlas/api/lib/knowledge/gitbook/config";
 import { ZENDESK_CATALOG_ID } from "@atlas/api/lib/knowledge/zendesk/config";
 import { SALESFORCE_KNOWLEDGE_CATALOG_ID } from "@atlas/api/lib/knowledge/salesforce/config";
-import { SLACK_HISTORY_CATALOG_ID } from "@atlas/api/lib/brain/ingest/slack/config";
 import { ZOOM_TRANSCRIPTS_CATALOG_ID } from "@atlas/api/lib/brain/ingest/zoom/config";
 import { OUTLOOK_MAIL_CATALOG_ID } from "@atlas/api/lib/brain/ingest/outlook/config";
 import { getBrainSourceConnector } from "@atlas/api/lib/brain/ingest/types";
@@ -158,7 +158,6 @@ function sourceOf(catalogId: string): KnowledgeSource {
   if (catalogId === FRONT_CATALOG_ID) return "front";
   if (catalogId === HELPSCOUT_CATALOG_ID) return "helpscout";
   if (catalogId === FRESHDESK_CATALOG_ID) return "freshdesk";
-  if (catalogId === SLACK_HISTORY_CATALOG_ID) return "slack-history";
   if (catalogId === ZOOM_TRANSCRIPTS_CATALOG_ID) return "zoom-transcripts";
   if (catalogId === OUTLOOK_MAIL_CATALOG_ID) return "outlook-mail";
   return "unknown";
@@ -181,7 +180,6 @@ function isSyncedSource(source: KnowledgeSource): boolean {
     // #4770 / #4965 / #4966: a brain source has no documents, but it DOES have
     // sync bookkeeping in the same `knowledge_sync_state` row, so the list's
     // sync column and "Sync now" apply to it unchanged.
-    source === "slack-history" ||
     source === "zoom-transcripts" ||
     source === "outlook-mail"
   );
@@ -215,7 +213,9 @@ const CollectionListResponseSchema = z.object({
   collections: z.array(
     z.object({
       slug: z.string(),
-      source: z.enum(["upload", "bundle-sync", "notion", "confluence", "confluence-datacenter", "gitbook", "zendesk", "salesforce-knowledge", "intercom", "front", "helpscout", "freshdesk", "slack-history", "zoom-transcripts", "outlook-mail"]),
+      // Fed from the shared tuple in @useatlas/schemas — #5203 had to remove
+      // a member from three hand-synchronized spellings of this set.
+      source: z.enum(KNOWLEDGE_COLLECTION_SOURCES),
       description: z.string().nullable(),
       installedAt: z.string().nullable(),
       endpointUrl: z.string().nullable(),

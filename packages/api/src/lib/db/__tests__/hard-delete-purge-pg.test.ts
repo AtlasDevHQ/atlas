@@ -281,6 +281,16 @@ const COLUMN_OVERRIDES: Readonly<Record<string, Readonly<Record<string, string>>
     cardinality: `'single'`,
     status: `'approved'`,
   },
+  // #5203: channel_id is CHECKed to the Slack id shape (^[CG][A-Z0-9]{2,}$),
+  // which the synthesized text value fails. `name` and `excluded_by` are the
+  // customer-data columns the purge decision names, and both are nullable —
+  // seeded with real content so their deletion is a deletion of something.
+  brain_slack_channel: {
+    channel_id: `'C0PURGESEED'`,
+    name: `('project-severance-' || $1)`,
+    excluded_at: `now()`,
+    excluded_by: `('actor-' || $1)`,
+  },
   // Structural constraints, not enums:
   //  - visible_to must hold at least one non-empty grant (no-grant-no-promotion)
   //  - provenance must be a non-empty object

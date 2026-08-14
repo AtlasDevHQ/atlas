@@ -28,6 +28,7 @@ import {
   findBrainSourceConnectors,
   getBrainSourceConnector,
   listBrainSourceCatalogIds,
+  listPerWorkspaceBrainSources,
   registerBrainSourceConnector,
   type BrainSourceAudienceFor,
   type BrainSourceConnector,
@@ -48,6 +49,7 @@ import {
   HUMAN_SOURCE,
   OUTLOOK_SOURCE,
   SLACK_SOURCE,
+  episodeSourceClass,
   WAREHOUSE_CLASS,
   WAREHOUSE_SOURCE,
   ZOOM_SOURCE,
@@ -176,6 +178,13 @@ describe("the brain source registry", () => {
     return {
       catalogId: "catalog:fixture",
       source: SLACK_SOURCE,
+      // Chat-class ⇒ per-workspace (#5203); registration refuses per-install
+      // for the chat class, which is the whole falsification.
+      scope: {
+        kind: "per-workspace" as const,
+        syncId: "fixture-sync",
+        listWorkspaces: () => Promise.resolve([]),
+      },
       // Chat grants are reconciled by the install-driven Slack walk, so the
       // default fixture registers no re-verifier. The tests below that DO care
       // override it.
@@ -189,7 +198,18 @@ describe("the brain source registry", () => {
     _resetBrainSourceConnectors();
     registerBrainSourceConnector(connector());
     expect(getBrainSourceConnector("catalog:fixture")?.source).toBe(SLACK_SOURCE);
-    expect(listBrainSourceCatalogIds()).toEqual(["catalog:fixture"]);
+    // ⚠️ The default fixture is CHAT-class, so since #5203 it is per-workspace
+    // and deliberately absent from the install-walk filter — a catalog id in
+    // there matches no install row, and the cycle would report a clean pass
+    // having synced nothing. Asserted on BOTH listings rather than just the
+    // per-workspace one: `toEqual([])` alone would also pass against a filter
+    // that had stopped returning anything at all.
+    expect(listBrainSourceCatalogIds()).toEqual([]);
+    expect(listPerWorkspaceBrainSources().map((c) => c.catalogId)).toEqual(["catalog:fixture"]);
+
+    // A per-install source still lands in the install-walk filter.
+    registerBrainSourceConnector({ ...connector(), catalogId: "catalog:zoomish", source: ZOOM_SOURCE, scope: { kind: "per-install" }, audience: { kind: "reverified", reverifier: async () => ({ ...ZERO_REVERIFY }) } });
+    expect(listBrainSourceCatalogIds()).toEqual(["catalog:zoomish"]);
     _resetBrainSourceConnectors();
   });
 
@@ -529,6 +549,12 @@ describe("resolving connectors by class + vendor (#4963)", () => {
     const make = (catalogId: string, source: EpisodeSource): BrainSourceConnector => ({
       catalogId,
       source,
+      // Chat-class sources may only be per-workspace (#5203); everything else
+      // in this fixture keeps the install-driven shape.
+      scope:
+        episodeSourceClass(source) === "chat"
+          ? { kind: "per-workspace", syncId: `${catalogId}-sync`, listWorkspaces: () => Promise.resolve([]) }
+          : { kind: "per-install" },
       audience: { kind: "externally-synced" },
       createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
     });
@@ -629,6 +655,7 @@ describe("resolving connectors by class + vendor (#4963)", () => {
     registerBrainSourceConnector({
       catalogId: "catalog:only",
       source: WAREHOUSE_SOURCE,
+      scope: { kind: "per-install" },
       audience: { kind: "externally-synced" },
       createClient: () => ({ fetchEpisodes: async () => ({ episodes: [], highWaterMark: null }) }),
     });

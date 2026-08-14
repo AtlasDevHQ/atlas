@@ -67,7 +67,7 @@
  * @see installation-encryption.ts — encrypt/decrypt helpers.
  */
 
-import { internalQuery, getInternalDB } from "@atlas/api/lib/db/internal";
+import { internalQuery, getInternalDB, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import type {
   SlackInstallation,
@@ -396,6 +396,48 @@ export function getInstallationByOrg(
   orgId: string,
 ): Promise<SlackInstallation | null> {
   return store.getByOrg(orgId);
+}
+
+/**
+ * The `LIKE` predicate is a LITERAL for `selectByOrg`'s reason — a
+ * parameterized one blocks the partial expression index match.
+ *
+ * `DISTINCT` because one org may hold several team installs (a Slack org-wide
+ * app across workspaces); the brain dispatches per WORKSPACE, once.
+ */
+const INSTALLED_ORG_IDS_SQL = `SELECT DISTINCT value->>'${FIELD.orgId}' AS org_id
+         FROM ${INSTALL_TABLE}
+        WHERE key LIKE 'slack:installation:%'
+          AND value->>'${FIELD.orgId}' IS NOT NULL
+          AND (expires_at IS NULL OR expires_at > NOW())
+        ORDER BY org_id ASC`;
+
+/**
+ * Every workspace with a Slack chat-platform install (#5203).
+ *
+ * This is the list the brain's Slack episode source is dispatched over, and it
+ * is the load-bearing half of the change: before it, ingest was dispatched over
+ * a SECOND, credential-free `slack-history` install, so "Slack is connected"
+ * and "the brain reads Slack" were two facts that could disagree silently — and
+ * for four days in three prod regions, did (#5200).
+ *
+ * Deliberately unfiltered by anything about the brain's own state. A workspace
+ * that has never ingested an episode must appear here, because that is exactly
+ * the workspace whose absence nobody would notice.
+ *
+ * Returns `[]` with no internal DB — the org dimension lives in the row's JSONB
+ * and the `SLACK_BOT_TOKEN` env fallback has no org at all, so a single-
+ * workspace no-DB deploy has no workspace to name. Such a deploy cannot run the
+ * brain anyway; the episodes it would write live in the internal DB.
+ */
+export async function listSlackInstalledOrgIds(): Promise<readonly string[]> {
+  if (!hasInternalDB()) return [];
+  const rows = await internalQuery<{ org_id: string | null }>(INSTALLED_ORG_IDS_SQL);
+  const orgIds: string[] = [];
+  for (const row of rows) {
+    if (typeof row.org_id === "string" && row.org_id !== "") orgIds.push(row.org_id);
+  }
+  return orgIds;
 }
 
 /**

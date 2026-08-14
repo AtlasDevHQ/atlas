@@ -109,6 +109,9 @@ const mockGetInstallation: Mock<(teamId: string) => Promise<{ org_id: string | n
   });
 
 void mock.module("@atlas/api/lib/slack/store", () => ({
+  // #5203: `mock.module` replaces the module wholesale, so an export missing
+  // here is missing for every importer in the process.
+  listSlackInstalledOrgIds: mock(() => Promise.resolve([])),
   // CLAUDE.md "mock all exports" rule — every named export from the
   // real module gets stubbed so any cross-test importer that walks
   // into a symbol other than `getInstallation` gets a no-op rather

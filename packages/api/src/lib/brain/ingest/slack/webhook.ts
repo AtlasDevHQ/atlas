@@ -127,7 +127,7 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
-import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { getSettingAuto } from "@atlas/api/lib/settings";
 import { getInstallation } from "@atlas/api/lib/slack/store";
 import type { SlackHistoryMessage } from "@atlas/api/lib/slack/api";
@@ -137,11 +137,9 @@ import { findBrainSourceConnectors } from "../types";
 import type { BrainEpisodeRecord, BrainSourceConnector } from "../types";
 import { ingestEpisodes } from "../episodes";
 import { toEpisode } from "./client";
-import {
-  SLACK_CHANNEL_ID_PATTERN,
-  SLACK_HISTORY_CATALOG_ID,
-  parseSlackHistoryConfig,
-} from "./config";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
+import { SLACK_CHANNEL_ID_PATTERN } from "./config";
+import { isEventChannelInScope } from "./scope";
 
 const log = createLogger("brain.ingest.slack.webhook");
 
@@ -169,8 +167,12 @@ export function isSlackWebhookFastPathEnabled(): boolean {
  *
  *   - **not a fault at all** — `noise` (the poll's own skip rules agreeing with
  *     themselves here), `not_a_message`, `channel_not_configured`, `disabled`;
- *   - **configuration** — `no_install`, `unknown_workspace`,
- *     `install_config_unreadable`, `unresolvable_visibility`;
+ *   - **configuration** — `unknown_workspace`, `unresolvable_visibility`,
+ *     `ambiguous_connector`;
+ *   - **fail-closed read fault** — `scope_unreadable`. Distinct from
+ *     `channel_not_configured` on purpose: one means the workspace said no, the
+ *     other means we could not ask, and folding them together is how "the brain
+ *     stopped ingesting" reads as normal traffic;
  *   - **fault** — `ingest_failed`. The path broke. It is spelled separately
  *     precisely so a DB outage cannot masquerade as routine traffic: an earlier
  *     cut folded every thrown error into `unparseable_event`, which also
@@ -191,10 +193,27 @@ export type SlackWebhookSkipReason =
    */
   | "unmintable_subtype"
   | "unknown_workspace"
-  | "no_install"
-  /** An install matched, but its stored config could not be parsed. */
-  | "install_config_unreadable"
+  /**
+   * More than one Slack brain source is registered, so nothing disambiguates
+   * which one this event belongs to (#5203).
+   *
+   * Before the `slack-history` install was retired, the INSTALL row picked the
+   * connector: the shell queried by every catalog id the vendor lookup
+   * returned, and the matching install named one. A per-workspace source has no
+   * install, so an ambiguous vendor lookup has no tiebreaker — and picking the
+   * first would silently file a second Slack source's events under the first's
+   * `source_id` namespace, which the poll would never do. A registration defect,
+   * refused loudly rather than guessed.
+   */
+  | "ambiguous_connector"
+  /**
+   * The channel is outside the workspace's ingest scope — excluded by an admin,
+   * or outside the legacy allowlist of a workspace whose first post-#5203 sync
+   * has not reconciled yet.
+   */
   | "channel_not_configured"
+  /** The workspace's ingest scope could not be read. Fail-closed: nothing stored. */
+  | "scope_unreadable"
   | "unresolvable_visibility"
   | "ungrantable_channel"
   | "noise"
@@ -329,11 +348,14 @@ export type SlackWebhookRead =
  * `message` sub-object carries neither.
  *
  * ⚠️ The channel id is NORMALISED (`trim().toUpperCase()`) — the same
- * normalisation `parseSlackHistoryConfig` applies to the configured list. That
- * is not cosmetic: the poll path builds its source-ids from the PARSED config
- * ids, so an un-normalised `c01abc` here would mint `c01abc:<ts>` against the
- * poll's `C01ABC:<ts>` and duplicate the message. Slack sends uppercase ids
- * today; making the two writers agree must not depend on that staying true.
+ * normalisation `brain_slack_channel` enforces on its own ids
+ * (`ck_brain_slack_channel_id_shape`, `^[CG][A-Z0-9]{2,}$`). That is not
+ * cosmetic: the poll path builds its source-ids from the channel ids in the
+ * resolved scope, so an un-normalised `c01abc` here would mint `c01abc:<ts>`
+ * against the poll's `C01ABC:<ts>` and duplicate the message. It also decides
+ * whether the exclusion lookup MATCHES, which since #5203 is what stands
+ * between an excluded channel and the fast path storing it anyway. Slack sends
+ * uppercase ids today; neither guarantee may depend on that staying true.
  */
 export function readSlackWebhookMessage(raw: unknown): SlackWebhookRead {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
@@ -478,19 +500,6 @@ export function resolveWebhookChannelVisibility(
 }
 
 /** One enabled Slack-history install: which workspace, which channels. */
-interface SlackHistoryInstallRow extends Record<string, unknown> {
-  install_id: string;
-  catalog_id: string;
-  config: Record<string, unknown> | null;
-}
-
-/** An install row, as {@link deriveSlackWebhookEpisode} needs to see it. */
-export interface SlackWebhookInstall {
-  readonly installId: string;
-  readonly catalogId: string;
-  readonly config: Record<string, unknown> | null;
-}
-
 /** What one event yields, before anything is written. */
 export type SlackWebhookDerivation =
   | {
@@ -509,90 +518,58 @@ export type SlackWebhookDerivation =
  * where the acceptance tests live. EVERY claim this slice has to make is
  * decided here — that the source-id matches the poll's byte for byte, that the
  * grant derivation and the skip rules are the poll's, that a channel outside
- * the install's configured scope is refused, that an unestablishable visibility
+ * the workspace's ingest scope is refused, that an unestablishable visibility
  * BLOCKS. A test for any of those against the I/O shell would be a test of five
  * mocks agreeing with each other; against this function it is a test of the
  * decision. The shell around it only fetches the two things this needs (which
- * workspace, which installs) and hands the result to the append-only writer.
+ * workspace, and whether the channel is in scope) and hands the result to the
+ * append-only writer.
  */
 export function deriveSlackWebhookEpisode(params: {
   readonly event: SlackWebhookMessageEvent;
   readonly connectors: readonly BrainSourceConnector[];
-  readonly installs: readonly SlackWebhookInstall[];
+  /**
+   * Whether the event's channel is in the workspace's ingest scope, resolved by
+   * the shell (`isEventChannelInScope`).
+   *
+   * A BOOLEAN rather than the scope itself, so this function stays I/O-free and
+   * the acceptance tests keep testing the decision rather than a query. The
+   * shell owns the fail-closed direction: a scope it could not READ is
+   * `scope_unreadable` and never reaches here as `true`.
+   */
+  readonly inScope: boolean;
 }): SlackWebhookDerivation {
-  const { event, connectors, installs } = params;
+  const { event, connectors, inScope } = params;
 
-  // The install whose configured channel scope COVERS this channel. Scope is
-  // re-checked per event rather than trusted from the subscription: Slack
-  // delivers events for every channel the bot is in, which is a strictly wider
-  // set than the channels an admin picked at install time. Storing outside that
-  // set would ingest content the workspace never consented to — and the poll
-  // never would, so the two writers' contents would diverge by construction.
-  let unreadableConfig = false;
-  const match = installs.find((install) => {
-    const parsed = parseSlackHistoryConfig(install.config);
-    if (!parsed.ok) {
-      // The error VALUE is not discarded. `parseSlackHistoryConfig` writes
-      // actionable, admin-facing messages precisely so a hand-edited install
-      // row is diagnosable, and the poll surfaces them into
-      // `knowledge_sync_state.error`. Folding it into a boolean here would make
-      // a corrupted config skip 100% of a workspace's messages forever with a
-      // reason that reads like ordinary out-of-scope traffic.
-      // Only a SLACK-HISTORY row's parse failure is a diagnosis, because this
-      // is the only schema read here and it is slack-history's.
-      //
-      // `findBrainSourceConnectors` returns an array and `ingest/types.ts`
-      // explicitly disclaims uniqueness, so the day a second slack-VENDOR brain
-      // source exists, `installs` carries its rows too — the shell queries by
-      // every catalog id the vendor lookup returned. Reading one of those with
-      // `parseSlackHistoryConfig` fails on a config that is perfectly valid for
-      // its own connector, and reporting THAT sends an admin to repair a row
-      // that was never broken.
-      //
-      // Gated on the catalog id that owns the schema, which is the only thing
-      // that discriminates. An earlier attempt gated on "is this install's
-      // catalog id one of the connectors we resolved" — inert, since the shell
-      // queries BY those ids, so it is true for every row that reaches here
-      // including the foreign one it meant to exclude.
-      //
-      // The DIAGNOSIS is gated, never the match. A foreign install whose config
-      // this schema happens to read still matches and still reaches
-      // `no_connector` below — silently reclassifying it as out-of-scope would
-      // trade one wrong answer for another.
-      if (install.catalogId === SLACK_HISTORY_CATALOG_ID) {
-        unreadableConfig = true;
-        log.warn(
-          { installId: install.installId, error: parsed.error },
-          "Slack brain webhook: this install's stored channel scope could not be parsed, so nothing is stored for it — the scheduled sync reports the same error into knowledge_sync_state",
-        );
-      }
-      return false;
-    }
-    // Both sides are already normalised — `parseSlackHistoryConfig` uppercases
-    // the configured ids and `readSlackWebhookMessage` uppercases the event's —
-    // so this is a plain comparison rather than a case-insensitive one. Doing
-    // it case-insensitively HERE would be the wrong repair: the id that must
-    // match is the id that goes on to mint the source-id.
-    return parsed.channels.includes(event.channelId);
-  });
-  if (match === undefined) {
-    // An unreadable config is reported as its own reason rather than as
-    // "not in scope": one is a misconfiguration to fix, the other is Slack
-    // delivering more than the admin asked for, which is normal.
-    return {
-      kind: "skipped",
-      reason: unreadableConfig ? "install_config_unreadable" : "channel_not_configured",
-    };
+  // Scope is decided by the SHELL and handed in — see the params docstring.
+  // It is still re-checked per event rather than trusted from the subscription:
+  // Slack delivers events for every channel the bot is in, and an admin's
+  // exclusion is precisely the case where that set is wider than what the
+  // workspace consented to retain. Storing outside it would ingest content the
+  // poll never would, so the two writers' contents would diverge by
+  // construction.
+  if (!inScope) {
+    return { kind: "skipped", reason: "channel_not_configured" };
   }
 
-  const connector = connectors.find((c) => c.catalogId === match.catalogId);
-  if (connector === undefined) {
-    // Reachable only if the caller passes installs whose catalog ids are not in
-    // `connectors` — the shell cannot, since it queries BY those ids. A counted
-    // skip rather than a non-null assertion, because the alternative to proving
-    // it is asserting it.
+  // With no install to name a catalog id, an ambiguous vendor lookup has no
+  // tiebreaker. Refused rather than resolved to `connectors[0]`: a second Slack
+  // brain source's events filed under this one's source-id namespace is a
+  // silent cross-source collision, and the poll — dispatched per connector —
+  // would never produce it. See `ambiguous_connector`.
+  if (connectors.length === 0) {
     return { kind: "skipped", reason: "no_connector" };
   }
+  if (connectors.length > 1) {
+    log.error(
+      { catalogIds: connectors.map((c) => c.catalogId), channelId: event.channelId },
+      "Slack brain webhook: more than one Slack brain source is registered and nothing disambiguates them — refusing the event rather than guessing. The poll cycle still covers it",
+    );
+    return { kind: "skipped", reason: "ambiguous_connector" };
+  }
+  const connector = connectors[0];
+  const installId =
+    connector.scope.kind === "per-workspace" ? connector.scope.syncId : connector.catalogId;
 
   const visibility = resolveWebhookChannelVisibility(event.channelType, event.channelId);
   if (visibility === null) {
@@ -647,28 +624,10 @@ export function deriveSlackWebhookEpisode(params: {
   return {
     kind: "episode",
     source: connector.source,
-    installId: match.installId,
+    installId,
     record,
   };
 }
-
-/**
- * The install lookup. Exported so the real-Postgres test executes this exact
- * string against the live schema rather than asserting a paraphrase.
- *
- * Its predicates are those of `SYNC_CYCLE_INSTALLS_SQL` (`lib/knowledge/sync.ts`)
- * plus `workspace_id = $1` — the cycle walks every workspace, whereas a webhook
- * event belongs to exactly one. That extra predicate is what makes this query's
- * result a strict SUBSET of the cycle's, which is the property that matters:
- * an install this filter admitted but the cycle's did not would be a source
- * writing episodes that no poll ever backstops. Keep the other four
- * (`catalog_id = ANY`, `pillar`, `enabled`, `status <> 'archived'`) in lockstep.
- */
-export const WEBHOOK_SLACK_INSTALLS_SQL = `SELECT install_id, catalog_id, config
-         FROM workspace_plugins
-        WHERE workspace_id = $1 AND catalog_id = ANY($2::text[]) AND pillar = 'knowledge'
-          AND enabled = true AND status <> 'archived'
-        ORDER BY install_id ASC`;
 
 export interface IngestSlackWebhookMessageParams {
   /** The raw Slack event payload, straight off the chat plugin's boundary. */
@@ -750,13 +709,12 @@ async function runWebhookIngest(
     return { status: "skipped", reason: "no_internal_db", pollBackstopped: true };
   }
 
-  // Resolved from the REGISTRY rather than from `SLACK_HISTORY_CATALOG_ID`,
-  // which this module could equally have imported. #4963 split the source
-  // vocabulary into class-major/vendor-minor axes precisely so a second Slack
-  // brain source (canvases, say) is a registration rather than an edit here;
-  // hard-coding one catalog id would make this writer silently serve the first
-  // of them and no others. Empty means nothing registered — this deploy has no
-  // Slack brain source at all.
+  // Resolved from the REGISTRY rather than from a hard-coded catalog id. #4963
+  // split the source vocabulary into class-major/vendor-minor axes precisely so
+  // a second Slack brain source (canvases, say) is a registration rather than an
+  // edit here. Empty means nothing registered — this deploy has no Slack brain
+  // source at all. More than one is refused as `ambiguous_connector` in the
+  // deriver: since #5203 there is no install row left to disambiguate them.
   const connectors = findBrainSourceConnectors({ vendor: SLACK_SOURCE });
   if (connectors.length === 0) {
     return { status: "skipped", reason: "no_connector", pollBackstopped: true };
@@ -798,24 +756,29 @@ async function runWebhookIngest(
     return { status: "skipped", reason: "unknown_workspace", pollBackstopped: backstopped };
   }
 
-  const catalogIds = connectors.map((connector) => connector.catalogId);
-  const installs = await internalQuery<SlackHistoryInstallRow>(WEBHOOK_SLACK_INSTALLS_SQL, [
-    workspaceId,
-    catalogIds,
-  ]);
-  if (installs.length === 0) {
-    return { status: "skipped", reason: "no_install", pollBackstopped: backstopped };
+  // The scope read replaces the install lookup (#5203). There is no install to
+  // find, and that is the whole change: this workspace has a Slack chat install
+  // — it is how we resolved `workspaceId` two lines up — so the source is
+  // connected by definition. The only remaining question is whether THIS
+  // channel is in scope.
+  //
+  // ⚠️ FAIL-CLOSED, and it needs its own arm. A scope read that throws must not
+  // fall through to "in scope" (it would store what an admin excluded) NOR be
+  // folded into `channel_not_configured` (a DB outage would then read as
+  // routine out-of-scope traffic — the exact conflation the reason vocabulary
+  // exists to prevent). The poll still covers the message either way.
+  let inScope: boolean;
+  try {
+    inScope = await isEventChannelInScope(workspaceId, event.channelId);
+  } catch (err) {
+    log.warn(
+      { workspaceId, channelId: event.channelId, err: errorMessage(err) },
+      "Slack brain webhook: could not read the workspace's ingest scope — nothing stored for this event, the poll cycle covers it",
+    );
+    return { status: "skipped", reason: "scope_unreadable", pollBackstopped: backstopped };
   }
 
-  const derived = deriveSlackWebhookEpisode({
-    event,
-    connectors,
-    installs: installs.map((row) => ({
-      installId: row.install_id,
-      catalogId: row.catalog_id,
-      config: row.config,
-    })),
-  });
+  const derived = deriveSlackWebhookEpisode({ event, connectors, inScope });
   if (derived.kind === "skipped") {
     return { status: "skipped", reason: derived.reason, pollBackstopped: backstopped };
   }

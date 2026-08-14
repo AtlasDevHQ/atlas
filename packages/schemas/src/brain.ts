@@ -1422,3 +1422,29 @@ type _DecideArmsCovered = [
   : never;
 const _decideArmsCovered: _DecideArmsCovered = true;
 void _decideArmsCovered;
+
+/**
+ * `GET /api/v1/admin/brain-slack/channels` — the Slack ingest-scope surface
+ * (#5203). The console's vitals strip reads this subset; the full channel
+ * rows also carry exclusion attribution and per-channel probe detail for the
+ * channel-manager surface when it is built. No `@useatlas/types` pin,
+ * deliberately: `/api/v1/admin/*` carries no frozen contract (#5149) and the
+ * route's own zod owns the shape — this mirrors exactly the fields the
+ * console consumes.
+ */
+export const BrainSlackSyncStatusSchema = z.object({
+  lastSyncAt: z.string().nullable(),
+  status: z.enum(["success", "error"]),
+  error: z.string().nullable(),
+  coverageIncomplete: z.boolean(),
+});
+
+export const BrainSlackScopeVitalsSchema = z.object({
+  scopeMode: z.enum(["membership", "legacy-pending"]),
+  inScopeCount: z.number().int().nonnegative(),
+  /** Null until the first sync attempt has been recorded for the workspace. */
+  sync: BrainSlackSyncStatusSchema.nullable(),
+  // Unknown per-channel keys are stripped — the vitals read needs only the
+  // probe verdict, and the manager surface will own the rest.
+  channels: z.array(z.object({ health: z.enum(["ok", "error"]).nullable() })),
+});

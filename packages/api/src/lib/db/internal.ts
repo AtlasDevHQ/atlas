@@ -3876,6 +3876,8 @@ export interface HardDeleteResult {
   brainVocabularyProposal: number;
   brainPredicateCardinality: number;
   brainAudienceReverifyAttempt: number;
+  brainSlackChannel: number;
+  brainSlackIngestScope: number;
   factAudienceMember: number;
   // ── Knowledge Base pillar (ADR-0028) — added by #5160 ──
   // knowledge_sync_credentials is a secret at rest: the same class of miss
@@ -4301,6 +4303,15 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     const brainAudienceReverifyAttempt = await del(
       `DELETE FROM brain_audience_reverify_attempt WHERE workspace_id = $1`,
     );
+    // The brain's Slack ingest scope (#5203). Channel names are customer data
+    // on their own — `oversight.ts` has a whole label policy because
+    // `#project-severance` discloses something even with no content attached —
+    // and `excluded_by` is a user id. No FK either way, so no ordering
+    // constraint against the rows above.
+    const brainSlackChannel = await del(`DELETE FROM brain_slack_channel WHERE workspace_id = $1`);
+    const brainSlackIngestScope = await del(
+      `DELETE FROM brain_slack_ingest_scope WHERE workspace_id = $1`,
+    );
     // Resolved identities backing the `audience:` ACL arm — email joins and
     // SSO-domain narrowing, so squarely personal data.
     const factAudienceMember = await del(`DELETE FROM fact_audience_member WHERE workspace_id = $1`);
@@ -4590,6 +4601,8 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
       brainVocabularyProposal,
       brainPredicateCardinality,
       brainAudienceReverifyAttempt,
+      brainSlackChannel,
+      brainSlackIngestScope,
       factAudienceMember,
       knowledgeDocuments,
       knowledgeLinks,

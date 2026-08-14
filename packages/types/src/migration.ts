@@ -83,6 +83,7 @@ export interface ExportManifest {
     factAudienceMembers?: number;
     /** The curated identity vocabulary's approved edges (#5022, ADR-0037 §6). */
     brainVocabularyEdges?: number;
+    brainSlackChannelExclusions?: number;
   };
 }
 
@@ -565,6 +566,50 @@ export interface ExportedBrainVocabularyEdge {
   approvedAt: string;
 }
 
+/**
+ * One Slack channel an admin removed from the company brain's ingest scope
+ * (#5203, ADR-0036).
+ *
+ * ⚠️ THE EXCLUSION HALF ONLY. `brain_slack_channel` also carries OBSERVED state
+ * — `is_member`, `name`, `is_private`, the health-probe verdicts — and none of
+ * it travels. All of it is re-derived from `users.conversations` on the target's
+ * first sync, and carrying a stale membership would have the destination poll
+ * channels its bot may not be in.
+ *
+ * What cannot be re-derived is the DECISION. Scope in the target is "every
+ * channel the bot is in, minus exclusions", so an exclusion that failed to
+ * travel does not degrade the destination — it makes the destination ingest a
+ * channel a human took out of scope. That is over-DISCLOSURE, the
+ * unrecoverable direction, and it is why this section exists rather than being
+ * deferred like `brain_vocabulary_proposal`'s rejection memory (whose cost is
+ * under-supersession, which is recoverable by re-authoring).
+ */
+export interface ExportedBrainSlackChannelExclusion {
+  /** The Slack channel id — `^[CG][A-Z0-9]{2,}$`, matching the table's CHECK. */
+  channelId: string;
+  excludedAt: string;
+  /** Why, as the admin wrote it. `null` when they gave no reason. */
+  exclusionReason: string | null;
+  /** Who excluded it. Never empty — the table's CHECK refuses an unattributed row. */
+  excludedBy: string;
+}
+
+/**
+ * A workspace whose pre-#5203 Slack channel scope has not yet been reconciled
+ * against live bot membership (#5203).
+ *
+ * Present only for a workspace that migrates in the window between upgrading
+ * and its first sync. Carried for the same reason the exclusions are: while
+ * `reconciledAt` is null the captured allowlist IS the scope, so a bundle that
+ * dropped it would land the workspace in the destination looking like one that
+ * never had a `slack-history` install — i.e. promoted to "every channel the bot
+ * is in". The narrowing intent, one step earlier than an exclusion.
+ */
+export interface ExportedBrainSlackIngestScope {
+  /** The retired installs' union. MAY BE EMPTY — empty means "ingest nothing yet". */
+  legacyChannels: string[];
+}
+
 // ---------------------------------------------------------------------------
 // Full bundle
 // ---------------------------------------------------------------------------
@@ -605,6 +650,17 @@ export interface ExportBundle {
    * vocabulary is a closure of neither.
    */
   brainVocabularyEdges?: ExportedBrainVocabularyEdge[];
+  /**
+   * The company brain's Slack ingest-scope decisions (#5203). Same
+   * optional-on-the-wire shape as the sections above.
+   *
+   * Both are NARROWINGS, which is why they travel while the observed membership
+   * beside them does not: losing either widens what the destination ingests
+   * past what a human agreed to.
+   */
+  brainSlackChannelExclusions?: ExportedBrainSlackChannelExclusion[];
+  /** Absent unless the workspace migrated mid-reconcile — see the type. */
+  brainSlackIngestScope?: ExportedBrainSlackIngestScope;
 }
 
 // ---------------------------------------------------------------------------
@@ -661,6 +717,7 @@ export interface ImportResult {
    * `migrate.ts` and `cli/migrate-import.ts` already do for whole sections.
    */
   brainVocabularyEdges: { imported: number; skipped: number; refused: number };
+  brainSlackChannelExclusions: { imported: number; skipped: number; refused: number };
 }
 
 // ---------------------------------------------------------------------------

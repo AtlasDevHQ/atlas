@@ -41,10 +41,19 @@ const mockLogAdminAction: Mock<(entry: AuditEntry) => void> = mock(() => {});
 
 void mock.module("@atlas/api/lib/audit", async () => {
   const actual = await import("@atlas/api/lib/audit/actions");
+  // `lib/audit/index.ts` also re-exports the error scrubber, and `mock.module`
+  // replaces the module WHOLESALE — so omitting these makes them missing for
+  // every importer in the process, which surfaces as a module-resolution error
+  // in an unrelated file rather than as a wrong value here. Re-exported from the
+  // real module rather than stubbed: nothing in this suite asserts on scrubbing,
+  // and a stub would quietly disable it for whatever else resolves through here.
+  const scrub = await import("@atlas/api/lib/audit/error-scrub");
   return {
     logAdminAction: mockLogAdminAction,
     logAdminActionAwait: mock(async () => {}),
     ADMIN_ACTIONS: actual.ADMIN_ACTIONS,
+    errorMessage: scrub.errorMessage,
+    causeToError: scrub.causeToError,
   };
 });
 
@@ -69,6 +78,9 @@ const mockGetEmailInstallationByOrg: Mock<() => Promise<EmailInstallShape>> = mo
 }));
 
 void mock.module("@atlas/api/lib/slack/store", () => ({
+  // #5203: `mock.module` replaces the module wholesale, so an export missing
+  // here is missing for every importer in the process.
+  listSlackInstalledOrgIds: mock(() => Promise.resolve([])),
   // ALL named exports stubbed — this file loads the full app, so a
   // missing binding (e.g. admin-proactive.ts's `getBotToken` import)
   // ESM-link-fails the admin router and 404s every admin route.

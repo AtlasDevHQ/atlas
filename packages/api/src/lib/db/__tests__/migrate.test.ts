@@ -347,7 +347,11 @@ describe("runMigrations", () => {
     //   splits that authority out as `dashboards:share`, admin-only — and a new
     //   flag reaches an already-seeded workspace only through a backfill, for
     //   exactly the reason 0196 records) = 198.
-    expect(count).toBe(198);
+    //   Plus 0198 (brain_slack_membership_scope — #5203 retires
+    //   `catalog:slack-history`, the second credential-free Slack install whose
+    //   absence let the brain report green while ingesting nothing for four
+    //   days, and moves ingest scope onto the bot's channel membership) = 199.
+    expect(count).toBe(199);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -574,6 +578,7 @@ describe("runMigrations", () => {
         "0195_brain_facts_drop_predicate_cardinality.sql",
         "0196_builtin_roles_dashboards_flags.sql",
         "0197_builtin_roles_dashboards_share.sql",
+        "0198_brain_slack_membership_scope.sql",
       ],
     });
 

@@ -185,6 +185,12 @@ describeIfPg("Slack brain webhook fast-path (real Postgres)", () => {
     await pool.query("DELETE FROM brain_facts");
     await pool.query("DELETE FROM brain_episodes");
     await pool.query("DELETE FROM workspace_plugins");
+    // The #5203 scope tables. A leaked `brain_slack_ingest_scope` row flips
+    // every later test's workspace to `legacy-pending`, and a leaked exclusion
+    // silently narrows its scope — both make unrelated tests fail on state a
+    // different test wrote.
+    await pool.query("DELETE FROM brain_slack_channel");
+    await pool.query("DELETE FROM brain_slack_ingest_scope");
     process.env.ATLAS_BRAIN_CHAT_WEBHOOK_ENABLED = "true";
   });
 
@@ -196,22 +202,37 @@ describeIfPg("Slack brain webhook fast-path (real Postgres)", () => {
     registerSlackHistoryConnector();
   }
 
-  async function installSource(
-    opts: { channels?: readonly string[]; enabled?: boolean; status?: string } = {},
+  /**
+   * Put the workspace's ingest scope in a known state (#5203).
+   *
+   * Replaces `installSource`, which wrote a `catalog:slack-history`
+   * `workspace_plugins` row — a row that can no longer exist, because migration
+   * 0198 deletes that catalog row and `workspace_plugins.catalog_id` is a
+   * cascading FK onto it.
+   *
+   * `channels` are observed memberships; `excluded` are admin exclusions.
+   */
+  async function setScope(
+    opts: { channels?: readonly string[]; excluded?: readonly string[] } = {},
   ): Promise<void> {
-    await pool.query(
-      `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, install_id, pillar, config, enabled, status)
-       VALUES ($1, $2, $3, $4, 'knowledge', $5::jsonb, $6, $7)`,
-      [
-        "wp-4967",
-        WORKSPACE,
-        SLACK_HISTORY_CATALOG_ID,
-        "slack-history",
-        JSON.stringify({ channels: opts.channels ?? [CHANNEL] }),
-        opts.enabled ?? true,
-        opts.status ?? "published",
-      ],
-    );
+    for (const channelId of opts.channels ?? [CHANNEL]) {
+      await pool.query(
+        `INSERT INTO brain_slack_channel (workspace_id, channel_id, name, is_private, is_member)
+         VALUES ($1, $2, 'general', false, true)
+         ON CONFLICT (workspace_id, channel_id) DO UPDATE SET is_member = true`,
+        [WORKSPACE, channelId],
+      );
+    }
+    for (const channelId of opts.excluded ?? []) {
+      await pool.query(
+        `INSERT INTO brain_slack_channel
+           (workspace_id, channel_id, is_member, excluded_at, exclusion_reason, excluded_by)
+         VALUES ($1, $2, true, now(), 'test exclusion', 'user-test')
+         ON CONFLICT (workspace_id, channel_id) DO UPDATE
+           SET excluded_at = now(), exclusion_reason = 'test exclusion', excluded_by = 'user-test'`,
+        [WORKSPACE, channelId],
+      );
+    }
   }
 
   /** Run the REAL poll writer over `messages` — client walk plus ingest. */
@@ -305,7 +326,7 @@ describeIfPg("Slack brain webhook fast-path (real Postgres)", () => {
 
   it("webhook then poll: the same message yields exactly ONE episode", async () => {
     registerConnector();
-    await installSource();
+    await setScope();
 
     const webhook = await ingestSlackWebhookMessage({ raw: webhookEvent() });
     expect(webhook).toEqual({ status: "inserted", sourceId: slackEpisodeSourceId(CHANNEL, TS) });
@@ -324,7 +345,7 @@ describeIfPg("Slack brain webhook fast-path (real Postgres)", () => {
 
   it("poll then webhook: the same message still yields exactly ONE episode", async () => {
     registerConnector();
-    await installSource();
+    await setScope();
 
     const poll = await runPoll();
     expect(poll.inserted).toBe(1);
@@ -339,7 +360,7 @@ describeIfPg("Slack brain webhook fast-path (real Postgres)", () => {
     // the two disagreed about the body or the grant, the store's contents would
     // depend on a race — and the loser's version would never be applied.
     registerConnector();
-    await installSource();
+    await setScope();
     await ingestSlackWebhookMessage({ raw: webhookEvent() });
     const viaWebhook = (await episodes())[0];
 
@@ -356,7 +377,7 @@ describeIfPg("Slack brain webhook fast-path (real Postgres)", () => {
 
   it("dual delivery cannot inflate a fact's corroboration", async () => {
     registerConnector();
-    await installSource();
+    await setScope();
 
     await ingestSlackWebhookMessage({ raw: webhookEvent() });
     await runPoll();
@@ -377,7 +398,7 @@ describeIfPg("Slack brain webhook fast-path (real Postgres)", () => {
     // The other direction, so the assertion above cannot pass because the edge
     // writer is inert. Genuine corroboration must still register.
     registerConnector();
-    await installSource();
+    await setScope();
 
     const secondTs = "1750000600.000200";
     await ingestSlackWebhookMessage({ raw: webhookEvent() });
@@ -397,7 +418,7 @@ describeIfPg("Slack brain webhook fast-path (real Postgres)", () => {
 
   it("with the fast path disabled, ingest is exactly what the poll alone produces", async () => {
     registerConnector();
-    await installSource();
+    await setScope();
     process.env.ATLAS_BRAIN_CHAT_WEBHOOK_ENABLED = "false";
 
     const webhook = await ingestSlackWebhookMessage({ raw: webhookEvent() });
@@ -419,7 +440,7 @@ describeIfPg("Slack brain webhook fast-path (real Postgres)", () => {
     // message (here, because nothing is registered to write for) and the
     // scheduled sync silently keeps the store correct.
     _resetBrainSourceConnectors();
-    await installSource();
+    await setScope();
 
     expect(await ingestSlackWebhookMessage({ raw: webhookEvent() })).toEqual({
       status: "skipped",
@@ -433,34 +454,56 @@ describeIfPg("Slack brain webhook fast-path (real Postgres)", () => {
     expect(await episodes()).toHaveLength(1);
   }, PG_TEST_TIMEOUT_MS);
 
-  // ── 4. The install filter matches the sync cycle's ────────────────────────
+  // ── 4. The webhook's scope predicate matches the poll's ───────────────────
+  //
+  // #5203 replaced this group's subject. It used to pin that the webhook wrote
+  // for exactly the installs the cycle synced — disabled and archived installs
+  // being the two rows that separated those filters. There are no installs, so
+  // what has to agree now is the SCOPE: an admin exclusion must stop the fast
+  // path exactly as it stops the poll, or the two writers' contents diverge.
 
-  it("refuses to write for an install the sync cycle would not sync", async () => {
+  it("refuses to write for a channel the admin excluded", async () => {
     registerConnector();
+    await setScope({ excluded: [CHANNEL] });
 
-    // Disabled — the cycle's filter excludes it, so nothing would ever poll
-    // these channels. A webhook writing for it would produce episodes with no
-    // backstop at all.
-    await installSource({ enabled: false });
     expect(await ingestSlackWebhookMessage({ raw: webhookEvent() })).toEqual({
       status: "skipped",
-      reason: "no_install",
-      pollBackstopped: true,
-    });
-
-    await pool.query("DELETE FROM workspace_plugins");
-    await installSource({ status: "archived" });
-    expect(await ingestSlackWebhookMessage({ raw: webhookEvent() })).toEqual({
-      status: "skipped",
-      reason: "no_install",
+      reason: "channel_not_configured",
       pollBackstopped: true,
     });
     expect(await episodes()).toHaveLength(0);
   }, PG_TEST_TIMEOUT_MS);
 
-  it("refuses a channel outside the install's configured scope", async () => {
+  it("⭐ DOES write for a channel with no row at all — delivery is the membership proof", async () => {
+    // The asymmetry `scope.ts` documents, exercised against the live schema.
+    // Slack only delivers `message.channels` events for conversations the bot is
+    // in, so an event arriving for a channel the last refresh has not observed
+    // yet is in scope — the alternative would drop every newly-invited channel's
+    // messages until the next sync cycle, for no gain.
+    //
+    // MUTATION THIS CATCHES: adding `is_member = true` to the event-path
+    // predicate, which reads like a tightening and is a silent narrowing.
     registerConnector();
-    await installSource({ channels: ["C09SOMETHINGELSE"] });
+    await setScope({ channels: [] });
+
+    expect(await ingestSlackWebhookMessage({ raw: webhookEvent() })).toMatchObject({
+      status: "inserted",
+    });
+    expect(await episodes()).toHaveLength(1);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("refuses a channel outside a workspace's unreconciled legacy scope", async () => {
+    registerConnector();
+    // A pre-#5203 workspace whose first sync has not run: the captured
+    // allowlist governs, so a channel outside it is refused even though the bot
+    // is plainly in it (Slack delivered the event). This is the arm that stops
+    // the retirement broadening a workspace through the FAST PATH while the
+    // poll is still narrow.
+    await pool.query(
+      `INSERT INTO brain_slack_ingest_scope (workspace_id, legacy_channels) VALUES ($1, $2::text[])`,
+      [WORKSPACE, ["C09SOMETHINGELSE"]],
+    );
+    await setScope({ channels: [CHANNEL] });
 
     // Slack delivers events for every channel the bot is in — a strictly wider
     // set than the admin configured.
@@ -474,7 +517,7 @@ describeIfPg("Slack brain webhook fast-path (real Postgres)", () => {
 
   it("refuses an event from a Slack team no workspace has installed", async () => {
     registerConnector();
-    await installSource();
+    await setScope();
 
     expect(await ingestSlackWebhookMessage({ raw: webhookEvent({ team_id: "TUNKNOWN" }) })).toEqual({
       status: "skipped",
@@ -486,7 +529,7 @@ describeIfPg("Slack brain webhook fast-path (real Postgres)", () => {
 
   it("stores a message whose channel visibility it can establish, and refuses one it cannot", async () => {
     registerConnector();
-    await installSource();
+    await setScope();
 
     expect(
       await ingestSlackWebhookMessage({ raw: webhookEvent({ channel_type: undefined }) }),
@@ -513,7 +556,7 @@ describeIfPg("Slack brain webhook fast-path (real Postgres)", () => {
     // populates the id `deriveChatChannelGrant` mints, so a webhook that minted
     // a different one writes facts visible to nobody.
     registerConnector();
-    await installSource({ channels: [PRIVATE_CHANNEL] });
+    await setScope({ channels: [PRIVATE_CHANNEL] });
 
     const webhook = await ingestSlackWebhookMessage({
       raw: webhookEvent({ channel: PRIVATE_CHANNEL, channel_type: "group" }),
@@ -535,7 +578,7 @@ describeIfPg("Slack brain webhook fast-path (real Postgres)", () => {
 
   it("collapses to ONE episode in a private channel too, with the audience grant intact", async () => {
     registerConnector();
-    await installSource({ channels: [PRIVATE_CHANNEL] });
+    await setScope({ channels: [PRIVATE_CHANNEL] });
 
     await ingestSlackWebhookMessage({
       raw: webhookEvent({ channel: PRIVATE_CHANNEL, channel_type: "group" }),
@@ -561,7 +604,7 @@ describeIfPg("Slack brain webhook fast-path (real Postgres)", () => {
     // clean skip, which never enters the catch at all — this one makes the
     // internal DB genuinely unusable so the throw is real.
     registerConnector();
-    await installSource();
+    await setScope();
     // A pool pointed at a closed connection: `internalQuery` rejects rather
     // than returning an empty result, which is exactly the shape a live outage
     // takes.
@@ -589,7 +632,10 @@ describeIfPg("Slack brain webhook fast-path (real Postgres)", () => {
     // declines is lost rather than deferred. The flag is what lets the observer
     // log that at warn instead of reciting "the scheduled sync covers it".
     registerConnector();
-    await installSource({ channels: ["C09NOTTHISONE"] });
+    // Out of scope by EXCLUSION (#5203). "Scoped to some other channel" no
+    // longer puts this one out of scope — with no exclusion row, delivery is the
+    // membership proof and the event would be stored.
+    await setScope({ excluded: [CHANNEL] });
 
     const outcome = await ingestSlackWebhookMessage({
       raw: webhookEvent({ ts: "1750000500.000200", thread_ts: TS }),

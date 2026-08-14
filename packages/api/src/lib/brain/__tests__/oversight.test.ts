@@ -50,7 +50,6 @@ import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context"
 import type { BrainCandidateReader } from "@atlas/api/lib/brain/candidates";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 import {
-  SLACK_HISTORY_CATALOG_ID,
   SLACK_HISTORY_SOURCE,
 } from "@atlas/api/lib/brain/ingest/slack/config";
 import {
@@ -102,9 +101,10 @@ interface ReaderOptions {
   /** `unknown` so a test can model query drift — a value that will not read back. */
   reviewable?: unknown;
   distinctTokens?: unknown;
-  configs?: Array<Record<string, unknown> | null>;
+  /** Rows the named-channels read returns — `{ channel_id }`, #5203. */
+  namedChannels?: Array<Record<string, unknown> | null>;
   seen?: string[];
-  /** Params of the install-config read, recorded for assertion AFTER the call. */
+  /** Params of the named-channels read, recorded for assertion AFTER the call. */
   configParams?: unknown[][];
   configThrows?: boolean;
   bucketsThrow?: boolean;
@@ -126,13 +126,13 @@ function reader(options: ReaderOptions): BrainCandidateReader {
   return {
     query: async (sql: string, params?: unknown[]) => {
       options.seen?.push(sql);
-      if (sql.includes("workspace_plugins")) {
+      if (sql.includes("brain_slack_channel")) {
         // RECORDED, not asserted here: `loadConfiguredChannels` wraps this call
         // in try/catch, so an `expect` thrown inside it is swallowed and
         // reported as a read fault — a decorative assertion that can never fail.
         options.configParams?.push(params ?? []);
-        if (options.configThrows) throw new Error("install config read failed");
-        return { rows: (options.configs ?? []).map((config) => ({ config })) };
+        if (options.configThrows) throw new Error("named channel read failed");
+        return { rows: [...(options.namedChannels ?? [])] };
       }
       if (sql.includes("will_supersede_total")) {
         return {
@@ -213,8 +213,13 @@ function reader(options: ReaderOptions): BrainCandidateReader {
   };
 }
 
-function slackConfig(...channels: string[]): Record<string, unknown> {
-  return { channels };
+/**
+ * Rows the named-channels read returns for these channels (#5203). Replaces the
+ * old `slackConfig` install-config shape — `brain_slack_channel` is the source
+ * of "named" now, and the query projects `channel_id` alone.
+ */
+function namedChannelRows(...channels: string[]): Array<Record<string, unknown>> {
+  return channels.map((channel_id) => ({ channel_id }));
 }
 
 describe("classifyToken", () => {
@@ -329,10 +334,18 @@ describe("chat-channel audience id round trip", () => {
 });
 
 describe("loadConfiguredChannels", () => {
-  it("collects channel ids across every install row for the catalog", async () => {
+  // #5203: "named" no longer means "typed into the slack-history install form"
+  // — that install is gone. It means a channel the workspace's admin performed
+  // a deliberate act on: the bot is a member (someone invited it) or the channel
+  // carries an exclusion (someone named it to keep it out). Both are read off
+  // `brain_slack_channel`.
+  it("collects channel ids the workspace has named", async () => {
     const configParams: unknown[][] = [];
     const configured = await loadConfiguredChannels(
-      reader({ configs: [slackConfig("C0AAAAAAA"), slackConfig("C0BBBBBBB")], configParams }),
+      reader({
+        namedChannels: [{ channel_id: "C0AAAAAAA" }, { channel_id: "C0BBBBBBB" }],
+        configParams,
+      }),
       WS,
     );
     expect(configured.get(SLACK_HISTORY_SOURCE)).toEqual(
@@ -341,20 +354,29 @@ describe("loadConfiguredChannels", () => {
     // Asserted OUT here, where a failure is a failure — inside the double it
     // would be caught by the module's own try/catch and reported as a read
     // fault, i.e. it could never fail the test.
-    expect(configParams[0]).toEqual([WS, SLACK_HISTORY_CATALOG_ID]);
+    //
+    // ONE param now, not two: the query no longer takes a catalog id, because
+    // there is no catalog row to take. A two-param assertion left in place would
+    // have kept passing against a query that silently read nothing.
+    expect(configParams[0]).toEqual([WS]);
   });
 
-  it("degrades to naming nothing when the config read fails", async () => {
-    // Fail-CLOSED for a disclosure decision: no configured set means every
-    // audience is discovered and every label is withheld. A read fault costs
-    // legibility, never confidentiality.
+  it("degrades to naming nothing when the read fails", async () => {
+    // Fail-CLOSED for a disclosure decision: no named set means every audience
+    // is discovered and every label is withheld. A read fault costs legibility,
+    // never confidentiality.
     const configured = await loadConfiguredChannels(reader({ configThrows: true }), WS);
     expect(configured.size).toBe(0);
   });
 
-  it("ignores a config it cannot parse rather than trusting it", async () => {
+  it("skips an unusable row rather than trusting it", async () => {
+    // The column is NOT NULL under a CHECK, so this models query drift rather
+    // than stored data. Fail-closed either way: an id that cannot be matched
+    // against a grant token can only ever WITHHOLD a label.
     const configured = await loadConfiguredChannels(
-      reader({ configs: [null, { channels: "not-an-array" }, slackConfig("C0AAAAAAA")] }),
+      reader({
+        namedChannels: [null, { channel_id: "" }, { channel_id: 42 }, { channel_id: "C0AAAAAAA" }],
+      }),
       WS,
     );
     expect(configured.get(SLACK_HISTORY_SOURCE)).toEqual(new Set(["C0AAAAAAA"]));
@@ -406,7 +428,7 @@ describe("loadFactOversight", () => {
     const discoveredToken = `audience:${chatChannelAudienceId(SLACK_HISTORY_SOURCE, UNCONFIGURED_CHANNEL)}`;
     const result = await loadFactOversight(
       reader({
-        configs: [slackConfig(PRIVATE_CHANNEL)],
+        namedChannels: namedChannelRows(PRIVATE_CHANNEL),
         buckets: [
           { token: "org", awaiting_review: 26 },
           { token: configuredToken, awaiting_review: 6 },
@@ -436,7 +458,7 @@ describe("loadFactOversight", () => {
     // the other N unpinned.
     const result = await loadFactOversight(
       reader({
-        configs: [slackConfig(PRIVATE_CHANNEL)],
+        namedChannels: namedChannelRows(PRIVATE_CHANNEL),
         buckets: [
           { token: "org", awaiting_review: 3 },
           { token: "role:admin", awaiting_review: 2 },
@@ -558,7 +580,7 @@ describe("loadFactOversight", () => {
     // below are the tokens of facts whose claim text is seeded in the -pg suite;
     // here the check is that no such text could arrive at all.
     const db = reader({
-      configs: [slackConfig(PRIVATE_CHANNEL)],
+      namedChannels: namedChannelRows(PRIVATE_CHANNEL),
       buckets: [
         { token: "org", awaiting_review: 26, published: 40 },
         {

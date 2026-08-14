@@ -270,6 +270,14 @@ void mock.module("@atlas/api/lib/brain/ingest/types", () => ({
   getBrainSourceConnector,
   registerBrainSourceConnector: () => {},
   listBrainSourceCatalogIds: () => (BRAIN_SOURCE ? [BRAIN_SOURCE.catalogId] : []),
+  // #5203: `knowledge-collection-slug.ts` imports listPerWorkspaceBrainSources
+  // for the reserved-syncId guard, and a partial mock missing ANY export this
+  // file's import graph reaches SyntaxErrors every importer in the process
+  // (the wholesale-replacement class the PR body documents) —
+  // findBrainSourceConnectors is included pre-emptively for the day a route
+  // pulls in the webhook module.
+  listPerWorkspaceBrainSources: () => [],
+  findBrainSourceConnectors: () => [],
   _resetBrainSourceConnectors: () => {},
 }));
 const syncBrainEpisodeSource = mock(async (params: { installId: string }) => ({
@@ -980,32 +988,39 @@ describe("POST /{collectionSlug}/sync — connector collections (#4378)", () => 
     expect(sf?.sync).not.toBeNull();
   });
 
-  it("dispatches a Slack history collection to the EPISODE engine and lists it as source 'slack-history' (#4770)", async () => {
+  it("dispatches a brain-source collection to the EPISODE engine and lists its source (#4770)", async () => {
     // The third dispatch arm. Without it the knowledge-connector lookup misses
     // (brain sources live in their own registry) and a perfectly healthy
     // install answers 500 "contact your operator" — the failure the arm's own
     // comment claims to prevent.
+    //
+    // ⚠️ Zoom, not Slack (#5203). This arm is about a brain source WITH an
+    // install, and Slack no longer has one — its catalog row and installs were
+    // deleted by migration 0198, and its ingest is dispatched per workspace off
+    // the chat-pillar install. Zoom still collects a secret and still installs,
+    // so it is the honest fixture for the arm this test is about; leaving Slack
+    // here would have tested a route path no install can reach.
     BRAIN_SOURCE = {
-      catalogId: "catalog:slack-history",
-      source: "slack",
+      catalogId: "catalog:zoom-transcripts",
+      source: "zoom",
       createClient: () => ({}),
     };
     COLLECTION = {
-      install_id: "slack-brain",
-      catalog_id: "catalog:slack-history",
+      install_id: "zoom-brain",
+      catalog_id: "catalog:zoom-transcripts",
       status: "published",
-      config: { channels: ["C01ABCDEF"] },
+      config: { accountId: "acct-1" },
     };
     SYNC_STATES = [
       {
-        collection_id: "slack-brain",
+        collection_id: "zoom-brain",
         last_sync_at: "2026-07-02T02:00:00.000Z",
         status: "success",
         error: null,
         coverage_incomplete: false,
       },
     ];
-    const syncRes = await adminKnowledge.request("/slack-brain/sync", { method: "POST" });
+    const syncRes = await adminKnowledge.request("/zoom-brain/sync", { method: "POST" });
     expect(syncRes.status).toBe(200);
     expect(syncBrainEpisodeSource).toHaveBeenCalledTimes(1);
     expect(syncConnectorCollection).not.toHaveBeenCalled();
@@ -1020,8 +1035,8 @@ describe("POST /{collectionSlug}/sync — connector collections (#4378)", () => 
     const body = (await listRes.json()) as {
       collections: Array<{ slug: string; source: string; sync: { coverageIncomplete: boolean } | null }>;
     };
-    const brain = body.collections.find((c) => c.slug === "slack-brain");
-    expect(brain?.source).toBe("slack-history");
+    const brain = body.collections.find((c) => c.slug === "zoom-brain");
+    expect(brain?.source).toBe("zoom-transcripts");
     // It carries sync bookkeeping like any other synced collection…
     expect(brain?.sync).not.toBeNull();
     expect(brain?.sync?.coverageIncomplete).toBe(false);
@@ -1032,19 +1047,19 @@ describe("POST /{collectionSlug}/sync — connector collections (#4378)", () => 
     // and this goes red; without it the route would emit `false` for every
     // collection and an operator could never learn a sync deferred work.
     BRAIN_SOURCE = {
-      catalogId: "catalog:slack-history",
-      source: "slack",
+      catalogId: "catalog:zoom-transcripts",
+      source: "zoom",
       createClient: () => ({}),
     };
     COLLECTION = {
-      install_id: "slack-brain",
-      catalog_id: "catalog:slack-history",
+      install_id: "zoom-brain",
+      catalog_id: "catalog:zoom-transcripts",
       status: "published",
-      config: { channels: ["C01ABCDEF"] },
+      config: { accountId: "acct-1" },
     };
     SYNC_STATES = [
       {
-        collection_id: "slack-brain",
+        collection_id: "zoom-brain",
         last_sync_at: "2026-07-02T02:00:00.000Z",
         status: "success",
         error: null,
@@ -1059,7 +1074,7 @@ describe("POST /{collectionSlug}/sync — connector collections (#4378)", () => 
         sync: { status: string; coverageIncomplete: boolean; coverageDetail: string | null } | null;
       }>;
     };
-    const brain = body.collections.find((c) => c.slug === "slack-brain");
+    const brain = body.collections.find((c) => c.slug === "zoom-brain");
     expect(brain?.sync?.status).toBe("success");
     expect(brain?.sync?.coverageIncomplete).toBe(true);
     // A flag with no reason is a flag nobody can act on — the three causes

@@ -121,6 +121,24 @@
 // the `pass` fixtures assert exit 0 — those are the ones a no-op guard would
 // satisfy; and the last asserts that the suite wrote no tracked file.
 //
+// ## The exit-code taxonomy is now PROCESS-WIDE
+//
+// Exit 1 means the published snippets drifted. Exit 2 means this guard could not
+// answer — an environment fault ({@link die}) or an unexpected throw
+// ({@link installGuardBoundary}). Since #5243 a `RangeError` from a pathological
+// fence or a `TypeError` from a future edit no longer exits 1 under a raw stack
+// trace, which a CI operator read as "the docs drifted" and took to `apps/docs`.
+//
+// ⚠️ ONE residual, and the boundary structurally cannot reach it: a fault BEFORE
+// it installs. A parse error or an unresolved import in this file exits 1
+// (measured), because the module never loads and the handlers were never
+// registered to say otherwise.
+//
+// ⚠️ THAT IS A STATEMENT ABOUT EXIT CODES, NOT ABOUT COVERAGE. The four
+// unfixtured sites below are unfixtured for reasons the boundary does not touch
+// — the two unreachable-by-construction arms do not throw at all — so nothing
+// here should be read as testing them.
+//
 // ⚠️ THE COUNT LIVES IN THE SUITE, NOT HERE. It has been wrong in this header
 // every time it was written down, because a header is the copy nobody
 // re-measures. `bash scripts/__tests__/check-docs-brain-snippets.test.sh`
@@ -170,18 +188,87 @@ const DEFAULT_DOCS_GLOBS = ["apps/docs/content/**/*.mdx"] as const;
  * an unscannable glob is neither of those things, and letting the exception
  * escape uncaught would report it as both.
  *
- * ⚠️ SCOPE: this covers the three I/O boundaries that route through it — the
- * root stat, the glob scan, and each file read. It is NOT a process-wide
- * guarantee. Everything below still runs at
- * module top level with no handler, so a `RangeError` from a pathological fence
- * or a `TypeError` from a future edit to `collect`/`armToken` exits 1 with a
- * stack trace and reads as drift. Closing that needs an `uncaughtException`
- * boundary, filed as #5243 rather than landed in a closing round.
+ * ⚠️ SCOPE: this is the NAMED half of the taxonomy — the three I/O boundaries
+ * that route through it (the root stat, the glob scan, each file read) plus
+ * {@link parseArgs}'s `fail`, where the guard knows what went wrong and can say
+ * so. The unnamed half is
+ * {@link installGuardBoundary}, which catches everything else. Both exit 2;
+ * their MESSAGES are what tell them apart, and that distinction is the point of
+ * having two (#5243).
  */
 function die(message: string): never {
   console.error(`[docs-brain-snippets] ${message}`);
   process.exit(2);
 }
+
+/**
+ * Exit 2 for anything that throws, from anywhere in this process (#5243).
+ *
+ * ## Why `die` alone was not enough
+ *
+ * `die` enforces the exit-code taxonomy at three I/O boundaries. Everything else
+ * here runs at module top level with no handler, so a `RangeError` from a
+ * pathological fence, a `TypeError` from a future edit to `collect` / `armToken`
+ * / `describe`, or an OOM inside `ts.createSourceFile` exited **1** with a raw
+ * stack trace. Exit 1 is this gate's DRIFT code, and every consumer reads it
+ * that way — a CI operator seeing a red `docs-brain-snippets` row goes and looks
+ * at `apps/docs`. So the defect `die` was added to fix survived one layer up:
+ * a crash reported as "the docs drifted".
+ *
+ * ## The message distinguishes a GUARD BUG from an environment fault
+ *
+ * It cannot tell them apart — nothing can, from inside the throw — so it does
+ * not pretend to. It says both are possible, prints the stack that decides
+ * which, and states the operational difference: a guard bug will not be fixed by
+ * re-running, and an environment fault might be.
+ *
+ * ## What a process-wide boundary must NOT be read as covering
+ *
+ * The header's unfixtured sites are unfixtured for reasons this does not touch.
+ * The fence-count tripwire and `aliasShape`'s `token === null` arm are
+ * unreachable BY CONSTRUCTION and they do not throw — they push a problem and
+ * exit 1 — so this boundary neither reaches them nor makes them look exercised.
+ * `die`'s stat and scan catches still need a directory the process cannot enter;
+ * deleting either `try` now lands here instead of exiting 1, which is a strictly
+ * better failure but is still not a test of those arms.
+ *
+ * ## Ordering
+ *
+ * Installed immediately, before {@link parseArgs} runs at module top level, so
+ * an argv fault that throws rather than routing through `fail` is covered too.
+ * `process.exit()` does not fire these handlers, so `die`'s exit 2 and the
+ * drift path's exit 1 are unaffected.
+ */
+function installGuardBoundary(): void {
+  // `kind` is the two literals, not `string`: the fixture greps for the exact
+  // text `INTERNAL ERROR (uncaught exception)`, so a typo here would surface as
+  // a fixture failure rather than as a compile error.
+  const bail =
+    (kind: "uncaught exception" | "unhandled rejection") =>
+    (err: unknown): never => {
+      console.error(
+        `[docs-brain-snippets] INTERNAL ERROR (${kind}) — this is NOT docs drift, and NOT a snippet problem.`,
+      );
+      console.error(
+        "[docs-brain-snippets] Either this guard has a bug, or its environment does. The stack below says which: a frame inside check-docs-brain-snippets.ts is a GUARD BUG and re-running will not fix it; an ENOMEM/EACCES/EMFILE is the environment and re-running might.",
+      );
+      // ⚠️ The value, not `err.stack`. This boundary's whole worth is the stack
+      // telling a guard bug from an environment fault, and `.stack` alone drops
+      // `cause` and an `AggregateError`'s `errors` — which is exactly where a
+      // wrapped I/O failure keeps its real reason. Bun formats those.
+      console.error(err);
+      process.exit(2);
+    };
+  process.on("uncaughtException", bail("uncaught exception"));
+  // A rejection cannot arrive from the code below — every I/O call here is
+  // synchronous — so this arm is a tripwire on that property rather than a live
+  // path. It is here because the property is easy to lose: one `await` added to
+  // the top-level flow makes a throw arrive this way instead, and without this
+  // it would exit 1 again with the boundary looking installed.
+  process.on("unhandledRejection", bail("unhandled rejection"));
+}
+
+installGuardBoundary();
 
 /** The two scanned sides, plus the directory their globs are anchored at. */
 interface Roots {

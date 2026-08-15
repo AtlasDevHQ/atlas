@@ -9,7 +9,7 @@
     "start": "next start -p 3003",
     "generate:api": "bun ./scripts/generate-openapi.ts",
     "type": "tsc --noEmit",
-    "test": "bun test src/lib/__tests__",
+    "test": "bun run scripts/test-isolated.ts",
     "postinstall": "fumadocs-mdx"
   },
   "dependencies": {

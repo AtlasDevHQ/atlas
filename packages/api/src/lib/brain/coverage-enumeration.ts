@@ -266,18 +266,26 @@ const UPSERT_UNIT_SQL = `INSERT INTO brain_coverage_snapshot
          deliberate_act = EXCLUDED.deliberate_act,
          vendor_reports_public = EXCLUDED.vendor_reports_public,
          newest_evidence_at = EXCLUDED.newest_evidence_at,
-         -- ⚠️ COALESCE, and the argument order is the whole point: an UNPROBED
-         -- unit passes NULL here and must keep the reading a previous cycle
-         -- paid a Slack call for. EXCLUDED first means a probe that found the
-         -- channel newly active wins; NULL falling through to the stored value
-         -- means an unprobed cycle changes nothing.
+         -- ⚠️ DISCRIMINATE ON vendor_activity_checked_at, NEVER ON
+         -- vendor_activity_at — the same discriminant the reader uses, and
+         -- getting it wrong here was a fabricated freshness.
          --
-         -- The cost, accepted: a channel whose newest message was DELETED keeps
-         -- the older reading until the next probe overwrites it. Nulling
-         -- instead would lose every reading on every unprobed cycle, which is
-         -- most cycles for most channels.
-         vendor_activity_at =
-           COALESCE(EXCLUDED.vendor_activity_at, brain_coverage_snapshot.vendor_activity_at),
+         -- An UNPROBED unit passes NULL for both and must keep the reading a
+         -- previous cycle paid a Slack call for; that is the CASE's first arm.
+         -- A PROBED unit must be believed WHOLE, a NULL reading included,
+         -- because an empty history page is a real reading ("this channel has
+         -- never had a message", which ADR-0041 calls quiet rather than stale).
+         --
+         -- A plain COALESCE conflated the two: an emptied channel kept its OLD
+         -- reading while the check time advanced to now, so the row asserted
+         -- "asked just now, newest message is <old date>" for a channel with
+         -- none — and no later probe could ever overwrite it, because only a
+         -- probe that FINDS a message produces a non-null.
+         vendor_activity_at = CASE
+           WHEN EXCLUDED.vendor_activity_checked_at IS NULL
+             THEN brain_coverage_snapshot.vendor_activity_at
+           ELSE EXCLUDED.vendor_activity_at
+         END,
          vendor_activity_checked_at =
            COALESCE(EXCLUDED.vendor_activity_checked_at,
                     brain_coverage_snapshot.vendor_activity_checked_at),
@@ -357,30 +365,56 @@ function storableErrorText(raw: string): string {
  * context, which is the whole reason that step exists.)
  *
  * The rows are enumerable WITHOUT the vendor: `brain_coverage_cycle` already
- * holds one row per (workspace, class) for every workspace ever enumerated. So
- * an UPDATE over that class reaches exactly the set that can be told, and no
- * more.
+ * holds one row per (workspace, class) for every workspace ever enumerated.
  *
  * ⚠️ An UPDATE, never an upsert. Inventing a row for a workspace this cycle
  * could not even list would assert Atlas tried to enumerate a workspace it never
  * established exists.
+ *
+ * ⚠️ And NOT every row of the class. A workspace that switched the cycle OFF
+ * would otherwise be told "Atlas could not list the workspaces to enumerate",
+ * about a cycle that would never have run for it — while the settings registry
+ * promises that turning it off "freezes the coverage page at its last reading".
+ * {@link includeWorkspace} is how the caller supplies the same per-workspace
+ * decision the normal path reads. An earlier docstring claimed this UPDATE
+ * reached "exactly the set that can be told, and no more"; that clause was false
+ * and is what this parameter makes true.
+ *
+ * ⚠️ COST, stated because an outage is the wrong time to discover it: a
+ * fleet-wide UPDATE over one class, once per cycle, for as long as the scan keeps
+ * failing. Fine at an hourly cadence and a few thousand tenants; it wants
+ * batching well before it is not.
  */
 export async function recordClassScanFailure(params: {
   readonly sourceClass: SurveyableSourceClass;
   readonly error: string;
   readonly cycleAt: Date;
+  /**
+   * The tenant's own decision, read per workspace exactly as the normal path
+   * reads it. Omitted means "tell every workspace holding this class".
+   */
+  readonly includeWorkspace?: (workspaceId: string) => boolean;
 }): Promise<number> {
+  const known = await internalQuery<{ workspace_id: string }>(
+    `SELECT workspace_id FROM brain_coverage_cycle WHERE source_class = $1`,
+    [params.sourceClass],
+  );
+  const include = params.includeWorkspace;
+  const targets = known
+    .map((r) => r.workspace_id)
+    .filter((id) => include === undefined || include(id));
+  if (targets.length === 0) return 0;
   const rows = await internalQuery<{ workspace_id: string }>(
     `UPDATE brain_coverage_cycle
         SET last_attempt_at = $2::timestamptz, last_error = $3
-      WHERE source_class = $1
+      WHERE source_class = $1 AND workspace_id = ANY($4::text[])
       RETURNING workspace_id`,
-    [params.sourceClass, params.cycleAt.toISOString(), storableErrorText(params.error)],
+    [params.sourceClass, params.cycleAt.toISOString(), storableErrorText(params.error), targets],
   );
   if (rows.length > 0) {
     log.warn(
-      { sourceClass: params.sourceClass, workspaces: rows.length },
-      "brain coverage: a class-wide scan failure was recorded against every workspace holding this class — their rosters keep their previous readings and the surface now says so",
+      { sourceClass: params.sourceClass, workspaces: rows.length, known: known.length },
+      "brain coverage: a class-wide scan failure was recorded against the workspaces holding this class — their rosters keep their previous readings and the surface now says so",
     );
   }
   return rows.length;
@@ -412,6 +446,16 @@ export type CoveragePersistReport =
       readonly surveyed: number;
       /** How many carry a label. Always ≤ `written`; the rest are counted, never named. */
       readonly labelled: number;
+      /**
+       * Did this cycle retire most or all of the prior roster?
+       *
+       * On the report rather than only in a log, for the reason round 2 learned
+       * the hard way about `error`: a verdict nothing can read is green by
+       * construction wherever it is observed. The scheduler puts it on the span,
+       * which is where a denominator that just collapsed becomes visible without
+       * anyone grepping.
+       */
+      readonly collapsed: boolean;
       readonly degraded: readonly CoverageDegradedArm[];
     };
 
@@ -509,7 +553,11 @@ export async function persistCoverageSnapshot(params: {
     return swept.rows.length;
   });
 
-  if (outcome.units.length === 0 && retired > 0) {
+  // A COLLAPSE, not only a total wipe. 500 -> 1 retires 499 rows under a clean
+  // success with a fresh date, which is the same loud-understatement failure one
+  // degree short of zero — and the zero-only condition could not see it.
+  const collapsed = retired > 0 && outcome.units.length * COLLAPSE_RATIO < retired;
+  if (collapsed) {
     // A SUCCESSFUL-looking empty enumeration is the one shape the union cannot
     // refuse: `{ ok: true, units: [] }` is legal, and it reaches the database as
     // "sweep everything, stamp a fresh success". ADR-0041 calls the result a
@@ -522,8 +570,8 @@ export async function persistCoverageSnapshot(params: {
     // with no way back. `error` is the escalation — a total wipe is far more
     // often a broken enumerator than a real event.
     log.error(
-      { workspaceId, sourceClass, retired },
-      "brain coverage: a SUCCESSFUL enumeration returned no units and retired the entire prior roster — this class now reads zero; verify the enumerator before trusting that number",
+      { workspaceId, sourceClass, retired, written: outcome.units.length },
+      "brain coverage: a SUCCESSFUL enumeration retired most or all of the prior roster — this class's denominator just collapsed; verify the enumerator before trusting the new number",
     );
   }
 
@@ -538,6 +586,7 @@ export async function persistCoverageSnapshot(params: {
   }
   return {
     status: "success",
+    collapsed,
     written: outcome.units.length,
     retired,
     surveyed,
@@ -754,6 +803,17 @@ export async function readActivityProbeRotation(params: {
 // Narrowing helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * How far a roster may shrink in one cycle before the write says so.
+ *
+ * `written * 4 < retired` fires on a 500 -> 1 collapse and on a total wipe, and
+ * stays quiet for the ordinary case where a handful of channels were archived.
+ * A ratio rather than a count because the honest signal is proportional: losing
+ * four rows of five is alarming at any scale, and losing four of four hundred is
+ * not.
+ */
+const COLLAPSE_RATIO = 4;
+
 const SURVEYABLE_SET: ReadonlySet<string> = new Set(SURVEYABLE_SOURCE_CLASSES);
 
 /** Is this value one of the classes that can hold a snapshot row? */
@@ -774,6 +834,11 @@ export function surveyableClassOf(cls: EpisodeSourceClass): SurveyableSourceClas
 }
 
 const DEGRADED_SET: ReadonlySet<string> = new Set(COVERAGE_DEGRADED_ARMS);
+
+/** Is this value one of the map-edge marks this deploy can render? */
+function isCoverageDegradedArm(value: unknown): value is CoverageDegradedArm {
+  return typeof value === "string" && DEGRADED_SET.has(value);
+}
 
 function readDegradedArms(
   raw: unknown,
@@ -796,8 +861,8 @@ function readDegradedArms(
   const unknown: string[] = [];
   for (const entry of raw) {
     if (typeof entry !== "string") continue;
-    if (DEGRADED_SET.has(entry)) {
-      out.push(entry as CoverageDegradedArm);
+    if (isCoverageDegradedArm(entry)) {
+      out.push(entry);
       continue;
     }
     unknown.push(entry);

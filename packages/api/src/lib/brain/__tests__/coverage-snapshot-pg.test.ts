@@ -58,6 +58,7 @@ import {
   type EnumeratedSurveyUnit,
 } from "@atlas/api/lib/brain/coverage-enumeration";
 import {
+  CHAT_ACTIVITY_PROBES_PER_CYCLE,
   PUBLIC_ROSTER_MAX_PAGES,
   enumerateSlackCoverage,
 } from "@atlas/api/lib/brain/ingest/slack/coverage";
@@ -405,6 +406,61 @@ describeIfPg("coverage denominator snapshots (#5213, ADR-0041)", () => {
       expect((await readCoverageUnits(WORKSPACE, "chat")).map((r) => r.unitId)).toEqual(["C0KEEP"]);
     });
 
+    it("MUTATION — a COLLAPSE is loud, not only a total wipe", async () => {
+      // The zero-only condition could not see 500 -> 1: 499 rows retired under a
+      // clean success with a fresh date is the same loud-understatement failure
+      // one degree short of zero. Asserted through the sweep's own count rather
+      // than the log, because the count is what the ratio is computed from.
+      const many = Array.from({ length: 10 }, (_v, i) => `C0M${i}`);
+      await persistCoverageSnapshot({
+        workspaceId: WORKSPACE,
+        sourceClass: "chat",
+        cycleAt: CYCLE_1,
+        outcome: success(many.map((id) => unit({ unitId: id }))),
+      });
+      const collapsed = await persistCoverageSnapshot({
+        workspaceId: WORKSPACE,
+        sourceClass: "chat",
+        cycleAt: CYCLE_2,
+        outcome: success([unit({ unitId: "C0M0" })]),
+      });
+      // ⚠️ Assert the PRODUCTION verdict, not the test's own arithmetic. An
+      // earlier version recomputed `written * 4 < retired` in the assertion,
+      // which is a test asserting itself: reverting the condition to
+      // `written === 0` left it green. `collapsed` is the module's answer.
+      expect(collapsed).toMatchObject({
+        status: "success",
+        written: 1,
+        retired: 9,
+        collapsed: true,
+      });
+    });
+
+    it("an ORDINARY shrink is NOT a collapse — the ratio has a quiet side", async () => {
+      // The control. Without it "the collapse condition fires" is satisfied by a
+      // condition that fires on every retirement, which would make the escalation
+      // noise and train a reader to ignore it.
+      const many = Array.from({ length: 10 }, (_v, i) => `C0N${i}`);
+      await persistCoverageSnapshot({
+        workspaceId: WORKSPACE,
+        sourceClass: "chat",
+        cycleAt: CYCLE_1,
+        outcome: success(many.map((id) => unit({ unitId: id }))),
+      });
+      const shrunk = await persistCoverageSnapshot({
+        workspaceId: WORKSPACE,
+        sourceClass: "chat",
+        cycleAt: CYCLE_2,
+        outcome: success(many.slice(0, 8).map((id) => unit({ unitId: id }))),
+      });
+      expect(shrunk).toMatchObject({
+        status: "success",
+        written: 8,
+        retired: 2,
+        collapsed: false,
+      });
+    });
+
     it("never sweeps ANOTHER workspace's or another class's roster", async () => {
       await persistCoverageSnapshot({
         workspaceId: OTHER_WORKSPACE,
@@ -498,6 +554,23 @@ describeIfPg("coverage denominator snapshots (#5213, ADR-0041)", () => {
       expect((await readCoverageSnapshot(WORKSPACE))[0]?.unavailableReason).toBe(
         "Slack refused: token_revoked.",
       );
+    });
+
+    it("strips a NUL through persistCoverageSnapshot too, not only the class-wide writer", async () => {
+      // The rule is shared (`storableErrorText`), and the shared-ness is the
+      // point — but only ONE writer was proven. This arm is the one that runs
+      // for every tenant, and node-pg REFUSES a NUL parameter outright, so an
+      // unstripped one turns a visible failure invisible.
+      const report = await persistCoverageSnapshot({
+        workspaceId: WORKSPACE,
+        sourceClass: "chat",
+        cycleAt: CYCLE_1,
+        outcome: { ok: false, error: `slack token \u0000 revoked` },
+      });
+      expect(report).toEqual({ status: "failure" });
+      const reason = (await readCoverageSnapshot(WORKSPACE))[0]?.unavailableReason;
+      expect(reason).toContain("revoked");
+      expect(reason).not.toContain("\u0000");
     });
 
     it("a later SUCCESS clears the failure and re-dates the statement", async () => {
@@ -606,6 +679,33 @@ describeIfPg("coverage denominator snapshots (#5213, ADR-0041)", () => {
       expect((await readCoverageSnapshot(WORKSPACE))[0]?.asOf).toBe(CYCLE_1.toISOString());
     });
 
+    it("a probed-and-now-EMPTY channel OVERWRITES its old reading, it does not keep it", async () => {
+      // The third case, and the one the COALESCE got wrong. An empty history
+      // page is a real reading — "this channel has never had a message" — so
+      // believing it whole is the point. Keeping the old `at` while advancing
+      // `checked_at` asserted "asked just now, newest message is <old date>" for
+      // a channel with none, and no later probe of an empty channel could ever
+      // overwrite it.
+      const firstReading = new Date("2026-07-30T12:00:00.000Z");
+      await persistCoverageSnapshot({
+        workspaceId: WORKSPACE,
+        sourceClass: "chat",
+        cycleAt: CYCLE_1,
+        outcome: success([unit({ unitId: "C0A", activity: { probed: true, at: firstReading } })]),
+      });
+      await persistCoverageSnapshot({
+        workspaceId: WORKSPACE,
+        sourceClass: "chat",
+        cycleAt: CYCLE_2,
+        outcome: success([unit({ unitId: "C0A", activity: { probed: true, at: null } })]),
+      });
+      expect((await readCoverageUnits(WORKSPACE, "chat"))[0]?.activity).toEqual({
+        probed: true,
+        at: null,
+        checkedAt: CYCLE_2.toISOString(),
+      });
+    });
+
     it("records the map edges on success and keeps them across a failure", async () => {
       await persistCoverageSnapshot({
         workspaceId: WORKSPACE,
@@ -657,11 +757,16 @@ describeIfPg("coverage denominator snapshots (#5213, ADR-0041)", () => {
       // dropping `workspace_id = $1`, dropping `source_class = $2`, dropping the
       // LIMIT. The last one matters most — `CHAT_ACTIVITY_PROBES_PER_CYCLE` is
       // the ONLY thing bounding Slack calls per cycle.
+      // ⚠️ `C0AA` sorts BEFORE `C0A`, and that ordering is the whole test. With a
+      // neighbour that sorted last, `LIMIT 2` cut it before the workspace
+      // predicate ever mattered — so deleting `workspace_id = $1` left this
+      // green, which was measured rather than reasoned. Sorting it first makes
+      // the unscoped query return it and the assertion red.
       await persistCoverageSnapshot({
         workspaceId: OTHER_WORKSPACE,
         sourceClass: "chat",
         cycleAt: CYCLE_1,
-        outcome: success([unit({ unitId: "C0NEIGHBOUR", inPerimeter: true })]),
+        outcome: success([unit({ unitId: "C0AA", inPerimeter: true })]),
       });
       await persistCoverageSnapshot({
         workspaceId: WORKSPACE,
@@ -685,7 +790,7 @@ describeIfPg("coverage denominator snapshots (#5213, ADR-0041)", () => {
         limit: 2,
       });
       expect(due).toEqual(["C0A", "C0B"]);
-      expect(due).not.toContain("C0NEIGHBOUR");
+      expect(due).not.toContain("C0AA");
       expect(due).not.toContain("5:plans:tier");
     });
   });
@@ -751,6 +856,41 @@ describeIfPg("coverage denominator snapshots (#5213, ADR-0041)", () => {
       ]);
     });
 
+    it("SKIPS a workspace that switched the cycle off, and tells the rest", async () => {
+      // The settings registry promises that turning it off "freezes the coverage
+      // page at its last reading". A failed attempt stamped on a frozen row
+      // breaks that promise with a statement that is simply false: that tenant's
+      // cycle would never have run.
+      await persistCoverageSnapshot({
+        workspaceId: WORKSPACE,
+        sourceClass: "chat",
+        cycleAt: CYCLE_1,
+        outcome: success([unit({ unitId: "C0A" })]),
+      });
+      await persistCoverageSnapshot({
+        workspaceId: OTHER_WORKSPACE,
+        sourceClass: "chat",
+        cycleAt: CYCLE_1,
+        outcome: success([unit({ unitId: "C0N" })]),
+      });
+      const touched = await recordClassScanFailure({
+        sourceClass: "chat",
+        cycleAt: CYCLE_2,
+        includeWorkspace: (workspaceId) => workspaceId !== OTHER_WORKSPACE,
+        error: "chat_cache unreadable",
+      });
+      expect(touched).toBe(1);
+      // The opted-OUT tenant's row is untouched — same date, no reason.
+      expect((await readCoverageSnapshot(OTHER_WORKSPACE))[0]).toMatchObject({
+        lastAttemptAt: CYCLE_1.toISOString(),
+        unavailableReason: null,
+      });
+      // The POSITIVE CONTROL from the same call: the other one WAS told.
+      expect((await readCoverageSnapshot(WORKSPACE))[0]?.lastAttemptAt).toBe(
+        CYCLE_2.toISOString(),
+      );
+    });
+
     it("INVENTS no row for a workspace that has never been enumerated", async () => {
       // An upsert here would assert Atlas tried to enumerate a workspace it never
       // established exists — and would put a row on the page for a tenant with no
@@ -799,7 +939,8 @@ describeIfPg("coverage denominator snapshots (#5213, ADR-0041)", () => {
       // ⚠️ The gap this closes: every other test reads a workspace holding ONE
       // class, so dropping `ON s.source_class = c.source_class` — or
       // `WHERE workspace_id = $1` from the SUBQUERY, a cross-tenant count leak —
-      // left them all green.
+      // left them all green. The neighbour's SEVEN units are what make the leak
+      // move a number rather than merely exist.
       await persistCoverageSnapshot({
         workspaceId: OTHER_WORKSPACE,
         sourceClass: "chat",
@@ -819,8 +960,12 @@ describeIfPg("coverage denominator snapshots (#5213, ADR-0041)", () => {
         sourceClass: "chat",
         cycleAt: CYCLE_1,
         outcome: success([
-          // 2 surveyed, 3 enumerated, 2 of those blind — FOUR distinct numbers
-          // across the row, so a FILTER pointed at the wrong predicate moves one.
+          // 2 surveyed, 3 enumerated, 2 of those blind. `surveyed` and `blind`
+          // are EQUAL here, so this row alone cannot tell a `blind` FILTER
+          // retargeted at the surveyed predicate from a correct one — the
+          // WAREHOUSE row below (0 surveyed, 1 blind) is what kills that
+          // mutation, and the two rows are unequal on every field for exactly
+          // that reason.
           unit({ unitId: "C0S1", inPerimeter: true, newestEvidenceAt: CYCLE_1 }),
           unit({ unitId: "C0S2", inPerimeter: true, newestEvidenceAt: CYCLE_1 }),
           unit({ unitId: "C0BLIND1", inPerimeter: true }),
@@ -859,8 +1004,10 @@ describeIfPg("coverage denominator snapshots (#5213, ADR-0041)", () => {
 
     it("counts `inPerimeterWithoutEvidence` as a SUBSET of enumerated, never beside it", async () => {
       // The M1 sentence — invited, configured, reading nothing — and the field
-      // that had no assertion anywhere. Sizes deliberately unequal (3 enumerated,
-      // 1 blind) so a filter that dropped `in_perimeter` or `state` moves it.
+      // that had no assertion anywhere. `enumerated` (3) and `blind` (1) are
+      // unequal, so dropping `in_perimeter` from the blind FILTER moves it;
+      // `surveyed` and `blind` are both 1, so this row does not discriminate
+      // those two and does not claim to.
       await persistCoverageSnapshot({
         workspaceId: WORKSPACE,
         sourceClass: "chat",
@@ -1137,6 +1284,121 @@ describeIfPg("coverage denominator snapshots (#5213, ADR-0041)", () => {
       expect(outcome.units.find((u) => u.unitId === "C0INSIDE")?.activity).toEqual({
         probed: false,
       });
+    });
+
+    it("STOPS the rotation on a 429, and does NOT stop it on `not_in_channel`", async () => {
+      // Both arms need MORE THAN ONE unit in the rotation, which is why neither
+      // was falsifiable before: with one unit, `break` and `continue` are the
+      // same program. The 429 stop is a real cost decision — up to 19 further
+      // calls against a token the ingest pipeline shares — and its sibling must
+      // NOT inherit it, or one departed channel silently drops every probe
+      // behind it.
+      for (const id of ["C0A", "C0B", "C0C"]) await seedChannel({ channelId: id, name: id });
+      await persistCoverageSnapshot({
+        workspaceId: WORKSPACE,
+        sourceClass: "chat",
+        cycleAt: CYCLE_1,
+        outcome: success([
+          unit({ unitId: "C0A", inPerimeter: true }),
+          unit({ unitId: "C0B", inPerimeter: true }),
+          unit({ unitId: "C0C", inPerimeter: true }),
+        ]),
+      });
+
+      let rateLimited = 0;
+      await enumerateSlackCoverage({
+        workspaceId: WORKSPACE,
+        token: "t",
+        deps: {
+          fetchConversationsListPage: async () => rosterPage(VENDOR_ROSTER),
+          fetchConversationHistoryPage: async () => {
+            rateLimited++;
+            return { ok: false, error: "ratelimited", retryAfterSeconds: 30 };
+          },
+        },
+      });
+      expect(rateLimited).toBe(1);
+
+      let departed = 0;
+      await enumerateSlackCoverage({
+        workspaceId: WORKSPACE,
+        token: "t",
+        deps: {
+          fetchConversationsListPage: async () => rosterPage(VENDOR_ROSTER),
+          fetchConversationHistoryPage: async () => {
+            departed++;
+            return { ok: false, error: "not_in_channel", retryAfterSeconds: null };
+          },
+        },
+      });
+      // Three, not one — the two numbers differ, so `break`/`continue` swapped
+      // either way moves one of them.
+      expect(departed).toBe(3);
+    });
+
+    it("MUTATION — a message timestamp we cannot parse is NOT recorded as quiet", async () => {
+      // The false all-clear: `slackTsToDate` returns null for an unparseable
+      // `ts`, and folding that onto the empty page stored `{ at: NULL, checked:
+      // now }` — which reads as "asked just now, never had a message", i.e.
+      // never stale, on the one axis this probe exists to measure.
+      await seedChannel({ channelId: "C0INSIDE", name: "general" });
+      await persistCoverageSnapshot({
+        workspaceId: WORKSPACE,
+        sourceClass: "chat",
+        cycleAt: CYCLE_1,
+        outcome: success([unit({ unitId: "C0INSIDE", inPerimeter: true })]),
+      });
+      const outcome = await enumerateSlackCoverage({
+        workspaceId: WORKSPACE,
+        token: "t",
+        deps: {
+          fetchConversationsListPage: async () => rosterPage(VENDOR_ROSTER),
+          fetchConversationHistoryPage: async () => ({
+            ok: true,
+            messages: [{ ts: "not-a-timestamp", text: "hi", user: "U1", subtype: null, botId: null }],
+            nextCursor: null,
+            dropped: 0,
+          }),
+        },
+      });
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+      // UNPROBED plus a map edge — not `{ probed: true, at: null }`, which is
+      // what "quiet" looks like and is what this used to store.
+      expect(outcome.units.find((u) => u.unitId === "C0INSIDE")?.activity).toEqual({
+        probed: false,
+      });
+      expect(outcome.degraded).toContain("chat-activity-unreadable");
+    });
+
+    it("bounds the probe rotation at CHAT_ACTIVITY_PROBES_PER_CYCLE", async () => {
+      // The constant is the ONLY thing bounding Slack calls per cycle, and
+      // nothing pinned the value the enumerator passes — only the SQL LIMIT via
+      // a test-supplied argument.
+      const ids = Array.from(
+        { length: CHAT_ACTIVITY_PROBES_PER_CYCLE + 5 },
+        (_v, i) => `C0P${String(i).padStart(3, "0")}`,
+      );
+      for (const id of ids) await seedChannel({ channelId: id, name: id });
+      await persistCoverageSnapshot({
+        workspaceId: WORKSPACE,
+        sourceClass: "chat",
+        cycleAt: CYCLE_1,
+        outcome: success(ids.map((id) => unit({ unitId: id, inPerimeter: true }))),
+      });
+      let probes = 0;
+      await enumerateSlackCoverage({
+        workspaceId: WORKSPACE,
+        token: "t",
+        deps: {
+          fetchConversationsListPage: async () => rosterPage(VENDOR_ROSTER),
+          fetchConversationHistoryPage: async () => {
+            probes++;
+            return historyPage(null);
+          },
+        },
+      });
+      expect(probes).toBe(CHAT_ACTIVITY_PROBES_PER_CYCLE);
     });
 
     it("`not_in_channel` is NOT a map edge — it resolves itself next scope refresh", async () => {
@@ -1439,6 +1701,10 @@ describeIfPg("coverage denominator snapshots (#5213, ADR-0041)", () => {
       // Under the DELIBERATE-ACT clause, with `vendorReportsPublic` false — the
       // contract declares this class closed on the vendor-public clause, and
       // pinning both is what catches a swap of which clause does the work.
+      // The CARDINALITY control, in the same call: every one of these `every`/
+      // `some` assertions is vacuously satisfied by an enumerator that returned
+      // nothing at all.
+      expect(outcome.units.length).toBe(4);
       expect(outcome.units.every((u) => u.deliberateAct)).toBe(true);
       expect(outcome.units.some((u) => u.vendorReportsPublic)).toBe(false);
       await persistCoverageSnapshot({
@@ -1448,11 +1714,13 @@ describeIfPg("coverage denominator snapshots (#5213, ADR-0041)", () => {
         outcome,
       });
       const rows = await readCoverageUnits(WORKSPACE, "warehouse");
+      expect(rows.length).toBe(4);
       expect(rows.every((r) => r.label !== null)).toBe(true);
     });
 
     it("declares NO vendor activity — the contract says `absent`", async () => {
       const outcome = await enumerateWarehouseCoverage({ workspaceId: WORKSPACE, deps });
+      expect(outcome.ok && outcome.units.length).toBe(4);
       expect(outcome.ok && outcome.units.every((u) => u.activity.probed === false)).toBe(true);
     });
 

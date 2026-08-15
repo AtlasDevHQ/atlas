@@ -315,6 +315,7 @@ async function readPublicRoster(params: {
 }): Promise<PublicRosterResult> {
   const { membersPerVendor } = params;
   const channels = new Map<string, string | null>();
+  let privateEntries = 0;
   let cursor: string | undefined;
   for (let page = 0; ; page++) {
     if (page >= PUBLIC_ROSTER_MAX_PAGES) {
@@ -322,6 +323,7 @@ async function readPublicRoster(params: {
         { workspaceId: params.workspaceId, channels: channels.size },
         "brain coverage: Slack's public-channel roster is longer than this enumeration's page bound — the chat denominator carries a truncation mark",
       );
+      reportPrivateEntries(params.workspaceId, privateEntries, channels.size);
       return { kind: "roster", channels, truncated: true };
     }
     const result = await params.listPage(params.token, {
@@ -345,13 +347,33 @@ async function readPublicRoster(params: {
       // gate, so it is decided on what Slack said about the row rather than on
       // what we asked for. `fetchConversationsListPage` requires the flag to be
       // present for the same reason.
-      if (channel.isPrivate) continue;
+      if (channel.isPrivate) {
+        // "Cannot arrive" — the request pins `types=public_channel`. Counted
+        // anyway, because that is the class of assumption the same call refuses
+        // to make about `is_private` itself: a vendor-semantics shift (converted
+        // or shared channels) would shrink the denominator toward the flattering
+        // side with nothing to say so.
+        privateEntries++;
+        continue;
+      }
       channels.set(channel.id, channel.name);
       if (channel.isMember) membersPerVendor.add(channel.id);
     }
-    if (result.nextCursor === null) return { kind: "roster", channels, truncated: false };
+    if (result.nextCursor === null) {
+      reportPrivateEntries(params.workspaceId, privateEntries, channels.size);
+      return { kind: "roster", channels, truncated: false };
+    }
     cursor = result.nextCursor;
   }
+}
+
+/** A `types=public_channel` request returning private rows is a vendor-contract change. */
+function reportPrivateEntries(workspaceId: string, privateEntries: number, kept: number): void {
+  if (privateEntries === 0) return;
+  log.warn(
+    { workspaceId, privateEntries, kept },
+    "brain coverage: Slack returned PRIVATE channels to a public-channel roster request — they are dropped, so the chat denominator is lower than what the request asked for",
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -414,10 +436,25 @@ async function probeActivity(params: {
     // unit reading "unverified since" forever, because nothing would ever fill
     // a value that does not exist.
     const newest = page.messages[0];
-    readings.set(channelId, {
-      probed: true,
-      at: newest === undefined ? null : slackTsToDate(newest.ts),
-    });
+    const at = newest === undefined ? null : slackTsToDate(newest.ts);
+    // ⚠️ A MESSAGE WE CANNOT PARSE IS NOT "QUIET", and folding it onto the empty
+    // page was a FALSE ALL-CLEAR on the one axis this probe exists to measure.
+    // `slackTsToDate` returns null for an unparseable or non-positive `ts`, and
+    // that null used to reach the store as `{ at: NULL, checked_at: now }` —
+    // which renders as "asked just now, this channel has never had a message",
+    // i.e. never stale. Every probe still returned `ok`, so no arm was raised
+    // and nothing was logged: a stalled ingest reading green, in the module
+    // built to end exactly that.
+    if (newest !== undefined && at === null) {
+      unreadable = true;
+      log.warn(
+        { workspaceId: params.workspaceId, channelId, ts: newest.ts.slice(0, 32) },
+        "brain coverage: Slack returned a message timestamp this deploy cannot parse — the channel keeps its previous reading and the map carries an activity edge",
+      );
+      readings.set(channelId, { probed: false });
+      continue;
+    }
+    readings.set(channelId, { probed: true, at });
   }
   return { readings, unreadable };
 }

@@ -41,6 +41,9 @@ function withDatabaseUrl<T>(fn: () => Promise<T>): Promise<T> {
 
 const OK: CoverageEnumeration = { ok: true, units: [], degraded: [] };
 
+/** What a SURVEYABLE class may declare — the registry's mapped type, mirrored. */
+type SurveyablePlan = Exclude<ClassEnumerationPlan, { readonly kind: "not-surveyable" }>;
+
 interface PersistCall {
   readonly workspaceId: string;
   readonly sourceClass: SurveyableSourceClass;
@@ -74,6 +77,7 @@ function persistSpy(
       retired: 0,
       surveyed: 0,
       labelled: 0,
+      collapsed: false,
       degraded: params.outcome.degraded,
       ...over(calls[calls.length - 1]!),
     };
@@ -84,14 +88,18 @@ function persistSpy(
 /**
  * A registry override.
  *
- * `human` is NOT overridable, and that is the point rather than an omission:
+ * `human` is NOT overridable, and a SURVEYABLE class may not be handed
+ * `not-surveyable` either — `SurveyablePlan` is `ClassEnumerationPlan` minus that
+ * arm, mirroring the registry's own mapped type in both directions.
+ *
+ * That is the point rather than an omission:
  * `ClassEnumerationPlans` correlates the class with the plan kind, so a helper
  * that let a test hand `human` an enumerator would rebuild exactly the illegal
  * state the mapped type removed — and a test double is where the first cut of
  * this file could construct it.
  */
 function plans(
-  over: Partial<Record<SurveyableSourceClass, ClassEnumerationPlan>>,
+  over: Partial<Record<SurveyableSourceClass, SurveyablePlan>>,
 ): ClassEnumerationPlans {
   return {
     chat: { kind: "awaiting-connector" },
@@ -226,7 +234,7 @@ describe("runCoverageSnapshotCycle", () => {
     );
     // One workspace's revoked token must not stop the next workspace's roster
     // being refreshed — hence the POSITIVE CONTROL beside the failure.
-    expect(result).toMatchObject({ status: "degraded", classesFailed: 1, classesEnumerated: 1 });
+    expect(result).toMatchObject({ status: "degraded", enumerationsFailed: 1, enumerationsSucceeded: 1 });
     expect(spy.calls.map((c) => c.workspaceId)).toEqual(["ws-broken", "ws-fine"]);
     expect(spy.calls[0]?.outcome.ok).toBe(false);
     // ⚠️ The REFUSAL branch feeds `error` too. It was the sibling of the
@@ -254,8 +262,8 @@ describe("runCoverageSnapshotCycle", () => {
         }),
       }),
     );
-    expect(result.classesFailed).toBe(1);
-    expect(result.classesEnumerated).toBe(1);
+    expect(result.enumerationsFailed).toBe(1);
+    expect(result.enumerationsSucceeded).toBe(1);
     const refusal = spy.calls[0]?.outcome;
     expect(refusal?.ok).toBe(false);
     // The refusal path is the one that KEEPS the previous roster, which is
@@ -357,7 +365,15 @@ describe("runCoverageSnapshotCycle", () => {
         throw new Error("deadlock detected");
       }
       if (!params.outcome.ok) return { status: "failure" };
-      return { status: "success", written: 0, retired: 0, surveyed: 0, labelled: 0, degraded: [] };
+      return {
+        status: "success",
+        written: 0,
+        retired: 0,
+        surveyed: 0,
+        labelled: 0,
+        collapsed: false,
+        degraded: [],
+      };
     };
     const result = await withDatabaseUrl(() =>
       runCoverageSnapshotCycle({
@@ -372,7 +388,7 @@ describe("runCoverageSnapshotCycle", () => {
         }),
       }),
     );
-    expect(result).toMatchObject({ status: "degraded", classesFailed: 1, classesEnumerated: 1 });
+    expect(result).toMatchObject({ status: "degraded", enumerationsFailed: 1, enumerationsSucceeded: 1 });
     // ⚠️ THREE calls, not two: ws-1's failed write, ws-1's recorded ATTEMPT, and
     // ws-2. Without the middle one `last_attempt_at` stays frozen and
     // `last_error` stays NULL, so the page renders a clean, dated, STALE
@@ -403,7 +419,7 @@ describe("runCoverageSnapshotCycle", () => {
         }),
       }),
     );
-    expect(result).toMatchObject({ status: "degraded", classesFailed: 2, classesEnumerated: 0 });
+    expect(result).toMatchObject({ status: "degraded", enumerationsFailed: 2, enumerationsSucceeded: 0 });
     // ⚠️ And a REASON travels. Write failures used to reach `error` never, so a
     // cycle in which every persist threw returned `{ degraded, error: null }`
     // while the status docstring claimed "`error` is non-null either way" — a
@@ -437,8 +453,98 @@ describe("runCoverageSnapshotCycle", () => {
       }),
     );
     // The POSITIVE CONTROL: the other class still ran to completion.
-    expect(result).toMatchObject({ status: "degraded", classesEnumerated: 1 });
+    expect(result).toMatchObject({ status: "degraded", enumerationsSucceeded: 1 });
     expect(spy.calls.map((c) => c.sourceClass)).toEqual(["warehouse"]);
+  });
+
+  it("bounds the WORKSPACE reasons, and never crowds out the class-wide one", async () => {
+    // `FAILURE_REASONS_MAX` was unfalsifiable: no test had more than two failing
+    // workspaces, so deleting both guards — or setting the constant to 5000 —
+    // stayed green. Eight failing workspaces plus one failed scan is what makes
+    // the bound and its deliberate exception both observable.
+    const workspaces = Array.from({ length: 8 }, (_v, i) => `ws-${i}`);
+    const result = await withDatabaseUrl(() =>
+      runCoverageSnapshotCycle({
+        persist: async (params) => {
+          if (!params.outcome.ok) return { status: "failure" };
+          throw new Error(`write failed for ${params.workspaceId}`);
+        },
+        recordScanFailure: async () => 1,
+        isEnabled: () => true,
+        plans: plans({
+          chat: {
+            kind: "enumerates",
+            listWorkspaces: async () => workspaces,
+            enumerate: async () => OK,
+          },
+          warehouse: {
+            kind: "enumerates",
+            listWorkspaces: async () => {
+              throw new Error("semantic_entities unreadable");
+            },
+            enumerate: async () => OK,
+          },
+        }),
+      }),
+    );
+    const reasons = (result.error ?? "").split("; ");
+    // FIVE workspace reasons plus ONE uncapped scan reason — six, not eight and
+    // not five. Three distinct numbers in one assertion.
+    expect(reasons.length).toBe(6);
+    expect(result.error).toContain("semantic_entities unreadable");
+    expect(result.enumerationsFailed).toBe(8);
+  });
+
+  it("reads the workspace OVERRIDE, not only the platform value", async () => {
+    // The seam the setting exists for — `scope: "workspace"` — and every
+    // dispatch test injects `isEnabled`, so dropping the `workspaceId` argument
+    // to `getSettingAuto` left a tenant's OFF switch inert with all green.
+    const key = "ATLAS_BRAIN_COVERAGE_SNAPSHOT_ENABLED";
+    const prior = process.env[key];
+    delete process.env[key];
+    try {
+      // Platform default is ON, so the no-argument read is the control.
+      expect(isCoverageSnapshotEnabled()).toBe(true);
+      // A workspace argument must reach the resolver. With the argument dropped
+      // this call would answer identically to the one above for every input,
+      // which is what makes the pair — not either half — the assertion.
+      expect(isCoverageSnapshotEnabled("ws-with-no-override")).toBe(true);
+    } finally {
+      if (prior === undefined) delete process.env[key];
+      else process.env[key] = prior;
+    }
+  });
+
+  it("threads the tenant's OFF switch into the class-wide scan-failure record", async () => {
+    // The `-pg` suite proves `recordClassScanFailure` HONOURS the filter; this
+    // proves the scheduler SUPPLIES it. Two halves, and the mutation that
+    // replaces the call site's `includeWorkspace` with `() => true` is invisible
+    // to the first half.
+    let probe: ((workspaceId: string) => boolean) | undefined;
+    await withDatabaseUrl(() =>
+      runCoverageSnapshotCycle({
+        persist: persistSpy().persist,
+        recordScanFailure: async (p) => {
+          probe = p.includeWorkspace;
+          return 0;
+        },
+        isEnabled: (workspaceId) => workspaceId !== "ws-off",
+        plans: plans({
+          chat: {
+            kind: "enumerates",
+            listWorkspaces: async () => {
+              throw new Error("chat_cache unreadable");
+            },
+            enumerate: async () => OK,
+          },
+        }),
+      }),
+    );
+    expect(probe).toBeDefined();
+    // The filter must REFLECT the tenant decision, not merely exist: `() => true`
+    // is defined too, and is exactly the mutation this catches.
+    expect(probe?.("ws-off")).toBe(false);
+    expect(probe?.("ws-on")).toBe(true);
   });
 
   it("threads ONE correlation id through every persist of a cycle", async () => {

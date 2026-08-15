@@ -65,6 +65,14 @@ describe("the surveyable-class list — pinned against the class contract", () =
     // class that failed to enumerate rather than one that has no universe.
     const occurrences = migration.split(`source_class IN (${inList})`).length - 1;
     expect(occurrences).toBe(2);
+
+    // ⚠️ And the DRIZZLE MIRROR, which nothing else checks:
+    // `scripts/check-schema-drift.sh` compares TABLE NAMES only, so `schema.ts`'s
+    // copy of this CHECK can drift from the migration silently — and the mirror
+    // is what the next `drizzle-kit generate` reads.
+    const schema = readFileSync(join(import.meta.dir, "..", "..", "db", "schema.ts"), "utf8");
+    const mirrored = schema.split(`source_class IN (${inList})`).length - 1;
+    expect(mirrored).toBe(2);
   });
 
   it("narrows a wider class value, and refuses everything else", () => {

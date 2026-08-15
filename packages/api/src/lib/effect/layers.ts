@@ -2537,11 +2537,21 @@ export function makeSchedulerLive(
           "atlas.brain.coverage.enumerations_attempted": result.enumerationsAttempted,
           "atlas.brain.coverage.enumerations_skipped_disabled":
             result.enumerationsSkippedDisabled,
-          "atlas.brain.coverage.classes_enumerated": result.classesEnumerated,
+          // Per (class, workspace), like the two above — a tenant with both
+          // Slack and a semantic layer contributes two. Named for what they
+          // measure so a threshold set on them is not wrong by a tenant count.
+          "atlas.brain.coverage.enumerations_succeeded": result.enumerationsSucceeded,
           // The one that means "part of the map is older than the rest": a
           // refused enumeration keeps its previous dated roster, so the page
           // stays correct and stays OLD, which is invisible without this.
-          "atlas.brain.coverage.classes_failed": result.classesFailed,
+          "atlas.brain.coverage.enumerations_failed": result.enumerationsFailed,
+          // ⚠️ The REASON, not just the count. Without it the cycle's `error`
+          // had no reader outside the test suite — `registerPeriodicFiber`
+          // `asVoid`s the result — so the fix that populated it was green by
+          // construction in the only place it was observed. The string is
+          // scrubbed at every push site (`errorMessage`), which is what makes it
+          // safe to put on a span at all.
+          "atlas.brain.coverage.error": result.error ?? "",
           "atlas.brain.coverage.units_written": result.unitsWritten,
           "atlas.brain.coverage.units_retired": result.unitsRetired,
           "atlas.brain.coverage.units_surveyed": result.unitsSurveyed,
@@ -2549,6 +2559,10 @@ export function makeSchedulerLive(
           // public channels) AND what a newly revoked scope looks like, so a
           // step change here is the alertable shape rather than the level.
           "atlas.brain.coverage.map_edges": result.mapEdges,
+          // A roster that lost most of itself under a CLEAN success. Nothing
+          // failed, so no failure counter moved — the number the page now shows
+          // is the suspect one, and this is the only signal that says so.
+          "atlas.brain.coverage.rosters_collapsed": result.rostersCollapsed,
         }),
         onTickFailure: {
           level: "warn",

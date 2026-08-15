@@ -84,6 +84,15 @@ export const DEFAULT_COVERAGE_SNAPSHOT_INTERVAL_MS = 60 * 60_000;
 const FAILURE_REASONS_MAX = 5;
 
 /**
+ * ⚠️ The bound applies to the PER-WORKSPACE arms only. The class-wide scan arm
+ * pushes unconditionally, because there is at most one per class and a
+ * class-wide fault must never be crowded out by five workspace faults. So a
+ * cycle can carry more than {@link FAILURE_REASONS_MAX} reasons, and they are
+ * not de-duplicated — the constant bounds the WORKSPACE reasons, not the list.
+ */
+void FAILURE_REASONS_MAX;
+
+/**
  * Is the denominator snapshot switched on for this scope?
  *
  * No argument reads the PLATFORM value — the fiber's own gate, an operator's
@@ -168,13 +177,17 @@ export type ClassEnumerationPlan =
  * `ck_brain_coverage_snapshot_class` — a CHECK violation counted as one more
  * failed class, indistinguishable from a transient database fault.
  *
- * The mapped type ties the plan to the class: a non-surveyable class may declare
- * ONLY `not-surveyable`, which makes the illegal pairing a compile error at the
- * declaration site and in every test double.
+ * The mapped type ties the plan to the class, in BOTH directions: a
+ * non-surveyable class may declare ONLY `not-surveyable`, and a surveyable one
+ * may NOT declare it. The second half was missing at first, and it matters for
+ * the same reason: `chat: { kind: "not-surveyable" }` type-checked and silently
+ * removed chat's roster forever, since the loop just `continue`s and no arm
+ * records an attempt. Only a runtime test caught it, and only for the production
+ * registry — never for a double, which is the gap the mapped type exists to close.
  */
 export type ClassEnumerationPlans = {
   readonly [K in EpisodeSourceClass]: K extends SurveyableSourceClass
-    ? ClassEnumerationPlan
+    ? Exclude<ClassEnumerationPlan, { readonly kind: "not-surveyable" }>
     : { readonly kind: "not-surveyable" };
 };
 
@@ -200,7 +213,10 @@ export const CLASS_ENUMERATION_PLANS = {
         // call and can throw pg or decrypt errors, whose text can echo a
         // connection string. This string is STORED and rendered, so it is
         // scrubbed like every other one on that path.
-        return { ok: false, error: errorMessage(err) };
+        return {
+          ok: false,
+          error: `Atlas could not read this workspace's Slack credential to enumerate chat coverage — the previous reading is kept, and it retries on the next cycle (${errorMessage(err)})`,
+        };
       }
       return enumerateSlackCoverage({ workspaceId, token });
     },
@@ -236,36 +252,53 @@ export interface CoverageSnapshotCycleResult {
    * "the cycle could not establish which workspaces to look at" — it is exactly
    * `degraded`'s sentence.
    *
-   * ⚠️ `error` is non-null whenever `status` is not `success`, and that is a
-   * property of the code rather than a hope: EVERY arm that increments
-   * `scansFailed` or `classesFailed` also pushes into `failureReasons`. It was
-   * asserted here before it was true — write failures reached the field never,
-   * and refusals never — so the sentence is now written as what makes it hold.
+   * ⚠️ `error` is non-null whenever a failure counter moved, and the mechanism
+   * is narrower than "every arm pushes": the FIRST failure of a cycle is always
+   * recorded, and {@link FAILURE_REASONS_MAX} only drops the sixth and later.
+   * The scan arm is deliberately uncapped, so a class-wide fault always names
+   * itself even behind five workspace faults.
+   *
+   * This sentence has now been wrong twice — first claiming the property before
+   * write failures pushed at all, then claiming a mechanism with two exceptions
+   * — so it is written as the weakest true statement rather than the tidiest.
    */
   readonly status: "success" | "degraded" | "failure";
   /** (class, workspace) pairs this cycle attempted. */
   readonly enumerationsAttempted: number;
   /** (class, workspace) pairs skipped because the workspace switched it off. */
   readonly enumerationsSkippedDisabled: number;
-  readonly classesEnumerated: number;
-  readonly classesFailed: number;
+  /** (class, workspace) pairs whose roster this cycle wrote. */
+  readonly enumerationsSucceeded: number;
+  /** (class, workspace) pairs whose roster this cycle could NOT write. */
+  readonly enumerationsFailed: number;
   readonly unitsWritten: number;
   readonly unitsRetired: number;
   readonly unitsSurveyed: number;
   /** Map-edge marks recorded across every class this cycle. */
   readonly mapEdges: number;
+  /**
+   * (class, workspace) pairs whose roster COLLAPSED this cycle — most or all of
+   * the prior units retired under a clean success.
+   *
+   * Separate from `enumerationsFailed` because nothing failed: the write
+   * succeeded and the number it wrote is the suspect one. A non-zero value is
+   * "verify the enumerator before trusting this denominator", which is a
+   * different instruction from "something is broken".
+   */
+  readonly rostersCollapsed: number;
   readonly error: string | null;
 }
 
 const ZERO = {
   enumerationsAttempted: 0,
   enumerationsSkippedDisabled: 0,
-  classesEnumerated: 0,
-  classesFailed: 0,
+  enumerationsSucceeded: 0,
+  enumerationsFailed: 0,
   unitsWritten: 0,
   unitsRetired: 0,
   unitsSurveyed: 0,
   mapEdges: 0,
+  rostersCollapsed: 0,
   error: null,
 } as const;
 
@@ -312,12 +345,13 @@ export async function runCoverageSnapshotCycle(
 
   let enumerationsAttempted = 0;
   let enumerationsSkippedDisabled = 0;
-  let classesEnumerated = 0;
-  let classesFailed = 0;
+  let enumerationsSucceeded = 0;
+  let enumerationsFailed = 0;
   let unitsWritten = 0;
   let unitsRetired = 0;
   let unitsSurveyed = 0;
   let mapEdges = 0;
+  let rostersCollapsed = 0;
   let scansAttempted = 0;
   let scansFailed = 0;
   /**
@@ -368,6 +402,10 @@ export async function runCoverageSnapshotCycle(
         await recordScanFailure({
           sourceClass,
           cycleAt: now(),
+          // The tenant's own decision, through the same reader the normal path
+          // uses. A workspace that switched the cycle OFF is skipped rather than
+          // told an enumeration failed that would never have run for it.
+          includeWorkspace: (workspaceId) => isEnabled(workspaceId),
           error: `Atlas could not list the workspaces to enumerate for ${sourceClass} coverage — the previous reading is kept, and it retries on the next cycle (${message})`,
         });
       } catch (recordErr) {
@@ -413,7 +451,7 @@ export async function runCoverageSnapshotCycle(
           requestId: cycleId,
         });
         if (report.status === "failure") {
-          classesFailed++;
+          enumerationsFailed++;
           // ⚠️ THE SIBLING BRANCH, one line from the write-failure arm below, and
           // it was left out of the same fix. A cycle whose every enumeration was
           // REFUSED (rather than thrown) returned `{ status: "degraded", error:
@@ -425,15 +463,21 @@ export async function runCoverageSnapshotCycle(
           // why. What was missing is the OPERATOR's half — the one field a span
           // carries, and the one an alert reads.
           if (!outcome.ok && failureReasons.length < FAILURE_REASONS_MAX) {
-            failureReasons.push(`${sourceClass}/${workspaceId}: ${outcome.error}`);
+            // SCRUBBED like its two siblings. `outcome.error` for the chat class
+            // embeds `slackReadGet`'s `request_failed: ${message}`, which is raw
+            // transport text — a proxy misconfiguration surfaces credentials
+            // there. Harmless while nothing read this field; a live leak the
+            // moment it reached a span, which it now does.
+            failureReasons.push(`${sourceClass}/${workspaceId}: ${errorMessage(outcome.error)}`);
           }
           continue;
         }
-        classesEnumerated++;
+        enumerationsSucceeded++;
         unitsWritten += report.written;
         unitsRetired += report.retired;
         unitsSurveyed += report.surveyed;
         mapEdges += report.degraded.length;
+        if (report.collapsed) rostersCollapsed++;
       } catch (err) {
         // ⚠️ THE ATTEMPT IS STILL RECORDED, and that is the whole point of this
         // arm. Without it a write failure leaves `last_attempt_at` frozen and
@@ -441,7 +485,7 @@ export async function runCoverageSnapshotCycle(
         // statement with no error state for as long as the failure lasts — M1's
         // shape exactly: green while nothing is happening. The counters were
         // already right; the surface was not.
-        classesFailed++;
+        enumerationsFailed++;
         const message = errorMessage(err);
         // PUSHED, not only logged: `error` is what an operator reads for the
         // reason, and a cycle in which every persist threw used to return
@@ -491,19 +535,20 @@ export async function runCoverageSnapshotCycle(
   const totalScanFailure = scansAttempted > 0 && scansFailed === scansAttempted;
   const status: CoverageSnapshotCycleResult["status"] = totalScanFailure
     ? "failure"
-    : scansFailed > 0 || classesFailed > 0
+    : scansFailed > 0 || enumerationsFailed > 0
       ? "degraded"
       : "success";
   return {
     status,
     enumerationsAttempted,
     enumerationsSkippedDisabled,
-    classesEnumerated,
-    classesFailed,
+    enumerationsSucceeded,
+    enumerationsFailed,
     unitsWritten,
     unitsRetired,
     unitsSurveyed,
     mapEdges,
+    rostersCollapsed,
     error: failureReasons.length === 0 ? null : failureReasons.join("; "),
   };
 }

@@ -110,9 +110,16 @@ export function warehouseSurveyUnitId(entity: string, dimension: string): Wareho
  * carries Slack channel ids and mailbox ids — so nothing at that seam can refuse
  * a hand-rolled `` `${entity}:${dimension}` ``. Such an id stores fine, parses to
  * the WRONG halves (the leading segment reads as a length), and misattributes one
- * entity's evidence to another. Branding the builder's RESULT is what makes
- * {@link parseWarehouseSurveyUnitId} refuse to be handed one, which is #5032's
- * lesson: brand the output, not just the parameter.
+ * entity's evidence to another.
+ *
+ * ⚠️ The brand only does work where a signature DEMANDS it, and an earlier
+ * docstring here claimed {@link parseWarehouseSurveyUnitId} refused a plain
+ * string — it does not, and must not: it is a boundary parser reading database
+ * text. What the brand actually buys is inside THIS module, where the mistake
+ * would be made: `enrolled` and the evidence map are keyed by it, so a
+ * hand-rolled `` `${entity}:${dimension}` `` fails to compile at the line that
+ * builds it. That is #5032's lesson applied honestly — brand the output, and
+ * then require it somewhere.
  */
 export type WarehouseSurveyUnitId = string & {
   readonly __warehouseSurveyUnitId: unique symbol;
@@ -252,23 +259,64 @@ export async function enumerateWarehouseCoverage(params: {
   // Narrowed by the loop above; re-narrowed here because the loop's `return`
   // does not flow into the destructured bindings.
   if (!entityRead.ok || !enrollmentRead.ok || !evidenceRead.ok) {
+    // Unreachable — the loop above returns for every failed read. LOUD anyway,
+    // on this module's own standard for unreachable branches (`asCount`,
+    // `readDegradedArms`): it can only fire if that loop is edited to stop
+    // returning, which is exactly when a silent generic sentence is worst.
+    log.error(
+      { workspaceId },
+      "brain coverage: the warehouse read-refusal loop did not return for a failed read — the refusal below names no subject and no remedy",
+    );
     return { ok: false, error: "Atlas could not read this workspace's warehouse coverage inputs." };
   }
   const entities = entityRead.value;
-  const enrolled: ReadonlySet<string> = new Set(
-    enrollmentRead.value.map((r) => warehouseSurveyUnitId(r.entity, r.dimension) as string),
+  // Keyed by the BRAND, not by `string` — the two widenings that used to sit
+  // here were what made it decoration.
+  const enrolled: ReadonlySet<WarehouseSurveyUnitId> = new Set(
+    enrollmentRead.value.map((r) => warehouseSurveyUnitId(r.entity, r.dimension)),
   );
-  const byPair = new Map<string, Date>();
+  const byPair = new Map<WarehouseSurveyUnitId, Date>();
+  // COUNTED, not dropped quietly — the sibling of the unrecognised-id fix, in
+  // the EVIDENCE join rather than the roster. If the snapshot episode's
+  // `source_id` format ever changes, every row fails to parse, `evidence` is
+  // empty, and every enrolled pair drops from `surveyed` to enrolled-and-
+  // producing-nothing: a full-scale false alarm with a fresh date and, without
+  // this, nothing anywhere explaining it.
+  let unparseableEvidence = 0;
   for (const row of evidenceRead.value) {
     const entity = parseWarehouseEpisodeEntity(row.source_id);
-    if (entity === null) continue;
+    if (entity === null) {
+      unparseableEvidence++;
+      continue;
+    }
     const at = toDate(row.newest);
-    if (at === null) continue;
-    const key: string = warehouseSurveyUnitId(entity, row.predicate);
+    if (at === null) {
+      unparseableEvidence++;
+      continue;
+    }
+    const key = warehouseSurveyUnitId(entity, row.predicate);
     const prior = byPair.get(key);
     if (prior === undefined || prior < at) byPair.set(key, at);
   }
-  const evidence: ReadonlyMap<string, Date> = byPair;
+  // ⚠️ LOG-ONLY, and deliberately NOT a map edge — the direction is what decides
+  // that. Losing an evidence reading UNDERSTATES `surveyed`, so the page reads
+  // worse than the truth: a false alarm, not the false all-clear ADR-0041's
+  // fabrication discipline is aimed at. A mark would also be wrong on its own
+  // terms, since the MAP is complete here; it is the reading that failed.
+  //
+  // MEASURED rather than falsified by a test, because the observable behaviour
+  // is identical with and without this counter: mutating it away leaves the
+  // suite green, verified. What the counter buys is the operator's ability to
+  // tell "the producer has emitted nothing yet" from "we cannot read what it
+  // emitted" — two states the page renders identically and no assertion can
+  // separate without asserting on the log itself.
+  if (unparseableEvidence > 0) {
+    log.error(
+      { workspaceId, unparseableEvidence, usable: byPair.size },
+      "brain coverage: warehouse snapshot episodes whose source_id or instant this deploy cannot read — their pairs report as enrolled and producing nothing",
+    );
+  }
+  const evidence: ReadonlyMap<WarehouseSurveyUnitId, Date> = byPair;
 
   const walked = entities.slice(0, WAREHOUSE_COVERAGE_MAX_ENTITIES);
   if (entities.length > walked.length) {
@@ -280,6 +328,7 @@ export async function enumerateWarehouseCoverage(params: {
   }
 
   const units: EnumeratedSurveyUnit[] = [];
+  let vanishedEntities = 0;
   for (const entity of walked) {
     let dimensions: readonly { readonly name: string }[] | null;
     try {
@@ -304,11 +353,22 @@ export async function enumerateWarehouseCoverage(params: {
       );
       continue;
     }
+    // ⚠️ `null` arrives TWO ways and only one of them is transient. The common
+    // one is a publish landing between the entity listing and this read — the
+    // entity is gone, which is what the next cycle will also say. The other is
+    // a stored name `isValidEntityName` refuses (`/`, `\`, `..`), which is
+    // PERMANENT: that entity drops out of the denominator every cycle forever,
+    // in the flattering direction. It is counted below so the second case is
+    // visible as a persistent number rather than mistaken for the first.
+    //
     // `null` is "this entity is not in the published semantic layer", which can
     // happen between the entity listing and this read (a publish landed
     // mid-cycle). Not an error and not zero dimensions: the entity is gone, so
     // it contributes nothing, which is what the next cycle will also say.
-    if (dimensions === null) continue;
+    if (dimensions === null) {
+      vanishedEntities++;
+      continue;
+    }
     for (const dimension of dimensions) {
       const unitId = warehouseSurveyUnitId(entity.name, dimension.name);
       const inPerimeter = enrolled.has(unitId);
@@ -330,6 +390,13 @@ export async function enumerateWarehouseCoverage(params: {
         activity: { probed: false },
       });
     }
+  }
+
+  if (vanishedEntities > 0) {
+    log.warn(
+      { workspaceId, vanishedEntities, walked: walked.length },
+      "brain coverage: entities the listing offered but the detail read could not resolve — transient if a publish landed mid-cycle, permanent if the name is one the semantic layer refuses",
+    );
   }
 
   return { ok: true, units, degraded };

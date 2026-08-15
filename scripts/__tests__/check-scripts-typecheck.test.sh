@@ -230,8 +230,40 @@ lint_probe() {
 
   if [ "$base_status" -eq 0 ] && [ "$status" -ne 0 ] && [ "$hits" -gt "$base_hits" ]; then
     pass "$name (probe caused a new '$rule' from the shipped command)"
+  elif [ "$base_status" -ne 0 ]; then
+    # ⚠️ A DIRTY BASELINE IS NOT A `scripts/` FAILURE, and it is reported apart
+    # from the generic arm because conflating the two sent a reader to the wrong
+    # directory. `$*` is a shipped, REPO-WIDE command, so the probe-free run
+    # reds on a diagnostic anywhere in `packages/`, `apps/`, `plugins/`, `ee/`,
+    # `examples/` or `create-atlas/` — and this suite then cannot measure
+    # anything, because "the probe ADDED a finding" is only meaningful against a
+    # clean baseline.
+    #
+    # Measured on #5083: this went red printing a `packages/web` diagnostic
+    # while nothing under `scripts/` was wrong. The step name in
+    # `.github/workflows/ci.yml` said "the scripts/ type + lint gate", so the
+    # operator went and looked at `scripts/`.
+    fail "$name — the probe-free BASELINE already failed (status=$base_status), so this suite could not measure anything.
+    This is NOT a scripts/ failure. \`$*\` is a shipped repo-wide command; fix the diagnostic it reports below — wherever in the repo it lives — and this case measures again."
+    # ⚠️ ERRORS ONLY, when there are any. oxlint's baseline output is ~200 lines
+    # of the permanent `warn` rules ADR-0031 says never to chase, and the one
+    # `error` that actually failed the command sits somewhere in the middle of
+    # them — so dumping the whole thing points at the right place in the same
+    # sense a haystack points at a needle. Two spellings because the runner emits
+    # GitHub annotations instead of `path:line:col:` (see this helper's header);
+    # the unfiltered dump is the fallback for a baseline that failed for some
+    # reason OTHER than a lint finding, e.g. the tool itself crashing.
+    local base_errors
+    base_errors="$(grep -E '(^|[[:space:]])error[[:space:]]|^::error' <<<"$base_out" || true)"
+    if [ -n "$base_errors" ]; then
+      echo "    Baseline ERRORS (warnings omitted — they are ADR-0031 permanent non-targets and did not fail the command):" >&2
+      sed 's/^/    /' <<<"$base_errors" >&2
+    else
+      echo "    Baseline output (no error-level line matched, so this is the full output):" >&2
+      sed 's/^/    /' <<<"$base_out" >&2
+    fi
   else
-    fail "$name — expected a probe-free baseline to be clean and the probe to add a '$rule'; got baseline status=$base_status hits=$base_hits, with-probe status=$status hits=$hits. With-probe output:"
+    fail "$name — expected the probe to add a '$rule' and flip the exit status; got baseline status=$base_status hits=$base_hits, with-probe status=$status hits=$hits. With-probe output:"
     sed 's/^/    /' <<<"$out" >&2
   fi
 }

@@ -239,7 +239,19 @@ jobs:
       # what makes that arrangement non-silent: it reintroduces #5169's defect
       # into a real scripts/ file and requires the gate to go red, and it fails
       # if the include glob narrows or a path list drops scripts/.
-      - name: Adversarial fixtures for the scripts/ type + lint gate (#5173)
+      #
+      # ⚠️ THE NAME BELOW SAYS "repo-wide" BECAUSE THIS STEP CAN GO RED WITH
+      # NOTHING WRONG UNDER `scripts/`. Its lint cases invoke the SHIPPED
+      # commands — `bun run lint`, `bun run lint:type-aware` — deliberately, so
+      # that turning linting of `scripts/` off is caught rather than
+      # re-implemented around. Those commands scan `packages/ ee/ plugins/ apps/
+      # examples/ create-atlas/ scripts/`, and each case first requires a
+      # probe-free baseline to be CLEAN, so a diagnostic anywhere in the repo
+      # reds it. On #5083 it did exactly that, printing a `packages/web`
+      # diagnostic under the old name — which sent the operator to `scripts/`.
+      # The suite's own failure text now names the dirty baseline separately and
+      # says the fault is elsewhere.
+      - name: Adversarial fixtures for the scripts/ type + lint gate — runs the shipped repo-wide lint commands (#5173)
         run: bash scripts/__tests__/check-scripts-typecheck.test.sh
 
       - name: Check streaming agent responses attach CORS headers (#2037)

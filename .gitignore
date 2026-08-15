@@ -74,15 +74,10 @@ internal/
 .lighthouseci/
 lighthouse-reports/
 
-# Throwaway pages written into a tracked content dir by an adversarial fixture
-# suite and removed on exit (scripts/__tests__/check-docs-brain-snippets.test.sh).
-# Ignored so a SIGKILLed run cannot leave one committable in a shared worktree —
-# CLAUDE.md's "never `git add -A`" rule exists for exactly this shape.
-apps/docs/content/**/__fixture-*.mdx
-
-# Same shape, for the scripts/ type + lint gate's fixture suite
+# Throwaway probe for the scripts/ type + lint gate's fixture suite
 # (scripts/__tests__/check-scripts-typecheck.test.sh). Its last-written body is
-# deliberately broken, so a SIGKILLed run must not leave one committable.
+# deliberately broken, so a SIGKILLed run must not leave one committable —
+# CLAUDE.md's "never `git add -A`" rule exists for exactly this shape.
 #
 # ⚠️ The `.fixture.ts` suffix keeps this to the TYPE probe only. That suite's
 # LINT probe must stay visible to git — oxlint honours `.gitignore` and tsgo does

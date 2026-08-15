@@ -281,18 +281,32 @@ wait
 status "stage 2: tree-writing gates (serial — these mutate sources in place) …"
 # ⚠️ `gate-fixtures` MOVED HERE from Stage 1 (#5165), for the same correctness
 # reason as `mutation-tables` above and not for load. Several of the adversarial
-# suites REWRITE TRACKED SOURCE in place and trap-restore it:
-# `check-pricing-parity.test.sh` mutates `packages/api/src/lib/settings.ts`, and
-# `check-docs-brain-snippets.test.sh` mutates
-# `packages/api/src/lib/brain/ingest/types.ts` twice — once adding a REQUIRED
-# member to `BrainSourceConnector`, which leaves `types.ts` itself valid but breaks
-# EVERY connector literal in the package (`zoom/`, `outlook/`, `slack/`), and once
-# replacing a union arm, which makes `types.ts` genuinely non-compiling at its own
-# `audience.kind` reads. Either way the window is ~1s per fixture. Run in parallel,
-# Stage 1 lands inside it while `lint-type-aware`, `brain-fact-promotion` and
-# `docs-brain-snippets` are reading those very files, so they go red on a line the
-# developer never wrote — the flake-teaching outcome the paragraph above exists to
-# prevent. Worse, in Stage 1 the fixture suite raced the very gate it tests.
+# suites REWRITE TRACKED SOURCE in place and trap-restore it, opening a ~1s
+# window per fixture in which the file on disk is deliberately wrong. Run in
+# parallel, Stage 1 lands inside that window while ~30 scanners are reading those
+# very files, so they go red on a line the developer never wrote — the
+# flake-teaching outcome the paragraph above exists to prevent. Worse, in Stage 1
+# a fixture suite raced the very gate it tests.
+#
+# FOUR suites still write into the tree Stage 1 reads, and they are what keeps
+# this row here:
+#   • check-pricing-parity.test.sh     → settings.ts, entitlements.generated.ts,
+#                                        llms.txt, and two docs pages (five files)
+#   • check-brain-settings-doc.test.sh → settings.ts, environment-variables.mdx,
+#                                        atlas-vocabulary.mdx, and the guard itself
+#   • check-enforcement-parity.test.sh → billing/enforcement-parity.ts and
+#                                        api/routes/admin-sso.ts
+#   • check-scripts-typecheck.test.sh  → writes a deliberately BROKEN, untracked
+#                                        scripts/zz-lint-probe.ts into a directory
+#                                        the Stage-1 `lint` gate scans. Not
+#                                        tracked source, same race.
+#
+# `check-docs-brain-snippets.test.sh` no longer does (#5172): the guard takes
+# `--root` / `--source-glob` / `--docs-glob`, so its fixtures build throwaway
+# trees under `mktemp -d` and it asserts `git status --porcelain` is unchanged
+# after every case. That is the seam the other three need before this row can go
+# back to Stage 1 — moving it while any of them writes tracked source would
+# reintroduce the race for all of them.
 run_fg gate-fixtures   g_gate_fixtures
 run_fg mutation-tables bash scripts/check-mutation-tables.sh --affected origin/main
 

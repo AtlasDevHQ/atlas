@@ -104,18 +104,23 @@ These are useful but don't slot into the daily Atlas rituals yet:
 
 The engineering skills were renamed upstream while this repo still referenced the old names, which left several `/`-invocations pointing at nothing. Current names:
 
-| Was | Now |
-| --- | --- |
-| `/to-prd` | `/to-spec` |
-| `/to-issues` | `/to-tickets` |
-| `/diagnose` | `/diagnosing-bugs` |
-| `/zoom-out` | `/wayfinder` |
-| `/design-an-interface` | `/codebase-design` |
-| `/ubiquitous-language` | `/domain-modeling` |
-| `/write-a-skill` | `/writing-great-skills` |
-| `/request-refactor-plan` | `/implement` |
+| Was | Now | Note |
+| --- | --- | --- |
+| `/to-prd` | `/to-spec` | "spec" is now the only term; the PRD wording is gone from the shipped text |
+| `/to-issues` | `/to-tickets` | |
+| `/diagnose` | `/diagnosing-bugs` | |
+| `/zoom-out` | `/wayfinder` | reframed: its tickets are **decision tickets**, not implementation slices |
+| `/design-an-interface` | `/codebase-design` | design-it-twice survives inside it as `DESIGN-IT-TWICE.md` |
+| `/ubiquitous-language` | `/domain-modeling` | maintains the whole model, not a one-conversation glossary dump |
+| `/write-a-skill` | `/writing-for-agents` | went `/write-a-skill` → `/writing-great-skills` → `/writing-for-agents`; scope widened to any agent-consumed doc, `AGENTS.md` and `CLAUDE.md` included |
+| `/qa` | `/triage` + `/to-tickets` | absorbed, not dropped |
+| `/request-refactor-plan` | `/to-spec` + `/improve-codebase-architecture` | absorbed, not dropped |
 
-`/caveman`, `/migrate-to-shoehorn`, `/scaffold-exercises`, `/setup-pre-commit`, `/git-guardrails-claude-code`, `/qa`, `/edit-article`, `/obsidian-vault` and the `/writing-*` set are gone — none were ever invoked from an Atlas flow.
+`/caveman`, `/migrate-to-shoehorn`, `/scaffold-exercises`, `/setup-pre-commit`, `/git-guardrails-claude-code`, `/edit-article`, `/obsidian-vault` and the `/writing-beats` / `/writing-fragments` / `/writing-shape` set have no successor. None was ever invoked from an Atlas flow.
+
+New in the plugin and not yet mapped into any Atlas phase: `/wait-what` (one-word corrective for model verbosity), `/wizard` (generates an interactive bash script for a human-only procedure — model-invoked, so an agent reaches for it instead of dumping numbered instructions), `/to-questionnaire`, `/resolving-merge-conflicts`.
+
+⚠️ **Grilling now asks in rounds, not one question at a time.** `/grilling`, `/grill-me`, `/grill-with-docs` and `/triage` compute a *frontier* — every decision whose prerequisites are settled — and ask it as one numbered round, then recompute. Answer by number ("Q1 agree, Q2 change this"). The opt-out is a line in your global `CLAUDE.md`.
 
 ---
 

@@ -3697,9 +3697,22 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     );
     expect(col.rows).toHaveLength(0);
 
+    // ⚠️ SCOPED TO `current_schema()`, like the column query above it.
+    // `pg_constraint` is DATABASE-wide, not schema-scoped, so the unscoped
+    // form asked "does any schema in this database hold that constraint" —
+    // and every `-pg` suite creates its own scratch schema on the same
+    // database. Any concurrently-live schema whose migrations stopped at or
+    // before 0194 still has the constraint, so this failed on a tree where
+    // 0195 was applied perfectly. Surfaced by #5082, whose new `-pg` file
+    // shifted shard timing enough to overlap; reproduced locally by querying
+    // `pg_namespace` and finding the constraint in two other suites' schemas.
     const chk = await pool.query<{ conname: string }>(
-      `SELECT conname FROM pg_constraint
-        WHERE conname = 'chk_brain_facts_predicate_cardinality'`,
+      `SELECT c.conname
+         FROM pg_constraint c
+         JOIN pg_class t ON t.oid = c.conrelid
+         JOIN pg_namespace n ON n.oid = t.relnamespace
+        WHERE c.conname = 'chk_brain_facts_predicate_cardinality'
+          AND n.nspname = current_schema()`,
     );
     expect(chk.rows).toHaveLength(0);
   }, PG_TEST_TIMEOUT_MS);

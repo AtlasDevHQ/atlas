@@ -115,15 +115,19 @@
 // fixtured for that reason.
 //
 // `scripts/__tests__/check-docs-brain-snippets.test.sh` probes both floors and
-// every arm below: 25 fixtures, of which the 22 failure fixtures each name a
-// marker AND require exit status exactly 1, so a crash or a different arm firing
-// cannot satisfy one. Of the 3 remaining, 2 are `pass` fixtures asserting exit 0 —
-// those are the ones a no-op guard would satisfy, which is what the 22 exist to
-// rule out — and the third asserts that the suite wrote no tracked file.
+// every reachable arm below: 34 fixtures, of which the 24 failure fixtures each
+// name a marker AND require exit status exactly 1, so a crash or a different arm
+// firing cannot satisfy one; 6 assert exit 2 on a malformed argv; 3 are `pass`
+// fixtures asserting exit 0 — those are the ones a no-op guard would satisfy —
+// and the last asserts that the suite wrote no tracked file.
+//
+// Two arms are deliberately unfixtured and each says so where it lives: the
+// fence-count tripwire above (unreachable by construction) and the
+// `__tests__`/`__mocks__` filter, which no input in either tree reaches.
 //
 // Run locally: bun scripts/check-docs-brain-snippets.ts
 
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync, type Stats } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Glob } from "bun";
@@ -138,6 +142,21 @@ const DEFAULT_ROOT = resolve(SCRIPT_DIR, "..");
 // name its own source already exports.
 const DEFAULT_SOURCE_GLOBS = ["packages/*/src/**/*.ts", "ee/src/**/*.ts"] as const;
 const DEFAULT_DOCS_GLOBS = ["apps/docs/content/**/*.mdx"] as const;
+
+/**
+ * An ENVIRONMENT fault, not a snippet violation.
+ *
+ * ⚠️ Exit 2, never 1. Exit 1 is this gate's drift code, and every consumer reads
+ * it that way — `scripts/__tests__/check-docs-brain-snippets.test.sh` requires
+ * exactly 1 from each of its failure fixtures, and a CI operator seeing a red
+ * `docs-brain-snippets` row goes and looks at `apps/docs`. An unreadable file or
+ * an unscannable glob is neither of those things, and letting the exception
+ * escape uncaught would report it as both.
+ */
+function die(message: string): never {
+  console.error(`[docs-brain-snippets] ${message}`);
+  process.exit(2);
+}
 
 /** The two scanned sides, plus the directory their globs are anchored at. */
 interface Roots {
@@ -170,36 +189,68 @@ function parseArgs(argv: readonly string[]): Roots {
   const docsGlobs: string[] = [];
   let root: string | null = null;
 
-  const fail = (message: string): never => {
-    console.error(`[docs-brain-snippets] ${message}`);
+  // ⚠️ The `never` is annotated on the CONST, not on the arrow. TypeScript only
+  // treats a call as never-returning — and so only marks what follows
+  // unreachable — when the callee carries an explicit type annotation at its
+  // declaration. Written `const fail = (m: string): never => …` the analysis
+  // does not apply: `value` stays `string | undefined` past its guard and `flag`
+  // never narrows to the three literals, so the exhaustiveness check below is
+  // not a check at all and a fourth flag added to the allow-list would land
+  // silently in `docsGlobs`. Measured with `tsgo`, the repo's own compiler.
+  const fail: (message: string) => never = (message) => {
     console.error(
       "[docs-brain-snippets] usage: check-docs-brain-snippets.ts [--root <dir>] [--source-glob <pattern>]... [--docs-glob <pattern>]...",
     );
-    process.exit(2);
+    die(message);
   };
 
   for (let i = 0; i < argv.length; i++) {
+    // `?? ""` is dead under today's `tsconfig.scripts.json` (`argv[i]` is
+    // `string` because `noUncheckedIndexedAccess` is off) and load-bearing the
+    // moment that flag is turned on, which is the direction that config is
+    // travelling.
     const flag = argv[i] ?? "";
     if (flag !== "--root" && flag !== "--source-glob" && flag !== "--docs-glob") {
       fail(`unknown argument \`${flag}\`.`);
     }
     const value = argv[i + 1];
-    // A present-but-valueless flag must not silently take the default: in the
-    // fixture harness that validates the wrong tree.
-    if (value === undefined || value.startsWith("-")) fail(`${flag} requires a value.`);
+    // `!value`, not `=== undefined`. The empty string is neither `undefined` nor
+    // `-`-prefixed, and `resolve("")` is the process cwd — which for a fixture
+    // invocation is the REAL repo, which passes. That is the
+    // fixture-that-cannot-fail shape arriving through argv, i.e. precisely what
+    // this parser exists to refuse. `check-docs-links.ts:92` has spelled it
+    // `!value` since #4480; this was the weaker half of the seam it copies.
+    if (!value || value.startsWith("-")) fail(`${flag} requires a non-empty value.`);
     i++;
     if (flag === "--root") {
       if (root !== null) fail("--root may be given at most once.");
       root = resolve(value);
     } else if (flag === "--source-glob") {
       sourceGlobs.push(value);
-    } else {
+    } else if (flag === "--docs-glob") {
       docsGlobs.push(value);
+    } else {
+      // Adding a flag to the allow-list above and forgetting to dispatch it is a
+      // COMPILE error here rather than a value quietly joining `docsGlobs`.
+      const unhandled: never = flag;
+      fail(`unhandled flag ${String(unhandled)}.`);
     }
   }
 
   const resolvedRoot = root ?? DEFAULT_ROOT;
-  if (!statSync(resolvedRoot, { throwIfNoEntry: false })?.isDirectory()) {
+  let rootStat: Stats | undefined;
+  try {
+    rootStat = statSync(resolvedRoot, { throwIfNoEntry: false });
+  } catch (err) {
+    // `throwIfNoEntry: false` suppresses ENOENT and nothing else. EACCES, ELOOP
+    // and an ENOTDIR on an intermediate component still throw, and an uncaught
+    // throw exits 1 — the drift code — so a bad `--root` read as "the docs
+    // drifted", under a raw stack trace. Argument faults are 2, all of them.
+    fail(
+      `--root ${resolvedRoot} could not be read: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  if (rootStat?.isDirectory() !== true) {
     fail(`--root ${resolvedRoot} is not a directory.`);
   }
   return {
@@ -221,14 +272,38 @@ const { root: REPO_ROOT, sourceGlobs: SOURCE_GLOBS, docsGlobs: DOCS_GLOBS } = pa
  * time — the duplicate-declaration arm firing on one file, which is a false
  * diagnosis with a rename attached.
  */
-function scanFiles(globs: readonly string[]): readonly string[] {
+function scanFiles(root: string, globs: readonly string[]): readonly string[] {
   const files = new Set<string>();
   for (const glob of globs) {
-    for (const file of new Glob(glob).scanSync({ cwd: REPO_ROOT })) {
-      files.add(resolve(REPO_ROOT, file));
+    try {
+      for (const file of new Glob(glob).scanSync({ cwd: root })) {
+        files.add(resolve(root, file));
+      }
+    } catch (err) {
+      die(
+        `could not scan \`${glob}\` under ${root}: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
   return [...files].sort();
+}
+
+/**
+ * One scanned file's text.
+ *
+ * Unguarded on `main`, where the roots were constants and the glob could only
+ * ever list tracked files. With a caller-supplied root the scan can reach a
+ * half-written fixture tree, an unreadable mount, or a file deleted between
+ * `scanSync` and here — none of which is a snippet violation. See {@link die}.
+ */
+function readOrDie(abs: string, side: "source" | "docs"): string {
+  try {
+    return readFileSync(abs, "utf8");
+  } catch (err) {
+    die(
+      `could not read the ${side} file ${relative(REPO_ROOT, abs)}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 /** Only declarations in the product's own `Brain*` namespace are contracts. */
@@ -674,7 +749,7 @@ const problems: string[] = [];
 
 // ── Source side ─────────────────────────────────────────────────────────────
 const source = new Map<string, Declared>();
-for (const abs of scanFiles(SOURCE_GLOBS)) {
+for (const abs of scanFiles(REPO_ROOT, SOURCE_GLOBS)) {
   const rel = relative(REPO_ROOT, abs);
   // Tests and mocks may declare `Brain*` fixtures that are not the published
   // contract. Defensive rather than load-bearing — `exported-only` already
@@ -682,7 +757,7 @@ for (const abs of scanFiles(SOURCE_GLOBS)) {
   // otherwise shadow the real declaration.
   if (rel.includes("__tests__") || rel.includes("__mocks__")) continue;
   for (const [name, declared] of collect(
-    parse(readFileSync(abs, "utf8"), abs),
+    parse(readOrDie(abs, "source"), abs),
     rel,
     "exported-only",
   )) {
@@ -692,7 +767,7 @@ for (const abs of scanFiles(SOURCE_GLOBS)) {
       // compared against whichever file the scan happened to reach second.
       problems.push(
         `\`${name}\` is exported from BOTH ${existing.where} and ${rel}.\n` +
-          `  This gate compares a published snippet against one declaration per name, so a duplicate makes the comparison depend on scan order. Rename one, or narrow the source globs (\`--source-glob\`, default ${DEFAULT_SOURCE_GLOBS.join(", ")}).`,
+          `  This gate compares a published snippet against one declaration per name, so a duplicate makes the comparison depend on scan order. Rename one, or narrow the source globs in effect (${SOURCE_GLOBS.join(", ")}).`,
       );
       continue;
     }
@@ -713,9 +788,9 @@ if (source.size === 0) {
 // ── Doc side ────────────────────────────────────────────────────────────────
 const compared = new Set<string>();
 
-for (const abs of scanFiles(DOCS_GLOBS)) {
+for (const abs of scanFiles(REPO_ROOT, DOCS_GLOBS)) {
   const rel = relative(REPO_ROOT, abs);
-  const scan = scanTsFences(readFileSync(abs, "utf8"));
+  const scan = scanTsFences(readOrDie(abs, "docs"));
 
   if (scan.unterminatedAt !== null) {
     problems.push(

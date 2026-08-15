@@ -26,7 +26,10 @@
 # #4480.
 #
 # `assert_tree_clean` pins it: `git status --porcelain` is compared against its
-# start-of-run value after EVERY case, and the final fixture reports the count.
+# start-of-run value after EVERY case, and the final fixture asserts both that
+# nothing diverged AND that the checkpoint count equals the number of fixtures —
+# the second half because without it, deleting every checkpoint call leaves that
+# fixture reporting `ok … at any of 0 checkpoints`.
 #
 # ## The failure fixtures each assert a MARKER, not just a non-zero exit
 #
@@ -35,15 +38,20 @@
 # arm fired". Each `check fail` below names a substring only its own arm prints,
 # on `scripts/__tests__/check-docs-links.test.sh`'s precedent. Without this, a
 # review measured nine of the then-eleven fixtures satisfied by `process.exit(3)`
-# at the top of the guard — and it is load-bearing beyond that: several mutations
-# still exit 1 (they fall through to the vacuity floor), so ONLY the marker
-# distinguishes them.
+# at the top of the guard — and it is load-bearing beyond that: three of the
+# refusal-arm mutations still exit 1, so ONLY the marker distinguishes them.
 #
-# The `check pass` fixtures assert exit 0 and structurally cannot name a marker.
-# Those are the ones a no-op guard would satisfy — which is exactly what the
-# failure fixtures exist to rule out. `--root` is pinned by every one of them at
-# once: ignore the flag and the guard scans the REAL repo, which passes, so every
-# `fail` fixture goes red.
+# ⚠️ A marker that PREFIXES a longer message is the weak version of this, and it
+# was measured: `"…compared for: BrainSourceConnector"` also matches
+# `"…compared for: BrainSourceConnector, BrainSourceAudience."`, so two fixtures
+# stayed green against a docs side that read NOTHING. The floor markers end in
+# the message's own full stop for that reason.
+#
+# The `check pass` fixtures assert exit 0 and structurally cannot name a marker —
+# `check()` refuses one. Those are the ones a no-op guard would satisfy, which is
+# exactly what the failure fixtures exist to rule out. `--root` is pinned by every
+# one of them at once: ignore the flag and the guard scans the REAL repo, which
+# passes, so 23 of 24 went red on that single mutation.
 #
 # ## Coverage: three directions, the arms only a fixture can reach, and the roots
 #
@@ -54,22 +62,29 @@
 #   • vacuity   — the page stops publishing a floored contract, or the fence
 #                 scanner stops reading it, which is the failure mode a
 #                 discovered-both-sides guard is uniquely exposed to;
-#   • refusal   — three branches whose design claim is "loud, never a skip" (an
-#                 opaque real declaration, an opaque published snippet, an
-#                 interface/union mismatch), each of which could be turned into a
-#                 bare `continue` with the suite still green;
-#   • roots     — the source glob, the docs glob, and the empty-source and
-#                 duplicate-declaration arms, none of which was reachable while
-#                 the roots were constants.
+#   • refusal   — branches whose design claim is "loud, never a skip" (an opaque
+#                 real declaration, an opaque published snippet, an
+#                 interface/union mismatch, a name published twice on one page),
+#                 each of which could be turned into a bare `continue` with the
+#                 suite still green;
+#   • correct prose that must NOT fail — an elided fence and a commented-out
+#                 declaration ride on the default page, so the parse-error rule's
+#                 NEGATIVE direction is covered. That was the one thing the
+#                 synthetic tree would otherwise have lost: the previous suite
+#                 scanned the real `apps/docs`, where 75 of 407 `ts` fences carry
+#                 parse diagnostics for perfectly good reasons;
+#   • roots     — both globs, their repeatability, the empty-source and
+#                 duplicate-declaration arms, and the four exit-2 argv refusals,
+#                 none of which was reachable while the roots were constants.
 #
-# ## One arm is deliberately NOT fixtured, and injectable roots do not change that
+# ## Two arms are deliberately NOT fixtured, and injectable roots change neither
 #
-# `scan.fences.length !== scan.openedTsFences` in the guard is unreachable by
-# construction, not by lack of control over the roots: the only way to open a `ts`
-# fence and not extract it is to leave it unterminated, which sets
-# `unterminatedAt` and is reported first. It is a regression tripwire on the
-# scanner, and the guard's own comment says so. A fixture claiming to reach it
-# would be asserting something false.
+# `scan.fences.length !== scan.openedTsFences` is unreachable by construction:
+# the only way to open a `ts` fence and not extract it is to leave it
+# unterminated, which sets `unterminatedAt` and is reported first. And the
+# `__tests__`/`__mocks__` source filter is unexercised by BOTH trees — the real
+# one has no matching file either. A fixture claiming to reach the first would be
+# asserting something false; the second is defensive by the guard's own account.
 
 set -uo pipefail
 
@@ -105,7 +120,13 @@ seed_tree() {
   mkdir -p "$dir/$(dirname "$TYPES_REL")" "$dir/$(dirname "$TOOLS_REL")" \
            "$dir/$(dirname "$DOC_REL")" || exit 2
 
-  cat > "$dir/$TYPES_REL" <<'TYPES_EOF'
+  # ⚠️ `|| exit 2` on every write. On a full or read-only TMPDIR `mktemp -d` and
+  # `mkdir -p` both succeed and only the `cat` fails, leaving a docs page with no
+  # declarations behind it — at which point the empty-source fixture below
+  # reports `ok` for a reason that has nothing to do with `--source-glob`. This
+  # is the hazard the deleted backup-verification block reasoned about, one
+  # command over: the `cat` inherited the `cp`'s failure mode, not its check.
+  cat > "$dir/$TYPES_REL" <<'TYPES_EOF' || exit 2
 export type EpisodeSource = "chat" | "meeting";
 
 interface AudienceReverifier {
@@ -137,13 +158,22 @@ TYPES_EOF
   # A `Brain*` contract OUTSIDE `lib/brain/**`, mirroring the real
   # `BrainToolReason` in `lib/tools/search-brain.ts`. The source glob is
   # deliberately wider than `lib/brain`, and this is what a fixture can pin.
-  cat > "$dir/$TOOLS_REL" <<'TOOLS_EOF'
+  #
+  # ⚠️ The shared `mode` property is load-bearing and is the ONLY thing covering
+  # `discriminantOf`'s distinctness rule. That rule is measured in the guard —
+  # requiring only non-null tokens picked the first string-literal-typed property
+  # in every arm, which here is `mode`, collapsing both arms to one token and
+  # reporting a perfectly good union as uncomparable. Drop the distinctness test
+  # and this declaration becomes opaque, so the second-doc-file fixture's marker
+  # (a DRIFT message) stops matching and that fixture goes red.
+  cat > "$dir/$TOOLS_REL" <<'TOOLS_EOF' || exit 2
 export type BrainToolReason =
-  | { readonly kind: "grounded" }
-  | { readonly kind: "speculative" };
+  | { readonly mode: "shared"; readonly kind: "grounded" }
+  | { readonly mode: "shared"; readonly kind: "speculative" };
 TOOLS_EOF
 
-  write_doc "$dir/$DOC_REL" doc_connector_fence doc_audience_fence doc_vendor_fence
+  write_doc "$dir/$DOC_REL" doc_connector_fence doc_audience_fence doc_vendor_fence \
+    doc_elided_fence
 }
 
 # ── the contract page, emitted fence by fence ────────────────────────────────
@@ -158,6 +188,24 @@ TOOLS_EOF
 # write_doc <file> <emitter>... — frontmatter, then each emitter in order.
 write_doc() {
   local file="$1"; shift
+  # ⚠️ Validate the names BEFORE the redirect, and check each call.
+  #
+  # `{ …; } > file || exit 2` guards the REDIRECT, not the emitters: a group's
+  # status is its last command's, so a typo in any earlier emitter exits 127,
+  # bash writes `command not found` to stderr rather than into the page, and the
+  # fence is silently absent. Measured, and it is not harmless — the
+  # relabelled-fence fixture's marker is the vacuity floor, which an ABSENT
+  # connector fence reproduces exactly, so that fixture would report `ok`
+  # whichever way its emitter resolved. The validation loop is outside the
+  # redirect because inside it the error message would land in the fixture page.
+  local emitter
+  for emitter in "$@"; do
+    declare -F "$emitter" >/dev/null || {
+      echo "::error::write_doc: no such fence emitter \`$emitter\`" >&2
+      echo "::error::The fixture below would assert against a page missing that fence, which several markers match for the wrong reason. Fix the name." >&2
+      exit 2
+    }
+  done
   {
     cat <<'HEAD_EOF'
 ---
@@ -169,8 +217,7 @@ description: Fixture page built by scripts/__tests__/check-docs-brain-snippets.t
 
 This page is the contract.
 HEAD_EOF
-    local emitter
-    for emitter in "$@"; do "$emitter"; done
+    for emitter in "$@"; do "$emitter" || exit 2; done
   } > "$file" || exit 2
 }
 
@@ -264,6 +311,41 @@ interface BrainSourceVendorClient {
 EOF
 }
 
+# ⚠️ CORRECT PROSE THAT MUST NOT FAIL — carried on the DEFAULT page, so every
+# fixture's tree contains it and fixture 1 is the sentinel.
+#
+# This is the only coverage of the parse-error rule's negative direction, and it
+# is the one thing the synthetic seed would otherwise have lost: the previous
+# suite scanned the real `apps/docs` on every fixture, where 75 of 407 `ts`
+# fences carry parse diagnostics because they are legitimately elided. Relax the
+# guard's rule from `errors && spelled` to `errors` alone and the real tree
+# reports 75 problems — but a synthetic tree with no unparseable fence reports
+# none, so the mutation would be invisible here.
+#
+# Two fences, one for each measured false positive:
+#   • an ELIDED snippet — does not parse, spells no `Brain*` name;
+#   • a commented-out `Brain*` declaration in a fence that DOES parse, which the
+#     parser correctly ignores and a regex would not (the shape that failed a
+#     page keeping an "old shape, for reference" comment).
+doc_elided_fence() { cat <<'EOF'
+
+Eliding for brevity is normal prose, not a contract:
+
+```ts
+const connector = { source: "chat", … };
+```
+
+The old shape, kept for reference:
+
+```ts
+// interface BrainSourceConnectorLegacy {
+//   readonly source: EpisodeSource;
+// }
+const migrated = true;
+```
+EOF
+}
+
 # A `ts` fence NESTED in a 4-backtick `md` block: that block's content, not
 # published contract. Its body declares a `BrainSourceConnector` that agrees with
 # nothing.
@@ -308,6 +390,13 @@ tweak() {
 # editing the shared checkout produces the same reading — so the message names
 # both. It fails LOUD either way, which is the direction that matters: the shape
 # this replaces reverted a concurrent edit silently and printed "17 passed".
+#
+# Two boundaries worth stating rather than leaving to be over-read. It is what
+# `git status --porcelain` sees, so a write to a GITIGNORED path or to anywhere
+# outside `$ROOT` is invisible to it; and it is a CHECKPOINT comparison, so a
+# fixture that wrote a tracked file and restored it within one `check()` would
+# also pass. That second one is the shape #5172 deleted — this assertion catches
+# a regression that leaves RESIDUE, not one that cleans up after itself.
 TREE_SNAPSHOT="$(git -C "$ROOT" status --porcelain)" || exit 2
 CHECKPOINTS=0
 DIRTIED=0
@@ -324,6 +413,44 @@ assert_tree_clean() {
   fi
 }
 
+# ── one throwaway root for the whole run, cleaned up on every exit path ──────
+#
+# Not a restore trap — nothing tracked is written, so there is nothing to put
+# back. It exists because `seed_tree`, `write_doc` and `tweak` can all `exit 2`
+# with a per-case dir already created, and because SIGINT and SIGTERM leave one
+# behind too. Removing the RESTORE trap was the point of #5172; removing all
+# cleanup with it was collateral, and its only signal would have been disk usage.
+TMPROOT="$(mktemp -d)" || exit 2
+trap 'rm -rf "$TMPROOT"' EXIT INT TERM
+
+# report <ok> <name> <expected> <status> <marker> <tmp> <out> <argv...>
+report() {
+  local ok="$1" name="$2" expected="$3" status="$4" marker="$5" tmp="$6" out="$7"
+  shift 7
+  if [ "$ok" -eq 1 ]; then
+    echo "  ok   $name (expected $expected)"
+    PASS=$((PASS + 1))
+    [ -z "$tmp" ] || rm -rf "$tmp"
+    return
+  fi
+  echo "  FAIL $name — expected $expected, got status=$status" >&2
+  if [ -n "$marker" ]; then echo "       marker sought: $marker" >&2; fi
+  # The argv and the tree are the INPUT that produced this output, and the
+  # previous shape deleted the tree three lines before deciding the fixture had
+  # failed — leaving "expected fail, got status=0" with nothing to inspect and,
+  # for the glob fixtures, not even a record of which globs were passed. The
+  # sibling `check-scripts-typecheck.test.sh` carries the same lesson about
+  # destroying evidence before reporting it.
+  echo "       guard argv: $*" >&2
+  [ -z "$tmp" ] || echo "       tree KEPT under \$TMPROOT for inspection: $tmp" >&2
+  # `\n`, not `%s` bare: without the trailing newline the NEXT fixture's `FAIL`
+  # line is appended to this one's last output line, so a run with several
+  # failures reads as one. Inherited from the previous version and measured
+  # here — 21 failures printed as 1 greppable `FAIL` line.
+  printf '%s\n' "$out" | sed 's/^/       | /' >&2
+  FAIL=$((FAIL + 1))
+}
+
 # check <pass|fail> <name> <setup-fn> <marker> [extra guard args...]
 #
 # `fail` asserts exit status 1 — the guard's own violation code — AND that the
@@ -333,17 +460,25 @@ assert_tree_clean() {
 #
 # The guard runs from `$ROOT`, not from the fixture dir, so a `--root` the guard
 # ignored would scan the real repo — which passes — and every `fail` fixture
-# would go red.
+# would go red. Measured: 23 of 24 die on that one mutation.
 check() {
   local expected="$1" name="$2" setup_fn="$3" marker="$4"
   shift 4
+  # A `pass` fixture cannot assert a marker — the `pass` branch never reads one —
+  # so accepting a non-empty one would let a future fixture read as if it did.
+  if [ "$expected" = "pass" ] && [ -n "$marker" ]; then
+    echo "::error::a \`pass\` fixture cannot assert a marker (it only checks exit 0): $name" >&2
+    exit 2
+  fi
   local tmp out status=0
-  tmp="$(mktemp -d)" || exit 2
-  seed_tree "$tmp"
-  "$setup_fn" "$tmp" || { echo "::error::fixture setup failed: $name" >&2; rm -rf "$tmp"; exit 2; }
+  tmp="$(mktemp -d "$TMPROOT/case.XXXXXX")" || exit 2
+  seed_tree "$tmp" || {
+    echo "::error::could not seed the fixture tree at $tmp (TMPDIR full or read-only?)" >&2
+    exit 2
+  }
+  "$setup_fn" "$tmp" || { echo "::error::fixture setup failed: $name" >&2; exit 2; }
 
   out="$(cd "$ROOT" && bun "$GUARD" --root "$tmp" "$@" 2>&1)" || status=$?
-  rm -rf "$tmp"
 
   local ok=1
   if [ "$expected" = "pass" ]; then
@@ -356,19 +491,28 @@ check() {
     fi
   fi
 
-  if [ "$ok" -eq 1 ]; then
-    echo "  ok   $name (expected $expected)"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL $name — expected $expected, got status=$status" >&2
-    if [ -n "$marker" ]; then echo "       marker sought: $marker" >&2; fi
-    # `\n`, not `%s` bare: without the trailing newline the NEXT fixture's `FAIL`
-    # line is appended to this one's last output line, so a run with several
-    # failures reads as one. Inherited from the previous version and measured
-    # here — 21 failures printed as 1 greppable `FAIL` line.
-    printf '%s\n' "$out" | sed 's/^/       | /' >&2
-    FAIL=$((FAIL + 1))
-  fi
+  report "$ok" "$name" "$expected" "$status" "$marker" "$tmp" "$out" --root "$tmp" "$@"
+  assert_tree_clean "$name"
+}
+
+# check_refuse <name> <marker> <guard args...> — exit 2 on a malformed argv.
+#
+# ⚠️ Its own root is whatever the args say, INCLUDING nothing, so a relaxed
+# parser falls through to the real repo — which passes — and the fixture goes
+# red on the status. That is the point: `parseArgs`'s strictness is what stops a
+# fixture with a typo'd flag from asserting against a tree it never built, and
+# without these four fixtures the mechanism against fixtures-that-cannot-fail was
+# itself a mechanism that could not fail. Measured: relaxing any of the four arms
+# killed nothing in the suite.
+check_refuse() {
+  local name="$1" marker="$2"
+  shift 2
+  local out status=0
+  out="$(cd "$ROOT" && bun "$GUARD" "$@" 2>&1)" || status=$?
+  local ok=1
+  [ "$status" -eq 2 ] || ok=0
+  printf '%s' "$out" | grep -qF -- "$marker" || ok=0
+  report "$ok" "$name" "exit 2" "$status" "$marker" "" "$out" "$@"
   assert_tree_clean "$name"
 }
 
@@ -391,8 +535,11 @@ check fail "a snippet missing the required \`audience\` member trips the gate" \
 doc_audience_optional() {
   tweak "$1/$DOC_REL" 's/^  readonly audience: BrainSourceAudienceFor<S>;$/  readonly audience?: BrainSourceAudienceFor<S>;/'
 }
+# The marker names the CLASSIFICATION, not just the token. `readonly audience?`
+# alone is also printed by the `page:` echo line, so it would pass without the
+# guard ever deciding the member was invented.
 check fail "a required member published as optional trips the gate" \
-  doc_audience_optional "readonly audience?"
+  doc_audience_optional "NOT IN the real declaration (member the snippet invents): readonly audience?"
 
 # Drop the `readonly` modifier. A snippet that says a field is mutable is the
 # same class of lie as one that says it is optional.
@@ -427,6 +574,17 @@ doc_drop_arm() {
 }
 check fail "a published union missing an arm trips the gate" \
   doc_drop_arm 'MISSING from the snippet (arm the real declaration has): readonly kind:"externally-synced"'
+
+# The ARM-level twin of the optional-member fixture above, and the only one of the
+# pair that guards a FLOORED declaration. `armToken` carries the discriminant's
+# own `readonly` and `?` for a measured reason — without them a snippet
+# publishing `{ kind?: "reverified" }` compared EQUAL to a real
+# `{ readonly kind: "reverified" }` — and dropping the `?` half killed no fixture.
+doc_arm_optional_discriminant() {
+  tweak "$1/$DOC_REL" 's/^  | { readonly kind: "reverified"; readonly reverifier: AudienceReverifier }$/  | { readonly kind?: "reverified"; readonly reverifier: AudienceReverifier }/'
+}
+check fail "a union arm whose discriminant is published as OPTIONAL trips the gate" \
+  doc_arm_optional_discriminant 'NOT IN the real declaration (arm the snippet invents): readonly kind?:"reverified"'
 
 # --- code side: the interface moves, the page does not -----------------------
 # The direction a feature PR actually produces.
@@ -481,6 +639,18 @@ doc_nonexistent() {
 check fail "a snippet for a nonexistent Brain* declaration trips the gate" \
   doc_nonexistent "is not an exported Brain* declaration"
 
+# The same declaration published TWICE on one page. Its own comment calls a
+# before/after pair a normal docs idiom, so last-write-wins would make the WRONG
+# half invisible — yet replacing the arm with a silent skip killed no fixture.
+# It was reachable only INCIDENTALLY, as the failure mode of the nested-`md` pass
+# fixture below: an assertion nobody had written down.
+doc_duplicate_declaration() {
+  write_doc "$1/$DOC_REL" doc_connector_fence doc_audience_fence doc_vendor_fence \
+    doc_elided_fence doc_connector_fence
+}
+check fail "the same declaration published twice on one page is refused" \
+  doc_duplicate_declaration "declares \`BrainSourceConnector\` more than once"
+
 # --- the roots: both globs, and the two arms only they can reach -------------
 # ⚠️ ONE fixture pins BOTH default globs, and the choice of declaration is what
 # does it. A second doc FILE pins the docs glob. Declaring `BrainToolReason` —
@@ -489,7 +659,7 @@ check fail "a snippet for a nonexistent Brain* declaration trips the gate" \
 # snippet stops resolving, so the gate reports "not an exported Brain*
 # declaration" instead of a drift and the marker below no longer matches.
 second_doc_file() {
-  cat > "$1/apps/docs/content/shared/guides/tool-reason.mdx" <<'PROBE_EOF'
+  cat > "$1/apps/docs/content/shared/guides/tool-reason.mdx" <<'PROBE_EOF' || exit 2
 ---
 title: Tool reasons
 ---
@@ -512,7 +682,7 @@ check fail "a source glob that matches nothing is refused, not passed vacuously"
 # glob at a subtree with no contract page leaves the gate with nothing compared,
 # which is the vacuity floor's job.
 check fail "a docs glob that excludes the contract page trips the vacuity floor" \
-  noop "no published snippet was compared for: BrainSourceConnector, BrainSourceAudience" \
+  noop "no published snippet was compared for: BrainSourceConnector, BrainSourceAudience." \
   --docs-glob 'apps/docs/content/shared/reference/**/*.mdx'
 
 # Two source files exporting one name make the comparison depend on scan order,
@@ -520,7 +690,7 @@ check fail "a docs glob that excludes the contract page trips the vacuity floor"
 # were constants — it needs a second declaration of a real contract name.
 duplicate_source() {
   mkdir -p "$1/packages/other/src" || exit 2
-  cat > "$1/packages/other/src/dup.ts" <<'DUP_EOF'
+  cat > "$1/packages/other/src/dup.ts" <<'DUP_EOF' || exit 2
 export interface BrainSourceVendorClient {
   readonly close: () => void;
 }
@@ -528,6 +698,38 @@ DUP_EOF
 }
 check fail "the same Brain* name exported from two source files is refused" \
   duplicate_source "is exported from BOTH packages/api/src/lib/brain/ingest/types.ts and packages/other/src/dup.ts"
+
+# Overlapping globs must not make a file collide with ITSELF. `scanFiles`
+# de-duplicates for exactly this reason, and it is new in #5172 because the globs
+# only became caller-supplied here — remove the `Set` and this reports
+# `BrainSourceConnector` "exported from BOTH types.ts and types.ts", the same
+# file named twice, with a rename attached as the remedy. This is also the suite's
+# only proof that the glob flags are REPEATABLE.
+check pass "overlapping source globs do not make a file collide with itself" noop "" \
+  --source-glob 'packages/*/src/**/*.ts' --source-glob 'packages/api/src/**/*.ts'
+
+# --- the strict parser: exit 2, never a fall-back to the real repo -----------
+# These four have no `--root` of their own on purpose. Relax any of the arms and
+# the guard falls through to the repo it is running in, which PASSES — so the
+# fixture goes red on the status. That is the property `parseArgs`'s docstring
+# claims, and until these existed all four arms could be deleted with the suite
+# still 25/25.
+check_refuse "an unknown argument is exit 2, not a silent fall-back to the real repo" \
+  "unknown argument" --bogus x
+check_refuse "a bare positional argument is refused" \
+  "unknown argument" apps/docs
+# The empty string is the sharp case: it is neither absent nor `-`-prefixed, and
+# `resolve("")` is the process cwd — the real repo, which passes.
+check_refuse "an EMPTY --root is exit 2, not the process cwd" \
+  "requires a non-empty value" --root ""
+check_refuse "a flag whose value is another flag is exit 2" \
+  "requires a non-empty value" --source-glob --docs-glob 'x'
+check_refuse "--root given twice is exit 2, not last-wins" \
+  "may be given at most once" --root /tmp --root /tmp
+# `$GUARD` is a file that always exists, so this reaches the isDirectory() arm
+# rather than the ENOENT one.
+check_refuse "a --root that is not a directory is exit 2" \
+  "is not a directory" --root "$GUARD"
 
 # --- the fence scanner: every silent-skip hole gets a fixture ---------------
 # An INDENTED fence (the convention inside a numbered step or a JSX child) was
@@ -585,7 +787,7 @@ doc_relabel_fence() {
   write_doc "$1/$DOC_REL" doc_connector_fence_text doc_audience_fence doc_vendor_fence
 }
 check fail "relabelling the contract fence away from \`\`\`ts trips the vacuity floor" \
-  doc_relabel_fence "no published snippet was compared for: BrainSourceConnector"
+  doc_relabel_fence "no published snippet was compared for: BrainSourceConnector."
 
 # Rename the published interface so no `BrainSourceConnector` snippet exists.
 # A plausible partial page: the fence is still ```ts and still parses, so only
@@ -594,7 +796,7 @@ doc_rename_interface() {
   tweak "$1/$DOC_REL" 's/^interface BrainSourceConnector<S extends EpisodeSource = EpisodeSource> {$/interface ConnectorSketch {/'
 }
 check fail "a contract snippet renamed out of the Brain* namespace trips the vacuity floor" \
-  doc_rename_interface "no published snippet was compared for: BrainSourceConnector"
+  doc_rename_interface "no published snippet was compared for: BrainSourceConnector."
 
 # The SECOND floored name. Deleting the whole `BrainSourceAudience` fence left the
 # gate green when only BrainSourceConnector was floored — so the union half of
@@ -603,12 +805,24 @@ doc_delete_audience_fence() {
   write_doc "$1/$DOC_REL" doc_connector_fence doc_vendor_fence
 }
 check fail "deleting the whole BrainSourceAudience fence trips the vacuity floor" \
-  doc_delete_audience_fence "no published snippet was compared for: BrainSourceAudience"
+  doc_delete_audience_fence "no published snippet was compared for: BrainSourceAudience."
 
 # --- the suite itself wrote nothing tracked ---------------------------------
-if [ "$DIRTIED" -eq 0 ]; then
+#
+# ⚠️ The CHECKPOINT COUNT is half the assertion, and without it this fixture —
+# the one that asserts #5172's entire headline claim — cannot fail. Measured:
+# delete every `assert_tree_clean` call from `check()` and `DIRTIED` stays 0, so
+# the suite printed `ok … at any of 0 checkpoints` and reported 25 passed. It
+# even printed the 0. Tying the count to the number of fixtures run is what makes
+# "no tracked file was mutated" a statement about the run rather than about an
+# empty set.
+CASES=$((PASS + FAIL))
+if [ "$DIRTIED" -eq 0 ] && [ "$CHECKPOINTS" -eq "$CASES" ]; then
   echo "  ok   no tracked file was mutated at any of $CHECKPOINTS checkpoints (expected pass)"
   PASS=$((PASS + 1))
+elif [ "$CHECKPOINTS" -ne "$CASES" ]; then
+  echo "  FAIL the tree was checked $CHECKPOINTS times for $CASES fixtures — the assert_tree_clean call has been removed from a fixture runner, so this assertion covers less than it claims" >&2
+  FAIL=$((FAIL + 1))
 else
   echo "  FAIL the working tree diverged at $DIRTIED of $CHECKPOINTS checkpoints" >&2
   FAIL=$((FAIL + 1))

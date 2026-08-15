@@ -120,7 +120,7 @@
 	# ── END /self-hosted section redirects (#4267) ───────────────────────────
 
 	# ── BEGIN brain-* -> atlas-* guide renames (#5083) ───────────────────────
-	# ADR-0038 Layer 1 renamed the product noun to Company Atlas. The seven
+	# ADR-0038 Layer 1 renamed the product noun to Company Atlas. The
 	# brain guides took the new noun in their titles and prose (PR #5084); this
 	# block retires their old URLs, which still said "brain". Same shape as the
 	# /self-hosted block directly above: an EXACT-path bare + trailing-slash 308
@@ -145,8 +145,9 @@
 	# apps/docs/src/lib/__tests__/redirect-coverage.test.ts fails if this block
 	# and that map drift apart, if a redirect here is not a 308, if a target
 	# 404s, if a brain-named guide is still on disk, if a section nav still
-	# lists one, or if anything in the repo still links to a retired URL. Keep
-	# the two in lockstep.
+	# lists one, or if a retired URL survives in the roots that test walks
+	# (the docs content and source, apps/www, packages/web, three READMEs —
+	# not the whole repo). Keep the two in lockstep.
 	redir /guides/brain-sources /guides/atlas-sources 308
 	redir /guides/brain-sources/ /guides/atlas-sources/ 308
 	redir /guides/brain-conflicts /guides/atlas-conflicts 308

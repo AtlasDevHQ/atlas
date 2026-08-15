@@ -42,6 +42,10 @@
  *    trailing-slash 308 for each entry, that each target resolves to a real page
  *    (no 404), that the old root file is gone (no shadowed live page), and that
  *    no *other* moved page under content/self-hosted/ is missing from this map.
+ *    Its reverse sweep also rejects a `redir` it cannot parse, one carrying a
+ *    status other than 308, and one whose two endpoints belong to different
+ *    entries — each of which was, at some point, a way to ship a bad redirect
+ *    past a green suite.
  */
 
 /**
@@ -66,20 +70,27 @@ export const MOVED_SELF_HOSTED_SLUGS = [
   "contributing/eval-harness",
 ] as const;
 
+export type MovedSelfHostedSlug = (typeof MOVED_SELF_HOSTED_SLUGS)[number];
+
 export interface DocRedirect {
   /** Slug shared by the old and new URL (the clean-prefix move). */
-  readonly slug: string;
+  readonly slug: MovedSelfHostedSlug;
   /**
-   * Pre-split public URL at the site root, no trailing slash. The `/${string}`
-   * template type makes the leading slash a compile error to omit.
+   * Pre-split public URL at the site root, no trailing slash. Pinned to the
+   * move set: a `from` naming a slug outside it is a compile error.
    */
-  readonly from: `/${string}`;
+  readonly from: `/${MovedSelfHostedSlug}`;
   /**
-   * Post-split URL under the `/self-hosted` section, no trailing slash. The
-   * `/self-hosted/${string}` template type makes a target outside the section a
-   * compile error — the prefix invariant is enforced, not just documented.
+   * Post-split URL under the `/self-hosted` section, no trailing slash. A
+   * target outside the section, or one naming a different page than `from`
+   * does, is a compile error.
+   *
+   * The looser `/self-hosted/${string}` this used to carry pinned the section
+   * but not the slug, so an entry whose two endpoints named DIFFERENT pages
+   * compiled clean. That is the same hole `GuideRenameRedirect` was tightened
+   * out of below; closing one member of a two-member class is not closing it.
    */
-  readonly to: `/self-hosted/${string}`;
+  readonly to: `/self-hosted/${MovedSelfHostedSlug}`;
 }
 
 /**
@@ -189,7 +200,10 @@ export interface GuideRenameRedirect {
  * (`from/` -> `to/`) 308 per entry; `redirect-coverage.test.ts` fails if any of
  * the four lines per stem is missing, if one of them is not a 308, if a target
  * 404s, if a `brain-*` guide is still on disk, if a section nav still lists
- * one, or if anything in the repo still links to a retired URL.
+ * one, or if a retired URL survives in the docs content, the docs source,
+ * `apps/www`, `packages/web` or the three READMEs the scan names. It does NOT
+ * walk the whole repo — a reference under `packages/api` or `scripts` is
+ * outside it, so a rename still owes a grep.
  *
  * The root mount is spelled `""`, so `${mount}/guides/…` supplies the leading
  * slash on its own and the template literal types hold in every arm without a

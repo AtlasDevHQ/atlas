@@ -26,11 +26,11 @@ import { warehouseRowId, type WarehouseRowId } from "@atlas/api/lib/brain/wareho
 /**
  * A REAL minted id, not a `wh_a` cast.
  *
- * ⚠️ The resolver DROPS a row whose id is not the minted shape (#5232) — the
- * region importer is a second writer of `brain_entity` and a bundle is
- * untrusted — so a placeholder makes every resolver assertion below vacuous.
- * The pure functions (`resolvableIds`, `entityEdgeProposals`) do not check, but
- * one spelling for both keeps the file honest.
+ * ⚠️ A row whose id is not the minted shape never RESOLVES, though it still
+ * POISONS its norm (#5232) — dropping it outright was a fail-open. So a
+ * placeholder id makes every resolver assertion below vacuous. `resolvableIds`
+ * and `entityEdgeProposals` check it too; one spelling for all three keeps the
+ * file honest.
  */
 const id = (seed: string) => warehouseRowId("ws", "accounts", seed);
 
@@ -345,7 +345,7 @@ describe("entityEdgeProposals", () => {
       entityEdgeProposals([
         entry({ entityId: "a", keySurface: "Acme Corp", canonicalSurface: "acme corp" }),
       ]),
-    ).toEqual({ proposals: [], selfEdges: 1, ambiguous: 0 });
+    ).toEqual({ proposals: [], selfEdges: 1, ambiguous: 0, unmintedIds: 0 });
   });
 
   it("refuses BOTH sides of an ambiguous name, and emits for the third entity", () => {
@@ -378,6 +378,28 @@ describe("entityEdgeProposals", () => {
     ]);
     expect(batch.proposals.map((p) => `${p.fromNorm}->${p.toNorm}`)).toEqual(["3->gamma", "3->gamma"]);
     expect(batch.ambiguous).toBe(2);
+  });
+
+  it("counts a natural-key entry as AMBIGUOUS when its name collides, not as a self-edge", () => {
+    // ⚠️ The ORDER of the two checks, and it was wrong. With the self-edge test
+    // first, a natural-key table whose rows share a name (`Acme` as the primary
+    // key of two entities) counted two benign `selfEdges` and reported
+    // `ambiguous: 0` — so the producer's warn never fired and the run said
+    // nothing was wrong about a store in which NEITHER entity resolves by name.
+    // A self-edge is only benign when the name is unambiguous.
+    const batch = entityEdgeProposals([
+      entry({ entityId: "a", entity: "accounts", keySurface: "Acme", canonicalSurface: "acme" }),
+      entry({ entityId: "b", entity: "contacts", keySurface: "ACME", canonicalSurface: "Acme" }),
+    ]);
+    expect(batch.ambiguous).toBe(2);
+    expect(batch.selfEdges).toBe(0);
+    // The control, from the same call: an UNAMBIGUOUS natural key is still a
+    // self-edge, so this is about the collision rather than about natural keys.
+    const clean = entityEdgeProposals([
+      entry({ entityId: "c", entity: "accounts", keySurface: "Gamma", canonicalSurface: "gamma" }),
+    ]);
+    expect(clean.selfEdges).toBe(1);
+    expect(clean.ambiguous).toBe(0);
   });
 
   it("carries NO id on any proposal — the claim two docstrings depend on", () => {
@@ -414,6 +436,6 @@ describe("entityEdgeProposals", () => {
       entry({ entityId: "a", entity: "accounts", keySurface: "1", canonicalSurface: "Acme" }),
       entry({ entityId: "b", entity: "contacts", keySurface: "9", canonicalSurface: "Acme" }),
     ]);
-    expect(batch).toEqual({ proposals: [], selfEdges: 0, ambiguous: 2 });
+    expect(batch).toEqual({ proposals: [], selfEdges: 0, ambiguous: 2, unmintedIds: 0 });
   });
 });

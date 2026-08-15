@@ -39,6 +39,7 @@ import {
   ENTITY_STORE_INSERT_SQL,
   ENTITY_EDGE_PRODUCER,
   type EntityStoreEntry,
+  type StoredEntity,
 } from "@atlas/api/lib/brain/entity-store";
 import type {
   AliasProducerCounters,
@@ -1795,7 +1796,21 @@ describe("the entity store", () => {
     // "nobody has named anything", whose next action is to go name something.
     // The message travels because "it failed" without a reason is a 500 with
     // extra steps.
-    expect(report.entityEdgesFailed).toBe("vocabulary lock timeout");
+    // ⚠️ **The failure is REPORTED but the driver's text is NOT.** Both throw
+    // sources are internal-DB-backed, so `err.message` here is a `pg` string —
+    // `FATAL: password authentication failed for user "atlas"`, a host, a role.
+    // The first cut of this field put it straight in a 200 body, which is the
+    // one thing this file already refuses for `snapshot-failed`.
+    expect(report.entityEdgesFailed).not.toBeNull();
+    expect(report.entityEdgesFailed).not.toContain("vocabulary lock timeout");
+    // …and it carries the handle that makes the real reason findable, which is
+    // what stops the redaction from being a dead end.
+    expect(report.entityEdgesFailed).toContain("req-1");
+    // ⚠️ It must NOT claim the clean case either. `proposeAliasEdges` commits
+    // PER PROPOSAL, so a mid-batch throw leaves approved edges behind — and an
+    // auto-approved entity edge re-keys the corpus. "No vocabulary edge was
+    // raised this run" was false in exactly that case.
+    expect(report.entityEdgesFailed).not.toContain("no vocabulary edge was raised");
   });
 
   test("a run with NOTHING to do is distinguishable from a run that FAILED", async () => {
@@ -1818,6 +1833,50 @@ describe("the entity store", () => {
     // byte-identical on the wire.
     expect(report.entityEdgesFailed).toBeNull();
     expect(report.entityEdgesAmbiguous).toBe(0);
+  });
+
+  test("the edge pass runs even when EVERY enrolled pair was refused", async () => {
+    // ⚠️ Removing the `entitiesStored > 0` gate was only half the fix: the pass
+    // still sat below the `plan.emit.length === 0` early return, so a run where
+    // every pair was refused — expired warehouse credentials, an entity
+    // un-published — skipped it while `brain_entity` still held every row.
+    // Un-enrolling deletes no entry and no reaper exists yet, so that is exactly
+    // the run an operator is staring at when they ask why the store stopped
+    // working, and it reported `entityEdgesAmbiguous: 0` over a store that may
+    // be entirely ambiguous.
+    const h = harness({
+      pairs: [{ entity: "Ghost", dimension: "tier", naming: false }],
+      // Not in the published semantic layer → every pair refused → `emit` empty.
+      entities: { Ghost: null },
+      entityStore: async () => [
+        {
+          entityId: warehouseRowId(WORKSPACE, "Accounts", "ACC-42"),
+          entity: "Accounts",
+          keySurface: "ACC-42",
+          keyNorm: "acc 42",
+          canonicalSurface: "Acme",
+          canonicalNorm: "acme",
+        },
+        {
+          entityId: warehouseRowId(WORKSPACE, "Contacts", "C-9"),
+          entity: "Contacts",
+          keySurface: "C-9",
+          keyNorm: "c 9",
+          canonicalSurface: "acme",
+          canonicalNorm: "acme",
+        },
+      ] satisfies readonly StoredEntity[],
+    });
+
+    const report = await run(h);
+
+    // Nothing emitted — the reach really was empty of producible pairs…
+    expect(report.entities).toEqual([]);
+    expect(report.refusals.length).toBeGreaterThan(0);
+    // …and the edge pass ran anyway, over the PERSISTED store, and found the
+    // collision. `0` here is the report saying "no name collisions" about a
+    // store where neither entity resolves.
+    expect(report.entityEdgesAmbiguous).toBe(2);
   });
 
   test("the edge pass runs even when THIS run stored nothing — the re-run case", async () => {

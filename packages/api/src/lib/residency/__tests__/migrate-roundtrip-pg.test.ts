@@ -549,7 +549,17 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       // are `skipped`. `namingDropped: 1` is the arriving `accounts/arr_band`
       // flag the local decision beat — a counter, because `imported + skipped`
       // structurally cannot say "the row landed and its decision did not".
-      expect(result.brainEnrollments).toEqual({ imported: 1, skipped: 2, namingDropped: 1 });
+      // ⚠️ FOUR numbers, and `namingApplied: 1` is the one that was missing.
+      // `subscriptions/plan` arrives named, the destination holds the pair
+      // UNNAMED, so the flag is applied by a follow-up UPDATE — a write that
+      // makes the next producer run re-key every fact about that entity. It was
+      // reported as `skipped`, which everywhere else means "nothing happened".
+      expect(result.brainEnrollments).toEqual({
+        imported: 1,
+        skipped: 2,
+        namingDropped: 1,
+        namingApplied: 1,
+      });
       // One new entry landed; the one the destination already snapshotted is
       // `skipped` (#5043). Different numbers deliberately — `{1, 1}` would be
       // satisfiable by an importer that counted every row into one bucket only
@@ -1069,7 +1079,12 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         // the destination now names the SAME dimension the bundle names, and
         // nothing is being discarded. Counting that as a drop reported a human
         // decision lost on the most routine path there is.
-        brainEnrollments: { imported: 0, skipped: 3, namingDropped: 1 },
+        // `namingApplied: 0` on the re-import: the decision is already applied,
+        // so `alreadyApplied` short-circuits before the UPDATE. THREE of the four
+        // differ from the first pass — `namingDropped` is 1 in both, so a swap
+        // involving that one is caught by the table-state assertion rather than
+        // here. (An earlier version of this line claimed all four differed.)
+        brainEnrollments: { imported: 0, skipped: 3, namingDropped: 1, namingApplied: 0 },
         // Both entries already here from the first import (#5043).
         brainEntities: { imported: 0, skipped: 2 },
       });

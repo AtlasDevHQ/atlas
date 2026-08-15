@@ -1014,6 +1014,7 @@ const ImportResultSchema = z.object({
     imported: z.number(),
     skipped: z.number(),
     namingDropped: z.number(),
+    namingApplied: z.number(),
   }),
   // TWO counters, on `brainEnrollments`' reasoning (#5043). `entity_id` is a
   // digest of `(workspace, entity, primary key)`, so two regions holding one id
@@ -1714,7 +1715,7 @@ export async function importBundle(
     factAudienceMembers: { imported: 0, skipped: 0 },
     brainVocabularyEdges: { imported: 0, skipped: 0, refused: 0 },
     brainSlackChannelExclusions: { imported: 0, skipped: 0, refused: 0 },
-    brainEnrollments: { imported: 0, skipped: 0, namingDropped: 0 },
+    brainEnrollments: { imported: 0, skipped: 0, namingDropped: 0, namingApplied: 0 },
     brainEntities: { imported: 0, skipped: 0 },
   };
 
@@ -2335,11 +2336,36 @@ export async function importBundle(
       // (b). One UPDATE, the same shape `setNamingDimension` uses, rather than
       // an `ON CONFLICT DO UPDATE` on the whole row — the row's `enrolled_by`,
       // `enrolled_at` and `note` must stay the destination's.
-      await client.query(
+      const applied = await client.query(
         `UPDATE brain_enrollment SET naming = true
           WHERE workspace_id = $1 AND entity = $2 AND dimension = $3 AND NOT naming`,
         [orgId, enrollment.entity, enrollment.dimension],
       );
+      // ⚠️ **COUNTED, because `skipped` says the opposite of what happened.**
+      // Everywhere else `skipped` means "this region already holds it" — and it
+      // holds the PAIR, not the DECISION. This UPDATE is what makes the
+      // destination's next producer run write entity-store entries and raise an
+      // edge that RE-KEYS every fact about the entity, which is the blast radius
+      // `setNamingDimension` puts behind an owner/admin bar. Reporting it under
+      // a counter that reads "nothing happened" is the silence `namingDropped`
+      // was added to end, one branch over — so the positive twin exists too.
+      if ((applied.rowCount ?? 0) > 0) {
+        result.brainEnrollments.namingApplied++;
+        log.info(
+          { orgId, entity: enrollment.entity, dimension: enrollment.dimension },
+          "Region import: applied an arriving naming dimension to a pair this region already held " +
+            "unnamed — the next producer run re-keys every fact about that entity",
+        );
+      } else {
+        // Zero rows: something changed the row between the SELECT that seeded
+        // `namedEntities` and here. Not silent — the human decision is lost.
+        result.brainEnrollments.namingDropped++;
+        log.warn(
+          { orgId, entity: enrollment.entity, dimension: enrollment.dimension },
+          "Region import: the arriving naming dimension matched no row to update — it was " +
+            "changed concurrently. The decision is NOT applied; re-name it by hand",
+        );
+      }
     }
   }
 
@@ -2357,11 +2383,12 @@ export async function importBundle(
   // radius arriving from a direction nobody is watching. Under-restoring is
   // recoverable by re-running the producer; a wrong re-key is not.
   //
-  // Deliberately BEFORE the facts below. The facts carry `subject_cmp` values
-  // that are these ids, so landing the store first means there is never a
-  // moment where a fact references an id the store cannot explain — which is
-  // not an FK (there is none, by design) but is the order a reader of a
-  // half-finished import needs.
+  // Before the facts below, though nothing depends on it: `regionPortableComparable`
+  // classifies the `entity:` tag `store-local`, so this importer NULLS an
+  // entity-valued `_cmp` on every arriving fact and none of them references an
+  // entry. The order is for a reader of a half-finished import, not a
+  // constraint — and an earlier version of this comment claimed otherwise,
+  // which is the claim `bundle-scope.ts` corrects two files away.
   for (const entry of bundle.brainEntities ?? []) {
     const { rows } = await client.query(
       `INSERT INTO brain_entity

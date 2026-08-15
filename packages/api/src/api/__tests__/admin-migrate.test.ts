@@ -265,7 +265,7 @@ describe("bundle round-trip shape", () => {
       // Three counters here alone (#5036).
       brainVocabularyEdges: { imported: 1, skipped: 4, refused: 6 },
       brainSlackChannelExclusions: { imported: 2, skipped: 1, refused: 0 },
-      brainEnrollments: { imported: 3, skipped: 1, namingDropped: 2 },
+      brainEnrollments: { imported: 3, skipped: 1, namingDropped: 2, namingApplied: 4 },
       brainEntities: { imported: 6, skipped: 2 },
     };
 

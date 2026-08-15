@@ -58958,12 +58958,16 @@
                         },
                         "namingDropped": {
                           "type": "number"
+                        },
+                        "namingApplied": {
+                          "type": "number"
                         }
                       },
                       "required": [
                         "imported",
                         "skipped",
-                        "namingDropped"
+                        "namingDropped",
+                        "namingApplied"
                       ]
                     },
                     "brainEntities": {

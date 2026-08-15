@@ -186,7 +186,12 @@ describeIfPg("the entity store (#5043)", () => {
   }, PG_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
-    await pool.query(`DELETE FROM brain_entity WHERE workspace_id = $1`, [WORKSPACE]);
+    // UNSCOPED, deliberately: the isolation test above writes a second
+    // workspace's row, and a scoped cleanup leaves it behind when an assertion
+    // fails — which makes the FIRST failure cascade into later ones. `afterEach`
+    // rather than a per-test `finally`, because a `finally` is bookkeeping the
+    // next test author forgets.
+    await pool.query(`DELETE FROM brain_entity`);
     await pool.query(`DELETE FROM brain_vocabulary_target WHERE workspace_id = $1`, [WORKSPACE]);
     await pool.query(`DELETE FROM brain_vocabulary_edge WHERE workspace_id = $1`, [WORKSPACE]);
     await pool.query(`DELETE FROM brain_vocabulary_proposal WHERE workspace_id = $1`, [WORKSPACE]);
@@ -252,11 +257,21 @@ describeIfPg("the entity store (#5043)", () => {
         workspaceId: WORKSPACE,
       });
       expect(answer.has("Acme Corp")).toBe(false);
+
+      // ⚠️ **THE ASSERTION THIS TEST WAS MISSING, and without it the test passed
+      // for the OPPOSITE reason.** `writeEntityEntries` DELETEs before it
+      // inserts; drop the `workspace_id` predicate from that DELETE and the
+      // second write above wipes `ws-other`'s row — after which "Acme Corp does
+      // not resolve here" is true because the row is GONE, not because it is
+      // scoped away. One workspace's producer run would silently destroy every
+      // other workspace's entries for the same entity name.
+      const other = await pool.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM brain_entity WHERE workspace_id = 'ws-other'`,
+      );
+      expect(other.rows[0]?.n).toBe("1");
       // The control: this workspace's own entry answers on the same call, so the
       // negative above is scoping rather than an empty read.
       expect(answer.has("Local Only")).toBe(true);
-
-      await pool.query(`DELETE FROM brain_entity WHERE workspace_id = 'ws-other'`);
     },
     PG_TEST_TIMEOUT_MS,
   );
@@ -560,6 +575,108 @@ describeIfPg("the entity store (#5043)", () => {
       // that rewrote `subject` would reintroduce at the entity position the
       // irreversibility ADR-0037 §8 spent a section designing out.
       expect(facts.rows.map((r) => r.subject)).toEqual(["Acme Corp", "Nobody Ltd"]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "a row whose id no producer could have minted never resolves — and still POISONS",
+    async () => {
+      // ⚠️ The guard at the site that reaches `subject_cmp` was UNFALSIFIABLE:
+      // deleting it left 197 unit tests and 8 `-pg` tests green, because nothing
+      // in the tree ever put a non-minted id in the table. Migration 0200 CHECKs
+      // only `entity_id <> ''`, so the row is perfectly insertable — the DB is
+      // not the second door, which is the other half of what this pins.
+      await writeEntityEntries(exec, {
+        workspaceId: WORKSPACE,
+        entity: "accounts",
+        entries: [entry({ entity: "accounts", keySurface: "ACC-42", canonicalSurface: "Acme Corp" })],
+        snapshotAt: new Date("2026-08-14T10:00:00Z"),
+      });
+      // Raw INSERT: a bundle that got past an older validator, or a hand edit.
+      // SAME canonical name as the row above, which is what makes the second
+      // assertion mean something.
+      await pool.query(
+        `INSERT INTO brain_entity
+           (workspace_id, entity_id, entity, key_surface, key_norm, canonical_surface, canonical_norm, snapshot_at)
+         VALUES ($1, '1', 'accounts', 'ACC-99', 'acc 99', 'Acme Corp', 'acme corp', now())`,
+        [WORKSPACE],
+      );
+
+      const answer = await entityStoreResolver()(new Set(["ACC-99", "ACC-42", "Acme Corp"]), {
+        workspaceId: WORKSPACE,
+      });
+      // The forged row never answers — it would reach `subject_cmp` as a value
+      // no producer minted, which compares equal to nothing and unequal to
+      // everything.
+      expect(answer.has("ACC-99")).toBe(false);
+      // ⚠️ **AND IT STILL POISONS.** Dropping forged rows BEFORE computing
+      // ambiguity was a fail-OPEN: the minted twin then owned `Acme Corp` and
+      // got an edge the fail-closed rule had refused. Two entities, one name,
+      // one of them unusable — the honest answer is that neither resolves.
+      expect(answer.has("Acme Corp")).toBe(false);
+      // The control from the same call: the minted row's KEY still resolves, so
+      // this is poisoning rather than a read that returned nothing.
+      expect(answer.get("ACC-42")).toEqual({
+        entityId: warehouseRowId(WORKSPACE, "accounts", "ACC-42"),
+      });
+
+      // `loadEntityStore` keeps the row (poisoning needs it) and the edge
+      // producer counts it apart from ordinary ambiguity, because the remedy is
+      // a re-import rather than a warehouse edit.
+      const stored = await loadEntityStore(WORKSPACE);
+      expect(stored).toHaveLength(2);
+      const batch = entityEdgeProposals(stored);
+      // ⚠️ DISJOINT. The unminted row is counted ONCE, under the counter whose
+      // remedy is a re-import — not also under `ambiguous`, whose remedy is a
+      // warehouse edit. They overlapped in a first cut, which made `ambiguous`
+      // mean three things and `unmintedIds > 0` imply `ambiguous > 0`.
+      expect(batch.unmintedIds).toBe(1);
+      // The MINTED row is the ambiguous one: its name is shared with the forged
+      // row, which still poisons. One row in each bucket, so a fix that merged
+      // them goes red.
+      expect(batch.ambiguous).toBe(1);
+      expect(batch.proposals).toEqual([]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "the WRITE statement and the READ statement agree about which column is which",
+    async () => {
+      // ⚠️ **Nothing in the arc fed `entityEdgeProposals` the output of
+      // `loadEntityStore`** — the rejection-memory test passes its in-memory
+      // fixture, and the unit harness reconstructs entries from the INSERT
+      // params it just recorded, which is a fixture agreeing with the writer by
+      // construction. So transposing `key_norm` and `canonical_norm` in the
+      // INSERT survived every suite: the resolver reads both columns
+      // symmetrically and cannot notice.
+      //
+      // The edge producer is NOT symmetric — it reads `keyNorm → canonicalNorm`
+      // as the edge DIRECTION — so a transposed store proposes
+      // `acme corp → acc 42`, re-keying every human mention onto the warehouse
+      // key. This is the one place the write statement, the read statement and
+      // the direction rule meet.
+      await writeEntityEntries(exec, {
+        workspaceId: WORKSPACE,
+        entity: "accounts",
+        entries: [entry({ entity: "accounts", keySurface: "ACC-42", canonicalSurface: "Acme Corp" })],
+        snapshotAt: new Date("2026-08-14T10:00:00Z"),
+      });
+
+      const stored = await loadEntityStore(WORKSPACE);
+      expect(stored[0]).toMatchObject({
+        keySurface: "ACC-42",
+        keyNorm: "acc 42",
+        canonicalSurface: "Acme Corp",
+        canonicalNorm: "acme corp",
+      });
+
+      const { proposals } = entityEdgeProposals(stored);
+      expect(proposals.map((e) => `${e.fromNorm}->${e.toNorm}`)).toEqual([
+        "acc 42->acme corp",
+        "acc 42->acme corp",
+      ]);
     },
     PG_TEST_TIMEOUT_MS,
   );

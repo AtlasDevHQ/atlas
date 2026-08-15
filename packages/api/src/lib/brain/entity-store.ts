@@ -96,15 +96,6 @@ export const ENTITY_EDGE_PRODUCER = "brain-entity-store";
 export const ENTITY_EDGE_CONFIDENCE = 1;
 
 /**
- * One entity, as the store holds it — a SNAPSHOT of one warehouse row.
- *
- * Two accepted costs ride on the word snapshot, both from ADR-0037 §5 rather
- * than discovered here: a deleted or renamed warehouse row leaves a stale entry
- * until the producer re-runs (and a re-keyed one when it does), and an entity's
- * canonical surface changing re-keys brain facts workspace-wide — a blast radius
- * reachable from a warehouse rename nobody thinks of as a brain operation.
- */
-/**
  * The three fields {@link resolvableIds} reads — an id and its two handles.
  *
  * Split out of {@link EntityStoreEntry} so the resolver's projection (which
@@ -112,19 +103,63 @@ export const ENTITY_EDGE_CONFIDENCE = 1;
  * inventing empty surfaces to satisfy a type the rule does not read. Inventing
  * them is how a `""` surface reaches a function that later starts caring.
  */
-export interface EntityNorms {
+export interface StoredEntityNorms {
   /**
-   * `warehouseRowId`'s digest. BRANDED, and the brand is the repo's own lesson
-   * rather than decoration: with a bare `string` here, `{ entityId: "1" }` is an
-   * unbranded door straight onto `subject_cmp`, which is how #5032's guard was
-   * bypassed one column over once only the parameter was branded.
+   * `warehouseRowId`'s digest, UNCHECKED — this is the READ shape.
+   *
+   * See {@link EntityStoreEntry.entityId} for why the brand is on the write side
+   * only: this module's own writes are guaranteed, and what comes back out is
+   * checked rather than assumed, because the region importer is a second writer.
    */
-  readonly entityId: WarehouseRowId;
+  readonly entityId: string;
   readonly keyNorm: string;
   readonly canonicalNorm: string;
 }
 
-export interface EntityStoreEntry extends EntityNorms {
+/**
+ * One row as the TABLE holds it — the read shape, id unchecked, and a SNAPSHOT
+ * of one warehouse row.
+ *
+ * Two accepted costs ride on the word snapshot, both from ADR-0037 §5 rather
+ * than discovered here: a deleted or renamed warehouse row leaves a stale entry
+ * until the producer re-runs (and a re-keyed one when it does), and an entity's
+ * canonical surface changing re-keys brain facts workspace-wide — a blast radius
+ * reachable from a warehouse rename nobody thinks of as a brain operation.
+ *
+ * {@link EntityStoreEntry} is the WRITE shape and brands the id;
+ * `buildEntityEntry` is its only mint. Same columns, deliberately not the same
+ * type: what this module stores is guaranteed, what it reads back is not,
+ * because the region importer is a second writer of `brain_entity`.
+ */
+export interface StoredEntity extends StoredEntityNorms {
+  readonly entity: string;
+  readonly keySurface: string;
+  readonly canonicalSurface: string;
+}
+
+/**
+ * One entry as this module WRITES it — {@link StoredEntity} with the id branded.
+ *
+ * `buildEntityEntry` is the only mint and `writeEntityEntries` is the only
+ * writer that takes it, so nothing unbranded can be stored through this module.
+ */
+export interface EntityStoreEntry extends StoredEntityNorms {
+  /**
+   * `warehouseRowId`'s digest, BRANDED — narrowing {@link StoredEntityNorms}'s
+   * bare `string`.
+   *
+   * ⚠️ **The brand is on the WRITE shape and deliberately not on the read one.**
+   * This is the door this module owns: `buildEntityEntry` is the only mint and
+   * `writeEntityEntries` takes this type, so nothing unbranded can be STORED
+   * through here — with a bare `string`, `{ entityId: "1" }` is an unbranded
+   * door straight onto `subject_cmp`, which is how #5032's guard was bypassed
+   * one column over once only the parameter was branded.
+   *
+   * What comes back OUT is a different question, and asserting the brand there
+   * was the bug: the region importer is a second writer, so a read is checked
+   * (`isWarehouseRowId`) rather than assumed.
+   */
+  readonly entityId: WarehouseRowId;
   /** `semantic_entities.name` — which enrolled entity produced this row. */
   readonly entity: string;
   /** The primary key's surface, verbatim as the producer emitted it. */
@@ -166,6 +201,44 @@ export function buildEntityEntry(params: {
 // Fail-closed: what a norm resolves to
 // ---------------------------------------------------------------------------
 
+/** What {@link entityEdgeProposals} produced, and what it refused. */
+export interface EntityEdgeBatch {
+  readonly proposals: readonly AliasProposalInput[];
+  /**
+   * Entries whose key IS its name — a natural-key table (`account_name` as the
+   * primary key). Nothing to propose, and nothing wrong: the surface a person
+   * says and the surface the warehouse stores are already one, so the entry
+   * resolves by name with no edge needed.
+   *
+   * Returned rather than folded into `ambiguous` so the two refusals stay
+   * distinguishable — "nothing to propose because the keys are natural" and
+   * "nothing to propose because names collide" have opposite meanings. It
+   * reaches no report and no log on purpose; there is nothing to act on.
+   */
+  readonly selfEdges: number;
+  /**
+   * Entries refused because a norm resolves to nothing — a name shared with
+   * another entity, or a norm poisoned by one. Their surfaces resolve to NOTHING
+   * and no edge is ever raised for them, so they are the rows a person has to
+   * disambiguate in their warehouse.
+   *
+   * DISJOINT from `unmintedIds`: an unminted row is counted there and skipped
+   * before this test. They overlapped in a first cut, which made this number
+   * mean three things at once and `unmintedIds > 0` imply `ambiguous > 0`.
+   *
+   * THIS one reaches the run report (`entityEdgesAmbiguous`) and a warn, because
+   * it is ordinary data — two `Acme` accounts — with a permanent consequence.
+   */
+  readonly ambiguous: number;
+  /**
+   * Rows whose id no producer could have minted (a hand-edited or downgraded
+   * bundle). They still POISON their norms — see {@link StoredEntityNorms} —
+   * and they can never be answered with. DISJOINT from `ambiguous`, and the
+   * split is the point: the remedy here is a re-import, not a warehouse edit.
+   */
+  readonly unmintedIds: number;
+}
+
 /**
  * Norm → the ONE id it names, for every norm that names exactly one.
  *
@@ -190,36 +263,15 @@ export function buildEntityEntry(params: {
  * `from_norm`), and together they merge two distinct entities into ONE slot key
  * workspace-wide, with no inverse.
  */
-/**
- * What {@link entityEdgeProposals} produced, and what it refused.
- *
- * The two counters are not diagnostics — they are the only way an operator
- * learns that entities in their warehouse will never resolve by name.
- * `ambiguous` in particular is ordinary data (two `Acme` accounts) with a
- * permanent consequence, which is exactly the shape the producer's other
- * counters exist for.
- */
-export interface EntityEdgeBatch {
-  readonly proposals: readonly AliasProposalInput[];
-  /** Entries whose key IS its name — a natural-key table. Nothing to propose. */
-  readonly selfEdges: number;
-  /**
-   * Entries refused because a norm names more than one entity. Their surfaces
-   * resolve to NOTHING and no edge is ever raised for them, so they are the
-   * rows a person has to disambiguate in their warehouse.
-   */
-  readonly ambiguous: number;
-}
-
 export function resolvableIds(
   // The THREE fields the rule needs, not `EntityStoreEntry`. `EntityStoreEntry`
   // satisfies it structurally, and the lookup path — which selects the id and
   // the two norms and nothing else — can pass its rows without inventing empty
   // surfaces to satisfy a type it does not read.
-  entries: readonly EntityNorms[],
+  entries: readonly StoredEntityNorms[],
 ): ReadonlyMap<string, WarehouseRowId> {
-  const byNorm = new Map<string, WarehouseRowId | null>();
-  const note = (norm: string, id: WarehouseRowId): void => {
+  const byNorm = new Map<string, string | null>();
+  const note = (norm: string, id: string): void => {
     // The degenerate norm is refused HERE, not only by the two callers that
     // happen to filter it. This function's docstring calls itself the single
     // home of the fail-closed clause, and that was true of ambiguity and not of
@@ -243,16 +295,44 @@ export function resolvableIds(
   }
   const resolved = new Map<string, WarehouseRowId>();
   for (const [norm, id] of byNorm) {
-    if (id !== null) resolved.set(norm, id);
+    // ⚠️ Unambiguous AND minted, and the two conditions are SEPARATE. An
+    // ambiguous norm answers nothing because the store cannot say which entity
+    // it is; an unminted id answers nothing because the VALUE cannot be trusted
+    // onto `subject_cmp`. A row can fail the second while still having poisoned
+    // a norm through the first — which is exactly what makes this fail-closed
+    // rather than fail-open. Filtering unminted rows out of the INPUT instead
+    // let a forged row's twin become unambiguous and take the name.
+    if (id !== null && isWarehouseRowId(id)) resolved.set(norm, id);
   }
   return resolved;
+}
+
+/**
+ * Rows whose id no producer could have minted — for the caller to report.
+ *
+ * Separate from {@link resolvableIds} because it answers a different question:
+ * that function says what a norm resolves to, and a caller also needs to know
+ * that some rows in the table are unusable, which is invisible in a map that
+ * simply omits them.
+ */
+export function unmintedIdCount(entries: readonly StoredEntityNorms[]): number {
+  let unminted = 0;
+  for (const entry of entries) {
+    if (!isWarehouseRowId(entry.entityId)) unminted++;
+  }
+  return unminted;
 }
 
 // ---------------------------------------------------------------------------
 // The write path
 // ---------------------------------------------------------------------------
 
-/** Exported so the `-pg` suite runs the exact statement, not a paraphrase. */
+/**
+ * Exported so `warehouse-producer.test.ts`'s fake executor dispatches on the
+ * EXACT statement rather than on a paraphrase that stays green against an edited
+ * one. (Not the `-pg` suite, which an earlier version of this line claimed: that
+ * suite calls the functions.)
+ */
 export const ENTITY_STORE_DELETE_SQL = `DELETE FROM brain_entity WHERE workspace_id = $1 AND entity = $2`;
 
 /** Exported for {@link ENTITY_STORE_DELETE_SQL}'s reason. */
@@ -365,56 +445,26 @@ interface EntityStoreDbRow extends Record<string, unknown> {
  * would be evidence ADR-0039's bound had failed rather than a listing to
  * truncate.
  *
- * ⚠️ **Ids are GUARDED, not cast.** `writeEntityEntries` is not the only writer
- * of this table — the region importer is the other, and a bundle is untrusted
- * input. An earlier version of this function asserted that every stored id came
- * from `warehouseRowId` and cast on that basis, which was false.
- *
- * ⚠️ **What a drop costs HERE, which is not what it costs at the resolver.**
- * This function's only consumer is the entity-edge pass, and
- * {@link entityEdgeProposals} reads an id solely to compare it — the id reaches
- * no `AliasProposalInput` and therefore no fact. So a dropped row costs a
- * VOCABULARY EDGE: nothing merges that row's key with its name, and claims about
- * it never collide with what people call it. The `subject_cmp` hazard belongs to
- * {@link entityStoreResolver}, which is a different caller.
- *
- * Stating it precisely matters because the first draft of this guard said these
- * ids "reach `subject_cmp`" — sending an operator to hunt a hazard this path
- * cannot produce while the real effect on their store went unnamed. That is the
- * defect this guard was added to fix, reproduced in the guard.
+ * ⚠️ **Every stored row comes back, including ones whose id no producer could
+ * have minted.** An earlier version DROPPED those before the caller computed
+ * ambiguity, which was a fail-OPEN: the dropped row stopped poisoning its norm,
+ * so its twin — a second entity with the same name — became unambiguous and got
+ * an edge the rule had refused. The guard belongs on the ANSWER, not the input;
+ * {@link resolvableIds} carries the argument, and {@link unmintedIdCount} is how
+ * a caller reports what it saw.
  */
 export async function loadEntityStore(
   workspaceId: string,
-): Promise<readonly EntityStoreEntry[]> {
+): Promise<readonly StoredEntity[]> {
   const rows = await internalQuery<EntityStoreDbRow>(ENTITY_STORE_LOAD_SQL, [workspaceId]);
-  const entries: EntityStoreEntry[] = [];
-  let forged = 0;
-  for (const r of rows) {
-    if (!isWarehouseRowId(r.entity_id)) {
-      forged++;
-      continue;
-    }
-    entries.push({
-      entityId: r.entity_id,
-      entity: r.entity,
-      keySurface: r.key_surface,
-      keyNorm: r.key_norm,
-      canonicalSurface: r.canonical_surface,
-      canonicalNorm: r.canonical_norm,
-    });
-  }
-  if (forged > 0) {
-    // Counted and logged, never silent: these rows are in the table and are
-    // being ignored, so an operator asking "why does this entity not resolve"
-    // has the only answer anything can give them.
-    log.error(
-      { workspaceId, forged, total: rows.length },
-      "Entity store: rows hold an id no producer could have minted and were DROPPED from the " +
-        "entity-edge pass — no vocabulary edge is raised for them, so claims about those rows " +
-        "will not match what people call them. Check the last region import into this workspace",
-    );
-  }
-  return entries;
+  return rows.map((r) => ({
+    entityId: r.entity_id,
+    entity: r.entity,
+    keySurface: r.key_surface,
+    keyNorm: r.key_norm,
+    canonicalSurface: r.canonical_surface,
+    canonicalNorm: r.canonical_norm,
+  }));
 }
 
 interface EntityLookupDbRow extends Record<string, unknown> {
@@ -490,23 +540,37 @@ export function entityStoreResolver(deps: EntityStoreResolverDeps = {}): EntityR
     // that came back. `resolvableIds` is what abstains on ambiguity, and it must
     // not be re-implemented here — see its docstring.
     //
-    // GUARDED, not cast. The region importer is a second writer of this table
-    // and a bundle is untrusted, so a stored id no producer could have minted is
-    // dropped rather than answered with.
+    // ⚠️ EVERY row goes in, including ones whose id is unusable. Filtering them
+    // out first was a fail-OPEN: a forged row stopped poisoning its norm, so its
+    // twin resolved where the pair had abstained. `resolvableIds` poisons over
+    // the input and answers only for minted ids, which is the shape that keeps
+    // both properties.
     //
     // ⚠️ THIS is the site where the id reaches `subject_cmp`/`object_cmp` — the
     // caller is `reconcile.ts`, by way of `extract.ts`. A forged id there is a
     // false `same` at the publish gate: two distinct entities merged, with no
-    // inverse. Dropping costs an abstain, which is the recoverable direction.
-    // (`loadEntityStore`'s drop costs something else entirely — a vocabulary
-    // edge — and its own comment says so rather than deferring to this one.)
-    const ids = resolvableIds(
-      rows.flatMap((r) =>
-        isWarehouseRowId(r.entity_id)
-          ? [{ entityId: r.entity_id, keyNorm: r.key_norm, canonicalNorm: r.canonical_norm }]
-          : [],
-      ),
-    );
+    // inverse. Abstaining is the recoverable direction.
+    const stored = rows.map((r) => ({
+      entityId: r.entity_id,
+      keyNorm: r.key_norm,
+      canonicalNorm: r.canonical_norm,
+    }));
+    const ids = resolvableIds(stored);
+
+    // NOT silent, and this site is the one that most needed the line: the edge
+    // producer's drop costs a vocabulary edge, this one costs a `_cmp` — so an
+    // operator asking "why does Acme Corp not resolve" gets an answer here or
+    // nowhere. `warn` rather than `error`: the store still answers for every
+    // other surface, and the remedy is a re-import rather than a restart.
+    const unminted = unmintedIdCount(stored);
+    if (unminted > 0) {
+      log.warn(
+        { workspaceId: context.workspaceId, unminted, matched: rows.length },
+        "Entity store: rows hold an id no producer could have minted, so those surfaces ABSTAIN " +
+          "rather than reaching `subject_cmp` — and they still block their twins from resolving. " +
+          "Check the last region import into this workspace",
+      );
+    }
 
     for (const [surface, norm] of normOf) {
       const id = ids.get(norm);
@@ -562,21 +626,43 @@ export function entityStoreResolver(deps: EntityStoreResolverDeps = {}): EntityR
  * does not emit), no UI. A comment promising an observability guarantee nothing
  * implements is worse than the omission, so the guarantee is built instead.
  */
-export function entityEdgeProposals(entries: readonly EntityStoreEntry[]): EntityEdgeBatch {
+export function entityEdgeProposals(entries: readonly StoredEntity[]): EntityEdgeBatch {
   const ids = resolvableIds(entries);
   const proposals: AliasProposalInput[] = [];
   let selfEdges = 0;
   let ambiguous = 0;
+  let unmintedIds = 0;
   for (const entry of entries) {
-    if (entry.keyNorm === entry.canonicalNorm) {
-      selfEdges++;
+    // ⚠️ **AMBIGUITY FIRST, self-edge second — the order is the finding.** With
+    // the self-edge check first, a natural-key table whose two rows share a name
+    // (`Acme` as the primary key of two entities) counted as two benign
+    // self-edges and reported `ambiguous: 0` — so the run said nothing was
+    // wrong about a store in which neither entity resolves by name, and the
+    // caller's warn never fired. A self-edge is only benign when the name is
+    // unambiguous.
+    // ⚠️ **UNMINTED FIRST, and the order is a finding rather than a style
+    // choice.** `resolvableIds` omits an unminted id, so without this arm such a
+    // row failed `resolvesToSelf` and landed in `ambiguous` — counted TWICE,
+    // making `ambiguous` mean three different things and `unmintedIds > 0`
+    // strictly imply `ambiguous > 0`. The two have different remedies (a
+    // re-import versus a warehouse edit), which is the whole reason they are two
+    // numbers.
+    if (!isWarehouseRowId(entry.entityId)) {
+      unmintedIds++;
       continue;
     }
-    if (
-      ids.get(entry.keyNorm) !== entry.entityId ||
-      ids.get(entry.canonicalNorm) !== entry.entityId
-    ) {
+    // AMBIGUITY next, self-edge last. With the self-edge test first, a
+    // natural-key table whose rows share a name counted two benign `selfEdges`
+    // and reported `ambiguous: 0` — the run saying nothing was wrong about a
+    // store in which neither entity resolves by name.
+    const resolvesToSelf =
+      ids.get(entry.keyNorm) === entry.entityId && ids.get(entry.canonicalNorm) === entry.entityId;
+    if (!resolvesToSelf) {
       ambiguous++;
+      continue;
+    }
+    if (entry.keyNorm === entry.canonicalNorm) {
+      selfEdges++;
       continue;
     }
     for (const position of ENTITY_EDGE_POSITIONS) {
@@ -595,5 +681,5 @@ export function entityEdgeProposals(entries: readonly EntityStoreEntry[]): Entit
     { entries: entries.length, resolvableNorms: ids.size, proposals: proposals.length },
     "Entity store: built entity-edge proposals",
   );
-  return { proposals, selfEdges, ambiguous };
+  return { proposals, selfEdges, ambiguous, unmintedIds };
 }

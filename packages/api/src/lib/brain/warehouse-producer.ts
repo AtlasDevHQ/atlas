@@ -59,8 +59,12 @@
  * ## What this module is NOT
  *
  * Not the enrollment surface (#5196 — `enrollment.ts`, `admin-brain-enrollment.ts`).
- * Not the entity store (#5043): the ids below identify a warehouse ROW, and they
- * reach `subject_cmp` and nothing else — no key, no surface column, no join arm.
+ * It also FEEDS the entity store (#5043) — it builds entries, writes them inside
+ * each entity's transaction, and runs the edge pass. The ids below identify a
+ * warehouse ROW and reach the two `_cmp` columns and `brain_entity.entity_id`;
+ * never a key, a surface column or a join arm. (This line used to say "not the
+ * entity store" and "`subject_cmp` and nothing else". Building the store
+ * falsified both.)
  * Not a scheduler: the only trigger that ships with it is the operator-initiated
  * `POST /api/v1/admin/brain-enrollment/produce`. A cadence is a second trigger
  * with its own enablement, cadence and audit questions, on the precedent
@@ -82,6 +86,7 @@ import {
   writeEntityEntries,
   ENTITY_EDGE_PRODUCER,
   type EntityStoreEntry,
+  type StoredEntity,
 } from "@atlas/api/lib/brain/entity-store";
 import type {
   AliasProducerCounters,
@@ -595,9 +600,10 @@ export function planWarehouseEmission(
             named,
             "naming-dimension-refused",
             `"${named}" is this entity's naming dimension and the producer refused it, so nothing ` +
-              "readable names its rows. Its entity-store entries are being CLEARED: claims about " +
-              "them stop matching what people call them, and match on the warehouse key alone. " +
-              "The refusal for the pair itself, beside this one, says why.",
+              "readable names its rows. Its entity-store entries are cleared the next time this " +
+              "entity is snapshotted successfully, after which claims about its rows match on the " +
+              "warehouse key alone rather than on what people call them. The refusal for the pair " +
+              "itself, beside this one, says why.",
           ),
         );
       }
@@ -768,8 +774,8 @@ const ID_SEPARATOR = "\u0000";
  *
  * NUL-separated — see {@link ID_SEPARATOR}.
  *
- * The id reaches `subject_cmp` and NOTHING else — no slot key, no surface column,
- * no join arm. An id at a slot would orphan the existing corpus the moment it
+ * The id reaches the two `_cmp` columns and `brain_entity.entity_id` (#5043) —
+ * never a slot key, a surface column or a join arm. An id at a slot would orphan the existing corpus the moment it
  * started answering (ADR-0037 §5), and that is the resolver seam's rule rather
  * than this function's.
  */
@@ -1205,7 +1211,7 @@ export interface WarehouseProducerDeps {
   readonly runSnapshot?: WarehouseSnapshotRunner;
   readonly loadVocabulary?: (workspaceId: string) => Promise<ClaimVocabulary>;
   /** The persisted entity store, read once per run for the edge pass (#5043). */
-  readonly loadEntityStore?: (workspaceId: string) => Promise<readonly EntityStoreEntry[]>;
+  readonly loadEntityStore?: (workspaceId: string) => Promise<readonly StoredEntity[]>;
   /**
    * The vocabulary's producer batch — propose each edge, route the eligible ones
    * through the decide seam, and tally.
@@ -1280,10 +1286,19 @@ export interface WarehouseProducerReport {
   /**
    * What the entity-edge producer did with this run's edges (#5043).
    *
-   * `null` when the run wrote no entries at all — no entity is named, so there
-   * was nothing to propose and the counters would be six honest zeros that read
-   * as *"we tried and nothing happened"*. The distinction is ADR-0039's, one
-   * level down: nothing to do and nothing achieved must not look alike.
+   * `null` when the pass PROPOSED nothing — an empty store, or every entry a
+   * self-edge or refused — and also when it threw. {@link entityEdgesFailed} is
+   * what tells the last case apart.
+   *
+   * ⚠️ NOT "the run wrote no entries", which is what this line used to say: that
+   * held only under the `entitiesStored > 0` gate #5232 removed. The batch comes
+   * from the PERSISTED, workspace-wide store, so a run that wrote nothing still
+   * reports counters when prior entries exist — and a run that wrote 500
+   * natural-key entries reports `null`, because every one is a self-edge.
+   *
+   * Zeroed counters rather than `null` would read as *"we tried and nothing
+   * happened"*. The distinction is ADR-0039's, one level down: nothing to do and
+   * nothing achieved must not look alike.
    *
    * ⚠️ `rejected` is THE counter to read on a re-run. A producer whose second
    * pass reports zero there is one whose human removals did not stick — #4507's
@@ -1501,7 +1516,117 @@ export async function runWarehouseProducer(
     }
   };
 
+  let entityEdges: AliasProducerCounters | null = null;
+  let entityEdgesFailed: string | null = null;
+  let entityEdgesAmbiguous = 0;
+
+  /**
+   * The entity-edge producer (#5043).
+   *
+   * AFTER the entity loop and OUTSIDE every transaction it opened. Both halves
+   * are forced:
+   *
+   *   - After, because ambiguity is a property of the WHOLE store rather than of
+   *     one snapshot. `accounts` and `contacts` can each hold an `Acme`, and an
+   *     edge emitted per entity would never see the other one — the one case
+   *     that merges two distinct entities into a single slot key workspace-wide.
+   *   - Outside, because `proposeAliasEdges` opens its own transaction per
+   *     proposal and takes the workspace vocabulary lock in each. Calling it
+   *     inside the reconcile transaction is the bounded-pool deadlock
+   *     `withBrainTransaction` warns about, with a lock-order inversion on top.
+   *
+   * ⚠️ **A closure so BOTH exits run it, and that is the second half of a fix
+   * whose first half was incomplete.** It was gated on `entitiesStored > 0`;
+   * removing that gate still left it below the `plan.emit.length === 0` early
+   * return, so a run where every enrolled pair was refused — expired warehouse
+   * credentials, a renamed table, a dimension gone ambiguous — skipped it while
+   * `brain_entity` still held every row. Un-enrolling does not delete entries
+   * and no reaper exists yet (#5233), so that is exactly the run on which an
+   * operator is asking why their store stopped working, and it reported
+   * `entityEdgesAmbiguous: 0` over a store that might be entirely ambiguous.
+   *
+   * ⚠️ **Its cost, stated honestly rather than as "one indexed read".** On a
+   * non-empty store this runs two sequential `proposeAliasEdge` calls per entry
+   * that EARNS an edge — up to `2 × entries`, and zero for a wholly natural-key
+   * store —
+   * each opening a transaction and taking the workspace vocabulary lock, on
+   * EVERY run — including a no-op re-run where the old gate cost nothing. At the
+   * row cap across several entities that is thousands of serialized
+   * lock-taking transactions per button press. A change-detector is the answer
+   * and is deliberately not in this slice: it is new machinery, correctness came
+   * first, and this producer has one manual trigger rather than a cadence
+   * (#5228). Tracked in #5233.
+   */
+  const runEntityEdgePass = async (): Promise<void> => {
+    // Failing here must NOT fail the run. Every fact is committed, and a throw
+    // reaches `runEffect` as `500 "Failed to run"` — which invites the one retry
+    // that files a second full round of drafts into the review queue.
+    try {
+      const store = await loadStore(workspaceId);
+      const batch = entityEdgeProposals(store);
+      entityEdgesAmbiguous = batch.ambiguous;
+      if (batch.ambiguous > 0 || batch.unmintedIds > 0) {
+        // WARN, because both are permanent consequences rather than hiccups:
+        // those surfaces resolve to nothing and no edge is ever raised for them.
+        // Ambiguity is ordinary data — two `Acme` accounts — which is precisely
+        // why silence would be indistinguishable from a working store. An
+        // unminted id has a different remedy (a re-import, not a warehouse
+        // edit), so it is counted apart rather than folded in.
+        log.warn(
+          {
+            ...runLog,
+            ambiguous: batch.ambiguous,
+            unmintedIds: batch.unmintedIds,
+            entries: store.length,
+          },
+          "Entity store: entries share a name with another entity, or hold an id no producer " +
+            "could have minted — neither resolves and no vocabulary edge is raised for them, so " +
+            "claims about those rows will not match what people call them",
+        );
+      }
+      if (batch.proposals.length > 0) {
+        entityEdges = await proposeEdges(workspaceId, batch.proposals, requestId);
+      }
+    } catch (err) {
+      // Recorded as a VALUE, not only a log line. A caught-and-logged failure
+      // that leaves the report indistinguishable from a healthy run is the
+      // silent failure this whole module argues against, one field over.
+      //
+      // ⚠️ **A FIXED sentence plus the correlation handle — never `err.message`.**
+      // Both throw sources are internal-DB-backed, so the message is a `pg` one:
+      // `connection to server at "10.x.x.x" … FATAL: password authentication
+      // failed for user "atlas"` puts a host and a role in a 200 body. This file
+      // refuses exactly that for `snapshot-failed`; the first cut of this field
+      // did not, which is the same defect one field over.
+      //
+      // ⚠️ It does NOT say "no vocabulary edge was raised". `proposeAliasEdges`
+      // COMMITS PER PROPOSAL, so a mid-batch throw leaves approved edges behind
+      // — and an auto-approved entity edge re-keys the corpus. Asserting the
+      // clean case in a catch is the same false-claim class this round exists to
+      // close. The alias-producer's own aborted-batch line carries the counts.
+      entityEdgesFailed =
+        "The entity-edge pass failed part-way. Any edge it had already proposed is committed — " +
+        "the alias-producer log line for this run carries those counts — and every fact and store " +
+        `entry is committed too. Re-running is safe. The server log for request ${
+          requestId ?? "(none)"
+        } carries the reason.`;
+      // `err` raw, so pino's serializer emits the stack — for a pool or lock
+      // failure the stack is the actionable half, and the per-entity catch
+      // already does it this way.
+      log.error(
+        { ...runLog, err },
+        "Warehouse producer: the entity-edge pass failed part-way — facts and store entries are " +
+          "committed, and any edge proposed before the failure is too. Re-run to retry",
+      );
+    }
+  };
+
   if (plan.emit.length === 0) {
+    // ⚠️ The edge pass runs HERE TOO. Every enrolled pair being refused does not
+    // empty the STORE — un-enrolling deletes no entry and no reaper exists yet —
+    // so this is the run an operator is most likely to be staring at. See the
+    // closure's own note.
+    await runEntityEdgePass();
     log.info(
       { ...runLog, enrolled: reach.pairs.length, refusals: refusals.length },
       "Warehouse producer: nothing to emit — every enrolled pair was refused or the reach is empty",
@@ -1512,12 +1637,9 @@ export async function runWarehouseProducer(
       enrolled: reach.pairs.length,
       entities: [],
       refusals,
-      // `null`, not zeroed counters. Nothing ran, so the edge pass has nothing
-      // to report — and a run that proposed nothing must not look like one that
-      // proposed and had everything refused.
-      entityEdges: null,
-      entityEdgesFailed: null,
-      entityEdgesAmbiguous: 0,
+      entityEdges,
+      entityEdgesFailed,
+      entityEdgesAmbiguous,
       created: 0,
       corroborated: 0,
     };
@@ -1916,78 +2038,7 @@ export async function runWarehouseProducer(
   const corroborated = outcomes.reduce((sum, o) => sum + o.corroborated, 0);
   const entitiesStored = outcomes.reduce((sum, o) => sum + o.entitiesStored, 0);
 
-  // ---------------------------------------------------------------------
-  // The entity-edge producer (#5043)
-  // ---------------------------------------------------------------------
-  //
-  // AFTER the entity loop, and OUTSIDE every transaction it opened. Both halves
-  // are forced:
-  //
-  //   - After, because ambiguity is a property of the WHOLE store rather than of
-  //     one snapshot. `accounts` and `contacts` can each hold an `Acme`, and an
-  //     edge emitted per entity would never see the other one — which is the one
-  //     case that merges two distinct entities into a single slot key
-  //     workspace-wide, with no inverse.
-  //   - Outside, because `proposeAliasEdges` opens its own transaction per
-  //     proposal and takes the workspace vocabulary lock in each. Calling it
-  //     inside the reconcile transaction is the bounded-pool deadlock
-  //     `withBrainTransaction` warns about, with a lock-order inversion on top.
-  //
-  // The read is the persisted store rather than this run's entries: a workspace
-  // whose `accounts` ran today and whose `contacts` ran yesterday must still see
-  // both when deciding what is ambiguous.
-  //
-  // ⚠️ UNGATED, and it was gated on `entitiesStored > 0` until #5232's review.
-  // That gate contradicted the paragraph above: a run in which every entity took
-  // the `snapshot-already-recorded` path stores 0 while the store holds
-  // thousands of rows, so the pass was skipped on exactly the RE-RUN where
-  // `rejected` — the counter that says a human's removal stuck — is the one an
-  // operator reads. The cost of removing it is one indexed read per run, and
-  // `entityEdgeProposals([])` short-circuits an empty store before any lock.
-  let entityEdges: AliasProducerCounters | null = null;
-  let entityEdgesFailed: string | null = null;
-  let entityEdgesAmbiguous = 0;
-  {
-    // Failing here must NOT fail the run. Every fact is committed, and a throw
-    // reaches `runEffect` as `500 "Failed to run"` — which invites the one retry
-    // that files a second full round of drafts into the review queue. The
-    // edges are re-proposed on the next run at no cost, since every outcome of
-    // `proposeAliasEdge` is idempotent.
-    try {
-      const store = await loadStore(workspaceId);
-      const batch = entityEdgeProposals(store);
-      entityEdgesAmbiguous = batch.ambiguous;
-      if (batch.ambiguous > 0) {
-        // WARN, because it is a permanent consequence rather than a hiccup:
-        // these surfaces resolve to nothing and no edge will ever be raised for
-        // them until a person disambiguates the rows in their warehouse. It is
-        // ordinary data — two `Acme` accounts — which is precisely why silence
-        // would be indistinguishable from a store that is working.
-        log.warn(
-          { ...runLog, ambiguous: batch.ambiguous, entries: store.length },
-          "Entity store: entries share a name with another entity, so neither resolves and no " +
-            "vocabulary edge is raised for them — claims about those rows will not match what " +
-            "people call them until the duplicate names are resolved in the warehouse",
-        );
-      }
-      if (batch.proposals.length > 0) {
-        entityEdges = await proposeEdges(workspaceId, batch.proposals, requestId);
-      }
-    } catch (err) {
-      // Recorded as a VALUE, not only a log line. A caught-and-logged failure
-      // that leaves the report indistinguishable from a healthy run is the
-      // silent failure this whole module argues against, one field over.
-      entityEdgesFailed = err instanceof Error ? err.message : String(err);
-      // `err` raw, so pino's serializer emits the stack — for a pool or lock
-      // failure the stack is the actionable half, and the per-entity catch
-      // ninety lines up already does it this way.
-      log.error(
-        { ...runLog, entitiesStored, err },
-        "Warehouse producer: the entity-edge pass failed — every fact and store entry is committed, " +
-          "but no vocabulary edge was raised this run. Re-run to retry; nothing needs cleaning up",
-      );
-    }
-  }
+  await runEntityEdgePass();
 
   log.info(
     {
@@ -2035,7 +2086,7 @@ async function defaultLoadVocabulary(workspaceId: string): Promise<ClaimVocabula
 
 async function defaultLoadEntityStore(
   workspaceId: string,
-): Promise<readonly EntityStoreEntry[]> {
+): Promise<readonly StoredEntity[]> {
   const { loadEntityStore } = await import("@atlas/api/lib/brain/entity-store");
   return loadEntityStore(workspaceId);
 }

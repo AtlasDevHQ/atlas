@@ -672,9 +672,31 @@ export interface ExportedBrainEnrollment {
  * What these entries buy the destination is a BRIDGE: they resolve surfaces by
  * name from the moment the bundle lands until the destination has warehouse
  * credentials again and a human re-runs the producer — the window in which
- * nothing else can. Their ids are digests over the SOURCE workspace, so that
- * first run replaces them wholesale; harmless, because no fact carries the old
- * ones. `stays` is also DELETION (#4458), so the source's copy would go too.
+ * nothing else can. `stays` is also DELETION (#4458), so the source's copy would
+ * go too.
+ *
+ * ⚠️ **The bridge has a COST, and an earlier version of this comment denied it.**
+ * It said the first producer run replaces these ids "harmlessly, because no fact
+ * carries the old ones". True at the moment of import — the importer NULLs an
+ * entity-valued `_cmp` — and false for the whole window the entries exist to
+ * serve: extraction consults the store, so every fact extracted during the
+ * bridge carries the imported, SOURCE-workspace id. The destination's first
+ * producer run then retires those ids for freshly minted ones.
+ *
+ * What that costs, stated rather than assumed: at `subject_cmp` a proven
+ * difference SUPPRESSES every consumer, so bridge-window facts and post-run
+ * facts about one warehouse row quietly stop corroborating — unmatched
+ * corroboration, which is the recoverable direction and is invisible. At
+ * `object_cmp` a proven difference is positive evidence, and whether that can
+ * reach a `valid_to` stamp for this pair is NOT traced here and is not asserted
+ * either way (#5233).
+ *
+ * ⚠️ And the replacement is keyed on `(workspace_id, entity)`. If the two
+ * regions' semantic layers name the entity differently, the imported rows are
+ * never deleted, both sets go live, and every shared canonical norm is poisoned
+ * — the store then resolves NOTHING for that entity until someone intervenes.
+ * `entityEdgesAmbiguous` is what makes that visible; the reaper (#5233) is what
+ * fixes it.
  *
  * The failure direction if it were dropped is ADR-0039's invisible one: the
  * cutover reports clean, the store resolves nothing, and every test stays green.
@@ -850,6 +872,17 @@ export interface ImportResult {
      * itself did arrive.
      */
     namingDropped: number;
+    /**
+     * Rows where an arriving `naming` flag WAS applied to a pair this region
+     * already held unnamed (#5043).
+     *
+     * The positive twin of {@link namingDropped}, and it exists for the same
+     * reason: that write makes the destination's next producer run re-key every
+     * fact about the entity, and `imported + skipped` reports it as `skipped` —
+     * which everywhere else means "this region already holds it". It holds the
+     * PAIR; it did not hold the DECISION.
+     */
+    namingApplied: number;
   };
   /**
    * The entity store's snapshot entries (#5043, ADR-0037 §5).

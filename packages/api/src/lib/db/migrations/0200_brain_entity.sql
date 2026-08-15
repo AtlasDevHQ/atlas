@@ -190,6 +190,6 @@ CREATE INDEX IF NOT EXISTS idx_brain_entity_key_norm
 
 -- The producer's own read: replace one entity's entries on a re-run without
 -- scanning the workspace. `(workspace_id, entity)` is the prefix of no other
--- index here, since the PK leads with `entity_id`.
+-- index here, since the PK's second column is `entity_id` rather than `entity`.
 CREATE INDEX IF NOT EXISTS idx_brain_entity_entity
   ON brain_entity (workspace_id, entity);

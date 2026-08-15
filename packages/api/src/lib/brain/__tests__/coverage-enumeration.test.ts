@@ -31,10 +31,15 @@ describe("the surveyable-class list — pinned against the class contract", () =
     // Derived from the contract rather than restated, so a class that argues its
     // way from `surveyable: false` to `true` (or back) reddens here instead of
     // silently gaining or losing a roster.
-    const declaredSurveyable = EPISODE_SOURCE_CLASSES.filter(
+    // Widened to `string[]` on BOTH sides so the comparison is on the values.
+    // Left as `SurveyableSourceClass[]` vs `EpisodeSourceClass[]` the overload
+    // does not resolve — and a cast on one side only would let the narrower type
+    // silently satisfy the wider one, which is the drift this test exists for.
+    const declaredSurveyable: string[] = EPISODE_SOURCE_CLASSES.filter(
       (cls) => CLASS_CONTRACTS[cls].coverage.denominator.surveyable,
     );
-    expect([...SURVEYABLE_SOURCE_CLASSES].toSorted()).toEqual([...declaredSurveyable].toSorted());
+    const listed: string[] = [...SURVEYABLE_SOURCE_CLASSES];
+    expect(listed.toSorted()).toEqual(declaredSurveyable.toSorted());
   });
 
   it("EXCLUDES `human`, whose units would be people", () => {

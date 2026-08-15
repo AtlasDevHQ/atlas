@@ -321,6 +321,72 @@ const RECORD_FAILURE_SQL = `INSERT INTO brain_coverage_cycle
          last_error = EXCLUDED.last_error`;
 
 /**
+ * Error text the store will actually accept.
+ *
+ * Two rules, both from the constraint rather than from taste:
+ * `ck_brain_coverage_cycle_error_present` refuses `''` (and
+ * `new Error().message` IS `''`), and a `text` column refuses a NUL byte
+ * outright — node-pg rejects the parameter, so an error whose message carried
+ * one would make the failure-recording statement THROW. Both turn a visible
+ * failure into an invisible one through the machinery meant to guarantee every
+ * red dot carries a message.
+ */
+function storableErrorText(raw: string): string {
+  // `errorMessage` scrubs secrets and bounds the length; it does NOT strip
+  // NUL, so that is done here — written as an ESCAPE, never as a literal
+  // byte. A literal NUL in a source file is itself unsendable to Postgres,
+  // which this branch found the hard way in migration 0201's first draft.
+  const scrubbed = errorMessage(raw).replaceAll("\u0000", "").trim();
+  return scrubbed === ""
+    ? "The enumeration failed without reporting a reason — check the coverage-snapshot logs for this workspace and class."
+    : scrubbed;
+}
+
+/**
+ * Record a class-wide scan failure against every workspace already known to hold
+ * that class — the arm {@link persistCoverageSnapshot} structurally cannot reach.
+ *
+ * ## Why this exists
+ *
+ * When `listWorkspaces()` throws there is no workspace list, so the per-workspace
+ * write never runs and NOTHING moves: `last_attempt_at` stays frozen and
+ * `last_error` stays NULL for every workspace of that class. The page then keeps
+ * rendering a clean, dated, CURRENT statement for as long as the scan keeps
+ * failing — precisely the defect the write-failure arm was fixed for, standing
+ * one arm over. (Found by auditing that fix against its own finding in fresh
+ * context, which is the whole reason that step exists.)
+ *
+ * The rows are enumerable WITHOUT the vendor: `brain_coverage_cycle` already
+ * holds one row per (workspace, class) for every workspace ever enumerated. So
+ * an UPDATE over that class reaches exactly the set that can be told, and no
+ * more.
+ *
+ * ⚠️ An UPDATE, never an upsert. Inventing a row for a workspace this cycle
+ * could not even list would assert Atlas tried to enumerate a workspace it never
+ * established exists.
+ */
+export async function recordClassScanFailure(params: {
+  readonly sourceClass: SurveyableSourceClass;
+  readonly error: string;
+  readonly cycleAt: Date;
+}): Promise<number> {
+  const rows = await internalQuery<{ workspace_id: string }>(
+    `UPDATE brain_coverage_cycle
+        SET last_attempt_at = $2::timestamptz, last_error = $3
+      WHERE source_class = $1
+      RETURNING workspace_id`,
+    [params.sourceClass, params.cycleAt.toISOString(), storableErrorText(params.error)],
+  );
+  if (rows.length > 0) {
+    log.warn(
+      { sourceClass: params.sourceClass, workspaces: rows.length },
+      "brain coverage: a class-wide scan failure was recorded against every workspace holding this class — their rosters keep their previous readings and the surface now says so",
+    );
+  }
+  return rows.length;
+}
+
+/**
  * What one persisted cycle changed — the scheduler's per-class tally.
  *
  * A discriminated union for {@link CoverageEnumeration}'s reason, applied to its
@@ -385,12 +451,10 @@ export async function persistCoverageSnapshot(params: {
     // and `new Error().message` IS `''`. Passing it straight through would make
     // the one statement whose entire job is recording a failure THROW, so a
     // visible failure would become an invisible one through the constraint
-    // written to guarantee every red dot carries a message.
-    const scrubbed = errorMessage(outcome.error).trim();
-    const stored =
-      scrubbed === ""
-        ? "The enumeration failed without reporting a reason — check the coverage-snapshot logs for this workspace and class."
-        : scrubbed;
+    // written to guarantee every red dot carries a message. Both rules, and the
+    // NUL one, live in {@link storableErrorText} so the two failure writers
+    // cannot apply different ones.
+    const stored = storableErrorText(outcome.error);
     await internalQuery(RECORD_FAILURE_SQL, [workspaceId, sourceClass, cycleIso, stored]);
     log.warn(
       { workspaceId, sourceClass, err: stored },

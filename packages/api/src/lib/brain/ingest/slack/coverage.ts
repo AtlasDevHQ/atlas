@@ -336,7 +336,7 @@ async function readPublicRoster(params: {
       if (result.error === "missing_scope") return { kind: "unreadable" };
       return {
         kind: "refused",
-        error: `Atlas could not list this workspace's Slack channels (${result.error}) — the coverage denominator keeps its previous reading rather than shrinking to what one failed call returned. It retries on the next cycle.`,
+        error: `Atlas could not list this workspace's Slack channels — the coverage denominator keeps its previous reading rather than shrinking to what one failed call returned, and it retries on the next cycle (${result.error})`,
       };
     }
     for (const channel of result.channels) {

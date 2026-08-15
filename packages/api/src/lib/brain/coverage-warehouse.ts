@@ -244,7 +244,7 @@ export async function enumerateWarehouseCoverage(params: {
       );
       return {
         ok: false,
-        error: `Atlas could not read ${read.subject} (${read.detail}) — the warehouse coverage denominator keeps its previous reading rather than reporting zero entities. ${read.remedy}. It retries on the next cycle.`,
+        error: `Atlas could not read ${read.subject} — the warehouse coverage denominator keeps its previous reading rather than reporting zero entities, and it retries on the next cycle. ${read.remedy} (${read.detail})`,
       };
     }
   }

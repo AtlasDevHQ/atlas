@@ -53,6 +53,7 @@ import {
   readActivityProbeRotation,
   readCoverageSnapshot,
   readCoverageUnits,
+  recordClassScanFailure,
   type CoverageEnumeration,
   type EnumeratedSurveyUnit,
 } from "@atlas/api/lib/brain/coverage-enumeration";
@@ -686,6 +687,106 @@ describeIfPg("coverage denominator snapshots (#5213, ADR-0041)", () => {
       expect(due).toEqual(["C0A", "C0B"]);
       expect(due).not.toContain("C0NEIGHBOUR");
       expect(due).not.toContain("5:plans:tier");
+    });
+  });
+
+  describe("recordClassScanFailure — the arm persist cannot reach", () => {
+    it("moves the ATTEMPT for every workspace holding the class, and only that class", async () => {
+      // ⚠️ The defect this exists for: when `listWorkspaces()` throws there is no
+      // workspace list, so the per-workspace write never runs and NOTHING moves.
+      // The page then keeps rendering a clean, dated, CURRENT statement for as
+      // long as the scan keeps failing — the same shape the write-failure arm was
+      // fixed for, one arm over.
+      await persistCoverageSnapshot({
+        workspaceId: WORKSPACE,
+        sourceClass: "chat",
+        cycleAt: CYCLE_1,
+        outcome: success([unit({ unitId: "C0A" }), unit({ unitId: "C0B" })]),
+      });
+      await persistCoverageSnapshot({
+        workspaceId: OTHER_WORKSPACE,
+        sourceClass: "chat",
+        cycleAt: CYCLE_1,
+        outcome: success([unit({ unitId: "C0N" })]),
+      });
+      // A DIFFERENT class of the same workspace — the control that catches an
+      // UPDATE missing its `source_class` predicate.
+      await persistCoverageSnapshot({
+        workspaceId: WORKSPACE,
+        sourceClass: "warehouse",
+        cycleAt: CYCLE_1,
+        outcome: success([unit({ unitId: "5:plans:tier" })]),
+      });
+
+      const touched = await recordClassScanFailure({
+        sourceClass: "chat",
+        cycleAt: CYCLE_2,
+        error: "Atlas could not list the workspaces to enumerate for chat coverage (chat_cache unreadable)",
+      });
+      expect(touched).toBe(2);
+
+      const mine = new Map(
+        (await readCoverageSnapshot(WORKSPACE)).map((c) => [c.sourceClass, c]),
+      );
+      expect(mine.get("chat")).toMatchObject({
+        asOf: CYCLE_1.toISOString(),
+        lastAttemptAt: CYCLE_2.toISOString(),
+      });
+      expect(mine.get("chat")?.unavailableReason).toContain("chat_cache unreadable");
+      // The warehouse row is untouched — same workspace, different class.
+      expect(mine.get("warehouse")).toMatchObject({
+        lastAttemptAt: CYCLE_1.toISOString(),
+        unavailableReason: null,
+      });
+      // …and the OTHER workspace's chat row WAS told, because a class-wide scan
+      // failure is class-wide.
+      expect((await readCoverageSnapshot(OTHER_WORKSPACE))[0]?.lastAttemptAt).toBe(
+        CYCLE_2.toISOString(),
+      );
+
+      // The ROSTER is untouched — this records an attempt, it does not zero.
+      expect((await readCoverageUnits(WORKSPACE, "chat")).map((r) => r.unitId).toSorted()).toEqual([
+        "C0A",
+        "C0B",
+      ]);
+    });
+
+    it("INVENTS no row for a workspace that has never been enumerated", async () => {
+      // An upsert here would assert Atlas tried to enumerate a workspace it never
+      // established exists — and would put a row on the page for a tenant with no
+      // Slack at all.
+      const touched = await recordClassScanFailure({
+        sourceClass: "chat",
+        cycleAt: CYCLE_2,
+        error: "chat_cache unreadable",
+      });
+      expect(touched).toBe(0);
+      expect(await readCoverageSnapshot(WORKSPACE)).toEqual([]);
+    });
+
+    it("stores a message the CHECK accepts, even for an empty or NUL-bearing one", async () => {
+      await persistCoverageSnapshot({
+        workspaceId: WORKSPACE,
+        sourceClass: "chat",
+        cycleAt: CYCLE_1,
+        outcome: success([unit({ unitId: "C0A" })]),
+      });
+      // Empty → the placeholder, not a CHECK violation.
+      await recordClassScanFailure({ sourceClass: "chat", cycleAt: CYCLE_2, error: "" });
+      expect((await readCoverageSnapshot(WORKSPACE))[0]?.unavailableReason).toContain(
+        "without reporting a reason",
+      );
+      // A NUL byte is what node-pg REFUSES outright, so an unstripped one would
+      // make the failure-recording statement throw — a visible failure turned
+      // invisible by the machinery meant to record it.
+      await recordClassScanFailure({
+        sourceClass: "chat",
+        cycleAt: CYCLE_2,
+        error: `slack token \u0000 revoked`,
+      });
+      const reason = (await readCoverageSnapshot(WORKSPACE))[0]?.unavailableReason;
+      expect(reason).toContain("revoked");
+      expect(reason).not.toContain("\u0000");
     });
   });
 

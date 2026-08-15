@@ -229,6 +229,11 @@ describe("runCoverageSnapshotCycle", () => {
     expect(result).toMatchObject({ status: "degraded", classesFailed: 1, classesEnumerated: 1 });
     expect(spy.calls.map((c) => c.workspaceId)).toEqual(["ws-broken", "ws-fine"]);
     expect(spy.calls[0]?.outcome.ok).toBe(false);
+    // ⚠️ The REFUSAL branch feeds `error` too. It was the sibling of the
+    // write-failure arm, one line away in the same loop, and it was left out of
+    // the same fix — so a cycle whose every enumeration was refused returned
+    // `{ degraded, error: null }` while the status docstring claimed otherwise.
+    expect(result.error).toContain("No Slack connection");
   });
 
   it("converts a THROWING enumerator into a refusal rather than losing the cycle", async () => {
@@ -260,9 +265,15 @@ describe("runCoverageSnapshotCycle", () => {
 
   it("a class whose WORKSPACE SCAN fails does not freeze the class beside it", async () => {
     const spy = persistSpy();
+    const scans: { sourceClass: string; error: string }[] = [];
+    const recordScanFailure: NonNullable<CoverageSnapshotDeps["recordScanFailure"]> = async (p) => {
+      scans.push({ sourceClass: p.sourceClass, error: p.error });
+      return 1;
+    };
     const result = await withDatabaseUrl(() =>
       runCoverageSnapshotCycle({
         persist: spy.persist,
+        recordScanFailure,
         isEnabled: () => true,
         plans: plans({
           chat: {
@@ -287,13 +298,26 @@ describe("runCoverageSnapshotCycle", () => {
     expect(result.error).toContain("chat_cache unreadable");
     // The POSITIVE CONTROL: the warehouse roster was still refreshed.
     expect(spy.calls.map((c) => c.sourceClass)).toEqual(["warehouse"]);
+    // ⚠️ AND the failed class RECORDS ITS ATTEMPT. This assertion is the one the
+    // first cut of this test got wrong: it pinned `["warehouse"]` and stopped,
+    // certifying that a scan-failed class wrote NOTHING — which left the page
+    // reading "as of <old date>" with no error beside it for as long as the scan
+    // kept failing.
+    expect(scans.map((c) => c.sourceClass)).toEqual(["chat"]);
+    expect(scans[0]?.error).toContain("chat_cache unreadable");
   });
 
   it("is a FAILURE only when EVERY class's scan failed — the cycle established nothing", async () => {
     const spy = persistSpy();
+    const scans: { sourceClass: string; error: string }[] = [];
+    const recordScanFailure: NonNullable<CoverageSnapshotDeps["recordScanFailure"]> = async (p) => {
+      scans.push({ sourceClass: p.sourceClass, error: p.error });
+      return 1;
+    };
     const result = await withDatabaseUrl(() =>
       runCoverageSnapshotCycle({
         persist: spy.persist,
+        recordScanFailure,
         isEnabled: () => true,
         plans: plans({
           chat: {
@@ -319,6 +343,8 @@ describe("runCoverageSnapshotCycle", () => {
     expect(result.error).toContain("chat_cache unreadable");
     expect(result.error).toContain("semantic_entities unreadable");
     expect(spy.calls.length).toBe(0);
+    // Both classes record their attempt, so both halves of the page say why.
+    expect(scans.map((c) => c.sourceClass).toSorted()).toEqual(["chat", "warehouse"]);
   });
 
   it("a PERSIST failure is a failed class, and the ATTEMPT is still recorded", async () => {
@@ -378,6 +404,41 @@ describe("runCoverageSnapshotCycle", () => {
       }),
     );
     expect(result).toMatchObject({ status: "degraded", classesFailed: 2, classesEnumerated: 0 });
+    // ⚠️ And a REASON travels. Write failures used to reach `error` never, so a
+    // cycle in which every persist threw returned `{ degraded, error: null }`
+    // while the status docstring claimed "`error` is non-null either way" — a
+    // counterfactual comment on the one field an operator reads for the reason.
+    expect(result.error).toContain("connection terminated");
+  });
+
+  it("survives the scan-failure RECORD also failing, and still finishes the cycle", async () => {
+    const spy = persistSpy();
+    const result = await withDatabaseUrl(() =>
+      runCoverageSnapshotCycle({
+        persist: spy.persist,
+        recordScanFailure: async () => {
+          throw new Error("connection terminated");
+        },
+        isEnabled: () => true,
+        plans: plans({
+          chat: {
+            kind: "enumerates",
+            listWorkspaces: async () => {
+              throw new Error("chat_cache unreadable");
+            },
+            enumerate: async () => OK,
+          },
+          warehouse: {
+            kind: "enumerates",
+            listWorkspaces: async () => ["ws-1"],
+            enumerate: async () => OK,
+          },
+        }),
+      }),
+    );
+    // The POSITIVE CONTROL: the other class still ran to completion.
+    expect(result).toMatchObject({ status: "degraded", classesEnumerated: 1 });
+    expect(spy.calls.map((c) => c.sourceClass)).toEqual(["warehouse"]);
   });
 
   it("threads ONE correlation id through every persist of a cycle", async () => {

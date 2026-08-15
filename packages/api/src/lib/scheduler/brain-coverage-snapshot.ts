@@ -46,6 +46,7 @@ import { enumerateWarehouseCoverage } from "@atlas/api/lib/brain/coverage-wareho
 import {
   SURVEYABLE_SOURCE_CLASSES,
   persistCoverageSnapshot,
+  recordClassScanFailure,
   type CoverageEnumeration,
   type SurveyableSourceClass,
 } from "@atlas/api/lib/brain/coverage-enumeration";
@@ -70,6 +71,17 @@ const log = createLogger("brain.coverage-snapshot");
  * before it is called stale.
  */
 export const DEFAULT_COVERAGE_SNAPSHOT_INTERVAL_MS = 60 * 60_000;
+
+/**
+ * How many distinct failure reasons the cycle result carries.
+ *
+ * A per-class scan failure is at most one per class, but a per-WORKSPACE write
+ * failure is one per tenant — so a fleet-wide database fault would otherwise
+ * build the same sentence a thousand times into a span attribute. The first few
+ * name the fault; the log lines carry the rest, one per workspace, with the
+ * cycle id to group them.
+ */
+const FAILURE_REASONS_MAX = 5;
 
 /**
  * Is the denominator snapshot switched on for this scope?
@@ -222,8 +234,13 @@ export interface CoverageSnapshotCycleResult {
    * The split matters because `failure` is what an operator pages on. One
    * class's scan failing while another enumerated five hundred workspaces is not
    * "the cycle could not establish which workspaces to look at" — it is exactly
-   * `degraded`'s sentence, and `error` is non-null either way, so nothing
-   * alerting on the error text loses anything.
+   * `degraded`'s sentence.
+   *
+   * ⚠️ `error` is non-null whenever `status` is not `success`, and that is a
+   * property of the code rather than a hope: EVERY arm that increments
+   * `scansFailed` or `classesFailed` also pushes into `failureReasons`. It was
+   * asserted here before it was true — write failures reached the field never,
+   * and refusals never — so the sentence is now written as what makes it hold.
    */
   readonly status: "success" | "degraded" | "failure";
   /** (class, workspace) pairs this cycle attempted. */
@@ -256,6 +273,13 @@ const ZERO = {
 export interface CoverageSnapshotDeps {
   readonly plans?: ClassEnumerationPlans;
   readonly persist?: typeof persistCoverageSnapshot;
+  /**
+   * The class-wide arm. Injected beside {@link persist} rather than folded into
+   * it because the two reach different row sets — one workspace versus every
+   * workspace of a class — and a double that could not tell them apart would
+   * hide precisely the omission this seam was added to close.
+   */
+  readonly recordScanFailure?: typeof recordClassScanFailure;
   readonly isEnabled?: (workspaceId?: string) => boolean;
   readonly now?: () => Date;
 }
@@ -277,6 +301,7 @@ export async function runCoverageSnapshotCycle(
 
   const plans = deps.plans ?? CLASS_ENUMERATION_PLANS;
   const persist = deps.persist ?? persistCoverageSnapshot;
+  const recordScanFailure = deps.recordScanFailure ?? recordClassScanFailure;
   const isEnabled = deps.isEnabled ?? isCoverageSnapshotEnabled;
   const now = deps.now ?? (() => new Date());
 
@@ -295,7 +320,17 @@ export async function runCoverageSnapshotCycle(
   let mapEdges = 0;
   let scansAttempted = 0;
   let scansFailed = 0;
-  const scanErrors: string[] = [];
+  /**
+   * Every reason this cycle could not do part of its job — scan failures AND
+   * write failures.
+   *
+   * Write failures used to increment `classesFailed` and reach `error` never, so
+   * a cycle in which every persist threw returned `{ status: "degraded", error:
+   * null }` while the status docstring claimed "`error` is non-null either way".
+   * A counterfactual comment about the one field an operator reads for the
+   * reason.
+   */
+  const failureReasons: string[] = [];
 
   // ⚠️ Iterating the SURVEYABLE list rather than the registry's keys, because
   // `Object.entries` widens the key to `string` — so the previous `cls as
@@ -317,11 +352,30 @@ export async function runCoverageSnapshotCycle(
       // every class's roster.
       scansFailed++;
       const message = errorMessage(err);
-      scanErrors.push(`${sourceClass}: ${message}`);
+      failureReasons.push(`${sourceClass}: ${message}`);
       log.error(
         { cycleId, sourceClass, err: message },
         "brain coverage: could not list the workspaces for this class — its rosters keep their previous readings this cycle",
       );
+      // ⚠️ THE ATTEMPT IS RECORDED HERE TOO, and this arm is the reason the
+      // fix-vs-finding step exists. Without it a class-wide scan failure moves
+      // NOTHING — no `last_attempt_at`, no `last_error`, for any workspace of
+      // that class — so the page keeps rendering a clean, dated, CURRENT
+      // statement for as long as the scan keeps failing. Which is exactly the
+      // defect the per-workspace write arm below was fixed for, standing one arm
+      // over and certified by a test that asserted the class wrote nothing.
+      try {
+        await recordScanFailure({
+          sourceClass,
+          cycleAt: now(),
+          error: `Atlas could not list the workspaces to enumerate for ${sourceClass} coverage — the previous reading is kept, and it retries on the next cycle (${message})`,
+        });
+      } catch (recordErr) {
+        log.error(
+          { cycleId, sourceClass, err: errorMessage(recordErr) },
+          "brain coverage: could not record the class-wide scan failure — this class will read 'as of' its last success with no error beside it",
+        );
+      }
       continue;
     }
 
@@ -346,7 +400,7 @@ export async function runCoverageSnapshotCycle(
         );
         outcome = {
           ok: false,
-          error: `Atlas could not enumerate this workspace's ${sourceClass} coverage (${message}) — the previous reading is kept. It retries on the next cycle.`,
+          error: `Atlas could not enumerate this workspace's ${sourceClass} coverage — the previous reading is kept, and it retries on the next cycle (${message})`,
         };
       }
 
@@ -360,6 +414,19 @@ export async function runCoverageSnapshotCycle(
         });
         if (report.status === "failure") {
           classesFailed++;
+          // ⚠️ THE SIBLING BRANCH, one line from the write-failure arm below, and
+          // it was left out of the same fix. A cycle whose every enumeration was
+          // REFUSED (rather than thrown) returned `{ status: "degraded", error:
+          // null }` while the status docstring claimed "`error` is non-null
+          // either way" — the same counterfactual claim, one branch over.
+          //
+          // The surface itself was never wrong here: `persist` ran
+          // `RECORD_FAILURE_SQL`, so the date moved and `unavailableReason` says
+          // why. What was missing is the OPERATOR's half — the one field a span
+          // carries, and the one an alert reads.
+          if (!outcome.ok && failureReasons.length < FAILURE_REASONS_MAX) {
+            failureReasons.push(`${sourceClass}/${workspaceId}: ${outcome.error}`);
+          }
           continue;
         }
         classesEnumerated++;
@@ -376,6 +443,15 @@ export async function runCoverageSnapshotCycle(
         // already right; the surface was not.
         classesFailed++;
         const message = errorMessage(err);
+        // PUSHED, not only logged: `error` is what an operator reads for the
+        // reason, and a cycle in which every persist threw used to return
+        // `{ status: "degraded", error: null }` while the status docstring
+        // claimed "`error` is non-null either way". Bounded to the first few so
+        // a fleet-wide database fault does not build a megabyte-long string out
+        // of one message per workspace.
+        if (failureReasons.length < FAILURE_REASONS_MAX) {
+          failureReasons.push(`${sourceClass}/${workspaceId}: ${message}`);
+        }
         log.error(
           { cycleId, workspaceId, sourceClass, err: message },
           "brain coverage: could not persist a denominator snapshot — this workspace's roster keeps its previous reading",
@@ -388,7 +464,7 @@ export async function runCoverageSnapshotCycle(
             requestId: cycleId,
             outcome: {
               ok: false,
-              error: `Atlas could not write this workspace's ${sourceClass} coverage roster (${message}) — the previous reading is kept. It retries on the next cycle.`,
+              error: `Atlas could not write this workspace's ${sourceClass} coverage roster — the previous reading is kept, and it retries on the next cycle (${message})`,
             },
           });
         } catch (recordErr) {
@@ -428,6 +504,6 @@ export async function runCoverageSnapshotCycle(
     unitsRetired,
     unitsSurveyed,
     mapEdges,
-    error: scanErrors.length === 0 ? null : scanErrors.join("; "),
+    error: failureReasons.length === 0 ? null : failureReasons.join("; "),
   };
 }

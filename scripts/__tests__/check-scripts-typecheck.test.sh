@@ -90,9 +90,15 @@ PROBE_LINT_BASE="$(basename "$PROBE_LINT")"
 # ⚠️ The pre-existence guard runs BEFORE the trap is installed, and the order is
 # the whole point. With the trap first, this `exit 2` fires it and deletes the
 # leftover the message tells you to inspect — so the evidence is destroyed and
-# the re-run is silently green. The sibling suite
-# `check-docs-brain-snippets.test.sh` carries the same ordering for the same
-# measured reason.
+# the re-run is silently green. `check-brain-settings-doc.test.sh` orders its
+# baseline against its trap for the same measured reason.
+#
+# (`check-docs-brain-snippets.test.sh` used to be the sibling cited here. It
+# stopped writing tracked files at all in #5172 — its guard takes `--root`, so
+# its fixtures build throwaway trees under `mktemp -d` — and it therefore has no
+# leftover to guard against and no trap to order. This probe cannot follow it:
+# the type and lint gates read `scripts/` from disk, so the probe has to BE a
+# file in `scripts/`.)
 for existing in "$PROBE_TYPE" "$PROBE_LINT"; do
   if [ -e "$existing" ]; then
     echo "::error::$existing already exists — a previous run left it behind. Inspect and delete it, then re-run." >&2

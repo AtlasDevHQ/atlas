@@ -48,6 +48,11 @@
 // declaration that "no longer exists" — a false diagnosis with a destructive
 // remedy attached.
 //
+// Both roots are INJECTABLE — `--root`, `--source-glob`, `--docs-glob` — and
+// default to exactly the constants above, so the CI invocation (`bun
+// scripts/check-docs-brain-snippets.ts`, no arguments) is unchanged. See
+// {@link parseArgs} for why the seam exists.
+//
 // A doc snippet naming a `Brain*` declaration that is not exported anywhere in
 // scope is a FAILURE, not a skip — a snippet for a renamed or deleted interface
 // is the same lie as one missing a member.
@@ -93,8 +98,8 @@
 //    from `ts`, an indent that stops matching, or a snippet renamed out of the
 //    `Brain*` namespace then becomes loud instead of leaving the gate green having
 //    compared everything EXCEPT the snippets that matter. (A page *rename* is not
-//    on that list and never was: `DOCS_GLOB` keys on the extension, so renaming a
-//    file changes nothing.)
+//    on that list and never was: the docs glob keys on the extension, so renaming
+//    a file changes nothing.)
 // 2. A fence that does not parse AND spells a `Brain*` declaration is refused,
 //    because TypeScript error-recovers rather than throwing: a MERGED fenced block
 //    keeps every count correct while the parser walks past the prose and drops a
@@ -110,28 +115,121 @@
 // fixtured for that reason.
 //
 // `scripts/__tests__/check-docs-brain-snippets.test.sh` probes both floors and
-// every arm below: 21 fixtures, of which the 19 failure fixtures each name a
+// every arm below: 25 fixtures, of which the 22 failure fixtures each name a
 // marker AND require exit status exactly 1, so a crash or a different arm firing
-// cannot satisfy one. The 2 remaining are `pass` fixtures asserting exit 0 — those
-// are the ones a no-op guard would satisfy, which is what the 19 exist to rule out.
+// cannot satisfy one. Of the 3 remaining, 2 are `pass` fixtures asserting exit 0 —
+// those are the ones a no-op guard would satisfy, which is what the 22 exist to
+// rule out — and the third asserts that the suite wrote no tracked file.
 //
 // Run locally: bun scripts/check-docs-brain-snippets.ts
 
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Glob } from "bun";
 import ts from "typescript";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(SCRIPT_DIR, "..");
+const DEFAULT_ROOT = resolve(SCRIPT_DIR, "..");
 
 // Where published `Brain*` contracts may be declared. Scoped to each package's
 // `src` rather than the whole package, so a build output
 // (`packages/types/dist/brain.d.ts`) cannot be read as a second declaration of a
 // name its own source already exports.
-const SOURCE_GLOBS = ["packages/*/src/**/*.ts", "ee/src/**/*.ts"] as const;
-const DOCS_GLOB = "apps/docs/content/**/*.mdx";
+const DEFAULT_SOURCE_GLOBS = ["packages/*/src/**/*.ts", "ee/src/**/*.ts"] as const;
+const DEFAULT_DOCS_GLOBS = ["apps/docs/content/**/*.mdx"] as const;
+
+/** The two scanned sides, plus the directory their globs are anchored at. */
+interface Roots {
+  readonly root: string;
+  readonly sourceGlobs: readonly string[];
+  readonly docsGlobs: readonly string[];
+}
+
+/**
+ * `--root` / `--source-glob` / `--docs-glob`, all optional (#5172).
+ *
+ * The seam exists for the fixture suite, and its shape is a direct consequence
+ * of what the previous one had to do without it: with both roots as module
+ * constants, `scripts/__tests__/check-docs-brain-snippets.test.sh` could only
+ * regress the guard by REWRITING TRACKED SOURCE in place — two files, restored
+ * on exit by a `restore()` that needed a trap, an idempotence guard, git-object
+ * verification and an `|| exit 2` escalation, and that still reverted any
+ * concurrent edit made during the run. The sibling guard
+ * `scripts/check-docs-links.ts` has taken `--content-dir` since #4480 and its
+ * suite builds throwaway trees under `mktemp -d`; this is the same seam.
+ *
+ * ⚠️ PARSING IS STRICT — an unknown flag, a missing value, or a `--root` that is
+ * not a directory is exit 2, not a fall-back to the defaults. A fixture whose
+ * flag is misspelled would otherwise scan the REAL repo and assert something
+ * about a tree it never built: the fixture-that-cannot-fail shape, arriving
+ * through argv. Bare positional arguments are refused for the same reason.
+ */
+function parseArgs(argv: readonly string[]): Roots {
+  const sourceGlobs: string[] = [];
+  const docsGlobs: string[] = [];
+  let root: string | null = null;
+
+  const fail = (message: string): never => {
+    console.error(`[docs-brain-snippets] ${message}`);
+    console.error(
+      "[docs-brain-snippets] usage: check-docs-brain-snippets.ts [--root <dir>] [--source-glob <pattern>]... [--docs-glob <pattern>]...",
+    );
+    process.exit(2);
+  };
+
+  for (let i = 0; i < argv.length; i++) {
+    const flag = argv[i] ?? "";
+    if (flag !== "--root" && flag !== "--source-glob" && flag !== "--docs-glob") {
+      fail(`unknown argument \`${flag}\`.`);
+    }
+    const value = argv[i + 1];
+    // A present-but-valueless flag must not silently take the default: in the
+    // fixture harness that validates the wrong tree.
+    if (value === undefined || value.startsWith("-")) fail(`${flag} requires a value.`);
+    i++;
+    if (flag === "--root") {
+      if (root !== null) fail("--root may be given at most once.");
+      root = resolve(value);
+    } else if (flag === "--source-glob") {
+      sourceGlobs.push(value);
+    } else {
+      docsGlobs.push(value);
+    }
+  }
+
+  const resolvedRoot = root ?? DEFAULT_ROOT;
+  if (!statSync(resolvedRoot, { throwIfNoEntry: false })?.isDirectory()) {
+    fail(`--root ${resolvedRoot} is not a directory.`);
+  }
+  return {
+    root: resolvedRoot,
+    sourceGlobs: sourceGlobs.length > 0 ? sourceGlobs : [...DEFAULT_SOURCE_GLOBS],
+    docsGlobs: docsGlobs.length > 0 ? docsGlobs : [...DEFAULT_DOCS_GLOBS],
+  };
+}
+
+const { root: REPO_ROOT, sourceGlobs: SOURCE_GLOBS, docsGlobs: DOCS_GLOBS } = parseArgs(
+  process.argv.slice(2),
+);
+
+/**
+ * Absolute paths matching any of `globs`, each visited once.
+ *
+ * De-duplicated because the globs are now caller-supplied and may overlap: the
+ * same file reached twice would be reported as declaring its own names a second
+ * time — the duplicate-declaration arm firing on one file, which is a false
+ * diagnosis with a rename attached.
+ */
+function scanFiles(globs: readonly string[]): readonly string[] {
+  const files = new Set<string>();
+  for (const glob of globs) {
+    for (const file of new Glob(glob).scanSync({ cwd: REPO_ROOT })) {
+      files.add(resolve(REPO_ROOT, file));
+    }
+  }
+  return [...files].sort();
+}
 
 /** Only declarations in the product's own `Brain*` namespace are contracts. */
 const CONTRACT_NAME = /^Brain[A-Z]/;
@@ -576,32 +674,29 @@ const problems: string[] = [];
 
 // ── Source side ─────────────────────────────────────────────────────────────
 const source = new Map<string, Declared>();
-for (const glob of SOURCE_GLOBS) {
-  for (const file of new Glob(glob).scanSync({ cwd: REPO_ROOT })) {
-    // Tests and mocks may declare `Brain*` fixtures that are not the published
-    // contract. Defensive rather than load-bearing — `exported-only` already
-    // excludes most — but a test fixture that happens to be exported would
-    // otherwise shadow the real declaration.
-    if (file.includes("__tests__") || file.includes("__mocks__")) continue;
-    const abs = resolve(REPO_ROOT, file);
-    const rel = relative(REPO_ROOT, abs);
-    for (const [name, declared] of collect(
-      parse(readFileSync(abs, "utf8"), abs),
-      rel,
-      "exported-only",
-    )) {
-      const existing = source.get(name);
-      if (existing !== undefined) {
-        // Last-write-wins would resolve by glob order, so a page would be
-        // compared against whichever file the scan happened to reach second.
-        problems.push(
-          `\`${name}\` is exported from BOTH ${existing.where} and ${rel}.\n` +
-            `  This gate compares a published snippet against one declaration per name, so a duplicate makes the comparison depend on scan order. Rename one, or narrow SOURCE_GLOBS in scripts/check-docs-brain-snippets.ts.`,
-        );
-        continue;
-      }
-      source.set(name, declared);
+for (const abs of scanFiles(SOURCE_GLOBS)) {
+  const rel = relative(REPO_ROOT, abs);
+  // Tests and mocks may declare `Brain*` fixtures that are not the published
+  // contract. Defensive rather than load-bearing — `exported-only` already
+  // excludes most — but a test fixture that happens to be exported would
+  // otherwise shadow the real declaration.
+  if (rel.includes("__tests__") || rel.includes("__mocks__")) continue;
+  for (const [name, declared] of collect(
+    parse(readFileSync(abs, "utf8"), abs),
+    rel,
+    "exported-only",
+  )) {
+    const existing = source.get(name);
+    if (existing !== undefined) {
+      // Last-write-wins would resolve by scan order, so a page would be
+      // compared against whichever file the scan happened to reach second.
+      problems.push(
+        `\`${name}\` is exported from BOTH ${existing.where} and ${rel}.\n` +
+          `  This gate compares a published snippet against one declaration per name, so a duplicate makes the comparison depend on scan order. Rename one, or narrow the source globs (\`--source-glob\`, default ${DEFAULT_SOURCE_GLOBS.join(", ")}).`,
+      );
+      continue;
     }
+    source.set(name, declared);
   }
 }
 
@@ -618,8 +713,7 @@ if (source.size === 0) {
 // ── Doc side ────────────────────────────────────────────────────────────────
 const compared = new Set<string>();
 
-for (const file of new Glob(DOCS_GLOB).scanSync({ cwd: REPO_ROOT })) {
-  const abs = resolve(REPO_ROOT, file);
+for (const abs of scanFiles(DOCS_GLOBS)) {
   const rel = relative(REPO_ROOT, abs);
   const scan = scanTsFences(readFileSync(abs, "utf8"));
 

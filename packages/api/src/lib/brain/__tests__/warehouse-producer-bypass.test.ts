@@ -1,5 +1,6 @@
 /**
- * The SQL-gate bypass set (#5042, re-pointed at #5230's spelling).
+ * The SQL-gate name allowlist (#5042, re-pointed at #5230's spelling, widened to
+ * whole-file name occurrence by #5249).
  *
  * ## WHY THIS FILE EXISTS
  *
@@ -10,43 +11,87 @@
  * grepping for the assertion is the whole list of places the gate is bypassed. An
  * assertion is greppable; nothing fails when a fifth one appears.
  *
+ * ## WHAT AN ENTRY MEANS — read this before adding one
+ *
+ * **An entry names a file that may MENTION a guarded name. It does not certify that
+ * the file bypasses anything, and it no longer certifies that the file asserts.**
+ * That is #5249's change and it is a real widening: before, an entry meant *"this
+ * line may cast"*; now it means *"this file may say the word"*.
+ *
+ * The consequence is that a module which only ANNOTATES — `let v: <a guarded name>`,
+ * a re-export, an import — has to be listed too, even though an annotation asserts
+ * nothing and is safe. The allowlist therefore grows for reasons that are not
+ * bypasses, and a flat list would quietly stop distinguishing the two. So it does not
+ * stay flat: every entry carries a {@link AllowlistKind}, and the count of each is
+ * asserted below. A reviewer reading the list can still see *"four bypasses, zero
+ * annotations"* rather than *"five files, unknown mix"*.
+ *
+ * **When you add an entry, pick the kind honestly.** `"bypass"` is the one that has
+ * to be argued: a production module minting a passing verdict is a second door onto
+ * an unvalidated statement reaching a customer's datasource. `"annotation"` is
+ * ordinarily fine and still has to be visible.
+ *
+ * ## WHY WHOLE-FILE, and what it bought
+ *
+ * The previous matcher keyed on the cast's own line — the keyword and a guarded name
+ * on one physical line. Three spellings walked past it, **all three measured against
+ * the repo's own checker (they compile) and against both matchers (the old one misses
+ * each, this one catches each)**. The measurement is not described here, it is
+ * executed: see the delta table in the "escapes closed by #5249" test below, which
+ * runs {@link LEGACY_AS_ADJACENT_RE} beside {@link NAME_RE} on each spelling.
+ *
+ * - a local type ALIAS, then the assertion through the alias
+ * - the ANGLE-BRACKET assertion form
+ * - a LINE BREAK between the keyword and the name
+ *
+ * A fourth, listed as a live escape by the previous header, is closed by the same
+ * move: an import that renames a guarded type OUT to another local name still spells
+ * the guarded name at the import site.
+ *
  * ## FIVE names, because #5230 moved the brand onto the REQUEST
  *
- * The passing verdict now carries the request it validated, and that request is
- * what is branded — which is how replay (a cached token for some other statement)
- * and ordering (a runner reachable with an unvalidated request) got closed. A bypass
- * can therefore be spelled five ways, and {@link BYPASS_RE} matches all of them: an
- * assertion naming the branded REQUEST type (what a mint ordinarily writes), the
- * VERDICT union, the VALIDATOR seam type, the DEPS interface that holds it, or the
- * RUNNER type whose parameter is the branded request.
+ * The passing verdict carries the request it validated, and that request is what is
+ * branded — which is how replay (a cached token for some other statement) and
+ * ordering (a runner reachable with an unvalidated request) got closed. A bypass can
+ * be spelled five ways: the branded REQUEST type, the VERDICT union, the VALIDATOR
+ * seam type, the DEPS interface that holds it, or the RUNNER type whose parameter is
+ * the branded request.
  *
- * ⚠️ **All five have to be matched, and the reason is one property of the brand.**
- * It only ADDS a field, so a branded request is assignable to a bare one, and `as`
- * succeeds whenever EITHER direction is comparable — the reverse direction carries
- * every seam name. Refused only where the reverse direction also fails: a NULLARY
- * mint (a 1-parameter function type is not assignable to a 0-parameter one), or a
- * literal with an excess property. `as const` on `valid` does not close it. Measured
- * against the repo's own checker, because the two obvious explanations for this were
- * both wrong. Such a validator returns its own argument, so the run loop's identity
- * check waves it through: the gate never ran and nothing downstream can tell.
+ * ⚠️ **All five have to be listed, and the reason is one property of the brand.** It
+ * only ADDS a field, so a branded request is assignable to a bare one, and the
+ * assertion succeeds whenever EITHER direction is comparable — the reverse direction
+ * carries every seam name. Refused only where the reverse direction also fails: a
+ * NULLARY mint (a 1-parameter function type is not assignable to a 0-parameter one),
+ * or a literal with an excess property. Such a validator returns its own argument, so
+ * the run loop's identity check waves it through: the gate never ran and nothing
+ * downstream can tell.
  *
- * ⚠️ **The pattern is not written out in this file's prose, and that is the point
- * rather than fastidiousness.** A lexical guard cannot tell a quotation from an
- * assertion, so a docstring spelling the forbidden cast puts the guard's own file
- * in its own result set — which it did, on the first run. The repo's answer is
- * reword, never exempt: an exemption is a hole shaped exactly like the thing being
- * guarded, and the next real instance gets written inside it. The exact spelling
- * lives in {@link BYPASS_RE} below, where a reader can still see it and the scan
- * cannot trip over it.
+ * ## The names are ASSEMBLED, and that is load-bearing twice
  *
- * ## What a new entry means
+ * A lexical guard cannot tell a quotation from an assertion. Under the old
+ * line-keyed matcher this file stayed out of its own result set by describing
+ * spellings in prose instead of writing them; under a whole-file name scan that is no
+ * longer enough, because **the matcher's own definition would spell all five names
+ * and put this file into its own results.** Measured: it does.
  *
- * Not automatically a bug. A suite that must bypass the real gate has a legitimate
- * reason — the gate's table check is workspace-whitelist-scoped, and a test schema
- * has no whitelist — which is why three of the four sites are test harnesses. What
- * it must not be is INVISIBLE: a production module minting a passing verdict is a
- * second door onto an unvalidated statement reaching a customer's datasource, and
- * that is the event that has to be argued rather than merged.
+ * The repo's answer is reword, never exempt — an exemption is a hole shaped exactly
+ * like the thing being guarded. So {@link GUARDED_NAMES} assembles each name from
+ * fragments and {@link NAME_RE} is built at runtime. No contiguous guarded name
+ * appears in this file's source, so it needs no entry, and **a real assertion written
+ * into this file would still spell a name contiguously and would still RED.**
+ *
+ * ⚠️ **Assembly introduces its own silent-failure mode, and it is the dangerous
+ * kind: a rename makes the guard VACUOUS rather than red.** If someone renames the
+ * VERDICT union, the fragments stop matching anything, the scan finds nothing, and
+ * the allowlist assertion fails loudly only because the four real files stop matching
+ * too — but a rename of a name with no instances (the runner, today) would go green
+ * forever. That is why the first test below reads `warehouse-producer.ts` and asserts
+ * every assembled name is really exported there.
+ *
+ * ⚠️ This paragraph names the types by ROLE rather than spelling them, and that is
+ * the rule for every comment added to this file from now on. The first draft of
+ * #5249's header spelled one — the suite RED-ed on its own file, immediately, which
+ * is the guard working.
  *
  * ## What this does NOT prove
  *
@@ -55,22 +100,19 @@
  * spread of the refusing arm, `unknown`, and the identity form of generic-inference
  * laundering are all REFUSED by the COMPILER.
  *
- * ⚠️ **What this scan holds is a different question, and conflating the two is how
- * this header has been wrong twice.** What it holds is exactly: *an assertion that
- * puts the keyword and one of the five names on ONE PHYSICAL LINE.* So it DOES catch
- * a double assertion through `unknown` written on one line. What genuinely escapes:
- * an angle-bracket assertion; a local type alias (including one aliasing an indexed
- * lookup of the runner's parameter); an import that renames one of these types OUT
- * to another local name; a line break between keyword and name, since the character
- * class below bars a newline; and `any`-typed wiring or a `Partial<T>`-shaped
- * generic builder, which need no assertion at all. The list is not exhaustive and
- * cannot be — read a green run as *"no new file names one"*, nothing more.
+ * ⚠️ **What this scan holds is exactly: no unlisted file under the scanned roots
+ * SPELLS one of the five names.** What still escapes is everything that reaches the
+ * type without naming it — `any`-typed wiring, a `Partial<T>`-shaped generic builder,
+ * or an indexed-access lookup routed through a VALUE rather than the type
+ * (`Parameters<typeof someRunner>[0]`). Those need no assertion and name nothing; the
+ * negative controls below pin that limit rather than leave it to prose. The list is
+ * not exhaustive and cannot be — read a green run as *"no new file names one"*,
+ * nothing more.
  *
  * It also does not pin the ANTI-REPLAY half. A mint listed below hands back a token
- * for the request it was given; a mint that hands back a token for some OTHER
- * request is a source-identical line this scan cannot tell apart, and it is the run
- * loop's identity check that refuses it. `warehouse-producer.test.ts` drives that
- * refusal.
+ * for the request it was given; a mint that hands back a token for some OTHER request
+ * is a source-identical line this scan cannot tell apart, and it is the run loop's
+ * identity check that refuses it. `warehouse-producer.test.ts` drives that refusal.
  *
  * A source-text test, and it says so: it proves what the tree CONTAINS, never what
  * runs.
@@ -89,17 +131,16 @@ const SRC_ROOT = new URL("../../../", import.meta.url).pathname;
 /**
  * Every root that can hold a mint — three of them, not decoration.
  *
- * ⚠️ All five matched names are EXPORTED, and both `ee/` and `packages/cli/` import
+ * ⚠️ All five guarded names are EXPORTED, and both `ee/` and `packages/cli/` import
  * `@atlas/api/*` freely: only the api→ee direction is gated. A scan of this package
  * alone proved a claim strictly narrower than the one the failure message made, so a
  * mint added under either would sit outside the enumeration while the guard stayed
- * green — the same silent-empty shape {@link BYPASS_RE}'s own note is written to
- * prevent, one axis over. `packages/cli/` is the concrete case: it already imports
+ * green. `packages/cli/` is the concrete case: it already imports
  * `@atlas/api/lib/db/*` and `@atlas/api/lib/semantic/*`, so an `atlas brain produce`
  * command is a plausible sixth site.
  *
  * ⚠️ **The roots are NAMED in the failure message too.** An enumeration is only as
- * honest as its scope, and the previous message asserted a tree-wide claim over one
+ * honest as its scope, and a previous message asserted a tree-wide claim over one
  * directory. If a root is added here, add it there.
  */
 const ROOTS: readonly { readonly dir: string; readonly label: string }[] = [
@@ -112,72 +153,92 @@ const ROOTS: readonly { readonly dir: string; readonly label: string }[] = [
 ];
 
 /**
- * Every site that MAY ASSERT one of the guarded names, with why.
+ * The module that defines all five names — read, not imported, so the assembled
+ * fragments can be checked against the real exports.
+ */
+const DEFINING_MODULE = join(SRC_ROOT, "lib/brain/warehouse-producer.ts");
+
+/**
+ * The five guarded names, ASSEMBLED so no contiguous spelling appears in this file.
+ * See the header: writing them whole would put this file into its own result set.
  *
- * ⚠️ "May assert", not "does bypass" — and the difference is real now that five
- * names are matched. A deps assertion carrying no `validateSnapshotSql`, or a
- * validator assertion returning only the refusing arm, bypasses nothing and still
- * belongs here. An entry is a place to LOOK, not a finding.
+ * The split points are arbitrary and only have to prevent a contiguous literal.
+ */
+const GUARDED_NAMES: readonly string[] = [
+  "Validated" + "SnapshotRequest",
+  "Snapshot" + "SqlVerdict",
+  "SnapshotSql" + "Validator",
+  "WarehouseProducer" + "Deps",
+  "WarehouseSnapshot" + "Runner",
+];
+
+/**
+ * #5249's matcher: does the file MENTION a guarded name at all?
+ *
+ * No keyword, no line discipline, no character class — the widening is the whole
+ * change, and it is what closes the alias, angle-bracket and line-break spellings in
+ * one move rather than three.
+ */
+const NAME_RE = new RegExp(`\\b(?:${GUARDED_NAMES.join("|")})\\b`);
+
+/**
+ * The matcher #5249 REPLACED, kept only so the behaviour delta is executable.
+ *
+ * ⚠️ This is not live — nothing scans the tree with it. It exists so the test below
+ * can assert, on each escape spelling, that the old matcher MISSED it and the new one
+ * CATCHES it. A delta described in prose drifts; a delta that runs cannot. Built from
+ * the same assembled fragments, for the same self-match reason as {@link NAME_RE}.
+ */
+const LEGACY_AS_ADJACENT_RE = new RegExp(
+  `\\bas\\b[^;=\\n]*\\b(?:${GUARDED_NAMES.join("|")})\\b`,
+);
+
+/** What an allowlist entry certifies. See the header — the distinction is the cost of #5249. */
+type AllowlistKind =
+  /** The file mints or asserts a passing verdict. This is the one to argue. */
+  | "bypass"
+  /** The file only names the type — annotation, import, re-export. Safe, still visible. */
+  | "annotation";
+
+/**
+ * Every file that MAY NAME one of the guarded types, with which kind and why.
+ *
+ * ⚠️ "May name", not "does bypass" — see the header. An entry is a place to LOOK,
+ * not a finding.
  *
  * ⚠️ ONE production entry, deliberately. It is the single point where the product's
- * gate answering yes becomes a value the run will act on. Measured: the module
- * matches on that cast's line alone — no prose line in it puts the keyword and a
- * matched name together — so deleting the cast without deleting this entry REDS the
- * test. Deleting both together is silent; an entry is a claim about the tree, not a
- * lock on the file.
+ * gate answering yes becomes a value the run will act on.
+ *
+ * ⚠️ This file is deliberately ABSENT, and that is not an exemption. It names none
+ * of the five contiguously — {@link GUARDED_NAMES} assembles them — so the scan does
+ * not find it. A real assertion written here would spell a name and would RED.
  */
-const KNOWN_BYPASSES: readonly { file: string; why: string }[] = [
+const NAME_ALLOWLIST: readonly {
+  readonly file: string;
+  readonly kind: AllowlistKind;
+  readonly why: string;
+}[] = [
   {
     file: "lib/brain/warehouse-producer.ts",
-    why: "the production mint — `defaultValidateSnapshotSql`, wrapping the real `validateSQL`",
+    kind: "bypass",
+    why: "the production mint — `defaultValidateSnapshotSql`, wrapping the real `validateSQL`; also where all five names are DEFINED",
   },
   {
     file: "lib/brain/__tests__/warehouse-producer.test.ts",
+    kind: "bypass",
     why: "the unit harness: no whitelist exists in a test workspace, so the real gate refuses every table",
   },
   {
     file: "lib/brain/__tests__/warehouse-producer-pg.test.ts",
+    kind: "bypass",
     why: "the -pg harness, for the same reason; its subject is the storage layer, not the gate",
   },
   {
     file: "lib/brain/__tests__/warehouse-producer-logging.test.ts",
+    kind: "bypass",
     why: "the logging harness, for the same reason",
   },
 ];
-
-/**
- * The cast that asserts a pass, however it is spelled.
- *
- * ⚠️ **`[^;=\n]*` between the keyword and the name, not `\s+`, and the difference
- * was measured rather than reasoned.** The first version required them adjacent, so
- * a QUALIFIED reference — the `as` keyword followed by an inline `import(…)` type
- * and only then the name, which is what a file that has not imported the type
- * writes — walked straight past it. A guard that reports an empty set is
- * indistinguishable from one with nothing to find, which is the way this kind of
- * test fails silently. (The spelling is not written out here for the header's
- * reason; the second positive control below constructs it.)
- *
- * The class excludes `;`, `=` and a newline so the match stays inside one type
- * position rather than spanning statements. The regex is also the canonical
- * spelling of the pattern: writing it out in prose would put this file into its own
- * result set, which is why the header describes it instead.
- *
- * ⚠️ **FIVE alternatives (#5230), and the header says why each is load-bearing.**
- * Only the first has instances in the tree today; the other four are pinned by the
- * planted controls below, which is deliberate — a matcher whose arms are exercised
- * only by real instances loses the arm the moment the tree stops containing one, and
- * these four exist precisely for the mint nobody has written yet.
- *
- * ⚠️ A single-line import that renames some OTHER binding INTO one of these names
- * matches — a false positive rather than a hole, since it fails loudly and the fix
- * is to rename the local. An import that renames one of these types OUT to a
- * different local name does NOT match, and that direction is a real escape, listed
- * with the others in the header. Neither spelling is written out here: writing one
- * put THIS FILE into its own result set on the first run, which is the quotation
- * trap arriving exactly where the header says it does.
- */
-const BYPASS_RE =
-  /\bas\b[^;=\n]*\b(?:ValidatedSnapshotRequest|SnapshotSqlVerdict|SnapshotSqlValidator|WarehouseProducerDeps|WarehouseSnapshotRunner)\b/;
 
 function* walk(dir: string): Generator<string> {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -191,7 +252,23 @@ function* walk(dir: string): Generator<string> {
   }
 }
 
-describe("the SQL-gate bypass set (#5042, #5230)", () => {
+describe("the SQL-gate name allowlist (#5042, #5230, #5249)", () => {
+  test("every assembled name is really exported — a rename must RED, not go vacuous", () => {
+    // ⚠️ The one test that assembly makes mandatory. Fragments cannot be checked by
+    // the compiler, so nothing but this read connects them to the real exports.
+    // Without it, renaming a guarded type with no instances in the tree leaves a
+    // matcher that can never match and a suite that is green forever.
+    const source = readFileSync(DEFINING_MODULE, "utf8");
+    for (const name of GUARDED_NAMES) {
+      expect(
+        new RegExp(`export (?:type|interface) ${name}\\b`).test(source),
+        `${name} is no longer exported from lib/brain/warehouse-producer.ts. If it was ` +
+          `renamed, update GUARDED_NAMES — the assembled fragments are invisible to the ` +
+          `compiler, so a stale one silently matches nothing.`,
+      ).toBe(true);
+    }
+  });
+
   test("every scanned root exists — a moved path must RED, not shrink the scan", () => {
     // ⚠️ Asserted rather than filtered. `existsSync`-and-skip would turn a renamed
     // directory into a silently smaller scan that still passes, which is the exact
@@ -203,85 +280,102 @@ describe("the SQL-gate bypass set (#5042, #5230)", () => {
     }
   });
 
-  test("exactly the known sites assert a passing SQL verdict", () => {
+  test("exactly the allowlisted files name a guarded type", () => {
     const found: string[] = [];
     for (const { dir, label } of ROOTS) {
       for (const file of walk(dir)) {
-        if (BYPASS_RE.test(readFileSync(file, "utf8"))) {
+        if (NAME_RE.test(readFileSync(file, "utf8"))) {
           found.push(label + file.slice(dir.length));
         }
       }
     }
     expect(
       found.toSorted(),
-      "the set of places under packages/api/src, ee/src and packages/cli/src that can assert the SQL " +
-        "gate passed has changed. A new TEST harness is ordinarily fine — the real gate is " +
-        "whitelist-scoped and a test workspace has none — but a new PRODUCTION site is a second door " +
-        "onto an unvalidated statement reaching a customer's datasource, and it is the thing to argue " +
-        "rather than merge. Add it to KNOWN_BYPASSES with a reason, or remove the cast.",
-    ).toEqual(KNOWN_BYPASSES.map((b) => b.file).toSorted());
+      "the set of files under packages/api/src, ee/src and packages/cli/src that NAME one of " +
+        "the five guarded SQL-gate types has changed. Since #5249 an entry means 'may name', " +
+        "not 'may cast' — so a file that merely ANNOTATES one of these types lands here too, " +
+        "and that is expected: add it to NAME_ALLOWLIST with kind 'annotation'. A new " +
+        "PRODUCTION site that MINTS a passing verdict is kind 'bypass', and it is a second " +
+        "door onto an unvalidated statement reaching a customer's datasource — the thing to " +
+        "argue rather than merge.",
+    ).toEqual(NAME_ALLOWLIST.map((b) => b.file).toSorted());
   });
 
-  test("the positive control: the matcher finds a cast it is shown", () => {
-    // Without this, an over-narrow regex reports an empty set forever and the test
-    // above passes by finding nothing — the shape a guard test fails in silently.
-    // ASSEMBLED, never written whole — see the header. A literal here would put this
-    // file back in its own result set.
-    const planted = `const v = ({ valid: true, request: r }) as Snapshot${"SqlVerdict"};`;
-    expect(BYPASS_RE.test(planted)).toBe(true);
-    // The QUALIFIED spelling, which the first version of this matcher missed — a
-    // file that has not imported the type writes it this way.
-    const qualified = `const v = x as import("./warehouse-producer").Snapshot${"SqlVerdict"};`;
-    expect(BYPASS_RE.test(qualified)).toBe(true);
-    // #5230's spelling — the one the four sites listed ABOVE actually use. Without
-    // this arm the matcher could lose the request alternative entirely and every
-    // assertion here would still pass on the verdict one.
-    const branded = `const v = { valid: true, request: r as Validated${"SnapshotRequest"} };`;
-    expect(BYPASS_RE.test(branded)).toBe(true);
-    const brandedQualified = `const v = r as import("./warehouse-producer").Validated${"SnapshotRequest"};`;
-    expect(BYPASS_RE.test(brandedQualified)).toBe(true);
-    // The SEAM spellings, and these two are the reason the header's claim changed.
-    // A mint asserted onto the validator type — with a PARAMETER, which is the only
-    // useful shape — compiles, so the matcher has to see it. The tree contains no
-    // instance, so these controls are the arms' only coverage.
-    const seam = `const v = (async (r) => ({ valid: true, request: r })) as SnapshotSql${"Validator"};`;
-    expect(BYPASS_RE.test(seam)).toBe(true);
-    const deps = `const d = { validateSnapshotSql: mint } as WarehouseProducer${"Deps"};`;
-    expect(BYPASS_RE.test(deps)).toBe(true);
-    // The RUNNER type, the fifth name. Free today — the tree has zero assertions
-    // onto it — and it is the cheapest innocuous-looking uncaught mint, because its
-    // parameter IS the branded request.
-    const runner = `const run = ((r) => read(r)) as WarehouseSnapshot${"Runner"};`;
-    expect(BYPASS_RE.test(runner)).toBe(true);
-    // A DOUBLE assertion through `unknown`, on one line. A round-1 draft of the
-    // header listed this as escaping; it does not, and the control is here so the
-    // sentence cannot drift back.
-    const doubled = `const r = payload as unknown as Validated${"SnapshotRequest"};`;
-    expect(BYPASS_RE.test(doubled)).toBe(true);
-    // And negative controls, so the matcher is not simply true of everything:
-    // naming a TYPE is not asserting a pass.
-    expect(BYPASS_RE.test(`let v: Snapshot${"SqlVerdict"};`)).toBe(false);
-    expect(BYPASS_RE.test(`let r: Validated${"SnapshotRequest"};`)).toBe(false);
-    expect(BYPASS_RE.test(`const f: SnapshotSql${"Validator"} = realGate;`)).toBe(false);
-    expect(BYPASS_RE.test(`function run(d: WarehouseProducer${"Deps"}) {}`)).toBe(false);
-    // ⚠️ The two negatives above contain no `as` at all, so they are false for ANY
-    // matcher that requires the keyword — including one that has lost every name.
-    // They do not discriminate the arms they sit beside. This one does: a matched
-    // name with no `as` anywhere on the line, in a position no assertion can take.
-    expect(BYPASS_RE.test(`export type { SnapshotSql${"Validator"} };`)).toBe(false);
-    // ⚠️ And the honest cost, asserted rather than described: PROSE containing the
-    // word and a matched name on one line MATCHES. This is the quotation trap as a
-    // measurement — the guard cannot tell a sentence from an assertion, which is
-    // exactly why the header describes spellings instead of writing them out.
-    expect(
-      BYPASS_RE.test(`// as good a place as any to name SnapshotSql${"Validator"} in prose`),
-    ).toBe(true);
-    // ⚠️ A NEGATIVE control of legitimate PROSE, not only of legitimate code. Every
-    // positive above is hand-planted by the same author as the matcher, so they pass
-    // by construction; this is the arm that catches an over-broad one. The sentence
-    // below is the shape a docstring in this module actually writes.
-    expect(
-      BYPASS_RE.test(`// the runner is reachable only as a consequence of the gate passing`),
-    ).toBe(false);
+  test("the allowlist's kinds are counted, so a bypass cannot arrive dressed as an annotation", () => {
+    // ⚠️ The number, not just the field. #5249 widened what an entry means, and the
+    // failure mode it introduces is a real mint added as `kind: "annotation"` because
+    // that is the quieter word. Pinning the count makes adding a bypass a visible edit
+    // to this line, with the reviewer's attention on it.
+    const byKind = { bypass: 0, annotation: 0 };
+    for (const entry of NAME_ALLOWLIST) byKind[entry.kind]++;
+    expect(byKind).toEqual({ bypass: 4, annotation: 0 });
+    // Every entry says why, and the reason is not the empty string.
+    for (const entry of NAME_ALLOWLIST) expect(entry.why.length).toBeGreaterThan(20);
+  });
+
+  test("the escapes #5249 closed: old matcher MISSES each, new matcher CATCHES each", () => {
+    // ⚠️ The behaviour delta, executed rather than described. Each spelling below was
+    // also compiled against the repo's own checker while #5249 was written — all three
+    // typecheck, which is what made them escapes rather than curiosities.
+    //
+    // ASSEMBLED, never written whole — a contiguous name here would put this file into
+    // its own result set, which is the trap the header describes.
+    const V = "Snapshot" + "SqlVerdict";
+    const escapes: readonly { readonly label: string; readonly src: string }[] = [
+      {
+        label: "a local type alias, then the assertion through the alias",
+        src: `type V = ${V};\nconst v = ({ valid: true, request: r }) as V;`,
+      },
+      {
+        label: "the angle-bracket assertion form",
+        src: `const v = <${V}>({ valid: true, request: r });`,
+      },
+      {
+        label: "a line break between the keyword and the name",
+        src: `const v = ({ valid: true, request: r }) as\n  ${V};`,
+      },
+      {
+        label: "an import renaming a guarded type OUT to another local name",
+        src: `import type { ${V} as Ok } from "./warehouse-producer";`,
+      },
+    ];
+    for (const { label, src } of escapes) {
+      expect(LEGACY_AS_ADJACENT_RE.test(src), `legacy matcher should MISS: ${label}`).toBe(false);
+      expect(NAME_RE.test(src), `#5249 matcher should CATCH: ${label}`).toBe(true);
+    }
+  });
+
+  test("the positive control: the matcher finds every name it is shown", () => {
+    // Without this, an over-narrow matcher reports an empty set forever and the
+    // allowlist test above passes by finding nothing — the shape a guard test fails
+    // in silently. One arm per name, so losing a single alternative REDS.
+    for (const name of GUARDED_NAMES) {
+      expect(NAME_RE.test(`const v = x as ${name};`), `lost the arm for ${name}`).toBe(true);
+      // ⚠️ And the whole point of #5249: the same name with no assertion at all.
+      expect(NAME_RE.test(`let v: ${name};`), `annotation form missed for ${name}`).toBe(true);
+    }
+  });
+
+  test("the negative controls: what a name scan still cannot see", () => {
+    // ⚠️ These are the residual holes, pinned as assertions so the header's "what this
+    // does NOT prove" section cannot drift away from the truth. Each names none of the
+    // five, so each reaches the branded type — or claims to — without spelling it.
+    expect(NAME_RE.test(`const d: any = { validateSnapshotSql: mint };`)).toBe(false);
+    expect(NAME_RE.test(`type V = Parameters<typeof runProducerSnapshot>[0];`)).toBe(false);
+    expect(NAME_RE.test(`const v = buildPartial({ valid: true, request: r });`)).toBe(false);
+    // ⚠️ A DISCRIMINATING negative, not merely an absent one. A near-miss identifier
+    // that CONTAINS a guarded name as a prefix must not match — otherwise `\b` has
+    // been dropped and the matcher is a substring test, which would drag in every
+    // sibling type and make the allowlist unmaintainable.
+    expect(NAME_RE.test(`let v: Snapshot${"SqlVerdict"}ish;`)).toBe(false);
+    // The real sibling type this scan must stay clear of: the UNvalidated request is
+    // named all over the producer and is not one of the five.
+    expect(NAME_RE.test(`function run(r: WarehouseSnapshot${"Request"}) {}`)).toBe(false);
+    // ⚠️ And the honest cost of the widening, asserted rather than described: PROSE
+    // naming a guarded type now matches, where the old matcher needed the keyword too.
+    // This is the quotation trap as a measurement — it is why the names above are
+    // assembled, and why "reword, never exempt" is the only way to add a comment here
+    // that mentions one.
+    expect(NAME_RE.test(`// see Snapshot${"SqlVerdict"} for the passing arm`)).toBe(true);
   });
 });

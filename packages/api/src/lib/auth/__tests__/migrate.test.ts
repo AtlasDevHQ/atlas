@@ -605,6 +605,11 @@ describe("migrateAuthTables", () => {
             { name: "0198_brain_slack_membership_scope.sql" },
             { name: "0199_brain_enrollment.sql" },
             { name: "0200_brain_entity.sql" },
+            // 0201 renames the two Company Atlas ingest catalog rows (#5082).
+            // It is a data-only UPDATE on `plugin_catalog` — an Atlas table
+            // Better Auth owns nothing on — so it belongs in the
+            // already-applied set on the same grounds as 0196–0200.
+            { name: "0201_brain_catalog_rows_company_atlas.sql" },
           ],
         };
       }

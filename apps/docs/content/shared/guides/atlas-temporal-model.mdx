@@ -48,7 +48,7 @@ A superseded fact is still `published` and still not retracted; its validity win
 <Callout type="warn" title="Retraction hides history; supersession preserves it">
   A retracted fact disappears from every fact-serving read, `asOf` included, because hiding history is what the verb is *for*. If you retract a claim you meant to supersede, you lose the ability to explain what the brain believed before the change.
 
-  The one deliberate exception is the [conflict cluster](/guides/brain-conflicts), where a retracted rival stays listed — labelled by `invalidatedAt`, exactly as a superseded rival is labelled there by `validTo` — because it is still why a live claim was contested. That carve-out is also why retraction is not itself content deletion.
+  The one deliberate exception is the [conflict cluster](/guides/atlas-conflicts), where a retracted rival stays listed — labelled by `invalidatedAt`, exactly as a superseded rival is labelled there by `validTo` — because it is still why a live claim was contested. That carve-out is also why retraction is not itself content deletion.
 </Callout>
 
 ## Reading the brain as of a past instant
@@ -104,7 +104,7 @@ The signal is anchored on the **newest observation** of the claim: the latest ev
 - The review queue **floats** stale claims for a human's attention. Staleness affects ordering only — a stale fact is surfaced, never filtered out.
 - The agent is told to **present a fact's age** ("as of March…") rather than assert a stale claim as current — and explicitly never to discard or overrule a fact because of its age. A `stale` fact is still the reviewed record.
 
-Acting on the signal is a human decision, taken through the [correction verbs](/guides/brain-corrections) or the review gate.
+Acting on the signal is a human decision, taken through the [correction verbs](/guides/atlas-corrections) or the review gate.
 
 <Callout type="info" title="Age precision and provenance entitlement">
   The newest-observation timestamp is episode data. A reader whose provenance attribution is withheld for a fact receives the coarse `level` only — `ageDays` and `lastObservedAt` come back `null`, because a day-precision age would restate the withheld timestamp as arithmetic. The level itself is still computed from the real anchor.
@@ -126,6 +126,6 @@ Fact **extraction** is off by default and enabled with `ATLAS_BRAIN_EXTRACTION_E
 
 ## Related
 
-- [Company Atlas — Corrections](/guides/brain-corrections) — the four verbs a human uses to fix a fact
-- [Company Atlas — Conflicts](/guides/brain-conflicts) — what Atlas does when two claims disagree
+- [Company Atlas — Corrections](/guides/atlas-corrections) — the four verbs a human uses to fix a fact
+- [Company Atlas — Conflicts](/guides/atlas-conflicts) — what Atlas does when two claims disagree
 - <AudienceLink saas="/guides/knowledge-base">Knowledge Base</AudienceLink> — the document store `searchBrain` reads alongside the brain

@@ -26,7 +26,7 @@
     "start": "sh scripts/start.sh",
     "lint": "oxlint --config .oxlintrc.json packages/ ee/ plugins/ apps/ examples/ create-atlas/ scripts/",
     "lint:type-aware": "oxlint --type-aware --config .oxlintrc.json packages/ ee/ plugins/ apps/ examples/ create-atlas/ scripts/",
-    "type": "bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build && bun run --filter '@useatlas/sdk' build && bun run --filter '@useatlas/react' build && tsgo --noEmit && bun run type:scripts && bun run --filter '@atlas/web' type && bun run --filter '@atlas/www' type",
+    "type": "bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build && bun run --filter '@useatlas/sdk' build && bun run --filter '@useatlas/react' build && tsgo --noEmit && bun run type:scripts && bun run --filter '@atlas/web' type && bun run --filter '@atlas/www' type && bun run --filter '@atlas/docs' type",
     "type:scripts": "tsgo --noEmit -p tsconfig.scripts.json",
     "atlas": "bun packages/cli/bin/atlas.ts",
     "atlas-operator": "bun packages/cli/bin/atlas-operator.ts",

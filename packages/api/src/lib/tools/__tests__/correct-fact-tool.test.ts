@@ -332,7 +332,7 @@ describe("outcome mapping", () => {
 // ---------------------------------------------------------------------------
 
 describe("the documented disclosure split", () => {
-  // `brain-corrections.mdx` shipped saying flags "come back in
+  // `atlas-corrections.mdx` shipped saying flags "come back in
   // `flaggedForReReview`" — true of `/correct` and the tool, false of
   // `/retract`, which is the route the admin console actually calls. The
   // response shapes are now unified and the split (ids on admin, a count on
@@ -348,7 +348,7 @@ describe("the documented disclosure split", () => {
       "utf8",
     );
     const guide = readFileSync(
-      join(repo, "apps", "docs", "content", "shared", "guides", "brain-corrections.mdx"),
+      join(repo, "apps", "docs", "content", "shared", "guides", "atlas-corrections.mdx"),
       "utf8",
     );
 
@@ -368,7 +368,7 @@ describe("the documented disclosure split", () => {
       // the ids as documented off a guide that only ever mentions the count.
       expect(
         new RegExp(`\\b${field}\\b`).test(guide),
-        `brain-corrections.mdx never names \`${field}\` (as a whole word). The admin routes return ids and the agent tool returns a count; a guide that documents only one of them tells half its readers the wrong thing about the surface they use.`,
+        `atlas-corrections.mdx never names \`${field}\` (as a whole word). The admin routes return ids and the agent tool returns a count; a guide that documents only one of them tells half its readers the wrong thing about the surface they use.`,
       ).toBe(true);
     }
 
@@ -389,11 +389,11 @@ describe("the documented disclosure split", () => {
 
     expect(
       attributed("flaggedForReReview", /\/retract|\/correct|admin route/i),
-      "brain-corrections.mdx names `flaggedForReReview` but never in the same sentence as the admin surface that returns it — a reader cannot tell which surface gives ids and which gives a count",
+      "atlas-corrections.mdx names `flaggedForReReview` but never in the same sentence as the admin surface that returns it — a reader cannot tell which surface gives ids and which gives a count",
     ).toBe(true);
     expect(
       attributed(countKey, /correct_fact|tool\b/i),
-      `brain-corrections.mdx names \`${countKey}\` but never in the same sentence as the agent tool that returns it — see above`,
+      `atlas-corrections.mdx names \`${countKey}\` but never in the same sentence as the agent tool that returns it — see above`,
     ).toBe(true);
   });
 });
@@ -475,13 +475,13 @@ describe("the public guide", () => {
         "content",
         "shared",
         "guides",
-        "brain-corrections.mdx",
+        "atlas-corrections.mdx",
       ),
       "utf8",
     );
     expect(
       /validity window has \*\*already closed\*\*|validity window[^.]*already closed/i.test(guide),
-      "brain-corrections.mdx does not document that re-authority/pin are refused on a closed validity window — that refusal has no other public description",
+      "atlas-corrections.mdx does not document that re-authority/pin are refused on a closed validity window — that refusal has no other public description",
     ).toBe(true);
 
     // The trap this Callout fell into once: `supersede` refuses ANY non-null
@@ -494,7 +494,7 @@ describe("the public guide", () => {
     for (const sentence of elapsed) {
       expect(
         /no correction|refuses|ingest/i.test(sentence),
-        `brain-corrections.mdx says "${sentence.trim()}" — an elapsed window with no successor has NO correction verb available (\`supersede\` refuses a closed window too), so this must not read as a remedy`,
+        `atlas-corrections.mdx says "${sentence.trim()}" — an elapsed window with no successor has NO correction verb available (\`supersede\` refuses a closed window too), so this must not read as a remedy`,
       ).toBe(true);
     }
   });

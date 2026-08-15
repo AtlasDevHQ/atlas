@@ -13,7 +13,7 @@
 # and `apps/docs/content/**` — and runs the guard against it via `--root`. The
 # previous version had no such seam: both roots were module constants, so the
 # only way to regress the guard was to REWRITE TRACKED SOURCE in place
-# (`apps/docs/content/shared/guides/brain-connector-authoring.mdx` and
+# (`apps/docs/content/shared/guides/atlas-connector-authoring.mdx` and
 # `packages/api/src/lib/brain/ingest/types.ts`) and restore it on exit. That
 # bought a `restore()` with a trap, an idempotence guard, git-object
 # verification and an `|| exit 2` escalation — two of whose defects were found in
@@ -126,7 +126,7 @@ FAIL=0
 # fixture onto the tree it models — but nothing here reads or writes either.
 TYPES_REL="packages/api/src/lib/brain/ingest/types.ts"
 TOOLS_REL="packages/api/src/lib/tools/search-brain.ts"
-DOC_REL="apps/docs/content/shared/guides/brain-connector-authoring.mdx"
+DOC_REL="apps/docs/content/shared/guides/atlas-connector-authoring.mdx"
 
 # ── the clean tree every fixture regresses FROM ──────────────────────────────
 #

@@ -103,9 +103,18 @@ fi
 
 # ── validation fixtures (need docker) ───────────────────────────────────────
 
+DOCKER_CASES=0
 if ! command -v docker >/dev/null 2>&1; then
+  # ⚠️ FATAL under CI. A skip is the right local behaviour and the wrong CI
+  # behaviour: in CI it would report "10 passed" on a run that validated no
+  # config at all, which is the vacuous-gate shape this suite exists to refuse.
+  if [ -n "${CI:-}${GITHUB_ACTIONS:-}" ]; then
+    echo "::error::docker is unavailable on a CI runner — the validation fixtures cannot run, and skipping them here would report a green gate that checked nothing." >&2
+    exit 2
+  fi
   echo "  ⊘ skipped — docker not available locally (the validation fixtures run in CI's drift job)"
 else
+  DOCKER_CASES=7
   # mutate <name> <sed-script> — copy the real Caddyfile, apply <sed-script>,
   # and REQUIRE the copy to differ. A sed that matched nothing would leave a
   # valid config behind and the case would assert nothing.
@@ -133,7 +142,26 @@ else
 
   check_invalid() {
     local name="$1" script="$2" dest
-    mutate "$name" "$script" || return 0
+    # ⚠️ THREE outcomes, not two. `mutate` returns 1 when it has ALREADY counted
+    # a `fail` (the sed matched nothing) and 2 when SETUP broke and nothing was
+    # reported at all. `|| return 0` treated them identically, so a failing
+    # `cp`/`sed` produced no pass, no fail and no message — the case simply
+    # evaporated.
+    #
+    # MEASURED, with `sed` forced to exit 1 on PATH: `5 passed, 0 failed`, exit
+    # 0, against a baseline of `10 passed`. All five adversarial cases gone,
+    # green. Live triggers, not hypotheticals: BSD/macOS `sed -i` requires a
+    # backup-suffix argument, so every validation case is vacuous on a mac while
+    # the suite reports success; a full or read-only TMPDIR does the same to `cp`.
+    mutate "$name" "$script"
+    case $? in
+      0) ;;
+      1) return 0 ;;
+      *)
+        fail "$name — fixture SETUP failed (cp/sed). NOTHING was tested; this is not a pass."
+        return 0
+        ;;
+    esac
     dest="$MUTATED"
     local out status=0
     out="$(cd "$ROOT" && bash "$GATE" "$dest" 2>&1)" || status=$?
@@ -177,6 +205,46 @@ else
   # careless rename produces, and it is the one most likely to reach main.
   check_invalid "a reference to an undefined named matcher" \
     's|^\theader @apiSearch |\theader @neverDefinedAnywhere |'
+
+  # ── a DOCKER fault is exit 2, never a verdict on the file ─────────────────
+  #
+  # The case that would have caught the gate's original shape. `if ! docker run`
+  # discarded the status, so a dead daemon, a registry outage or a Docker Hub
+  # rate limit all exited 1 under "your Caddyfile is not a valid Caddy config" —
+  # naming a tracked file that is fine. `command -v docker` cannot see any of
+  # that; it only proves the binary exists.
+  #
+  # An unreachable socket stands in for the whole class: docker exits 125 for
+  # daemon, registry and mount faults alike, and the gate must map every one of
+  # them to 2.
+  docker_out=""
+  docker_status=0
+  docker_out="$(cd "$ROOT" && DOCKER_HOST=unix:///nonexistent-caddyfile-probe.sock \
+    bash "$GATE" 2>&1)" || docker_status=$?
+  if [ "$docker_status" -eq 2 ] &&
+    printf '%s' "$docker_out" | grep -qF 'NOT a verdict on' &&
+    ! printf '%s' "$docker_out" | grep -qF 'is not a valid Caddy config'; then
+    pass "an unreachable docker daemon is exit 2, not a verdict on the Caddyfile"
+  else
+    fail "an unreachable docker daemon — expected exit 2 and no validation verdict, got $docker_status"
+    printf '%s\n' "$docker_out" | sed 's/^/       | /' >&2
+  fi
+fi
+
+# ── the case count must match ───────────────────────────────────────────────
+#
+# Without this a vanished case is invisible: the summary prints whatever ran,
+# and "5 passed, 0 failed" reads exactly like success. The sibling
+# `check-docs-brain-snippets.test.sh` pins its checkpoint count for the same
+# reason.
+#
+# THREE argv/image cases, plus 7 when docker is present (the real-file floor,
+# five refusals, and the docker-fault case). The tracked-tree check is NOT in
+# the total: it runs after this line, which is deliberate — it has to observe
+# every case's writes, including this one's.
+EXPECTED_CASES=$((3 + DOCKER_CASES))
+if [ "$((PASS + FAIL))" -ne "$EXPECTED_CASES" ]; then
+  fail "expected $EXPECTED_CASES cases, ran $((PASS + FAIL)) — a case VANISHED (a setup fault returning early?), which is not a pass"
 fi
 
 # ── the tracked tree must be untouched ──────────────────────────────────────

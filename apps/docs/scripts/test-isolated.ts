@@ -32,47 +32,89 @@ const args = process.argv.slice(2);
 let concurrency = cpus().length;
 let filter: string | undefined;
 
+// ⚠️ AN UNKNOWN FLAG IS FATAL, and that is not tidiness.
+//
+// The first cut silently dropped anything it did not recognise, so
+// `--affected` printed `Running 9 test files` and a green summary — a FULL run
+// reported as an affected run. That matters more here than the usual CLI nit:
+// this runner deliberately omits `--affected`/`--shard` (they are the api
+// runner's), while CLAUDE.md and `/ship-issue` — edited in this same PR — train
+// every agent to type `bun run scripts/test-isolated.ts --affected`. Silence is
+// the one response that produces a wrong pre-flight with no signal.
+//
+// A valueless `--concurrency` fell through both branches for the same reason
+// (`"--concurrency".startsWith("-")` is true), silently keeping the default.
 for (let i = 0; i < args.length; i++) {
-  if (args[i] === "--concurrency" && args[i + 1]) {
-    const parsed = parseInt(args[i + 1] ?? "", 10);
-    if (!Number.isFinite(parsed) || parsed < 1) {
-      console.error(`Invalid --concurrency value: ${args[i + 1]} (must be a positive integer)`);
+  const arg = args[i];
+  if (arg === undefined) continue;
+  if (arg === "--concurrency") {
+    const raw = args[i + 1];
+    if (raw === undefined || raw.startsWith("-")) {
+      console.error("--concurrency requires a value (a positive integer).");
+      process.exit(1);
+    }
+    // `Number`, not `parseInt`: `parseInt("4abc", 10)` is `4`, so a typo'd value
+    // would be silently accepted at a different concurrency than the one typed.
+    const parsed = Number(raw);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      console.error(`Invalid --concurrency value: ${raw} (must be a positive integer)`);
       process.exit(1);
     }
     concurrency = parsed;
     i++;
-  } else if (args[i]?.startsWith("-") === false) {
-    filter = args[i];
+  } else if (arg.startsWith("-")) {
+    console.error(
+      `Unknown flag: ${arg}. This runner takes [--concurrency N] [filter] only — ` +
+        `--affected and --shard belong to packages/api's runner, not this one.`,
+    );
+    process.exit(1);
+  } else {
+    filter = arg;
   }
 }
 
 // --- Discover test files ---
 // `.tsx` as well as `.ts`: `audience-conditionals.test.tsx` is a real suite here,
 // and a `.ts`-only glob would drop it while still printing a green summary.
+//
+// TWO roots. `src/` holds every suite today, but this PR created
+// `apps/docs/scripts/`, and a suite added there would have been silently
+// unrun under a `src`-only scan while the summary stayed green — the same hole
+// the `.tsx` note above describes, one directory over.
 const patterns = ["**/*.test.ts", "**/*.test.tsx"];
-let files: string[] = [];
-for (const pattern of patterns) {
-  const glob = new Glob(pattern);
-  for await (const path of glob.scan({ cwd: SRC, absolute: true })) {
-    files.push(path);
+const roots = [SRC, resolve(ROOT, "scripts")];
+const seen = new Set<string>();
+for (const root of roots) {
+  for (const pattern of patterns) {
+    const glob = new Glob(pattern);
+    for await (const path of glob.scan({ cwd: root, absolute: true })) {
+      seen.add(path);
+    }
   }
 }
-files.sort();
+const discovered = [...seen].sort();
+let files = discovered;
 
 if (filter) {
   files = files.filter((f) => f.includes(filter));
 }
 
+// ⚠️ Exit 1 in BOTH arms — a runner that reports success on an empty set is the
+// vacuous-pass shape this repo refuses elsewhere (`scripts/test-others.ts` takes
+// the same line for the same reason).
+//
+// The sibling runners exit 0 on a filter that matches nothing, and that arm is
+// where it bites hardest: a renamed or mistyped filter
+// (`test-isolated.ts redirect-coverge`) runs zero tests and reports green. The
+// discovered set is printed so the typo is visible rather than guessed at.
 if (files.length === 0) {
   if (filter) {
-    console.log(`No test files matching filter "${filter}".`);
-    process.exit(0);
+    console.error(`No test files matching filter "${filter}" — zero tests ran, which is not a pass.`);
+    console.error("Discovered suites:");
+    for (const f of discovered) console.error(`  ${relative(ROOT, f)}`);
+  } else {
+    console.error("No test files found — this likely indicates a configuration error.");
   }
-  // ⚠️ Exit 1, not 0. An unfiltered run that discovers nothing means the glob or
-  // the layout moved — a runner that reports success on an empty set is the
-  // vacuous-pass shape this repo refuses elsewhere (`scripts/test-others.ts`
-  // takes the same line for the same reason).
-  console.error("No test files found — this likely indicates a configuration error.");
   process.exit(1);
 }
 
@@ -142,16 +184,29 @@ async function runFile(file: string): Promise<Result> {
   }
 }
 
-const results: Result[] = [];
+// ⚠️ A MAP KEYED BY FILE, not an array.
+//
+// The completeness check below used `results.length < files.length`, and the
+// `.catch` was chained AFTER the `.then` — so it also caught rejections from the
+// recursively-returned `scheduleNext()`. One rejection deep in the chain made
+// every ancestor's catch fire with its OWN already-completed `file` still in
+// scope, pushing a SECOND result for a file that had already passed. The count
+// then met `files.length` while a file was genuinely missing, the `<` gate never
+// opened, and the set difference — the entire point of the block — was never
+// computed. Keyed storage makes a double-write invisible instead of load-bearing,
+// and the membership check below now runs unconditionally.
+const results = new Map<string, Result>();
 const queue = [...files];
 const active = new Set<Promise<void>>();
 
 async function scheduleNext(): Promise<void> {
   const file = queue.shift();
   if (file === undefined) return;
-  const p = runFile(file)
-    .then((result) => {
-      results.push(result);
+  // Two-arg `.then(onFulfilled, onRejected)`, deliberately: the rejection
+  // handler covers `runFile` ONLY, never its own continuation.
+  const p = runFile(file).then(
+    (result) => {
+      results.set(result.file, result);
       const rel = relative(ROOT, result.file);
       const status = result.exitCode === 0 ? "\x1b[32mPASS\x1b[0m" : "\x1b[31mFAIL\x1b[0m";
       const tag = result.timedOut ? "  \x1b[33mTIME\x1b[0m" : "";
@@ -167,10 +222,10 @@ async function scheduleNext(): Promise<void> {
 
       active.delete(p);
       return scheduleNext();
-    })
-    .catch((err: unknown) => {
+    },
+    (err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
-      results.push({
+      results.set(file, {
         file,
         exitCode: 1,
         stdout: "",
@@ -182,7 +237,8 @@ async function scheduleNext(): Promise<void> {
       console.log(`    ${message}\n`);
       active.delete(p);
       return scheduleNext();
-    });
+    },
+  );
   active.add(p);
 }
 
@@ -190,23 +246,25 @@ for (let i = 0; i < concurrency && queue.length > 0; i++) await scheduleNext();
 while (active.size > 0) await Promise.race(active);
 
 // --- Verify every discovered file produced a result ---
-// Without this a scheduling bug drops files silently and the summary below is
-// computed over whatever survived, which reads as a pass on a smaller suite.
-if (results.length < files.length) {
-  const missing = files.filter((f) => !results.some((r) => r.file === f));
+// ⚠️ UNCONDITIONAL membership, never gated on a count. A count comparison is
+// satisfied by a duplicate as readily as by the real thing, which is how the
+// array version of this could report a full suite with a file missing.
+const missing = files.filter((f) => !results.has(f));
+if (missing.length > 0) {
   console.error(`\nRunner error: ${missing.length} file(s) produced no result:`);
   for (const f of missing) console.error(`  ${relative(ROOT, f)}`);
   process.exit(1);
 }
 
 // --- Summary ---
-const passed = results.filter((r) => r.exitCode === 0).length;
-const failed = results.filter((r) => r.exitCode !== 0).length;
-const totalMs = results.reduce((s, r) => s + r.durationMs, 0).toFixed(0);
+const finished = [...results.values()];
+const passed = finished.filter((r) => r.exitCode === 0).length;
+const failed = finished.filter((r) => r.exitCode !== 0).length;
+const totalMs = finished.reduce((s, r) => s + r.durationMs, 0).toFixed(0);
 
 console.log("\n" + "─".repeat(60));
 console.log(
-  `  Files: ${results.length}  |  ` +
+  `  Files: ${finished.length}  |  ` +
     `\x1b[32mPassed: ${passed}\x1b[0m  |  ` +
     (failed > 0 ? `\x1b[31mFailed: ${failed}\x1b[0m` : `Failed: 0`) +
     `  |  Time: ${totalMs}ms`,
@@ -215,7 +273,7 @@ console.log("─".repeat(60));
 
 if (failed > 0) {
   console.log("\nFailed files:");
-  for (const r of results.filter((r) => r.exitCode !== 0)) {
+  for (const r of finished.filter((r) => r.exitCode !== 0)) {
     console.log(`  \x1b[31m✗\x1b[0m ${relative(ROOT, r.file)}`);
   }
   process.exit(1);

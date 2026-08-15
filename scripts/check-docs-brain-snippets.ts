@@ -235,8 +235,11 @@ function die(message: string): never {
  * drift path's exit 1 are unaffected.
  */
 function installGuardBoundary(): void {
+  // `kind` is the two literals, not `string`: the fixture greps for the exact
+  // text `INTERNAL ERROR (uncaught exception)`, so a typo here would surface as
+  // a fixture failure rather than as a compile error.
   const bail =
-    (kind: string) =>
+    (kind: "uncaught exception" | "unhandled rejection") =>
     (err: unknown): never => {
       console.error(
         `[docs-brain-snippets] INTERNAL ERROR (${kind}) — this is NOT docs drift, and NOT a snippet problem.`,
@@ -244,7 +247,11 @@ function installGuardBoundary(): void {
       console.error(
         "[docs-brain-snippets] Either this guard has a bug, or its environment does. The stack below says which: a frame inside check-docs-brain-snippets.ts is a GUARD BUG and re-running will not fix it; an ENOMEM/EACCES/EMFILE is the environment and re-running might.",
       );
-      console.error(err instanceof Error ? (err.stack ?? err.message) : String(err));
+      // ⚠️ The value, not `err.stack`. This boundary's whole worth is the stack
+      // telling a guard bug from an environment fault, and `.stack` alone drops
+      // `cause` and an `AggregateError`'s `errors` — which is exactly where a
+      // wrapped I/O failure keeps its real reason. Bun formats those.
+      console.error(err);
       process.exit(2);
     };
   process.on("uncaughtException", bail("uncaught exception"));

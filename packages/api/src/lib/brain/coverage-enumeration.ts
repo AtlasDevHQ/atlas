@@ -405,7 +405,15 @@ export type StorableErrorText = string & { readonly [storableErrorTextBrand]: tr
  */
 export function updateClassFailureRows(params: {
   readonly sourceClass: SurveyableSourceClass;
-  readonly cycleIso: string;
+  /**
+   * The cycle instant, as a `Date`. Deliberately NOT a pre-formatted string:
+   * `workspaceId`, an ISO string and `lastError` are all `string`-assignable, so
+   * only the property NAMES would stop a positional swap, and a malformed
+   * timestamp throws at PG inside the very statement the brand was added to
+   * protect. Taking the `Date` deletes a `.toISOString()` from each call site
+   * and removes a stringly-typed parameter from the seam being hardened.
+   */
+  readonly cycleAt: Date;
   readonly lastError: StorableErrorText;
   readonly workspaceIds: readonly string[];
 }): Promise<{ workspace_id: string }[]> {
@@ -414,24 +422,33 @@ export function updateClassFailureRows(params: {
         SET last_attempt_at = $2::timestamptz, last_error = $3
       WHERE source_class = $1 AND workspace_id = ANY($4::text[])
       RETURNING workspace_id`,
-    [params.sourceClass, params.cycleIso, params.lastError, params.workspaceIds],
+    [params.sourceClass, params.cycleAt.toISOString(), params.lastError, params.workspaceIds],
   );
 }
 
 /**
  * The per-workspace failure upsert — the other of the two. See
  * {@link updateClassFailureRows} for why it is a function.
+ *
+ * ⚠️ **An UPSERT, so it CREATES a row that did not exist.** That warning lives
+ * on {@link recordClassScanFailure} sixty lines down, where it explains why the
+ * class-wide writer is an UPDATE and never this: *inventing a row for a
+ * workspace this cycle could not even list would assert Atlas tried to enumerate
+ * a workspace it never established exists*. A reader who lands on this exported
+ * function does not see that, so it is restated here. Call it only for a
+ * workspace the cycle actually attempted.
  */
 export function recordFailureRow(params: {
   readonly workspaceId: string;
   readonly sourceClass: SurveyableSourceClass;
-  readonly cycleIso: string;
+  /** See {@link updateClassFailureRows}'s `cycleAt` — a `Date`, for the same reason. */
+  readonly cycleAt: Date;
   readonly lastError: StorableErrorText;
 }): Promise<unknown> {
   return internalQuery(RECORD_FAILURE_SQL, [
     params.workspaceId,
     params.sourceClass,
-    params.cycleIso,
+    params.cycleAt.toISOString(),
     params.lastError,
   ]);
 }
@@ -490,7 +507,7 @@ export async function recordClassScanFailure(params: {
   if (targets.length === 0) return 0;
   const rows = await updateClassFailureRows({
     sourceClass: params.sourceClass,
-    cycleIso: params.cycleAt.toISOString(),
+    cycleAt: params.cycleAt,
     lastError: storableErrorText(params.error),
     workspaceIds: targets,
   });
@@ -498,6 +515,24 @@ export async function recordClassScanFailure(params: {
     log.warn(
       { sourceClass: params.sourceClass, workspaces: rows.length, known: known.length },
       "brain coverage: a class-wide scan failure was recorded against the workspaces holding this class — their rosters keep their previous readings and the surface now says so",
+    );
+  } else {
+    // ⚠️ `targets` was non-empty (the early return above) and the UPDATE matched
+    // NOTHING. Silence here returns 0, which the caller cannot tell from "no
+    // workspace holds this class" — so the coverage page keeps rendering a
+    // clean, dated, CURRENT statement while the scan keeps failing, which is the
+    // exact defect this function exists to prevent, one arm over.
+    //
+    // Reachable: rows deleted between the SELECT and the UPDATE (a workspace
+    // torn down mid-cycle), or the two `internalQuery` calls landing on
+    // different databases through a residency/pool mismatch.
+    log.warn(
+      {
+        sourceClass: params.sourceClass,
+        targets: targets.length,
+        known: known.length,
+      },
+      "brain coverage: a class-wide scan failure matched NO rows despite having targets — those workspaces' coverage pages will keep rendering their last reading as current",
     );
   }
   return rows.length;
@@ -585,7 +620,7 @@ export async function persistCoverageSnapshot(params: {
     // this comment: `storableErrorText` returns a {@link StorableErrorText}, and
     // it is the only mint for the two writers' `lastError` parameter.
     const stored = storableErrorText(outcome.error);
-    await recordFailureRow({ workspaceId, sourceClass, cycleIso, lastError: stored });
+    await recordFailureRow({ workspaceId, sourceClass, cycleAt, lastError: stored });
     log.warn(
       { workspaceId, sourceClass, err: stored },
       "brain coverage: enumeration failed — the previous dated roster is kept as-is, and the surface reads 'enumeration unavailable since' its last success",

@@ -67,7 +67,12 @@ fail() {
 # missing file rather than as the mount fault it is.
 CADDYFILE="$(cd "$(dirname "$CADDYFILE_ARG")" && pwd)/$(basename "$CADDYFILE_ARG")"
 
-FROM_LINES="$(grep -cE '^FROM[[:space:]]+caddy:' "$DOCKERFILE" || true)"
+# `grep -c` exits 1 for zero matches — the value being counted — and 2 when it
+# cannot READ the file. `|| true` on both would collapse them, and the second
+# prints nothing, so the message below would name no number at all.
+GREP_STATUS=0
+FROM_LINES="$(grep -cE '^FROM[[:space:]]+caddy:' "$DOCKERFILE")" || GREP_STATUS=$?
+[ "$GREP_STATUS" -le 1 ] || die "could not read $DOCKERFILE (grep exit $GREP_STATUS) — check its permissions."
 if [ "$FROM_LINES" != "1" ]; then
   die "expected exactly one \`FROM caddy:\` line in $DOCKERFILE, found $FROM_LINES. This gate must run the SAME image that serves the file; pick one deliberately rather than letting this script choose."
 fi
@@ -76,15 +81,73 @@ IMAGE="$(grep -E '^FROM[[:space:]]+caddy:' "$DOCKERFILE" | awk '{print $2}')"
 command -v docker >/dev/null 2>&1 ||
   die "docker is required to validate the Caddyfile (this gate runs \`caddy validate\` in $IMAGE) and is not on PATH. Exiting 2 rather than passing a check that ran nothing."
 
-echo "[caddyfile] validating $(basename "$CADDYFILE") with $IMAGE"
+# ⚠️ A FAILING `docker run` IS NOT A VERDICT ON THE FILE, and the exit code is
+# not enough to tell the two apart.
+#
+# `command -v docker` proves the BINARY is on PATH. It proves nothing about the
+# daemon, the socket, the registry, or the image. The first cut wrote
+# `if ! docker run …`, which discards the status entirely, so every one of those
+# faults was reported as "your Caddyfile is not a valid Caddy config" — naming a
+# tracked file that is fine. Worse than no gate: on a routine Docker Hub rate
+# limit the `drift` job goes red instructing an operator to fix a correct file.
+#
+# ⚠️ AND BRANCHING ON THE STATUS IS ALSO NOT ENOUGH — measured, which is the
+# only reason this is not still wrong. The replacement mapped ≥125 to exit 2 on
+# the documented "docker uses 125 for its own faults" rule. Then the fixture for
+# it went red: `DOCKER_HOST=unix:///nonexistent.sock docker run …` exits **1**
+# here (docker 29.1.3), identically to `caddy validate` refusing a config. The
+# status cannot separate them.
+#
+# So the decision is made on POSITIVE EVIDENCE THAT CADDY RAN. Caddy emits
+#     {"level":"info", … ,"msg":"using config from file", …}
+# the moment it reads the config — on success AND on a config error, verified
+# both ways against this image. A docker fault never reaches it. No marker means
+# no verdict was ever produced, whatever the exit code says.
+#
+#                                  first cut   status-only   now
+#   valid config                   exit 0      exit 0        exit 0
+#   INVALID config                 exit 1      exit 1        exit 1
+#   daemon down / socket denied    exit 1      exit 1 ✗      exit 2
+#   registry outage / rate limit   exit 1      exit 2        exit 2
+#   exec fault (126/127)           exit 1      exit 2        exit 2
+#
+# Every changed row moves from asserting a verdict about the file to admitting
+# there is none — the conservative direction. If a future Caddy renames that log
+# line, this gate starts reporting exit 2 on genuinely invalid configs: a false
+# ENVIRONMENT fault, which is loud and refuses to assert, rather than a false
+# verdict about a file. That is the failure direction to prefer.
+#
+# The daemon and image probes come first so the common faults get their own
+# message instead of arriving as an absent marker.
+docker version --format '{{.Server.Version}}' >/dev/null 2>&1 ||
+  die "the docker daemon is not reachable (\`docker version\` failed). This is NOT a verdict on $CADDYFILE — the config was never parsed. Start docker, or check DOCKER_HOST."
 
-# `:ro` because a config adapter has no business writing to its input, and the
-# container runs as root. `--entrypoint` is not needed — the caddy image's
-# entrypoint IS `caddy`, and passing the subcommand as the command works.
-if ! OUT="$(docker run --rm -v "$CADDYFILE:/etc/caddy/Caddyfile:ro" "$IMAGE" \
-  caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile 2>&1)"; then
-  echo "$OUT" >&2
-  fail "$CADDYFILE is not a valid Caddy config. It would pass every other gate and then kill the docs container at boot — the Dockerfile COPYs it without adapting it."
+if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+  docker pull --quiet "$IMAGE" >/dev/null 2>&1 ||
+    die "could not obtain $IMAGE (pull failed — registry outage, rate limit, or a bad digest). This is NOT a verdict on $CADDYFILE."
 fi
 
-echo "[caddyfile] PASS: valid configuration"
+echo "[caddyfile] validating $(basename "$CADDYFILE") with $IMAGE"
+
+# `--mount` rather than `-v`: `-v` splits on `:`, so a checkout or TMPDIR path
+# containing a colon becomes a malformed mount — a docker fault that used to
+# arrive dressed as an invalid config. `readonly` because a config adapter has
+# no business writing to its input. `--entrypoint` is not needed: the caddy
+# image's entrypoint IS `caddy`, so the subcommand rides as the command.
+set +e
+OUT="$(docker run --rm \
+  --mount "type=bind,source=$CADDYFILE,target=/etc/caddy/Caddyfile,readonly" \
+  "$IMAGE" caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile 2>&1)"
+DOCKER_STATUS=$?
+set -e
+
+if [ "$DOCKER_STATUS" -eq 0 ]; then
+  echo "[caddyfile] PASS: valid configuration"
+  exit 0
+fi
+
+echo "$OUT" >&2
+if printf '%s' "$OUT" | grep -qF 'using config from file'; then
+  fail "$CADDYFILE is not a valid Caddy config. It would pass every other gate and then kill the docs container at boot — the Dockerfile COPYs it without adapting it."
+fi
+die "docker exited $DOCKER_STATUS without caddy ever reading the config (no \`using config from file\` line above). This is NOT a verdict on $CADDYFILE: the config was never parsed."

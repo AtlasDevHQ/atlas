@@ -1040,14 +1040,29 @@ check_boundary() {
   # taxonomy, and it is what a CI operator reads.
   printf '%s' "$out" | grep -qF '[docs-brain-snippets] FAIL' && ok=0
 
-  # …and without the boundary the SAME throw exits 1. If this run also exits 2,
-  # something other than the boundary is producing the code above.
+  # …and without the boundary the SAME throw exits 1.
+  #
+  # ⚠️ MARKER-CHECKED, not exit-code-only, for this file's own stated reason:
+  # `bun` exits 1 on an uncaught exception, on a parse error, AND on an
+  # unresolved import. Asserting only the status would let a boundary-less copy
+  # that cannot even parse — a future edit interacting badly with the awk line
+  # deletion, or a `node_modules` layout change on that side — satisfy "the old
+  # behaviour, reproduced on demand" while reproducing nothing. This is the run
+  # the case's whole argument rests on, so it gets the same discipline every
+  # other failure fixture here gets.
   out_off="$(cd "$ROOT" && bun "$guard_dir/probe-no-boundary.ts" --root "$tmp" 2>&1)" || status_off=$?
   [ "$status_off" -eq 1 ] || ok=0
+  # The SAME throw got out…
+  printf '%s' "$out_off" | grep -qF 'zz-boundary-probe' || ok=0
+  # …and nothing caught it.
+  printf '%s' "$out_off" | grep -qF 'INTERNAL ERROR' && ok=0
 
   report "$ok" \
     "an unexpected THROW is exit 2 with an INTERNAL ERROR banner (exit 1 without the boundary; got $status_off)" \
-    "exit 2" "$status" "INTERNAL ERROR (uncaught exception)" "$tmp" "$out" --root "$tmp"
+    "exit 2" "$status" "INTERNAL ERROR (uncaught exception)" "$tmp" \
+    "$out
+--- boundary-ABSENT run (expected exit 1, uncaught, no banner) — status $status_off ---
+$out_off" --root "$tmp"
   assert_tree_clean "boundary"
 }
 

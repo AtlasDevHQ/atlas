@@ -151,8 +151,9 @@ function store(options: { cardinalityConflict?: boolean } = {}) {
 function deps(over: Partial<Parameters<ProducerModule["runWarehouseProducer"]>[1]> = {}) {
   return {
     loadReach: async () => ({
-      pairs: [{ entity: "Accounts", dimension: "status" }],
+      pairs: [{ entity: "Accounts", dimension: "status", naming: false }],
       entities: ["Accounts"],
+      namingDimension: new Map<string, string>(),
       has: () => true,
     }),
     loadEntity: async () => ACCOUNTS_YAML,
@@ -162,6 +163,12 @@ function deps(over: Partial<Parameters<ProducerModule["runWarehouseProducer"]>[1
       { [producer.SUBJECT_ALIAS]: "Acme Corp", [`${producer.DIMENSION_ALIAS_PREFIX}0`]: "active" },
     ],
     loadVocabulary: async () => (await import("@atlas/api/lib/brain/identity")).identityVocabulary,
+    // The edge pass runs on EVERY run since #5232 (it was gated on this run's
+    // `entitiesStored`, which skipped it on exactly the re-run where its
+    // `rejected` counter matters). Stubbed empty here: this suite is about the
+    // producer's own log lines, and the real loader would reach a pool that
+    // does not exist and add an unrelated error line to every assertion.
+    loadEntityStore: async () => [],
     withTransaction: store().runner,
     now: () => SNAPSHOT_AT,
     ...over,
@@ -277,8 +284,9 @@ describe("warehouse producer logging", () => {
     // stays dormant for it. That is not "unexpected", and it is not routine either.
     await run({
       loadReach: async () => ({
-        pairs: [{ entity: "Accounts", dimension: "__" }],
+        pairs: [{ entity: "Accounts", dimension: "__", naming: false }],
         entities: ["Accounts"],
+        namingDimension: new Map(),
         has: () => true,
       }),
       loadEntity: async () => ({

@@ -36,6 +36,7 @@ import {
 } from "@atlas/api/lib/brain/object-cmp";
 
 import { normalizeEnrollmentPair } from "@atlas/api/lib/brain/enrollment";
+import { isWarehouseRowId } from "@atlas/api/lib/brain/warehouse-producer";
 import type { ExportBundle, ExportedBrainFact, ImportResult, SupportedBundleVersion } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -875,8 +876,89 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
       if ("note" in x && x.note !== null && typeof x.note !== "string") {
         return { ok: false, error: `brainEnrollments[${i}].note: must be a string or null.` };
       }
+      // The ADJACENT TWIN of the line above, and it was missing (#5232's review).
+      // `naming` is consumed as `(enrollment.naming ?? false) && …`, so a
+      // non-boolean is truthiness-coerced into a `boolean` pg parameter — a
+      // string `"false"` would name the dimension and re-key the destination's
+      // corpus. Optional on the wire (a pre-#5043 v3 bundle carries none), so
+      // `undefined` is admitted and `false` is that bundle's truth.
+      if ("naming" in x && x.naming !== undefined && typeof x.naming !== "boolean") {
+        return { ok: false, error: `brainEnrollments[${i}].naming: must be a boolean.` };
+      }
       const tsError = missingTimestamps(x, ["enrolledAt"]);
       if (tsError) return { ok: false, error: `brainEnrollments[${i}].${tsError}` };
+    }
+  }
+
+  if ("brainEntities" in obj && obj.brainEntities !== undefined) {
+    if (!Array.isArray(obj.brainEntities)) {
+      return { ok: false, error: "Invalid 'brainEntities' field. Expected an array." };
+    }
+    for (let i = 0; i < obj.brainEntities.length; i++) {
+      const x = obj.brainEntities[i] as Record<string, unknown> | null;
+      if (!x || typeof x !== "object") {
+        return { ok: false, error: `brainEntities[${i}]: must be an object.` };
+      }
+      for (const field of [
+        "entityId",
+        "entity",
+        "keySurface",
+        "keyNorm",
+        "canonicalSurface",
+        "canonicalNorm",
+      ] as const) {
+        const value = x[field];
+        if (typeof value !== "string" || value === "") {
+          return { ok: false, error: `brainEntities[${i}].${field}: must be a non-empty string.` };
+        }
+      }
+      // ⚠️ **The id's SHAPE, and this is the field with the widest blast radius
+      // in the section.** Non-empty-string was the whole check until #5232's
+      // review: `entityId: "1"` validated, landed, and reached `subject_cmp`
+      // through a cast — verbatim the value `WarehouseRowId`'s docstring says
+      // the brand exists to forbid, arriving through the one writer the brand
+      // cannot reach. A forged id there is a false `same` at the publish gate,
+      // which merges two distinct entities with no inverse.
+      //
+      // The SHAPE and not a recomputation: the digest is taken over the
+      // WORKSPACE id, and a bundle's destination org is not its source org, so
+      // re-deriving would refuse every legitimate cross-region migration.
+      if (!isWarehouseRowId(x.entityId)) {
+        return {
+          ok: false,
+          error:
+            `brainEntities[${i}].entityId: must be an id the warehouse producer minted ` +
+            "(`wh_` followed by a sha256). This value reaches `subject_cmp`, where an id no " +
+            "producer could have minted compares equal to nothing and unequal to everything.",
+        };
+      }
+      // ⚠️ **The norms are RE-DERIVED here and COMPARED, never recomputed into
+      // the row.** Recomputing would be a second application of `lexicalNorm` to
+      // rows the first one already produced, and the two would agree until the
+      // day the function changed — at which point the destination's store would
+      // silently key differently from the facts arriving beside it on the same
+      // bundle. Comparing turns that into a refused bundle, which is loud.
+      //
+      // It is also the one check that catches a hand-edited or downgraded
+      // bundle: `entity_id` reaches `subject_cmp`, and a row whose norms do not
+      // match its surfaces is a row whose id names something other than what it
+      // says it names.
+      for (const [surface, norm] of [
+        ["keySurface", "keyNorm"],
+        ["canonicalSurface", "canonicalNorm"],
+      ] as const) {
+        if (lexicalNorm(x[surface] as string) !== x[norm]) {
+          return {
+            ok: false,
+            error:
+              `brainEntities[${i}].${norm}: does not match lexicalNorm(${surface}). The store's ` +
+              "norms are what its lookups and its vocabulary edges are made of, so a row that " +
+              "disagrees with itself would resolve one surface and key another.",
+          };
+        }
+      }
+      const tsError = missingTimestamps(x, ["snapshotAt"]);
+      if (tsError) return { ok: false, error: `brainEntities[${i}].${tsError}` };
     }
   }
 
@@ -924,7 +1006,20 @@ const ImportResultSchema = z.object({
   // — the pair is the whole key and both regions' rows are the same kind of
   // human act — so the merge is a union and `skipped` means what it means
   // everywhere else.
-  brainEnrollments: z.object({ imported: z.number(), skipped: z.number() }),
+  // THREE counters since #5232. `namingDropped` is not a refusal in
+  // `REFUSAL_ACCOUNTING`'s sense — the row landed and only its `naming` flag was
+  // discarded — but it is a human decision this region declined to apply, and
+  // `imported + skipped` cannot express it.
+  brainEnrollments: z.object({
+    imported: z.number(),
+    skipped: z.number(),
+    namingDropped: z.number(),
+    namingApplied: z.number(),
+  }),
+  // TWO counters, on `brainEnrollments`' reasoning (#5043). `entity_id` is a
+  // digest of `(workspace, entity, primary key)`, so two regions holding one id
+  // hold one warehouse row — there is no contradictory decision to refuse.
+  brainEntities: z.object({ imported: z.number(), skipped: z.number() }),
 });
 
 /**
@@ -1017,6 +1112,7 @@ const importRoute = createRoute({
                 brainVocabularyEdges: z.number().optional(),
                 brainSlackChannelExclusions: z.number().optional(),
                 brainEnrollments: z.number().optional(),
+                brainEntities: z.number().optional(),
               }),
             }),
             conversations: z.array(z.unknown()),
@@ -1049,6 +1145,12 @@ const importRoute = createRoute({
             // cutover, because an unenrolled workspace and a working one are
             // indistinguishable from inside the code.
             brainEnrollments: z.array(z.unknown()).optional(),
+            // The entity store (#5043). Undeclared, `strip` drops the whole
+            // section before the importer runs — and the destination's facts
+            // land carrying `subject_cmp` values nothing can explain, with a
+            // green cutover, because every lookup abstaining is the store's
+            // designed behaviour.
+            brainEntities: z.array(z.unknown()).optional(),
           }),
         },
       },
@@ -1613,7 +1715,8 @@ export async function importBundle(
     factAudienceMembers: { imported: 0, skipped: 0 },
     brainVocabularyEdges: { imported: 0, skipped: 0, refused: 0 },
     brainSlackChannelExclusions: { imported: 0, skipped: 0, refused: 0 },
-    brainEnrollments: { imported: 0, skipped: 0 },
+    brainEnrollments: { imported: 0, skipped: 0, namingDropped: 0, namingApplied: 0 },
+    brainEntities: { imported: 0, skipped: 0 },
   };
 
   // --- 1. Conversations + Messages ---
@@ -2149,10 +2252,32 @@ export async function importBundle(
   // destination's row, if it has one, carries ITS OWN author and timestamp, and
   // overwriting them would re-attribute a local admin's decision to whoever
   // happened to enroll the same pair in the source region.
+  //
+  // `namedEntities` guards the partial unique index — see the `naming` param
+  // below. Seeded from the DESTINATION, not from the bundle: the row that must
+  // win is the one already here.
+  const namedEntities = new Map<string, string>(
+    (
+      await client.query(
+        `SELECT entity, dimension FROM brain_enrollment WHERE workspace_id = $1 AND naming`,
+        [orgId],
+      )
+    ).rows.map((r) => [r.entity as string, r.dimension as string] as const),
+  );
   for (const enrollment of bundle.brainEnrollments ?? []) {
+    const wantsNaming = enrollment.naming === true;
+    // ⚠️ The map holds the DIMENSION, not just the entity, and that distinction
+    // is the difference between a loss and a no-op. Keyed on the entity alone,
+    // a destination that already names the SAME dimension the bundle names
+    // counted as a drop — so an idempotent re-import reported a human decision
+    // discarded when nothing at all had happened. Caught by the round-trip's own
+    // second-import assertion.
+    const namedHere = namedEntities.get(enrollment.entity);
+    const alreadyApplied = wantsNaming && namedHere === enrollment.dimension;
+    const granted = wantsNaming && namedHere === undefined;
     const { rows } = await client.query(
-      `INSERT INTO brain_enrollment (workspace_id, entity, dimension, enrolled_at, enrolled_by, note)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO brain_enrollment (workspace_id, entity, dimension, enrolled_at, enrolled_by, note, naming)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT (workspace_id, entity, dimension) DO NOTHING
        RETURNING entity`,
       [
@@ -2162,12 +2287,128 @@ export async function importBundle(
         enrollment.enrolledAt,
         enrollment.enrolledBy,
         enrollment.note ?? null,
+        // `?? false` because the field is OPTIONAL on the wire: a v3 bundle
+        // written before #5043 carries no `naming`, and `false` is that
+        // bundle's truth rather than a guess about it.
+        //
+        // ⚠️ It can still collide. `uq_brain_enrollment_naming` admits one
+        // naming row per entity, and a destination that already named a
+        // DIFFERENT dimension for the same entity would raise 23505 here and
+        // abort the cutover. `DO NOTHING` does not cover it — the conflict is
+        // on the partial index, not on the primary key — so the arriving row's
+        // flag is dropped when this region already has one. The local decision
+        // wins for `enrolledBy`'s reason: it is this region's admin's, and
+        // silently re-pointing it would re-key their corpus.
+        granted,
       ],
     );
+    if (granted) namedEntities.set(enrollment.entity, enrollment.dimension);
     // `DO NOTHING` returns no row for the conflict case, which is exactly the
     // "this region already holds it" split `skipped` reports.
     if (rows.length > 0) result.brainEnrollments.imported++;
     else result.brainEnrollments.skipped++;
+
+    // ⚠️ **TWO ways the flag is lost, and only ONE of them is the deliberate
+    // policy above (#5232's review).**
+    //
+    //   (a) This region already names a DIFFERENT dimension for the entity.
+    //       The local decision wins — deliberate — but it is a human authority
+    //       decision being discarded, so it is counted and logged rather than
+    //       dropped by an `&&`.
+    //   (b) This region already holds the SAME pair with `naming = false` and
+    //       names nothing. `granted` is true, but `ON CONFLICT DO NOTHING`
+    //       skipped the write, so the column keeps `false`. The local-wins
+    //       argument does NOT cover this case — there is no local decision to
+    //       protect — and the loss is ADR-0039-invisible: the destination's
+    //       store writes no entry, every lookup abstains, the list still shows
+    //       the pair as live, and the section reports `skipped`, which
+    //       everywhere else means "this region already holds it". It holds the
+    //       PAIR; it does not hold the DECISION.
+    if (wantsNaming && !granted && !alreadyApplied) {
+      result.brainEnrollments.namingDropped++;
+      log.warn(
+        { orgId, entity: enrollment.entity, dimension: enrollment.dimension },
+        "Region import: the arriving naming dimension was dropped — this region already names a " +
+          "different dimension for that entity. Its imported entity-store entries are cleared on " +
+          "the next producer run unless an admin re-names it",
+      );
+    } else if (granted && rows.length === 0) {
+      // (b). One UPDATE, the same shape `setNamingDimension` uses, rather than
+      // an `ON CONFLICT DO UPDATE` on the whole row — the row's `enrolled_by`,
+      // `enrolled_at` and `note` must stay the destination's.
+      const applied = await client.query(
+        `UPDATE brain_enrollment SET naming = true
+          WHERE workspace_id = $1 AND entity = $2 AND dimension = $3 AND NOT naming`,
+        [orgId, enrollment.entity, enrollment.dimension],
+      );
+      // ⚠️ **COUNTED, because `skipped` says the opposite of what happened.**
+      // Everywhere else `skipped` means "this region already holds it" — and it
+      // holds the PAIR, not the DECISION. This UPDATE is what makes the
+      // destination's next producer run write entity-store entries and raise an
+      // edge that RE-KEYS every fact about the entity, which is the blast radius
+      // `setNamingDimension` puts behind an owner/admin bar. Reporting it under
+      // a counter that reads "nothing happened" is the silence `namingDropped`
+      // was added to end, one branch over — so the positive twin exists too.
+      if ((applied.rowCount ?? 0) > 0) {
+        result.brainEnrollments.namingApplied++;
+        log.info(
+          { orgId, entity: enrollment.entity, dimension: enrollment.dimension },
+          "Region import: applied an arriving naming dimension to a pair this region already held " +
+            "unnamed — the next producer run re-keys every fact about that entity",
+        );
+      } else {
+        // Zero rows: something changed the row between the SELECT that seeded
+        // `namedEntities` and here. Not silent — the human decision is lost.
+        result.brainEnrollments.namingDropped++;
+        log.warn(
+          { orgId, entity: enrollment.entity, dimension: enrollment.dimension },
+          "Region import: the arriving naming dimension matched no row to update — it was " +
+            "changed concurrently. The decision is NOT applied; re-name it by hand",
+        );
+      }
+    }
+  }
+
+  // --- 9d. The entity store's snapshot entries (#5043, ADR-0037 §5) ---
+  //
+  // Restored inline, on `brainEnrollments`' reasoning: there is nothing to
+  // screen. `entity_id` is a digest of `(workspace, entity, primary key)`, so
+  // two regions holding one id hold one warehouse row.
+  //
+  // `DO NOTHING` and NOT `DO UPDATE`, and this is the arm where the difference
+  // has teeth. An arriving snapshot may be OLDER than the destination's — a
+  // bundle taken last week against a workspace whose producer has run since —
+  // and last-writer-wins would re-key that workspace's corpus onto a canonical
+  // surface that has already changed. That is ADR-0037 §5's workspace-wide blast
+  // radius arriving from a direction nobody is watching. Under-restoring is
+  // recoverable by re-running the producer; a wrong re-key is not.
+  //
+  // Before the facts below, though nothing depends on it: `regionPortableComparable`
+  // classifies the `entity:` tag `store-local`, so this importer NULLS an
+  // entity-valued `_cmp` on every arriving fact and none of them references an
+  // entry. The order is for a reader of a half-finished import, not a
+  // constraint — and an earlier version of this comment claimed otherwise,
+  // which is the claim `bundle-scope.ts` corrects two files away.
+  for (const entry of bundle.brainEntities ?? []) {
+    const { rows } = await client.query(
+      `INSERT INTO brain_entity
+         (workspace_id, entity_id, entity, key_surface, key_norm, canonical_surface, canonical_norm, snapshot_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (workspace_id, entity_id) DO NOTHING
+       RETURNING entity_id`,
+      [
+        orgId,
+        entry.entityId,
+        entry.entity,
+        entry.keySurface,
+        entry.keyNorm,
+        entry.canonicalSurface,
+        entry.canonicalNorm,
+        entry.snapshotAt,
+      ],
+    );
+    if (rows.length > 0) result.brainEntities.imported++;
+    else result.brainEntities.skipped++;
   }
 
   // --- 10. Company brain (#4767, ADR-0036) — facts ride inside their episode ---

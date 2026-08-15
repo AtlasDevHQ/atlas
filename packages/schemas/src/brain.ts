@@ -44,6 +44,7 @@ import type {
   BrainEnrollmentEntityOption,
   BrainEnrollmentEntry,
   BrainEnrollmentListResponse,
+  BrainEnrollmentNamingResponse,
   BrainEnrollmentWriteResponse,
   BrainFactOversightBucketKind,
   BrainFactOversightLabelPolicy,
@@ -1505,6 +1506,7 @@ export const BrainEnrollmentEntrySchema = z.strictObject({
   enrolledAt: z.string(),
   enrolledBy: z.string(),
   note: z.string().nullable(),
+  naming: z.boolean(),
 }) satisfies z.ZodType<BrainEnrollmentEntry, unknown>;
 
 export const BrainEnrollmentListResponseSchema = z.strictObject({
@@ -1528,6 +1530,7 @@ export const BrainEnrollmentDimensionOptionSchema = z.strictObject({
   type: z.string().nullable(),
   description: z.string().nullable(),
   enrolled: z.boolean(),
+  naming: z.boolean(),
 }) satisfies z.ZodType<BrainEnrollmentDimensionOption, unknown>;
 
 export const BrainEnrollmentDimensionsResponseSchema = z.strictObject({
@@ -1571,6 +1574,32 @@ export const BrainEnrollmentWriteResponseSchema = z.strictObject({
   dimension: z.string(),
   changed: z.boolean(),
 }) satisfies z.ZodType<BrainEnrollmentWriteResponse, unknown>;
+
+/**
+ * The naming-dimension body (#5043).
+ *
+ * `dimension` is NULLABLE and the null is the clear verb — it is what un-names an
+ * entity's canonical surface, after which the entity store holds no entry for it.
+ * Spelled as one nullable field rather than two verbs because the underlying
+ * write is one statement either way (at most one naming row per entity), and two
+ * routes would be two chances for the partial unique index to be the thing that
+ * discovers a caller set two.
+ *
+ * `.nullable()` and NOT `.nullish()`: on a `strictObject` an omitted field and an
+ * explicit `null` would then mean the same thing, and "clear the naming
+ * dimension" is too destructive a default for a body that forgot a field. It
+ * re-keys every fact about that entity workspace-wide.
+ */
+export const BrainEnrollmentNamingRequestSchema = z.strictObject({
+  entity: z.string().min(1).max(BRAIN_ENROLLMENT_NAME_MAX),
+  dimension: z.string().min(1).max(BRAIN_ENROLLMENT_NAME_MAX).nullable(),
+});
+
+export const BrainEnrollmentNamingResponseSchema = z.strictObject({
+  entity: z.string(),
+  dimension: z.string().nullable(),
+  changed: z.boolean(),
+}) satisfies z.ZodType<BrainEnrollmentNamingResponse, unknown>;
 
 // ---------------------------------------------------------------------------
 // The warehouse producer's run report (#5042, ADR-0037 §4)
@@ -1634,6 +1663,18 @@ export const BRAIN_WAREHOUSE_REFUSAL_REASONS = [
   "snapshot-rejected",
   "snapshot-failed",
   "snapshot-already-recorded",
+  /**
+   * The entity's NAMING dimension (#5043) was itself refused — it went ambiguous
+   * across two entities, or left the semantic layer. The pair's own refusal sits
+   * beside this one and says which.
+   *
+   * Its own arm rather than folding into that refusal, because the CONSEQUENCE is
+   * different in kind and worse: the producer clears the entity's store entries,
+   * so claims about its rows stop matching what people call them. Left silent it
+   * reported as `entitiesStored: 0`, which is byte-identical to "this entity was
+   * never named" while the enrollment surface still showed it as named.
+   */
+  "naming-dimension-refused",
 ] as const;
 
 export const BrainWarehouseRefusalSchema = z.strictObject({
@@ -1684,6 +1725,45 @@ export const BrainWarehouseEntityOutcomeSchema = z.strictObject({
    */
   unsurfaceableKeyRows: z.number().int().nonnegative(),
   cardinalityProposed: z.array(z.string()).readonly(),
+  /**
+   * Entity-store entries written for this entity (#5043).
+   *
+   * ⚠️ **On the wire even when it is 0, and 0 is the number that matters.** An
+   * entity with no naming dimension writes no entries, resolves nothing, and is
+   * otherwise byte-identical in this report to one whose store is working —
+   * ADR-0039's *"an empty store and a correctly-working store are
+   * indistinguishable from inside the code."* This field is what makes them
+   * distinguishable from OUTSIDE it, and it is the number #5197 verifies on prod.
+   */
+  entitiesStored: z.number().int().nonnegative(),
+  /**
+   * Rows that produced claims but no entity-store entry, because the naming
+   * dimension held nothing usable for them.
+   *
+   * Always 0 when the entity has no naming dimension at all — that case is a
+   * `entitiesStored: 0` with no `unnamedRows`, because *"nobody named a surface"*
+   * and *"the surface column is empty for these rows"* have different remedies.
+   */
+  unnamedRows: z.number().int().nonnegative(),
+});
+
+/**
+ * What the entity-edge producer did with a run's edges (#5043).
+ *
+ * The counters sum to MORE than the proposals offered, deliberately: an eligible
+ * row whose auto-approval the vocabulary refused is counted under BOTH `queued`
+ * and `refused`, because it IS queued for a human and the auto-approval DID fail.
+ *
+ * ⚠️ `rejected` is the counter to read on a re-run — a producer whose second pass
+ * reports zero there is one whose human removals did not stick.
+ */
+export const BrainAliasProducerCountersSchema = z.strictObject({
+  queued: z.number().int().nonnegative(),
+  autoApproved: z.number().int().nonnegative(),
+  deduped: z.number().int().nonnegative(),
+  alreadyApproved: z.number().int().nonnegative(),
+  rejected: z.number().int().nonnegative(),
+  refused: z.number().int().nonnegative(),
 });
 
 /**
@@ -1703,6 +1783,30 @@ export const BrainWarehouseRunReportSchema = z.strictObject({
   refusals: z.array(BrainWarehouseRefusalSchema).readonly(),
   created: z.number().int().nonnegative(),
   corroborated: z.number().int().nonnegative(),
+  /**
+   * `null` when the run wrote no entity-store entries at all — nothing was named,
+   * so there was nothing to propose. Six honest zeros would read as *"we tried and
+   * nothing happened"*, and ADR-0039's rule one level down is that nothing to do
+   * and nothing achieved must not look alike.
+   */
+  entityEdges: BrainAliasProducerCountersSchema.nullable(),
+  /**
+   * The edge pass's failure message, or `null` when it did not fail (#5043).
+   *
+   * ⚠️ A sibling field because `entityEdges: null` alone MISINFORMS: it collapses
+   * "nothing named", "everything already snapshotted", "every proposal refused"
+   * and *the pass threw* onto one value, and only the last is a run an operator
+   * must act on. Without this, a vocabulary lock timeout reports as "nobody has
+   * named anything" to the admin whose next action is to go name something.
+   */
+  entityEdgesFailed: z.string().nullable(),
+  /**
+   * Store entries refused an edge because their name is shared with another
+   * entity (#5043) — two `Acme` accounts, and neither resolves by name.
+   * Ordinary data with a permanent consequence, which is why it is a number on
+   * the report rather than a log line.
+   */
+  entityEdgesAmbiguous: z.number().int().nonnegative(),
 });
 
 /**

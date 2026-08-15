@@ -15,6 +15,7 @@ import type {
 } from "@useatlas/types";
 import type { InternalPoolClient } from "@atlas/api/lib/db/internal";
 import { importBundle, validateBundle } from "../routes/admin-migrate";
+import { warehouseRowId } from "@atlas/api/lib/brain/warehouse-producer";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -264,7 +265,8 @@ describe("bundle round-trip shape", () => {
       // Three counters here alone (#5036).
       brainVocabularyEdges: { imported: 1, skipped: 4, refused: 6 },
       brainSlackChannelExclusions: { imported: 2, skipped: 1, refused: 0 },
-      brainEnrollments: { imported: 3, skipped: 1 },
+      brainEnrollments: { imported: 3, skipped: 1, namingDropped: 2, namingApplied: 4 },
+      brainEntities: { imported: 6, skipped: 2 },
     };
 
     const total = (r: { imported: number; skipped: number }) => r.imported + r.skipped;
@@ -1556,6 +1558,116 @@ describe("validateBundle — the vocabulary (#5022)", () => {
  *   - an empty `enrolledBy` hits `ck_brain_enrollment_attributed` — authority
  *     nobody can be shown to have granted.
  */
+describe("validateBundle — the entity store (#5043)", () => {
+  const entityBundle = (rows: unknown[]): unknown => ({
+    ...validV2Bundle(),
+    brainEntities: rows,
+  });
+
+  // A REAL id, minted by the production function rather than a `wh_…` literal —
+  // the shape is what the validator checks, so a hand-written stand-in would be
+  // testing the fixture's spelling instead of the rule.
+  const ENTITY_ID = warehouseRowId("org-src", "accounts", "ACC-42");
+
+  const validEntity = () => ({
+    entityId: ENTITY_ID,
+    entity: "accounts",
+    // A key surface whose norm DIFFERS from itself, so the surface/norm pairing
+    // is checkable at all. Every numeric key makes the two equal by
+    // construction, and a validator comparing the wrong pair would pass.
+    keySurface: "ACC-42",
+    keyNorm: "acc 42",
+    canonicalSurface: "Acme Corp",
+    canonicalNorm: "acme corp",
+    snapshotAt: "2026-08-14T00:00:00Z",
+  });
+
+  it("accepts a well-formed entity section, and the section survives (the control)", () => {
+    const result = validateBundle(
+      entityBundle([validEntity(), { ...validEntity(), entityId: warehouseRowId("org-src", "accounts", "ACC-43") }]),
+    );
+    expect(result.ok).toBe(true);
+    // `ok: true` alone passes a validator that accepted the bundle while
+    // dropping the section — which lands a destination whose store resolves
+    // nothing, indistinguishable from a working one.
+    if (result.ok) expect(result.bundle.brainEntities).toHaveLength(2);
+  });
+
+  it("refuses a non-array section and a non-object element", () => {
+    for (const bad of ["nope", 42, {}]) {
+      expect(validateBundle(entityBundle(bad as never)).ok).toBe(false);
+    }
+    for (const bad of [null, 42, "row", []]) {
+      const result = validateBundle(entityBundle([bad]));
+      expect(result.ok, `element ${JSON.stringify(bad)} was accepted`).toBe(false);
+      if (!result.ok) expect(result.error).toContain("brainEntities[0]");
+    }
+  });
+
+  it("refuses an empty or non-string field, naming the field AND the row", () => {
+    for (const field of ["entity", "keySurface", "keyNorm", "canonicalSurface", "canonicalNorm"] as const) {
+      for (const bad of ["", 42, null, undefined]) {
+        // Row INDEX 1, so an `i`-vs-`0` slip goes red.
+        const result = validateBundle(
+          entityBundle([validEntity(), { ...validEntity(), [field]: bad }]),
+        );
+        expect(result.ok, `${field}=${JSON.stringify(bad)} was accepted`).toBe(false);
+        if (!result.ok) expect(result.error).toContain(`brainEntities[1].${field}`);
+      }
+    }
+  });
+
+  it("refuses an id no producer could have minted — the field that reaches `subject_cmp`", () => {
+    // ⚠️ THE arm. Until #5232 this was `typeof value === "string" && value !== ""`,
+    // so `entityId: "1"` validated, landed, and reached `subject_cmp` through a
+    // cast — verbatim the value the brand exists to forbid, arriving through the
+    // one writer the brand cannot reach. A forged id there is a false `same` at
+    // the publish gate: two distinct entities merged, with no inverse.
+    for (const bad of [
+      "1",
+      "wh_",
+      "wh_notahex",
+      `wh_${"a".repeat(63)}`, // one short
+      `wh_${"a".repeat(65)}`, // one long
+      `WH_${"a".repeat(64)}`, // wrong case on the prefix
+      `wh_${"A".repeat(64)}`, // uppercase hex
+      `${ENTITY_ID} `, // trailing space
+    ]) {
+      const result = validateBundle(entityBundle([{ ...validEntity(), entityId: bad }]));
+      expect(result.ok, `entityId=${JSON.stringify(bad)} was accepted`).toBe(false);
+      if (!result.ok) expect(result.error).toContain("brainEntities[0].entityId");
+    }
+    // The control: a genuinely minted id passes, so this is a shape rule rather
+    // than a validator that refuses every id.
+    expect(validateBundle(entityBundle([validEntity()])).ok).toBe(true);
+  });
+
+  it("refuses a norm that disagrees with its own surface, on BOTH pairs", () => {
+    // The check that catches a hand-edited or downgraded bundle: a row whose
+    // norms do not match its surfaces is a row whose id names something other
+    // than what it says it names. Both pairs, because a validator comparing the
+    // canonical pair twice passes a single-pair assertion.
+    expect(validateBundle(entityBundle([{ ...validEntity(), keyNorm: "ACC-42" }])).ok).toBe(false);
+    expect(validateBundle(entityBundle([{ ...validEntity(), canonicalNorm: "Acme Corp" }])).ok).toBe(false);
+    // A CROSS-WIRED row — each norm holding the other's value. This is what a
+    // validator that pairs the fields wrongly would accept.
+    expect(
+      validateBundle(entityBundle([{ ...validEntity(), keyNorm: "acme corp", canonicalNorm: "acc 42" }])).ok,
+    ).toBe(false);
+    const named = validateBundle(entityBundle([{ ...validEntity(), canonicalNorm: "wrong" }]));
+    if (!named.ok) expect(named.error).toContain("brainEntities[0].canonicalNorm");
+  });
+
+  it("refuses a missing or malformed snapshotAt", () => {
+    for (const bad of [undefined, "", "not-a-date", 42]) {
+      expect(
+        validateBundle(entityBundle([{ ...validEntity(), snapshotAt: bad }])).ok,
+        `snapshotAt=${JSON.stringify(bad)} was accepted`,
+      ).toBe(false);
+    }
+  });
+});
+
 describe("validateBundle — the enrolled reach (#5196)", () => {
   const enrollmentBundle = (rows: unknown[]): unknown => ({
     ...validV2Bundle(),
@@ -1569,6 +1681,9 @@ describe("validateBundle — the enrolled reach (#5196)", () => {
     enrolledBy: "user-1",
     note: null,
   });
+
+  const entityBundleNaming = (naming: unknown): unknown =>
+    enrollmentBundle([{ ...validEnrollment(), naming }]);
 
   it("accepts a well-formed enrollment section (the control)", () => {
     // Without this, every refusal below is satisfied by a validator that
@@ -1623,6 +1738,24 @@ describe("validateBundle — the enrolled reach (#5196)", () => {
     }
     // The control: the same names WITHOUT surrounding whitespace are fine, so
     // this is a whitespace rule rather than a validator that refuses everything.
+    expect(validateBundle(enrollmentBundle([validEnrollment()])).ok).toBe(true);
+  });
+
+  it("refuses a non-boolean `naming` — the adjacent twin of `note` (#5043)", () => {
+    // `naming` is consumed as `(enrollment.naming ?? false) && …`, so a
+    // non-boolean is truthiness-coerced into a `boolean` pg parameter: the
+    // string `"false"` would NAME the dimension and re-key the destination's
+    // corpus. `note` one line above already had exactly this check.
+    for (const bad of ["false", "true", 0, 1, {}, []]) {
+      const result = validateBundle(entityBundleNaming(bad));
+      expect(result.ok, `naming=${JSON.stringify(bad)} was accepted`).toBe(false);
+      if (!result.ok) expect(result.error).toContain("brainEnrollments[0].naming");
+    }
+    // Both booleans AND absence pass — absence is a pre-#5043 v3 bundle, whose
+    // truth is `false` rather than a guess.
+    for (const good of [true, false]) {
+      expect(validateBundle(entityBundleNaming(good)).ok, `naming=${good} was refused`).toBe(true);
+    }
     expect(validateBundle(enrollmentBundle([validEnrollment()])).ok).toBe(true);
   });
 

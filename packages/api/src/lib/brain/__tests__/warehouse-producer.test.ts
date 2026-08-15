@@ -29,8 +29,22 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { makeProducerReach } from "@atlas/api/lib/brain/enrollment";
+import {
+  makeProducerReach,
+  type EnrolledDimension,
+} from "@atlas/api/lib/brain/enrollment";
 import { identityKey, identityVocabulary, type ClaimVocabulary } from "@atlas/api/lib/brain/identity";
+import {
+  ENTITY_STORE_DELETE_SQL,
+  ENTITY_STORE_INSERT_SQL,
+  ENTITY_EDGE_PRODUCER,
+  type EntityStoreEntry,
+  type StoredEntity,
+} from "@atlas/api/lib/brain/entity-store";
+import type {
+  AliasProducerCounters,
+  AliasProposalInput,
+} from "@atlas/api/lib/brain/vocabulary-decide";
 import {
   CORROBORATION_LOOKUP_SQL,
   INSERT_FACT_SQL,
@@ -55,11 +69,13 @@ import {
   warehouseEntityResolver,
   warehouseRowId,
   warehouseSurface,
+  type WarehouseDimension,
   type WarehouseEntity,
   type WarehouseEntityLookup,
   type WarehouseEntityPlan,
   type WarehouseProducerDeps,
   type SnapshotSqlVerdict,
+  type WarehouseRowId,
   type WarehouseSnapshotRequest,
 } from "@atlas/api/lib/brain/warehouse-producer";
 
@@ -120,7 +136,12 @@ function found(...entities: readonly WarehouseEntity[]): Map<string, WarehouseEn
   return new Map(entities.map((entity) => [entity.name, { kind: "found" as const, entity }]));
 }
 
-function planFor(entity: WarehouseEntity, dimensions: readonly string[]): WarehouseEntityPlan {
+function planFor(
+  entity: WarehouseEntity,
+  dimensions: readonly string[],
+  /** The dimension naming the entity (#5043). A NAME, so a typo is a throw. */
+  naming?: string,
+): WarehouseEntityPlan {
   const pick = (name: string) => {
     const dim = entity.dimensions.find((d) => d.name === name);
     if (dim === undefined) throw new Error(`fixture "${entity.name}" has no dimension "${name}"`);
@@ -130,7 +151,19 @@ function planFor(entity: WarehouseEntity, dimensions: readonly string[]): Wareho
   if (primaryKey === undefined) throw new Error(`fixture "${entity.name}" declares no primary key`);
   const [first, ...rest] = dimensions.map(pick);
   if (first === undefined) throw new Error("a plan needs at least one dimension");
-  return { entity, primaryKey, dimensions: [first, ...rest] };
+  const dims = [first, ...rest] as [WarehouseDimension, ...WarehouseDimension[]];
+  // The INDEX, resolved by name against the very array the plan returns — so a
+  // fixture cannot hand `buildWarehouseClaims` a position that is not in it.
+  const namingIndex = naming === undefined ? -1 : dims.findIndex((d) => d.name === naming);
+  if (naming !== undefined && namingIndex === -1) {
+    throw new Error(`fixture "${entity.name}" cannot name "${naming}" — it is not a planned dimension`);
+  }
+  return {
+    entity,
+    primaryKey,
+    dimensions: dims,
+    namingDimensionIndex: namingIndex === -1 ? null : namingIndex,
+  };
 }
 
 /** `entity.dimension:reason`, the shape every refusal assertion compares on. */
@@ -215,11 +248,11 @@ describe("planWarehouseEmission — ADR-0037 §4's fail-closed ambiguity rule", 
       dimensions: ["id", "status", "region", "owner"],
     });
     const reach = makeProducerReach([
-      { entity: "Accounts", dimension: "status" },
-      { entity: "Accounts", dimension: "tier" },
-      { entity: "Contracts", dimension: "status" },
-      { entity: "Contracts", dimension: "region" },
-      { entity: "Contracts", dimension: "owner" },
+      { entity: "Accounts", dimension: "status", naming: false },
+      { entity: "Accounts", dimension: "tier", naming: false },
+      { entity: "Contracts", dimension: "status", naming: false },
+      { entity: "Contracts", dimension: "region", naming: false },
+      { entity: "Contracts", dimension: "owner", naming: false },
     ]);
 
     const plan = planWarehouseEmission(reach, found(accounts, contracts));
@@ -250,10 +283,10 @@ describe("planWarehouseEmission — ADR-0037 §4's fail-closed ambiguity rule", 
       dimensions: ["id", "status"],
     });
     const reach = makeProducerReach([
-      { entity: "Accounts", dimension: "status" },
+      { entity: "Accounts", dimension: "status", naming: false },
       // Enrolled, but the entity left the published semantic layer. The producer
       // is not producing from it, so `status` is not ambiguous.
-      { entity: "Contracts", dimension: "status" },
+      { entity: "Contracts", dimension: "status", naming: false },
     ]);
 
     const plan = planWarehouseEmission(
@@ -283,8 +316,8 @@ describe("planWarehouseEmission — ADR-0037 §4's fail-closed ambiguity rule", 
     });
     const plan = planWarehouseEmission(
       makeProducerReach([
-        { entity: "Accounts", dimension: "status" },
-        { entity: "Contracts", dimension: "Status" },
+        { entity: "Accounts", dimension: "status", naming: false },
+        { entity: "Contracts", dimension: "Status", naming: false },
       ]),
       found(accounts, contracts),
     );
@@ -299,7 +332,7 @@ describe("planWarehouseEmission — ADR-0037 §4's fail-closed ambiguity rule", 
       dimensions: ["id", "status", "tier", "arr"],
     });
     const plan = planWarehouseEmission(
-      makeProducerReach([{ entity: "Accounts", dimension: "tier" }]),
+      makeProducerReach([{ entity: "Accounts", dimension: "tier", naming: false }]),
       found(accounts),
     );
     expect(plan.emit[0]?.dimensions.map((d) => d.name)).toEqual(["tier"]);
@@ -353,8 +386,8 @@ describe("planWarehouseEmission — ADR-0037 §4's fail-closed ambiguity rule", 
     // key for it to fall back to.
     const plan = planWarehouseEmission(
       makeProducerReach([
-        { entity: "Plans", dimension: "price" },
-        { entity: "Products", dimension: "price" },
+        { entity: "Plans", dimension: "price", naming: false },
+        { entity: "Products", dimension: "price", naming: false },
       ]),
       found(analytics, billing),
     );
@@ -380,10 +413,10 @@ describe("planWarehouseEmission — ADR-0037 §4's fail-closed ambiguity rule", 
     });
     const plan = planWarehouseEmission(
       makeProducerReach([
-        { entity: "NoKey", dimension: "status" },
-        { entity: "Composite", dimension: "status" },
-        { entity: "Orders", dimension: "total_revenue" },
-        { entity: "Orders", dimension: "typo" },
+        { entity: "NoKey", dimension: "status", naming: false },
+        { entity: "Composite", dimension: "status", naming: false },
+        { entity: "Orders", dimension: "total_revenue", naming: false },
+        { entity: "Orders", dimension: "typo", naming: false },
       ]),
       found(noKey, composite, withMeasure),
     );
@@ -416,8 +449,8 @@ describe("planWarehouseEmission — ADR-0037 §4's fail-closed ambiguity rule", 
     });
     const plan = planWarehouseEmission(
       makeProducerReach([
-        { entity: "Broken", dimension: "status" },
-        { entity: "Accounts", dimension: "tier" },
+        { entity: "Broken", dimension: "status", naming: false },
+        { entity: "Accounts", dimension: "tier", naming: false },
       ]),
       new Map<string, WarehouseEntityLookup>([
         ["Broken", { kind: "unreadable", cause: "load-threw", why: "it resolves in two connection groups." }],
@@ -770,6 +803,15 @@ class RunStore {
     return this.calls.filter((c) => c.sql === sql).map((c) => c.params);
   }
 
+  /** The entity-store rows this run wrote, one array per INSERT (#5043). */
+  entityStoreWrites(): readonly (readonly unknown[])[] {
+    return this.calls.filter((c) => c.sql === ENTITY_STORE_INSERT_SQL).map((c) => c.params);
+  }
+
+  entityStoreDeletes(): readonly (readonly unknown[])[] {
+    return this.calls.filter((c) => c.sql === ENTITY_STORE_DELETE_SQL).map((c) => c.params);
+  }
+
   cardinalityWrites(): readonly (readonly unknown[])[] {
     return this.calls
       .filter((c) => c.sql.includes("INSERT INTO brain_predicate_cardinality"))
@@ -788,6 +830,8 @@ class RunStore {
     if (sql === CORROBORATION_LOOKUP_SQL) return { rows: [] };
     if (sql === TENSION_CANDIDATES_SQL) return { rows: [] };
     if (sql === INSERT_PROVENANCE_EDGE_SQL) return { rows: [] };
+    if (sql === ENTITY_STORE_DELETE_SQL) return { rows: [] };
+    if (sql === ENTITY_STORE_INSERT_SQL) return { rows: [] };
     if (sql.includes("brain_predicate_cardinality")) return { rows: [{ inserted: 1 }] };
     throw new Error(`RunStore: unexpected statement\n${sql}`);
   }
@@ -797,11 +841,13 @@ interface RunHarness {
   readonly store: RunStore;
   readonly snapshots: WarehouseSnapshotRequest[];
   readonly validations: WarehouseSnapshotRequest[];
+  /** Every entity-edge batch handed to the vocabulary seam (#5043). */
+  readonly edgeBatches: (readonly AliasProposalInput[])[];
   readonly deps: WarehouseProducerDeps;
 }
 
 function harness(options: {
-  pairs: readonly { entity: string; dimension: string }[];
+  pairs: readonly EnrolledDimension[];
   entities: Record<string, Record<string, unknown> | null>;
   /** Entity names whose lookup THROWS, as `getAdminEntity` does for an ambiguous name. */
   lookupThrows?: readonly string[];
@@ -811,16 +857,22 @@ function harness(options: {
   rejectSqlFor?: readonly string[];
   vocabulary?: ClaimVocabulary;
   rowCap?: number;
+  /** Override the persisted store the edge pass reads (#5043). */
+  entityStore?: () => Promise<readonly EntityStoreEntry[]>;
+  /** What the vocabulary seam reports back. */
+  edgeCounters?: AliasProducerCounters;
 }): RunHarness {
   const store = new RunStore();
   const snapshots: WarehouseSnapshotRequest[] = [];
   const validations: WarehouseSnapshotRequest[] = [];
   const throwing = new Set(options.lookupThrows ?? []);
   const rejected = new Set(options.rejectSqlFor ?? []);
+  const edgeBatches: (readonly AliasProposalInput[])[] = [];
   return {
     store,
     snapshots,
     validations,
+    edgeBatches,
     deps: {
       loadReach: async () => makeProducerReach(options.pairs),
       loadEntity: async (_workspaceId, entity) => {
@@ -846,11 +898,53 @@ function harness(options: {
       },
       loadVocabulary: async () => options.vocabulary ?? identityVocabulary,
       withTransaction: store.runner,
+      // The PERSISTED store, which is what the edge pass reads. Defaults to
+      // "whatever this run wrote", which is the ordinary single-run case; a test
+      // that needs a pre-existing entry from another entity supplies its own.
+      loadEntityStore:
+        options.entityStore ??
+        (async () =>
+          store
+            .entityStoreWrites()
+            .flatMap((params) => {
+              const [, entity, , entityIds, keySurfaces, keyNorms, canonicalSurfaces, canonicalNorms] =
+                params as [
+                  string,
+                  string,
+                  string,
+                  string[],
+                  string[],
+                  string[],
+                  string[],
+                  string[],
+                ];
+              return entityIds.map((entityId, i) => ({
+                entityId: entityId as WarehouseRowId,
+                entity,
+                keySurface: keySurfaces[i] ?? "",
+                keyNorm: keyNorms[i] ?? "",
+                canonicalSurface: canonicalSurfaces[i] ?? "",
+                canonicalNorm: canonicalNorms[i] ?? "",
+              }));
+            })),
+      proposeAliasEdges: async (_ws, proposals) => {
+        edgeBatches.push(proposals);
+        return options.edgeCounters ?? EMPTY_EDGE_COUNTERS;
+      },
       now: () => SNAPSHOT_AT,
       ...(options.rowCap === undefined ? {} : { rowCap: options.rowCap }),
     },
   };
 }
+
+const EMPTY_EDGE_COUNTERS: AliasProducerCounters = {
+  queued: 0,
+  autoApproved: 0,
+  deduped: 0,
+  alreadyApproved: 0,
+  rejected: 0,
+  refused: 0,
+};
 
 const run = (h: RunHarness) =>
   runWarehouseProducer({ workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-1" }, h.deps);
@@ -865,7 +959,7 @@ const snapshotRow = (subject: unknown, ...values: readonly unknown[]) =>
 describe("runWarehouseProducer", () => {
   test("reads only enrolled dimensions, and emits only for enrolled pairs", async () => {
     const h = harness({
-      pairs: [{ entity: "Accounts", dimension: "tier" }],
+      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
       entities: {
         Accounts: entityYaml({
           table: "accounts",
@@ -894,8 +988,8 @@ describe("runWarehouseProducer", () => {
   test("validates the built statement BEFORE the snapshot seam is reached", async () => {
     const h = harness({
       pairs: [
-        { entity: "Blocked", dimension: "status" },
-        { entity: "Small", dimension: "tier" },
+        { entity: "Blocked", dimension: "status", naming: false },
+        { entity: "Small", dimension: "tier", naming: false },
       ],
       entities: {
         Blocked: entityYaml({ table: "blocked", primaryKey: "id", dimensions: ["id", "status"] }),
@@ -930,8 +1024,8 @@ describe("runWarehouseProducer", () => {
     // that is fine.
     const h = harness({
       pairs: [
-        { entity: "Throws", dimension: "status" },
-        { entity: "Small", dimension: "tier" },
+        { entity: "Throws", dimension: "status", naming: false },
+        { entity: "Small", dimension: "tier", naming: false },
       ],
       entities: {
         Throws: entityYaml({ table: "throws", primaryKey: "id", dimensions: ["id", "status"] }),
@@ -964,7 +1058,7 @@ describe("runWarehouseProducer", () => {
 
   test("a validator that REJECTS is caught on the same arm", async () => {
     const h = harness({
-      pairs: [{ entity: "Rejects", dimension: "status" }],
+      pairs: [{ entity: "Rejects", dimension: "status", naming: false }],
       entities: {
         Rejects: entityYaml({ table: "rejects", primaryKey: "id", dimensions: ["id", "status"] }),
       },
@@ -981,7 +1075,7 @@ describe("runWarehouseProducer", () => {
     // opposite and interpolated the caught error, so a pg failure would put an
     // internal host or role into a refusal an operator reads.
     const h = harness({
-      pairs: [{ entity: "Ambiguous", dimension: "status" }],
+      pairs: [{ entity: "Ambiguous", dimension: "status", naming: false }],
       entities: {},
       lookupThrows: ["Ambiguous"],
     });
@@ -996,7 +1090,7 @@ describe("runWarehouseProducer", () => {
 
   test("stamps the snapshot episode by REFERENCE — locator, never body", async () => {
     const h = harness({
-      pairs: [{ entity: "Accounts", dimension: "tier" }],
+      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
       entities: {
         Accounts: entityYaml({ table: "accounts", primaryKey: "id", dimensions: ["id", "tier"] }),
       },
@@ -1019,8 +1113,8 @@ describe("runWarehouseProducer", () => {
   test("proposes `warehouse_structural` cardinality, pending, one per enrolled predicate", async () => {
     const h = harness({
       pairs: [
-        { entity: "Accounts", dimension: "tier" },
-        { entity: "Accounts", dimension: "status" },
+        { entity: "Accounts", dimension: "tier", naming: false },
+        { entity: "Accounts", dimension: "status", naming: false },
       ],
       entities: {
         Accounts: entityYaml({
@@ -1055,7 +1149,7 @@ describe("runWarehouseProducer", () => {
     // survives — the silent no-op wearing a successful proposal's face that
     // `proposePredicateCardinalityForSurface`'s own docstring names.
     const h = harness({
-      pairs: [{ entity: "Accounts", dimension: "tier" }],
+      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
       entities: {
         Accounts: entityYaml({ table: "accounts", primaryKey: "id", dimensions: ["id", "tier"] }),
       },
@@ -1077,10 +1171,10 @@ describe("runWarehouseProducer", () => {
       rowCap: 2,
       pairs: [
         // TWO dimensions, so a refusal loop that only covered the first goes red.
-        { entity: "Big", dimension: "status" },
-        { entity: "Big", dimension: "region" },
-        { entity: "AtCap", dimension: "plan" },
-        { entity: "Small", dimension: "tier" },
+        { entity: "Big", dimension: "status", naming: false },
+        { entity: "Big", dimension: "region", naming: false },
+        { entity: "AtCap", dimension: "plan", naming: false },
+        { entity: "Small", dimension: "tier", naming: false },
       ],
       entities: {
         Big: entityYaml({ table: "big", primaryKey: "id", dimensions: ["id", "status", "region"] }),
@@ -1119,9 +1213,9 @@ describe("runWarehouseProducer", () => {
   test("a failed snapshot refuses ALL that entity's pairs and leaves the rest of the run alone", async () => {
     const h = harness({
       pairs: [
-        { entity: "Broken", dimension: "status" },
-        { entity: "Broken", dimension: "region" },
-        { entity: "Small", dimension: "tier" },
+        { entity: "Broken", dimension: "status", naming: false },
+        { entity: "Broken", dimension: "region", naming: false },
+        { entity: "Small", dimension: "tier", naming: false },
       ],
       entities: {
         Broken: entityYaml({
@@ -1164,8 +1258,8 @@ describe("runWarehouseProducer", () => {
     // nothing.
     const h = harness({
       pairs: [
-        { entity: "Ambiguous", dimension: "status" },
-        { entity: "Small", dimension: "tier" },
+        { entity: "Ambiguous", dimension: "status", naming: false },
+        { entity: "Small", dimension: "tier", naming: false },
       ],
       entities: {
         Small: entityYaml({ table: "small", primaryKey: "id", dimensions: ["id", "tier"] }),
@@ -1184,8 +1278,8 @@ describe("runWarehouseProducer", () => {
   test("a published entity with no `table:` is unreadable, not unpublished", async () => {
     const h = harness({
       pairs: [
-        { entity: "NoTable", dimension: "status" },
-        { entity: "Small", dimension: "tier" },
+        { entity: "NoTable", dimension: "status", naming: false },
+        { entity: "Small", dimension: "tier", naming: false },
       ],
       entities: {
         NoTable: { dimensions: [{ name: "status", sql: "status" }] },
@@ -1221,7 +1315,7 @@ describe("runWarehouseProducer", () => {
     // this fixture exists to pin, so a swap between exactly them survived. Count the
     // values before believing the sentence.
     const h = harness({
-      pairs: [{ entity: "Empty", dimension: "status" }],
+      pairs: [{ entity: "Empty", dimension: "status", naming: false }],
       entities: {
         Empty: entityYaml({ table: "empty", primaryKey: "id", dimensions: ["id", "status"] }),
       },
@@ -1259,6 +1353,12 @@ describe("runWarehouseProducer", () => {
         unsurfaceableCells: 3,
         unsurfaceableKeyRows: 1,
         cardinalityProposed: [],
+        // No episode, no transaction — so nothing was STORED, whatever this
+        // snapshot would have implied. `Empty` has no naming dimension either,
+        // so `unnamedRows` stays 0: "nobody named a surface" is reported by the
+        // plan, not by this counter.
+        entitiesStored: 0,
+        unnamedRows: 0,
       },
     ]);
   });
@@ -1267,7 +1367,7 @@ describe("runWarehouseProducer", () => {
     // Asymmetric values (1 unidentified, 2 colliding, 3 unsurfaceable) so a swap
     // between any two of the three fields goes red.
     const h = harness({
-      pairs: [{ entity: "Messy", dimension: "status" }],
+      pairs: [{ entity: "Messy", dimension: "status", naming: false }],
       entities: {
         Messy: entityYaml({ table: "messy", primaryKey: "id", dimensions: ["id", "status"] }),
       },
@@ -1295,7 +1395,7 @@ describe("runWarehouseProducer", () => {
 
   test("a re-run at the same instant reports the entity rather than dropping it", async () => {
     const h = harness({
-      pairs: [{ entity: "Accounts", dimension: "tier" }],
+      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
       entities: {
         Accounts: entityYaml({ table: "accounts", primaryKey: "id", dimensions: ["id", "tier"] }),
       },
@@ -1351,8 +1451,8 @@ describe("runWarehouseProducer", () => {
     // producer exists to keep reviewable.
     const h = harness({
       pairs: [
-        { entity: "Broken", dimension: "status" },
-        { entity: "Small", dimension: "tier" },
+        { entity: "Broken", dimension: "status", naming: false },
+        { entity: "Small", dimension: "tier", naming: false },
       ],
       entities: {
         Broken: entityYaml({ table: "broken", primaryKey: "id", dimensions: ["id", "status"] }),
@@ -1389,7 +1489,7 @@ describe("runWarehouseProducer", () => {
     // and turning it into a per-entity refusal would make every entity of every run
     // refuse quietly forever on a producer that merely looks unlucky.
     const h = harness({
-      pairs: [{ entity: "Accounts", dimension: "tier" }],
+      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
       entities: {
         Accounts: entityYaml({ table: "accounts", primaryKey: "id", dimensions: ["id", "tier"] }),
       },
@@ -1397,5 +1497,481 @@ describe("runWarehouseProducer", () => {
     });
     h.store.episodeReturnsGarbage = true;
     await expect(run(h)).rejects.toThrow("RETURNING clause and this reader disagree");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The entity store (#5043, ADR-0037 §5)
+// ---------------------------------------------------------------------------
+
+describe("planWarehouseEmission — the naming dimension (#5043)", () => {
+  const withName = (entity: string, dimension: string) =>
+    ({ entity, dimension, naming: true }) as const;
+
+  test("resolves the naming dimension to a position in the plan's OWN dimension list", () => {
+    const accounts = parsed("Accounts", {
+      table: "accounts",
+      primaryKey: "id",
+      dimensions: ["id", "name", "tier"],
+    });
+    const plan = planWarehouseEmission(
+      makeProducerReach([
+        withName("Accounts", "name"),
+        { entity: "Accounts", dimension: "tier", naming: false },
+      ]),
+      found(accounts),
+    );
+    const emitted = plan.emit[0];
+    // An INDEX, and it must point at `name` within `dimensions` — not at the
+    // entity's full YAML dimension list, which also contains `id`. Resolving
+    // against `entity.dimensions` (the defect this block's comment argues
+    // against) yields a different position and reads the wrong column.
+    expect(emitted?.namingDimensionIndex).not.toBeNull();
+    expect(emitted?.dimensions[emitted.namingDimensionIndex ?? -1]?.name).toBe("name");
+  });
+
+  test("a naming dimension the plan REFUSED lands null AND is reported, never silent", () => {
+    // ⚠️ The data-destroying case. `name` is enrolled on two entities, so the
+    // ambiguity rule refuses it on BOTH — it leaves `dimensions`, the snapshot
+    // never selects its column, and the producer's unconditional DELETE then
+    // clears every entry the entity already had. Folded into the same `null` as
+    // "nobody named this entity", that reported `entitiesStored: 0` while the
+    // enrollment surface still showed the badge.
+    const accounts = parsed("Accounts", { table: "accounts", primaryKey: "id", dimensions: ["id", "name", "tier"] });
+    const contracts = parsed("Contracts", { table: "contracts", primaryKey: "id", dimensions: ["id", "name"] });
+    const plan = planWarehouseEmission(
+      makeProducerReach([
+        withName("Accounts", "name"),
+        { entity: "Accounts", dimension: "tier", naming: false },
+        withName("Contracts", "name"),
+      ]),
+      found(accounts, contracts),
+    );
+
+    const accountsPlan = plan.emit.find((e) => e.entity.name === "Accounts");
+    // Still emitting — `tier` survived, so this is not "the entity dropped out".
+    expect(accountsPlan?.dimensions.map((d) => d.name)).toEqual(["tier"]);
+    expect(accountsPlan?.namingDimensionIndex).toBeNull();
+    // …and the refusal reaches the caller, beside the `ambiguous-dimension` row
+    // that caused it. A `null` with no refusal is the silent version.
+    expect(refusalKeys(plan.refused)).toContain("Accounts.name:naming-dimension-refused");
+    expect(refusalKeys(plan.refused)).toContain("Accounts.name:ambiguous-dimension");
+  });
+
+  test("an UNNAMED entity produces no refusal — the two nulls are different facts", () => {
+    // The control that makes the assertion above mean something. Without it, a
+    // planner that emitted `naming-dimension-refused` unconditionally would pass.
+    const accounts = parsed("Accounts", { table: "accounts", primaryKey: "id", dimensions: ["id", "tier"] });
+    const plan = planWarehouseEmission(
+      makeProducerReach([{ entity: "Accounts", dimension: "tier", naming: false }]),
+      found(accounts),
+    );
+    expect(plan.emit[0]?.namingDimensionIndex).toBeNull();
+    expect(plan.refused).toEqual([]);
+  });
+});
+
+describe("the entity store", () => {
+  const ACCOUNTS = {
+    table: "accounts",
+    dimensions: [
+      { name: "id", sql: "account_id", primary_key: true },
+      { name: "name", sql: "display_name" },
+      { name: "tier", sql: "plan_tier" },
+    ],
+  };
+
+  /** The reach with `name` marked as the entity's canonical surface. */
+  const namedPairs = [
+    { entity: "Accounts", dimension: "name", naming: true },
+    { entity: "Accounts", dimension: "tier", naming: false },
+  ] as const;
+
+  test("materializes an entry per row and proposes its edge at both positions", async () => {
+    const h = harness({
+      pairs: [...namedPairs],
+      entities: { Accounts: ACCOUNTS },
+      rows: {
+        // ⚠️ Key surfaces that NORM DIFFERENTLY from themselves (`ACC-42` →
+        // `acc 42`). Every earlier fixture used numeric keys, where
+        // `key_surface` and `key_norm` are equal by construction — so swapping
+        // those two columns in the INSERT passed every suite in the arc.
+        Accounts: [snapshotRow("ACC-42", "Acme Corp", "gold"), snapshotRow("ACC-43", "Beta LLC", "silver")],
+      },
+    });
+
+    const report = await run(h);
+
+    // ⚠️ THE POSITIVE CONTROL for this whole slice, and ADR-0039 is why it has
+    // to be here: an empty store and a working one are indistinguishable from
+    // inside the code, so every other assertion below could pass against a
+    // producer that stored nothing.
+    expect(report.entities[0]?.entitiesStored).toBe(2);
+    expect(report.entities[0]?.unnamedRows).toBe(0);
+
+    const [params] = h.store.entityStoreWrites();
+    expect(params?.[1]).toBe("Accounts");
+    // The ids are the SAME digests the facts carry on `subject_cmp` — derived
+    // here rather than copied out of the run, so a producer that minted store
+    // ids by a different route goes red.
+    expect(params?.[3]).toEqual([
+      warehouseRowId(WORKSPACE, "Accounts", "ACC-42"),
+      warehouseRowId(WORKSPACE, "Accounts", "ACC-43"),
+    ]);
+    expect(params?.[4]).toEqual(["ACC-42", "ACC-43"]);
+    // ⚠️ ASSERTED, and distinct from the surfaces above. This slot had no
+    // assertion at all, and could not have distinguished anything if it had:
+    // under numeric keys `key_surface` and `key_norm` hold the same bytes.
+    expect(params?.[5]).toEqual(["acc 42", "acc 43"]);
+    expect(params?.[6]).toEqual(["Acme Corp", "Beta LLC"]);
+    expect(params?.[7]).toEqual(["acme corp", "beta llc"]);
+
+    // Two entries × two positions.
+    expect(h.edgeBatches).toHaveLength(1);
+    expect(h.edgeBatches[0]?.map((e) => `${e.position}:${e.fromNorm}->${e.toNorm}`)).toEqual([
+      "subject:acc 42->acme corp",
+      "object:acc 42->acme corp",
+      "subject:acc 43->beta llc",
+      "object:acc 43->beta llc",
+    ]);
+    expect(h.edgeBatches[0]?.every((e) => e.proposedBy === ENTITY_EDGE_PRODUCER)).toBe(true);
+  });
+
+  test("stores NOTHING and proposes NOTHING when no dimension names the entity", async () => {
+    const h = harness({
+      // Same rows, same entity, `naming: false` everywhere. The ONLY difference
+      // from the test above.
+      pairs: [
+        { entity: "Accounts", dimension: "name", naming: false },
+        { entity: "Accounts", dimension: "tier", naming: false },
+      ],
+      entities: { Accounts: ACCOUNTS },
+      rows: {
+        Accounts: [snapshotRow("42", "Acme Corp", "gold"), snapshotRow("43", "Beta LLC", "silver")],
+      },
+    });
+
+    const report = await run(h);
+
+    expect(report.entities[0]?.entitiesStored).toBe(0);
+    // 0, not 2. "Nobody named a surface" is reported by `entitiesStored`; this
+    // counter is for rows whose named column was EMPTY, and conflating them
+    // would send an operator looking at their data for a decision they never made.
+    expect(report.entities[0]?.unnamedRows).toBe(0);
+    expect(h.store.entityStoreWrites()).toEqual([]);
+    // `null`, not zeroed counters — nothing to propose is not the same as
+    // proposing and having everything refused.
+    expect(report.entityEdges).toBeNull();
+    expect(h.edgeBatches).toEqual([]);
+    // The CONTROL: the claims still landed, so this is a store that abstained
+    // rather than a producer that did nothing.
+    expect(report.entities[0]?.created).toBeGreaterThan(0);
+  });
+
+  test("DELETEs the entity's entries even with nothing to write — un-naming clears the store", async () => {
+    const h = harness({
+      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
+      entities: { Accounts: ACCOUNTS },
+      rows: { Accounts: [snapshotRow("42", "gold")] },
+    });
+
+    await run(h);
+
+    // Without the unconditional DELETE, every entry written before a human
+    // un-named the dimension keeps resolving under a name nobody named any more.
+    expect(h.store.entityStoreDeletes()).toEqual([[WORKSPACE, "Accounts"]]);
+    expect(h.store.entityStoreWrites()).toEqual([]);
+  });
+
+  test("counts a row whose name cell is empty, and stores the rows beside it", async () => {
+    const h = harness({
+      pairs: [...namedPairs],
+      entities: { Accounts: ACCOUNTS },
+      rows: {
+        Accounts: [
+          snapshotRow("42", "Acme Corp", "gold"),
+          snapshotRow("43", null, "silver"),
+          // A name that TRIMS to something and NORMS to nothing.
+          snapshotRow("44", "---", "bronze"),
+        ],
+      },
+    });
+
+    const report = await run(h);
+
+    // Distinct numbers: `{1, 2}` cannot be satisfied by an implementation that
+    // put every row in one bucket.
+    expect(report.entities[0]?.entitiesStored).toBe(1);
+    expect(report.entities[0]?.unnamedRows).toBe(2);
+  });
+
+  test("a row the claim builder DROPPED never becomes an entry", async () => {
+    const h = harness({
+      pairs: [...namedPairs],
+      entities: { Accounts: ACCOUNTS },
+      rows: {
+        Accounts: [
+          snapshotRow("42", "Acme Corp", "gold"),
+          // Same primary key — dropped as a colliding subject.
+          snapshotRow("42", "Acme Holdings", "silver"),
+          // No primary key at all.
+          snapshotRow(null, "Ghost Inc", "bronze"),
+        ],
+      },
+    });
+
+    const report = await run(h);
+
+    expect(report.entities[0]?.collidingSubjectRows).toBe(1);
+    expect(report.entities[0]?.unidentifiedRows).toBe(1);
+    // ONE entry, and its canonical surface is the FIRST row's. A second pass
+    // over `rows` — rather than building entries inside the claim loop — would
+    // store both and resolve `42` to whichever it wrote last.
+    expect(report.entities[0]?.entitiesStored).toBe(1);
+    const [params] = h.store.entityStoreWrites();
+    expect(params?.[6]).toEqual(["Acme Corp"]);
+  });
+
+  test("refuses the edge when two rows share a name, and still stores both", async () => {
+    const h = harness({
+      pairs: [...namedPairs],
+      entities: { Accounts: ACCOUNTS },
+      rows: {
+        Accounts: [
+          snapshotRow("42", "Acme", "gold"),
+          snapshotRow("43", "acme", "silver"),
+          snapshotRow("44", "Gamma", "bronze"),
+        ],
+      },
+    });
+
+    const report = await run(h);
+
+    // BOTH ambiguous rows are stored — they are true snapshots, and dropping one
+    // would lie about coverage. It is the READER and the edge producer that
+    // abstain.
+    expect(report.entities[0]?.entitiesStored).toBe(3);
+    expect(h.edgeBatches[0]?.map((e) => `${e.fromNorm}->${e.toNorm}`)).toEqual([
+      "44->gamma",
+      "44->gamma",
+    ]);
+  });
+
+  test("reports the vocabulary seam's counters — `rejected` is the re-run signal", async () => {
+    const h = harness({
+      pairs: [...namedPairs],
+      entities: { Accounts: ACCOUNTS },
+      rows: { Accounts: [snapshotRow("42", "Acme Corp", "gold")] },
+      // A human removed this edge. #4507's permanent rejection memory refuses
+      // the re-proposal, and the counter is the ONLY way the run can say so.
+      edgeCounters: { ...EMPTY_EDGE_COUNTERS, rejected: 2 },
+    });
+
+    const report = await run(h);
+
+    expect(report.entityEdges).toEqual({ ...EMPTY_EDGE_COUNTERS, rejected: 2 });
+  });
+
+  test("an edge-pass failure does NOT fail the run — the facts are already committed", async () => {
+    const h = harness({
+      pairs: [...namedPairs],
+      entities: { Accounts: ACCOUNTS },
+      rows: { Accounts: [snapshotRow("42", "Acme Corp", "gold")] },
+      entityStore: async () => {
+        throw new Error("vocabulary lock timeout");
+      },
+    });
+
+    // A throw here reaches `runEffect` as `500 "Failed to run"`, and the admin's
+    // retry files a second full round of drafts into the queue this producer's
+    // whole design exists to keep reviewable.
+    const report = await run(h);
+
+    expect(report.created).toBeGreaterThan(0);
+    expect(report.entities[0]?.entitiesStored).toBe(1);
+    expect(report.entityEdges).toBeNull();
+    // ⚠️ **THE FIELD THAT MAKES THE FAILURE READABLE.** `entityEdges: null`
+    // alone is what a healthy idle run reports too, so before this the two were
+    // byte-identical on the wire — a vocabulary lock timeout told the admin
+    // "nobody has named anything", whose next action is to go name something.
+    // The message travels because "it failed" without a reason is a 500 with
+    // extra steps.
+    // ⚠️ **The failure is REPORTED but the driver's text is NOT.** Both throw
+    // sources are internal-DB-backed, so `err.message` here is a `pg` string —
+    // `FATAL: password authentication failed for user "atlas"`, a host, a role.
+    // The first cut of this field put it straight in a 200 body, which is the
+    // one thing this file already refuses for `snapshot-failed`.
+    expect(report.entityEdgesFailed).not.toBeNull();
+    expect(report.entityEdgesFailed).not.toContain("vocabulary lock timeout");
+    // …and it carries the handle that makes the real reason findable, which is
+    // what stops the redaction from being a dead end.
+    expect(report.entityEdgesFailed).toContain("req-1");
+    // ⚠️ It must NOT claim the clean case either. `proposeAliasEdges` commits
+    // PER PROPOSAL, so a mid-batch throw leaves approved edges behind — and an
+    // auto-approved entity edge re-keys the corpus. "No vocabulary edge was
+    // raised this run" was false in exactly that case.
+    expect(report.entityEdgesFailed).not.toContain("no vocabulary edge was raised");
+  });
+
+  test("a run with NOTHING to do is distinguishable from a run that FAILED", async () => {
+    // The paired arm, and the reason this pair exists: two tests in this file
+    // asserted identical state under a comment claiming they distinguished
+    // these cases. They did not — the panel found it by reading the tests.
+    const h = harness({
+      // No naming dimension, so nothing is stored and the store stays empty —
+      // the genuine "nothing to do" run.
+      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
+      entities: { Accounts: ACCOUNTS },
+      rows: { Accounts: [snapshotRow("ACC-42", "gold")] },
+    });
+
+    const report = await run(h);
+
+    // Same `entityEdges: null` as the failing run above…
+    expect(report.entityEdges).toBeNull();
+    // …and the ONE field that separates them. Before it, these two runs were
+    // byte-identical on the wire.
+    expect(report.entityEdgesFailed).toBeNull();
+    expect(report.entityEdgesAmbiguous).toBe(0);
+  });
+
+  test("the edge pass runs even when EVERY enrolled pair was refused", async () => {
+    // ⚠️ Removing the `entitiesStored > 0` gate was only half the fix: the pass
+    // still sat below the `plan.emit.length === 0` early return, so a run where
+    // every pair was refused — expired warehouse credentials, an entity
+    // un-published — skipped it while `brain_entity` still held every row.
+    // Un-enrolling deletes no entry and no reaper exists yet, so that is exactly
+    // the run an operator is staring at when they ask why the store stopped
+    // working, and it reported `entityEdgesAmbiguous: 0` over a store that may
+    // be entirely ambiguous.
+    const h = harness({
+      pairs: [{ entity: "Ghost", dimension: "tier", naming: false }],
+      // Not in the published semantic layer → every pair refused → `emit` empty.
+      entities: { Ghost: null },
+      entityStore: async () => [
+        {
+          entityId: warehouseRowId(WORKSPACE, "Accounts", "ACC-42"),
+          entity: "Accounts",
+          keySurface: "ACC-42",
+          keyNorm: "acc 42",
+          canonicalSurface: "Acme",
+          canonicalNorm: "acme",
+        },
+        {
+          entityId: warehouseRowId(WORKSPACE, "Contacts", "C-9"),
+          entity: "Contacts",
+          keySurface: "C-9",
+          keyNorm: "c 9",
+          canonicalSurface: "acme",
+          canonicalNorm: "acme",
+        },
+      ] satisfies readonly StoredEntity[],
+    });
+
+    const report = await run(h);
+
+    // Nothing emitted — the reach really was empty of producible pairs…
+    expect(report.entities).toEqual([]);
+    expect(report.refusals.length).toBeGreaterThan(0);
+    // …and the edge pass ran anyway, over the PERSISTED store, and found the
+    // collision. `0` here is the report saying "no name collisions" about a
+    // store where neither entity resolves.
+    expect(report.entityEdgesAmbiguous).toBe(2);
+  });
+
+  test("the edge pass runs even when THIS run stored nothing — the re-run case", async () => {
+    // It was gated on `entitiesStored > 0`, which skipped the pass entirely on
+    // a run where every entity was already snapshotted — i.e. exactly the
+    // RE-RUN on which `rejected` (the counter that says a human's removal
+    // stuck) is the number an operator reads.
+    const h = harness({
+      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
+      entities: { Accounts: ACCOUNTS },
+      rows: { Accounts: [snapshotRow("ACC-42", "gold")] },
+      // The persisted store is NOT empty, though this run wrote nothing.
+      entityStore: async () => [
+        {
+          entityId: warehouseRowId(WORKSPACE, "Accounts", "ACC-42"),
+          entity: "Accounts",
+          keySurface: "ACC-42",
+          keyNorm: "acc 42",
+          canonicalSurface: "Acme Corp",
+          canonicalNorm: "acme corp",
+        },
+      ] satisfies readonly EntityStoreEntry[],
+      edgeCounters: { ...EMPTY_EDGE_COUNTERS, rejected: 2 },
+    });
+
+    const report = await run(h);
+
+    expect(report.entities[0]?.entitiesStored).toBe(0);
+    // The pass ran anyway, and its counters reached the report.
+    expect(h.edgeBatches).toHaveLength(1);
+    expect(report.entityEdges).toEqual({ ...EMPTY_EDGE_COUNTERS, rejected: 2 });
+  });
+
+  test("ambiguous entries are COUNTED on the report, not just skipped", async () => {
+    // Two rows sharing a name is ordinary warehouse data with a PERMANENT
+    // consequence — neither resolves by name, ever. It was visible only in a
+    // `debug` line production does not emit, under a docstring claiming the
+    // caller counted it.
+    const h = harness({
+      pairs: [...namedPairs],
+      entities: { Accounts: ACCOUNTS },
+      rows: {
+        Accounts: [
+          snapshotRow("ACC-42", "Acme", "gold"),
+          snapshotRow("ACC-43", "acme", "silver"),
+          snapshotRow("ACC-44", "Gamma", "bronze"),
+        ],
+      },
+    });
+
+    const report = await run(h);
+
+    expect(report.entityEdgesAmbiguous).toBe(2);
+    // The control: the third row is NOT ambiguous and its edge was proposed, so
+    // this is a count of the refused rather than of everything.
+    expect(h.edgeBatches[0]).toHaveLength(2);
+  });
+
+  test("the edge pass reads the PERSISTED store, not just this run's entries", async () => {
+    // `contacts` was snapshotted on an earlier run and holds the same name. An
+    // edge pass scoped to this run would never see it and would merge the two.
+    const h = harness({
+      pairs: [...namedPairs],
+      entities: { Accounts: ACCOUNTS },
+      rows: { Accounts: [snapshotRow("42", "Acme", "gold")] },
+      entityStore: async () => [
+        {
+          entityId: "wh_this" as WarehouseRowId,
+          entity: "Accounts",
+          keySurface: "42",
+          keyNorm: "42",
+          canonicalSurface: "Acme",
+          canonicalNorm: "acme",
+        },
+        {
+          entityId: "wh_prior" as WarehouseRowId,
+          entity: "Contacts",
+          keySurface: "9",
+          keyNorm: "9",
+          canonicalSurface: "acme",
+          canonicalNorm: "acme",
+        },
+      ] satisfies readonly EntityStoreEntry[],
+    });
+
+    const report = await run(h);
+
+    // No batch is handed to the vocabulary seam at all — an empty one would take
+    // the workspace lock to say nothing.
+    expect(h.edgeBatches).toEqual([]);
+    expect(report.entityEdges).toBeNull();
+    // ⚠️ The control that separates this from the no-naming-dimension case
+    // above, where `entityEdges` is also null: the store DID write an entry.
+    // Both facts together are what say "the edge was refused on ambiguity"
+    // rather than "nothing was named".
+    expect(report.entities[0]?.entitiesStored).toBe(1);
   });
 });

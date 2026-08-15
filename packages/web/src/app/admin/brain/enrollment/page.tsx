@@ -8,6 +8,7 @@ import {
   BrainEnrollmentEntitiesResponseSchema,
   BrainEnrollmentListResponseSchema,
   BrainEnrollmentWriteResponseSchema,
+  BrainEnrollmentNamingResponseSchema,
 } from "@/ui/lib/admin-schemas";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
@@ -32,6 +33,7 @@ type ListResponse = z.infer<typeof BrainEnrollmentListResponseSchema>;
 type EntitiesResponse = z.infer<typeof BrainEnrollmentEntitiesResponseSchema>;
 type DimensionsResponse = z.infer<typeof BrainEnrollmentDimensionsResponseSchema>;
 type WriteResponse = z.infer<typeof BrainEnrollmentWriteResponseSchema>;
+type NamingResponse = z.infer<typeof BrainEnrollmentNamingResponseSchema>;
 
 /**
  * **Enrollment** — what the warehouse producer may hold claims about
@@ -88,6 +90,10 @@ function BrainEnrollment() {
    * a message the admin had not read.
    */
   const [unenrollError, setUnenrollError] = useState<string | null>(null);
+  // Its OWN slot, not `unenrollError`. The two verbs sit on the same row, and a
+  // shared slot renders a naming failure under a "not removed" badge — the same
+  // defect the un-enroll slot was split out of the enroll card to fix.
+  const [namingError, setNamingError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const {
@@ -142,6 +148,10 @@ function BrainEnrollment() {
     path: "/api/v1/admin/brain-enrollment/unenroll",
     method: "POST",
   });
+  const namingMutation = useAdminMutation<NamingResponse>({
+    path: "/api/v1/admin/brain-enrollment/naming",
+    method: "POST",
+  });
 
   const enrollments = list?.enrollments ?? [];
   /**
@@ -186,6 +196,35 @@ function BrainEnrollment() {
     // Unawaited deliberately: `useAdminFetch` owns the refetch's own loading and
     // error state, so awaiting it here would only delay clearing the form. A
     // rejection surfaces through `listError`, which the page already renders.
+    void refetch();
+  }
+
+  /**
+   * Name (or un-name) the dimension that supplies an entity's canonical surface.
+   *
+   * ⚠️ **The copy says what this DOES, not what it toggles.** Naming a dimension
+   * re-keys every fact about the entity workspace-wide, because the store emits
+   * a vocabulary edge from the row's primary key onto that name — and a control
+   * that reads "use as name" gives an admin no reason to expect that. Both
+   * branches of the notice say it, because both are that act: clearing it
+   * re-keys them back.
+   */
+  async function onSetNaming(target: BrainEnrollmentEntry, naming: boolean) {
+    setNamingError(null);
+    setNotice(null);
+    const result = await namingMutation.mutate({
+      itemId: `${target.entity}/${target.dimension}`,
+      body: { entity: target.entity, dimension: naming ? target.dimension : null },
+    });
+    if (!result.ok) {
+      setNamingError(friendlyError(result.error));
+      return;
+    }
+    setNotice(
+      naming
+        ? `“${target.dimension}” now names “${target.entity}”. Atlas will file what it already knows about each of those rows under that name — so a claim someone made about “Acme Corp” and a row the warehouse calls “42” become the same subject. Run the producer to apply it.`
+        : `“${target.entity}” no longer has a name column. Atlas stops matching its rows to what people call them, and goes back to matching on the warehouse key alone. Run the producer to apply it.`,
+    );
     void refetch();
   }
 
@@ -412,6 +451,12 @@ function BrainEnrollment() {
             </div>
           </div>
 
+          {namingError !== null ? (
+            <Alert variant="destructive">
+              <AlertTriangle className="size-4" aria-hidden />
+              <AlertDescription>{namingError}</AlertDescription>
+            </Alert>
+          ) : null}
           {unenrollError !== null ? (
             <Alert variant="destructive">
               <AlertTriangle className="size-4" aria-hidden />
@@ -452,10 +497,22 @@ function BrainEnrollment() {
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
+                    {entry.naming ? <Badge variant="secondary">names this entity</Badge> : null}
+                    {namingMutation.errorFor(`${entry.entity}/${entry.dimension}`) !== undefined ? (
+                      <Badge variant="destructive">name not changed</Badge>
+                    ) : null}
                     {unenrollMutation.errorFor(`${entry.entity}/${entry.dimension}`) !==
                     undefined ? (
                       <Badge variant="destructive">not removed</Badge>
                     ) : null}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={namingMutation.isMutating(`${entry.entity}/${entry.dimension}`)}
+                      onClick={() => onSetNaming(entry, !entry.naming)}
+                    >
+                      {entry.naming ? "Stop using as name" : "Use as name"}
+                    </Button>
                     <Button
                       variant="ghost"
                       size="sm"
@@ -474,6 +531,15 @@ function BrainEnrollment() {
           {/* ⚠️ Stated on the page, not only in the code. "Un-enroll" reads as
               "stop knowing this", and an admin who believed that would use this
               button to try to retract a published claim. */}
+          {/* ⚠️ On the page, not only in the code. "Use as name" reads like a
+              display preference; it is the act that decides which claims Atlas
+              treats as being about the same thing. */}
+          <p className="text-muted-foreground text-xs">
+            One column per entity can be its <strong>name</strong>. Warehouse rows are identified by
+            a key like <span className="font-mono">42</span>, and people write “Acme Corp” — naming
+            a column is how Atlas learns those are the same subject. Changing it re-files everything
+            Atlas knows about that entity, so it is not a display setting.
+          </p>
           <p className="text-muted-foreground text-xs">
             Un-enrolling stops future claims and nothing else. Claims Atlas already produced and you
             already published stay published and stay visible — retracting one is a decision you

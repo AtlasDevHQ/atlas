@@ -4167,6 +4167,15 @@ export const brainEnrollment = pgTable(
     enrolledAt: timestamp("enrolled_at", { withTimezone: true }).notNull().defaultNow(),
     enrolledBy: text("enrolled_by").notNull(),
     note: text("note"),
+    // Whether this dimension supplies its entity's CANONICAL SURFACE — the
+    // human-readable name the entity store keys on (0200, #5043).
+    //
+    // A flag on an enrollment rather than a column of its own, because the
+    // snapshot query selects the enrolled columns only: a naming dimension that
+    // is not enrolled would name a column the producer never reads. It also
+    // gives the store ADR-0039's bound for free — an entity nobody enrolled has
+    // no naming dimension and therefore no entry.
+    naming: boolean("naming").notNull().default(false),
   },
   (t) => [
     // The pair IS the identity, which is what makes the region import a plain
@@ -4178,7 +4187,94 @@ export const brainEnrollment = pgTable(
     // An enrollment with no author is not one — `brainPredicateCardinality`'s
     // rule. `NOT NULL` alone would admit `''`.
     check("ck_brain_enrollment_attributed", sql`enrolled_by <> ''`),
-    // No secondary index: the PK above IS `(workspace_id, entity, dimension)`,
-    // which is the producer's listing order. See the migration header.
+    // AT MOST ONE naming dimension per entity. Two would mint two canonical
+    // surfaces for one row and the store would hold whichever the producer's
+    // loop reached last — a non-deterministic canonical surface, which is the
+    // one thing the id's determinism argument cannot survive.
+    uniqueIndex("uq_brain_enrollment_naming")
+      .on(t.workspaceId, t.entity)
+      .where(sql`naming`),
+    // No other secondary index: the PK above IS `(workspace_id, entity,
+    // dimension)`, which is the producer's listing order. See the migration
+    // header.
+  ],
+);
+
+// brain_entity (0200) — the entity store (#5043, ADR-0037 §5).
+//
+// Brain-owned, workspace-scoped, internal-DB-resident. The semantic layer and
+// the warehouse are its highest-quality INPUT, never the store: they are
+// type-level where the brain names instances, `connection_group`-scoped where
+// the brain is workspace-scoped, and unjoinable as one opaque YAML blob.
+//
+// ⚠️ **The general rule this table exists to keep true, derived twice in
+// ADR-0037: the brain never reads tier-1 live, at any position, for any
+// purpose.** A live customer-warehouse query at resolve time would make a key
+// irreproducible offline, make resolution success a property of a datasource
+// being up, and put `ConnectionRegistry` egress on the pre-transaction path.
+//
+// Two jobs and one prohibition — `lib/brain/entity-store.ts` owns all three,
+// and migration 0200's header carries the argument:
+//
+//   1. Answer `surface → stable id`, batched per episode, role-invariant,
+//      absent-means-abstain. The id reaches `subject_cmp`/`object_cmp` and no
+//      join arm.
+//   2. Emit `lexicalNorm(key_surface) → lexicalNorm(canonical_surface)` as an
+//      ordinary `brainVocabularyEdge` row at both entity positions.
+//   3. NOTHING CLEVER AT READ TIME — no fuzzy matching, no embeddings, no LLM
+//      disambiguation. A prohibition, not an omission.
+//
+// No UNIQUE on either norm, deliberately: two warehouse rows may legitimately
+// carry one name, both are stored, and the READER abstains when a norm matches
+// more than one id. See the migration header's fail-closed section for why the
+// edge producer refuses that pair outright rather than merely abstaining.
+export const brainEntity = pgTable(
+  "brain_entity",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    // `warehouseRowId`'s `wh_<sha256 of (workspace, entity, primary key)>`.
+    // GLOBALLY unique, not merely deterministic and workspace-scoped: a derived
+    // id (`dim_plan:7`) collides across regions for two DIFFERENT rows, and a
+    // collision is a false `same` at the publish gate — two distinct entities
+    // merged, with no inverse.
+    entityId: text("entity_id").notNull(),
+    // `semantic_entities.name`, matching `brainEnrollment.entity`.
+    entity: text("entity").notNull(),
+    // The primary key's surface, verbatim — the subject surface on every fact
+    // the producer wrote, and the handle by which a person finds the entry.
+    keySurface: text("key_surface").notNull(),
+    // `lexicalNorm(key_surface)`. Materialized rather than computed at read
+    // time: a functional index would be a second implementation of
+    // `lexicalNorm` in SQL that nothing pins against the TypeScript one.
+    keyNorm: text("key_norm").notNull(),
+    // The naming dimension's value, verbatim — the human surface.
+    canonicalSurface: text("canonical_surface").notNull(),
+    // `lexicalNorm(canonical_surface)`. The lookup column that matters: it is
+    // what an extracted claim about "Acme Corp" resolves through.
+    canonicalNorm: text("canonical_norm").notNull(),
+    snapshotAt: timestamp("snapshot_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    // The ID is the identity, not the surface — so a re-run for the same
+    // warehouse row updates in place, and a renamed row keeps its id while
+    // gaining a new canonical surface.
+    primaryKey({ columns: [t.workspaceId, t.entityId] }),
+    check("ck_brain_entity_id_present", sql`entity_id <> ''`),
+    check(
+      "ck_brain_entity_names_present",
+      sql`entity <> '' AND key_surface <> '' AND canonical_surface <> ''`,
+    ),
+    // 0187's `DEFAULT ''` hazard through the front door: a stored empty norm is
+    // the one key value that joins every other degenerate row.
+    check("ck_brain_entity_norms_present", sql`key_norm <> '' AND canonical_norm <> ''`),
+    // TWO indexes, not one composite: the columns are ALTERNATIVES in the
+    // resolver's single statement, so `(workspace_id, canonical_norm, key_norm)`
+    // would serve the canonical arm and nothing else.
+    index("idx_brain_entity_canonical_norm").on(t.workspaceId, t.canonicalNorm),
+    index("idx_brain_entity_key_norm").on(t.workspaceId, t.keyNorm),
+    // The producer's own read — replace one entity's entries on a re-run without
+    // scanning the workspace. Not a prefix of anything above: the PK leads with
+    // `entity_id`.
+    index("idx_brain_entity_entity").on(t.workspaceId, t.entity),
   ],
 );

@@ -121,12 +121,14 @@ import { PREDICATE_CARDINALITIES } from "@atlas/api/lib/brain/types";
 import {
   classifyEpisodeForReconcile,
   reconcileFacts,
+  type EntityResolver,
   type FactCandidate,
   type ReconcileBlockReason,
   type ReconcileEpisodeRef,
   type ReconcileReport,
 } from "@atlas/api/lib/brain/reconcile";
 import type { ClaimVocabulary } from "@atlas/api/lib/brain/identity";
+import { entityStoreResolver } from "@atlas/api/lib/brain/entity-store";
 import { loadWorkspaceVocabulary } from "@atlas/api/lib/brain/vocabulary";
 import { proposeAliasesFromCorpus } from "@atlas/api/lib/brain/alias-proposal";
 
@@ -732,6 +734,20 @@ export interface BrainExtractionDeps {
   /** Defaults to {@link loadWorkspaceVocabulary}. */
   readonly loadVocabulary?: (workspaceId: string) => Promise<ClaimVocabulary>;
   /**
+   * Defaults to `entityStoreResolver()` — the entity store (#5043, ADR-0037 §5).
+   *
+   * ⚠️ **THIS is where the store stops being dormant.** The warehouse producer
+   * resolves its own subjects from the snapshot it just read, so it never needed
+   * a store; extraction is the path where a person says "Acme Corp" about a row
+   * the warehouse calls `42`, and until this seam was passed the extraction path
+   * used `passthroughEntityResolver` and every extracted claim landed
+   * `subject_cmp`/`object_cmp` NULL. A store nothing consults does not answer.
+   *
+   * Injectable for `reconcile`'s reason exactly: it reads the internal pool, and
+   * a unit test of the drain must be able to run without one.
+   */
+  readonly resolveEntity?: EntityResolver;
+  /**
    * Defaults to `proposeAliasesFromCorpus` (#5034) — the alias-proposal
    * producer, run after an episode commits and only when it created a row
    * carrying a comparable object. See {@link proposeAliasesAfterCommit}.
@@ -792,6 +808,11 @@ export function runBrainExtractionCycle(
   const resolveModel = deps.resolveModel ?? resolveExtractionModel;
   const reconcile = deps.reconcile ?? reconcileFacts;
   const loadVocabulary = deps.loadVocabulary ?? loadWorkspaceVocabulary;
+  // ONE resolver for the whole cycle, not one per episode: it holds no state
+  // and its lookup is per-call, so a fresh one per episode would allocate for
+  // nothing. Intra-episode consistency is the seam's own property — one
+  // statement per call over the deduplicated surface set — and is unaffected.
+  const resolveEntity = deps.resolveEntity ?? entityStoreResolver();
   const proposeAliases =
     deps.proposeAliases ?? ((workspaceId: string) => proposeAliasesFromCorpus(workspaceId));
   // `Number.isInteger` AND the upper bound, both load-bearing: a delay past
@@ -962,6 +983,7 @@ export function runBrainExtractionCycle(
           modelFor,
           reconcile,
           loadVocabulary,
+          resolveEntity,
           proposeAliases,
           proposalStall,
           aliasProposalDeadlineMs,
@@ -980,6 +1002,7 @@ interface ApplyDeps {
   readonly modelFor: (workspaceId: string) => Promise<ResolvedExtractionModel | null>;
   readonly reconcile: typeof reconcileFacts;
   readonly loadVocabulary: (workspaceId: string) => Promise<ClaimVocabulary>;
+  readonly resolveEntity: EntityResolver;
   readonly proposeAliases: (workspaceId: string) => Promise<unknown>;
   /**
    * The per-tick circuit breaker for the alias-proposal trigger — see
@@ -1153,6 +1176,7 @@ async function extractEpisode(row: EpisodeRow, deps: ApplyDeps): Promise<Episode
     producer: BRAIN_EXTRACTION_PRODUCER,
     extractedAt,
     vocabulary,
+    resolveEntity: deps.resolveEntity,
   });
 
   // The stage refused the whole episode despite our pre-flight passing. It

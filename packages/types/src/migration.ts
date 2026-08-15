@@ -86,6 +86,8 @@ export interface ExportManifest {
     brainSlackChannelExclusions?: number;
     /** The warehouse producer's enrolled reach (#5196, ADR-0039). */
     brainEnrollments?: number;
+    /** The entity store's snapshot entries (#5043, ADR-0037 §5). */
+    brainEntities?: number;
   };
 }
 
@@ -637,6 +639,83 @@ export interface ExportedBrainEnrollment {
   enrolledBy: string;
   /** Why, as the admin wrote it. `null` when they gave no reason. */
   note: string | null;
+  /**
+   * Whether this dimension names its entity's canonical surface (#5043).
+   *
+   * It travels because it is the same kind of human decision the row already is,
+   * and because losing it is silent in the ADR-0039 way: the destination's store
+   * writes no entry, every lookup abstains, and the enrollment list still shows
+   * the pair as live. OPTIONAL on the wire, so a v3 bundle written before #5043
+   * imports as `false` — which is the pre-#5043 truth rather than a guess.
+   */
+  naming?: boolean;
+}
+
+/**
+ * One entity-store entry — a snapshot of one warehouse row (#5043, ADR-0037 §5).
+ *
+ * ## Why it travels rather than being re-derived
+ *
+ * It looks derived, and `brain_vocabulary_target` — genuinely derived — stays.
+ * The difference is what the derivation needs. A closure is a pure function of
+ * edges that travel on the same bundle, so the destination can rebuild it
+ * immediately. An entry is a function of a WAREHOUSE READ, which the destination
+ * cannot repeat until its datasource credentials are re-established and a human
+ * re-runs the producer.
+ *
+ * ⚠️ **The ids do NOT travel on the facts, and it would be wrong to say they do.**
+ * `regionPortableComparable` classifies the `entity:` tag `store-local`, so the
+ * importer NULLS `subject_cmp`/`object_cmp` on every entity-valued row — a
+ * foreign id there is counterfeit positive evidence of DIFFERENCE, which is the
+ * one direction that stamps `valid_to` without a human.
+ *
+ * What these entries buy the destination is a BRIDGE: they resolve surfaces by
+ * name from the moment the bundle lands until the destination has warehouse
+ * credentials again and a human re-runs the producer — the window in which
+ * nothing else can. `stays` is also DELETION (#4458), so the source's copy would
+ * go too.
+ *
+ * ⚠️ **The bridge has a COST, and an earlier version of this comment denied it.**
+ * It said the first producer run replaces these ids "harmlessly, because no fact
+ * carries the old ones". True at the moment of import — the importer NULLs an
+ * entity-valued `_cmp` — and false for the whole window the entries exist to
+ * serve: extraction consults the store, so every fact extracted during the
+ * bridge carries the imported, SOURCE-workspace id. The destination's first
+ * producer run then retires those ids for freshly minted ones.
+ *
+ * What that costs, stated rather than assumed: at `subject_cmp` a proven
+ * difference SUPPRESSES every consumer, so bridge-window facts and post-run
+ * facts about one warehouse row quietly stop corroborating — unmatched
+ * corroboration, which is the recoverable direction and is invisible. At
+ * `object_cmp` a proven difference is positive evidence, and whether that can
+ * reach a `valid_to` stamp for this pair is NOT traced here and is not asserted
+ * either way (#5233).
+ *
+ * ⚠️ And the replacement is keyed on `(workspace_id, entity)`. If the two
+ * regions' semantic layers name the entity differently, the imported rows are
+ * never deleted, both sets go live, and every shared canonical norm is poisoned
+ * — the store then resolves NOTHING for that entity until someone intervenes.
+ * `entityEdgesAmbiguous` is what makes that visible; the reaper (#5233) is what
+ * fixes it.
+ *
+ * The failure direction if it were dropped is ADR-0039's invisible one: the
+ * cutover reports clean, the store resolves nothing, and every test stays green.
+ */
+export interface ExportedBrainEntity {
+  /** `wh_<sha256>` — globally unique, and the value already on `subject_cmp`. */
+  entityId: string;
+  /** The semantic-layer entity name this row came from. */
+  entity: string;
+  /** The primary key's surface, verbatim. */
+  keySurface: string;
+  /** `lexicalNorm(keySurface)`. Carried, not recomputed — see the importer. */
+  keyNorm: string;
+  /** The naming dimension's value, verbatim — the human surface. */
+  canonicalSurface: string;
+  /** `lexicalNorm(canonicalSurface)`. */
+  canonicalNorm: string;
+  /** When the snapshot that produced this entry was taken. */
+  snapshotAt: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -702,6 +781,11 @@ export interface ExportBundle {
    * code — so it travels for the same reason, discovered the hard way.
    */
   brainEnrollments?: ExportedBrainEnrollment[];
+  /**
+   * The entity store's snapshot entries (#5043, ADR-0037 §5). Same
+   * optional-on-the-wire shape as the sections above.
+   */
+  brainEntities?: ExportedBrainEntity[];
 }
 
 // ---------------------------------------------------------------------------
@@ -770,7 +854,52 @@ export interface ImportResult {
    * same kind, and a pair enrolled in both is the same decision twice. So the
    * merge is a union, and `skipped` means exactly what it means everywhere else.
    */
-  brainEnrollments: { imported: number; skipped: number };
+  brainEnrollments: {
+    imported: number;
+    skipped: number;
+    /**
+     * Rows whose arriving `naming` flag was NOT applied (#5043).
+     *
+     * A third counter because `imported + skipped` structurally cannot express
+     * it: the row landed (or was already here), and only the human decision
+     * riding on it was declined. Without it the drop is invisible — the
+     * destination's entity store writes no entry for that entity, every lookup
+     * abstains, and the enrollment list still shows the pair as live, which is
+     * the ADR-0039 shape where a loss looks exactly like a working system.
+     *
+     * NOT a `refused` in `REFUSAL_ACCOUNTING`'s sense, and deliberately named
+     * differently: a shortfall here does not abort a cutover, because the pair
+     * itself did arrive.
+     */
+    namingDropped: number;
+    /**
+     * Rows where an arriving `naming` flag WAS applied to a pair this region
+     * already held unnamed (#5043).
+     *
+     * The positive twin of {@link namingDropped}, and it exists for the same
+     * reason: that write makes the destination's next producer run re-key every
+     * fact about the entity, and `imported + skipped` reports it as `skipped` —
+     * which everywhere else means "this region already holds it". It holds the
+     * PAIR; it did not hold the DECISION.
+     */
+    namingApplied: number;
+  };
+  /**
+   * The entity store's snapshot entries (#5043, ADR-0037 §5).
+   *
+   * TWO counters, on `brainEnrollments`' reasoning and not `brainVocabularyEdges`'.
+   * The `entity_id` is a digest of `(workspace, entity, primary key)`, so two
+   * regions holding the same id are holding the same warehouse row — there is no
+   * contradictory decision to refuse. `skipped` is a destination that already
+   * snapshotted that row.
+   *
+   * ⚠️ **`DO NOTHING`, so an OLDER arriving snapshot never overwrites a newer
+   * local one.** The alternative reading — last-writer-wins on `snapshot_at` —
+   * would let a bundle taken last week re-key the destination's corpus onto a
+   * name that has since changed, which is ADR-0037 §5's workspace-wide blast
+   * radius arriving from a direction nobody is watching.
+   */
+  brainEntities: { imported: number; skipped: number };
 }
 
 // ---------------------------------------------------------------------------

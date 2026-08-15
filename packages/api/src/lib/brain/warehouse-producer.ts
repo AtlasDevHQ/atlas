@@ -1515,6 +1515,58 @@ async function insertSnapshotEpisode(
 }
 
 /**
+ * A one-way fingerprint of a snapshot statement, for the gate-mismatch log line.
+ *
+ * ⚠️ **A DIGEST, and the statement itself is never an option.** The SELECT is
+ * assembled from admin-authored `table:` and `sql:` expressions, so it can carry a
+ * column name — and, through a `sql:` expression, a literal — that identifies a
+ * customer. CLAUDE.md forbids that reaching a log, and the mismatch arm is exactly
+ * where an operator most wants to see the statement, which is what makes writing
+ * the rule down here worth the lines.
+ *
+ * Truncated to 16 hex characters, matching `logger.ts`'s `hashShareToken` and
+ * `learn/pattern-analyzer.ts`. This is a CORRELATION fingerprint, not a security
+ * primitive: the entity is refused either way, so the only thing a collision buys
+ * is a forged statement logged as if it were a replay, and 64 bits against a target
+ * the attacker does not choose is not the cheap way to achieve that.
+ *
+ * ⚠️ Non-strings get a SENTINEL rather than a throw. `sql` here comes from the
+ * validator seam, whose whole premise on this path is that it may be substituted or
+ * cast — `warehouse-producer-bypass.test.ts` pins the sites that may — so a
+ * `createHash().update(<number>)` would throw a `TypeError` out of the log call,
+ * escape the per-entity `try` (the mismatch arm has none) and take down the whole
+ * run as a 500. That contradicts {@link runWarehouseProducer}'s own "caught PER
+ * ENTITY" contract for the sake of a diagnostic line, which is the wrong trade in
+ * both directions.
+ *
+ * The sentinel cannot be confused with a digest: `<non-string>` is neither 16
+ * characters nor hex, and the SUBMITTED side is a string by construction
+ * ({@link buildSnapshotSql} returns one), so it can never equal the returned side's
+ * sentinel and report a false `sqlDigestMatch`.
+ */
+function snapshotSqlDigest(sql: unknown): string {
+  if (typeof sql !== "string") return "<non-string>";
+  return createHash("sha256").update(sql).digest("hex").slice(0, 16);
+}
+
+/**
+ * A string from the validator seam, bounded and total.
+ *
+ * Same reason as {@link snapshotSqlDigest}'s sentinel: the mismatch arm logs values
+ * the seam controls, and `undefined.slice(0, 200)` on a verdict cast from `{}`
+ * threw out of the log call and past the per-entity contract. `<undefined>` in the
+ * payload says what came back; a 500 says nothing and loses the other fields too.
+ *
+ * Honest bound: a returned value that literally spells `"<undefined>"` is
+ * indistinguishable from an absent one here. An operator reading this line is
+ * already looking at a gate that answered about the wrong request.
+ */
+function seamString(value: unknown): string {
+  if (typeof value === "string") return value.slice(0, 200);
+  return value === null ? "<null>" : `<${typeof value}>`;
+}
+
+/**
  * Run the producer over one workspace's reach.
  *
  * One transaction per ENTITY, not one per run: an entity whose snapshot fails
@@ -1857,6 +1909,32 @@ export async function runWarehouseProducer(
     // `reconcile.ts` states the same rule for the same reason.
     const validated = validation.request;
     if (validated !== request) {
+      // ⚠️ **THREE FIELDS, EACH READ ONCE — the capture rule above, applied one level
+      // down.** `validated` is captured, but its PROPERTIES are still expressions the
+      // seam controls: a Proxy or a getter answers `.sql` honestly for the digest and
+      // dishonestly for the comparison, which is #5230's aliasing finding reproduced
+      // inside the line written to report it. Reading each into a local once is what
+      // makes the digest below a statement about a value rather than about a property
+      // access. The object itself may not be an object at all — a verdict cast from
+      // `{}` or `null` compiles — so it is narrowed before any read; see
+      // {@link seamString} for why a throw here is worse than a sentinel.
+      const returned: Record<string, unknown> = isRecord(validated) ? validated : {};
+      const returnedEntity = returned.entity;
+      const returnedWorkspaceId = returned.workspaceId;
+      const returnedSql = returned.sql;
+      // ⚠️ **This pair is what separates a FORGERY from a benign REPLAY, and until
+      // #5248 the line could not.** Identity is the acceptance test, so both cases
+      // land here: a validator that memoises and hands back an equal-but-distinct
+      // object for THE SAME statement (benign — a retry, a re-wrap), and one that
+      // hands back a token minted for a DIFFERENT statement (the aliased/forged case,
+      // the one worth paging on). Refused either way, so this is observability rather
+      // than a correctness hole — but an operator whose alert cannot tell them apart
+      // is paging on retries and ignoring the real thing.
+      //
+      // Digests, never the statements — see {@link snapshotSqlDigest}. `sql` is this
+      // iteration's own local, so the submitted side cannot be aliased at all.
+      const sqlDigest = snapshotSqlDigest(sql);
+      const returnedSqlDigest = snapshotSqlDigest(returnedSql);
       log.error(
         {
           ...runLog,
@@ -1870,8 +1948,16 @@ export async function runWarehouseProducer(
           //
           // Bounded: both strings come from the seam rather than from the plan, and
           // nothing else on this line is attacker-shaped.
-          returnedEntity: validated.entity.slice(0, 200),
-          returnedWorkspaceId: validated.workspaceId.slice(0, 200),
+          returnedEntity: seamString(returnedEntity),
+          returnedWorkspaceId: seamString(returnedWorkspaceId),
+          sqlDigest,
+          returnedSqlDigest,
+          // ⚠️ Derivable from the two above and logged anyway, because an alert rule
+          // is a FILTER, not a computation: `sqlDigestMatch: false` is one greppable
+          // predicate, while "these two hex fields differ" is a join most log
+          // pipelines cannot express. Named for what was actually compared — digests,
+          // truncated — rather than claiming the statements themselves are equal.
+          sqlDigestMatch: sqlDigest === returnedSqlDigest,
         },
         "Warehouse producer: the SQL gate returned a verdict for a different request — refusing rather than reading",
       );

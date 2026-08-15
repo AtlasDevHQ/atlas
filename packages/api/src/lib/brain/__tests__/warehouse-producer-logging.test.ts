@@ -45,6 +45,7 @@
  */
 
 import { afterEach, beforeAll, describe, expect, it, mock } from "bun:test";
+import { createHash } from "node:crypto";
 
 interface Captured {
   readonly payload: unknown;
@@ -201,6 +202,18 @@ const messages = (sink: readonly Captured[]) => sink.map((c) => c.message);
  * out of `x?.payload as T` — an optional chain there makes a missing line read as
  * `undefined` and quietly weakens whatever is asserted about it.
  */
+/**
+ * The digest the mismatch line should carry, computed INDEPENDENTLY of the module
+ * under test.
+ *
+ * ⚠️ Deliberately not imported from the producer, and that is this repo's recorded
+ * lesson rather than a style choice: a fixture that derives its expectation from the
+ * implementation agrees with it by construction, so swapping the algorithm — or
+ * hashing the wrong side of the comparison — stays green. Spelled out here, changing
+ * either REDs.
+ */
+const digest = (sql: string) => createHash("sha256").update(sql).digest("hex").slice(0, 16);
+
 function payloadOf(sink: readonly Captured[], fragment: string): Record<string, unknown> {
   const hits = sink.filter((c) => c.message.includes(fragment));
   expect(hits, `expected exactly one log line containing "${fragment}"`).toHaveLength(1);
@@ -378,6 +391,151 @@ describe("warehouse producer logging", () => {
     // ABSENT from warn, not merely present in error — a demotion is how this line
     // stops being an incident while still being "logged".
     expect(messages(warns).filter((m) => m.includes("different request"))).toEqual([]);
+  });
+
+  it("separates a forged statement from a benign replay on the mismatch line (#5248)", async () => {
+    // ⚠️ **THE COLLAPSE FALSIFIER.** Identity is the acceptance test, so BOTH of these
+    // land on the same arm and were logged identically before #5248: a token minted
+    // for a different statement (the aliased case, worth paging on) and the same
+    // statement arriving under a fresh object (a retry, routine). Refused either way,
+    // so nothing here is a correctness hole — but an alert that cannot tell them apart
+    // fires on the routine one and stays quiet for the other. Deleting either digest
+    // field, or hardcoding `sqlDigestMatch`, collapses the two shapes back onto one
+    // and REDs below.
+    const FORGED_SQL = "SELECT 1 AS forged";
+    let submitted = "";
+
+    // (1) a genuine-looking verdict minted for a DIFFERENT statement.
+    await run({
+      validateSnapshotSql: async (request: WarehouseSnapshotRequest) => {
+        submitted = request.sql;
+        return {
+          valid: true as const,
+          request: { ...request, sql: FORGED_SQL } as ValidatedSnapshotRequest,
+        };
+      },
+    });
+    const forged = payloadOf(errors, "verdict for a different request");
+    expect(forged.sqlDigestMatch).toBe(false);
+    expect(forged.sqlDigest).toBe(digest(submitted));
+    // ⚠️ Derived from what came BACK. The measured sibling of this file's
+    // `returnedEntity` note: a field that digests the SUBMITTED statement under a
+    // `returned*` name passes every other assertion here and reports every forgery as
+    // a replay, which is the exact inversion of the signal.
+    expect(forged.returnedSqlDigest).toBe(digest(FORGED_SQL));
+    expect(forged.returnedSqlDigest).not.toBe(forged.sqlDigest);
+
+    errors.length = 0;
+
+    // (2) THE SAME statement, under a different object — the benign replay.
+    await run({
+      validateSnapshotSql: async (request: WarehouseSnapshotRequest) => ({
+        valid: true as const,
+        request: { ...request } as ValidatedSnapshotRequest,
+      }),
+    });
+    const replay = payloadOf(errors, "verdict for a different request");
+    expect(replay.sqlDigestMatch).toBe(true);
+    expect(replay.returnedSqlDigest).toBe(replay.sqlDigest);
+    // The same fixture builds the same statement, so the replay's digest is the
+    // forged run's SUBMITTED one — which is what "the same statement" means here.
+    expect(replay.sqlDigest).toBe(digest(submitted));
+
+    // ⚠️ The claim the two runs exist to make, asserted directly rather than left as
+    // an inference from the two blocks above. A single hardcoded value satisfies
+    // roughly half the assertions in each block; nothing satisfies this one.
+    expect(forged.sqlDigestMatch).not.toBe(replay.sqlDigestMatch);
+  });
+
+  it("fingerprints the statements and never carries one (#5248)", async () => {
+    let submitted = "";
+    await run({
+      validateSnapshotSql: async (request: WarehouseSnapshotRequest) => {
+        submitted = request.sql;
+        return { valid: true as const, request: { ...request } as ValidatedSnapshotRequest };
+      },
+    });
+
+    const payload = payloadOf(errors, "verdict for a different request");
+    // ⚠️ POSITIVE ANCHOR first. Without it every `not.toContain` below is satisfied by
+    // a fixture that built no statement at all, and the whole case goes vacuous.
+    expect(submitted).toContain("SELECT");
+    expect(submitted).toContain("lifecycle_status");
+
+    const serialized = JSON.stringify(payload);
+    expect(serialized).not.toContain(submitted);
+    // ⚠️ And not a FRAGMENT of it. The statement is assembled from admin-authored
+    // `table:` and `sql:` expressions, so the identifying part is the column names
+    // rather than the whole string — a line that truncated the SELECT to 200
+    // characters would pass the assertion above and still put a customer's schema in
+    // the log, which is what CLAUDE.md forbids.
+    expect(serialized).not.toContain("lifecycle_status");
+    expect(payload.sqlDigest).toMatch(/^[0-9a-f]{16}$/);
+    expect(payload.returnedSqlDigest).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it("reads the returned statement ONCE, so a getter cannot answer the digest and the comparison differently (#5248, #5230)", async () => {
+    // ⚠️ #5230's aliasing finding, one level down and inside the line written to
+    // report it. `validation.request` is captured once — but its PROPERTIES are still
+    // expressions the seam controls, so a getter that answers honestly for the digest
+    // and dishonestly for the comparison puts a forged statement's mismatch on the log
+    // as a benign replay. A per-site read proves nothing about the next site; only the
+    // count does.
+    const SECOND_READ = "SELECT 1 AS second_read";
+    let sqlReads = 0;
+    let honest = "";
+
+    await run({
+      validateSnapshotSql: async (request: WarehouseSnapshotRequest) => {
+        honest = request.sql;
+        const copy = { ...request } as Record<string, unknown>;
+        Object.defineProperty(copy, "sql", {
+          enumerable: true,
+          get() {
+            sqlReads += 1;
+            return sqlReads === 1 ? honest : SECOND_READ;
+          },
+        });
+        return { valid: true as const, request: copy as unknown as ValidatedSnapshotRequest };
+      },
+    });
+
+    const payload = payloadOf(errors, "verdict for a different request");
+    // ⚠️ The whole case. Two reads — one for the digest field, one for the comparison
+    // — makes this 2 and is the defect; the assertions below cannot see it on their
+    // own, because a second read that happens to agree looks identical.
+    expect(sqlReads).toBe(1);
+    expect(payload.returnedSqlDigest).toBe(digest(honest));
+    expect(payload.returnedSqlDigest).not.toBe(digest(SECOND_READ));
+    // The first read IS the submitted statement, so this mismatch is a replay.
+    expect(payload.sqlDigestMatch).toBe(true);
+  });
+
+  it("logs a mismatch rather than throwing when the verdict carries no request at all (#5248)", async () => {
+    // ⚠️ The mismatch arm has NO enclosing `try` — the per-entity catches wrap the
+    // validator call and the snapshot, not this branch — so a `TypeError` raised while
+    // BUILDING the log payload escapes `runWarehouseProducer` entirely and turns a
+    // refused entity into a 500 for the whole run. `undefined.slice(0, 200)` on a
+    // verdict cast from `{}` did exactly that, and the cast compiles:
+    // `warehouse-producer-bypass.test.ts` pins the sites that may write one.
+    const report = await run({
+      validateSnapshotSql: async () => ({
+        valid: true as const,
+        request: {} as ValidatedSnapshotRequest,
+      }),
+    });
+    expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-failed"]);
+
+    const payload = payloadOf(errors, "verdict for a different request");
+    // Sentinels, not silence: an operator needs to know the field was absent rather
+    // than empty, and the digest must still say the statements differ.
+    expect(payload.returnedEntity).toBe("<undefined>");
+    expect(payload.returnedWorkspaceId).toBe("<undefined>");
+    expect(payload.returnedSqlDigest).toBe("<non-string>");
+    expect(payload.sqlDigestMatch).toBe(false);
+    // ...and the SUBMITTED side is unaffected, so the line still identifies the run.
+    expect(payload.entity).toBe("Accounts");
+    expect(payload.sqlDigest).toMatch(/^[0-9a-f]{16}$/);
   });
 
   it("carries the request id and the trigger on every line, including the failures", async () => {

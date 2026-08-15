@@ -1639,8 +1639,13 @@ export const BrainEnrollmentNamingResponseSchema = z.strictObject({
  *     table is outside the whitelist or a `sql:` expression is malformed, and
  *     re-running changes nothing.
  *   - `snapshot-failed` — the run could not complete for this entity: the
- *     datasource read failed, the SQL gate threw rather than answering, or the
- *     entity's transaction rolled back. Nothing was stamped. Retryable, but not
+ *     datasource read failed, the SQL gate threw rather than answering, the
+ *     entity's transaction rolled back, or Atlas could not confirm the gate's
+ *     verdict was about the statement it was going to run (#5230). Nothing was
+ *     stamped. The last of the four is an Atlas wiring fault rather than an
+ *     environment one, and its message says so and carries the request id — the
+ *     other three ask the operator to look at their warehouse or their YAML, and
+ *     that one asks them to report it. Retryable, but not
  *     always usefully so — a dropped table fails the same way forever, and after a
  *     rolled-back transaction earlier entities have already COMMITTED, so that
  *     message tells the operator to drain the review queue before re-running. Split

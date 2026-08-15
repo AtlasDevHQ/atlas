@@ -74,6 +74,7 @@ import {
   type WarehouseEntityLookup,
   type WarehouseEntityPlan,
   type WarehouseProducerDeps,
+  type SnapshotSqlValidator,
   type SnapshotSqlVerdict,
   type ValidatedSnapshotRequest,
   type WarehouseRowId,
@@ -1096,7 +1097,7 @@ describe("runWarehouseProducer", () => {
 
     let cached: SnapshotSqlVerdict | undefined;
     const report = await runWarehouseProducer(
-      { workspaceId: WORKSPACE, triggeredBy: "user-1" },
+      { workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-replay" },
       {
         ...h.deps,
         validateSnapshotSql: async (request) => {
@@ -1114,6 +1115,15 @@ describe("runWarehouseProducer", () => {
     // planner emits first is not this test's subject.
     expect(h.snapshots).toHaveLength(1);
     const ran = h.snapshots[0]?.entity;
+    // ⚠️ WHICH one ran, not merely that one did. `not.toBe(ran)` alone is satisfied
+    // by an INVERTED check (`===` instead of `!==`), which runs the wrong entity on
+    // the cached token and refuses the right one — the mutation this test is the
+    // subject of, and the one it could not see. The cached token is about the first
+    // request the gate was handed, so that entity is the one that may run.
+    expect(ran).toBe(h.validations[0]?.entity);
+    // …and the row counts differ (1 vs 2), so `created` says which entity's rows
+    // were read rather than only that reading happened.
+    expect(report.created).toBe(1);
     expect(refusalKeys(report.refusals)).toHaveLength(1);
     const refused = report.refusals[0];
     expect(refused?.entity).not.toBe(ran);
@@ -1123,9 +1133,9 @@ describe("runWarehouseProducer", () => {
     expect(refused?.reason).toBe("snapshot-failed");
     expect(refused?.message).not.toContain("Re-running will not change");
     expect(refused?.message).toContain("could not confirm");
-    // And the run still produced the entity the token WAS for — a guard that
-    // refused everything would satisfy every assertion above.
-    expect(report.created).toBeGreaterThan(0);
+    // The operator's only handle: the report carries no request id, so the refusal
+    // has to name it inline or the instruction to quote it is unfollowable.
+    expect(refused?.message).toContain("req-replay");
   });
 
   test("a verdict carrying a RECONSTRUCTED request is refused too (#5230)", async () => {
@@ -1156,6 +1166,46 @@ describe("runWarehouseProducer", () => {
 
     expect(h.snapshots).toEqual([]);
     expect(refusalKeys(report.refusals)).toEqual(["Copied.status:snapshot-failed"]);
+    // ⚠️ The MESSAGE, because `snapshot-failed` is shared by four arms — the gate
+    // throwing, the gate rejecting, the snapshot throwing, and this one — and only
+    // the message tells them apart. Without it this test passes on a run that
+    // refused for an entirely different reason.
+    expect(report.refusals[0]?.message).toContain("could not confirm");
+    expect(report.created).toBe(0);
+  });
+
+  test("a validator that MUTATES the request after validating is refused (#5230)", async () => {
+    // ⚠️ The residual the identity check reads as if it had closed. `readonly` is
+    // erased at runtime, so a validator can validate, rewrite `sql`, and hand back
+    // the SAME reference — identity passes and the datasource reads a statement the
+    // gate never saw. The request is frozen, so the write throws instead, onto the
+    // gate-threw arm. `Object.assign` rather than `request.sql = …`: the latter is a
+    // compile error against the `readonly` field, and a test that cannot be written
+    // is not evidence about runtime.
+    const h = harness({
+      pairs: [{ entity: "Mutated", dimension: "status", naming: false }],
+      entities: {
+        Mutated: entityYaml({ table: "mutated", primaryKey: "id", dimensions: ["id", "status"] }),
+      },
+      rows: { Mutated: [snapshotRow("Acme Corp", "active")] },
+    });
+
+    const report = await runWarehouseProducer(
+      { workspaceId: WORKSPACE, triggeredBy: "user-1" },
+      {
+        ...h.deps,
+        validateSnapshotSql: async (request) => {
+          Object.assign(request, { sql: "SELECT * FROM salaries" });
+          return { valid: true, request: request as ValidatedSnapshotRequest };
+        },
+      },
+    );
+
+    expect(h.snapshots).toEqual([]);
+    expect(refusalKeys(report.refusals)).toEqual(["Mutated.status:snapshot-failed"]);
+    // The TRANSIENT arm, and specifically the gate-threw one rather than the
+    // mismatch one — the write throws before a verdict exists.
+    expect(report.refusals[0]?.message).toContain("could not check the query");
     expect(report.created).toBe(0);
   });
 
@@ -1174,7 +1224,23 @@ describe("runWarehouseProducer", () => {
     };
     // @ts-expect-error a bare request has not passed the SQL gate, and the runner says so
     const call = () => runner(bare);
+    // ⚠️ Keep the guarded line MINIMAL. `@ts-expect-error` suppresses *any* error on
+    // its line, so a line that grows can start satisfying the directive for a reason
+    // that has nothing to do with the brand.
     expect(typeof call).toBe("function");
+
+    // The BRAND, not only the parameter — three more one-line claims, each measured
+    // against `bun run type` rather than reasoned about. Without these, deleting the
+    // brand from the verdict's passing arm would leave only the runner's parameter
+    // pinned, and the replay half of #5230 would go quiet.
+    // @ts-expect-error the passing verdict cannot be written as a literal carrying a bare request
+    const literal: SnapshotSqlVerdict = { valid: true, request: bare };
+    // @ts-expect-error a validator cannot return a token for a request the gate has not branded
+    const mint: SnapshotSqlValidator = async (r) => ({ valid: true, request: r });
+    // @ts-expect-error the runner cannot be narrowed to a function taking a bare request
+    const widened: (r: WarehouseSnapshotRequest) => Promise<readonly Record<string, unknown>[]> =
+      runner;
+    expect([literal, mint, widened].every((v) => v !== null)).toBe(true);
   });
 
   test("a validator that REJECTS is caught on the same arm", async () => {

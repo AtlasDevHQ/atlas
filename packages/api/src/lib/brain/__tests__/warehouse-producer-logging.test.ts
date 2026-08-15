@@ -339,6 +339,36 @@ describe("warehouse producer logging", () => {
     expect(payload.err).toBeInstanceOf(Error);
   });
 
+  it("logs a gate/request mismatch at ERROR, naming what came BACK (#5230)", async () => {
+    // ⚠️ The only ERROR-level per-entity refusal in the run loop — every sibling is
+    // a WARN, and the neighbouring `snapshot-failed` case above asserts
+    // `messages(errors)` is empty. Without this case, demoting this line to `warn`
+    // (or deleting it) is green, which is the demotion this file's header names as
+    // the failure it exists to refuse.
+    //
+    // The validator returns a token for a RECONSTRUCTED request: same fields, wrong
+    // object. That is the mismatch arm rather than the gate-threw one.
+    await run({
+      validateSnapshotSql: async (request: WarehouseSnapshotRequest) => ({
+        valid: true as const,
+        request: { ...request } as ValidatedSnapshotRequest,
+      }),
+    });
+
+    const payload = payloadOf(errors, "verdict for a different request");
+    expect(payload.entity).toBe("Accounts");
+    expect(payload.table).toBe("accounts");
+    // ⚠️ What CAME BACK, under its own keys. A payload carrying only the submitted
+    // entity cannot tell a same-workspace replay from a token minted against another
+    // tenant's statement, and the second is the one that has to be greppable.
+    expect(payload.returnedEntity).toBe("Accounts");
+    expect(payload.returnedWorkspaceId).toBe(WORKSPACE);
+    expect(payload.requestId).toBe("req-1");
+    // ABSENT from warn, not merely present in error — a demotion is how this line
+    // stops being an incident while still being "logged".
+    expect(messages(warns).filter((m) => m.includes("different request"))).toEqual([]);
+  });
+
   it("carries the request id and the trigger on every line, including the failures", async () => {
     // The failures that matter here return 200 — a refusal is a successful response
     // — so without this an operator holding one has workspace plus wall-clock and
@@ -351,7 +381,12 @@ describe("warehouse producer logging", () => {
     // ⚠️ The count assertion first. `for (const line of [...warns, ...infos])` over
     // two EMPTY sinks passes while proving nothing, which is the shape this file
     // exists to refuse.
-    const lines = [...warns, ...infos];
+    //
+    // ⚠️ `errors` is in the sweep too (#5230). It was omitted while the only ERROR
+    // line was the transaction failure; the gate/request mismatch made two, and the
+    // mismatch refusal is the one that TELLS the operator to quote the request id —
+    // so an error line without it is the one place the instruction is unfollowable.
+    const lines = [...warns, ...infos, ...errors];
     expect(lines.length).toBeGreaterThanOrEqual(2);
     for (const line of lines) {
       expect(line.payload).toMatchObject({

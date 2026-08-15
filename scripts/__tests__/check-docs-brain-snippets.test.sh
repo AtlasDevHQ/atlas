@@ -958,6 +958,101 @@ check_die "an unreadable DOCS file is exit 2, not drift" \
 check_die "an unreadable SOURCE file is exit 2, not drift" \
   source_file_unreadable "could not read the source file"
 
+# ── the process-wide boundary (#5243) ───────────────────────────────────────
+#
+# `die` covers the three I/O boundaries that route through it. Everything else
+# ran at module top level with no handler, so an unexpected throw exited 1 — the
+# DRIFT code — under a raw stack trace, and a CI operator reading that goes to
+# `apps/docs`. `installGuardBoundary` closes it.
+#
+# ## Why this fixture runs a COPY of the guard rather than the guard
+#
+# The throw has to come from inside the guard, and no INPUT produces one: every
+# I/O path is already caught, and the failure classes the issue names — a
+# `RangeError` from a pathological fence, a `TypeError` from a future edit to
+# `collect`/`armToken`/`describe` — are edits, not inputs. The alternative is a
+# test-only escape hatch in shipped code, which is worse: it is a branch nothing
+# in production reaches, sitting in the guard forever.
+#
+# So the mutation is applied to a copy under `mktemp -d`. That keeps #5172's rule
+# intact — this suite still writes no tracked file — at the cost of one wrinkle:
+# a copy outside the repo cannot resolve `typescript` or `bun`, so the case
+# symlinks the real `node_modules` beside it. Measured working; without the
+# symlink the copy dies on the import and the case would "pass" on the wrong
+# exit code, which is why the boundary-absent run below is what decides it.
+#
+# ## The second run is the point
+#
+# Asserting "a throw exits 2" alone would pass against a guard where something
+# ELSE happened to produce a 2. The case therefore runs the SAME injected throw
+# with `installGuardBoundary()`'s CALL deleted and requires exit 1 — the old
+# behaviour, reproduced on demand. The boundary is load-bearing exactly when
+# those two runs disagree.
+#
+# ## What each regression looks like from here, measured
+#
+#   - GUT the handler (say it exits 1 instead of 2): a clean `FAIL` on this
+#     case, since the first run's status is no longer 2.
+#   - DELETE `installGuardBoundary()`'s call: the suite exits **2** with
+#     `the installGuardBoundary() call did not appear EXACTLY once`, because the
+#     second copy can no longer be built. That is a fixture-setup fault rather
+#     than a case failure, and it is the right shape — the message names the
+#     edit — but do not expect a `FAIL` line for it.
+BOUNDARY_ANCHOR='  const found: (readonly [string, Declared])[] = [];'
+BOUNDARY_THROW='  throw new TypeError("zz-boundary-probe: a future edit to collect()");'
+BOUNDARY_INSTALL='installGuardBoundary();'
+
+check_boundary() {
+  local tmp guard_dir out status=0 out_off status_off=0 ok=1
+  tmp="$(mktemp -d "$TMPROOT/case.XXXXXX")" || exit 2
+  seed_tree "$tmp" || {
+    echo "::error::could not seed the fixture tree at $tmp" >&2
+    exit 2
+  }
+
+  guard_dir="$tmp/guard"
+  mkdir -p "$guard_dir" || exit 2
+  # Bare imports resolve by walking up from the importing FILE, so the symlink
+  # has to sit beside the copy rather than at `$tmp`.
+  ln -s "$ROOT/node_modules" "$guard_dir/node_modules" || exit 2
+
+  # ⚠️ Both substitutions are checked. A silently-unmatched anchor would leave
+  # the copy identical to the guard, which exits 0 on the seeded tree — and a
+  # case asserting "not 0" would then pass having injected nothing.
+  awk -v anchor="$BOUNDARY_ANCHOR" -v inject="$BOUNDARY_THROW" \
+    'BEGIN{n=0} $0==anchor{print inject; n++} {print} END{exit n==1?0:1}' \
+    "$GUARD" > "$guard_dir/probe.ts" || {
+    echo "::error::the collect() anchor did not match EXACTLY once in $GUARD — update BOUNDARY_ANCHOR." >&2
+    exit 2
+  }
+  awk -v install="$BOUNDARY_INSTALL" \
+    'BEGIN{n=0} $0==install{n++; next} {print} END{exit n==1?0:1}' \
+    "$guard_dir/probe.ts" > "$guard_dir/probe-no-boundary.ts" || {
+    echo "::error::the installGuardBoundary() call did not appear EXACTLY once — update BOUNDARY_INSTALL." >&2
+    exit 2
+  }
+
+  out="$(cd "$ROOT" && bun "$guard_dir/probe.ts" --root "$tmp" 2>&1)" || status=$?
+  [ "$status" -eq 2 ] || ok=0
+  printf '%s' "$out" | grep -qF 'INTERNAL ERROR (uncaught exception)' || ok=0
+  printf '%s' "$out" | grep -qF 'zz-boundary-probe' || ok=0
+  # An internal error must NOT print the drift banner — that split is the whole
+  # taxonomy, and it is what a CI operator reads.
+  printf '%s' "$out" | grep -qF '[docs-brain-snippets] FAIL' && ok=0
+
+  # …and without the boundary the SAME throw exits 1. If this run also exits 2,
+  # something other than the boundary is producing the code above.
+  out_off="$(cd "$ROOT" && bun "$guard_dir/probe-no-boundary.ts" --root "$tmp" 2>&1)" || status_off=$?
+  [ "$status_off" -eq 1 ] || ok=0
+
+  report "$ok" \
+    "an unexpected THROW is exit 2 with an INTERNAL ERROR banner (exit 1 without the boundary; got $status_off)" \
+    "exit 2" "$status" "INTERNAL ERROR (uncaught exception)" "$tmp" "$out" --root "$tmp"
+  assert_tree_clean "boundary"
+}
+
+check_boundary
+
 # --- the fence scanner: every silent-skip hole gets a fixture ---------------
 # An INDENTED fence (the convention inside a numbered step or a JSX child) was
 # skipped entirely by the first cut's column-anchored regex — the guard printed

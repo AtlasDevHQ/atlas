@@ -225,7 +225,7 @@ if (!claimedWorkspace) {
 // 4. Defaults RESTATED IN PROSE elsewhere in the docs (#5158).
 // ---------------------------------------------------------------------------
 // Checks 1-3 hold the reference table to the registry. They do not see a GUIDE
-// that repeats a default in a sentence — `guides/brain-vocabulary.mdx` says the
+// that repeats a default in a sentence — `guides/atlas-vocabulary.mdx` says the
 // auto-approve knobs "ship as `warehouse_key`" and "ship as `1`" — and that
 // restatement is what a reader acts on, since nobody consults a reference table
 // to learn what the shipped behaviour is. A default changed in the registry
@@ -268,11 +268,11 @@ for (const rel of listMdx(join(ROOT, "apps/docs/content"))) {
 // silence is not.
 const EXPECTED_PROSE_CLAIMS: readonly { readonly file: string; readonly key: string }[] = [
   {
-    file: "apps/docs/content/shared/guides/brain-vocabulary.mdx",
+    file: "apps/docs/content/shared/guides/atlas-vocabulary.mdx",
     key: "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES",
   },
   {
-    file: "apps/docs/content/shared/guides/brain-vocabulary.mdx",
+    file: "apps/docs/content/shared/guides/atlas-vocabulary.mdx",
     key: "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD",
   },
 ];

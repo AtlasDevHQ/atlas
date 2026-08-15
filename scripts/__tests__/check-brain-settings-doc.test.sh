@@ -55,7 +55,7 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 GUARD="$SCRIPT_DIR/check-brain-settings-doc.ts"
 DOC="$ROOT/apps/docs/content/shared/reference/environment-variables.mdx"
 REG="$ROOT/packages/api/src/lib/settings.ts"
-GUIDE="$ROOT/apps/docs/content/shared/guides/brain-vocabulary.mdx"
+GUIDE="$ROOT/apps/docs/content/shared/guides/atlas-vocabulary.mdx"
 
 if [ ! -f "$GUARD" ]; then
   echo "::error::guard under test not found at $GUARD" >&2

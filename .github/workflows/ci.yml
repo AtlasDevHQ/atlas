@@ -381,8 +381,13 @@ jobs:
       # (@useatlas/types, plugin-sdk, sdk, react), runs tsgo --noEmit, then
       # `type:scripts` (tsconfig.scripts.json — the repo-root scripts/ dir,
       # excluded from the root program and unchecked by anything until #5173),
-      # and finishes with `@atlas/web type` + `@atlas/www type` —
-      # self-contained, no pre-build.
+      # and finishes with `@atlas/web type` + `@atlas/www type` +
+      # `@atlas/docs type` (#5083 — apps/docs is EXCLUDED from the root
+      # tsconfig, so until it was chained here a type error in it was invisible
+      # to every gate). The docs arm needs `apps/docs/.source/` — gitignored,
+      # emitted by that workspace's `postinstall: fumadocs-mdx` — so unlike the
+      # others it is not self-contained; `bun install --frozen-lockfile` in
+      # setup-bun-cached runs that postinstall, which is what makes it work.
       #
       # tsgo parallelism (--checkers/--builders) was benchmarked and declined
       # (#4446): on this 4-vCPU runner class the tsgo default (4 checkers, as

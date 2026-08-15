@@ -27,6 +27,49 @@
  * unique index and the `id` primary key, so re-running on a populated catalog
  * is a no-op. A seed-time failure logs at error and the API keeps booting —
  * the rows from a prior boot answer admin-UI reads.
+ *
+ * ⚠️ INSERT-ONLY BY DESIGN, and that posture is load-bearing (#5082). The
+ * constants below describe the shape a row is BORN with — they are NOT a
+ * declarative desired state the seeder reconciles towards. `ON CONFLICT DO
+ * NOTHING` never touches a row that already exists, so editing a `name` or
+ * `description` here changes nothing in any region that has already booted
+ * once: new installs get the new copy, every existing region keeps the old,
+ * and nothing reports the divergence. That is deliberate — it is also what
+ * keeps an operator's edit through the catalog CRUD path
+ * (`lib/integrations/catalog-crud.ts`) from being reverted on the next boot.
+ *
+ * The consequence is a rule, not a caveat: **changing a field on an EXISTING
+ * built-in row takes a migration.** ADR-0038's rename of the two Company Atlas
+ * ingest rows is migration `0201_brain_catalog_rows_company_atlas.sql`, and
+ * `__tests__/seed-builtin-knowledge-catalog.test.ts` pins these constants to
+ * the literals that migration writes, so the next rename cannot update one and
+ * miss the other. The same file carries a COPY LOCK over every row in this
+ * file: `name`, `description`, `saasEligible`, `autoInstall`. The rule was
+ * never specific to those two rows, only the defect was. Adding a NEW row is
+ * still one append here and nothing else.
+ *
+ * ⚠️ `config_schema` is stored under the same `ON CONFLICT DO NOTHING` and is
+ * customer-read (it renders as install-form labels and helper text), so it
+ * carries the identical constraint — with no migration behind it yet. The two
+ * Company Atlas rows still say "this brain source" there; rewriting a string
+ * inside a JSONB array is a materially less safe statement than 0201's guarded
+ * column updates, so it is deferred to #5240 and pinned by a test meanwhile.
+ *
+ * ⚠️ KNOWN BLIND SPOT (#5239): the conflict target is UNQUALIFIED, so `DO NOTHING`
+ * also swallows a conflict on the `slug` unique index. If a row already holds
+ * one of these slugs under a DIFFERENT id, the built-in insert does nothing,
+ * `insertedSlugs` stays empty, and the pass reports `{ kind: "seeded" }` with
+ * every slug listed — for a row that does not exist under its canonical id and
+ * never will. Nothing distinguishes that from "the row was already there".
+ *
+ * The window is narrow (`slug` is settable only at create, per
+ * `lib/integrations/catalog-crud.ts`, so it needs an operator-created row that
+ * predates the built-in ever being seeded) but it is real, and it compounds:
+ * any migration keyed on the canonical id — 0201 among them — then correctly
+ * finds nothing, and the admin UI never lists the row. Qualifying the target to
+ * `ON CONFLICT (id) DO NOTHING` would surface it as a `23505` instead; that
+ * needs a per-row catch so one collision cannot abort the rest of the loop,
+ * which is why it is #5239 rather than a one-line edit here.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -702,9 +745,9 @@ export const BUILTIN_FRESHDESK_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
 export const BUILTIN_ZOOM_TRANSCRIPTS_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
   id: ZOOM_TRANSCRIPTS_CATALOG_ID,
   slug: ZOOM_TRANSCRIPTS_SLUG,
-  name: "Company Brain (Zoom transcripts)",
+  name: "Company Atlas (Zoom transcripts)",
   description:
-    "Read cloud-recording transcripts from Zoom into the company brain as immutable, deduped episodes. Each meeting is granted only to the people who attended it — a meeting whose participant list cannot be read is skipped rather than ingested. Episodes are raw evidence; the claims drawn from them go through review before anything becomes an authoritative fact.",
+    "Read cloud-recording transcripts from Zoom into the Company Atlas as immutable, deduped episodes. Each meeting is granted only to the people who attended it — a meeting whose participant list cannot be read is skipped rather than ingested. Episodes are raw evidence; the claims drawn from them go through review before anything becomes an authoritative fact.",
   installModel: "form",
   autoInstall: false,
   saasEligible: true,
@@ -772,9 +815,9 @@ export const BUILTIN_ZOOM_TRANSCRIPTS_CATALOG_ROW: BuiltinKnowledgeCatalogRow = 
 export const BUILTIN_OUTLOOK_MAIL_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
   id: OUTLOOK_MAIL_CATALOG_ID,
   slug: OUTLOOK_MAIL_SLUG,
-  name: "Company Brain (Outlook mail)",
+  name: "Company Atlas (Outlook mail)",
   description:
-    "Read selected Outlook mailboxes into the company brain as immutable, deduped episodes. Each message is granted only to the people named in its From, To and Cc headers — blind-copied and forwarded-to recipients are deliberately NOT granted, so access is a lower bound on who saw the mail rather than a guess. Episodes are raw evidence; the claims drawn from them go through review before anything becomes an authoritative fact.",
+    "Read selected Outlook mailboxes into the Company Atlas as immutable, deduped episodes. Each message is granted only to the people named in its From, To and Cc headers — blind-copied and forwarded-to recipients are deliberately NOT granted, so access is a lower bound on who saw the mail rather than a guess. Episodes are raw evidence; the claims drawn from them go through review before anything becomes an authoritative fact.",
   installModel: "form",
   autoInstall: false,
   saasEligible: true,

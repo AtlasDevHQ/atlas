@@ -1111,7 +1111,7 @@ export interface BrainSearchResponse {
  * correction episode and the flagged dependents. Both are echoed here (#4939):
  * while they reached only `logAdminAction` metadata, the console reviewer who
  * triggered the retraction was the one party told nothing, and
- * `brain-corrections.mdx` documented the opposite. `id` rather than `factId`
+ * `atlas-corrections.mdx` documented the opposite. `id` rather than `factId`
  * is the pre-existing spelling of the same value, kept so the addition stays
  * purely additive for an existing client.
  */

@@ -7,7 +7,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 Your corpus says `is priced at` in a contract, `priced at` in a spreadsheet, and `costs` in a Slack thread. Three spellings, one relation. Atlas keys claims on the spelling it was given, so until somebody says otherwise those are three different relations and a claim under one can neither corroborate nor replace a claim under another.
 
-The **Claim Vocabulary** is where somebody says otherwise. It lives at **`/admin/brain/vocabulary`** in the admin console, and it holds two kinds of decision: an **alias** (two spellings name one thing) and a **curated predicate** (this relation holds one value at a time — see [Conflicts](/guides/brain-conflicts#where-cardinality-comes-from)).
+The **Claim Vocabulary** is where somebody says otherwise. It lives at **`/admin/brain/vocabulary`** in the admin console, and it holds two kinds of decision: an **alias** (two spellings name one thing) and a **curated predicate** (this relation holds one value at a time — see [Conflicts](/guides/atlas-conflicts#where-cardinality-comes-from)).
 
 This page is about the alias half, and about the judgement the surface is built to support.
 
@@ -22,7 +22,7 @@ Atlas refuses because the first and highest-ranked output of any such rule is wr
 <Callout type="warn" title="A similarity rule ranks `led_by` / `leads` first">
   They share a stem, they are one character apart after stemming, and they are **inverse relations**. `A led_by B` and `B leads A` say the same thing from opposite ends; merging the spellings merges the ends. Every claim in the manager graph moves into one slot, where the two directions now read as rivals rather than as each other.
 
-  ADR-0037 states the consequence in one line, in two places: approving that pair **"stamps `valid_to` across the manager graph"**. If the merged predicate is curated single-valued — and *"who does this person report to"* is exactly the relation somebody curates single-valued — then a person's manager and a person's reports collide in one slot, and the [publish gate](/guides/brain-temporal-model) closes the validity window on one of them. There is no un-supersede verb anywhere in Atlas.
+  ADR-0037 states the consequence in one line, in two places: approving that pair **"stamps `valid_to` across the manager graph"**. If the merged predicate is curated single-valued — and *"who does this person report to"* is exactly the relation somebody curates single-valued — then a person's manager and a person's reports collide in one slot, and the [publish gate](/guides/atlas-temporal-model) closes the validity window on one of them. There is no un-supersede verb anywhere in Atlas.
 
   `priced at` / `is priced at` and `led_by` / `leads` are the same distance apart lexically and opposite in meaning. No rule available to Atlas separates them. A person separates them without effort.
 </Callout>
@@ -74,7 +74,7 @@ The write is atomic — the proposal row, the edge, the closure rebuild and the 
 <Callout type="warn" title="An approved object alias does not withdraw the contradiction flags it makes stale">
   Corroboration and tension are evaluated once, at ingest, per episode. The approval rewrites the object's identity key and nothing else — nothing deletes an `in-tension-with` edge. So every advisory contradiction between two claims Atlas now treats as agreeing is **left in place**, still flagging a disagreement that the decision just resolved.
 
-  The blast-radius preview counts them and says so explicitly before you approve. Nothing flags them afterwards — unlike a superseded rival in a [conflict cluster](/guides/brain-conflicts#what-a-conflict-cluster-shows), which at least carries a label saying what happened to it.
+  The blast-radius preview counts them and says so explicitly before you approve. Nothing flags them afterwards — unlike a superseded rival in a [conflict cluster](/guides/atlas-conflicts#what-a-conflict-cluster-shows), which at least carries a label saying what happened to it.
 </Callout>
 
 ### Direction is never guessed
@@ -267,8 +267,8 @@ The `rank` on an alias row orders the queue. It is not a probability, and the pa
 
 ## Related
 
-- [Company Atlas — Conflicts](/guides/brain-conflicts) — what a curated `single` predicate arms, and why Atlas refuses to arbitrate
-- [Company Atlas — Corrections](/guides/brain-corrections) — the verbs a reviewer uses on individual claims
-- [Company Atlas — Temporal Model](/guides/brain-temporal-model) — what closing a validity window does, and why it has no inverse
+- [Company Atlas — Conflicts](/guides/atlas-conflicts) — what a curated `single` predicate arms, and why Atlas refuses to arbitrate
+- [Company Atlas — Corrections](/guides/atlas-corrections) — the verbs a reviewer uses on individual claims
+- [Company Atlas — Temporal Model](/guides/atlas-temporal-model) — what closing a validity window does, and why it has no inverse
 - [Environment variables → Company Atlas](/reference/environment-variables#company-atlas) — the two auto-approval knobs
 - <AudienceLink saas="/api-reference/admin-claim-vocabulary/postAdminBrainVocabularyDecide">API Reference — Admin: Claim Vocabulary</AudienceLink> — the eight endpoints behind this surface

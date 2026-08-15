@@ -43,17 +43,33 @@
  * ingest rows is migration `0201_brain_catalog_rows_company_atlas.sql`, and
  * `__tests__/seed-builtin-knowledge-catalog.test.ts` pins these constants to
  * the literals that migration writes, so the next rename cannot update one and
- * miss the other. The same file carries a COPY LOCK over every row's
- * `name`/`description` — the rule was never specific to those two, only the
- * defect was. Adding a NEW row is still one append here and nothing else.
+ * miss the other. The same file carries a COPY LOCK over every row in this
+ * file: `name`, `description`, `saasEligible`, `autoInstall`. The rule was
+ * never specific to those two rows, only the defect was. Adding a NEW row is
+ * still one append here and nothing else.
  *
  * ⚠️ `config_schema` is stored under the same `ON CONFLICT DO NOTHING` and is
  * customer-read (it renders as install-form labels and helper text), so it
  * carries the identical constraint — with no migration behind it yet. The two
  * Company Atlas rows still say "this brain source" there; rewriting a string
  * inside a JSONB array is a materially less safe statement than 0201's guarded
- * column updates, so it is deferred to its own change and pinned by a test
- * meanwhile.
+ * column updates, so it is deferred to #5240 and pinned by a test meanwhile.
+ *
+ * ⚠️ KNOWN BLIND SPOT (#5239): the conflict target is UNQUALIFIED, so `DO NOTHING`
+ * also swallows a conflict on the `slug` unique index. If a row already holds
+ * one of these slugs under a DIFFERENT id, the built-in insert does nothing,
+ * `insertedSlugs` stays empty, and the pass reports `{ kind: "seeded" }` with
+ * every slug listed — for a row that does not exist under its canonical id and
+ * never will. Nothing distinguishes that from "the row was already there".
+ *
+ * The window is narrow (`slug` is settable only at create, per
+ * `lib/integrations/catalog-crud.ts`, so it needs an operator-created row that
+ * predates the built-in ever being seeded) but it is real, and it compounds:
+ * any migration keyed on the canonical id — 0201 among them — then correctly
+ * finds nothing, and the admin UI never lists the row. Qualifying the target to
+ * `ON CONFLICT (id) DO NOTHING` would surface it as a `23505` instead; that
+ * needs a per-row catch so one collision cannot abort the rest of the loop,
+ * which is why it is #5239 rather than a one-line edit here.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";

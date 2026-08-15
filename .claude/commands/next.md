@@ -80,6 +80,7 @@ IMPORTANT — CI gates (mandatory before PR):
 - Before creating a PR, run `/ci` — checks lint, type, test, syncpack, template drift, railway-watch. All six must pass.
 - Individual gates during development:
   - `bun run lint` — oxlint
+  - `bun run lint:type-aware` — oxlint `--type-aware`; a SEPARATE CI-blocking job, not a superset run of the line above (~11s)
   - `bun run type` — TypeScript (tsgo)
   - `bun run test` — FULL suite across all packages (isolated per-file runner). NEVER bare `bun test`.
   - `bun x syncpack lint` — dependency version consistency

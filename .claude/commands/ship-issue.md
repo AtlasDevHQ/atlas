@@ -116,7 +116,7 @@ Run the cheap pre-flight (Step 4), push, and open the PR **as a draft** — then
 the panel. Remote CI and the panel run **concurrently**, against the same head SHA:
 
 ```bash
-cd packages/api && bun run scripts/test-isolated.ts --affected   # + bun run lint, bun run type
+cd packages/api && bun run scripts/test-isolated.ts --affected   # + bun run lint, bun run type, bun run lint:type-aware
 git push -u origin <branch>
 # then /pr, adding --draft to its `gh pr create` invocation
 ```
@@ -222,14 +222,14 @@ This is the pre-flight Step 3 opens with — it is documented here, but it **run
 before the push**, at the top of Step 3:
 
 ```bash
-cd packages/api && bun run scripts/test-isolated.ts --affected   # + bun run lint, bun run type
+cd packages/api && bun run scripts/test-isolated.ts --affected   # + bun run lint, bun run type, bun run lint:type-aware
 ```
 
 Then push, open the draft PR, and let remote CI run **while the panel runs**. **Do NOT run `/ci` locally before every PR.**
 
 ⚠️ **This is a change, and the arithmetic is the whole argument.** `scripts/ci-local.sh` is ~25 minutes, largely serial, and the mutation gate inside it rewrites source files in place — so nothing else can touch the tree while it runs. Remote CI on the PR covers the same gates in **~4 minutes**, in parallel, on hardware that is not yours, while you do something else. Running both means paying the slow one first for a result the fast one is about to produce anyway. Measured across `/ship-issue` runs, local `/ci` was one of the largest single blocks of wall clock in the loop and caught nothing remote CI did not.
 
-So the local pre-flight is the cheap subset — `--affected`, `lint`, `type` — which is seconds to a couple of minutes and catches the errors that would waste a remote round-trip. A red remote check is then serviced exactly like any other: fix, `git commit -o <files>`, push, which re-runs CI.
+So the local pre-flight is the cheap subset — `--affected`, `lint`, `type`, `lint:type-aware` — which is seconds to a couple of minutes and catches the errors that would waste a remote round-trip. **`lint:type-aware` is on that list and it is not the same gate as `lint`**: it is its own CI-blocking job, it costs ~11s, and leaving it off is what let one type-aware diagnostic red-flag two CI jobs on #5083 *after* this pre-flight came back clean. A red remote check is then serviced exactly like any other: fix, `git commit -o <files>`, push, which re-runs CI.
 
 **Run the full `/ci` only when:**
 - remote CI is itself broken or unavailable, and you need a local answer;

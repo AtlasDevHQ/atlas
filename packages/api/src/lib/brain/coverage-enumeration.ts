@@ -39,7 +39,7 @@
  * future reader that forgot the policy, and the disclosure facts travel beside
  * the row so that reader can still re-derive the decision rather than trust it.
  *
- * @see ../db/migrations/0201_brain_coverage_snapshot.sql — the tables and the
+ * @see ../db/migrations/0202_brain_coverage_snapshot.sql — the tables and the
  *   green-is-evidence CHECK
  * @see ./class-contract.ts — `coverageLabelPolicy`, the class's declared
  *   denominator and staleness capability
@@ -63,7 +63,7 @@ const log = createLogger("brain.coverage-enumeration");
  *
  * `human` is absent because `CLASS_CONTRACTS.human` declares itself
  * non-surveyable: no credential enumerates "the set of humans who might state
- * something", and a unit of that class would be a PERSON. Migration 0201's CHECK
+ * something", and a unit of that class would be a PERSON. Migration 0202's CHECK
  * refuses it at the database and `coverage-enumeration.test.ts` pins this list
  * against `CLASS_CONTRACTS`, so the two cannot drift.
  */
@@ -343,7 +343,7 @@ function storableErrorText(raw: string): string {
   // `errorMessage` scrubs secrets and bounds the length; it does NOT strip
   // NUL, so that is done here — written as an ESCAPE, never as a literal
   // byte. A literal NUL in a source file is itself unsendable to Postgres,
-  // which this branch found the hard way in migration 0201's first draft.
+  // which this branch found the hard way in migration 0202's first draft.
   const scrubbed = errorMessage(raw).replaceAll("\u0000", "").trim();
   return scrubbed === ""
     ? "The enumeration failed without reporting a reason — check the coverage-snapshot logs for this workspace and class."
@@ -679,7 +679,7 @@ export async function readCoverageSnapshot(
   for (const row of rows) {
     const sourceClass = row.source_class;
     if (!isSurveyableSourceClass(sourceClass)) {
-      // Unreachable through the writers (migration 0201's CHECK) and therefore a
+      // Unreachable through the writers (migration 0202's CHECK) and therefore a
       // hand-edited or future-schema row. Dropped rather than rendered, because
       // the page's shape is `Record<EpisodeSourceClass, …>` and an unrecognised
       // key has no answer — but LOUD, because a silently missing class is a

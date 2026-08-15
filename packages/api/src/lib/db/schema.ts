@@ -4279,7 +4279,7 @@ export const brainEntity = pgTable(
   ],
 );
 
-// brain_coverage_snapshot (0201) — the Coverage Surface's dated survey-unit
+// brain_coverage_snapshot (0202) — the Coverage Surface's dated survey-unit
 // roster (#5213, ADR-0041). One row per (workspace, class, survey unit), written
 // by a scheduled enumeration cycle and read by the page stamped "as of <date>".
 //
@@ -4347,7 +4347,7 @@ export const brainCoverageSnapshot = pgTable(
   ],
 );
 
-// brain_coverage_cycle (0201) — when each (workspace, class) enumeration last
+// brain_coverage_cycle (0202) — when each (workspace, class) enumeration last
 // attempted and last SUCCEEDED (#5213, ADR-0041).
 //
 // Separate from the roster because it survives the failure the roster cannot

@@ -1,4 +1,4 @@
--- 0201 — Denominator snapshots: dated survey-unit rosters (#5213, ADR-0041).
+-- 0202 — Denominator snapshots: dated survey-unit rosters (#5213, ADR-0041).
 --
 -- The Coverage Surface's denominators come from SCHEDULED CYCLES writing dated
 -- snapshots, never from live vendor calls on page view (ADR-0041 § The surface).

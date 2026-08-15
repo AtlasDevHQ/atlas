@@ -55,7 +55,7 @@ describe("the surveyable-class list — pinned against the class contract", () =
     // agree or the first write of a newly surveyable class fails at runtime.
     // Read off the migration's source text — nothing else can see a CHECK.
     const migration = readFileSync(
-      join(import.meta.dir, "..", "..", "db", "migrations", "0201_brain_coverage_snapshot.sql"),
+      join(import.meta.dir, "..", "..", "db", "migrations", "0202_brain_coverage_snapshot.sql"),
       "utf8",
     );
     const inList = [...SURVEYABLE_SOURCE_CLASSES].map((c) => `'${c}'`).join(", ");

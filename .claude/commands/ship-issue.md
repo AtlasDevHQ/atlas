@@ -102,7 +102,7 @@ Note the type label, acceptance criteria, and any `Depends on #M`. If a dependen
 
 **Step 2 — Pick the craft loop**
 
-- **bug** → `/diagnose` first (reproduce → isolate → fix), THEN `/tdd` to lock the regression test. Never write the test before isolating the cause.
+- **bug** → `/diagnosing-bugs` first (reproduce → isolate → fix), THEN `/tdd` to lock the regression test. Never write the test before isolating the cause.
 - **feature, clear shape** → `/tdd` (red-green-refactor, one slice).
 - **feature, uncertain design** → `/prototype` first, then `/tdd`.
 - **domain-heavy** → `/grill-with-docs` first.

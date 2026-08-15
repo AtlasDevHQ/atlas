@@ -1,5 +1,5 @@
 ---
-description: "Research an untracked bug, tech-debt item, or idea, file a GitHub issue, decide fix-now vs park. One-issue-sized only — /elevate for a whole surface, /to-prd for a milestone."
+description: "Research an untracked bug, tech-debt item, or idea, file a GitHub issue, decide fix-now vs park. One-issue-sized only — /elevate for a whole surface, /to-spec for a milestone."
 ---
 
 Investigate something you've noticed — a bug, tech debt, rough edge, or idea — that isn't tracked anywhere. Research it, file a GH issue, and decide whether to fix it now or park it.
@@ -9,7 +9,7 @@ Investigate something you've noticed — a bug, tech debt, rough edge, or idea �
 **Pick the right tool first:**
 - **One-issue-sized finding** (bug, tech debt, small feature, < half a day of work) — stay here, use `/investigate`
 - **A whole shipped surface beneath its potential** (problems at the seams, would take a grill + PRD to fix right) — stop and use `/elevate` instead; it audits the surface in parallel dimensions and produces the findings doc that feeds the grill
-- **Milestone-sized direction or architectural change** — stop and use `/to-prd` instead; it synthesises the conversation into a PRD issue that `/to-issues` can then break into vertical slices
+- **Milestone-sized direction or architectural change** — stop and use `/to-spec` instead; it synthesises the conversation into a PRD issue that `/to-tickets` can then break into vertical slices
 - **You have a plan but want it stress-tested first** — `/grill-me` (plain interview) or `/grill-with-docs` (interview + update CONTEXT.md / ADRs inline) before filing
 - See `docs/agents/workflow.md` for the full decision tree
 

@@ -1,8 +1,10 @@
 # Agent workflow: Atlas commands × Engineering skills
 
-How `/next`, `/tidy`, `/investigate`, `/elevate`, `/kickoff`, `/closeout`, `/ci`, `/pr` (Atlas project rituals) compose with the Matt Pocock engineering skills (`/diagnose`, `/tdd`, `/to-prd`, `/to-issues`, `/triage`, `/grill-with-docs`, `/grill-me`, `/improve-codebase-architecture`, `/zoom-out`, `/prototype`, `/handoff`).
+How `/next`, `/tidy`, `/investigate`, `/elevate`, `/kickoff`, `/closeout`, `/ci`, `/pr` (Atlas project rituals) compose with the Matt Pocock engineering skills (`/diagnosing-bugs`, `/tdd`, `/to-spec`, `/to-tickets`, `/triage`, `/grill-with-docs`, `/grill-me`, `/improve-codebase-architecture`, `/wayfinder`, `/prototype`, `/handoff`).
 
 The Atlas commands own **project rituals** — ROADMAP, milestones, CI/PR gates, deploy. The engineering skills own **craft loops** inside each phase. They don't duplicate — they layer.
+
+> **Where the engineering skills live.** They are installed at the **user level** (`~/.claude/skills/`), not vendored into this repo. Only Atlas-owned skills — `impeccable`, `operator-commands`, `publish-package` — sit in `.claude/skills/`. A checkout on a fresh machine gets the Atlas commands and rules but not the Matt Pocock skills; install those separately. The repo previously carried a vendored fork under `.agents/skills/`, which drifted a full rename cycle behind upstream before it was removed.
 
 ---
 
@@ -16,11 +18,11 @@ The Atlas commands own **project rituals** — ROADMAP, milestones, CI/PR gates,
 | --- | --- |
 | Spotted a bug, rough edge, or tech debt | `/investigate` (Atlas) — light: research → file issue → park-or-fix |
 | A shipped surface works but is beneath its potential | `/elevate` (Atlas) — parallel multi-dimension audit → ranked findings doc in `.claude/research/` → hand off to `/grill-with-docs` |
-| Have a half-formed idea worth designing | `/to-prd` — synthesise the current conversation into a PRD issue |
+| Have a half-formed idea worth designing | `/to-spec` — synthesise the current conversation into a PRD issue |
 | Have a plan but want it stress-tested first | `/grill-me` — interview until every branch of the decision tree is resolved |
 | Plan touches domain terminology or contradicts a past decision | `/grill-with-docs` — grill + update `CONTEXT.md` and `docs/adr/` inline |
 
-**Decision rule:** three tiers by size of the itch. One-issue-sized (< half a day of work) → `/investigate`. Surface-sized — a whole feature beneath its potential, problems likely at the seams → `/elevate`, whose findings doc feeds `/grill-with-docs` → `/to-prd` → `/to-issues` (the chat answer-styles cycle #4292 and the 2026-07-04 dashboard elevation are the worked examples). Already know what to build → `/to-prd` directly (optionally after `/grill-with-docs`). Purely presentational, page-scoped itch → `/revamp` skips the cycle entirely.
+**Decision rule:** three tiers by size of the itch. One-issue-sized (< half a day of work) → `/investigate`. Surface-sized — a whole feature beneath its potential, problems likely at the seams → `/elevate`, whose findings doc feeds `/grill-with-docs` → `/to-spec` → `/to-tickets` (the chat answer-styles cycle #4292 and the 2026-07-04 dashboard elevation are the worked examples). Already know what to build → `/to-spec` directly (optionally after `/grill-with-docs`). Purely presentational, page-scoped itch → `/revamp` skips the cycle entirely.
 
 ### Phase 2 — Plan
 
@@ -29,10 +31,10 @@ The Atlas commands own **project rituals** — ROADMAP, milestones, CI/PR gates,
 | Situation | Use |
 | --- | --- |
 | New milestone, items already in `.claude/research/ROADMAP.md` | `/kickoff` (Atlas) — creates child issues from ROADMAP line items |
-| New milestone driven by a PRD issue (the 1.4.x / 1.5.x pattern) | `/to-issues` against the PRD issue — produces tracer-bullet vertical slices |
+| New milestone driven by a PRD issue (the 1.4.x / 1.5.x pattern) | `/to-tickets` against the PRD issue — produces tracer-bullet vertical slices |
 | Adding new line items to ROADMAP without creating issues yet | `/roadmap-extend` (Atlas) |
 
-**Decision rule:** PRD-driven milestones (`#2336`, `#2362`, `#2291`) use `/to-prd` → `/to-issues`. ROADMAP-driven milestones use `/kickoff`. Both paths produce GitHub issues that follow the Atlas issue body format (see `issue-tracker.md`).
+**Decision rule:** PRD-driven milestones (`#2336`, `#2362`, `#2291`) use `/to-spec` → `/to-tickets`. ROADMAP-driven milestones use `/kickoff`. Both paths produce GitHub issues that follow the Atlas issue body format (see `issue-tracker.md`).
 
 ### Phase 3 — Build
 
@@ -41,10 +43,10 @@ The Atlas commands own **project rituals** — ROADMAP, milestones, CI/PR gates,
 The agent's first move depends on the issue's shape. Default sequence:
 
 ```
-unfamiliar territory?  →  /zoom-out            (Matt Pocock — broader context)
+unfamiliar territory?  →  /wayfinder            (Matt Pocock — broader context)
                           /research            (Atlas — module map)
 
-is it a bug?           →  /diagnose            (Matt Pocock — reproduce → minimise → hypothesise → instrument → fix → regression-test)
+is it a bug?           →  /diagnosing-bugs            (Matt Pocock — reproduce → minimise → hypothesise → instrument → fix → regression-test)
                           THEN /tdd to lock the fix with a regression test
 
 is it a feature?       →  domain-heavy?        /grill-with-docs first (sharpen CONTEXT.md + ADRs)
@@ -54,7 +56,7 @@ is it a feature?       →  domain-heavy?        /grill-with-docs first (sharpen
 always for new code    →  /tdd                 (Matt Pocock — red-green-refactor, one slice at a time)
 ```
 
-**Decision rule:** never write `/tdd` tests against a bug you haven't `/diagnose`d. The regression test you write before isolating the root cause will lock in the wrong behaviour.
+**Decision rule:** never write `/tdd` tests against a bug you haven't `/diagnosing-bugs`d. The regression test you write before isolating the root cause will lock in the wrong behaviour.
 
 ### Phase 4 — Reconcile
 
@@ -95,21 +97,31 @@ When Atlas opens to a community, `/triage` runs first (move new issues through t
 These are useful but don't slot into the daily Atlas rituals yet:
 
 - **`/prototype`** — for design-uncertain spikes inside Phase 3. Worth pulling out when a feature's interaction model isn't clear (e.g. the chat-as-dashboard-editor #2362 drawer; the dashboardScreenshot vision tool #2366 spike).
-- **`/zoom-out`** — for when you (or another agent) hit an unfamiliar package. Most useful at the start of a `/next` prompt where the issue touches code outside the agent's recent context.
-- **`/caveman`** — token-compression mode. Not workflow; turn on when conversation context is getting tight.
-- **`/grill-me` vs `/grill-with-docs`** — `/grill-me` is plain interview; `/grill-with-docs` updates `CONTEXT.md` + `docs/adr/` inline. Prefer the latter for anything that names a domain concept.
+- **`/wayfinder`** — for planning work too big for one session, as a map of investigation tickets resolved one at a time. Also the reach-for when you (or another agent) hit an unfamiliar package at the start of a `/next` prompt.
+- **`/grill-me` vs `/grill-with-docs`** — `/grill-me` is plain interview; `/grill-with-docs` updates `CONTEXT.md` + `docs/adr/` inline. Prefer the latter for anything that names a domain concept. (`/grilling` is the same interview under its current upstream name; either resolves.)
 
-## Skills explicitly NOT in scope here
+## Renamed upstream
 
-- `/setup-pre-commit`, `/git-guardrails-claude-code` — one-time repo setup; not a daily flow.
-- `/migrate-to-shoehorn`, `/scaffold-exercises` — Matt Pocock's course material; unused in Atlas.
-- `/write-a-skill` — for authoring new skills, not for daily code work.
+The engineering skills were renamed upstream while this repo still referenced the old names, which left several `/`-invocations pointing at nothing. Current names:
+
+| Was | Now |
+| --- | --- |
+| `/to-prd` | `/to-spec` |
+| `/to-issues` | `/to-tickets` |
+| `/diagnose` | `/diagnosing-bugs` |
+| `/zoom-out` | `/wayfinder` |
+| `/design-an-interface` | `/codebase-design` |
+| `/ubiquitous-language` | `/domain-modeling` |
+| `/write-a-skill` | `/writing-great-skills` |
+| `/request-refactor-plan` | `/implement` |
+
+`/caveman`, `/migrate-to-shoehorn`, `/scaffold-exercises`, `/setup-pre-commit`, `/git-guardrails-claude-code`, `/qa`, `/edit-article`, `/obsidian-vault` and the `/writing-*` set are gone — none were ever invoked from an Atlas flow.
 
 ---
 
 ## Issue body format
 
-Every issue created by any of these flows (whether through `/investigate`, `/kickoff`, `/to-prd`, `/to-issues`) **must follow the Atlas issue body format** documented in `docs/agents/issue-tracker.md`. `/tidy` and `/closeout` depend on this format to do their work.
+Every issue created by any of these flows (whether through `/investigate`, `/kickoff`, `/to-spec`, `/to-tickets`) **must follow the Atlas issue body format** documented in `docs/agents/issue-tracker.md`. `/tidy` and `/closeout` depend on this format to do their work.
 
 ## Labels
 

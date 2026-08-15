@@ -288,12 +288,18 @@ status "stage 2: tree-writing gates (serial — these mutate sources in place) �
 # flake-teaching outcome the paragraph above exists to prevent. Worse, in Stage 1
 # a fixture suite raced the very gate it tests.
 #
-# THREE suites still have that shape, and they are what keeps this row here:
-#   • check-pricing-parity.test.sh   → packages/api/src/lib/settings.ts
+# FOUR suites still write into the tree Stage 1 reads, and they are what keeps
+# this row here:
+#   • check-pricing-parity.test.sh     → settings.ts, entitlements.generated.ts,
+#                                        llms.txt, and two docs pages (five files)
 #   • check-brain-settings-doc.test.sh → settings.ts, environment-variables.mdx,
-#                                        brain-vocabulary.mdx, and the guard itself
+#                                        atlas-vocabulary.mdx, and the guard itself
 #   • check-enforcement-parity.test.sh → billing/enforcement-parity.ts and
 #                                        api/routes/admin-sso.ts
+#   • check-scripts-typecheck.test.sh  → writes a deliberately BROKEN, untracked
+#                                        scripts/zz-lint-probe.ts into a directory
+#                                        the Stage-1 `lint` gate scans. Not
+#                                        tracked source, same race.
 #
 # `check-docs-brain-snippets.test.sh` no longer does (#5172): the guard takes
 # `--root` / `--source-glob` / `--docs-glob`, so its fixtures build throwaway

@@ -322,9 +322,9 @@ jobs:
       # --porcelain` is unchanged after every case (#5172); it used to rewrite
       # two tracked files in place and trap-restore them, which is why it sits in
       # ci-local.sh's serial stage 2 — it stays there only because three OTHER
-      # suites under that glob still do. No Postgres; ~15s measured on WSL2 — 33
-      # `bun` spawns over a five-file tree, against ~33s for the 22 spawns over
-      # the real repo it replaces.
+      # suites under that glob still do. No Postgres; ~20s measured on WSL2 — 39
+      # `bun` spawns over a four-file synthetic tree, against ~33s for the 22
+      # spawns over the real repo it replaces.
       - name: Adversarial fixtures for the brain-snippets gate (#5165)
         run: bash scripts/__tests__/check-docs-brain-snippets.test.sh
 

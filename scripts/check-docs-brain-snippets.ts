@@ -49,7 +49,7 @@
 // remedy attached.
 //
 // Both roots are INJECTABLE — `--root`, `--source-glob`, `--docs-glob` — and
-// default to exactly the constants above, so the CI invocation (`bun
+// default to the globs named above, so the CI invocation (`bun
 // scripts/check-docs-brain-snippets.ts`, no arguments) is unchanged. See
 // {@link parseArgs} for why the seam exists.
 //
@@ -115,15 +115,32 @@
 // fixtured for that reason.
 //
 // `scripts/__tests__/check-docs-brain-snippets.test.sh` probes both floors and
-// every reachable arm below: 34 fixtures, of which the 24 failure fixtures each
-// name a marker AND require exit status exactly 1, so a crash or a different arm
-// firing cannot satisfy one; 6 assert exit 2 on a malformed argv; 3 are `pass`
-// fixtures asserting exit 0 — those are the ones a no-op guard would satisfy —
-// and the last asserts that the suite wrote no tracked file.
+// every reachable arm below. The failure fixtures each name a marker AND require
+// exit status exactly 1, so a crash or a different arm firing cannot satisfy
+// one; a second class asserts exit 2 on a malformed argv or an unreadable input;
+// the `pass` fixtures assert exit 0 — those are the ones a no-op guard would
+// satisfy; and the last asserts that the suite wrote no tracked file.
 //
-// Two arms are deliberately unfixtured and each says so where it lives: the
-// fence-count tripwire above (unreachable by construction) and the
-// `__tests__`/`__mocks__` filter, which no input in either tree reaches.
+// ⚠️ THE COUNT LIVES IN THE SUITE, NOT HERE. It has been wrong in this header
+// every time it was written down, because a header is the copy nobody
+// re-measures. `bash scripts/__tests__/check-docs-brain-snippets.test.sh`
+// prints it.
+//
+// FOUR sites are unfixtured, and each says so where it lives:
+//   • the fence-count tripwire above — unreachable by construction;
+//   • `aliasShape`'s `token === null` arm — likewise;
+//   • the `root === null` half of the root label — reaching it means making this
+//     repository's own directory unreadable, which no fixture may do;
+//   • {@link die}'s stat and scan catches — same reason: both need a directory
+//     the process cannot enter.
+// `die`'s third path, `readOrDie`, IS fixtured, as is the `__tests__`/`__mocks__`
+// filter.
+//
+// (An earlier version of this note claimed that filter "no input in either tree
+// reaches". Measured false: it fires 1,376 times on a real CI run. What is true
+// is narrower — no test or mock file currently exports a `Brain*` name — which
+// is a fact about content, not reach, and exactly the kind that changes without
+// anyone noticing. It is fixtured now.)
 //
 // Run locally: bun scripts/check-docs-brain-snippets.ts
 
@@ -152,6 +169,14 @@ const DEFAULT_DOCS_GLOBS = ["apps/docs/content/**/*.mdx"] as const;
  * `docs-brain-snippets` row goes and looks at `apps/docs`. An unreadable file or
  * an unscannable glob is neither of those things, and letting the exception
  * escape uncaught would report it as both.
+ *
+ * ⚠️ SCOPE: this covers the three I/O boundaries that route through it — the
+ * root stat, the glob scan, and each file read. It is NOT a process-wide
+ * guarantee. Everything below still runs at
+ * module top level with no handler, so a `RangeError` from a pathological fence
+ * or a `TypeError` from a future edit to `collect`/`armToken` exits 1 with a
+ * stack trace and reads as drift. Closing that needs an `uncaughtException`
+ * boundary, filed as #5243 rather than landed in a closing round.
  */
 function die(message: string): never {
   console.error(`[docs-brain-snippets] ${message}`);
@@ -189,26 +214,31 @@ function parseArgs(argv: readonly string[]): Roots {
   const docsGlobs: string[] = [];
   let root: string | null = null;
 
-  // ⚠️ The `never` is annotated on the CONST, not on the arrow. TypeScript only
-  // treats a call as never-returning — and so only marks what follows
-  // unreachable — when the callee carries an explicit type annotation at its
-  // declaration. Written `const fail = (m: string): never => …` the analysis
-  // does not apply: `value` stays `string | undefined` past its guard and `flag`
-  // never narrows to the three literals, so the exhaustiveness check below is
-  // not a check at all and a fourth flag added to the allow-list would land
-  // silently in `docsGlobs`. Measured with `tsgo`, the repo's own compiler.
+  // ⚠️ The `never` is annotated on the CONST, not on the arrow. TypeScript
+  // applies never-call analysis — and so marks what follows unreachable — only
+  // when the callee carries the annotation at its DECLARATION. Move it onto the
+  // arrow and `flag` stops narrowing to the three literals.
+  //
+  // Measured with `tsgo`, both ways, because the obvious statement of this is
+  // too strong: the exhaustiveness arm below still ERRORS under the arrow form.
+  // What changes is its diagnosis — `Type 'string' is not assignable to type
+  // 'never'` instead of naming the undispatched flag. So the check survives and
+  // its usefulness does not, which is the failure worth preventing.
+  // Message FIRST, then the usage banner — the reverse buried the reason under
+  // boilerplate on the first stderr line, which is the one a CI log tail shows.
   const fail: (message: string) => never = (message) => {
-    console.error(
-      "[docs-brain-snippets] usage: check-docs-brain-snippets.ts [--root <dir>] [--source-glob <pattern>]... [--docs-glob <pattern>]...",
+    console.error(`[docs-brain-snippets] ${message}`);
+    die(
+      "usage: check-docs-brain-snippets.ts [--root <dir>] [--source-glob <pattern>]... [--docs-glob <pattern>]...",
     );
-    die(message);
   };
 
   for (let i = 0; i < argv.length; i++) {
-    // `?? ""` is dead under today's `tsconfig.scripts.json` (`argv[i]` is
-    // `string` because `noUncheckedIndexedAccess` is off) and load-bearing the
-    // moment that flag is turned on, which is the direction that config is
-    // travelling.
+    // `?? ""` is defence in depth, and MEASURED to be dead in both compiler
+    // configurations — with and without `noUncheckedIndexedAccess` — because
+    // `undefined` fails the allow-list guard below and is refused by `fail`, so
+    // the narrowing holds without it. (An earlier version of this comment
+    // claimed it becomes load-bearing under that flag; the compiler disagrees.)
     const flag = argv[i] ?? "";
     if (flag !== "--root" && flag !== "--source-glob" && flag !== "--docs-glob") {
       fail(`unknown argument \`${flag}\`.`);
@@ -232,26 +262,54 @@ function parseArgs(argv: readonly string[]): Roots {
     } else {
       // Adding a flag to the allow-list above and forgetting to dispatch it is a
       // COMPILE error here rather than a value quietly joining `docsGlobs`.
+      //
+      // This arm reports TWO different breakages and the message tells them
+      // apart: a LITERAL in the error text (`Type '"--new-flag"' is not
+      // assignable to type 'never'`) means an undispatched flag; plain `string`
+      // means the narrowing itself broke — almost always `fail`'s annotation
+      // moving back onto the arrow, which is the defect this whole arm exists
+      // to make visible. Both measured with `tsgo`.
       const unhandled: never = flag;
       fail(`unhandled flag ${String(unhandled)}.`);
     }
   }
 
   const resolvedRoot = root ?? DEFAULT_ROOT;
+  // ⚠️ The noun BRANCHES on provenance. CI runs this guard with no arguments, so
+  // `DEFAULT_ROOT` is in force — and a message reading `--root /home/runner/...
+  // could not be read`, under a usage banner, names a flag that appears nowhere
+  // in the invocation. The operator greps the workflow for `--root`, finds
+  // nothing, and is stuck.
+  //
+  // ⚠️ The `root === null` HALF IS UNFALSIFIABLE and deliberately unfixtured:
+  // reaching it means making the real repository's own directory unreadable,
+  // which no fixture may do. Measured — collapsing this back to an unconditional
+  // `--root ${resolvedRoot}` kills nothing in the suite. The `root !== null`
+  // half is pinned by the non-directory fixture.
+  const rootLabel =
+    root !== null
+      ? `--root ${resolvedRoot}`
+      : `the default root ${resolvedRoot} (derived from this script's own location)`;
   let rootStat: Stats | undefined;
   try {
     rootStat = statSync(resolvedRoot, { throwIfNoEntry: false });
   } catch (err) {
     // `throwIfNoEntry: false` suppresses ENOENT and nothing else. EACCES, ELOOP
     // and an ENOTDIR on an intermediate component still throw, and an uncaught
-    // throw exits 1 — the drift code — so a bad `--root` read as "the docs
-    // drifted", under a raw stack trace. Argument faults are 2, all of them.
-    fail(
-      `--root ${resolvedRoot} could not be read: ${err instanceof Error ? err.message : String(err)}`,
+    // throw exits 1 — the drift code — so a bad root read as "the docs drifted",
+    // under a raw stack trace.
+    //
+    // `die`, not `fail`: an unreadable directory is an ENVIRONMENT fault by
+    // {@link die}'s own definition, so printing the argv usage banner would tell
+    // the operator to go and fix flags that are already correct.
+    die(
+      `${rootLabel} could not be read: ${err instanceof Error ? err.message : String(err)}. Check the path's permissions and that no component is a broken symlink.`,
     );
   }
+  // This one keeps `fail`: when `--root` was given it IS an argv fault, and when
+  // it was not, `rootLabel` says so instead of inventing a flag.
   if (rootStat?.isDirectory() !== true) {
-    fail(`--root ${resolvedRoot} is not a directory.`);
+    fail(`${rootLabel} is not a directory.`);
   }
   return {
     root: resolvedRoot,
@@ -275,15 +333,23 @@ const { root: REPO_ROOT, sourceGlobs: SOURCE_GLOBS, docsGlobs: DOCS_GLOBS } = pa
 function scanFiles(root: string, globs: readonly string[]): readonly string[] {
   const files = new Set<string>();
   for (const glob of globs) {
+    // `root` is a verified directory by construction — `parseArgs` is its only
+    // producer and stats it — but the parameter type cannot say so, and a
+    // branded type for one call site was judged not worth the cast it needs
+    // (#5172 review, round 2). Treat this as "must be a verified directory".
+    let matches: readonly string[];
     try {
-      for (const file of new Glob(glob).scanSync({ cwd: root })) {
-        files.add(resolve(root, file));
-      }
+      // Materialised INSIDE the try so a lazy mid-iteration failure still lands
+      // in this catch — but the loop body stays OUT of it, because the catch's
+      // message asserts a cause ("could not scan this glob") that a throw from
+      // `resolve`/`Set.add` would not establish.
+      matches = [...new Glob(glob).scanSync({ cwd: root })];
     } catch (err) {
       die(
         `could not scan \`${glob}\` under ${root}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+    for (const file of matches) files.add(resolve(root, file));
   }
   return [...files].sort();
 }
@@ -291,17 +357,20 @@ function scanFiles(root: string, globs: readonly string[]): readonly string[] {
 /**
  * One scanned file's text.
  *
- * Unguarded on `main`, where the roots were constants and the glob could only
- * ever list tracked files. With a caller-supplied root the scan can reach a
- * half-written fixture tree, an unreadable mount, or a file deleted between
- * `scanSync` and here — none of which is a snippet violation. See {@link die}.
+ * Unguarded on `main`, where the roots were constants so every scanned path was
+ * inside this checkout. (Not "tracked" — the old fixture suite wrote an
+ * untracked probe page straight into the scanned tree, which is what the
+ * deleted `__fixture-*.mdx` .gitignore entry existed for.) With a
+ * caller-supplied root the scan can reach a half-written fixture tree, an
+ * unreadable mount, or a file deleted between `scanSync` and here — none of
+ * which is a snippet violation. See {@link die}.
  */
-function readOrDie(abs: string, side: "source" | "docs"): string {
+function readOrDie(root: string, abs: string, side: "source" | "docs"): string {
   try {
     return readFileSync(abs, "utf8");
   } catch (err) {
     die(
-      `could not read the ${side} file ${relative(REPO_ROOT, abs)}: ${err instanceof Error ? err.message : String(err)}`,
+      `could not read the ${side} file ${relative(root, abs)}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 }
@@ -601,12 +670,27 @@ function aliasShape(node: ts.TypeAliasDeclaration): Shape {
   for (const arm of type.types) {
     const token = armToken(arm, discriminant ?? "kind");
     if (token === null) {
+      // ⚠️ UNREACHABLE by construction, and deliberately unfixtured for the same
+      // reason as the fence-count tripwire — measured, by replacing it with a
+      // bare `continue` and watching the suite stay green. Either every arm is a
+      // string literal, in which case `armToken` returns `JSON.stringify(...)`
+      // and never null; or `discriminantOf` already required
+      // `tokens.every((t) => t !== null)` for the very name it returned, and
+      // this loop recomputes the same call with the same name. Kept as a
+      // regression tripwire on that contract, not as a live refusal.
       return { kind: "opaque", reason: "one of its arms could not be reduced to a token" };
     }
     if (arms.has(token)) {
       // Two arms sharing a discriminant value would collapse to one token, and a
       // snippet omitting one of them would then compare equal. Refuse to compare
       // rather than compare wrongly.
+      //
+      // ⚠️ Since `discriminantOf` gained its distinctness requirement, the only
+      // input that reaches this is a DEGENERATE string-literal union — `"a" |
+      // "a"` — because distinct tokens are now the precondition for returning a
+      // discriminant at all. The `duplicateArm` remedy downstream now says to
+      // delete the repeated arm, which is the only followable advice for that
+      // input; see the branch there.
       return {
         kind: "opaque",
         reason: `two arms share the discriminant value ${token}, so the arm set cannot be compared by discriminant alone`,
@@ -757,7 +841,7 @@ for (const abs of scanFiles(REPO_ROOT, SOURCE_GLOBS)) {
   // otherwise shadow the real declaration.
   if (rel.includes("__tests__") || rel.includes("__mocks__")) continue;
   for (const [name, declared] of collect(
-    parse(readOrDie(abs, "source"), abs),
+    parse(readOrDie(REPO_ROOT, abs, "source"), abs),
     rel,
     "exported-only",
   )) {
@@ -790,7 +874,7 @@ const compared = new Set<string>();
 
 for (const abs of scanFiles(REPO_ROOT, DOCS_GLOBS)) {
   const rel = relative(REPO_ROOT, abs);
-  const scan = scanTsFences(readOrDie(abs, "docs"));
+  const scan = scanTsFences(readOrDie(REPO_ROOT, abs, "docs"));
 
   if (scan.unterminatedAt !== null) {
     problems.push(
@@ -856,11 +940,17 @@ for (const abs of scanFiles(REPO_ROOT, DOCS_GLOBS)) {
         // interfaces are how this repo writes wire types — for those, "extend the
         // gate" is the wrong instruction; not publishing that declaration on a
         // contract page is the right one.
-        const extendable = real.shape.reason.startsWith("two arms share");
+        // ⚠️ The `two arms share` reason no longer means "extend the gate", and
+        // saying so was measurably unfollowable advice. Since `discriminantOf`
+        // requires DISTINCT tokens, an object union that reaches this point does
+        // not exist — the only input left is a degenerate string-literal union
+        // (`"a" | "a"`), where nothing needs extending and the fix is to delete
+        // the repeated arm. The remedy now says that.
+        const duplicateArm = real.shape.reason.startsWith("two arms share");
         problems.push(
           `${rel}:${fence.line}: publishes a snippet for \`${name}\`, whose real declaration in ${real.where} is a shape this gate cannot compare — ${real.shape.reason}.\n` +
-            (extendable
-              ? `  Extend discriminantOf()/armToken() in scripts/check-docs-brain-snippets.ts so the arms are distinguishable. A published contract this gate cannot read is exactly where an omitted arm hides.`
+            (duplicateArm
+              ? `  Two arms of that union are identical, so one of them is dead. Remove the repeated arm in ${real.where}; there is nothing to teach this gate. A published contract it cannot read is exactly where an omitted arm hides.`
               : `  This gate compares member names and union arms, and that declaration is neither — so publishing it here is a contract claim nothing can check. Either describe it in prose instead, or teach aliasShape() in scripts/check-docs-brain-snippets.ts to read this shape.`),
         );
         continue;

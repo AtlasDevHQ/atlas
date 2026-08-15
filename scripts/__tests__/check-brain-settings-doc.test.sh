@@ -3,10 +3,15 @@
 #
 # The guard holds the "## Company Atlas" env-var table to the settings registry
 # it describes. It exists because a prose claim outlived its own subject: #5159
-# added two rows and corrected the count from nine to eleven, while the two new
-# keys did not carry `saasVisible: false` — so the sentence "All eleven are
-# hidden … a workspace admin cannot read or write any of them" became false of
-# its enlarged set with the number still right.
+# added two rows and corrected the count, while the two new keys did not carry
+# `saasVisible: false` — so the "all N are hidden … a workspace admin cannot
+# read or write any of them" sentence became false of its enlarged set with the
+# number still right.
+#
+# ⚠️ The mutations below are anchored on the COMMITTED sentence, so every PR
+# that adds a Company Atlas key re-anchors them — the script fails loudly with
+# "fixture sed matched nothing" rather than going quietly blind, which is the
+# whole point and is how #5213 found this line.
 #
 # ## Why this suite exists AT ALL
 #
@@ -281,12 +286,12 @@ check fail "a registry brain key with no doc row is caught" \
 restore_doc
 
 # --- doc side: the hidden-count sentence -------------------------------------
-mutate "$DOC" "$DOC_BACKUP" 's/All eleven are hidden/All ten are hidden/'
+mutate "$DOC" "$DOC_BACKUP" 's/All thirteen are hidden/All twelve are hidden/'
 check fail "a stale hidden-count is caught" \
   'but the table lists'
 restore_doc
 
-mutate "$DOC" "$DOC_BACKUP" 's/All eleven are hidden from the generic settings page/All of them are concealed from the generic settings page/'
+mutate "$DOC" "$DOC_BACKUP" 's/All thirteen are hidden from the generic settings page/All of them are concealed from the generic settings page/'
 check fail "REWORDING the hidden-count sentence fails loudly rather than going blind" \
   '"all N are hidden" sentence is gone'
 restore_doc
@@ -294,7 +299,7 @@ restore_doc
 # The hidden-count sentence's UNREADABLE arm. Its workspace twin has W-REWORD;
 # leaving this one unfixtured would recreate, inside the fixture suite, the very
 # asymmetry between the two checks that this suite exists because of.
-mutate "$DOC" "$DOC_BACKUP" 's/All eleven are hidden from the generic settings page/All keys are hidden from the generic settings page/'
+mutate "$DOC" "$DOC_BACKUP" 's/All thirteen are hidden from the generic settings page/All keys are hidden from the generic settings page/'
 check fail "an unreadable hidden-count fails loudly" \
   'as a number word in the hidden-count sentence'
 restore_doc
@@ -312,7 +317,7 @@ restore_doc
 # ⚠️ W-REWORD and W-DIGITS are the two review empirically falsified. Before the
 # fix both exited 0 with no output, silently disabling the workspace check while
 # the run still reported PASS.
-mutate "$DOC" "$DOC_BACKUP" 's/Three are \*\*workspace-scoped\*\*/Three of them are **workspace-scoped**/'
+mutate "$DOC" "$DOC_BACKUP" 's/Four are \*\*workspace-scoped\*\*/Four of them are **workspace-scoped**/'
 check fail "W-REWORD: the reword that used to disable this check now fails loudly" \
   'Could not read "them" as a count in the workspace-scoped sentence'
 restore_doc
@@ -320,25 +325,25 @@ restore_doc
 # The other half: the sentence removed outright rather than reworded. Different
 # arm, different marker — a reword still MATCHES the pattern (capturing a
 # non-count word), so only a deletion reaches the missing-sentence branch.
-mutate "$DOC" "$DOC_BACKUP" 's/ Three are \*\*workspace-scoped\*\* — meaning each can hold a different value per workspace, set by a platform admin: `ATLAS_BRAIN_AUDIENCE_SYNC_ENABLED` and the two alias auto-approval keys.//'
+mutate "$DOC" "$DOC_BACKUP" 's/ Four are \*\*workspace-scoped\*\* — meaning each can hold a different value per workspace, set by a platform admin: `ATLAS_BRAIN_AUDIENCE_SYNC_ENABLED`, `ATLAS_BRAIN_COVERAGE_SNAPSHOT_ENABLED` and the two alias auto-approval keys.//'
 check fail "W-MISSING: deleting the workspace sentence fails loudly rather than going blind" \
   'workspace-scoped**" sentence is gone'
 restore_doc
 
-mutate "$DOC" "$DOC_BACKUP" 's/Three are \*\*workspace-scoped\*\*/Four are **workspace-scoped**/'
+mutate "$DOC" "$DOC_BACKUP" 's/Four are \*\*workspace-scoped\*\*/Five are **workspace-scoped**/'
 check fail "a stale workspace-scoped count is caught" \
   'are workspace-scoped" but'
 restore_doc
 
 # W-DIGITS is a PASS fixture: digits are a legitimate reword, and the first
 # draft treated them as "unreadable" and fell through to silence. The count is
-# still verified — `3` is the true number, so this must pass for the right
+# still verified — `4` is the true number, so this must pass for the right
 # reason, which the next fixture pins by making the digit WRONG.
-mutate "$DOC" "$DOC_BACKUP" 's/Three are \*\*workspace-scoped\*\*/3 are **workspace-scoped**/'
+mutate "$DOC" "$DOC_BACKUP" 's/Four are \*\*workspace-scoped\*\*/4 are **workspace-scoped**/'
 check pass "W-DIGITS: a digit count is read, not silently skipped"
 restore_doc
 
-mutate "$DOC" "$DOC_BACKUP" 's/Three are \*\*workspace-scoped\*\*/7 are **workspace-scoped**/'
+mutate "$DOC" "$DOC_BACKUP" 's/Four are \*\*workspace-scoped\*\*/7 are **workspace-scoped**/'
 check fail "W-DIGITS is not vacuous — a WRONG digit count is caught" \
   'are workspace-scoped" but'
 restore_doc

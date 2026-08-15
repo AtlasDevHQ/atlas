@@ -757,11 +757,12 @@ describeIfPg("coverage denominator snapshots (#5213, ADR-0041)", () => {
       // dropping `workspace_id = $1`, dropping `source_class = $2`, dropping the
       // LIMIT. The last one matters most — `CHAT_ACTIVITY_PROBES_PER_CYCLE` is
       // the ONLY thing bounding Slack calls per cycle.
-      // ⚠️ `C0AA` sorts BEFORE `C0A`, and that ordering is the whole test. With a
-      // neighbour that sorted last, `LIMIT 2` cut it before the workspace
-      // predicate ever mattered — so deleting `workspace_id = $1` left this
-      // green, which was measured rather than reasoned. Sorting it first makes
-      // the unscoped query return it and the assertion red.
+      // ⚠️ `C0AA` sorts BETWEEN `C0A` and `C0B`, and that ordering is the whole
+      // test: with `LIMIT 2` an unscoped query returns `[C0A, C0AA]` and the
+      // assertion reddens. A neighbour sorting after `C0C` would be cut by the
+      // LIMIT before the workspace predicate ever mattered — which is what the
+      // first version did, and it left `workspace_id = $1` deletable and green.
+      // Measured against a real server, not reasoned.
       await persistCoverageSnapshot({
         workspaceId: OTHER_WORKSPACE,
         sourceClass: "chat",
@@ -1025,8 +1026,9 @@ describeIfPg("coverage denominator snapshots (#5213, ADR-0041)", () => {
         enumerated: 3,
         inPerimeterWithoutEvidence: 1,
       });
-      // The subset relation, stated: adding them would total 4 and overcount the
-      // universe by the very unit the field exists to make legible.
+      // `surveyed + enumerated` IS the universe (4 units seeded). Adding
+      // `inPerimeterWithoutEvidence` on top would make it 5 — counting the blind
+      // unit twice, which is the mistake the subset relation exists to prevent.
       expect(snapshot!.surveyed + snapshot!.enumerated).toBe(4);
     });
   });

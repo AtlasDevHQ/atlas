@@ -35,9 +35,14 @@
  * applies it. This module applies {@link coverageLabelPolicy} anyway, before the
  * insert, and stores `NULL` whenever it answers `count-only`. The issue's AC-6
  * says why: nothing here should make over-disclosure the path of least
- * resistance. A mailbox address that was never written cannot leak through a
- * future reader that forgot the policy, and the disclosure facts travel beside
- * the row so that reader can still re-derive the decision rather than trust it.
+ * resistance, and the disclosure facts travel beside the row so a reader can
+ * re-derive the decision rather than trust it.
+ *
+ * ⚠️ This is NOT a structural guarantee that a mailbox address can never be
+ * stored: `coverageLabelPolicy` names a unit of ANY surveyable class under the
+ * deliberate-act clause, `email` included. No email enumerator ships here; when
+ * one lands it must not assert `deliberateAct` for a mailbox, because the policy
+ * would name it if it did.
  *
  * @see ../db/migrations/0202_brain_coverage_snapshot.sql — the tables and the
  *   green-is-evidence CHECK
@@ -361,8 +366,7 @@ function storableErrorText(raw: string): string {
  * `last_error` stays NULL for every workspace of that class. The page then keeps
  * rendering a clean, dated, CURRENT statement for as long as the scan keeps
  * failing — precisely the defect the write-failure arm was fixed for, standing
- * one arm over. (Found by auditing that fix against its own finding in fresh
- * context, which is the whole reason that step exists.)
+ * one arm over.
  *
  * The rows are enumerable WITHOUT the vendor: `brain_coverage_cycle` already
  * holds one row per (workspace, class) for every workspace ever enumerated.
@@ -376,9 +380,8 @@ function storableErrorText(raw: string): string {
  * about a cycle that would never have run for it — while the settings registry
  * promises that turning it off "freezes the coverage page at its last reading".
  * {@link includeWorkspace} is how the caller supplies the same per-workspace
- * decision the normal path reads. An earlier docstring claimed this UPDATE
- * reached "exactly the set that can be told, and no more"; that clause was false
- * and is what this parameter makes true.
+ * decision the normal path reads, which is what makes "reaches exactly the set
+ * that can be told, and no more" true of it.
  *
  * ⚠️ COST, stated because an outage is the wrong time to discover it: a
  * fleet-wide UPDATE over one class, once per cycle, for as long as the scan keeps
@@ -467,9 +470,10 @@ export type CoveragePersistReport =
  * with a fresh success. A failure arm writes only `brain_coverage_cycle` and
  * touches no roster row at all.
  *
- * @throws whatever the database throws. The caller (the scheduled job) records it
- *   as a failed tick; swallowing it here would report a green cycle that wrote
- *   nothing, which is M1's failure shape.
+ * @throws whatever the database throws. The scheduler catches it per workspace,
+ *   counts a failed enumeration and records the attempt through the failure arm;
+ *   swallowing it here would report a green cycle that wrote nothing, which is
+ *   M1's failure shape.
  */
 export async function persistCoverageSnapshot(params: {
   readonly workspaceId: string;
@@ -806,11 +810,10 @@ export async function readActivityProbeRotation(params: {
 /**
  * How far a roster may shrink in one cycle before the write says so.
  *
- * `written * 4 < retired` fires on a 500 -> 1 collapse and on a total wipe, and
- * stays quiet for the ordinary case where a handful of channels were archived.
- * A ratio rather than a count because the honest signal is proportional: losing
- * four rows of five is alarming at any scale, and losing four of four hundred is
- * not.
+ * `written * 4 < retired` fires when a cycle retires MORE THAN 80% of a roster —
+ * 10 -> 1, and any total wipe — and stays quiet when a handful of channels were
+ * archived. A ratio rather than a count because the honest signal is
+ * proportional: losing 80 of 100 is alarming and losing 4 of 400 is not.
  */
 const COLLAPSE_RATIO = 4;
 

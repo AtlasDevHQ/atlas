@@ -93,8 +93,8 @@ export interface WarehouseCoverageDeps {
  * precisely because every printable separator is ambiguous — with a `.`,
  * `("plans.status", "tier")` and `("plans", "status.tier")` build the same key —
  * and NUL is the one byte a Postgres `text` column cannot hold, so it is
- * unavailable to a STORED id. The length prefix is injective for the same reason
- * and stores fine.
+ * unavailable to a STORED id. A length prefix is unambiguous for the same job —
+ * the declared length says where the entity ends — and it stores fine.
  *
  * Exported with {@link parseWarehouseSurveyUnitId} so the build and the parse
  * cannot drift.
@@ -112,14 +112,13 @@ export function warehouseSurveyUnitId(entity: string, dimension: string): Wareho
  * the WRONG halves (the leading segment reads as a length), and misattributes one
  * entity's evidence to another.
  *
- * ⚠️ The brand only does work where a signature DEMANDS it, and an earlier
- * docstring here claimed {@link parseWarehouseSurveyUnitId} refused a plain
- * string — it does not, and must not: it is a boundary parser reading database
- * text. What the brand actually buys is inside THIS module, where the mistake
- * would be made: `enrolled` and the evidence map are keyed by it, so a
- * hand-rolled `` `${entity}:${dimension}` `` fails to compile at the line that
- * builds it. That is #5032's lesson applied honestly — brand the output, and
- * then require it somewhere.
+ * ⚠️ A brand only does work where a signature DEMANDS it. This one's work is
+ * inside THIS module: `enrolled` and the evidence map are keyed by it, so a
+ * hand-rolled `` `${entity}:${dimension}` `` fails to compile at the LOOKUP —
+ * `enrolled.has(…)`, `byPair.set(…)` — which is where the mistake would surface.
+ * {@link parseWarehouseSurveyUnitId} deliberately takes a plain `string`: it is
+ * a boundary parser reading database text. #5032's lesson applied honestly —
+ * brand the output, then require it somewhere.
  */
 export type WarehouseSurveyUnitId = string & {
   readonly __warehouseSurveyUnitId: unique symbol;
@@ -304,12 +303,11 @@ export async function enumerateWarehouseCoverage(params: {
   // fabrication discipline is aimed at. A mark would also be wrong on its own
   // terms, since the MAP is complete here; it is the reading that failed.
   //
-  // MEASURED rather than falsified by a test, because the observable behaviour
-  // is identical with and without this counter: mutating it away leaves the
-  // suite green, verified. What the counter buys is the operator's ability to
-  // tell "the producer has emitted nothing yet" from "we cannot read what it
-  // emitted" — two states the page renders identically and no assertion can
-  // separate without asserting on the log itself.
+  // UNFALSIFIABLE by a test and deliberately so: the observable behaviour is
+  // identical with and without the counter (measured — mutating it away leaves
+  // the suite green). What it buys is the operator's ability to tell "the
+  // producer has emitted nothing yet" from "we cannot read what it emitted" —
+  // two states the page renders identically.
   if (unparseableEvidence > 0) {
     log.error(
       { workspaceId, unparseableEvidence, usable: byPair.size },
@@ -360,11 +358,7 @@ export async function enumerateWarehouseCoverage(params: {
     // PERMANENT: that entity drops out of the denominator every cycle forever,
     // in the flattering direction. It is counted below so the second case is
     // visible as a persistent number rather than mistaken for the first.
-    //
-    // `null` is "this entity is not in the published semantic layer", which can
-    // happen between the entity listing and this read (a publish landed
-    // mid-cycle). Not an error and not zero dimensions: the entity is gone, so
-    // it contributes nothing, which is what the next cycle will also say.
+
     if (dimensions === null) {
       vanishedEntities++;
       continue;

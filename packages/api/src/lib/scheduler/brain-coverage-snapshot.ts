@@ -80,17 +80,13 @@ export const DEFAULT_COVERAGE_SNAPSHOT_INTERVAL_MS = 60 * 60_000;
  * build the same sentence a thousand times into a span attribute. The first few
  * name the fault; the log lines carry the rest, one per workspace, with the
  * cycle id to group them.
+ *
+ * ⚠️ The bound applies to the PER-WORKSPACE arms only. The class-wide scan arm
+ * pushes unconditionally, because there is at most one per class and it must
+ * never be crowded out by five workspace faults — so a cycle can carry more than
+ * this many reasons, and they are not de-duplicated.
  */
 const FAILURE_REASONS_MAX = 5;
-
-/**
- * ⚠️ The bound applies to the PER-WORKSPACE arms only. The class-wide scan arm
- * pushes unconditionally, because there is at most one per class and a
- * class-wide fault must never be crowded out by five workspace faults. So a
- * cycle can carry more than {@link FAILURE_REASONS_MAX} reasons, and they are
- * not de-duplicated — the constant bounds the WORKSPACE reasons, not the list.
- */
-void FAILURE_REASONS_MAX;
 
 /**
  * Is the denominator snapshot switched on for this scope?
@@ -252,15 +248,14 @@ export interface CoverageSnapshotCycleResult {
    * "the cycle could not establish which workspaces to look at" — it is exactly
    * `degraded`'s sentence.
    *
-   * ⚠️ `error` is non-null whenever a failure counter moved, and the mechanism
-   * is narrower than "every arm pushes": the FIRST failure of a cycle is always
-   * recorded, and {@link FAILURE_REASONS_MAX} only drops the sixth and later.
-   * The scan arm is deliberately uncapped, so a class-wide fault always names
-   * itself even behind five workspace faults.
+   * ⚠️ `error` is non-null whenever a failure counter moves: the FIRST failure of
+   * a cycle is always recorded, and {@link FAILURE_REASONS_MAX} only drops the
+   * sixth and later. The scan arm is uncapped, so a class-wide fault always
+   * names itself even behind five workspace faults.
    *
-   * This sentence has now been wrong twice — first claiming the property before
-   * write failures pushed at all, then claiming a mechanism with two exceptions
-   * — so it is written as the weakest true statement rather than the tidiest.
+   * Holds in production, where a `failure` report implies a refused outcome. An
+   * injected `persist` that returned `failure` for an `ok` one would move the
+   * counter and push nothing.
    */
   readonly status: "success" | "degraded" | "failure";
   /** (class, workspace) pairs this cycle attempted. */
@@ -320,12 +315,15 @@ export interface CoverageSnapshotDeps {
 /**
  * Run one denominator-snapshot cycle over every surveyable class.
  *
- * Never rejects for a per-workspace reason — a refused enumeration is recorded
- * against that (workspace, class) and the cycle carries on, because one
- * workspace's revoked Slack token must not stop another workspace's warehouse
- * roster being refreshed. A WRITE failure is different and does propagate out of
- * the per-class loop into the tally as a failed class, with the message logged:
- * a database that cannot be written is not a fact about one tenant.
+ * Every per-workspace fault is caught per workspace: a refused enumeration and a
+ * failed write both record an attempt, count an `enumerationsFailed`, and let the
+ * loop move on — one workspace's revoked Slack token must not stop another
+ * workspace's warehouse roster being refreshed. Only `listWorkspaces()` throwing
+ * is class-wide.
+ *
+ * ⚠️ It does not therefore never reject. The per-workspace `isEnabled` read sits
+ * outside every `try`, which is exactly why the fiber wraps this in
+ * `Effect.tryPromise` rather than `Effect.promise`.
  */
 export async function runCoverageSnapshotCycle(
   deps: CoverageSnapshotDeps = {},
@@ -452,16 +450,10 @@ export async function runCoverageSnapshotCycle(
         });
         if (report.status === "failure") {
           enumerationsFailed++;
-          // ⚠️ THE SIBLING BRANCH, one line from the write-failure arm below, and
-          // it was left out of the same fix. A cycle whose every enumeration was
-          // REFUSED (rather than thrown) returned `{ status: "degraded", error:
-          // null }` while the status docstring claimed "`error` is non-null
-          // either way" — the same counterfactual claim, one branch over.
-          //
-          // The surface itself was never wrong here: `persist` ran
+          // The SURFACE is already right on this path: `persist` ran
           // `RECORD_FAILURE_SQL`, so the date moved and `unavailableReason` says
-          // why. What was missing is the OPERATOR's half — the one field a span
-          // carries, and the one an alert reads.
+          // why. What this adds is the OPERATOR's half — the span's `error`
+          // attribute, which is what an alert reads.
           if (!outcome.ok && failureReasons.length < FAILURE_REASONS_MAX) {
             // SCRUBBED like its two siblings. `outcome.error` for the chat class
             // embeds `slackReadGet`'s `request_failed: ${message}`, which is raw
@@ -488,11 +480,8 @@ export async function runCoverageSnapshotCycle(
         enumerationsFailed++;
         const message = errorMessage(err);
         // PUSHED, not only logged: `error` is what an operator reads for the
-        // reason, and a cycle in which every persist threw used to return
-        // `{ status: "degraded", error: null }` while the status docstring
-        // claimed "`error` is non-null either way". Bounded to the first few so
-        // a fleet-wide database fault does not build a megabyte-long string out
-        // of one message per workspace.
+        // reason. Bounded so a fleet-wide database fault does not build a
+        // megabyte-long string out of one message per workspace.
         if (failureReasons.length < FAILURE_REASONS_MAX) {
           failureReasons.push(`${sourceClass}/${workspaceId}: ${message}`);
         }

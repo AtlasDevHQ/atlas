@@ -89,7 +89,7 @@ export const PUBLIC_ROSTER_PAGE_LIMIT = 200;
  */
 export const CHAT_ACTIVITY_PROBES_PER_CYCLE = 20;
 
-/** Injection seam for the tests — the two Slack reads and the clock. */
+/** Injection seam for the tests — the two Slack reads. */
 export interface SlackCoverageDeps {
   readonly fetchConversationsListPage?: typeof fetchConversationsListPage;
   readonly fetchConversationHistoryPage?: typeof fetchConversationHistoryPage;

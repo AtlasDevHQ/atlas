@@ -441,10 +441,12 @@ describe("fetchConversationsListPage (#5213)", () => {
     }) as unknown as typeof globalThis.fetch;
 
     await fetchConversationsListPage("t", { limit: 200 });
-    // PUBLIC ONLY. Widening to private_channel would put the names of private
-    // channels the bot is in into a roster whose entries are stored as labels
-    // under the VENDOR-PUBLIC clause — a disclosure ADR-0041 refuses, admitted
-    // by one query parameter.
+    // PUBLIC ONLY. `types` is what the vendor-public clause leans on: a widened
+    // request hands the caller rows Slack calls private, which `readPublicRoster`
+    // then drops with a warn — a denominator that silently disagrees with the
+    // request that produced it. (Private perimeter channels ARE labelled, under
+    // the deliberate-act clause; that is a different clause and a different
+    // path.)
     expect(seen).toContain("types=public_channel");
     expect(seen).not.toContain("private_channel");
     // Archived channels stay IN the denominator: their history is still

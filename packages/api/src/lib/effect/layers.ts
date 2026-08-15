@@ -2486,7 +2486,7 @@ export function makeSchedulerLive(
       // vendors' rate limits, and the date is part of the statement."
       //
       // The `yield* Migration` barrier above sequences it after `MigrationLive`,
-      // so the eager boot tick cannot race 0201 creating the tables.
+      // so the eager boot tick cannot race 0202 creating the tables.
       yield* registerPeriodicFiber({
         name: "brain_coverage_snapshot",
         intervalMs: () => {
@@ -2531,15 +2531,13 @@ export function makeSchedulerLive(
         ),
         spanResultAttributes: (result) => ({
           "atlas.brain.coverage.status": result.status,
-          // Per (class, workspace), NOT per workspace — a tenant with both Slack
-          // and a semantic layer contributes two. Named for what it measures so
-          // an operator cannot read it as a fleet count.
+          // ⚠️ Every `enumerations_*` counter is per (CLASS, WORKSPACE): a tenant
+          // with both Slack and a published semantic layer contributes two.
+          // Named for what they measure so a threshold on them is not wrong by a
+          // tenant count.
           "atlas.brain.coverage.enumerations_attempted": result.enumerationsAttempted,
           "atlas.brain.coverage.enumerations_skipped_disabled":
             result.enumerationsSkippedDisabled,
-          // Per (class, workspace), like the two above — a tenant with both
-          // Slack and a semantic layer contributes two. Named for what they
-          // measure so a threshold set on them is not wrong by a tenant count.
           "atlas.brain.coverage.enumerations_succeeded": result.enumerationsSucceeded,
           // The one that means "part of the map is older than the rest": a
           // refused enumeration keeps its previous dated roster, so the page

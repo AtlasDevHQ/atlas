@@ -91,12 +91,18 @@
  * Three different mechanisms hold three different failures, and none subsumes
  * another — say which is which before touching any of them:
  *
- * - **DELETION** — a name leaving the array. Closed at COMPILE time: the array is a
- *   fixed-arity tuple, so dropping an element is a type error, and the runtime length
- *   assertion below is the same claim where a reader will look for it.
+ * - **DELETION** — a name leaving the array. Closed at COMPILE time by the fixed-arity
+ *   tuple (`bun run type`) and at RUNTIME by the length assertion (`bun test`, which
+ *   strips types without checking them, so neither mechanism is redundant).
+ * - **SUBSTITUTION** — one name replaced by a COPY of another. Arity is unchanged and
+ *   both spellings are real exports, so neither mechanism above sees it, and the
+ *   positive-control loop shrinks along with the matcher. Closed by the DISTINCTNESS
+ *   assertion. This is listed separately because an earlier draft treated deletion as
+ *   the whole class and measured green under substitution.
  * - **RENAME / TYPO** — a fragment that no longer spells a real export. Closed at
  *   RUNTIME by reading `warehouse-producer.ts`; the compiler cannot see inside a
- *   concatenation, so nothing else can close this.
+ *   concatenation, so nothing else can close this. The reading machinery has its own
+ *   fixture block, because a checker with no falsifier is how its blind spots ship.
  * - **A SIXTH branded type being exported and nobody adding it here** — OPEN, and
  *   deliberately: deriving the set from the module needs a tagging convention in
  *   production source. Tracked as a follow-up rather than improvised in a review
@@ -168,30 +174,66 @@ const SRC_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
  * ⚠️ **The roots are NAMED in the failure message too.** An enumeration is only as
  * honest as its scope. If a root is added here, add it there.
  *
- * ⚠️ **`minFiles` exists because root EXISTENCE is not root CORRECTNESS.** Repointing
- * a root at a subdirectory that also exists — `ee/src/lib` for `ee/src` — passed
- * every other assertion in this file, because `ee/` and `cli/` contribute zero
- * matches and a narrower scan of them is invisible. The floors are set near half of
- * today's counts (1966 / 108 / 75), so ordinary churn does not red them and gross
- * narrowing does.
+ * ⚠️ **Root EXISTENCE is not root CORRECTNESS, and a VOLUME floor is only a proxy
+ * for it — a proxy that was measured insufficient.** A first attempt set floors at
+ * roughly half of each root's file count and verified one root. That is the wrong
+ * calibration: the number that matters is the size of the largest CHILD directory,
+ * because repointing a root at its own child is the edit in question. Measured —
+ * `packages/api/src` -> `src/lib` is 1613 files against a floor of 1000, and
+ * `packages/cli/src` -> `src/__tests__` is 35 against 30. Both stayed GREEN. Only the
+ * `ee` root, the one that had been checked, RED-ed.
+ *
+ * So the floor is no longer the mechanism, it is the backstop. **`sentinel` is the
+ * mechanism**: a file that must be REACHED by the walk, which answers "is this the
+ * right directory" directly instead of inferring it from a count. It also catches
+ * narrowing introduced INSIDE `walk` — a skipped directory or a tightened extension
+ * test — which no root-level floor can see. Each sentinel is a uniquely-pathed file
+ * under its root, so a repoint cannot accidentally satisfy it.
+ *
+ * The floors stay because they catch a different thing: a scan that still reaches the
+ * sentinel while losing most of the tree.
+ *
+ * ⚠️ **The TUPLE type is the same fix as {@link GUARDED_NAMES}', and it is here
+ * because the first attempt at that fix reproduced the defect one array over.**
+ * Pinning a root's `dir` catches NARROWING it; nothing caught DELETING the entry,
+ * because every assertion about a root is driven by this same list — so removing an
+ * element removed the scan and its own checks together, and `ee/src` and
+ * `packages/cli/src` contribute zero matches, so the allowlist test could not notice
+ * either. Fixed arity makes a deletion a compile error.
  */
-const ROOTS: readonly {
+type ScanRoot = {
   readonly dir: string;
   readonly label: string;
   readonly minFiles: number;
-}[] = [
-  { dir: SRC_ROOT, label: "", minFiles: 1000 },
+  /** Root-relative path that MUST be reached — the direct answer to "right directory?". */
+  readonly sentinel: string;
+};
+const ROOTS: readonly [ScanRoot, ScanRoot, ScanRoot] = [
+  {
+    dir: SRC_ROOT,
+    label: "",
+    minFiles: 1000,
+    sentinel: "lib/brain/warehouse-producer.ts",
+  },
   {
     dir: fileURLToPath(new URL("../../../../../../ee/src/", import.meta.url)),
     label: "ee/src/",
     minFiles: 50,
+    sentinel: "deploy-mode.ts",
   },
   {
     dir: fileURLToPath(new URL("../../../../../cli/src/", import.meta.url)),
     label: "packages/cli/src/",
     minFiles: 30,
+    sentinel: "validate.ts",
   },
 ];
+
+/** Resolve an allowlist entry to an absolute path via its root's label, never assuming the api root. */
+function resolveEntry(file: string): string {
+  const root = ROOTS.find((r) => r.label !== "" && file.startsWith(r.label));
+  return root ? join(root.dir, file.slice(root.label.length)) : join(SRC_ROOT, file);
+}
 
 /**
  * The module that defines all five names — read, not imported, so the assembled
@@ -314,15 +356,53 @@ function* walk(dir: string): Generator<string> {
   }
 }
 
-/** Strip line and block comments, so a guard cannot be satisfied by prose about it. */
+/**
+ * Strip block and line comments, so a guard cannot be satisfied by prose about itself.
+ *
+ * ⚠️ **Block comments are removed as REGIONS, not by looking at how each line
+ * starts, and the difference was measured.** A line-shape filter (drop lines whose
+ * trimmed start is `//`, `*` or `/*`) leaves the BODY of an ordinary block comment
+ * intact, because continuation lines are only conventionally prefixed with `*` —
+ * nothing enforces it, and "toggle block comment" over a declaration produces none.
+ * So this stayed GREEN:
+ *
+ *     /* <a guarded declaration, commented out during a rename>
+ *
+ * which is the same vacuity the line filter was written to close, one comment syntax
+ * over — a guard satisfied by prose describing the very rename it exists to catch.
+ *
+ * Honest bound: a STRING LITERAL whose content begins a line with `export type <a
+ * guarded name>` still satisfies the caller's pattern. Not constructible against
+ * today's module, and the fixtures below pin the shapes that are.
+ */
 function withoutComments(source: string): string {
   return source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
     .split("\n")
-    .filter((line) => {
-      const t = line.trimStart();
-      return !t.startsWith("//") && !t.startsWith("*") && !t.startsWith("/*");
-    })
+    .filter((line) => !line.trimStart().startsWith("//"))
     .join("\n");
+}
+
+/**
+ * Is `name` exported from `source`? Hoisted out of the test so it can be DRIVEN BY
+ * FIXTURES rather than only by the real module.
+ *
+ * ⚠️ **Hoisting is the fix for a measured hole: the machinery that closes the
+ * rename check had no falsifier of its own.** Replacing {@link withoutComments} with
+ * the identity function, or dropping the `^`/`m` anchor, each left the whole suite
+ * GREEN — so the previous round's fix was protected by nothing and its blind spot
+ * (block comments) shipped undetected. The fixture block below is what makes both
+ * deletions RED.
+ */
+function isExported(source: string, name: string): boolean {
+  const stripped = withoutComments(source);
+  const declared = new RegExp(`^export (?:declare )?(?:type|interface|class) ${name}\\b`, "m");
+  // A barrel re-export is a legal refactor for a 2,300-line module and must not RED.
+  // ⚠️ The negative lookahead matters: `export type { X as V2 }` means X is NO LONGER
+  // exported under that spelling, which is precisely the rename this check exists to
+  // catch — without it the widening swallowed its own subject.
+  const reExported = new RegExp(`^export (?:type )?\\{[^}]*\\b${name}\\b(?!\\s+as\\b)`, "m");
+  return declared.test(stripped) || reExported.test(stripped);
 }
 
 describe("the SQL-gate name allowlist (#5042, #5230, #5249)", () => {
@@ -336,22 +416,27 @@ describe("the SQL-gate name allowlist (#5042, #5230, #5249)", () => {
       `the defining module moved: ${DEFINING_MODULE}. Update DEFINING_MODULE — a bare ` +
         `ENOENT below would be this assertion's job done badly.`,
     ).toBe(true);
-    // Belt and braces on the tuple: the same claim, where a reader looks for it.
+    // ⚠️ Under `bun test` the tuple contributes NOTHING — the runner strips types
+    // without checking them, so this assertion is the only live mechanism here and
+    // the tuple is the only one in `bun run type`. Two gates, two mechanisms, neither
+    // redundant. This is not belt and braces.
     expect(GUARDED_NAMES.length, "a guarded name left the array; the scan silently narrowed").toBe(
       5,
     );
+    // ⚠️ ARITY IS NOT IDENTITY, and the gap was measured. Substituting one name for a
+    // COPY of another keeps the length at 5, keeps both spellings real exports, and
+    // shrinks the positive-control loop along with the matcher — the whole suite
+    // stayed GREEN while `NAME_RE` silently lost an alternative. The runner arm, which
+    // has no instances in the tree, is exactly the one a copy-paste clobbers.
+    expect(
+      new Set(GUARDED_NAMES).size,
+      "two fragments assemble the same name — an arm left the matcher without shortening it",
+    ).toBe(GUARDED_NAMES.length);
 
-    // ⚠️ Comments are stripped and the pattern is line-ANCHORED. Unanchored, a
-    // `// export type <name> was renamed in #9999` note satisfied this check — the
-    // exact vacuity the test exists to refuse, satisfied by prose describing the
-    // rename. Measured.
-    const source = withoutComments(readFileSync(DEFINING_MODULE, "utf8"));
+    const source = readFileSync(DEFINING_MODULE, "utf8");
     for (const name of GUARDED_NAMES) {
-      const declared = new RegExp(`^export (?:declare )?(?:type|interface|class) ${name}\\b`, "m");
-      // A barrel re-export is a legal refactor for a 2,300-line module and must not RED.
-      const reExported = new RegExp(`^export (?:type )?\\{[^}]*\\b${name}\\b`, "m");
       expect(
-        declared.test(source) || reExported.test(source),
+        isExported(source, name),
         `${name} is no longer exported from lib/brain/warehouse-producer.ts. If it was ` +
           `renamed, update GUARDED_NAMES — the assembled fragments are invisible to the ` +
           `compiler, so a stale one silently matches nothing.`,
@@ -359,17 +444,53 @@ describe("the SQL-gate name allowlist (#5042, #5230, #5249)", () => {
     }
   });
 
-  test("every scanned root exists AND still yields its floor — narrowing must RED", () => {
+  test("the export check itself: prose must not satisfy it, a legal refactor must not RED it", () => {
+    // ⚠️ This block exists because the machinery above had NO falsifier. Replacing
+    // `withoutComments` with the identity function, or dropping its line anchor, each
+    // left the suite green — so the rename check was protected by nothing, and that is
+    // how the block-comment hole below shipped in the first place.
+    const N = "SnapshotSql" + "Validator";
+    // The real shape, which must pass.
+    expect(isExported(`export type ${N} = (r: R) => V;`, N)).toBe(true);
+    // A barrel re-export is legal and must pass, including multi-line.
+    expect(isExported(`export type {\n  Other,\n  ${N},\n} from "./split";`, N)).toBe(true);
+    // ⚠️ ...but a re-export that RENAMES it away is the rename, not an export of it.
+    expect(isExported(`export type { ${N} as ${N}V2 } from "./split";`, N)).toBe(false);
+    // Prose must not satisfy it — the line form the previous round closed...
+    expect(isExported(`// export type ${N} = ... renamed in #9999`, N)).toBe(false);
+    // ...the JSDoc form...
+    expect(isExported(`/**\n * export type ${N} = (r: R) => V;\n */`, N)).toBe(false);
+    // ...and the plain BLOCK form, whose body lines carry no `*` prefix. This is the
+    // one a line-shape filter misses, and it is what "comment out the old declaration
+    // during a rename" actually produces.
+    expect(isExported(`/*\nexport type ${N} = (r: R) => V;\n*/`, N)).toBe(false);
+    // A block comment opened mid-line, same reason.
+    expect(isExported(`export type ${N}V2 = X; /* was:\nexport type ${N} = Y;\n*/`, N)).toBe(false);
+    // The anchor: an indented match is not a top-level export.
+    expect(isExported(`  export type ${N} = X;`, N)).toBe(false);
+  });
+
+  test("every scanned root exists, reaches its sentinel, and still yields its floor", () => {
     // ⚠️ Asserted rather than filtered. `existsSync`-and-skip would turn a renamed
-    // directory into a silently smaller scan that still passes. The floor is the same
-    // discipline one level down: a root repointed at a real subdirectory exists, and
-    // without a volume check its narrowing is invisible.
-    for (const { dir, label, minFiles } of ROOTS) {
+    // directory into a silently smaller scan that still passes.
+    expect(ROOTS.length, "a root left the list; the scan silently stopped covering it").toBe(3);
+    for (const { dir, label, minFiles, sentinel } of ROOTS) {
       const name = label || "packages/api/src/";
       expect(existsSync(dir), `scan root missing: ${name} (${dir})`).toBe(true);
+      const files = [...walk(dir)];
+      // ⚠️ The sentinel, not the floor, is what answers "is this the right directory".
+      // Two of the three floors were measured passable by repointing a root at its own
+      // largest child; a reached-file check cannot be satisfied that way, and it also
+      // catches narrowing introduced inside `walk` itself.
       expect(
-        [...walk(dir)].length,
-        `scan root ${name} yielded fewer than ${minFiles} files — repointed at a subdirectory?`,
+        files,
+        `scan root ${name} no longer reaches ${sentinel} — repointed, or did walk() narrow?`,
+      ).toContain(join(dir, sentinel));
+      expect(
+        files.length,
+        `scan root ${name} yielded fewer than ${minFiles} files. Either it was repointed at a ` +
+          `subdirectory, or the package genuinely shrank — establish which before lowering ` +
+          `this floor; the sentinel above distinguishes them.`,
       ).toBeGreaterThan(minFiles);
     }
   });
@@ -395,34 +516,54 @@ describe("the SQL-gate name allowlist (#5042, #5230, #5249)", () => {
     ).toEqual(NAME_ALLOWLIST.map((b) => b.file).toSorted());
   });
 
-  test("the allowlist's kinds are counted, so a bypass cannot arrive dressed as an annotation", () => {
-    // ⚠️ The number, not just the field. #5249 widened what an entry means, and the
-    // failure mode it introduces is a real mint added as `kind: "annotation"` because
-    // that is the quieter word. Pinning the count makes adding a bypass a visible edit
-    // to a line a reviewer is looking at.
+  test("the allowlist's kinds are counted, so adding a bypass is a visible edit", () => {
+    // ⚠️ The NAME of this test used to promise that a bypass "cannot arrive dressed as
+    // an annotation". Counting cannot give that: a mislabeller edits the entry and the
+    // expected count in one hunk, and both are green. What counting DOES give is that
+    // the edit is visible to a reviewer — which is worth having, and is all this
+    // claims. The property the old name promised is held by the two checks below.
     const byKind: Record<AllowlistKind, number> = { bypass: 0, annotation: 0 };
     for (const entry of NAME_ALLOWLIST) byKind[entry.kind]++;
     expect(byKind).toEqual(EXPECTED_BY_KIND);
   });
 
-  test("every kind:'bypass' entry really contains an assertion — the claim is checked, not believed", () => {
-    // ⚠️ This restores a property #5249 removed. Under the old line-keyed matcher,
-    // deleting a cast while leaving its entry RED-ed the suite; a name scan cannot see
-    // that, so an entry could over-claim forever. Non-vacuous today: all four match.
+  test("every kind is CHECKED against the tree, in both directions", () => {
+    // ⚠️ The bypass arm restores a property #5249 removed: under the old line-keyed
+    // matcher, deleting a cast while leaving its entry RED-ed the suite; a name scan
+    // cannot see that, so an entry could over-claim forever.
     //
-    // Honest limit, stated because the arm is one-directional: this uses the LEGACY
-    // matcher, so a bypass written in one of the escape forms would read as an
-    // annotation here. It does not make `kind` sound; it makes the common case
-    // falsifiable and restores the deleted-cast-REDs property.
+    // ⚠️ The annotation arm is the one the header's own threat model asks for — "a
+    // real mint added as kind:'annotation' because that is the quieter word" — and it
+    // was missing, so that exact edit passed everything. It is VACUOUS TODAY (zero
+    // annotations) and load-bearing the moment the first one lands, which is the case
+    // #5249's widening was written to invite. Do not delete it as dead.
+    //
+    // ⚠️ Both read through `withoutComments`. Reading raw source reproduced, in the
+    // check added to fix it, the same prose vacuity the export check above was fixed
+    // for: a comment narrating a cast satisfied the bypass arm after the cast itself
+    // was gone.
+    //
+    // Honest limit: this uses the LEGACY matcher, so a bypass written in one of the
+    // escape spellings reads as an annotation. It does not make `kind` sound; it makes
+    // the common case falsifiable in both directions.
     const bypasses = NAME_ALLOWLIST.filter((e) => e.kind === "bypass");
-    expect(bypasses.length, "no bypass entries — this test would be vacuous").toBeGreaterThan(0);
+    expect(bypasses.length, "no bypass entries — the arm below would be vacuous").toBeGreaterThan(
+      0,
+    );
     for (const entry of bypasses) {
       expect(
-        LEGACY_AS_ADJACENT_RE.test(readFileSync(join(SRC_ROOT, entry.file), "utf8")),
+        LEGACY_AS_ADJACENT_RE.test(withoutComments(readFileSync(resolveEntry(entry.file), "utf8"))),
         `${entry.file} is listed kind "bypass" but contains no assertion form. If its cast ` +
           `was removed, demote it to "annotation" (and move the count); do not leave a stale ` +
           `over-claim in the list.`,
       ).toBe(true);
+    }
+    for (const entry of NAME_ALLOWLIST.filter((e) => e.kind === "annotation")) {
+      expect(
+        LEGACY_AS_ADJACENT_RE.test(withoutComments(readFileSync(resolveEntry(entry.file), "utf8"))),
+        `${entry.file} is listed kind "annotation" but contains an assertion form — it is a ` +
+          `bypass. Argue it as one rather than filing it under the quieter word.`,
+      ).toBe(false);
     }
   });
 
@@ -481,8 +622,9 @@ describe("the SQL-gate name allowlist (#5042, #5230, #5249)", () => {
     // ⚠️ Read this for what it is: it proves the word boundaries hold in BOTH the
     // assertion and the annotation context, for each name. It CANNOT detect a name
     // leaving GUARDED_NAMES — matcher and loop derive from the same array, so they
-    // shrink together. The tuple type closes that; an earlier draft claimed this loop
-    // did, and that claim was measured false.
+    // shrink together. An earlier draft claimed this loop did, and that was measured
+    // false. Deletion is closed by the tuple and the length assert; SUBSTITUTION by
+    // the distinctness assert — two different mechanisms, neither of them this loop.
     for (const name of GUARDED_NAMES) {
       expect(NAME_RE.test(`const v = x as ${name};`), `boundary failed for ${name}`).toBe(true);
       // ⚠️ And the whole point of #5249: the same name with no assertion at all.

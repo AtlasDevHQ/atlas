@@ -1053,7 +1053,13 @@ check_boundary() {
   out_off="$(cd "$ROOT" && bun "$guard_dir/probe-no-boundary.ts" --root "$tmp" 2>&1)" || status_off=$?
   [ "$status_off" -eq 1 ] || ok=0
   # The SAME throw got out…
-  printf '%s' "$out_off" | grep -qF 'zz-boundary-probe' || ok=0
+  #
+  # ⚠️ `TypeError: zz-boundary-probe`, not the bare probe string. Bun echoes the
+  # offending SOURCE LINE as context for a syntax error, so a parse error near
+  # the injected `throw` would print that string and satisfy a looser marker
+  # while reproducing nothing. Requiring the THROWN form means only an actual
+  # uncaught throw can match.
+  printf '%s' "$out_off" | grep -qF 'TypeError: zz-boundary-probe' || ok=0
   # …and nothing caught it.
   printf '%s' "$out_off" | grep -qF 'INTERNAL ERROR' && ok=0
 

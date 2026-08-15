@@ -53,13 +53,23 @@
  *   safe rather than merely argued-safe. `recordFailureRow` is an UPSERT, so a
  *   new caller does not just write a row, it INVENTS one.
  *
- * What is NOT pinned, stated rather than papered over: a column name built by
- * interpolation (`SET ${COL} = $1`), and any raw-SQL writer outside
- * `lib/brain/**`. The second is deliberate — `last_error` is also a column on
- * `crm_outbox`, `lead_outbox`, `email_outbox` and the billing teardown tables
- * (19 write sites, measured), so a tree-wide scan for it would be dominated by
- * writes this rule says nothing about. The Drizzle scan is what covers the wide
- * tree, because the symbol is table-specific where the column name is not.
+ * What is NOT pinned, stated rather than papered over — and this list is itself
+ * a round-2 finding, because the first version of it read as complete and was
+ * not:
+ *
+ * - a column name built by interpolation (`SET ${COL} = $1`);
+ * - Postgres's multi-column form, `SET (last_attempt_at, last_error) = ($2, $3)`
+ *   — a natural refactor of the existing statement;
+ * - a comment between the identifier and the `=` (`SET last_error /* x *\/ = $3`);
+ * - any raw-SQL writer outside `lib/brain/**`. Deliberate: `last_error` is also
+ *   a column on `crm_outbox`, `lead_outbox`, `email_outbox` and the billing
+ *   teardown tables (19 write sites, measured), so a tree-wide scan for it would
+ *   be dominated by writes this rule says nothing about. The Drizzle scan and
+ *   the call-site scan are what cover the wide tree, because a symbol is
+ *   table-specific where a column name is not.
+ *
+ * The REMOVAL direction is safe in all four cases — the equality assertion reds
+ * when a known write disappears. It is the ADDITION direction these miss.
  *
  * ## What the scan deliberately permits
  *
@@ -154,6 +164,8 @@ const API_SRC = resolve(BRAIN_DIR, "..", "..");
 
 /** The one file allowed to write a VALUE into the column. */
 const OWNER_FILE = "coverage-enumeration.ts";
+/** The same file, relative to `API_SRC`, for the tree-wide scans. */
+const OWNER_REL = "lib/brain/coverage-enumeration.ts";
 
 function sourceFiles(dir: string): string[] {
   const out: string[] = [];
@@ -191,7 +203,12 @@ function sourceFiles(dir: string): string[] {
  */
 function lastErrorAssignments(text: string): string[] {
   const found: string[] = [];
-  for (const match of text.matchAll(/last_error\s*=\s*('[^']*'|[A-Za-z0-9_.$[\]]+)/gi)) {
+  // `"?last_error"?` — Postgres accepts a QUOTED IDENTIFIER, and
+  // `SET "last_error" = $1` broke the match because the closing quote sat
+  // between the name and the `=`. That is not exotic syntax invented for a
+  // fixture: `api/routes/admin-mfa-reset.ts` and `lib/staging/seed.ts` both use
+  // quoted identifiers in production SQL today.
+  for (const match of text.matchAll(/"?last_error"?\s*=\s*('[^']*'|[A-Za-z0-9_.$[\]]+)/gi)) {
     const value = match[1];
     if (value !== undefined) found.push(value);
   }
@@ -263,32 +280,62 @@ describe("no unbranded sibling may write brain_coverage_cycle.last_error", () =>
   });
 
   test("the brand has exactly one mint, and each writer exactly one caller", () => {
-    // ⚠️ A second `as StorableErrorText` would be a sibling MINTER rather than a
-    // sibling writer — the same #5032 shape one level up, and the arithmetic
-    // above cannot see it: a cast moves neither the write list nor the constant's
-    // reference count.
+    // ⚠️ A second minter is a sibling PRODUCER — the #5032 shape one level up
+    // from the writers — and the arithmetic above cannot see it: minting moves
+    // neither the write list nor the constant's reference count.
     expect(countOf(ownerText, /as StorableErrorText\b/g)).toBe(1);
+
+    // ⚠️ AND THE CAST COUNT ALONE IS NOT THE PROPERTY. Counting casts in the
+    // owner file missed a minter in ANY OTHER file — measured green for
+    // `lib/brain/zz.ts` and `lib/scheduler/zz.ts` alike — because
+    // `StorableErrorText` is an EXPORTED type. It also missed a cast-free minter
+    // that simply declares the return type and launders the value
+    // (`return JSON.parse(JSON.stringify(raw))`).
+    //
+    // The property that actually holds is containment of the TYPE NAME: nothing
+    // outside the owner file may name `StorableErrorText` at all, so there is
+    // nowhere to declare a second mint. (Round 2 widened the caller scan and the
+    // Drizzle scan to the whole tree and left this one on `ownerText` — the same
+    // asymmetry, surviving one fix over.)
+    const namers = sourceFiles(API_SRC)
+      .filter((abs) => relative(API_SRC, abs).replaceAll("\\", "/") !== OWNER_REL)
+      .filter((abs) => /\bStorableErrorText\b/.test(readFileSync(abs, "utf8")))
+      .map((abs) => relative(API_SRC, abs).replaceAll("\\", "/"));
+    expect(namers).toEqual([]);
 
     // And the call-site counts are what make EXPORTING the two writers safe
     // rather than merely argued-safe in a doc comment. `recordFailureRow` is an
     // upsert: a new caller does not just write a row, it INVENTS one for a
     // (workspace, class) the cycle may never have attempted.
     //
-    // One call each, both in the owner file. The declarations are `export
-    // function <name>(params: {`, which this pattern does not match.
-    expect(countOf(ownerText, /\brecordFailureRow\(\{/g)).toBe(1);
-    expect(countOf(ownerText, /\bupdateClassFailureRows\(\{/g)).toBe(1);
+    // TWO occurrences each: the declaration and the one call.
+    //
+    // ⚠️ `\s*\(`, not `\(\{`. Anchoring on the object literal excluded the
+    // declaration for free, but it also made the count blind to
+    // `recordFailureRow(args)` — a second caller passing a variable moved
+    // NEITHER this count nor `RECORD_FAILURE_SQL`'s (a caller adds no SQL
+    // reference) nor the write list. Counting both forms and expecting 2 keeps
+    // the declaration in the total and sees every call shape.
+    expect(countOf(ownerText, /\brecordFailureRow\s*\(/g)).toBe(2);
+    expect(countOf(ownerText, /\bupdateClassFailureRows\s*\(/g)).toBe(2);
 
-    // Nothing outside the owner file calls either one today. This is the
-    // assertion that turns the export from a promise into a measurement.
-    const callersElsewhere = brainFiles
-      .filter((abs) => relative(BRAIN_DIR, abs) !== OWNER_FILE)
-      .filter((abs) => /\b(recordFailureRow|updateClassFailureRows)\s*\(/.test(readFileSync(abs, "utf8")))
-      .map((abs) => relative(BRAIN_DIR, abs));
+    // ⚠️ THE WHOLE API TREE, not just `lib/brain/**`. This assertion is what
+    // makes exporting the writers a measurement rather than a promise, and the
+    // export is reachable from anywhere in `@atlas/api` — `storableErrorText` is
+    // exported too, so any module can mint a valid `StorableErrorText` and call
+    // the UPSERT. Scoping it to `lib/brain/**` measured the one place the export
+    // was not the risk. (The Drizzle assertion below already reasoned its way to
+    // the wider scope; this one did not follow, which is the gap.)
+    const callersElsewhere = sourceFiles(API_SRC)
+      .filter((abs) => relative(API_SRC, abs).replaceAll("\\", "/") !== OWNER_REL)
+      .filter((abs) =>
+        /\b(recordFailureRow|updateClassFailureRows)\s*\(/.test(readFileSync(abs, "utf8")),
+      )
+      .map((abs) => relative(API_SRC, abs).replaceAll("\\", "/"));
     expect(callersElsewhere).toEqual([]);
   });
 
-  test("the Drizzle table symbol is confined to schema.ts and the purge path", () => {
+  test("no Drizzle WRITE targets brainCoverageCycle anywhere in the API tree", () => {
     // ⚠️ THE SHAPE THE RAW-SQL SCAN STRUCTURALLY CANNOT SEE.
     // `db.update(brainCoverageCycle).set({ lastError })` spells neither the
     // column nor the table, so every assertion above passes while an unsanitized
@@ -296,16 +343,29 @@ describe("no unbranded sibling may write brain_coverage_cycle.last_error", () =>
     // is reachable rather than hypothetical.
     //
     // Scanned across the whole API source tree, not just `lib/brain/**`, because
-    // the writers are now exported and a caller in `lib/scheduler/` or
+    // the writers are exported and a caller in `lib/scheduler/` or
     // `api/routes/` would be outside the narrower scope. (The raw-SQL scan stays
     // narrow for the opposite reason: `last_error` is also a column on
     // `crm_outbox`, `lead_outbox`, `email_outbox` and the billing teardown
     // tables, so a tree-wide scan for it would be dominated by writes this rule
     // says nothing about. The symbol is table-specific where the column is not.)
-    const users = sourceFiles(API_SRC)
-      .filter((abs) => /\bbrainCoverageCycle\b/.test(readFileSync(abs, "utf8")))
+    //
+    // ⚠️ WRITE FORMS, not the bare symbol — and the difference bit in both
+    // directions. A bare-symbol allowlist of file NAMES admitted a real
+    // `db.update(brainCoverageCycle).set({ lastError: raw })` inside any
+    // allowlisted file, and `lib/db/internal.ts` was on that list only because it
+    // happens to declare a local `const brainCoverageCycle` for its purge DELETE
+    // — an identifier collision, not a Drizzle use. In the other direction it
+    // red-flagged a legitimate READ, contradicting this file's own "reads are
+    // permitted" rule two sections up. Matching `.update(`/`.insert(` removes
+    // both: the expected set is empty, so there is no allowlist to rot and no
+    // read to trip it.
+    const writers = sourceFiles(API_SRC)
+      .filter((abs) =>
+        /\.\s*(update|insert)\s*\(\s*brainCoverageCycle\b/.test(readFileSync(abs, "utf8")),
+      )
       .map((abs) => relative(API_SRC, abs).replaceAll("\\", "/"))
       .sort();
-    expect(users).toEqual(["lib/db/internal.ts", "lib/db/schema.ts"]);
+    expect(writers).toEqual([]);
   });
 });

@@ -410,8 +410,14 @@ export function updateClassFailureRows(params: {
    * `workspaceId`, an ISO string and `lastError` are all `string`-assignable, so
    * only the property NAMES would stop a positional swap, and a malformed
    * timestamp throws at PG inside the very statement the brand was added to
-   * protect. Taking the `Date` deletes a `.toISOString()` from each call site
-   * and removes a stringly-typed parameter from the seam being hardened.
+   * protect — taking the `Date` moves that throw client-side, before the write.
+   *
+   * It removes a stringly-typed parameter from the seam being hardened. It does
+   * NOT remove every `.toISOString()`: {@link persistCoverageSnapshot} still
+   * computes one for the SUCCESS path, so on the failure arm that instant is
+   * serialized twice. An earlier version of this note claimed the conversion was
+   * gone from each call site, which is true of `recordClassScanFailure` and not
+   * of its sibling.
    */
   readonly cycleAt: Date;
   readonly lastError: StorableErrorText;

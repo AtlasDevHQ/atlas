@@ -108,13 +108,17 @@ if ! command -v docker >/dev/null 2>&1; then
   # ⚠️ FATAL under CI. A skip is the right local behaviour and the wrong CI
   # behaviour: in CI it would report "10 passed" on a run that validated no
   # config at all, which is the vacuous-gate shape this suite exists to refuse.
-  if [ -n "${CI:-}${GITHUB_ACTIONS:-}" ]; then
+  # Not `-n "${CI:-}${GITHUB_ACTIONS:-}"` — concatenation makes the literal
+  # string `false` non-empty, so `CI=false` would read as "in CI". It fails in
+  # the safe direction, but a guard whose condition means the opposite of what it
+  # says is one nobody can reason about.
+  if [ "${CI:-}" = "true" ] || [ "${GITHUB_ACTIONS:-}" = "true" ]; then
     echo "::error::docker is unavailable on a CI runner — the validation fixtures cannot run, and skipping them here would report a green gate that checked nothing." >&2
     exit 2
   fi
   echo "  ⊘ skipped — docker not available locally (the validation fixtures run in CI's drift job)"
 else
-  DOCKER_CASES=7
+  DOCKER_CASES=10
   # mutate <name> <sed-script> — copy the real Caddyfile, apply <sed-script>,
   # and REQUIRE the copy to differ. A sed that matched nothing would leave a
   # valid config behind and the case would assert nothing.
@@ -229,6 +233,76 @@ else
     fail "an unreachable docker daemon — expected exit 2 and no validation verdict, got $docker_status"
     printf '%s\n' "$docker_out" | sed 's/^/       | /' >&2
   fi
+
+  # ── the MARKER rule, on its own ────────────────────────────────────────────
+  #
+  # ⚠️ THE CASE ABOVE DOES NOT TEST IT. Measured: with only the unreachable-daemon
+  # fixture, deleting the `docker version` probe leaves the suite at 11/11, and
+  # replacing `grep -qF 'using config from file'` with `if true` ALSO leaves it at
+  # 11/11 — because three redundant guards stand behind one input and whichever
+  # fires first satisfies it. The marker rule is the centrepiece of the whole
+  # exit-1-vs-exit-2 argument and it was the least covered thing in the file.
+  #
+  # A `docker` STUB on PATH is what isolates it: the daemon and image probes are
+  # made to succeed, so the only thing left deciding the verdict is the marker.
+  # This needs no seam in the gate — the gate calls `docker`, and PATH decides
+  # which one.
+  # ⚠️ The stub's `run` output is `cat`ed from a FILE, never interpolated into
+  # the stub's source. The first version inlined it, and caddy's own output
+  # contains double quotes — `{"level":"info","msg":"using config from file"}` —
+  # which closed the stub's quoting and word-split the JSON into `config`, `from`,
+  # `file}` on separate lines. The marker then never matched and the POSITIVE
+  # control failed, which is the fixture lying about the gate.
+  stub_docker() {
+    local dir="$1" run_status="$2" run_out="$3"
+    mkdir -p "$dir" || return 2
+    printf '%s\n' "$run_out" > "$dir/run-output" || return 2
+    cat > "$dir/docker" <<STUB
+#!/usr/bin/env bash
+case "\$1" in
+  version) echo "99.9.9"; exit 0 ;;
+  image)   exit 0 ;;
+  run)     cat "$dir/run-output"; exit $run_status ;;
+esac
+exit 0
+STUB
+    chmod +x "$dir/docker"
+  }
+
+  check_marker() {
+    local name="$1" run_status="$2" run_out="$3" want="$4" marker="$5"
+    local dir="$TMPROOT/stub-$want-$run_status" out status=0
+    stub_docker "$dir" "$run_status" "$run_out" || {
+      fail "$name — could not build the docker stub"
+      return 0
+    }
+    out="$(cd "$ROOT" && PATH="$dir:$PATH" bash "$GATE" 2>&1)" || status=$?
+    if [ "$status" -eq "$want" ] && printf '%s' "$out" | grep -qF -- "$marker"; then
+      pass "$name"
+    else
+      fail "$name — expected exit $want containing '$marker', got $status"
+      printf '%s\n' "$out" | sed 's/^/       | /' >&2
+    fi
+  }
+
+  # A caddy that exits 0 having adapted NOTHING — a base image that gains an
+  # ENTRYPOINT, a `validate` that becomes a deprecating no-op, a `FROM caddy:`
+  # repointed at a wrapper. Exit 0 must NOT be taken as a verdict. This is the
+  # false-GREEN direction, the one the gate must never produce.
+  check_marker "exit 0 with no marker is exit 2, not a PASS" 0 "some unrelated output" \
+    2 "without caddy ever reading the config"
+
+  # …and the failure direction: a nonzero exit with no marker is an environment
+  # fault, not a verdict on the file.
+  check_marker "exit 1 with no marker is exit 2, not a verdict" 1 "docker: something broke" \
+    2 "NOT a verdict on"
+
+  # The positive control. Without it, a gate hard-wired to exit 2 would satisfy
+  # both rows above — the marker must still be able to produce a real verdict.
+  check_marker "exit 1 WITH the marker is a genuine validation failure" 1 \
+    '{"level":"info","msg":"using config from file"}
+Error: adapting config using caddyfile: bad' \
+    1 "is not a valid Caddy config"
 fi
 
 # ── the case count must match ───────────────────────────────────────────────
@@ -238,10 +312,16 @@ fi
 # `check-docs-brain-snippets.test.sh` pins its checkpoint count for the same
 # reason.
 #
-# THREE argv/image cases, plus 7 when docker is present (the real-file floor,
-# five refusals, and the docker-fault case). The tracked-tree check is NOT in
-# the total: it runs after this line, which is deliberate — it has to observe
-# every case's writes, including this one's.
+# THREE argv/image cases, plus 10 when docker is present (the real-file floor,
+# five refusals, the docker-fault case, and three marker cases). The tracked-tree
+# check is NOT in the total: it runs after this line, which is deliberate — it
+# has to observe every case's writes, including this one's.
+#
+# ⚠️ An ABSOLUTE literal, not a count derived from the run. `check-docs-brain-snippets.test.sh`
+# compares two numbers that BOTH move when a fixture vanishes, so deleting a case
+# there leaves it green — measured, `40 passed, 0 failed`. An earlier version of
+# this comment cited that suite as the precedent for this floor; it is the
+# counter-example.
 EXPECTED_CASES=$((3 + DOCKER_CASES))
 if [ "$((PASS + FAIL))" -ne "$EXPECTED_CASES" ]; then
   fail "expected $EXPECTED_CASES cases, ran $((PASS + FAIL)) — a case VANISHED (a setup fault returning early?), which is not a pass"

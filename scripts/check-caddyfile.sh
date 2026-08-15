@@ -119,21 +119,45 @@ command -v docker >/dev/null 2>&1 ||
 #
 # The daemon and image probes come first so the common faults get their own
 # message instead of arriving as an absent marker.
-docker version --format '{{.Server.Version}}' >/dev/null 2>&1 ||
-  die "the docker daemon is not reachable (\`docker version\` failed). This is NOT a verdict on $CADDYFILE — the config was never parsed. Start docker, or check DOCKER_HOST."
+# ⚠️ Both probes PRINT what docker said. Discarding it and guessing the cause in
+# the message ("registry outage, rate limit, or a bad digest") is the
+# generic-error-message rule broken by the very commit that fixed the
+# mislabelling — docker's own line names which it was
+# (`toomanyrequests: You have reached your pull rate limit`, or
+# `manifest unknown`), and that line is the whole diagnostic.
+if ! VERSION_OUT="$(docker version --format '{{.Server.Version}}' 2>&1)"; then
+  echo "$VERSION_OUT" >&2
+  die "the docker daemon is not reachable (see docker's output above). This is NOT a verdict on $CADDYFILE — the config was never parsed. Start docker, or check DOCKER_HOST."
+fi
 
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-  docker pull --quiet "$IMAGE" >/dev/null 2>&1 ||
-    die "could not obtain $IMAGE (pull failed — registry outage, rate limit, or a bad digest). This is NOT a verdict on $CADDYFILE."
+  if ! PULL_OUT="$(docker pull --quiet "$IMAGE" 2>&1)"; then
+    echo "$PULL_OUT" >&2
+    die "could not obtain $IMAGE (see docker's output above). This is NOT a verdict on $CADDYFILE."
+  fi
 fi
 
 echo "[caddyfile] validating $(basename "$CADDYFILE") with $IMAGE"
 
 # `--mount` rather than `-v`: `-v` splits on `:`, so a checkout or TMPDIR path
-# containing a colon becomes a malformed mount — a docker fault that used to
-# arrive dressed as an invalid config. `readonly` because a config adapter has
-# no business writing to its input. `--entrypoint` is not needed: the caddy
-# image's entrypoint IS `caddy`, so the subcommand rides as the command.
+# containing a colon became a malformed mount — a docker fault dressed as an
+# invalid config. `readonly` because a config adapter has no business writing to
+# its input.
+#
+# ⚠️ RESIDUAL, stated rather than claimed closed: `--mount`'s CSV has the same
+# problem with a COMMA in the path. Quoting the value (`source="$CADDYFILE"`) is
+# the documented remedy and it does NOT work here — measured against docker
+# 29.1.3, it produces the usage banner and exit 125, i.e. it breaks the gate for
+# every path. So the separator class is MOVED (colon → comma), not closed. That
+# is acceptable only because the marker rule below keeps it in the safe
+# direction: a comma path fails as "docker exited without caddy reading the
+# config", exit 2, which refuses to assert rather than blaming the file.
+#
+# The image sets no ENTRYPOINT (`docker image inspect` → `Entrypoint: null`,
+# `Cmd: ["caddy","run",…]`), so the full argv INCLUDING the leading `caddy` is
+# the command. Dropping that word gives `exec: "validate": executable file not
+# found`, measured — an earlier version of this comment claimed the entrypoint
+# supplied it, which is the opposite of true.
 set +e
 OUT="$(docker run --rm \
   --mount "type=bind,source=$CADDYFILE,target=/etc/caddy/Caddyfile,readonly" \
@@ -141,13 +165,23 @@ OUT="$(docker run --rm \
 DOCKER_STATUS=$?
 set -e
 
+# ⚠️ THE MARKER IS CHECKED ON BOTH ARMS, and the PASS arm is the one that
+# matters. Applying it only to the failure arm left the green path resting on
+# exactly the reasoning the block above spends twenty lines rejecting — "the
+# status is enough". A base image that gains an ENTRYPOINT, a `validate` that
+# becomes a deprecating no-op, or a `FROM caddy:` repointed at a wrapper whose
+# command layer swallows the args would all exit 0, and this gate would print
+# "valid configuration" over a run that adapted nothing. A false GREEN is the
+# one direction this gate must never produce.
+if ! printf '%s' "$OUT" | grep -qF 'using config from file'; then
+  echo "$OUT" >&2
+  die "docker exited $DOCKER_STATUS without caddy ever reading the config (no \`using config from file\` line above). This is NOT a verdict on $CADDYFILE: the config was never parsed."
+fi
+
 if [ "$DOCKER_STATUS" -eq 0 ]; then
   echo "[caddyfile] PASS: valid configuration"
   exit 0
 fi
 
 echo "$OUT" >&2
-if printf '%s' "$OUT" | grep -qF 'using config from file'; then
-  fail "$CADDYFILE is not a valid Caddy config. It would pass every other gate and then kill the docs container at boot — the Dockerfile COPYs it without adapting it."
-fi
-die "docker exited $DOCKER_STATUS without caddy ever reading the config (no \`using config from file\` line above). This is NOT a verdict on $CADDYFILE: the config was never parsed."
+fail "$CADDYFILE is not a valid Caddy config. It would pass every other gate and then kill the docs container at boot — the Dockerfile COPYs it without adapting it."

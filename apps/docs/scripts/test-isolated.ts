@@ -55,7 +55,10 @@ for (let i = 0; i < args.length; i++) {
     }
     // `Number`, not `parseInt`: `parseInt("4abc", 10)` is `4`, so a typo'd value
     // would be silently accepted at a different concurrency than the one typed.
-    const parsed = Number(raw);
+    // The digit test comes first because `Number` is looser in the other
+    // direction — `Number.isInteger` passes `1e3` (1000 subprocesses), `0x20`
+    // and `" 4 "`, against a message promising "a positive integer".
+    const parsed = /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
     if (!Number.isInteger(parsed) || parsed < 1) {
       console.error(`Invalid --concurrency value: ${raw} (must be a positive integer)`);
       process.exit(1);
@@ -67,6 +70,13 @@ for (let i = 0; i < args.length; i++) {
       `Unknown flag: ${arg}. This runner takes [--concurrency N] [filter] only — ` +
         `--affected and --shard belong to packages/api's runner, not this one.`,
     );
+    process.exit(1);
+  } else if (filter !== undefined) {
+    // A second positional silently overwrote the first, so
+    // `test-isolated.ts llms-surface audience` ran only the `audience` match and
+    // reported green — the same silent-drop this loop refuses for flags,
+    // surviving one arm over.
+    console.error(`Only one filter is supported; got "${filter}" and "${arg}".`);
     process.exit(1);
   } else {
     filter = arg;
@@ -96,7 +106,14 @@ const discovered = [...seen].sort();
 let files = discovered;
 
 if (filter) {
-  files = files.filter((f) => f.includes(filter));
+  // ⚠️ Against the REPO-RELATIVE path, not the absolute one. Matching the
+  // absolute path meant any substring occurring in the checkout — `docs`,
+  // `atlas`, `src`, a username — matched every file, so
+  // `test-isolated.ts docs` ran all nine suites and reported them as a filtered
+  // run. That is the mirror image of the `--affected` defect fixed above: a FULL
+  // run reported as a narrowed one.
+  const needle = filter;
+  files = files.filter((f) => relative(ROOT, f).includes(needle));
 }
 
 // ⚠️ Exit 1 in BOTH arms — a runner that reports success on an empty set is the

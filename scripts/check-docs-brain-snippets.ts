@@ -4,7 +4,7 @@
 //
 // ## Why this exists
 //
-// `guides/brain-connector-authoring.mdx` opens with the sentence "This page is
+// `guides/atlas-connector-authoring.mdx` opens with the sentence "This page is
 // the contract" and then hand-copies `BrainSourceConnector` into a fenced block.
 // It drifted: the real interface gained a non-optional third member —
 // `readonly audience: BrainSourceAudienceFor<S>` (#4985), taking it to four —

@@ -21,10 +21,10 @@ A **class** is a kind of evidence. A **vendor** is one product within a class. A
 | **Transcripts** | Zoom | One cloud-recording transcript from one meeting instance | Shipped |
 | **Email** | Outlook (Microsoft Graph) | One message — never a thread | Shipped |
 | **Docs / wiki / code / drive** | — | — | Deliberately deferred |
-| **Human** | — | A person's own recorded words — today, a [correction](/guides/brain-corrections) | Produced inside Atlas, not a connector |
+| **Human** | — | A person's own recorded words — today, a [correction](/guides/atlas-corrections) | Produced inside Atlas, not a connector |
 | **Warehouse** | — | A fact derived from your own data, by reference | **Reserved** — the vocabulary has it, no producer ships yet |
 
-The last two never appear in the integrations catalog: they are produced inside Atlas rather than fetched from a vendor. `human` is live today — every correction you make is recorded as one. `warehouse` is a reserved slot: when a producer ships, facts carrying it will be the only ones refused *on tier grounds* from [correction by hand](/guides/brain-corrections), because the fix will belong in your data or your semantic layer, where the next sync will not overwrite it. Separately, a fact imported from a region running a newer vocabulary is quarantined from correction until this deployment learns the kind.
+The last two never appear in the integrations catalog: they are produced inside Atlas rather than fetched from a vendor. `human` is live today — every correction you make is recorded as one. `warehouse` is a reserved slot: when a producer ships, facts carrying it will be the only ones refused *on tier grounds* from [correction by hand](/guides/atlas-corrections), because the fix will belong in your data or your semantic layer, where the next sync will not overwrite it. Separately, a fact imported from a region running a newer vocabulary is quarantined from correction until this deployment learns the kind.
 
 ## Why this order — it tracks ACL difficulty, not volume
 
@@ -182,8 +182,8 @@ So a just-ingested episode routinely shows up in retrieval like this:
 
 The window is routinely open, and gets wider the more sources you connect:
 
-- **Extraction is off by default** (`ATLAS_BRAIN_EXTRACTION_ENABLED`). On a deployment that has never switched it on, every ingested episode stays raw and `extraction: pending` permanently, because nothing is drawing facts from them. Turning it on later extracts the backlog rather than losing it. (A workspace can still hold authoritative facts with extraction off — a [correction](/guides/brain-corrections) is a separate, human-authored entry point that does not go through extraction at all.)
-- **Ingest itself is not continuous.** Every brain source is walked by one shared sync cycle on one cadence — `ATLAS_KNOWLEDGE_SYNC_INTERVAL_HOURS`, **default 24 hours**. Without the [chat webhook fast-path](/guides/brain-chat-webhook), "the next sync" can be most of a day away. That knob is in the [Knowledge Base section](/reference/environment-variables#knowledge-base), not the Company Atlas one, because it governs both pillars.
+- **Extraction is off by default** (`ATLAS_BRAIN_EXTRACTION_ENABLED`). On a deployment that has never switched it on, every ingested episode stays raw and `extraction: pending` permanently, because nothing is drawing facts from them. Turning it on later extracts the backlog rather than losing it. (A workspace can still hold authoritative facts with extraction off — a [correction](/guides/atlas-corrections) is a separate, human-authored entry point that does not go through extraction at all.)
+- **Ingest itself is not continuous.** Every brain source is walked by one shared sync cycle on one cadence — `ATLAS_KNOWLEDGE_SYNC_INTERVAL_HOURS`, **default 24 hours**. Without the [chat webhook fast-path](/guides/atlas-chat-webhook), "the next sync" can be most of a day away. That knob is in the [Knowledge Base section](/reference/environment-variables#knowledge-base), not the Company Atlas one, because it governs both pillars.
 - **Extraction drains at a fixed rate, and it is the real bound.** The fiber takes **25 episodes every 5 minutes — roughly 300 an hour, process-wide across every workspace**, oldest first with no per-workspace fairness. Both numbers are constants with no knob. Size a first backfill against that figure: 50 Slack channels with a week of history apiece will sit in the window for a long time, and nothing about that is a fault.
 - **Zoom publishes its transcript asynchronously**, minutes after the meeting ends. The recording exists before the transcript does.
 - **Extracted facts then go through review.** Extraction produces *draft candidates*; nothing **extracted** becomes an authoritative fact without a human approving it at the review gate. (A hand-written correction lands authoritative immediately — it already has its human, so queueing it for a second one would only review the reviewer.)
@@ -194,14 +194,14 @@ What `extraction: pending` never means is that something was dropped. Episodes a
 
 Corroboration and contradiction are decided on the claim, not on the class it came from. The same fact asserted in a meeting and in an email **corroborates** — one fact with two provenance edges — rather than landing as two facts. A claim that contradicts an existing one records an advisory `in-tension-with` edge, and both sides are surfaced with their own provenance.
 
-Nothing ranks one class above another. Atlas has no rule that says a transcript beats an email, and adding one would be [arbitration Atlas deliberately refuses to do](/guides/brain-conflicts#why-atlas-refuses-to-arbitrate).
+Nothing ranks one class above another. Atlas has no rule that says a transcript beats an email, and adding one would be [arbitration Atlas deliberately refuses to do](/guides/atlas-conflicts#why-atlas-refuses-to-arbitrate).
 
 Access is decided per fact, not per cluster: a reader entitled to a meeting's audience but not to a mail message's sees exactly one side, and the other is reported as a withheld counterpart rather than silently omitted.
 
 ## Related
 
-- [Company Atlas — Chat Webhook Fast-Path](/guides/brain-chat-webhook) — lower ingest latency for Slack, and why the poll stays the floor
-- [Company Atlas — Writing a Source Connector](/guides/brain-connector-authoring) — the contract a new vendor implements
-- [Company Atlas — Conflicts](/guides/brain-conflicts) — what happens when two sources disagree
-- [Company Atlas — Temporal Model](/guides/brain-temporal-model) — how a claim's validity window is recorded
+- [Company Atlas — Chat Webhook Fast-Path](/guides/atlas-chat-webhook) — lower ingest latency for Slack, and why the poll stays the floor
+- [Company Atlas — Writing a Source Connector](/guides/atlas-connector-authoring) — the contract a new vendor implements
+- [Company Atlas — Conflicts](/guides/atlas-conflicts) — what happens when two sources disagree
+- [Company Atlas — Temporal Model](/guides/atlas-temporal-model) — how a claim's validity window is recorded
 - [Environment variables → Company Atlas](/reference/environment-variables#company-atlas) — backfill windows, cadences, and the staleness bound

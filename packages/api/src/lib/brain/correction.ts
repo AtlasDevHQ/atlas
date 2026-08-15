@@ -620,7 +620,7 @@ export const DEPENDENT_FACTS_SQL = `SELECT ed.from_fact_id::text AS id
  * to a query that returns zero rows and the conclusion that the write never
  * happened.
  *
- * Give one of the three a reader and the prose in `brain-corrections.mdx` and
+ * Give one of the three a reader and the prose in `atlas-corrections.mdx` and
  * this module's `pin` header bullet becomes an understatement that should be
  * corrected in the same change; `candidates.test.ts` fails on exactly that
  * transition, so the pairing is enforced rather than remembered.

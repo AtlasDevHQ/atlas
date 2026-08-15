@@ -24,7 +24,7 @@ Every correction materializes an **immutable, human-authored episode** recording
 
 Retraction is the sole path that withdraws a claim. It stamps `invalidatedAt` and never touches `status` — a withdrawal is a tombstone, not a demotion, so a retracted fact still reports whatever review status it held before.
 
-The row is **not deleted**. Every fact-serving read hides it, including [`asOf` reads](/guides/brain-temporal-model#reading-the-brain-as-of-a-past-instant), because hiding history is precisely what this verb is for. The one deliberate exception is the [conflict cluster](/guides/brain-conflicts): a retracted claim is still listed there, labelled with its `invalidatedAt`, as a withdrawn rival of any live claim it contested — a reviewer needs to see that a conflict was resolved by withdrawing the other side.
+The row is **not deleted**. Every fact-serving read hides it, including [`asOf` reads](/guides/atlas-temporal-model#reading-the-brain-as-of-a-past-instant), because hiding history is precisely what this verb is for. The one deliberate exception is the [conflict cluster](/guides/atlas-conflicts): a retracted claim is still listed there, labelled with its `invalidatedAt`, as a withdrawn rival of any live claim it contested — a reviewer needs to see that a conflict was resolved by withdrawing the other side.
 
 Retraction **flags** dependent claims rather than cascading to them. Facts holding a `derives-from` edge onto the retracted one come back in `flaggedForReReview`; their own `invalidatedAt`, `validTo`, and `status` are untouched. A conclusion may well survive losing one of its premises, and only a human can say whether this one did.
 
@@ -54,7 +54,7 @@ The correction episode becomes evidence: a `provenance` edge from the fact to th
 
 ### `pin` — advisory emphasis
 
-The same evidence edge plus a `pinned` marker. Advisory at rest, exactly like the [decay signal](/guides/brain-temporal-model#staleness-is-advisory) it counteracts: nothing auto-acts on it — and today nothing reads it either. The marker is recorded on the fact's provenance for a future review surface; the effect you can observe now is the evidence edge, which is what resets the decay clock.
+The same evidence edge plus a `pinned` marker. Advisory at rest, exactly like the [decay signal](/guides/atlas-temporal-model#staleness-is-advisory) it counteracts: nothing auto-acts on it — and today nothing reads it either. The marker is recorded on the fact's provenance for a future review surface; the effect you can observe now is the evidence edge, which is what resets the decay clock.
 
 <Callout type="info" title="Both vouching verbs refuse a claim that is no longer current">
   `re-authority` and `pin` are refused when the target's validity window has **already closed** — no current read serves such a claim, so re-anchoring its staleness clock would change nothing anybody can see. A supersession is the usual cause, and then you vouch for the claim that replaced it. If nothing replaced it — a scheduled end that simply elapsed — there is no correction to apply at all: `supersede` refuses a closed window too, so the claim has to be observed again through ingest before it can be vouched for. A *future-dated* `validTo` is a live claim whose end is merely scheduled, and is accepted.
@@ -82,5 +82,5 @@ Every refusal carries both a machine-readable reason and actionable prose: a too
 
 ## Related
 
-- [Company Atlas — Temporal Model](/guides/brain-temporal-model) — validity windows, `asOf` reads, and the staleness signal
-- [Company Atlas — Conflicts](/guides/brain-conflicts) — what supersession resolves
+- [Company Atlas — Temporal Model](/guides/atlas-temporal-model) — validity windows, `asOf` reads, and the staleness signal
+- [Company Atlas — Conflicts](/guides/atlas-conflicts) — what supersession resolves

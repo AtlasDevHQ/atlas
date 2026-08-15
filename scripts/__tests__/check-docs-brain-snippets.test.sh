@@ -52,7 +52,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 GUARD="$SCRIPT_DIR/check-docs-brain-snippets.ts"
-DOC="$ROOT/apps/docs/content/shared/guides/brain-connector-authoring.mdx"
+DOC="$ROOT/apps/docs/content/shared/guides/atlas-connector-authoring.mdx"
 TYPES="$ROOT/packages/api/src/lib/brain/ingest/types.ts"
 # A throwaway second doc file, so the DOCS_GLOB half of "both sides are
 # discovered" is falsifiable. Removed by restore().

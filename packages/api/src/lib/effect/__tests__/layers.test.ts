@@ -479,6 +479,13 @@ describe("makeSchedulerLive", () => {
         // flag would let a deployment opt out of hearing that its rows are
         // invisible.
         "brain_grant_sweep",
+        // #5213 — the Coverage Surface's denominator snapshots (ADR-0041).
+        // Gated ON by default like the audience sync and for its reason: it
+        // reads rosters the workspace has already connected, produces no claim,
+        // and grants no model budget. ADR-0041 puts the page's denominators
+        // behind a scheduled cycle precisely so no vendor call happens on a page
+        // view, which makes the fiber's absence a page that cannot be correct.
+        "brain_coverage_snapshot",
       ],
     },
   ] as const;

@@ -362,7 +362,12 @@ describe("runMigrations", () => {
     //   stable id` for `subject_cmp`/`object_cmp` and emits the vocabulary edge
     //   that puts a surrogate-keyed warehouse row in the same slot as an
     //   extracted mention of its name) = 201.
-    expect(count).toBe(201);
+    //   Plus 0201 (brain_coverage_snapshot — #5213 / ADR-0041's denominator
+    //   snapshots: a dated survey-unit roster per (workspace, class) plus the
+    //   cycle record that lets a failed enumeration read "unavailable since
+    //   <date>" instead of zero. `state` is CHECK-derived from perimeter AND
+    //   observed evidence, which is ADR-0040 rule 3 in the schema) = 202.
+    expect(count).toBe(202);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -592,6 +597,7 @@ describe("runMigrations", () => {
         "0198_brain_slack_membership_scope.sql",
         "0199_brain_enrollment.sql",
         "0200_brain_entity.sql",
+        "0201_brain_coverage_snapshot.sql",
       ],
     });
 

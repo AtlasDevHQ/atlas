@@ -594,6 +594,120 @@ export async function fetchUserConversationsPage(
 }
 
 // ---------------------------------------------------------------------------
+// Read method for the Coverage Surface's chat denominator (#5213)
+// ---------------------------------------------------------------------------
+
+/** One page of `conversations.list` — the workspace's PUBLIC channel roster. */
+export interface SlackConversationsListPage {
+  readonly ok: true;
+  readonly channels: readonly SlackConversationInfo[];
+  readonly nextCursor: string | null;
+}
+
+/**
+ * One page of the workspace's **public** channel roster — ADR-0041's
+ * `chat-channel-roster` denominator.
+ *
+ * ## Why this exists beside both `listChannels` and `fetchUserConversationsPage`
+ *
+ * The three answer three different questions and the differences are exactly the
+ * ones that fail silently:
+ *
+ *   - {@link fetchUserConversationsPage} answers *"what is the bot IN?"* — the
+ *     ingest perimeter. It cannot see a channel nobody invited the bot to, which
+ *     is precisely the population a denominator has to count.
+ *   - {@link listChannels} answers *"what can an admin pick?"* and degrades for
+ *     that job: it caps at 5 pages and reports the truncation to nobody, it
+ *     passes `exclude_archived=true`, and on `missing_scope` it silently retries
+ *     public-only and returns the narrower listing as a success. Every one of
+ *     those is fine for a picker that falls back to manual entry, and every one
+ *     of them understates a denominator without saying so.
+ *   - This one answers *"what does this token's workspace CONTAIN?"*, and it
+ *     reports incompleteness to the caller instead of absorbing it, because
+ *     ADR-0041's map edge is a mark the page has to render rather than a
+ *     shortfall it can absorb.
+ *
+ * **Public channels only** (`types=public_channel`). Private channels the bot is
+ * not in are not visible to the token at all, so asking for them would return
+ * exactly the private channels the bot IS in — which the perimeter half already
+ * has — while risking a whole-request `missing_scope` on a token holding
+ * `channels:read` without `groups:read` (#3462's failure). ADR-0041's
+ * vendor-public label clause is also scoped to public channels by definition, so
+ * the label half and the count half agree.
+ *
+ * `exclude_archived=false`, matching {@link fetchUserConversationsPage}: an
+ * archived channel's history is still readable and still evidence, so dropping
+ * it here would shrink the denominator the moment somebody archived a channel —
+ * and shrinking a denominator raises a ratio, which is the flattering direction.
+ *
+ * A page carrying one unusable entry is refused WHOLE, on
+ * {@link fetchUserConversationsPage}'s reasoning applied to the denominator: the
+ * caller's roster is swept against what this returns, so an understated page
+ * does not merely miss a channel, it RETIRES one — the "loud understatement"
+ * mutation ADR-0041's fixture charter names.
+ */
+export async function fetchConversationsListPage(
+  token: string,
+  params: { readonly cursor?: string; readonly limit: number },
+): Promise<SlackConversationsListPage | SlackReadError> {
+  const query = new URLSearchParams({
+    types: "public_channel",
+    exclude_archived: "false",
+    limit: String(params.limit),
+  });
+  if (params.cursor !== undefined) query.set("cursor", params.cursor);
+
+  const result = await slackReadGet("conversations.list", token, query);
+  if (!result.ok) return result;
+
+  if (!Array.isArray(result.data.channels)) {
+    log.error(
+      { method: "conversations.list" },
+      "Slack returned ok:true with a non-array `channels` — refusing to read it as an empty roster",
+    );
+    return { ok: false, error: "malformed_conversations_page", retryAfterSeconds: null };
+  }
+
+  const channels: SlackConversationInfo[] = [];
+  for (const raw of result.data.channels) {
+    if (raw === null || typeof raw !== "object") continue;
+    const ch = raw as Record<string, unknown>;
+    if (typeof ch.id !== "string" || ch.id === "") continue;
+    // `is_private` is REQUIRED even though this request asks for public channels
+    // only: the flag is what the Coverage Surface's vendor-public label clause
+    // leans on, and inferring `false` from the `types=` parameter would name a
+    // channel on the strength of what we ASKED for rather than what Slack said.
+    if (typeof ch.is_private !== "boolean") continue;
+    channels.push({
+      id: ch.id,
+      name: typeof ch.name === "string" ? ch.name : ch.id,
+      isPrivate: ch.is_private,
+      // Read off the payload here, unlike `users.conversations` — this method
+      // enumerates the workspace, so membership is a property of the row rather
+      // than of the endpoint.
+      isMember: ch.is_member === true,
+      isArchived: ch.is_archived === true,
+    });
+  }
+  if (channels.length !== result.data.channels.length) {
+    log.error(
+      {
+        method: "conversations.list",
+        returned: result.data.channels.length,
+        usable: channels.length,
+      },
+      "Slack public-channel roster page contained unusable entries — refusing a partial page rather than understating the coverage denominator",
+    );
+    return { ok: false, error: "malformed_conversations_page", retryAfterSeconds: null };
+  }
+
+  const meta = result.data.response_metadata as { next_cursor?: unknown } | undefined;
+  const nextCursor =
+    typeof meta?.next_cursor === "string" && meta.next_cursor.length > 0 ? meta.next_cursor : null;
+  return { ok: true, channels, nextCursor };
+}
+
+// ---------------------------------------------------------------------------
 // Read methods for audience-membership sync (#4801)
 // ---------------------------------------------------------------------------
 

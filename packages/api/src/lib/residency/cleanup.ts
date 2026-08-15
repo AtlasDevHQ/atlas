@@ -248,6 +248,16 @@ export const CLEANUP_TABLE_RULES = {
   // classified 'stays' rather than exported: the target rebuilds it from a
   // uniformly-NULL first cycle.
   brain_audience_reverify_attempt: { kind: "column", column: "workspace_id" },
+  // The Coverage Surface's dated roster and its cycle record (#5213, ADR-0041).
+  // Column-scoped and phase-indifferent: no FK in either direction — the roster
+  // stores a channel id and an `<entity>:<dimension>` pair as plain text, never
+  // a row reference — so there is nothing to order against `brain_slack_channel`
+  // or `semantic_entities`. Classified 'stays' rather than exported because
+  // every reading in them is a reading of the SOURCE region's credentials at a
+  // source-region instant; the target rebuilds both on its first successful
+  // cycle and says "enumeration unavailable" until then.
+  brain_coverage_snapshot: { kind: "column", column: "workspace_id" },
+  brain_coverage_cycle: { kind: "column", column: "workspace_id" },
   // No org column: cache keys have no org dimension, but the Slack
   // installation store rides this table with the org id in the JSONB value
   // (see the bundle-scope rationale) — scope by that expression. Generic

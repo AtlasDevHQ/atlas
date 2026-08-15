@@ -1997,6 +1997,45 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     saasVisible: false,
   },
   {
+    // The Coverage Surface's denominator enumeration (#5213, ADR-0041).
+    //
+    // Default ON, and workspace-scoped for the audience sync's reason one seam
+    // over: the cycle reads a tenant's own vendor rosters, so the tenant is who
+    // decides. ADR-0040's rule makes ON the right default — availability is
+    // automatic, authority never is — and nothing this cycle writes is a claim:
+    // it counts survey units and stores no message, no fact and no person.
+    //
+    // ⚠️ NOT a staleness knob. ADR-0041 refuses one by name ("No staleness knob
+    // — not env, not the settings registry"), and this key does not become one:
+    // it decides whether the roster is re-enumerated at all, never how far a
+    // source may move before it is called stale.
+    key: "ATLAS_BRAIN_COVERAGE_SNAPSHOT_ENABLED",
+    section: "Knowledge Base",
+    label: "Company Atlas Coverage Snapshot",
+    description:
+      "Keep the Company Atlas coverage page's denominators up to date by periodically enumerating what Atlas's credentials can see — the channels in a connected chat workspace, the entities and dimensions in the published semantic layer. Counts only: no message, no claim and no person is read or stored by this cycle. Switching it OFF freezes the coverage page at its last reading, which the page then labels with that date rather than showing zero.",
+    type: "boolean",
+    default: "true",
+    envVar: "ATLAS_BRAIN_COVERAGE_SNAPSHOT_ENABLED",
+    scope: "workspace",
+    saasVisible: false,
+  },
+  {
+    // Cadence of the denominator enumeration. Platform-scoped because the cost
+    // it governs is the operator's — one channel-roster walk plus a bounded
+    // probe rotation per connected workspace per cycle.
+    key: "ATLAS_BRAIN_COVERAGE_SNAPSHOT_INTERVAL_MINUTES",
+    section: "Knowledge Base",
+    label: "Company Atlas Coverage Snapshot Interval",
+    description:
+      "How often the Company Atlas coverage page's denominators are re-enumerated, in minutes (default 60). A roster changes on a human timescale — someone creates a channel, someone invites the bot — so this is also roughly how long a new channel takes to appear on the coverage page. Applies at restart; non-positive or unparseable values fall back to the default.",
+    type: "number",
+    default: "60",
+    envVar: "ATLAS_BRAIN_COVERAGE_SNAPSHOT_INTERVAL_MINUTES",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
     // The time bound on the interval knob's promise (#4808). Without it, "the
     // answer is one interval" holds only while the roster reads SUCCEED — a
     // channel Atlas was removed from fails every cycle forever and keeps

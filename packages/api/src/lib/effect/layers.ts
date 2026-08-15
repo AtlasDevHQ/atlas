@@ -321,6 +321,12 @@ export const SCHEDULER_WORK_SPAN_NAMES = {
   // at read time. DAILY by default — the defect is permanent, so its count is a
   // gauge and its log line is a digest, not an event stream.
   brain_grant_sweep: "atlas.scheduler.brain_grant_sweep",
+  // #5213 — the Coverage Surface's denominator snapshots (ADR-0041). Per class,
+  // per workspace, enumerate the survey units the granted credentials can see
+  // and write a DATED roster. `map_edges` is the attribute worth watching: a
+  // non-zero count means part of a workspace's map is beyond its credentials,
+  // which is a legitimate state and also what a revoked scope looks like.
+  brain_coverage_snapshot: "atlas.scheduler.brain_coverage_snapshot",
   // #4457 — internal-DB scheduled backups. The tick claims the current
   // cadence window atomically (partial UNIQUE index on
   // `backups.scheduled_window`), then create→verify→purge through the
@@ -2471,6 +2477,80 @@ export function makeSchedulerLive(
           message: "Company-brain audience sync tick failed — will retry next interval",
         },
         startLog: "Company-brain audience sync scheduler started",
+      });
+
+      // ── Periodic fiber: coverage denominator snapshots (#5213, ADR-0041) ──
+      // ADR-0041 § The surface: denominators come from SCHEDULED CYCLES writing
+      // dated snapshots, "never live vendor calls on page view", because "the
+      // page's correctness claim must not couple its availability to five
+      // vendors' rate limits, and the date is part of the statement."
+      //
+      // The `yield* Migration` barrier above sequences it after `MigrationLive`,
+      // so the eager boot tick cannot race 0201 creating the tables.
+      yield* registerPeriodicFiber({
+        name: "brain_coverage_snapshot",
+        intervalMs: () => {
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports -- read the interval synchronously at fiber-registration time (same pattern as brain_audience_sync). NOTE the knob is hot-reloadable in the registry but is read ONCE here, so a change takes effect at restart.
+          const { getCoverageSnapshotIntervalMs } = require("@atlas/api/lib/scheduler/brain-coverage-snapshot") as {
+            getCoverageSnapshotIntervalMs: () => number;
+          };
+          return getCoverageSnapshotIntervalMs();
+        },
+        gate: {
+          check: () => {
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
+            const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
+              hasInternalDB: () => boolean;
+            };
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports -- same reason
+            const { isCoverageSnapshotEnabled } = require("@atlas/api/lib/scheduler/brain-coverage-snapshot") as {
+              isCoverageSnapshotEnabled: (workspaceId?: string) => boolean;
+            };
+            // No workspace argument: the PLATFORM gate. The per-workspace
+            // decision is read again inside the cycle, per workspace.
+            return hasInternalDB() && isCoverageSnapshotEnabled();
+          },
+          skipLog:
+            "Company-brain coverage snapshots not started — needs an internal database and ATLAS_BRAIN_COVERAGE_SNAPSHOT_ENABLED",
+        },
+        tick: Effect.tryPromise({
+          try: () => import("@atlas/api/lib/scheduler/brain-coverage-snapshot"),
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }).pipe(
+          Effect.flatMap((m) =>
+            // `tryPromise`, NOT `promise` — `brain_audience_sync`'s argument
+            // verbatim: the cycle catches its own scan and per-workspace faults,
+            // but `hasInternalDB()` and the per-workspace settings read sit
+            // outside that net, and a defect would kill this fiber for the life
+            // of the process with no signal but an ABSENCE of spans.
+            Effect.tryPromise({
+              try: () => m.runCoverageSnapshotCycle(),
+              catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+            }),
+          ),
+        ),
+        spanResultAttributes: (result) => ({
+          "atlas.brain.coverage.status": result.status,
+          "atlas.brain.coverage.workspaces_inspected": result.workspacesInspected,
+          "atlas.brain.coverage.workspaces_skipped_disabled": result.workspacesSkippedDisabled,
+          "atlas.brain.coverage.classes_enumerated": result.classesEnumerated,
+          // The one that means "part of the map is older than the rest": a
+          // refused enumeration keeps its previous dated roster, so the page
+          // stays correct and stays OLD, which is invisible without this.
+          "atlas.brain.coverage.classes_failed": result.classesFailed,
+          "atlas.brain.coverage.units_written": result.unitsWritten,
+          "atlas.brain.coverage.units_retired": result.unitsRetired,
+          "atlas.brain.coverage.units_surveyed": result.unitsSurveyed,
+          // Map edges. Non-zero is a legitimate state (a token that cannot list
+          // public channels) AND what a newly revoked scope looks like, so a
+          // step change here is the alertable shape rather than the level.
+          "atlas.brain.coverage.map_edges": result.mapEdges,
+        }),
+        onTickFailure: {
+          level: "warn",
+          message: "Company-brain coverage snapshot tick failed — will retry next interval",
+        },
+        startLog: "Company-brain coverage snapshot scheduler started",
       });
 
       // ── Periodic fiber: malformed-grant sweep (#4797, ADR-0036) ──────────

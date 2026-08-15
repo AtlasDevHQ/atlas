@@ -1,0 +1,366 @@
+/**
+ * The chat class's denominator enumeration (#5213, ADR-0041).
+ *
+ * Answers, for one workspace, per Slack channel: does it exist, is it inside the
+ * ingest perimeter, has it actually produced evidence, and when did the SOURCE
+ * last move. That is ADR-0041's `chat-channel-roster` denominator plus the two
+ * timestamps a measured lag needs.
+ *
+ * ## Three reads, and each answers a question the others cannot
+ *
+ *   1. **`brain_slack_channel`** — the perimeter. `is_member AND excluded_at IS
+ *      NULL` is the ingest scope (#5203), and an excluded row is a deliberate act
+ *      that took a channel OUT of it. This read cannot see a channel nobody
+ *      invited the bot to, which is exactly the population a denominator needs.
+ *   2. **`conversations.list`** — the public roster: what the workspace CONTAINS,
+ *      not what the bot is in. ADR-0041 state 2 lives here.
+ *   3. **`conversations.history` with `limit: 1`** — the VENDOR's newest message
+ *      timestamp, on a bounded rotation.
+ *
+ * ## Why (3) asks Slack rather than reading our own episodes
+ *
+ * "Stale means the source has moved since we last looked" (ADR-0041). Our newest
+ * episode is the *"we last looked"* half; deriving the *"source has moved"* half
+ * from the same table makes the lag structurally zero and the badge decorative.
+ * A stalled ingest is precisely the case the measurement exists to catch, and it
+ * is the case a self-referential reading cannot see. So the probe pays a Slack
+ * call — bounded to {@link CHAT_ACTIVITY_PROBES_PER_CYCLE} per cycle,
+ * oldest-reading-first, on `brain_slack_channel`'s health-rotation model where
+ * the ORDER BY is the whole scheduler.
+ *
+ * ## The two ways this arm degrades, and why only one of them refuses
+ *
+ *   - **`missing_scope` on the public roster** is a stable fact about the map:
+ *     these credentials cannot see beyond membership, and they will not be able
+ *     to next cycle either. It degrades to the `chat-public-roster-unreadable`
+ *     MARK and the perimeter half still enumerates — AC-2's "visibly, never
+ *     silently". The denominator legitimately shrinks to what the credentials can
+ *     see, which ADR-0041 states outright: "widening scopes grows the
+ *     denominator, so connecting more can make a ratio go down."
+ *   - **Anything else** — rate limits, transport failures, a malformed page — is
+ *     "we could not look this cycle", and it REFUSES the whole enumeration so the
+ *     previous dated roster stays in place. Writing the perimeter half alone
+ *     would let the persistence sweep retire every state-2 channel because a
+ *     Slack 429 landed, which is the flattering direction and exactly the loud
+ *     understatement ADR-0041's fixture charter names.
+ *
+ * @see ../../coverage-enumeration.ts — the shape this produces and the write
+ * @see ../../../slack/api.ts — `fetchConversationsListPage`, and why it exists
+ *   beside `listChannels` and `fetchUserConversationsPage`
+ */
+
+import { createLogger } from "@atlas/api/lib/logger";
+import { internalQuery } from "@atlas/api/lib/db/internal";
+import {
+  fetchConversationHistoryPage,
+  fetchConversationsListPage,
+} from "@atlas/api/lib/slack/api";
+import { SLACK_SOURCE } from "@atlas/api/lib/brain/sources";
+import {
+  readActivityProbeRotation,
+  type CoverageDegradedArm,
+  type CoverageEnumeration,
+  type EnumeratedSurveyUnit,
+} from "@atlas/api/lib/brain/coverage-enumeration";
+import { SLACK_CHANNEL_ID_PATTERN } from "./config";
+
+const log = createLogger("brain.coverage.slack");
+
+/**
+ * Page bound on the public-channel roster. 20 × 200 = 4,000 public channels,
+ * matching `MEMBERSHIP_MAX_PAGES` × `MEMBERSHIP_PAGE_LIMIT` so the two
+ * enumerations in this subsystem have one bound to reason about.
+ *
+ * Hitting it emits the `chat-public-roster-truncated` MARK rather than refusing:
+ * the roster we got is a stable prefix of Slack's own ordering, so the count
+ * does not churn between cycles, and the mark is what stops it being read as the
+ * whole map. "Any denominator that includes [the unenumerable] is fabricated" —
+ * so the honest rendering is a count plus an edge, never an estimate.
+ */
+export const PUBLIC_ROSTER_MAX_PAGES = 20;
+export const PUBLIC_ROSTER_PAGE_LIMIT = 200;
+
+/**
+ * Vendor-activity probes per cycle — `SLACK_CHANNEL_HEALTH_PROBES_PER_CYCLE`'s
+ * bound and its argument: at most this many extra Slack calls regardless of
+ * perimeter size, so a 400-channel workspace takes ~20 cycles to read every
+ * channel's activity once. Right for a measurement whose subject is a lag
+ * measured against a sync cadence rather than a per-minute reading.
+ */
+export const CHAT_ACTIVITY_PROBES_PER_CYCLE = 20;
+
+/** Injection seam for the tests — the two Slack reads and the clock. */
+export interface SlackCoverageDeps {
+  readonly fetchConversationsListPage?: typeof fetchConversationsListPage;
+  readonly fetchConversationHistoryPage?: typeof fetchConversationHistoryPage;
+}
+
+interface PerimeterRow extends Record<string, unknown> {
+  channel_id: string;
+  name: string | null;
+  is_member: boolean;
+  excluded_at: Date | null;
+}
+
+/**
+ * The perimeter half. EVERY row, including excluded ones: an exclusion is a
+ * deliberate act, so the channel stays nameable and stays in the denominator —
+ * it moved out of the perimeter, it did not stop existing.
+ */
+const PERIMETER_SQL = `SELECT channel_id, name, is_member, excluded_at
+     FROM brain_slack_channel
+    WHERE workspace_id = $1
+    ORDER BY channel_id ASC`;
+
+/**
+ * Our newest observed evidence, per channel.
+ *
+ * `split_part(source_id, ':', 1)` reverses `slackEpisodeSourceId`'s
+ * `<channelId>:<ts>` — a channel id holds no colon (`SLACK_CHANNEL_ID_PATTERN`)
+ * and the `ts` is always the second half, so the split is exact rather than
+ * best-effort. Pinned by `coverage-slack.test.ts`, which builds its fixture
+ * episodes through `slackEpisodeSourceId` so a format change reddens here.
+ */
+const NEWEST_EVIDENCE_SQL = `SELECT split_part(source_id, ':', 1) AS channel_id,
+          max(occurred_at) AS newest
+     FROM brain_episodes
+    WHERE workspace_id = $1 AND source = $2
+    GROUP BY 1`;
+
+/**
+ * Enumerate the chat class's survey units for one workspace.
+ *
+ * Never throws for a vendor reason: a Slack failure becomes either a map-edge
+ * mark or `{ ok: false }`, both of which the caller can persist. A DATABASE
+ * failure propagates — the roster reads are the perimeter's ground truth, and a
+ * caught one would hand back a unit list that reads as "this workspace has no
+ * channels".
+ */
+export async function enumerateSlackCoverage(params: {
+  readonly workspaceId: string;
+  readonly token: string;
+  readonly deps?: SlackCoverageDeps;
+}): Promise<CoverageEnumeration> {
+  const { workspaceId, token } = params;
+  const listPage = params.deps?.fetchConversationsListPage ?? fetchConversationsListPage;
+  const historyPage = params.deps?.fetchConversationHistoryPage ?? fetchConversationHistoryPage;
+  const degraded: CoverageDegradedArm[] = [];
+
+  const [perimeterRows, evidenceRows] = await Promise.all([
+    internalQuery<PerimeterRow>(PERIMETER_SQL, [workspaceId]),
+    internalQuery<{ channel_id: string; newest: Date | string | null }>(NEWEST_EVIDENCE_SQL, [
+      workspaceId,
+      SLACK_SOURCE,
+    ]),
+  ]);
+
+  const newestEvidence = new Map<string, Date>();
+  for (const row of evidenceRows) {
+    const at = toDate(row.newest);
+    if (at !== null) newestEvidence.set(row.channel_id, at);
+  }
+
+  // ── The public roster ────────────────────────────────────────────────────
+  const publicRoster = await readPublicRoster({ token, listPage, workspaceId });
+  if (publicRoster.kind === "refused") return { ok: false, error: publicRoster.error };
+  if (publicRoster.kind === "unreadable") {
+    degraded.push("chat-public-roster-unreadable");
+    log.warn(
+      { workspaceId },
+      "brain coverage: this workspace's Slack token cannot list public channels — the chat denominator counts only what the bot is in, and the surface carries a map edge saying so",
+    );
+  } else if (publicRoster.truncated) {
+    degraded.push("chat-public-roster-truncated");
+  }
+  const vendorPublic =
+    publicRoster.kind === "roster" ? publicRoster.channels : new Map<string, string>();
+
+  // ── The activity probe rotation ──────────────────────────────────────────
+  // Read BEFORE the units are assembled, because the rotation orders on the
+  // PREVIOUS cycle's readings — a rotation computed from this cycle's freshly
+  // stamped rows would have no ordering at all.
+  const due = await readActivityProbeRotation({
+    workspaceId,
+    sourceClass: "chat",
+    limit: CHAT_ACTIVITY_PROBES_PER_CYCLE,
+  });
+  const probe = await probeActivity({ token, historyPage, channels: due, workspaceId });
+  if (probe.unreadable) degraded.push("chat-activity-unreadable");
+
+  // ── The union ────────────────────────────────────────────────────────────
+  const units: EnumeratedSurveyUnit[] = [];
+  const seen = new Set<string>();
+  for (const row of perimeterRows) {
+    if (!SLACK_CHANNEL_ID_PATTERN.test(row.channel_id)) continue;
+    seen.add(row.channel_id);
+    const inPerimeter = row.is_member === true && row.excluded_at === null;
+    units.push({
+      unitId: row.channel_id,
+      label: row.name === null || row.name === "" ? null : row.name,
+      inPerimeter,
+      // Membership and exclusion are both on ADR-0041's deliberate-act list, so
+      // every row of this table is nameable under clause 1 whatever the vendor
+      // says. That is the clause that survives Slack changing what "public"
+      // means, which is why `coverageLabelPolicy` prefers it.
+      deliberateAct: true,
+      // ⚠️ NOT `brain_slack_channel.is_private`. That column is DISPLAY ONLY and
+      // may be stale (see its schema comment: a stale `false` would publish an
+      // invite-only channel's contents org-wide). The vendor-public clause is
+      // answered from the LIVE public roster or not at all — a channel absent
+      // from it is treated as not-public, which is the fail-closed direction.
+      vendorReportsPublic: vendorPublic.has(row.channel_id),
+      newestEvidenceAt: newestEvidence.get(row.channel_id) ?? null,
+      activity: probe.readings.get(row.channel_id) ?? { probed: false },
+    });
+  }
+  for (const [channelId, name] of vendorPublic) {
+    if (seen.has(channelId)) continue;
+    if (!SLACK_CHANNEL_ID_PATTERN.test(channelId)) continue;
+    units.push({
+      unitId: channelId,
+      label: name === "" ? null : name,
+      // Nobody put it in the perimeter — ADR-0041 state 2, verbatim.
+      inPerimeter: false,
+      deliberateAct: false,
+      vendorReportsPublic: true,
+      // Structurally null rather than looked up: an episode can only exist for a
+      // channel the bot was in, and a channel the bot was in has a
+      // `brain_slack_channel` row, so it was handled above.
+      newestEvidenceAt: null,
+      // A history read for a channel the bot is not in is refused by Slack, so
+      // there is nothing to probe and no gap in not probing it.
+      activity: { probed: false },
+    });
+  }
+
+  return { ok: true, units, degraded };
+}
+
+// ---------------------------------------------------------------------------
+// The public roster
+// ---------------------------------------------------------------------------
+
+type PublicRosterResult =
+  /** Read completely, or up to the page bound. `channels` maps id → name. */
+  | { readonly kind: "roster"; readonly channels: Map<string, string>; readonly truncated: boolean }
+  /** A stable capability fact: these credentials cannot list public channels. */
+  | { readonly kind: "unreadable" }
+  /** A transient failure. The caller refuses the whole cycle. */
+  | { readonly kind: "refused"; readonly error: string };
+
+async function readPublicRoster(params: {
+  readonly token: string;
+  readonly listPage: typeof fetchConversationsListPage;
+  readonly workspaceId: string;
+}): Promise<PublicRosterResult> {
+  const channels = new Map<string, string>();
+  let cursor: string | undefined;
+  for (let page = 0; ; page++) {
+    if (page >= PUBLIC_ROSTER_MAX_PAGES) {
+      log.warn(
+        { workspaceId: params.workspaceId, channels: channels.size },
+        "brain coverage: Slack's public-channel roster is longer than this enumeration's page bound — the chat denominator carries a truncation mark",
+      );
+      return { kind: "roster", channels, truncated: true };
+    }
+    const result = await params.listPage(params.token, {
+      limit: PUBLIC_ROSTER_PAGE_LIMIT,
+      ...(cursor !== undefined ? { cursor } : {}),
+    });
+    if (!result.ok) {
+      // The one error that is a MAP FACT rather than an outage. See the module
+      // header: a token without `channels:read` will not have it next cycle
+      // either, so the honest answer is a smaller denominator plus an edge, not
+      // an indefinite "unavailable".
+      if (result.error === "missing_scope") return { kind: "unreadable" };
+      return {
+        kind: "refused",
+        error: `Atlas could not list this workspace's Slack channels (${result.error}) — the coverage denominator keeps its previous reading rather than shrinking to what one failed call returned. It retries on the next cycle.`,
+      };
+    }
+    for (const channel of result.channels) {
+      // A private channel cannot arrive here — the request asks for
+      // `types=public_channel` — but the vendor-public clause is a DISCLOSURE
+      // gate, so it is decided on what Slack said about the row rather than on
+      // what we asked for. `fetchConversationsListPage` requires the flag to be
+      // present for the same reason.
+      if (channel.isPrivate) continue;
+      channels.set(channel.id, channel.name);
+    }
+    if (result.nextCursor === null) return { kind: "roster", channels, truncated: false };
+    cursor = result.nextCursor;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The vendor-activity probe
+// ---------------------------------------------------------------------------
+
+interface ProbeResult {
+  readonly readings: Map<string, EnumeratedSurveyUnit["activity"]>;
+  /** True when a probe failed for a reason other than "the bot is not in there". */
+  readonly unreadable: boolean;
+}
+
+async function probeActivity(params: {
+  readonly token: string;
+  readonly historyPage: typeof fetchConversationHistoryPage;
+  readonly channels: readonly string[];
+  readonly workspaceId: string;
+}): Promise<ProbeResult> {
+  const readings = new Map<string, EnumeratedSurveyUnit["activity"]>();
+  let unreadable = false;
+  for (const channelId of params.channels) {
+    const page = await params.historyPage(params.token, { channel: channelId, limit: 1 });
+    if (!page.ok) {
+      // `not_in_channel` is not a degradation: the bot left, membership has not
+      // been refreshed yet, and the next scope refresh takes the channel out of
+      // the perimeter. Marking the map edge for it would raise an edge that
+      // resolves itself, which trains a reader to ignore edges.
+      if (page.error !== "not_in_channel") {
+        unreadable = true;
+        log.warn(
+          { workspaceId: params.workspaceId, channelId, err: page.error },
+          "brain coverage: could not read a channel's newest message from Slack — its staleness reads 'unverified since' rather than current",
+        );
+      }
+      readings.set(channelId, { probed: false });
+      continue;
+    }
+    // An EMPTY page is a real reading and must be `probed: true`: it says the
+    // channel has never had a message, which is "quiet", and ADR-0041 is
+    // explicit that quiet is not stale. Recording it as unprobed would leave the
+    // unit reading "unverified since" forever, because nothing would ever fill
+    // a value that does not exist.
+    const newest = page.messages[0];
+    readings.set(channelId, {
+      probed: true,
+      at: newest === undefined ? null : slackTsToDate(newest.ts),
+    });
+  }
+  return { readings, unreadable };
+}
+
+/**
+ * Slack's `ts` is `<unix seconds>.<microseconds>` as a string.
+ *
+ * `null` on anything unparseable rather than `new Date(NaN)`: an invalid Date
+ * reaches the database as `Invalid Date` and the driver either throws or stores
+ * garbage, and a garbage vendor reading would make a lag comparison produce a
+ * verdict nobody measured.
+ */
+export function slackTsToDate(ts: string): Date | null {
+  const seconds = Number.parseFloat(ts);
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  const at = new Date(seconds * 1000);
+  return Number.isNaN(at.getTime()) ? null : at;
+}
+
+function toDate(value: Date | string | null): Date | null {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (typeof value === "string" && value !== "") {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  return null;
+}

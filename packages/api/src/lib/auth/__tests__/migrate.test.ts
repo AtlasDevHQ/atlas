@@ -605,6 +605,7 @@ describe("migrateAuthTables", () => {
             { name: "0198_brain_slack_membership_scope.sql" },
             { name: "0199_brain_enrollment.sql" },
             { name: "0200_brain_entity.sql" },
+            { name: "0201_brain_coverage_snapshot.sql" },
           ],
         };
       }

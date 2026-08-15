@@ -291,6 +291,24 @@ const COLUMN_OVERRIDES: Readonly<Record<string, Readonly<Record<string, string>>
     excluded_at: `now()`,
     excluded_by: `('actor-' || $1)`,
   },
+  // #5213: `source_class` is CHECKed to the four SURVEYABLE classes — `human`
+  // is refused at the database because a unit of that class would be a person
+  // (ADR-0041) — and `state` is CHECK-derived from `in_perimeter` AND
+  // `newest_evidence_at`, so the three have to agree. `unit_label` is the
+  // customer-data column the purge decision names (a channel name), seeded with
+  // real content so its deletion deletes something.
+  brain_coverage_snapshot: {
+    source_class: `'chat'`,
+    unit_id: `'C0PURGESEED'`,
+    state: `'surveyed'`,
+    in_perimeter: `true`,
+    newest_evidence_at: `now()`,
+    unit_label: `('project-severance-' || $1)`,
+  },
+  brain_coverage_cycle: {
+    source_class: `'chat'`,
+    last_error: `('Slack refused for ' || $1)`,
+  },
   // Structural constraints, not enums:
   //  - visible_to must hold at least one non-empty grant (no-grant-no-promotion)
   //  - provenance must be a non-empty object

@@ -3880,6 +3880,8 @@ export interface HardDeleteResult {
   brainSlackIngestScope: number;
   brainEnrollment: number;
   brainEntity: number;
+  brainCoverageSnapshot: number;
+  brainCoverageCycle: number;
   factAudienceMember: number;
   // ── Knowledge Base pillar (ADR-0028) — added by #5160 ──
   // knowledge_sync_credentials is a secret at rest: the same class of miss
@@ -4324,6 +4326,17 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     // either direction — the ids reach `brain_facts` as comparison VALUES, never
     // as a join arm — so no ordering constraint against the fact phases.
     const brainEntity = await del(`DELETE FROM brain_entity WHERE workspace_id = $1`);
+    // The Coverage Surface's dated roster and its cycle record (#5213,
+    // ADR-0041). `unit_label` holds channel names verbatim and the warehouse
+    // rows hold the workspace's own entity and column names, so this is
+    // `brain_slack_channel`'s asset class. No FK in either direction — the unit
+    // id is plain text, never a row reference — so no ordering constraint.
+    const brainCoverageSnapshot = await del(
+      `DELETE FROM brain_coverage_snapshot WHERE workspace_id = $1`,
+    );
+    const brainCoverageCycle = await del(
+      `DELETE FROM brain_coverage_cycle WHERE workspace_id = $1`,
+    );
     // Resolved identities backing the `audience:` ACL arm — email joins and
     // SSO-domain narrowing, so squarely personal data.
     const factAudienceMember = await del(`DELETE FROM fact_audience_member WHERE workspace_id = $1`);
@@ -4617,6 +4630,8 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
       brainSlackIngestScope,
       brainEnrollment,
       brainEntity,
+      brainCoverageSnapshot,
+      brainCoverageCycle,
       factAudienceMember,
       knowledgeDocuments,
       knowledgeLinks,

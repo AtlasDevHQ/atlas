@@ -355,23 +355,28 @@ export interface WarehouseEntityPlan {
    */
   readonly dimensions: readonly [WarehouseDimension, ...WarehouseDimension[]];
   /**
-   * The dimension a human named as this entity's CANONICAL SURFACE, or `null`
-   * (#5043, ADR-0037 §5).
+   * An INDEX into {@link dimensions} naming this entity's canonical surface, or
+   * `null` (#5043, ADR-0037 §5).
    *
-   * ⚠️ **A member of {@link dimensions}, always** — it is resolved against the
-   * surviving set rather than against the reach, so a naming dimension the plan
-   * refused (absent from the semantic layer, ambiguous across two entities) lands
-   * `null` here. The snapshot's SELECT list is built from `dimensions`, so a
-   * naming dimension outside it would name a column the producer never reads:
-   * the store would write no entry, every lookup would abstain, and the admin
-   * surface would show the entity as named. Silent, and indistinguishable from a
-   * working store.
+   * ⚠️ **An index rather than the `WarehouseDimension` itself, and the change is
+   * a guard rather than a tidy-up** (#5232's review). As an object it was
+   * resolved back to a position with `dimensions.indexOf(…)`, which is REFERENCE
+   * equality — so any path that clones or round-trips a plan (a fixture builder,
+   * a structured clone, JSON) yields `-1` while `dimensions` visibly contains the
+   * dimension, and every row then lands in `unnamedRows`: the counter whose whole
+   * job is to keep "nobody named a surface" apart from "the surface column is
+   * empty" reports a third thing as the second. An index cannot disagree with the
+   * list it indexes, and the lookup leaves the per-row loop.
    *
-   * `null` is the ordinary case rather than an error. Without it the entity store
-   * holds no entry for this entity — which is ADR-0039's bound inherited, not a
-   * failure mode.
+   * In-range by construction: {@link planWarehouseEmission} takes it from
+   * `findIndex` over the same array it returns.
+   *
+   * `null` is the ordinary case — nobody named this entity, so the store holds
+   * nothing for it, which is ADR-0039's bound inherited rather than a failure.
+   * A naming dimension the plan REFUSED also lands `null`, and that one is
+   * reported as a `naming-dimension-refused` refusal rather than left silent.
    */
-  readonly namingDimension: WarehouseDimension | null;
+  readonly namingDimensionIndex: number | null;
 }
 
 export interface WarehousePlan {
@@ -568,13 +573,39 @@ export function planWarehouseEmission(
       // never read. `undefined` there, `null` here: the plan says "this entity
       // has no canonical surface", and the store writes no entry for it.
       const named = reach.namingDimension.get(bucket.entity.name);
-      const namingDimension =
-        named === undefined ? null : (bucket.dims.find((d) => d.name === named) ?? null);
+      const namingIndex = named === undefined ? -1 : bucket.dims.findIndex((d) => d.name === named);
+      // ⚠️ **TWO different facts, and folding them into one `null` DESTROYED
+      // DATA silently** (#5232's review). `named === undefined` is "nobody named
+      // this entity" — ordinary, and the store simply holds nothing for it.
+      // `named !== undefined && namingIndex === -1` is "a human DID name a
+      // dimension and the plan refused it" — because it went ambiguous across
+      // two entities, or left the semantic layer. Under one `null` the second
+      // case produced no entries, and `writeEntityEntries`' unconditional DELETE
+      // then removed every entry the entity already had, reporting
+      // `entitiesStored: 0` — byte-identical to "never named", while the
+      // enrollment surface still showed the badge.
+      //
+      // Clearing IS correct once the name is unreadable; being quiet about it is
+      // not. So it becomes a refusal that reaches the caller, beside the
+      // `ambiguous-dimension` row that caused it.
+      if (named !== undefined && namingIndex === -1) {
+        refused.push(
+          refusal(
+            bucket.entity.name,
+            named,
+            "naming-dimension-refused",
+            `"${named}" is this entity's naming dimension and the producer refused it, so nothing ` +
+              "readable names its rows. Its entity-store entries are being CLEARED: claims about " +
+              "them stop matching what people call them, and match on the warehouse key alone. " +
+              "The refusal for the pair itself, beside this one, says why.",
+          ),
+        );
+      }
       return {
         entity: bucket.entity,
         primaryKey: bucket.pk,
         dimensions: bucket.dims,
-        namingDimension,
+        namingDimensionIndex: namingIndex === -1 ? null : namingIndex,
       };
     }),
     refused,
@@ -772,6 +803,35 @@ export function warehouseRowId(
  */
 export type WarehouseRowId = string & { readonly __warehouseRowId: unique symbol };
 
+/**
+ * The SHAPE {@link warehouseRowId} mints — `wh_` plus a sha256 in lowercase hex.
+ *
+ * Exported so the ONE other writer of `brain_entity` can check it. That writer
+ * is the region importer, and until #5232's review it checked only
+ * `typeof value === "string" && value !== ""` — so a bundle carrying
+ * `entityId: "1"` validated, landed, was read back through a
+ * `as WarehouseRowId` cast, and reached `subject_cmp`. That is verbatim the
+ * `{ entityId: "1" }` the brand's own docstring says it exists to forbid,
+ * arriving one layer down: the same shape as #5032's, which is why the brand
+ * exists at all.
+ */
+export const WAREHOUSE_ROW_ID_PATTERN = /^wh_[0-9a-f]{64}$/;
+
+/**
+ * Narrow an untrusted string to a {@link WarehouseRowId} without a cast.
+ *
+ * ⚠️ **A SHAPE check, deliberately NOT a recomputation.** Re-deriving
+ * `warehouseRowId(workspaceId, entity, keySurface)` and comparing would be
+ * stronger against a hand-edited bundle — and it would REFUSE every legitimate
+ * cross-region migration, because the digest is taken over the workspace id and
+ * a bundle's destination org is not its source org — the roundtrip suite migrates
+ * one org id into a different one, so recomputation fails there by construction. The shape is what can be checked at a boundary that legitimately
+ * sees ids from another workspace.
+ */
+export function isWarehouseRowId(value: unknown): value is WarehouseRowId {
+  return typeof value === "string" && WAREHOUSE_ROW_ID_PATTERN.test(value);
+}
+
 /** One row's worth of claims, plus the id its subject resolves to. */
 export interface WarehouseClaims {
   readonly candidates: readonly FactCandidate[];
@@ -937,10 +997,10 @@ export function buildWarehouseClaims(params: {
     // `namingDimension === null` is the ordinary case, not an error — see the
     // plan's field. The entity simply has no canonical surface, so the store
     // holds nothing for it and every lookup abstains.
-    if (plan.namingDimension !== null) {
-      const namingIndex = plan.dimensions.indexOf(plan.namingDimension);
-      const canonical =
-        namingIndex === -1 ? null : warehouseSurface(row[`${DIMENSION_ALIAS_PREFIX}${namingIndex}`]);
+    if (plan.namingDimensionIndex !== null) {
+      const canonical = warehouseSurface(
+        row[`${DIMENSION_ALIAS_PREFIX}${plan.namingDimensionIndex}`],
+      );
       if (canonical === null) {
         // A row whose NAME column is null, blank or of an unsurfaceable type.
         // Counted rather than logged per row: on a nullable display-name column
@@ -1231,6 +1291,36 @@ export interface WarehouseProducerReport {
    * deleted and re-keys their corpus with it.
    */
   readonly entityEdges: AliasProducerCounters | null;
+  /**
+   * The edge pass's failure message, or `null` when it did not fail (#5043).
+   *
+   * ⚠️ **A SIBLING field because `entityEdges: null` alone MISINFORMS.** That
+   * field collapses four outcomes onto one value — nothing named, everything
+   * already snapshotted, every proposal refused, and *the pass threw* — and only
+   * the last one is a run an operator must act on. Without this, a vocabulary
+   * lock timeout reports the same wire value as "nobody has named anything", to
+   * the admin whose next action is to go name something.
+   *
+   * It was caught by the panel through the tests: two cases in
+   * `warehouse-producer.test.ts` asserted IDENTICAL state under a comment
+   * claiming they distinguished the two. They did not.
+   *
+   * The fuller answer is a discriminated `EntityEdgeOutcome` union replacing
+   * both fields; that is a wire-shape change reaching the OpenAPI surface, so it
+   * is deferred (#5233). This is the minimum that stops `null` lying.
+   */
+  readonly entityEdgesFailed: string | null;
+  /**
+   * Store entries refused an edge because their name is shared with another
+   * entity (#5043).
+   *
+   * On the report because it is the one consequence of the fail-closed rule a
+   * person can actually act on — two `Acme` accounts is ordinary data, and the
+   * permanent effect is that neither resolves by name. It was countable only in
+   * a `debug` line production does not emit, under a docstring claiming the
+   * caller reported it.
+   */
+  readonly entityEdgesAmbiguous: number;
 }
 
 /**
@@ -1426,6 +1516,8 @@ export async function runWarehouseProducer(
       // to report — and a run that proposed nothing must not look like one that
       // proposed and had everything refused.
       entityEdges: null,
+      entityEdgesFailed: null,
+      entityEdgesAmbiguous: 0,
       created: 0,
       corroborated: 0,
     };
@@ -1844,8 +1936,18 @@ export async function runWarehouseProducer(
   // The read is the persisted store rather than this run's entries: a workspace
   // whose `accounts` ran today and whose `contacts` ran yesterday must still see
   // both when deciding what is ambiguous.
+  //
+  // ⚠️ UNGATED, and it was gated on `entitiesStored > 0` until #5232's review.
+  // That gate contradicted the paragraph above: a run in which every entity took
+  // the `snapshot-already-recorded` path stores 0 while the store holds
+  // thousands of rows, so the pass was skipped on exactly the RE-RUN where
+  // `rejected` — the counter that says a human's removal stuck — is the one an
+  // operator reads. The cost of removing it is one indexed read per run, and
+  // `entityEdgeProposals([])` short-circuits an empty store before any lock.
   let entityEdges: AliasProducerCounters | null = null;
-  if (entitiesStored > 0) {
+  let entityEdgesFailed: string | null = null;
+  let entityEdgesAmbiguous = 0;
+  {
     // Failing here must NOT fail the run. Every fact is committed, and a throw
     // reaches `runEffect` as `500 "Failed to run"` — which invites the one retry
     // that files a second full round of drafts into the review queue. The
@@ -1853,13 +1955,34 @@ export async function runWarehouseProducer(
     // `proposeAliasEdge` is idempotent.
     try {
       const store = await loadStore(workspaceId);
-      const proposals = entityEdgeProposals(store);
-      if (proposals.length > 0) {
-        entityEdges = await proposeEdges(workspaceId, proposals, requestId);
+      const batch = entityEdgeProposals(store);
+      entityEdgesAmbiguous = batch.ambiguous;
+      if (batch.ambiguous > 0) {
+        // WARN, because it is a permanent consequence rather than a hiccup:
+        // these surfaces resolve to nothing and no edge will ever be raised for
+        // them until a person disambiguates the rows in their warehouse. It is
+        // ordinary data — two `Acme` accounts — which is precisely why silence
+        // would be indistinguishable from a store that is working.
+        log.warn(
+          { ...runLog, ambiguous: batch.ambiguous, entries: store.length },
+          "Entity store: entries share a name with another entity, so neither resolves and no " +
+            "vocabulary edge is raised for them — claims about those rows will not match what " +
+            "people call them until the duplicate names are resolved in the warehouse",
+        );
+      }
+      if (batch.proposals.length > 0) {
+        entityEdges = await proposeEdges(workspaceId, batch.proposals, requestId);
       }
     } catch (err) {
+      // Recorded as a VALUE, not only a log line. A caught-and-logged failure
+      // that leaves the report indistinguishable from a healthy run is the
+      // silent failure this whole module argues against, one field over.
+      entityEdgesFailed = err instanceof Error ? err.message : String(err);
+      // `err` raw, so pino's serializer emits the stack — for a pool or lock
+      // failure the stack is the actionable half, and the per-entity catch
+      // ninety lines up already does it this way.
       log.error(
-        { ...runLog, entitiesStored, err: err instanceof Error ? err.message : String(err) },
+        { ...runLog, entitiesStored, err },
         "Warehouse producer: the entity-edge pass failed — every fact and store entry is committed, " +
           "but no vocabulary edge was raised this run. Re-run to retry; nothing needs cleaning up",
       );
@@ -1875,6 +1998,8 @@ export async function runWarehouseProducer(
       corroborated,
       entitiesStored,
       entityEdges,
+      entityEdgesFailed,
+      entityEdgesAmbiguous,
       refusals: refusals.length,
     },
     "Warehouse producer run complete — every fact landed draft and waits for a human publish",
@@ -1889,6 +2014,8 @@ export async function runWarehouseProducer(
     created,
     corroborated,
     entityEdges,
+    entityEdgesFailed,
+    entityEdgesAmbiguous,
   };
 }
 

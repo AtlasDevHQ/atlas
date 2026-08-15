@@ -207,24 +207,24 @@ describeIfPg("the entity store (#5043)", () => {
         workspaceId: WORKSPACE,
         entity: "accounts",
         entries: [
-          entry({ entity: "accounts", keySurface: "42", canonicalSurface: "Acme Corp" }),
-          entry({ entity: "accounts", keySurface: "43", canonicalSurface: "Beta LLC" }),
+          entry({ entity: "accounts", keySurface: "ACC-42", canonicalSurface: "Acme Corp" }),
+          entry({ entity: "accounts", keySurface: "ACC-43", canonicalSurface: "Beta LLC" }),
         ],
         snapshotAt: new Date("2026-08-14T10:00:00Z"),
       });
 
       const resolve = entityStoreResolver();
-      const answer = await resolve(new Set(["ACME  corp", "43", "Gamma Inc"]), {
+      const answer = await resolve(new Set(["ACME  corp", "ACC-43", "Gamma Inc"]), {
         workspaceId: WORKSPACE,
       });
 
       // ⚠️ THE POSITIVE CONTROL the milestone turns on. Everything else in this
       // file could pass against a store that resolves nothing.
       expect(answer.get("ACME  corp")).toEqual({
-        entityId: warehouseRowId(WORKSPACE, "accounts", "42"),
+        entityId: warehouseRowId(WORKSPACE, "accounts", "ACC-42"),
       });
-      expect(answer.get("43")).toEqual({
-        entityId: warehouseRowId(WORKSPACE, "accounts", "43"),
+      expect(answer.get("ACC-43")).toEqual({
+        entityId: warehouseRowId(WORKSPACE, "accounts", "ACC-43"),
       });
       // The abstain, beside two surfaces that resolved.
       expect(answer.has("Gamma Inc")).toBe(false);
@@ -238,7 +238,7 @@ describeIfPg("the entity store (#5043)", () => {
       await writeEntityEntries(exec, {
         workspaceId: "ws-other",
         entity: "accounts",
-        entries: [entry({ entity: "accounts", keySurface: "42", canonicalSurface: "Acme Corp" })],
+        entries: [entry({ entity: "accounts", keySurface: "ACC-42", canonicalSurface: "Acme Corp" })],
         snapshotAt: new Date("2026-08-14T10:00:00Z"),
       });
       await writeEntityEntries(exec, {
@@ -265,8 +265,8 @@ describeIfPg("the entity store (#5043)", () => {
     "a re-run REPLACES the entity's entries — a vanished warehouse row stops resolving",
     async () => {
       const first = [
-        entry({ entity: "accounts", keySurface: "42", canonicalSurface: "Acme Corp" }),
-        entry({ entity: "accounts", keySurface: "43", canonicalSurface: "Beta LLC" }),
+        entry({ entity: "accounts", keySurface: "ACC-42", canonicalSurface: "Acme Corp" }),
+        entry({ entity: "accounts", keySurface: "ACC-43", canonicalSurface: "Beta LLC" }),
       ];
       await writeEntityEntries(exec, {
         workspaceId: WORKSPACE,
@@ -286,7 +286,7 @@ describeIfPg("the entity store (#5043)", () => {
       await writeEntityEntries(exec, {
         workspaceId: WORKSPACE,
         entity: "accounts",
-        entries: [entry({ entity: "accounts", keySurface: "42", canonicalSurface: "Acme Holdings" })],
+        entries: [entry({ entity: "accounts", keySurface: "ACC-42", canonicalSurface: "Acme Holdings" })],
         snapshotAt: new Date("2026-08-15T10:00:00Z"),
       });
 
@@ -300,7 +300,7 @@ describeIfPg("the entity store (#5043)", () => {
       // is what makes a rename a re-key rather than a second entity.
       expect(answer.has("Acme Corp")).toBe(false);
       expect(answer.get("Acme Holdings")).toEqual({
-        entityId: warehouseRowId(WORKSPACE, "accounts", "42"),
+        entityId: warehouseRowId(WORKSPACE, "accounts", "ACC-42"),
       });
       // ⚠️ The scoping control: another entity's entries are untouched. A DELETE
       // that dropped the `entity` predicate would pass every assertion above.
@@ -319,7 +319,7 @@ describeIfPg("the entity store (#5043)", () => {
     "REJECTION MEMORY: a removed entity edge is never re-emitted, and the counter says so",
     async () => {
       const entries = [
-        entry({ entity: "accounts", keySurface: "42", canonicalSurface: "Acme Corp" }),
+        entry({ entity: "accounts", keySurface: "ACC-42", canonicalSurface: "Acme Corp" }),
       ];
       await writeEntityEntries(exec, {
         workspaceId: WORKSPACE,
@@ -327,14 +327,14 @@ describeIfPg("the entity store (#5043)", () => {
         entries,
         snapshotAt: new Date("2026-08-14T10:00:00Z"),
       });
-      const proposals = entityEdgeProposals(entries);
+      const { proposals } = entityEdgeProposals(entries);
       expect(proposals).toHaveLength(2);
 
       // Both populations the edge would merge, so the reader can see each side.
       // Without them the removal below is refused as `not-in-force` — the same
       // word an absent edge returns, which would make the falsifier pass for the
       // wrong reason.
-      await seedFact("42", "Alice");
+      await seedFact("ACC-42", "Alice");
       await seedFact("Acme Corp", "Bob");
 
       // ── Run 1: the edges land ──
@@ -359,13 +359,13 @@ describeIfPg("the entity store (#5043)", () => {
       // surrogate-keyed warehouse row landing in the same slot as an extracted
       // mention of its name.
       const vocabulary = await loadWorkspaceVocabulary(WORKSPACE);
-      expect(vocabulary.subject("42")).toBe("acme corp");
-      expect(vocabulary.object("42")).toBe("acme corp");
+      expect(vocabulary.subject("acc 42")).toBe("acme corp");
+      expect(vocabulary.object("acc 42")).toBe("acme corp");
 
       // ── A human removes the subject-position edge ──
       const removal = await removeInForceAliasEdge(
         WORKSPACE,
-        { position: "subject", fromNorm: "42", toNorm: "acme corp" },
+        { position: "subject", fromNorm: "acc 42", toNorm: "acme corp" },
         OWNER_CTX,
       );
       expect(removal.kind).toBe("removed");
@@ -383,10 +383,10 @@ describeIfPg("the entity store (#5043)", () => {
 
       // And the edge really is gone from the vocabulary, not merely uncounted.
       const after = await loadWorkspaceVocabulary(WORKSPACE);
-      expect(after.subject("42")).toBe("42");
+      expect(after.subject("acc 42")).toBe("acc 42");
       // The CONTROL: the object-position edge, which nobody removed, survived —
       // so this is a positional removal rather than a wiped vocabulary.
-      expect(after.object("42")).toBe("acme corp");
+      expect(after.object("acc 42")).toBe("acme corp");
     },
     PG_TEST_TIMEOUT_MS,
   );
@@ -499,8 +499,8 @@ describeIfPg("the entity store (#5043)", () => {
         workspaceId: WORKSPACE,
         entity: "accounts",
         entries: [
-          entry({ entity: "accounts", keySurface: "42", canonicalSurface: "Acme Corp" }),
-          entry({ entity: "accounts", keySurface: "43", canonicalSurface: "Beta LLC" }),
+          entry({ entity: "accounts", keySurface: "ACC-42", canonicalSurface: "Acme Corp" }),
+          entry({ entity: "accounts", keySurface: "ACC-43", canonicalSurface: "Beta LLC" }),
         ],
         snapshotAt: new Date("2026-08-14T10:00:00Z"),
       });
@@ -549,7 +549,7 @@ describeIfPg("the entity store (#5043)", () => {
         {
           subject: "Acme Corp",
           subject_cmp: subjectComparableValue(
-            warehouseRowId(WORKSPACE, "accounts", "42") as unknown as ResolvedEntityId,
+            warehouseRowId(WORKSPACE, "accounts", "ACC-42") as unknown as ResolvedEntityId,
           ),
         },
         // …and the honest abstain beside it, on the same call.
@@ -570,7 +570,19 @@ describeIfPg("the entity store (#5043)", () => {
       // The application layer refuses these first (`buildEntityEntry` returns
       // null), and the CHECKs are the second door — which is the one that holds
       // against the region importer and against a hand-written INSERT.
-      const base = [WORKSPACE, "wh_x", "accounts", "42", "42", "Acme", "acme", new Date()];
+      const base = [
+        WORKSPACE,
+        // A REAL minted id: the resolver and `loadEntityStore` now DROP a row
+        // whose id is not the minted shape, so a `wh_x` placeholder would make
+        // the control below assert nothing about anything readable.
+        warehouseRowId(WORKSPACE, "accounts", "ACC-99"),
+        "accounts",
+        "ACC-99",
+        "acc 99",
+        "Acme",
+        "acme",
+        new Date(),
+      ];
       const insert = `INSERT INTO brain_entity
           (workspace_id, entity_id, entity, key_surface, key_norm, canonical_surface, canonical_norm, snapshot_at)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`;

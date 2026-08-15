@@ -121,9 +121,10 @@ describe("bundle-scope drift tripwire (#4460)", () => {
     // needs: a closure is a pure function of edges that travel on the same
     // bundle, an entry is a function of a WAREHOUSE READ the destination cannot
     // repeat until its credentials are back and a human re-runs the producer.
-    // And the ids are already on the wire — `brain_facts.subject_cmp` carries
-    // them verbatim — so leaving the store behind lands facts whose comparison
-    // values nothing in the destination can explain.
+    // NOT because the ids travel on the facts — they do not, and saying so was
+    // this entry's original error: the importer NULLS an entity-valued `_cmp`
+    // deliberately. The entries are a BRIDGE, resolving surfaces by name until
+    // the destination can run its own producer again.
     expect([...EXPORTED_TABLES].toSorted()).toEqual([
       "agent_session_memory",
       "brain_edges",

@@ -36,6 +36,7 @@ import {
 } from "@atlas/api/lib/brain/object-cmp";
 
 import { normalizeEnrollmentPair } from "@atlas/api/lib/brain/enrollment";
+import { isWarehouseRowId } from "@atlas/api/lib/brain/warehouse-producer";
 import type { ExportBundle, ExportedBrainFact, ImportResult, SupportedBundleVersion } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -875,6 +876,15 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
       if ("note" in x && x.note !== null && typeof x.note !== "string") {
         return { ok: false, error: `brainEnrollments[${i}].note: must be a string or null.` };
       }
+      // The ADJACENT TWIN of the line above, and it was missing (#5232's review).
+      // `naming` is consumed as `(enrollment.naming ?? false) && …`, so a
+      // non-boolean is truthiness-coerced into a `boolean` pg parameter — a
+      // string `"false"` would name the dimension and re-key the destination's
+      // corpus. Optional on the wire (a pre-#5043 v3 bundle carries none), so
+      // `undefined` is admitted and `false` is that bundle's truth.
+      if ("naming" in x && x.naming !== undefined && typeof x.naming !== "boolean") {
+        return { ok: false, error: `brainEnrollments[${i}].naming: must be a boolean.` };
+      }
       const tsError = missingTimestamps(x, ["enrolledAt"]);
       if (tsError) return { ok: false, error: `brainEnrollments[${i}].${tsError}` };
     }
@@ -901,6 +911,26 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
         if (typeof value !== "string" || value === "") {
           return { ok: false, error: `brainEntities[${i}].${field}: must be a non-empty string.` };
         }
+      }
+      // ⚠️ **The id's SHAPE, and this is the field with the widest blast radius
+      // in the section.** Non-empty-string was the whole check until #5232's
+      // review: `entityId: "1"` validated, landed, and reached `subject_cmp`
+      // through a cast — verbatim the value `WarehouseRowId`'s docstring says
+      // the brand exists to forbid, arriving through the one writer the brand
+      // cannot reach. A forged id there is a false `same` at the publish gate,
+      // which merges two distinct entities with no inverse.
+      //
+      // The SHAPE and not a recomputation: the digest is taken over the
+      // WORKSPACE id, and a bundle's destination org is not its source org, so
+      // re-deriving would refuse every legitimate cross-region migration.
+      if (!isWarehouseRowId(x.entityId)) {
+        return {
+          ok: false,
+          error:
+            `brainEntities[${i}].entityId: must be an id the warehouse producer minted ` +
+            "(`wh_` followed by a sha256). This value reaches `subject_cmp`, where an id no " +
+            "producer could have minted compares equal to nothing and unequal to everything.",
+        };
       }
       // ⚠️ **The norms are RE-DERIVED here and COMPARED, never recomputed into
       // the row.** Recomputing would be a second application of `lexicalNorm` to
@@ -976,7 +1006,15 @@ const ImportResultSchema = z.object({
   // — the pair is the whole key and both regions' rows are the same kind of
   // human act — so the merge is a union and `skipped` means what it means
   // everywhere else.
-  brainEnrollments: z.object({ imported: z.number(), skipped: z.number() }),
+  // THREE counters since #5232. `namingDropped` is not a refusal in
+  // `REFUSAL_ACCOUNTING`'s sense — the row landed and only its `naming` flag was
+  // discarded — but it is a human decision this region declined to apply, and
+  // `imported + skipped` cannot express it.
+  brainEnrollments: z.object({
+    imported: z.number(),
+    skipped: z.number(),
+    namingDropped: z.number(),
+  }),
   // TWO counters, on `brainEnrollments`' reasoning (#5043). `entity_id` is a
   // digest of `(workspace, entity, primary key)`, so two regions holding one id
   // hold one warehouse row — there is no contradictory decision to refuse.
@@ -1676,7 +1714,7 @@ export async function importBundle(
     factAudienceMembers: { imported: 0, skipped: 0 },
     brainVocabularyEdges: { imported: 0, skipped: 0, refused: 0 },
     brainSlackChannelExclusions: { imported: 0, skipped: 0, refused: 0 },
-    brainEnrollments: { imported: 0, skipped: 0 },
+    brainEnrollments: { imported: 0, skipped: 0, namingDropped: 0 },
     brainEntities: { imported: 0, skipped: 0 },
   };
 
@@ -2217,15 +2255,25 @@ export async function importBundle(
   // `namedEntities` guards the partial unique index — see the `naming` param
   // below. Seeded from the DESTINATION, not from the bundle: the row that must
   // win is the one already here.
-  const namedEntities = new Set<string>(
+  const namedEntities = new Map<string, string>(
     (
       await client.query(
-        `SELECT entity FROM brain_enrollment WHERE workspace_id = $1 AND naming`,
+        `SELECT entity, dimension FROM brain_enrollment WHERE workspace_id = $1 AND naming`,
         [orgId],
       )
-    ).rows.map((r) => r.entity as string),
+    ).rows.map((r) => [r.entity as string, r.dimension as string] as const),
   );
   for (const enrollment of bundle.brainEnrollments ?? []) {
+    const wantsNaming = enrollment.naming === true;
+    // ⚠️ The map holds the DIMENSION, not just the entity, and that distinction
+    // is the difference between a loss and a no-op. Keyed on the entity alone,
+    // a destination that already names the SAME dimension the bundle names
+    // counted as a drop — so an idempotent re-import reported a human decision
+    // discarded when nothing at all had happened. Caught by the round-trip's own
+    // second-import assertion.
+    const namedHere = namedEntities.get(enrollment.entity);
+    const alreadyApplied = wantsNaming && namedHere === enrollment.dimension;
+    const granted = wantsNaming && namedHere === undefined;
     const { rows } = await client.query(
       `INSERT INTO brain_enrollment (workspace_id, entity, dimension, enrolled_at, enrolled_by, note, naming)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -2250,14 +2298,49 @@ export async function importBundle(
         // flag is dropped when this region already has one. The local decision
         // wins for `enrolledBy`'s reason: it is this region's admin's, and
         // silently re-pointing it would re-key their corpus.
-        (enrollment.naming ?? false) && !namedEntities.has(enrollment.entity),
+        granted,
       ],
     );
-    if (enrollment.naming === true) namedEntities.add(enrollment.entity);
+    if (granted) namedEntities.set(enrollment.entity, enrollment.dimension);
     // `DO NOTHING` returns no row for the conflict case, which is exactly the
     // "this region already holds it" split `skipped` reports.
     if (rows.length > 0) result.brainEnrollments.imported++;
     else result.brainEnrollments.skipped++;
+
+    // ⚠️ **TWO ways the flag is lost, and only ONE of them is the deliberate
+    // policy above (#5232's review).**
+    //
+    //   (a) This region already names a DIFFERENT dimension for the entity.
+    //       The local decision wins — deliberate — but it is a human authority
+    //       decision being discarded, so it is counted and logged rather than
+    //       dropped by an `&&`.
+    //   (b) This region already holds the SAME pair with `naming = false` and
+    //       names nothing. `granted` is true, but `ON CONFLICT DO NOTHING`
+    //       skipped the write, so the column keeps `false`. The local-wins
+    //       argument does NOT cover this case — there is no local decision to
+    //       protect — and the loss is ADR-0039-invisible: the destination's
+    //       store writes no entry, every lookup abstains, the list still shows
+    //       the pair as live, and the section reports `skipped`, which
+    //       everywhere else means "this region already holds it". It holds the
+    //       PAIR; it does not hold the DECISION.
+    if (wantsNaming && !granted && !alreadyApplied) {
+      result.brainEnrollments.namingDropped++;
+      log.warn(
+        { orgId, entity: enrollment.entity, dimension: enrollment.dimension },
+        "Region import: the arriving naming dimension was dropped — this region already names a " +
+          "different dimension for that entity. Its imported entity-store entries are cleared on " +
+          "the next producer run unless an admin re-names it",
+      );
+    } else if (granted && rows.length === 0) {
+      // (b). One UPDATE, the same shape `setNamingDimension` uses, rather than
+      // an `ON CONFLICT DO UPDATE` on the whole row — the row's `enrolled_by`,
+      // `enrolled_at` and `note` must stay the destination's.
+      await client.query(
+        `UPDATE brain_enrollment SET naming = true
+          WHERE workspace_id = $1 AND entity = $2 AND dimension = $3 AND NOT naming`,
+        [orgId, enrollment.entity, enrollment.dimension],
+      );
+    }
   }
 
   // --- 9d. The entity store's snapshot entries (#5043, ADR-0037 §5) ---

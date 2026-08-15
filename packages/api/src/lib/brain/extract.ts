@@ -1179,7 +1179,6 @@ async function extractEpisode(row: EpisodeRow, deps: ApplyDeps): Promise<Episode
     resolveEntity: deps.resolveEntity,
   });
 
-
   // The stage refused the whole episode despite our pre-flight passing. It
   // cannot happen while this path passes no `sourcePrincipal` (the two gates
   // then see identical inputs) — but `ReconcileRequest` exists to let a caller

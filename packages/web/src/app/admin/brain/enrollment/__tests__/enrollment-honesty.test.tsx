@@ -91,6 +91,10 @@ const THREE_PAIRS_TWO_ENTITIES = [
   },
 ];
 
+/** What the page POSTed to `/naming`, in order. */
+type NamingBody = { entity: string; dimension: string | null };
+let namingBodies: NamingBody[] = [];
+
 const originalFetch = globalThis.fetch;
 
 const jsonResponse = (body: unknown, status = 200) =>
@@ -151,6 +155,7 @@ function installFetchStub() {
       );
     }
     if (url.includes("/brain-enrollment/naming")) {
+      namingBodies.push(JSON.parse(String(init?.body)) as NamingBody);
       return Promise.resolve(
         writeFails
           ? jsonResponse(
@@ -251,6 +256,7 @@ beforeEach(() => {
   entitiesFail = false;
   writeChanged = true;
   writeFails = false;
+  namingBodies = [];
   enrollments = [];
   entities = [{ name: "accounts", table: "public.accounts", description: null }];
   installFetchStub();
@@ -457,7 +463,7 @@ describe("naming the column an entity is known by (#5043)", () => {
     expect(screen.getAllByRole("button", { name: /Stop using as name/ })).toHaveLength(1);
   });
 
-  test("naming a column explains the merge it creates", async () => {
+  test("naming a column sends the dimension, and explains the merge it creates", async () => {
     const container = await renderNamed(false);
     fireEvent.click(screen.getByRole("button", { name: /^Use as name$/ }));
     await waitFor(() =>
@@ -465,9 +471,14 @@ describe("naming the column an entity is known by (#5043)", () => {
     );
     // The other half of the ternary must NOT also be on screen.
     expect(container.textContent ?? "").not.toContain("no longer has a name column");
+    // ⚠️ THE WIRE PAYLOAD, not just the copy. The notice branches on the page's
+    // own local boolean, so every assertion about prose passes whatever the page
+    // actually sent — `dimension: target.dimension` on BOTH paths survived the
+    // whole suite.
+    expect(namingBodies).toEqual([{ entity: "accounts", dimension: "arr_band" }]);
   });
 
-  test("clearing it says matching goes back to the warehouse key", async () => {
+  test("clearing it sends NULL — the destructive half of the verb", async () => {
     // The paired arm. Without it an inverted ternary passes the test above by
     // rendering the merge copy on every path.
     const container = await renderNamed(true);
@@ -476,6 +487,11 @@ describe("naming the column an entity is known by (#5043)", () => {
       expect(container.textContent ?? "").toContain("no longer has a name column"),
     );
     expect(container.textContent ?? "").not.toContain("become the same subject");
+    // ⚠️ `null`, and this is the assertion that matters most in the file.
+    // Sending the dimension here does not clear the name — it RE-NAMES, which
+    // re-keys every fact about the entity workspace-wide. The copy is identical
+    // either way, so prose can never catch it.
+    expect(namingBodies).toEqual([{ entity: "accounts", dimension: null }]);
   });
 
   test("a failed naming change gets its OWN error slot and badge", async () => {

@@ -1663,6 +1663,18 @@ export const BRAIN_WAREHOUSE_REFUSAL_REASONS = [
   "snapshot-rejected",
   "snapshot-failed",
   "snapshot-already-recorded",
+  /**
+   * The entity's NAMING dimension (#5043) was itself refused — it went ambiguous
+   * across two entities, or left the semantic layer. The pair's own refusal sits
+   * beside this one and says which.
+   *
+   * Its own arm rather than folding into that refusal, because the CONSEQUENCE is
+   * different in kind and worse: the producer clears the entity's store entries,
+   * so claims about its rows stop matching what people call them. Left silent it
+   * reported as `entitiesStored: 0`, which is byte-identical to "this entity was
+   * never named" while the enrollment surface still showed it as named.
+   */
+  "naming-dimension-refused",
 ] as const;
 
 export const BrainWarehouseRefusalSchema = z.strictObject({
@@ -1778,6 +1790,23 @@ export const BrainWarehouseRunReportSchema = z.strictObject({
    * and nothing achieved must not look alike.
    */
   entityEdges: BrainAliasProducerCountersSchema.nullable(),
+  /**
+   * The edge pass's failure message, or `null` when it did not fail (#5043).
+   *
+   * ⚠️ A sibling field because `entityEdges: null` alone MISINFORMS: it collapses
+   * "nothing named", "everything already snapshotted", "every proposal refused"
+   * and *the pass threw* onto one value, and only the last is a run an operator
+   * must act on. Without this, a vocabulary lock timeout reports as "nobody has
+   * named anything" to the admin whose next action is to go name something.
+   */
+  entityEdgesFailed: z.string().nullable(),
+  /**
+   * Store entries refused an edge because their name is shared with another
+   * entity (#5043) — two `Acme` accounts, and neither resolves by name.
+   * Ordinary data with a permanent consequence, which is why it is a number on
+   * the report rather than a log line.
+   */
+  entityEdgesAmbiguous: z.number().int().nonnegative(),
 });
 
 /**

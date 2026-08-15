@@ -31111,7 +31111,8 @@
                                   "row-cap-exceeded",
                                   "snapshot-rejected",
                                   "snapshot-failed",
-                                  "snapshot-already-recorded"
+                                  "snapshot-already-recorded",
+                                  "naming-dimension-refused"
                                 ]
                               },
                               "message": {
@@ -31176,6 +31177,16 @@
                           ],
                           "additionalProperties": false
                         },
+                        "entityEdgesFailed": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "entityEdgesAmbiguous": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
                         "reportComplete": {
                           "type": "boolean",
                           "enum": [
@@ -31192,6 +31203,8 @@
                         "created",
                         "corroborated",
                         "entityEdges",
+                        "entityEdgesFailed",
+                        "entityEdgesAmbiguous",
                         "reportComplete"
                       ],
                       "additionalProperties": false
@@ -58942,11 +58955,15 @@
                         },
                         "skipped": {
                           "type": "number"
+                        },
+                        "namingDropped": {
+                          "type": "number"
                         }
                       },
                       "required": [
                         "imported",
-                        "skipped"
+                        "skipped",
+                        "namingDropped"
                       ]
                     },
                     "brainEntities": {

@@ -254,7 +254,7 @@ describe("migration types", () => {
       // The one section with a THIRD counter (#5036).
       brainVocabularyEdges: { imported: 2, skipped: 1, refused: 4 },
       brainSlackChannelExclusions: { imported: 3, skipped: 2, refused: 0 },
-      brainEnrollments: { imported: 4, skipped: 1 },
+      brainEnrollments: { imported: 4, skipped: 1, namingDropped: 2 },
       // Distinct numbers from every neighbour, so a mis-wired section cannot be
       // satisfied by another's counters.
       brainEntities: { imported: 7, skipped: 3 },

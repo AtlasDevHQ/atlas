@@ -131,9 +131,15 @@ void mock.module("@atlas/api/lib/brain/enrollment", () => ({
   ENROLLMENT_NAME_MAX: BRAIN_ENROLLMENT_NAME_MAX,
   InvalidEnrollmentPairError: TestInvalidEnrollmentPairError,
   UnattributedEnrollmentError: class extends Error {},
+  // `namingDimension` included, and the fake is the reason it can drift: a
+  // `mock.module` factory is untyped, so the shape's second definition silently
+  // lost the field the same commit that added it. Kept in sync by hand here
+  // because the factory cannot carry a `satisfies` without importing the module
+  // it replaces.
   makeProducerReach: (pairs: readonly unknown[]) => ({
     pairs,
     entities: [],
+    namingDimension: new Map<string, string>(),
     has: () => false,
   }),
   normalizeEnrollmentPair: (entity: string, dimension: string) => {
@@ -147,7 +153,12 @@ void mock.module("@atlas/api/lib/brain/enrollment", () => ({
     return { entity: e, dimension: d };
   },
   listEnrollments: async () => enrollments,
-  loadProducerReach: async () => ({ pairs: [], entities: [], has: () => false }),
+  loadProducerReach: async () => ({
+    pairs: [],
+    entities: [],
+    namingDimension: new Map<string, string>(),
+    has: () => false,
+  }),
   enrollPair: async (params: unknown) => {
     enrollCalls.push(params);
     return enrollChanged;
@@ -515,6 +526,35 @@ describe("POST /unenroll", () => {
   });
 });
 
+describe("GET /dimensions — the naming flag (#5043)", () => {
+  it("marks the naming dimension and leaves its siblings alone, in one response", async () => {
+    // Both arms in ONE response, mirroring the `enrolled` test above: a handler
+    // that hardcoded `naming: false`, or reused `enrolled.has(...)`, passes any
+    // single-arm assertion.
+    enrollments = [row("accounts", "arr_band", "user-1", true), row("accounts", "mrr")];
+    const res = await adminBrainEnrollment.request("/dimensions?entity=accounts");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      dimensions: Record<string, unknown>[];
+    };
+    expect(body.dimensions).toEqual([
+      { name: "arr_band", kind: "dimension", type: "string", description: null, enrolled: true, naming: true },
+      { name: "mrr", kind: "measure", type: "number", description: null, enrolled: true, naming: false },
+    ]);
+  });
+
+  it("does not leak another entity's naming dimension", async () => {
+    // The cross-entity arm the `enrolled` flag already has. Dropping the
+    // `e.entity === entity` filter shows `subscriptions`' name column as
+    // `accounts`' — and the click that follows is a workspace-wide re-key of
+    // the wrong entity.
+    enrollments = [row("subscriptions", "arr_band", "user-1", true)];
+    const res = await adminBrainEnrollment.request("/dimensions?entity=accounts");
+    const body = (await res.json()) as { dimensions: { name: string; naming: boolean }[] };
+    expect(body.dimensions.find((d) => d.name === "arr_band")?.naming).toBe(false);
+  });
+});
+
 describe("POST /naming — which column names an entity (#5043)", () => {
   it("names a dimension, and says what that does rather than what it toggles", async () => {
     const res = await post("/naming", { entity: "accounts", dimension: "arr_band" });
@@ -657,6 +697,11 @@ describe("POST /produce — running the producer", () => {
         rejected: 13,
         refused: 14,
       },
+      // Non-null here and `null` in the `beforeEach` default, so BOTH arms of
+      // the field cross the wire in this file — a schema that dropped it goes
+      // red on one of them.
+      entityEdgesFailed: "vocabulary lock timeout",
+      entityEdgesAmbiguous: 5,
     };
     const res = await post("/produce", {});
     expect(res.status).toBe(200);

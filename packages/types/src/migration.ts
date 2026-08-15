@@ -663,10 +663,18 @@ export interface ExportedBrainEnrollment {
  * cannot repeat until its datasource credentials are re-established and a human
  * re-runs the producer.
  *
- * ⚠️ And the ids are already on the wire. `brain_facts.subject_cmp` and
- * `object_cmp` carry them verbatim, so leaving the store behind lands facts whose
- * comparison values nothing in the destination can explain. `stays` is also
- * DELETION (#4458), so the source's copy would go at the same moment.
+ * ⚠️ **The ids do NOT travel on the facts, and it would be wrong to say they do.**
+ * `regionPortableComparable` classifies the `entity:` tag `store-local`, so the
+ * importer NULLS `subject_cmp`/`object_cmp` on every entity-valued row — a
+ * foreign id there is counterfeit positive evidence of DIFFERENCE, which is the
+ * one direction that stamps `valid_to` without a human.
+ *
+ * What these entries buy the destination is a BRIDGE: they resolve surfaces by
+ * name from the moment the bundle lands until the destination has warehouse
+ * credentials again and a human re-runs the producer — the window in which
+ * nothing else can. Their ids are digests over the SOURCE workspace, so that
+ * first run replaces them wholesale; harmless, because no fact carries the old
+ * ones. `stays` is also DELETION (#4458), so the source's copy would go too.
  *
  * The failure direction if it were dropped is ADR-0039's invisible one: the
  * cutover reports clean, the store resolves nothing, and every test stays green.
@@ -824,7 +832,25 @@ export interface ImportResult {
    * same kind, and a pair enrolled in both is the same decision twice. So the
    * merge is a union, and `skipped` means exactly what it means everywhere else.
    */
-  brainEnrollments: { imported: number; skipped: number };
+  brainEnrollments: {
+    imported: number;
+    skipped: number;
+    /**
+     * Rows whose arriving `naming` flag was NOT applied (#5043).
+     *
+     * A third counter because `imported + skipped` structurally cannot express
+     * it: the row landed (or was already here), and only the human decision
+     * riding on it was declined. Without it the drop is invisible — the
+     * destination's entity store writes no entry for that entity, every lookup
+     * abstains, and the enrollment list still shows the pair as live, which is
+     * the ADR-0039 shape where a loss looks exactly like a working system.
+     *
+     * NOT a `refused` in `REFUSAL_ACCOUNTING`'s sense, and deliberately named
+     * differently: a shortfall here does not abort a cutover, because the pair
+     * itself did arrive.
+     */
+    namingDropped: number;
+  };
   /**
    * The entity store's snapshot entries (#5043, ADR-0037 §5).
    *

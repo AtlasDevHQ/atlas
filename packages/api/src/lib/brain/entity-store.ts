@@ -54,11 +54,13 @@ import { internalQuery } from "@atlas/api/lib/db/internal";
 import { lexicalNorm } from "@atlas/api/lib/brain/identity";
 import type { EntityResolver, ReconcileExecutor } from "@atlas/api/lib/brain/reconcile";
 import type { AliasProposalInput } from "@atlas/api/lib/brain/vocabulary-decide";
-// TYPE-ONLY, and it has to stay that way: `warehouse-producer.ts` imports this
-// module for values, so a value import here would close a runtime cycle. The
-// brand is erased at build time, which is exactly what makes it importable in
-// the direction the cycle forbids.
-import type { WarehouseRowId } from "@atlas/api/lib/brain/warehouse-producer";
+// ⚠️ `warehouse-producer.ts` imports THIS module for values, so this edge closes
+// a runtime cycle — deliberately, and it is why `isWarehouseRowId` lives there
+// rather than here. ES modules handle the cycle (both sides only call across it
+// at runtime, never during module evaluation), and the alternative was worse:
+// re-declaring the minted shape here would be a second spelling of the pattern
+// `warehouseRowId` produces, drifting the day either changes.
+import { isWarehouseRowId, type WarehouseRowId } from "@atlas/api/lib/brain/warehouse-producer";
 
 const log = createLogger("brain-entity-store");
 
@@ -188,6 +190,27 @@ export function buildEntityEntry(params: {
  * `from_norm`), and together they merge two distinct entities into ONE slot key
  * workspace-wide, with no inverse.
  */
+/**
+ * What {@link entityEdgeProposals} produced, and what it refused.
+ *
+ * The two counters are not diagnostics — they are the only way an operator
+ * learns that entities in their warehouse will never resolve by name.
+ * `ambiguous` in particular is ordinary data (two `Acme` accounts) with a
+ * permanent consequence, which is exactly the shape the producer's other
+ * counters exist for.
+ */
+export interface EntityEdgeBatch {
+  readonly proposals: readonly AliasProposalInput[];
+  /** Entries whose key IS its name — a natural-key table. Nothing to propose. */
+  readonly selfEdges: number;
+  /**
+   * Entries refused because a norm names more than one entity. Their surfaces
+   * resolve to NOTHING and no edge is ever raised for them, so they are the
+   * rows a person has to disambiguate in their warehouse.
+   */
+  readonly ambiguous: number;
+}
+
 export function resolvableIds(
   // The THREE fields the rule needs, not `EntityStoreEntry`. `EntityStoreEntry`
   // satisfies it structurally, and the lookup path — which selects the id and
@@ -197,6 +220,12 @@ export function resolvableIds(
 ): ReadonlyMap<string, WarehouseRowId> {
   const byNorm = new Map<string, WarehouseRowId | null>();
   const note = (norm: string, id: WarehouseRowId): void => {
+    // The degenerate norm is refused HERE, not only by the two callers that
+    // happen to filter it. This function's docstring calls itself the single
+    // home of the fail-closed clause, and that was true of ambiguity and not of
+    // emptiness — `""` is the one key value that joins every other degenerate
+    // row, so a caller that forgot the filter would resolve them all as one.
+    if (norm === "") return;
     if (!byNorm.has(norm)) {
       byNorm.set(norm, id);
       return;
@@ -258,6 +287,21 @@ export const ENTITY_STORE_INSERT_SQL = `INSERT INTO brain_entity
  * facts they describe commit or roll back together. An entity whose transaction
  * fails leaves its previous entries intact, which is the honest state: nothing
  * was read, so nothing is known to have changed.
+ *
+ * ⚠️ **AND THAT MEANS THE SNAPSHOT CLAIM ABOVE HAS A STATED LIMIT.** The
+ * producer opens no transaction for an entity that yielded no candidates — a
+ * truncated table, a primary-key column that became unsurfaceable, an entity
+ * un-enrolled entirely — so this function is not reached and its prior entries
+ * SURVIVE, still resolving surfaces for rows that may no longer exist. An
+ * earlier version of this docstring asserted the snapshot property without the
+ * exception, which is a comment describing an invariant the code does not keep.
+ *
+ * It is the recoverable direction (an entry resolves to an id no live fact
+ * carries; nothing over-matches, because the ids are unique per row) and the
+ * fix is a reaper over entities no longer in reach — deliberately NOT in this
+ * slice, because deleting entries for an entity the producer did not read this
+ * run needs its own argument about what "no longer in reach" means when a
+ * datasource is merely down. Tracked in #5233.
  *
  * The `ON CONFLICT` arm is not dead code the DELETE makes unreachable — it is
  * what keeps the statement correct if two entities ever legitimately claim one
@@ -321,22 +365,56 @@ interface EntityStoreDbRow extends Record<string, unknown> {
  * would be evidence ADR-0039's bound had failed rather than a listing to
  * truncate.
  *
- * The cast is the DB boundary's, not a type-system escape: the columns are all
- * `text NOT NULL` and the CHECKs make every one of them non-empty, so the row
- * shape is guaranteed by the schema this module ships with.
+ * ⚠️ **Ids are GUARDED, not cast.** `writeEntityEntries` is not the only writer
+ * of this table — the region importer is the other, and a bundle is untrusted
+ * input. An earlier version of this function asserted that every stored id came
+ * from `warehouseRowId` and cast on that basis, which was false.
+ *
+ * ⚠️ **What a drop costs HERE, which is not what it costs at the resolver.**
+ * This function's only consumer is the entity-edge pass, and
+ * {@link entityEdgeProposals} reads an id solely to compare it — the id reaches
+ * no `AliasProposalInput` and therefore no fact. So a dropped row costs a
+ * VOCABULARY EDGE: nothing merges that row's key with its name, and claims about
+ * it never collide with what people call it. The `subject_cmp` hazard belongs to
+ * {@link entityStoreResolver}, which is a different caller.
+ *
+ * Stating it precisely matters because the first draft of this guard said these
+ * ids "reach `subject_cmp`" — sending an operator to hunt a hazard this path
+ * cannot produce while the real effect on their store went unnamed. That is the
+ * defect this guard was added to fix, reproduced in the guard.
  */
 export async function loadEntityStore(
   workspaceId: string,
 ): Promise<readonly EntityStoreEntry[]> {
   const rows = await internalQuery<EntityStoreDbRow>(ENTITY_STORE_LOAD_SQL, [workspaceId]);
-  return rows.map((r) => ({
-    entityId: r.entity_id as WarehouseRowId,
-    entity: r.entity,
-    keySurface: r.key_surface,
-    keyNorm: r.key_norm,
-    canonicalSurface: r.canonical_surface,
-    canonicalNorm: r.canonical_norm,
-  }));
+  const entries: EntityStoreEntry[] = [];
+  let forged = 0;
+  for (const r of rows) {
+    if (!isWarehouseRowId(r.entity_id)) {
+      forged++;
+      continue;
+    }
+    entries.push({
+      entityId: r.entity_id,
+      entity: r.entity,
+      keySurface: r.key_surface,
+      keyNorm: r.key_norm,
+      canonicalSurface: r.canonical_surface,
+      canonicalNorm: r.canonical_norm,
+    });
+  }
+  if (forged > 0) {
+    // Counted and logged, never silent: these rows are in the table and are
+    // being ignored, so an operator asking "why does this entity not resolve"
+    // has the only answer anything can give them.
+    log.error(
+      { workspaceId, forged, total: rows.length },
+      "Entity store: rows hold an id no producer could have minted and were DROPPED from the " +
+        "entity-edge pass — no vocabulary edge is raised for them, so claims about those rows " +
+        "will not match what people call them. Check the last region import into this workspace",
+    );
+  }
+  return entries;
 }
 
 interface EntityLookupDbRow extends Record<string, unknown> {
@@ -412,15 +490,22 @@ export function entityStoreResolver(deps: EntityStoreResolverDeps = {}): EntityR
     // that came back. `resolvableIds` is what abstains on ambiguity, and it must
     // not be re-implemented here — see its docstring.
     //
-    // The cast is the DB boundary's: `entity_id` is `text NOT NULL` with a
-    // non-empty CHECK, and every value in it was written by `warehouseRowId`
-    // through {@link writeEntityEntries}, which takes the branded type.
+    // GUARDED, not cast. The region importer is a second writer of this table
+    // and a bundle is untrusted, so a stored id no producer could have minted is
+    // dropped rather than answered with.
+    //
+    // ⚠️ THIS is the site where the id reaches `subject_cmp`/`object_cmp` — the
+    // caller is `reconcile.ts`, by way of `extract.ts`. A forged id there is a
+    // false `same` at the publish gate: two distinct entities merged, with no
+    // inverse. Dropping costs an abstain, which is the recoverable direction.
+    // (`loadEntityStore`'s drop costs something else entirely — a vocabulary
+    // edge — and its own comment says so rather than deferring to this one.)
     const ids = resolvableIds(
-      rows.map((r) => ({
-        entityId: r.entity_id as WarehouseRowId,
-        keyNorm: r.key_norm,
-        canonicalNorm: r.canonical_norm,
-      })),
+      rows.flatMap((r) =>
+        isWarehouseRowId(r.entity_id)
+          ? [{ entityId: r.entity_id, keyNorm: r.key_norm, canonicalNorm: r.canonical_norm }]
+          : [],
+      ),
     );
 
     for (const [surface, norm] of normOf) {
@@ -469,19 +554,31 @@ export function entityStoreResolver(deps: EntityStoreResolverDeps = {}): EntityR
  *   resolver's ambiguity costs an abstain, an edge's merges two entities
  *   workspace-wide with no inverse.
  *
- * Both refusals are SILENT here and reported by the caller as a count, because
- * an entity store with two `Acme` rows is ordinary data rather than a defect —
- * what an operator needs is the number, not a line per row.
+ * Both refusals are COUNTED and returned, never merely skipped. An earlier
+ * version of this docstring said they were *"reported by the caller as a
+ * count"* — the caller read only `proposals.length` and reported nothing, so a
+ * workspace with two `Acme` accounts had every edge for both rows refused with
+ * no trace anywhere: no report field, no log above `debug` (which production
+ * does not emit), no UI. A comment promising an observability guarantee nothing
+ * implements is worse than the omission, so the guarantee is built instead.
  */
-export function entityEdgeProposals(
-  entries: readonly EntityStoreEntry[],
-): readonly AliasProposalInput[] {
+export function entityEdgeProposals(entries: readonly EntityStoreEntry[]): EntityEdgeBatch {
   const ids = resolvableIds(entries);
   const proposals: AliasProposalInput[] = [];
+  let selfEdges = 0;
+  let ambiguous = 0;
   for (const entry of entries) {
-    if (entry.keyNorm === entry.canonicalNorm) continue;
-    if (ids.get(entry.keyNorm) !== entry.entityId) continue;
-    if (ids.get(entry.canonicalNorm) !== entry.entityId) continue;
+    if (entry.keyNorm === entry.canonicalNorm) {
+      selfEdges++;
+      continue;
+    }
+    if (
+      ids.get(entry.keyNorm) !== entry.entityId ||
+      ids.get(entry.canonicalNorm) !== entry.entityId
+    ) {
+      ambiguous++;
+      continue;
+    }
     for (const position of ENTITY_EDGE_POSITIONS) {
       proposals.push({
         position,
@@ -498,5 +595,5 @@ export function entityEdgeProposals(
     { entries: entries.length, resolvableNorms: ids.size, proposals: proposals.length },
     "Entity store: built entity-edge proposals",
   );
-  return proposals;
+  return { proposals, selfEdges, ambiguous };
 }

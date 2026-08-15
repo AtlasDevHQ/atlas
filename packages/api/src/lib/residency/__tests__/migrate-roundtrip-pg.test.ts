@@ -28,6 +28,7 @@ import { exportWorkspaceBundle } from "../export";
 import { approveAliasEdge, recomputeEffectiveTargets } from "@atlas/api/lib/brain/vocabulary";
 import { identityVocabulary } from "@atlas/api/lib/brain/identity";
 import { reconcileFacts } from "@atlas/api/lib/brain/reconcile";
+import { warehouseRowId } from "@atlas/api/lib/brain/warehouse-producer";
 import {
   RegionImportUnkeyableError,
   RegionImportVocabularyTargetError,
@@ -295,10 +296,16 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
     // was granted silently rewritten across the cutover, with all three rows
     // present, both counters right, and `enrolled_by` and `note` matching.
     await pool.query(
-      `INSERT INTO brain_enrollment (workspace_id, entity, dimension, enrolled_at, enrolled_by, note)
-       VALUES ($1, 'accounts', 'arr_band', '2026-03-01T00:00:00Z', 'user-1', 'revenue tiering'),
-              ($1, 'accounts', 'status', '2026-03-02T00:00:00Z', 'user-1', NULL),
-              ($1, 'subscriptions', 'plan', '2026-03-03T00:00:00Z', 'user-2', NULL)`,
+      // ⚠️ `naming` seeded TRUE on two of the three (#5043), and that is the
+      // half this fixture was missing: every row defaulted to `false`, so the
+      // exporter's read, the importer's bind and the wire field were only ever
+      // exercised in their false state — hardcoding `naming: false` on either
+      // side passed the whole suite. Two, not one, because the two arriving
+      // flags take DIFFERENT paths at the destination (dropped vs applied).
+      `INSERT INTO brain_enrollment (workspace_id, entity, dimension, enrolled_at, enrolled_by, note, naming)
+       VALUES ($1, 'accounts', 'arr_band', '2026-03-01T00:00:00Z', 'user-1', 'revenue tiering', true),
+              ($1, 'accounts', 'status', '2026-03-02T00:00:00Z', 'user-1', NULL, false),
+              ($1, 'subscriptions', 'plan', '2026-03-03T00:00:00Z', 'user-2', NULL, true)`,
       [SOURCE_ORG],
     );
 
@@ -315,11 +322,26 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
     // wrong about, and DIFFERENT norms from every surface so a row that carried
     // its surface into a norm column cannot pass.
     await pool.query(
+      // ⚠️ REAL ids, minted by the production function. Hand-written `wh_aaa`
+      // placeholders were refused the moment `validateBundle` learned the id's
+      // shape (#5232) — correctly: `entity_id` reaches `subject_cmp`, so a value
+      // no producer could have minted compares equal to nothing and unequal to
+      // everything. Minting them here also makes the fixture agree with the
+      // producer rather than with itself.
+      //
+      // Key surfaces that NORM DIFFERENTLY from themselves (`ACC-42` → `acc 42`),
+      // so the `key_surface`/`key_norm` pair is distinguishable. Every earlier
+      // fixture in this arc used numeric keys, where the two are equal by
+      // construction and swapping the columns passed every suite.
       `INSERT INTO brain_entity
          (workspace_id, entity_id, entity, key_surface, key_norm, canonical_surface, canonical_norm, snapshot_at)
-       VALUES ($1, 'wh_aaa', 'accounts', '42', '42', 'Acme Corp', 'acme corp', '2026-03-04T00:00:00Z'),
-              ($1, 'wh_bbb', 'accounts', '43', '43', 'Beta LLC', 'beta llc', '2026-03-04T00:00:00Z')`,
-      [SOURCE_ORG],
+       VALUES ($1, $2, 'accounts', 'ACC-42', 'acc 42', 'Acme Corp', 'acme corp', '2026-03-04T00:00:00Z'),
+              ($1, $3, 'accounts', 'ACC-43', 'acc 43', 'Beta LLC', 'beta llc', '2026-03-04T00:00:00Z')`,
+      [
+        SOURCE_ORG,
+        warehouseRowId(SOURCE_ORG, "accounts", "ACC-42"),
+        warehouseRowId(SOURCE_ORG, "accounts", "ACC-43"),
+      ],
     );
 
     // ── The curated identity vocabulary (#5022, ADR-0037 §6/§8) ──
@@ -463,9 +485,21 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       // whose conflict arm fires, and the author check afterwards is what
       // distinguishes `DO NOTHING` from a `DO UPDATE` that would re-attribute a
       // local admin's decision to the source region's.
+      // ⚠️ TWO destination rows, because the arriving `naming` flags take two
+      // different paths and only one of them is the documented policy (#5043):
+      //
+      //   `accounts` is ALREADY named here, on a DIFFERENT dimension. The
+      //   arriving `arr_band` flag must be dropped — the local admin's decision
+      //   wins — and the drop must be COUNTED, not swallowed by an `&&`.
+      //
+      //   `subscriptions/plan` is held here UNNAMED, and this region names
+      //   nothing for it. `ON CONFLICT DO NOTHING` skips the row, so the flag
+      //   would be lost with no local decision to protect — the case the
+      //   local-wins comment does not cover.
       await pool.query(
-        `INSERT INTO brain_enrollment (workspace_id, entity, dimension, enrolled_at, enrolled_by, note)
-         VALUES ($1, 'accounts', 'status', '2026-07-01T00:00:00Z', 'target-admin', 'decided here first')`,
+        `INSERT INTO brain_enrollment (workspace_id, entity, dimension, enrolled_at, enrolled_by, note, naming)
+         VALUES ($1, 'accounts', 'status', '2026-07-01T00:00:00Z', 'target-admin', 'decided here first', true),
+                ($1, 'subscriptions', 'plan', '2026-07-03T00:00:00Z', 'target-admin', NULL, false)`,
         [TARGET_ORG],
       );
 
@@ -479,8 +513,12 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       await pool.query(
         `INSERT INTO brain_entity
            (workspace_id, entity_id, entity, key_surface, key_norm, canonical_surface, canonical_norm, snapshot_at)
-         VALUES ($1, 'wh_aaa', 'accounts', '42', '42', 'Acme Corporation', 'acme corporation', '2026-07-02T00:00:00Z')`,
-        [TARGET_ORG],
+         VALUES ($1, $2, 'accounts', 'ACC-42', 'acc 42', 'Acme Corporation', 'acme corporation', '2026-07-02T00:00:00Z')`,
+        // The SOURCE's digest, deliberately: the collision this arm exercises is
+        // on `(workspace_id, entity_id)`, and the arriving row carries the id the
+        // source minted. A destination-minted id would not conflict at all and
+        // the test would assert nothing.
+        [TARGET_ORG, warehouseRowId(SOURCE_ORG, "accounts", "ACC-42")],
       );
 
       // ── Import: real INSERTs against the real schema ──
@@ -507,7 +545,11 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       // (#5196). Different numbers deliberately — `{2, 1}` cannot be satisfied
       // by an importer that counts every row into one bucket, and `{3, 0}` or
       // `{0, 3}` each go red on exactly one half.
-      expect(result.brainEnrollments).toEqual({ imported: 2, skipped: 1 });
+      // One new pair landed (`arr_band`); the two the destination already held
+      // are `skipped`. `namingDropped: 1` is the arriving `accounts/arr_band`
+      // flag the local decision beat — a counter, because `imported + skipped`
+      // structurally cannot say "the row landed and its decision did not".
+      expect(result.brainEnrollments).toEqual({ imported: 1, skipped: 2, namingDropped: 1 });
       // One new entry landed; the one the destination already snapshotted is
       // `skipped` (#5043). Different numbers deliberately — `{1, 1}` would be
       // satisfiable by an importer that counted every row into one bucket only
@@ -569,19 +611,25 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         enrolled_at: Date;
         enrolled_by: string;
         note: string | null;
+        naming: boolean;
       }>(
-        `SELECT entity, dimension, enrolled_at, enrolled_by, note
+        `SELECT entity, dimension, enrolled_at, enrolled_by, note, naming
            FROM brain_enrollment WHERE workspace_id = $1 ORDER BY entity, dimension`,
         [TARGET_ORG],
       );
       // ── The entity store landed, and the LOCAL entry won (#5043) ──
       const targetEntities = await pool.query<{
         entity_id: string;
+        key_surface: string;
+        key_norm: string;
         canonical_surface: string;
         canonical_norm: string;
         snapshot_at: Date;
       }>(
-        `SELECT entity_id, canonical_surface, canonical_norm, snapshot_at
+        // `key_surface` AND `key_norm`, because they differ here — under the
+        // numeric keys this fixture used to carry they were equal, and swapping
+        // the two columns in the INSERT passed every suite in the arc.
+        `SELECT entity_id, key_surface, key_norm, canonical_surface, canonical_norm, snapshot_at
            FROM brain_entity WHERE workspace_id = $1 ORDER BY entity_id`,
         [TARGET_ORG],
       );
@@ -592,7 +640,9 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         // untouched by the arriving older one. A `DO UPDATE` re-keys every fact
         // about this entity onto the bundle's stale name.
         {
-          entity_id: "wh_aaa",
+          entity_id: warehouseRowId(SOURCE_ORG, "accounts", "ACC-42"),
+          key_surface: "ACC-42",
+          key_norm: "acc 42",
           canonical_surface: "Acme Corporation",
           canonical_norm: "acme corporation",
           snapshot_at: "2026-07-02T00:00:00.000Z",
@@ -601,7 +651,9 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         // `now()` bound in its place reports a perfect cutover while telling the
         // destination this entry was read today.
         {
-          entity_id: "wh_bbb",
+          entity_id: warehouseRowId(SOURCE_ORG, "accounts", "ACC-43"),
+          key_surface: "ACC-43",
+          key_norm: "acc 43",
           canonical_surface: "Beta LLC",
           canonical_norm: "beta llc",
           snapshot_at: "2026-03-04T00:00:00.000Z",
@@ -619,6 +671,9 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
           enrolled_at: "2026-03-01T00:00:00.000Z",
           enrolled_by: "user-1",
           note: "revenue tiering",
+          // FALSE, though the bundle said true: `accounts` is already named
+          // here, on `status`. The local decision wins.
+          naming: false,
         },
         // NOT `user-1`, NOT "revenue tiering", and NOT March — the destination's
         // own row in all three columns, untouched by the arriving one.
@@ -628,13 +683,24 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
           enrolled_at: "2026-07-01T00:00:00.000Z",
           enrolled_by: "target-admin",
           note: "decided here first",
+          // The destination's own naming decision, untouched — and it is what
+          // makes the `false` above a POLICY rather than a lost flag.
+          naming: true,
         },
         {
           entity: "subscriptions",
           dimension: "plan",
-          enrolled_at: "2026-03-03T00:00:00.000Z",
-          enrolled_by: "user-2",
+          // The DESTINATION's row — `DO NOTHING` kept its author and timestamp.
+          enrolled_at: "2026-07-03T00:00:00.000Z",
+          enrolled_by: "target-admin",
           note: null,
+          // ⚠️ TRUE, and this is the path the local-wins comment does not
+          // cover: the pair was already here UNNAMED and this region named
+          // nothing for the entity, so there was no local decision to protect.
+          // `DO NOTHING` skipped the write, so the flag arrives through a
+          // follow-up UPDATE. Without it the human decision is lost and the
+          // destination's store writes nothing for `subscriptions` — silently.
+          naming: true,
         },
       ]);
 
@@ -996,7 +1062,14 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         brainSlackChannelExclusions: { imported: 0, skipped: 2, refused: 0 },
         // All THREE now, including the pair that was `skipped` on the first
         // pass: a re-import of an already-landed reach is entirely no-op.
-        brainEnrollments: { imported: 0, skipped: 3 },
+        // ⚠️ `namingDropped: 1`, not 2 — and the difference is a real
+        // distinction rather than an off-by-one. `accounts/arr_band` is still
+        // genuinely beaten by the destination's `accounts/status`, so it counts
+        // again. `subscriptions/plan` does NOT: the first import applied it, so
+        // the destination now names the SAME dimension the bundle names, and
+        // nothing is being discarded. Counting that as a drop reported a human
+        // decision lost on the most routine path there is.
+        brainEnrollments: { imported: 0, skipped: 3, namingDropped: 1 },
         // Both entries already here from the first import (#5043).
         brainEntities: { imported: 0, skipped: 2 },
       });

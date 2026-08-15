@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
   fetchConversationHistoryPage,
   fetchConversationMembersPage,
+  fetchConversationsListPage,
   fetchUserConversationsPage,
   fetchUsersListPage,
   getConversationInfo,
@@ -418,6 +419,116 @@ describe("fetchUserConversationsPage (#5203)", () => {
       response_metadata: { next_cursor: "page-2" },
     });
     const result = await fetchUserConversationsPage("t", { limit: 200 });
+    expect(result.ok === true && result.nextCursor).toBe("page-2");
+  });
+});
+
+describe("fetchConversationsListPage (#5213)", () => {
+  // This one backs the Coverage Surface's chat DENOMINATOR, and the caller
+  // sweeps its roster against what comes back — so, exactly like
+  // `fetchUserConversationsPage` above, every refusal branch here is a
+  // unit-retirement guard rather than politeness. Its two request parameters are
+  // load-bearing in opposite directions: `types` decides what may be NAMED,
+  // `exclude_archived` decides the size of the denominator.
+
+  it("asks for PUBLIC channels only, keeps archived ones, and forwards the cursor", async () => {
+    let seen = "";
+    globalThis.fetch = (async (url: string | URL) => {
+      seen = String(url);
+      return new Response(JSON.stringify({ ok: true, channels: [] }), {
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    await fetchConversationsListPage("t", { limit: 200 });
+    // PUBLIC ONLY. Widening to private_channel would put the names of private
+    // channels the bot is in into a roster whose entries are stored as labels
+    // under the VENDOR-PUBLIC clause — a disclosure ADR-0041 refuses, admitted
+    // by one query parameter.
+    expect(seen).toContain("types=public_channel");
+    expect(seen).not.toContain("private_channel");
+    // Archived channels stay IN the denominator: their history is still
+    // evidence, and dropping them would shrink the denominator whenever someone
+    // archived a channel — which RAISES the ratio, the flattering direction.
+    expect(seen).toContain("exclude_archived=false");
+    expect(seen).not.toContain("cursor=");
+
+    await fetchConversationsListPage("t", { limit: 200, cursor: "c7" });
+    expect(seen).toContain("cursor=c7");
+  });
+
+  it("reads membership off the PAYLOAD, unlike users.conversations", async () => {
+    respondWith({
+      ok: true,
+      channels: [
+        { id: "C1", name: "general", is_private: false, is_member: true },
+        { id: "C2", name: "random", is_private: false, is_member: false, is_archived: true },
+      ],
+      response_metadata: { next_cursor: "" },
+    });
+    const result = await fetchConversationsListPage("t", { limit: 200 });
+    // This method enumerates the WORKSPACE, so membership is a property of the
+    // row. `fetchUserConversationsPage` pins it `true` because the endpoint
+    // means membership; pinning it here would contradict half the roster.
+    expect(result).toEqual({
+      ok: true,
+      channels: [
+        { id: "C1", name: "general", isPrivate: false, isMember: true, isArchived: false },
+        { id: "C2", name: "random", isPrivate: false, isMember: false, isArchived: true },
+      ],
+      nextCursor: null,
+    });
+  });
+
+  it("returns a NULL name rather than the id — an id in a label column is not a name", async () => {
+    respondWith({ ok: true, channels: [{ id: "C1", is_private: false }] });
+    const result = await fetchConversationsListPage("t", { limit: 200 });
+    expect(result.ok === true && result.channels[0]?.name).toBeNull();
+  });
+
+  it("refuses a page whose entry lacks is_private — the clause is decided on what Slack SAID", async () => {
+    // Not on what we asked for. Inferring `false` from `types=public_channel`
+    // would name a channel on the strength of our own query parameter.
+    respondWith({
+      ok: true,
+      channels: [
+        { id: "C1", name: "general", is_private: false },
+        { id: "C2", name: "mystery" },
+      ],
+    });
+    const result = await fetchConversationsListPage("t", { limit: 200 });
+    expect(result.ok === false && result.error).toBe("malformed_conversations_page");
+  });
+
+  it("refuses a page whose entry has no usable id — an understated page RETIRES units", async () => {
+    respondWith({ ok: true, channels: [{ id: "", name: "ghost", is_private: false }] });
+    const result = await fetchConversationsListPage("t", { limit: 200 });
+    expect(result.ok === false && result.error).toBe("malformed_conversations_page");
+  });
+
+  it("refuses ok:true with a non-array channels rather than reading an empty roster", async () => {
+    respondWith({ ok: true, channels: "surprise" });
+    const result = await fetchConversationsListPage("t", { limit: 200 });
+    expect(result.ok === false && result.error).toBe("malformed_conversations_page");
+  });
+
+  it("surfaces missing_scope rather than absorbing it like listChannels does", async () => {
+    // `listChannels` silently retries public-only and returns the narrower
+    // listing as a SUCCESS. Fine for a picker; for a denominator it is an
+    // understatement the caller can never see, so this one reports it and lets
+    // the caller raise the map edge.
+    respondWith({ ok: false, error: "missing_scope" });
+    const result = await fetchConversationsListPage("t", { limit: 200 });
+    expect(result.ok === false && result.error).toBe("missing_scope");
+  });
+
+  it("carries a non-empty next_cursor through", async () => {
+    respondWith({
+      ok: true,
+      channels: [{ id: "C1", name: "a", is_private: false }],
+      response_metadata: { next_cursor: "page-2" },
+    });
+    const result = await fetchConversationsListPage("t", { limit: 200 });
     expect(result.ok === true && result.nextCursor).toBe("page-2");
   });
 });

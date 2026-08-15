@@ -36,6 +36,7 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { getSettingAuto } from "@atlas/api/lib/settings";
 import { getBotToken, getInstallationByOrg, listSlackInstalledOrgIds } from "@atlas/api/lib/slack/store";
@@ -43,6 +44,7 @@ import { resolveSlackHistoryToken } from "@atlas/api/lib/brain/ingest/slack/conn
 import { enumerateSlackCoverage } from "@atlas/api/lib/brain/ingest/slack/coverage";
 import { enumerateWarehouseCoverage } from "@atlas/api/lib/brain/coverage-warehouse";
 import {
+  SURVEYABLE_SOURCE_CLASSES,
   persistCoverageSnapshot,
   type CoverageEnumeration,
   type SurveyableSourceClass,
@@ -145,8 +147,29 @@ export type ClassEnumerationPlan =
   | { readonly kind: "awaiting-connector" };
 
 /**
+ * The registry's shape — total over `EpisodeSourceClass`, and CORRELATED.
+ *
+ * A plain `Record<EpisodeSourceClass, ClassEnumerationPlan>` gave totality and
+ * nothing else, so `human: { kind: "enumerates", … }` type-checked. That is not
+ * a hypothetical: the class would then reach `persistCoverageSnapshot` (whose
+ * parameter says `SurveyableSourceClass`) and die on
+ * `ck_brain_coverage_snapshot_class` — a CHECK violation counted as one more
+ * failed class, indistinguishable from a transient database fault.
+ *
+ * The mapped type ties the plan to the class: a non-surveyable class may declare
+ * ONLY `not-surveyable`, which makes the illegal pairing a compile error at the
+ * declaration site and in every test double.
+ */
+export type ClassEnumerationPlans = {
+  readonly [K in EpisodeSourceClass]: K extends SurveyableSourceClass
+    ? ClassEnumerationPlan
+    : { readonly kind: "not-surveyable" };
+};
+
+/**
  * THE registry. Total over `EpisodeSourceClass` by construction — a new class
- * without an entry is a compile error.
+ * without an entry is a compile error, and a non-surveyable class with an
+ * enumerator is too.
  */
 export const CLASS_ENUMERATION_PLANS = {
   chat: {
@@ -159,10 +182,13 @@ export const CLASS_ENUMERATION_PLANS = {
       } catch (err) {
         // A recorded refusal, NOT a throw: the previous dated roster stays, and
         // the page says "enumeration unavailable since <date>" with this
-        // sentence beside it. `resolveSlackHistoryToken`'s messages are already
+        // sentence beside it. `resolveSlackHistoryToken`'s own two messages are
         // written for an admin ("no Slack connection", "credential could not be
-        // read"), which is why they travel verbatim.
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        // read") — but `getInstallationByOrg`/`getBotToken` sit under the same
+        // call and can throw pg or decrypt errors, whose text can echo a
+        // connection string. This string is STORED and rendered, so it is
+        // scrubbed like every other one on that path.
+        return { ok: false, error: errorMessage(err) };
       }
       return enumerateSlackCoverage({ workspaceId, token });
     },
@@ -175,19 +201,35 @@ export const CLASS_ENUMERATION_PLANS = {
     enumerate: (workspaceId: string) => enumerateWarehouseCoverage({ workspaceId }),
   },
   human: { kind: "not-surveyable" },
-} as const satisfies Record<EpisodeSourceClass, ClassEnumerationPlan>;
+} as const satisfies ClassEnumerationPlans;
 
-/** What one cycle did, for the span attributes and the audit line. */
+/**
+ * What one cycle did, for the span attributes and the audit line.
+ *
+ * ⚠️ The counters are per (CLASS, WORKSPACE), not per workspace — a tenant with
+ * both Slack and a published semantic layer contributes two enumerations. They
+ * are named for what they measure because the alternative is a span attribute an
+ * operator reads as a tenant count and derives a wrong "how much of the fleet is
+ * covered" from.
+ */
 export interface CoverageSnapshotCycleResult {
   /**
-   * `degraded` when at least one (workspace, class) enumeration refused while
-   * others succeeded — the cycle ran, and part of the map is older than the rest.
-   * `failure` is reserved for the scan itself failing, i.e. the cycle could not
-   * establish which workspaces to look at.
+   * `degraded` when part of the cycle ran and part did not — an enumeration
+   * refused, a write failed, or ONE class's workspace scan failed while another
+   * class's succeeded. `failure` is reserved for the cycle establishing nothing
+   * at all: every class that has an enumerator failed to list its workspaces.
+   *
+   * The split matters because `failure` is what an operator pages on. One
+   * class's scan failing while another enumerated five hundred workspaces is not
+   * "the cycle could not establish which workspaces to look at" — it is exactly
+   * `degraded`'s sentence, and `error` is non-null either way, so nothing
+   * alerting on the error text loses anything.
    */
   readonly status: "success" | "degraded" | "failure";
-  readonly workspacesInspected: number;
-  readonly workspacesSkippedDisabled: number;
+  /** (class, workspace) pairs this cycle attempted. */
+  readonly enumerationsAttempted: number;
+  /** (class, workspace) pairs skipped because the workspace switched it off. */
+  readonly enumerationsSkippedDisabled: number;
   readonly classesEnumerated: number;
   readonly classesFailed: number;
   readonly unitsWritten: number;
@@ -199,8 +241,8 @@ export interface CoverageSnapshotCycleResult {
 }
 
 const ZERO = {
-  workspacesInspected: 0,
-  workspacesSkippedDisabled: 0,
+  enumerationsAttempted: 0,
+  enumerationsSkippedDisabled: 0,
   classesEnumerated: 0,
   classesFailed: 0,
   unitsWritten: 0,
@@ -212,7 +254,7 @@ const ZERO = {
 
 /** Injection seam for the tests. */
 export interface CoverageSnapshotDeps {
-  readonly plans?: Record<EpisodeSourceClass, ClassEnumerationPlan>;
+  readonly plans?: ClassEnumerationPlans;
   readonly persist?: typeof persistCoverageSnapshot;
   readonly isEnabled?: (workspaceId?: string) => boolean;
   readonly now?: () => Date;
@@ -238,23 +280,33 @@ export async function runCoverageSnapshotCycle(
   const isEnabled = deps.isEnabled ?? isCoverageSnapshotEnabled;
   const now = deps.now ?? (() => new Date());
 
-  let workspacesInspected = 0;
-  let workspacesSkippedDisabled = 0;
+  // One id for every line this cycle emits. The per-workspace warns and errors
+  // are otherwise ungroupable — the property `requestId` gives the HTTP side,
+  // which a background fiber has no equivalent of until it mints one.
+  const cycleId = `cov-${now().toISOString()}-${Math.random().toString(36).slice(2, 8)}`;
+
+  let enumerationsAttempted = 0;
+  let enumerationsSkippedDisabled = 0;
   let classesEnumerated = 0;
   let classesFailed = 0;
   let unitsWritten = 0;
   let unitsRetired = 0;
   let unitsSurveyed = 0;
   let mapEdges = 0;
-  let scanError: string | null = null;
+  let scansAttempted = 0;
+  let scansFailed = 0;
+  const scanErrors: string[] = [];
 
-  for (const [cls, plan] of Object.entries(plans)) {
+  // ⚠️ Iterating the SURVEYABLE list rather than the registry's keys, because
+  // `Object.entries` widens the key to `string` — so the previous `cls as
+  // SurveyableSourceClass` was an unchecked assertion, not the narrowing its
+  // comment claimed. Here `sourceClass` is correctly typed with no assertion,
+  // and `human` cannot be reached at all rather than being skipped by a
+  // `kind` check that a mis-declared registry could defeat.
+  for (const sourceClass of SURVEYABLE_SOURCE_CLASSES) {
+    const plan = plans[sourceClass];
     if (plan.kind !== "enumerates") continue;
-    // Narrowed rather than cast: only a surveyable class may hold a snapshot
-    // row (migration 0201's CHECK), and the registry's `human` entry is
-    // `not-surveyable` precisely so this narrowing cannot fail. If it ever does,
-    // the class gained an enumerator without gaining a migration.
-    const sourceClass = cls as SurveyableSourceClass;
+    scansAttempted++;
 
     let workspaces: readonly string[];
     try {
@@ -263,10 +315,11 @@ export async function runCoverageSnapshotCycle(
       // RECORDED AND FALLEN THROUGH — the other classes' scans are independent,
       // and aborting the cycle here would let one class's scan failure freeze
       // every class's roster.
-      const message = err instanceof Error ? err.message : String(err);
-      scanError = scanError === null ? `${sourceClass}: ${message}` : `${scanError}; ${sourceClass}: ${message}`;
+      scansFailed++;
+      const message = errorMessage(err);
+      scanErrors.push(`${sourceClass}: ${message}`);
       log.error(
-        { sourceClass, err: message },
+        { cycleId, sourceClass, err: message },
         "brain coverage: could not list the workspaces for this class — its rosters keep their previous readings this cycle",
       );
       continue;
@@ -274,10 +327,10 @@ export async function runCoverageSnapshotCycle(
 
     for (const workspaceId of workspaces) {
       if (!isEnabled(workspaceId)) {
-        workspacesSkippedDisabled++;
+        enumerationsSkippedDisabled++;
         continue;
       }
-      workspacesInspected++;
+      enumerationsAttempted++;
       let outcome: CoverageEnumeration;
       try {
         outcome = await plan.enumerate(workspaceId);
@@ -286,9 +339,9 @@ export async function runCoverageSnapshotCycle(
         // database read inside it, most likely. Converted rather than swallowed:
         // the refusal path is the one that keeps the previous roster, which is
         // exactly what a caller wants when an enumerator breaks.
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorMessage(err);
         log.error(
-          { workspaceId, sourceClass, err: message },
+          { cycleId, workspaceId, sourceClass, err: message },
           "brain coverage: an enumeration threw — recorded as unavailable, and the previous dated roster is kept",
         );
         outcome = {
@@ -298,7 +351,13 @@ export async function runCoverageSnapshotCycle(
       }
 
       try {
-        const report = await persist({ workspaceId, sourceClass, outcome, cycleAt: now() });
+        const report = await persist({
+          workspaceId,
+          sourceClass,
+          outcome,
+          cycleAt: now(),
+          requestId: cycleId,
+        });
         if (report.status === "failure") {
           classesFailed++;
           continue;
@@ -309,27 +368,66 @@ export async function runCoverageSnapshotCycle(
         unitsSurveyed += report.surveyed;
         mapEdges += report.degraded.length;
       } catch (err) {
+        // ⚠️ THE ATTEMPT IS STILL RECORDED, and that is the whole point of this
+        // arm. Without it a write failure leaves `last_attempt_at` frozen and
+        // `last_error` NULL, so the page keeps rendering a clean, dated, STALE
+        // statement with no error state for as long as the failure lasts — M1's
+        // shape exactly: green while nothing is happening. The counters were
+        // already right; the surface was not.
         classesFailed++;
+        const message = errorMessage(err);
         log.error(
-          { workspaceId, sourceClass, err: err instanceof Error ? err.message : String(err) },
+          { cycleId, workspaceId, sourceClass, err: message },
           "brain coverage: could not persist a denominator snapshot — this workspace's roster keeps its previous reading",
         );
+        try {
+          await persist({
+            workspaceId,
+            sourceClass,
+            cycleAt: now(),
+            requestId: cycleId,
+            outcome: {
+              ok: false,
+              error: `Atlas could not write this workspace's ${sourceClass} coverage roster (${message}) — the previous reading is kept. It retries on the next cycle.`,
+            },
+          });
+        } catch (recordErr) {
+          // The failure arm writes one row to one table, so reaching here means
+          // the database is refusing that too. Logged and dropped — there is
+          // nowhere left to record it — but NOT silently, because the page will
+          // now read "as of <old date>" with nothing beside it.
+          log.error(
+            { cycleId, workspaceId, sourceClass, err: errorMessage(recordErr) },
+            "brain coverage: could not even record the failed attempt — this class will read 'as of' its last success with no error beside it",
+          );
+        }
       }
     }
   }
 
-  const status: CoverageSnapshotCycleResult["status"] =
-    scanError !== null ? "failure" : classesFailed > 0 ? "degraded" : "success";
+  // ⚠️ `failure` means the cycle established NOTHING — every class that has an
+  // enumerator failed to list its workspaces. A partial scan failure is
+  // `degraded`, which is what its own docstring says and what the arithmetic
+  // previously contradicted: one class's scan failing while another enumerated
+  // five hundred workspaces is not "could not establish which workspaces to look
+  // at". `error` is non-null in both cases, so nothing alerting on the error
+  // text is affected by the demotion.
+  const totalScanFailure = scansAttempted > 0 && scansFailed === scansAttempted;
+  const status: CoverageSnapshotCycleResult["status"] = totalScanFailure
+    ? "failure"
+    : scansFailed > 0 || classesFailed > 0
+      ? "degraded"
+      : "success";
   return {
     status,
-    workspacesInspected,
-    workspacesSkippedDisabled,
+    enumerationsAttempted,
+    enumerationsSkippedDisabled,
     classesEnumerated,
     classesFailed,
     unitsWritten,
     unitsRetired,
     unitsSurveyed,
     mapEdges,
-    error: scanError,
+    error: scanErrors.length === 0 ? null : scanErrors.join("; "),
   };
 }

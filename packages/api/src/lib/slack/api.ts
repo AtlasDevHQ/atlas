@@ -597,10 +597,30 @@ export async function fetchUserConversationsPage(
 // Read method for the Coverage Surface's chat denominator (#5213)
 // ---------------------------------------------------------------------------
 
+/**
+ * One row of the public-channel roster.
+ *
+ * Its own shape rather than {@link SlackConversationInfo}, for ONE field:
+ * `name` is nullable here. That type's `name` is `string` and its two producers
+ * fall back to the channel ID when Slack omits it — harmless where the value is
+ * a log line or a probe message, and NOT harmless here, because this `name` is
+ * the candidate `unit_label` on the Coverage Surface. An id stored in a label
+ * column is a row that reads as NAMED while carrying no name, which defeats the
+ * counted-never-named split at the one seam that split exists for.
+ */
+export interface SlackPublicChannel {
+  readonly id: string;
+  /** `null` when Slack sent no usable name — counted, never named. */
+  readonly name: string | null;
+  readonly isPrivate: boolean;
+  readonly isMember: boolean;
+  readonly isArchived: boolean;
+}
+
 /** One page of `conversations.list` — the workspace's PUBLIC channel roster. */
 export interface SlackConversationsListPage {
   readonly ok: true;
-  readonly channels: readonly SlackConversationInfo[];
+  readonly channels: readonly SlackPublicChannel[];
   readonly nextCursor: string | null;
 }
 
@@ -668,7 +688,7 @@ export async function fetchConversationsListPage(
     return { ok: false, error: "malformed_conversations_page", retryAfterSeconds: null };
   }
 
-  const channels: SlackConversationInfo[] = [];
+  const channels: SlackPublicChannel[] = [];
   for (const raw of result.data.channels) {
     if (raw === null || typeof raw !== "object") continue;
     const ch = raw as Record<string, unknown>;
@@ -680,7 +700,9 @@ export async function fetchConversationsListPage(
     if (typeof ch.is_private !== "boolean") continue;
     channels.push({
       id: ch.id,
-      name: typeof ch.name === "string" ? ch.name : ch.id,
+      // NULL rather than the id — see {@link SlackPublicChannel}. The caller
+      // stores this in a label column, and an id there reads as a name.
+      name: typeof ch.name === "string" && ch.name !== "" ? ch.name : null,
       isPrivate: ch.is_private,
       // Read off the payload here, unlike `users.conversations` — this method
       // enumerates the workspace, so membership is a property of the row rather

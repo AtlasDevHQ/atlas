@@ -2,7 +2,7 @@
  * The denominator-snapshot vocabulary and its derivations (#5213, ADR-0041).
  *
  * The database half — the write, the sweep, the never-zero rule, the readers —
- * is `coverage-enumeration-pg.test.ts`. This file owns the claims a double can
+ * is `coverage-snapshot-pg.test.ts`. This file owns the claims a double can
  * actually falsify: that the surveyable-class list agrees with the class
  * contract, that `state` is derived from EVIDENCE rather than configuration, and
  * that the warehouse unit id is injective where a separator-joined one would not
@@ -110,8 +110,11 @@ describe("the map-edge vocabulary", () => {
     expect(COVERAGE_DEGRADED_ARMS.length).toBeGreaterThan(0);
     for (const arm of COVERAGE_DEGRADED_ARMS) {
       // A mark the page renders needs to say WHICH class's map has the edge; an
-      // arm named only for its cause ("missing-scope") could not.
-      expect(arm.split("-")[0]).toBeOneOf([...SURVEYABLE_SOURCE_CLASSES]);
+      // arm named only for its cause ("missing-scope") could not. The class must
+      // also be one that SHIPS an enumerator — an arm for `email` would be a mark
+      // no cycle can ever raise, sitting in the vocabulary looking answered.
+      const [prefix] = arm.split("-");
+      expect(prefix).toBeOneOf(["chat", "warehouse"]);
     }
   });
 

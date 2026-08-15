@@ -45,6 +45,7 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { WAREHOUSE_SOURCE } from "@atlas/api/lib/brain/sources";
 import { listEnrollments } from "@atlas/api/lib/brain/enrollment";
@@ -98,9 +99,24 @@ export interface WarehouseCoverageDeps {
  * Exported with {@link parseWarehouseSurveyUnitId} so the build and the parse
  * cannot drift.
  */
-export function warehouseSurveyUnitId(entity: string, dimension: string): string {
-  return `${entity.length}:${entity}:${dimension}`;
+export function warehouseSurveyUnitId(entity: string, dimension: string): WarehouseSurveyUnitId {
+  return `${entity.length}:${entity}:${dimension}` as WarehouseSurveyUnitId;
 }
+
+/**
+ * A warehouse survey unit id, BRANDED on the way OUT.
+ *
+ * `EnumeratedSurveyUnit.unitId` is a plain `string` — it has to be, it also
+ * carries Slack channel ids and mailbox ids — so nothing at that seam can refuse
+ * a hand-rolled `` `${entity}:${dimension}` ``. Such an id stores fine, parses to
+ * the WRONG halves (the leading segment reads as a length), and misattributes one
+ * entity's evidence to another. Branding the builder's RESULT is what makes
+ * {@link parseWarehouseSurveyUnitId} refuse to be handed one, which is #5032's
+ * lesson: brand the output, not just the parameter.
+ */
+export type WarehouseSurveyUnitId = string & {
+  readonly __warehouseSurveyUnitId: unique symbol;
+};
 
 /** {@link warehouseSurveyUnitId}'s inverse — `null` when the id is malformed. */
 export function parseWarehouseSurveyUnitId(
@@ -149,6 +165,36 @@ const WAREHOUSE_EVIDENCE_SQL = `SELECT e.source_id, f.predicate, max(e.occurred_
     GROUP BY e.source_id, f.predicate`;
 
 /**
+ * One labelled input read — the value, or the subject and remedy the refusal
+ * needs to name.
+ *
+ * `detail` is SCRUBBED: it is interpolated into the string this module returns as
+ * `{ ok: false, error }`, which `persistCoverageSnapshot` stores in `last_error`
+ * and the page renders to an admin. A pg failure's `.message` can carry the
+ * connection string, which is why `error-scrub.ts` exists.
+ */
+type StepResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | {
+      readonly ok: false;
+      readonly subject: string;
+      readonly remedy: string;
+      readonly detail: string;
+    };
+
+async function step<T>(
+  subject: string,
+  remedy: string,
+  read: () => Promise<T>,
+): Promise<StepResult<T>> {
+  try {
+    return { ok: true, value: await read() };
+  } catch (err) {
+    return { ok: false, subject, remedy, detail: errorMessage(err) };
+  }
+}
+
+/**
  * Enumerate the warehouse class's survey units for one workspace.
  *
  * Semantic-layer read failures PROPAGATE as a refusal rather than as an empty
@@ -168,39 +214,61 @@ export async function enumerateWarehouseCoverage(params: {
   const loadEnrollments = params.deps?.listEnrollments ?? listEnrollments;
   const degraded: CoverageDegradedArm[] = [];
 
-  let entities: readonly { readonly name: string }[];
-  let enrolled: ReadonlySet<string>;
-  let evidence: ReadonlyMap<string, Date>;
-  try {
-    const [entityRows, enrollmentRows, evidenceRows] = await Promise.all([
+  // ⚠️ THREE reads, THREE catches, and one `try` around all three was the bug.
+  //
+  // The three fail for different reasons and only one of them is the semantic
+  // layer, so a single catch sent an admin whose `brain_enrollment` read failed
+  // to go and check their entity YAML — advice they can follow forever without
+  // anything changing (CLAUDE.md: no generic error messages). The step label
+  // also travels into the log, so the failing READ is recoverable from the logs
+  // rather than only from the stored sentence.
+  const reads = await Promise.all([
+    step("the published semantic layer", "publish an entity, or check Admin → Semantic Layer", () =>
       loadEntities(workspaceId),
+    ),
+    step("this workspace's warehouse enrollments", "check Admin → Company Atlas → Enrollment", () =>
       loadEnrollments(workspaceId),
+    ),
+    step("the warehouse facts already produced", "no action — this is Atlas's own store", () =>
       internalQuery<{ source_id: string; predicate: string; newest: Date | string | null }>(
         WAREHOUSE_EVIDENCE_SQL,
         [workspaceId, WAREHOUSE_SOURCE],
       ),
-    ]);
-    entities = entityRows;
-    enrolled = new Set(
-      enrollmentRows.map((r) => warehouseSurveyUnitId(r.entity, r.dimension)),
-    );
-    const byPair = new Map<string, Date>();
-    for (const row of evidenceRows) {
-      const entity = parseWarehouseEpisodeEntity(row.source_id);
-      if (entity === null) continue;
-      const at = toDate(row.newest);
-      if (at === null) continue;
-      const key = warehouseSurveyUnitId(entity, row.predicate);
-      const prior = byPair.get(key);
-      if (prior === undefined || prior < at) byPair.set(key, at);
+    ),
+  ]);
+  for (const read of reads) {
+    if (!read.ok) {
+      log.warn(
+        { workspaceId, subject: read.subject, err: read.detail },
+        "brain coverage: a warehouse enumeration input could not be read — the previous dated roster is kept",
+      );
+      return {
+        ok: false,
+        error: `Atlas could not read ${read.subject} (${read.detail}) — the warehouse coverage denominator keeps its previous reading rather than reporting zero entities. ${read.remedy}. It retries on the next cycle.`,
+      };
     }
-    evidence = byPair;
-  } catch (err) {
-    return {
-      ok: false,
-      error: `Atlas could not read this workspace's published semantic layer (${err instanceof Error ? err.message : String(err)}) — the warehouse coverage denominator keeps its previous reading rather than reporting zero entities. It retries on the next cycle.`,
-    };
   }
+  const [entityRead, enrollmentRead, evidenceRead] = reads;
+  // Narrowed by the loop above; re-narrowed here because the loop's `return`
+  // does not flow into the destructured bindings.
+  if (!entityRead.ok || !enrollmentRead.ok || !evidenceRead.ok) {
+    return { ok: false, error: "Atlas could not read this workspace's warehouse coverage inputs." };
+  }
+  const entities = entityRead.value;
+  const enrolled: ReadonlySet<string> = new Set(
+    enrollmentRead.value.map((r) => warehouseSurveyUnitId(r.entity, r.dimension) as string),
+  );
+  const byPair = new Map<string, Date>();
+  for (const row of evidenceRead.value) {
+    const entity = parseWarehouseEpisodeEntity(row.source_id);
+    if (entity === null) continue;
+    const at = toDate(row.newest);
+    if (at === null) continue;
+    const key: string = warehouseSurveyUnitId(entity, row.predicate);
+    const prior = byPair.get(key);
+    if (prior === undefined || prior < at) byPair.set(key, at);
+  }
+  const evidence: ReadonlyMap<string, Date> = byPair;
 
   const walked = entities.slice(0, WAREHOUSE_COVERAGE_MAX_ENTITIES);
   if (entities.length > walked.length) {
@@ -218,14 +286,21 @@ export async function enumerateWarehouseCoverage(params: {
       dimensions = await loadDimensions(workspaceId, entity.name);
     } catch (err) {
       // ONE entity's read failed. Refusing the whole cycle for it would let a
-      // single unreadable entity freeze the whole class's denominator; counting
-      // it as zero dimensions would shrink the denominator silently. Neither —
-      // the entity contributes no units this cycle and the previous cycle's
-      // units for it are swept, which the `warehouse-entity-bound-reached` mark
-      // does NOT cover, so it is logged at `error` where an operator sees it.
+      // single unreadable entity freeze the whole class's denominator, and
+      // counting it as zero dimensions would shrink the denominator SILENTLY —
+      // in the flattering direction, because its unsurveyed pairs are the ones
+      // that disappear, so the ratio RISES while the page shows a fresher date.
+      //
+      // So: the entity contributes no units this cycle, its previous units are
+      // swept by the write, AND the map carries an edge saying part of it could
+      // not be read. Idempotent push — one broken entity and forty broken
+      // entities are the same mark, and the count belongs in the log.
+      if (!degraded.includes("warehouse-entity-unreadable")) {
+        degraded.push("warehouse-entity-unreadable");
+      }
       log.error(
-        { workspaceId, entity: entity.name, err: err instanceof Error ? err.message : String(err) },
-        "brain coverage: could not read one entity's dimensions — its pairs are absent from this cycle's warehouse denominator",
+        { workspaceId, entity: entity.name, err: errorMessage(err) },
+        "brain coverage: could not read one entity's dimensions — its pairs are absent from this cycle's warehouse denominator, and the map carries an edge saying so",
       );
       continue;
     }

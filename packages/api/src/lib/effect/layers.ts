@@ -2531,8 +2531,12 @@ export function makeSchedulerLive(
         ),
         spanResultAttributes: (result) => ({
           "atlas.brain.coverage.status": result.status,
-          "atlas.brain.coverage.workspaces_inspected": result.workspacesInspected,
-          "atlas.brain.coverage.workspaces_skipped_disabled": result.workspacesSkippedDisabled,
+          // Per (class, workspace), NOT per workspace — a tenant with both Slack
+          // and a semantic layer contributes two. Named for what it measures so
+          // an operator cannot read it as a fleet count.
+          "atlas.brain.coverage.enumerations_attempted": result.enumerationsAttempted,
+          "atlas.brain.coverage.enumerations_skipped_disabled":
+            result.enumerationsSkippedDisabled,
           "atlas.brain.coverage.classes_enumerated": result.classesEnumerated,
           // The one that means "part of the map is older than the rest": a
           // refused enumeration keeps its previous dated roster, so the page

@@ -46,6 +46,7 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { withBrainTransaction } from "@atlas/api/lib/brain/reconcile";
 import { coverageLabelPolicy, type ClassContractLogMeta } from "@atlas/api/lib/brain/class-contract";
@@ -75,6 +76,21 @@ export const SURVEYABLE_SOURCE_CLASSES = Object.freeze([
 
 /** A class a survey unit may belong to — {@link SURVEYABLE_SOURCE_CLASSES}'s member type. */
 export type SurveyableSourceClass = (typeof SURVEYABLE_SOURCE_CLASSES)[number];
+
+/**
+ * Compile-time tie to the closed class set, in `sources.ts`'s and
+ * `class-contract.ts`'s shape (`_CLASS_AXIS_IN_SYNC`, `_CONTRACT_KEYS_IN_SYNC`).
+ *
+ * The runtime test pins this list against `CLASS_CONTRACTS`, which is a
+ * different and equally necessary guarantee — that the two DECLARATIONS agree.
+ * This one holds the weaker, earlier property that a member of this list is a
+ * class at all. {@link isSurveyableSourceClass} cannot supply it: a `value is T`
+ * predicate narrows to an INTERSECTION, so a member that is not an
+ * `EpisodeSourceClass` still compiles through it.
+ */
+const _SURVEYABLE_IS_A_CLASS: SurveyableSourceClass extends EpisodeSourceClass ? true : never =
+  true;
+void _SURVEYABLE_IS_A_CLASS;
 
 /**
  * The two states a STORED unit can be in.
@@ -119,8 +135,30 @@ export const COVERAGE_DEGRADED_ARMS = Object.freeze([
    * is "unverified since", not "current".
    */
   "chat-activity-unreadable",
+  /**
+   * Vendor conversation ids this deploy's id pattern does not recognise were
+   * dropped from the roster.
+   *
+   * A MARK rather than only a log line, on `warehouse-entity-unreadable`'s
+   * reasoning: the units are gone from the denominator and swept by the write,
+   * so the count is lower than the truth and the page would otherwise render it
+   * as complete. If Slack ever mints a public-conversation id prefix the pattern
+   * does not admit, EVERY row fails and the whole roster empties under a green
+   * success — this is the arm that says so.
+   */
+  "chat-unit-ids-unrecognised",
   /** The semantic-layer walk hit its entity bound: there are entities past it. */
   "warehouse-entity-bound-reached",
+  /**
+   * One or more entities' dimensions could not be read this cycle, so their
+   * pairs are absent from the denominator AND swept by the write.
+   *
+   * A separate arm from the bound above, because the two shrink the map for
+   * different reasons and only this one is a fault. Without it the loss is
+   * invisible AND flattering: a broken entity removes its unsurveyed pairs from
+   * the denominator, which RAISES the ratio while the page shows a fresher date.
+   */
+  "warehouse-entity-unreadable",
 ] as const);
 
 /** One arm of an enumeration that could not be performed — see {@link COVERAGE_DEGRADED_ARMS}. */
@@ -282,19 +320,34 @@ const RECORD_FAILURE_SQL = `INSERT INTO brain_coverage_cycle
      SET last_attempt_at = EXCLUDED.last_attempt_at,
          last_error = EXCLUDED.last_error`;
 
-/** What one persisted cycle changed — the scheduler's per-class tally. */
-export interface CoveragePersistReport {
-  readonly status: "success" | "failure";
-  /** Units written this cycle. Zero on a failure, and no row was touched. */
-  readonly written: number;
-  /** Units the cycle did not re-observe and therefore retired. Zero on a failure. */
-  readonly retired: number;
-  /** How many of the written units are `surveyed`. */
-  readonly surveyed: number;
-  /** How many carry a label. Always ≤ `written`; the rest are counted, never named. */
-  readonly labelled: number;
-  readonly degraded: readonly CoverageDegradedArm[];
-}
+/**
+ * What one persisted cycle changed — the scheduler's per-class tally.
+ *
+ * A discriminated union for {@link CoverageEnumeration}'s reason, applied to its
+ * sibling: the failure arm must be structurally incapable of reporting counts.
+ * As a flat record `{ status: "failure", written: 12 }` type-checked, and the
+ * "zero on a failure" invariants lived only in doc comments — on the report the
+ * operator's span attributes are built from.
+ *
+ * The failure arm also carries NO `degraded`, and that is the sharper half:
+ * `RECORD_FAILURE_SQL` deliberately leaves `degraded_arms` untouched, so a `[]`
+ * here would mean *unknown* while reading as *none* — the map-edge field, whose
+ * whole job is to say the map is incomplete, quietly saying it is complete.
+ */
+export type CoveragePersistReport =
+  | { readonly status: "failure" }
+  | {
+      readonly status: "success";
+      /** Units written this cycle. */
+      readonly written: number;
+      /** Units the cycle did not re-observe and therefore retired. */
+      readonly retired: number;
+      /** How many of the written units are `surveyed`. */
+      readonly surveyed: number;
+      /** How many carry a label. Always ≤ `written`; the rest are counted, never named. */
+      readonly labelled: number;
+      readonly degraded: readonly CoverageDegradedArm[];
+    };
 
 /**
  * Land one class's enumeration for one workspace.
@@ -320,12 +373,30 @@ export async function persistCoverageSnapshot(params: {
   const cycleIso = cycleAt.toISOString();
 
   if (!outcome.ok) {
-    await internalQuery(RECORD_FAILURE_SQL, [workspaceId, sourceClass, cycleIso, outcome.error]);
+    // ⚠️ SCRUBBED and NON-EMPTY, and both halves are load-bearing.
+    //
+    // Scrubbed because this string is STORED in `last_error` and rendered to an
+    // admin as `unavailableReason` — and pg error text sometimes echoes the
+    // connection string, which is the hazard `error-scrub.ts` exists for
+    // (CLAUDE.md: no secrets in responses). `errorMessage` bounds it too, so a
+    // stack arriving as a `.message` cannot bloat the row.
+    //
+    // Non-empty because `ck_brain_coverage_cycle_error_present` refuses `''` —
+    // and `new Error().message` IS `''`. Passing it straight through would make
+    // the one statement whose entire job is recording a failure THROW, so a
+    // visible failure would become an invisible one through the constraint
+    // written to guarantee every red dot carries a message.
+    const scrubbed = errorMessage(outcome.error).trim();
+    const stored =
+      scrubbed === ""
+        ? "The enumeration failed without reporting a reason — check the coverage-snapshot logs for this workspace and class."
+        : scrubbed;
+    await internalQuery(RECORD_FAILURE_SQL, [workspaceId, sourceClass, cycleIso, stored]);
     log.warn(
-      { workspaceId, sourceClass, err: outcome.error },
+      { workspaceId, sourceClass, err: stored },
       "brain coverage: enumeration failed — the previous dated roster is kept as-is, and the surface reads 'enumeration unavailable since' its last success",
     );
-    return { status: "failure", written: 0, retired: 0, surveyed: 0, labelled: 0, degraded: [] };
+    return { status: "failure" };
   }
 
   const meta: ClassContractLogMeta = {
@@ -373,6 +444,24 @@ export async function persistCoverageSnapshot(params: {
     ]);
     return swept.rows.length;
   });
+
+  if (outcome.units.length === 0 && retired > 0) {
+    // A SUCCESSFUL-looking empty enumeration is the one shape the union cannot
+    // refuse: `{ ok: true, units: [] }` is legal, and it reaches the database as
+    // "sweep everything, stamp a fresh success". ADR-0041 calls the result a
+    // false statement rather than an error state, and the page cannot tell it
+    // from a workspace that genuinely has nothing.
+    //
+    // LOGGED rather than refused, deliberately: a workspace whose bot was
+    // removed from every channel, or whose semantic layer was emptied, really
+    // does enumerate to nothing, and refusing would freeze it at "unavailable"
+    // with no way back. `error` is the escalation — a total wipe is far more
+    // often a broken enumerator than a real event.
+    log.error(
+      { workspaceId, sourceClass, retired },
+      "brain coverage: a SUCCESSFUL enumeration returned no units and retired the entire prior roster — this class now reads zero; verify the enumerator before trusting that number",
+    );
+  }
 
   if (outcome.degraded.length > 0) {
     // Logged as well as stored. A map edge is a statement the page makes, and an
@@ -457,6 +546,17 @@ const READ_SNAPSHOT_SQL = `SELECT c.source_class,
  * ⚠️ Errors PROPAGATE — `loadEnrollableEntities`' rule. An empty result and a
  * failed read render identically, and only one of them means "nothing is
  * connected". ADR-0041 puts the false-all-clear direction on the throw side.
+ *
+ * ⚠️ **A LIST, so the argument above covers only the classes that HAVE a cycle
+ * row.** A surveyable class that has never run at all is simply absent, and this
+ * function says nothing about what that absence means. ADR-0041's totality
+ * requirement — "the coverage representation is keyed `Record<EpisodeSourceClass,
+ * …>`, so a class added without a coverage answer is a compile error" — is a
+ * property of THE PAGE'S representation, which is #5214's, and keying it here
+ * would decide that shape from the reader. The obligation this hands #5214, since
+ * nothing here can enforce it: seed the record from
+ * {@link SURVEYABLE_SOURCE_CLASSES} and render a class with no row as "never
+ * enumerated", never as a class nobody connected.
  */
 export async function readCoverageSnapshot(
   workspaceId: string,
@@ -480,9 +580,9 @@ export async function readCoverageSnapshot(
     const lastSuccessAt = isoOrNull(row.last_success_at);
     out.push({
       sourceClass,
-      surveyed: asCount(row.surveyed),
-      enumerated: asCount(row.enumerated),
-      inPerimeterWithoutEvidence: asCount(row.blind),
+      surveyed: asCount(row.surveyed, "surveyed", workspaceId),
+      enumerated: asCount(row.enumerated, "enumerated", workspaceId),
+      inPerimeterWithoutEvidence: asCount(row.blind, "blind", workspaceId),
       asOf: lastSuccessAt,
       lastAttemptAt: isoOrNull(row.last_attempt_at),
       unavailableReason:
@@ -501,8 +601,21 @@ export interface CoverageUnitRow {
   /** `null` when no label clause admitted this unit — counted, never named. */
   readonly label: string | null;
   readonly newestEvidenceAt: string | null;
-  readonly vendorActivityAt: string | null;
-  readonly vendorActivityCheckedAt: string | null;
+  /**
+   * The vendor-side reading, as the same tri-state {@link EnumeratedSurveyUnit}
+   * writes — not the flat `(at, checkedAt)` pair the columns hold.
+   *
+   * The pair is what the union exists to prevent: it makes the reader re-derive
+   * "did we ask?" from `checkedAt !== null`, and it admits `{ at: <date>,
+   * checkedAt: null }` — the state
+   * `ck_brain_coverage_snapshot_activity_attributed` refuses at the database. That
+   * is precisely the axis ADR-0041 forbids guessing on ("current" vs "unverified
+   * since"), so the invariant the SQL enforces travels in the type the page
+   * consumes rather than stopping at the driver.
+   */
+  readonly activity:
+    | { readonly probed: false }
+    | { readonly probed: true; readonly at: string | null; readonly checkedAt: string };
 }
 
 const READ_UNITS_SQL = `SELECT unit_id, state, in_perimeter, unit_label, newest_evidence_at,
@@ -526,18 +639,26 @@ export async function readCoverageUnits(
     workspaceId,
     sourceClass,
   ]);
-  return rows.map((r) => ({
-    unitId: String(r.unit_id),
-    // Narrowed fail-closed: an unrecognised state renders as `enumerated`, never
-    // as a `surveyed` no writer recorded. The CHECK makes it unreachable; the
-    // narrowing is what keeps the type honest if it ever is not.
-    state: r.state === "surveyed" ? "surveyed" : "enumerated",
-    inPerimeter: r.in_perimeter === true,
-    label: typeof r.unit_label === "string" && r.unit_label !== "" ? r.unit_label : null,
-    newestEvidenceAt: isoOrNull(r.newest_evidence_at),
-    vendorActivityAt: isoOrNull(r.vendor_activity_at),
-    vendorActivityCheckedAt: isoOrNull(r.vendor_activity_checked_at),
-  }));
+  return rows.map((r) => {
+    // `checkedAt` is the discriminant, not `at`: "we asked and the channel is
+    // empty" stores a NULL `at` with a real `checkedAt`, and reading `at` as the
+    // discriminant would report that unit as never probed forever.
+    const checkedAt = isoOrNull(r.vendor_activity_checked_at);
+    return {
+      unitId: String(r.unit_id),
+      // Narrowed fail-closed: an unrecognised state renders as `enumerated`,
+      // never as a `surveyed` no writer recorded. The CHECK makes it
+      // unreachable; the narrowing keeps the type honest if it ever is not.
+      state: r.state === "surveyed" ? "surveyed" : "enumerated",
+      inPerimeter: r.in_perimeter === true,
+      label: typeof r.unit_label === "string" && r.unit_label !== "" ? r.unit_label : null,
+      newestEvidenceAt: isoOrNull(r.newest_evidence_at),
+      activity:
+        checkedAt === null
+          ? ({ probed: false } as const)
+          : ({ probed: true, at: isoOrNull(r.vendor_activity_at), checkedAt } as const),
+    };
+  });
 }
 
 /**
@@ -595,7 +716,18 @@ function readDegradedArms(
   workspaceId: string,
   sourceClass: SurveyableSourceClass,
 ): readonly CoverageDegradedArm[] {
-  if (!Array.isArray(raw)) return [];
+  if (!Array.isArray(raw)) {
+    // Not `return []` quietly. `degraded_arms` is `NOT NULL DEFAULT '{}'` so this
+    // is unreachable through the driver — which is exactly why it must be loud
+    // if it ever happens: an empty array here reads as "no map edges", i.e. a
+    // COMPLETE map, which is the flattering direction and the one ADR-0041 calls
+    // a false statement rather than an error state.
+    log.error(
+      { workspaceId, sourceClass, rawType: typeof raw },
+      "brain coverage: the stored map-edge marks are not an array — reporting no map edges for this class, which reads as a complete map",
+    );
+    return [];
+  }
   const out: CoverageDegradedArm[] = [];
   const unknown: string[] = [];
   for (const entry of raw) {
@@ -619,8 +751,22 @@ function readDegradedArms(
   return out;
 }
 
-function asCount(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+/**
+ * A denominator column, or a LOUD zero.
+ *
+ * `count(*)::int` reaches node-pg as a `number`, so the fallback is unreachable
+ * — which is the reason it logs rather than the reason it can be trusted. A
+ * silent `0` on `enumerated` SHRINKS the denominator, and a shrunk denominator
+ * raises the ratio: the one direction this whole module is organised against,
+ * arriving through the narrowing helper nobody reads.
+ */
+function asCount(value: unknown, field: string, workspaceId: string): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  log.error(
+    { workspaceId, field, valueType: typeof value },
+    "brain coverage: a denominator count came back unreadable — reporting zero for it, which makes this class's coverage look better than it is",
+  );
+  return 0;
 }
 
 function isoOrNull(value: unknown): string | null {

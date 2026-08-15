@@ -118,7 +118,7 @@ const PERIMETER_SQL = `SELECT channel_id, name, is_member, excluded_at
  * `split_part(source_id, ':', 1)` reverses `slackEpisodeSourceId`'s
  * `<channelId>:<ts>` — a channel id holds no colon (`SLACK_CHANNEL_ID_PATTERN`)
  * and the `ts` is always the second half, so the split is exact rather than
- * best-effort. Pinned by `coverage-slack.test.ts`, which builds its fixture
+ * best-effort. Pinned by `brain/__tests__/coverage-snapshot-pg.test.ts`, which builds its fixture
  * episodes through `slackEpisodeSourceId` so a format change reddens here.
  */
 const NEWEST_EVIDENCE_SQL = `SELECT split_part(source_id, ':', 1) AS channel_id,
@@ -161,7 +161,8 @@ export async function enumerateSlackCoverage(params: {
   }
 
   // ── The public roster ────────────────────────────────────────────────────
-  const publicRoster = await readPublicRoster({ token, listPage, workspaceId });
+  const membersPerVendor = new Set<string>();
+  const publicRoster = await readPublicRoster({ token, listPage, workspaceId, membersPerVendor });
   if (publicRoster.kind === "refused") return { ok: false, error: publicRoster.error };
   if (publicRoster.kind === "unreadable") {
     degraded.push("chat-public-roster-unreadable");
@@ -173,7 +174,7 @@ export async function enumerateSlackCoverage(params: {
     degraded.push("chat-public-roster-truncated");
   }
   const vendorPublic =
-    publicRoster.kind === "roster" ? publicRoster.channels : new Map<string, string>();
+    publicRoster.kind === "roster" ? publicRoster.channels : new Map<string, string | null>();
 
   // ── The activity probe rotation ──────────────────────────────────────────
   // Read BEFORE the units are assembled, because the rotation orders on the
@@ -190,8 +191,20 @@ export async function enumerateSlackCoverage(params: {
   // ── The union ────────────────────────────────────────────────────────────
   const units: EnumeratedSurveyUnit[] = [];
   const seen = new Set<string>();
+  // ⚠️ COUNTED, not dropped quietly, in BOTH loops.
+  //
+  // `fetchConversationsListPage` refuses a whole page for one unusable entry
+  // because "an understated page does not merely miss a channel, it RETIRES
+  // one" — and this is that same sweep, one seam later. If Slack ever mints a
+  // public-conversation id prefix this pattern does not admit, EVERY row fails
+  // here, the roster empties, and `persistCoverageSnapshot` sweeps the lot under
+  // a green success. A silent `continue` is how that arrives with no signal.
+  let unrecognisedIds = 0;
   for (const row of perimeterRows) {
-    if (!SLACK_CHANNEL_ID_PATTERN.test(row.channel_id)) continue;
+    if (!SLACK_CHANNEL_ID_PATTERN.test(row.channel_id)) {
+      unrecognisedIds++;
+      continue;
+    }
     seen.add(row.channel_id);
     const inPerimeter = row.is_member === true && row.excluded_at === null;
     units.push({
@@ -215,10 +228,13 @@ export async function enumerateSlackCoverage(params: {
   }
   for (const [channelId, name] of vendorPublic) {
     if (seen.has(channelId)) continue;
-    if (!SLACK_CHANNEL_ID_PATTERN.test(channelId)) continue;
+    if (!SLACK_CHANNEL_ID_PATTERN.test(channelId)) {
+      unrecognisedIds++;
+      continue;
+    }
     units.push({
       unitId: channelId,
-      label: name === "" ? null : name,
+      label: name,
       // Nobody put it in the perimeter — ADR-0041 state 2, verbatim.
       inPerimeter: false,
       deliberateAct: false,
@@ -233,6 +249,32 @@ export async function enumerateSlackCoverage(params: {
     });
   }
 
+  if (unrecognisedIds > 0) {
+    // A MARK as well as a log, for `warehouse-entity-unreadable`'s reason: the
+    // dropped units are gone from the denominator and swept by the write, so
+    // without an edge the page renders a short count as a complete map.
+    degraded.push("chat-unit-ids-unrecognised");
+    log.error(
+      { workspaceId, unrecognisedIds, kept: units.length },
+      "brain coverage: Slack conversation ids this deploy does not recognise were dropped from the chat denominator — the count is lower than the truth",
+    );
+  }
+
+  // The perimeter is what `brain_slack_channel` says, and this enumeration does
+  // NOT widen it — a channel Slack calls a membership with no row here counts as
+  // state 2, which is the understating and therefore safe direction. But it is
+  // also what a broken membership sync looks like, and that fact had no detector
+  // at all until this line: the ingest scope is the same table, so a channel
+  // stuck outside it is a channel Atlas is not reading.
+  const perimeterIds = new Set(perimeterRows.map((r) => r.channel_id));
+  const unsynced = [...membersPerVendor].filter((id) => !perimeterIds.has(id));
+  if (unsynced.length > 0) {
+    log.warn(
+      { workspaceId, unsynced: unsynced.length, example: unsynced[0] },
+      "brain coverage: Slack reports the bot in channels this workspace has no membership row for — they count as enumerated, not surveyed, and the ingest scope is not reading them either",
+    );
+  }
+
   return { ok: true, units, degraded };
 }
 
@@ -241,8 +283,16 @@ export async function enumerateSlackCoverage(params: {
 // ---------------------------------------------------------------------------
 
 type PublicRosterResult =
-  /** Read completely, or up to the page bound. `channels` maps id → name. */
-  | { readonly kind: "roster"; readonly channels: Map<string, string>; readonly truncated: boolean }
+  /**
+   * Read completely, or up to the page bound. `channels` maps id → name, where
+   * the name may be `null` — Slack sent none, and an id in its place would be a
+   * label that is not one.
+   */
+  | {
+      readonly kind: "roster";
+      readonly channels: Map<string, string | null>;
+      readonly truncated: boolean;
+    }
   /** A stable capability fact: these credentials cannot list public channels. */
   | { readonly kind: "unreadable" }
   /** A transient failure. The caller refuses the whole cycle. */
@@ -252,8 +302,19 @@ async function readPublicRoster(params: {
   readonly token: string;
   readonly listPage: typeof fetchConversationsListPage;
   readonly workspaceId: string;
+  /**
+   * Channels the VENDOR says the bot is in, filled as a side effect.
+   *
+   * Only used to detect disagreement with `brain_slack_channel` — the perimeter
+   * is what that table says, and this enumeration must not quietly widen it. A
+   * channel Slack calls a membership that has no row is an understatement (the
+   * safe direction) AND a broken membership sync, and without this the second
+   * fact has no detector at all.
+   */
+  readonly membersPerVendor: Set<string>;
 }): Promise<PublicRosterResult> {
-  const channels = new Map<string, string>();
+  const { membersPerVendor } = params;
+  const channels = new Map<string, string | null>();
   let cursor: string | undefined;
   for (let page = 0; ; page++) {
     if (page >= PUBLIC_ROSTER_MAX_PAGES) {
@@ -286,6 +347,7 @@ async function readPublicRoster(params: {
       // present for the same reason.
       if (channel.isPrivate) continue;
       channels.set(channel.id, channel.name);
+      if (channel.isMember) membersPerVendor.add(channel.id);
     }
     if (result.nextCursor === null) return { kind: "roster", channels, truncated: false };
     cursor = result.nextCursor;
@@ -320,11 +382,30 @@ async function probeActivity(params: {
       if (page.error !== "not_in_channel") {
         unreadable = true;
         log.warn(
-          { workspaceId: params.workspaceId, channelId, err: page.error },
+          {
+            workspaceId: params.workspaceId,
+            channelId,
+            err: page.error,
+            retryAfterSeconds: page.retryAfterSeconds,
+          },
           "brain coverage: could not read a channel's newest message from Slack — its staleness reads 'unverified since' rather than current",
         );
       }
       readings.set(channelId, { probed: false });
+      // ⚠️ STOP on a 429 rather than working through the rest of the rotation.
+      //
+      // The mark is already raised and every remaining unit keeps its previous
+      // reading through the write's COALESCE, so continuing buys nothing — and it
+      // costs up to 19 more calls against a token the INGEST pipeline shares.
+      // Degrading the pipeline whose staleness this measurement reports on is
+      // the one cost this measurement must not impose.
+      if (page.error === "ratelimited") {
+        log.warn(
+          { workspaceId: params.workspaceId, retryAfterSeconds: page.retryAfterSeconds },
+          "brain coverage: Slack is rate limiting this workspace — the activity probe rotation stops here and resumes next cycle",
+        );
+        break;
+      }
       continue;
     }
     // An EMPTY page is a real reading and must be `probed: true`: it says the

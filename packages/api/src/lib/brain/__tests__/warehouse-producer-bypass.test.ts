@@ -61,9 +61,11 @@
  * assertion succeeds whenever EITHER direction is comparable — the reverse direction
  * carries every seam name. Refused only where the reverse direction also fails: a
  * NULLARY mint (a 1-parameter function type is not assignable to a 0-parameter one),
- * or a literal with an excess property. Such a validator returns its own argument, so
- * the run loop's identity check waves it through: the gate never ran and nothing
- * downstream can tell.
+ * or a literal with an excess property. `as const` on `valid` does not close it.
+ * Measured against the repo's own checker, because the two obvious explanations for
+ * this were both wrong. The identity mint that survives — one returning its own
+ * argument — is waved through by the run loop's identity check: the gate never ran
+ * and nothing downstream can tell.
  *
  * ## The names are ASSEMBLED, and that is load-bearing twice
  *
@@ -84,12 +86,13 @@
  * the five contiguously while each control assembled its own — two independent
  * spellings that had to agree. Deriving both from `GUARDED_NAMES` removed that
  * independence, and it was measured: **deleting three of the five names left the
- * whole suite green**, including the RUNNER arm that has no instances in the tree and
- * is the cheapest innocuous-looking uncaught mint. Fixtures that agree by
- * construction (#5000, #5068), one layer up.
+ * whole suite green**, including the RUNNER arm — every file that names it is already
+ * listed and also names another guarded type, so losing the arm changes no result,
+ * and no unlisted file names it, which makes it the cheapest innocuous-looking
+ * uncaught mint. Fixtures that agree by construction (#5000, #5068), one layer up.
  *
- * Three different mechanisms hold three different failures, and none subsumes
- * another — say which is which before touching any of them:
+ * Three failures are closed by four mechanisms, none subsuming another, and a fourth
+ * failure is open — say which is which before touching any of them:
  *
  * - **DELETION** — a name leaving the array. Closed at COMPILE time by the fixed-arity
  *   tuple (`bun run type`) and at RUNTIME by the length assertion (`bun test`, which
@@ -115,8 +118,8 @@
  * spread of the refusing arm, `unknown`, and the identity form of generic-inference
  * laundering are all REFUSED by the COMPILER.
  *
- * ⚠️ **What this scan holds is exactly: no unlisted file under the scanned roots
- * SPELLS one of the five names.** What still escapes is everything that reaches the
+ * ⚠️ **What this scan holds is exactly: no unlisted TypeScript file under the scanned
+ * roots SPELLS one of the five names.** What still escapes is everything that reaches the
  * type without naming it — `any`-typed wiring, a `Partial<T>`-shaped generic builder,
  * or an indexed-access lookup routed through a VALUE rather than the type
  * (`Parameters<typeof someRunner>[0]`). Those need no assertion and name nothing; the
@@ -129,8 +132,10 @@
  *
  * ⚠️ **`--affected` will not select this file for the event it exists to catch.** The
  * affected-test runner keys on quoted module specifiers, and a brand-new mint at
- * `lib/brain/<new-file>.ts` is named in no string here — nor is anything under
- * `ee/src` or `packages/cli/src`, which are outside this package entirely. So the
+ * `lib/brain/<new-file>.ts` is named in no string here. The two sentinel strings DO
+ * name files under `ee/src` and `packages/cli/src`, but the runner needs its token
+ * immediately before the closing quote and `"validate.ts"` ends in `.ts`, so they
+ * select nothing either — and those roots are outside this package regardless. So the
  * local pre-flight is blind to a new mint and only full CI catches it. This is the
  * repo's known glob-scanning-guard-is-`--affected`-blind pattern; do not read a green
  * pre-flight as covering it.
@@ -164,12 +169,11 @@ const SRC_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
  * they were.** All five guarded names are EXPORTED and nothing gates who imports
  * `@atlas/api/*` — only the api→ee direction is gated — so the same argument that
  * put `ee/src` and `packages/cli/src` here applies verbatim to directories that are
- * knowingly unscanned: every `plugins/<name>/src` (a dozen of which import
- * `@atlas/api` today), `packages/cli/bin`, `packages/cli/lib`,
- * `packages/api/scripts`, and `packages/mcp/src`. None names a guarded type today —
- * verified by repo-wide grep —
- * so the gap is latent, not live. Widening the scan to cover them needs glob
- * expansion and is tracked as a follow-up.
+ * knowingly unscanned: every `plugins/<name>/src` (24 of the 25 import `@atlas/api`
+ * today), `packages/cli/bin`, `packages/cli/lib`, `packages/api/scripts`, and
+ * `packages/mcp/src`. None names a guarded type today, verified by repo-wide grep, so
+ * the gap is latent rather than live. Widening the scan needs glob expansion and is
+ * tracked as a follow-up.
  *
  * ⚠️ **The roots are NAMED in the failure message too.** An enumeration is only as
  * honest as its scope. If a root is added here, add it there.
@@ -179,16 +183,22 @@ const SRC_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
  * roughly half of each root's file count and verified one root. That is the wrong
  * calibration: the number that matters is the size of the largest CHILD directory,
  * because repointing a root at its own child is the edit in question. Measured —
- * `packages/api/src` -> `src/lib` is 1613 files against a floor of 1000, and
+ * `packages/api/src` -> `src/lib` is 1612 files against a floor of 1000, and
  * `packages/cli/src` -> `src/__tests__` is 35 against 30. Both stayed GREEN. Only the
  * `ee` root, the one that had been checked, RED-ed.
  *
  * So the floor is no longer the mechanism, it is the backstop. **`sentinel` is the
  * mechanism**: a file that must be REACHED by the walk, which answers "is this the
- * right directory" directly instead of inferring it from a count. It also catches
- * narrowing introduced INSIDE `walk` — a skipped directory or a tightened extension
- * test — which no root-level floor can see. Each sentinel is a uniquely-pathed file
- * under its root, so a repoint cannot accidentally satisfy it.
+ * right directory" directly instead of inferring it from a count. Each sentinel is a
+ * uniquely-pathed file under its root, so a repoint cannot accidentally satisfy it.
+ *
+ * ⚠️ **The sentinel catches a `walk` narrowing only when that narrowing drops the
+ * sentinel's OWN path, and an earlier draft of this paragraph claimed more.**
+ * Measured: skipping `brain` leaves 1,789 files — clears the 1,000 floor, but REDs
+ * the sentinel. Skipping `src/api` leaves 1,651 — clears the floor AND still reaches
+ * the sentinel, so both mechanisms miss it. Tightening the extension test to `.ts`
+ * drops nothing at all, since no root holds a `.tsx`, `.mts` or `.cts` today. A scan
+ * narrowed away from the sentinel's path is not covered here.
  *
  * The floors stay because they catch a different thing: a scan that still reaches the
  * sentinel while losing most of the tree.
@@ -275,7 +285,8 @@ const NAME_RE = new RegExp(`\\b(?:${GUARDED_NAMES.join("|")})\\b`);
 
 /**
  * The matcher #5249 replaced. It does NOT scan the tree — but it is not dead code
- * either, and an earlier draft that treated it as dead shipped a vacuous test.
+ * either, and an earlier draft's only use of it carried no positive anchor, so a
+ * matcher that matched NOTHING satisfied every "should MISS" assertion.
  *
  * Two live uses: the behaviour delta below asserts it MISSES each escape spelling
  * (with a positive anchor, so a matcher that missed *everything* could not satisfy
@@ -349,7 +360,7 @@ function* walk(dir: string): Generator<string> {
       yield* walk(full);
     } else if (/\.(?:ts|tsx|mts|cts)$/.test(entry.name)) {
       // `.mts`/`.cts` are included though the roots contain none today: the cost is
-      // one alternative, and a module extension the scan cannot see is exactly the
+      // two alternatives, and a module extension the scan cannot see is exactly the
       // silent narrowing this file is built to refuse.
       yield full;
     }
@@ -397,7 +408,7 @@ function withoutComments(source: string): string {
 function isExported(source: string, name: string): boolean {
   const stripped = withoutComments(source);
   const declared = new RegExp(`^export (?:declare )?(?:type|interface|class) ${name}\\b`, "m");
-  // A barrel re-export is a legal refactor for a 2,300-line module and must not RED.
+  // A barrel re-export is a legal refactor for a 2,378-line module and must not RED.
   // ⚠️ The negative lookahead matters: `export type { X as V2 }` means X is NO LONGER
   // exported under that spelling, which is precisely the rename this check exists to
   // catch — without it the widening swallowed its own subject.
@@ -419,15 +430,16 @@ describe("the SQL-gate name allowlist (#5042, #5230, #5249)", () => {
     // ⚠️ Under `bun test` the tuple contributes NOTHING — the runner strips types
     // without checking them, so this assertion is the only live mechanism here and
     // the tuple is the only one in `bun run type`. Two gates, two mechanisms, neither
-    // redundant. This is not belt and braces.
+    // redundant.
     expect(GUARDED_NAMES.length, "a guarded name left the array; the scan silently narrowed").toBe(
       5,
     );
     // ⚠️ ARITY IS NOT IDENTITY, and the gap was measured. Substituting one name for a
     // COPY of another keeps the length at 5, keeps both spellings real exports, and
     // shrinks the positive-control loop along with the matcher — the whole suite
-    // stayed GREEN while `NAME_RE` silently lost an alternative. The runner arm, which
-    // has no instances in the tree, is exactly the one a copy-paste clobbers.
+    // stayed GREEN while `NAME_RE` silently lost an alternative. The runner arm has no
+    // assertion onto it anywhere and no unlisted file naming it, so it is the one a
+    // copy-paste clobbers unnoticed.
     expect(
       new Set(GUARDED_NAMES).size,
       "two fragments assemble the same name — an arm left the matcher without shortening it",
@@ -480,8 +492,9 @@ describe("the SQL-gate name allowlist (#5042, #5230, #5249)", () => {
       const files = [...walk(dir)];
       // ⚠️ The sentinel, not the floor, is what answers "is this the right directory".
       // Two of the three floors were measured passable by repointing a root at its own
-      // largest child; a reached-file check cannot be satisfied that way, and it also
-      // catches narrowing introduced inside `walk` itself.
+      // largest child; a reached-file check cannot be satisfied that way. It also
+      // catches a `walk` narrowing that drops the sentinel's own directory — but only
+      // that one; a narrowing elsewhere clears both this and the floor.
       expect(
         files,
         `scan root ${name} no longer reaches ${sentinel} — repointed, or did walk() narrow?`,
@@ -580,8 +593,8 @@ describe("the SQL-gate name allowlist (#5042, #5230, #5249)", () => {
 
   test("the escapes #5249 closed: old matcher MISSES each, new matcher CATCHES each", () => {
     // ⚠️ The behaviour delta, executed rather than described. Each spelling below was
-    // also compiled against the repo's own checker while #5249 was written — all three
-    // typecheck, which is what made them escapes rather than curiosities.
+    // also compiled against the repo's own checker while #5249 was written — each of
+    // the four typechecks, which is what made them escapes rather than curiosities.
     //
     // ASSEMBLED, never written whole — a contiguous name here would put this file into
     // its own result set, which is the trap the header describes.

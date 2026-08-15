@@ -140,6 +140,23 @@
 	# rather than linked directly, llms.txt indexes the HTML URL, and the
 	# /self-hosted block above set the same precedent for its twelve pages.
 	#
+	# ⚠️ WHICH WINS on a retired URL carrying `Accept: text/markdown` — this
+	# block's `redir`, or the `@markdown` rewrite at the bottom of the file?
+	# THE REDIRECT DOES, and that is not readable off this file: Caddy orders
+	# directives by its own table, not by source order. MEASURED two ways at
+	# #5242, against the digest-pinned image this container runs:
+	#
+	#   - `caddy adapt` puts every `redir` (as `static_response`) in routes
+	#     8–63 and every `rewrite` in 64–71;
+	#   - a real request — `curl -H 'Accept: text/markdown' --max-redirs 0
+	#     /guides/brain-sources` — answers `308 Location: /guides/atlas-sources`,
+	#     while the same header on the live `/guides/atlas-sources/` answers
+	#     `200 Content-Type: text/markdown` with the twin's body.
+	#
+	# So an agent asking for markdown at a retired URL is redirected first and
+	# gets the twin on its follow-up request, which carries the header along.
+	# Nothing is lost, and there is no need for a markdown-specific redirect.
+	#
 	# SSOT for this list: apps/docs/src/lib/redirects.ts
 	# (RENAMED_ATLAS_GUIDE_STEMS x SHARED_MOUNT_PREFIXES) — the same
 	# apps/docs/src/lib/__tests__/redirect-coverage.test.ts fails if this block

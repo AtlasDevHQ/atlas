@@ -170,6 +170,26 @@ jobs:
       - name: Check template drift
         run: bash scripts/check-template-drift.sh
 
+      # `deploy/docs/Caddyfile` is the ONLY redirect layer for apps/docs — the
+      # site is `output: "export"`, which disables Next's `redirects()`. It was
+      # asserted only AS TEXT (redirect-coverage.test.ts, security-txt-redirect.test.ts
+      # string-match lines), so a syntax error passed lint/type/drift/every test,
+      # passed `Built image (docs)` too — the Dockerfile COPYs it without
+      # adapting it — and then killed the container at boot, on the deploy the
+      # redirects need in order to exist. #5236 added 28 `redir` lines in one
+      # block, the largest single addition that file has had.
+      #
+      # The gate adapts it with the digest-pinned image READ OUT OF
+      # deploy/docs/Dockerfile, so it validates against the binary that serves
+      # it and no second pin can drift. `ubuntu-latest` has docker; the gate
+      # exits 2 rather than 0 when it does not, so a runner without it fails
+      # loudly instead of looking green.
+      - name: Check deploy/docs/Caddyfile is a valid Caddy config (#5242)
+        run: bash scripts/check-caddyfile.sh
+
+      - name: Adversarial fixtures for the Caddyfile config gate (#5242)
+        run: bash scripts/__tests__/check-caddyfile.test.sh
+
       - name: Check no publishable package version is merged-but-unpublished
         run: bun scripts/check-unpublished-versions.ts
 
@@ -272,8 +292,9 @@ jobs:
       # ⚠️ Enumerated here because this workflow lists each fixture suite BY NAME
       # while ci-local.sh globs the directory — so a new suite runs locally and
       # silently never runs in CI. This was the only one missing at the time, of
-      # thirteen suites then. There are 19 now, all covered: 18 named in this
-      # workflow plus `scan-image.test.sh` in image-scan.yml.
+      # thirteen suites then. There are 20 now, all covered: 19 named in this
+      # workflow plus `scan-image.test.sh` in image-scan.yml. (#5242 added the
+      # twentieth, `check-caddyfile.test.sh`, named in the drift job above.)
       # It builds throwaway trees and needs no Postgres; ~2 seconds.
       - name: Adversarial fixtures for the mutation-tables gate (#5077)
         run: bash scripts/__tests__/check-mutation-tables.test.sh

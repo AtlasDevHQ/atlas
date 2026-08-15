@@ -26,7 +26,7 @@ When a `single`-cardinality claim arrives that disagrees with an existing one, A
 
 ### Where cardinality comes from
 
-Cardinality is a property of the **canonical predicate**, curated by a human on the [Claim Vocabulary](/guides/brain-vocabulary) surface. It is not a field on the claim, and there is **no database default** — absence is the ordinary state and it means `multi`.
+Cardinality is a property of the **canonical predicate**, curated by a human on the [Claim Vocabulary](/guides/atlas-vocabulary) surface. It is not a field on the claim, and there is **no database default** — absence is the ordinary state and it means `multi`.
 
 A *stored* `multi` is a different fact from absence: it records a human who looked and declined the question, which is what stops the automatic proposer raising it again. Only an **approved** entry counts. A proposer that watches human corrections can suggest `single`; it can never approve one, and nothing autonomous can.
 
@@ -57,7 +57,7 @@ Each visible counterpart arrives as a full claim in its own right: subject, pred
 Counterparts are sorted by fact id. That is deterministic and deliberately meaningless: not by time, not by status, not by source authority, not by corroboration count. Any of those orderings would imply a winner.
 
 <Callout type="info" title="Retired rivals stay listed, and stay labelled">
-  A claim that has since been withdrawn or replaced is still why a live claim was contested, so the cluster lists both: it is the one read that does not hide a tombstoned rival, and the one *current-belief* read that does not hide a superseded one. Every counterpart carries the stamps for **both** [temporal axes](/guides/brain-temporal-model#supersession-is-not-retraction) — `invalidatedAt` if it was retracted, `validTo` for the end of its validity window, either or both possible — because neither verb writes `status`. Without them you could not tell a live conflict from one somebody already resolved.
+  A claim that has since been withdrawn or replaced is still why a live claim was contested, so the cluster lists both: it is the one read that does not hide a tombstoned rival, and the one *current-belief* read that does not hide a superseded one. Every counterpart carries the stamps for **both** [temporal axes](/guides/atlas-temporal-model#supersession-is-not-retraction) — `invalidatedAt` if it was retracted, `validTo` for the end of its validity window, either or both possible — because neither verb writes `status`. Without them you could not tell a live conflict from one somebody already resolved.
 
   `validTo` arrives without anyone acting on the rival: the publish gate stamps it on the claim it retires, and nothing deletes the `in-tension-with` edge written when the two claims first disagreed. So a promoted claim keeps its predecessor as a counterpart permanently — correctly labelled as settled, not as an open contradiction.
 
@@ -90,7 +90,7 @@ An automatic arbitration rule — newest wins, most-corroborated wins, highest-a
 
 A wrong arbitration is worse than a visible conflict, because it is invisible. The losing claim disappears, and the agent asserts the survivor with full confidence and no signal that anything was ever contested.
 
-So arbitration stays a **human verb**. Resolving a conflict means [superseding](/guides/brain-corrections#supersede--replace-a-belief) the claim that lost — which closes its validity window, records the `supersedes` edge, and keeps the retired belief readable inside its own window — or [retracting](/guides/brain-corrections#retract--the-only-tombstone) a claim that should never have been served.
+So arbitration stays a **human verb**. Resolving a conflict means [superseding](/guides/atlas-corrections#supersede--replace-a-belief) the claim that lost — which closes its validity window, records the `supersedes` edge, and keeps the retired belief readable inside its own window — or [retracting](/guides/atlas-corrections#retract--the-only-tombstone) a claim that should never have been served.
 
 <Callout type="info" title="What the agent does with a conflict">
   Conflicting facts reach the agent labelled as such, both sides present. The agent surfaces the disagreement rather than silently choosing — an answer built on a contested claim should say so.
@@ -98,6 +98,6 @@ So arbitration stays a **human verb**. Resolving a conflict means [superseding](
 
 ## Related
 
-- [Company Atlas — Corrections](/guides/brain-corrections) — the verbs that resolve a conflict
-- [Company Atlas — Claim Vocabulary](/guides/brain-vocabulary) — where a predicate is curated `single`, and where two spellings become one slot
-- [Company Atlas — Temporal Model](/guides/brain-temporal-model) — why a superseded claim stays readable
+- [Company Atlas — Corrections](/guides/atlas-corrections) — the verbs that resolve a conflict
+- [Company Atlas — Claim Vocabulary](/guides/atlas-vocabulary) — where a predicate is curated `single`, and where two spellings become one slot
+- [Company Atlas — Temporal Model](/guides/atlas-temporal-model) — why a superseded claim stays readable

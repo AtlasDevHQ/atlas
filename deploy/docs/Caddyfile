@@ -119,6 +119,53 @@
 	redir /contributing/eval-harness/ /self-hosted/contributing/eval-harness/ 308
 	# ── END /self-hosted section redirects (#4267) ───────────────────────────
 
+	# ── BEGIN brain-* -> atlas-* guide renames (#5083) ───────────────────────
+	# ADR-0038 Layer 1 renamed the product noun to Company Atlas. The seven
+	# brain guides took the new noun in their titles and prose (#5081); this
+	# block retires their old URLs, which still said "brain". Same shape as the
+	# blocks above: an EXACT-path bare + trailing-slash 308 pair per URL.
+	#
+	# TWO mounts per guide. These pages live in content/shared/, which
+	# src/lib/source.ts feeds into BOTH the site-root loader and the
+	# /self-hosted loader, so each rename retires /guides/brain-<stem> AND
+	# /self-hosted/guides/brain-<stem> — both were listed in their section's
+	# guides/meta.json and both were reachable.
+	#
+	# SSOT for this list: apps/docs/src/lib/redirects.ts
+	# (RENAMED_ATLAS_GUIDE_STEMS x SHARED_MOUNT_PREFIXES) — the same
+	# apps/docs/src/lib/__tests__/redirect-coverage.test.ts fails if this block
+	# and that map drift apart, if a target 404s, or if an old page is still on
+	# disk. Keep the two in lockstep.
+	redir /guides/brain-sources /guides/atlas-sources 308
+	redir /guides/brain-sources/ /guides/atlas-sources/ 308
+	redir /guides/brain-conflicts /guides/atlas-conflicts 308
+	redir /guides/brain-conflicts/ /guides/atlas-conflicts/ 308
+	redir /guides/brain-corrections /guides/atlas-corrections 308
+	redir /guides/brain-corrections/ /guides/atlas-corrections/ 308
+	redir /guides/brain-temporal-model /guides/atlas-temporal-model 308
+	redir /guides/brain-temporal-model/ /guides/atlas-temporal-model/ 308
+	redir /guides/brain-connector-authoring /guides/atlas-connector-authoring 308
+	redir /guides/brain-connector-authoring/ /guides/atlas-connector-authoring/ 308
+	redir /guides/brain-chat-webhook /guides/atlas-chat-webhook 308
+	redir /guides/brain-chat-webhook/ /guides/atlas-chat-webhook/ 308
+	redir /guides/brain-vocabulary /guides/atlas-vocabulary 308
+	redir /guides/brain-vocabulary/ /guides/atlas-vocabulary/ 308
+	redir /self-hosted/guides/brain-sources /self-hosted/guides/atlas-sources 308
+	redir /self-hosted/guides/brain-sources/ /self-hosted/guides/atlas-sources/ 308
+	redir /self-hosted/guides/brain-conflicts /self-hosted/guides/atlas-conflicts 308
+	redir /self-hosted/guides/brain-conflicts/ /self-hosted/guides/atlas-conflicts/ 308
+	redir /self-hosted/guides/brain-corrections /self-hosted/guides/atlas-corrections 308
+	redir /self-hosted/guides/brain-corrections/ /self-hosted/guides/atlas-corrections/ 308
+	redir /self-hosted/guides/brain-temporal-model /self-hosted/guides/atlas-temporal-model 308
+	redir /self-hosted/guides/brain-temporal-model/ /self-hosted/guides/atlas-temporal-model/ 308
+	redir /self-hosted/guides/brain-connector-authoring /self-hosted/guides/atlas-connector-authoring 308
+	redir /self-hosted/guides/brain-connector-authoring/ /self-hosted/guides/atlas-connector-authoring/ 308
+	redir /self-hosted/guides/brain-chat-webhook /self-hosted/guides/atlas-chat-webhook 308
+	redir /self-hosted/guides/brain-chat-webhook/ /self-hosted/guides/atlas-chat-webhook/ 308
+	redir /self-hosted/guides/brain-vocabulary /self-hosted/guides/atlas-vocabulary 308
+	redir /self-hosted/guides/brain-vocabulary/ /self-hosted/guides/atlas-vocabulary/ 308
+	# ── END brain-* -> atlas-* guide renames (#5083) ─────────────────────────
+
 	# ── BEGIN llms twin rewrites (#4266) ─────────────────────────────────────
 	# Section-aware markdown twins for the /self-hosted section. Its machine
 	# surfaces (/self-hosted/llms.txt, /self-hosted/llms-full.txt, and the

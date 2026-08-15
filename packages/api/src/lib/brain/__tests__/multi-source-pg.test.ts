@@ -33,7 +33,7 @@
  *      `extracted_at IS NULL` is still returned, tagged
  *      `tier: raw-episode, extraction: pending`. With three connectors landing
  *      episodes into one shared drain (25 episodes / 5 min, process-wide, no
- *      knob — see `brain-sources`) that window is routinely open rather than a
+ *      knob — see `atlas-sources`) that window is routinely open rather than a
  *      corner case, and the regression to fear is a read that BLOCKS on it.
  *
  * ## What is faked, precisely

@@ -4,11 +4,20 @@ import { join, relative, sep } from "node:path";
 import {
   SELF_HOSTED_REDIRECTS,
   MOVED_SELF_HOSTED_SLUGS,
+  ATLAS_GUIDE_REDIRECTS,
+  RENAMED_ATLAS_GUIDE_STEMS,
+  SHARED_MOUNT_PREFIXES,
   canonicalForSelfHostedMount,
 } from "@/lib/redirects";
 
 /**
- * Redirect-coverage test (PRD #4257 slice #4267).
+ * Redirect-coverage test — `deploy/docs/Caddyfile` vs the maps in
+ * `@/lib/redirects`. Two move sets, one guard: the `/self-hosted` section split
+ * (#4267) and the `brain-*` -> `atlas-*` guide rename (#5083). `apps/docs`
+ * builds with `output: "export"`, so Next's `redirects()` is off and the
+ * Caddyfile is the only thing standing between a moved page and a 404.
+ *
+ * ── /self-hosted section split (PRD #4257 slice #4267) ───────────────────────
  *
  * Slice #4264 (PR #4283) MOVED twelve self-hosted-only pages from the site root
  * into the new `/self-hosted/*` section. This test guards that no pre-split
@@ -41,6 +50,8 @@ import {
 const DOCS_ROOT = join(import.meta.dir, "../../..");
 const CONTENT_SELF_HOSTED = join(DOCS_ROOT, "content/self-hosted");
 const CONTENT_DOCS = join(DOCS_ROOT, "content/docs");
+const CONTENT = join(DOCS_ROOT, "content");
+const CONTENT_SHARED_GUIDES = join(DOCS_ROOT, "content/shared/guides");
 // apps/docs -> repo root -> deploy/docs/Caddyfile
 const CADDYFILE = join(DOCS_ROOT, "../../deploy/docs/Caddyfile");
 
@@ -78,6 +89,34 @@ const caddyLines: string[] = (() => {
 
 function hasRedir(from: string, to: string): boolean {
   return caddyLines.includes(`redir ${from} ${to} 308`);
+}
+
+// Every (from -> to) pair ANY map in `@/lib/redirects` declares, bare and
+// trailing-slash, keyed as one string so the reverse sweeps compare the PAIR
+// rather than the two endpoints independently — a redirect whose `from` and
+// `to` are each known but belong to different entries is still a bug.
+const DECLARED_REDIRECT_PAIRS: ReadonlySet<string> = new Set(
+  [...SELF_HOSTED_REDIRECTS, ...ATLAS_GUIDE_REDIRECTS].flatMap(({ from, to }) => [
+    `${from} -> ${to}`,
+    `${from}/ -> ${to}/`,
+  ]),
+);
+
+// The subset of the above contributed by the #5083 guide rename. The #4267
+// sweep uses it to hand resolution of those targets to the #5083 block, whose
+// pages live under content/shared/ where `pageResolves` (a content/self-hosted
+// lookup) cannot find them.
+const ATLAS_GUIDE_REDIRECT_PAIRS: ReadonlySet<string> = new Set(
+  ATLAS_GUIDE_REDIRECTS.flatMap(({ from, to }) => [
+    `${from} -> ${to}`,
+    `${from}/ -> ${to}/`,
+  ]),
+);
+
+// A renamed guide's target resolves iff the shared source file is on disk —
+// one file per stem, mounted at both prefixes, so the mount is irrelevant here.
+function sharedGuideResolves(stem: string): boolean {
+  return existsSync(join(CONTENT_SHARED_GUIDES, `atlas-${stem}.mdx`));
 }
 
 // A `/self-hosted` URL (bare or trailing-slash) resolves to a real page iff the
@@ -139,12 +178,6 @@ describe("self-hosted redirect coverage (#4267)", () => {
   }
 
   test("every /self-hosted redirect the Caddyfile serves is mapped and resolves (no stale/stray line)", () => {
-    const expectedFrom = new Set<string>();
-    const expectedTo = new Set<string>();
-    for (const { from, to } of SELF_HOSTED_REDIRECTS) {
-      expectedFrom.add(from).add(`${from}/`);
-      expectedTo.add(to).add(`${to}/`);
-    }
     const redirLine = /^redir (\S+) (\S+) 308$/;
     // Collect offenders (rather than asserting per-line) so a real failure names
     // the exact Caddyfile line instead of a bare `false !== true`.
@@ -154,15 +187,26 @@ describe("self-hosted redirect coverage (#4267)", () => {
       const match = redirLine.exec(line);
       if (!match) continue;
       const [, redirFrom, redirTo] = match;
-      // Only this slice's block (mcp-hosted etc. target other prefixes).
+      // Every line that lands anywhere in the /self-hosted section, whatever
+      // put it there (mcp-hosted etc. target other prefixes and are out of
+      // scope). Membership is checked against the UNION of this module's maps,
+      // not just #4267's: #5083 added `/self-hosted/guides/brain-* ->
+      // /self-hosted/guides/atlas-*` lines, which target this section but are
+      // declared by the OTHER map. Filtering them out of the sweep instead
+      // would leave them swept by nothing; checking them against the union
+      // keeps the sweep's coverage of the section total.
       if (!redirTo.startsWith("/self-hosted")) continue;
-      // The line must be one the map declares ...
-      if (!expectedFrom.has(redirFrom) || !expectedTo.has(redirTo)) {
+      // The line must be one some map declares — as a PAIR, so a redirect
+      // pointing at the wrong (but individually known) target still fails ...
+      if (!DECLARED_REDIRECT_PAIRS.has(`${redirFrom} -> ${redirTo}`)) {
         unmapped.push(line);
         continue;
       }
       // ... and must resolve to a real page (catches a stale 308 -> 404 left
-      // behind after a page is deleted from both the map and disk).
+      // behind after a page is deleted from both the map and disk). Guide
+      // renames land on a content/shared page mounted here, which
+      // `pageResolves` cannot see, so they are resolved by the #5083 block.
+      if (ATLAS_GUIDE_REDIRECT_PAIRS.has(`${redirFrom} -> ${redirTo}`)) continue;
       if (!pageResolves(redirTo)) unresolved.push(line);
     }
     expect(unmapped).toEqual([]);
@@ -183,6 +227,142 @@ describe("self-hosted redirect coverage (#4267)", () => {
     // Any orphan is either a page that moved from root without a redirect, or a
     // newly born-here page that needs allow-listing. Either way: review it.
     expect(orphans).toEqual([]);
+  });
+});
+
+/**
+ * brain-* -> atlas-* guide-rename coverage (#5083, ADR-0038 Layer 1).
+ *
+ * The seven Company Atlas guides kept `brain-*` FILENAMES after taking the new
+ * noun in their titles, so `/guides/brain-sources` served a page titled
+ * "Company Atlas — Sources". Renaming the files moves the published URLs, and
+ * `output: "export"` means Caddy — not Next — has to carry the 308s.
+ *
+ * The trap this block exists for is the SECOND mount. These pages live in
+ * `content/shared/`, which `src/lib/source.ts` feeds into the site-root loader
+ * AND the `/self-hosted` loader, so each rename retires TWO live URLs. The
+ * mount coverage is checked against the two sections' `guides/meta.json` navs
+ * rather than restated here, so a section that lists a stem and has no redirect
+ * for it fails.
+ */
+const GUIDE_NAV_BY_MOUNT: ReadonlyArray<{
+  readonly mount: string;
+  readonly metaPath: string;
+}> = [
+  { mount: "", metaPath: join(CONTENT_DOCS, "guides/meta.json") },
+  {
+    mount: "/self-hosted",
+    metaPath: join(CONTENT_SELF_HOSTED, "guides/meta.json"),
+  },
+];
+
+function guideNavPages(metaPath: string): string[] {
+  const parsed: unknown = JSON.parse(readFileSync(metaPath, "utf8"));
+  const pages =
+    typeof parsed === "object" && parsed !== null && "pages" in parsed
+      ? (parsed as { pages: unknown }).pages
+      : undefined;
+  if (!Array.isArray(pages)) {
+    throw new Error(
+      `${metaPath} has no \`pages\` array — the guide nav cannot be checked for renamed stems`,
+    );
+  }
+  return pages.filter((p): p is string => typeof p === "string");
+}
+
+describe("brain-* -> atlas-* guide renames (#5083)", () => {
+  test("the map is one entry per stem per mount, both URLs derived", () => {
+    expect(RENAMED_ATLAS_GUIDE_STEMS.length).toBeGreaterThan(0);
+    expect(ATLAS_GUIDE_REDIRECTS.length).toBe(
+      RENAMED_ATLAS_GUIDE_STEMS.length * SHARED_MOUNT_PREFIXES.length,
+    );
+    // Distinct `from`s: a mount prefix duplicated in the source array would
+    // otherwise pass the count check with two identical halves.
+    expect(new Set(ATLAS_GUIDE_REDIRECTS.map((r) => r.from)).size).toBe(
+      ATLAS_GUIDE_REDIRECTS.length,
+    );
+  });
+
+  for (const { stem, mount, from, to } of ATLAS_GUIDE_REDIRECTS) {
+    describe(`${mount || "/"} :: ${stem}`, () => {
+      test("both URLs are derived from the stem, not hand-typed", () => {
+        expect(from).toBe(`${mount}/guides/brain-${stem}`);
+        expect(to).toBe(`${mount}/guides/atlas-${stem}`);
+      });
+
+      test("has a bare-path 308 redirect in the Caddyfile", () => {
+        expect(hasRedir(from, to)).toBe(true);
+      });
+
+      test("has a trailing-slash 308 redirect in the Caddyfile", () => {
+        expect(hasRedir(`${from}/`, `${to}/`)).toBe(true);
+      });
+
+      test("target resolves to a real shared guide (no 404)", () => {
+        expect(sharedGuideResolves(stem)).toBe(true);
+      });
+
+      test("the brain-named source file is gone (redirect can't shadow it)", () => {
+        expect(
+          existsSync(join(CONTENT_SHARED_GUIDES, `brain-${stem}.mdx`)),
+        ).toBe(false);
+      });
+    });
+  }
+
+  test("every section nav that lists a renamed guide lists the atlas-* stem and has a redirect for its mount", () => {
+    const redirectedFrom = new Set(ATLAS_GUIDE_REDIRECTS.map((r) => r.from));
+    const staleNavEntries: string[] = [];
+    const mountsMissingRedirect: string[] = [];
+    for (const { mount, metaPath } of GUIDE_NAV_BY_MOUNT) {
+      const pages = guideNavPages(metaPath);
+      for (const stem of RENAMED_ATLAS_GUIDE_STEMS) {
+        if (pages.includes(`brain-${stem}`)) {
+          staleNavEntries.push(`${metaPath}: brain-${stem}`);
+        }
+        // A section that does NOT serve this guide owes no redirect; one that
+        // does owes a pair for its own mount.
+        if (!pages.includes(`atlas-${stem}`)) continue;
+        if (!redirectedFrom.has(`${mount}/guides/brain-${stem}`)) {
+          mountsMissingRedirect.push(`${mount}/guides/brain-${stem}`);
+        }
+      }
+    }
+    expect(staleNavEntries).toEqual([]);
+    expect(mountsMissingRedirect).toEqual([]);
+  });
+
+  test("every brain-guide redirect the Caddyfile serves is mapped (no stale/stray line)", () => {
+    const redirLine = /^redir (\S+) (\S+) 308$/;
+    const unmapped: string[] = [];
+    for (const line of caddyLines) {
+      const match = redirLine.exec(line);
+      if (!match) continue;
+      const [, redirFrom, redirTo] = match;
+      // Scope: anything originating from a brain-named guide URL, on any mount.
+      if (!/(^|\/)guides\/brain-/.test(redirFrom)) continue;
+      if (!DECLARED_REDIRECT_PAIRS.has(`${redirFrom} -> ${redirTo}`)) {
+        unmapped.push(line);
+      }
+    }
+    expect(unmapped).toEqual([]);
+  });
+
+  test("no page under content/ still links to a /guides/brain-* URL", () => {
+    // The rename is only finished when nothing inside the docs still points at
+    // the retired URL: a 308 keeps an EXTERNAL link alive, but an internal one
+    // that has to bounce is a link we simply failed to update.
+    const offenders: string[] = [];
+    for (const file of walk(CONTENT)) {
+      if (!file.endsWith(".mdx") && !file.endsWith(".json")) continue;
+      const text = readFileSync(file, "utf8");
+      for (const stem of RENAMED_ATLAS_GUIDE_STEMS) {
+        if (text.includes(`/guides/brain-${stem}`)) {
+          offenders.push(`${relative(CONTENT, file)} -> /guides/brain-${stem}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });
 

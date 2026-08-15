@@ -149,7 +149,7 @@ describe("projectProvenance", () => {
   // whitelists its output keys, so all three markers are dropped here.
   //
   // That is a bounded, deliberate state, and the prose that used to imply
-  // otherwise — `brain-corrections.mdx`'s `pin` section ("surfaces may read
+  // otherwise — `atlas-corrections.mdx`'s `pin` section ("surfaces may read
   // the marker") and `lib/brain/correction.ts`'s matching header bullet — now
   // says so outright. This test fails the day one of the three gains a reader,
   // which is exactly when that prose becomes an understatement and should be
@@ -169,7 +169,7 @@ describe("projectProvenance", () => {
       expect(
         marker in marked,
         `\`${marker}\` now reaches a read surface. That is a real improvement — and it makes the "nothing reads it yet" ` +
-          "sentences in apps/docs/content/shared/guides/brain-corrections.mdx and lib/brain/correction.ts (the `pin` header " +
+          "sentences in apps/docs/content/shared/guides/atlas-corrections.mdx and lib/brain/correction.ts (the `pin` header " +
           "bullet and MERGE_PROVENANCE_MARKER_SQL's header) understatements. Correct them in this change, then update this guard.",
       ).toBe(false);
     }

@@ -202,6 +202,12 @@ export const CLEANUP_TABLE_RULES = {
   // — `entity` stores a NAME rather than a `semantic_entities` id, so there is
   // no ordering constraint against the entity phase either.
   brain_enrollment: { kind: "column", column: "workspace_id" },
+  // The entity store's snapshot entries (#5043, ADR-0037 §5). Plain column rule
+  // for `brain_enrollment`'s reason: no FK in either direction, and deliberately
+  // none to `brain_facts` — the ids appear there as `subject_cmp`/`object_cmp`
+  // VALUES, which is a comparison column and never a join arm, so there is
+  // nothing to order against.
+  brain_entity: { kind: "column", column: "workspace_id" },
 
   // ── Stays residue (region-local; registry says NOT retained) ─────────────
   // The vocabulary's derived closure (#5022). `expression` rather than

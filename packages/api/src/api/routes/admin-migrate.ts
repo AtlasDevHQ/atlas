@@ -880,6 +880,58 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
     }
   }
 
+  if ("brainEntities" in obj && obj.brainEntities !== undefined) {
+    if (!Array.isArray(obj.brainEntities)) {
+      return { ok: false, error: "Invalid 'brainEntities' field. Expected an array." };
+    }
+    for (let i = 0; i < obj.brainEntities.length; i++) {
+      const x = obj.brainEntities[i] as Record<string, unknown> | null;
+      if (!x || typeof x !== "object") {
+        return { ok: false, error: `brainEntities[${i}]: must be an object.` };
+      }
+      for (const field of [
+        "entityId",
+        "entity",
+        "keySurface",
+        "keyNorm",
+        "canonicalSurface",
+        "canonicalNorm",
+      ] as const) {
+        const value = x[field];
+        if (typeof value !== "string" || value === "") {
+          return { ok: false, error: `brainEntities[${i}].${field}: must be a non-empty string.` };
+        }
+      }
+      // ⚠️ **The norms are RE-DERIVED here and COMPARED, never recomputed into
+      // the row.** Recomputing would be a second application of `lexicalNorm` to
+      // rows the first one already produced, and the two would agree until the
+      // day the function changed — at which point the destination's store would
+      // silently key differently from the facts arriving beside it on the same
+      // bundle. Comparing turns that into a refused bundle, which is loud.
+      //
+      // It is also the one check that catches a hand-edited or downgraded
+      // bundle: `entity_id` reaches `subject_cmp`, and a row whose norms do not
+      // match its surfaces is a row whose id names something other than what it
+      // says it names.
+      for (const [surface, norm] of [
+        ["keySurface", "keyNorm"],
+        ["canonicalSurface", "canonicalNorm"],
+      ] as const) {
+        if (lexicalNorm(x[surface] as string) !== x[norm]) {
+          return {
+            ok: false,
+            error:
+              `brainEntities[${i}].${norm}: does not match lexicalNorm(${surface}). The store's ` +
+              "norms are what its lookups and its vocabulary edges are made of, so a row that " +
+              "disagrees with itself would resolve one surface and key another.",
+          };
+        }
+      }
+      const tsError = missingTimestamps(x, ["snapshotAt"]);
+      if (tsError) return { ok: false, error: `brainEntities[${i}].${tsError}` };
+    }
+  }
+
   return { ok: true, bundle: obj as unknown as ExportBundle };
 }
 
@@ -925,6 +977,10 @@ const ImportResultSchema = z.object({
   // human act — so the merge is a union and `skipped` means what it means
   // everywhere else.
   brainEnrollments: z.object({ imported: z.number(), skipped: z.number() }),
+  // TWO counters, on `brainEnrollments`' reasoning (#5043). `entity_id` is a
+  // digest of `(workspace, entity, primary key)`, so two regions holding one id
+  // hold one warehouse row — there is no contradictory decision to refuse.
+  brainEntities: z.object({ imported: z.number(), skipped: z.number() }),
 });
 
 /**
@@ -1017,6 +1073,7 @@ const importRoute = createRoute({
                 brainVocabularyEdges: z.number().optional(),
                 brainSlackChannelExclusions: z.number().optional(),
                 brainEnrollments: z.number().optional(),
+                brainEntities: z.number().optional(),
               }),
             }),
             conversations: z.array(z.unknown()),
@@ -1049,6 +1106,12 @@ const importRoute = createRoute({
             // cutover, because an unenrolled workspace and a working one are
             // indistinguishable from inside the code.
             brainEnrollments: z.array(z.unknown()).optional(),
+            // The entity store (#5043). Undeclared, `strip` drops the whole
+            // section before the importer runs — and the destination's facts
+            // land carrying `subject_cmp` values nothing can explain, with a
+            // green cutover, because every lookup abstaining is the store's
+            // designed behaviour.
+            brainEntities: z.array(z.unknown()).optional(),
           }),
         },
       },
@@ -1614,6 +1677,7 @@ export async function importBundle(
     brainVocabularyEdges: { imported: 0, skipped: 0, refused: 0 },
     brainSlackChannelExclusions: { imported: 0, skipped: 0, refused: 0 },
     brainEnrollments: { imported: 0, skipped: 0 },
+    brainEntities: { imported: 0, skipped: 0 },
   };
 
   // --- 1. Conversations + Messages ---
@@ -2149,10 +2213,22 @@ export async function importBundle(
   // destination's row, if it has one, carries ITS OWN author and timestamp, and
   // overwriting them would re-attribute a local admin's decision to whoever
   // happened to enroll the same pair in the source region.
+  //
+  // `namedEntities` guards the partial unique index — see the `naming` param
+  // below. Seeded from the DESTINATION, not from the bundle: the row that must
+  // win is the one already here.
+  const namedEntities = new Set<string>(
+    (
+      await client.query(
+        `SELECT entity FROM brain_enrollment WHERE workspace_id = $1 AND naming`,
+        [orgId],
+      )
+    ).rows.map((r) => r.entity as string),
+  );
   for (const enrollment of bundle.brainEnrollments ?? []) {
     const { rows } = await client.query(
-      `INSERT INTO brain_enrollment (workspace_id, entity, dimension, enrolled_at, enrolled_by, note)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO brain_enrollment (workspace_id, entity, dimension, enrolled_at, enrolled_by, note, naming)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT (workspace_id, entity, dimension) DO NOTHING
        RETURNING entity`,
       [
@@ -2162,12 +2238,67 @@ export async function importBundle(
         enrollment.enrolledAt,
         enrollment.enrolledBy,
         enrollment.note ?? null,
+        // `?? false` because the field is OPTIONAL on the wire: a v3 bundle
+        // written before #5043 carries no `naming`, and `false` is that
+        // bundle's truth rather than a guess about it.
+        //
+        // ⚠️ It can still collide. `uq_brain_enrollment_naming` admits one
+        // naming row per entity, and a destination that already named a
+        // DIFFERENT dimension for the same entity would raise 23505 here and
+        // abort the cutover. `DO NOTHING` does not cover it — the conflict is
+        // on the partial index, not on the primary key — so the arriving row's
+        // flag is dropped when this region already has one. The local decision
+        // wins for `enrolledBy`'s reason: it is this region's admin's, and
+        // silently re-pointing it would re-key their corpus.
+        (enrollment.naming ?? false) && !namedEntities.has(enrollment.entity),
       ],
     );
+    if (enrollment.naming === true) namedEntities.add(enrollment.entity);
     // `DO NOTHING` returns no row for the conflict case, which is exactly the
     // "this region already holds it" split `skipped` reports.
     if (rows.length > 0) result.brainEnrollments.imported++;
     else result.brainEnrollments.skipped++;
+  }
+
+  // --- 9d. The entity store's snapshot entries (#5043, ADR-0037 §5) ---
+  //
+  // Restored inline, on `brainEnrollments`' reasoning: there is nothing to
+  // screen. `entity_id` is a digest of `(workspace, entity, primary key)`, so
+  // two regions holding one id hold one warehouse row.
+  //
+  // `DO NOTHING` and NOT `DO UPDATE`, and this is the arm where the difference
+  // has teeth. An arriving snapshot may be OLDER than the destination's — a
+  // bundle taken last week against a workspace whose producer has run since —
+  // and last-writer-wins would re-key that workspace's corpus onto a canonical
+  // surface that has already changed. That is ADR-0037 §5's workspace-wide blast
+  // radius arriving from a direction nobody is watching. Under-restoring is
+  // recoverable by re-running the producer; a wrong re-key is not.
+  //
+  // Deliberately BEFORE the facts below. The facts carry `subject_cmp` values
+  // that are these ids, so landing the store first means there is never a
+  // moment where a fact references an id the store cannot explain — which is
+  // not an FK (there is none, by design) but is the order a reader of a
+  // half-finished import needs.
+  for (const entry of bundle.brainEntities ?? []) {
+    const { rows } = await client.query(
+      `INSERT INTO brain_entity
+         (workspace_id, entity_id, entity, key_surface, key_norm, canonical_surface, canonical_norm, snapshot_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (workspace_id, entity_id) DO NOTHING
+       RETURNING entity_id`,
+      [
+        orgId,
+        entry.entityId,
+        entry.entity,
+        entry.keySurface,
+        entry.keyNorm,
+        entry.canonicalSurface,
+        entry.canonicalNorm,
+        entry.snapshotAt,
+      ],
+    );
+    if (rows.length > 0) result.brainEntities.imported++;
+    else result.brainEntities.skipped++;
   }
 
   // --- 10. Company brain (#4767, ADR-0036) — facts ride inside their episode ---

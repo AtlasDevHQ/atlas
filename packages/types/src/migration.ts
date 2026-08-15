@@ -86,6 +86,8 @@ export interface ExportManifest {
     brainSlackChannelExclusions?: number;
     /** The warehouse producer's enrolled reach (#5196, ADR-0039). */
     brainEnrollments?: number;
+    /** The entity store's snapshot entries (#5043, ADR-0037 §5). */
+    brainEntities?: number;
   };
 }
 
@@ -637,6 +639,53 @@ export interface ExportedBrainEnrollment {
   enrolledBy: string;
   /** Why, as the admin wrote it. `null` when they gave no reason. */
   note: string | null;
+  /**
+   * Whether this dimension names its entity's canonical surface (#5043).
+   *
+   * It travels because it is the same kind of human decision the row already is,
+   * and because losing it is silent in the ADR-0039 way: the destination's store
+   * writes no entry, every lookup abstains, and the enrollment list still shows
+   * the pair as live. OPTIONAL on the wire, so a v3 bundle written before #5043
+   * imports as `false` — which is the pre-#5043 truth rather than a guess.
+   */
+  naming?: boolean;
+}
+
+/**
+ * One entity-store entry — a snapshot of one warehouse row (#5043, ADR-0037 §5).
+ *
+ * ## Why it travels rather than being re-derived
+ *
+ * It looks derived, and `brain_vocabulary_target` — genuinely derived — stays.
+ * The difference is what the derivation needs. A closure is a pure function of
+ * edges that travel on the same bundle, so the destination can rebuild it
+ * immediately. An entry is a function of a WAREHOUSE READ, which the destination
+ * cannot repeat until its datasource credentials are re-established and a human
+ * re-runs the producer.
+ *
+ * ⚠️ And the ids are already on the wire. `brain_facts.subject_cmp` and
+ * `object_cmp` carry them verbatim, so leaving the store behind lands facts whose
+ * comparison values nothing in the destination can explain. `stays` is also
+ * DELETION (#4458), so the source's copy would go at the same moment.
+ *
+ * The failure direction if it were dropped is ADR-0039's invisible one: the
+ * cutover reports clean, the store resolves nothing, and every test stays green.
+ */
+export interface ExportedBrainEntity {
+  /** `wh_<sha256>` — globally unique, and the value already on `subject_cmp`. */
+  entityId: string;
+  /** The semantic-layer entity name this row came from. */
+  entity: string;
+  /** The primary key's surface, verbatim. */
+  keySurface: string;
+  /** `lexicalNorm(keySurface)`. Carried, not recomputed — see the importer. */
+  keyNorm: string;
+  /** The naming dimension's value, verbatim — the human surface. */
+  canonicalSurface: string;
+  /** `lexicalNorm(canonicalSurface)`. */
+  canonicalNorm: string;
+  /** When the snapshot that produced this entry was taken. */
+  snapshotAt: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -702,6 +751,11 @@ export interface ExportBundle {
    * code — so it travels for the same reason, discovered the hard way.
    */
   brainEnrollments?: ExportedBrainEnrollment[];
+  /**
+   * The entity store's snapshot entries (#5043, ADR-0037 §5). Same
+   * optional-on-the-wire shape as the sections above.
+   */
+  brainEntities?: ExportedBrainEntity[];
 }
 
 // ---------------------------------------------------------------------------
@@ -771,6 +825,22 @@ export interface ImportResult {
    * merge is a union, and `skipped` means exactly what it means everywhere else.
    */
   brainEnrollments: { imported: number; skipped: number };
+  /**
+   * The entity store's snapshot entries (#5043, ADR-0037 §5).
+   *
+   * TWO counters, on `brainEnrollments`' reasoning and not `brainVocabularyEdges`'.
+   * The `entity_id` is a digest of `(workspace, entity, primary key)`, so two
+   * regions holding the same id are holding the same warehouse row — there is no
+   * contradictory decision to refuse. `skipped` is a destination that already
+   * snapshotted that row.
+   *
+   * ⚠️ **`DO NOTHING`, so an OLDER arriving snapshot never overwrites a newer
+   * local one.** The alternative reading — last-writer-wins on `snapshot_at` —
+   * would let a bundle taken last week re-key the destination's corpus onto a
+   * name that has since changed, which is ADR-0037 §5's workspace-wide blast
+   * radius arriving from a direction nobody is watching.
+   */
+  brainEntities: { imported: number; skipped: number };
 }
 
 // ---------------------------------------------------------------------------

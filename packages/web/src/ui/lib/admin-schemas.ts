@@ -69,6 +69,7 @@ export {
   BrainEnrollmentEntitiesResponseSchema,
   BrainEnrollmentDimensionsResponseSchema,
   BrainEnrollmentWriteResponseSchema,
+  BrainEnrollmentNamingResponseSchema,
   AbuseStatusSchema,
   AbuseThresholdConfigSchema,
   AbuseDetailSchema,

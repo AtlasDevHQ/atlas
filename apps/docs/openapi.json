@@ -30118,6 +30118,9 @@
                               "string",
                               "null"
                             ]
+                          },
+                          "naming": {
+                            "type": "boolean"
                           }
                         },
                         "required": [
@@ -30125,7 +30128,8 @@
                           "dimension",
                           "enrolledAt",
                           "enrolledBy",
-                          "note"
+                          "note",
+                          "naming"
                         ],
                         "additionalProperties": false
                       }
@@ -30361,6 +30365,9 @@
                           },
                           "enrolled": {
                             "type": "boolean"
+                          },
+                          "naming": {
+                            "type": "boolean"
                           }
                         },
                         "required": [
@@ -30368,7 +30375,8 @@
                           "kind",
                           "type",
                           "description",
-                          "enrolled"
+                          "enrolled",
+                          "naming"
                         ],
                         "additionalProperties": false
                       }
@@ -30824,6 +30832,152 @@
         "operationId": "postAdminBrainEnrollmentUnenroll"
       }
     },
+    "/api/v1/admin/brain-enrollment/naming": {
+      "post": {
+        "tags": [
+          "Admin — Brain"
+        ],
+        "summary": "Name the dimension that supplies an entity's canonical surface",
+        "description": "The entity store (#5043) keys on a human-readable name, and the semantic layer marks which dimension identifies a row but marks nothing as the row's NAME — so a person names it. Marking one makes a surrogate-keyed warehouse row (`42`) collide with an extracted mention of its name (`Acme Corp`), by way of an approved vocabulary edge. ⚠️ That edge RE-KEYS every brain fact about the entity, workspace-wide, and so does changing it. `dimension: null` clears it, after which the store holds no entry for the entity and every lookup abstains. The dimension must already be enrolled: the snapshot query names the enrolled columns only, so naming an unenrolled one would look set and reach nothing.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "entity": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "dimension": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "minLength": 1,
+                    "maxLength": 200
+                  }
+                },
+                "required": [
+                  "entity",
+                  "dimension"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Named",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "entity": {
+                      "type": "string"
+                    },
+                    "dimension": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "changed": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "entity",
+                    "dimension",
+                    "changed"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid pair, dimension not enrolled, or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not entitled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminBrainEnrollmentNaming"
+      }
+    },
     "/api/v1/admin/brain-enrollment/produce": {
       "post": {
         "tags": [
@@ -30904,6 +31058,14 @@
                                 "items": {
                                   "type": "string"
                                 }
+                              },
+                              "entitiesStored": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "unnamedRows": {
+                                "type": "integer",
+                                "minimum": 0
                               }
                             },
                             "required": [
@@ -30918,7 +31080,9 @@
                               "collidingSubjectRows",
                               "unsurfaceableCells",
                               "unsurfaceableKeyRows",
-                              "cardinalityProposed"
+                              "cardinalityProposed",
+                              "entitiesStored",
+                              "unnamedRows"
                             ],
                             "additionalProperties": false
                           }
@@ -30971,6 +31135,47 @@
                           "type": "integer",
                           "minimum": 0
                         },
+                        "entityEdges": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "queued": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "autoApproved": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "deduped": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "alreadyApproved": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "rejected": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "refused": {
+                              "type": "integer",
+                              "minimum": 0
+                            }
+                          },
+                          "required": [
+                            "queued",
+                            "autoApproved",
+                            "deduped",
+                            "alreadyApproved",
+                            "rejected",
+                            "refused"
+                          ],
+                          "additionalProperties": false
+                        },
                         "reportComplete": {
                           "type": "boolean",
                           "enum": [
@@ -30986,6 +31191,7 @@
                         "refusals",
                         "created",
                         "corroborated",
+                        "entityEdges",
                         "reportComplete"
                       ],
                       "additionalProperties": false
@@ -58408,6 +58614,9 @@
                           },
                           "brainEnrollments": {
                             "type": "number"
+                          },
+                          "brainEntities": {
+                            "type": "number"
                           }
                         },
                         "required": [
@@ -58480,6 +58689,10 @@
                   },
                   "brainSlackIngestScope": {},
                   "brainEnrollments": {
+                    "type": "array",
+                    "items": {}
+                  },
+                  "brainEntities": {
                     "type": "array",
                     "items": {}
                   }
@@ -58735,6 +58948,21 @@
                         "imported",
                         "skipped"
                       ]
+                    },
+                    "brainEntities": {
+                      "type": "object",
+                      "properties": {
+                        "imported": {
+                          "type": "number"
+                        },
+                        "skipped": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "imported",
+                        "skipped"
+                      ]
                     }
                   },
                   "required": [
@@ -58752,7 +58980,8 @@
                     "factAudienceMembers",
                     "brainVocabularyEdges",
                     "brainSlackChannelExclusions",
-                    "brainEnrollments"
+                    "brainEnrollments",
+                    "brainEntities"
                   ]
                 }
               }

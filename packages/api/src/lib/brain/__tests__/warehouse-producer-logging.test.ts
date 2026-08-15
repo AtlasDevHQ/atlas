@@ -151,8 +151,9 @@ function store(options: { cardinalityConflict?: boolean } = {}) {
 function deps(over: Partial<Parameters<ProducerModule["runWarehouseProducer"]>[1]> = {}) {
   return {
     loadReach: async () => ({
-      pairs: [{ entity: "Accounts", dimension: "status" }],
+      pairs: [{ entity: "Accounts", dimension: "status", naming: false }],
       entities: ["Accounts"],
+      namingDimension: new Map<string, string>(),
       has: () => true,
     }),
     loadEntity: async () => ACCOUNTS_YAML,
@@ -277,8 +278,9 @@ describe("warehouse producer logging", () => {
     // stays dormant for it. That is not "unexpected", and it is not routine either.
     await run({
       loadReach: async () => ({
-        pairs: [{ entity: "Accounts", dimension: "__" }],
+        pairs: [{ entity: "Accounts", dimension: "__", naming: false }],
         entities: ["Accounts"],
+        namingDimension: new Map(),
         has: () => true,
       }),
       loadEntity: async () => ({

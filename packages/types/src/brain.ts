@@ -1949,6 +1949,17 @@ export interface BrainEnrollmentEntry {
   readonly enrolledAt: string;
   readonly enrolledBy: string;
   readonly note: string | null;
+  /**
+   * Whether this dimension supplies its entity's CANONICAL SURFACE — the
+   * human-readable name the entity store (#5043) keys on.
+   *
+   * At most one per entity, enforced by a partial unique index. A `true` here is
+   * what turns a surrogate-keyed warehouse row (`42`) into a row that collides
+   * with an extracted mention of its name (`Acme Corp`); with no naming
+   * dimension the entity store holds no entry for the entity at all and every
+   * lookup for it abstains.
+   */
+  readonly naming: boolean;
 }
 
 /** `GET /api/v1/admin/brain-enrollment` — what this workspace has enrolled. */
@@ -2010,6 +2021,8 @@ export interface BrainEnrollmentDimensionOption {
   readonly type: string | null;
   readonly description: string | null;
   readonly enrolled: boolean;
+  /** Whether this is the entity's naming dimension. See {@link BrainEnrollmentEntry.naming}. */
+  readonly naming: boolean;
 }
 
 /** `GET /api/v1/admin/brain-enrollment/dimensions` — one entity's candidates. */
@@ -2029,5 +2042,23 @@ export interface BrainEnrollmentDimensionsResponse {
 export interface BrainEnrollmentWriteResponse {
   readonly entity: string;
   readonly dimension: string;
+  readonly changed: boolean;
+}
+
+/**
+ * `POST /api/v1/admin/brain-enrollment/naming` — name (or un-name) the dimension
+ * that supplies an entity's canonical surface.
+ *
+ * A verb of its own rather than a field on the enroll body, because enrolling is
+ * idempotent and deliberately does NOT re-attribute or update an existing pair:
+ * folded in, marking an already-enrolled dimension as naming would silently do
+ * nothing. `dimension: null` clears the entity's naming dimension, after which
+ * the entity store holds no entry for it.
+ */
+export interface BrainEnrollmentNamingResponse {
+  readonly entity: string;
+  /** The dimension now naming this entity, or `null` if it has none. */
+  readonly dimension: string | null;
+  /** `false` when the requested state already held — a no-op, not a failure. */
   readonly changed: boolean;
 }

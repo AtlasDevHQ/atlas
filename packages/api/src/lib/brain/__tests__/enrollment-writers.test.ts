@@ -241,6 +241,18 @@ describe("brain_enrollment writer set (#5196, ADR-0039)", () => {
       // fields, which is how an inconsistent one gets made.
       "makeProducerReach",
       "normalizeEnrollmentPair",
+      // A WRITER, added by #5043, and it belongs on this list rather than being
+      // exempted from it. It updates `brain_enrollment.naming` — which dimension
+      // supplies an entity's canonical surface — and it is admitted for the same
+      // reason `enrollPair` is: a person invokes it, deliberately, over a set
+      // they can see. It cannot widen the producer's reach (it refuses a
+      // dimension that is not already enrolled) and it cannot enroll anything.
+      //
+      // ADR-0039's test applied to it: it is not on a schedule, not on connect,
+      // and not on profile. If a future `nameEveryEntityFromTheProfiler` appears
+      // beside it, that is the sweep, and this list is where it has to be argued
+      // for.
+      "setNamingDimension",
       "unenrollPair",
     ]);
   });

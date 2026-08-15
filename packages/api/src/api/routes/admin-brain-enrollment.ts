@@ -78,6 +78,7 @@ import {
   enrollPair,
   listEnrollments,
   normalizeEnrollmentPair,
+  setNamingDimension,
   unenrollPair,
 } from "@atlas/api/lib/brain/enrollment";
 import {
@@ -92,6 +93,8 @@ import {
   BrainEnrollmentDimensionsResponseSchema,
   BrainEnrollmentEntitiesResponseSchema,
   BrainEnrollmentListResponseSchema,
+  BrainEnrollmentNamingRequestSchema,
+  BrainEnrollmentNamingResponseSchema,
   BrainEnrollmentUnenrollRequestSchema,
   BrainEnrollmentWriteRequestSchema,
   BrainEnrollmentWriteResponseSchema,
@@ -361,6 +364,31 @@ const unenrollRoute = createRoute({
   },
 });
 
+const namingRoute = createRoute({
+  method: "post",
+  path: "/naming",
+  tags: ["Admin — Brain"],
+  summary: "Name the dimension that supplies an entity's canonical surface",
+  description:
+    "The entity store (#5043) keys on a human-readable name, and the semantic layer marks which " +
+    "dimension identifies a row but marks nothing as the row's NAME — so a person names it. " +
+    "Marking one makes a surrogate-keyed warehouse row (`42`) collide with an extracted mention of " +
+    "its name (`Acme Corp`), by way of an approved vocabulary edge. ⚠️ That edge RE-KEYS every " +
+    "brain fact about the entity, workspace-wide, and so does changing it. `dimension: null` " +
+    "clears it, after which the store holds no entry for the entity and every lookup abstains. " +
+    "The dimension must already be enrolled: the snapshot query names the enrolled columns only, " +
+    "so naming an unenrolled one would look set and reach nothing.",
+  request: {
+    body: { content: { "application/json": { schema: BrainEnrollmentNamingRequestSchema } } },
+  },
+  responses: {
+    200: { description: "Named", content: { "application/json": { schema: BrainEnrollmentNamingResponseSchema } } },
+    400: { description: "Invalid pair, dimension not enrolled, or no active organization", content: { "application/json": { schema: ErrorSchema } } },
+    403: { description: "Not entitled", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
 const adminBrainEnrollment = createAdminRouter();
 
 adminBrainEnrollment.use(requireOrgContext());
@@ -430,14 +458,19 @@ adminBrainEnrollment.openapi(dimensionsRoute, async (c) => {
             listEnrollments(orgId),
           ]);
           if (candidates === null) return null;
-          const enrolled = new Set(
-            enrollments.filter((e) => e.entity === entity).map((e) => e.dimension),
-          );
+          const mine = enrollments.filter((e) => e.entity === entity);
+          const enrolled = new Set(mine.map((e) => e.dimension));
+          // Computed SERVER-SIDE beside `enrolled`, for that flag's reason: the
+          // client would have to re-implement the pair's identity to join it,
+          // and a mismatch renders the naming dimension as un-named — offering a
+          // "name this" action whose click is a no-op.
+          const naming = new Set(mine.filter((e) => e.naming).map((e) => e.dimension));
           return {
             entity,
             dimensions: candidates.map((candidate) => ({
               ...candidate,
               enrolled: enrolled.has(candidate.name),
+              naming: naming.has(candidate.name),
             })),
           };
         },
@@ -665,6 +698,99 @@ adminBrainEnrollment.openapi(unenrollRoute, async (c) => {
       );
     }),
     { label: "unenroll brain dimension" },
+  );
+});
+
+adminBrainEnrollment.openapi(namingRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
+      const { mode, user, orgId } = yield* AuthContext;
+      if (!orgId) return c.json(noActiveOrgBody(requestId), 400);
+      const body = c.req.valid("json");
+
+      const ctx = yield* Effect.tryPromise({
+        try: () =>
+          resolveBrainReaderContext(getInternalDB(), { workspaceId: orgId, mode, user, requestId }),
+        catch: toError,
+      });
+      // The SAME owner/admin bar the other two write verbs take, and here it is
+      // the strictest of the three by consequence: enrolling widens what may be
+      // emitted, un-enrolling narrows it, and this one RE-KEYS facts that are
+      // already published — the workspace-wide blast radius ADR-0037 §5 records
+      // as reachable from a warehouse rename nobody thinks of as a brain
+      // operation.
+      if (recordedAuthor(ctx) === null) {
+        log.warn(
+          { workspaceId: orgId, origin: ctx.origin, role: ctx.role, requestId },
+          "Naming-dimension change refused — the reader does not clear the owner/admin bar",
+        );
+        return c.json(
+          errorBody(
+            "not-entitled",
+            "Naming an entity's canonical surface re-keys every fact about it, so it is limited to " +
+              "workspace owners and admins.",
+            requestId,
+          ),
+          403,
+        );
+      }
+
+      const outcome = yield* Effect.tryPromise({
+        try: async () => {
+          const changed = await setNamingDimension({
+            workspaceId: orgId,
+            entity: body.entity,
+            dimension: body.dimension,
+          });
+          // Normalized through the same door the write took, so the response
+          // echoes what was STORED rather than what was sent — a trailing space
+          // in the request must not read back as an accepted spelling.
+          const pair = normalizeEnrollmentPair(body.entity, body.dimension ?? body.entity);
+          return {
+            kind: "written",
+            entity: pair.entity,
+            dimension: body.dimension === null ? null : pair.dimension,
+            changed,
+          } as const;
+        },
+        catch: toError,
+      }).pipe(
+        Effect.catchAll((err) =>
+          err instanceof InvalidEnrollmentPairError
+            ? Effect.succeed({ kind: "invalid", message: err.message } as const)
+            : Effect.fail(err),
+        ),
+      );
+
+      if (outcome.kind === "invalid") {
+        return c.json(errorBody("invalid-pair", outcome.message, requestId), 400);
+      }
+
+      outcome satisfies { readonly kind: "written" };
+      log.info(
+        {
+          workspaceId: orgId,
+          entity: outcome.entity,
+          dimension: outcome.dimension,
+          changed: outcome.changed,
+          requestId,
+        },
+        outcome.dimension === null
+          ? "Cleared an entity's naming dimension — the entity store holds no entry for it"
+          : "Named an entity's canonical surface — every fact about it re-keys onto that name",
+      );
+      return c.json(
+        checked(BrainEnrollmentNamingResponseSchema, {
+          entity: outcome.entity,
+          dimension: outcome.dimension,
+          changed: outcome.changed,
+        }),
+        200,
+      );
+    }),
+    { label: "set brain naming dimension" },
   );
 });
 

@@ -79,6 +79,12 @@ const RECONCILED_SECTIONS = [
   // the milestone's proof a prod row count — so a target that quietly landed
   // none of them would otherwise report a clean cutover.
   "brainEnrollments",
+  // #5043. Reconciled for `brainEnrollments`' reason, one step further along: a
+  // dropped entry makes the destination's store resolve nothing, which is the
+  // store's DESIGNED behaviour when it is empty — so a target that landed none
+  // of them looks byte-identical to one working correctly, and would otherwise
+  // report a clean cutover.
+  "brainEntities",
 ] as const satisfies readonly (keyof ExportManifest["counts"] & keyof ImportResult)[];
 
 type RefusalCapableSection = {

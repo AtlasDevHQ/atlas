@@ -265,6 +265,7 @@ describe("bundle round-trip shape", () => {
       brainVocabularyEdges: { imported: 1, skipped: 4, refused: 6 },
       brainSlackChannelExclusions: { imported: 2, skipped: 1, refused: 0 },
       brainEnrollments: { imported: 3, skipped: 1 },
+      brainEntities: { imported: 6, skipped: 2 },
     };
 
     const total = (r: { imported: number; skipped: number }) => r.imported + r.skipped;

@@ -109,8 +109,12 @@ void mock.module("@atlas/api/lib/brain/reader-context", () => ({
 let enrollments: EnrollmentRow[] = [];
 let enrollChanged = true;
 let unenrollChanged = true;
+let namingChanged = true;
+/** When set, `setNamingDimension` throws it — the not-enrolled refusal. */
+let namingThrows: Error | null = null;
 const enrollCalls: unknown[] = [];
 const unenrollCalls: unknown[] = [];
+const namingCalls: unknown[] = [];
 
 class TestInvalidEnrollmentPairError extends Error {
   override readonly name = "InvalidEnrollmentPairError";
@@ -151,6 +155,11 @@ void mock.module("@atlas/api/lib/brain/enrollment", () => ({
   unenrollPair: async (params: unknown) => {
     unenrollCalls.push(params);
     return unenrollChanged;
+  },
+  setNamingDimension: async (params: unknown) => {
+    namingCalls.push(params);
+    if (namingThrows !== null) throw namingThrows;
+    return namingChanged;
   },
 }));
 
@@ -239,12 +248,18 @@ const post = (path: string, body: unknown) =>
     body: JSON.stringify(body),
   });
 
-const row = (entity: string, dimension: string, enrolledBy = "user-1"): EnrollmentRow => ({
+const row = (
+  entity: string,
+  dimension: string,
+  enrolledBy = "user-1",
+  naming = false,
+): EnrollmentRow => ({
   entity,
   dimension,
   enrolledAt: "2026-08-14T00:00:00.000Z",
   enrolledBy,
   note: null,
+  naming,
 });
 
 beforeEach(() => {
@@ -254,8 +269,11 @@ beforeEach(() => {
   enrollments = [];
   enrollChanged = true;
   unenrollChanged = true;
+  namingChanged = true;
+  namingThrows = null;
   enrollCalls.length = 0;
   unenrollCalls.length = 0;
+  namingCalls.length = 0;
   dimensionCalls.length = 0;
   loggedErrors.length = 0;
   produceCalls = [];
@@ -267,6 +285,7 @@ beforeEach(() => {
     refusals: [],
     created: 0,
     corroborated: 0,
+    entityEdges: null,
   };
   entityOptions = [{ name: "accounts", table: "public.accounts", description: null }];
   dimensionOptions = [
@@ -280,7 +299,10 @@ describe("GET / — what is enrolled", () => {
     // THREE pairs across TWO entities. Equal numbers would be satisfied by a
     // handler that returned `enrollments.length` for both.
     enrollments = [
-      row("accounts", "arr_band"),
+      // `arr_band` NAMES its entity (#5043), so the flag has a true value to
+      // carry. All three `false` would let a handler that hardcoded `false`
+      // pass the round-trip assertion below.
+      row("accounts", "arr_band", "user-1", true),
       row("accounts", "tier"),
       row("subscriptions", "plan"),
     ];
@@ -302,7 +324,11 @@ describe("GET / — what is enrolled", () => {
       enrolledAt: "2026-08-14T00:00:00.000Z",
       enrolledBy: "user-1",
       note: null,
+      naming: true,
     });
+    // The other two carry `false` on the same call — so `naming: true` above is
+    // the row's own value rather than a constant the handler stamps.
+    expect(body.enrollments[1]).toMatchObject({ dimension: "tier", naming: false });
   });
 });
 
@@ -489,6 +515,70 @@ describe("POST /unenroll", () => {
   });
 });
 
+describe("POST /naming — which column names an entity (#5043)", () => {
+  it("names a dimension, and says what that does rather than what it toggles", async () => {
+    const res = await post("/naming", { entity: "accounts", dimension: "arr_band" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      entity: "accounts",
+      dimension: "arr_band",
+      changed: true,
+    });
+    expect(namingCalls).toEqual([
+      { workspaceId: CURRENT_ORG, entity: "accounts", dimension: "arr_band" },
+    ]);
+  });
+
+  it("clears it on an explicit null, and the null reaches the seam", async () => {
+    const res = await post("/naming", { entity: "accounts", dimension: null });
+    expect(res.status).toBe(200);
+    // `null` on the way OUT too. A handler echoing the entity name here would
+    // tell an admin they had named the entity after itself.
+    expect(await res.json()).toEqual({ entity: "accounts", dimension: null, changed: true });
+    expect(namingCalls).toEqual([
+      { workspaceId: CURRENT_ORG, entity: "accounts", dimension: null },
+    ]);
+  });
+
+  it("refuses an OMITTED dimension — clearing is too destructive to be a default", async () => {
+    // `.nullable()` and not `.nullish()`: on a `strictObject` an omitted field
+    // and an explicit `null` would otherwise mean the same thing, and clearing
+    // re-keys every fact about the entity workspace-wide.
+    const res = await post("/naming", { entity: "accounts" });
+    expect(res.status).toBe(422);
+    expect(namingCalls).toHaveLength(0);
+  });
+
+  it("reports the no-op", async () => {
+    namingChanged = false;
+    const res = await post("/naming", { entity: "accounts", dimension: "arr_band" });
+    expect((await res.json()) as { changed: boolean }).toMatchObject({ changed: false });
+  });
+
+  it("400s when the dimension is not enrolled, carrying the seam's own sentence", async () => {
+    // The snapshot query names the ENROLLED columns only, so naming an
+    // unenrolled one would look set and reach nothing — the silent failure
+    // ADR-0039 warns is indistinguishable from success. The prose is the
+    // SEAM's, verbatim: a second wording in the route would drift from the rule.
+    namingThrows = new TestInvalidEnrollmentPairError(
+      '"name" is not enrolled for "accounts", so the producer never reads that column.',
+    );
+    const res = await post("/naming", { entity: "accounts", dimension: "name" });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { message: string }).message).toContain("is not enrolled");
+  });
+
+  it("403s a member, and does not write", async () => {
+    // The STRICTEST of the three write verbs by consequence: enrolling widens
+    // what may be emitted, un-enrolling narrows it, and this one re-keys facts
+    // that are already published.
+    READER_ROLE = "member";
+    const res = await post("/naming", { entity: "accounts", dimension: "arr_band" });
+    expect(res.status).toBe(403);
+    expect(namingCalls).toHaveLength(0);
+  });
+});
+
 describe("POST /produce — running the producer", () => {
   it("403s a member, and does not run the producer", async () => {
     // ⚠️ The verb that actually READS the customer's warehouse and fills the
@@ -545,6 +635,10 @@ describe("POST /produce — running the producer", () => {
           unsurfaceableCells: 3,
           unsurfaceableKeyRows: 2,
           cardinalityProposed: ["arr_band"],
+          // #5043, and every number distinct from its neighbours for this
+          // block's stated reason.
+          entitiesStored: 6,
+          unnamedRows: 9,
         },
       ],
       refusals: [
@@ -552,6 +646,17 @@ describe("POST /produce — running the producer", () => {
       ],
       created: 4,
       corroborated: 1,
+      // Non-null here, `null` in the `beforeEach` default — so both arms of the
+      // nullable field cross the wire in this file, and a schema that dropped
+      // the section would go red on one of them.
+      entityEdges: {
+        queued: 8,
+        autoApproved: 10,
+        deduped: 11,
+        alreadyApproved: 12,
+        rejected: 13,
+        refused: 14,
+      },
     };
     const res = await post("/produce", {});
     expect(res.status).toBe(200);

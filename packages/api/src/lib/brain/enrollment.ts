@@ -48,6 +48,7 @@
 import { BRAIN_ENROLLMENT_NAME_MAX } from "@useatlas/schemas";
 import type { BrainEnrollmentEntry } from "@useatlas/types";
 import { internalQuery } from "@atlas/api/lib/db/internal";
+import type { ReconcileTransactionRunner } from "@atlas/api/lib/brain/reconcile";
 
 /**
  * Upper bound on either half of a pair.
@@ -100,6 +101,19 @@ export class UnattributedEnrollmentError extends Error {
 export interface EnrolledPair {
   readonly entity: string;
   readonly dimension: string;
+}
+
+/**
+ * An enrolled pair plus whether it names its entity (#5043).
+ *
+ * A SEPARATE type from {@link EnrolledPair} rather than an optional field on it,
+ * because the pair is an IDENTITY and this is a property of the row. Folded in,
+ * `pairKey` and the membership index would have had to decide whether to include
+ * it, and `has(entity, dimension)` answering differently for two spellings of
+ * the same pair is the failure the type exists to forbid.
+ */
+export interface EnrolledDimension extends EnrolledPair {
+  readonly naming: boolean;
 }
 
 /**
@@ -191,8 +205,26 @@ export function normalizeEnrollmentPair(entity: string, dimension: string): Enro
  * producing from, and "the entities it is producing from" is exactly this.
  */
 export interface ProducerReach {
-  readonly pairs: readonly EnrolledPair[];
+  /**
+   * {@link EnrolledDimension}, not {@link EnrolledPair} — the rows carry their
+   * `naming` flag, so `makeProducerReach(reach.pairs)` round-trips. Under the
+   * narrower type it did not: the derived reach lost every naming dimension
+   * silently, and a silently-unnamed entity is a store that holds nothing and
+   * abstains everywhere, which is the failure ADR-0039 warns looks like success.
+   */
+  readonly pairs: readonly EnrolledDimension[];
   readonly entities: readonly string[];
+  /**
+   * Entity → the dimension a human named as its canonical surface (#5043).
+   *
+   * ABSENT rather than empty-string for an entity with no naming dimension, and
+   * the difference is the entity store's whole coverage story: no entry is
+   * written for that entity, so every lookup for it abstains. That is ADR-0039's
+   * bound inherited rather than a failure mode — but it does mean an empty store
+   * and a working one are indistinguishable from inside the code, which is why
+   * M5 closes on prod row counts (#5197).
+   */
+  readonly namingDimension: ReadonlyMap<string, string>;
   /**
    * `readonly` and a property, NOT method shorthand.
    *
@@ -237,9 +269,10 @@ type EnrollmentDbRow = {
   readonly enrolled_at: Date | string;
   readonly enrolled_by: string;
   readonly note: string | null;
+  readonly naming: boolean;
 };
 
-const LIST_SQL = `SELECT entity, dimension, enrolled_at, enrolled_by, note
+const LIST_SQL = `SELECT entity, dimension, enrolled_at, enrolled_by, note, naming
                     FROM brain_enrollment
                    WHERE workspace_id = $1
                    ORDER BY entity, dimension`;
@@ -260,6 +293,7 @@ export async function listEnrollments(workspaceId: string): Promise<readonly Enr
     enrolledAt: r.enrolled_at instanceof Date ? r.enrolled_at.toISOString() : String(r.enrolled_at),
     enrolledBy: r.enrolled_by,
     note: r.note,
+    naming: r.naming,
   }));
 }
 
@@ -272,13 +306,15 @@ export async function listEnrollments(workspaceId: string): Promise<readonly Enr
  * with two WHERE clauses is how they start to.
  */
 export async function loadProducerReach(workspaceId: string): Promise<ProducerReach> {
-  const rows = await internalQuery<{ entity: string; dimension: string }>(
-    `SELECT entity, dimension FROM brain_enrollment
+  const rows = await internalQuery<{ entity: string; dimension: string; naming: boolean }>(
+    `SELECT entity, dimension, naming FROM brain_enrollment
       WHERE workspace_id = $1
       ORDER BY entity, dimension`,
     [workspaceId],
   );
-  return makeProducerReach(rows.map((r) => ({ entity: r.entity, dimension: r.dimension })));
+  return makeProducerReach(
+    rows.map((r) => ({ entity: r.entity, dimension: r.dimension, naming: r.naming })),
+  );
 }
 
 /**
@@ -296,12 +332,22 @@ export async function loadProducerReach(workspaceId: string): Promise<ProducerRe
  * returns a value. Nothing here reaches `brain_enrollment`, so it is not a path
  * by which anything can enroll.
  */
-export function makeProducerReach(pairs: readonly EnrolledPair[]): ProducerReach {
+export function makeProducerReach(pairs: readonly EnrolledDimension[]): ProducerReach {
   const index = new Set(pairs.map((p) => pairKey(p.entity, p.dimension)));
   const entities = [...new Set(pairs.map((p) => p.entity))];
+  // FIRST wins, and the partial unique index is what makes that never matter:
+  // `uq_brain_enrollment_naming` admits at most one naming row per entity, so a
+  // second one here means the caller built a reach by hand. Taking the first
+  // (rather than the last) keeps the choice deterministic under the LIST order
+  // either way.
+  const namingDimension = new Map<string, string>();
+  for (const p of pairs) {
+    if (p.naming && !namingDimension.has(p.entity)) namingDimension.set(p.entity, p.dimension);
+  }
   return {
     pairs,
     entities,
+    namingDimension,
     has: (entity, dimension) => index.has(pairKey(entity, dimension)),
   };
 }
@@ -378,4 +424,130 @@ export async function unenrollPair(params: {
     [params.workspaceId, pair.entity, pair.dimension],
   );
   return rows.length > 0;
+}
+
+/**
+ * The one seam {@link setNamingDimension} needs, defaulted to production.
+ *
+ * A dependency rather than a static import of `withBrainTransaction`, on
+ * `warehouse-producer.ts`'s dynamic-import precedent and for its reason: this
+ * module is partial-mocked by several suites, and a static edge to `reconcile.ts`
+ * would drag the whole reconcile graph into every one of them.
+ */
+export interface NamingDimensionDeps {
+  readonly withTransaction?: ReconcileTransactionRunner;
+}
+
+async function defaultBrainTransaction(): Promise<ReconcileTransactionRunner> {
+  const { withBrainTransaction } = await import("@atlas/api/lib/brain/reconcile");
+  return withBrainTransaction;
+}
+
+/**
+ * The dimension that supplies an entity's CANONICAL SURFACE, or `null` to clear
+ * it (#5043, ADR-0037 §5).
+ *
+ * ## Why this is a human act
+ *
+ * `warehouse-producer.ts` states the limit: *"the semantic layer marks which
+ * dimension identifies a row and marks nothing as the row's NAME, so the primary
+ * key is the only identifying surface available without a guess."* Picking a
+ * `name`-ish column by heuristic is the failure `subject-cmp.ts` calls a
+ * CONFIDENTIALITY limit rather than an advisory one — a wrong subject is a
+ * homonym, corroboration has no grant arm, and publish widens `visible_to` with
+ * the union of evidence grants. So a person names it, on ADR-0039's pattern.
+ *
+ * ## Its blast radius, stated at the door that opens it
+ *
+ * The store emits `lexicalNorm(primary key) → lexicalNorm(canonical surface)` as
+ * a vocabulary edge, and that edge is what the slot keys read. So naming a
+ * dimension — or re-naming a different one — RE-KEYS every brain fact about that
+ * entity, workspace-wide. `brain_vocabulary_edge`'s removal path is a
+ * recomputation rather than a patch, which is what makes it undoable; nothing
+ * makes it invisible, and nothing here should try to.
+ *
+ * ## Why it is a verb of its own
+ *
+ * {@link enrollPair} is idempotent and deliberately does not re-attribute or
+ * update an existing row, so a `naming` field folded into the enroll body would
+ * silently do nothing for the pair that is already enrolled — which is every
+ * pair a person would want to mark.
+ *
+ * ⚠️ **It REFUSES a dimension that is not enrolled**, and that is not a
+ * courtesy check. The snapshot query names the enrolled columns only, so an
+ * unenrolled naming dimension would name a column the producer never reads: the
+ * store would hold no entry, every lookup would abstain, and the admin surface
+ * would show the entity as named. Silent, and indistinguishable from a working
+ * store — the exact failure ADR-0039 warns is invisible.
+ *
+ * Returns whether anything changed. `false` is a no-op: the requested state
+ * already held.
+ */
+export async function setNamingDimension(
+  params: {
+    readonly workspaceId: string;
+    readonly entity: string;
+    readonly dimension: string | null;
+  },
+  deps: NamingDimensionDeps = {},
+): Promise<boolean> {
+  // The entity half is normalized through the same door both other verbs use.
+  // A `null` dimension has nothing to normalize, so it is paired with the
+  // entity's own name to reach the shared rules — the alternative is a second
+  // copy of the trim/length/NUL checks for the clear verb, which is exactly the
+  // divergence `normalizeEnrollmentPair`'s header records having already
+  // happened once.
+  const { entity } = normalizeEnrollmentPair(params.entity, params.dimension ?? params.entity);
+  const dimension =
+    params.dimension === null
+      ? null
+      : normalizeEnrollmentPair(params.entity, params.dimension).dimension;
+
+  if (dimension !== null) {
+    const enrolled = await internalQuery<{ entity: string }>(
+      `SELECT entity FROM brain_enrollment
+        WHERE workspace_id = $1 AND entity = $2 AND dimension = $3`,
+      [params.workspaceId, entity, dimension],
+    );
+    if (enrolled.length === 0) {
+      throw new InvalidEnrollmentPairError(
+        `"${dimension}" is not enrolled for "${entity}", so the producer never reads that column. ` +
+          "Enroll the pair first, then name it.",
+      );
+    }
+  }
+
+  // ⚠️ TWO statements in ONE transaction, and the split is not tidiness — a
+  // single `SET naming = (dimension = $3)` is NON-DETERMINISTICALLY broken.
+  // Postgres inserts each updated tuple's index entry as it rewrites that tuple,
+  // so if the row being turned ON is rewritten before the row being turned OFF,
+  // `uq_brain_enrollment_naming` sees two live `naming` rows for the entity and
+  // raises 23505. Whether it does depends on scan order, which is the worst
+  // shape a failure can have: it works in every test and fails in production
+  // once the table has enough rows to be scanned differently.
+  //
+  // Clearing first makes the intermediate state "this entity has no naming
+  // dimension", which is a state the schema and the producer both accept. The
+  // transaction is what stops a concurrent caller observing it or racing into
+  // the same index.
+  const withTransaction = deps.withTransaction ?? (await defaultBrainTransaction());
+  return withTransaction(async (tx) => {
+    const cleared = await tx.query(
+      `UPDATE brain_enrollment
+          SET naming = false
+        WHERE workspace_id = $1 AND entity = $2 AND naming
+          AND dimension IS DISTINCT FROM $3::text
+        RETURNING dimension`,
+      [params.workspaceId, entity, dimension],
+    );
+    if (dimension === null) return cleared.rows.length > 0;
+    const set = await tx.query(
+      `UPDATE brain_enrollment
+          SET naming = true
+        WHERE workspace_id = $1 AND entity = $2 AND dimension = $3 AND NOT naming
+        RETURNING dimension`,
+      [params.workspaceId, entity, dimension],
+    );
+    return cleared.rows.length > 0 || set.rows.length > 0;
+  });
 }

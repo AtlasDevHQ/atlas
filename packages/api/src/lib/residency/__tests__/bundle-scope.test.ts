@@ -114,10 +114,21 @@ describe("bundle-scope drift tripwire (#4460)", () => {
     // inside the code. Same asset class as `brain_vocabulary_edge`: a deliberate
     // human decision about the brain's shape, so 'stays' would be deletion of
     // one.
+    //
+    // And again by #5043 (ADR-0037 §5) with the entity store. It is the closest
+    // call on this list, because it LOOKS derived and `brain_vocabulary_target`
+    // — genuinely derived — stays. The difference is what the re-derivation
+    // needs: a closure is a pure function of edges that travel on the same
+    // bundle, an entry is a function of a WAREHOUSE READ the destination cannot
+    // repeat until its credentials are back and a human re-runs the producer.
+    // And the ids are already on the wire — `brain_facts.subject_cmp` carries
+    // them verbatim — so leaving the store behind lands facts whose comparison
+    // values nothing in the destination can explain.
     expect([...EXPORTED_TABLES].toSorted()).toEqual([
       "agent_session_memory",
       "brain_edges",
       "brain_enrollment",
+      "brain_entity",
       "brain_episodes",
       "brain_facts",
       "brain_slack_channel",

@@ -68,6 +68,10 @@ const THREE_PAIRS_TWO_ENTITIES = [
     enrolledAt: "2026-08-14T00:00:00.000Z",
     enrolledBy: "user-1",
     note: null,
+    // The naming dimension (#5043). ONE of the three, so the "names this
+    // entity" badge and the two verbs on the row are exercised against a
+    // fixture where the flag is not constant.
+    naming: true,
   },
   {
     entity: "accounts",
@@ -75,6 +79,7 @@ const THREE_PAIRS_TWO_ENTITIES = [
     enrolledAt: "2026-08-14T00:00:00.000Z",
     enrolledBy: "user-1",
     note: null,
+    naming: false,
   },
   {
     entity: "subscriptions",
@@ -82,6 +87,7 @@ const THREE_PAIRS_TWO_ENTITIES = [
     enrolledAt: "2026-08-14T00:00:00.000Z",
     enrolledBy: "user-2",
     note: null,
+    naming: false,
   },
 ];
 
@@ -105,7 +111,7 @@ const jsonResponse = (body: unknown, status = 200) =>
  * every assertion below would then be reading a page whose picker never loaded.
  */
 function installFetchStub() {
-  globalThis.fetch = mock((input: RequestInfo | URL) => {
+  globalThis.fetch = mock((input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.includes("/brain-enrollment/entities")) {
       return Promise.resolve(
@@ -128,6 +134,7 @@ function installFetchStub() {
               type: "string",
               description: null,
               enrolled: false,
+              naming: false,
             },
           ],
         }),
@@ -141,6 +148,23 @@ function installFetchStub() {
               403,
             )
           : jsonResponse({ entity: "accounts", dimension: "arr_band", changed: writeChanged }),
+      );
+    }
+    if (url.includes("/brain-enrollment/naming")) {
+      return Promise.resolve(
+        writeFails
+          ? jsonResponse(
+              { error: "not-entitled", message: "you may not rename", requestId: "req-1" },
+              403,
+            )
+          : jsonResponse({
+              entity: "accounts",
+              // Echoed from the REQUEST, so a page that sent the wrong half is
+              // visible in what comes back rather than masked by a constant.
+              dimension: (JSON.parse(String(init?.body)) as { dimension: string | null })
+                .dimension,
+              changed: writeChanged,
+            }),
       );
     }
     if (url.includes("/brain-enrollment/unenroll")) {
@@ -393,6 +417,78 @@ describe("the write verbs report what actually happened", () => {
     // with the row it belongs to rather than in the authoring form above.
     const text = container.textContent ?? "";
     expect(text.indexOf("you may not un-enroll")).toBeGreaterThan(text.indexOf("In the producer"));
+  });
+});
+
+
+describe("naming the column an entity is known by (#5043)", () => {
+  async function renderNamed(naming: boolean) {
+    enrollments = [{ ...THREE_PAIRS_TWO_ENTITIES[0]!, naming }];
+    const { container } = renderPage();
+    await waitFor(() =>
+      expect(container.textContent ?? "").not.toContain("Loading what is enrolled…"),
+    );
+    return container;
+  }
+
+  test("the standing copy says what naming DOES, not that it is a display setting", async () => {
+    const text = await settledText();
+    // "Use as name" reads like a preference. It is the act that decides which
+    // claims Atlas treats as being about the same thing, and re-files every
+    // fact about the entity — a workspace-wide re-key an admin has no reason to
+    // expect from a control labelled that way.
+    expect(text).toContain("Changing it re-files everything Atlas knows about that entity");
+    expect(text).toContain("not a display setting");
+  });
+
+  test("the row shows which dimension names its entity — and the others do not", async () => {
+    // The fixture's FIRST pair is the naming one and the other two are not, so
+    // a badge rendered unconditionally would show three times.
+    enrollments = THREE_PAIRS_TWO_ENTITIES;
+    const { container } = renderPage();
+    await waitFor(() =>
+      expect(container.textContent ?? "").not.toContain("Loading what is enrolled…"),
+    );
+    const text = container.textContent ?? "";
+    expect(text.match(/names this entity/g) ?? []).toHaveLength(1);
+    // Both verbs are on screen, one per row — the naming row offers to stop,
+    // the other two offer to start.
+    expect(screen.getAllByRole("button", { name: /^Use as name$/ })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: /Stop using as name/ })).toHaveLength(1);
+  });
+
+  test("naming a column explains the merge it creates", async () => {
+    const container = await renderNamed(false);
+    fireEvent.click(screen.getByRole("button", { name: /^Use as name$/ }));
+    await waitFor(() =>
+      expect(container.textContent ?? "").toContain("become the same subject"),
+    );
+    // The other half of the ternary must NOT also be on screen.
+    expect(container.textContent ?? "").not.toContain("no longer has a name column");
+  });
+
+  test("clearing it says matching goes back to the warehouse key", async () => {
+    // The paired arm. Without it an inverted ternary passes the test above by
+    // rendering the merge copy on every path.
+    const container = await renderNamed(true);
+    fireEvent.click(screen.getByRole("button", { name: /Stop using as name/ }));
+    await waitFor(() =>
+      expect(container.textContent ?? "").toContain("no longer has a name column"),
+    );
+    expect(container.textContent ?? "").not.toContain("become the same subject");
+  });
+
+  test("a failed naming change gets its OWN error slot and badge", async () => {
+    // A shared slot would render this under the un-enroll card's "not removed"
+    // badge — the same defect the un-enroll slot was split out of the enroll
+    // card to fix, one verb later.
+    writeFails = true;
+    const container = await renderNamed(false);
+    fireEvent.click(screen.getByRole("button", { name: /^Use as name$/ }));
+    await waitFor(() => expect(container.textContent ?? "").toContain("you may not rename"));
+    const text = container.textContent ?? "";
+    expect(text).toContain("name not changed");
+    expect(text).not.toContain("not removed");
   });
 });
 

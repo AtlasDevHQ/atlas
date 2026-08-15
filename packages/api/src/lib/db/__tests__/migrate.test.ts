@@ -356,7 +356,13 @@ describe("runMigrations", () => {
     //   producer's reach. Not a content-mode table and not an invalidation
     //   authority: un-enrolling deletes a row here and leaves every published
     //   fact untouched) = 200.
-    expect(count).toBe(200);
+    //   Plus 0200 (brain_entity — #5043 / ADR-0037 §5's entity store, plus the
+    //   `brain_enrollment.naming` flag that names the one dimension a human
+    //   picked as an entity's canonical surface. The store answers `surface →
+    //   stable id` for `subject_cmp`/`object_cmp` and emits the vocabulary edge
+    //   that puts a surrogate-keyed warehouse row in the same slot as an
+    //   extracted mention of its name) = 201.
+    expect(count).toBe(201);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -585,6 +591,7 @@ describe("runMigrations", () => {
         "0197_builtin_roles_dashboards_share.sql",
         "0198_brain_slack_membership_scope.sql",
         "0199_brain_enrollment.sql",
+        "0200_brain_entity.sql",
       ],
     });
 

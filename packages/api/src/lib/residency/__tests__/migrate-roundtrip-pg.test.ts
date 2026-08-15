@@ -302,6 +302,26 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       [SOURCE_ORG],
     );
 
+    // ── The entity store (#5043, ADR-0037 §5) ──
+    //
+    // `snapshot_at` seeded EXPLICITLY and to a date nothing else would produce,
+    // on `enrolled_at`'s reasoning above: the column has no DEFAULT, so a
+    // projection that dropped it would fail loudly — but an importer binding
+    // `now()` in its place would report a perfect cutover while telling the
+    // destination every entry was read today. `snapshot_at` is the one column
+    // that says how stale an entry is.
+    //
+    // TWO entities, so the ambiguity rule below has a population to be right or
+    // wrong about, and DIFFERENT norms from every surface so a row that carried
+    // its surface into a norm column cannot pass.
+    await pool.query(
+      `INSERT INTO brain_entity
+         (workspace_id, entity_id, entity, key_surface, key_norm, canonical_surface, canonical_norm, snapshot_at)
+       VALUES ($1, 'wh_aaa', 'accounts', '42', '42', 'Acme Corp', 'acme corp', '2026-03-04T00:00:00Z'),
+              ($1, 'wh_bbb', 'accounts', '43', '43', 'Beta LLC', 'beta llc', '2026-03-04T00:00:00Z')`,
+      [SOURCE_ORG],
+    );
+
     // ── The curated identity vocabulary (#5022, ADR-0037 §6/§8) ──
     // A COMPRESSED chain, which is the only shape that can tell "the closure
     // was recomputed" from "the closure was copied": the bundle carries no
@@ -399,6 +419,8 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         // unlike the exclusions above, every row here is a human act and there
         // is no observed half to leave behind.
         brainEnrollments: 3,
+        // Both entries (#5043). No predicate narrows this section either.
+        brainEntities: 2,
       });
 
       // ── Simulate the cross-region hop on one DB: preserved UUIDs would
@@ -419,6 +441,7 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       await pool.query(`DELETE FROM brain_slack_channel WHERE workspace_id = $1`, [SOURCE_ORG]);
       await pool.query(`DELETE FROM brain_slack_ingest_scope WHERE workspace_id = $1`, [SOURCE_ORG]);
       await pool.query(`DELETE FROM brain_enrollment WHERE workspace_id = $1`, [SOURCE_ORG]);
+      await pool.query(`DELETE FROM brain_entity WHERE workspace_id = $1`, [SOURCE_ORG]);
       await pool.query(`DELETE FROM semantic_entities WHERE org_id = $1`, [SOURCE_ORG]);
       await pool.query(`DELETE FROM learned_patterns WHERE org_id = $1`, [SOURCE_ORG]);
       await pool.query(`DELETE FROM settings WHERE org_id = $1`, [SOURCE_ORG]);
@@ -443,6 +466,20 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       await pool.query(
         `INSERT INTO brain_enrollment (workspace_id, entity, dimension, enrolled_at, enrolled_by, note)
          VALUES ($1, 'accounts', 'status', '2026-07-01T00:00:00Z', 'target-admin', 'decided here first')`,
+        [TARGET_ORG],
+      );
+
+      // The destination's own producer ALREADY ran and snapshotted `wh_aaa`,
+      // NEWER than the bundle's and under a DIFFERENT canonical surface (#5043).
+      // This is what makes the assertion below say something: `DO UPDATE` would
+      // overwrite `Acme Corporation` with the bundle's older `Acme Corp` and
+      // re-key every fact about that entity workspace-wide, which is exactly the
+      // blast radius ADR-0037 §5 records — arriving from a direction nobody is
+      // watching, on a cutover reported clean.
+      await pool.query(
+        `INSERT INTO brain_entity
+           (workspace_id, entity_id, entity, key_surface, key_norm, canonical_surface, canonical_norm, snapshot_at)
+         VALUES ($1, 'wh_aaa', 'accounts', '42', '42', 'Acme Corporation', 'acme corporation', '2026-07-02T00:00:00Z')`,
         [TARGET_ORG],
       );
 
@@ -471,6 +508,11 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       // by an importer that counts every row into one bucket, and `{3, 0}` or
       // `{0, 3}` each go red on exactly one half.
       expect(result.brainEnrollments).toEqual({ imported: 2, skipped: 1 });
+      // One new entry landed; the one the destination already snapshotted is
+      // `skipped` (#5043). Different numbers deliberately — `{1, 1}` would be
+      // satisfiable by an importer that counted every row into one bucket only
+      // if it counted exactly half, which no bucketing bug produces.
+      expect(result.brainEntities).toEqual({ imported: 1, skipped: 1 });
 
       // C0PAYROLL landed fresh with `is_member` FALSE — the bundle carries no
       // membership, and claiming one would put the channel in the poll scope
@@ -532,6 +574,40 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
            FROM brain_enrollment WHERE workspace_id = $1 ORDER BY entity, dimension`,
         [TARGET_ORG],
       );
+      // ── The entity store landed, and the LOCAL entry won (#5043) ──
+      const targetEntities = await pool.query<{
+        entity_id: string;
+        canonical_surface: string;
+        canonical_norm: string;
+        snapshot_at: Date;
+      }>(
+        `SELECT entity_id, canonical_surface, canonical_norm, snapshot_at
+           FROM brain_entity WHERE workspace_id = $1 ORDER BY entity_id`,
+        [TARGET_ORG],
+      );
+      expect(
+        targetEntities.rows.map((r) => ({ ...r, snapshot_at: r.snapshot_at.toISOString() })),
+      ).toEqual([
+        // NOT `Acme Corp` and NOT March — the destination's own newer snapshot,
+        // untouched by the arriving older one. A `DO UPDATE` re-keys every fact
+        // about this entity onto the bundle's stale name.
+        {
+          entity_id: "wh_aaa",
+          canonical_surface: "Acme Corporation",
+          canonical_norm: "acme corporation",
+          snapshot_at: "2026-07-02T00:00:00.000Z",
+        },
+        // Carried whole, norms included, with the SOURCE's snapshot instant. A
+        // `now()` bound in its place reports a perfect cutover while telling the
+        // destination this entry was read today.
+        {
+          entity_id: "wh_bbb",
+          canonical_surface: "Beta LLC",
+          canonical_norm: "beta llc",
+          snapshot_at: "2026-03-04T00:00:00.000Z",
+        },
+      ]);
+
       expect(
         targetEnrollments.rows.map((r) => ({ ...r, enrolled_at: r.enrolled_at.toISOString() })),
       ).toEqual([
@@ -921,6 +997,8 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         // All THREE now, including the pair that was `skipped` on the first
         // pass: a re-import of an already-landed reach is entirely no-op.
         brainEnrollments: { imported: 0, skipped: 3 },
+        // Both entries already here from the first import (#5043).
+        brainEntities: { imported: 0, skipped: 2 },
       });
 
       // ── Catch-up import: an episode the target already has, carrying a

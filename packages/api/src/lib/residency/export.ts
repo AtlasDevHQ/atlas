@@ -39,6 +39,7 @@ import {
   type ExportedBrainSlackChannelExclusion,
   type ExportedBrainSlackIngestScope,
   type ExportedBrainEnrollment,
+  type ExportedBrainEntity,
   type ExportedVocabularySlotPosition,
 } from "@useatlas/types";
 
@@ -205,6 +206,7 @@ export async function exportWorkspaceBundle(
     slackExclusionResult,
     slackScopeResult,
     enrollmentResult,
+    entityStoreResult,
   ] = await Promise.all([
     // --- 1. Conversations + Messages (2 queries, no N+1) ---
     pool.query(
@@ -485,9 +487,22 @@ export async function exportWorkspaceBundle(
     // enrollment, so every row here is a human act and every one of them is the
     // decision.
     pool.query(
-      `SELECT entity, dimension, enrolled_at, enrolled_by, note
+      `SELECT entity, dimension, enrolled_at, enrolled_by, note, naming
        FROM brain_enrollment WHERE ${scopeClause("workspace_id", orgScope)}
        ORDER BY entity, dimension ASC`,
+      params,
+    ),
+    // The entity store's snapshot entries (#5043, ADR-0037 §5). The WHOLE row,
+    // norms included: they are `lexicalNorm`'s output, and recomputing them at
+    // the destination would be a second implementation of that function running
+    // against rows the first one produced — the exact drift `brain_facts`'
+    // carried identity keys exist to avoid (#5035). The importer refuses a row
+    // whose norms disagree with its surfaces instead, which is a check rather
+    // than a second spelling.
+    pool.query(
+      `SELECT entity_id, entity, key_surface, key_norm, canonical_surface, canonical_norm, snapshot_at
+       FROM brain_entity WHERE ${scopeClause("workspace_id", orgScope)}
+       ORDER BY entity, entity_id ASC`,
       params,
     ),
   ]);
@@ -866,6 +881,21 @@ export async function exportWorkspaceBundle(
     // have granted. Let the import's own validation refuse it.
     enrolledBy: r.enrolled_by as string,
     note: (r.note as string | null) ?? null,
+    // #5043. `=== true` rather than a cast: the column is `boolean NOT NULL`,
+    // but this is the one field whose loss is silent in ADR-0039's way — the
+    // destination's store writes no entry and every lookup abstains, while the
+    // enrollment list still shows the pair as live.
+    naming: r.naming === true,
+  }));
+
+  const brainEntities: ExportedBrainEntity[] = entityStoreResult.rows.map((r) => ({
+    entityId: r.entity_id as string,
+    entity: r.entity as string,
+    keySurface: r.key_surface as string,
+    keyNorm: r.key_norm as string,
+    canonicalSurface: r.canonical_surface as string,
+    canonicalNorm: r.canonical_norm as string,
+    snapshotAt: toISO(r.snapshot_at),
   }));
 
   // --- Build bundle ---
@@ -897,6 +927,7 @@ export async function exportWorkspaceBundle(
         brainVocabularyEdges: brainVocabularyEdges.length,
         brainSlackChannelExclusions: brainSlackChannelExclusions.length,
         brainEnrollments: brainEnrollments.length,
+        brainEntities: brainEntities.length,
       },
     },
     conversations,
@@ -914,6 +945,7 @@ export async function exportWorkspaceBundle(
     brainSlackChannelExclusions,
     ...(brainSlackIngestScope !== undefined ? { brainSlackIngestScope } : {}),
     brainEnrollments,
+    brainEntities,
   };
 
   log.info(

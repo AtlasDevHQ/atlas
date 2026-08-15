@@ -19,6 +19,8 @@
  */
 
 import { afterEach, describe, expect, it, mock } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   seedBuiltinKnowledgeCatalog,
   BUILTIN_KNOWLEDGE_CATALOG_ROW,
@@ -32,6 +34,8 @@ import {
   BUILTIN_FRONT_CATALOG_ROW,
   BUILTIN_HELPSCOUT_CATALOG_ROW,
   BUILTIN_FRESHDESK_CATALOG_ROW,
+  BUILTIN_ZOOM_TRANSCRIPTS_CATALOG_ROW,
+  BUILTIN_OUTLOOK_MAIL_CATALOG_ROW,
   BUILTIN_KNOWLEDGE_CATALOG_ROWS,
   type BuiltinKnowledgeCatalogSeedDb,
 } from "@atlas/api/lib/db/seed-builtin-knowledge-catalog";
@@ -298,6 +302,95 @@ describe("BUILTIN_FRESHDESK_CATALOG_ROW (#4401)", () => {
     expect(row.configSchema.filter((f) => f.secret === true).map((f) => f.key)).toEqual(["api_key"]);
     expect(row.configSchema.find((f) => f.key === "api_key")?.required).toBe(true);
     expect(row.configSchema.find((f) => f.key === "subdomain")?.required).toBe(true);
+  });
+});
+
+/**
+ * #5082 — the constant/migration agreement pin for the two Company Atlas
+ * ingest rows.
+ *
+ * The seeder is insert-only (`ON CONFLICT DO NOTHING`), so the constants above
+ * describe only the shape a row is BORN with. Renaming a row that already
+ * exists in a region takes migration
+ * `0201_brain_catalog_rows_company_atlas.sql`, and the failure mode this pin
+ * exists to catch is silent: edit the constant, forget the migration, and new
+ * installs diverge from every existing region with nothing reporting it.
+ *
+ * The pin therefore reads the migration OFF DISK and compares it to the
+ * constants — the two are never hand-written to agree here.
+ *
+ * The OLD strings are derived from the constants by INVERTING the ADR-0038
+ * rename rather than being transcribed a third time, so a typo on either side
+ * fails this test. That derivation is specific to migration 0201: a FUTURE
+ * rename must add its own migration and re-point this block at it, and the
+ * failure it causes here is the intended alarm, not collateral damage.
+ */
+describe("Company Atlas ingest rows ↔ migration 0201 (#5082, ADR-0038)", () => {
+  const MIGRATION_SQL = readFileSync(
+    join(import.meta.dir, "..", "migrations", "0201_brain_catalog_rows_company_atlas.sql"),
+    "utf8",
+  );
+
+  /** ADR-0038's rename, inverted: the string these rows held before 0201. */
+  const preRename = (s: string): string =>
+    s
+      .replace("Company Atlas (", "Company Brain (")
+      .replace("the Company Atlas", "the company brain");
+
+  const rows = [
+    { label: "Zoom transcripts", row: BUILTIN_ZOOM_TRANSCRIPTS_CATALOG_ROW },
+    { label: "Outlook mail", row: BUILTIN_OUTLOOK_MAIL_CATALOG_ROW },
+  ];
+
+  for (const { label, row } of rows) {
+    describe(label, () => {
+      it("writes exactly the constant's name and description", () => {
+        // The NEW half. If the constant is edited without the migration, these
+        // literals are absent from the SQL and this fails — which is the whole
+        // point of the pin.
+        expect(MIGRATION_SQL).toContain(`'${row.name}'`);
+        expect(MIGRATION_SQL).toContain(`'${row.description}'`);
+      });
+
+      it("matches on the pre-rename strings, so a hand-edited row is left alone", () => {
+        // The OLD half — what the three prod regions actually hold. Derived,
+        // not transcribed.
+        const oldName = preRename(row.name);
+        const oldDescription = preRename(row.description);
+        expect(oldName).not.toBe(row.name);
+        expect(oldDescription).not.toBe(row.description);
+        expect(MIGRATION_SQL).toContain(`'${oldName}'`);
+        expect(MIGRATION_SQL).toContain(`'${oldDescription}'`);
+      });
+
+      it("is keyed on the stable catalog id", () => {
+        expect(MIGRATION_SQL).toContain(`WHERE id = '${row.id}'`);
+      });
+
+      it("no longer says 'Company Brain' or 'company brain' in the constant", () => {
+        // ADR-0038 governs product copy, and both of these are customer-read
+        // strings on `/admin/knowledge`.
+        expect(row.name).not.toContain("Company Brain");
+        expect(row.description).not.toContain("company brain");
+        expect(row.description).not.toContain("Company Brain");
+      });
+    });
+  }
+
+  it("touches exactly the two Company Atlas rows and no other catalog id", () => {
+    // Negative, and the load-bearing one: a WHERE clause that reached another
+    // built-in row would rewrite a vendor connector's copy. Every `WHERE id =`
+    // in the file must name one of the two.
+    const targeted = [...MIGRATION_SQL.matchAll(/WHERE id = '([^']+)'/g)].map((m) => m[1]);
+    expect(targeted.sort()).toEqual(["catalog:outlook-mail", "catalog:zoom-transcripts"]);
+  });
+
+  it("leaves every OTHER built-in row's copy out of the migration entirely", () => {
+    for (const other of BUILTIN_KNOWLEDGE_CATALOG_ROWS) {
+      if (other.id === "catalog:zoom-transcripts" || other.id === "catalog:outlook-mail") continue;
+      expect(MIGRATION_SQL).not.toContain(other.id);
+      expect(MIGRATION_SQL).not.toContain(`'${other.name}'`);
+    }
   });
 });
 

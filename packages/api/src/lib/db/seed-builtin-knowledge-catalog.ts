@@ -43,7 +43,17 @@
  * ingest rows is migration `0201_brain_catalog_rows_company_atlas.sql`, and
  * `__tests__/seed-builtin-knowledge-catalog.test.ts` pins these constants to
  * the literals that migration writes, so the next rename cannot update one and
- * miss the other. Adding a NEW row is still one append here and nothing else.
+ * miss the other. The same file carries a COPY LOCK over every row's
+ * `name`/`description` — the rule was never specific to those two, only the
+ * defect was. Adding a NEW row is still one append here and nothing else.
+ *
+ * ⚠️ `config_schema` is stored under the same `ON CONFLICT DO NOTHING` and is
+ * customer-read (it renders as install-form labels and helper text), so it
+ * carries the identical constraint — with no migration behind it yet. The two
+ * Company Atlas rows still say "this brain source" there; rewriting a string
+ * inside a JSONB array is a materially less safe statement than 0201's guarded
+ * column updates, so it is deferred to its own change and pinned by a test
+ * meanwhile.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";

@@ -39,6 +39,7 @@ import {
   BUILTIN_KNOWLEDGE_CATALOG_ROWS,
   type BuiltinKnowledgeCatalogSeedDb,
 } from "@atlas/api/lib/db/seed-builtin-knowledge-catalog";
+import { RENAME_PAIRS } from "@atlas/api/lib/db/__tests__/brain-catalog-rename-fixtures";
 
 interface CapturedQuery {
   sql: string;
@@ -316,33 +317,42 @@ describe("BUILTIN_FRESHDESK_CATALOG_ROW (#4401)", () => {
  * exists to catch is silent: edit the constant, forget the migration, and new
  * installs diverge from every existing region with nothing reporting it.
  *
- * The pin therefore reads the migration OFF DISK and compares it to the
- * constants — the two are never hand-written to agree here.
+ * The pin reads the migration OFF DISK and compares it to the constants — the
+ * two are never hand-written to agree here. The pre-rename strings come from
+ * `brain-catalog-rename-fixtures.ts`, which is the ONE derivation in the tree
+ * and is shared with `brain-catalog-rename-pg.test.ts` so the pin and the
+ * behavioural fixture can never drift apart.
  *
- * The OLD strings are derived from the constants by INVERTING the ADR-0038
- * rename rather than being transcribed a third time, so a typo on either side
- * fails this test. That derivation is specific to migration 0201: a FUTURE
- * rename must add its own migration and re-point this block at it, and the
- * failure it causes here is the intended alarm, not collateral damage.
+ * ⚠️ WHAT THIS BLOCK CANNOT SEE: direction. It asserts that both the old and
+ * the new literals appear in the file, so a migration with `WHEN`/`THEN`
+ * swapped — renaming Atlas back to Brain — contains both and passes every
+ * assertion here. `brain-catalog-rename-pg.test.ts` owns direction, by running
+ * the statements. Both files are needed; neither is redundant.
+ *
+ * The derivation is specific to migration 0201: a FUTURE rename must add its
+ * own migration and re-point this block at it, and the failure it causes here
+ * is the intended alarm, not collateral damage.
  */
 describe("Company Atlas ingest rows ↔ migration 0201 (#5082, ADR-0038)", () => {
-  const MIGRATION_SQL = readFileSync(
+  const MIGRATION_FILE = readFileSync(
     join(import.meta.dir, "..", "migrations", "0201_brain_catalog_rows_company_atlas.sql"),
     "utf8",
   );
 
-  /** ADR-0038's rename, inverted: the string these rows held before 0201. */
-  const preRename = (s: string): string =>
-    s
-      .replace("Company Atlas (", "Company Brain (")
-      .replace("the Company Atlas", "the company brain");
+  /**
+   * The migration with `--` comment lines removed.
+   *
+   * Every assertion below is `toContain` over text, and 0201 carries a ~60-line
+   * prose header that quotes the strings it rewrites. Asserting against the raw
+   * file would let a header comment satisfy the pin over broken or absent SQL —
+   * and would red the "no other catalog id" check the moment a comment
+   * legitimately names one. Strip the prose; assert on the statements.
+   */
+  const MIGRATION_SQL = MIGRATION_FILE.split("\n")
+    .filter((line) => !line.trimStart().startsWith("--"))
+    .join("\n");
 
-  const rows = [
-    { label: "Zoom transcripts", row: BUILTIN_ZOOM_TRANSCRIPTS_CATALOG_ROW },
-    { label: "Outlook mail", row: BUILTIN_OUTLOOK_MAIL_CATALOG_ROW },
-  ];
-
-  for (const { label, row } of rows) {
+  for (const { label, row, oldName, oldDescription } of RENAME_PAIRS) {
     describe(label, () => {
       it("writes exactly the constant's name and description", () => {
         // The NEW half. If the constant is edited without the migration, these
@@ -354,9 +364,8 @@ describe("Company Atlas ingest rows ↔ migration 0201 (#5082, ADR-0038)", () =>
 
       it("matches on the pre-rename strings, so a hand-edited row is left alone", () => {
         // The OLD half — what the three prod regions actually hold. Derived,
-        // not transcribed.
-        const oldName = preRename(row.name);
-        const oldDescription = preRename(row.description);
+        // not transcribed. The two `not.toBe`s are what stop a future rename
+        // from making `preRename` the identity and this pin vacuous.
         expect(oldName).not.toBe(row.name);
         expect(oldDescription).not.toBe(row.description);
         expect(MIGRATION_SQL).toContain(`'${oldName}'`);
@@ -378,18 +387,100 @@ describe("Company Atlas ingest rows ↔ migration 0201 (#5082, ADR-0038)", () =>
   }
 
   it("touches exactly the two Company Atlas rows and no other catalog id", () => {
-    // Negative, and the load-bearing one: a WHERE clause that reached another
-    // built-in row would rewrite a vendor connector's copy. Every `WHERE id =`
-    // in the file must name one of the two.
+    // Negative: a WHERE clause that reached another built-in row would rewrite
+    // a vendor connector's copy. Every `WHERE id =` in the statements must name
+    // one of the two. This proves WHICH ids are targeted, not what is done to
+    // them — the statement-kind assertion below covers that, and the foreign-id
+    // decoy in `brain-catalog-rename-pg.test.ts` covers scoping behaviourally.
     const targeted = [...MIGRATION_SQL.matchAll(/WHERE id = '([^']+)'/g)].map((m) => m[1]);
-    expect(targeted.sort()).toEqual(["catalog:outlook-mail", "catalog:zoom-transcripts"]);
+    expect(targeted.sort()).toEqual(
+      [BUILTIN_OUTLOOK_MAIL_CATALOG_ROW.id, BUILTIN_ZOOM_TRANSCRIPTS_CATALOG_ROW.id].sort(),
+    );
+  });
+
+  it("is exactly two UPDATEs and nothing destructive", () => {
+    // The id list above is satisfied just as well by
+    // `DELETE FROM plugin_catalog WHERE id = 'catalog:zoom-transcripts'`, which
+    // would drop the row and cascade its installs. Pin the statement KIND too.
+    expect(MIGRATION_SQL.match(/^\s*UPDATE plugin_catalog$/gm)?.length).toBe(2);
+    for (const forbidden of ["DELETE", "INSERT", "ALTER", "TRUNCATE", "DROP"]) {
+      expect(MIGRATION_SQL).not.toContain(forbidden);
+    }
   });
 
   it("leaves every OTHER built-in row's copy out of the migration entirely", () => {
     for (const other of BUILTIN_KNOWLEDGE_CATALOG_ROWS) {
-      if (other.id === "catalog:zoom-transcripts" || other.id === "catalog:outlook-mail") continue;
+      if (
+        other.id === BUILTIN_ZOOM_TRANSCRIPTS_CATALOG_ROW.id ||
+        other.id === BUILTIN_OUTLOOK_MAIL_CATALOG_ROW.id
+      ) {
+        continue;
+      }
       expect(MIGRATION_SQL).not.toContain(other.id);
       expect(MIGRATION_SQL).not.toContain(`'${other.name}'`);
+    }
+  });
+});
+
+/**
+ * #5082 — the COPY LOCK, and the reason it is not scoped to the two rows above.
+ *
+ * The rule #5082 writes into CONTEXT.md is general: *changing a field on a
+ * built-in catalog row that regions already hold takes a migration*, because
+ * `ON CONFLICT DO NOTHING` means a constant edit renames nothing that exists.
+ * That rule applied to all fourteen rows all along; only two of them had the
+ * defect noticed. Every per-row `describe` above asserts `slug`/`id`/
+ * `installModel`/`configSchema` and none of them asserted `name` or
+ * `description` — so today someone can edit any other row's copy, ship it, and
+ * fork the label across three regions with no signal at all.
+ *
+ * Pinning only Zoom and Outlook would fix the two instances and leave the
+ * class open, so this snapshot covers the whole list. Editing any row's copy
+ * reds CI and forces the author to choose: write the migration, or bump this
+ * snapshot deliberately because the row is not yet in any region.
+ *
+ * ⚠️ THIS IS NOT A "DON'T CHANGE COPY" GATE. Bumping it is fine and expected —
+ * what it removes is doing so *without noticing*.
+ */
+describe("built-in catalog copy lock (#5082)", () => {
+  it("pins name + description for every built-in row", () => {
+    const copy = BUILTIN_KNOWLEDGE_CATALOG_ROWS.map((r) => `${r.id}\t${r.name}\t${r.description}`);
+    expect(copy).toEqual([
+      "catalog:okf-upload\tKnowledge Base (Upload)\tUpload an Open Knowledge Format bundle as a review-gated knowledge collection.",
+      "catalog:bundle-sync\tKnowledge Base (Bundle Sync)\tPoint a knowledge collection at an endpoint serving your bundle (tarball/zip, incl. git-forge archive URLs); Atlas pulls it on a schedule and queues changes for review.",
+      "catalog:notion-knowledge\tKnowledge Base (Notion)\tConnect a Notion workspace with an internal-integration token; the pages you share with the integration sync as review-gated knowledge documents. Share a parent page to include its whole subtree.",
+      "catalog:confluence\tKnowledge Base (Confluence Cloud)\tMirror a Confluence Cloud space into a review-gated knowledge collection; Atlas syncs pages on a schedule (incremental + reconciliation) and queues changes for review.",
+      "catalog:confluence-datacenter\tKnowledge Base (Confluence Data Center)\tMirror a self-managed Confluence Data Center/Server space into a review-gated knowledge collection; Atlas syncs pages on a schedule (incremental + reconciliation) and queues changes for review.",
+      "catalog:gitbook\tKnowledge Base (GitBook)\tMirror a GitBook Cloud space into a review-gated knowledge collection; Atlas syncs pages on a schedule (incremental + reconciliation) and queues changes for review.",
+      "catalog:zendesk\tKnowledge Base (Zendesk Guide)\tMirror your Zendesk Guide help center into review-gated knowledge collections (one per brand); Atlas syncs published articles on a schedule (incremental + reconciliation) and queues changes for review.",
+      "catalog:salesforce-knowledge\tKnowledge Base (Salesforce Knowledge)\tMirror your Salesforce Knowledge articles into a review-gated knowledge collection using the workspace's existing Salesforce connection — no extra credentials; Atlas syncs published articles on a schedule (incremental + reconciliation) and queues changes for review.",
+      "catalog:intercom\tKnowledge Base (Intercom)\tMirror your Intercom help center's published articles (all locales) into a review-gated knowledge collection; Atlas syncs on a schedule and queues changes for review.",
+      "catalog:front\tKnowledge Base (Front)\tMirror your Front knowledge bases into review-gated knowledge collections (one per knowledge base); Atlas syncs published articles and their locale translations on a schedule and queues changes for review.",
+      "catalog:helpscout\tKnowledge Base (Help Scout Docs)\tMirror your Help Scout Docs help center into review-gated knowledge collections (one per site); Atlas syncs published articles on a schedule (incremental + reconciliation) and queues changes for review.",
+      "catalog:freshdesk\tKnowledge Base (Freshdesk Solutions)\tMirror your Freshdesk Solutions help center into review-gated knowledge collections (one per category); Atlas syncs published articles and their language translations on a schedule and queues changes for review.",
+      `catalog:zoom-transcripts\t${BUILTIN_ZOOM_TRANSCRIPTS_CATALOG_ROW.name}\t${BUILTIN_ZOOM_TRANSCRIPTS_CATALOG_ROW.description}`,
+      `catalog:outlook-mail\t${BUILTIN_OUTLOOK_MAIL_CATALOG_ROW.name}\t${BUILTIN_OUTLOOK_MAIL_CATALOG_ROW.description}`,
+    ]);
+  });
+
+  it("records the config_schema copy that still reads 'brain source' as a KNOWN exemption", () => {
+    // #5082's own sibling, one field over in the SAME object literal — the
+    // shape the repo keeps paying for. `config_schema` is seeded as JSONB under
+    // the identical `ON CONFLICT DO NOTHING`, and this string is rendered as
+    // helper text on the install form, so it is a STORED, CUSTOMER-READ string
+    // that still says "brain". It is deliberately NOT renamed here: rewriting a
+    // string inside a JSONB array needs a different and much less safe
+    // statement than the two guarded column UPDATEs 0201 is, and that belongs
+    // in its own change. Tracked as a follow-up; CONTEXT.md records it as an
+    // exemption rather than claiming no stored string is left.
+    //
+    // This assertion exists so the next editor of that field gets a signal
+    // instead of walking into #5082's failure mode a second time.
+    for (const row of [BUILTIN_ZOOM_TRANSCRIPTS_CATALOG_ROW, BUILTIN_OUTLOOK_MAIL_CATALOG_ROW]) {
+      const descriptionField = row.configSchema.find((f) => f.key === "description");
+      expect(descriptionField?.description).toBe(
+        "Optional. A human description of this brain source.",
+      );
     }
   });
 });

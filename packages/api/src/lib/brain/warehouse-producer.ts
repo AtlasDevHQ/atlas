@@ -1441,6 +1441,42 @@ export const WAREHOUSE_EPISODE_INSERT_SQL = `INSERT INTO brain_episodes
  * a duplicate episode. It cannot mask a real re-run: the source id carries the
  * snapshot instant, so a genuine second reading is a different id.
  */
+/**
+ * The snapshot episode's `source_id` — `warehouse:<entity>@<ISO instant>`.
+ *
+ * A stored key, so its format is frozen for the same reason
+ * `slackEpisodeSourceId`'s is: a reformat re-reads every entity in every
+ * workspace as a fresh snapshot.
+ *
+ * Exported alongside {@link parseWarehouseEpisodeEntity} because a SECOND reader
+ * now exists — the Coverage Surface's warehouse enumeration (#5213) recovers the
+ * entity from this id to decide which enrolled pairs have produced evidence. Two
+ * hand-written spellings of one format is how a build and a parse drift apart
+ * silently; a builder and its inverse in one place is how they cannot.
+ */
+export function warehouseEpisodeSourceId(entity: string, snapshotAt: Date): string {
+  return `warehouse:${entity}@${snapshotAt.toISOString()}`;
+}
+
+/**
+ * {@link warehouseEpisodeSourceId}'s inverse — the entity, or `null` when the id
+ * is not one this producer minted.
+ *
+ * Splits on the LAST `@` rather than the first: an ISO-8601 instant contains
+ * none, so everything after the final one is the timestamp and everything before
+ * it is the entity name — which recovers entity names that themselves contain
+ * `@`. Splitting on the first would truncate those to their local part and
+ * silently attribute their evidence to an entity that does not exist.
+ */
+export function parseWarehouseEpisodeEntity(sourceId: string): string | null {
+  const prefix = "warehouse:";
+  if (!sourceId.startsWith(prefix)) return null;
+  const at = sourceId.lastIndexOf("@");
+  if (at < prefix.length) return null;
+  const entity = sourceId.slice(prefix.length, at);
+  return entity === "" ? null : entity;
+}
+
 async function insertSnapshotEpisode(
   tx: ReconcileExecutor,
   params: {
@@ -1450,7 +1486,7 @@ async function insertSnapshotEpisode(
     readonly snapshotAt: Date;
   },
 ): Promise<{ id: string; sourceId: string } | null> {
-  const sourceId = `warehouse:${params.entity}@${params.snapshotAt.toISOString()}`;
+  const sourceId = warehouseEpisodeSourceId(params.entity, params.snapshotAt);
   const { rows } = await tx.query(WAREHOUSE_EPISODE_INSERT_SQL, [
     params.workspaceId,
     WAREHOUSE_SOURCE,

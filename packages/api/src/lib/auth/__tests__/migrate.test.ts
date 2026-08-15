@@ -610,6 +610,10 @@ describe("migrateAuthTables", () => {
             // Better Auth owns nothing on — so it belongs in the
             // already-applied set on the same grounds as 0196–0200.
             { name: "0201_brain_catalog_rows_company_atlas.sql" },
+            // 0202 creates the coverage snapshot + cycle tables (#5213). Two
+            // plain Atlas tables with no Better-Auth dependency, so the same
+            // grounds again.
+            { name: "0202_brain_coverage_snapshot.sql" },
           ],
         };
       }

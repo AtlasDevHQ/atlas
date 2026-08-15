@@ -4278,3 +4278,112 @@ export const brainEntity = pgTable(
     index("idx_brain_entity_entity").on(t.workspaceId, t.entity),
   ],
 );
+
+// brain_coverage_snapshot (0202) — the Coverage Surface's dated survey-unit
+// roster (#5213, ADR-0041). One row per (workspace, class, survey unit), written
+// by a scheduled enumeration cycle and read by the page stamped "as of <date>".
+//
+// `state` is DERIVED from `inPerimeter` AND `newestEvidenceAt IS NOT NULL` —
+// ADR-0040 rule 3's green-is-evidence, pinned by a CHECK rather than left to
+// each writer. `inPerimeter` with no evidence is the M1 state (invited, reading
+// nothing) and reads `enumerated`, which is a sentence an admin can act on.
+//
+// The third state, UNENUMERABLE, has no row here: it is the map edge, "a mark,
+// never a number", and its marks live in `brainCoverageCycle.degradedArms`.
+export const brainCoverageSnapshot = pgTable(
+  "brain_coverage_snapshot",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    // `EpisodeSourceClass` minus `human` — that class declares itself
+    // non-surveyable and its "units" would be people, which ADR-0041 refuses by
+    // name. The CHECK below is the refusal.
+    sourceClass: text("source_class").notNull(),
+    // The unit's vendor-side identity — an ID, never a surface. ADR-0041 admits
+    // ids for counting while refusing to NAME mailboxes and persons; the
+    // nameable surface is `unitLabel`, which is NULL unless a clause admitted it.
+    unitId: text("unit_id").notNull(),
+    state: text("state").notNull(),
+    inPerimeter: boolean("in_perimeter").notNull(),
+    // ⚠️ Written through `coverageLabelPolicy` at ENUMERATION time, not merely
+    // read through it at page time (#5214 applies it again). The write path must
+    // not make over-disclosure the path of least resistance.
+    unitLabel: text("unit_label"),
+    // The two disclosure facts the label policy consumes, retained so a read can
+    // re-derive the decision rather than trust `unitLabel`.
+    deliberateAct: boolean("deliberate_act").notNull(),
+    vendorReportsPublic: boolean("vendor_reports_public").notNull(),
+    // OUR side of the lag.
+    newestEvidenceAt: timestamp("newest_evidence_at", { withTimezone: true }),
+    // THE VENDOR'S side, read from the vendor rather than from our own store —
+    // sourcing it from our episodes would make the lag structurally zero.
+    vendorActivityAt: timestamp("vendor_activity_at", { withTimezone: true }),
+    vendorActivityCheckedAt: timestamp("vendor_activity_checked_at", { withTimezone: true }),
+    // "As of <date>" is part of the statement, and the sweep key: a successful
+    // cycle deletes what it did not re-observe by comparing this to its instant.
+    cycleAt: timestamp("cycle_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.workspaceId, t.sourceClass, t.unitId] }),
+    check(
+      "ck_brain_coverage_snapshot_class",
+      sql`source_class IN ('chat', 'transcript', 'email', 'warehouse')`,
+    ),
+    check("ck_brain_coverage_snapshot_state", sql`state IN ('surveyed', 'enumerated')`),
+    check("ck_brain_coverage_snapshot_unit_present", sql`unit_id <> ''`),
+    check("ck_brain_coverage_snapshot_label_present", sql`unit_label IS NULL OR unit_label <> ''`),
+    // GREEN IS EVIDENCE (ADR-0040 rule 3), as one constraint.
+    check(
+      "ck_brain_coverage_snapshot_state_is_evidence",
+      sql`(state = 'surveyed') = (in_perimeter AND newest_evidence_at IS NOT NULL)`,
+    ),
+    // An activity reading with no reading time is an unattributed measurement —
+    // a value whose age is unknown cannot be compared to a cadence.
+    check(
+      "ck_brain_coverage_snapshot_activity_attributed",
+      sql`vendor_activity_at IS NULL OR vendor_activity_checked_at IS NOT NULL`,
+    ),
+    // No secondary index: every read is prefixed by `(workspace_id,
+    // source_class)`, which the PK already is. See the migration header.
+  ],
+);
+
+// brain_coverage_cycle (0202) — when each (workspace, class) enumeration last
+// attempted and last SUCCEEDED (#5213, ADR-0041).
+//
+// Separate from the roster because it survives the failure the roster cannot
+// express: a failed cycle leaves every snapshot row untouched and moves only
+// `lastAttemptAt` + `lastError`, which is what lets the page say "enumeration
+// unavailable since <date>" instead of rendering a zeroed roster. A per-row
+// flag could not carry it — the units are exactly the ones nobody could
+// re-observe, and a class whose enumeration returned nothing has no row at all.
+export const brainCoverageCycle = pgTable(
+  "brain_coverage_cycle",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    sourceClass: text("source_class").notNull(),
+    // Always moved. The pair distinguishes "nobody has looked lately" from
+    // "something has been failing since <date>".
+    lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }).notNull(),
+    // NULL until the first success — distinguishable from an old date, which is
+    // what stops the page reading a never-enumerated workspace as "zero units".
+    lastSuccessAt: timestamp("last_success_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    // ADR-0041's MAP EDGE, as marks rather than numbers: arms of the last
+    // SUCCESSFUL enumeration that could not be performed. Empty is the ordinary
+    // case and is not the same as a failed cycle.
+    degradedArms: text("degraded_arms").array().notNull().default(sql`'{}'`),
+  },
+  (t) => [
+    primaryKey({ columns: [t.workspaceId, t.sourceClass] }),
+    check(
+      "ck_brain_coverage_cycle_class",
+      sql`source_class IN ('chat', 'transcript', 'email', 'warehouse')`,
+    ),
+    // An error with no message is a red dot an admin cannot act on.
+    check("ck_brain_coverage_cycle_error_present", sql`last_error IS NULL OR last_error <> ''`),
+    // A NULL or empty element reads as an arm matching nothing, silently
+    // dropping one map edge from the mark set.
+    check("ck_brain_coverage_cycle_arms_no_null", sql`array_position(degraded_arms, NULL) IS NULL`),
+    check("ck_brain_coverage_cycle_arms_present", sql`array_position(degraded_arms, '') IS NULL`),
+  ],
+);

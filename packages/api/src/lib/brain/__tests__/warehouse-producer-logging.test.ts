@@ -95,7 +95,10 @@ void mock.module("@atlas/api/lib/logger", () => {
 });
 
 type ProducerModule = typeof import("@atlas/api/lib/brain/warehouse-producer");
-type SnapshotSqlVerdict = import("@atlas/api/lib/brain/warehouse-producer").SnapshotSqlVerdict;
+type WarehouseSnapshotRequest =
+  import("@atlas/api/lib/brain/warehouse-producer").WarehouseSnapshotRequest;
+type ValidatedSnapshotRequest =
+  import("@atlas/api/lib/brain/warehouse-producer").ValidatedSnapshotRequest;
 type ReconcileModule = typeof import("@atlas/api/lib/brain/reconcile");
 
 let producer: ProducerModule;
@@ -157,8 +160,16 @@ function deps(over: Partial<Parameters<ProducerModule["runWarehouseProducer"]>[1
       has: () => true,
     }),
     loadEntity: async () => ACCOUNTS_YAML,
-    // Cast because the passing verdict is branded — see the unit suite's note.
-    validateSnapshotSql: async () => ({ valid: true }) as SnapshotSqlVerdict,
+    // Cast because the passing verdict carries a branded request — see the unit
+    // suite's note. It brands the request it was HANDED: a fresh object would trip
+    // the run loop's anti-replay identity check (#5230).
+    // `true as const`, because this literal is NOT contextually typed — `deps()`
+    // has no return annotation, so a bare `true` widens to `boolean` and the whole
+    // object stops satisfying the seam.
+    validateSnapshotSql: async (request: WarehouseSnapshotRequest) => ({
+      valid: true as const,
+      request: request as ValidatedSnapshotRequest,
+    }),
     runSnapshot: async () => [
       { [producer.SUBJECT_ALIAS]: "Acme Corp", [`${producer.DIMENSION_ALIAS_PREFIX}0`]: "active" },
     ],

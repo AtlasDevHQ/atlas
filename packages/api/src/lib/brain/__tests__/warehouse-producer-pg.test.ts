@@ -40,7 +40,7 @@ import {
   WAREHOUSE_PRODUCER,
   runWarehouseProducer,
   warehouseRowId,
-  type SnapshotSqlVerdict,
+  type ValidatedSnapshotRequest,
   type WarehouseProducerDeps,
 } from "@atlas/api/lib/brain/warehouse-producer";
 
@@ -146,10 +146,16 @@ describeIfPg("warehouse producer (real Postgres)", () => {
       // The SQL gate is workspace-whitelist-scoped and this schema has no
       // whitelist, so it is stubbed here and driven for real in the unit suite
       // (`what it builds is never rejected for its FORM`).
-      // The cast is required: `SnapshotSqlVerdict`'s passing arm is branded so an
-      // object literal cannot assert the gate passed, which makes every bypass in
-      // the tree greppable as `as SnapshotSqlVerdict`.
-      validateSnapshotSql: async () => ({ valid: true }) as SnapshotSqlVerdict,
+      // The cast is required: the passing verdict carries a branded
+      // `ValidatedSnapshotRequest`, so an object literal cannot assert the gate
+      // passed, which makes every bypass in the tree greppable.
+      //
+      // It brands the request it was HANDED — a freshly built one would be refused
+      // by the run loop's anti-replay identity check (#5230).
+      validateSnapshotSql: async (request) => ({
+        valid: true,
+        request: request as ValidatedSnapshotRequest,
+      }),
       runSnapshot: async () => rows,
       now: () => snapshotAt,
     };

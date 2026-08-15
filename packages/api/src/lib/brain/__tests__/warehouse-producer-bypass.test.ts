@@ -1,5 +1,5 @@
 /**
- * The `SnapshotSqlVerdict` bypass set (#5042).
+ * The SQL-gate bypass set (#5042, re-pointed at #5230's spelling).
  *
  * ## WHY THIS FILE EXISTS
  *
@@ -9,6 +9,17 @@
  * `{ valid: boolean }` left — but the brand's own docstring then makes a claim the
  * TYPE cannot keep: that grepping for the cast is the whole list of places the gate
  * is bypassed. A cast is greppable; nothing fails when a fifth one appears.
+ *
+ * ## TWO names, because #5230 moved the brand onto the REQUEST
+ *
+ * The passing verdict now carries the request it validated, and that request is
+ * what is branded — which is how replay (a cached token for some other statement)
+ * and ordering (a runner reachable with an unvalidated request) got closed. So a
+ * bypass can be spelled two ways: an assertion naming the branded request type, or
+ * one naming the verdict union — the two differ only by the brand, which makes them
+ * comparable, so a whole-verdict assertion compiles just as well. {@link BYPASS_RE}
+ * matches both; matching only the first would have re-opened this guard on the
+ * exact spelling the previous version pinned.
  *
  * ⚠️ **The pattern is not written out in this file's prose, and that is the point
  * rather than fastidiousness.** A lexical guard cannot tell a quotation from an
@@ -44,6 +55,12 @@
  * `any`-typed wiring — `JSON.parse`, an untyped mock, a dynamic `import()`. This
  * file pins the half a grep can hold; the rest is stated in the type's docstring
  * rather than claimed away.
+ *
+ * It also does not pin the ANTI-REPLAY half. A mint listed below hands back a token
+ * for the request it was given; a mint that hands back a token for some OTHER
+ * request is a source-identical line this scan cannot tell apart, and it is the run
+ * loop's identity check that refuses it. `warehouse-producer.test.ts` drives that
+ * refusal.
  *
  * A source-text test, and it says so: it proves what the tree CONTAINS, never what
  * runs.
@@ -100,8 +117,15 @@ const KNOWN_BYPASSES: readonly { file: string; why: string }[] = [
  * position rather than spanning statements. The regex is also the canonical
  * spelling of the pattern: writing it out in prose would put this file into its own
  * result set, which is why the header describes it instead.
+ *
+ * ⚠️ **TWO alternatives, both required (#5230).** The brand moved onto the request,
+ * so a mint ordinarily names the branded request type — but the verdict union is
+ * *comparable* to an object literal carrying an unvalidated request, so asserting
+ * the union is an equally compiling second door. Dropping the second alternative
+ * would leave this guard reporting a smaller set than the tree contains, which is
+ * the silent-empty failure the note above is about, one name over.
  */
-const BYPASS_RE = /\bas\b[^;=\n]*\bSnapshotSqlVerdict\b/;
+const BYPASS_RE = /\bas\b[^;=\n]*\b(?:ValidatedSnapshotRequest|SnapshotSqlVerdict)\b/;
 
 function* walk(dir: string): Generator<string> {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -115,7 +139,7 @@ function* walk(dir: string): Generator<string> {
   }
 }
 
-describe("the SnapshotSqlVerdict bypass set (#5042)", () => {
+describe("the SQL-gate bypass set (#5042, #5230)", () => {
   test("exactly the known sites assert a passing SQL verdict", () => {
     const found: string[] = [];
     for (const file of walk(SRC_ROOT)) {
@@ -138,14 +162,22 @@ describe("the SnapshotSqlVerdict bypass set (#5042)", () => {
     // above passes by finding nothing — the shape a guard test fails in silently.
     // ASSEMBLED, never written whole — see the header. A literal here would put this
     // file back in its own result set.
-    const planted = `const v = ({ valid: true }) as Snapshot${"SqlVerdict"};`;
+    const planted = `const v = ({ valid: true, request: r }) as Snapshot${"SqlVerdict"};`;
     expect(BYPASS_RE.test(planted)).toBe(true);
     // The QUALIFIED spelling, which the first version of this matcher missed — a
     // file that has not imported the type writes it this way.
     const qualified = `const v = x as import("./warehouse-producer").Snapshot${"SqlVerdict"};`;
     expect(BYPASS_RE.test(qualified)).toBe(true);
-    // And a negative control, so the matcher is not simply true of everything:
-    // naming the TYPE is not asserting a pass.
+    // #5230's spelling — the one the four sites below actually use. Without this
+    // arm the matcher could lose the request alternative entirely and every
+    // assertion here would still pass on the verdict one.
+    const branded = `const v = { valid: true, request: r as Validated${"SnapshotRequest"} };`;
+    expect(BYPASS_RE.test(branded)).toBe(true);
+    const brandedQualified = `const v = r as import("./warehouse-producer").Validated${"SnapshotRequest"};`;
+    expect(BYPASS_RE.test(brandedQualified)).toBe(true);
+    // And negative controls, so the matcher is not simply true of everything:
+    // naming a TYPE is not asserting a pass.
     expect(BYPASS_RE.test(`let v: Snapshot${"SqlVerdict"};`)).toBe(false);
+    expect(BYPASS_RE.test(`let r: Validated${"SnapshotRequest"};`)).toBe(false);
   });
 });

@@ -1,5 +1,5 @@
 ---
-description: "Start a milestone — create issues from ROADMAP line items, label, assign. PRD-anchored milestones go through /to-issues first."
+description: "Start a milestone — create issues from ROADMAP line items, label, assign. PRD-anchored milestones go through /to-tickets first."
 ---
 
 # Milestone Kickoff
@@ -10,9 +10,9 @@ Spin up a new milestone: create GitHub issues from planned work, label them, and
 
 **Two entry paths:**
 1. **ROADMAP-driven** (this command) — the milestone's line items already exist in `.claude/research/ROADMAP.md`. `/kickoff` reads them and creates one issue per line item.
-2. **PRD-driven** — the milestone is anchored on a PRD issue (the 1.4.x / 1.5.x pattern: PRD #2336 → #2338–#2347, PRD #2362 → #2363–#2369). For this path, use **`/to-issues`** against the PRD issue. It produces tracer-bullet vertical slices that follow the Atlas issue body format (`## Key files / ## Acceptance criteria / ## Dependencies` — see `docs/agents/issue-tracker.md`). Then come back here to assign milestones and update ROADMAP.
+2. **PRD-driven** — the milestone is anchored on a PRD issue (the 1.4.x / 1.5.x pattern: PRD #2336 → #2338–#2347, PRD #2362 → #2363–#2369). For this path, use **`/to-tickets`** against the PRD issue. It produces tracer-bullet vertical slices that follow the Atlas issue body format (`## Key files / ## Acceptance criteria / ## Dependencies` — see `docs/agents/issue-tracker.md`). Then come back here to assign milestones and update ROADMAP.
 
-If the planned work is a mix, use both — `/to-issues` for the PRD-derived items, then `/kickoff` for any standalone ROADMAP line items.
+If the planned work is a mix, use both — `/to-tickets` for the PRD-derived items, then `/kickoff` for any standalone ROADMAP line items.
 
 ---
 

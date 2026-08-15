@@ -21,7 +21,7 @@ Atlas issues carry labels on **two orthogonal axes**:
 | Axis | Labels | Set by |
 | --- | --- | --- |
 | **State** (where in the triage funnel) | `needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix` | `/triage` (Matt Pocock) |
-| **Kind + location** (what kind of work, what part of the codebase) | `bug` / `feature` / `refactor` / `chore` / `docs` + `area: *` + optional `architecture` / `security` / `design` | `/next`, `/investigate`, `/kickoff`, `/tidy`, `/to-issues` (Atlas + Matt Pocock) |
+| **Kind + location** (what kind of work, what part of the codebase) | `bug` / `feature` / `refactor` / `chore` / `docs` + `area: *` + optional `architecture` / `security` / `design` | `/next`, `/investigate`, `/kickoff`, `/tidy`, `/to-tickets` (Atlas + Matt Pocock) |
 
 **Both axes apply to every issue.** A community-filed issue starts as `bug, area: api, needs-triage`. After triage, it becomes `bug, area: api, ready-for-agent`. The triage-state label changes; the kind/area labels stay.
 

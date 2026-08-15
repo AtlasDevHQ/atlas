@@ -8,7 +8,7 @@ L2 — the milestone loop. Grind an entire milestone of `ready-for-agent` issues
 
 **You type:** `/ship-milestone "0.0.5 — REST Datasources"`
 
-**Prereq:** the milestone is already broken into issues (via `/kickoff` or `/to-issues`) and they're labeled `ready-for-agent`. This command does NOT plan — it executes. Run it on YOUR OWN issues only; never on a milestone containing fork contributions.
+**Prereq:** the milestone is already broken into issues (via `/kickoff` or `/to-tickets`) and they're labeled `ready-for-agent`. This command does NOT plan — it executes. Run it on YOUR OWN issues only; never on a milestone containing fork contributions.
 
 ---
 

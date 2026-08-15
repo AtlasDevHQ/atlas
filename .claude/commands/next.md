@@ -110,11 +110,11 @@ IMPORTANT — Incidental findings:
 - Keep your current work focused — the issue ensures the finding isn't lost
 
 IMPORTANT — Picking the right craft loop:
-- **Bug fixes** — start with `/diagnose` (reproduce → minimise → hypothesise → instrument → fix → regression-test). Don't write `/tdd` tests against a bug you haven't isolated; you'll lock in the wrong behaviour. Once `/diagnose` produces a fix, use `/tdd` to add the regression test.
+- **Bug fixes** — start with `/diagnosing-bugs` (reproduce → minimise → hypothesise → instrument → fix → regression-test). Don't write `/tdd` tests against a bug you haven't isolated; you'll lock in the wrong behaviour. Once `/diagnosing-bugs` produces a fix, use `/tdd` to add the regression test.
 - **Features (clear shape)** — go straight to `/tdd` (red-green-refactor, one vertical slice at a time)
 - **Features (uncertain design)** — `/prototype` first (throwaway terminal app for state/business-logic; or 3 UI variations toggleable from one route), then `/tdd` once the shape settles
 - **Domain-heavy work** — `/grill-with-docs` first to sharpen `CONTEXT.md` and ADRs (when those exist) before designing
-- **Unfamiliar package** — `/zoom-out` for higher-level perspective before diving in
+- **Unfamiliar package** — `/wayfinder` for higher-level perspective before diving in
 - Use `--affected` mode to keep the red→green loop under a minute; reserve the full suite for the pre-PR gate
 - Skip `/tdd` for docs-only, chore, or trivial config changes
 - See `docs/agents/workflow.md` for the full Atlas-commands × engineering-skills map

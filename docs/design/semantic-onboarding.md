@@ -147,7 +147,7 @@ Today the generator runs in two places and enrichment in a third (CLI-only). Con
 - **Preview step.** The wizard's existing `/preview` ("preview agent behavior with generated entities") is retained as the "see it work before you save" beat; its exact placement relative to enrichment (preview baseline vs preview enriched) is a UI detail.
 - **REST datasources.** This doc is about SQL Datasources and their entity YAMLs. REST datasources (`openapi-generic`) have their own representation; not covered here.
 
-## Build sequence (for `/to-issues`)
+## Build sequence (for `/to-tickets`)
 
 Tracer-bullet slices, roughly in dependency order:
 

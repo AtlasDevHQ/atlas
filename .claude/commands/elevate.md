@@ -12,7 +12,7 @@ Run the audit phase of a **feature elevation cycle**: a shipped surface works, b
 - The chat turn-presentation cycle — full chat-page audit → CONTEXT.md § *Chat turn presentation* glossary → PRD #4292 → milestone `v0.0.43 — The Analyst Voice`.
 - The dashboard elevation — `.claude/research/dashboard-audit-2026-07-04.md` ("prep for a `/grill-with-docs` session") → CONTEXT.md § *Dashboard editing* vocabulary.
 
-**Where it sits:** Phase 1 ("Notice") of `docs/agents/workflow.md`, feeding `/grill-with-docs` → `/to-prd` → `/to-issues` → milestone. `/elevate` never writes the PRD itself.
+**Where it sits:** Phase 1 ("Notice") of `docs/agents/workflow.md`, feeding `/grill-with-docs` → `/to-spec` → `/to-tickets` → milestone. `/elevate` never writes the PRD itself.
 
 ---
 
@@ -62,7 +62,7 @@ Most findings stay in the doc. File a GitHub issue immediately **only** when BOT
 
 Worked boundary (from the dashboard audit): a cookieless SSR fetch 403-ing every org-share viewer, or a validation error silently downgrading an org share to public — **file** (the fix is the fix, grill or no grill). Agent-built dashboards rendering an empty canvas — **doc only**: plainly broken, but the fix is entangled with the draft-model design the grill exists to settle; filing it standalone would pre-decide the design.
 
-File per `/investigate` conventions (type + area labels, milestone, Atlas body format), and list the filed issues in the findings doc — a dedicated **"Filed this run"** list in the header, each with issue number, link, and the finding it came from — so the grill still sees the complete picture **and** the downstream `/to-issues` pass can fold them in: when the elevation's PRD is sliced, every issue filed here gets attached as a **sub-issue of the PRD** alongside the slices (they're part of the elevation's delivery even though their fixes proceed independently, and any slice that assumes one merged first names it in "Blocked by"). Fix nothing — `/elevate` mutates no product code.
+File per `/investigate` conventions (type + area labels, milestone, Atlas body format), and list the filed issues in the findings doc — a dedicated **"Filed this run"** list in the header, each with issue number, link, and the finding it came from — so the grill still sees the complete picture **and** the downstream `/to-tickets` pass can fold them in: when the elevation's PRD is sliced, every issue filed here gets attached as a **sub-issue of the PRD** alongside the slices (they're part of the elevation's delivery even though their fixes proceed independently, and any slice that assumes one merged first names it in "Blocked by"). Fix nothing — `/elevate` mutates no product code.
 
 ## Step 5 — Write the findings doc
 
@@ -76,14 +76,14 @@ File per `/investigate` conventions (type + area labels, milestone, Atlas body f
 
 ## Step 6 — Report
 
-Summarize to the user: verdict in one line, finding counts by severity, issues filed (with links), the grill agenda, and the handoff. Do **not** start the grill, write a PRD, or create a milestone — those are the user's moves, made through `/grill-with-docs` → `/to-prd` → `/to-issues` per `docs/agents/workflow.md`.
+Summarize to the user: verdict in one line, finding counts by severity, issues filed (with links), the grill agenda, and the handoff. Do **not** start the grill, write a PRD, or create a milestone — those are the user's moves, made through `/grill-with-docs` → `/to-spec` → `/to-tickets` per `docs/agents/workflow.md`.
 
 ---
 
 ## What NOT to do
 
 - Don't fix findings (beyond Step 4's filing) — this is a read-only briefing pass.
-- Don't pre-slice findings into issues; `/to-issues` will cut different slices than the audit found.
+- Don't pre-slice findings into issues; `/to-tickets` will cut different slices than the audit found.
 - Don't pin new domain vocabulary in `CONTEXT.md` from here — vocabulary gets pinned *in the grill*, where the user is present.
 - Don't run `/elevate` on a surface with an active elevation PRD in flight — read the PRD and `/investigate` gaps against it instead.
 - Don't inflate the doc: a finding without an anchor, or a severity without a failure scenario, gets cut in Step 3.

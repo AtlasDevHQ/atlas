@@ -49,7 +49,7 @@ Run `gh issue view <number> -R AtlasDevHQ/atlas --comments`.
 
 For bugs / investigations, optionally add a `## Findings` section between the description and `## Key files`. For PRDs, add `## Scope`, `## Out of scope`, `## Open questions` after `## Acceptance criteria`.
 
-**This format is load-bearing.** `/tidy`, `/closeout`, and `/next` all parse it. Skills that create issues from other formats (e.g. `/to-issues` "tracer-bullet vertical slices") **must adapt their output to this structure** — keep the vertical-slice mindset, but render it as `## Key files` + `## Acceptance criteria`. Don't invent new section headers.
+**This format is load-bearing.** `/tidy`, `/closeout`, and `/next` all parse it. Skills that create issues from other formats (e.g. `/to-tickets` "tracer-bullet vertical slices") **must adapt their output to this structure** — keep the vertical-slice mindset, but render it as `## Key files` + `## Acceptance criteria`. Don't invent new section headers.
 
 ## Required labels (two dimensions, both required)
 

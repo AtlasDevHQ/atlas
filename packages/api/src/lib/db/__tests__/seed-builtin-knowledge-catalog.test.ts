@@ -19,6 +19,8 @@
  */
 
 import { afterEach, describe, expect, it, mock } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   seedBuiltinKnowledgeCatalog,
   BUILTIN_KNOWLEDGE_CATALOG_ROW,
@@ -32,9 +34,16 @@ import {
   BUILTIN_FRONT_CATALOG_ROW,
   BUILTIN_HELPSCOUT_CATALOG_ROW,
   BUILTIN_FRESHDESK_CATALOG_ROW,
+  BUILTIN_ZOOM_TRANSCRIPTS_CATALOG_ROW,
+  BUILTIN_OUTLOOK_MAIL_CATALOG_ROW,
   BUILTIN_KNOWLEDGE_CATALOG_ROWS,
   type BuiltinKnowledgeCatalogSeedDb,
 } from "@atlas/api/lib/db/seed-builtin-knowledge-catalog";
+import {
+  RENAME_PAIRS,
+  sqlLiteral,
+  stripSqlComments,
+} from "@atlas/api/lib/db/__tests__/brain-catalog-rename-fixtures";
 
 interface CapturedQuery {
   sql: string;
@@ -298,6 +307,224 @@ describe("BUILTIN_FRESHDESK_CATALOG_ROW (#4401)", () => {
     expect(row.configSchema.filter((f) => f.secret === true).map((f) => f.key)).toEqual(["api_key"]);
     expect(row.configSchema.find((f) => f.key === "api_key")?.required).toBe(true);
     expect(row.configSchema.find((f) => f.key === "subdomain")?.required).toBe(true);
+  });
+});
+
+/**
+ * #5082 — the constant/migration agreement pin for the two Company Atlas
+ * ingest rows.
+ *
+ * The seeder is insert-only (`ON CONFLICT DO NOTHING`), so the constants above
+ * describe only the shape a row is BORN with. Renaming a row that already
+ * exists in a region takes migration
+ * `0201_brain_catalog_rows_company_atlas.sql`, and the failure mode this pin
+ * exists to catch is silent: edit the constant, forget the migration, and new
+ * installs diverge from every existing region with nothing reporting it.
+ *
+ * The pin reads the migration OFF DISK and compares it to the constants — the
+ * two are never hand-written to agree here. The pre-rename strings come from
+ * `brain-catalog-rename-fixtures.ts`, which is the ONE derivation in the tree
+ * and is shared with `brain-catalog-rename-pg.test.ts` so the pin and the
+ * behavioural fixture can never drift apart.
+ *
+ * ⚠️ WHAT THIS BLOCK CANNOT SEE: direction. It asserts that both the old and
+ * the new literals appear in the file, so a migration with `WHEN`/`THEN`
+ * swapped — renaming Atlas back to Brain — contains both and passes every
+ * assertion here. `brain-catalog-rename-pg.test.ts` owns direction, by running
+ * the statements.
+ *
+ * The derivation is specific to migration 0201: a FUTURE rename must add its
+ * own migration and re-point this block at it, and the failure it causes here
+ * is the intended alarm, not collateral damage.
+ */
+describe("Company Atlas ingest rows ↔ migration 0201 (#5082, ADR-0038)", () => {
+  const MIGRATION_FILE = readFileSync(
+    join(import.meta.dir, "..", "migrations", "0201_brain_catalog_rows_company_atlas.sql"),
+    "utf8",
+  );
+
+  /**
+   * The migration with its `--` comments removed.
+   *
+   * Every assertion below is `toContain` over text, and 0201 carries a long
+   * prose header discussing the strings it rewrites. Asserting against the raw
+   * file would let a header comment satisfy the pin over broken or absent SQL —
+   * and would red the "no other catalog id" check the moment a comment
+   * legitimately names one. Strip the prose; assert on the statements.
+   *
+   * Shared with `assertPinnedToMigration` rather than reimplemented, because
+   * this exact stripping already drifted once: it was added here and NOT to
+   * the guard in the fixtures module, which is the same loophole one file over.
+   */
+  const MIGRATION_SQL = stripSqlComments(MIGRATION_FILE);
+
+  for (const { label, row, oldName, oldDescription } of RENAME_PAIRS) {
+    describe(label, () => {
+      it("writes exactly the constant's name and description", () => {
+        // The NEW half. If the constant is edited without the migration, these
+        // literals are absent from the SQL and this fails — which is the whole
+        // point of the pin. `sqlLiteral` doubles any apostrophe, so a copy
+        // string that gains one does not read as a migration typo.
+        expect(MIGRATION_SQL).toContain(sqlLiteral(row.name));
+        expect(MIGRATION_SQL).toContain(sqlLiteral(row.description));
+      });
+
+      it("matches on the pre-rename strings, so a hand-edited row is left alone", () => {
+        // The OLD half — what the three prod regions actually hold. Derived,
+        // not transcribed. The two `not.toBe`s are what stop a future rename
+        // from making the derivation the identity and this pin vacuous.
+        expect(oldName).not.toBe(row.name);
+        expect(oldDescription).not.toBe(row.description);
+        expect(MIGRATION_SQL).toContain(sqlLiteral(oldName));
+        expect(MIGRATION_SQL).toContain(sqlLiteral(oldDescription));
+      });
+
+      it("is keyed on the stable catalog id", () => {
+        expect(MIGRATION_SQL).toContain(`WHERE id = ${sqlLiteral(row.id)}`);
+      });
+
+      it("no longer says 'Company Brain' or 'company brain' in the constant", () => {
+        // ADR-0038 governs product copy, and both of these are customer-read
+        // strings on `/admin/knowledge`.
+        expect(row.name).not.toContain("Company Brain");
+        expect(row.description).not.toContain("company brain");
+        expect(row.description).not.toContain("Company Brain");
+      });
+    });
+  }
+
+  it("touches exactly the two Company Atlas rows and no other catalog id", () => {
+    // Negative: a WHERE clause that reached another built-in row would rewrite
+    // a vendor connector's copy. Every `WHERE id =` in the statements must name
+    // one of the two.
+    //
+    // A SET, not a list — each row is now referenced three times per statement
+    // block (the eligibility pre-count, the UPDATE, and the residue check), and
+    // pinning the COUNT would make this test about the breadcrumb's internal
+    // shape rather than about which rows the migration can reach.
+    //
+    // This proves WHICH ids are targeted, not what is done to them — the
+    // statement-kind assertion below covers that, and the per-row foreign-id
+    // decoys in `brain-catalog-rename-pg.test.ts` cover scoping behaviourally,
+    // which is the only place a widened `WHERE … OR name = …` is visible.
+    const targeted = new Set(
+      [...MIGRATION_SQL.matchAll(/WHERE id = '([^']+)'/g)].map((m) => m[1]),
+    );
+    expect([...targeted].sort()).toEqual(
+      [BUILTIN_OUTLOOK_MAIL_CATALOG_ROW.id, BUILTIN_ZOOM_TRANSCRIPTS_CATALOG_ROW.id].sort(),
+    );
+  });
+
+  it("writes plugin_catalog with exactly two UPDATEs and nothing destructive", () => {
+    // The id list above is satisfied just as well by
+    // `DELETE FROM plugin_catalog WHERE id = 'catalog:zoom-transcripts'`, which
+    // would drop the row and cascade its installs. Pin the statement KIND too.
+    //
+    // Matched on word boundaries rather than a whole line, so reflowing the SQL
+    // (`UPDATE plugin_catalog SET` on one line) does not red a test whose
+    // subject is statement kind rather than formatting.
+    expect(MIGRATION_SQL.match(/\bUPDATE\s+plugin_catalog\b/gi)).toHaveLength(2);
+    // Case-insensitive and word-bounded, and scoped to the verb ACTING ON this
+    // table — the migration's `RAISE NOTICE` prose lives inside the statements
+    // now, so a blanket keyword scan over the whole text would red on an
+    // innocuous message that happened to contain one of these words.
+    for (const verb of ["DELETE\\s+FROM", "INSERT\\s+INTO", "ALTER\\s+TABLE", "TRUNCATE", "DROP"]) {
+      expect(MIGRATION_SQL).not.toMatch(new RegExp(`\\b${verb}\\s+(?:\\w+\\.)?plugin_catalog\\b`, "i"));
+    }
+  });
+
+  it("leaves every OTHER built-in row's copy out of the migration entirely", () => {
+    for (const other of BUILTIN_KNOWLEDGE_CATALOG_ROWS) {
+      if (
+        other.id === BUILTIN_ZOOM_TRANSCRIPTS_CATALOG_ROW.id ||
+        other.id === BUILTIN_OUTLOOK_MAIL_CATALOG_ROW.id
+      ) {
+        continue;
+      }
+      expect(MIGRATION_SQL).not.toContain(other.id);
+      expect(MIGRATION_SQL).not.toContain(sqlLiteral(other.name));
+    }
+  });
+});
+
+/**
+ * #5082 — the COPY LOCK, and the reason it is not scoped to the two rows above.
+ *
+ * The rule #5082 writes into CONTEXT.md is general: *changing a field on a
+ * built-in catalog row that regions already hold takes a migration*, because
+ * `ON CONFLICT DO NOTHING` means a constant edit renames nothing that exists.
+ * That rule applied to all fourteen rows all along; only two of them had the
+ * defect noticed. Every per-row `describe` above asserts `slug`/`id`/
+ * `installModel`/`configSchema` and none of them asserted `name` or
+ * `description` — so today someone can edit any other row's copy, ship it, and
+ * fork the label across three regions with no signal at all.
+ *
+ * Pinning only Zoom and Outlook would fix the two instances and leave the
+ * class open, so this snapshot covers the whole list. Editing any row's copy
+ * reds CI and forces the author to choose: write the migration, or bump this
+ * snapshot deliberately because the row is not yet in any region.
+ *
+ * ⚠️ THIS IS NOT A "DON'T CHANGE COPY" GATE. Bumping it is fine and expected —
+ * what it removes is doing so *without noticing*.
+ */
+describe("built-in catalog copy lock (#5082)", () => {
+  it("pins the frozen fields for EVERY built-in row", () => {
+    // ⚠️ ALL FOURTEEN ROWS ARE LITERALS, INCLUDING ZOOM AND OUTLOOK. An earlier
+    // draft interpolated those two from the very constants the left-hand side
+    // maps over, which made exactly the two rows this issue is about compare to
+    // themselves. Measured: renaming the Zoom constant AND retro-editing 0201
+    // to match passed the whole suite — #5082's defect verbatim, since regions
+    // that already applied 0201 keep the old string and no new migration
+    //
+    // Fields: `name`/`description` are the customer-read copy; `saasEligible`
+    // and `autoInstall` are frozen by the same `ON CONFLICT DO NOTHING` and
+    // flipping either on an existing row diverges three regions just as
+    // silently. An object array rather than a joined string, so the failure
+    // diff names the field that moved.
+    const frozen = BUILTIN_KNOWLEDGE_CATALOG_ROWS.map((r) => ({
+      id: r.id,
+      name: r.name,
+      description: r.description,
+      saasEligible: r.saasEligible,
+      autoInstall: r.autoInstall,
+    }));
+    expect(frozen).toEqual([
+      {"id":"catalog:okf-upload","name":"Knowledge Base (Upload)","description":"Upload an Open Knowledge Format bundle as a review-gated knowledge collection.","saasEligible":true,"autoInstall":false},
+      {"id":"catalog:bundle-sync","name":"Knowledge Base (Bundle Sync)","description":"Point a knowledge collection at an endpoint serving your bundle (tarball/zip, incl. git-forge archive URLs); Atlas pulls it on a schedule and queues changes for review.","saasEligible":true,"autoInstall":false},
+      {"id":"catalog:notion-knowledge","name":"Knowledge Base (Notion)","description":"Connect a Notion workspace with an internal-integration token; the pages you share with the integration sync as review-gated knowledge documents. Share a parent page to include its whole subtree.","saasEligible":true,"autoInstall":false},
+      {"id":"catalog:confluence","name":"Knowledge Base (Confluence Cloud)","description":"Mirror a Confluence Cloud space into a review-gated knowledge collection; Atlas syncs pages on a schedule (incremental + reconciliation) and queues changes for review.","saasEligible":true,"autoInstall":false},
+      {"id":"catalog:confluence-datacenter","name":"Knowledge Base (Confluence Data Center)","description":"Mirror a self-managed Confluence Data Center/Server space into a review-gated knowledge collection; Atlas syncs pages on a schedule (incremental + reconciliation) and queues changes for review.","saasEligible":true,"autoInstall":false},
+      {"id":"catalog:gitbook","name":"Knowledge Base (GitBook)","description":"Mirror a GitBook Cloud space into a review-gated knowledge collection; Atlas syncs pages on a schedule (incremental + reconciliation) and queues changes for review.","saasEligible":true,"autoInstall":false},
+      {"id":"catalog:zendesk","name":"Knowledge Base (Zendesk Guide)","description":"Mirror your Zendesk Guide help center into review-gated knowledge collections (one per brand); Atlas syncs published articles on a schedule (incremental + reconciliation) and queues changes for review.","saasEligible":true,"autoInstall":false},
+      {"id":"catalog:salesforce-knowledge","name":"Knowledge Base (Salesforce Knowledge)","description":"Mirror your Salesforce Knowledge articles into a review-gated knowledge collection using the workspace's existing Salesforce connection — no extra credentials; Atlas syncs published articles on a schedule (incremental + reconciliation) and queues changes for review.","saasEligible":true,"autoInstall":false},
+      {"id":"catalog:intercom","name":"Knowledge Base (Intercom)","description":"Mirror your Intercom help center's published articles (all locales) into a review-gated knowledge collection; Atlas syncs on a schedule and queues changes for review.","saasEligible":true,"autoInstall":false},
+      {"id":"catalog:front","name":"Knowledge Base (Front)","description":"Mirror your Front knowledge bases into review-gated knowledge collections (one per knowledge base); Atlas syncs published articles and their locale translations on a schedule and queues changes for review.","saasEligible":true,"autoInstall":false},
+      {"id":"catalog:helpscout","name":"Knowledge Base (Help Scout Docs)","description":"Mirror your Help Scout Docs help center into review-gated knowledge collections (one per site); Atlas syncs published articles on a schedule (incremental + reconciliation) and queues changes for review.","saasEligible":true,"autoInstall":false},
+      {"id":"catalog:freshdesk","name":"Knowledge Base (Freshdesk Solutions)","description":"Mirror your Freshdesk Solutions help center into review-gated knowledge collections (one per category); Atlas syncs published articles and their language translations on a schedule and queues changes for review.","saasEligible":true,"autoInstall":false},
+      {"id":"catalog:zoom-transcripts","name":"Company Atlas (Zoom transcripts)","description":"Read cloud-recording transcripts from Zoom into the Company Atlas as immutable, deduped episodes. Each meeting is granted only to the people who attended it — a meeting whose participant list cannot be read is skipped rather than ingested. Episodes are raw evidence; the claims drawn from them go through review before anything becomes an authoritative fact.","saasEligible":true,"autoInstall":false},
+      {"id":"catalog:outlook-mail","name":"Company Atlas (Outlook mail)","description":"Read selected Outlook mailboxes into the Company Atlas as immutable, deduped episodes. Each message is granted only to the people named in its From, To and Cc headers — blind-copied and forwarded-to recipients are deliberately NOT granted, so access is a lower bound on who saw the mail rather than a guess. Episodes are raw evidence; the claims drawn from them go through review before anything becomes an authoritative fact.","saasEligible":true,"autoInstall":false},
+    ]);
+  });
+
+  it("records the config_schema copy that still reads 'brain source' as a KNOWN exemption", () => {
+    // #5082's own sibling, one field over in the SAME object literal — the
+    // shape the repo keeps paying for. `config_schema` is seeded as JSONB under
+    // the identical `ON CONFLICT DO NOTHING`, and this string is rendered as
+    // helper text on the install form, so it is a STORED, CUSTOMER-READ string
+    // that still says "brain". It is deliberately NOT renamed here: rewriting a
+    // string inside a JSONB array needs a different and much less safe
+    // statement than the two guarded column UPDATEs 0201 is, and that belongs
+    // in its own change — #5240. CONTEXT.md records it as an exemption rather
+    // than claiming no stored string is left.
+    //
+    // This assertion exists so the next editor of that field gets a signal
+    // instead of walking into #5082's failure mode a second time.
+    for (const row of [BUILTIN_ZOOM_TRANSCRIPTS_CATALOG_ROW, BUILTIN_OUTLOOK_MAIL_CATALOG_ROW]) {
+      const descriptionField = row.configSchema.find((f) => f.key === "description");
+      expect(descriptionField?.description).toBe(
+        "Optional. A human description of this brain source.",
+      );
+    }
   });
 });
 

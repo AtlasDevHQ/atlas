@@ -344,15 +344,96 @@ const RECORD_FAILURE_SQL = `INSERT INTO brain_coverage_cycle
  * failure into an invisible one through the machinery meant to guarantee every
  * red dot carries a message.
  */
-function storableErrorText(raw: string): string {
+export function storableErrorText(raw: string): StorableErrorText {
   // `errorMessage` scrubs secrets and bounds the length; it does NOT strip
   // NUL, so that is done here — written as an ESCAPE, never as a literal
   // byte. A literal NUL in a source file is itself unsendable to Postgres,
   // which this branch found the hard way in migration 0202's first draft.
   const scrubbed = errorMessage(raw).replaceAll("\u0000", "").trim();
-  return scrubbed === ""
-    ? "The enumeration failed without reporting a reason — check the coverage-snapshot logs for this workspace and class."
-    : scrubbed;
+  // THE seam, and the only cast to this brand in the tree. Sound here and only
+  // here: both rules above have been applied to the value being returned.
+  return (
+    scrubbed === ""
+      ? "The enumeration failed without reporting a reason — check the coverage-snapshot logs for this workspace and class."
+      : scrubbed
+  ) as StorableErrorText;
+}
+
+declare const storableErrorTextBrand: unique symbol;
+
+/**
+ * Error text that has been through {@link storableErrorText} — the ONLY shape
+ * the two `last_error` writers below will bind.
+ *
+ * ⚠️ **A brand, on the OUTPUT rather than on a parameter, for #5230's reason.**
+ * `storableErrorText` was `(raw: string) => string`, so nothing at the type
+ * level said the two writers had to route through it: `internalQuery`'s bind
+ * array is `unknown[]`, and passing `outcome.error` straight into it compiled.
+ * The rules it applies are not decoration — a `''` message violates
+ * `ck_brain_coverage_cycle_error_present`, and a NUL byte is refused by node-pg
+ * outright, so an unsanitized writer makes the one statement whose whole job is
+ * recording a failure THROW. A visible failure becomes an invisible one through
+ * the machinery meant to guarantee every red dot carries a message.
+ *
+ * ⚠️ **What the brand does NOT close, stated because a brand invites the wrong
+ * confidence.** It stops the two writers below from binding a raw string. It
+ * cannot stop a THIRD writer from calling `internalQuery` with its own
+ * `last_error` SQL and never mentioning this type at all — the unbranded
+ * sibling producer that reopened #5032 twice. That half is carried by
+ * `__tests__/coverage-error-text-writers.test.ts`, which reads this file and
+ * refuses a `last_error` write outside the two functions below. The two halves
+ * are independent and neither is redundant.
+ */
+export type StorableErrorText = string & { readonly [storableErrorTextBrand]: true };
+
+/**
+ * The class-wide failure UPDATE — one of exactly two statements permitted to
+ * write `brain_coverage_cycle.last_error`.
+ *
+ * It exists as a named function rather than an inline `internalQuery` so its
+ * `lastError` parameter can be a {@link StorableErrorText}. That is what makes
+ * *the storage site cannot accept an unsanitized string* true at the type level
+ * rather than in a doc comment.
+ *
+ * ⚠️ EXPORTED for the `@ts-expect-error` rows in
+ * `__tests__/coverage-error-text-writers.test.ts`, and safely so: the only mint
+ * for its `lastError` parameter is {@link storableErrorText}, so an outside
+ * caller cannot reach it holding a raw string. A source-scan assertion about
+ * the annotation would be a text match — `lastError: StorableErrorText | string`
+ * would satisfy it while gutting the type — which is why the proof is a
+ * compile check on the real function rather than a grep for its signature.
+ */
+export function updateClassFailureRows(params: {
+  readonly sourceClass: SurveyableSourceClass;
+  readonly cycleIso: string;
+  readonly lastError: StorableErrorText;
+  readonly workspaceIds: readonly string[];
+}): Promise<{ workspace_id: string }[]> {
+  return internalQuery<{ workspace_id: string }>(
+    `UPDATE brain_coverage_cycle
+        SET last_attempt_at = $2::timestamptz, last_error = $3
+      WHERE source_class = $1 AND workspace_id = ANY($4::text[])
+      RETURNING workspace_id`,
+    [params.sourceClass, params.cycleIso, params.lastError, params.workspaceIds],
+  );
+}
+
+/**
+ * The per-workspace failure upsert — the other of the two. See
+ * {@link updateClassFailureRows} for why it is a function.
+ */
+export function recordFailureRow(params: {
+  readonly workspaceId: string;
+  readonly sourceClass: SurveyableSourceClass;
+  readonly cycleIso: string;
+  readonly lastError: StorableErrorText;
+}): Promise<unknown> {
+  return internalQuery(RECORD_FAILURE_SQL, [
+    params.workspaceId,
+    params.sourceClass,
+    params.cycleIso,
+    params.lastError,
+  ]);
 }
 
 /**
@@ -407,13 +488,12 @@ export async function recordClassScanFailure(params: {
     .map((r) => r.workspace_id)
     .filter((id) => include === undefined || include(id));
   if (targets.length === 0) return 0;
-  const rows = await internalQuery<{ workspace_id: string }>(
-    `UPDATE brain_coverage_cycle
-        SET last_attempt_at = $2::timestamptz, last_error = $3
-      WHERE source_class = $1 AND workspace_id = ANY($4::text[])
-      RETURNING workspace_id`,
-    [params.sourceClass, params.cycleAt.toISOString(), storableErrorText(params.error), targets],
-  );
+  const rows = await updateClassFailureRows({
+    sourceClass: params.sourceClass,
+    cycleIso: params.cycleAt.toISOString(),
+    lastError: storableErrorText(params.error),
+    workspaceIds: targets,
+  });
   if (rows.length > 0) {
     log.warn(
       { sourceClass: params.sourceClass, workspaces: rows.length, known: known.length },
@@ -501,9 +581,11 @@ export async function persistCoverageSnapshot(params: {
     // visible failure would become an invisible one through the constraint
     // written to guarantee every red dot carries a message. Both rules, and the
     // NUL one, live in {@link storableErrorText} so the two failure writers
-    // cannot apply different ones.
+    // cannot apply different ones — and since #5247 the TYPE says so rather than
+    // this comment: `storableErrorText` returns a {@link StorableErrorText}, and
+    // it is the only mint for the two writers' `lastError` parameter.
     const stored = storableErrorText(outcome.error);
-    await internalQuery(RECORD_FAILURE_SQL, [workspaceId, sourceClass, cycleIso, stored]);
+    await recordFailureRow({ workspaceId, sourceClass, cycleIso, lastError: stored });
     log.warn(
       { workspaceId, sourceClass, err: stored },
       "brain coverage: enumeration failed — the previous dated roster is kept as-is, and the surface reads 'enumeration unavailable since' its last success",

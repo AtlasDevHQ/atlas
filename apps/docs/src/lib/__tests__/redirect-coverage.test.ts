@@ -513,10 +513,14 @@ describe("brain-* -> atlas-* guide renames (#5083)", () => {
     expect(loaders.length).toBeGreaterThan(0);
     // A loader whose `baseUrl` this scan cannot read (computed, or a template
     // with a substitution) is a BLIND SPOT, not a pass — fail rather than
-    // silently drop it from the comparison.
+    // silently drop it from the comparison. Asserted BEFORE the mounts are
+    // collected, and the collection narrows on the same predicate, so an
+    // unreadable loader cannot reach the comparison as a `null`.
     expect(loaders.filter((l) => l.baseUrl === null)).toEqual([]);
-    const sharedMounts = loaders
-      .filter((l) => l.mountsShared)
+    const sharedMounts: string[] = loaders
+      .filter((l): l is { baseUrl: string; mountsShared: boolean } =>
+        l.mountsShared && l.baseUrl !== null,
+      )
       // `source.ts` spells the site root "/"; a mount PREFIX carries no
       // trailing slash, so the root prefix is the empty string.
       .map((l) => (l.baseUrl === "/" ? "" : l.baseUrl));

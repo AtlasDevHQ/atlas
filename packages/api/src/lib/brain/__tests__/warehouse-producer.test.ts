@@ -520,6 +520,13 @@ describe("buildSnapshotSql", () => {
    * actually reached (inside the hooks and restored after — the test-discipline
    * rule). And the assertions are UNCONDITIONAL, because an assertion inside
    * `if (!valid)` reports "pass" for exactly the case it was written to exclude.
+   *
+   * ⚠️ **This block REDS if you run it in the same `bun test` invocation as
+   * `warehouse-producer-mint.test.ts`, and that is the tripwire working.** That
+   * suite `mock.module`s `lib/tools/sql`, whose blast radius is the process, so the
+   * real gate is not what answers here. The isolated runner spawns per file, so CI
+   * and `bun run test` are unaffected; a hand-run of both files together is not, and
+   * the red is telling you this block measured a stub. Run them separately.
    */
   describe("against the product's real SQL gate", () => {
     let priorDatasourceUrl: string | undefined;
@@ -546,6 +553,12 @@ describe("buildSnapshotSql", () => {
       // The tripwire the first version lacked: the gate must have been REACHED.
       // "No valid datasource" means it returned before reading the statement.
       expect(reason(result)).not.toContain("No valid datasource");
+      // ⚠️ And a POSITIVE tripwire, which the negative one cannot supply: this is
+      // the SHIPPED gate's own wording. A negative assertion is satisfied by any
+      // stub that happens not to say that phrase, and `mock.module` is process-wide
+      // — so co-locating a suite that stubs `lib/tools/sql` in one `bun test`
+      // invocation made this whole block pass against the stub's message instead.
+      expect(reason(result)).toMatch(/allowed list|catalog\.yml/);
       // The whitelist is workspace-scoped and this workspace has none, so a
       // table-scoped rejection is the expected shape here. A FORM rejection would
       // reject in EVERY workspace — ADR-0039's dead producer.
@@ -1209,6 +1222,59 @@ describe("runWarehouseProducer", () => {
     expect(report.created).toBe(0);
   });
 
+  test("a verdict whose `request` ANSWERS DIFFERENTLY on each read is refused (#5230)", async () => {
+    // ⚠️ Identity across TWO PROPERTY ACCESSES is not identity. `validation` comes
+    // from the seam the check defends against, so `validation.request` is an
+    // expression the implementer controls: a getter answers the guard with the
+    // honest request and the runner with another object. Freezing the request closes
+    // mutation and leaves this open; only capturing the value once closes it.
+    //
+    // Worse than the mutation hole it sits beside: the substituted object carries its
+    // own `workspaceId`/`connectionId`, and `defaultRunSnapshot` selects the
+    // connection pool from those — a cross-tenant read, not merely a gate bypass.
+    const h = harness({
+      pairs: [{ entity: "Aliased", dimension: "status", naming: false }],
+      entities: {
+        Aliased: entityYaml({ table: "aliased", primaryKey: "id", dimensions: ["id", "status"] }),
+      },
+      rows: { Aliased: [snapshotRow("Acme Corp", "active")] },
+    });
+
+    let reads = 0;
+    const report = await runWarehouseProducer(
+      { workspaceId: WORKSPACE, triggeredBy: "user-1" },
+      {
+        ...h.deps,
+        validateSnapshotSql: async (request) => {
+          const other = { ...request, sql: "SELECT * FROM salaries" };
+          return {
+            valid: true,
+            get request() {
+              // First read: the honest object, so the guard passes. Every read after:
+              // a different statement.
+              return (reads++ === 0 ? request : other) as ValidatedSnapshotRequest;
+            },
+          };
+        },
+      },
+    );
+
+    // ⚠️ EXACTLY ONE read. Two would mean the guard's value and the runner's
+    // argument came from separate property accesses — the defect, even on a read
+    // that happens to return the same thing.
+    expect(reads).toBe(1);
+    // …and the statement that reached the runner is the one the gate approved, not
+    // the getter's second answer. This is the assertion that goes red without the
+    // capture: the run still succeeds, silently, on the wrong statement.
+    expect(h.snapshots).toHaveLength(1);
+    expect(h.snapshots[0]?.sql).not.toContain("salaries");
+    expect(h.snapshots[0]?.sql).toContain("aliased");
+    // A refusal here would be a DIFFERENT, weaker outcome — the honest request did
+    // pass the gate, so the entity is expected to produce.
+    expect(report.refusals).toEqual([]);
+    expect(report.created).toBe(1);
+  });
+
   test("the runner's parameter refuses an unvalidated request — ordering is a TYPE (#5230)", () => {
     // ⚠️ A COMPILE-TIME assertion, and `bun run type` is where it fails. `@ts-expect-error`
     // is an error when the line it guards has NO error, so widening
@@ -1240,7 +1306,11 @@ describe("runWarehouseProducer", () => {
     // @ts-expect-error the runner cannot be narrowed to a function taking a bare request
     const widened: (r: WarehouseSnapshotRequest) => Promise<readonly Record<string, unknown>[]> =
       runner;
-    expect([literal, mint, widened].every((v) => v !== null)).toBe(true);
+    // ⚠️ This asserts NOTHING about the brand, and saying so is the point. The three
+    // values are referenced so the unused-vars rule is satisfied; the CLAIM is each
+    // `@ts-expect-error` directive above, and `bun run type` is where it fails. An
+    // `every(v => v !== null)` here read like an assertion and had no reachable red.
+    expect([literal, mint, widened]).toHaveLength(3);
   });
 
   test("a validator that REJECTS is caught on the same arm", async () => {

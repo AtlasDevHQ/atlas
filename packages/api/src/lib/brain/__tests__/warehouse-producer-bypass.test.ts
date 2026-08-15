@@ -10,27 +10,29 @@
  * TYPE cannot keep: that grepping for the cast is the whole list of places the gate
  * is bypassed. A cast is greppable; nothing fails when a fifth one appears.
  *
- * ## FOUR names, because #5230 moved the brand onto the REQUEST
+ * ## FIVE names, because #5230 moved the brand onto the REQUEST
  *
  * The passing verdict now carries the request it validated, and that request is
  * what is branded — which is how replay (a cached token for some other statement)
  * and ordering (a runner reachable with an unvalidated request) got closed. A bypass
- * can therefore be spelled four ways, and {@link BYPASS_RE} matches all of them:
+ * can therefore be spelled five ways, and {@link BYPASS_RE} matches all of them: an
+ * assertion naming the branded REQUEST type (what a mint ordinarily writes), the
+ * VERDICT union, the VALIDATOR seam type, the DEPS interface that holds it, or the
+ * RUNNER type whose parameter is the branded request.
  *
- *   1. an assertion naming the branded REQUEST type — what a mint ordinarily writes;
- *   2. one naming the VERDICT union — the two differ only by the brand, which makes
- *      them comparable, so a whole-verdict assertion compiles just as well;
- *   3. one naming the VALIDATOR seam type, and
- *   4. one naming the DEPS interface that holds it.
- *
- * ⚠️ **3 and 4 are here because the docstrings claimed they were refused, and that
- * was measured false.** The nullary mint is refused; a mint that TAKES A PARAMETER
- * is not, because its return literal's `valid` widens to `boolean` and the
- * discriminated-arm check is skipped — and the parameterised form is the only useful
- * one now that the passing arm must carry a request. Worse, such a validator returns
- * its own argument, so the run loop's identity check waves it through: the gate never
- * ran and nothing downstream can tell. Matching only 1 and 2 would have left this
- * guard green over the one bypass the brand does not close.
+ * ⚠️ **The last four are here because the docstrings claimed they were refused, and
+ * that was measured false — twice, with two different wrong explanations.** The
+ * mechanism, measured against the repo's own checker: the brand only ADDS a
+ * property, so the branded request is assignable to the bare one, and `as` succeeds
+ * whenever EITHER direction is comparable — the reverse direction carries all of
+ * them. What IS refused is the shape where the reverse direction also fails: a
+ * NULLARY mint (a 1-parameter function type is not assignable to a 0-parameter one)
+ * or a literal with an excess property. Pinning `valid` with `as const` does not
+ * close it; that was the second wrong explanation, and it was the one this file
+ * shipped in round 1. Such a validator returns its own argument, so the run loop's
+ * identity check waves it through: the gate never ran and nothing downstream can
+ * tell. Matching only the first two would have left this guard green over the one
+ * bypass the brand does not close.
  *
  * ⚠️ **The pattern is not written out in this file's prose, and that is the point
  * rather than fastidiousness.** A lexical guard cannot tell a quotation from an
@@ -60,19 +62,20 @@
  * ## What this does NOT prove
  *
  * The brand is not the only bypass, and saying so here is the honest half. Measured
- * against the repo's own `tsc`: an object literal, `as const`, `satisfies`, a spread
- * of the refusing arm, and the identity form of generic-inference laundering are all
- * REFUSED. What still gets through with no hit below is `as unknown as`, any
- * `any`-typed wiring (`JSON.parse`, an untyped mock, a dynamic `import()`), and a
- * `Partial<T>`-shaped generic builder.
+ * against the repo's own checker: an object literal, `as const`, `satisfies`, a
+ * spread of the refusing arm, `unknown`, and the identity form of generic-inference
+ * laundering are all REFUSED by the COMPILER.
  *
- * ⚠️ **The accepted list used to be written as *"`as unknown as` plus `any`"*, and
- * that was measurably wrong in a way worth stating precisely.** What this scan
- * actually holds is: *an assertion that puts the keyword and one of the four names
- * on ONE PHYSICAL LINE.* An angle-bracket assertion, a local type alias or a
- * renaming import of the same type, an indexed lookup of the runner's parameter, or
- * a line break between keyword and name all compile and all escape — because the
- * character class below bars a newline. Chasing those is a regex arms race the
+ * ⚠️ **What this scan holds is a different question, and conflating the two is how
+ * this header has now been wrong twice.** What it holds is exactly: *an assertion
+ * that puts the keyword and one of the five names on ONE PHYSICAL LINE.* So it DOES
+ * catch a double assertion through `unknown` written on one line — an earlier draft
+ * listed that as escaping, which was measurably false and is corrected here. What
+ * genuinely escapes: an angle-bracket assertion; a local type alias; an import that
+ * renames one of these types OUT to another local name; an indexed lookup of the
+ * runner's parameter; a line break between keyword and name (the character class
+ * below bars a newline); and `any`-typed wiring or a `Partial<T>`-shaped generic
+ * builder, which need no assertion at all. Chasing those is a regex arms race the
  * honest sentence wins; the sentence is here so nobody reads a green run as more
  * than it is.
  *
@@ -97,25 +100,42 @@ import { join } from "path";
 const SRC_ROOT = new URL("../../../", import.meta.url).pathname;
 
 /**
- * `ee/src/` too — a second root, not decoration.
+ * Every root that can hold a mint — three of them, not decoration.
  *
- * ⚠️ All four matched names are EXPORTED, and `ee/` imports `@atlas/api/*` freely:
- * only the reverse direction is gated. A scan of this package alone would prove a
- * claim strictly narrower than the one this suite's failure message makes, so a mint
- * added under `ee/` would sit outside the enumeration while the guard stayed green —
- * the same silent-empty shape {@link BYPASS_RE}'s own note is written to prevent,
- * one axis over.
+ * ⚠️ All five matched names are EXPORTED, and both `ee/` and `packages/cli/` import
+ * `@atlas/api/*` freely: only the api→ee direction is gated. A scan of this package
+ * alone proved a claim strictly narrower than the one the failure message made, so a
+ * mint added under either would sit outside the enumeration while the guard stayed
+ * green — the same silent-empty shape {@link BYPASS_RE}'s own note is written to
+ * prevent, one axis over. `packages/cli/` is the concrete case: it already imports
+ * `@atlas/api/lib/db/*` and `@atlas/api/lib/semantic/*`, so an `atlas brain produce`
+ * command is a plausible sixth site.
+ *
+ * ⚠️ **The roots are NAMED in the failure message too.** An enumeration is only as
+ * honest as its scope, and the previous message asserted a tree-wide claim over one
+ * directory. If a root is added here, add it there.
  */
 const ROOTS: readonly { readonly dir: string; readonly label: string }[] = [
   { dir: SRC_ROOT, label: "" },
   { dir: new URL("../../../../../../ee/src/", import.meta.url).pathname, label: "ee/src/" },
+  {
+    dir: new URL("../../../../../cli/src/", import.meta.url).pathname,
+    label: "packages/cli/src/",
+  },
 ];
 
 /**
- * Every site that may assert a passing SQL verdict, with why.
+ * Every site that MAY ASSERT one of the guarded names, with why.
+ *
+ * ⚠️ "May assert", not "does bypass" — and the difference is real now that five
+ * names are matched. A deps assertion carrying no `validateSnapshotSql`, or a
+ * validator assertion returning only the refusing arm, bypasses nothing and still
+ * belongs here. An entry is a place to LOOK, not a finding.
  *
  * ⚠️ ONE production entry, deliberately. It is the single point where the product's
- * gate answering yes becomes a value the run will act on.
+ * gate answering yes becomes a value the run will act on. Note the module also names
+ * these types in prose, so it would keep matching even if its cast were removed —
+ * this test cannot tell you the cast is still there, only that no NEW file names one.
  */
 const KNOWN_BYPASSES: readonly { file: string; why: string }[] = [
   {
@@ -153,21 +173,24 @@ const KNOWN_BYPASSES: readonly { file: string; why: string }[] = [
  * spelling of the pattern: writing it out in prose would put this file into its own
  * result set, which is why the header describes it instead.
  *
- * ⚠️ **FOUR alternatives (#5230), and the header says why each is load-bearing.**
- * Only the first has instances in the tree today; the other three are pinned by the
+ * ⚠️ **FIVE alternatives (#5230), and the header says why each is load-bearing.**
+ * Only the first has instances in the tree today; the other four are pinned by the
  * planted controls below, which is deliberate — a matcher whose arms are exercised
  * only by real instances loses the arm the moment the tree stops containing one, and
- * these three exist precisely for the mint nobody has written yet.
+ * these four exist precisely for the mint nobody has written yet.
  *
- * ⚠️ A renaming IMPORT — one that binds a local name to a matched type inside the
- * braces — also matches. That is a false positive rather than a hole: it fails
- * loudly, and the fix is to add the file or rename the local. It is described rather
- * than written out for the header's reason; writing the spelling here put THIS FILE
- * into its own result set on the first run, which is the quotation trap arriving
- * exactly where the header says it does.
+ * ⚠️ A single-line import that renames some OTHER binding INTO one of these names
+ * matches — a false positive rather than a hole, since it fails loudly and the fix
+ * is to rename the local. An import that renames one of these types OUT to a
+ * different local name does NOT match, and that direction is a real escape, listed
+ * with the others in the header. A round-1 draft asserted the opposite direction and
+ * called it a false positive; both halves were wrong, and the correction is measured
+ * rather than reasoned. Neither spelling is written out here — writing one put THIS
+ * FILE into its own result set on the first run, which is the quotation trap
+ * arriving exactly where the header says it does.
  */
 const BYPASS_RE =
-  /\bas\b[^;=\n]*\b(?:ValidatedSnapshotRequest|SnapshotSqlVerdict|SnapshotSqlValidator|WarehouseProducerDeps)\b/;
+  /\bas\b[^;=\n]*\b(?:ValidatedSnapshotRequest|SnapshotSqlVerdict|SnapshotSqlValidator|WarehouseProducerDeps|WarehouseSnapshotRunner)\b/;
 
 function* walk(dir: string): Generator<string> {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -204,11 +227,11 @@ describe("the SQL-gate bypass set (#5042, #5230)", () => {
     }
     expect(
       found.toSorted(),
-      "the set of places that can assert the SQL gate passed has changed. A new TEST harness is " +
-        "ordinarily fine — the real gate is whitelist-scoped and a test workspace has none — but a new " +
-        "PRODUCTION site is a second door onto an unvalidated statement reaching a customer's " +
-        "datasource, and it is the thing to argue rather than merge. Add it to KNOWN_BYPASSES with a " +
-        "reason, or remove the cast.",
+      "the set of places under packages/api/src, ee/src and packages/cli/src that can assert the SQL " +
+        "gate passed has changed. A new TEST harness is ordinarily fine — the real gate is " +
+        "whitelist-scoped and a test workspace has none — but a new PRODUCTION site is a second door " +
+        "onto an unvalidated statement reaching a customer's datasource, and it is the thing to argue " +
+        "rather than merge. Add it to KNOWN_BYPASSES with a reason, or remove the cast.",
     ).toEqual(KNOWN_BYPASSES.map((b) => b.file).toSorted());
   });
 
@@ -238,12 +261,34 @@ describe("the SQL-gate bypass set (#5042, #5230)", () => {
     expect(BYPASS_RE.test(seam)).toBe(true);
     const deps = `const d = { validateSnapshotSql: mint } as WarehouseProducer${"Deps"};`;
     expect(BYPASS_RE.test(deps)).toBe(true);
+    // The RUNNER type, the fifth name. Free today — the tree has zero assertions
+    // onto it — and it is the cheapest innocuous-looking uncaught mint, because its
+    // parameter IS the branded request.
+    const runner = `const run = ((r) => read(r)) as WarehouseSnapshot${"Runner"};`;
+    expect(BYPASS_RE.test(runner)).toBe(true);
+    // A DOUBLE assertion through `unknown`, on one line. A round-1 draft of the
+    // header listed this as escaping; it does not, and the control is here so the
+    // sentence cannot drift back.
+    const doubled = `const r = payload as unknown as Validated${"SnapshotRequest"};`;
+    expect(BYPASS_RE.test(doubled)).toBe(true);
     // And negative controls, so the matcher is not simply true of everything:
     // naming a TYPE is not asserting a pass.
     expect(BYPASS_RE.test(`let v: Snapshot${"SqlVerdict"};`)).toBe(false);
     expect(BYPASS_RE.test(`let r: Validated${"SnapshotRequest"};`)).toBe(false);
     expect(BYPASS_RE.test(`const f: SnapshotSql${"Validator"} = realGate;`)).toBe(false);
     expect(BYPASS_RE.test(`function run(d: WarehouseProducer${"Deps"}) {}`)).toBe(false);
+    // ⚠️ The two negatives above contain no `as` at all, so they are false for ANY
+    // matcher that requires the keyword — including one that has lost every name.
+    // They do not discriminate the arms they sit beside. This one does: a matched
+    // name with no `as` anywhere on the line, in a position no assertion can take.
+    expect(BYPASS_RE.test(`export type { SnapshotSql${"Validator"} };`)).toBe(false);
+    // ⚠️ And the honest cost, asserted rather than described: PROSE containing the
+    // word and a matched name on one line MATCHES. This is the quotation trap as a
+    // measurement — the guard cannot tell a sentence from an assertion, which is
+    // exactly why the header describes spellings instead of writing them out.
+    expect(
+      BYPASS_RE.test(`// as good a place as any to name SnapshotSql${"Validator"} in prose`),
+    ).toBe(true);
     // ⚠️ A NEGATIVE control of legitimate PROSE, not only of legitimate code. Every
     // positive above is hand-planted by the same author as the matcher, so they pass
     // by construction; this is the arm that catches an over-broad one. The sentence

@@ -15,15 +15,24 @@
  * `defaultValidateSnapshotSql` for real, but the gate's table check is
  * workspace-whitelist-scoped and a test workspace has none — so that block only ever
  * reaches the REFUSING arm, and the refusing arm carries no request. The passing arm
- * is only reachable with the gate itself stubbed, which means `mock.module`, which is
- * process-wide and therefore cannot share a file with suites that want the real one.
+ * is only reachable with the gate itself stubbed, which means `mock.module`, whose
+ * blast radius is the PROCESS rather than the file — so this suite must not share one
+ * with `warehouse-producer.test.ts`'s real-gate block, the very block whose docstring
+ * records that deleting the production gate used to leave every suite green. The
+ * isolated runner spawns per file, so CI is safe; a hand-run `bun test <a> <b>` is
+ * not, and the `afterAll` below is what makes a leak benign rather than silent.
  *
  * ⚠️ EVERY value export of `lib/tools/sql` is replaced below. `mock.module` swaps the
  * whole module, so an export left out becomes `undefined` and the first unrelated
  * consumer throws — which reads as a broken test rather than a missing mock.
+ *
+ * ⚠️ **What this file does NOT pin: the brand.** Retype the passing arm's `request`
+ * to the bare request type and every assertion here still compiles and passes. That
+ * half is carried by the `@ts-expect-error` rows in `warehouse-producer.test.ts`, and
+ * the two files can be edited independently — hence the pointer.
  */
 
-import { beforeAll, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
 
 let validateSqlCalls: { sql: string; connectionId?: string; workspaceId?: string }[] = [];
 let nextResult: { valid: boolean; error?: string } = { valid: true };
@@ -59,10 +68,31 @@ beforeAll(async () => {
   producer = await import("@atlas/api/lib/brain/warehouse-producer");
 });
 
+afterAll(() => {
+  // ⚠️ `mock.module` is PROCESS-wide, not file-wide. `scripts/test-isolated.ts`
+  // spawns per file so CI is unaffected, but `bun test <a> <b>` — the invocation
+  // CLAUDE.md permits for single files — shares one process, and a leaked REFUSING
+  // stub would make `warehouse-producer.test.ts`'s real-gate block pass vacuously.
+  // Resetting cannot uninstall the mock; it makes the leak benign instead.
+  nextResult = { valid: true };
+  validateSqlCalls = [];
+});
+
+/**
+ * ⚠️ A NON-DEFAULT `connectionId`, and it is load-bearing.
+ *
+ * With `undefined` here, `toEqual` ignores the key and the "it validated THIS
+ * statement" assertion below is blind to the argument being dropped — measured:
+ * passing a literal `undefined` as `validateSQL`'s second argument left this suite
+ * green. That argument resolves the dialect the parser runs in (`tools/sql.ts` calls
+ * the wrong mode a security risk) and scopes the whitelist, while
+ * `defaultRunSnapshot` reads the row set from `connectionId ?? "default"` — so
+ * dropping it validates against one connection and reads from another.
+ */
 const REQUEST: WarehouseSnapshotRequest = {
   workspaceId: "ws-5230-mint",
   entity: "Accounts",
-  connectionId: undefined,
+  connectionId: "warehouse-replica",
   sql: "SELECT account_id AS atlas_brain_subject FROM accounts LIMIT 101",
 };
 
@@ -84,7 +114,7 @@ describe("defaultValidateSnapshotSql", () => {
     // …and it validated THIS statement, not some other one. Without this the mint
     // could ignore its argument entirely and still satisfy the line above.
     expect(validateSqlCalls).toEqual([
-      { sql: REQUEST.sql, connectionId: undefined, workspaceId: REQUEST.workspaceId },
+      { sql: REQUEST.sql, connectionId: "warehouse-replica", workspaceId: REQUEST.workspaceId },
     ]);
   });
 

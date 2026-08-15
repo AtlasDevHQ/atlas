@@ -95,7 +95,10 @@ void mock.module("@atlas/api/lib/logger", () => {
 });
 
 type ProducerModule = typeof import("@atlas/api/lib/brain/warehouse-producer");
-type SnapshotSqlVerdict = import("@atlas/api/lib/brain/warehouse-producer").SnapshotSqlVerdict;
+type WarehouseSnapshotRequest =
+  import("@atlas/api/lib/brain/warehouse-producer").WarehouseSnapshotRequest;
+type ValidatedSnapshotRequest =
+  import("@atlas/api/lib/brain/warehouse-producer").ValidatedSnapshotRequest;
 type ReconcileModule = typeof import("@atlas/api/lib/brain/reconcile");
 
 let producer: ProducerModule;
@@ -157,8 +160,16 @@ function deps(over: Partial<Parameters<ProducerModule["runWarehouseProducer"]>[1
       has: () => true,
     }),
     loadEntity: async () => ACCOUNTS_YAML,
-    // Cast because the passing verdict is branded — see the unit suite's note.
-    validateSnapshotSql: async () => ({ valid: true }) as SnapshotSqlVerdict,
+    // Cast because the passing verdict carries a branded request — see the unit
+    // suite's note. It brands the request it was HANDED: a fresh object would trip
+    // the run loop's anti-replay identity check (#5230).
+    // `true as const`, because this literal is NOT contextually typed — `deps()`
+    // has no return annotation, so a bare `true` widens to `boolean` and the whole
+    // object stops satisfying the seam.
+    validateSnapshotSql: async (request: WarehouseSnapshotRequest) => ({
+      valid: true as const,
+      request: request as ValidatedSnapshotRequest,
+    }),
     runSnapshot: async () => [
       { [producer.SUBJECT_ALIAS]: "Acme Corp", [`${producer.DIMENSION_ALIAS_PREFIX}0`]: "active" },
     ],
@@ -328,6 +339,47 @@ describe("warehouse producer logging", () => {
     expect(payload.err).toBeInstanceOf(Error);
   });
 
+  it("logs a gate/request mismatch at ERROR, naming what came BACK (#5230)", async () => {
+    // ⚠️ One of TWO ERROR-level per-entity refusals — the transaction-rollback case
+    // directly above is the other, and it also files `snapshot-failed`. Every
+    // remaining sibling is a WARN, and the first case in this file asserts the error
+    // sink is empty for one of them. Without this case, demoting this line to `warn`
+    // (or deleting it) is green, which is the demotion this file's header names as
+    // the failure it exists to refuse.
+    //
+    // ⚠️ The token names ANOTHER TENANT and ANOTHER ENTITY, and both differences are
+    // load-bearing. With a plain `{ ...request }` the returned values equal the
+    // submitted ones, so a payload that logged the SUBMITTED entity under both keys
+    // passed — measured: replacing `validated.entity` with `entityPlan.entity.name`
+    // and `validated.workspaceId` with `workspaceId` left this suite green, which is
+    // precisely the defect these two keys were added to close.
+    await run({
+      validateSnapshotSql: async (request: WarehouseSnapshotRequest) => ({
+        valid: true as const,
+        request: {
+          ...request,
+          entity: "Impostor",
+          workspaceId: "ws-other-tenant",
+        } as ValidatedSnapshotRequest,
+      }),
+    });
+
+    const payload = payloadOf(errors, "verdict for a different request");
+    expect(payload.entity).toBe("Accounts");
+    // NOT shadowed by the returned one — the keys are separate for this reason.
+    expect(payload.workspaceId).toBe(WORKSPACE);
+    expect(payload.table).toBe("accounts");
+    // ⚠️ What CAME BACK, under its own keys. A payload carrying only the submitted
+    // entity cannot tell a same-workspace replay from a token minted against another
+    // tenant's statement, and the second is the one that has to be greppable.
+    expect(payload.returnedEntity).toBe("Impostor");
+    expect(payload.returnedWorkspaceId).toBe("ws-other-tenant");
+    expect(payload.requestId).toBe("req-1");
+    // ABSENT from warn, not merely present in error — a demotion is how this line
+    // stops being an incident while still being "logged".
+    expect(messages(warns).filter((m) => m.includes("different request"))).toEqual([]);
+  });
+
   it("carries the request id and the trigger on every line, including the failures", async () => {
     // The failures that matter here return 200 — a refusal is a successful response
     // — so without this an operator holding one has workspace plus wall-clock and
@@ -337,11 +389,28 @@ describe("warehouse producer logging", () => {
         throw new Error("connection refused");
       },
     });
-    // ⚠️ The count assertion first. `for (const line of [...warns, ...infos])` over
-    // two EMPTY sinks passes while proving nothing, which is the shape this file
-    // exists to refuse.
-    const lines = [...warns, ...infos];
-    expect(lines.length).toBeGreaterThanOrEqual(2);
+    // ⚠️ TWO runs, because the first emits no ERROR line at all. Adding `...errors`
+    // to the sweep without this was measured VACUOUS — `warns=1 infos=1 errors=0` —
+    // so the widening proved nothing and its own justification described a line the
+    // fixture never emitted. The mismatch arm is what populates the error sink, and
+    // it is mutually exclusive with a throwing runner on one entity.
+    await run({
+      validateSnapshotSql: async (request: WarehouseSnapshotRequest) => ({
+        valid: true as const,
+        request: { ...request } as ValidatedSnapshotRequest,
+      }),
+    });
+    // ⚠️ The count assertions first. `for (const line of [...warns, ...infos])` over
+    // EMPTY sinks passes while proving nothing, which is the shape this file exists
+    // to refuse — and the per-sink assertion is what stops `errors` sliding back to
+    // zero while the total stays satisfied by warns and infos.
+    //
+    // `errors` is in the sweep since #5230: the mismatch refusal is the one line
+    // that TELLS the operator to quote the request id, so an error line without it
+    // is the one place the instruction is unfollowable.
+    expect(errors.length).toBeGreaterThanOrEqual(1);
+    const lines = [...warns, ...infos, ...errors];
+    expect(lines.length).toBeGreaterThanOrEqual(3);
     for (const line of lines) {
       expect(line.payload).toMatchObject({
         workspaceId: WORKSPACE,

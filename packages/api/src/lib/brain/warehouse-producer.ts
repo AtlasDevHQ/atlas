@@ -657,7 +657,15 @@ export function buildSnapshotSql(plan: WarehouseEntityPlan, rowCap = WAREHOUSE_R
   return `SELECT ${columns.join(", ")} FROM ${plan.entity.table} LIMIT ${rowCap + 1}`;
 }
 
-/** What {@link WarehouseSnapshotRunner} is asked for. */
+/**
+ * What {@link WarehouseSnapshotRunner} is asked for.
+ *
+ * ⚠️ **Every field must stay a PRIMITIVE.** `runWarehouseProducer` freezes this
+ * object so a substituted validator cannot rewrite the statement after the gate
+ * approved it, and a shallow freeze is total only while nothing here is a reference.
+ * An object-typed field added later would leave the freeze looking intact and the
+ * guarantee gone.
+ */
 export interface WarehouseSnapshotRequest {
   readonly workspaceId: string;
   readonly entity: string;
@@ -666,9 +674,53 @@ export interface WarehouseSnapshotRequest {
   readonly sql: string;
 }
 
-/** Reads tier-1. The one seam in this module that touches a customer datasource. */
+declare const validatedSnapshotSql: unique symbol;
+
+/**
+ * A snapshot request THE GATE HAS SEEN AND PASSED — the token, and the statement
+ * it is a token for, as one value.
+ *
+ * ⚠️ **The brand is on the REQUEST rather than on a bare verdict, and that is the
+ * whole of #5230.** A verdict that merely says *"something passed"* leaves two
+ * doors open that no object literal has to walk through:
+ *
+ * - **Replay.** `cached ??= await validate(BENIGN_REQUEST)` mints one genuine
+ *   passing token and hands it back for every entity thereafter. Nothing is
+ *   forged; the token is simply about a different statement than the one about to
+ *   run. Carrying the request kills it, because {@link runWarehouseProducer}
+ *   compares what came back against what it sent and runs only what the gate
+ *   actually saw.
+ * - **Ordering.** While {@link WarehouseSnapshotRunner} took a bare
+ *   {@link WarehouseSnapshotRequest}, validate-then-run was enforced by STATEMENT
+ *   ORDER — the same convention the brand was introduced to replace. A reorder, or
+ *   a new call site reaching the runner directly, compiled fine. Now the runner's
+ *   only input is a value that cannot exist without the gate having produced it.
+ *
+ * The symbol is module-private and never exported, so this type is minted by
+ * {@link defaultValidateSnapshotSql} or by an assertion. FIVE exported names can
+ * carry such an assertion — see {@link SnapshotSqlVerdict}'s note for why — and
+ * `__tests__/warehouse-producer-bypass.test.ts` pins all five.
+ */
+export type ValidatedSnapshotRequest = WarehouseSnapshotRequest & {
+  readonly [validatedSnapshotSql]: true;
+};
+
+/**
+ * Reads tier-1. The one seam in this module that touches a customer datasource.
+ *
+ * ⚠️ It takes a {@link ValidatedSnapshotRequest}, not a bare request, so no call
+ * site — here or in a future scheduler — can reach a datasource with a statement
+ * the SELECT-only / single-statement / whitelist-scoped gate has not passed. The
+ * ordering is a type, not a convention.
+ *
+ * ⚠️ **Every seam holding this must be a PROPERTY, never a method shorthand.**
+ * `WarehouseProducerDeps.runSnapshot` is a property today and has to stay one:
+ * method parameters are bivariant, so `interface S { run(r: WarehouseSnapshotRequest): … }`
+ * accepts this runner and then admits a bare request at the call site — measured,
+ * and it is the one way the parameter's guarantee can be re-opened without a cast.
+ */
 export type WarehouseSnapshotRunner = (
-  request: WarehouseSnapshotRequest,
+  request: ValidatedSnapshotRequest,
 ) => Promise<readonly Record<string, unknown>[]>;
 
 /**
@@ -1139,10 +1191,8 @@ export interface WarehouseRunContext {
   readonly requestId?: string;
 }
 
-declare const snapshotSqlBrand: unique symbol;
-
 /**
- * The SQL gate's verdict — and the PASSING arm is branded.
+ * The SQL gate's verdict — and the PASSING arm carries the request it passed.
  *
  * ⚠️ **The brand is the guarantee; without it the seam is the defect it replaced.**
  * Moving `validateSQL` out of `defaultRunSnapshot` stopped a substituted RUNNER
@@ -1153,29 +1203,52 @@ declare const snapshotSqlBrand: unique symbol;
  * the repo's answer and cites where ignoring it cost a round (#5032): an unbranded
  * value is an unbranded door.
  *
- * A `valid: true` cannot be written as an object literal. It comes from
- * {@link defaultValidateSnapshotSql}, or from a cast — and a cast is greppable,
- * deliberate, and has to be argued for in review, which is exactly the difference
- * between an invariant enforced by the type and one enforced by convention.
+ * A `valid: true` cannot be written as an object literal, because it needs a
+ * {@link ValidatedSnapshotRequest} and that type's symbol is module-private. It
+ * comes from {@link defaultValidateSnapshotSql}, or from a cast — and a cast is
+ * greppable, deliberate, and has to be argued for in review, which is exactly the
+ * difference between an invariant enforced by the type and one enforced by
+ * convention.
  *
- * ⚠️ **What the brand does and does not close, measured rather than asserted.**
+ * ⚠️ **What the shape does and does not close, measured rather than asserted.**
  * REFUSED with no cast: an object literal, `as const`, `satisfies`, a spread of the
- * refusing arm, `unknown`, generic-inference laundering — and, the useful one,
- * `(async () => ({valid: true})) as SnapshotSqlValidator`, which does not compile
- * either. ACCEPTED without a `as SnapshotSqlVerdict` hit: `as unknown as`, and any
- * `any`-typed wiring (`JSON.parse`, an untyped mock, a dynamic `import()` of a
- * plugin). So the bypass list is `as SnapshotSqlVerdict` plus `as unknown as` plus
- * `any` — an earlier draft of this line claimed the first alone was the whole list,
- * which was a comment stating a universal the type does not deliver.
+ * refusing arm, `unknown`, and the identity form of generic-inference laundering.
+ * ACCEPTED by the compiler: `as unknown as`, any `any`-typed wiring (`JSON.parse`,
+ * an untyped mock, a dynamic `import()` of a plugin), a `Partial<T>`-shaped generic
+ * builder — and, the one that matters, **an assertion onto any of the five names the
+ * bypass matcher takes**: this union, {@link ValidatedSnapshotRequest},
+ * {@link SnapshotSqlValidator}, {@link WarehouseProducerDeps} or
+ * {@link WarehouseSnapshotRunner}.
  *
- * `__tests__/warehouse-producer-bypass.test.ts` pins the `as SnapshotSqlVerdict`
- * sites, which is the half a grep can actually hold.
+ * The mechanism, measured rather than reasoned — the two obvious explanations for it
+ * are both wrong: **the brand only ADDS a property**, so
+ * `ValidatedSnapshotRequest` is assignable to {@link WarehouseSnapshotRequest}, and
+ * `as` succeeds whenever EITHER direction is comparable. The reverse direction
+ * carries every one of those spellings. Refused only where the reverse direction
+ * also fails — a NULLARY mint (a 1-parameter function type is not assignable to a
+ * 0-parameter one), or a literal with an excess property. Pinning `valid` with
+ * `as const` does NOT close it. Such a validator hands back its OWN argument, so the
+ * run loop's identity check waves it through — which is why the seam names are in
+ * the bypass matcher rather than described away here.
+ *
+ * ⚠️ **FIVE names are in the bypass matcher, and none is redundant.** This union,
+ * {@link ValidatedSnapshotRequest}, {@link SnapshotSqlValidator},
+ * {@link WarehouseProducerDeps} and {@link WarehouseSnapshotRunner} — every exported
+ * name an assertion can land on and reach this authority, for the reason above.
+ * `__tests__/warehouse-producer-bypass.test.ts` pins all five, which is the half a
+ * grep can actually hold; what it cannot hold is stated there rather than here.
+ *
+ * ⚠️ **The type still cannot say WHICH statement passed — only the run loop can.**
+ * A validator is free to return a genuine token minted for some other request, and
+ * a cached one is exactly that. {@link runWarehouseProducer} therefore compares the
+ * returned request against the one it submitted and refuses on a mismatch; the
+ * type narrows the door, the identity check closes it.
  *
  * The REFUSING arm is deliberately unbranded: refusing more is always safe, so
  * there is no property to forge.
  */
 export type SnapshotSqlVerdict =
-  | { readonly valid: true; readonly [snapshotSqlBrand]: true }
+  | { readonly valid: true; readonly request: ValidatedSnapshotRequest }
   // ⚠️ `error` is REQUIRED. The wrapped `SQLValidationResult` makes it required on
   // its failing arm, so an optional here made the seam weaker than the thing it
   // wraps — and the run loop paid for it with a `?? "no reason given"` fallback, on
@@ -1649,18 +1722,34 @@ export async function runWarehouseProducer(
 
   for (const entityPlan of plan.emit) {
     const sql = buildSnapshotSql(entityPlan, rowCap);
-    const request: WarehouseSnapshotRequest = {
+    // ⚠️ FROZEN, one of three things the identity check below needs. Identity proves
+    // the gate answered about THIS OBJECT; freezing stops the object changing under
+    // it; capturing the returned request ONCE (below) stops a getter answering the
+    // guard and the runner differently. `readonly` is erased at runtime, so a
+    // substituted validator could validate, then `Object.assign(request, {sql})` and
+    // hand the same reference back — passing the check and reaching a customer's
+    // datasource with a statement the gate never saw.
+    //
+    // Frozen, that write fails CLOSED either way, and the two ways differ: an
+    // `Object.assign` throws whatever the caller's strictness and lands on the
+    // gate-threw arm below; a plain `request.sql = …` in a sloppy-mode caller
+    // silently no-ops, so the run proceeds with the statement the gate DID see.
+    // Shallow is total here: every field of {@link WarehouseSnapshotRequest} is a
+    // primitive, which is a property of that interface rather than of this line.
+    const request: WarehouseSnapshotRequest = Object.freeze({
       workspaceId,
       entity: entityPlan.entity.name,
       connectionId: entityPlan.entity.connection ?? undefined,
       sql,
-    };
+    });
 
-    // ⚠️ The gate runs HERE, before the seam, and that placement is the guarantee.
-    // While it lived inside `defaultRunSnapshot`, any injected runner — a test
-    // harness today, a scheduler or self-hosted variant tomorrow — satisfied
-    // `WarehouseSnapshotRunner` while skipping the SELECT-only, single-statement,
-    // whitelist-scoped check entirely, and nothing in the type said otherwise. The
+    // ⚠️ The gate runs HERE, before the seam — and since #5230 the TYPE says so
+    // rather than this statement order. While the check lived inside
+    // `defaultRunSnapshot`, any injected runner — a test harness today, a scheduler
+    // or self-hosted variant tomorrow — satisfied `WarehouseSnapshotRunner` while
+    // skipping the SELECT-only, single-statement, whitelist-scoped check entirely.
+    // Moving it out fixed that but left the sequence itself a convention; the runner
+    // now takes only a `ValidatedSnapshotRequest`, so a reorder does not compile. The
     // statement is assembled from admin-authored `table:` and `sql:` expressions, so
     // it is exactly the input that check exists for.
     // `try`/`catch` rather than `.catch(…)`: a validator that throws SYNCHRONOUSLY
@@ -1706,9 +1795,76 @@ export async function runWarehouseProducer(
       continue;
     }
 
+    // ⚠️ **IDENTITY, not equality, and it is the anti-replay check.** The verdict
+    // now carries the request it passed, but nothing stops a validator from handing
+    // back a genuine token minted for a DIFFERENT statement — `cached ??= await
+    // validate(BENIGN_REQUEST)` compiles, forges nothing, and would otherwise let
+    // one benign statement authorize every entity in the run. Comparing object
+    // identity against what this iteration submitted is the narrowest possible
+    // acceptance: a re-serialized or reconstructed request is refused too, which is
+    // correct, because the gate's answer is about the object it was given.
+    //
+    // Transient (`snapshot-failed`), not `snapshot-rejected`: the statement was
+    // never judged, so "re-running will not change this" would be a claim about a
+    // check that did not happen. It shares the arm with the gate THROWING for the
+    // same reason — in both, the gate declined to answer about this entity.
+    // ⚠️ **READ ONCE, and this is the other half of freezing the request.**
+    // `validation` comes from the very seam this check defends against, so
+    // `validation.request` is an EXPRESSION the implementer controls: a getter or a
+    // Proxy answers the guard with the honest request and the runner with another
+    // object. Four read SITES across two paths — guard plus two log fields on the
+    // mismatch arm, guard plus the runner argument on the passing one — and a
+    // per-site read proves nothing about the next. The swapped object also carries its own
+    // `workspaceId`/`connectionId`, and `defaultRunSnapshot` selects the pool from
+    // those, so the residual was a cross-tenant read rather than only a gate bypass.
+    // Freezing closes mutation; capturing closes aliasing; neither closes the other.
+    // `reconcile.ts` states the same rule for the same reason.
+    const validated = validation.request;
+    if (validated !== request) {
+      log.error(
+        {
+          ...runLog,
+          entity: entityPlan.entity.name,
+          table: entityPlan.entity.table,
+          // ⚠️ What CAME BACK, under its OWN keys so `runLog`'s workspaceId is not
+          // shadowed. Without these, the replay this branch exists for (a cached
+          // token for the first entity) and a token minted against ANOTHER
+          // WORKSPACE's statement log identically — and the second is the one that
+          // has to be greppable the day it happens.
+          //
+          // Bounded: both strings come from the seam rather than from the plan, and
+          // nothing else on this line is attacker-shaped.
+          returnedEntity: validated.entity.slice(0, 200),
+          returnedWorkspaceId: validated.workspaceId.slice(0, 200),
+        },
+        "Warehouse producer: the SQL gate returned a verdict for a different request — refusing rather than reading",
+      );
+      refuseEntity(
+        entityPlan,
+        "snapshot-failed",
+        `Atlas could not confirm its SQL gate checked the query it would run against ` +
+          `"${entityPlan.entity.table}", so nothing was emitted for it this run. Nothing was ` +
+          "invalidated and no window was stamped. This is an Atlas wiring fault rather than a problem " +
+          // ⚠️ INTERPOLATED, not "this run's request id". The report carries no
+          // requestId field and no middleware echoes one back, so an operator told
+          // to quote it had workspace plus wall-clock — exactly what
+          // `WarehouseRunContext.requestId`'s docstring exists to prevent. Same
+          // shape as the entity-edge failure message above.
+          // `"unknown"`, matching `vocabulary-preview.ts` and
+          // `vocabulary-object-radius.ts`. Two spellings of the same placeholder in
+          // one subsystem means an operator grepping support tickets for one misses
+          // the other.
+          `with the entity — if it repeats, report it with request id ${requestId ?? "unknown"}.`,
+      );
+      continue;
+    }
+
     let rows: readonly Record<string, unknown>[];
     try {
-      rows = await runSnapshot(request);
+      // `validated`, the value the guard compared — NOT a fresh `validation.request`,
+      // which would be a second read of a property the seam controls. See the capture
+      // above.
+      rows = await runSnapshot(validated);
     } catch (err) {
       // The Error itself, not `.message`. `scrubErrSerializer` emits type, message,
       // stack AND pg's `code` with credentials already stripped — and `42P01` vs
@@ -2130,8 +2286,9 @@ async function defaultLoadEntity(
  * guarantee: while the validation lived inside the shipped runner, any substituted
  * runner satisfied the runner type while skipping the gate entirely, and nothing in
  * the type said otherwise. {@link runWarehouseProducer} now calls this before the
- * runner, so a replacement runner cannot reach a datasource with an unvalidated
- * statement.
+ * runner — and since #5230 the runner's parameter is a
+ * {@link ValidatedSnapshotRequest}, so a replacement runner cannot reach a
+ * datasource with an unvalidated statement even if the call order changes.
  *
  * Exported so a test can drive the REAL gate over a REAL built statement.
  *
@@ -2150,13 +2307,17 @@ export async function defaultValidateSnapshotSql(
 ): Promise<SnapshotSqlVerdict> {
   const { validateSQL } = await import("@atlas/api/lib/tools/sql");
   const result = await validateSQL(request.sql, request.connectionId, request.workspaceId);
-  // THE cast — the only `as SnapshotSqlVerdict` in production code, which is what
+  // THE cast — the only one in production code, which is what
   // `warehouse-producer-bypass.test.ts` pins. This is the single point where
   // "the product's SQL gate said yes" becomes a value the run will act on — see
-  // {@link SnapshotSqlVerdict} for why that has to be unforgeable by an object
+  // {@link ValidatedSnapshotRequest} for why that has to be unforgeable by an object
   // literal rather than merely documented.
+  //
+  // It brands THE REQUEST IT WAS GIVEN, by reference. Constructing a fresh object
+  // with the same fields would satisfy the type and fail the run loop's identity
+  // check, which is the anti-replay guard — the token has to be about this object.
   return result.valid
-    ? ({ valid: true } as SnapshotSqlVerdict)
+    ? { valid: true, request: request as ValidatedSnapshotRequest }
     : // `error` is required on both sides — `SQLValidationResult`'s failing arm and
       // this one — so there is nothing to conditionally spread.
       { valid: false, error: result.error };
@@ -2165,12 +2326,13 @@ export async function defaultValidateSnapshotSql(
 /**
  * The shipped snapshot runner — reads tier-1, and nothing else.
  *
- * It deliberately does NOT validate: the gate ran before it was called, and having
- * it here as well would put the product's one SQL invariant inside a substitutable
- * implementation. See {@link defaultValidateSnapshotSql}.
+ * It deliberately does NOT validate: the gate ran before it was called — its
+ * parameter type is the proof — and having it here as well would put the product's
+ * one SQL invariant inside a substitutable implementation. See
+ * {@link defaultValidateSnapshotSql}.
  */
 async function defaultRunSnapshot(
-  request: WarehouseSnapshotRequest,
+  request: ValidatedSnapshotRequest,
 ): Promise<readonly Record<string, unknown>[]> {
   const { connections } = await import("@atlas/api/lib/db/connection");
   const connection = connections.getForOrg(request.workspaceId, request.connectionId ?? "default");

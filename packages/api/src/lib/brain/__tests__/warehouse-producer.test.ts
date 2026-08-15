@@ -74,9 +74,12 @@ import {
   type WarehouseEntityLookup,
   type WarehouseEntityPlan,
   type WarehouseProducerDeps,
+  type SnapshotSqlValidator,
   type SnapshotSqlVerdict,
+  type ValidatedSnapshotRequest,
   type WarehouseRowId,
   type WarehouseSnapshotRequest,
+  type WarehouseSnapshotRunner,
 } from "@atlas/api/lib/brain/warehouse-producer";
 
 const WORKSPACE = "ws-5042";
@@ -517,6 +520,13 @@ describe("buildSnapshotSql", () => {
    * actually reached (inside the hooks and restored after — the test-discipline
    * rule). And the assertions are UNCONDITIONAL, because an assertion inside
    * `if (!valid)` reports "pass" for exactly the case it was written to exclude.
+   *
+   * ⚠️ **This block REDS if you run it in the same `bun test` invocation as
+   * `warehouse-producer-mint.test.ts`, and that is the tripwire working.** That
+   * suite `mock.module`s `lib/tools/sql`, whose blast radius is the process, so the
+   * real gate is not what answers here. The isolated runner spawns per file, so CI
+   * and `bun run test` are unaffected; a hand-run of both files together is not, and
+   * the red is telling you this block measured a stub. Run them separately.
    */
   describe("against the product's real SQL gate", () => {
     let priorDatasourceUrl: string | undefined;
@@ -543,6 +553,12 @@ describe("buildSnapshotSql", () => {
       // The tripwire the first version lacked: the gate must have been REACHED.
       // "No valid datasource" means it returned before reading the statement.
       expect(reason(result)).not.toContain("No valid datasource");
+      // ⚠️ And a POSITIVE tripwire, which the negative one cannot supply: this is
+      // the SHIPPED gate's own wording. A negative assertion is satisfied by any
+      // stub that happens not to say that phrase, and `mock.module` is process-wide
+      // — so co-locating a suite that stubs `lib/tools/sql` in one `bun test`
+      // invocation made this whole block pass against the stub's message instead.
+      expect(reason(result)).toMatch(/allowed list|catalog\.yml/);
       // The whitelist is workspace-scoped and this workspace has none, so a
       // table-scoped rejection is the expected shape here. A FORM rejection would
       // reject in EVERY workspace — ADR-0039's dead producer.
@@ -883,13 +899,17 @@ function harness(options: {
         validations.push(request);
         return rejected.has(request.entity)
           ? { valid: false, error: `Table "${request.entity}" is not in the whitelist` }
-      // ⚠️ A CAST, and it has to be. `SnapshotSqlVerdict`'s passing arm is branded
-      // so no object literal can assert that the product's SQL gate said yes —
-      // which is the whole point, since an unbranded `{valid: true}` made the seam
-      // the same convention-enforced hole it replaced. The real gate is
-      // workspace-whitelist-scoped and this suite has no whitelist, so the bypass
-      // is deliberate, named here, and greppable as `as SnapshotSqlVerdict`.
-          : ({ valid: true } as SnapshotSqlVerdict);
+      // ⚠️ A CAST, and it has to be. The passing verdict carries a branded
+      // `ValidatedSnapshotRequest`, so no object literal can assert that the
+      // product's SQL gate said yes — which is the whole point, since an unbranded
+      // `{valid: true}` made the seam the same convention-enforced hole it
+      // replaced. The real gate is workspace-whitelist-scoped and this suite has no
+      // whitelist, so the bypass is deliberate, named here, and greppable.
+      //
+      // ⚠️ It brands THE REQUEST IT WAS HANDED, by reference. Minting a fresh object
+      // here would satisfy the type and be refused by the run loop's identity check
+      // (#5230) — which is the anti-replay guard, and it does not exempt harnesses.
+          : { valid: true, request: request as ValidatedSnapshotRequest };
       },
       runSnapshot: async (request) => {
         snapshots.push(request);
@@ -1044,7 +1064,10 @@ describe("runWarehouseProducer", () => {
         // that.
         validateSnapshotSql: (request) => {
           if (request.entity === "Throws") throw new Error("module init failed");
-          return Promise.resolve({ valid: true } as SnapshotSqlVerdict);
+          return Promise.resolve({
+            valid: true,
+            request: request as ValidatedSnapshotRequest,
+          });
         },
       },
     );
@@ -1054,6 +1077,241 @@ describe("runWarehouseProducer", () => {
     expect(report.refusals[0]?.message).not.toContain("Re-running will not change");
     // The positive control: one entity throwing costs one entity.
     expect(report.created).toBe(1);
+  });
+
+  test("a REPLAYED verdict cannot authorize a different statement (#5230)", async () => {
+    // ⚠️ THE SHAPE #5230 EXISTS FOR, and nothing in it is forged. The validator
+    // mints ONE genuine passing token — for the first request it is handed — and
+    // hands the same token back for every entity after that:
+    //
+    //   cached ??= await validate(FIRST_REQUEST)
+    //
+    // Under a verdict that only said "something passed", every later entity reached
+    // the datasource on a token about a statement it has nothing to do with. The
+    // verdict now carries the request it passed, and the run loop compares it by
+    // IDENTITY against what it submitted.
+    const h = harness({
+      pairs: [
+        { entity: "First", dimension: "status", naming: false },
+        { entity: "Second", dimension: "tier", naming: false },
+      ],
+      entities: {
+        First: entityYaml({ table: "first", primaryKey: "id", dimensions: ["id", "status"] }),
+        Second: entityYaml({ table: "second", primaryKey: "id", dimensions: ["id", "tier"] }),
+      },
+      // ⚠️ DIFFERENT row counts, so the two entities cannot be told apart by
+      // accident: an assertion that both ran and one that only the first did would
+      // otherwise read the same on `created`.
+      rows: {
+        First: [snapshotRow("Acme Corp", "gold")],
+        Second: [snapshotRow("Beta Ltd", "silver"), snapshotRow("Gamma Inc", "bronze")],
+      },
+    });
+
+    let cached: SnapshotSqlVerdict | undefined;
+    const report = await runWarehouseProducer(
+      { workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-replay" },
+      {
+        ...h.deps,
+        validateSnapshotSql: async (request) => {
+          h.validations.push(request);
+          return (cached ??= { valid: true, request: request as ValidatedSnapshotRequest });
+        },
+      },
+    );
+
+    // The gate was consulted for both — the replay is at the VERDICT, not the call.
+    expect(h.validations.map((v) => v.entity).toSorted()).toEqual(["First", "Second"]);
+
+    // Exactly one entity reached the runner: the one the cached token is actually
+    // about. Asserted relationally rather than by name, because which entity the
+    // planner emits first is not this test's subject.
+    expect(h.snapshots).toHaveLength(1);
+    const ran = h.snapshots[0]?.entity;
+    // ⚠️ WHICH one ran, not merely that one did. `not.toBe(ran)` alone is satisfied
+    // by an INVERTED check (`===` instead of `!==`), which runs the wrong entity on
+    // the cached token and refuses the right one — the mutation this test is the
+    // subject of, and the one it could not see. The cached token is about the first
+    // request the gate was handed, so that entity is the one that may run.
+    expect(ran).toBe(h.validations[0]?.entity);
+    // …and the row counts differ (1 vs 2), so `created` says which entity's rows
+    // were read rather than only that reading happened.
+    expect(report.created).toBe(1);
+    expect(refusalKeys(report.refusals)).toHaveLength(1);
+    const refused = report.refusals[0];
+    expect(refused?.entity).not.toBe(ran);
+    // TRANSIENT, not `snapshot-rejected`: the statement was never judged, so a
+    // message saying "re-running will not change this" would describe a check that
+    // did not happen.
+    expect(refused?.reason).toBe("snapshot-failed");
+    expect(refused?.message).not.toContain("Re-running will not change");
+    expect(refused?.message).toContain("could not confirm");
+    // The operator's only handle: the report carries no request id, so the refusal
+    // has to name it inline or the instruction to quote it is unfollowable.
+    expect(refused?.message).toContain("req-replay");
+  });
+
+  test("a verdict carrying a RECONSTRUCTED request is refused too (#5230)", async () => {
+    // Identity, not field equality. A validator that returns a token for an object
+    // with the same fields is indistinguishable at the field level from one
+    // returning a token for a statement it rewrote — the gate's answer is about the
+    // object it was given, so a copy is refused. Without this the check could be
+    // weakened to a deep compare and the test above would stay green, since a
+    // CACHED token differs in fields as well as in identity.
+    const h = harness({
+      pairs: [{ entity: "Copied", dimension: "status", naming: false }],
+      entities: {
+        Copied: entityYaml({ table: "copied", primaryKey: "id", dimensions: ["id", "status"] }),
+      },
+      rows: { Copied: [snapshotRow("Acme Corp", "active")] },
+    });
+
+    const report = await runWarehouseProducer(
+      { workspaceId: WORKSPACE, triggeredBy: "user-1" },
+      {
+        ...h.deps,
+        validateSnapshotSql: async (request) => ({
+          valid: true,
+          request: { ...request } as ValidatedSnapshotRequest,
+        }),
+      },
+    );
+
+    expect(h.snapshots).toEqual([]);
+    expect(refusalKeys(report.refusals)).toEqual(["Copied.status:snapshot-failed"]);
+    // ⚠️ The MESSAGE, because `snapshot-failed` is shared by four arms — the gate
+    // throwing, the snapshot read throwing, a rolled-back transaction, and this one
+    // — and only the message tells them apart. (The gate REJECTING is
+    // `snapshot-rejected`, a different reason.) Without it this test passes on a run
+    // that refused for an entirely different reason.
+    expect(report.refusals[0]?.message).toContain("could not confirm");
+    expect(report.created).toBe(0);
+  });
+
+  test("a validator that MUTATES the request after validating is refused (#5230)", async () => {
+    // ⚠️ The residual the identity check reads as if it had closed. `readonly` is
+    // erased at runtime, so a validator can validate, rewrite `sql`, and hand back
+    // the SAME reference — identity passes and the datasource reads a statement the
+    // gate never saw. The request is frozen, so the write throws instead, onto the
+    // gate-threw arm. `Object.assign` rather than `request.sql = …`: the latter is a
+    // compile error against the `readonly` field, and a test that cannot be written
+    // is not evidence about runtime.
+    const h = harness({
+      pairs: [{ entity: "Mutated", dimension: "status", naming: false }],
+      entities: {
+        Mutated: entityYaml({ table: "mutated", primaryKey: "id", dimensions: ["id", "status"] }),
+      },
+      rows: { Mutated: [snapshotRow("Acme Corp", "active")] },
+    });
+
+    const report = await runWarehouseProducer(
+      { workspaceId: WORKSPACE, triggeredBy: "user-1" },
+      {
+        ...h.deps,
+        validateSnapshotSql: async (request) => {
+          Object.assign(request, { sql: "SELECT * FROM salaries" });
+          return { valid: true, request: request as ValidatedSnapshotRequest };
+        },
+      },
+    );
+
+    expect(h.snapshots).toEqual([]);
+    expect(refusalKeys(report.refusals)).toEqual(["Mutated.status:snapshot-failed"]);
+    // The TRANSIENT arm, and specifically the gate-threw one rather than the
+    // mismatch one — the write throws before a verdict exists.
+    expect(report.refusals[0]?.message).toContain("could not check the query");
+    expect(report.created).toBe(0);
+  });
+
+  test("a verdict whose `request` ANSWERS DIFFERENTLY on each read is refused (#5230)", async () => {
+    // ⚠️ Identity across TWO PROPERTY ACCESSES is not identity. `validation` comes
+    // from the seam the check defends against, so `validation.request` is an
+    // expression the implementer controls: a getter answers the guard with the
+    // honest request and the runner with another object. Freezing the request closes
+    // mutation and leaves this open; only capturing the value once closes it.
+    //
+    // Worse than the mutation hole it sits beside: the substituted object carries its
+    // own `workspaceId`/`connectionId`, and `defaultRunSnapshot` selects the
+    // connection pool from those — a cross-tenant read, not merely a gate bypass.
+    const h = harness({
+      pairs: [{ entity: "Aliased", dimension: "status", naming: false }],
+      entities: {
+        Aliased: entityYaml({ table: "aliased", primaryKey: "id", dimensions: ["id", "status"] }),
+      },
+      rows: { Aliased: [snapshotRow("Acme Corp", "active")] },
+    });
+
+    let reads = 0;
+    const report = await runWarehouseProducer(
+      { workspaceId: WORKSPACE, triggeredBy: "user-1" },
+      {
+        ...h.deps,
+        validateSnapshotSql: async (request) => {
+          const other = { ...request, sql: "SELECT * FROM salaries" };
+          return {
+            valid: true,
+            get request() {
+              // First read: the honest object, so the guard passes. Every read after:
+              // a different statement.
+              return (reads++ === 0 ? request : other) as ValidatedSnapshotRequest;
+            },
+          };
+        },
+      },
+    );
+
+    // ⚠️ EXACTLY ONE read. Two would mean the guard's value and the runner's
+    // argument came from separate property accesses — the defect, even on a read
+    // that happens to return the same thing.
+    expect(reads).toBe(1);
+    // …and the statement that reached the runner is the one the gate approved, not
+    // the getter's second answer. This is the assertion that goes red without the
+    // capture: the run still succeeds, silently, on the wrong statement.
+    expect(h.snapshots).toHaveLength(1);
+    expect(h.snapshots[0]?.sql).not.toContain("salaries");
+    expect(h.snapshots[0]?.sql).toContain("aliased");
+    // A refusal here would be a DIFFERENT, weaker outcome — the honest request did
+    // pass the gate, so the entity is expected to produce.
+    expect(report.refusals).toEqual([]);
+    expect(report.created).toBe(1);
+  });
+
+  test("the runner's parameter refuses an unvalidated request — ordering is a TYPE (#5230)", () => {
+    // ⚠️ A COMPILE-TIME assertion, and `bun run type` is where it fails. `@ts-expect-error`
+    // is an error when the line it guards has NO error, so widening
+    // `WarehouseSnapshotRunner` back to a bare request — or dropping the brand —
+    // reds the type gate rather than quietly restoring the hole this issue closed.
+    // Statement order was the only thing sequencing validate-then-run before #5230.
+    const runner: WarehouseSnapshotRunner = async () => [];
+    const bare: WarehouseSnapshotRequest = {
+      workspaceId: WORKSPACE,
+      entity: "Unvalidated",
+      connectionId: undefined,
+      sql: "SELECT 1",
+    };
+    // @ts-expect-error a bare request has not passed the SQL gate, and the runner says so
+    const call = () => runner(bare);
+    // ⚠️ Keep the guarded line MINIMAL. `@ts-expect-error` suppresses *any* error on
+    // its line, so a line that grows can start satisfying the directive for a reason
+    // that has nothing to do with the brand.
+    expect(typeof call).toBe("function");
+
+    // The BRAND, not only the parameter — three more one-line claims, each measured
+    // against `bun run type` rather than reasoned about. Without these, deleting the
+    // brand from the verdict's passing arm would leave only the runner's parameter
+    // pinned, and the replay half of #5230 would go quiet.
+    // @ts-expect-error the passing verdict cannot be written as a literal carrying a bare request
+    const literal: SnapshotSqlVerdict = { valid: true, request: bare };
+    // @ts-expect-error a validator cannot return a token for a request the gate has not branded
+    const mint: SnapshotSqlValidator = async (r) => ({ valid: true, request: r });
+    // @ts-expect-error the runner cannot be narrowed to a function taking a bare request
+    const widened: (r: WarehouseSnapshotRequest) => Promise<readonly Record<string, unknown>[]> =
+      runner;
+    // ⚠️ This asserts NOTHING about the brand, and saying so is the point. The three
+    // values are referenced so the unused-vars rule is satisfied; the CLAIM is each
+    // `@ts-expect-error` directive above, and `bun run type` is where it fails. An
+    // `every(v => v !== null)` here read like an assertion and had no reachable red.
+    expect([literal, mint, widened]).toHaveLength(3);
   });
 
   test("a validator that REJECTS is caught on the same arm", async () => {

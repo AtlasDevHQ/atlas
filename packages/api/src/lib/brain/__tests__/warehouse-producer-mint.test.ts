@@ -6,10 +6,10 @@
  * `runWarehouseProducer` refuses unless `verdict.request === request` — the
  * anti-replay check. The only production mint is `defaultValidateSnapshotSql`, and
  * nothing asserted that it brands the request it was HANDED rather than a copy of
- * it. That asymmetry is the dangerous kind: an innocuous edit there (`{ ...request }`,
- * a normalized field, a logging Proxy) compiles, keeps every existing suite green,
- * and in production refuses **every entity on every run** as an "Atlas wiring fault".
- * The producer silently stops emitting and the Atlas goes stale.
+ * it. Measured: replacing that with `{ ...request }` fails only this suite — the
+ * unit, logging and bypass suites stay green — while in production every entity is
+ * refused on every run as an "Atlas wiring fault". The producer silently stops
+ * emitting and the Atlas goes stale.
  *
  * The unit suite cannot cover it. Its real-gate block drives the shipped
  * `defaultValidateSnapshotSql` for real, but the gate's table check is
@@ -71,9 +71,12 @@ beforeAll(async () => {
 afterAll(() => {
   // ⚠️ `mock.module` is PROCESS-wide, not file-wide. `scripts/test-isolated.ts`
   // spawns per file so CI is unaffected, but `bun test <a> <b>` — the invocation
-  // CLAUDE.md permits for single files — shares one process, and a leaked REFUSING
-  // stub would make `warehouse-producer.test.ts`'s real-gate block pass vacuously.
-  // Resetting cannot uninstall the mock; it makes the leak benign instead.
+  // CLAUDE.md permits for single files — shares one process. Resetting cannot
+  // uninstall the mock. Since #5230 `warehouse-producer.test.ts`'s real-gate block
+  // carries a positive tripwire on the shipped gate's own wording, so a co-run REDS
+  // there rather than passing against this stub — measured, and its docstring says
+  // so. The reset only keeps the leaked state predictable; the red is that file's
+  // job, not this one's.
   nextResult = { valid: true };
   validateSqlCalls = [];
 });

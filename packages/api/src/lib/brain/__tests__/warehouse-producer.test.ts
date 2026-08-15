@@ -1180,9 +1180,10 @@ describe("runWarehouseProducer", () => {
     expect(h.snapshots).toEqual([]);
     expect(refusalKeys(report.refusals)).toEqual(["Copied.status:snapshot-failed"]);
     // ⚠️ The MESSAGE, because `snapshot-failed` is shared by four arms — the gate
-    // throwing, the gate rejecting, the snapshot throwing, and this one — and only
-    // the message tells them apart. Without it this test passes on a run that
-    // refused for an entirely different reason.
+    // throwing, the snapshot read throwing, a rolled-back transaction, and this one
+    // — and only the message tells them apart. (The gate REJECTING is
+    // `snapshot-rejected`, a different reason.) Without it this test passes on a run
+    // that refused for an entirely different reason.
     expect(report.refusals[0]?.message).toContain("could not confirm");
     expect(report.created).toBe(0);
   });

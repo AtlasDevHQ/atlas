@@ -3,12 +3,12 @@
  *
  * ## WHY THIS FILE EXISTS
  *
- * `warehouse-producer.ts` brands the SQL gate's PASSING verdict so that no object
- * literal can assert *"the product's SELECT-only / single-statement /
- * whitelist-scoped check said yes"*. That closes the hole a plain
- * `{ valid: boolean }` left — but the brand's own docstring then makes a claim the
- * TYPE cannot keep: that grepping for the cast is the whole list of places the gate
- * is bypassed. A cast is greppable; nothing fails when a fifth one appears.
+ * `warehouse-producer.ts` brands the REQUEST the SQL gate passed, and the passing
+ * verdict carries it — so no object literal can assert *"the product's SELECT-only /
+ * single-statement / whitelist-scoped check said yes"*. That closes the hole a plain
+ * `{ valid: boolean }` left, but it leaves a claim the TYPE cannot keep: that
+ * grepping for the assertion is the whole list of places the gate is bypassed. An
+ * assertion is greppable; nothing fails when a fifth one appears.
  *
  * ## FIVE names, because #5230 moved the brand onto the REQUEST
  *
@@ -20,19 +20,15 @@
  * VERDICT union, the VALIDATOR seam type, the DEPS interface that holds it, or the
  * RUNNER type whose parameter is the branded request.
  *
- * ⚠️ **The last four are here because the docstrings claimed they were refused, and
- * that was measured false — twice, with two different wrong explanations.** The
- * mechanism, measured against the repo's own checker: the brand only ADDS a
- * property, so the branded request is assignable to the bare one, and `as` succeeds
- * whenever EITHER direction is comparable — the reverse direction carries all of
- * them. What IS refused is the shape where the reverse direction also fails: a
- * NULLARY mint (a 1-parameter function type is not assignable to a 0-parameter one)
- * or a literal with an excess property. Pinning `valid` with `as const` does not
- * close it; that was the second wrong explanation, and it was the one this file
- * shipped in round 1. Such a validator returns its own argument, so the run loop's
- * identity check waves it through: the gate never ran and nothing downstream can
- * tell. Matching only the first two would have left this guard green over the one
- * bypass the brand does not close.
+ * ⚠️ **All five have to be matched, and the reason is one property of the brand.**
+ * It only ADDS a field, so a branded request is assignable to a bare one, and `as`
+ * succeeds whenever EITHER direction is comparable — the reverse direction carries
+ * every seam name. Refused only where the reverse direction also fails: a NULLARY
+ * mint (a 1-parameter function type is not assignable to a 0-parameter one), or a
+ * literal with an excess property. `as const` on `valid` does not close it. Measured
+ * against the repo's own checker, because the two obvious explanations for this were
+ * both wrong. Such a validator returns its own argument, so the run loop's identity
+ * check waves it through: the gate never ran and nothing downstream can tell.
  *
  * ⚠️ **The pattern is not written out in this file's prose, and that is the point
  * rather than fastidiousness.** A lexical guard cannot tell a quotation from an
@@ -42,13 +38,6 @@
  * guarded, and the next real instance gets written inside it. The exact spelling
  * lives in {@link BYPASS_RE} below, where a reader can still see it and the scan
  * cannot trip over it.
- *
- * This is the repo's standing ratchet applied on a shorter cycle than usual: the
- * same principle was swept for twice inside one PR — once when the gate moved out
- * of `defaultRunSnapshot`, and again when the seam that replaced it turned out to
- * be as skippable as the thing it replaced — and prose does not scale to new
- * surface, which is exactly where it kept failing. So the enumeration is asserted
- * as what it is.
  *
  * ## What a new entry means
  *
@@ -67,17 +56,15 @@
  * laundering are all REFUSED by the COMPILER.
  *
  * ⚠️ **What this scan holds is a different question, and conflating the two is how
- * this header has now been wrong twice.** What it holds is exactly: *an assertion
- * that puts the keyword and one of the five names on ONE PHYSICAL LINE.* So it DOES
- * catch a double assertion through `unknown` written on one line — an earlier draft
- * listed that as escaping, which was measurably false and is corrected here. What
- * genuinely escapes: an angle-bracket assertion; a local type alias; an import that
- * renames one of these types OUT to another local name; an indexed lookup of the
- * runner's parameter; a line break between keyword and name (the character class
- * below bars a newline); and `any`-typed wiring or a `Partial<T>`-shaped generic
- * builder, which need no assertion at all. Chasing those is a regex arms race the
- * honest sentence wins; the sentence is here so nobody reads a green run as more
- * than it is.
+ * this header has been wrong twice.** What it holds is exactly: *an assertion that
+ * puts the keyword and one of the five names on ONE PHYSICAL LINE.* So it DOES catch
+ * a double assertion through `unknown` written on one line. What genuinely escapes:
+ * an angle-bracket assertion; a local type alias (including one aliasing an indexed
+ * lookup of the runner's parameter); an import that renames one of these types OUT
+ * to another local name; a line break between keyword and name, since the character
+ * class below bars a newline; and `any`-typed wiring or a `Partial<T>`-shaped
+ * generic builder, which need no assertion at all. The list is not exhaustive and
+ * cannot be — read a green run as *"no new file names one"*, nothing more.
  *
  * It also does not pin the ANTI-REPLAY half. A mint listed below hands back a token
  * for the request it was given; a mint that hands back a token for some OTHER
@@ -133,9 +120,11 @@ const ROOTS: readonly { readonly dir: string; readonly label: string }[] = [
  * belongs here. An entry is a place to LOOK, not a finding.
  *
  * ⚠️ ONE production entry, deliberately. It is the single point where the product's
- * gate answering yes becomes a value the run will act on. Note the module also names
- * these types in prose, so it would keep matching even if its cast were removed —
- * this test cannot tell you the cast is still there, only that no NEW file names one.
+ * gate answering yes becomes a value the run will act on. Measured: the module
+ * matches on that cast's line alone — no prose line in it puts the keyword and a
+ * matched name together — so deleting the cast without deleting this entry REDS the
+ * test. Deleting both together is silent; an entry is a claim about the tree, not a
+ * lock on the file.
  */
 const KNOWN_BYPASSES: readonly { file: string; why: string }[] = [
   {
@@ -183,11 +172,9 @@ const KNOWN_BYPASSES: readonly { file: string; why: string }[] = [
  * matches — a false positive rather than a hole, since it fails loudly and the fix
  * is to rename the local. An import that renames one of these types OUT to a
  * different local name does NOT match, and that direction is a real escape, listed
- * with the others in the header. A round-1 draft asserted the opposite direction and
- * called it a false positive; both halves were wrong, and the correction is measured
- * rather than reasoned. Neither spelling is written out here — writing one put THIS
- * FILE into its own result set on the first run, which is the quotation trap
- * arriving exactly where the header says it does.
+ * with the others in the header. Neither spelling is written out here: writing one
+ * put THIS FILE into its own result set on the first run, which is the quotation
+ * trap arriving exactly where the header says it does.
  */
 const BYPASS_RE =
   /\bas\b[^;=\n]*\b(?:ValidatedSnapshotRequest|SnapshotSqlVerdict|SnapshotSqlValidator|WarehouseProducerDeps|WarehouseSnapshotRunner)\b/;
@@ -246,8 +233,8 @@ describe("the SQL-gate bypass set (#5042, #5230)", () => {
     // file that has not imported the type writes it this way.
     const qualified = `const v = x as import("./warehouse-producer").Snapshot${"SqlVerdict"};`;
     expect(BYPASS_RE.test(qualified)).toBe(true);
-    // #5230's spelling — the one the four sites below actually use. Without this
-    // arm the matcher could lose the request alternative entirely and every
+    // #5230's spelling — the one the four sites listed ABOVE actually use. Without
+    // this arm the matcher could lose the request alternative entirely and every
     // assertion here would still pass on the verdict one.
     const branded = `const v = { valid: true, request: r as Validated${"SnapshotRequest"} };`;
     expect(BYPASS_RE.test(branded)).toBe(true);

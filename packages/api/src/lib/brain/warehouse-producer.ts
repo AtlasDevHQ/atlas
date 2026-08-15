@@ -696,11 +696,10 @@ declare const validatedSnapshotSql: unique symbol;
  *   a new call site reaching the runner directly, compiled fine. Now the runner's
  *   only input is a value that cannot exist without the gate having produced it.
  *
- * The symbol is module-private and never exported, so the only ways to obtain one
- * are {@link defaultValidateSnapshotSql} or a cast naming this type (or
- * {@link SnapshotSqlVerdict}, whose passing arm is comparable to an object literal
- * carrying an unvalidated request). Both spellings are greppable, and
- * `__tests__/warehouse-producer-bypass.test.ts` pins the set.
+ * The symbol is module-private and never exported, so this type is minted by
+ * {@link defaultValidateSnapshotSql} or by an assertion. FIVE exported names can
+ * carry such an assertion — see {@link SnapshotSqlVerdict}'s note for why — and
+ * `__tests__/warehouse-producer-bypass.test.ts` pins all five.
  */
 export type ValidatedSnapshotRequest = WarehouseSnapshotRequest & {
   readonly [validatedSnapshotSql]: true;
@@ -1216,20 +1215,21 @@ export interface WarehouseRunContext {
  * refusing arm, `unknown`, and the identity form of generic-inference laundering.
  * ACCEPTED by the compiler: `as unknown as`, any `any`-typed wiring (`JSON.parse`,
  * an untyped mock, a dynamic `import()` of a plugin), a `Partial<T>`-shaped generic
- * builder — and, the one that matters, **an assertion onto the VALIDATOR seam type,
- * or onto this union, or onto the deps interface.**
+ * builder — and, the one that matters, **an assertion onto any of the five names the
+ * bypass matcher takes**: this union, {@link ValidatedSnapshotRequest},
+ * {@link SnapshotSqlValidator}, {@link WarehouseProducerDeps} or
+ * {@link WarehouseSnapshotRunner}.
  *
- * The mechanism, since two earlier drafts of this paragraph guessed it and both
- * guesses were measurably wrong: **the brand only ADDS a property**, so
+ * The mechanism, measured rather than reasoned — the two obvious explanations for it
+ * are both wrong: **the brand only ADDS a property**, so
  * `ValidatedSnapshotRequest` is assignable to {@link WarehouseSnapshotRequest}, and
  * `as` succeeds whenever EITHER direction is comparable. The reverse direction
- * carries every one of those spellings. The shapes that are refused are the ones
- * where the reverse direction also fails — a NULLARY mint (a 1-parameter function
- * type is not assignable to a 0-parameter one), or a literal with an excess
- * property. Pinning `valid` with `as const` does NOT close it; that was the second
- * wrong guess. Such a validator hands back its OWN argument, so the run loop's
- * identity check waves it through — which is why the seam names are in the bypass
- * matcher rather than described away here.
+ * carries every one of those spellings. Refused only where the reverse direction
+ * also fails — a NULLARY mint (a 1-parameter function type is not assignable to a
+ * 0-parameter one), or a literal with an excess property. Pinning `valid` with
+ * `as const` does NOT close it. Such a validator hands back its OWN argument, so the
+ * run loop's identity check waves it through — which is why the seam names are in
+ * the bypass matcher rather than described away here.
  *
  * ⚠️ **FIVE names are in the bypass matcher, and none is redundant.** This union,
  * {@link ValidatedSnapshotRequest}, {@link SnapshotSqlValidator},
@@ -1812,8 +1812,9 @@ export async function runWarehouseProducer(
     // `validation` comes from the very seam this check defends against, so
     // `validation.request` is an EXPRESSION the implementer controls: a getter or a
     // Proxy answers the guard with the honest request and the runner with another
-    // object. Four separate reads — guard, two log fields, and the runner argument —
-    // proved nothing about the fourth. The swapped object also carries its own
+    // object. Four read SITES across two paths — guard plus two log fields on the
+    // mismatch arm, guard plus the runner argument on the passing one — and a
+    // per-site read proves nothing about the next. The swapped object also carries its own
     // `workspaceId`/`connectionId`, and `defaultRunSnapshot` selects the pool from
     // those, so the residual was a cross-tenant read rather than only a gate bypass.
     // Freezing closes mutation; capturing closes aliasing; neither closes the other.

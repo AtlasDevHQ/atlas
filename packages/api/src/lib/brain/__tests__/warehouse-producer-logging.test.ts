@@ -340,9 +340,10 @@ describe("warehouse producer logging", () => {
   });
 
   it("logs a gate/request mismatch at ERROR, naming what came BACK (#5230)", async () => {
-    // ⚠️ The only ERROR-level per-entity refusal in the run loop — every sibling is
-    // a WARN, and the neighbouring `snapshot-failed` case above asserts
-    // `messages(errors)` is empty. Without this case, demoting this line to `warn`
+    // ⚠️ One of TWO ERROR-level per-entity refusals — the transaction-rollback case
+    // directly above is the other, and it also files `snapshot-failed`. Every
+    // remaining sibling is a WARN, and the first case in this file asserts the error
+    // sink is empty for one of them. Without this case, demoting this line to `warn`
     // (or deleting it) is green, which is the demotion this file's header names as
     // the failure it exists to refuse.
     //

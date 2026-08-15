@@ -7,12 +7,11 @@
  * forbid. Nothing was broken by it *yet*: no suite here calls `mock.module`
  * today, which is a fact about content, not about reach. The whole point of the
  * per-file spawn is that the first suite to reach for a module mock does not
- * silently take the other eight with it, and a runner added after that happens
- * is a runner added to debug it.
+ * silently take the other eight with it.
  *
  * Mirrors the sibling runners (`packages/web`, `packages/mcp`) rather than
  * inventing a shape. Trimmed of `--shard` / `--affected`, which the api runner
- * carries because its suite is large; this one is nine files and ~3s.
+ * carries because its suite is large; this one is nine files and under a second.
  *
  * Usage: bun run scripts/test-isolated.ts [--concurrency N] [filter]
  */
@@ -24,7 +23,7 @@ import { relative, resolve } from "node:path";
 const ROOT = resolve(import.meta.dir, "..");
 const SRC = resolve(ROOT, "src");
 
-/** Per-file subprocess timeout in milliseconds. The slowest suite here is ~1s. */
+/** Per-file subprocess timeout in milliseconds. The slowest suite here is under 200ms. */
 const FILE_TIMEOUT_MS = 60_000;
 
 // --- CLI args ---
@@ -32,7 +31,7 @@ const args = process.argv.slice(2);
 let concurrency = cpus().length;
 let filter: string | undefined;
 
-// ⚠️ AN UNKNOWN FLAG IS FATAL, and that is not tidiness.
+// ⚠️ AN UNKNOWN FLAG IS FATAL.
 //
 // The first cut silently dropped anything it did not recognise, so
 // `--affected` printed `Running 9 test files` and a green summary — a FULL run
@@ -106,9 +105,9 @@ const discovered = [...seen].sort();
 let files = discovered;
 
 if (filter) {
-  // ⚠️ Against the REPO-RELATIVE path, not the absolute one. Matching the
-  // absolute path meant any substring occurring in the checkout — `docs`,
-  // `atlas`, `src`, a username — matched every file, so
+  // ⚠️ Against the PACKAGE-relative path (`src/lib/__tests__/…`), not the
+  // absolute one. Matching the absolute path meant any substring occurring in
+  // the checkout — `docs`, `atlas`, `src`, a username — matched every file, so
   // `test-isolated.ts docs` ran all nine suites and reported them as a filtered
   // run. That is the mirror image of the `--affected` defect fixed above: a FULL
   // run reported as a narrowed one.

@@ -398,7 +398,8 @@ export type StorableErrorText = string & { readonly [storableErrorTextBrand]: tr
  * ⚠️ EXPORTED for the `@ts-expect-error` rows in
  * `__tests__/coverage-error-text-writers.test.ts`, and safely so: the only mint
  * for its `lastError` parameter is {@link storableErrorText}, so an outside
- * caller cannot reach it holding a raw string. A source-scan assertion about
+ * caller cannot reach it holding a raw string without an explicit cast or a
+ * suppression comment. A source-scan assertion about
  * the annotation would be a text match — `lastError: StorableErrorText | string`
  * would satisfy it while gutting the type — which is why the proof is a
  * compile check on the real function rather than a grep for its signature.

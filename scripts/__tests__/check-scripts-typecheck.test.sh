@@ -245,11 +245,11 @@ lint_probe() {
     # operator went and looked at `scripts/`.
     fail "$name — the probe-free BASELINE already failed (status=$base_status), so this suite could not measure anything.
     This is NOT a scripts/ failure. \`$*\` is a shipped repo-wide command; fix the diagnostic it reports below — wherever in the repo it lives — and this case measures again."
-    # ⚠️ ERRORS ONLY, when there are any. oxlint's baseline output is ~200 lines
-    # of the permanent `warn` rules ADR-0031 says never to chase, and the one
-    # `error` that actually failed the command sits somewhere in the middle of
-    # them — so dumping the whole thing points at the right place in the same
-    # sense a haystack points at a needle. Two spellings because the runner emits
+    # ⚠️ ERRORS ONLY, when there are any. The `lint:type-aware` baseline is ~258
+    # lines of the permanent `warn` rules ADR-0031 says never to chase (the plain
+    # `lint` baseline is ~12), and the one `error` that actually failed the
+    # command sits somewhere inside them — so dumping the whole thing buries the
+    # one line that matters. Two spellings because the runner emits
     # GitHub annotations instead of `path:line:col:` (see this helper's header);
     # the unfiltered dump is the fallback for a baseline that failed for some
     # reason OTHER than a lint finding, e.g. the tool itself crashing.

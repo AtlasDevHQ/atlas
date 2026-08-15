@@ -125,10 +125,14 @@
 //
 // Exit 1 means the published snippets drifted. Exit 2 means this guard could not
 // answer — an environment fault ({@link die}) or an unexpected throw
-// ({@link installGuardBoundary}). Since #5243 there is no third case: a
-// `RangeError` from a pathological fence or a `TypeError` from a future edit no
-// longer exits 1 under a raw stack trace, which a CI operator read as "the docs
-// drifted" and took to `apps/docs`.
+// ({@link installGuardBoundary}). Since #5243 a `RangeError` from a pathological
+// fence or a `TypeError` from a future edit no longer exits 1 under a raw stack
+// trace, which a CI operator read as "the docs drifted" and took to `apps/docs`.
+//
+// ⚠️ ONE residual, and the boundary structurally cannot reach it: a fault BEFORE
+// it installs. A parse error or an unresolved import in this file exits 1
+// (measured), because the module never loads and the handlers were never
+// registered to say otherwise.
 //
 // ⚠️ THAT IS A STATEMENT ABOUT EXIT CODES, NOT ABOUT COVERAGE. The four
 // unfixtured sites below are unfixtured for reasons the boundary does not touch
@@ -185,8 +189,9 @@ const DEFAULT_DOCS_GLOBS = ["apps/docs/content/**/*.mdx"] as const;
  * escape uncaught would report it as both.
  *
  * ⚠️ SCOPE: this is the NAMED half of the taxonomy — the three I/O boundaries
- * that route through it (the root stat, the glob scan, each file read), where
- * the guard knows what went wrong and can say so. The unnamed half is
+ * that route through it (the root stat, the glob scan, each file read) plus
+ * {@link parseArgs}'s `fail`, where the guard knows what went wrong and can say
+ * so. The unnamed half is
  * {@link installGuardBoundary}, which catches everything else. Both exit 2;
  * their MESSAGES are what tell them apart, and that distinction is the point of
  * having two (#5243).

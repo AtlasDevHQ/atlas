@@ -53,23 +53,30 @@
  *   safe rather than merely argued-safe. `recordFailureRow` is an UPSERT, so a
  *   new caller does not just write a row, it INVENTS one.
  *
- * What is NOT pinned, stated rather than papered over — and this list is itself
- * a round-2 finding, because the first version of it read as complete and was
- * not:
+ * What is NOT pinned, stated rather than papered over:
  *
  * - a column name built by interpolation (`SET ${COL} = $1`);
  * - Postgres's multi-column form, `SET (last_attempt_at, last_error) = ($2, $3)`
  *   — a natural refactor of the existing statement;
  * - a comment between the identifier and the `=` (`SET last_error /* x *\/ = $3`);
+ * - a plain `INSERT … (…, last_error) VALUES (…)` with NO `ON CONFLICT`. Both
+ *   statements that write the column today carry an `ON CONFLICT DO UPDATE SET`,
+ *   so the equality sees them; a new INSERT-only writer matches nothing —
+ *   measured — and for a `(workspace, class)` pair with no row yet it succeeds,
+ *   which is the row-INVENTING hazard this file warns about elsewhere;
+ * - a mint that never spells `StorableErrorText`: `as never`,
+ *   `as unknown as ReturnType<typeof storableErrorText>`, or
+ *   `Parameters<typeof recordFailureRow>[0]["lastError"]` all compile;
  * - any raw-SQL writer outside `lib/brain/**`. Deliberate: `last_error` is also
  *   a column on `crm_outbox`, `lead_outbox`, `email_outbox` and the billing
- *   teardown tables (19 write sites, measured), so a tree-wide scan for it would
- *   be dominated by writes this rule says nothing about. The Drizzle scan and
- *   the call-site scan are what cover the wide tree, because a symbol is
- *   table-specific where a column name is not.
+ *   teardown tables — 16 write sites under `packages/api/src` by this file's own
+ *   regex — so a tree-wide scan for it would be dominated by writes this rule
+ *   says nothing about. The Drizzle, call-site and type-name scans are what
+ *   cover the wide tree, because a symbol is table-specific where a column name
+ *   is not.
  *
- * The REMOVAL direction is safe in all four cases — the equality assertion reds
- * when a known write disappears. It is the ADDITION direction these miss.
+ * The REMOVAL direction is safe in every case — the equality assertion reds when
+ * a known write disappears. It is the ADDITION direction these miss.
  *
  * ## What the scan deliberately permits
  *
@@ -161,6 +168,8 @@ describe("the last_error writers refuse an unsanitized string at the type level"
 
 const BRAIN_DIR = resolve(import.meta.dir, "..");
 const API_SRC = resolve(BRAIN_DIR, "..", "..");
+/** `ee/` is source-available and imports `@atlas/api` from 96 files, measured. */
+const EE_SRC = resolve(API_SRC, "..", "..", "..", "ee", "src");
 
 /** The one file allowed to write a VALUE into the column. */
 const OWNER_FILE = "coverage-enumeration.ts";
@@ -194,12 +203,12 @@ function sourceFiles(dir: string): string[] {
  * `SET last_error = ''`, the single value the CHECK constraint refuses, produced
  * no match at all and was permitted silently.
  *
- * Only the SET form is matched. Both INSERTs naming `last_error` in a column
- * list also carry an `ON CONFLICT DO UPDATE SET last_error = …` for the same
- * value, so against this table's upsert shape an INSERT-only writer is not
- * expressible; the equality below is what keeps that honest, since a statement
- * writing the column without a SET would drop the count and red the suite rather
- * than let it go quietly blind.
+ * Only the SET form is matched. Both statements that write the column today
+ * carry an `ON CONFLICT DO UPDATE SET last_error = …`, so the equality below
+ * sees them, and REWRITING either to drop its SET would drop the count and red
+ * the suite. A NEW plain `INSERT … (…, last_error) VALUES (…)` with no
+ * `ON CONFLICT` matches nothing and moves no count — measured — so it is
+ * unpinned, like the other addition-direction gaps the header lists.
  */
 function lastErrorAssignments(text: string): string[] {
   const found: string[] = [];
@@ -292,12 +301,20 @@ describe("no unbranded sibling may write brain_coverage_cycle.last_error", () =>
     // that simply declares the return type and launders the value
     // (`return JSON.parse(JSON.stringify(raw))`).
     //
-    // The property that actually holds is containment of the TYPE NAME: nothing
-    // outside the owner file may name `StorableErrorText` at all, so there is
-    // nowhere to declare a second mint. (Round 2 widened the caller scan and the
-    // Drizzle scan to the whole tree and left this one on `ownerText` — the same
-    // asymmetry, surviving one fix over.)
-    const namers = sourceFiles(API_SRC)
+    // What holds instead is containment of the TYPE NAME across `packages/api/src`
+    // AND `ee/src`. (Round 2 widened the caller scan and the Drizzle scan to the
+    // whole tree and left this one on `ownerText` — the same asymmetry, surviving
+    // one fix over. `ee/` is included because 96 files there import `@atlas/api`,
+    // measured, and this repo has a standing lesson about audit greps that stop
+    // at `packages/`.)
+    //
+    // ⚠️ NARROWER THAN "there is nowhere to declare a second mint", which an
+    // earlier version of this comment claimed. Three shapes compile without ever
+    // naming the type — `as never`, `as unknown as ReturnType<typeof
+    // storableErrorText>`, and `Parameters<typeof recordFailureRow>[0]["lastError"]`
+    // — so they are unpinned, and they are on the header's list. This assertion
+    // pins the spelling, which is the one a sibling minter would naturally use.
+    const namers = [...sourceFiles(API_SRC), ...sourceFiles(EE_SRC)]
       .filter((abs) => relative(API_SRC, abs).replaceAll("\\", "/") !== OWNER_REL)
       .filter((abs) => /\bStorableErrorText\b/.test(readFileSync(abs, "utf8")))
       .map((abs) => relative(API_SRC, abs).replaceAll("\\", "/"));

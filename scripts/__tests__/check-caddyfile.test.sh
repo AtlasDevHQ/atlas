@@ -218,9 +218,11 @@ else
   # naming a tracked file that is fine. `command -v docker` cannot see any of
   # that; it only proves the binary exists.
   #
-  # An unreachable socket stands in for the whole class: docker exits 125 for
-  # daemon, registry and mount faults alike, and the gate must map every one of
-  # them to 2.
+  # An unreachable socket is the SHARPEST case, not merely a representative one:
+  # docker exits **1** for it — the same code `caddy validate` uses to refuse a
+  # config — while registry and mount faults exit 125 and exec faults 127. The
+  # status alone cannot separate a dead daemon from a broken file, which is the
+  # whole reason the gate decides on the marker. See `check-caddyfile.sh`'s table.
   docker_out=""
   docker_status=0
   docker_out="$(cd "$ROOT" && DOCKER_HOST=unix:///nonexistent-caddyfile-probe.sock \

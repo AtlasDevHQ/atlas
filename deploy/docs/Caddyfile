@@ -121,21 +121,32 @@
 
 	# ── BEGIN brain-* -> atlas-* guide renames (#5083) ───────────────────────
 	# ADR-0038 Layer 1 renamed the product noun to Company Atlas. The seven
-	# brain guides took the new noun in their titles and prose (#5081); this
+	# brain guides took the new noun in their titles and prose (PR #5084); this
 	# block retires their old URLs, which still said "brain". Same shape as the
-	# blocks above: an EXACT-path bare + trailing-slash 308 pair per URL.
+	# /self-hosted block directly above: an EXACT-path bare + trailing-slash 308
+	# pair per retired URL. (Not the mcp-hosted block — its first rule is a
+	# path_regexp subtree redirect, so "the blocks above" name two shapes.)
 	#
 	# TWO mounts per guide. These pages live in content/shared/, which
 	# src/lib/source.ts feeds into BOTH the site-root loader and the
 	# /self-hosted loader, so each rename retires /guides/brain-<stem> AND
-	# /self-hosted/guides/brain-<stem> — both were listed in their section's
-	# guides/meta.json and both were reachable.
+	# /self-hosted/guides/brain-<stem>. Both are served because the loaders
+	# concatenate the whole shared collection and the routes enumerate over its
+	# FILES — guides/meta.json orders the sidebar, it does not gate the route.
+	#
+	# NOT redirected, deliberately: the per-page markdown twins of these URLs
+	# (/guides/<slug>.mdx and /llms.mdx/guides/<slug>), which the rewrites below
+	# route onto the static emission. A twin is reached from its live HTML page
+	# rather than linked directly, llms.txt indexes the HTML URL, and the
+	# /self-hosted block above set the same precedent for its twelve pages.
 	#
 	# SSOT for this list: apps/docs/src/lib/redirects.ts
 	# (RENAMED_ATLAS_GUIDE_STEMS x SHARED_MOUNT_PREFIXES) — the same
 	# apps/docs/src/lib/__tests__/redirect-coverage.test.ts fails if this block
-	# and that map drift apart, if a target 404s, or if an old page is still on
-	# disk. Keep the two in lockstep.
+	# and that map drift apart, if a redirect here is not a 308, if a target
+	# 404s, if a brain-named guide is still on disk, if a section nav still
+	# lists one, or if anything in the repo still links to a retired URL. Keep
+	# the two in lockstep.
 	redir /guides/brain-sources /guides/atlas-sources 308
 	redir /guides/brain-sources/ /guides/atlas-sources/ 308
 	redir /guides/brain-conflicts /guides/atlas-conflicts 308

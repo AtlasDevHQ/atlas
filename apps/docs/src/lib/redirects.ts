@@ -1,12 +1,13 @@
 /**
- * Docs redirect maps — the reviewed SSOT `deploy/docs/Caddyfile` is kept in
- * lockstep with. Two independent move sets live here: the `/self-hosted`
- * section split (PRD #4257, slice #4267) below, and the `brain-*` -> `atlas-*`
- * guide rename (#5083, ADR-0038 Layer 1) further down.
+ * Docs redirect maps — the reviewed SSOT for the redirect blocks in
+ * `deploy/docs/Caddyfile`. Two independent move sets live here: the
+ * `/self-hosted` section split (PRD #4257, slice #4267) below, and the
+ * `brain-*` -> `atlas-*` guide rename (#5083, ADR-0038 Layer 1) further down.
  *
  * `apps/docs` builds with `output: "export"`, so Next's `redirects()` is
- * disabled and Caddy — not the app — owns every redirect. That is why a move
- * here needs a docs-service DEPLOY, not just a merge.
+ * disabled and Caddy owns every redirect. The Caddyfile is baked into the docs
+ * image, so a move here is inert until that image rebuilds — Railway watches
+ * `deploy/docs/**` and `apps/docs/**`, so merging to `main` is what ships it.
  *
  * ── /self-hosted section split (#4267) ───────────────────────────────────────
  *
@@ -99,8 +100,8 @@ export const SELF_HOSTED_REDIRECTS: readonly DocRedirect[] =
  *
  * ADR-0038 renamed the PRODUCT noun from *Company Brain* to *Company Atlas*.
  * The guides took the new noun in their titles and prose; their filenames — and
- * so their published URLs — did not, leaving `/guides/brain-sources` serving a
- * page titled "Company Atlas — Sources". This move finishes that: the file is
+ * so their published URLs — did not, leaving `/guides/brain-<stem>` serving a
+ * page titled "Company Atlas — …". This move finishes that: the file is
  * `atlas-<stem>.mdx`, the URL is `/guides/atlas-<stem>`, and every old URL
  * 308s.
  *
@@ -108,10 +109,14 @@ export const SELF_HOSTED_REDIRECTS: readonly DocRedirect[] =
  * that issue was written (#5158, PR #5218) with the same "Company Atlas — …"
  * title and the same `brain-*` filename, so it is a member of exactly the class
  * this move closes. Renaming six of seven would leave one published
- * `/guides/brain-*` URL behind and reopen the defect one page over.
+ * `/guides/brain-*` URL behind.
  *
- * The rename is the ONLY change to these pages — frontmatter, prose and
- * headings are already correct (#5081 did that half).
+ * That near-miss is also why `redirect-coverage.test.ts` guards the CLASS
+ * rather than this list: a stem-list guard would greet the next such guide the
+ * same way it greeted this one — silently.
+ *
+ * Beyond their internal link targets, these pages are unchanged: frontmatter,
+ * prose and headings already took the new noun in PR #5084.
  */
 export const RENAMED_ATLAS_GUIDE_STEMS = [
   "sources",
@@ -128,11 +133,18 @@ export const RENAMED_ATLAS_GUIDE_STEMS = [
  *
  * These pages live in `content/shared/`, which `src/lib/source.ts` feeds into
  * BOTH loaders — the site root (`baseUrl: "/"`) and the on-prem section
- * (`baseUrl: "/self-hosted"`). So each rename retires TWO live URLs, not one,
- * and `/self-hosted/guides/brain-sources` was as reachable as
- * `/guides/brain-sources` (both `guides/meta.json` files listed the `brain-*`
- * stems). A redirect set covering only the root mount would 404 half the
- * inbound links it exists to save.
+ * (`baseUrl: "/self-hosted"`). So each rename retires two live URLs:
+ * `/self-hosted/guides/brain-<stem>` was as reachable as its site-root twin,
+ * and a redirect set covering only the root mount would 404 half the inbound
+ * links it exists to save.
+ *
+ * `redirect-coverage.test.ts` pins this list to the `baseUrl`s `source.ts`
+ * actually mounts `shared` under, so it cannot quietly disagree with them.
+ *
+ * The mount list is NOT read off `guides/meta.json`: that file orders the
+ * sidebar, while `compose.ts` concatenates the whole `shared` collection into
+ * each section's source and the routes enumerate over the FILES. A page is
+ * served at both URLs whether or not either nav lists it.
  *
  * `""` is the root mount; the array order is the emission order in the
  * Caddyfile block.
@@ -140,16 +152,32 @@ export const RENAMED_ATLAS_GUIDE_STEMS = [
 export const SHARED_MOUNT_PREFIXES = ["", "/self-hosted"] as const;
 
 export type SharedMountPrefix = (typeof SHARED_MOUNT_PREFIXES)[number];
+export type RenamedAtlasGuideStem = (typeof RENAMED_ATLAS_GUIDE_STEMS)[number];
 
 export interface GuideRenameRedirect {
   /** The `brain-`/`atlas-` suffix shared by the old and new slug. */
-  readonly stem: string;
+  readonly stem: RenamedAtlasGuideStem;
   /** Which shared mount this pair belongs to (`""` = site root). */
   readonly mount: SharedMountPrefix;
-  /** Retired public URL, no trailing slash. */
-  readonly from: `/${string}`;
-  /** Live public URL, no trailing slash. */
-  readonly to: `/${string}`;
+  /**
+   * Retired public URL, no trailing slash.
+   *
+   * The template pins the mount, the `/guides/` section and the `brain-`
+   * prefix, so an entry that names a stem outside the move set — or points at
+   * the wrong section — is a compile error, the same discipline `DocRedirect`
+   * applies above. "No trailing slash" stops being documentation-only too: no
+   * stem ends in `/`.
+   */
+  readonly from: `${SharedMountPrefix}/guides/brain-${RenamedAtlasGuideStem}`;
+  /**
+   * Live public URL, no trailing slash.
+   *
+   * The `atlas-` prefix is pinned for the reason the loose type was not enough:
+   * under `/${string}` both `to: brain-${stem}` — a 308 straight back to the
+   * retired URL, i.e. a redirect LOOP in production — and a target outside
+   * `/guides` compiled without complaint.
+   */
+  readonly to: `${SharedMountPrefix}/guides/atlas-${RenamedAtlasGuideStem}`;
 }
 
 /**
@@ -159,12 +187,15 @@ export interface GuideRenameRedirect {
  * which page it is talking about — the same discipline `SELF_HOSTED_REDIRECTS`
  * uses. The Caddyfile emits a bare (`from` -> `to`) and a trailing-slash
  * (`from/` -> `to/`) 308 per entry; `redirect-coverage.test.ts` fails if any of
- * the four lines per stem is missing, if a target 404s, or if the old file is
- * still on disk.
+ * the four lines per stem is missing, if one of them is not a 308, if a target
+ * 404s, if a `brain-*` guide is still on disk, if a section nav still lists
+ * one, or if anything in the repo still links to a retired URL.
  *
  * The root mount is spelled `""`, so `${mount}/guides/…` supplies the leading
- * slash on its own and the `/${string}` field types hold in every arm without a
+ * slash on its own and the template literal types hold in every arm without a
  * per-mount branch — TypeScript distributes the template over the prefix union.
+ * That distribution is load-bearing on the annotation below staying put: an
+ * un-annotated `const` widens to `string` and stops satisfying the field types.
  */
 export const ATLAS_GUIDE_REDIRECTS: readonly GuideRenameRedirect[] =
   SHARED_MOUNT_PREFIXES.flatMap((mount) =>

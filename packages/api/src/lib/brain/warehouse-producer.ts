@@ -1520,17 +1520,13 @@ const SEAM_THREW = Symbol("seam-threw");
 /**
  * Read ONE property off a value the validator seam controls, totally.
  *
- * ⚠️ **Narrowing the container is not enough, and that gap was the first version of
- * this code.** `isRecord(validated)` answers `true` for `{ get entity() { throw … } }`,
- * so the property access itself runs seam-controlled code. (A revoked Proxy is worse
- * still and is handled by the placement below, not by this paragraph: `isRecord`
- * does not answer `true` for one, it THROWS.) The refusal arms of {@link runWarehouseProducer}
- * have NO enclosing `try` — the per-entity catches wrap the validator call, the
- * snapshot and the transaction, and the arms sit between them — so a throw here
- * escapes the loop, escapes the function, and turns ONE refused entity into a 500
- * for the whole run. That is the contract this file documents two paragraphs into
- * `runWarehouseProducer`, broken for the sake of a diagnostic line, and it costs the
- * operator the very forensic payload the line exists to produce.
+ * ⚠️ **Narrowing the container is not enough.** `isRecord(validated)` answers `true`
+ * for `{ get entity() { throw … } }`, so the property access itself runs
+ * seam-controlled code. The refusal arms of {@link runWarehouseProducer} have NO
+ * enclosing `try` — the per-entity catches wrap the validator call, the snapshot and
+ * the transaction, and the arms sit between them — so a throw here escapes the loop
+ * and turns ONE refused entity into a 500 for the whole run, losing the forensic
+ * payload the line exists to produce.
  *
  * Absent and non-record both answer `undefined`, which {@link seamString} renders as
  * `<undefined>`; a throw answers {@link SEAM_THREW}, which renders as `<threw>`. The
@@ -1538,27 +1534,24 @@ const SEAM_THREW = Symbol("seam-threw");
  */
 function seamRead(source: unknown, key: string): unknown {
   try {
-    // ⚠️ **`isRecord` IS INSIDE THE `try`, and putting it outside was this helper's
-    // own instance of the defect it exists to close — the THIRD in one change.** It
-    // calls `Array.isArray`, which THROWS on a revoked Proxy rather than answering
-    // (measured: *"Array.isArray cannot be called on a Proxy that has been
-    // revoked"*), while `typeof` and `!== null` pass it cleanly first. So the guard
-    // written to make the read total was itself an unguarded seam operation, sitting
-    // one line above the `try` that was supposed to cover it.
-    //
-    // The rule the three instances share: **narrowing is an OPERATION on the seam
-    // value, not a fact about it.** Anything that dispatches on the object — a
-    // property read, `Array.isArray`, a template literal, `toString` — belongs
-    // inside the guard, never in front of it.
+    // ⚠️ `isRecord` belongs INSIDE the `try`: it calls `Array.isArray`, which throws
+    // on a revoked Proxy rather than answering, while `typeof` and `!== null` pass one
+    // cleanly first. The general rule, and it cost three instances to learn:
+    // **narrowing is an OPERATION on the seam value, not a fact about it.** Anything
+    // that dispatches on the object — a property read, `Array.isArray`, a template
+    // literal, `toString` — goes inside the guard, never in front of it.
     if (!isRecord(source)) return undefined;
     return source[key];
   } catch {
     // NOT silence, so this takes a plain comment rather than CLAUDE.md's
     // `intentionally ignored` marker: the sentinel IS the signal, and it reaches the
     // operator on the same log line as the field it replaces, alongside
-    // `returnedReadThrew`. The Error object is dropped DELIBERATELY — it comes from
-    // the seam under audit, so a hostile `.message` or `.stack` getter would throw
-    // again inside the log serializer, re-opening the exact escape this helper closes.
+    // `returnedReadThrew`.
+    //
+    // The Error is dropped because it comes from the seam under audit, so it is
+    // evidence of nothing, and the field's own sentinel already says which read
+    // failed. Not because logging it would be unsafe: `scrubErrSerializer` has a
+    // total outer catch and renders a hostile one as `[log scrub failed]`.
     return SEAM_THREW;
   }
 }
@@ -1583,6 +1576,22 @@ function seamString(value: unknown): string {
   if (value === SEAM_THREW) return "<threw>";
   if (typeof value === "string") {
     return value.length > 200 ? `${value.slice(0, 200)}…(${value.length})` : value;
+  }
+  // ⚠️ An `Error` is the likeliest non-string a plugin-supplied or future validator
+  // puts in `error`, and without this arm it rendered `<object>` — `undefined` with
+  // extra steps, on a PERMANENT refusal whose own text says re-running will not
+  // help. That is the generic message CLAUDE.md forbids, arriving through the
+  // renderer added to remove it. `.message` is itself a seam read, so it is guarded
+  // like every other one.
+  try {
+    if (value instanceof Error) {
+      const message = value.message;
+      if (typeof message === "string") return seamString(message);
+    }
+  } catch {
+    // Not silence — `<threw>` is the signal, and it is the same sentinel every other
+    // failed seam read on this line renders.
+    return "<threw>";
   }
   return value === null ? "<null>" : `<${typeof value}>`;
 }
@@ -1618,27 +1627,51 @@ function sqlDigest(sql: string): string {
 /**
  * {@link sqlDigest} for the RETURNED side, where the value may be anything.
  *
- * Non-strings fall through to {@link seamString}, so `sql` gets the same sentinel
- * vocabulary as every other seam field on the line — `<undefined>` and `<null>` and
+ * Non-strings render through {@link seamKind}, so `sql` gets the same sentinel
+ * vocabulary as every other seam field on the line — `<undefined>`, `<null>` and
  * `<number>` are three different wiring faults in a substituted validator, and `sql`
  * is the field that identifies the forgery class, so it is the last one that should
- * collapse them. Every sentinel is still neither 16 characters nor hex, so it can
- * never be mistaken for a digest.
+ * collapse them.
+ *
+ * ⚠️ **{@link seamKind}, NOT {@link seamString}, and the difference is a hole that
+ * was measured open.** `seamString` renders an `Error` by its message, so a verdict
+ * carrying `sql: new Error("f52e4d03c838ad9d")` put an attacker-chosen 16-hex string
+ * in `returnedSqlDigest` — indistinguishable from a real digest to the operator
+ * reading the line, and equal to the submitted one if they copy it. Every value
+ * `seamKind` returns is bracketed, so nothing in this function's range can be
+ * mistaken for a digest.
  */
 function seamSqlDigest(value: unknown): string {
-  return typeof value === "string" ? sqlDigest(value) : seamString(value);
+  return typeof value === "string" ? sqlDigest(value) : seamKind(value);
 }
 
 /**
- * WHICH malformation a seam value is — `"object"`, or {@link seamString}'s rendering.
+ * WHAT KIND a seam value is — never what it CONTAINS.
  *
  * Exists so the shape test is never written inline at a call site: `isRecord(x)` in a
  * log payload is an unguarded seam operation for the reason {@link seamRead} gives,
  * and it read as obviously safe both times it was written that way.
+ *
+ * ⚠️ **Renders the TYPE, never the value.** Falling through to {@link seamString}
+ * echoed a returned request that happened to be a STRING verbatim — and a validator
+ * that crosses a wire, or a serialising proxy, answers `JSON.stringify(request)`,
+ * which is the whole SELECT with its table and column names. That is the one thing
+ * {@link sqlDigest} exists to keep out of the log. Rendering `<string>` loses
+ * nothing: the field's job is to tell the malformations the fixture table lists
+ * apart, and the bracketed vocabulary still does.
+ *
+ * Every value in the range is BRACKETED, the record case included: `"object"` beside
+ * a sentinel `"<object>"` for an ARRAY was two characters apart with opposite
+ * meanings, so a filter written for one silently missed the other.
  */
 function seamKind(value: unknown): string {
+  // The same sentinel `seamString` uses. Reachable through {@link seamSqlDigest},
+  // whose input is a `seamRead` result: without this arm a thrown `sql` read rendered
+  // `<symbol>`, which names the marker's implementation rather than what happened.
+  if (value === SEAM_THREW) return "<threw>";
   try {
-    return isRecord(value) ? "object" : seamString(value);
+    if (isRecord(value)) return "<record>";
+    return value === null ? "<null>" : `<${typeof value}>`;
   } catch {
     // The same non-silence as `seamRead`'s: the sentinel reaches the operator on the
     // log line, and the Error is dropped because it comes from the seam under audit.
@@ -1945,24 +1978,51 @@ export async function runWarehouseProducer(
     //
     // ⚠️ Three properties, each read ONCE — the rule is per PROPERTY, which is what
     // lets the discriminant be read in the `if` and keeps TypeScript's narrowing.
-    // The branded `request` therefore stays branded: nothing here needs a cast, and
-    // adding one would weaken the "ONE production cast, deliberately" claim that
-    // `warehouse-producer-bypass.test.ts`'s allowlist rests on.
+    // The branded `request` therefore stays branded, and nothing here needs a cast.
+    // Keep it that way by discipline rather than by guard: since #5249 the bypass
+    // allowlist is a whole-FILE name scan, so a second cast inside this file would
+    // be invisible to it.
     let verdictValid: boolean;
     let verdictError: unknown;
     let verdictRequest: ValidatedSnapshotRequest | undefined;
+    // ⚠️ **The payload reads are guarded SEPARATELY from the gate call, and the
+    // difference decides which arm reports the event.** Folding them into the outer
+    // `try` sent a throwing `.request` to the gate-threw arm — a `warn` reading *"the
+    // SQL gate threw rather than answering"*, with no digests, no match booleans, no
+    // `returned*` fields at all. Detectability is this change's entire deliverable,
+    // so a hostile validator would only have had to throw from `.request` to demote
+    // its own forgery to something that looks like a transient module-init blip.
+    // Guarded here, an unreadable request stays `undefined`, fails the identity check
+    // below, and reaches the mismatch arm with `returnedReadThrew: true` — which is
+    // the line that exists to report exactly this.
+    let verdictRequestThrew = false;
     try {
       const verdict = await validateSnapshotSql(request);
       if (verdict.valid) {
         verdictValid = true;
-        // Captured by REFERENCE — the identity check below is about this object, so
-        // nothing here may copy, spread or re-wrap it.
-        verdictRequest = verdict.request;
         verdictError = undefined;
+        try {
+          // Captured by REFERENCE — the identity check below is about this object, so
+          // nothing here may copy, spread or re-wrap it.
+          verdictRequest = verdict.request;
+        } catch {
+          // Not silence: `verdictRequestThrew` reaches the mismatch line as
+          // `returnedReadThrew`, and `undefined` is what routes the entity there.
+          verdictRequest = undefined;
+          verdictRequestThrew = true;
+        }
       } else {
         verdictValid = false;
         verdictRequest = undefined;
-        verdictError = verdict.error;
+        try {
+          verdictError = verdict.error;
+        } catch {
+          // Not silence: `seamString` renders this as `<threw>` in both the log and
+          // the operator-facing refusal. The gate DID answer invalid, so the entity
+          // keeps that verdict's permanence rather than being demoted to transient
+          // because its reason was unreadable.
+          verdictError = SEAM_THREW;
+        }
       }
     } catch (err) {
       // ⚠️ A THROW IS NOT A VERDICT OF INVALID, and routing it to
@@ -1996,9 +2056,13 @@ export async function runWarehouseProducer(
       // forbids, on a refusal whose own text says re-running will not help; a throwing
       // `toString` escaped the template literal as a 500 for the whole run.
       //
-      // Bounding is safe here and was checked rather than assumed: `validateSQL`'s
-      // messages carry the table name (already in the sentence) and at most one
-      // unexpected-token character from the parser, never identifiers or literals.
+      // Bounded at 200, and the bound BITES: measured against the real parser, three
+      // of four realistic parse failures produced messages of 201–254 characters,
+      // because it lists every expected token. So the tail — the "but X found" clause
+      // and the remediation sentence — is cut on the commonest failure. The `…(n)`
+      // suffix is what stops that reading as a complete message. The messages carry
+      // the table name (already in the sentence) and blocked function names lifted
+      // from the submitted query, never row values.
       const reason = seamString(verdictError);
       log.warn(
         { ...runLog, entity: entityPlan.entity.name, reason },
@@ -2043,8 +2107,10 @@ export async function runWarehouseProducer(
     // The single read now happens inside the `try` above — see the note there for why
     // it MOVED rather than merely being captured here.
     const validated = verdictRequest;
-    // `undefined` is spelled out only so TypeScript can narrow past it below; it is
-    // already covered by the identity comparison, since `undefined !== request`.
+    // Redundant — `request` is frozen and never `undefined`, so `undefined !== request`
+    // already routes here, and TypeScript narrows without the disjunct. Spelled out
+    // because a `.request` getter that threw lands here as `undefined`, and that is a
+    // state a reader will look for.
     if (validated === undefined || validated !== request) {
       // ⚠️ **FOUR FIELDS, EACH READ ONCE AND EACH GUARDED — the capture rule above,
       // applied one level down.** `validated` is captured, but its PROPERTIES are
@@ -2073,6 +2139,19 @@ export async function runWarehouseProducer(
       // `string` parameter type is what stops two absent statements matching.
       const submittedSqlDigest = sqlDigest(sql);
       const returnedSqlDigest = seamSqlDigest(returnedSql);
+      // ⚠️ **A MATCH CLAIM REQUIRES A READABLE CONTAINER, and leaving that out
+      // reproduced — one field over, in this same object literal — the defect the
+      // `sqlDigest(sql: string)` split had just closed.** `seamRead` answers
+      // `undefined` both for an absent field AND for a non-record, and
+      // `submittedConnectionId` is `undefined` for every default-connection
+      // workspace, which is the ordinary case. So `returnedConnectionIdMatch` read
+      // TRUE for a verdict that was `null`, `undefined`, a bare string, an array or a
+      // number — *"the gate returned no request at all"* reported as *"the connection
+      // matched"*, on the field this arm's own comment calls the alert key. (`{}`
+      // still reads true, and correctly so — both sides are genuinely absent; see
+      // `returnedRequestMatch` below for why that is safe.)
+      const returnedRequestType = seamKind(validated);
+      const returnedIsRecord = returnedRequestType === "<record>";
       log.error(
         {
           ...runLog,
@@ -2090,12 +2169,12 @@ export async function runWarehouseProducer(
           returnedEntity: seamString(returnedEntity),
           returnedWorkspaceId: seamString(returnedWorkspaceId),
           returnedConnectionId: seamString(returnedConnectionId),
-          // Which of "the gate returned an object with no fields" and "the gate
-          // returned a string / null / a function" happened. Without it all of them
-          // collapse onto one payload of sentinels — the same collapse this arm exists
-          // to undo, one level up.
-          returnedRequestType: seamKind(validated),
+          // Which malformation it was. Without it the non-record verdicts — null,
+          // undefined, a string, an array, a number — produce one identical payload of
+          // sentinels, the same collapse this arm exists to undo, one level up.
+          returnedRequestType,
           returnedReadThrew:
+            verdictRequestThrew ||
             returnedEntity === SEAM_THREW ||
             returnedWorkspaceId === SEAM_THREW ||
             returnedConnectionId === SEAM_THREW ||
@@ -2118,20 +2197,38 @@ export async function runWarehouseProducer(
           // worst forgery this arm can see. The other two booleans are what that alert
           // actually keys on; the naming is deliberate for the same reason.
           //
-          // ⚠️ The `typeof` arm is DEFENCE IN DEPTH and is deliberately recorded as
-          // unfalsifiable: removing it was measured green against the whole suite,
-          // because the state it refuses — both sides rendering the same sentinel — is
-          // unreachable while the submitted side is a `string` by construction. The
-          // real guarantee is {@link sqlDigest}'s `string` parameter, which is a
-          // COMPILE error to break rather than a test to run; this arm only keeps the
-          // runtime honest if a future edit makes the submitted side seam-derived.
-          // Written down instead of tested, per the rule about publishing a claim no
-          // measurement backs.
+          // `typeof` first, and it is the second of two independent guarantees: it is
+          // redundant while {@link seamSqlDigest} brackets every non-string, and it is
+          // what held when that bracketing was briefly absent — a verdict carrying
+          // `sql: new Error(<the submitted digest>)` otherwise reported a match.
           sqlDigestMatch:
             typeof returnedSql === "string" && submittedSqlDigest === returnedSqlDigest,
-          returnedWorkspaceIdMatch: returnedWorkspaceId === workspaceId,
-          returnedEntityMatch: returnedEntity === entityPlan.entity.name,
-          returnedConnectionIdMatch: returnedConnectionId === submittedConnectionId,
+          returnedWorkspaceIdMatch: returnedIsRecord && returnedWorkspaceId === workspaceId,
+          returnedEntityMatch: returnedIsRecord && returnedEntity === entityPlan.entity.name,
+          returnedConnectionIdMatch:
+            returnedIsRecord && returnedConnectionId === submittedConnectionId,
+          // ⚠️ **THE PREDICATE AN ALERT KEYS ON — the three components above are
+          // DIAGNOSTIC and at least one of them cannot carry the alert alone.**
+          // `returnedConnectionIdMatch` is `true` for a verdict of `{}`, and that is
+          // literally correct rather than a bug: both sides are absent, because the
+          // submitted connection is `undefined` for every default-connection
+          // workspace. Requiring the field to be PRESENT instead would report every
+          // benign default-connection replay as a connection mismatch — noise on day
+          // one, which is the failure the whole field was added to avoid. The
+          // conjunction is what distinguishes the two: an empty record fails it on
+          // `entity` and `workspaceId`, whose submitted sides are non-empty strings.
+          //
+          // ⚠️ The `returnedIsRecord` conjunct here is REDUNDANT and recorded as such:
+          // removing it was measured green, because a non-record answers `undefined`
+          // for every field and the two string comparisons below already fail. It is
+          // kept for the same reason as `sqlDigestMatch`'s `typeof` arm — defence in
+          // depth against a future edit — and, like that one, it is documented rather
+          // than pinned by a test that could not fail.
+          returnedRequestMatch:
+            returnedIsRecord &&
+            returnedWorkspaceId === workspaceId &&
+            returnedEntity === entityPlan.entity.name &&
+            returnedConnectionId === submittedConnectionId,
         },
         "Warehouse producer: the SQL gate returned a verdict for a different request — refusing rather than reading",
       );

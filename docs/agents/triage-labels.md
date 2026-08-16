@@ -12,7 +12,9 @@ The skills speak in terms of five canonical triage roles. This file maps those r
 
 When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the corresponding label string from this table.
 
-These five labels do not exist in `AtlasDevHQ/atlas` yet — the `/triage` skill will create them lazily on first use via `gh label create -R AtlasDevHQ/atlas`. They do not collide with the existing label vocabulary.
+All five labels exist in `AtlasDevHQ/atlas` and are in use. They do not collide with the existing label vocabulary.
+
+⚠️ **`ready-for-agent` is an execution trigger, not a description.** `/ship-batch` and `/ship-milestone` both select work with `gh issue list --label ready-for-agent` — so the label does not mean "this is well specified", it means "an agent may start this unattended". A fully specified issue that nobody should start yet must NOT carry it. See *Blocked on an external event* below.
 
 ## These labels are STATE — they don't replace kind/area
 
@@ -32,5 +34,18 @@ See `docs/agents/issue-tracker.md` for the full kind/area vocabulary and how to 
 Today, almost every Atlas issue is self-filed by the maintainer with a clear next step — those issues don't need to pass through the triage funnel. Skip the triage-state label for internal issues, and rely on the milestone + kind/area labels alone.
 
 When Atlas opens to community contributions, every externally-filed issue should land with `needs-triage` and move through the state machine via `/triage`. At that point `/tidy` + `/triage` become the two pillars of issue hygiene (see `docs/agents/workflow.md`).
+
+## Blocked on an external event
+
+The five roles describe **specification readiness**, and Atlas has a class they don't cover: issues that are completely specified and deliberately must not be started, because they wait on something outside the repo. There is no sixth label — the convention is a state plus a title marker, split by what is being waited on:
+
+| Waiting on | State | Title | Examples |
+| --- | --- | --- | --- |
+| **A third party** to ship something | `needs-info` | `[blocked]` after the conventional-commit type | #4404 (a HubSpot KB read API), #3368 (a Railway no-egress sandbox mode), #5281 (the TypeScript 7.1 programmatic API) |
+| **Our own scale**, i.e. a metric a human must read | `ready-for-human` | unchanged | #2109 (>150 MCP sessions/region for two weeks), #2055 (measure before adopting Redis) |
+
+`needs-info` is a reuse rather than a perfect fit — its canonical meaning is "waiting on the reporter", and here the party who has to act is a vendor. It is the right home anyway: it is the machine's only waiting state, it keeps the issue out of the `ready-for-agent` selector, and the `[blocked]` prefix makes the distinction legible in a title list.
+
+**Give every blocked issue an unblock test** — the specific observation that would move it back to `needs-triage`, written so someone can perform it without re-deriving the analysis ("re-read Railway's sandbox network-mode docs and look for a third mode alongside isolated and private"). A blocked issue with no unblock test is indistinguishable from an abandoned one.
 
 Edit the right-hand column of the table to match whatever vocabulary you actually use.

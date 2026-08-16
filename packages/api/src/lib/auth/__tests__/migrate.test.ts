@@ -614,6 +614,10 @@ describe("migrateAuthTables", () => {
             // plain Atlas tables with no Better-Auth dependency, so the same
             // grounds again.
             { name: "0202_brain_coverage_snapshot.sql" },
+            // 0203 rewrites the two Company Atlas rows' `config_schema` helper
+            // text (#5240) — again a data-only UPDATE on `plugin_catalog`, so
+            // the same grounds as 0196–0202.
+            { name: "0203_brain_catalog_config_help_company_atlas.sql" },
           ],
         };
       }

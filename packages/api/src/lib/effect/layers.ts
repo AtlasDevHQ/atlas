@@ -999,7 +999,10 @@ export const BuiltinDatasourceCatalogSeedLive: Layer.Layer<
  * Mirrors {@link BuiltinDatasourceCatalogSeedOutcome}.
  *
  * - `skipped-gate`  — InternalDB or Migration upstream not satisfied
- * - `seeded`        — seed ran (`inserted` false on re-boot with both rows present)
+ * - `seeded`        — the seed pass ran. `inserted` is false on a re-boot where
+ *                     every row already exists; it is ALSO false when nothing
+ *                     could be inserted, so read `blockedSlugs` before treating
+ *                     this as a complete catalog (#5239)
  * - `error`         — the boot wrapper or its dynamic import threw;
  *                     pre-existing rows answer admin-UI reads
  */
@@ -1009,13 +1012,28 @@ export type BuiltinKnowledgeCatalogSeedOutcome =
   | "error";
 
 export interface BuiltinKnowledgeCatalogSeedShape {
-  /**
-   * True when ANY built-in knowledge catalog row (`okf-upload`,
-   * `bundle-sync`) was newly inserted this boot.
-   */
+  /** True when any built-in knowledge catalog row was newly inserted this boot. */
   readonly inserted: boolean;
   readonly outcome: BuiltinKnowledgeCatalogSeedOutcome;
-  /** Scrubbed error message when `outcome === "error"`. */
+  /**
+   * Built-in slugs a foreign-id collision blocked (#5239) — the catalog is
+   * missing these rows and a re-boot will not fix it.
+   *
+   * `[]` on `skipped-gate` means nothing ran. `[]` on `error` means **unknown**,
+   * NOT "none": a throw mid-loop abandons the list the seeder had accumulated,
+   * so a pass that blocked one row and then hit a dead pool reports `[]` here.
+   * The seeder logs the partial list before rethrowing precisely because it
+   * cannot survive this field. Nothing serves this shape over HTTP today; the
+   * operator-visible signal is the seeder's own `log.warn`.
+   */
+  readonly blockedSlugs: ReadonlyArray<string>;
+  /**
+   * The failure message when `outcome === "error"`, scrubbed via
+   * `errorMessage` on both producing arms (credential URIs masked, truncated).
+   *
+   * ⚠️ Scrubbed is not safe-to-publish: a `pg` failure still carries host and
+   * port.
+   */
   readonly error?: string;
 }
 
@@ -1024,10 +1042,12 @@ export class BuiltinKnowledgeCatalogSeed extends Context.Tag(
 )<BuiltinKnowledgeCatalogSeed, BuiltinKnowledgeCatalogSeedShape>() {}
 
 /**
- * Idempotent boot-time seed of the built-in Knowledge Base catalog rows —
- * `okf-upload` (#4206) and `bundle-sync` (#4211), ADR-0028. Code-seeded
+ * Idempotent boot-time seed of every row in `BUILTIN_KNOWLEDGE_CATALOG_ROWS`
+ * (fourteen today, ADR-0028 §5). Code-seeded
  * through the operator-curated seam and re-asserted on every boot via
- * `ON CONFLICT DO NOTHING`.
+ * `ON CONFLICT (id) DO NOTHING` — qualified on the PK since #5239, so a slug
+ * held under a foreign id surfaces as a blocked row rather than as silent
+ * success. See `outcome`/`blockedSlugs` above.
  *
  * Depends on `Migration` so migration 0161's widened pillar CHECK (which
  * admits `pillar = 'knowledge'`) is guaranteed before the INSERTs; depends on
@@ -1052,6 +1072,7 @@ export const BuiltinKnowledgeCatalogSeedLive: Layer.Layer<
       return {
         inserted: false,
         outcome: "skipped-gate",
+        blockedSlugs: [],
       } satisfies BuiltinKnowledgeCatalogSeedShape;
     }
 
@@ -1066,17 +1087,25 @@ export const BuiltinKnowledgeCatalogSeedLive: Layer.Layer<
             return {
               inserted: false,
               outcome: "skipped-gate",
+              blockedSlugs: [],
             } satisfies BuiltinKnowledgeCatalogSeedShape;
           case "seeded":
             return {
               inserted: result.inserted,
               outcome: "seeded",
+              blockedSlugs: result.blockedSlugs,
             } satisfies BuiltinKnowledgeCatalogSeedShape;
           case "error":
             return {
               inserted: false,
               outcome: "error",
-              error: result.message,
+              // Scrubbed at the Layer boundary, matching the `catchAll` arm
+              // below and `ImplementationStatusOverride`'s precedent in this
+              // same file: a pg connect failure echoes `scheme://user:pass@host`
+              // into `message`. Until #5239 this arm was the raw one while its
+              // sibling scrubbed — one field, two guarantees, one comment.
+              error: errorMessage(new Error(result.message)),
+              blockedSlugs: [],
             } satisfies BuiltinKnowledgeCatalogSeedShape;
         }
       },
@@ -1088,6 +1117,7 @@ export const BuiltinKnowledgeCatalogSeedLive: Layer.Layer<
           inserted: false,
           outcome: "error",
           error: errorMessage(err),
+          blockedSlugs: [],
         } satisfies BuiltinKnowledgeCatalogSeedShape);
       }),
     );

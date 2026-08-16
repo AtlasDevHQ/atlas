@@ -1,6 +1,8 @@
 /**
- * The pre-rename copy for #5082's two Company Atlas ingest catalog rows — the
- * strings the three prod regions actually hold before migration 0201 runs.
+ * The pre-rename copy for the two Company Atlas ingest catalog rows — the
+ * strings the three prod regions actually hold before migrations 0201 (#5082,
+ * `name` + `description`) and 0203 (#5240, the `config_schema` helper text)
+ * run.
  *
  * ⚠️ THIS FILE EXISTS SO THERE IS EXACTLY ONE DERIVATION IN THE TREE. Both
  * `seed-builtin-knowledge-catalog.test.ts` (the constant↔migration text pin)
@@ -21,9 +23,9 @@
  * fixture fail to BUILD, which reads as a broken test rather than a caught
  * defect. Derive from the constants; VERIFY against the migration's text.
  *
- * This derivation is specific to ADR-0038 and migration 0201. A future rename
- * adds its own migration and re-points this file; the failure it causes here
- * meanwhile is the intended alarm.
+ * These derivations are specific to ADR-0038 and migrations 0201/0203. A future
+ * rename adds its own migration and re-points this file; the failure it causes
+ * here meanwhile is the intended alarm.
  */
 
 import {
@@ -113,6 +115,105 @@ export const RENAME_PAIRS = [
     decoyId: "catalog:operator-copy-outlook",
   },
 ] as const;
+
+/**
+ * #5240's string: the `config_schema` helper text on the field with key
+ * `description`, on the same two rows.
+ *
+ * A THIRD customer-read string per row, stored inside the JSONB array under
+ * the same insert-only seeder, renamed by migration
+ * `0203_brain_catalog_config_help_company_atlas.sql`. Same discipline as the
+ * name/description pair above: derive the pre-rename value from the current
+ * constant, verify it against the migration's text.
+ */
+export const CONFIG_HELP_FIELD_KEY = "description";
+
+/** ADR-0038's rename of the helper text, inverted. */
+const preRenameConfigHelp = (s: string): string =>
+  s.replace("this Company Atlas source", "this brain source");
+
+/**
+ * The helper text a row's `description` field carries.
+ *
+ * Throws rather than returning `undefined`: the field vanishing (renamed key,
+ * dropped field) would make every pin below vacuous, and a fixture that cannot
+ * fail is worse than a red one. A throw at import aborts the whole file, which
+ * is the intended alarm.
+ */
+function configHelpOf(row: {
+  readonly id: string;
+  readonly configSchema: ReadonlyArray<{ readonly key: string; readonly description?: string }>;
+}): string {
+  const field = row.configSchema.find((f) => f.key === CONFIG_HELP_FIELD_KEY);
+  if (!field?.description) {
+    throw new Error(
+      `${row.id}: no \`${CONFIG_HELP_FIELD_KEY}\` config_schema field with help text — ` +
+        `#5240's pin has nothing to compare and would pass vacuously. Re-point brain-catalog-rename-fixtures.ts.`,
+    );
+  }
+  return field.description;
+}
+
+/**
+ * ⚠️ BUILT AS AN EXPLICIT TUPLE, not `RENAME_PAIRS.map(...)`. `RENAME_PAIRS` is
+ * `as const` — a readonly 2-tuple — and `.map` collapses that to
+ * `Array<...>`, which loses "there are exactly two, both present" at the type
+ * level. Downstream that cost 13 non-null assertions in the `-pg` suite
+ * (`ROWS[0]!`, `zoomPair!`, …), every one of them noise today and every one of
+ * them load-bearing the day `noUncheckedIndexedAccess` goes on.
+ */
+const configHelpPair = (pair: (typeof RENAME_PAIRS)[number]) => {
+  const help = configHelpOf(pair.row);
+  return {
+    label: pair.label,
+    row: pair.row,
+    help,
+    oldHelp: preRenameConfigHelp(help),
+    decoyId: pair.decoyId,
+  } as const;
+};
+
+export const CONFIG_HELP_PAIRS = [
+  configHelpPair(RENAME_PAIRS[0]),
+  configHelpPair(RENAME_PAIRS[1]),
+] as const;
+
+/**
+ * The 0203 counterpart of {@link assertPinnedToMigration}, and it fails in the
+ * same two ways: the inversion degenerating into the identity (every fixture
+ * would then seed the POST-rename string, the migration's guard would match
+ * nothing, and the positive assertions would still read the constant back), or
+ * producing a string 0203 does not match on.
+ *
+ * ⚠️ CALL IT FROM `beforeAll`, not from an `it` — `expect(...).not.toThrow()`
+ * catches the throw and leaves every following case running against fixtures
+ * that cannot fail.
+ */
+export function assertConfigHelpPinnedToMigration(migrationSql: string): void {
+  const sql = stripSqlComments(migrationSql);
+  for (const { label, help, oldHelp } of CONFIG_HELP_PAIRS) {
+    if (oldHelp === help) {
+      throw new Error(
+        `${label}: the pre-rename config_schema help derivation is a no-op against the current constant, so ` +
+          `every fixture would seed the post-rename string and pass without the migration writing anything. ` +
+          `ADR-0038's rename shape changed — re-point brain-catalog-rename-fixtures.ts at the new one.`,
+      );
+    }
+    for (const [what, value] of [
+      ["new", help],
+      ["pre-rename", oldHelp],
+    ] as const) {
+      if (!sql.includes(sqlLiteral(value))) {
+        throw new Error(
+          `${label}: migration 0203's STATEMENTS do not contain the ${what} config_schema help string. ` +
+            `Either the seed constant moved without the migration, or the migration's literal has a typo — ` +
+            `in production that is a guard matching nothing and a rename that silently never happens. ` +
+            `(Comments are stripped before this check, so a header mentioning the string does not satisfy it.)`,
+        );
+      }
+    }
+  }
+}
 
 /**
  * The two ways this derivation can go quietly wrong.

@@ -373,7 +373,13 @@ describe("runMigrations", () => {
     //   cycle record that lets a failed enumeration read "unavailable since
     //   <date>" instead of zero. `state` is CHECK-derived from perimeter AND
     //   observed evidence, which is ADR-0040 rule 3 in the schema) = 203.
-    expect(count).toBe(203);
+    //   Plus 0203 (brain_catalog_config_help_company_atlas — #5240 / ADR-0038's
+    //   last known stored "brain" string a customer reads: the helper text
+    //   inside the two Company Atlas rows' `config_schema`. Data-only, and a
+    //   guarded rewrite of one string INSIDE the JSONB array — the array is
+    //   rebuilt element-wise with `jsonb_agg … WITH ORDINALITY` so every other
+    //   field, flag and position survives byte-identical) = 204.
+    expect(count).toBe(204);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -605,6 +611,7 @@ describe("runMigrations", () => {
         "0200_brain_entity.sql",
         "0201_brain_catalog_rows_company_atlas.sql",
         "0202_brain_coverage_snapshot.sql",
+        "0203_brain_catalog_config_help_company_atlas.sql",
       ],
     });
 

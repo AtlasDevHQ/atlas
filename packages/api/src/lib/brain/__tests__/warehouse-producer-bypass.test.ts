@@ -3,6 +3,18 @@
  * whole-file name occurrence by #5249, given its completeness direction and five more
  * scanned roots by #5255).
  *
+ * ## MUTATIONS THIS CATCHES
+ *
+ * **Generated — see `packages/api/scripts/mutations/warehouse-producer.md`**, where
+ * this file is the `bypass` column (#5229). Exactly two rows are non-zero, and both
+ * land on the COMPLETENESS test below — one for each direction of its set equality:
+ * a `@sql-gate-guarded` tag deleted, and a brand-carrying export added untagged.
+ * Every other row is 0 here by construction, because no edit to the producer can
+ * make a different FILE name a guarded type. Note the consequence: one weakened
+ * assertion in that test zeroes the whole column.
+ *
+ *     cd packages/api && bun run scripts/mutate.ts scripts/mutations/warehouse-producer.mutations.ts
+ *
  * ## WHY THIS FILE EXISTS
  *
  * `warehouse-producer.ts` brands the REQUEST the SQL gate passed, and the passing
@@ -305,7 +317,7 @@ const ROOTS: readonly [
   {
     dir: fileURLToPath(new URL("../../../../scripts/", import.meta.url)),
     label: "packages/api/scripts/",
-    // 27 files, largest child `mutations/` at 13.
+    // 28 files, largest child `mutations/` at 14.
     minFiles: 20,
     sentinel: "mutate.ts",
   },

@@ -1,6 +1,18 @@
 /**
  * The production mint's BY-REFERENCE contract (#5230).
  *
+ * ## MUTATIONS THIS CATCHES
+ *
+ * **Generated — see `packages/api/scripts/mutations/warehouse-producer.md`**, where
+ * this file is the `mint` column (#5229). It is 0 on every row except the two that
+ * edit `defaultValidateSnapshotSql` itself, because it never calls
+ * `runWarehouseProducer` — that narrowness is the point of the file, not a gap.
+ * Deleting the production gate kills BOTH tests here, which trips the runner's
+ * whole-suite flag; the spec's note explains why that is honest for a two-test
+ * single-subject file rather than the setup breakage the flag usually means.
+ *
+ *     cd packages/api && bun run scripts/mutate.ts scripts/mutations/warehouse-producer.mutations.ts
+ *
  * ## Why this needs its own file
  *
  * `runWarehouseProducer` refuses unless `verdict.request === request` — the

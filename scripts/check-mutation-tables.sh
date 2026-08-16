@@ -147,14 +147,14 @@ cd "$ROOT/packages/api"
 # ⚠️ A SEAM, so the adversarial fixture can point this at a throwaway tree.
 # `scripts/__tests__/check-mutation-tables.test.sh` needs to prove the gate
 # CATCHES a hand-edited table and a skipped target; without an override it could
-# only ever be run against the real specs, which is a ~16-minute assertion.
+# only ever be run against the real specs, which is a multi-minute assertion.
 SPECS=(${MUTATION_SPEC_GLOB:-scripts/mutations/*.mutations.ts})
 # ⚠️ Shard ownership is a spec's POSITION in this list, so the ORDER is part of
 # the partition's contract and must not depend on the ambient locale. Glob
 # expansion is collated: under glibc's en_US.UTF-8 punctuation carries no
 # primary weight, so `vocabulary.mutations.ts` and `vocabulary-rekey.mutations.ts`
 # compare as `vocabularymutationsts` vs `vocabularyrekeymutationsts` and swap
-# against C, where `-` (0x2D) sorts before `.` (0x2E). Two of the thirteen specs
+# against C, where `-` (0x2D) sorts before `.` (0x2E). Two of the fourteen specs
 # change shard between the two collations.
 #
 # Sorted here rather than by exporting LC_ALL for the whole process: the locale
@@ -279,8 +279,9 @@ $UNTRACKED"
         #     declined to perform, precisely when it was most wanted.
         #
         # Declining (3) rather than widening to --all is deliberate: the full
-        # sweep is 948s MEASURED at thirteen specs (see the header), more
-        # than the rest of ci-local.sh combined,
+        # sweep runs in the minutes-not-seconds range the header gives with its
+        # spread (do not re-quote a single figure from it — the header says why),
+        # more than the rest of ci-local.sh combined,
         # and remote CI already runs --all on every push to main, so widening
         # would re-verify the same SHA at the highest cost for no new coverage.
         # What was missing was not coverage, it was an honest verdict.
@@ -337,11 +338,17 @@ if [ "$MODE" = "all" ]; then SELECTED=("${SPECS[@]}"); fi
 # in this file's header.
 #
 # Balance is lumpy: cost tracks a spec's mutation COUNT and round-robin ignores
-# it. Measured 2026-08-14 by generated table rows (266 mutations over 13 specs):
-# the four shards carry 87 / 53 / 91 / 35, so the long pole is ~34% of the sweep
-# against a ~20% floor set by the heaviest single spec (vocabulary-decide, 53).
+# it. Measured 2026-08-16 by generated table rows (288 mutations over 14 specs):
+# the four shards carry 87 / 75 / 91 / 35, so the long pole is ~32% of the sweep
+# against a ~18% floor set by the heaviest single spec (vocabulary-decide, 53).
 # Weighted assignment would close part of that; going under the floor needs
 # mutate.ts to partition its own mutation list.
+#
+# ⚠️ This census exists a SECOND time, in the mutation-tables job comment in
+# .github/workflows/ci.yml, and the two drifted apart the moment a spec was added
+# (#5229 updated that copy and left this one saying 266 / 13). If you re-measure,
+# change both — or delete one and point at the other. That block also records why
+# mutation COUNT is the wrong unit for the newest spec.
 if [ -n "$SHARD_TOTAL" ]; then
   PRE_SHARD_COUNT=${#SELECTED[@]}
   SHARDED=()

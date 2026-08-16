@@ -20,6 +20,24 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.9",
+    title: "Warehouse Facts, Only Where You Enroll Them",
+    date: "2026-08-16",
+    summary:
+      "The Company Atlas can now derive facts from the data warehouse it already queries — company size, plan tier, region and the like — instead of only from what people wrote in chat, transcripts and mail. It does that strictly where an administrator says it may: a new Enrollment page is where you name the entity and dimension pairs the Atlas is authorized to hold claims about, and nothing widens that reach on its own. Every derived fact still arrives as a draft and passes the same human review gate as any other claim; there is no auto-approve path. This release also fixes a long-standing gap where connecting Slack left a second, separate ingest install that was easy to miss — so Slack could look connected while nothing was ever read.",
+    highlights: [
+      "New Enrollment page under Company Atlas — an administrator names the entity/dimension pairs the Atlas may hold warehouse claims about, and the producer can never widen its own scope",
+      "Warehouse-derived facts land as drafts and go through the same review gate as every other claim — there is no bulk-approve and no auto-approve",
+      "The Atlas resolves warehouse rows to stable identities, so a claim naming a customer and a claim naming its account row can be recognised as being about the same thing",
+      "Slack now installs once instead of twice — previously the chat connection and the message-ingest connection were separate steps, so a workspace could be connected and still read nothing",
+      "Groundwork for a coverage page: dated rosters record what Atlas's credentials can actually see, which is the denominator any honest coverage number needs",
+      "The Company Atlas rename now reaches the last customer-visible text and the documentation URLs; existing links redirect",
+      "Security: administrator settings marked secret are no longer written verbatim into the audit log, and warehouse snapshot requests are identified so a forged statement cannot be mistaken for a harmless replay",
+      "Fixed: several duplicate-record errors returned a generic failure instead of the intended conflict response, because the error was inspected in the wrong shape",
+      "Self-hosted: migrations 0198-0203 add new tables only — no changes to existing tables, so the upgrade window stays short",
+    ],
+  },
+  {
     version: "v0.2.8",
     title: "Dashboards Leave the Admin Perimeter",
     date: "2026-08-13",

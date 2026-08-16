@@ -19,6 +19,7 @@ import type { AuthResult, AuthenticatedResult } from "@atlas/api/lib/auth/types"
 import { authenticateRequest } from "@atlas/api/lib/auth/middleware";
 import { invalidatePasswordGate } from "@atlas/api/lib/auth/password-gate";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { auditSettingsWrite } from "@atlas/api/lib/audit/settings-write";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { connections } from "@atlas/api/lib/db/connection";
 import {
@@ -3666,6 +3667,35 @@ admin.openapi(getSettingsRoute, async (c) => runHandler(c, "list settings", asyn
   return c.json({ settings, manageable, deployMode, regionApiUrl }, 200);
 }));
 
+/**
+ * The 500 both settings verbs return when their audit row cannot be committed
+ * (#5262).
+ *
+ * ⚠️ IT SAYS THE WRITE LANDED. `auditSettingsWrite` runs AFTER `setSetting` /
+ * `deleteSetting` have succeeded and the in-process cache has already been
+ * updated, so the setting really did change — a generic "something went wrong"
+ * here would tell an admin the opposite of what happened and invite a retry
+ * that double-applies nothing but also never gets recorded. The actionable
+ * part is the reconciliation, not a retry: the change is live and the log does
+ * not have it.
+ */
+function settingsAuditFailureBody(
+  err: unknown,
+  key: string,
+  requestId: string,
+  verb: string,
+): { error: string; message: string; requestId: string } {
+  log.error(
+    { err: err instanceof Error ? err.message : String(err), requestId, key },
+    "Settings write succeeded but its admin_action_log row could not be committed",
+  );
+  return {
+    error: "audit_not_committed",
+    message: `"${key}" was ${verb}, and the change is already in effect — but the admin action-log entry recording it could not be written, so this change is currently unaudited. Check the internal database's health, then re-apply the setting to produce a logged entry.`,
+    requestId,
+  };
+}
+
 admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", async () => {
 
   const { key } = c.req.valid("param");
@@ -3802,16 +3832,23 @@ admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", asy
   }
   log.info({ requestId, key, orgId: effectiveOrgId, actorId: authResult.user?.id }, "Setting override saved via admin API");
 
-  logAdminAction({
-    actionType: ADMIN_ACTIONS.settings.update,
-    targetType: "settings",
-    targetId: key,
-    ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-    // #4669 — record which tier the write landed on (global row vs the
-    // session workspace's row) so platform-tier flips are distinguishable
-    // in the audit trail.
-    metadata: { key, value, tier: effectiveOrgId ? "workspace" : "platform" },
-  });
+  // #5270/#5262 — the whole entry is built inside `auditSettingsWrite`: it
+  // redacts a `secret: true` value, stamps `scope` from the tier (#4669's
+  // metadata annotation now drives the row's scope column too), and AWAITS
+  // the row. Handing it the definition and the raw value rather than a
+  // metadata object is what makes re-inlining the plaintext a type error.
+  try {
+    await auditSettingsWrite({
+      key,
+      definition: def,
+      value,
+      action: "update",
+      platformTier: effectiveOrgId === undefined,
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    });
+  } catch (err) {
+    return c.json(settingsAuditFailureBody(err, key, requestId, "updated"), 500);
+  }
 
   return c.json({ success: true, key, value }, 200);
 }));
@@ -3892,14 +3929,21 @@ admin.openapi(deleteSettingRoute, async (c) => runHandler(c, "delete setting", a
   }
   log.info({ requestId, key, orgId: effectiveOrgId, actorId: authResult.user?.id }, "Setting override removed via admin API");
 
-  logAdminAction({
-    actionType: ADMIN_ACTIONS.settings.update,
-    targetType: "settings",
-    targetId: key,
-    ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-    // #4669 — same tier annotation as PUT (see there).
-    metadata: { key, action: "reset_to_default", tier: effectiveOrgId ? "workspace" : "platform" },
-  });
+  // #5270/#5262 — same seam as PUT. `value: undefined` is the clear path and
+  // records no value field: what it reverted TO is the env/default, which is
+  // exactly as secret as the override was.
+  try {
+    await auditSettingsWrite({
+      key,
+      definition: def,
+      value: undefined,
+      action: "reset_to_default",
+      platformTier: effectiveOrgId === undefined,
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    });
+  } catch (err) {
+    return c.json(settingsAuditFailureBody(err, key, requestId, "reset to its default"), 500);
+  }
 
   return c.json({ success: true, key }, 200);
 }));

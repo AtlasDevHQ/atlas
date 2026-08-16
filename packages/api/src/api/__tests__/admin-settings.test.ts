@@ -47,6 +47,22 @@ void mock.module("@atlas/api/lib/audit", () => ({
   causeToError: (cause: unknown) => (cause instanceof Error ? cause : new Error(String(cause))),
 }));
 
+/**
+ * #5270/#5262 — the settings write path no longer builds its own audit entry;
+ * it hands the definition and the raw value to `auditSettingsWrite`, which
+ * redacts, stamps `scope` and awaits the row. The ENTRY's shape is pinned in
+ * `lib/audit/__tests__/settings-write.test.ts`; what belongs here is what the
+ * ROUTE passes — in particular that `platformTier` tracks the row the write
+ * actually landed on, which is #4669's claim restated at the new seam.
+ */
+const mockAuditSettingsWrite: Mock<(entry: Record<string, unknown>) => Promise<void>> = mock(
+  async () => {},
+);
+
+void mock.module("@atlas/api/lib/audit/settings-write", () => ({
+  auditSettingsWrite: mockAuditSettingsWrite,
+}));
+
 // --- Test-specific overrides ---
 
 let mockConfigOverride: Record<string, unknown> | null = null;
@@ -225,6 +241,7 @@ describe("admin settings routes", () => {
     mockSetSetting.mockClear();
     mockDeleteSetting.mockClear();
     mockLogAdminAction.mockClear();
+    mockAuditSettingsWrite.mockClear();
     mockIsSaasModeForGuard.mockClear();
     mockIsSaasModeForGuard.mockImplementation(saasGuardDefaultImpl);
   });
@@ -672,8 +689,8 @@ describe("admin settings routes", () => {
       expect(mockDeleteSetting).toHaveBeenCalledWith("ATLAS_ROW_LIMIT", "ws-admin-1", "org-1");
       // #4669 — DELETE's audit annotation is a separate copy of PUT's;
       // pin its workspace arm too.
-      expect(mockLogAdminAction).toHaveBeenCalledWith(
-        expect.objectContaining({ metadata: expect.objectContaining({ tier: "workspace" }) }),
+      expect(mockAuditSettingsWrite).toHaveBeenCalledWith(
+        expect.objectContaining({ platformTier: false }),
       );
     });
 
@@ -1198,8 +1215,8 @@ describe("admin settings routes", () => {
       // explicit tier targets the global row → orgId undefined.
       expect(mockSetSetting).toHaveBeenCalledWith("ATLAS_AGENT_AUTH_ENABLED", "true", "platform-admin-1", undefined);
       // Audit trail records the row the write actually landed on.
-      expect(mockLogAdminAction).toHaveBeenCalledWith(
-        expect.objectContaining({ metadata: expect.objectContaining({ tier: "platform" }) }),
+      expect(mockAuditSettingsWrite).toHaveBeenCalledWith(
+        expect.objectContaining({ platformTier: true }),
       );
     });
 
@@ -1211,8 +1228,8 @@ describe("admin settings routes", () => {
       expect(res.status).toBe(200);
       expect(mockDeleteSetting).toHaveBeenCalledTimes(1);
       expect(mockDeleteSetting).toHaveBeenCalledWith("ATLAS_AGENT_AUTH_ENABLED", "platform-admin-1", undefined);
-      expect(mockLogAdminAction).toHaveBeenCalledWith(
-        expect.objectContaining({ metadata: expect.objectContaining({ tier: "platform" }) }),
+      expect(mockAuditSettingsWrite).toHaveBeenCalledWith(
+        expect.objectContaining({ platformTier: true }),
       );
     });
 
@@ -1333,8 +1350,8 @@ describe("admin settings routes", () => {
       expect(res.status).toBe(200);
       expect(mockSetSetting).toHaveBeenCalledWith("ATLAS_AGENT_AUTH_ENABLED", "false", "ws-admin-1", "org-1");
       // Audit trail labels the workspace-row write accordingly.
-      expect(mockLogAdminAction).toHaveBeenCalledWith(
-        expect.objectContaining({ metadata: expect.objectContaining({ tier: "workspace" }) }),
+      expect(mockAuditSettingsWrite).toHaveBeenCalledWith(
+        expect.objectContaining({ platformTier: false }),
       );
     });
 
@@ -1359,6 +1376,81 @@ describe("admin settings routes", () => {
       // The router's shared validationHook defaultHook → 422 Unprocessable Entity.
       expect(res.status).toBe(422);
       expect(mockSetSetting).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── the audit row is awaited (#5262) ──────────────────────────
+
+  describe("an audit row that cannot be committed (#5262)", () => {
+    // The residual #5262 is actually about: `logAdminAction` dropped the row
+    // with a `log.warn` when the internal-DB circuit breaker was open, and a
+    // raised `ATLAS_LOG_LEVEL` — itself runtime-mutable — then ate the warn.
+    // Awaiting the row turns a silently unrecorded config change into a
+    // response the admin sees.
+    const auditDown = () => {
+      mockAuditSettingsWrite.mockImplementationOnce(() =>
+        Promise.reject(new Error("circuit breaker open")),
+      );
+    };
+
+    it("PUT 500s when the audit row is rejected", async () => {
+      auditDown();
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "500" }),
+      });
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { error: string; message: string; requestId: string };
+      expect(body.error).toBe("audit_not_committed");
+      // ⚠️ THE MESSAGE'S CLAIM, not just its presence. The write already
+      // landed and the cache is already updated, so a body implying the
+      // change did not apply would send the admin to re-check the wrong
+      // thing. It has to say the setting DID change and is unaudited.
+      expect(body.message).toContain("already in effect");
+      expect(body.message).toContain("unaudited");
+      expect(body.requestId).toBeTruthy();
+    });
+
+    it("⭐ and the write really did land — the 500 is about the record, not the write", async () => {
+      // Without this, a handler that rolled the setting back on audit failure
+      // would satisfy the status assertion above while doing something
+      // completely different, and the message would then be a lie.
+      auditDown();
+      await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "500" }),
+      });
+      expect(mockSetSetting).toHaveBeenCalledTimes(1);
+      // The submitted value, not a rollback to anything else.
+      expect(mockSetSetting).toHaveBeenCalledWith(
+        "ATLAS_ROW_LIMIT",
+        "500",
+        expect.any(String),
+        undefined,
+      );
+    });
+
+    it("DELETE 500s the same way — the clear path is a write too", async () => {
+      auditDown();
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", { method: "DELETE" });
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { error: string; message: string };
+      expect(body.error).toBe("audit_not_committed");
+      expect(body.message).toContain("reset to its default");
+      expect(mockDeleteSetting).toHaveBeenCalledTimes(1);
+    });
+
+    it("stays 200 when the audit row commits — the arm that must NOT fail", async () => {
+      // The other half of the claim: a route that 500'd unconditionally would
+      // pass all three tests above.
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "500" }),
+      });
+      expect(res.status).toBe(200);
     });
   });
 

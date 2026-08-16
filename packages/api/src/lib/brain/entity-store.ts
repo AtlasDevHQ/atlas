@@ -212,8 +212,14 @@ export interface EntityEdgeBatch {
    *
    * Returned rather than folded into `ambiguous` so the two refusals stay
    * distinguishable — "nothing to propose because the keys are natural" and
-   * "nothing to propose because names collide" have opposite meanings. It
-   * reaches no report and no log on purpose; there is nothing to act on.
+   * "nothing to propose because names collide" have opposite meanings.
+   *
+   * ⚠️ It DOES reach the run report now (#5277), on every `entityEdges` arm that
+   * got far enough to count it. This line used to say "no report and no log on
+   * purpose; there is nothing to act on", and the second half is still true — but
+   * silence made a healthy all-natural-key store byte-identical to one whose ids no
+   * producer could have minted, which resolves nothing. Nothing to ACT on is not
+   * the same as nothing to SAY.
    */
   readonly selfEdges: number;
   /**

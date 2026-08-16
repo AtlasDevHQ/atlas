@@ -1775,6 +1775,17 @@ export const BrainAliasProducerCountersSchema = z.strictObject({
 /**
  * What the entity-edge pass did — the wire half of `EntityEdgeOutcome` (#5277).
  *
+ * ⚠️ **Pinned EXACTLY against its TypeScript counterpart by `_reportMatchesWireSchema`
+ * in `api/routes/admin-brain-enrollment.ts`** — a mutual-`extends` `ExactShape`, which
+ * is stronger than the one-way `satisfies` used elsewhere in this file and catches a
+ * dropped arm, a widened discriminant, and an optionality or nullability flip in BOTH
+ * directions, structurally through the nested union. Named here because that pin lives
+ * in a third file: editing either definition alone reds a route, and nothing in either
+ * definition said so.
+ *
+ * What the pin structurally CANNOT see: `strictObject` vs `object`, `.int()`/
+ * `.nonnegative()` refinements, and `readonly` modifiers. Those are on review.
+ *
  * ⚠️ **ONE discriminated union replacing three parallel fields**, because
  * `entityEdges: counters | null`, `entityEdgesFailed: string | null` and
  * `entityEdgesAmbiguous: number` could spell combinations that were never a run
@@ -1789,56 +1800,172 @@ export const BrainAliasProducerCountersSchema = z.strictObject({
  * auto-approved entity edge re-keys the corpus, so "threw before proposing
  * anything" and "threw after committing 900 edges" are materially different runs
  * that used to be the same two wire values.
+ *
+ * ⚠️ **NOTHING IS NULLABLE, and the first cut of this schema had two.** Nullable
+ * counts beside a non-nullable `proposalsAttempted` admit three shapes that are
+ * not runs — a count from a store never read, a submission without a read, a
+ * submission before planning. What varies is HOW FAR THE PASS GOT, so that is
+ * spelled once, as {@link BrainEntityEdgeProgressSchema}, and each phase carries
+ * exactly the numbers it established.
+ *
+ * ⚠️ The four counts travel TOGETHER wherever they are known.
+ * `entityEdgeProposals` returns four disjoint reasons an entry earns no edge, and
+ * only `ambiguous` used to reach the report — so 500 rows carrying ids no producer
+ * could have minted were byte-identical to 500 healthy natural-key rows. One
+ * resolves every surface; the other resolves nothing, ever, and wants a re-import
+ * rather than a warehouse edit.
  */
+const nonNegativeInt = () => z.number().int().nonnegative();
+
+/**
+ * The counts every reason an entry produced no edge — disjoint by construction in
+ * `entity-store.ts`, and therefore only meaningful together.
+ */
+const entityEdgeCensusFields = {
+  /** Entries in the persisted, workspace-wide store the pass read. */
+  entries: nonNegativeInt(),
+  /**
+   * Refused because the name is shared with another entity — two `Acme` accounts,
+   * and neither resolves by name. Ordinary data with a permanent consequence.
+   */
+  ambiguous: nonNegativeInt(),
+  /** A natural-key table: the name and the key are already one. Nothing to do. */
+  selfEdges: nonNegativeInt(),
+  /**
+   * Ids no producer could have minted — a hand-edited or downgraded bundle. These
+   * resolve NOTHING, ever, and the remedy is a re-import rather than a warehouse
+   * edit, which is why they are counted apart from `ambiguous`.
+   */
+  unmintedIds: nonNegativeInt(),
+} as const;
+
+/** How far the entity-edge pass got before it threw. See `EntityEdgeProgress`. */
+export const BrainEntityEdgeProgressSchema = z.discriminatedUnion("phase", [
+  /** The store read threw. NOTHING is known — no count is reported because none was taken. */
+  z.strictObject({ phase: z.literal("store-read") }),
+  /** The store was read; planning threw. Nothing was submitted, so nothing was committed. */
+  z.strictObject({ phase: z.literal("planning"), entries: nonNegativeInt() }),
+  /**
+   * The batch was submitted and the vocabulary seam threw part-way through it.
+   *
+   * ⚠️ `proposalsAttempted` is the count SUBMITTED, not COMMITTED — an upper bound
+   * on the blast radius, and possibly none of them landed (the seam does a dynamic
+   * `import()` before its first write).
+   *
+   * ⚠️ **`positive()`, not `nonNegativeInt()`** — this phase's entire definition is
+   * "the batch WAS submitted", so `proposalsAttempted: 0` is unconstructible, and
+   * the pass returns `nothing-to-propose` before it ever advances here. Zero on this
+   * arm was one of the three illegal states the reshape claimed to remove, surviving
+   * as a count instead of as a `null`.
+   */
+  z
+    .strictObject({
+      phase: z.literal("proposing"),
+      ...entityEdgeCensusFields,
+      proposalsAttempted: z.number().int().positive(),
+    })
+    .superRefine((value, ctx) => checkCensus(value, ctx, true)),
+]);
+
+/**
+ * The census's cross-field invariant, enforced AT THE BOUNDARY.
+ *
+ * ⚠️ **The four counts are disjoint partitions of `entries`, and until this existed
+ * that was a sentence in a docstring rather than a check.** `entityEdgeProposals`
+ * puts every entry down exactly one of four paths, so `ambiguous + selfEdges +
+ * unmintedIds` can never exceed `entries` — yet four bare non-negative integers
+ * spell `{entries: 0, ambiguous: 5}`, which is "counted five in a store that held
+ * nothing". That is one of the three illegal states this union was reshaped to
+ * remove, reached by arithmetic instead of by a `null`.
+ *
+ * TypeScript cannot express a sum relation, so the TS union genuinely could not
+ * hold this; Zod can, the report IS parsed here, and two siblings in this file
+ * (`BrainFactWillWidenSchema`, `BrainFactOversightSchema`) already argue that a
+ * cross-check whose operands ride the wire together belongs at the boundary rather
+ * than trusted to the producer.
+ *
+ * `earnedAnEdge` is what separates the two callers: on `nothing-to-propose` NO
+ * entry earned an edge, so the partition is exact; on the arms that did propose, at
+ * least one did, so the accounted-for count is strictly short of `entries`.
+ */
+function checkCensus(
+  value: {
+    readonly entries: number;
+    readonly ambiguous: number;
+    readonly selfEdges: number;
+    readonly unmintedIds: number;
+  },
+  ctx: z.RefinementCtx,
+  earnedAnEdge: boolean,
+): void {
+  const accountedFor = value.ambiguous + value.selfEdges + value.unmintedIds;
+  if (accountedFor > value.entries) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["entries"],
+      message:
+        "more store entries were refused an edge than the store holds — the four counts are " +
+        "disjoint partitions of `entries`, so their sum can never exceed it",
+    });
+    return;
+  }
+  if (earnedAnEdge && accountedFor === value.entries) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["entries"],
+      message:
+        "a batch was submitted from a store in which every entry was refused an edge — if " +
+        "nothing earned one there was nothing to propose",
+    });
+  }
+  if (!earnedAnEdge && accountedFor !== value.entries) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["entries"],
+      message:
+        "nothing was proposed, yet some entries are unaccounted for — an entry that was " +
+        "neither ambiguous, a self-edge nor unminted earns an edge, so it would have been",
+    });
+  }
+}
+
 export const BrainEntityEdgeOutcomeSchema = z.discriminatedUnion("kind", [
   /**
-   * The pass ran and had nothing to propose — an empty store, every entry a
-   * self-edge (a natural-key table, where the name and the key are already one),
-   * or every entry refused. `entries` is what tells those apart.
+   * The pass ran and had nothing to propose. All four reasons are carried, because
+   * `entries` separates only empty from non-empty — and they must ACCOUNT for every
+   * entry, since an entry that fell into none of them would have earned an edge.
    */
-  z.strictObject({
-    kind: z.literal("nothing-to-propose"),
-    entries: z.number().int().nonnegative(),
-    ambiguous: z.number().int().nonnegative(),
-  }),
+  z
+    .strictObject({
+      kind: z.literal("nothing-to-propose"),
+      ...entityEdgeCensusFields,
+    })
+    .superRefine((value, ctx) => checkCensus(value, ctx, false)),
   /**
    * The batch ran to completion.
    *
    * ⚠️ `counters.rejected` is the number to read on a re-run — a producer whose
    * second pass reports zero there is one whose human removals did not stick.
    */
-  z.strictObject({
-    kind: z.literal("proposed"),
-    entries: z.number().int().nonnegative(),
-    /**
-     * Store entries refused an edge because their name is shared with another
-     * entity — two `Acme` accounts, and neither resolves by name. Ordinary data
-     * with a permanent consequence, which is why it is on the report at all.
-     */
-    ambiguous: z.number().int().nonnegative(),
-    counters: BrainAliasProducerCountersSchema,
-  }),
+  z
+    .strictObject({
+      kind: z.literal("proposed"),
+      ...entityEdgeCensusFields,
+      counters: BrainAliasProducerCountersSchema,
+    })
+    .superRefine((value, ctx) => checkCensus(value, ctx, true)),
   /**
    * The pass threw. Every fact and store entry is still committed.
    *
    * ⚠️ `message` is a FIXED sentence plus the request id, never the caught error's
    * message: both throw sources are internal-DB-backed, so the raw text would put
-   * a host and a role in a 200 body.
+   * a host and a role in a 200 body. `.min(1)` because a message with no
+   * correlation handle makes "go read the log" a dead end.
    */
   z.strictObject({
     kind: z.literal("failed"),
-    /**
-     * `null` when the throw came from the store READ itself — not `0`, which
-     * would claim an empty store to an operator whose store may be full.
-     */
-    entries: z.number().int().nonnegative().nullable(),
-    ambiguous: z.number().int().nonnegative().nullable(),
-    /**
-     * Proposals SUBMITTED before the throw. `0` means nothing can have been
-     * committed; non-zero means an unknown prefix of that many is.
-     */
-    proposalsAttempted: z.number().int().nonnegative(),
-    message: z.string(),
+    reached: BrainEntityEdgeProgressSchema,
+    message: z.string().min(1),
   }),
 ]);
 
@@ -1885,8 +2012,14 @@ export const BrainWarehouseRunReportSchema = z.strictObject({
  * makes the numbers UNREADABLE on the branch where they are meaningless, rather
  * than readable and wrong. Two of those three use `z.discriminatedUnion` and so
  * does this — a plain `z.union` reports a failure as ONE `invalid_union` issue at
- * `path: []`, which collapses every consumer's diagnostic to nothing, and renders
- * as `anyOf` with no discriminator for every generated client.
+ * `path: []`, which collapses every consumer's diagnostic to nothing.
+ *
+ * ⚠️ That diagnostic argument is the whole argument. An earlier version added
+ * "…and renders as `anyOf` with no discriminator for every generated client",
+ * which overstates what the generator gives you: `apps/docs/openapi.json` contains
+ * ZERO `"discriminator"` keys, and a `discriminatedUnion` emits a bare `oneOf`
+ * exactly as a plain union would. Measured, not reasoned — the choice is worth
+ * making for the zod issue paths alone.
  */
 export const BrainWarehouseRunResponseSchema = z.discriminatedUnion("reportComplete", [
   BrainWarehouseRunReportSchema.extend({ reportComplete: z.literal(true) }),

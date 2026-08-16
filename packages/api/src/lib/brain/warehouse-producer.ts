@@ -1408,27 +1408,49 @@ export interface WarehouseEntityOutcome {
  * RE-KEYS THE CORPUS, so a mid-batch throw leaves approved edges behind. Under
  * the old fields, "threw before proposing anything" and "threw after committing
  * 900 edges" were the same two wire values — `entityEdges: null` plus a message
- * — and the prose said so while the type could not. {@link proposalsAttempted}
- * is the field that separates them.
+ * — and the prose said so while the type could not. {@link EntityEdgeProgress}
+ * is what separates them.
+ *
+ * ⚠️ **NO NULLABLE FIELDS, and the first cut of this union had three.** That cut
+ * put `entries: number | null`, `ambiguous: number | null` and
+ * `proposalsAttempted: number` side by side on one `failed` arm, which spells
+ * three combinations that are not runs — *counted five in a store never read*,
+ * *submitted four without reading*, *submitted before planning*. Its own tests
+ * asserted the impossibility in PROSE (`entries: null` … "so
+ * `proposalsAttempted` is necessarily 0"), which is the shape #5277 exists to
+ * remove, one arm in: 4 illegal states became 3 rather than 0. What actually
+ * varies is HOW FAR THE PASS GOT, and that is one discriminant, not three
+ * nullable fields — so it is spelled as one.
  */
 export type EntityEdgeOutcome =
+  // ⚠️ Pinned EXACTLY against `BrainEntityEdgeOutcomeSchema` by
+  // `_reportMatchesWireSchema` in `api/routes/admin-brain-enrollment.ts`. Editing
+  // this union without the schema reds a route rather than shipping a wire lie —
+  // but the pin lives in a third file, so it is named here where someone editing
+  // will see it.
   /**
-   * The pass ran and had nothing to propose — an empty store, every entry a
-   * self-edge (a natural-key table, where the name and the key are already one),
-   * or every entry refused.
+   * The pass ran and had nothing to propose.
    *
    * ⚠️ NOT "the run wrote no entries". The batch comes from the PERSISTED,
    * workspace-wide store, so a run that wrote nothing still proposes when prior
    * entries exist, and a run that wrote 500 natural-key entries lands HERE
-   * because every one is a self-edge. `entries` is what tells those apart, and it
-   * is on this arm rather than inferable from a `null`.
+   * because every one is a self-edge.
+   *
+   * ⚠️ **All FOUR reasons are carried, and an earlier cut carried two.** It
+   * enumerated three causes in prose and claimed `entries` told them apart;
+   * `entries` separates only empty from non-empty, and {@link unmintedIds} was
+   * missing from the enumeration entirely. So `{entries: 500, ambiguous: 0}` was
+   * byte-identical for a healthy all-natural-key store and for 500 rows whose ids
+   * no producer could have minted — one resolves every surface, the other
+   * resolves nothing ever, and the remedies are "none" and "re-import". That is
+   * this union's own charter failing one counter over.
    */
   | {
       readonly kind: "nothing-to-propose";
-      /** Entries in the persisted, workspace-wide store the pass read. */
       readonly entries: number;
-      /** See the `proposed` arm — the same number, and the same reason it is here. */
       readonly ambiguous: number;
+      readonly selfEdges: number;
+      readonly unmintedIds: number;
     }
   /**
    * The batch ran to completion.
@@ -1441,16 +1463,17 @@ export type EntityEdgeOutcome =
   | {
       readonly kind: "proposed";
       readonly entries: number;
-      /**
-       * Store entries refused an edge because their name is shared with another
-       * entity (#5043) — two `Acme` accounts, and neither resolves by name.
-       *
-       * On the report because it is the one consequence of the fail-closed rule a
-       * person can act on. It was countable only in a `debug` line production does
-       * not emit, under a docstring claiming the caller reported it.
-       */
       readonly ambiguous: number;
-      readonly counters: AliasProducerCounters;
+      readonly selfEdges: number;
+      readonly unmintedIds: number;
+      /**
+       * ⚠️ `Readonly<…>` because {@link AliasProducerCounters} declares six
+       * MUTABLE fields — `vocabulary-decide.ts` builds them by mutation — so a
+       * bare `readonly counters` freezes the reference and leaves
+       * `report.entityEdges.counters.queued = 0` compiling on a returned report.
+       * Every other field on this report is deeply immutable; this was the hole.
+       */
+      readonly counters: Readonly<AliasProducerCounters>;
     }
   /**
    * The pass threw. Every fact and store entry is still committed — this arm
@@ -1467,32 +1490,66 @@ export type EntityEdgeOutcome =
    */
   | {
       readonly kind: "failed";
-      /**
-       * Store entries read, or `null` when the throw came from the READ itself.
-       *
-       * ⚠️ `null` is not `0`. Reporting zero for a store that was never read is
-       * ADR-0039's invisibility in miniature — "we looked and found nothing" told
-       * to an operator whose store may hold every row it ever did.
-       */
-      readonly entries: number | null;
-      /** Ambiguous entries, or `null` for the same reason as {@link entries}. */
-      readonly ambiguous: number | null;
-      /**
-       * Proposals SUBMITTED before the throw — the partial-progress handle.
-       *
-       * `0` means the throw preceded the batch, so nothing can have been
-       * committed and re-running costs nothing. Non-zero means an unknown PREFIX
-       * of that many is committed and each committed edge has already re-keyed
-       * what it touches; the alias-producer's own aborted-batch log line for this
-       * request carries the counts.
-       *
-       * ⚠️ It is the count SUBMITTED, not the count COMMITTED, and the difference
-       * is not recoverable here: `proposeAliasEdges` returns its counters only on
-       * success, so a throw takes them with it. Reporting the submitted size is
-       * the honest upper bound; claiming a committed number would be inventing one.
-       */
-      readonly proposalsAttempted: number;
+      readonly reached: EntityEdgeProgress;
       readonly message: string;
+    };
+
+/**
+ * How far the pass got before it threw — the knowability boundary, as a type.
+ *
+ * ⚠️ **Each phase carries exactly the numbers that phase has ESTABLISHED, and no
+ * others.** That is the whole design: a field is absent where it is unknown
+ * rather than present-and-null, so "the store was never read" cannot be spelled
+ * alongside a count of anything, and "four proposals were submitted" cannot be
+ * spelled without the census that produced them. The three impossible states the
+ * nullable-field version admitted are unrepresentable here rather than refused by
+ * a comment.
+ *
+ * The phases are the pass's three sequential steps, in order.
+ */
+export type EntityEdgeProgress =
+  /**
+   * The store read itself threw. NOTHING is known and nothing can have been
+   * written — no count is reported because none was taken.
+   *
+   * ⚠️ This is the arm that used to be `entries: null`, and the reason it was
+   * right to distinguish: reporting `0` for a store nobody looked at is ADR-0039's
+   * invisibility in miniature — "we looked and found nothing", told to an operator
+   * whose store may hold every row it ever did.
+   */
+  | { readonly phase: "store-read" }
+  /**
+   * The store was read; planning the batch threw.
+   *
+   * `entityEdgeProposals` is a pure function over an array already in memory, so
+   * reaching here means a code defect rather than an operational event — which is
+   * exactly why it must be reportable rather than folded into a neighbouring arm.
+   * Nothing has been submitted, so nothing can have been committed.
+   */
+  | { readonly phase: "planning"; readonly entries: number }
+  /**
+   * The batch was submitted and the vocabulary seam threw part-way through it.
+   *
+   * ⚠️ {@link proposalsAttempted} is the count SUBMITTED, not the count
+   * COMMITTED. `proposeAliasEdges` returns its counters only on success, so a
+   * throw takes them with it — the submitted size is the honest UPPER BOUND on
+   * the blast radius and the alias-producer's own aborted-batch log line for this
+   * request carries the real counts.
+   *
+   * ⚠️ **Possibly NONE of them committed**, and an earlier version of this note
+   * said an unknown prefix definitely had. The production seam does a dynamic
+   * `import()` before its first write, so a module-resolution failure or a
+   * top-level throw inside `vocabulary-decide` lands here having written nothing.
+   * An operator reading "an unknown prefix is committed" would go and audit a
+   * corpus that was never touched.
+   */
+  | {
+      readonly phase: "proposing";
+      readonly entries: number;
+      readonly ambiguous: number;
+      readonly selfEdges: number;
+      readonly unmintedIds: number;
+      readonly proposalsAttempted: number;
     };
 
 export interface WarehouseProducerReport {
@@ -2064,21 +2121,41 @@ export async function runWarehouseProducer(
    * detector has to satisfy. Whoever builds the cadence owns this line.
    */
   const runEntityEdgePass = async (): Promise<EntityEdgeOutcome> => {
-    // ⚠️ Captured OUTSIDE the try, because the `failed` arm has to say how far the
-    // pass got and every one of these is unknown until its own step ran. `null` and
-    // `0` are different answers here: `entries: null` is "the store was never read",
-    // `entries: 0` is "the store is empty". #5043's shape could say only the second.
-    let entries: number | null = null;
-    let ambiguous: number | null = null;
-    let proposalsAttempted = 0;
+    // ⚠️ ONE variable declared OUTSIDE the try, advanced as each step ESTABLISHES
+    // its numbers, and read by the catch. Three nullable locals were the first cut
+    // and they let the catch assemble combinations no step could produce; a single
+    // discriminated value can only ever hold what one phase actually knows.
+    let reached: EntityEdgeProgress = { phase: "store-read" };
     // Failing here must NOT fail the run. Every fact is committed, and a throw
     // reaches `runEffect` as `500 "Failed to run"` — which invites the one retry
     // that files a second full round of drafts into the review queue.
     try {
       const store = await loadStore(workspaceId);
-      entries = store.length;
+      // ⚠️ ADDITIVE guard: it can only ever refuse more. A seam resolving a
+      // non-array is a lying seam rather than an operational failure, and without
+      // this `store.length` is `undefined` — which flows into the report as an
+      // `undefined` count, fails `BrainWarehouseRunReportSchema`, and hands the
+      // operator "the report could not be serialized" instead of "the entity-edge
+      // pass failed". Throwing puts it on the arm that describes it, and the
+      // message never reaches the body because the body's sentence is fixed. The
+      // sibling snapshot seam is hardened for exactly this reason; this one was not.
+      if (!Array.isArray(store)) {
+        throw new TypeError("the entity-store seam resolved a non-array");
+      }
+      // `reached` advances only AFTER the read returned, so a throw above keeps
+      // `store-read` and reports no count at all.
+      reached = { phase: "planning", entries: store.length };
       const batch = entityEdgeProposals(store);
-      ambiguous = batch.ambiguous;
+      // Every reason an entry produced no proposal, all four of them, disjoint by
+      // construction (`entity-store.ts`). Carried together because the report's
+      // job is to say WHY there was nothing to do, and three of the four are
+      // invisible in `entries` alone.
+      const census = {
+        entries: store.length,
+        ambiguous: batch.ambiguous,
+        selfEdges: batch.selfEdges,
+        unmintedIds: batch.unmintedIds,
+      };
       if (batch.ambiguous > 0 || batch.unmintedIds > 0) {
         // WARN, because both are permanent consequences rather than hiccups:
         // those surfaces resolve to nothing and no edge is ever raised for them.
@@ -2099,15 +2176,14 @@ export async function runWarehouseProducer(
         );
       }
       if (batch.proposals.length === 0) {
-        return { kind: "nothing-to-propose", entries, ambiguous };
+        return { kind: "nothing-to-propose", ...census };
       }
-      // ⚠️ Set BEFORE the await, not after. It is the count SUBMITTED, and its
-      // whole job is to be true when the await throws.
-      proposalsAttempted = batch.proposals.length;
+      // ⚠️ Advanced BEFORE the await, not after. Its whole job is to be true when
+      // the await throws.
+      reached = { phase: "proposing", ...census, proposalsAttempted: batch.proposals.length };
       return {
         kind: "proposed",
-        entries,
-        ambiguous,
+        ...census,
         counters: await proposeEdges(workspaceId, batch.proposals, requestId),
       };
     } catch (err) {
@@ -2129,9 +2205,18 @@ export async function runWarehouseProducer(
       // close. The alias-producer's own aborted-batch line carries the counts.
       //
       // ⚠️ The sentence is FIXED — the same bytes on every failure, regardless of
-      // how far the pass got. What varies is the STRUCTURED half beside it
-      // (`proposalsAttempted`, `entries`, `ambiguous`), which is a place a machine
-      // can read partial progress off without a caller parsing prose.
+      // how far the pass got or what threw. What varies is the STRUCTURED half
+      // beside it ({@link EntityEdgeProgress}), which is where a machine reads
+      // partial progress off without a caller parsing prose.
+      //
+      // ⚠️ **The catch is deliberately broad, so it also catches DETERMINISTIC
+      // defects** — a `TypeError` in the planner, a substituted seam of the wrong
+      // shape, the non-array guard above. "Re-running is safe" is true about
+      // double-writes and says nothing about outcomes, so a defect invites the
+      // admin to press Run forever, filing another full round of drafts each time.
+      // The permanence clause is FIXED too (it varies with nothing but the request
+      // id), so it costs the byte-equality property nothing. Same wording as the
+      // gate-threw arm's, deliberately: one phrasing to grep support tickets for.
       const message =
         "The entity-edge pass failed part-way. Any edge it had already proposed is committed — " +
         "the alias-producer log line for this run carries those counts — and every fact and store " +
@@ -2140,16 +2225,24 @@ export async function runWarehouseProducer(
         // the other — the rule the snapshot arm already states, applied to the outlier.
         `entry is committed too. Re-running is safe. The server log for request ${
           requestId ?? "unknown"
-        } carries the reason.`;
+        } carries the reason. If it fails again identically, this is an Atlas fault rather ` +
+        "than a transient one: report it with that request id.";
       // `err` raw, so pino's serializer emits the stack — for a pool or lock
       // failure the stack is the actionable half, and the per-entity catch
       // already does it this way.
+      //
+      // ⚠️ `reached` travels on the LOG as well as the report, and that pairing is
+      // the redaction's counterpart: the body withholds the driver's text and
+      // promises this line carries the reason, so the line has to exist and has to
+      // carry `err`. `warehouse-producer-logging.test.ts` asserts both halves —
+      // without it, deleting `err` here left every suite green while the report
+      // went on pointing operators at a line with no reason in it.
       log.error(
-        { ...runLog, err, entries, ambiguous, proposalsAttempted },
+        { ...runLog, err, reached },
         "Warehouse producer: the entity-edge pass failed part-way — facts and store entries are " +
           "committed, and any edge proposed before the failure is too. Re-run to retry",
       );
-      return { kind: "failed", entries, ambiguous, proposalsAttempted, message };
+      return { kind: "failed", reached, message };
     }
   };
 

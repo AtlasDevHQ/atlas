@@ -31154,12 +31154,22 @@
                                 "ambiguous": {
                                   "type": "integer",
                                   "minimum": 0
+                                },
+                                "selfEdges": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "unmintedIds": {
+                                  "type": "integer",
+                                  "minimum": 0
                                 }
                               },
                               "required": [
                                 "kind",
                                 "entries",
-                                "ambiguous"
+                                "ambiguous",
+                                "selfEdges",
+                                "unmintedIds"
                               ],
                               "additionalProperties": false
                             },
@@ -31177,6 +31187,14 @@
                                   "minimum": 0
                                 },
                                 "ambiguous": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "selfEdges": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "unmintedIds": {
                                   "type": "integer",
                                   "minimum": 0
                                 },
@@ -31223,6 +31241,8 @@
                                 "kind",
                                 "entries",
                                 "ambiguous",
+                                "selfEdges",
+                                "unmintedIds",
                                 "counters"
                               ],
                               "additionalProperties": false
@@ -31236,33 +31256,93 @@
                                     "failed"
                                   ]
                                 },
-                                "entries": {
-                                  "type": [
-                                    "integer",
-                                    "null"
-                                  ],
-                                  "minimum": 0
-                                },
-                                "ambiguous": {
-                                  "type": [
-                                    "integer",
-                                    "null"
-                                  ],
-                                  "minimum": 0
-                                },
-                                "proposalsAttempted": {
-                                  "type": "integer",
-                                  "minimum": 0
+                                "reached": {
+                                  "oneOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "phase": {
+                                          "type": "string",
+                                          "enum": [
+                                            "store-read"
+                                          ]
+                                        }
+                                      },
+                                      "required": [
+                                        "phase"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "phase": {
+                                          "type": "string",
+                                          "enum": [
+                                            "planning"
+                                          ]
+                                        },
+                                        "entries": {
+                                          "type": "integer",
+                                          "minimum": 0
+                                        }
+                                      },
+                                      "required": [
+                                        "phase",
+                                        "entries"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "phase": {
+                                          "type": "string",
+                                          "enum": [
+                                            "proposing"
+                                          ]
+                                        },
+                                        "entries": {
+                                          "type": "integer",
+                                          "minimum": 0
+                                        },
+                                        "ambiguous": {
+                                          "type": "integer",
+                                          "minimum": 0
+                                        },
+                                        "selfEdges": {
+                                          "type": "integer",
+                                          "minimum": 0
+                                        },
+                                        "unmintedIds": {
+                                          "type": "integer",
+                                          "minimum": 0
+                                        },
+                                        "proposalsAttempted": {
+                                          "type": "integer",
+                                          "exclusiveMinimum": 0
+                                        }
+                                      },
+                                      "required": [
+                                        "phase",
+                                        "entries",
+                                        "ambiguous",
+                                        "selfEdges",
+                                        "unmintedIds",
+                                        "proposalsAttempted"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  ]
                                 },
                                 "message": {
-                                  "type": "string"
+                                  "type": "string",
+                                  "minLength": 1
                                 }
                               },
                               "required": [
                                 "kind",
-                                "entries",
-                                "ambiguous",
-                                "proposalsAttempted",
+                                "reached",
                                 "message"
                               ],
                               "additionalProperties": false

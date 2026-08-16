@@ -29,7 +29,7 @@
  * {@link isRoutingIdUniqueViolation}.
  */
 
-import { PG_UNIQUE_VIOLATION } from "@atlas/api/lib/db/pg-errors";
+import { PG_UNIQUE_VIOLATION, pgErrorLinks } from "@atlas/api/lib/db/pg-errors";
 
 /**
  * Name of the partial unique index created by migration 0120 and mirrored
@@ -39,23 +39,14 @@ import { PG_UNIQUE_VIOLATION } from "@atlas/api/lib/db/pg-errors";
 export const CHAT_ROUTING_ID_UNIQUE_INDEX = "workspace_plugins_chat_routing_id_unique";
 
 /**
- * Max `.cause` links to follow. The pg error is at most a couple of links
- * deep (`SqlError.cause` → pg `DatabaseError`); the cap is a backstop against
- * a cyclic `cause` chain rather than a real depth requirement.
- */
-const MAX_CAUSE_DEPTH = 8;
-
-/**
  * Shape of the fields we read off an error link. `code` carries the SQLSTATE;
  * `constraint` carries the violated index/constraint name on a unique
- * violation; `cause` is the next link to inspect. All optional because the
- * value reaching a `catch` is `unknown` — a network/driver error won't have
- * them.
+ * violation. Both optional because the value reaching a `catch` is `unknown` —
+ * a network/driver error won't have them.
  */
 interface PgErrorLike {
   readonly code?: unknown;
   readonly constraint?: unknown;
-  readonly cause?: unknown;
 }
 
 /**
@@ -69,20 +60,33 @@ interface PgErrorLike {
  * install via `getInternalDB().connect()`), but the no-org direct-insert path
  * and the generic marketplace config UPDATE both go through `@effect/sql`
  * (`internalQuery` / `queryEffect` → `_sqlClient.unsafe`), which wraps the pg
- * error inside a `SqlError.cause` with NO top-level `code`. Inspecting each
- * link catches the 23505 regardless of how deeply the driver/Effect layer
- * wrapped it.
+ * error inside a `SqlError` with NO top-level `code`.
+ *
+ * ⚠️ **The walk this function used to do was its OWN `.cause` loop, and that
+ * loop was DEAD on exactly the two Effect paths the paragraph above cites.**
+ * `Effect.runPromise` rejects with a `FiberFailure`, which exposes no `cause`
+ * own-property — its `Cause` hangs off a symbol — so the loop read `undefined`
+ * at depth 0 and returned `false` for every wrapped collision.
+ *
+ * The concrete route in: `persist-form-install.ts` catches with
+ * `.catch(raiseWriteError)` on a promise, so what reaches here is the
+ * `FiberFailure` rather than the `SqlError` an in-program catch would see. That
+ * made #3167's "already connected elsewhere" message unreachable on that path
+ * and handed the losing installer a raw 500. Measured in
+ * #5272 against a real database with the index deliberately named
+ * {@link CHAT_ROUTING_ID_UNIQUE_INDEX}, so the constraint check could not be
+ * what failed: it returned `false` on the real error and `true` on the
+ * hand-built fixture its tests use. {@link pgErrorLinks} unwraps the
+ * `FiberFailure` before following `.cause`, which is the part the local loop
+ * could not have gotten right by inspection.
  */
 export function isRoutingIdUniqueViolation(err: unknown): boolean {
-  let current: unknown = err;
-  for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {
-    if (typeof current !== "object" || current === null) return false;
-    const e = current as PgErrorLike;
+  for (const link of pgErrorLinks(err)) {
+    if (typeof link !== "object" || link === null) continue;
+    const e = link as PgErrorLike;
     if (e.code === PG_UNIQUE_VIOLATION && e.constraint === CHAT_ROUTING_ID_UNIQUE_INDEX) {
       return true;
     }
-    if (e.cause === current) return false; // self-referential guard
-    current = e.cause;
   }
   return false;
 }

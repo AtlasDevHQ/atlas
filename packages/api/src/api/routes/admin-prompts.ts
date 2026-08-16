@@ -10,7 +10,7 @@ import { Effect } from "effect";
 import type { Context as HonoContext } from "hono";
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
-import { asUniqueViolation } from "@atlas/api/lib/db/pg-errors";
+import { asWrappedUniqueViolation } from "@atlas/api/lib/db/pg-errors";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
@@ -32,22 +32,17 @@ const log = createLogger("admin-prompts");
  * violation into a typed result so create/rename routes can return a 409
  * instead of leaking a generic 500.
  *
- * ⚠️ **READS A FLAT TOP-LEVEL `code`, AND THIS ROUTE WRITES THROUGH
- * `internalQuery`, WHICH MAY NOT PRODUCE ONE.** Once the Layer has booted,
- * `internalQuery` goes through `Effect.runPromise(_sqlClient.unsafe(…))`
- * (`db/internal.ts:768-773`), which rejects with a `FiberFailure` wrapping
- * `SqlError` wrapping the pg `DatabaseError` — no top-level `code`. That is
- * the shape `integrations/install/routing-id-conflict.ts` walks the `.cause`
- * chain for. If it holds here, this 409 is dead in production and a duplicate
- * name 500s instead. The existing tests cannot see it: they set `err.code`
- * directly on a hand-built rejection, a fixture agreeing with the assumption.
- * Surfaced by the #5271 review panel and NOT fixed there — it is pre-existing,
- * needs a `-pg` harness to settle, and changing four call sites' error
- * classification (two routes, two stores) is machinery this PR has no round
- * left to review. Tracked in #5272.
+ * ⚠️ **Classifies on the WRAPPED shape, and a flat read here was dead.** This
+ * route writes through `queryEffect`, so once the Layer has booted the
+ * rejection is a `FiberFailure` wrapping `SqlError` wrapping the pg
+ * `DatabaseError`, with no top-level `code` — measured against a real database
+ * in #5272, where a flat read returned "not a violation" and this 409 was
+ * unreachable in production. `normalizeError` passes the `FiberFailure` through
+ * untouched (it is already an `Error`), so the typed channel carries that exact
+ * shape.
  */
 function isUniqueViolation(err: unknown): boolean {
-  return asUniqueViolation(err) !== undefined;
+  return asWrappedUniqueViolation(err) !== undefined;
 }
 
 // ---------------------------------------------------------------------------

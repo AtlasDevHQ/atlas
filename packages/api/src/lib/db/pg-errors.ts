@@ -22,23 +22,38 @@
  * matches seven test fixtures that build a rejection by hand.)
  *
  * ⚠️ **Only the CONSTANT is universal; the classification around it is not.**
- * `asUniqueViolation` below reads a FLAT `code`, which is right for the `pg`
+ * {@link asUniqueViolation} reads a FLAT `code`, which is right for the `pg`
  * driver and wrong for `@effect/sql` — that wrapper moves the driver error
- * under `.cause`, which is why `routing-id-conflict.ts` walks the chain
- * instead. It imports the constant and keeps its own walk. Do not "simplify"
- * the two into one helper: a chain walk applied to the seeders would classify
- * a wrapped violation from an unrelated layer as a benign collision, and a
- * flat read applied to the Effect path would classify every real collision as
- * an unhandled throw.
+ * down a chain, which is what {@link asWrappedUniqueViolation} traverses. Do
+ * not "simplify" the two into one helper: a chain walk applied to the seeders
+ * would classify a wrapped violation from an unrelated layer as a benign
+ * collision, and a flat read applied to the Effect path would classify every
+ * real collision as an unhandled throw.
  *
- * ⚠️ FOUR of the six consumers are on exactly that Effect path today:
- * `admin-prompts.ts`, `sub-processor-subscriptions.ts`,
- * `starter-prompts/favorite-store.ts` and `suggestions/approval-store.ts` all
- * read this flat classification off an `internalQuery` result, where the shape
- * may be wrapped. Tracked in #5272; each site carries the same note. Do not
- * read "flat is right for the `pg` driver" as "flat is right at every call
- * site" — only the two seeders pass a raw `Pool`.
+ * ⚠️ The TRAVERSAL, unlike the classification, is now shared —
+ * `routing-id-conflict.ts` used to keep its own `.cause` loop and that loop was
+ * dead on the very paths its docstring cited (#5272). It keeps its own
+ * constraint-name check, which is the part that is genuinely local to it, and
+ * takes {@link pgErrorLinks} for the part that is not.
+ *
+ * ⚠️ FOUR of the six consumers were on exactly that Effect path and were
+ * therefore DEAD — `admin-prompts.ts`, `sub-processor-subscriptions.ts`,
+ * `starter-prompts/favorite-store.ts` and `suggestions/approval-store.ts` each
+ * read the flat classification off an `internalQuery` result. #5272 settled it
+ * against a real database and they now call {@link asWrappedUniqueViolation}.
+ * Do not read "flat is right for the `pg` driver" as "flat is right at every
+ * call site" — only the two seeders pass a raw `Pool`.
  */
+
+// ⚠️ SUBPATH imports, not the `effect` barrel, and deliberately so. Importing
+// `{ Cause, Runtime }` from `"effect"` raises a runtime `SyntaxError: Export
+// named 'Cause' not found` when a suite that partially mocks the barrel links a
+// graph reaching this file — `admin-marketplace.test.ts` is one. It is not a
+// type error and this module's own tests did not see it, so the barrel form
+// looked correct right up to the point another suite red. Other modules here do
+// use the barrel; they are not reached from a partially-mocked graph.
+import * as Cause from "effect/Cause";
+import * as Runtime from "effect/Runtime";
 
 /** Postgres SQLSTATE for `unique_violation`. */
 export const PG_UNIQUE_VIOLATION = "23505";
@@ -67,6 +82,95 @@ export function asUniqueViolation(
   const constraint = "constraint" in err && typeof err.constraint === "string" ? err.constraint : undefined;
   const detail = "detail" in err && typeof err.detail === "string" ? err.detail : undefined;
   return { constraint, detail };
+}
+
+/**
+ * Max links to follow. Measured depth on the Effect path is 2
+ * (`SqlError` → pg `DatabaseError`); the cap is a backstop against a cyclic
+ * `cause` chain rather than a real depth requirement.
+ */
+const MAX_CAUSE_DEPTH = 8;
+
+/**
+ * One `FiberFailure` unwrapped to the error its `Cause` carries, or `err`
+ * unchanged when it is not one.
+ *
+ * ⚠️ **A `FiberFailure` exposes NO `cause` own-property, and that is why a
+ * plain `.cause` walk does not reach the driver error.** #5272 proposed exactly
+ * such a walk, and the settling experiment falsified it: the rejection from
+ * `Effect.runPromise` is a `FiberFailureImpl` whose only own property names are
+ * `message`, `name` and `stack`. The `Cause` hangs off the symbol below, so any
+ * walk that starts with `err.cause` reads `undefined` and stops at depth 0 —
+ * which is precisely how `routing-id-conflict.ts`'s walk was failing on the two
+ * `internalQuery`/`queryEffect` paths its own docstring claimed to cover.
+ *
+ * Uses Effect's own `isFiberFailure` guard rather than testing for the symbol
+ * by hand, so a runtime change to how the wrapper is marked surfaces as a type
+ * error instead of a silently-undefined lookup that would make every collision
+ * unclassified again — which is the exact failure mode this function exists to
+ * end. (Adopted from the parallel fix in #5276, which reached this module
+ * independently.)
+ */
+function unwrapFiberFailure(err: unknown): unknown {
+  return Runtime.isFiberFailure(err) ? Cause.squash(err[Runtime.FiberFailureCauseId]) : err;
+}
+
+/**
+ * Every error link worth classifying, outermost first.
+ *
+ * Unwraps a `FiberFailure` at each step before following `.cause`, so one
+ * traversal covers both shapes a caller can be handed: the raw pg
+ * `DatabaseError` from a `Pool`, and the `FiberFailure` → `SqlError` → pg
+ * `DatabaseError` stack that `internalQuery` produces once the Effect Layer has
+ * booted.
+ *
+ * **The measured chain (#5272, real Postgres, Layer booted):**
+ * `FiberFailureImpl` (no `code`) → `Cause.squash` → `SqlError` (no `code`,
+ * `_tag` its only own key) → `.cause` → pg `DatabaseError` carrying
+ * `code: "23505"`, `constraint` and `detail`.
+ *
+ * Exported so a classifier for a DIFFERENT SQLSTATE reuses the traversal rather
+ * than re-deriving it — the six-spellings problem this module's header opens
+ * with, one level up from the constant.
+ */
+export function pgErrorLinks(err: unknown): readonly unknown[] {
+  const links: unknown[] = [];
+  let current = unwrapFiberFailure(err);
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {
+    links.push(current);
+    if (typeof current !== "object" || current === null) break;
+    const next = (current as { readonly cause?: unknown }).cause;
+    if (next === undefined || next === null) break;
+    if (next === current) break; // self-referential guard
+    current = unwrapFiberFailure(next);
+  }
+  return links;
+}
+
+/**
+ * The diagnostic fields of a `23505` found anywhere in `err`'s chain, or
+ * `undefined`.
+ *
+ * The classifier for every caller that writes through `internalQuery` or
+ * `queryEffect`. {@link asUniqueViolation} is its flat counterpart and stays
+ * separate deliberately — this module's header carries that argument, and it is
+ * unchanged by #5272: a chain walk applied to the two seeders, which hold a raw
+ * `Pool`, would classify a wrapped violation from an unrelated layer as a
+ * benign slug collision.
+ *
+ * ⚠️ It reads the SQLSTATE only. A caller that must distinguish WHICH
+ * constraint was violated has to check `constraint` itself — see
+ * `integrations/install/routing-id-conflict.ts`, whose whole point is that a
+ * `23505` on any other index is a different failure.
+ */
+export function asWrappedUniqueViolation(
+  err: unknown,
+): { readonly constraint?: string; readonly detail?: string } | undefined {
+  for (const link of pgErrorLinks(err)) {
+    const flat = asUniqueViolation(link);
+    if (flat !== undefined) return flat;
+  }
+  return undefined;
 }
 
 /**

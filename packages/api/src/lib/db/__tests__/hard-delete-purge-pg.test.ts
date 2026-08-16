@@ -47,6 +47,8 @@ import {
   PURGED_TABLES,
   RETAINED_TABLES,
   WORKSPACE_SCOPE_COLUMNS,
+  type PurgeParentLink,
+  type PurgeTableScope,
 } from "../purge-scope";
 
 /**
@@ -180,36 +182,34 @@ interface ColumnMeta {
  * parent's rows, so the seeded child must point at the seeded parent or the
  * subquery matches nothing and the row would survive a CORRECT purge.
  *
- * `purge-scope.test.ts` pins the same pairs for delete ORDER; this map pins the
- * column that links them.
+ * READ FROM THE REGISTRY (#5176). This was a hand-written `PARENT_LINK` map — a
+ * third independent copy of the relation, alongside the SQL subqueries in
+ * `hardDeleteWorkspace` and the ordering pairs in `purge-scope.test.ts`. Each
+ * was internally self-consistent, so a drifted copy still passed its own suite,
+ * and THIS copy is the one that decides whether the falsifier can fail at all:
+ * a seeder pointing the child at the wrong parent column seeds an unreachable
+ * row, and "zero rows remain" then holds for the wrong reason.
+ *
+ * ⚠️ What this suite can and cannot catch, since it and the purge now read ONE
+ * declaration: a declaration that is simply INVALID (a column that does not
+ * exist, a scope column the parent lacks) fails the seed loudly. A declaration
+ * that is WRONG but internally consistent does NOT — the seeder points the child
+ * at whatever the purge deletes by, and FK enforcement is off during the seed
+ * (`session_replication_role = replica`), so a mis-pointed parent id inserts
+ * cleanly. Measured: repointing `messages` at `dashboards` leaves this suite
+ * 17/17 green. THAT check lives in `purge-scope.test.ts`, against db/schema.ts's
+ * own foreign keys — an independent third party this file cannot be.
  */
-interface ParentLink {
-  /** The child's column holding the parent's key. */
-  readonly column: string;
-  readonly parent: string;
-  /** The parent column the child points at. */
-  readonly parentKey: string;
-  /** The PARENT's scope column — quoted as it appears in SQL. */
-  readonly parentScope: string;
-}
+// String-indexed view: the registry's literal-keyed type (via `satisfies`)
+// rejects arbitrary-string indexing, which is what every lookup here does.
+const scopeFor: Readonly<Record<string, PurgeTableScope | undefined>> = PURGE_TABLE_DECISIONS;
 
-const PARENT_LINK: Readonly<Record<string, ParentLink | undefined>> = {
-  messages: { column: "conversation_id", parent: "conversations", parentKey: "id", parentScope: "org_id" },
-  slack_threads: { column: "conversation_id", parent: "conversations", parentKey: "id", parentScope: "org_id" },
-  dashboard_cards: { column: "dashboard_id", parent: "dashboards", parentKey: "id", parentScope: "org_id" },
-  dashboard_user_drafts: { column: "dashboard_id", parent: "dashboards", parentKey: "id", parentScope: "org_id" },
-  dashboard_draft_card_cache: { column: "dashboard_id", parent: "dashboards", parentKey: "id", parentScope: "org_id" },
-  knowledge_links: { column: "source_document_id", parent: "knowledge_documents", parentKey: "id", parentScope: "workspace_id" },
-  suggestion_user_clicks: { column: "suggestion_id", parent: "query_suggestions", parentKey: "id", parentScope: "org_id" },
-  scheduled_task_runs: { column: "task_id", parent: "scheduled_tasks", parentKey: "id", parentScope: "org_id" },
-  prompt_items: { column: "collection_id", parent: "prompt_collections", parentKey: "id", parentScope: "org_id" },
-  stripe_webhook_events: {
-    column: "stripe_subscription_id",
-    parent: "subscription",
-    parentKey: "stripeSubscriptionId",
-    parentScope: "referenceId",
-  },
-};
+const parentLinkFor = (table: string): PurgeParentLink | undefined => scopeFor[table]?.viaParent;
+
+/** The tables that have one, for the assertions that iterate them. */
+const VIA_PARENT_TABLES = Object.entries(scopeFor)
+  .filter(([, v]) => v?.viaParent !== undefined)
+  .map(([k]) => k);
 
 /**
  * Values a CHECK constraint or a scoping expression demands. Anything absent
@@ -448,7 +448,7 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     const names = cols.map((c) => c.column_name);
     const overrides = { ...(COLUMN_OVERRIDES[table] ?? {}), ...extra };
     const scopeCol = (WORKSPACE_SCOPE_COLUMNS as readonly string[]).find((c) => names.includes(c));
-    const link = PARENT_LINK[table];
+    const link = parentLinkFor(table);
 
     // Track raw names for the dedupe: quoting them into `insertCols` and then
     // testing membership against the unquoted name never matches, which yields
@@ -468,7 +468,7 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     if (scopeCol) push(scopeCol, workspaceId === null ? `NULL` : `$1`);
     if (link) {
       // Scope by the PARENT's column, not the child's: the child has no scope
-      // column (that is why it is in PARENT_LINK at all), and `conversations`
+      // column (that is why it declares `viaParent` at all), and `conversations`
       // scopes by org_id while `knowledge_documents` scopes by workspace_id.
       push(
         link.column,
@@ -503,7 +503,7 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
   const countFor = async (table: string, workspaceId: string): Promise<number> => {
     const cols = (await columnsFor(table)).map((c) => c.column_name);
     const scopeCol = (WORKSPACE_SCOPE_COLUMNS as readonly string[]).find((c) => cols.includes(c));
-    const link = PARENT_LINK[table];
+    const link = parentLinkFor(table);
 
     if (table === "chat_cache") {
       const r = await pool.query<{ n: string }>(
@@ -756,12 +756,12 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
         });
 
       // SEED_PRIORITY first (in its own order, so the brain block's RESTRICT
-      // references resolve), then everything else, then the PARENT_LINK children
+      // references resolve), then everything else, then the viaParent children
       // whose INSERT subqueries read their parent's rows.
       const rank = (t: string): number => {
         const priority = SEED_PRIORITY.indexOf(t);
         if (priority !== -1) return priority;
-        return PARENT_LINK[t] ? 1000 : 500;
+        return parentLinkFor(t) ? 1000 : 500;
       };
       const order = [...PURGED_TABLES].toSorted((a, b) => rank(a) - rank(b));
       if (replica) {
@@ -853,7 +853,8 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     expect(
       skipped,
       `Table(s) that could not be seeded: ${skipped.join(", ")}. Each needs a ` +
-        `WORKSPACE_SCOPE_COLUMNS entry, a PARENT_LINK entry, an EXPRESSION_SCOPED entry, ` +
+        `WORKSPACE_SCOPE_COLUMNS entry, a \`viaParent\` declaration in PURGE_TABLE_DECISIONS, ` +
+        `an EXPRESSION_SCOPED entry, ` +
         `or a COLUMN_OVERRIDES value.`,
     ).toEqual([]);
     // Every purged table AND every survivor table got a row.
@@ -879,7 +880,7 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
       // scoped count would answer 0 for a row that actually leaked. They get
       // the exact-survivor-count test below instead, which can tell the
       // difference.
-      if (PARENT_LINK[table]) continue;
+      if (parentLinkFor(table)) continue;
       const remaining = await countFor(table, ORG);
       if (remaining !== 0) survivors.push(`${table} (${remaining} row(s) remain)`);
     }
@@ -897,7 +898,7 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     // nothing both leave zero rows behind for a workspace that was never
     // seeded. Since exactly one row per table was seeded, every reported count
     // must be >= 1 — a 0 here means the DELETE ran against the wrong column.
-    const zeroCounts = Object.entries(result)
+    const zeroCounts = Object.entries(result.counts)
       .filter(([, n]) => n === 0)
       .map(([field]) => field);
     expect(
@@ -914,7 +915,7 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     // "zero rows remain" perfectly while destroying every other tenant.
     const damaged: string[] = [];
     for (const table of seeded.keys()) {
-      if (PARENT_LINK[table]) continue; // counted table-wide; asserted below
+      if (parentLinkFor(table)) continue; // counted table-wide; asserted below
       if (table === "admin_action_log") continue; // its scrub is asserted separately
       const remaining = await countFor(table, NEIGHBOUR);
       if (remaining !== 1) damaged.push(`${table} (${remaining}, expected 1)`);
@@ -1042,7 +1043,7 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     //   (3) target_id residue only              → scrubbed (the disjunct that
     //       had no runtime witness until this row existed)
     //   (4) already fully scrubbed              → SKIPPED, so the count is honest
-    expect(result.adminActionLogAnonymized).toBe(3);
+    expect(result.counts.adminActionLogAnonymized).toBe(3);
 
     const total = await pool.query<{ n: string }>(
       `SELECT count(*)::text AS n FROM admin_action_log WHERE org_id = $1`,
@@ -1103,9 +1104,9 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     // neighbour's) must remain. This is the assertion that distinguishes
     // "purged the child" from "purged nothing and the parent hid it".
     const wrong: string[] = [];
-    for (const table of Object.keys(PARENT_LINK)) {
+    for (const table of VIA_PARENT_TABLES) {
       if (!seeded.has(table)) continue;
-      const link = PARENT_LINK[table];
+      const link = parentLinkFor(table);
       const r = await pool.query<{ n: string }>(`SELECT count(*)::text AS n FROM "${table}"`);
       const n = Number(r.rows[0].n);
       if (n !== 1) {
@@ -1116,7 +1117,7 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
       // identical whether the purge removed ORG's or the neighbour's. The
       // neighbour's parent survives the purge, so its id is the discriminator
       // that turns a count into an identity check.
-      if (!link) continue; // unreachable: `table` came from Object.keys(PARENT_LINK)
+      if (!link) continue; // unreachable: `table` came from VIA_PARENT_TABLES
       const survivor = await pool.query<{ n: string }>(
         `SELECT count(*)::text AS n FROM "${table}"
           WHERE "${link.column}" IN (
@@ -1157,7 +1158,7 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     expect(Number(row.with_actor), "actor_id/actor_email must be scrubbed").toBe(0);
     expect(Number(row.with_ip), "ip_address must be scrubbed").toBe(0);
     expect(Number(row.unstamped), "every scrubbed row must carry anonymized_at").toBe(0);
-    expect(result.adminActionLogAnonymized).toBeGreaterThan(0);
+    expect(result.counts.adminActionLogAnonymized).toBeGreaterThan(0);
 
     // The MEMBER's identity, which the first draft of the scrub left behind:
     // `metadata.targetUserEmail` and `target_id`.
@@ -1264,7 +1265,7 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     expect(org.rows.length).toBe(0);
     const user = await pool.query(`SELECT 1 FROM "user" WHERE id = $1`, [USER_ORPHAN]);
     expect(user.rows.length).toBe(0);
-    expect(result.organization).toBe(1);
-    expect(result.orphanedUsers).toBe(1);
+    expect(result.counts.organization).toBe(1);
+    expect(result.counts.orphanedUsers).toBe(1);
   });
 });

@@ -30,7 +30,12 @@ import { PERMISSIONS as REAL_PERMISSIONS, isValidPermission as realIsValidPermis
 // (#5160). The purge route maps it with `domainError`, which matches by
 // `instanceof` — a hand-rolled stand-in here would never match, and the route's
 // 409s would silently degrade to generic 500s in every route test.
-import { PurgeAbortedError as RealPurgeAbortedError } from "@atlas/api/lib/db/internal";
+import {
+  PurgeAbortedError as RealPurgeAbortedError,
+  SURVIVOR_COUNT_FIELDS as REAL_SURVIVOR_COUNT_FIELDS,
+  COUNT_FIELD_ALIASES as REAL_COUNT_FIELD_ALIASES,
+  NON_REGISTRY_COUNT_FIELDS as REAL_NON_REGISTRY_COUNT_FIELDS,
+} from "@atlas/api/lib/db/internal";
 import {
   createConnectionMock,
   type ConnectionMockOverrides,
@@ -300,29 +305,61 @@ export function buildInternalDbMockDefaults(deps: {
         ? { withhold: false, clause: `(org_id = ${placeholder} OR org_id IS NULL)` }
         : { withhold: false, clause: "org_id IS NULL" },
     AMENDMENT_CLAIM_STALE_MINUTES: 10,
-    hardDeleteWorkspace: mock(async () => ({})),
+    hardDeleteWorkspace: mock(async () => ({ counts: {}, skippedTables: [] })),
     // #5160 — the purge route imports this alongside hardDeleteWorkspace, so it
     // must be in the complete surface or the named import SyntaxErrors under bun
-    // and every route in the file 404s. Mirrors the real implementation: sum the
-    // numeric fields, skip `skippedTables` (an array) and the anonymized count
-    // (rows that SURVIVED), so a test asserting on totalRows exercises the same
-    // arithmetic the route does.
+    // and every route in the file 404s. The real class, not a stand-in:
+    // `domainError` matches it with `instanceof`.
     PurgeAbortedError: RealPurgeAbortedError,
-    // #5160 — mirrors the real `totalRowsDeleted`: sum the numeric fields, skip
-    // `skippedTables` (an array) and the anonymized count (rows that SURVIVED).
-    // Duplicated rather than imported because this mock surface stands in for the
-    // very module the function lives in. The drift risk is real but bounded:
-    // `purge-scope.test.ts` pins the `anonymized` category to exactly one table,
-    // so a second survivor field cannot appear without that guard failing first.
-    totalRowsDeleted: (result: Record<string, unknown>) => {
+    // #5160 — mirrors the real `totalRowsDeleted` over `result.counts`. Only the
+    // LOOP is duplicated (this surface stands in for the module the helper lives
+    // in); the survivor exclusion is imported, so renaming that field breaks the
+    // compile rather than silently counting survivors as destroyed.
+    totalRowsDeleted: (result: { counts?: Record<string, unknown> }) => {
+      // Reads `result.counts` (#5176) — the counts live in their own uniformly
+      // numeric container, with `skippedTables` outside it.
+      //
+      // Both throws below are BACKSTOPS, and an earlier version of this comment
+      // claimed one of them was the primary detector. It is not: the purge route
+      // destructures `counts` one line BEFORE calling this, so a fake still
+      // returning the pre-#5176 flat shape dies there first. Measured — five
+      // opaque 500s, and this function never runs. What these catch is a future
+      // consumer that totals before destructuring, plus any suite calling the
+      // helper directly. Kept because they cost nothing and name the cause,
+      // which those 500s do not.
+      if (!result.counts) {
+        throw new Error(
+          "totalRowsDeleted mock: the suite's hardDeleteWorkspace fake returned no `counts`. " +
+            "Since #5176 HardDeleteResult is { counts, skippedTables } — nest the counts.",
+        );
+      }
       let total = 0;
-      for (const [field, value] of Object.entries(result)) {
-        if (typeof value !== "number") continue;
-        if (field === "adminActionLogAnonymized") continue;
+      for (const [field, value] of Object.entries(result.counts)) {
+        // Loud, not skipped. A `continue` here silently dropped a string count
+        // and answered a plausible smaller total, while the real helper does
+        // `total += value` and would produce "03" on the wire — a mock that
+        // disagrees with production about arithmetic makes a wrong route look
+        // right.
+        if (typeof value !== "number") {
+          throw new Error(
+            `totalRowsDeleted mock: counts.${field} is ${typeof value}, not a number — ` +
+              "HardDeleteCounts is uniformly numeric since #5176.",
+          );
+        }
+        // The REAL exclusion set, imported rather than re-spelled. Hard-coding
+        // "adminActionLogAnonymized" meant renaming that field would break
+        // internal.ts's compile while this mock silently began counting
+        // SURVIVING rows as destroyed — #5160's overstatement, in tests.
+        if (REAL_SURVIVOR_COUNT_FIELDS.has(field)) continue;
         total += value;
       }
       return total;
     },
+    // Present so a transitive named import never SyntaxErrors under bun's
+    // partial-mock rules — #5176 added all three to internal.ts's surface.
+    SURVIVOR_COUNT_FIELDS: REAL_SURVIVOR_COUNT_FIELDS,
+    COUNT_FIELD_ALIASES: REAL_COUNT_FIELD_ALIASES,
+    NON_REGISTRY_COUNT_FIELDS: REAL_NON_REGISTRY_COUNT_FIELDS,
   
     // Remaining named exports with no behavior worth faking — present so
     // a transitive `import { x }` never SyntaxErrors at load time.

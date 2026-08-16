@@ -287,7 +287,12 @@ The `purged` object carries a row count per table, useful for audit purposes. Th
 **`purged` contains deletion counts only, so `totalRows` is exactly their sum.** Two related numbers deliberately sit *outside* that map rather than inside it, because neither is a count of destroyed rows: `adminActionLogAnonymized` counts rows that **survived** with their identifying columns scrubbed, and `skippedTables` is not a count at all. Keeping them out is what makes the obvious `Object.values(purged).reduce(…)` agree with `totalRows` instead of over-reporting destruction on an erasure record.
 </Callout>
 
-**Always check `complete`.** When it is `false`, the purge ran but did not finish: `skippedTables` names the work that did not run — relations absent from this region's schema, plus the deletes and writes gated behind them — and it reported `0` for each, which reads exactly like "there were none". `complete` is also `false` when the Stripe teardown left a warning.
+**Always check `complete`.** When it is `false`, the purge ran but did not finish: `skippedTables` names the work that did not run — relations absent from this region's schema, plus the deletes and writes gated behind them. `complete` is also `false` when the Stripe teardown left a warning.
+
+Read `message` rather than inferring from the names, because the two kinds of skipped work have opposite consequences:
+
+- a skipped **DELETE** reported `0` rows, which reads exactly like "there were none" — that data was **not** deleted and survives;
+- a skipped **WRITE** has no count at all. The one that occurs is the [#3468](https://github.com/AtlasDevHQ/atlas/issues/3468) tombstone (`stripe_purged_subscriptions`), and its absence means late Stripe cancellation webhooks can **regrow** `stripe_webhook_events` rows the purge did clear.
 
 Run the region's migrations, then clear the residue with `atlas-operator ops sweep-residue --region <r>` (above). **Do not try to purge again** — the organization record is already gone, so the endpoint answers `404`.
 

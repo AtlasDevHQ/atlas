@@ -653,7 +653,11 @@ export async function handleTeardownVerifyAccounts(args: string[]): Promise<void
         // `adminActionLogAnonymized`, which counts rows that SURVIVED and so
         // made this command over-report destruction. The route had the identical
         // bug and was fixed by hand; this copy was not, which is why the
-        // arithmetic now has one home.
+        // arithmetic now has one home. Since #5176 the array lives OUTSIDE
+        // `counts`, so that half cannot recur — but the survivor count still
+        // can: it is a real number in the map, so `Object.values(purged.counts)
+        // as number[]` is now perfectly truthful and still wrong. The helper,
+        // not the cast, is what fixes it.
         return { rowsPurged: totalRowsDeleted(purged), skippedTables: purged.skippedTables };
       },
     }, dryRun);

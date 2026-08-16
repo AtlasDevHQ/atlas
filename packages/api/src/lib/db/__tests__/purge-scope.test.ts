@@ -38,11 +38,16 @@ import {
   RETAINED_TABLES,
   WORKSPACE_SCOPE_COLUMNS,
   USER_SCOPE_COLUMNS,
+  viaParentDeleteSql,
+  type PurgeParentLink,
   type PurgeTableScope,
+  type ViaParentTableName,
 } from "../purge-scope";
+import { COUNT_FIELD_ALIASES, NON_REGISTRY_COUNT_FIELDS } from "../internal";
 
-// String-indexed view: the registry's literal-keyed type (via `satisfies`)
-// rejects arbitrary-string indexing, which is exactly what this suite does.
+// String-indexed view: the registry's literal key type (from `as const`; the
+// `satisfies` clause type-checks the values without widening) rejects
+// arbitrary-string indexing, which is exactly what this suite does.
 const decisionFor: Readonly<Record<string, PurgeTableScope | undefined>> = PURGE_TABLE_DECISIONS;
 
 // ── Enumerate the live schema ────────────────────────────────────────
@@ -87,8 +92,16 @@ const rawPurgeFnBody = (() => {
  * FROM organization` appeared three times, two of them prose. So deleting the
  * REAL statement left this suite passing 15/15, satisfied by the sentence
  * describing it — and because `-pg` suites skip silently without
- * TEST_DATABASE_URL, this tripwire is the entire completeness gate for anyone
- * running the suite locally.
+ * TEST_DATABASE_URL, this tripwire is what stands between a deleted statement
+ * and a green local run.
+ *
+ * ⚠️ That used to read "the entire completeness gate for anyone running the
+ * suite locally", and #5176 made it false in one direction: whether every purged
+ * table REPORTS A COUNT is now enforced by `HardDeleteCounts`, a mapped type over
+ * the registry, so it fails `bun run type` rather than any test here. Still
+ * covered — type-check is in both the pre-flight and CI — but `bun test` alone
+ * no longer signals it. What this file still uniquely covers is the DELETE
+ * existing at all, its ORDER, and the scrub's residue predicate.
  *
  * A lexical guard cannot tell a quotation from an assertion. The repo's rule for
  * that is reword-not-exempt, but here the quotations are legitimate and load
@@ -109,10 +122,41 @@ const purgeFnBody = rawPurgeFnBody
   .replace(/\/\*[\s\S]*?\*\//g, "")
   .replace(/\/\/.*$/gm, "");
 
-const deleteMatches = [...purgeFnBody.matchAll(/DELETE\s+FROM\s+"?([a-z_][a-z0-9_]*)"?/gi)].map(
+/**
+ * The two SHAPES a delete takes in the source, and both count.
+ *
+ * A table with a scope column is a literal `DELETE FROM <table>`. A table with
+ * none is `delViaParent("<table>")`, whose SQL is built from the registry's
+ * `viaParent` declaration (#5176) and so never appears here as text.
+ *
+ * Scanning both keeps every check below saying what it always said — "the
+ * registry cannot claim a delete the implementation does not make" — because
+ * `delViaParent` is still one explicit call per table. What the registry now
+ * guarantees is the RELATION, not the call: a `viaParent` entry with no call
+ * site is still an entry outrunning the implementation, and still fails here.
+ */
+const viaParentCalls = [...purgeFnBody.matchAll(/delViaParent\("([a-z_][a-z0-9_]*)"\)/g)].map(
   (m) => m[1],
 );
+const deleteMatches = [
+  ...[...purgeFnBody.matchAll(/DELETE\s+FROM\s+"?([a-z_][a-z0-9_]*)"?/gi)].map((m) => m[1]),
+  ...viaParentCalls,
+];
 const deleteTargets = new Set(deleteMatches);
+
+/**
+ * Where a table's delete appears in the function, by whichever shape it takes.
+ * The ORDER assertions below compare these positions.
+ */
+const deleteIndexOf = (table: string): number => {
+  const viaIdx = purgeFnBody.indexOf(`delViaParent("${table}")`);
+  if (viaIdx !== -1) return viaIdx;
+  // Anchored on a word boundary, not a prefix: a bare
+  // `indexOf("DELETE FROM " + table)` makes `dashboards` match a future
+  // `dashboards_v2` and silently compare the wrong statement's position.
+  const escaped = table.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return purgeFnBody.search(new RegExp(`DELETE FROM "?${escaped}"?\\b`));
+};
 
 const updateTargets = new Set(
   [...purgeFnBody.matchAll(/UPDATE\s+"?([a-z_][a-z0-9_]*)"?/gi)].map((m) => m[1]),
@@ -206,6 +250,16 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
       if (table === "chat_cache") continue;
       const m = clause.match(NARROWING);
       if (m) offenders.push(`${table} (narrowed on \`${m[0]}…\`)`);
+    }
+    // The ten `viaParent` tables have no literal statement to slice (#5176), so
+    // their SQL is GENERATED here from the same registry declaration and builder
+    // the implementation uses — checking the builder's real output rather than a
+    // restatement of it. If a narrowing predicate ever became expressible in the
+    // link (a `where?:` field, say), it would appear here.
+    for (const [table, entry] of Object.entries(decisionFor)) {
+      if (!entry?.viaParent) continue;
+      const m = viaParentDeleteSql(table as ViaParentTableName).match(NARROWING);
+      if (m) offenders.push(`${table} (viaParent SQL narrowed on \`${m[0]}…\`)`);
     }
     expect(
       offenders,
@@ -539,8 +593,8 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
       ["brain_vocabulary_target", "brain_vocabulary_edge"],
     ];
     for (const [referencing, target] of restrictPairs) {
-      const refIdx = purgeFnBody.indexOf(`DELETE FROM ${referencing}`);
-      const targetIdx = purgeFnBody.indexOf(`DELETE FROM ${target}`);
+      const refIdx = deleteIndexOf(referencing);
+      const targetIdx = deleteIndexOf(target);
       expect(refIdx, `no DELETE for ${referencing}`).toBeGreaterThan(-1);
       expect(targetIdx, `no DELETE for ${target}`).toBeGreaterThan(-1);
       expect(
@@ -555,23 +609,38 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
     // None of these has a scope column, so their DELETE reads the parent's rows.
     // Deleting the parent first silently leaves them behind — no error, no
     // count, exactly the shape of the original bug.
-    const childBeforeParent: Array<[string, string]> = [
-      ["messages", "conversations"],
-      ["slack_threads", "conversations"],
-      ["dashboard_draft_card_cache", "dashboards"],
-      ["dashboard_user_drafts", "dashboards"],
-      ["dashboard_cards", "dashboards"],
-      ["knowledge_links", "knowledge_documents"],
-      ["suggestion_user_clicks", "query_suggestions"],
-      ["scheduled_task_runs", "scheduled_tasks"],
-      ["prompt_items", "prompt_collections"],
-      ["stripe_webhook_events", "subscription"],
-    ];
+    //
+    // The pairs are READ FROM THE REGISTRY (#5176). They used to be a
+    // hand-written list here, a third independent copy of the same relation
+    // alongside the SQL and the -pg falsifier's map — each self-consistent, so a
+    // drifted one still passed its own suite. This list can no longer disagree
+    // with the SQL, because the SQL is generated from what it iterates.
+    //
+    // What it still checks, and what makes it able to fail, is the ORDER: the
+    // registry says nothing about where in the function a delete is issued, so
+    // moving `delViaParent("messages")` below `DELETE FROM conversations` fails
+    // here by name.
+    //
+    // It is also the CYCLE guard, and gets one for free rather than by design:
+    // a self-referential link needs `idx(x) < idx(x)`, and a two-table cycle
+    // needs `idx(a) < idx(b)` and `idx(b) < idx(a)` — both unsatisfiable, so
+    // either fails here immediately. Measured: pointing `prompt_items` at itself
+    // fails this test plus the two schema checks, in 0.42ms, rather than
+    // spinning. Nothing walks the relation at runtime — the child and parent
+    // sets are disjoint today, so it is one hop deep — but the guard does not
+    // depend on that staying true.
+    const childBeforeParent = Object.entries(decisionFor).flatMap(([child, entry]) =>
+      entry?.viaParent ? [[child, entry.viaParent.parent] as const] : [],
+    );
+    // Pinned to the exact count rather than a floor: 0 means the derivation
+    // broke and this test is vacuous, anything else means a declaration was
+    // added or removed. Update this number deliberately when that happens.
+    expect(childBeforeParent.length, "viaParent declarations found").toBe(10);
     for (const [child, parent] of childBeforeParent) {
-      const childIdx = purgeFnBody.indexOf(`DELETE FROM ${child}`);
-      const parentIdx = purgeFnBody.indexOf(`DELETE FROM ${parent}`);
-      expect(childIdx, `no DELETE for ${child}`).toBeGreaterThan(-1);
-      expect(parentIdx, `no DELETE for ${parent}`).toBeGreaterThan(-1);
+      const childIdx = deleteIndexOf(child);
+      const parentIdx = deleteIndexOf(parent);
+      expect(childIdx, `no delete for ${child}`).toBeGreaterThan(-1);
+      expect(parentIdx, `no delete for ${parent}`).toBeGreaterThan(-1);
       expect(
         childIdx,
         `${child} scopes through ${parent} via a subquery, so it must be deleted FIRST — ` +
@@ -580,45 +649,394 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
     }
   });
 
-  // ── The result contract ────────────────────────────────────────────
-
-  it("reports a count for every purged table (operator sees what was removed)", () => {
-    // AC: "HardDeleteResult reports the new counts, so the operator sees what
-    // was removed rather than trusting the message." Checked structurally
-    // against the interface so a new DELETE without a reported count fails.
-    const resultStart = internalSource.indexOf("export interface HardDeleteResult");
-    const resultEnd = internalSource.indexOf("\n}", resultStart);
-    const resultFields = new Set(
-      [...internalSource.slice(resultStart, resultEnd).matchAll(/^\s{2}([a-zA-Z]+):\s*number;/gm)].map(
-        (m) => m[1],
-      ),
-    );
-    expect(resultFields.size).toBeGreaterThan(80);
-
-    const snake = (s: string) => s.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
-    // Plural-tolerant: the pre-existing fields are inconsistent (`subscriptions`
-    // reports `subscription`), so match on a normalized stem rather than
-    // demanding an exact 1:1 spelling.
-    const stems = new Set([...resultFields].map((f) => snake(f).replace(/s$/, "")));
-    // One table is reported under a name that is not its own, and the mismatch
-    // is meaningful rather than sloppy: the purge does not clear `chat_cache`,
-    // it clears the Slack installation rows INSIDE it (the
-    // `value->>'orgId'` expression), so `slackInstallations` is the honest
-    // label for what the count measures. Aliased explicitly so the guard stays
-    // exact everywhere else instead of being loosened to accommodate it.
-    const REPORTED_UNDER: Readonly<Record<string, string | undefined>> = {
-      chat_cache: "slackInstallations",
-    };
-    const unreported = [...PURGED_TABLES].filter((t) => {
-      const alias = REPORTED_UNDER[t];
-      if (alias !== undefined) return !resultFields.has(alias);
-      const stem = t.replace(/s$/, "");
-      return !stems.has(stem) && !stems.has(t);
-    });
+  it("declares viaParent on exactly the purged tables with no scope column", () => {
+    // The registry's `viaParent` is now what routes a table through its parent,
+    // so the set has to match the tables that need routing — in BOTH directions.
+    // A scope-less table with no declaration is unreachable by the purge (the
+    // #5160 bug); a declaration on a table that has its own scope column is a
+    // subquery doing the work a `WHERE org_id = $1` would do directly, which is
+    // slower and drifts.
+    //
+    // `chat_cache` is the one legitimate scope-less table without one: it is
+    // scoped by an EXPRESSION (`key LIKE … AND value->>'orgId' = $1`), not by a
+    // parent row. Named singly so the next addition has to justify itself.
+    const EXPRESSION_SCOPED = new Set(["chat_cache"]);
+    const wrong: string[] = [];
+    for (const table of PURGED_TABLES) {
+      const declared = decisionFor[table]?.viaParent !== undefined;
+      const scoped = workspaceScopeColumnOf(table) !== undefined;
+      if (scoped && declared) wrong.push(`${table} (has ${workspaceScopeColumnOf(table)}, but declares viaParent)`);
+      if (!scoped && !declared && !EXPRESSION_SCOPED.has(table)) {
+        wrong.push(`${table} (no scope column and no viaParent — nothing reaches it)`);
+      }
+    }
     expect(
-      unreported,
-      `Purged table(s) with no count on HardDeleteResult: ${unreported.join(", ")}. ` +
-        `The operator response reports these; an unreported delete is invisible.`,
+      wrong,
+      `viaParent declared on the wrong tables: ${wrong.join(", ")}.`,
     ).toEqual([]);
   });
+
+  it("matches the schema's own foreign key wherever one exists", () => {
+    // ⚠️ THE CHECK THAT KEEPS THE -pg FALSIFIER HONEST, and the reason it is
+    // here rather than there.
+    //
+    // Collapsing the relation to one declaration (#5176) removed three copies
+    // that could disagree — but it also means the seeder and the purge now read
+    // the SAME declaration, so a declaration that is WRONG but internally
+    // consistent satisfies both. Measured: pointing `messages` at `dashboards`
+    // makes the seeder insert a dashboard id and the purge delete by the same
+    // join, and the -pg suite stays green while the production DELETE would
+    // match nothing. That is "fixtures that agree by construction" arriving
+    // through the fix for it.
+    //
+    // The FK in db/schema.ts is the independent third party. It is written from
+    // the migrations, nothing here can edit it to agree, and seven of the ten
+    // declarations have one — so for those, a mis-pointed parent fails HERE.
+    //
+    // ⚠️ THE PIN BELOW IS THE REMOVED COPY, COMING BACK FOR 3 OF 10. Say it
+    // plainly rather than calling it derivation: three declarations have no
+    // single-column FK to check against, so their fields are restated here.
+    //
+    // What makes it better than the `PARENT_LINK` this PR deleted is only that
+    // it lives NEXT TO the assertion that compares it — a one-site edit fails,
+    // where the old copies sat in three files that never met. It cannot catch a
+    // coordinated edit of both sites, and nothing here pretends otherwise.
+    //
+    // It pins ALL FOUR fields, and that is the fix for a measured hole: pinning
+    // only `parent`/`parentKey` left `column` anchored to nothing, and changing
+    // `dashboard_draft_card_cache.column` from `dashboard_id` to `card_id` was
+    // green across all three suites (22/22 + 98/98 + 17/17) while the emitted
+    // statement matched ZERO rows — on a table holding `cached_rows`,
+    // materialized customer query results.
+    const NO_SINGLE_COLUMN_FK = {
+      // No FK in the schema at all — the registry entry says so ("no FK to
+      // cascade from"). The mapping exists only in the purge's own subquery.
+      slack_threads: {
+        column: "conversation_id", parent: "conversations", parentKey: "id", parentScope: "org_id",
+      },
+      // Also declares NO foreign keys: the webhook ledger is written by handlers
+      // that may see an event before the subscription row exists, so an FK would
+      // reject legitimate rows. (`subscription` itself IS in db/schema.ts —
+      // an earlier version of this comment said otherwise and was wrong.)
+      stripe_webhook_events: {
+        column: "stripe_subscription_id", parent: "subscription",
+        parentKey: "stripeSubscriptionId", parentScope: "referenceId", parentKeyNullable: true,
+      },
+      // Its only FK is COMPOSITE, to dashboard_user_drafts(user_id,
+      // dashboard_id). The purge deliberately routes it to the GRANDPARENT
+      // `dashboards` — one subquery reaches every draft's cache, and neither
+      // this table nor its parent carries a scope column to narrow on. The
+      // composite is still used below to check `column` by derivation.
+      dashboard_draft_card_cache: {
+        column: "dashboard_id", parent: "dashboards", parentKey: "id", parentScope: "org_id",
+      },
+      // `satisfies` constrains the KEYS to tables that actually declare a link —
+      // the same move COUNT_FIELD_ALIASES got, for the same reason. Measured
+      // before it: junk entries (`messages: {...WRONG}`, `nonexistent_table`)
+      // sat here inert at 24/24 green. A dead pin is not harmless — if
+      // `messages` ever lost its FK, that wrong pin would silently become the
+      // authority for it.
+    } satisfies Partial<Record<ViaParentTableName, PurgeParentLink>>;
+    const pinsConsulted = new Set<string>();
+
+    const fksOf = (table: string) =>
+      schemaTables
+        .find((t) => t.name === table)
+        ?.foreignKeys.map((fk) => {
+          const ref = fk.reference();
+          return {
+            columns: ref.columns.map((c) => c.name),
+            foreignTable: getTableConfig(ref.foreignTable).name,
+            foreignColumns: ref.foreignColumns.map((c) => c.name),
+          };
+        }) ?? [];
+
+    const wrong: string[] = [];
+    let checkedAgainstFk = 0;
+    let checkedAgainstComposite = 0;
+    for (const [child, entry] of Object.entries(decisionFor)) {
+      const link = entry?.viaParent;
+      if (!link) continue;
+
+      // `parentScope` is what `$1` is compared against, so it must be a real
+      // workspace scope column on the parent. An existing-but-wrong column
+      // (`parentScope: "id"`) yields a subquery matching nothing and a silent
+      // 0-count DELETE — #5160's shape, and derivable, so no pin needed.
+      if (!(WORKSPACE_SCOPE_COLUMNS as readonly string[]).includes(link.parentScope)) {
+        wrong.push(
+          `${child}: parentScope ${link.parent}.${link.parentScope} is not one of ` +
+            `WORKSPACE_SCOPE_COLUMNS, so the subquery would not scope by workspace`,
+        );
+      }
+
+      const fk = fksOf(child).find((f) => f.columns.length === 1 && f.columns[0] === link.column);
+      if (!fk) {
+        const pinned: PurgeParentLink | undefined =
+          NO_SINGLE_COLUMN_FK[child as keyof typeof NO_SINGLE_COLUMN_FK];
+        if (pinned) pinsConsulted.add(child);
+        if (!pinned) {
+          wrong.push(
+            `${child}.${link.column} has no single-column FK and is not pinned — add it to ` +
+              `NO_SINGLE_COLUMN_FK with the reason no FK exists`,
+          );
+          continue;
+        }
+        // Whole-link comparison, KEY-DRIVEN rather than a hand-written field
+        // list. Pinning a subset is what let `column` drift in the first place,
+        // and a hand-written list is that same defect deferred: a sixth field
+        // added to `PurgeParentLink` (the `where?:` the narrowing test already
+        // speculates about) would join the unchecked set silently. Taking the
+        // union of both objects' keys means a new field is covered the moment it
+        // appears on either side.
+        //
+        // `?? false` normalizes the optional boolean, where absent and `false`
+        // mean the same thing; it is a no-op for the string fields.
+        const fields = new Set<keyof PurgeParentLink>([
+          ...(Object.keys(pinned) as (keyof PurgeParentLink)[]),
+          ...(Object.keys(link) as (keyof PurgeParentLink)[]),
+        ]);
+        for (const field of fields) {
+          if ((pinned[field] ?? false) !== (link[field] ?? false)) {
+            wrong.push(
+              `${child}: ${field} is ${JSON.stringify(link[field])} but pinned as ` +
+                `${JSON.stringify(pinned[field])}`,
+            );
+          }
+        }
+        // Where a COMPOSITE FK covers the column, follow it — TWO HOPS, by
+        // POSITION, to the declared parent.
+        //
+        // ⚠️ A membership test (`composite.columns.includes(link.column)`) is
+        // NOT derivation and the first version of this was exactly that. The
+        // composite is `(user_id, dashboard_id) -> dashboard_user_drafts(...)`,
+        // so membership admits `user_id` — one of two candidates, and the one a
+        // careless edit produces. It would emit
+        // `WHERE "user_id" IN (SELECT "id" FROM "dashboards" ...)`, matching user
+        // ids against dashboard ids. In `-pg` that survives as a `text = uuid`
+        // type accident rather than an assertion, which is not a guard.
+        //
+        // Position-matching picks the child column's own counterpart on the
+        // intermediate table, then requires THAT column to carry a single-column
+        // FK reaching the declared parent/key. `user_id`'s counterpart on
+        // `dashboard_user_drafts` carries NO single-column FK at all, so it
+        // leads nowhere and is rejected. (An earlier version of this comment
+        // said it reaches `user` — it does not; verified against schema.ts.)
+        const composite = fksOf(child).find((f) => f.columns.length > 1);
+        if (composite) {
+          checkedAgainstComposite++;
+          const at = composite.columns.indexOf(link.column);
+          if (at === -1) {
+            wrong.push(
+              `${child}.${link.column} is not part of its composite FK ` +
+                `(${composite.columns.join(", ")}) — the purge would join on a column that ` +
+                `does not hold the parent's key`,
+            );
+          } else {
+            const midColumn = composite.foreignColumns[at];
+            const hop = fksOf(composite.foreignTable).find(
+              (f) => f.columns.length === 1 && f.columns[0] === midColumn,
+            );
+            if (!hop || hop.foreignTable !== link.parent || hop.foreignColumns[0] !== link.parentKey) {
+              wrong.push(
+                `${child}.${link.column} reaches ${composite.foreignTable}.${midColumn}, which ` +
+                  `does not lead to ${link.parent}(${link.parentKey}) — the declared grandparent ` +
+                  `route does not exist in the schema`,
+              );
+            }
+          }
+        }
+        continue;
+      }
+      checkedAgainstFk++;
+      if (fk.foreignTable !== link.parent || fk.foreignColumns[0] !== link.parentKey) {
+        wrong.push(
+          `${child}.${link.column} has an FK to ${fk.foreignTable}(${fk.foreignColumns[0]}) but ` +
+            `viaParent declares ${link.parent}(${link.parentKey})`,
+        );
+      }
+    }
+    expect(
+      wrong,
+      `viaParent declaration(s) disagreeing with the schema: ${wrong.join("; ")}`,
+    ).toEqual([]);
+    // Pinned to the exact counts rather than a floor, so this cannot quietly
+    // become an empty loop. Update them DELIBERATELY when adding or removing a
+    // declaration: 7 links carry a single-column FK, and 1 of the 3 pinned ones
+    // is additionally covered by a composite.
+    expect(checkedAgainstFk, "declarations checked against a single-column FK").toBe(7);
+    expect(checkedAgainstComposite, "pinned declarations also covered by a composite FK").toBe(1);
+    // Every pin must have been REACHED. `satisfies` stops a bogus key; this
+    // stops a key that is real but never consulted, which is what a pin for a
+    // table that (still) has an FK would be.
+    expect(
+      [...pinsConsulted].toSorted(),
+      "pin(s) declared but never consulted — the table has an FK, so the pin is dead",
+    ).toEqual(Object.keys(NO_SINGLE_COLUMN_FK).toSorted());
+  });
+
+  it("declares parentKeyNullable iff the schema says the parent key is nullable", () => {
+    // `parentKeyNullable` is the one link field whose only consequence is a
+    // production abort, so it is the one most able to be deleted as dead weight.
+    // Measured before this test existed: removing `parentKeyNullable: true` from
+    // `stripe_webhook_events` was green 22/22 + 98/98 + 17/17.
+    //
+    // What it prevents: `parentKeySubquery` feeds BOTH the ledger DELETE and the
+    // #3468 tombstone INSERT, and that INSERT targets
+    // `stripe_purged_subscriptions.stripe_subscription_id`, a PRIMARY KEY. A
+    // `subscription` row with a NULL Stripe id — which @better-auth/stripe
+    // writes at checkout, before the webhook lands — would raise a not-null
+    // violation that `ON CONFLICT` does not cover, aborting the whole purge
+    // transaction and leaving the workspace permanently unpurgeable.
+    //
+    // Derived from Drizzle's own `notNull`, so it is not another copy.
+    const nullableOf = (table: string, column: string): boolean | undefined => {
+      const col = schemaTables.find((t) => t.name === table)?.columns.find((c) => c.name === column);
+      return col === undefined ? undefined : !col.notNull;
+    };
+
+    const wrong: string[] = [];
+    let checked = 0;
+    for (const [child, entry] of Object.entries(decisionFor)) {
+      const link = entry?.viaParent;
+      if (!link) continue;
+      const nullable = nullableOf(link.parent, link.parentKey);
+      if (nullable === undefined) {
+        wrong.push(`${child}: ${link.parent}.${link.parentKey} not found in the schema`);
+        continue;
+      }
+      checked++;
+      if (Boolean(link.parentKeyNullable) !== nullable) {
+        wrong.push(
+          `${child}: parentKeyNullable=${Boolean(link.parentKeyNullable)} but ` +
+            `${link.parent}.${link.parentKey} is ${nullable ? "NULLABLE" : "NOT NULL"}`,
+        );
+      }
+    }
+    expect(
+      wrong,
+      `parentKeyNullable disagreeing with the schema: ${wrong.join("; ")}`,
+    ).toEqual([]);
+    // All ten are checkable: `subscription` IS declared in db/schema.ts.
+    expect(checked, "declarations checked for parent-key nullability").toBe(10);
+  });
+
+  it("maps no two purged tables onto the same count field", () => {
+    // The one input where `HardDeleteCounts` does NOT fail. It is a union of
+    // field names, so two tables producing the same name DEDUPE rather than
+    // conflict — the second table then satisfies "is it counted?" using the
+    // first's count, and the compiler says nothing. Measured: adding a
+    // `subscriptions` or `slack_installations` purged entry compiles clean.
+    //
+    // There are no collisions today; this pins that. It reads the same alias map
+    // the type does, so the two cannot disagree on THAT axis.
+    //
+    // ⚠️ `camel` below is a RUNTIME re-implementation of the type-level
+    // `Camel<S>`, i.e. a second copy of the transform — the shape this PR exists
+    // to remove. It cannot be shared (one is a type, the other a value), so the
+    // premise that makes them agree is asserted instead of assumed: the two
+    // diverge only on consecutive or trailing underscores (`a__b` is `aB` to the
+    // type and `a_B` to this regex), so requiring single internal underscores
+    // makes them provably identical over the actual key space.
+    const WELL_FORMED = /^[a-z][a-z0-9]*(_[a-z0-9]+)*$/;
+    const malformed = [...PURGED_TABLES].filter((t) => !WELL_FORMED.test(t));
+    expect(
+      malformed,
+      `Registry key(s) that are not plain snake_case: ${malformed.join(", ")}. The runtime ` +
+        `camel() below and the type-level Camel<S> disagree on consecutive/trailing ` +
+        `underscores, so this check's premise fails and its result would be meaningless.`,
+    ).toEqual([]);
+    const camel = (s: string) => s.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
+    const aliases: Readonly<Record<string, string | undefined>> = COUNT_FIELD_ALIASES;
+    const byField = new Map<string, string[]>();
+    // Seed the union's OTHER arm first. `HardDeleteCountField` is
+    // `CountFieldFor<PurgedTableName> | NonRegistryCountField`, and a union
+    // dedupes ACROSS its arms, not just within one — so a purged table whose
+    // camel name lands on `members` or `organization` would report under a
+    // Better-Auth count with nothing failing. Measured: aliasing `chat_cache` to
+    // `"members"` and dropping `slackInstallations` from the return literal
+    // compiled clean AND passed every test. Worst case is
+    // `adminActionLogAnonymized`, which SURVIVOR_COUNT_FIELDS excludes from the
+    // total — a collision there SUBTRACTS real deletions from the number an
+    // operator puts on a DPA erasure record.
+    for (const field of NON_REGISTRY_COUNT_FIELDS) {
+      byField.set(field, [`<non-registry: ${field}>`]);
+    }
+    for (const table of PURGED_TABLES) {
+      const field = aliases[table] ?? camel(table);
+      byField.set(field, [...(byField.get(field) ?? []), table]);
+    }
+    // ⚠️ THE COLLISION ASSERTION COMES FIRST, and that ordering is the whole
+    // point: a collision is exactly what makes `byField.size` SMALLER, so a
+    // size check ahead of it throws on a bare arithmetic diff
+    // (`expected 98 to be 97`) and the named diagnostic below never renders.
+    const collisions = [...byField.entries()]
+      .filter(([, tables]) => tables.length > 1)
+      .map(([field, tables]) => `${field} <- ${tables.join(" + ")}`);
+    expect(
+      collisions,
+      `Purged table(s) sharing a count field: ${collisions.join("; ")}. A union dedupes, so ` +
+        `the second table would report under the first's count and HardDeleteCounts would not ` +
+        `notice. Give one of them an entry in COUNT_FIELD_ALIASES.`,
+    ).toEqual([]);
+    // ⚠️ NOT a vacuity pin, and an earlier comment here claimed it was.
+    // MEASURED: with `PURGED_TABLES` emptied, this PASSES — the non-registry
+    // seed contributes to BOTH sides of the equation, so it balances at 0 + 5.
+    // It is a second, weaker statement of the collision check above, kept only
+    // because it also catches a future edit that stops appending to `byField`.
+    // Vacuity is pinned separately, on the registry itself:
+    expect(PURGED_TABLES.size, "registry produced no purged tables").toBeGreaterThan(80);
+    expect(byField.size, "distinct count fields (registry + non-registry)").toBe(
+      PURGED_TABLES.size + NON_REGISTRY_COUNT_FIELDS.length,
+    );
+    // Alias VALUES are unconstrained by `satisfies`, which constrains keys only:
+    // a non-identifier value would just become a required field on
+    // HardDeleteCounts that the return statement dutifully supplies.
+    const badAlias = Object.values(COUNT_FIELD_ALIASES).filter((v) => !/^[a-z][A-Za-z0-9]*$/.test(v));
+    expect(badAlias, `alias value(s) that are not camelCase identifiers: ${badAlias.join(", ")}`).toEqual([]);
+  });
+
+  it("names a real column on a real parent in every viaParent declaration", () => {
+    // The registry is a plain data file, so a typo in `column`/`parentKey`/
+    // `parentScope` is only caught where the names meet the schema. Checked
+    // against the live Drizzle enumeration, which is the same source the
+    // "every schema table has a decision" tripwire reads.
+    //
+    // ⚠️ This ran with `if (link.parent === "subscription") continue;` on the
+    // premise that `subscription` is created by migration 0152 and so invisible
+    // to the enumeration. That premise is FALSE — schema.ts declares it as a
+    // pgTable precisely so check-schema-drift.sh sees one, and the sibling
+    // "no stale registry entries" test passes only because the enumeration finds
+    // it. The skip removed all four checks from `stripe_webhook_events`, the one
+    // declaration with quote-sensitive camelCase identifiers.
+    const bad: string[] = [];
+    for (const [child, entry] of Object.entries(decisionFor)) {
+      const link = entry?.viaParent;
+      if (!link) continue;
+      if (!columnsOf(child).includes(link.column)) bad.push(`${child}.${link.column} does not exist`);
+      if (!schemaTableNames.includes(link.parent)) bad.push(`${child}: parent ${link.parent} is not a table`);
+      if (!columnsOf(link.parent).includes(link.parentKey)) {
+        bad.push(`${child}: ${link.parent}.${link.parentKey} does not exist`);
+      }
+      if (!columnsOf(link.parent).includes(link.parentScope)) {
+        bad.push(`${child}: ${link.parent}.${link.parentScope} does not exist`);
+      }
+    }
+    expect(bad, `viaParent declaration(s) naming something the schema does not have: ${bad.join("; ")}`).toEqual([]);
+  });
+
+  // ── The result contract ────────────────────────────────────────────
+  //
+  // "reports a count for every purged table" USED to live here: it sliced
+  // `HardDeleteResult`'s own source with a regex, normalized plural stems, and
+  // consulted a `REPORTED_UNDER` alias map to excuse `chat_cache`. #5176 deleted
+  // it rather than adapting it, because `HardDeleteCounts` is now a mapped type
+  // over this registry — a `purged` entry with no count is a compile error at
+  // `hardDeleteWorkspace`'s return statement (measured: TS2741, "Property
+  // 'falsifierNewTable' is missing"), a misspelled field is TS2561, and the two
+  // aliases are members of the type instead of entries in a test's lookup.
+  //
+  // A test that still passed after that type landed would no longer be the thing
+  // enforcing the rule, and keeping it would suggest otherwise. What the type
+  // CANNOT express stays above: that the DELETE exists at all, the delete ORDER
+  // the two RESTRICT FKs depend on, and the scrub's residue predicate.
 });

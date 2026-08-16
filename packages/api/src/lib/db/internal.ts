@@ -25,6 +25,17 @@ import { normalizeError } from "@atlas/api/lib/effect/errors";
 import { resolveStatusClause } from "@atlas/api/lib/content-mode/port";
 import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
 import { getConnectTimeoutMs } from "@atlas/api/lib/db/pool-config";
+// The purge registry is BOTH the source of `HardDeleteCounts` (so the purge's
+// return statement stops compiling when a `purged` entry has no count) and the
+// single declaration of the child→parent relation the scope-less tables are
+// deleted through (#5176). purge-scope.ts itself imports nothing, so this edge
+// only ever points one way.
+import {
+  PURGE_TABLE_DECISIONS,
+  parentKeySubquery,
+  viaParentDeleteSql,
+  type ViaParentTableName,
+} from "@atlas/api/lib/db/purge-scope";
 import { foldRollingMean } from "@atlas/api/lib/learn/rolling-mean";
 import { REPEATED_PATTERN_MIN_REPETITIONS } from "@atlas/api/lib/learn/pattern-tiers";
 import {
@@ -3795,142 +3806,22 @@ export class PurgeAbortedError extends Error {
 }
 
 /**
- * Hard-delete result — a removal count per table, plus two fields that are NOT
- * removal counts: `adminActionLogAnonymized` (rows that SURVIVED, scrubbed) and
- * `skippedTables` (a string array). Use `totalRowsDeleted()` to total it; a bare
- * `Object.values(...).reduce(...)` over-reports destruction and string-
- * concatenates the array.
+ * Hard-delete result — the per-table counts, and separately the work the purge
+ * did NOT do.
+ *
+ * The split is what lets `HardDeleteCounts` be uniformly numeric (#5176). While
+ * `skippedTables` shared the object, every consumer had to filter it back out at
+ * runtime: `totalRowsDeleted` carried a `typeof value !== "number"` escape hatch,
+ * and the route cast the rest through `Record<string, number>` to publish it.
+ * Both were guarding against a field the type could simply not contain.
+ *
+ * `counts.adminActionLogAnonymized` is still a number that is NOT a removal
+ * count — it counts rows that SURVIVED with their identifiers scrubbed — so
+ * `totalRowsDeleted()` remains the only correct way to total this. A bare
+ * `Object.values(result.counts).reduce(...)` over-reports destruction.
  */
 export interface HardDeleteResult {
-  // Data tables (org_id)
-  auditLog: number;
-  conversations: number;
-  messages: number;
-  slackInstallations: number;
-  slackThreads: number;
-  actionLog: number;
-  scheduledTaskRuns: number;
-  scheduledTasks: number;
-  tokenUsage: number;
-  pluginSettings: number;
-  settings: number;
-  semanticEntityVersions: number;
-  semanticEntities: number;
-  learnedPatterns: number;
-  promptItems: number;
-  promptCollections: number;
-  querySuggestions: number;
-  ssoProviders: number;
-  ipAllowlist: number;
-  customRoles: number;
-  auditRetentionConfig: number;
-  workspaceModelConfig: number;
-  approvalQueue: number;
-  approvalRules: number;
-  workspaceBranding: number;
-  onboardingEmails: number;
-  piiColumnClassifications: number;
-  scimGroupMappings: number;
-  sandboxCredentials: number;
-  dashboardCards: number;
-  dashboards: number;
-  oauthState: number;
-  // Integration tables (org_id). teams/telegram/gchat/whatsapp_installations
-  // were dropped by migration 0119 (#3161); discord_installations stays (BYOT).
-  discordInstallations: number;
-  githubInstallations: number;
-  linearInstallations: number;
-  emailInstallations: number;
-  // Tables keyed by workspace_id
-  usageEvents: number;
-  usageSummaries: number;
-  abuseEvents: number;
-  customDomains: number;
-  slaMetrics: number;
-  slaAlerts: number;
-  slaThresholds: number;
-  regionMigrations: number;
-  workspacePlugins: number;
-  // Per-workspace credential stores (workspace_id) — encrypted secrets at rest.
-  // integration_credentials: lazy-OAuth bundles (Salesforce/Jira/etc., ADR-0005).
-  // twenty_integrations: Twenty CRM API key.
-  integrationCredentials: number;
-  twentyIntegrations: number;
-  // Stripe billing linkage (#3425): @better-auth/stripe `subscription` rows
-  // (0 when the plugin's table doesn't exist) + Atlas's stripe_webhook_events
-  // dedupe-ledger rows for the org's subscription ids.
-  subscriptions: number;
-  stripeWebhookEvents: number;
-  // ── Company Atlas / brain pillar (ADR-0036/0037) — added by #5160 ──
-  // Unreachable by the purge until #5160: workspace_id-keyed with no FK to
-  // `organization`, so the `DELETE FROM organization` below never cascaded to
-  // them. `brain_facts` is the highest-sensitivity table in the internal DB
-  // (claims extracted from Slack/Zoom/Outlook, retained verbatim) and is
-  // documented in schema.ts as "Nothing DELETEs" — the purge is its ONLY
-  // removal path, which is why its absence had no other mechanism behind it.
-  brainFacts: number;
-  brainEdges: number;
-  brainEpisodes: number;
-  brainVocabularyEdge: number;
-  brainVocabularyTarget: number;
-  brainVocabularyProposal: number;
-  brainPredicateCardinality: number;
-  brainAudienceReverifyAttempt: number;
-  brainSlackChannel: number;
-  brainSlackIngestScope: number;
-  brainEnrollment: number;
-  brainEntity: number;
-  brainCoverageSnapshot: number;
-  brainCoverageCycle: number;
-  factAudienceMember: number;
-  // ── Knowledge Base pillar (ADR-0028) — added by #5160 ──
-  // knowledge_sync_credentials is a secret at rest: the same class of miss
-  // integration_credentials was (#3425), one pillar over.
-  knowledgeDocuments: number;
-  knowledgeLinks: number;
-  knowledgeSyncCredentials: number;
-  knowledgeSyncState: number;
-  // ── Remaining workspace-scoped tables the purge never reached (#5160) ──
-  // Found by the mechanical sweep behind lib/db/purge-scope.ts rather than by
-  // enumeration from memory — see that file for the per-table rationale.
-  agentRuns: number;
-  agentSessionMemory: number;
-  adminActionRetentionConfig: number;
-  connectionGroupDescriptions: number;
-  connectionProfileState: number;
-  semanticProfileStatus: number;
-  learnedPatternInjections: number;
-  suggestionUserClicks: number;
-  dashboardUserDrafts: number;
-  dashboardDraftCardCache: number;
-  userFavoritePrompts: number;
-  mcpActionPolicy: number;
-  oauthClientWorkspaceGrants: number;
-  oauthClientWorkspaceScope: number;
-  oauthClientRateLimits: number;
-  overageMeterReports: number;
-  workspaceModelCatalog: number;
-  workspaceProactiveConfig: number;
-  channelProactiveConfig: number;
-  proactivePauses: number;
-  proactiveMeterEvents: number;
-  proactiveClassificationReview: number;
-  proactivePublicDataset: number;
-  emailOutbox: number;
-  crmOutbox: number;
-  // Rows SCRUBBED rather than deleted: the operator accountability trail keeps
-  // WHAT happened to this workspace (action_type / target_type / timestamp /
-  // org_id) while losing WHO — actor_id, actor_email, ip_address and metadata
-  // are NULLed and target_id takes a sentinel. PRIOR operator actions only: the
-  // purge's own audit row is written after this function returns, stamped with
-  // the acting admin's org, so it is never in scope. See purge-scope.ts
-  // `anonymized`.
-  adminActionLogAnonymized: number;
-  // Better Auth tables
-  members: number;
-  betterAuthInvitations: number;
-  orphanedUsers: number;
-  organization: number;
+  readonly counts: HardDeleteCounts;
   /**
    * Work the purge did NOT do (#5160): relations absent from this region's
    * schema, PLUS the deletes and writes that were gated behind them. A missing
@@ -3938,23 +3829,183 @@ export interface HardDeleteResult {
    * (whose delete reads it) and `stripe_purged_subscriptions` (whose tombstone
    * INSERT never ran) — and only the first was actually absent.
    *
-   * NOT a count — the only non-numeric field, and deliberately so. A skipped
-   * table reports `0` rows, which is indistinguishable from "there were none",
-   * and the purge response is what an operator attaches to a DPA erasure record.
-   * Non-empty means the purge was INCOMPLETE and the route must say so.
+   * NOT a count, and it lives OUTSIDE `counts` for exactly that reason. A
+   * skipped table reports `0` rows, which is indistinguishable from "there were
+   * none", and the purge response is what an operator attaches to a DPA erasure
+   * record. Non-empty means the purge was INCOMPLETE and the route must say so.
    */
-  skippedTables: readonly string[];
+  readonly skippedTables: readonly string[];
 }
 
+/** The registry, by type only — its VALUE is never read here. */
+type PurgeRegistry = typeof PURGE_TABLE_DECISIONS;
+
 /**
- * Fields on `HardDeleteResult` that count rows which SURVIVED the purge, and so
+ * The registry keys whose decision is `purged` — the exact set of tables
+ * `hardDeleteWorkspace` issues an explicit DELETE for, as a literal union.
+ */
+type PurgedTableName = {
+  [K in keyof PurgeRegistry]: PurgeRegistry[K]["decision"] extends "purged" ? K : never;
+}[keyof PurgeRegistry];
+
+/** `snake_case` → `camelCase`, at the type level. */
+type Camel<S extends string> = S extends `${infer Head}_${infer Tail}`
+  ? `${Head}${Capitalize<Camel<Tail>>}`
+  : S;
+
+/**
+ * The two count fields whose name is NOT the camelCase of their table. Both
+ * mismatches are deliberate:
+ *
+ * - `chat_cache` → `slackInstallations`: the purge does not clear the table, it
+ *   clears the Slack installation rows INSIDE it (the `value->>'orgId'`
+ *   expression), so the table's own name would overstate what the count measures.
+ * - `subscription` → `subscriptions`: @better-auth/stripe names its table in the
+ *   singular, and the count field has been plural since #3425.
+ *
+ * These lived in a TEST's `REPORTED_UNDER` lookup until #5176, beside a
+ * plural-stem normalizer that existed to tolerate the second one.
+ *
+ * `satisfies Partial<Record<PurgedTableName, string>>` is what makes the KEYS
+ * mean something. Without it an alias for a table that is not in the registry —
+ * or a misspelling of one — sits here inert: the aliased table never matches, so
+ * the entry is dead and nothing says so. With it, a bogus key is TS2353 and a
+ * table that stops being `purged` fails on this line rather than silently
+ * leaving a dangling alias behind.
+ *
+ * A `const` rather than an `interface` deliberately: an interface is
+ * declaration-mergeable, so a second declaration elsewhere could add an alias
+ * invisibly, and a value can be read by the test that checks two tables never
+ * map to the same field name.
+ */
+export const COUNT_FIELD_ALIASES = {
+  chat_cache: "slackInstallations",
+  subscription: "subscriptions",
+} as const satisfies Partial<Record<PurgedTableName, string>>;
+
+type CountFieldAliases = typeof COUNT_FIELD_ALIASES;
+
+type CountFieldFor<T extends string> = T extends keyof CountFieldAliases
+  ? CountFieldAliases[T]
+  : Camel<T>;
+
+/**
+ * Counts that do not come from the registry at all.
+ *
+ * `adminActionLogAnonymized` counts rows that SURVIVED — `admin_action_log` is
+ * `anonymized`, not `purged`, so it is deliberately not in the union above; see
+ * `SURVIVOR_COUNT_FIELDS` below, which excludes it from the destruction total.
+ * The other four are Better-Auth tables: global by ADR-0024, absent from
+ * `db/schema.ts`, and therefore absent from the registry that enumerates it.
+ *
+ * The exemptions stop one class short of complete, deliberately: the purge also
+ * DELETEs `session`, `account`, `user_onboarding` and `email_preferences` for
+ * orphaned users and discards all four counts. The first two are Better-Auth;
+ * the last two are `user_scoped` registry entries, which `PurgedTableName`
+ * filters out because it selects on `decision === "purged"`. Nothing here counts
+ * them, and `purge-scope.test.ts` covers them instead — it asserts each has a
+ * real DELETE, which is the claim that matters for a user-keyed erasure.
+ */
+/**
+ * The one name `skippedTables` can carry that is a skipped WRITE, not a skipped
+ * DELETE — the #3468 tombstone.
+ *
+ * Exported because the purge route has to tell the two apart when it explains an
+ * incomplete erasure to an operator, and the consequences are opposite: a
+ * skipped delete means rows survive; a skipped tombstone means late Stripe
+ * cancellation webhooks can REGROW ledger rows the purge did clear. The route
+ * used to recover this by string-matching a literal authored here, in another
+ * module, with nothing tying the two together.
+ */
+export const PURGE_TOMBSTONE_RELATION = "stripe_purged_subscriptions";
+
+export const NON_REGISTRY_COUNT_FIELDS = [
+  "adminActionLogAnonymized",
+  "members",
+  "betterAuthInvitations",
+  "orphanedUsers",
+  "organization",
+] as const;
+
+type NonRegistryCountField = (typeof NON_REGISTRY_COUNT_FIELDS)[number];
+
+type HardDeleteCountField = CountFieldFor<PurgedTableName> | NonRegistryCountField;
+
+/**
+ * Per-table row counts from a hard delete — DERIVED from the purge registry
+ * rather than hand-written (#5176).
+ *
+ * This was 92 hand-written `number` fields, and the field↔table correspondence
+ * was enforced by a test that regex-scanned this interface's own source,
+ * normalized plural stems, and consulted a hand-maintained alias map. Now:
+ * adding a `purged` entry to `PURGE_TABLE_DECISIONS` adds a required field here,
+ * so `hardDeleteWorkspace`'s return statement stops compiling until it reports a
+ * count for the table it has just claimed to delete. Deleting a count field, or
+ * misspelling one, fails the same way. That test is GONE rather than adapted —
+ * a test that still passes once the type lands is no longer what enforces the
+ * rule, and keeping it would suggest otherwise.
+ *
+ * The implicit index signature that lets `Object.entries` in `totalRowsDeleted`
+ * and the route's `Record<string, number>` wire contract work without a cast
+ * comes from this being a `type` ALIAS of an object type rather than an
+ * `interface` — not from its mapped-ness. That distinction is load-bearing, and
+ * it is narrower than it first looks: a tidy into an interface with ENUMERATED
+ * members (`interface HardDeleteCounts { readonly auditLog: number; … }`)
+ * compiles and reintroduces both casts, while `interface … extends
+ * Record<HardDeleteCountField, number>` keeps the index signature and does not.
+ * Uniform numeric-ness is separately only possible because `skippedTables`
+ * lives outside it.
+ *
+ * What this does NOT check is that the DELETE exists, that the delete ORDER
+ * respects the two RESTRICT FKs, or that the scrub's residue predicate covers
+ * its SET list. None of those are expressible here; they stay in
+ * `purge-scope.test.ts`. Nor does it catch two purged tables whose names map to
+ * the SAME count field — a union dedupes rather than conflicts, so the second
+ * table would satisfy the guarantee using the first's count. That one is
+ * checked by `purge-scope.test.ts`'s field-name cardinality assertion — which
+ * seeds itself from `NON_REGISTRY_COUNT_FIELDS` too, because the union dedupes
+ * ACROSS its two arms and not just within the registry one. Measured: aliasing
+ * `chat_cache` to `"members"` and dropping `slackInstallations` from the return
+ * literal compiled clean AND passed every test, silently reporting a purged
+ * table's deletions under a Better-Auth count. Worse for
+ * `adminActionLogAnonymized`, which `SURVIVOR_COUNT_FIELDS` excludes from the
+ * destruction total — a collision there would SUBTRACT real deletions from the
+ * number an operator puts on a DPA erasure record.
+ */
+export type HardDeleteCounts = {
+  readonly [K in HardDeleteCountField]: number;
+};
+
+/**
+ * Pins the guarantee itself: if `Camel<S>` or the registry ever degenerated so
+ * that `HardDeleteCountField` widened to `string`, `HardDeleteCounts` would gain
+ * an index signature and accept ANY return literal — the type would look like a
+ * guard and be decoration. That is the #5068 failure mode at the type level, and
+ * it is silent, so it gets an assertion rather than a comment.
+ *
+ * Measured: degenerating `Camel<S>` to `string` produces exactly one diagnostic
+ * in the whole package — `TS2322: Type 'true' is not assignable to type 'never'`
+ * — on the line below. It covers the WIDENING half only; the opposite
+ * degeneration (`PurgedTableName` collapsing to `never`) is caught instead by
+ * excess-property checking on the purge's return literal, which still applies
+ * despite the implicit index signature.
+ *
+ * `void` is belt-and-braces: `noUnusedLocals` is off and oxlint's
+ * `no-unused-vars` ignores `^_`, so nothing requires it today.
+ */
+type _CountFieldsAreLiteral = string extends HardDeleteCountField ? never : true;
+const _countFieldsAreLiteral: _CountFieldsAreLiteral = true;
+void _countFieldsAreLiteral;
+
+/**
+ * Fields on `HardDeleteCounts` that count rows which SURVIVED the purge, and so
  * must never be summed into a "rows destroyed" total.
  *
  * `satisfies` ties each entry to a real field, so renaming the field is a compile
  * error here rather than a silently-stale exclusion.
  */
-const SURVIVOR_COUNT_FIELDS: ReadonlySet<string> = new Set(
-  ["adminActionLogAnonymized"] satisfies readonly (keyof HardDeleteResult)[],
+export const SURVIVOR_COUNT_FIELDS: ReadonlySet<string> = new Set(
+  ["adminActionLogAnonymized"] satisfies readonly (keyof HardDeleteCounts)[],
 );
 
 /**
@@ -3965,11 +4016,16 @@ const SURVIVOR_COUNT_FIELDS: ReadonlySet<string> = new Set(
  * included `adminActionLogAnonymized`, which counts rows that SURVIVED. One
  * caller was fixed by hand and the other (`ops teardown-verify-accounts`) was
  * not, which is exactly the drift a shared helper prevents (#5160).
+ *
+ * No runtime type guard: `HardDeleteCounts` is uniformly numeric by construction
+ * since the counts/skipped split (#5176), so a `typeof value !== "number"`
+ * continue would be dead code claiming a non-numeric field can arrive here.
+ * `SURVIVOR_COUNT_FIELDS` is the only exclusion left, and it excludes a real
+ * number for a semantic reason rather than a shape one.
  */
 export function totalRowsDeleted(result: HardDeleteResult): number {
   let total = 0;
-  for (const [field, value] of Object.entries(result)) {
-    if (typeof value !== "number") continue; // skippedTables
+  for (const [field, value] of Object.entries(result.counts)) {
     if (SURVIVOR_COUNT_FIELDS.has(field)) continue;
     total += value;
   }
@@ -4039,6 +4095,24 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
       const result = await client.query(sql, params);
       return result.rows.length;
     };
+    /**
+     * Delete a table that has no scope column of its own, through its parent's
+     * rows — the relation coming from the registry's `viaParent` rather than a
+     * subquery written here (#5176).
+     *
+     * The relation used to be written three times: here as SQL, in
+     * `purge-scope.test.ts` as an ordering constraint, and in
+     * `hard-delete-purge-pg.test.ts` as the map that makes the seeded child
+     * point at the seeded parent. Each was internally consistent, so a drifted
+     * copy still passed its own suite — and the falsifier's copy is the one that
+     * decides whether the falsifier can fail at all.
+     *
+     * `ViaParentTableName` is the union of registry keys that HAVE a
+     * declaration, so a call for any other table does not compile, and the
+     * lookup inside `viaParentDeleteSql` can never hit an undefined link.
+     */
+    const delViaParent = async (table: ViaParentTableName) =>
+      delRaw(viaParentDeleteSql(table));
 
     // Tables this purge could NOT reach because the relation is absent from this
     // region's schema. Reported on HardDeleteResult and surfaced by the route as
@@ -4106,18 +4180,14 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     // ── Phase 1: Child tables with FK dependencies (delete children first) ──
 
     // slack_threads uses conversation_id (no FK constraint) — delete before conversations to avoid orphans
-    const slackThreads = await delRaw(
-      `DELETE FROM slack_threads WHERE conversation_id IN (SELECT id FROM conversations WHERE org_id = $1) RETURNING 1`,
-    );
+    const slackThreads = await delViaParent("slack_threads");
 
     // messages cascade from conversations via FK (schema.ts:107), but we delete
     // explicitly as a GDPR completeness guarantee — older deployments may predate the FK
-    const messages = await delRaw(`DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE org_id = $1) RETURNING 1`);
+    const messages = await delViaParent("messages");
 
     // scheduled_task_runs references scheduled_tasks via FK cascade
-    const scheduledTaskRuns = await delRaw(
-      `DELETE FROM scheduled_task_runs WHERE task_id IN (SELECT id FROM scheduled_tasks WHERE org_id = $1) RETURNING 1`,
-    );
+    const scheduledTaskRuns = await delViaParent("scheduled_task_runs");
 
     // semantic_entity_versions references semantic_entities via FK cascade
     const semanticEntityVersions = await del(
@@ -4125,37 +4195,29 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     );
 
     // prompt_items references prompt_collections via FK cascade
-    const promptItems = await delRaw(
-      `DELETE FROM prompt_items WHERE collection_id IN (SELECT id FROM prompt_collections WHERE org_id = $1) RETURNING 1`,
-    );
+    const promptItems = await delViaParent("prompt_items");
 
     // dashboard_cards references dashboards via FK cascade
-    const dashboardCards = await delRaw(
-      `DELETE FROM dashboard_cards WHERE dashboard_id IN (SELECT id FROM dashboards WHERE org_id = $1) RETURNING 1`,
-    );
+    const dashboardCards = await delViaParent("dashboard_cards");
 
     // dashboard_draft_card_cache → dashboard_user_drafts → dashboards (#5160).
     // Both cascade, but both are deleted explicitly for the same reason
     // `messages` is: neither carries a scope column, so a cascade is the ONLY
     // thing that would remove them, and the cache holds `cached_rows` —
-    // materialized query RESULTS, i.e. customer data at rest. Grandchild first.
-    const dashboardDraftCardCache = await delRaw(
-      `DELETE FROM dashboard_draft_card_cache WHERE dashboard_id IN (SELECT id FROM dashboards WHERE org_id = $1) RETURNING 1`,
-    );
-    const dashboardUserDrafts = await delRaw(
-      `DELETE FROM dashboard_user_drafts WHERE dashboard_id IN (SELECT id FROM dashboards WHERE org_id = $1) RETURNING 1`,
-    );
+    // materialized query RESULTS, i.e. customer data at rest.
+    //
+    // Both point at `dashboards` directly, so the grandchild/child pair has no
+    // ordering constraint BETWEEN them — only against the shared parent. That is
+    // visible in the registry now rather than inferable from statement order.
+    const dashboardDraftCardCache = await delViaParent("dashboard_draft_card_cache");
+    const dashboardUserDrafts = await delViaParent("dashboard_user_drafts");
 
     // knowledge_links references knowledge_documents via FK cascade (#5160).
     // No scope column of its own, so it goes via its parent's workspace_id.
-    const knowledgeLinks = await delRaw(
-      `DELETE FROM knowledge_links WHERE source_document_id IN (SELECT id FROM knowledge_documents WHERE workspace_id = $1) RETURNING 1`,
-    );
+    const knowledgeLinks = await delViaParent("knowledge_links");
 
     // suggestion_user_clicks references query_suggestions via FK cascade (#5160)
-    const suggestionUserClicks = await delRaw(
-      `DELETE FROM suggestion_user_clicks WHERE suggestion_id IN (SELECT id FROM query_suggestions WHERE org_id = $1) RETURNING 1`,
-    );
+    const suggestionUserClicks = await delViaParent("suggestion_user_clicks");
 
     // ── Phase 2: All org_id tables ──
 
@@ -4410,7 +4472,7 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     // that silently does not happen when `subscription` is absent, and without
     // them the operator is told one relation was skipped when three operations
     // were.
-    if (await tableExists("subscription", ["stripe_webhook_events", "stripe_purged_subscriptions"])) {
+    if (await tableExists("subscription", ["stripe_webhook_events", PURGE_TOMBSTONE_RELATION])) {
       // Tombstone the purged subscription ids FIRST (#3468): the remote
       // teardown's cancellations generate `customer.subscription.deleted`
       // webhooks that arrive after this transaction commits, and the
@@ -4419,19 +4481,19 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
       // immediately regrows `stripe_webhook_events` rows. Stamped inside
       // the purge transaction (same atomicity as the deletes below);
       // consulted by `classifyStripeEvent`; pruned after 30 days.
+      //
+      // The SELECT is `parentKeySubquery` over the SAME `viaParent` declaration
+      // the ledger DELETE below uses (#5176). It was a fourth hand-written copy
+      // of the subscription relation, and the two had to agree: the tombstone
+      // must record exactly the ids whose ledger rows are about to be removed,
+      // or a webhook arriving for an unrecorded id regrows the row it names.
       await client.query(
         `INSERT INTO stripe_purged_subscriptions (stripe_subscription_id)
-         SELECT "stripeSubscriptionId" FROM subscription
-          WHERE "referenceId" = $1 AND "stripeSubscriptionId" IS NOT NULL
+         ${parentKeySubquery("stripe_webhook_events")}
          ON CONFLICT (stripe_subscription_id) DO NOTHING`,
         [orgId],
       );
-      stripeWebhookEvents = await delRaw(
-        `DELETE FROM stripe_webhook_events WHERE stripe_subscription_id IN (
-           SELECT "stripeSubscriptionId" FROM subscription
-            WHERE "referenceId" = $1 AND "stripeSubscriptionId" IS NOT NULL
-         ) RETURNING 1`,
-      );
+      stripeWebhookEvents = await delViaParent("stripe_webhook_events");
       subscriptions = await del(`DELETE FROM subscription WHERE "referenceId" = $1`);
     }
 
@@ -4569,104 +4631,106 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     await client.query("COMMIT");
 
     return {
-      auditLog,
-      conversations,
-      messages,
-      slackInstallations,
-      slackThreads,
-      actionLog,
-      scheduledTaskRuns,
-      scheduledTasks,
-      tokenUsage,
-      pluginSettings,
-      settings,
-      semanticEntityVersions,
-      semanticEntities,
-      learnedPatterns,
-      promptItems,
-      promptCollections,
-      querySuggestions,
-      ssoProviders,
-      ipAllowlist,
-      customRoles,
-      auditRetentionConfig,
-      workspaceModelConfig,
-      approvalQueue,
-      approvalRules,
-      workspaceBranding,
-      onboardingEmails,
-      piiColumnClassifications,
-      scimGroupMappings,
-      sandboxCredentials,
-      dashboardCards,
-      dashboards,
-      oauthState,
-      discordInstallations,
-      githubInstallations,
-      linearInstallations,
-      emailInstallations,
-      usageEvents,
-      usageSummaries,
-      abuseEvents,
-      customDomains,
-      slaMetrics,
-      slaAlerts,
-      slaThresholds,
-      regionMigrations,
-      workspacePlugins,
-      integrationCredentials,
-      twentyIntegrations,
-      subscriptions,
-      stripeWebhookEvents,
-      brainFacts,
-      brainEdges,
-      brainEpisodes,
-      brainVocabularyEdge,
-      brainVocabularyTarget,
-      brainVocabularyProposal,
-      brainPredicateCardinality,
-      brainAudienceReverifyAttempt,
-      brainSlackChannel,
-      brainSlackIngestScope,
-      brainEnrollment,
-      brainEntity,
-      brainCoverageSnapshot,
-      brainCoverageCycle,
-      factAudienceMember,
-      knowledgeDocuments,
-      knowledgeLinks,
-      knowledgeSyncCredentials,
-      knowledgeSyncState,
-      agentRuns,
-      agentSessionMemory,
-      adminActionRetentionConfig,
-      connectionGroupDescriptions,
-      connectionProfileState,
-      semanticProfileStatus,
-      learnedPatternInjections,
-      suggestionUserClicks,
-      dashboardUserDrafts,
-      dashboardDraftCardCache,
-      userFavoritePrompts,
-      mcpActionPolicy,
-      oauthClientWorkspaceGrants,
-      oauthClientWorkspaceScope,
-      oauthClientRateLimits,
-      overageMeterReports,
-      workspaceModelCatalog,
-      workspaceProactiveConfig,
-      channelProactiveConfig,
-      proactivePauses,
-      proactiveMeterEvents,
-      proactiveClassificationReview,
-      proactivePublicDataset,
-      emailOutbox,
-      crmOutbox,
-      adminActionLogAnonymized,
-      members,
-      betterAuthInvitations,
-      orphanedUsers,
-      organization,
+      counts: {
+        auditLog,
+        conversations,
+        messages,
+        slackInstallations,
+        slackThreads,
+        actionLog,
+        scheduledTaskRuns,
+        scheduledTasks,
+        tokenUsage,
+        pluginSettings,
+        settings,
+        semanticEntityVersions,
+        semanticEntities,
+        learnedPatterns,
+        promptItems,
+        promptCollections,
+        querySuggestions,
+        ssoProviders,
+        ipAllowlist,
+        customRoles,
+        auditRetentionConfig,
+        workspaceModelConfig,
+        approvalQueue,
+        approvalRules,
+        workspaceBranding,
+        onboardingEmails,
+        piiColumnClassifications,
+        scimGroupMappings,
+        sandboxCredentials,
+        dashboardCards,
+        dashboards,
+        oauthState,
+        discordInstallations,
+        githubInstallations,
+        linearInstallations,
+        emailInstallations,
+        usageEvents,
+        usageSummaries,
+        abuseEvents,
+        customDomains,
+        slaMetrics,
+        slaAlerts,
+        slaThresholds,
+        regionMigrations,
+        workspacePlugins,
+        integrationCredentials,
+        twentyIntegrations,
+        subscriptions,
+        stripeWebhookEvents,
+        brainFacts,
+        brainEdges,
+        brainEpisodes,
+        brainVocabularyEdge,
+        brainVocabularyTarget,
+        brainVocabularyProposal,
+        brainPredicateCardinality,
+        brainAudienceReverifyAttempt,
+        brainSlackChannel,
+        brainSlackIngestScope,
+        brainEnrollment,
+        brainEntity,
+        brainCoverageSnapshot,
+        brainCoverageCycle,
+        factAudienceMember,
+        knowledgeDocuments,
+        knowledgeLinks,
+        knowledgeSyncCredentials,
+        knowledgeSyncState,
+        agentRuns,
+        agentSessionMemory,
+        adminActionRetentionConfig,
+        connectionGroupDescriptions,
+        connectionProfileState,
+        semanticProfileStatus,
+        learnedPatternInjections,
+        suggestionUserClicks,
+        dashboardUserDrafts,
+        dashboardDraftCardCache,
+        userFavoritePrompts,
+        mcpActionPolicy,
+        oauthClientWorkspaceGrants,
+        oauthClientWorkspaceScope,
+        oauthClientRateLimits,
+        overageMeterReports,
+        workspaceModelCatalog,
+        workspaceProactiveConfig,
+        channelProactiveConfig,
+        proactivePauses,
+        proactiveMeterEvents,
+        proactiveClassificationReview,
+        proactivePublicDataset,
+        emailOutbox,
+        crmOutbox,
+        adminActionLogAnonymized,
+        members,
+        betterAuthInvitations,
+        orphanedUsers,
+        organization,
+      },
       skippedTables,
     };
   } catch (err) {

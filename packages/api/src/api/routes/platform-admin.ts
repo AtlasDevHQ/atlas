@@ -38,6 +38,7 @@ import {
   hardDeleteWorkspace,
   totalRowsDeleted,
   PurgeAbortedError,
+  PURGE_TOMBSTONE_RELATION,
   type WorkspaceRow,
   type PlanTier,
   type WorkspaceStatus,
@@ -254,7 +255,7 @@ const purgeWorkspaceRoute = createRoute({
   path: "/workspaces/{id}/purge",
   tags: ["Platform Admin"],
   summary: "Purge workspace (GDPR hard delete)",
-  description: "SaaS only. Permanently removes ALL workspace data — conversations, messages, company-brain claims and episodes, knowledge-base documents, semantic layer, dashboards, integrations and their encrypted credentials, members, and orphaned users. Two deliberate exceptions: the admin action log is retained with its identifying columns scrubbed (counted separately as `adminActionLogAnonymized`), and pending Stripe teardown records are kept until they settle. The workspace must already be soft-deleted. This action is irreversible. Check `complete` — when false, `skippedTables` names the work that did not run (relations absent from this region, plus the deletes and writes gated behind them) and that data was NOT deleted.",
+  description: "SaaS only. Permanently removes ALL workspace data — conversations, messages, company-brain claims and episodes, knowledge-base documents, semantic layer, dashboards, integrations and their encrypted credentials, members, and orphaned users. Two deliberate exceptions: the admin action log is retained with its identifying columns scrubbed (counted separately as `adminActionLogAnonymized`), and pending Stripe teardown records are kept until they settle. The workspace must already be soft-deleted. This action is irreversible. Check `complete` — when false, `skippedTables` names the work that did not run (relations absent from this region, plus the deletes and writes gated behind them). For a skipped DELETE that data was NOT deleted; for a skipped WRITE the consequence is different, so read `message`, which names it per entry.",
   responses: {
     200: {
       description: "Workspace purged",
@@ -831,15 +832,18 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
     // The arithmetic lives in `totalRowsDeleted` rather than here: this used to
     // be a local `Object.values(purged).reduce(...)`, and so did the CLI's
     // teardown command, and fixing one by hand left the other over-reporting.
-    // `counts` excludes `skippedTables`, and that exclusion is the fix for a
-    // defect this PR's own earlier commit created: `purged` is published as
-    // `Record<string, number>`, so spreading the whole result put a string ARRAY
-    // inside a map of counts. A client doing the obvious
-    // `Object.values(body.purged).reduce(...)` would then string-concatenate it —
-    // bit for bit the bug removed from the CLI two commits ago, re-exported to
-    // every consumer of the admin API. The cast below is only true because of
-    // this line.
-    const { adminActionLogAnonymized, skippedTables, ...counts } = purged;
+    //
+    // `skippedTables` is no longer something this line has to remember to
+    // exclude — since #5176 it lives outside `counts`, so a string ARRAY can no
+    // longer reach the documented map of numbers. That leak was a real defect
+    // once (a client doing `Object.values(body.purged).reduce(...)` would
+    // string-concatenate it) and the fix was a destructure that any later edit
+    // could undo; now the type does it.
+    const { counts, skippedTables } = purged;
+    // `adminActionLogAnonymized` IS a number, so the type cannot separate it —
+    // it is excluded here because it counts SURVIVORS, and reported beside
+    // `totalRows` rather than inside the per-table map.
+    const { adminActionLogAnonymized, ...deletedCounts } = counts;
     const totalRows = totalRowsDeleted(purged);
 
     // A skipped table means the purge is INCOMPLETE for that relation, and the
@@ -854,10 +858,54 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
     // is finished", not "the table loop finished".
     const incomplete = skippedTables.length > 0 || billing.warnings.length > 0;
 
+    const reasons: string[] = [];
+    if (skippedTables.length > 0) {
+      // ⚠️ "so that data was NOT deleted" is wrong for one of the names this
+      // list can contain, and on a DPA erasure receipt that inversion matters.
+      // `stripe_purged_subscriptions` is skipped as a WRITE, not a delete: it is
+      // the #3468 tombstone, and its absence means post-commit
+      // `customer.subscription.deleted` webhooks can REGROW the ledger rows the
+      // purge just cleared. Naming the consequence rather than mislabelling the
+      // operation, since the operator's next action differs for the two.
+      // The relation name is IMPORTED, not re-spelled: it is authored in
+      // internal.ts's `alsoSkipped` array, and recovering it by string match
+      // meant a rename there silently reverted this split to the inversion it
+      // exists to remove.
+      const notDeleted = skippedTables.filter((t) => t !== PURGE_TOMBSTONE_RELATION);
+      if (notDeleted.length > 0) {
+        reasons.push(
+          `${notDeleted.length} delete(s) did not run because a relation was absent from ` +
+            `this region's schema, so that data was NOT deleted (${notDeleted.join(", ")})`,
+        );
+      }
+      if (skippedTables.includes(PURGE_TOMBSTONE_RELATION)) {
+        reasons.push(
+          `the ${PURGE_TOMBSTONE_RELATION} tombstone was NOT written, so late Stripe ` +
+            `cancellation webhooks ` +
+            `may regrow stripe_webhook_events rows for this workspace (#3468)`,
+        );
+      }
+    }
+    if (billing.warnings.length > 0) {
+      reasons.push(`Stripe teardown did not fully settle (see \`warnings\`)`);
+    }
+    // Logged AFTER `reasons` is built, so the line states the cause that
+    // actually occurred. It used to say "some relations were absent from this
+    // region" for ANY incompleteness — including a Stripe-teardown warning with
+    // an empty `skippedTables` — and this is the log an operator correlates by
+    // requestId when the response says INCOMPLETE.
     log.info(
-      { workspaceId, totalRows, adminActionLogAnonymized, skippedTables, stripe: billing, requestId },
+      {
+        workspaceId,
+        totalRows,
+        adminActionLogAnonymized,
+        skippedTables,
+        reasons,
+        stripe: billing,
+        requestId,
+      },
       incomplete
-        ? "Workspace purged (GDPR hard delete) — INCOMPLETE: some relations were absent from this region"
+        ? `Workspace purged (GDPR hard delete) — INCOMPLETE: ${reasons.join("; ")}`
         : "Workspace purged (GDPR hard delete)",
     );
 
@@ -867,7 +915,11 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
       targetId: workspaceId,
       scope: "platform",
       metadata: {
-        purged,
+        // `counts`, not `purged`: since #5176 `purged` nests them, and spreading
+        // the container would bury `skippedTables` inside a key named "purged"
+        // as well as beside it. Readers of this audit row key off the top-level
+        // fields.
+        purged: counts,
         totalRows,
         adminActionLogAnonymized,
         skippedTables,
@@ -893,16 +945,6 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
     // re-purge would be an instruction that cannot be followed, which on a
     // compliance remedy is worse than saying nothing. The residue sweep in
     // platform-admin.mdx is the procedure that actually works.
-    const reasons: string[] = [];
-    if (skippedTables.length > 0) {
-      reasons.push(
-        `${skippedTables.length} operation(s) did not run because a relation was absent from ` +
-          `this region's schema, so that data was NOT deleted (${skippedTables.join(", ")})`,
-      );
-    }
-    if (billing.warnings.length > 0) {
-      reasons.push(`Stripe teardown did not fully settle (see \`warnings\`)`);
-    }
     const incompleteMessage =
       `Workspace purged, but INCOMPLETE: ${reasons.join("; ")}. The organization record is ` +
       `already gone, so this endpoint cannot be re-run — migrate this region, then clear the ` +
@@ -912,9 +954,12 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
     return c.json({
       message: incomplete ? incompleteMessage : completeMessage,
       workspaceId,
-      // `counts`, not `purged` — see the destructure above. Shipping the whole
-      // result put a string array inside a documented map of numbers.
-      purged: counts as unknown as Record<string, number>,
+      // `deletedCounts`, not `purged` — see the destructure above. No cast:
+      // `HardDeleteCounts` is a uniformly-numeric mapped type since #5176, so
+      // it carries an implicit index signature and assigns to the wire schema
+      // directly. The old `as unknown as Record<string, number>` was only ever
+      // true because the destructure above removed a string array first.
+      purged: deletedCounts,
       totalRows,
       adminActionLogAnonymized,
       // Copied rather than passed through: `HardDeleteResult.skippedTables` is

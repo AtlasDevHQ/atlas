@@ -69,15 +69,21 @@ let hardDeleteSkipped: string[] = [];
  * at all). The anonymized count is 7 — a value no other field carries and one
  * no subset of the others sums to — so a total that wrongly includes it lands
  * on a number the correct arithmetic cannot produce.
+ *
+ * Since #5176 the third shape sits OUTSIDE `counts`, which is the container
+ * split; the first two still share it, because both are numbers and only their
+ * meaning differs.
  */
 const mockHardDelete = mock(async () => {
   callOrder.push("hardDelete");
   return {
-    conversations: 3,
-    brainFacts: 5,
-    subscriptions: 1,
-    organization: 1,
-    adminActionLogAnonymized: 7,
+    counts: {
+      conversations: 3,
+      brainFacts: 5,
+      subscriptions: 1,
+      organization: 1,
+      adminActionLogAnonymized: 7,
+    },
     skippedTables: hardDeleteSkipped,
   };
 });
@@ -334,6 +340,44 @@ describe("POST /api/v1/platform/workspaces/:id/purge — Stripe teardown", () =>
       expect(body.skippedTables).toEqual(["scim_group_mappings", "subscription"]);
       expect(body.message).toContain("INCOMPLETE");
       expect(body.message).toContain("scim_group_mappings");
+    } finally {
+      hardDeleteSkipped = [];
+    }
+  });
+
+  it("splits the #3468 tombstone WRITE from the skipped DELETEs", async () => {
+    // ⚠️ THE FIXTURE IS THE POINT. `internal.ts` is the only producer of this
+    // field, and its `subscription` probe records THREE names at once —
+    // `tableExists("subscription", ["stripe_webhook_events",
+    // PURGE_TOMBSTONE_RELATION])` — so the tombstone never arrives alone, and
+    // the sibling test above uses a combination the producer cannot emit.
+    //
+    // The inversion this pins: calling an unwritten tombstone "data that was NOT
+    // deleted" is backwards. The tombstone is a WRITE that did not happen, and
+    // its absence means late `customer.subscription.deleted` webhooks can REGROW
+    // ledger rows the purge did clear. An operator reading the old wording goes
+    // hunting for surviving rows; the actual follow-up is the opposite.
+    //
+    // Measured before this test existed: reverting the whole split to the
+    // pre-#5176 single sentence left this suite at 18/18 and platform-admin at
+    // 17/17 — a correct compliance-receipt change that reverted for free.
+    hardDeleteSkipped = ["subscription", "stripe_webhook_events", "stripe_purged_subscriptions"];
+    try {
+      const res = await app.fetch(platformRequest("POST", "/api/v1/platform/workspaces/org-1/purge"));
+      const body = (await res.json()) as { message: string; complete: boolean };
+
+      expect(res.status).toBe(200);
+      expect(body.complete).toBe(false);
+      // Two deletes, not three — the tombstone is not one of them.
+      expect(body.message).toContain("2 delete(s) did not run");
+      expect(body.message).toContain("(subscription, stripe_webhook_events)");
+      // …and the write is reported with its own, different consequence.
+      expect(body.message).toContain("tombstone was NOT written");
+      expect(body.message).toContain("may regrow stripe_webhook_events rows");
+      // The inversion itself, asserted negatively so a revert cannot pass: the
+      // tombstone must never be counted among, or described as, deleted data.
+      expect(body.message).not.toContain("3 delete(s)");
+      expect(body.message).not.toMatch(/stripe_purged_subscriptions[^.]*NOT deleted/);
     } finally {
       hardDeleteSkipped = [];
     }

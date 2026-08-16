@@ -23,10 +23,11 @@
  * CHECK, which `Migration` guarantees has run before this seed (the Layer's
  * `Migration` dependency).
  *
- * Idempotency: unqualified `ON CONFLICT DO NOTHING` covers both the `slug`
- * unique index and the `id` primary key, so re-running on a populated catalog
- * is a no-op. A seed-time failure logs at error and the API keeps booting —
- * the rows from a prior boot answer admin-UI reads.
+ * Idempotency: `ON CONFLICT (id) DO NOTHING` — the target is qualified on the
+ * PRIMARY KEY, so re-running on a populated catalog is a no-op. It is
+ * deliberately NOT unqualified; the slug-collision note below is the whole
+ * reason. A seed-time failure logs at error and the API keeps booting — the
+ * rows from a prior boot answer admin-UI reads.
  *
  * ⚠️ INSERT-ONLY BY DESIGN, and that posture is load-bearing (#5082). The
  * constants below describe the shape a row is BORN with — they are NOT a
@@ -48,28 +49,36 @@
  * never specific to those two rows, only the defect was. Adding a NEW row is
  * still one append here and nothing else.
  *
- * ⚠️ `config_schema` is stored under the same `ON CONFLICT DO NOTHING` and is
+ * ⚠️ `config_schema` is stored under the same conflict target and is
  * customer-read (it renders as install-form labels and helper text), so it
- * carries the identical constraint — with no migration behind it yet. The two
- * Company Atlas rows still say "this brain source" there; rewriting a string
- * inside a JSONB array is a materially less safe statement than 0201's guarded
- * column updates, so it is deferred to #5240 and pinned by a test meanwhile.
+ * carries the identical constraint. The two Company Atlas rows' helper text is
+ * migration `0203_brain_catalog_config_help_company_atlas.sql` (#5240) — a
+ * guarded rewrite of one string INSIDE the JSONB array, matched on the
+ * known-old value so an operator-edited schema is never clobbered — and the
+ * same test file pins these constants to what it writes.
  *
- * ⚠️ KNOWN BLIND SPOT (#5239): the conflict target is UNQUALIFIED, so `DO NOTHING`
- * also swallows a conflict on the `slug` unique index. If a row already holds
- * one of these slugs under a DIFFERENT id, the built-in insert does nothing,
- * `insertedSlugs` stays empty, and the pass reports `{ kind: "seeded" }` with
- * every slug listed — for a row that does not exist under its canonical id and
- * never will. Nothing distinguishes that from "the row was already there".
+ * ⚠️ A SLUG COLLISION UNDER A FOREIGN ID IS LOUD, NOT SILENT (#5239). Because
+ * the conflict target names `(id)`, `DO NOTHING` covers the primary key only.
+ * A row already holding one of these slugs under a DIFFERENT id therefore
+ * raises `23505` rather than no-op'ing; the loop catches THAT code per row,
+ * logs a `warn` naming the row, records the slug in `blockedSlugs`, and carries
+ * on to the remaining rows. Every other error still propagates and aborts the
+ * pass, so a real outage is never demoted to a warning.
  *
- * The window is narrow (`slug` is settable only at create, per
+ * Until #5239 the target was unqualified and the same collision was swallowed:
+ * `insertedSlugs` stayed empty and the pass reported `{ kind: "seeded" }` with
+ * every slug listed, for a row that does not exist under its canonical id and
+ * never will — indistinguishable from "the row was already there". It also
+ * compounds: any migration keyed on the canonical id (0201 and 0203 among them)
+ * then correctly finds nothing, and the admin UI never lists the row.
+ *
+ * The window is narrow — `slug` is settable only at create, per
  * `lib/integrations/catalog-crud.ts`, so it needs an operator-created row that
- * predates the built-in ever being seeded) but it is real, and it compounds:
- * any migration keyed on the canonical id — 0201 among them — then correctly
- * finds nothing, and the admin UI never lists the row. Qualifying the target to
- * `ON CONFLICT (id) DO NOTHING` would surface it as a `23505` instead; that
- * needs a per-row catch so one collision cannot abort the rest of the loop,
- * which is why it is #5239 rather than a one-line edit here.
+ * predates the built-in ever being seeded — but it is production-reachable.
+ * `blockedSlugs` rides on the result rather than into `/health`: the boot Layer
+ * has no arm between "seeded" and "error", and a blocked built-in row is an
+ * operator's own row holding a name, not a failed boot. The warning is the
+ * signal; the field is what a caller can assert on.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -790,7 +799,10 @@ export const BUILTIN_ZOOM_TRANSCRIPTS_CATALOG_ROW: BuiltinKnowledgeCatalogRow = 
       key: "description",
       type: "string",
       label: "Description",
-      description: "Optional. A human description of this brain source.",
+      // Customer-read helper text, so ADR-0038's noun applies (#5240). Editing
+      // it here renames nothing a region already holds — migration 0203 is the
+      // half that reaches the three prod regions.
+      description: "Optional. A human description of this Company Atlas source.",
     },
   ],
 };
@@ -860,7 +872,9 @@ export const BUILTIN_OUTLOOK_MAIL_CATALOG_ROW: BuiltinKnowledgeCatalogRow = {
       key: "description",
       type: "string",
       label: "Description",
-      description: "Optional. A human description of this brain source.",
+      // See the Zoom row's twin of this field: same string, same migration
+      // (0203), same reason (#5240).
+      description: "Optional. A human description of this Company Atlas source.",
     },
   ],
 };
@@ -893,10 +907,40 @@ export interface BuiltinKnowledgeCatalogSeedDb {
 }
 
 export interface BuiltinKnowledgeCatalogSeedResult {
-  /** True when any `ON CONFLICT DO NOTHING` ran an insert (a row didn't exist). */
+  /** True when any `ON CONFLICT (id) DO NOTHING` ran an insert (a row didn't exist). */
   readonly inserted: boolean;
   /** The slugs actually inserted this pass (empty on a fully-populated catalog). */
   readonly insertedSlugs: ReadonlyArray<string>;
+  /**
+   * The slugs a `23505` blocked — a DIFFERENT catalog id already holds the
+   * slug, so the built-in row does not exist under its canonical id and this
+   * pass could not create it (#5239). Distinct from "not inserted": every
+   * other row in `BUILTIN_KNOWLEDGE_CATALOG_ROWS` absent from BOTH lists was
+   * already present and correct.
+   */
+  readonly blockedSlugs: ReadonlyArray<string>;
+}
+
+/** Postgres `unique_violation` (23505). */
+const PG_UNIQUE_VIOLATION = "23505";
+
+/**
+ * The diagnostic fields of a `23505`, or `undefined` for any other rejection.
+ *
+ * `pg` rejects with a `DatabaseError` carrying untyped `code`/`constraint`/
+ * `detail`, so this narrows rather than casts. It reads the CODE and not the
+ * message: matching on prose would classify an unrelated failure whose message
+ * happened to say "duplicate key" as a benign collision, and demoting a real
+ * outage to a warning is the failure this catch exists to avoid.
+ */
+function asUniqueViolation(
+  err: unknown,
+): { readonly constraint?: string; readonly detail?: string } | undefined {
+  if (typeof err !== "object" || err === null) return undefined;
+  if (!("code" in err) || err.code !== PG_UNIQUE_VIOLATION) return undefined;
+  const constraint = "constraint" in err && typeof err.constraint === "string" ? err.constraint : undefined;
+  const detail = "detail" in err && typeof err.detail === "string" ? err.detail : undefined;
+  return { constraint, detail };
 }
 
 /**
@@ -906,7 +950,14 @@ export interface BuiltinKnowledgeCatalogSeedResult {
  * seeds stay structurally recognizable; `type` and `pillar` differ (`context` /
  * `knowledge`). `RETURNING slug` reports whether each row was inserted vs
  * preserved. Rows seed sequentially: a pre-existing row never blocks the next,
- * but a hard failure aborts the pass and propagates (the boot wrapper logs and continues booting).
+ * a slug held under a foreign id is reported and skipped (#5239 — see the
+ * header), and any other hard failure aborts the pass and propagates (the boot
+ * wrapper logs and continues booting).
+ *
+ * ⚠️ The sibling built-in DATASOURCE seed (`seed-builtin-datasource-catalog.ts`)
+ * still inserts with an unqualified `ON CONFLICT DO NOTHING` and so still has
+ * the swallow described in this file's header. #5239 scoped itself to the
+ * knowledge catalog; the class is the same one file over.
  */
 export async function seedBuiltinKnowledgeCatalog(
   db: BuiltinKnowledgeCatalogSeedDb,
@@ -915,35 +966,67 @@ export async function seedBuiltinKnowledgeCatalog(
   assertOperatorCatalogWrite("builtin-knowledge-seed");
 
   const insertedSlugs: string[] = [];
+  const blockedSlugs: string[] = [];
   for (const row of BUILTIN_KNOWLEDGE_CATALOG_ROWS) {
-    const { rows } = await db.query<{ slug: string }>(
-      `INSERT INTO plugin_catalog
-         (id, name, slug, description, type, install_model, pillar,
-          implementation_status, auto_install, min_plan, enabled, saas_eligible,
-          config_schema, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, 'context', $5, 'knowledge', 'available', $6,
-               'starter', true, $7, $8::jsonb, NOW(), NOW())
-       ON CONFLICT DO NOTHING
-       RETURNING slug`,
-      [
-        row.id,
-        row.name,
-        row.slug,
-        row.description,
-        row.installModel,
-        row.autoInstall,
-        row.saasEligible,
-        JSON.stringify(row.configSchema),
-      ],
-    );
-    if (rows.length > 0) insertedSlugs.push(row.slug);
+    let returned: { slug: string }[];
+    try {
+      const { rows } = await db.query<{ slug: string }>(
+        `INSERT INTO plugin_catalog
+           (id, name, slug, description, type, install_model, pillar,
+            implementation_status, auto_install, min_plan, enabled, saas_eligible,
+            config_schema, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'context', $5, 'knowledge', 'available', $6,
+                 'starter', true, $7, $8::jsonb, NOW(), NOW())
+         ON CONFLICT (id) DO NOTHING
+         RETURNING slug`,
+        [
+          row.id,
+          row.name,
+          row.slug,
+          row.description,
+          row.installModel,
+          row.autoInstall,
+          row.saasEligible,
+          JSON.stringify(row.configSchema),
+        ],
+      );
+      returned = rows;
+    } catch (err) {
+      const collision = asUniqueViolation(err);
+      // Anything that is not a unique violation is a real failure: rethrow it
+      // and let the pass abort, exactly as before #5239.
+      if (!collision) throw err;
+      blockedSlugs.push(row.slug);
+      log.warn(
+        {
+          id: row.id,
+          slug: row.slug,
+          constraint: collision.constraint,
+          detail: collision.detail,
+        },
+        "Built-in Knowledge Base catalog row NOT seeded — another catalog row already holds one of its unique values (normally the slug) under a different id, so this row does not exist under its canonical id. /admin/knowledge will not list it and every migration keyed on that id will correctly find nothing. Resolve by renaming or removing the conflicting row.",
+      );
+      continue;
+    }
+    if (returned.length > 0) insertedSlugs.push(row.slug);
   }
 
-  log.info(
-    { insertedSlugs, slugs: BUILTIN_KNOWLEDGE_CATALOG_ROWS.map((r) => r.slug) },
-    "Built-in Knowledge Base catalog seed complete",
-  );
-  return { inserted: insertedSlugs.length > 0, insertedSlugs };
+  const summary = {
+    insertedSlugs,
+    blockedSlugs,
+    slugs: BUILTIN_KNOWLEDGE_CATALOG_ROWS.map((r) => r.slug),
+  };
+  if (blockedSlugs.length > 0) {
+    // Not `info`: the pass finished, but the catalog is missing rows it was
+    // asked to seed. Reporting that as completion is #5239's defect.
+    log.warn(
+      summary,
+      "Built-in Knowledge Base catalog seed finished with BLOCKED rows — see the per-row warnings above",
+    );
+  } else {
+    log.info(summary, "Built-in Knowledge Base catalog seed complete");
+  }
+  return { inserted: insertedSlugs.length > 0, insertedSlugs, blockedSlugs };
 }
 
 /**
@@ -953,7 +1036,17 @@ export async function seedBuiltinKnowledgeCatalog(
  */
 export type BuiltinKnowledgeCatalogSeedBootResult =
   | { readonly kind: "skipped"; readonly reason: "no-internal-db" }
-  | { readonly kind: "seeded"; readonly inserted: boolean }
+  | {
+      readonly kind: "seeded";
+      readonly inserted: boolean;
+      /**
+       * Rows a foreign-id slug collision blocked (#5239). `seeded` with a
+       * non-empty `blocked` is a real state — the pass ran, and some rows are
+       * missing from the catalog. The boot Layer maps `seeded` to one health
+       * outcome either way; this field is what a caller can assert on.
+       */
+      readonly blocked: ReadonlyArray<string>;
+    }
   | { readonly kind: "error"; readonly message: string };
 
 /**
@@ -983,7 +1076,7 @@ export async function runBuiltinKnowledgeCatalogSeedBoot(): Promise<BuiltinKnowl
 
   try {
     const result = await seedBuiltinKnowledgeCatalog(db);
-    return { kind: "seeded", inserted: result.inserted };
+    return { kind: "seeded", inserted: result.inserted, blocked: result.blockedSlugs };
   } catch (err) {
     const normalized = err instanceof Error ? err : new Error(String(err));
     log.error(

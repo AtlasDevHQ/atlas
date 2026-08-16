@@ -5,9 +5,12 @@
  *
  *  1. `seedBuiltinKnowledgeCatalog(db)` — the runtime seeder. Asserts the
  *     built-in rows (`okf-upload` #4206, `bundle-sync` #4211) are inserted with
- *     `ON CONFLICT DO NOTHING` semantics through the operator-curated seam,
- *     with the ADR-0028 §5 shape (type `context`, pillar `knowledge`,
- *     install_model `form`).
+ *     `ON CONFLICT (id) DO NOTHING` semantics through the operator-curated
+ *     seam, with the ADR-0028 §5 shape (type `context`, pillar `knowledge`,
+ *     install_model `form`). The foreign-id slug collision that target makes
+ *     visible (#5239) has its own file — `…-collision.test.ts` for the log and
+ *     the loop, `builtin-knowledge-catalog-seed-pg.test.ts` for the proof that
+ *     Postgres actually raises there.
  *
  *  2. `BUILTIN_KNOWLEDGE_CATALOG_ROW(S)` — the in-process source of truth.
  *     Asserts content-level invariants (okf-upload credential-less; bundle-sync
@@ -40,6 +43,7 @@ import {
   type BuiltinKnowledgeCatalogSeedDb,
 } from "@atlas/api/lib/db/seed-builtin-knowledge-catalog";
 import {
+  CONFIG_HELP_PAIRS,
   RENAME_PAIRS,
   sqlLiteral,
   stripSqlComments,
@@ -506,24 +510,128 @@ describe("built-in catalog copy lock (#5082)", () => {
     ]);
   });
 
-  it("records the config_schema copy that still reads 'brain source' as a KNOWN exemption", () => {
-    // #5082's own sibling, one field over in the SAME object literal — the
-    // shape the repo keeps paying for. `config_schema` is seeded as JSONB under
-    // the identical `ON CONFLICT DO NOTHING`, and this string is rendered as
-    // helper text on the install form, so it is a STORED, CUSTOMER-READ string
-    // that still says "brain". It is deliberately NOT renamed here: rewriting a
-    // string inside a JSONB array needs a different and much less safe
-    // statement than the two guarded column UPDATEs 0201 is, and that belongs
-    // in its own change — #5240. CONTEXT.md records it as an exemption rather
-    // than claiming no stored string is left.
+  it("pins the config_schema helper text on both Company Atlas rows (#5240)", () => {
+    // #5082's own sibling, one field over in the SAME object literal.
+    // `config_schema` is seeded as JSONB under the identical conflict target,
+    // and this string renders as helper text on the install form, so it is a
+    // STORED, CUSTOMER-READ string and ADR-0038 governs it. It was a recorded
+    // exemption until #5240; the rename now lives in migration 0203 and the
+    // block below pins the constant to what that migration writes.
     //
-    // This assertion exists so the next editor of that field gets a signal
-    // instead of walking into #5082's failure mode a second time.
+    // Kept as a LITERAL here for the same reason the copy lock above is: an
+    // assertion derived from the constants it is locking compares them to
+    // themselves.
     for (const row of [BUILTIN_ZOOM_TRANSCRIPTS_CATALOG_ROW, BUILTIN_OUTLOOK_MAIL_CATALOG_ROW]) {
       const descriptionField = row.configSchema.find((f) => f.key === "description");
       expect(descriptionField?.description).toBe(
-        "Optional. A human description of this brain source.",
+        "Optional. A human description of this Company Atlas source.",
       );
+    }
+  });
+
+  it("leaves NO customer-read 'brain' noun anywhere in either row's config_schema", () => {
+    // The class, not the instance. #5240 renamed the one field anybody had
+    // noticed; every label and help string on these two rows is rendered on the
+    // install form, so a second one carrying the old noun is the same defect
+    // with a different key. Names and descriptions are covered by the copy lock
+    // above; this covers the JSONB.
+    for (const row of [BUILTIN_ZOOM_TRANSCRIPTS_CATALOG_ROW, BUILTIN_OUTLOOK_MAIL_CATALOG_ROW]) {
+      for (const field of row.configSchema) {
+        for (const text of [field.label, field.description]) {
+          expect(text?.toLowerCase() ?? "").not.toContain("brain");
+        }
+      }
+    }
+  });
+});
+
+/**
+ * #5240 — the constant/migration agreement pin for the `config_schema` helper
+ * text, the direct counterpart of the 0201 block above.
+ *
+ * Same failure mode, same remedy: the seeder is insert-only, so editing the
+ * constant alone gives new installs the new helper text and leaves all three
+ * prod regions on "this brain source" with nothing reporting the divergence.
+ * The pre-rename string is DERIVED in `brain-catalog-rename-fixtures.ts`, never
+ * transcribed here.
+ *
+ * ⚠️ WHAT THIS BLOCK CANNOT SEE, exactly as the 0201 pin cannot: direction, and
+ * whether the statement actually rewrites anything. Both literals appearing in
+ * the file is satisfied by a migration with its `WHEN`/`THEN` swapped.
+ * `brain-config-help-rename-pg.test.ts` owns behaviour, by running it.
+ */
+describe("Company Atlas config_schema help ↔ migration 0203 (#5240, ADR-0038)", () => {
+  const MIGRATION_SQL = stripSqlComments(
+    readFileSync(
+      join(import.meta.dir, "..", "migrations", "0203_brain_catalog_config_help_company_atlas.sql"),
+      "utf8",
+    ),
+  );
+
+  for (const { label, row, help, oldHelp } of CONFIG_HELP_PAIRS) {
+    describe(label, () => {
+      it("writes exactly the constant's helper text", () => {
+        expect(MIGRATION_SQL).toContain(sqlLiteral(help));
+      });
+
+      it("matches on the pre-rename helper text, so an operator's own wording is left alone", () => {
+        expect(oldHelp).not.toBe(help);
+        expect(MIGRATION_SQL).toContain(sqlLiteral(oldHelp));
+      });
+
+      it("is keyed on the stable catalog id", () => {
+        expect(MIGRATION_SQL).toContain(`WHERE id = ${sqlLiteral(row.id)}`);
+      });
+    });
+  }
+
+  it("touches exactly the two Company Atlas rows and no other catalog id", () => {
+    const targeted = new Set([...MIGRATION_SQL.matchAll(/WHERE id = '([^']+)'/g)].map((m) => m[1]));
+    expect([...targeted].sort()).toEqual(
+      [BUILTIN_OUTLOOK_MAIL_CATALOG_ROW.id, BUILTIN_ZOOM_TRANSCRIPTS_CATALOG_ROW.id].sort(),
+    );
+  });
+
+  it("writes plugin_catalog with exactly two UPDATEs and nothing destructive", () => {
+    // The id list is satisfied just as well by a DELETE, which would drop the
+    // row and cascade its installs. Pin the statement KIND too.
+    expect(MIGRATION_SQL.match(/\bUPDATE\s+plugin_catalog\b/gi)).toHaveLength(2);
+    for (const verb of ["DELETE\\s+FROM", "INSERT\\s+INTO", "ALTER\\s+TABLE", "TRUNCATE", "DROP"]) {
+      expect(MIGRATION_SQL).not.toMatch(
+        new RegExp(`\\b${verb}\\s+(?:\\w+\\.)?plugin_catalog\\b`, "i"),
+      );
+    }
+  });
+
+  it("rebuilds the array element-wise rather than round-tripping config_schema through text", () => {
+    // The statement shape #5240 exists to avoid: `config_schema::text` +
+    // `replace()` is unanchored (JSONB normalises key order and whitespace on
+    // storage) and would rewrite the phrase wherever else it appeared.
+    expect(MIGRATION_SQL).not.toMatch(/config_schema\s*::\s*text/i);
+    expect(MIGRATION_SQL).not.toMatch(/\breplace\s*\(/i);
+    expect(MIGRATION_SQL).toContain("jsonb_agg");
+    expect(MIGRATION_SQL).toContain("jsonb_set");
+    // Order is part of what "leaves the rest byte-identical" means — an
+    // unordered `jsonb_agg` may reorder the install form's fields.
+    expect(MIGRATION_SQL).toContain("WITH ORDINALITY");
+    expect(MIGRATION_SQL).toMatch(/ORDER BY\s+f\.ord/i);
+  });
+
+  it("scopes the rewrite to the field with key 'description'", () => {
+    // Without the key predicate the guard is "any field whose help is exactly
+    // this string", which is the same rewrite by a looser route.
+    expect(MIGRATION_SQL.match(/f\.field->>'key'\s*=\s*'description'/g) ?? []).not.toHaveLength(0);
+  });
+
+  it("leaves every OTHER built-in row's copy out of the migration entirely", () => {
+    for (const other of BUILTIN_KNOWLEDGE_CATALOG_ROWS) {
+      if (
+        other.id === BUILTIN_ZOOM_TRANSCRIPTS_CATALOG_ROW.id ||
+        other.id === BUILTIN_OUTLOOK_MAIL_CATALOG_ROW.id
+      ) {
+        continue;
+      }
+      expect(MIGRATION_SQL).not.toContain(other.id);
     }
   });
 });
@@ -537,10 +645,14 @@ describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
       expect(q.sql).toContain("INSERT INTO plugin_catalog");
       expect(q.sql).toContain("'context'");
       expect(q.sql).toContain("'knowledge'");
-      // Unqualified ON CONFLICT DO NOTHING covers both the slug unique index
-      // AND the id PK (mirrors the datasource seed's edge-case handling).
-      expect(q.sql).toContain("ON CONFLICT DO NOTHING");
+      // ⚠️ QUALIFIED on the PK (#5239). An unqualified target also swallows a
+      // conflict on the `slug` unique index, which reports plain success for a
+      // built-in row that does not exist under its canonical id and never will.
+      // `(id)` makes that case a 23505 the loop reports instead — see
+      // `seed-builtin-knowledge-catalog-collision.test.ts`.
+      expect(q.sql).toContain("ON CONFLICT (id) DO NOTHING");
       expect(q.sql).not.toContain("ON CONFLICT (slug)");
+      expect(q.sql).not.toMatch(/ON CONFLICT\s+DO NOTHING/);
       expect(q.sql).toContain("RETURNING slug");
     }
     expect(captured.map((q) => q.params[2])).toEqual([
@@ -598,10 +710,16 @@ describe("seedBuiltinKnowledgeCatalog (idempotent boot seed)", () => {
       "zoom-transcripts",
       "outlook-mail",
     ]);
-    // Empty RETURNING = rows already existed (ON CONFLICT DO NOTHING path).
+    // Nothing was blocked on either pass — with the target qualified on `(id)`
+    // a blocked row raises rather than returning empty, so this is the
+    // discriminator #5239 added: empty RETURNING now means present-and-correct
+    // and nothing else.
+    expect(fresh.blockedSlugs).toEqual([]);
+    // Empty RETURNING = rows already existed (ON CONFLICT (id) DO NOTHING path).
     const reboot = await seedBuiltinKnowledgeCatalog(captureDb(false).db);
     expect(reboot.inserted).toBe(false);
     expect(reboot.insertedSlugs).toEqual([]);
+    expect(reboot.blockedSlugs).toEqual([]);
   });
 
   it("propagates DB errors instead of swallowing them", async () => {
@@ -655,7 +773,12 @@ describe("runBuiltinKnowledgeCatalogSeedBoot (discriminated outcomes)", () => {
     );
     const result = await runBuiltinKnowledgeCatalogSeedBoot();
     expect(result.kind).toBe("seeded");
-    if (result.kind === "seeded") expect(result.inserted).toBe(true);
+    if (result.kind === "seeded") {
+      expect(result.inserted).toBe(true);
+      // `seeded` no longer implies "every row is in the catalog" — it carries
+      // what was blocked (#5239). Nothing is, here.
+      expect(result.blocked).toEqual([]);
+    }
   });
 
   it("returns `{ kind: 'error' }` when the pool query throws", async () => {

@@ -480,6 +480,18 @@ export type WarehouseBrandProbe = { readonly [validatedSnapshotSql]: true };`,
       ],
       note: "A falsifier #5042 measured once, by hand, and left unprotected — which is this file's whole subject. The refusal body deliberately keeps the driver's text off the wire and PROMISES this line carries the reason, so the two are one claim: delete `err` and the report goes on pointing operators at a log line with nothing in it. The source comment records that this was green across every suite before the logging suite existed; the row is what stops that being a fact about one afternoon.",
     },
+    {
+      label: "the snapshot's connection falls back to the YAML hint alone, ignoring the group",
+      edits: [
+        {
+          file: PRODUCER,
+          oldString:
+            "      connectionId:\n        entityPlan.entity.connection ?? connectionIds.get(entityPlan.entity.name) ?? undefined,",
+          newString: "      connectionId: entityPlan.entity.connection ?? undefined,",
+        },
+      ],
+      note: "**The #5284 defect, restored verbatim.** It is the shipped line as it stood through #5042, #5230 and #5228, and it reached prod: on a DB-backed semantic layer the YAML `connection:` hint is null for EVERY entity — the scope lives in the row's `connection_group_id` — so every group-scoped workspace sent every snapshot to the deployment's `default` datasource, and each entity refused with `relation \"…\" does not exist` while its pairs sat in the enrollment list looking live. ⚠️ The row exists because this class is **structurally invisible to a unit suite**: `defaultValidateSnapshotSql`'s own header notes that a test workspace has no whitelist, so the gate rejects on the table whatever the statement says, and a producer that refuses every entity in production reads from in here exactly like one that works. The single kill is the seam assertion that the request carries the RESOLVED id rather than `undefined` — thin by design, and thin is the point: nothing else in five suites notices, which is why it took a prod run on #5197 to find.",
+    },
   ],
 };
 

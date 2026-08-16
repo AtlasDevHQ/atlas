@@ -381,7 +381,10 @@ assertion.** Ask what value would make it go red, and check that value is
 reachable.
 
 **Rules:**
-- Read-only. The panel reports; it never edits code.
+- Read-only, and now **enforced by the tool grant rather than by asking**. No panel agent holds `Bash`; none holds `Edit` or `Write`. The panel reports; it never edits code. The author is the single writer to the working tree.
+  - ⚠️ **This was a request, not a fact, until 2026-08-15.** Four of the five agents held `Bash` — a full write primitive (`sed -i`, `>`, `git checkout`, `scripts/mutate.ts`) handed back immediately after `Edit`/`Write` were withheld. On #5260 a panel agent mutated a file to measure a falsifier and its restore reverted the **author's uncommitted in-flight edits** along with its own mutant; `git` cannot distinguish them, since both are just unstaged changes. Only the author knows what is uncommitted, so only the author may write.
+  - The pressure that caused it is legitimate and still applies: **you cannot prove a test is able to fail by reading it.** That is why the panel's evidence standard demands measurement (Step 6, and "a `0` in a mutation table is a CLAIM"). The split is now explicit — **the panel names the mutation, the author runs it.** A reviewer that wants a measurement it cannot take reports the finding as **UNVERIFIED** and names the one experiment that settles it; naming a mutation is worth more than running one anyway, because a named mutation lands in a `scripts/mutations/*.mutations.ts` spec and keeps working, while a measured-and-reverted one is gone the moment it is restored.
+  - If a future reviewer genuinely needs to execute, give it a throwaway copy of the tree — never the live one.
 - Scope is the changed lines **plus their enclosing declaration** (Step 2). The strict-diff reading has a blind spot for adjacent twins and it has cost real rounds.
 - Fresh context per agent — never let the implementer "review" its own diff in-context; that rubber-stamps. On round 2+, fresh context **plus** the previous round's fix commits named as the audit target.
 - Every fix is checked against its own finding in **fresh context, in the round that wrote it** (Step 5d). Step 5b sweeps the tree that exists; 5d is the only thing that looks at the surface the fix just added.

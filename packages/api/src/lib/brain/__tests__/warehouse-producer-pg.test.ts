@@ -2,6 +2,18 @@
  * Real-Postgres coverage for the tier-1 warehouse producer (#5042, ADR-0037 §4,
  * ADR-0039).
  *
+ * ## MUTATIONS THIS CATCHES
+ *
+ * **Generated — see `packages/api/scripts/mutations/warehouse-producer.md`**, where
+ * this file is the `pg` column (#5229). It is non-zero on exactly two rows, and both
+ * are the `name`/`sql` decision — the emitted predicate, and the surface a
+ * cardinality proposal is keyed by. Both are reachable only because the fixture
+ * below gives every dimension a `sql:` that differs from its `name:`; with them
+ * equal, as the profiler defaults them, neither row can fail. Its zeros are honest
+ * and the spec's preamble says which of three reasons applies to each.
+ *
+ *     cd packages/api && bun run scripts/mutate.ts scripts/mutations/warehouse-producer.mutations.ts
+ *
  * The unit suite pins what the producer DECIDES — which pairs it refuses, what a
  * candidate carries — against injected seams. Everything below is a claim only a
  * live schema can settle, and every one of them passes vacuously against a mock:
@@ -26,7 +38,13 @@
  *      `valid_to` was stamped" perfectly while never colliding with anything.
  *
  * Opt in locally with:
- *   bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5433/brain_5042_scratch
+ *   bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/brain_5042_scratch
+ *
+ * ⚠️ 5432, not 5433. `db:up` starts the ROOT `docker-compose.yml`, which publishes
+ * 5432; 5433/5434/5435 belong to the multi-env compose. This line said 5433 until
+ * #5229, which is the port that makes the suite self-skip and then aborts the
+ * mutation runner on a deflated baseline — the one failure the runbook exists to
+ * prevent.
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";

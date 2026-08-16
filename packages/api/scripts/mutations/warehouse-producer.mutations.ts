@@ -47,16 +47,16 @@
  *
  * ⚠️ `db:up` maps **5432** (the root `docker-compose.yml`); the multi-env compose
  * maps 5433/5434/5435. Several sibling specs pair `db:up` with 5433, which is the
- * wrong port for the container that command starts — `vocabulary.mutations.ts` is
- * the one that states the distinction, and this file follows it rather than them.
+ * wrong port for the container that command starts.
  *
  * ## What is here, and the one class that is deliberately NOT
  *
- * #5229 enumerates fourteen mutations and each has a row below. The remaining rows
- * are additions, and the first of them earns its place structurally: deleting a
- * `@sql-gate-guarded` tag is the only edit to THIS module the bypass suite can
- * see, and without it that column is zero end to end and reads as a suite covering
- * nothing.
+ * #5229 enumerates fourteen mutations and each has a row below. The rest are
+ * additions. Two of them earn their place structurally rather than by argument:
+ * the `@sql-gate-guarded` tag deleted, and a brand-carrying export added untagged,
+ * are the only edits to THIS module the bypass suite can see — one for each
+ * direction of the set equality it asserts. Without them that column is zero end
+ * to end and reads as a suite covering nothing.
  *
  * The class left out is TYPE-ONLY edits — the verdict's `error` made optional, and
  * the snapshot seam's parameter widened back to a bare request. `bun test` strips
@@ -105,8 +105,9 @@ suites are five different instruments and the interesting fact is usually
 which one holds a row up:
 
 - **producer** — what the run DECIDES against injected seams. The widest column:
-  the only one that catches the collision guard, the \`LIMIT\` arithmetic, the
-  absent-cell split and the episode reader.
+  the only one that catches the collision guard, the \`LIMIT cap + 1\` arithmetic,
+  both halves of the absent-cell split and the episode reader. (Not the row CAP —
+  one of its two rows is caught in \`logging\` as well.)
 - **logging** — PER-LEVEL sinks. A single-array capture cannot see a demotion, so
   this is the only column that can fail on \`log.error\` becoming \`log.warn\`, on
   a warn deleted outright while the counter it reports stays correct, or on a
@@ -129,12 +130,15 @@ which one holds a row up:
   settles something a mock cannot: the emitted predicate, and the surface the
   cardinality proposal is keyed by. Both are the \`name\`/\`sql\` decision, and both
   are exercised only because this suite's fixtures give every dimension a \`sql:\`
-  that differs from its \`name:\`. Its zeros elsewhere are honest for two different
-  reasons, and lumping them together is what an earlier draft of this bullet did:
-  most rows are decisions a mock can drive and a live schema adds nothing to, while
-  the transaction-failure and episode-reader rows are simply not reachable from a
-  real Postgres fixture — this suite injects no failing transaction, and a real
-  \`RETURNING\` never hands back a non-string id.
+  that differs from its \`name:\`. Its zeros elsewhere are honest for THREE
+  different reasons, and collapsing them is what two earlier drafts of this bullet
+  did: most rows are decisions a mock can drive that a live schema adds nothing to;
+  the transaction-failure and episode-reader rows are unreachable from a real
+  Postgres fixture, since this suite injects no failing transaction and a real
+  \`RETURNING\` never hands back a non-string id; and the two \`buildSnapshotSql\`
+  rows and every log-level row are structurally invisible here, because this suite
+  injects its own snapshot runner — so the built statement is never executed — and
+  captures no logs.
 
 ⚠️ **A zero here is a statement about ONE instrument, not about coverage.** The
 row that would matter is one that is zero EVERYWHERE, and there is none — every
@@ -146,9 +150,18 @@ is a fixture, not a deleted row.
 runner has no floor warning to tell you when that stops being true — \`mutate.ts\`
 flags a suspiciously HIGH count and says nothing about a 1. Those rows are one
 weakened assertion from returning to unfalsifiable, and they are the ones to
-re-read first when a count moves. The opposite end is worth the same suspicion: the
-identity-check row's 23 is the largest here and was inspected rather than trusted;
-see its note.
+re-read first when a count moves.
+
+⚠️ **Six of those eight sit in three PAIRS behind one test each**, which is worse
+than eight independent single points: one deleted assertion returns TWO rows to
+unfalsifiable at once, and for the two \`@sql-gate-guarded\` rows it zeroes the
+whole \`bypass\` column. The pairs are the two tag/closure rows, the two row-drop
+warns, and the two row-cap rows. The cap pair is the one that still discriminates,
+and only through \`logging\`: at a cap of 1 with two rows, \`>=\` still refuses
+while \`overCap = false\` does not.
+
+The opposite end deserves the same suspicion. The identity-check row carries the
+largest count here and was inspected rather than trusted; see its note.
 `,
   mutations: [
     {
@@ -174,7 +187,7 @@ see its note.
             '    ...plan.dimensions.map((dim, index) => `${dim.name} AS ${DIMENSION_ALIAS_PREFIX}${index}`),',
         },
       ],
-      note: "The same `name`/`sql` confusion at the OTHER end of the pipe, and it fails in the opposite direction: here the expression is what belongs and the bare name is wrong. One fixture change closed both, which is exactly why both need a row — a later fixture that re-collapses them would put both back. ⚠️ Two of its four kills are fixture ANCHORS rather than subjects: the `logging` pair asserts a column name appears in the submitted statement as the positive half of a secrecy check, and dies because the anchor string moved. The on-subject kill is the builder test in `producer`.",
+      note: "The same `name`/`sql` confusion at the OTHER end of the pipe, and it fails in the opposite direction: here the expression is what belongs and the bare name is wrong. One fixture change closed both, which is exactly why both need a row — a later fixture that re-collapses them would put both back. ⚠️ Two of its four kills are fixture ANCHORS rather than subjects: the `logging` pair asserts a column name appears in the submitted statement as the positive half of a secrecy check, and dies because the anchor string moved. The on-subject kills are the two in `producer` — the builder's own statement test, and the run-level assertion that an unenrolled column never leaves the warehouse.",
     },
     {
       label: "`buildSnapshotSql` selects the bare primary-key NAME as the subject column",
@@ -196,7 +209,7 @@ see its note.
           newString: "            predicateSurface: dim.sql,",
         },
       ],
-      note: "The THIRD site of the same `name`/`sql` decision, and the quietest of the three. A `single` cardinality proposal filed under `col_status` while the emitted predicate is `status` refuses nothing and warns about nothing: the vocabulary simply never gates `in-tension-with` for the predicate that actually exists, so supersession stays dormant — the dormancy ADR-0037 section 4 spent four slices closing. It is also why the row above measures 2 in `pg` rather than 3: the `-pg` cardinality assertion reads this site, not that one.",
+      note: "The THIRD site of the same `name`/`sql` decision, and the quietest of the three. A `single` cardinality proposal filed under `col_status` while the emitted predicate is `status` refuses nothing and warns about nothing: the vocabulary simply never gates `in-tension-with` for the predicate that actually exists, so supersession stays dormant — the dormancy ADR-0037 section 4 spent four slices closing. It is also why the `predicate: dim.name` row measures 2 in `pg` rather than 3: the `-pg` cardinality assertion reads THIS site, not that one. ⚠️ Named rather than pointed at — an earlier draft said *“the row above”*, and the very round that added the row now sitting between the two turned that sentence into a citation of a cell measuring 0. A positional reference into a list that grows is unfalsifiable by construction.",
     },
     {
       label: "the subject-collision guard compares ids again, so a duplicate primary key emits twice",
@@ -242,7 +255,7 @@ see its note.
           newString: "LIMIT ${rowCap}`;",
         },
       ],
-      note: "The cap's evidence, deleted. At exactly `cap` rows a truncated read and a table of that size are the same result set, so the guard above it can never fire and the producer silently emits an arbitrary subset. Two edits one function apart hold one invariant between them, and only the pair of rows shows that.",
+      note: "The cap's evidence, deleted. At exactly `cap` rows a truncated read and a table of that size are the same result set, so the guard above it can never fire and the producer silently emits an arbitrary subset. Two edits one function apart hold one invariant between them, and only the pair of rows shows that. ⚠️ Only ONE of its two `producer` kills is on-subject: the other is a whole-statement equality assertion that dies because the `LIMIT` literal moved inside it — the same fixture-anchor class the `buildSnapshotSql` dimension row discloses. Read this row as a 1.",
     },
     {
       label: "the production SQL gate deleted — `defaultValidateSnapshotSql` passes everything",
@@ -272,11 +285,21 @@ see its note.
       edits: [
         {
           file: PRODUCER,
+          // ⚠️ **A DISJUNCT DELETED, not the whole guard, and the difference is
+          // measured.** `if (false)` was the obvious spelling and it does not
+          // COMPILE: the deleted condition is the only thing narrowing `validated`
+          // from `… | undefined`, so the snapshot seam's call site reds with
+          // `TS2345` — a mutant `bun run type` forbids, which is exactly the
+          // objection the episode-reader row's second edit exists to answer. Two
+          // rows in this file would then hold opposite standards. Dropping only the
+          // `!==` disjunct keeps the narrowing, deletes precisely the anti-replay
+          // comparison, and type-checks clean — and the source's own comment invites
+          // it by calling the surviving disjunct "Redundant".
           oldString: "    if (validated === undefined || validated !== request) {",
-          newString: "    if (false) {",
+          newString: "    if (validated === undefined) {",
         },
       ],
-      note: "The highest-blast-radius line in the module, and the row it had none of. The gate's verdict carries the request it passed, but nothing stops a validator handing back a genuine token minted for a DIFFERENT statement — `cached ??= await validate(BENIGN_REQUEST)` forges nothing and would let one benign statement authorize every entity in the run. The type narrows the door and only this comparison closes it, which the module's own docstring says in as many words. Because `defaultRunSnapshot` selects the pool from the RETURNED `workspaceId`/`connectionId`, the residual is a cross-tenant read rather than merely a gate bypass. The deleted-gate row does not stand in for it: with the gate stubbed to pass, the mint hands back the very object it was given and this check is satisfied. ⚠️ **Its 23 in `logging` was inspected rather than published on trust** — a count that size is usually a mutation breaking suite SETUP. It is not: all 23 are the #5230/#5248 mismatch block, every name of the form *“logs a mismatch rather than throwing when the verdict's request is …”* or *“catches a cross-tenant forgery …”*. One deleted comparison is the subject of an entire dedicated block, which is what a guard of this blast radius should look like.",
+      note: "The highest-blast-radius line in the module, and the row it had none of. The gate's verdict carries the request it passed, but nothing stops a validator handing back a genuine token minted for a DIFFERENT statement — `cached ??= await validate(BENIGN_REQUEST)` forges nothing and would let one benign statement authorize every entity in the run. The type narrows the door and only this comparison closes it, which the module's own docstring says in as many words. Because `defaultRunSnapshot` selects the pool from the RETURNED `workspaceId`/`connectionId`, the residual is a cross-tenant read rather than merely a gate bypass. The deleted-gate row does not stand in for it: with the gate stubbed to pass, the mint hands back the very object it was given and this check is satisfied. ⚠️ **This row's `logging` count is the largest in the table and was INSPECTED rather than published on trust** — a count that size is usually a mutation breaking suite SETUP. It is not: every failing test sits in the #5230/#5248 mismatch block and reaches the mismatch arm, whose greppable signature is `payloadOf(errors, \"verdict for a different request\")`. Two things a bare *“the block dies”* would hide, and both are checks on the count: neighbours in that same block routing to the REJECTED or gate-threw arms sit UPSTREAM of this comparison and correctly survive, and one of the failures is an anchor rather than a subject — the request-id sweep, which asserts only that some error line exists. ⚠️ The count MOVED when the mutation was respelled (see the edit's comment), and the drop is itself evidence the respelling is more precise: the case that stopped failing is *“the verdict's request is undefined”*, which now routes through the surviving `=== undefined` arm exactly as it should.",
     },
     {
       label: "a validator THROW reported as `snapshot-rejected` — the permanence inversion",
@@ -321,6 +344,13 @@ see its note.
       edits: [
         {
           file: PRODUCER,
+          // ⚠️ **THE TRAILING COMMENT LINE IS PART OF THE ANCHOR, not decoration.**
+          // The five payload lines above it are byte-identical to a sibling
+          // `log.error` further down the same function — same indentation, same four
+          // fields — so without that sixth line this matches TWICE and the runner
+          // refuses to measure it. Reword `// ⚠️ These two` in the source and this
+          // anchor dies loudly, which is the intended failure; SHORTEN it here and
+          // the spec stops working for a reason nobody records.
           oldString: `      log.error(
         {
           ...runLog,
@@ -409,7 +439,7 @@ see its note.
           newString: "  return { id: String(row.id), sourceId };",
         },
       ],
-      note: "`WAREHOUSE_EPISODE_INSERT_SQL` is exported precisely because it is expected to be edited, and this reader is the only thing that notices when its `RETURNING` clause and this function stop agreeing. Mutated, an unreadable row travels onward as a real episode instead of being refused. ⚠️ **It does NOT produce the *“already recorded”* report, and an earlier draft of this note said it did.** That sentence is the consequence of folding this arm together with `rows.length === 0`, which is the split the source comment above it argues for — a different edit from this one. Stated here because a note that borrows its neighbour's consequence is exactly the unfalsifiable claim this file exists to retire.",
+      note: "`WAREHOUSE_EPISODE_INSERT_SQL` is exported precisely because it is expected to be edited, and this reader is the only thing that notices when its `RETURNING` clause and this function stop agreeing. Mutated, an unreadable row travels onward as a real episode instead of being refused. ⚠️ **TWO edits, and the second is why the row is honest.** Dropping the id check alone leaves the return statement assigning an `unknown` to a declared `string`, so `bun run type` would red on the MUTATION rather than on the defect; coercing instead of validating compiles, is the likelier way someone writes this bug, and lands a plausible `\"undefined\"` in the episode table — the worse residual, so the row is strengthened rather than diluted. It kills the same single test either way. ⚠️ **It does NOT produce the *“already recorded”* report, and an earlier draft of this note said it did.** That sentence is the consequence of folding this arm together with `rows.length === 0`, which is the split the source comment above it argues for — a different edit from this one. Stated here because a note that borrows its neighbour's consequence is exactly the unfalsifiable claim this file exists to retire.",
     },
     {
       label: "the `@sql-gate-guarded` tag deleted from the producer's deps interface",

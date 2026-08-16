@@ -1,6 +1,16 @@
 /**
  * The warehouse producer's OPERATOR-FACING lines (#5042, ADR-0037 §4).
  *
+ * ## MUTATIONS THIS CATCHES
+ *
+ * **Generated — see `packages/api/scripts/mutations/warehouse-producer.md`**, where
+ * this file is the `logging` column. Four rows are non-zero there and ZERO in the
+ * unit suite — a level demotion, both row-drop warns, and a dropped `err` field —
+ * because the per-level sinks below are the only instrument in the repo that can
+ * see them. That is this file's whole justification, measured rather than asserted.
+ *
+ *     cd packages/api && bun run scripts/mutate.ts scripts/mutations/warehouse-producer.mutations.ts
+ *
  * Every line below is the only record of something otherwise invisible to a caller,
  * and each was deletable — or demotable — green before this file existed:
  *

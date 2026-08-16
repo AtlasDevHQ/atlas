@@ -1,6 +1,22 @@
 /**
  * The tier-1 warehouse producer's decisions (#5042, ADR-0037 §4, ADR-0039).
  *
+ * ## MUTATIONS THIS CATCHES
+ *
+ * **Generated — see `packages/api/scripts/mutations/warehouse-producer.md`.** The
+ * mutation list is `packages/api/scripts/mutations/warehouse-producer.mutations.ts`,
+ * and the table measures each mutation against this suite and four others —
+ * `-logging`, `-bypass`, `-mint` and `-pg` — which are its other columns:
+ *
+ *     cd packages/api && bun run scripts/mutate.ts scripts/mutations/warehouse-producer.mutations.ts
+ *
+ * The `-pg` column needs `TEST_DATABASE_URL`; without it the runner aborts on a
+ * deflated baseline rather than publishing that column as zeros.
+ *
+ * Those numbers used to live in commit messages, hand-measured during #5042's
+ * review, where nothing re-ran them (#5229). Read the columns against each other:
+ * this one is the widest, and several rows die ONLY here.
+ *
  * Everything here is a claim about what the producer WILL AND WILL NOT EMIT,
  * driven against injected seams — no database, no datasource, no semantic layer
  * on disk. The storage-level half (a fact landing `draft`, a re-emission minting

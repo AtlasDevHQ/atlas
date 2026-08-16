@@ -1151,3 +1151,709 @@ describe("warehouse producer logging", () => {
     }
   });
 });
+
+/**
+ * The seam-read ratchet, applied past the validator (#5257).
+ *
+ * #5248 closed one class for `validateSnapshotSql`: *narrowing is an OPERATION on
+ * the seam value, not a fact about it.* These are the same principle on the SIBLING
+ * seams of the same loop — the snapshot runner's return value, the entity loader's
+ * return value, and the value `withTransaction` rejects with.
+ *
+ * Falsifiers here were measured against the unfixed producer by restoring it from a
+ * backup and re-running — not reasoned about. **Not every case is one:** several are
+ * counter-cases or pins that were GREEN before the fix and are killed instead by a
+ * targeted mutation of it, and each says so at its own site. Reasoning has been wrong
+ * on this principle repeatedly in this file's history.
+ *
+ * A `runWarehouseProducer` that REJECTS is the failure this describe exists for: one
+ * refused entity becoming a 500 for the whole run, with no log line at all. That is
+ * why the cases assert a resolved report AND a log line rather than only the first.
+ */
+describe("warehouse producer seam reads past the validator (#5257)", () => {
+  /**
+   * A snapshot runner returning `value`, with the seam's return type asserted away.
+   *
+   * The whole point of these cases is a runner that does NOT honour its declared
+   * return type — a substituted implementation, a plugin, a wire — so the assertion
+   * is the fixture, not a shortcut around one.
+   */
+  const returning = (value: unknown) => async () =>
+    value as readonly Record<string, unknown>[];
+
+  /** The `tx` shape {@link store}'s runner hands its callback. */
+  type TestTx = { query: (sql: string, params?: unknown[]) => Promise<{ rows: readonly unknown[] }> };
+
+  describe("the snapshot runner's return value", () => {
+    // ⚠️ The rendered kinds are DELIBERATELY not all distinct — two records render
+    // `<record>` — but the shapes are, and each one escaped through a different
+    // expression before the fix: `.length` on `null`, a `length` GETTER, and
+    // `valueOf` during the `>` comparison. Collapsing them into one case would let a
+    // guard that closes only the first stay green.
+    const nonArrays: readonly { readonly label: string; readonly kind: string; readonly make: () => unknown }[] = [
+      { label: "null", kind: "<null>", make: () => null },
+      { label: "undefined", kind: "<undefined>", make: () => undefined },
+      { label: "a string", kind: "<string>", make: () => "rows" },
+      {
+        label: "an object whose `length` getter throws",
+        kind: "<record>",
+        make: () => {
+          const hostile = {};
+          Object.defineProperty(hostile, "length", {
+            enumerable: true,
+            get() {
+              throw new TypeError("hostile length getter");
+            },
+          });
+          return hostile;
+        },
+      },
+      {
+        label: "an object whose `length` coerces by throwing",
+        kind: "<record>",
+        make: () => ({
+          length: {
+            valueOf() {
+              throw new TypeError("hostile length valueOf");
+            },
+          },
+        }),
+      },
+    ];
+
+    for (const { label, kind, make } of nonArrays) {
+      it(`refuses ONE entity when the runner answers ${label}, rather than 500ing the run`, async () => {
+        const report = await run({ runSnapshot: returning(make()) });
+
+        // Resolved at all — the pre-fix producer REJECTED here, so this line is the
+        // falsifier and the payload assertions below are the diagnosis.
+        expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-failed"]);
+        expect(report.entities).toEqual([]);
+
+        const payload = payloadOf(warns, "snapshot failed");
+        expect(payload.entity).toBe("Accounts");
+        // ⚠️ The message NAMES what came back. Without it the five shapes above
+        // produce one identical line, which is the collapse `seamKind` exists to
+        // undo — and an operator cannot tell a runner returning `null` from one
+        // returning a hostile object.
+        expect(payload.err).toBeInstanceOf(Error);
+        expect((payload.err as Error).message).toContain(kind);
+        // A shape fault is not an incident for the whole run.
+        expect(messages(errors)).toEqual([]);
+      });
+    }
+
+    it("survives an array whose `Symbol.iterator` throws", async () => {
+      // ⚠️ `Array.isArray` answers TRUE here and `.length` is honest, so the shape
+      // check alone does not save this one — the claim builder's `for…of` is where it
+      // throws, which is why the whole consumption of the returned rows moved inside
+      // the `try` rather than only the length read.
+      const rows: Record<string, unknown>[] = [
+        { [producer.SUBJECT_ALIAS]: "Acme Corp", [`${producer.DIMENSION_ALIAS_PREFIX}0`]: "active" },
+      ];
+      Object.defineProperty(rows, Symbol.iterator, {
+        get() {
+          throw new TypeError("hostile iterator");
+        },
+      });
+
+      const report = await run({ runSnapshot: returning(rows) });
+      expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-failed"]);
+      expect(report.entities).toEqual([]);
+      expect(payloadOf(warns, "snapshot failed").entity).toBe("Accounts");
+      expect(messages(errors)).toEqual([]);
+    });
+
+    it("survives a REVOKED PROXY array, where `Array.isArray` itself throws", async () => {
+      // ⚠️ **A PIN, not a falsifier, and saying so is the honest half.** Measured
+      // GREEN against the unfixed producer: a revoked Proxy is trapped by the `await`
+      // inside the existing `try`, so this case survived by luck rather than by
+      // design. No local mutation of the fix REDs it, which is the shape of "covered by
+      // construction" worth recording rather than dressing up as a measurement.
+      //
+      // ⚠️ The first draft of this comment justified that with *"every consumption of
+      // the returned rows is now guarded"*, which was FALSE when written: the
+      // no-candidates arm read `rows.length` outside every `try`. The case below is
+      // the falsifier for it. A pin's justification is a claim like any other.
+      const { proxy, revoke } = Proxy.revocable([{ [producer.SUBJECT_ALIAS]: "Acme Corp" }], {});
+      revoke();
+
+      const report = await run({ runSnapshot: returning(proxy) });
+      expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-failed"]);
+      expect(report.entities).toEqual([]);
+      expect(payloadOf(warns, "snapshot failed").entity).toBe("Accounts");
+      expect(messages(errors)).toEqual([]);
+    });
+
+    it("survives an array that answers `length` and THEN throws, after the claims are built", async () => {
+      // ⚠️ **THE ROUND-1 FIX'S OWN DEFECT, ONE STATEMENT OVER.** `Array.isArray`
+      // answers TRUE for a Proxy over an array, so the shape check passes and `length`
+      // stays under the seam's control for every later read. The first fix guarded the
+      // cap read and the claim build, then handed the array back out and read
+      // `rows.length` again in the no-candidates arm, where nothing encloses it.
+      //
+      // ⚠️ **The threshold is MEASURED, and the premise is asserted below rather than
+      // assumed.** Against the round-1 code an empty returned array took THREE
+      // `length` reads — cap check, the `for…of` iterator, and the no-candidates arm —
+      // and a trap throwing from #3 gave `REJECTED: hostile length read #3`: the
+      // whole-run 500 with no log line, from inside the fix written to stop it.
+      // Against this code there are TWO, both inside the `try`, so #3 never happens.
+      let reads = 0;
+      const counted = new Proxy([] as Record<string, unknown>[], {
+        get(target, key, receiver) {
+          if (key === "length" && ++reads >= 3) throw new TypeError(`hostile length read #${reads}`);
+          return Reflect.get(target, key, receiver);
+        },
+      });
+
+      const report = await run({ runSnapshot: returning(counted) });
+
+      // The behavioural claim: the run RESOLVED. Pre-fix it rejected.
+      expect(report.refusals).toEqual([]);
+      expect(report.entities.map((e) => e.rows)).toEqual([0]);
+      // ⚠️ And the premise, pinned. Without this the case goes vacuous the day an
+      // internal read is added — the trap would stop firing for a reason that has
+      // nothing to do with the guard, and a green test would prove nothing.
+      expect(reads).toBe(2);
+    });
+
+    it("reports the row count the CAP accepted, not a later answer", async () => {
+      // ⚠️ The same seam, lying rather than throwing — the half a `try` cannot catch.
+      // A trap that answers honestly for the cap check and inflates afterwards made
+      // the report say 999,999 rows for an entity the cap had just accepted. Reading
+      // `length` once, beside the comparison, makes the two the same number by
+      // construction.
+      // Read #3 for the same measured reason as the case above — reads #1 and #2 are
+      // the cap check and the `for…of`, and an inflated answer to EITHER would make
+      // the claim builder iterate a million absent rows rather than test the report.
+      let reads = 0;
+      const lying = new Proxy([] as Record<string, unknown>[], {
+        get(target, key, receiver) {
+          if (key === "length" && ++reads >= 3) return 999_999;
+          return Reflect.get(target, key, receiver);
+        },
+      });
+
+      const report = await run({ rowCap: 5, runSnapshot: returning(lying) });
+      expect(report.entities.map((e) => e.rows)).toEqual([0]);
+      // ⚠️ The same premise pin as the case above, and without it this one is INERT:
+      // with only two reads the trap never fires, so a plain `[]` satisfies the
+      // assertion and the Proxy proves nothing.
+      expect(reads).toBe(2);
+    });
+
+    it("refuses a snapshot whose `length` is not a usable count", async () => {
+      // ⚠️ Making the cap check and the report the same number does not make that
+      // number VALID. `NaN > rowCap` is false, so a trap answering `NaN` sailed past
+      // the cap into `WarehouseEntityOutcome.rows`, where the run report's schema
+      // requires a non-negative int — so one bad `length` blanked the ENTIRE run
+      // report, every other entity's outcome included. Bigger blast radius than the
+      // entity it came from, which is why it is refused at the read.
+      for (const bad of [Number.NaN, -1, 1.5, Number.POSITIVE_INFINITY]) {
+        warns.length = 0;
+        const hostile = new Proxy([] as Record<string, unknown>[], {
+          get(target, key, receiver) {
+            if (key === "length") return bad;
+            return Reflect.get(target, key, receiver);
+          },
+        });
+        const report = await run({ runSnapshot: returning(hostile) });
+        expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-failed"]);
+        expect(report.entities).toEqual([]);
+        // Blamed on Atlas, not the entity — the shape phase, not the read.
+        expect(payloadOf(warns, "snapshot failed").phase).toBe("shape");
+      }
+    });
+
+    it("survives a NULL row inside a well-formed array", async () => {
+      // ⚠️ A hostile CELL is IN scope, and this case plus the next are what make that
+      // sentence in the producer a claim rather than a hope. Two rows, not one, so a
+      // fix that merely dropped the bad row would still have to explain the survivor.
+      const report = await run({
+        runSnapshot: returning([
+          { [producer.SUBJECT_ALIAS]: "Acme Corp", [`${producer.DIMENSION_ALIAS_PREFIX}0`]: "active" },
+          null,
+        ]),
+      });
+      expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-failed"]);
+      expect(report.entities).toEqual([]);
+      expect(payloadOf(warns, "snapshot failed").entity).toBe("Accounts");
+      expect(messages(errors)).toEqual([]);
+    });
+
+    it("survives a row whose SUBJECT getter throws", async () => {
+      const hostileRow = {};
+      Object.defineProperty(hostileRow, producer.SUBJECT_ALIAS, {
+        enumerable: true,
+        get() {
+          throw new TypeError("hostile subject getter");
+        },
+      });
+
+      const report = await run({ runSnapshot: returning([hostileRow]) });
+      expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-failed"]);
+      expect(report.entities).toEqual([]);
+      // ⚠️ `phase: "claims"` — the ONLY signal separating "the seam answered a bad
+      // shape" from "our own claim builder is defective", which is the stated cost of
+      // widening the `try`. Nothing else asserts it, so deleting the assignment was
+      // green until this line.
+      const payload = payloadOf(warns, "snapshot failed");
+      expect(payload.entity).toBe("Accounts");
+      expect(payload.phase).toBe("claims");
+      expect(messages(errors)).toEqual([]);
+    });
+
+    it("survives a row whose DIMENSION cell getter throws", async () => {
+      // ⚠️ A DIFFERENT expression from the subject case above — `row[SUBJECT_ALIAS]`
+      // and `row[DIMENSION_ALIAS_PREFIX + i]` are separate reads behind separate
+      // branches, and the subject one runs first. A row with a valid subject and a
+      // hostile dimension reaches the second read only, so this is the case that
+      // proves the guard covers the per-dimension loop rather than just the key.
+      const hostileRow: Record<string, unknown> = { [producer.SUBJECT_ALIAS]: "Acme Corp" };
+      Object.defineProperty(hostileRow, `${producer.DIMENSION_ALIAS_PREFIX}0`, {
+        enumerable: true,
+        get() {
+          throw new TypeError("hostile dimension getter");
+        },
+      });
+
+      const report = await run({ runSnapshot: returning([hostileRow]) });
+      expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-failed"]);
+      expect(report.entities).toEqual([]);
+      expect(payloadOf(warns, "snapshot failed").entity).toBe("Accounts");
+    });
+
+    it("does NOT refuse a primitive row — it stays an unidentified row (#5257 scope)", async () => {
+      // ⚠️ **The boundary of "a hostile CELL is IN scope", pinned because the first
+      // draft of that comment overstated it.** A row that is a primitive answers
+      // `undefined` for every alias instead of THROWING, so nothing reaches the guard
+      // and the pre-existing unidentified-row counter takes it. Measured identical
+      // before and after the fix — `rows: 1, unidentifiedRows: 1`, no refusal.
+      //
+      // Whether an unreadable ROW should cost a refusal is a real question and a
+      // different one; #5257 deliberately does not move it. This case is what makes
+      // that a recorded decision rather than an unnoticed gap, and it REDs the day
+      // someone changes it silently.
+      const report = await run({ runSnapshot: returning([42, "x"]) });
+      expect(report.refusals).toEqual([]);
+      expect(report.entities.map((e) => ({ rows: e.rows, unidentified: e.unidentifiedRows }))).toEqual([
+        { rows: 2, unidentified: 2 },
+      ]);
+    });
+
+    it("blames ATLAS, not the entity, when the fault is the runner's shape", async () => {
+      // ⚠️ Widening the `try` made two Atlas-side faults reachable on an arm whose
+      // message says "usually a table or a dimension's column that no longer exists.
+      // Fix the entity YAML" — advice that sends an admin to edit a correct entity.
+      // The `phase` split is what keeps the sentence honest, and this is its falsifier:
+      // collapsing the ternary back to one message passes every other case here.
+      const shape = await run({ runSnapshot: returning(null) });
+      expect(shape.refusals[0]?.message).toContain("This is an Atlas fault");
+      expect(shape.refusals[0]?.message).toContain("req-1");
+      expect(shape.refusals[0]?.message).not.toContain("Fix the entity YAML");
+      expect(payloadOf(warns, "snapshot failed").phase).toBe("shape");
+
+      warns.length = 0;
+      // And the datasource read keeps the entity-facing advice it always had.
+      const read = await run({
+        runSnapshot: async () => {
+          throw new Error("relation does not exist");
+        },
+      });
+      // ⚠️ It points at the LOG rather than asserting the cause. `phase: "run"` covers
+      // more than the datasource read — `defaultRunSnapshot` imports a module and looks
+      // up a pool first — so naming "a table or column that no longer exists" as THE
+      // cause was unfollowable for the Atlas-side half of its own arm.
+      expect(read.refusals[0]?.message).toContain("a table or a dimension's column");
+      expect(read.refusals[0]?.message).toContain("The server log for this run names what");
+      expect(read.refusals[0]?.message).not.toContain("This is an Atlas fault rather than a problem");
+      expect(payloadOf(warns, "snapshot failed").phase).toBe("run");
+    });
+
+    it("still refuses an over-cap snapshot under its OWN reason, not `snapshot-failed`", async () => {
+      // ⚠️ The shape check moved the cap read inside the `try`, and a `try` that
+      // swallowed the cap arm would relabel a routine, well-diagnosed refusal as a
+      // failed snapshot — advice that sends an admin to check their warehouse instead
+      // of their enrollment. Measured: deleting the `row-cap` arm and letting the
+      // catch handle it passes every OTHER case in this describe.
+      const report = await run({
+        rowCap: 1,
+        runSnapshot: returning([
+          { [producer.SUBJECT_ALIAS]: "Acme Corp", [`${producer.DIMENSION_ALIAS_PREFIX}0`]: "active" },
+          { [producer.SUBJECT_ALIAS]: "Globex", [`${producer.DIMENSION_ALIAS_PREFIX}0`]: "churned" },
+        ]),
+      });
+      expect(report.refusals.map((r) => r.reason)).toEqual(["row-cap-exceeded"]);
+      expect(payloadOf(warns, "exceeds the row cap").rowCap).toBe(1);
+      expect(warns.filter((c) => c.message.includes("snapshot failed"))).toEqual([]);
+    });
+  });
+
+  describe("the entity loader's return value", () => {
+    it("refuses ONE entity whose YAML shape throws, leaving its neighbour's run intact", async () => {
+      // ⚠️ TWO enrolled entities, and the second one is the whole assertion. The
+      // parse sat outside the `try` whose own comment says an uncaught throw *"rejects
+      // the whole `Promise.all`, killing the run for every unrelated enrolled
+      // entity"* — so a one-entity fixture would prove only that the run resolved,
+      // never that the unrelated entity survived.
+      const hostileYaml: Record<string, unknown> = {};
+      Object.defineProperty(hostileYaml, "table", {
+        enumerable: true,
+        get() {
+          throw new TypeError("hostile table getter");
+        },
+      });
+
+      const report = await run({
+        loadReach: async () => ({
+          pairs: [
+            { entity: "Accounts", dimension: "status", naming: false },
+            { entity: "Hostile", dimension: "status", naming: false },
+          ],
+          entities: ["Accounts", "Hostile"],
+          namingDimension: new Map<string, string>(),
+          has: () => true,
+        }),
+        loadEntity: async (_workspaceId: string, name: string) =>
+          name === "Hostile" ? hostileYaml : ACCOUNTS_YAML,
+      });
+
+      // The hostile one is refused, and the message is the PERMANENT one: the lookup
+      // succeeded, so `load-threw`'s "audit your connection groups / wait and retry"
+      // would be advice this admin can follow forever.
+      expect(report.refusals.map((r) => `${r.entity}:${r.reason}`)).toEqual([
+        "Hostile:entity-unreadable",
+      ]);
+      expect(report.refusals[0]?.message).toContain("fix the entity YAML");
+      // ⚠️ And the UNRELATED entity still produced its outcome — with a POSITIVE
+      // CONTROL on what it produced. `entities` containing "Accounts" is satisfied by
+      // an entity that ran and emitted nothing, so without `created` this stays green
+      // for a fix that leaves the neighbour reachable but broken.
+      expect(report.entities.map((e) => e.entity)).toEqual(["Accounts"]);
+      expect(report.created).toBe(1);
+      // ⚠️ Its OWN message, not the loader's. Asserted as absent from the loader's
+      // line too, because sharing one arm is exactly what this split undid.
+      expect(payloadOf(warns, "YAML could not be read").entity).toBe("Hostile");
+      expect(warns.filter((c) => c.message.includes("entity lookup failed"))).toEqual([]);
+    });
+
+    it("keeps a THROWING loader distinct from an unreadable SHAPE", async () => {
+      // ⚠️ The counter-case for the split above, and without it the two arms can be
+      // folded back together and every other case here stays green. A loader that
+      // THREW says nothing about whether the entity is fixable — the ambiguous-name
+      // and transient-blip causes are both live — so its prose points at the server
+      // log, not at the YAML.
+      const report = await run({
+        loadEntity: async () => {
+          throw new Error("connect ECONNREFUSED");
+        },
+      });
+
+      expect(report.refusals.map((r) => r.reason)).toEqual(["entity-unreadable"]);
+      expect(report.refusals[0]?.message).toContain("connection group");
+      // And NOT the permanent remedy — the two arms must not converge on one sentence.
+      expect(report.refusals[0]?.message).not.toContain("fix the entity YAML");
+      expect(payloadOf(warns, "entity lookup failed").err).toBeInstanceOf(Error);
+      expect(warns.filter((c) => c.message.includes("YAML could not be read"))).toEqual([]);
+    });
+
+    it("blames ATLAS when the loader answers something that is not a record", async () => {
+      // ⚠️ **This case previously PINNED THE DEFECT.** A loader answering a string or an
+      // array does not throw — `nonEmptyString(raw.table)` just answers `undefined` — so
+      // it fell through to the `no-table` arm and told the admin *"its YAML declares no
+      // `table:` … Fix the entity YAML"*, with ZERO log lines. That is the same
+      // misdirection the `unreadable-shape` split removed, one arm over, and the
+      // quietest instance of it: the other two arms at least warn.
+      for (const answer of ["yaml", 42, [], true]) {
+        warns.length = 0;
+        const report = await run({
+          loadEntity: async () => answer as unknown as Record<string, unknown>,
+        });
+
+        expect(report.refusals.map((r) => r.reason)).toEqual(["entity-unreadable"]);
+        expect(report.refusals[0]?.message).toContain("This is an Atlas fault");
+        expect(report.refusals[0]?.message).not.toContain("declares no `table:`");
+        expect(payloadOf(warns, "not an entity record").entity).toBe("Accounts");
+      }
+    });
+
+    it("keeps the genuine `no-table` arm silent for a record that simply omits it", async () => {
+      // The counter-case: a real entity record with no `table:` is an ordinary YAML
+      // mistake whose remedy is already right, and it stays SILENT by design. Without
+      // this, the shape guard above could be widened to swallow the genuine case too.
+      const report = await run({ loadEntity: async () => ({ dimensions: [] }) });
+
+      expect(report.refusals.map((r) => r.reason)).toEqual(["entity-unreadable"]);
+      expect(report.refusals[0]?.message).toContain("declares no `table:`");
+      expect(warns.filter((c) => c.message.includes("not an entity record"))).toEqual([]);
+      expect(warns.filter((c) => c.message.includes("YAML could not be read"))).toEqual([]);
+      expect(warns.filter((c) => c.message.includes("entity lookup failed"))).toEqual([]);
+    });
+
+    it("keeps `not-published` distinct from a throwing shape", async () => {
+      // The arm the move must not swallow: `null` is an ordinary unpublished entity
+      // and gets `entity-not-published`, not the loader's failure arm. Without this,
+      // folding the null check into the catch passes the case above.
+      const report = await run({ loadEntity: async () => null });
+      expect(report.refusals.map((r) => r.reason)).toEqual(["entity-not-published"]);
+      expect(warns.filter((c) => c.message.includes("entity lookup failed"))).toEqual([]);
+    });
+  });
+
+  describe("the value the transaction rejects with", () => {
+    it("cannot escape the `instanceof` in the transaction handler", async () => {
+      // ⚠️ `err instanceof WarehouseProducerContractError` walks the prototype chain,
+      // so it is an operation on a value the transaction seam chose. Measured before
+      // the fix: a revoked Proxy escaped `runWarehouseProducer` with ZERO log lines,
+      // out of the handler written to stop precisely that.
+      const { proxy, revoke } = Proxy.revocable({}, {});
+      revoke();
+
+      // ⚠️ TWO enrolled entities, the first committing, so `committedEntities` is
+      // asserted against a NON-EMPTY list. With the one-entity fixture the pre-existing
+      // case uses, `toEqual([])` is true by construction and cannot tell a correct
+      // payload from a hardcoded one — and this key exists precisely to be the only
+      // record that earlier entities had already filed drafts.
+      let calls = 0;
+      const report = await run({
+        loadReach: async () => ({
+          pairs: [
+            { entity: "Accounts", dimension: "status", naming: false },
+            { entity: "Second", dimension: "tier", naming: false },
+          ],
+          entities: ["Accounts", "Second"],
+          namingDimension: new Map<string, string>(),
+          has: () => true,
+        }),
+        // ⚠️ Distinct DIMENSION NAMES, not just distinct tables. One dimension name
+        // owned by two entities is `ambiguous-dimension`, and the plan refuses both
+        // before a transaction is ever opened — which would make this case green for
+        // a reason that has nothing to do with the transaction seam.
+        loadEntity: async (_workspaceId: string, name: string) =>
+          name === "Second"
+            ? {
+                table: "contacts",
+                dimensions: [
+                  { name: "contact_id", sql: "contact_id", primary_key: true },
+                  { name: "tier", sql: "tier" },
+                ],
+              }
+            : ACCOUNTS_YAML,
+        withTransaction: async <T,>(fn: (tx: TestTx) => Promise<T>): Promise<T> => {
+          if (++calls === 1) return store().runner(fn);
+          throw proxy;
+        },
+      });
+      expect(report.refusals.map((r) => `${r.entity}:${r.reason}`)).toEqual([
+        "Second:snapshot-failed",
+      ]);
+
+      const payload = payloadOf(errors, "transaction failed");
+      expect(payload.committedEntities).toEqual(["Accounts"]);
+      expect(payload.committedCreated).toBe(1);
+      // ⚠️ The two fields that survive a hostile value. `scrubErrSerializer` renders
+      // one as `[log scrub failed]`, so without these the operator's entire diagnosis
+      // is that string — and `contractCheckThrew` is the bit a bare boolean swallowed.
+      expect(payload.errKind).toBe("<threw>");
+      expect(payload.contractCheckThrew).toBe(true);
+    });
+
+    it("cannot escape on the value the transaction RESOLVES with", async () => {
+      // ⚠️ **THE MIRROR HALF, and the round-1 fix hardened only the rejection.**
+      // `withTransaction`'s `T` is inferred from OUR callback, so the declared type is
+      // a claim about a substitutable seam rather than a fact about it — nothing
+      // checked that the resolved value was the object the callback built. Measured
+      // against the round-1 code: an outcome with a throwing `created` getter rejected
+      // the whole run from `outcomes.reduce(…)`, AFTER every entity had committed,
+      // with no log line naming the entity.
+      const hostileOutcome = {};
+      Object.defineProperty(hostileOutcome, "created", {
+        enumerable: true,
+        get() {
+          throw new TypeError("hostile outcome getter");
+        },
+      });
+
+      const report = await run({ withTransaction: async () => hostileOutcome as never });
+      expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-failed"]);
+      expect(report.entities).toEqual([]);
+      expect(report.created).toBe(0);
+      // ⚠️ Recorded: this fixture's runner never invokes the callback, so post-fix the
+      // hostile getter is read ZERO times and this lands on the same arm as the
+      // `undefined` case below. It still kills a `resolved ?? producedOutcome`
+      // weakening, but the genuinely distinct class — a runner that RUNS the callback
+      // and then resolves something else — is the next case, not this one.
+      expect(payloadOf(errors, "resolved without running").entity).toBe("Accounts");
+    });
+
+    it("ignores a plausible outcome the runner resolves AFTER running the callback", async () => {
+      // ⚠️ The distinct class the case above does not reach: the callback runs and
+      // commits, and the seam then resolves its OWN object. Nothing about that object
+      // is hostile — it is exactly the shape we build — so only reading the closure
+      // local tells the two apart. `created: 99` is deliberately not a number this run
+      // can produce, so a fix that trusted the returned value would report it.
+      const report = await run({
+        withTransaction: (async (fn: (tx: TestTx) => Promise<unknown>) => {
+          await store().runner(fn);
+          return { entity: "Accounts", rows: 7, candidates: 7, created: 99 };
+        }) as never,
+      });
+      expect(report.created).toBe(1);
+      expect(report.entities.map((e) => ({ entity: e.entity, rows: e.rows }))).toEqual([
+        { entity: "Accounts", rows: 1 },
+      ]);
+      expect(report.refusals).toEqual([]);
+    });
+
+    it("treats a plain non-thenable return as work never done", async () => {
+      // The sibling of the revoked-Proxy return: `.catch` is simply UNDEFINED on a
+      // number, so the old form died with `x.catch is not a function` outside every
+      // guard. It is the shape a naive substituted runner actually has.
+      const report = await run({ withTransaction: (() => 5) as never });
+      expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-failed"]);
+      expect(report.refusals[0]?.message).toContain("either of its exits");
+    });
+
+    it("cannot escape on the RETURNED value either, before it is ever awaited", async () => {
+      // ⚠️ **The third read on this one seam, and the one a `.catch(…)` chain cannot
+      // guard — because `.catch` is itself a property access on the returned value.**
+      // A runner handing back a revoked Proxy threw at the `.catch` lookup, outside
+      // every `try`, after earlier entities had committed. `await` inside a `try/catch`
+      // has no such read: the revoked Proxy throws on the `.then` lookup instead, where
+      // it is caught.
+      const { proxy, revoke } = Proxy.revocable({}, {});
+      revoke();
+
+      const report = await run({ withTransaction: (() => proxy) as never });
+      expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-failed"]);
+      expect(report.entities).toEqual([]);
+
+      // ⚠️ A REAL Error, and `contractCheckThrew: false` — asserted because the first
+      // draft of this case guessed `true` and was measured wrong. What reaches the
+      // catch is the `TypeError` the runtime raises for the `.then` lookup on a revoked
+      // Proxy, NOT the Proxy itself, so the classification never touches a hostile
+      // value here. The distinction matters: it is why this case does not duplicate the
+      // revoked-Proxy REJECTION case above, which does hand one straight to
+      // `instanceof`.
+      const payload = payloadOf(errors, "transaction failed");
+      expect(payload.err).toBeInstanceOf(Error);
+      expect(payload.contractCheckThrew).toBe(false);
+      expect(payload.errKind).toBe("<record>");
+    });
+
+    it("refuses when the runner resolves WITHOUT running the entity's work", async () => {
+      // The same class with no hostility at all: a substituted runner that simply
+      // forgets to invoke the callback resolves `undefined`, which passed both
+      // identity checks and reached `o.created`. It is now its own refusal, because
+      // dropping the entity from both lists reads as "never enrolled" — the silence
+      // this report exists to remove.
+      const report = await run({ withTransaction: async () => undefined as never });
+      expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-failed"]);
+      expect(report.refusals[0]?.message).toContain("either of its exits");
+      // ⚠️ It must NOT claim a clean rollback. The callback may have run and committed
+      // an episode before a swallowed throw — only the final assignment is known not to
+      // have happened — so the sibling abort arm's "nothing at all was recorded"
+      // guarantee does not travel here.
+      expect(report.refusals[0]?.message).toContain("cannot confirm what");
+      expect(report.refusals[0]?.message).not.toContain("nothing at all was recorded");
+      expect(payloadOf(errors, "resolved without running").entity).toBe("Accounts");
+    });
+
+    it("resets its per-entity state — an entity AFTER a failed one still commits", async () => {
+      // ⚠️ **`producedOutcome` and `transactionAborted` are new mutable state this fix
+      // introduced, and every other case puts the FAILING entity last** — so neither
+      // flag is ever observed being reset. Hoisting either declaration out of the loop
+      // body, the classic refactor, is green without this case and produces exactly the
+      // silence this module argues against:
+      //   - `transactionAborted` hoisted → every entity after an abort hits `continue`
+      //     and vanishes from BOTH lists: no facts, and no refusal naming it.
+      //   - `producedOutcome` hoisted → the next entity pushes the PREVIOUS entity's
+      //     outcome, double-counting `created` in the operator report.
+      let calls = 0;
+      const report = await run({
+        loadReach: async () => ({
+          pairs: [
+            { entity: "A", dimension: "status", naming: false },
+            { entity: "B", dimension: "tier", naming: false },
+            { entity: "C", dimension: "band", naming: false },
+          ],
+          entities: ["A", "B", "C"],
+          namingDimension: new Map<string, string>(),
+          has: () => true,
+        }),
+        loadEntity: async (_workspaceId: string, name: string) => ({
+          table: `t_${name.toLowerCase()}`,
+          dimensions: [
+            { name: `${name.toLowerCase()}_id`, sql: "id", primary_key: true },
+            { name: name === "A" ? "status" : name === "B" ? "tier" : "band", sql: "col" },
+          ],
+        }),
+        withTransaction: async <T,>(fn: (tx: TestTx) => Promise<T>): Promise<T> => {
+          // B is the MIDDLE entity, which is the whole point.
+          if (++calls === 2) throw new Error("40001 serialization failure");
+          return store().runner(fn);
+        },
+      });
+
+      // A and C both committed; only B is refused — and B is named, not dropped.
+      expect(report.entities.map((e) => e.entity)).toEqual(["A", "C"]);
+      expect(report.refusals.map((r) => `${r.entity}:${r.reason}`)).toEqual([
+        "B:snapshot-failed",
+      ]);
+      expect(report.created).toBe(2);
+      // ⚠️ And the error line proves the "earlier entities had already committed" story
+      // end to end: A is in the list, C is not, because C had not run yet.
+      expect(payloadOf(errors, "transaction failed").committedEntities).toEqual(["A"]);
+    });
+
+    it("does not carry one entity's outcome onto the next", async () => {
+      // The `producedOutcome` half of the case above, isolated: B's runner resolves
+      // without ever invoking the callback. A hoisted `producedOutcome` would push A's
+      // outcome a second time under B's turn.
+      let calls = 0;
+      const report = await run({
+        loadReach: async () => ({
+          pairs: [
+            { entity: "A", dimension: "status", naming: false },
+            { entity: "B", dimension: "tier", naming: false },
+          ],
+          entities: ["A", "B"],
+          namingDimension: new Map<string, string>(),
+          has: () => true,
+        }),
+        loadEntity: async (_workspaceId: string, name: string) => ({
+          table: `t_${name.toLowerCase()}`,
+          dimensions: [
+            { name: `${name.toLowerCase()}_id`, sql: "id", primary_key: true },
+            { name: name === "A" ? "status" : "tier", sql: "col" },
+          ],
+        }),
+        withTransaction: (async (fn: (tx: TestTx) => Promise<unknown>) => {
+          if (++calls === 2) return undefined;
+          return store().runner(fn);
+        }) as never,
+      });
+
+      expect(report.entities.map((e) => e.entity)).toEqual(["A"]);
+      expect(report.created).toBe(1);
+      expect(report.refusals.map((r) => `${r.entity}:${r.reason}`)).toEqual([
+        "B:snapshot-failed",
+      ]);
+    });
+
+    it("still lets this module's OWN contract defect stay fatal", async () => {
+      // ⚠️ **The anti-constant falsifier, and without it the guard is satisfiable by
+      // `() => false`.** Every other case in this describe wants the classification
+      // to answer "not a contract error"; only this one wants a `true`, and it is the
+      // one that keeps the fatal/operational split from collapsing into "nothing is
+      // ever fatal".
+      await expect(
+        run({
+          withTransaction: async () => {
+            throw new producer.WarehouseProducerContractError("RETURNING clause and reader disagree");
+          },
+        }),
+      ).rejects.toThrow("RETURNING clause and reader disagree");
+    });
+  });
+});

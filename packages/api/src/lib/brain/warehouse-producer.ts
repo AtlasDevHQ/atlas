@@ -710,6 +710,29 @@ declare const validatedSnapshotSql: unique symbol;
  * {@link defaultValidateSnapshotSql} or by an assertion. FIVE exported names can
  * carry such an assertion — see {@link SnapshotSqlVerdict}'s note for why — and
  * `__tests__/warehouse-producer-bypass.test.ts` pins all five.
+ *
+ * ## The `@sql-gate-guarded` tag, and what it is NOT (#5255)
+ *
+ * Every declaration in that set of five carries the tag below. It exists so the
+ * membership decision is reviewable HERE, at the definition site, rather than only
+ * in a hand-maintained array in a test file three directories away — and the bypass
+ * suite asserts set equality in BOTH directions, so a tag added without a list entry
+ * reds, and a list entry whose tag was deleted reds.
+ *
+ * ⚠️ **The tag is not the completeness mechanism, and reading it as one is the trap.**
+ * A tag is something a person has to remember, so a sixth brand-carrying type added
+ * WITHOUT one would be invisible to it — which is the exact failure #5255 exists to
+ * close. The suite therefore also derives the set STRUCTURALLY: it walks this module's
+ * top-level exported `type`/`interface`/`class` declarations and takes the transitive
+ * closure of "names the brand symbol, or names something already in the closure".
+ * That closure is computed from the source and cannot be forgotten. The tag is the
+ * human-readable half; the closure is the enforcing half; they are asserted equal.
+ *
+ * A new exported type that mentions any of the five therefore has to be argued —
+ * either it genuinely carries the brand, in which case tag it and list it, or the
+ * mention is incidental and the reference should not be there.
+ *
+ * @sql-gate-guarded
  */
 export type ValidatedSnapshotRequest = WarehouseSnapshotRequest & {
   readonly [validatedSnapshotSql]: true;
@@ -728,6 +751,8 @@ export type ValidatedSnapshotRequest = WarehouseSnapshotRequest & {
  * method parameters are bivariant, so `interface S { run(r: WarehouseSnapshotRequest): … }`
  * accepts this runner and then admits a bare request at the call site — measured,
  * and it is the one way the parameter's guarantee can be re-opened without a cast.
+ *
+ * @sql-gate-guarded
  */
 export type WarehouseSnapshotRunner = (
   request: ValidatedSnapshotRequest,
@@ -1256,6 +1281,8 @@ export interface WarehouseRunContext {
  *
  * The REFUSING arm is deliberately unbranded: refusing more is always safe, so
  * there is no property to forge.
+ *
+ * @sql-gate-guarded
  */
 export type SnapshotSqlVerdict =
   | { readonly valid: true; readonly request: ValidatedSnapshotRequest }
@@ -1267,12 +1294,20 @@ export type SnapshotSqlVerdict =
   // produced it is removable for free: every producer already supplies a reason.
   | { readonly valid: false; readonly error: string };
 
-/** The SELECT-only / single-statement / whitelist gate, as a seam. */
+/**
+ * The SELECT-only / single-statement / whitelist gate, as a seam.
+ *
+ * @sql-gate-guarded
+ */
 export type SnapshotSqlValidator = (
   request: WarehouseSnapshotRequest,
 ) => Promise<SnapshotSqlVerdict>;
 
-/** Every I/O seam the run touches, each defaulted to its production wiring. */
+/**
+ * Every I/O seam the run touches, each defaulted to its production wiring.
+ *
+ * @sql-gate-guarded
+ */
 export interface WarehouseProducerDeps {
   readonly loadReach?: (workspaceId: string) => Promise<ProducerReach>;
   /**

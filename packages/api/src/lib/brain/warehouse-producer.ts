@@ -216,7 +216,16 @@ export interface WarehouseDimension {
 export interface WarehouseEntity {
   readonly name: string;
   readonly table: string;
-  /** The YAML `connection:` group, or `null` for the default group. */
+  /**
+   * The YAML `connection:` HINT — an author naming a datasource directly.
+   *
+   * ⚠️ Not the entity's connection group, and the distinction is the #5197 bug:
+   * on a DB-backed semantic layer the scope lives in the row's
+   * `connection_group_id` and this field is `null` for every entity, so reading
+   * `null` as "the default connection" pointed every SaaS snapshot at the wrong
+   * database. {@link defaultResolveConnectionIds} answers the group question;
+   * this field only ever overrides it.
+   */
   readonly connection: string | null;
   readonly dimensions: readonly WarehouseDimension[];
   readonly measures: ReadonlySet<string>;
@@ -1329,6 +1338,18 @@ export interface WarehouseProducerDeps {
     workspaceId: string,
     entity: string,
   ) => Promise<Record<string, unknown> | null>;
+  /**
+   * Which datasource each enrolled entity's snapshot reads, by entity name.
+   *
+   * A seam of its own rather than a field on {@link loadEntity}'s result: the
+   * answer is not in the entity YAML at all (see
+   * {@link defaultResolveConnectionIds}), so a loader returning the parsed
+   * document could not carry it without also becoming a group resolver.
+   */
+  readonly resolveConnectionIds?: (
+    workspaceId: string,
+    entities: readonly string[],
+  ) => Promise<ReadonlyMap<string, string>>;
   readonly validateSnapshotSql?: SnapshotSqlValidator;
   readonly runSnapshot?: WarehouseSnapshotRunner;
   readonly loadVocabulary?: (workspaceId: string) => Promise<ClaimVocabulary>;
@@ -1920,6 +1941,7 @@ export async function runWarehouseProducer(
   const rowCap = Math.max(1, Math.trunc(deps.rowCap ?? WAREHOUSE_ROW_CAP));
   const loadReach = deps.loadReach ?? loadProducerReach;
   const loadEntity = deps.loadEntity ?? defaultLoadEntity;
+  const resolveConnectionIds = deps.resolveConnectionIds ?? defaultResolveConnectionIds;
   const validateSnapshotSql = deps.validateSnapshotSql ?? defaultValidateSnapshotSql;
   const runSnapshot = deps.runSnapshot ?? defaultRunSnapshot;
   const loadVocabulary = deps.loadVocabulary ?? defaultLoadVocabulary;
@@ -1931,6 +1953,11 @@ export async function runWarehouseProducer(
 
   const snapshotAt = now();
   const reach = await loadReach(workspaceId);
+
+  // ONE resolution per run, not one per entity — and deliberately not inside the
+  // `Promise.all` below: every enrolled entity of one group shares an answer, and
+  // the lookup reads the workspace's visible groups each time it is called.
+  const connectionIds = await resolveConnectionIds(workspaceId, reach.entities);
 
   // One entity read per DISTINCT entity, not one per pair — `reach.entities` is
   // that set, and it is the same set the fail-closed rule is evaluated across.
@@ -2317,7 +2344,11 @@ export async function runWarehouseProducer(
     const request: WarehouseSnapshotRequest = Object.freeze({
       workspaceId,
       entity: entityPlan.entity.name,
-      connectionId: entityPlan.entity.connection ?? undefined,
+      // The YAML hint WINS where an author set one: it names a connection
+      // directly, which is more specific than the row's group. `undefined` on
+      // both arms is the flat default scope, unchanged.
+      connectionId:
+        entityPlan.entity.connection ?? connectionIds.get(entityPlan.entity.name) ?? undefined,
       sql,
     });
 
@@ -3334,6 +3365,76 @@ async function defaultLoadEntity(
   const { getAdminEntity } = await import("@atlas/api/lib/semantic/admin-source");
   const detail = await getAdminEntity({ name: entity, orgId: workspaceId, mode: "published" });
   return detail === null ? null : (detail.entity as Record<string, unknown>);
+}
+
+/**
+ * Which datasource each enrolled entity's snapshot reads (#5197).
+ *
+ * ⚠️ **The producer used to answer this from {@link WarehouseEntity.connection}
+ * alone — the YAML `connection:` hint — and read `null` as "the default
+ * connection". On a DB-backed semantic layer that field is null for every
+ * entity**, because the scope lives in the row's `connection_group_id` and NOT
+ * in the YAML; `admin-source.ts` names the two as distinct fields for exactly
+ * this reason. So every group-scoped workspace sent every snapshot to the
+ * deployment's `default` datasource — on a stock SaaS deploy, the demo database
+ * — and each entity refused with `relation "…" does not exist` while its pairs
+ * sat in the enrollment list looking live. It is invisible to a test workspace
+ * with no whitelist, which is why {@link defaultValidateSnapshotSql}'s header
+ * predicted prod would be what closed it; prod is where it surfaced.
+ *
+ * {@link resolveGroupPrimaryConnectionId} is the SAME resolver semantic
+ * amendments use for the same reason (#4513, *"evidence runs where the change
+ * lives"*): a group-scoped entity runs against its group's primary member, a
+ * group-of-one resolves to its own id, and a null group is the flat `"default"`
+ * scope. Reusing it is deliberate — a second policy for "which datasource does
+ * this entity belong to" is a second thing to keep in agreement.
+ *
+ * **A name in more than one group is OMITTED, not resolved.** `getAdminEntity`
+ * already throws `AmbiguousEntityError` for that name and the run loop refuses
+ * the entity on it; picking one group here would hand the snapshot a datasource
+ * the loader is about to refuse to choose between, which is worse than absent.
+ */
+async function defaultResolveConnectionIds(
+  workspaceId: string,
+  entities: readonly string[],
+): Promise<ReadonlyMap<string, string>> {
+  const [{ listAdminEntities }, { resolveGroupPrimaryConnectionId }] = await Promise.all([
+    import("@atlas/api/lib/semantic/admin-source"),
+    import("@atlas/api/lib/group-reach/lookup"),
+  ]);
+
+  const wanted = new Set(entities);
+  const { entities: summaries } = await listAdminEntities({
+    orgId: workspaceId,
+    mode: "published",
+  });
+
+  const matched = summaries.filter((summary) => wanted.has(summary.name));
+  const occurrences = new Map<string, number>();
+  for (const summary of matched) {
+    occurrences.set(summary.name, (occurrences.get(summary.name) ?? 0) + 1);
+  }
+
+  // Distinct GROUPS, resolved once each: `resolveGroupPrimaryConnectionId` reads
+  // the workspace's visible groups per call, and a workspace enrolling eight
+  // entities of one group would otherwise pay for eight identical reads.
+  const groups = [...new Set(matched.map((summary) => summary.connectionId))];
+  const resolved = new Map(
+    await Promise.all(
+      groups.map(
+        async (group) =>
+          [group, await resolveGroupPrimaryConnectionId(workspaceId, group)] as const,
+      ),
+    ),
+  );
+
+  const out = new Map<string, string>();
+  for (const summary of matched) {
+    if ((occurrences.get(summary.name) ?? 0) > 1) continue;
+    const connectionId = resolved.get(summary.connectionId);
+    if (connectionId !== undefined) out.set(summary.name, connectionId);
+  }
+  return out;
 }
 
 /**

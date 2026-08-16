@@ -1032,6 +1032,81 @@ describe("runWarehouseProducer", () => {
     expect(h.store.paramsFor(INSERT_FACT_SQL)).toHaveLength(1);
   });
 
+  test("snapshots run against the entity's CONNECTION GROUP, not the default connection", async () => {
+    const h = harness({
+      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
+      entities: {
+        // NO YAML `connection:` — which is every entity on a DB-backed semantic
+        // layer, where the scope lives in the row's `connection_group_id` and
+        // never in the document.
+        Accounts: entityYaml({ table: "accounts", primaryKey: "id", dimensions: ["id", "tier"] }),
+      },
+      rows: { Accounts: [snapshotRow("Acme Corp", "gold")] },
+    });
+
+    const report = await runWarehouseProducer(
+      { workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-1" },
+      { ...h.deps, resolveConnectionIds: async () => new Map([["Accounts", "us-prod"]]) },
+    );
+
+    // Before #5197 this was `undefined`: the run read the YAML hint, found null,
+    // and sent every snapshot to the deployment's `default` datasource. On a SaaS
+    // deploy that is a DIFFERENT database, so the entity refused with `relation
+    // "accounts" does not exist` while its pair sat in the list looking enrolled.
+    expect(h.snapshots[0]?.connectionId).toBe("us-prod");
+    // The GATE has to be told the same connection. Its table whitelist is
+    // per-connection, so validating against one datasource and reading another
+    // would clear a table the target does not have — the two ids agreeing is the
+    // property, not either one alone.
+    expect(h.validations[0]?.connectionId).toBe("us-prod");
+    expect(report.created).toBe(1);
+  });
+
+  test("a YAML `connection:` hint still overrides the resolved group", async () => {
+    const h = harness({
+      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
+      entities: {
+        Accounts: entityYaml({
+          table: "accounts",
+          connection: "authored",
+          primaryKey: "id",
+          dimensions: ["id", "tier"],
+        }),
+      },
+      rows: { Accounts: [snapshotRow("Acme Corp", "gold")] },
+    });
+
+    await runWarehouseProducer(
+      { workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-1" },
+      { ...h.deps, resolveConnectionIds: async () => new Map([["Accounts", "us-prod"]]) },
+    );
+
+    // An author naming a datasource outright is more specific than the row's
+    // group, so the hint wins. Asserted because the fix inverted nothing: the
+    // group is the FALLBACK the hint never had.
+    expect(h.snapshots[0]?.connectionId).toBe("authored");
+  });
+
+  test("an entity the resolver could not place falls back to the default connection", async () => {
+    const h = harness({
+      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
+      entities: {
+        Accounts: entityYaml({ table: "accounts", primaryKey: "id", dimensions: ["id", "tier"] }),
+      },
+      rows: { Accounts: [snapshotRow("Acme Corp", "gold")] },
+    });
+
+    await runWarehouseProducer(
+      { workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-1" },
+      // Empty map — the shipped resolver omits a name that resolves in more than
+      // one connection group, because `getAdminEntity` is about to refuse to
+      // choose between them too.
+      { ...h.deps, resolveConnectionIds: async () => new Map() },
+    );
+
+    expect(h.snapshots[0]?.connectionId).toBeUndefined();
+  });
+
   test("validates the built statement BEFORE the snapshot seam is reached", async () => {
     const h = harness({
       pairs: [

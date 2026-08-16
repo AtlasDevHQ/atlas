@@ -1550,22 +1550,31 @@ describe("audit value redaction (#5180)", () => {
   // mask leaks 8 of 9 characters of a short secret into it. These fixtures
   // straddle the boundary the display mask cares about (8 / 9 / 32 chars) to
   // pin that the audit path has no such boundary left.
-  it.each([
-    ["sk-ant-api03-SUPERSECRET-payload", 32],
-    ["abcdefghi", 9],
-    ["hunter22", 8],
-    ["   ", 3],
-    ["x", 1],
-  ])("withholds a secret's value entirely — %p (%p chars)", (written) => {
+  /** Straddles the boundary the display mask cared about: 32 / 9 / 8 / 3 / 1. */
+  const SECRET_LENGTHS = ["sk-ant-api03-SUPERSECRET-payload", "abcdefghi", "hunter22", "   ", "x"];
+
+  it.each(SECRET_LENGTHS)("withholds a secret's value entirely — %p", (written) => {
     const { value, masked, maskReason } = redactAuditValue(SECRET_DEF, written);
     expect(masked).toBe(true);
     expect(maskReason).toBe("secret");
-    expect(value).toBe(audited("[redacted]"));
-    // Not merely "different from the input" — no fragment of it survives.
-    for (const ch of new Set(written.replace(/[a-z[\]]/g, ""))) {
-      expect(value).not.toContain(ch);
-    }
-    expect(value).not.toContain("SUPERSECRET");
+    expect(value).toBe(audited("[withheld:secret-setting]"));
+  });
+
+  // ⚠️ THE CLAIM THAT ACTUALLY BITES, and the first draft of it could not fail.
+  // That draft asserted, per row, that no character of the input survived —
+  // but it stripped lowercase letters before comparing, so for `"abcdefghi"`
+  // and `"x"` it iterated ZERO times and asserted nothing at all. The property
+  // worth pinning is stronger and uniform: the output does not depend on the
+  // input. `maskSecret` produces five DIFFERENT strings for these five values,
+  // two of them revealing eight characters, so it goes red here.
+  it("produces one identical placeholder for every secret, whatever its length", () => {
+    const outputs = new Set(SECRET_LENGTHS.map((w) => redactAuditValue(SECRET_DEF, w).value));
+    expect(outputs.size).toBe(1);
+    expect([...outputs][0]).toBe(audited("[withheld:secret-setting]"));
+    // And the distinctive one, named directly rather than derived.
+    expect(redactAuditValue(SECRET_DEF, "sk-ant-api03-SUPERSECRET-payload").value).not.toContain(
+      "SUPERSECRET",
+    );
   });
 
   // ⚠️ THE CONTROL. The fix must not be "mask everything": the written value is
@@ -1591,7 +1600,7 @@ describe("audit value redaction (#5180)", () => {
     // indistinguishable from the healthy case, and the backstop would fire
     // silently.
     expect(redactAuditValue(undefined, "mystery-value-here")).toEqual({
-      value: audited("[redacted]"),
+      value: audited("[withheld:secret-setting]"),
       masked: true,
       maskReason: "unknown_definition",
     });
@@ -1612,12 +1621,15 @@ describe("audit value redaction (#5180)", () => {
     });
   });
 
-  it("an empty write to a secret key yields undefined — `action` marks the clear", () => {
-    // There is nothing in "" to withhold, and emitting the placeholder would
-    // imply content that does not exist. The set/clear distinction survives
-    // because it lives in `action`, not in whether `value` is present.
+  // ⚠️ THE EMPTY SECRET IS WITHHELD LIKE ANY OTHER, and the earlier draft that
+  // returned `undefined` here was a one-bit oracle. Every other secret reads
+  // `[withheld:secret-setting]`, so a lone `undefined` singled the empty one
+  // out — and for the empty secret, "its length is zero" IS the secret. The
+  // set/clear distinction it was protecting lives in `action`, which is where
+  // it always was.
+  it("withholds an empty write to a secret key like any other value", () => {
     expect(redactAuditValue(SECRET_DEF, "")).toEqual({
-      value: undefined,
+      value: audited("[withheld:secret-setting]"),
       masked: true,
       maskReason: "secret",
     });
@@ -1727,7 +1739,7 @@ describe("securitySensitiveAuditLine (#5180)", () => {
       definition: definitionWithSecret(RPM, true),
       value: "sk-ant-api03-SUPERSECRET-payload",
     });
-    expect(line?.value).toBe(audited("[redacted]"));
+    expect(line?.value).toBe(audited("[withheld:secret-setting]"));
     expect(line?.value).not.toContain("SUPERSECRET");
     expect(line?.valueMasked).toBe(true);
     expect(line?.maskReason).toBe("secret");
@@ -1749,7 +1761,7 @@ describe("securitySensitiveAuditLine (#5180)", () => {
     const line = lineFor({ definition: definitionWithSecret(RPM, true), value: "0" });
     expect(line?.disablesControl).toBe(true);
     expect(line?.valueMasked).toBe(true);
-    expect(line?.value).toBe(audited("[redacted]"));
+    expect(line?.value).toBe(audited("[withheld:secret-setting]"));
   });
 
   // The control, at the payload level: the fix must not be "mask everything".
@@ -1770,16 +1782,19 @@ describe("securitySensitiveAuditLine (#5180)", () => {
       definition: definitionWithSecret("ATLAS_ROW_LIMIT", false),
       value: "mystery-value-here",
     });
-    expect(line?.value).toBe(audited("[redacted]"));
+    expect(line?.value).toBe(audited("[withheld:secret-setting]"));
     expect(line?.valueMasked).toBe(true);
-    // Reported as drift, not as a routine masked write — the mismatch is a
-    // caller bug, and an anomaly that logs like the healthy case is silent.
-    expect(line?.maskReason).toBe("unknown_definition");
+    // ⚠️ `definition_mismatch`, NOT `unknown_definition`. Both withhold, but
+    // they route an operator to different places: drift means grep the
+    // registry, mismatch means the key is present and the CALLER is wrong.
+    // Reporting a caller bug as drift gets the alert closed as a false
+    // positive against a registry that looks fine.
+    expect(line?.maskReason).toBe("definition_mismatch");
   });
 
   it("fails closed when there is no definition at all", () => {
     const line = lineFor({ definition: undefined, value: "mystery-value-here" });
-    expect(line?.value).toBe(audited("[redacted]"));
+    expect(line?.value).toBe(audited("[withheld:secret-setting]"));
     expect(line?.valueMasked).toBe(true);
     expect(line?.maskReason).toBe("unknown_definition");
   });
@@ -1813,7 +1828,7 @@ describe("securitySensitiveAuditLine (#5180)", () => {
       const withheld = def === undefined || def.secret === true;
       expect(line).not.toBeNull();
       expect(line?.valueMasked).toBe(withheld);
-      expect(line?.value).toBe(audited(withheld ? "[redacted]" : written));
+      expect(line?.value).toBe(audited(withheld ? "[withheld:secret-setting]" : written));
     },
   );
 });

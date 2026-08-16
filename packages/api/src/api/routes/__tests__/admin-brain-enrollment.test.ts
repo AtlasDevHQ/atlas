@@ -296,7 +296,7 @@ beforeEach(() => {
     refusals: [],
     created: 0,
     corroborated: 0,
-    entityEdges: null,
+    entityEdges: { kind: "nothing-to-propose", entries: 0, ambiguous: 0 },
   };
   entityOptions = [{ name: "accounts", table: "public.accounts", description: null }];
   dimensionOptions = [
@@ -686,22 +686,23 @@ describe("POST /produce — running the producer", () => {
       ],
       created: 4,
       corroborated: 1,
-      // Non-null here, `null` in the `beforeEach` default — so both arms of the
-      // nullable field cross the wire in this file, and a schema that dropped
-      // the section would go red on one of them.
+      // The `proposed` arm here, `nothing-to-propose` in the `beforeEach` default
+      // and `failed` in the test below — so ALL THREE arms of the union cross the
+      // wire in this file, and a schema that dropped one goes red (#5277). Every
+      // number distinct, for this block's stated reason.
       entityEdges: {
-        queued: 8,
-        autoApproved: 10,
-        deduped: 11,
-        alreadyApproved: 12,
-        rejected: 13,
-        refused: 14,
+        kind: "proposed",
+        entries: 7,
+        ambiguous: 5,
+        counters: {
+          queued: 8,
+          autoApproved: 10,
+          deduped: 11,
+          alreadyApproved: 12,
+          rejected: 13,
+          refused: 14,
+        },
       },
-      // Non-null here and `null` in the `beforeEach` default, so BOTH arms of
-      // the field cross the wire in this file — a schema that dropped it goes
-      // red on one of them.
-      entityEdgesFailed: "vocabulary lock timeout",
-      entityEdgesAmbiguous: 5,
     };
     const res = await post("/produce", {});
     expect(res.status).toBe(200);
@@ -709,6 +710,65 @@ describe("POST /produce — running the producer", () => {
     // cannot pass. `reportComplete: true` is the discriminant that makes this arm
     // distinguishable from the degraded one below — without it a caller cannot tell
     // a real result from a report the server could not serialize.
+    expect(await res.json()).toEqual({ ...produceReport, reportComplete: true });
+  });
+
+  it("carries the entity-edge pass's FAILED arm across the wire, partial progress and all (#5277)", async () => {
+    // ⚠️ The third arm of the union, and the one whose fields the schema is most
+    // likely to get wrong: `entries`/`ambiguous` are nullable HERE and not on the
+    // other two arms, and `proposalsAttempted` exists only here. A
+    // `z.discriminatedUnion` that fell back to the `proposed` arm's shape — or a
+    // strictObject that rejected the extra key — reds on this and on nothing else.
+    //
+    // Non-zero `proposalsAttempted` with non-null counts is the "threw after
+    // submitting a batch" run: the store read succeeded, four proposals went out,
+    // and an unknown prefix of them is committed. Every number distinct so a
+    // handler that copied one field into another cannot pass.
+    produceReport = {
+      workspaceId: CURRENT_ORG,
+      snapshotAt: "2026-08-14T10:00:00.000Z",
+      enrolled: 3,
+      entities: [],
+      refusals: [],
+      created: 0,
+      corroborated: 0,
+      entityEdges: {
+        kind: "failed",
+        entries: 9,
+        ambiguous: 2,
+        proposalsAttempted: 4,
+        message: "The entity-edge pass failed part-way. …request req-1 carries the reason.",
+      },
+    };
+    const res = await post("/produce", {});
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ...produceReport, reportComplete: true });
+  });
+
+  it("carries the FAILED arm's NULL counts — a store that was never read (#5277)", async () => {
+    // ⚠️ The paired nullability case, and it is not the same assertion as the one
+    // above: `entries: null` says the throw came from the store READ, so nothing
+    // was ever counted and `proposalsAttempted` is necessarily 0. A schema that
+    // typed these as plain non-negative integers passes the test above and reds
+    // here, which is exactly the split that makes `null` mean something.
+    produceReport = {
+      workspaceId: CURRENT_ORG,
+      snapshotAt: "2026-08-14T10:00:00.000Z",
+      enrolled: 3,
+      entities: [],
+      refusals: [],
+      created: 0,
+      corroborated: 0,
+      entityEdges: {
+        kind: "failed",
+        entries: null,
+        ambiguous: null,
+        proposalsAttempted: 0,
+        message: "The entity-edge pass failed part-way. …request req-1 carries the reason.",
+      },
+    };
+    const res = await post("/produce", {});
+    expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ...produceReport, reportComplete: true });
   });
 

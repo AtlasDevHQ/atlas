@@ -1392,6 +1392,109 @@ export interface WarehouseEntityOutcome {
   readonly unnamedRows: number;
 }
 
+/**
+ * What the entity-edge pass did — ONE discriminated union, replacing the three
+ * parallel report fields #5043 shipped (#5277).
+ *
+ * ⚠️ **The three fields could spell states that do not exist, and could not spell
+ * one that does.** `entityEdges: AliasProducerCounters | null`,
+ * `entityEdgesFailed: string | null` and `entityEdgesAmbiguous: number` are 2 × 2
+ * independent shapes, of which "counters AND a failure message" was never a run
+ * and "no counters, no message, ambiguous: 0" meant four different things. The
+ * one state they could NOT spell is the one that matters most.
+ *
+ * ⚠️ **PARTIAL PROGRESS, which the old shape could not represent at all.**
+ * `proposeAliasEdges` COMMITS PER PROPOSAL and an auto-approved entity edge
+ * RE-KEYS THE CORPUS, so a mid-batch throw leaves approved edges behind. Under
+ * the old fields, "threw before proposing anything" and "threw after committing
+ * 900 edges" were the same two wire values — `entityEdges: null` plus a message
+ * — and the prose said so while the type could not. {@link proposalsAttempted}
+ * is the field that separates them.
+ */
+export type EntityEdgeOutcome =
+  /**
+   * The pass ran and had nothing to propose — an empty store, every entry a
+   * self-edge (a natural-key table, where the name and the key are already one),
+   * or every entry refused.
+   *
+   * ⚠️ NOT "the run wrote no entries". The batch comes from the PERSISTED,
+   * workspace-wide store, so a run that wrote nothing still proposes when prior
+   * entries exist, and a run that wrote 500 natural-key entries lands HERE
+   * because every one is a self-edge. `entries` is what tells those apart, and it
+   * is on this arm rather than inferable from a `null`.
+   */
+  | {
+      readonly kind: "nothing-to-propose";
+      /** Entries in the persisted, workspace-wide store the pass read. */
+      readonly entries: number;
+      /** See the `proposed` arm — the same number, and the same reason it is here. */
+      readonly ambiguous: number;
+    }
+  /**
+   * The batch ran to completion.
+   *
+   * ⚠️ `counters.rejected` is THE number to read on a re-run. A producer whose
+   * second pass reports zero there is one whose human removals did not stick —
+   * #4507's permanent rejection memory failing open, which re-creates an edge a
+   * person deleted and re-keys their corpus with it.
+   */
+  | {
+      readonly kind: "proposed";
+      readonly entries: number;
+      /**
+       * Store entries refused an edge because their name is shared with another
+       * entity (#5043) — two `Acme` accounts, and neither resolves by name.
+       *
+       * On the report because it is the one consequence of the fail-closed rule a
+       * person can act on. It was countable only in a `debug` line production does
+       * not emit, under a docstring claiming the caller reported it.
+       */
+      readonly ambiguous: number;
+      readonly counters: AliasProducerCounters;
+    }
+  /**
+   * The pass threw. Every fact and store entry is still committed — this arm
+   * exists so a caught-and-logged failure cannot leave the report
+   * indistinguishable from a healthy run.
+   *
+   * ⚠️ **`message` is a FIXED sentence plus the correlation handle, NEVER
+   * `err.message`.** Both throw sources are internal-DB-backed, so the raw message
+   * is a `pg` one — `connection to server at "10.x.x.x" … FATAL: password
+   * authentication failed for user "atlas"` puts a host and a role in a 200 body.
+   * This module refuses exactly that for `snapshot-failed`; #5043's first cut of
+   * the old field did not, and this arm inherits the rule rather than re-deciding
+   * it.
+   */
+  | {
+      readonly kind: "failed";
+      /**
+       * Store entries read, or `null` when the throw came from the READ itself.
+       *
+       * ⚠️ `null` is not `0`. Reporting zero for a store that was never read is
+       * ADR-0039's invisibility in miniature — "we looked and found nothing" told
+       * to an operator whose store may hold every row it ever did.
+       */
+      readonly entries: number | null;
+      /** Ambiguous entries, or `null` for the same reason as {@link entries}. */
+      readonly ambiguous: number | null;
+      /**
+       * Proposals SUBMITTED before the throw — the partial-progress handle.
+       *
+       * `0` means the throw preceded the batch, so nothing can have been
+       * committed and re-running costs nothing. Non-zero means an unknown PREFIX
+       * of that many is committed and each committed edge has already re-keyed
+       * what it touches; the alias-producer's own aborted-batch log line for this
+       * request carries the counts.
+       *
+       * ⚠️ It is the count SUBMITTED, not the count COMMITTED, and the difference
+       * is not recoverable here: `proposeAliasEdges` returns its counters only on
+       * success, so a throw takes them with it. Reporting the submitted size is
+       * the honest upper bound; claiming a committed number would be inventing one.
+       */
+      readonly proposalsAttempted: number;
+      readonly message: string;
+    };
+
 export interface WarehouseProducerReport {
   readonly workspaceId: string;
   readonly snapshotAt: string;
@@ -1401,59 +1504,8 @@ export interface WarehouseProducerReport {
   readonly refusals: readonly WarehouseRefusal[];
   readonly created: number;
   readonly corroborated: number;
-  /**
-   * What the entity-edge producer did with this run's edges (#5043).
-   *
-   * `null` when the pass PROPOSED nothing — an empty store, or every entry a
-   * self-edge or refused — and also when it threw. {@link entityEdgesFailed} is
-   * what tells the last case apart.
-   *
-   * ⚠️ NOT "the run wrote no entries", which is what this line used to say: that
-   * held only under the `entitiesStored > 0` gate #5232 removed. The batch comes
-   * from the PERSISTED, workspace-wide store, so a run that wrote nothing still
-   * reports counters when prior entries exist — and a run that wrote 500
-   * natural-key entries reports `null`, because every one is a self-edge.
-   *
-   * Zeroed counters rather than `null` would read as *"we tried and nothing
-   * happened"*. The distinction is ADR-0039's, one level down: nothing to do and
-   * nothing achieved must not look alike.
-   *
-   * ⚠️ `rejected` is THE counter to read on a re-run. A producer whose second
-   * pass reports zero there is one whose human removals did not stick — #4507's
-   * permanent rejection memory failing open, which re-creates an edge a person
-   * deleted and re-keys their corpus with it.
-   */
-  readonly entityEdges: AliasProducerCounters | null;
-  /**
-   * The edge pass's failure message, or `null` when it did not fail (#5043).
-   *
-   * ⚠️ **A SIBLING field because `entityEdges: null` alone MISINFORMS.** That
-   * field collapses four outcomes onto one value — nothing named, everything
-   * already snapshotted, every proposal refused, and *the pass threw* — and only
-   * the last one is a run an operator must act on. Without this, a vocabulary
-   * lock timeout reports the same wire value as "nobody has named anything", to
-   * the admin whose next action is to go name something.
-   *
-   * It was caught by the panel through the tests: two cases in
-   * `warehouse-producer.test.ts` asserted IDENTICAL state under a comment
-   * claiming they distinguished the two. They did not.
-   *
-   * The fuller answer is a discriminated `EntityEdgeOutcome` union replacing
-   * both fields; that is a wire-shape change reaching the OpenAPI surface, so it
-   * is deferred (#5233). This is the minimum that stops `null` lying.
-   */
-  readonly entityEdgesFailed: string | null;
-  /**
-   * Store entries refused an edge because their name is shared with another
-   * entity (#5043).
-   *
-   * On the report because it is the one consequence of the fail-closed rule a
-   * person can actually act on — two `Acme` accounts is ordinary data, and the
-   * permanent effect is that neither resolves by name. It was countable only in
-   * a `debug` line production does not emit, under a docstring claiming the
-   * caller reported it.
-   */
-  readonly entityEdgesAmbiguous: number;
+  /** What the entity-edge producer did with this run's edges (#5043, #5277). */
+  readonly entityEdges: EntityEdgeOutcome;
 }
 
 /**
@@ -1940,12 +1992,14 @@ export async function runWarehouseProducer(
     }
   };
 
-  let entityEdges: AliasProducerCounters | null = null;
-  let entityEdgesFailed: string | null = null;
-  let entityEdgesAmbiguous = 0;
-
   /**
-   * The entity-edge producer (#5043).
+   * The entity-edge producer (#5043), returning its {@link EntityEdgeOutcome} (#5277).
+   *
+   * ⚠️ **RETURNS its outcome rather than assigning three closure variables.** The
+   * previous shape needed an initial value for each — `null`, `null`, `0` — which
+   * is a claim about a pass that has not run, and the `0` in particular was
+   * indistinguishable from a real "no ambiguity" answer. Nothing enforced that both
+   * exits assign before building their report; the type now does.
    *
    * AFTER the entity loop and OUTSIDE every transaction it opened. Both halves
    * are forced:
@@ -1966,29 +2020,65 @@ export async function runWarehouseProducer(
    * credentials, a renamed table, a dimension gone ambiguous — skipped it while
    * `brain_entity` still held every row. Un-enrolling does not delete entries
    * and no reaper exists yet (#5233), so that is exactly the run on which an
-   * operator is asking why their store stopped working, and it reported
-   * `entityEdgesAmbiguous: 0` over a store that might be entirely ambiguous.
+   * operator is asking why their store stopped working, and it reported the
+   * then-flat `entityEdgesAmbiguous: 0` over a store that might be entirely
+   * ambiguous.
    *
    * ⚠️ **Its cost, stated honestly rather than as "one indexed read".** On a
    * non-empty store this runs two sequential `proposeAliasEdge` calls per entry
    * that EARNS an edge — up to `2 × entries`, and zero for a wholly natural-key
-   * store —
-   * each opening a transaction and taking the workspace vocabulary lock, on
-   * EVERY run — including a no-op re-run where the old gate cost nothing. At the
-   * row cap across several entities that is thousands of serialized
-   * lock-taking transactions per button press. A change-detector is the answer
-   * and is deliberately not in this slice: it is new machinery, correctness came
-   * first, and this producer has one manual trigger rather than a cadence
-   * (#5228). Tracked in #5233.
+   * store — each opening a transaction and taking the workspace vocabulary lock,
+   * on EVERY run including a no-op re-run. At the row cap across several entities
+   * that is thousands of serialized lock-taking transactions per button press.
+   *
+   * ## The change-detector: DECIDED, not deferred again (#5277)
+   *
+   * #5233 recorded a detector as "the answer" — skip when no `snapshot_at` moved
+   * and the previous run was all `alreadyApproved`/`deduped`. #5277 is the round
+   * that had to build it or say why not, and the answer is **the cost is accepted
+   * at today's cadence**, for three reasons, in the order that decided it:
+   *
+   *   1. **That predicate is UNSOUND for the counter the pass exists to report.**
+   *      `rejected` is what says a human's removal STUCK — #4507's permanent
+   *      rejection memory failing open is the failure it watches for. A human
+   *      rejecting an edge between two runs moves no `snapshot_at` and changes no
+   *      previous-run counter, so the sketched predicate skips exactly the re-run
+   *      that would have reported on it. A detector that silences `rejected` is a
+   *      detector that removes this pass's whole observability contribution while
+   *      reporting success, which is ADR-0039's invisible failure with a
+   *      performance justification attached.
+   *   2. **It needs state that does not exist.** "The previous run was all
+   *      `alreadyApproved`/`deduped`" is a claim about a PREVIOUS RUN, and no run
+   *      is persisted — the report is returned to an HTTP caller and dropped.
+   *      `brain_entity` carries no run watermark. So a detector is a new table or
+   *      column, a migration, a `schema.ts` mirror and a `-pg` smoke, whose own
+   *      staleness failure mode is again the invisible one.
+   *   3. **The trigger is still one person pressing a button.** #5228 — the
+   *      cadence — is OPEN. The cost is bounded by how often a human runs the
+   *      producer, which is the condition under which "accepted" is a defensible
+   *      word.
+   *
+   * ⚠️ **This decision EXPIRES when #5228 lands.** A cadence turns "thousands of
+   * lock-taking transactions per button press" into "per interval, forever", and
+   * point 3 evaporates while points 1 and 2 stay as the design constraints any
+   * detector has to satisfy. Whoever builds the cadence owns this line.
    */
-  const runEntityEdgePass = async (): Promise<void> => {
+  const runEntityEdgePass = async (): Promise<EntityEdgeOutcome> => {
+    // ⚠️ Captured OUTSIDE the try, because the `failed` arm has to say how far the
+    // pass got and every one of these is unknown until its own step ran. `null` and
+    // `0` are different answers here: `entries: null` is "the store was never read",
+    // `entries: 0` is "the store is empty". #5043's shape could say only the second.
+    let entries: number | null = null;
+    let ambiguous: number | null = null;
+    let proposalsAttempted = 0;
     // Failing here must NOT fail the run. Every fact is committed, and a throw
     // reaches `runEffect` as `500 "Failed to run"` — which invites the one retry
     // that files a second full round of drafts into the review queue.
     try {
       const store = await loadStore(workspaceId);
+      entries = store.length;
       const batch = entityEdgeProposals(store);
-      entityEdgesAmbiguous = batch.ambiguous;
+      ambiguous = batch.ambiguous;
       if (batch.ambiguous > 0 || batch.unmintedIds > 0) {
         // WARN, because both are permanent consequences rather than hiccups:
         // those surfaces resolve to nothing and no edge is ever raised for them.
@@ -2008,9 +2098,18 @@ export async function runWarehouseProducer(
             "claims about those rows will not match what people call them",
         );
       }
-      if (batch.proposals.length > 0) {
-        entityEdges = await proposeEdges(workspaceId, batch.proposals, requestId);
+      if (batch.proposals.length === 0) {
+        return { kind: "nothing-to-propose", entries, ambiguous };
       }
+      // ⚠️ Set BEFORE the await, not after. It is the count SUBMITTED, and its
+      // whole job is to be true when the await throws.
+      proposalsAttempted = batch.proposals.length;
+      return {
+        kind: "proposed",
+        entries,
+        ambiguous,
+        counters: await proposeEdges(workspaceId, batch.proposals, requestId),
+      };
     } catch (err) {
       // Recorded as a VALUE, not only a log line. A caught-and-logged failure
       // that leaves the report indistinguishable from a healthy run is the
@@ -2028,7 +2127,12 @@ export async function runWarehouseProducer(
       // — and an auto-approved entity edge re-keys the corpus. Asserting the
       // clean case in a catch is the same false-claim class this round exists to
       // close. The alias-producer's own aborted-batch line carries the counts.
-      entityEdgesFailed =
+      //
+      // ⚠️ The sentence is FIXED — the same bytes on every failure, regardless of
+      // how far the pass got. What varies is the STRUCTURED half beside it
+      // (`proposalsAttempted`, `entries`, `ambiguous`), which is a place a machine
+      // can read partial progress off without a caller parsing prose.
+      const message =
         "The entity-edge pass failed part-way. Any edge it had already proposed is committed — " +
         "the alias-producer log line for this run carries those counts — and every fact and store " +
         // `"unknown"`, matching every other placeholder in this file. Two spellings of
@@ -2041,10 +2145,11 @@ export async function runWarehouseProducer(
       // failure the stack is the actionable half, and the per-entity catch
       // already does it this way.
       log.error(
-        { ...runLog, err },
+        { ...runLog, err, entries, ambiguous, proposalsAttempted },
         "Warehouse producer: the entity-edge pass failed part-way — facts and store entries are " +
           "committed, and any edge proposed before the failure is too. Re-run to retry",
       );
+      return { kind: "failed", entries, ambiguous, proposalsAttempted, message };
     }
   };
 
@@ -2053,9 +2158,9 @@ export async function runWarehouseProducer(
     // empty the STORE — un-enrolling deletes no entry and no reaper exists yet —
     // so this is the run an operator is most likely to be staring at. See the
     // closure's own note.
-    await runEntityEdgePass();
+    const entityEdges = await runEntityEdgePass();
     log.info(
-      { ...runLog, enrolled: reach.pairs.length, refusals: refusals.length },
+      { ...runLog, enrolled: reach.pairs.length, refusals: refusals.length, entityEdges },
       "Warehouse producer: nothing to emit — every enrolled pair was refused or the reach is empty",
     );
     return {
@@ -2065,8 +2170,6 @@ export async function runWarehouseProducer(
       entities: [],
       refusals,
       entityEdges,
-      entityEdgesFailed,
-      entityEdgesAmbiguous,
       created: 0,
       corroborated: 0,
     };
@@ -3032,7 +3135,7 @@ export async function runWarehouseProducer(
   const corroborated = outcomes.reduce((sum, o) => sum + o.corroborated, 0);
   const entitiesStored = outcomes.reduce((sum, o) => sum + o.entitiesStored, 0);
 
-  await runEntityEdgePass();
+  const entityEdges = await runEntityEdgePass();
 
   log.info(
     {
@@ -3043,8 +3146,6 @@ export async function runWarehouseProducer(
       corroborated,
       entitiesStored,
       entityEdges,
-      entityEdgesFailed,
-      entityEdgesAmbiguous,
       refusals: refusals.length,
     },
     "Warehouse producer run complete — every fact landed draft and waits for a human publish",
@@ -3059,8 +3160,6 @@ export async function runWarehouseProducer(
     created,
     corroborated,
     entityEdges,
-    entityEdgesFailed,
-    entityEdgesAmbiguous,
   };
 }
 

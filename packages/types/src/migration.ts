@@ -695,8 +695,9 @@ export interface ExportedBrainEnrollment {
  * regions' semantic layers name the entity differently, the imported rows are
  * never deleted, both sets go live, and every shared canonical norm is poisoned
  * — the store then resolves NOTHING for that entity until someone intervenes.
- * `entityEdgesAmbiguous` is what makes that visible; the reaper (#5233) is what
- * fixes it.
+ * The run report's `entityEdges.ambiguous` is what makes that visible (#5277
+ * folded the old flat `entityEdgesAmbiguous` into the outcome union); the reaper
+ * (#5233) is what fixes it.
  *
  * The failure direction if it were dropped is ADR-0039's invisible one: the
  * cutover reports clean, the store resolves nothing, and every test stays green.

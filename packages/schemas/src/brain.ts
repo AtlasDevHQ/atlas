@@ -1773,6 +1773,76 @@ export const BrainAliasProducerCountersSchema = z.strictObject({
 });
 
 /**
+ * What the entity-edge pass did — the wire half of `EntityEdgeOutcome` (#5277).
+ *
+ * ⚠️ **ONE discriminated union replacing three parallel fields**, because
+ * `entityEdges: counters | null`, `entityEdgesFailed: string | null` and
+ * `entityEdgesAmbiguous: number` could spell combinations that were never a run
+ * (counters AND a failure message) while collapsing four real outcomes onto one
+ * value — nothing named, everything already snapshotted, every proposal refused,
+ * and *the pass threw*. Only the last is a run an operator must act on, and under
+ * the old shape a vocabulary lock timeout read as "nobody has named anything" to
+ * the admin whose next action was to go name something.
+ *
+ * ⚠️ **The `failed` arm makes PARTIAL PROGRESS representable, which is the state
+ * the old shape could not spell at all.** The producer commits per proposal and an
+ * auto-approved entity edge re-keys the corpus, so "threw before proposing
+ * anything" and "threw after committing 900 edges" are materially different runs
+ * that used to be the same two wire values.
+ */
+export const BrainEntityEdgeOutcomeSchema = z.discriminatedUnion("kind", [
+  /**
+   * The pass ran and had nothing to propose — an empty store, every entry a
+   * self-edge (a natural-key table, where the name and the key are already one),
+   * or every entry refused. `entries` is what tells those apart.
+   */
+  z.strictObject({
+    kind: z.literal("nothing-to-propose"),
+    entries: z.number().int().nonnegative(),
+    ambiguous: z.number().int().nonnegative(),
+  }),
+  /**
+   * The batch ran to completion.
+   *
+   * ⚠️ `counters.rejected` is the number to read on a re-run — a producer whose
+   * second pass reports zero there is one whose human removals did not stick.
+   */
+  z.strictObject({
+    kind: z.literal("proposed"),
+    entries: z.number().int().nonnegative(),
+    /**
+     * Store entries refused an edge because their name is shared with another
+     * entity — two `Acme` accounts, and neither resolves by name. Ordinary data
+     * with a permanent consequence, which is why it is on the report at all.
+     */
+    ambiguous: z.number().int().nonnegative(),
+    counters: BrainAliasProducerCountersSchema,
+  }),
+  /**
+   * The pass threw. Every fact and store entry is still committed.
+   *
+   * ⚠️ `message` is a FIXED sentence plus the request id, never the caught error's
+   * message: both throw sources are internal-DB-backed, so the raw text would put
+   * a host and a role in a 200 body.
+   */
+  z.strictObject({
+    kind: z.literal("failed"),
+    /**
+     * `null` when the throw came from the store READ itself — not `0`, which
+     * would claim an empty store to an operator whose store may be full.
+     */
+    entries: z.number().int().nonnegative().nullable(),
+    ambiguous: z.number().int().nonnegative().nullable(),
+    /**
+     * Proposals SUBMITTED before the throw. `0` means nothing can have been
+     * committed; non-zero means an unknown prefix of that many is.
+     */
+    proposalsAttempted: z.number().int().nonnegative(),
+    message: z.string(),
+  }),
+]);
+
+/**
  * The producer's run report — what `runWarehouseProducer` returns.
  *
  * `enrolled` and `refusals` are both on it deliberately: a run that emitted
@@ -1789,30 +1859,8 @@ export const BrainWarehouseRunReportSchema = z.strictObject({
   refusals: z.array(BrainWarehouseRefusalSchema).readonly(),
   created: z.number().int().nonnegative(),
   corroborated: z.number().int().nonnegative(),
-  /**
-   * `null` when the run wrote no entity-store entries at all — nothing was named,
-   * so there was nothing to propose. Six honest zeros would read as *"we tried and
-   * nothing happened"*, and ADR-0039's rule one level down is that nothing to do
-   * and nothing achieved must not look alike.
-   */
-  entityEdges: BrainAliasProducerCountersSchema.nullable(),
-  /**
-   * The edge pass's failure message, or `null` when it did not fail (#5043).
-   *
-   * ⚠️ A sibling field because `entityEdges: null` alone MISINFORMS: it collapses
-   * "nothing named", "everything already snapshotted", "every proposal refused"
-   * and *the pass threw* onto one value, and only the last is a run an operator
-   * must act on. Without this, a vocabulary lock timeout reports as "nobody has
-   * named anything" to the admin whose next action is to go name something.
-   */
-  entityEdgesFailed: z.string().nullable(),
-  /**
-   * Store entries refused an edge because their name is shared with another
-   * entity (#5043) — two `Acme` accounts, and neither resolves by name.
-   * Ordinary data with a permanent consequence, which is why it is a number on
-   * the report rather than a log line.
-   */
-  entityEdgesAmbiguous: z.number().int().nonnegative(),
+  /** What the entity-edge pass did (#5043, #5277). */
+  entityEdges: BrainEntityEdgeOutcomeSchema,
 });
 
 /**

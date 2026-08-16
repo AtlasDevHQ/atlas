@@ -226,8 +226,9 @@ export interface EntityEdgeBatch {
    * before this test. They overlapped in a first cut, which made this number
    * mean three things at once and `unmintedIds > 0` imply `ambiguous > 0`.
    *
-   * THIS one reaches the run report (`entityEdgesAmbiguous`) and a warn, because
-   * it is ordinary data — two `Acme` accounts — with a permanent consequence.
+   * THIS one reaches the run report (`entityEdges.ambiguous`, on every arm that
+   * got far enough to count it) and a warn, because it is ordinary data — two
+   * `Acme` accounts — with a permanent consequence.
    */
   readonly ambiguous: number;
   /**

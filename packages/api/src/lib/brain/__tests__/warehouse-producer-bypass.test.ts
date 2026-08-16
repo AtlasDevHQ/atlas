@@ -743,6 +743,19 @@ describe("the SQL-gate name allowlist (#5042, #5230, #5249, #5255)", () => {
       decls.map((d) => d.name),
       "the parser no longer sees the module's UNguarded exports, so exclusion proves nothing",
     ).toContain("Warehouse" + "SnapshotRequest");
+    // ⚠️ The guard EXERCISED on a real new export rather than only on the five it
+    // was written around. #5277 added `EntityEdgeOutcome` to this module in the same
+    // arc; it is a report shape naming `AliasProducerCounters` and nothing branded,
+    // so the correct answer is "seen, and out of scope" — both halves asserted,
+    // because "not in the closure" is what a parser that never saw it also says.
+    expect(
+      decls.map((d) => d.name),
+      "the parser stopped seeing EntityEdgeOutcome, so its exclusion below proves nothing",
+    ).toContain("EntityEdgeOutcome");
+    expect(
+      brandCarryingExports(stripped, BRAND_SYMBOL),
+      "EntityEdgeOutcome now reaches the brand — tag it and list it, or remove the reference",
+    ).not.toContain("EntityEdgeOutcome");
 
     expect(
       brandCarryingExports(stripped, BRAND_SYMBOL),

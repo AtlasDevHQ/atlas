@@ -29,7 +29,7 @@
  * {@link isRoutingIdUniqueViolation}.
  */
 
-import { PG_UNIQUE_VIOLATION } from "@atlas/api/lib/db/pg-errors";
+import { PG_UNIQUE_VIOLATION, unwrapFiberFailure } from "@atlas/api/lib/db/pg-errors";
 
 /**
  * Name of the partial unique index created by migration 0120 and mirrored
@@ -74,7 +74,18 @@ interface PgErrorLike {
  * wrapped it.
  */
 export function isRoutingIdUniqueViolation(err: unknown): boolean {
-  let current: unknown = err;
+  // ⚠️ #5272 — UNWRAP BEFORE WALKING. `persist-form-install.ts` catches with
+  // `.catch(raiseWriteError)` on a promise, so what arrives here is Effect's
+  // `FiberFailure`, whose Cause is symbol-keyed and whose `.cause` is
+  // `undefined` — the walk below stopped at the wrapper and this returned
+  // `false` for every real concurrent-install race. The chat handlers' #3167
+  // "already connected elsewhere" message was therefore unreachable on that
+  // path and the loser got a raw 500.
+  //
+  // Additive by construction: unwrapping can only ever let the walk see MORE
+  // links, never fewer, and the CHAT_ROUTING_ID_UNIQUE_INDEX check below still
+  // gates what counts — so this cannot start mislabelling an unrelated 23505.
+  let current: unknown = unwrapFiberFailure(err);
   for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {
     if (typeof current !== "object" || current === null) return false;
     const e = current as PgErrorLike;

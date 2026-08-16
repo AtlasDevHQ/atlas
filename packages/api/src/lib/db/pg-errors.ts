@@ -31,14 +31,24 @@
  * flat read applied to the Effect path would classify every real collision as
  * an unhandled throw.
  *
- * ⚠️ FOUR of the six consumers are on exactly that Effect path today:
- * `admin-prompts.ts`, `sub-processor-subscriptions.ts`,
- * `starter-prompts/favorite-store.ts` and `suggestions/approval-store.ts` all
- * read this flat classification off an `internalQuery` result, where the shape
- * may be wrapped. Tracked in #5272; each site carries the same note. Do not
- * read "flat is right for the `pg` driver" as "flat is right at every call
- * site" — only the two seeders pass a raw `Pool`.
+ * ⚠️ **#5272 SETTLED — the four `internalQuery` consumers needed the second
+ * classifier, and the shape is worse than "wrapped under `.cause`".** Measured
+ * against real Postgres with a real `PgClient.layerFromPool` client
+ * (`__tests__/internal-query-error-shape-pg.test.ts`), a promise-awaited
+ * `internalQuery` rejects with:
+ *
+ *     FiberFailureImpl                      ← own props: message, name, stack
+ *       [Symbol(effect/Runtime/FiberFailure/Cause)] = { _tag: "Fail", error }
+ *           SqlError.cause = DatabaseError { code: "23505", constraint, … }
+ *
+ * There is no top-level `code` AND **no `.cause` on the FiberFailure** — the
+ * cause hangs off a symbol. So both the flat read and a naive `.cause` walk
+ * miss it, and every affected 409/duplicate arm surfaced a routine collision
+ * as a 500. {@link asWrappedUniqueViolation} unwraps that; the four sites use
+ * it now.
  */
+
+import { Cause, Runtime } from "effect";
 
 /** Postgres SQLSTATE for `unique_violation`. */
 export const PG_UNIQUE_VIOLATION = "23505";
@@ -83,3 +93,77 @@ export function asUniqueViolation(
  * hedge each seeder's warning carries.
  */
 export const PG_PLUGIN_CATALOG_SLUG_CONSTRAINT = "plugin_catalog_slug_key";
+
+/**
+ * Max `.cause` links to follow after unwrapping. The driver error is at most a
+ * couple of links deep (`SqlError.cause` → pg `DatabaseError`); the cap is a
+ * backstop against a cyclic chain, not a depth requirement.
+ */
+const MAX_CAUSE_DEPTH = 8;
+
+/**
+ * The diagnostic fields of a `23505` raised through an Effect-backed client, or
+ * `undefined` for anything else.
+ *
+ * ⚠️ **THE SIBLING OF {@link asUniqueViolation}, NOT A REPLACEMENT — the two
+ * model different transports and merging them breaks both.** A chain walk
+ * applied to the raw-`Pool` seeders would classify a wrapped violation from an
+ * unrelated layer as a benign collision; a flat read applied here classifies
+ * every real collision as an unhandled throw. Pick by how the caller obtained
+ * the error, not by taste:
+ *
+ * - `await pool.query(...)` / a raw `Pool` seam → {@link asUniqueViolation}
+ * - `await internalQuery(...)` / anything through `Effect.runPromise` → this
+ *
+ * Two unwrapping steps, and BOTH are load-bearing (#5272, measured):
+ *
+ * 1. **The `FiberFailure` symbol.** `Effect.runPromise` rejects with a
+ *    `FiberFailureImpl` whose only own properties are `message`, `name` and
+ *    `stack`; the `Cause` is stored under `Runtime.FiberFailureCauseId`.
+ *    `Cause.squash` reduces that to the underlying failure. Read through
+ *    Effect's own API rather than the raw symbol so a runtime change surfaces
+ *    as a type error rather than a silently-undefined lookup.
+ * 2. **The `.cause` chain.** `SqlError` then holds the pg `DatabaseError` under
+ *    an ordinary `.cause`.
+ *
+ * An error that is NOT a `FiberFailure` still gets the chain walk, because a
+ * caller inside an Effect program (catching in the error channel rather than
+ * after `runPromise`) sees the bare `SqlError` — same transport, one less
+ * wrapper.
+ */
+export function asWrappedUniqueViolation(
+  err: unknown,
+): { readonly constraint?: string; readonly detail?: string } | undefined {
+  let current: unknown = unwrapFiberFailure(err);
+
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {
+    const flat = asUniqueViolation(current);
+    if (flat !== undefined) return flat;
+    if (typeof current !== "object" || current === null) return undefined;
+    const next: unknown = (current as { cause?: unknown }).cause;
+    if (next === current) return undefined; // self-referential guard
+    current = next;
+  }
+  return undefined;
+}
+
+/**
+ * Peel Effect's `FiberFailure` wrapper off a rejection, or return `err` as-is.
+ *
+ * `Effect.runPromise` rejects with a `FiberFailureImpl` whose only own
+ * properties are `message`, `name` and `stack` — the `Cause` hangs off
+ * `Runtime.FiberFailureCauseId`, so `.cause` is `undefined` and every ordinary
+ * chain walk stops at the wrapper. Measured in
+ * `__tests__/internal-query-error-shape-pg.test.ts` (#5272).
+ *
+ * Exported because TWO classifiers need this same first step and must not each
+ * grow their own copy: this one, and
+ * `integrations/install/routing-id-conflict.ts`, whose constraint-name walk was
+ * equally blind to the wrapper. A caller that catches INSIDE an Effect program
+ * sees the bare error and passes through untouched.
+ */
+export function unwrapFiberFailure(err: unknown): unknown {
+  return Runtime.isFiberFailure(err)
+    ? Cause.squash(err[Runtime.FiberFailureCauseId])
+    : err;
+}

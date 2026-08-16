@@ -10,6 +10,7 @@
  * relabelled with a misleading cross-workspace message.
  */
 
+import { Cause, Runtime } from "effect";
 import { describe, expect, it } from "bun:test";
 import {
   CHAT_ROUTING_ID_UNIQUE_INDEX,
@@ -79,6 +80,38 @@ describe("isRoutingIdUniqueViolation (#3167)", () => {
     const cyclic: { code: string; cause?: unknown } = { code: "08006" };
     cyclic.cause = cyclic;
     expect(isRoutingIdUniqueViolation(cyclic)).toBe(false);
+  });
+
+  it("⭐ matches through Effect's FiberFailure wrapper (#5272)", () => {
+    // The shape `persist-form-install.ts` actually catches: it awaits
+    // `internalQuery(...).catch(raiseWriteError)`, so `Effect.runPromise`
+    // rejects with a FiberFailure whose Cause is SYMBOL-keyed and whose
+    // `.cause` is undefined. The walk below used to stop at the wrapper and
+    // return false for every real concurrent-install race, making #3167's
+    // "already connected elsewhere" message unreachable on that path.
+    //
+    // Built with Effect's own constructors rather than a hand-rolled
+    // look-alike — a fixture that guesses the wrapper's shape would agree with
+    // whatever the code guesses too. The real shape is pinned against a live
+    // client in `db/__tests__/internal-query-error-shape-pg.test.ts`.
+    const sqlError = Object.assign(new Error("statement failed"), {
+      _tag: "SqlError",
+      cause: pgError("23505", CHAT_ROUTING_ID_UNIQUE_INDEX),
+    });
+    const fiberFailure = Runtime.makeFiberFailure(Cause.fail(sqlError));
+    // The premise: the wrapper really does hide it from a plain walk.
+    expect((fiberFailure as { cause?: unknown }).cause).toBeUndefined();
+    expect(isRoutingIdUniqueViolation(fiberFailure)).toBe(true);
+  });
+
+  it("still does NOT match a wrapped 23505 on a different index through the same wrapper", () => {
+    // The discriminating half — unwrapping must widen what the walk can SEE,
+    // not what it accepts.
+    const sqlError = Object.assign(new Error("statement failed"), {
+      _tag: "SqlError",
+      cause: pgError("23505", "workspace_plugins_singleton"),
+    });
+    expect(isRoutingIdUniqueViolation(Runtime.makeFiberFailure(Cause.fail(sqlError)))).toBe(false);
   });
 
   it("pins the index name the migration + schema mirror create", () => {

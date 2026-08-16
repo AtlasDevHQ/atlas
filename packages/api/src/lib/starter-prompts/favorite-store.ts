@@ -16,7 +16,7 @@ import {
   hasInternalDB,
   internalQuery,
 } from "@atlas/api/lib/db/internal";
-import { asUniqueViolation } from "@atlas/api/lib/db/pg-errors";
+import { asWrappedUniqueViolation } from "@atlas/api/lib/db/pg-errors";
 
 const log = createLogger("favorite-store");
 
@@ -216,15 +216,10 @@ export async function createFavorite(
     }
     return toRow(rows[0]);
   } catch (err) {
-    // ⚠️ FLAT `code`, and this path writes through `internalQuery`, which
-    // wraps the driver error under `.cause` once the Effect Layer has booted
-    // — so this arm may be dead in production and a duplicate may surface as
-    // a 500 instead of the specific message below. Same hazard as
-    // `admin-prompts.ts` and `sub-processor-subscriptions.ts`; pre-existing,
-    // surfaced by the #5271 review panel, tracked in #5272. Noted on all four
-    // sites deliberately: a defect documented in half its instances is one
-    // that gets closed on the documented half.
-    const collision = asUniqueViolation(err);
+    // ⚠️ #5272: `internalQuery` rejects with a `FiberFailure` whose Cause is
+    // symbol-keyed, so the flat read missed every collision and a duplicate
+    // pin surfaced as a 500 with a `createFavorite failed` error line.
+    const collision = asWrappedUniqueViolation(err);
     if (collision !== undefined) {
       throw new DuplicateFavoriteError();
     }

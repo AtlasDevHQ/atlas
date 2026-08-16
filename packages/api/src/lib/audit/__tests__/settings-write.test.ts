@@ -77,6 +77,13 @@ describe("auditSettingsWrite", () => {
     // would make claim 1 pass for the wrong reason.
     expect(SECRET_DEF?.secret).toBe(true);
     expect(SECRET_DEF?.scope).toBe("platform");
+    // ⚠️ `toBeDefined` FIRST. `expect(PLAIN_DEF?.secret).toBeFalsy()` passes
+    // when `PLAIN_DEF` is `undefined` — the optional chain yields `undefined`,
+    // which is falsy — so a renamed registry key would make this file assert
+    // against a missing definition and every "verbatim arm" test below would
+    // pass through the fail-closed arm instead. That is the exact
+    // passes-for-the-wrong-reason class this block exists to prevent.
+    expect(PLAIN_DEF).toBeDefined();
     expect(PLAIN_DEF?.secret).toBeFalsy();
   });
 
@@ -130,6 +137,47 @@ describe("auditSettingsWrite", () => {
       expect(meta().value).toBe(WITHHELD);
       expect(meta().maskReason).toBe("unknown_definition");
       expect(JSON.stringify(lastAwaited())).not.toContain(SECRET_VALUE);
+    });
+
+    it("⭐ withholds when the definition belongs to a DIFFERENT key", async () => {
+      // The cheap defeat of the brand, and this module shipped without the
+      // guard its #5180 sibling has. The brand fences the OUTPUT of the
+      // redaction decision; corrupting its INPUT needs no cast. A real
+      // definition for the wrong key is far easier to produce than the
+      // fabricated one #5180 reasoned about — an alias or rename resolver
+      // hands you one.
+      await auditSettingsWrite({
+        key: "RESEND_API_KEY",
+        definition: PLAIN_DEF, // ATLAS_MODEL's entry: secret: false
+        value: SECRET_VALUE,
+        action: "update",
+        platformTier: true,
+        ipAddress: null,
+      });
+      expect(meta().value).toBe(WITHHELD);
+      expect(meta().valueMasked).toBe(true);
+      // ⚠️ The REASON, not just the withholding. "registry drift" and "the
+      // call site passed the wrong entry" send an operator to different
+      // places — which is why `AuditMaskReason` has three arms and not two.
+      // This module advertised `definition_mismatch` in its type while being
+      // unable to produce it.
+      expect(meta().maskReason).toBe("definition_mismatch");
+      expect(JSON.stringify(lastAwaited())).not.toContain(SECRET_VALUE);
+    });
+
+    it("a definition whose key MATCHES is still used — the guard is not a blanket withhold", async () => {
+      // The discriminating half. A guard that discarded every definition
+      // would pass the test above and withhold every value in the product.
+      await auditSettingsWrite({
+        key: "ATLAS_MODEL",
+        definition: PLAIN_DEF,
+        value: "claude-opus-5",
+        action: "update",
+        platformTier: true,
+        ipAddress: null,
+      });
+      expect(meta().value).toBe("claude-opus-5");
+      expect(meta().maskReason).toBeUndefined();
     });
 
     it("withholds the EMPTY secret like any other — no one-bit oracle", async () => {

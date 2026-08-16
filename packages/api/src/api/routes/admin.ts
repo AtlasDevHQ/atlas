@@ -3684,9 +3684,14 @@ function settingsAuditFailureBody(
   key: string,
   requestId: string,
   verb: string,
+  actorId: string | undefined,
 ): { error: string; message: string; requestId: string } {
+  // ⚠️ `actorId` is on this line because the row that would have carried it is
+  // the thing that was just lost. This log.error is the closest surviving
+  // record of an unaudited configuration change, and without the actor it
+  // takes a join on `requestId` against the earlier info line to answer "who".
   log.error(
-    { err: err instanceof Error ? err.message : String(err), requestId, key },
+    { err: err instanceof Error ? err.message : String(err), requestId, key, actorId },
     "Settings write succeeded but its admin_action_log row could not be committed",
   );
   return {
@@ -3843,11 +3848,26 @@ admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", asy
       definition: def,
       value,
       action: "update",
-      platformTier: effectiveOrgId === undefined,
+      // ⚠️ `!effectiveOrgId`, NOT `=== undefined`. #4669's `tier` metadata has
+      // always been `effectiveOrgId ? "workspace" : "platform"`, and this
+      // value now drives the row's `scope` column as well — so the two
+      // spellings disagree on exactly one input class:
+      //
+      //                     old tier    `=== undefined`   `!effectiveOrgId`
+      //   undefined         platform    platform          platform
+      //   "org-1"           workspace   workspace         workspace
+      //   ""                platform    WORKSPACE  ←      platform
+      //
+      // `activeOrganizationId` is typed `string | undefined`, so `""` is in
+      // the type. The changed row moves a GLOBAL-row write back onto the
+      // org-scoped `/admin/admin-actions` read API — the precise exposure
+      // this PR exists to close — so it is the non-conservative direction and
+      // the truthiness spelling is the one that preserves #4669's semantics.
+      platformTier: !effectiveOrgId,
       ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
     });
   } catch (err) {
-    return c.json(settingsAuditFailureBody(err, key, requestId, "updated"), 500);
+    return c.json(settingsAuditFailureBody(err, key, requestId, "updated", authResult.user?.id), 500);
   }
 
   return c.json({ success: true, key, value }, 200);
@@ -3938,11 +3958,26 @@ admin.openapi(deleteSettingRoute, async (c) => runHandler(c, "delete setting", a
       definition: def,
       value: undefined,
       action: "reset_to_default",
-      platformTier: effectiveOrgId === undefined,
+      // ⚠️ `!effectiveOrgId`, NOT `=== undefined`. #4669's `tier` metadata has
+      // always been `effectiveOrgId ? "workspace" : "platform"`, and this
+      // value now drives the row's `scope` column as well — so the two
+      // spellings disagree on exactly one input class:
+      //
+      //                     old tier    `=== undefined`   `!effectiveOrgId`
+      //   undefined         platform    platform          platform
+      //   "org-1"           workspace   workspace         workspace
+      //   ""                platform    WORKSPACE  ←      platform
+      //
+      // `activeOrganizationId` is typed `string | undefined`, so `""` is in
+      // the type. The changed row moves a GLOBAL-row write back onto the
+      // org-scoped `/admin/admin-actions` read API — the precise exposure
+      // this PR exists to close — so it is the non-conservative direction and
+      // the truthiness spelling is the one that preserves #4669's semantics.
+      platformTier: !effectiveOrgId,
       ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
     });
   } catch (err) {
-    return c.json(settingsAuditFailureBody(err, key, requestId, "reset to its default"), 500);
+    return c.json(settingsAuditFailureBody(err, key, requestId, "reset to its default", authResult.user?.id), 500);
   }
 
   return c.json({ success: true, key }, 200);

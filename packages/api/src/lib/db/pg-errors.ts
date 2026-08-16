@@ -2,13 +2,22 @@
  * Postgres error classification shared across the write paths that recover
  * from a specific SQLSTATE rather than failing the whole pass.
  *
- * `PG_UNIQUE_VIOLATION` had FOUR independent definitions when this module was
+ * `PG_UNIQUE_VIOLATION` had SIX independent definitions when this module was
  * written (#5266) — `seed-builtin-knowledge-catalog.ts`, `admin-prompts.ts`,
- * `sub-processor-subscriptions.ts` and `routing-id-conflict.ts` — the fourth
- * added by #5260 while fixing the very defect class this module serves. Four
- * spellings of one constant is four chances for one of them to drift to a
- * SQLSTATE that means something else, and nothing would catch it: each site's
- * tests pin its own copy.
+ * `sub-processor-subscriptions.ts`, `routing-id-conflict.ts`,
+ * `starter-prompts/favorite-store.ts` and `suggestions/approval-store.ts` —
+ * one of them added by #5260 while fixing the very defect class this module
+ * serves. Six spellings of one constant is six chances for one of them to
+ * drift to a SQLSTATE that means something else, and nothing would catch it:
+ * each site's tests pin its own copy.
+ *
+ * ⚠️ The first draft of this header said FOUR, because the sweep that produced
+ * it grepped for the declaration and stopped at the sites the issue named. The
+ * two it missed are cited BY PATH inside `sub-processor-subscriptions.ts` as
+ * its own precedent — i.e. they were reachable from a file the same commit was
+ * editing. A census in a header is a claim like any other; this one is now
+ * `grep -rn '= "23505"'` over `packages/api/src` and `ee/`, which returns this
+ * line and nothing else.
  *
  * ⚠️ **Only the CONSTANT is universal; the classification around it is not.**
  * `asUniqueViolation` below reads a FLAT `code`, which is right for the `pg`

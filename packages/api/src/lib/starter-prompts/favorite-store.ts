@@ -16,6 +16,7 @@ import {
   hasInternalDB,
   internalQuery,
 } from "@atlas/api/lib/db/internal";
+import { PG_UNIQUE_VIOLATION } from "@atlas/api/lib/db/pg-errors";
 
 const log = createLogger("favorite-store");
 
@@ -26,8 +27,6 @@ const log = createLogger("favorite-store");
  * keeps the empty-state grid readable.
  */
 export const FAVORITE_TEXT_MAX_LENGTH = 2000;
-
-const PG_UNIQUE_VIOLATION = "23505";
 
 export interface FavoritePromptRow {
   readonly id: string;

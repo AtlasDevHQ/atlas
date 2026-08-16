@@ -25,13 +25,12 @@ import {
   type QuerySuggestionRow,
 } from "@atlas/api/lib/db/internal";
 import { toQuerySuggestion } from "@atlas/api/lib/learn/suggestion-helpers";
+import { PG_UNIQUE_VIOLATION } from "@atlas/api/lib/db/pg-errors";
 
 const log = createLogger("approval-store");
 
 /** Upper bound on admin-authored prompt text. */
 export const SUGGESTION_TEXT_MAX_LENGTH = 2000;
-
-const PG_UNIQUE_VIOLATION = "23505";
 
 // ---------------------------------------------------------------------------
 // Typed errors

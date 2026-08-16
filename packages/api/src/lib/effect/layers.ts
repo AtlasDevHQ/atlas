@@ -918,10 +918,12 @@ export class BuiltinDatasourceCatalogSeed extends Context.Tag(
 )<BuiltinDatasourceCatalogSeed, BuiltinDatasourceCatalogSeedShape>() {}
 
 /**
- * Idempotent boot-time seed of the eight built-in Datasource catalog
+ * Idempotent boot-time seed of the nine built-in Datasource catalog
  * rows. Per ADR-0007 these are code-seeded (not declared in
  * `atlas.config.ts`) and re-asserted on every boot via
- * `ON CONFLICT (slug) DO NOTHING`.
+ * `ON CONFLICT (id) DO NOTHING` — qualified on the primary key since
+ * #5266, so a slug held under a foreign id raises `23505` and is
+ * reported in `blockedSlugs` rather than being swallowed.
  *
  * Depends on `Migration` so the `pillar` / `implementation_status` /
  * `auto_install` columns added by migration 0092 exist before the
@@ -985,10 +987,17 @@ export const BuiltinDatasourceCatalogSeedLive: Layer.Layer<
             // `runBuiltinDatasourceCatalogSeedBoot` already logged at
             // error; surface the message to health consumers via the
             // documented `outcome: "error"` contract.
+            //
+            // ⚠️ SCRUBBED, like the `catchAll` arm below and like the
+            // knowledge sibling. A `pg` connect failure carries
+            // `scheme://user:pass@host` in `message`, and the field is
+            // DOCUMENTED as scrubbed — one field with two producers must not
+            // have two guarantees. #5239 fixed exactly this asymmetry one
+            // Layer over; it was still live here.
             return {
               ...zeroCounts,
               outcome: "error",
-              error: result.message,
+              error: errorMessage(new Error(result.message)),
             } satisfies BuiltinDatasourceCatalogSeedShape;
         }
       },

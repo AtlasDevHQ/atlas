@@ -1,65 +1,86 @@
 /**
- * The one seam through which a settings write reaches `admin_action_log`
- * (#5270, #5262).
+ * The seam through which the `PUT`/`DELETE /admin/settings/{key}` verbs reach
+ * `admin_action_log` (#5270, #5262).
  *
- * ⚠️ **THREE DEFECTS SHARED ONE CALL SITE**, and each is only half-closed by
- * fixing the others, which is why they land together:
+ * ⚠️ **NOT "the one seam for settings writes" — three other writers exist and
+ * none of them routes through here.** `platform-demo.ts` files its own
+ * `settings.update` with the fire-and-forget `logAdminAction` (it does pass
+ * `scope: "platform"`, so only defect 3 below applies to it);
+ * `onboarding.ts:943` writes `ATLAS_DEMO_INDUSTRY`; `admin-sandbox.ts:542`
+ * clears `ATLAS_SANDBOX_BACKEND` with no audit row at all. They are outside
+ * this PR, and naming them here is the point — the next reader must not take
+ * "the seam" to mean coverage nobody built.
  *
- * 1. **The value was recorded verbatim.** `PUT /admin/settings/{key}` passed
- *    `metadata: { key, value, tier }` with the raw string, so writing any of
- *    the seven `secret: true` registry keys — `RESEND_API_KEY`,
- *    `ANTHROPIC_API_KEY`, `DATABASE_URL`, `ATLAS_DATASOURCE_URL`, … — put the
- *    plaintext credential in a DB row. Two of the three surfaces that show a
- *    settings value already withhold it: the read path masks
- *    (`getSettingsForAdmin` → `maskSecret`), and #5180 redacted the
- *    `security_setting.changed` log line. This one, the DURABLE surface, did
- *    neither. `redactPaths` does not cover it either: pino redacts on FIELD
- *    NAME (`apiKey`, `clientSecret`, `serverToken`, …) and this field is
- *    called `value`, nested under `metadata`, so the pino line leaked too.
+ * ⚠️ **THREE DEFECTS SHARED ONE CALL SITE. ONE WAS LIVE; TWO WERE NOT WHAT
+ * THE ISSUES SAID THEY WERE.** Both stated mechanisms were checked and both
+ * were wrong — recorded here rather than quietly corrected, because a fix
+ * resting on a false rationale is one verification away from being deleted:
  *
- * 2. **The row was stamped `scope: "workspace"`.** `resolveEntry` defaults
- *    scope to `"workspace"` for any non-`systemActor` write, and neither
- *    settings call site passed one — unlike `admin-abuse.ts`,
- *    `admin-connections.ts`, `admin-marketplace.ts` and
- *    `admin-operator-integrations.ts`, which all pass `scope: "platform"`
- *    explicitly. All seven secret keys are `scope: "platform"` in the
- *    registry, so a platform-tier write was filed as a workspace action —
- *    and `GET /admin/admin-actions` selects
- *    `WHERE org_id = $1 AND scope = 'workspace'` and returns `metadata`
- *    verbatim, with a CSV export beside it. That router is
- *    `createAdminRouter()`, i.e. `adminAuth` only, while the write required
- *    `admin:settings`. An admin who could not write the setting could read
- *    back what another admin wrote. Redacting (1) without fixing this leaves
- *    platform actions on the workspace read API; fixing this without (1)
- *    leaves plaintext in the table and the log stream.
+ * 1. **The value was recorded verbatim — but a `secret: true` value cannot
+ *    reach it.** `metadata: { key, value, tier }` carried the raw string, and
+ *    #5270 claimed that put the seven `secret: true` credentials in a DB row.
+ *    It does not: `admin.ts:3720` (PUT) and `:3876` (DELETE) both 403 a
+ *    `secret: true` key *before* the write, and that guard is on `main`
+ *    already — there was no window. So `redactAuditValue`'s `secret` arm and
+ *    its `undefined`-definition fail-closed arm are BOTH route-unreachable
+ *    today, and every production entry takes the verbatim arm.
  *
- * 3. **The audit row was fire-and-forget.** `logAdminAction` drops the row
- *    with a `log.warn` when the internal-DB circuit breaker is open — and
- *    `ATLAS_LOG_LEVEL` is runtime-mutable, hot-reloading through
- *    `SETTING_SIDE_EFFECTS`, so an operator who raised it to `error` also
- *    silences that warn. `logAdminActionAwait` exists for exactly this shape;
- *    its own docstring names the audit-retention surface, "where a
- *    fire-and-forget gap during a circuit-breaker open would let an attacker
- *    shrink retention with no record". A settings write is the same surface.
+ *    The redaction is kept as defense in depth, and the honest claim is
+ *    narrow: the 403 is the primary control, this is what remains if someone
+ *    deletes it or adds a second settings writer. `redactPaths` would not
+ *    catch that case — pino redacts on FIELD NAME (`apiKey`, `clientSecret`,
+ *    `serverToken`, …) and this field is called `value`, nested under
+ *    `metadata` — so there is no backstop underneath.
+ *
+ * 2. **The row was stamped `scope: "workspace"` — this one was live.**
+ *    `resolveEntry` defaults scope to `"workspace"` for any non-`systemActor`
+ *    write, and neither settings call site passed one, unlike
+ *    `admin-abuse.ts`, `admin-connections.ts`, `admin-marketplace.ts` and
+ *    `admin-operator-integrations.ts`. So a PLATFORM-tier write was filed as
+ *    a workspace action and landed on `GET /admin/admin-actions`, which
+ *    selects `WHERE org_id = $1 AND scope = 'workspace'` and returns
+ *    `metadata` verbatim with a CSV export beside it. The values involved are
+ *    non-secret registry settings (the secret ones are 403'd per 1), so this
+ *    is an audit-correctness bug plus minor disclosure of platform
+ *    configuration to workspace admins — not a credential leak.
+ *
+ * 3. **The audit row was fire-and-forget — and the drop is SILENT, which is
+ *    a stronger reason than the one #5262 gave.** #5262 argued a raised
+ *    `ATLAS_LOG_LEVEL` silences the drop's `log.warn`. There is no such warn.
+ *    Once the internal-DB circuit breaker is open, `internalExecute`
+ *    (`db/internal.ts:874-879`) increments `_droppedCount` and returns with
+ *    NO log line at any level — the only trace is an anonymous count on a
+ *    later recovery line, naming no key, actor or value. Before the breaker
+ *    opens, the drop logs at `error` (`:889-898`), which `ATLAS_LOG_LEVEL`
+ *    does not silence, and which names no key either. Either way the settings
+ *    change is unrecorded and unattributable, so `logAdminActionAwait` is the
+ *    right instrument — for the reason its own docstring gives about the
+ *    audit-retention surface, not for the reason #5262 gave.
  *
  * ⚠️ **WHY THE WHOLE ENTRY IS BUILT HERE rather than at the route.** The
  * redaction is not something a call site can be trusted to remember: #5180
  * measured that re-inlining `log.warn({ ...line, value })` passed all 154
- * tests, because no sensitive key is `secret: true` today and redacted equals
- * raw on every currently-reachable input. The brand is the guard — and a brand
- * only bites where something is EXPECTED to carry it. `AdminActionEntry`'s
- * `metadata` is `Record<string, unknown>`, so a route that builds its own
- * object gets no help at all. Hence: the route hands over the definition and
- * the raw value, and never touches `metadata`. There is no spelling of the
- * call site that reintroduces (1) without deleting this module.
+ * tests, because redacted equals raw on every currently-reachable input. The
+ * brand is the guard — and a brand only bites where something is EXPECTED to
+ * carry it. `AdminActionEntry`'s `metadata` is `Record<string, unknown>`, so a
+ * route that builds its own object gets no help at all. Hence: the route hands
+ * over the definition and the raw value, and never touches `metadata`.
  *
  * ⚠️ **WHAT THIS DOES NOT CLOSE**, stated because the fence invites the wrong
- * confidence: a caller that goes back to `logAdminAction` directly with a
- * hand-built metadata object bypasses everything here, and no type can see
- * that. `__tests__/settings-write.test.ts` flips a registry definition to
- * `secret: true` to make redacted and raw differ on a reachable input, which
- * is what catches the seam-REMOVING edit; the brand catches the
- * seam-preserving one. Neither is redundant.
+ * confidence, and every item below was MEASURED rather than reasoned about:
+ *
+ * - **A caller that goes back to `logAdminAction` with a hand-built metadata
+ *   object** bypasses everything here, and no type can see it.
+ * - **A property arriving via a SPREAD.** `...(cond ? { previousValue: raw }
+ *   : {})` compiles clean against this annotation — excess-property checking
+ *   does not apply through a spread — while the direct spelling
+ *   `previousValue: raw` is a type error. Verified by compiling both. The
+ *   spread form is caught only by `settings-write.test.ts`'s whole-entry
+ *   `JSON.stringify` negative assertion, which is why that assertion is on
+ *   the serialized entry rather than on `metadata.value`.
+ * - **A definition belonging to a DIFFERENT key** — closed below by the
+ *   `mismatched` check, which this module was missing until review caught
+ *   that its #5180 sibling has one and it did not.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -101,18 +122,17 @@ type SettingsAuditMetadata = {
   readonly maskReason?: AuditMaskReason;
 };
 
-export interface SettingsAuditWrite {
+interface SettingsAuditCommon {
   readonly key: string;
   /**
    * The registry definition, or `undefined` when the key has no entry.
+   *
    * Passed rather than looked up here so the fail-closed arm of
-   * {@link redactAuditValue} — "we could not tell, so withhold" — stays
-   * reachable and testable from the call site.
+   * {@link redactAuditValue} is reachable from a test. It is NOT reachable
+   * from either live route: `admin.ts` 400s an unknown key before the write,
+   * so through production callers this is always a real entry for `key`.
    */
   readonly definition: SettingDefinition | undefined;
-  /** The raw written value; `undefined` on the `reset_to_default` path. */
-  readonly value: string | undefined;
-  readonly action: SettingsWriteAction;
   /**
    * True when the write targeted the GLOBAL row rather than a workspace's.
    * The route computes this as `effectiveOrgId === undefined`, which is the
@@ -122,6 +142,26 @@ export interface SettingsAuditWrite {
   readonly platformTier: boolean;
   readonly ipAddress: string | null;
 }
+
+/**
+ * ⚠️ A UNION, so the docstring's rule about `reset_to_default` is the TYPE
+ * rather than prose. `{ action: "reset_to_default", value: "s3cret" }` was
+ * previously well-typed and produced a reset row carrying a value — exactly
+ * what {@link SettingsWriteAction} forbids in words. Its mirror,
+ * `{ action: "update", value: undefined }`, produced an update row with no
+ * value and no discriminator, indistinguishable from a bare key/tier row.
+ * Both are now compile errors.
+ *
+ * This matters more than a normal illegal-state cleanup because
+ * `metadata.action` is the ONLY thing separating the two verbs in
+ * `admin_action_log`: `ADMIN_ACTIONS.settings` has a single member, so both
+ * PUT and DELETE file `settings.update`.
+ */
+export type SettingsAuditWrite = SettingsAuditCommon &
+  (
+    | { readonly action: "update"; readonly value: string }
+    | { readonly action: "reset_to_default"; readonly value?: undefined }
+  );
 
 /**
  * Record a settings write in `admin_action_log`, awaiting the row.
@@ -141,7 +181,22 @@ export interface SettingsAuditWrite {
  * `SAAS_IMMUTABLE_KEYS` vs `secret: true` already presents three times over.
  */
 export async function auditSettingsWrite(entry: SettingsAuditWrite): Promise<void> {
-  const redacted = redactAuditValue(entry.definition, entry.value);
+  // ⚠️ A DEFINITION BELONGING TO A DIFFERENT KEY IS NOT EVIDENCE ABOUT THIS
+  // ONE. `securitySensitiveAuditLine` (settings.ts) has carried this check
+  // since #5180 and this module shipped without it — the brand fences the
+  // OUTPUT of the redaction decision, so corrupting its INPUT costs no cast
+  // and trips nothing. `auditSettingsWrite({ key: "RESEND_API_KEY",
+  // definition: <ATLAS_MODEL's entry>, value: rawKey })` would otherwise
+  // compile, run, and record the credential verbatim.
+  //
+  // Discarding the definition routes to `redactAuditValue`'s fail-closed arm,
+  // which is the conservative direction: an unrecognised pairing withholds.
+  // `maskReason` then says WHICH event it was, because "registry drift" and
+  // "the call site passed the wrong entry" send an operator to different
+  // places — the distinction `AuditMaskReason` exists to draw, and which this
+  // module advertised in its type while being unable to produce it.
+  const mismatched = entry.definition !== undefined && entry.definition.key !== entry.key;
+  const redacted = redactAuditValue(mismatched ? undefined : entry.definition, entry.value);
   const tier = entry.platformTier ? "platform" : "workspace";
 
   const metadata: SettingsAuditMetadata = {
@@ -152,7 +207,9 @@ export async function auditSettingsWrite(entry: SettingsAuditWrite): Promise<voi
       ? {
           value: redacted.value,
           valueMasked: redacted.masked,
-          ...(redacted.maskReason !== undefined ? { maskReason: redacted.maskReason } : {}),
+          ...(redacted.maskReason !== undefined || mismatched
+            ? { maskReason: mismatched ? ("definition_mismatch" as const) : redacted.maskReason }
+            : {}),
         }
       : {}),
   };
@@ -169,5 +226,13 @@ export async function auditSettingsWrite(entry: SettingsAuditWrite): Promise<voi
     ipAddress: entry.ipAddress,
   });
 
-  log.debug({ key: entry.key, tier, action: entry.action }, "Settings write audited");
+  // ⚠️ `info`, and AFTER the await, because it is the only line that can say
+  // the row COMMITTED. `logAdminActionAwait` calls `emitPino` BEFORE its
+  // INSERT, so the stream already carries a routine `admin_action` line at
+  // info for a row that may never land — nothing in it says "pending". At
+  // `debug` (where this started) it is off in every production deploy and
+  // duplicates fields the pre-commit line already has; at `info` it is the
+  // difference an operator greps for between a committed row and an
+  // emitted-then-lost one.
+  log.info({ key: entry.key, tier, action: entry.action }, "Settings write audit row COMMITTED");
 }

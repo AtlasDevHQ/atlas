@@ -444,6 +444,45 @@ describe("runBuiltinDatasourceCatalogSeedBoot (discriminated outcomes)", () => {
     }
   });
 
+  it("⭐ forwards NON-EMPTY blockedSlugs and preservedSlugs across the boot seam", async () => {
+    // ⚠️ THE TEST ABOVE ASSERTS BOTH FIELDS ARE `[]`, WHICH IS THE VALUE A
+    // BROKEN FORWARD PRODUCES. `blockedSlugs: []` / `preservedSlugs: []`
+    // hardcoded in the boot wrapper passes it — measured. The knowledge
+    // sibling has this exact test (`seed-builtin-knowledge-catalog.test.ts`)
+    // with a comment saying the same thing; #5266 did not carry it over, and
+    // the review panel found the gap.
+    //
+    // One blocked, one preserved, seven inserted — three DIFFERENT sizes, so
+    // no two of the lists can be swapped without a count disagreeing.
+    hasInternalDBReturns = true;
+    mockQuery.mockImplementation((_sql, params) => {
+      const slug = String((params ?? [])[2]);
+      if (slug === "clickhouse") {
+        return Promise.reject(
+          Object.assign(new Error("duplicate key value violates unique constraint"), {
+            code: "23505",
+            constraint: "plugin_catalog_slug_key",
+            detail: `Key (slug)=(${slug}) already exists.`,
+          }),
+        );
+      }
+      // Empty RETURNING = the row already existed under its canonical id.
+      if (slug === "postgres") return Promise.resolve({ rows: [] });
+      return Promise.resolve({ rows: [{ slug }] });
+    });
+
+    const { runBuiltinDatasourceCatalogSeedBoot } = await import(
+      "@atlas/api/lib/db/seed-builtin-datasource-catalog"
+    );
+    const result = await runBuiltinDatasourceCatalogSeedBoot();
+    expect(result.kind).toBe("seeded");
+    if (result.kind === "seeded") {
+      expect(result.blockedSlugs).toEqual(["clickhouse"]);
+      expect(result.preservedSlugs).toEqual(["postgres"]);
+      expect(result.insertedSlugs).toHaveLength(7);
+    }
+  });
+
   it("returns `{ kind: 'error' }` when the pool query throws", async () => {
     hasInternalDBReturns = true;
     mockQuery.mockImplementation(() =>

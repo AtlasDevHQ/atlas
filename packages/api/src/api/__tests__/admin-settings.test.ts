@@ -213,6 +213,19 @@ void mock.module("@atlas/api/lib/settings", () => ({
   isHotReloadedKey: mock(() => false),
   SECURITY_SENSITIVE_KEYS: new Set<string>(),
   securitySensitiveAuditFields: mock(() => undefined),
+  // #5270 — newly load-bearing: `lib/audit/settings-write.ts` resolves
+  // `redactAuditValue` from this module. A partial mock replaces the WHOLE
+  // module, so the moment anything in admin.ts's import graph reaches it,
+  // the omission surfaces as `undefined is not a function` several files from
+  // the cause. `securitySensitiveAuditLine` and `settingsCacheEverLoaded`
+  // were already missing; added for the same reason.
+  redactAuditValue: mock((_def: unknown, value: string | undefined) => ({
+    value,
+    masked: false,
+    maskReason: undefined,
+  })),
+  securitySensitiveAuditLine: mock(() => undefined),
+  settingsCacheEverLoaded: mock(() => true),
 }));
 
 // --- Import the app AFTER mocks ---
@@ -1379,6 +1392,99 @@ describe("admin settings routes", () => {
     });
   });
 
+  // ─── what the route hands the audit seam (#5270) ───────────────
+
+  describe("the route→seam audit contract (#5270)", () => {
+    // ⚠️ EVERY OTHER ASSERTION ON THIS SEAM IS `objectContaining({
+    // platformTier })`, which leaves `key`, `definition`, `value` and
+    // `action` unobserved. That matters because `definition` and `value` are
+    // the two inputs the redaction decision is made from, and both are
+    // type-legal to break in one word:
+    //
+    //   `definition: def` → `definition: undefined`
+    //        every write records `[withheld:secret-setting]` /
+    //        `unknown_definition` — the audit trail's usefulness is gone
+    //   `value` → `value: ""`
+    //        every write records an empty value
+    //
+    // Neither is a brand violation (the value still goes through
+    // `redactAuditValue`), so the type cannot see either. These are the
+    // seam-preserving edits the module docstring says the brand does not
+    // close.
+
+    it("⭐ PUT passes the full entry — key, definition, value, action, tier", async () => {
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "500" }),
+      });
+      expect(res.status).toBe(200);
+      expect(mockAuditSettingsWrite).toHaveBeenCalledWith({
+        key: "ATLAS_ROW_LIMIT",
+        // The REAL definition for THIS key — not `undefined`, and not another
+        // key's entry (which the seam now withholds on; see
+        // `lib/audit/__tests__/settings-write.test.ts`).
+        definition: expect.objectContaining({ key: "ATLAS_ROW_LIMIT" }),
+        value: "500",
+        action: "update",
+        platformTier: expect.any(Boolean),
+        ipAddress: null,
+      });
+    });
+
+    it("⭐ DELETE passes action reset_to_default and NO value", async () => {
+      // The untested mirror half. `metadata.action` is the ONLY thing
+      // separating the two verbs in `admin_action_log` — `ADMIN_ACTIONS
+      // .settings` has a single member, so PUT and DELETE both file
+      // `settings.update`. Flipping this to "update" made every DELETE
+      // indistinguishable from a PUT with nothing red.
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", { method: "DELETE" });
+      expect(res.status).toBe(200);
+      expect(mockAuditSettingsWrite).toHaveBeenCalledWith({
+        key: "ATLAS_ROW_LIMIT",
+        definition: expect.objectContaining({ key: "ATLAS_ROW_LIMIT" }),
+        value: undefined,
+        action: "reset_to_default",
+        platformTier: expect.any(Boolean),
+        ipAddress: null,
+      });
+    });
+
+    it("⭐ neither verb writes a SECOND row through the fire-and-forget sink", async () => {
+      // Re-adding the old `logAdminAction({ …, metadata: { key, value, tier }
+      // })` next to the new call would restore the unredacted, workspace-
+      // scoped durable row while every other test stayed green. `mockLog
+      // AdminAction` was declared and cleared but never asserted on.
+      await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "500" }),
+      });
+      await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", { method: "DELETE" });
+      expect(mockLogAdminAction).not.toHaveBeenCalled();
+    });
+
+    it("does NOT reach the seam at all when the secret-key gate 403s", async () => {
+      // ⚠️ THE REACHABILITY PREMISE, which had no test. `admin.ts` 403s a
+      // `secret: true` key before the write, which is why the seam's
+      // redaction is defense-in-depth rather than the live control #5270
+      // claimed. Pinning the gate here means that if it is ever relaxed — to
+      // let platform admins rotate a key from the UI, say — this test is what
+      // says the redaction has just become load-bearing.
+      // Uses the registry fixture's real `secret: true` entry rather than a
+      // hand-built definition — a fixture written for this test could agree
+      // with it by construction.
+      const res = await request("/api/v1/admin/settings/ANTHROPIC_API_KEY", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "sk-ant-live-secret" }),
+      });
+      expect(res.status).toBe(403);
+      expect(mockAuditSettingsWrite).not.toHaveBeenCalled();
+      expect(mockSetSetting).not.toHaveBeenCalled();
+    });
+  });
+
   // ─── the audit row is awaited (#5262) ──────────────────────────
 
   describe("an audit row that cannot be committed (#5262)", () => {
@@ -1430,16 +1536,29 @@ describe("admin settings routes", () => {
         expect.any(String),
         undefined,
       );
+      // ⚠️ THE NEGATIVE, because the natural rollback is the OTHER verb.
+      // `toHaveBeenCalledTimes(1)` on setSetting catches a rollback written
+      // as a second `setSetting`; it cannot see `deleteSetting(key, …)` in
+      // the audit catch — which would make "already in effect" a lie while
+      // every assertion above stayed green.
+      expect(mockDeleteSetting).not.toHaveBeenCalled();
     });
 
     it("DELETE 500s the same way — the clear path is a write too", async () => {
       auditDown();
       const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", { method: "DELETE" });
       expect(res.status).toBe(500);
-      const body = (await res.json()) as { error: string; message: string };
+      const body = (await res.json()) as { error: string; message: string; requestId: string };
       expect(body.error).toBe("audit_not_committed");
       expect(body.message).toContain("reset to its default");
+      expect(body.message).toContain("already in effect");
+      // The PUT twin asserts this; the DELETE one did not. Every 500 in this
+      // repo carries a requestId for log correlation, and this one more than
+      // most — it is the ONLY handle on a config change that was not audited.
+      expect(body.requestId).toBeTruthy();
       expect(mockDeleteSetting).toHaveBeenCalledTimes(1);
+      // The mirror of the PUT negative: no rollback via the other verb.
+      expect(mockSetSetting).not.toHaveBeenCalled();
     });
 
     it("stays 200 when the audit row commits — the arm that must NOT fail", async () => {

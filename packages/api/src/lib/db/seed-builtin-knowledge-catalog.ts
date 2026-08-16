@@ -107,8 +107,6 @@ import { FRONT_CATALOG_ID, FRONT_SLUG } from "@atlas/api/lib/knowledge/front/con
 import { HELPSCOUT_CATALOG_ID, HELPSCOUT_SLUG } from "@atlas/api/lib/knowledge/helpscout/config";
 import { FRESHDESK_CATALOG_ID, FRESHDESK_SLUG } from "@atlas/api/lib/knowledge/freshdesk/config";
 import {
-} from "@atlas/api/lib/brain/ingest/slack/config";
-import {
   ZOOM_TRANSCRIPTS_CATALOG_ID,
   ZOOM_TRANSCRIPTS_SLUG,
 } from "@atlas/api/lib/brain/ingest/zoom/config";
@@ -963,13 +961,13 @@ export interface BuiltinKnowledgeCatalogSeedResult {
  * header), and any other hard failure aborts the pass and propagates (the boot
  * wrapper logs and continues booting).
  *
- * ⚠️ The sibling built-in DATASOURCE seed (`seed-builtin-datasource-catalog.ts`)
- * still inserts with an unqualified `ON CONFLICT DO NOTHING` and so still has
- * the swallow described in this file's header. #5239 scoped itself to the
- * knowledge catalog; the class is the same one file over — and worse there,
- * because that seeder derives `preservedSlugs` as *all minus inserted* and its
- * docstring calls them rows that "already existed". A blocked row is therefore
- * positively REPORTED as present, where this seeder merely omitted it.
+ * The sibling built-in DATASOURCE seed (`seed-builtin-datasource-catalog.ts`)
+ * carried the same defect and was fixed in #5266 — worse there, because it
+ * derived `preservedSlugs` as *all minus inserted*, so a blocked row was
+ * positively REPORTED as present where this seeder merely omitted it. Both
+ * now qualify the conflict target and report `blockedSlugs` as its own
+ * outcome; they share `asUniqueViolation` and the SQLSTATE constants from
+ * `db/pg-errors.ts`.
  */
 export async function seedBuiltinKnowledgeCatalog(
   db: BuiltinKnowledgeCatalogSeedDb,

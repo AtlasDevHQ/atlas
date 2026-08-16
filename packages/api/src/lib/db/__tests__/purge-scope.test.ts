@@ -581,44 +581,18 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
   });
 
   // ── The result contract ────────────────────────────────────────────
-
-  it("reports a count for every purged table (operator sees what was removed)", () => {
-    // AC: "HardDeleteResult reports the new counts, so the operator sees what
-    // was removed rather than trusting the message." Checked structurally
-    // against the interface so a new DELETE without a reported count fails.
-    const resultStart = internalSource.indexOf("export interface HardDeleteCounts");
-    const resultEnd = internalSource.indexOf("\n}", resultStart);
-    const resultFields = new Set(
-      [...internalSource.slice(resultStart, resultEnd).matchAll(/^\s{2}([a-zA-Z]+):\s*number;/gm)].map(
-        (m) => m[1],
-      ),
-    );
-    expect(resultFields.size).toBeGreaterThan(80);
-
-    const snake = (s: string) => s.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
-    // Plural-tolerant: the pre-existing fields are inconsistent (`subscriptions`
-    // reports `subscription`), so match on a normalized stem rather than
-    // demanding an exact 1:1 spelling.
-    const stems = new Set([...resultFields].map((f) => snake(f).replace(/s$/, "")));
-    // One table is reported under a name that is not its own, and the mismatch
-    // is meaningful rather than sloppy: the purge does not clear `chat_cache`,
-    // it clears the Slack installation rows INSIDE it (the
-    // `value->>'orgId'` expression), so `slackInstallations` is the honest
-    // label for what the count measures. Aliased explicitly so the guard stays
-    // exact everywhere else instead of being loosened to accommodate it.
-    const REPORTED_UNDER: Readonly<Record<string, string | undefined>> = {
-      chat_cache: "slackInstallations",
-    };
-    const unreported = [...PURGED_TABLES].filter((t) => {
-      const alias = REPORTED_UNDER[t];
-      if (alias !== undefined) return !resultFields.has(alias);
-      const stem = t.replace(/s$/, "");
-      return !stems.has(stem) && !stems.has(t);
-    });
-    expect(
-      unreported,
-      `Purged table(s) with no count on HardDeleteResult: ${unreported.join(", ")}. ` +
-        `The operator response reports these; an unreported delete is invisible.`,
-    ).toEqual([]);
-  });
+  //
+  // "reports a count for every purged table" USED to live here: it sliced
+  // `HardDeleteResult`'s own source with a regex, normalized plural stems, and
+  // consulted a `REPORTED_UNDER` alias map to excuse `chat_cache`. #5176 deleted
+  // it rather than adapting it, because `HardDeleteCounts` is now a mapped type
+  // over this registry — a `purged` entry with no count is a compile error at
+  // `hardDeleteWorkspace`'s return statement (measured: TS2741, "Property
+  // 'falsifierNewTable' is missing"), a misspelled field is TS2561, and the two
+  // aliases are members of the type instead of entries in a test's lookup.
+  //
+  // A test that still passed after that type landed would no longer be the thing
+  // enforcing the rule, and keeping it would suggest otherwise. What the type
+  // CANNOT express stays above: that the DELETE exists at all, the delete ORDER
+  // the two RESTRICT FKs depend on, and the scrub's residue predicate.
 });

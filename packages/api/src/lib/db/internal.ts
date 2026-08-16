@@ -25,6 +25,10 @@ import { normalizeError } from "@atlas/api/lib/effect/errors";
 import { resolveStatusClause } from "@atlas/api/lib/content-mode/port";
 import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
 import { getConnectTimeoutMs } from "@atlas/api/lib/db/pool-config";
+// Type-only: `HardDeleteCounts` is derived from the registry, so the purge's
+// return statement stops compiling when a `purged` entry has no count (#5176).
+// Nothing here is needed at runtime, so this adds no import to the bundle.
+import type { PURGE_TABLE_DECISIONS } from "@atlas/api/lib/db/purge-scope";
 import { foldRollingMean } from "@atlas/api/lib/learn/rolling-mean";
 import { REPEATED_PATTERN_MIN_REPETITIONS } from "@atlas/api/lib/learn/pattern-tiers";
 import {
@@ -3826,138 +3830,91 @@ export interface HardDeleteResult {
   readonly skippedTables: readonly string[];
 }
 
-/** Per-table row counts from a hard delete. Every field is a number. */
-export interface HardDeleteCounts {
-  // Data tables (org_id)
-  auditLog: number;
-  conversations: number;
-  messages: number;
-  slackInstallations: number;
-  slackThreads: number;
-  actionLog: number;
-  scheduledTaskRuns: number;
-  scheduledTasks: number;
-  tokenUsage: number;
-  pluginSettings: number;
-  settings: number;
-  semanticEntityVersions: number;
-  semanticEntities: number;
-  learnedPatterns: number;
-  promptItems: number;
-  promptCollections: number;
-  querySuggestions: number;
-  ssoProviders: number;
-  ipAllowlist: number;
-  customRoles: number;
-  auditRetentionConfig: number;
-  workspaceModelConfig: number;
-  approvalQueue: number;
-  approvalRules: number;
-  workspaceBranding: number;
-  onboardingEmails: number;
-  piiColumnClassifications: number;
-  scimGroupMappings: number;
-  sandboxCredentials: number;
-  dashboardCards: number;
-  dashboards: number;
-  oauthState: number;
-  // Integration tables (org_id). teams/telegram/gchat/whatsapp_installations
-  // were dropped by migration 0119 (#3161); discord_installations stays (BYOT).
-  discordInstallations: number;
-  githubInstallations: number;
-  linearInstallations: number;
-  emailInstallations: number;
-  // Tables keyed by workspace_id
-  usageEvents: number;
-  usageSummaries: number;
-  abuseEvents: number;
-  customDomains: number;
-  slaMetrics: number;
-  slaAlerts: number;
-  slaThresholds: number;
-  regionMigrations: number;
-  workspacePlugins: number;
-  // Per-workspace credential stores (workspace_id) — encrypted secrets at rest.
-  // integration_credentials: lazy-OAuth bundles (Salesforce/Jira/etc., ADR-0005).
-  // twenty_integrations: Twenty CRM API key.
-  integrationCredentials: number;
-  twentyIntegrations: number;
-  // Stripe billing linkage (#3425): @better-auth/stripe `subscription` rows
-  // (0 when the plugin's table doesn't exist) + Atlas's stripe_webhook_events
-  // dedupe-ledger rows for the org's subscription ids.
-  subscriptions: number;
-  stripeWebhookEvents: number;
-  // ── Company Atlas / brain pillar (ADR-0036/0037) — added by #5160 ──
-  // Unreachable by the purge until #5160: workspace_id-keyed with no FK to
-  // `organization`, so the `DELETE FROM organization` below never cascaded to
-  // them. `brain_facts` is the highest-sensitivity table in the internal DB
-  // (claims extracted from Slack/Zoom/Outlook, retained verbatim) and is
-  // documented in schema.ts as "Nothing DELETEs" — the purge is its ONLY
-  // removal path, which is why its absence had no other mechanism behind it.
-  brainFacts: number;
-  brainEdges: number;
-  brainEpisodes: number;
-  brainVocabularyEdge: number;
-  brainVocabularyTarget: number;
-  brainVocabularyProposal: number;
-  brainPredicateCardinality: number;
-  brainAudienceReverifyAttempt: number;
-  brainSlackChannel: number;
-  brainSlackIngestScope: number;
-  brainEnrollment: number;
-  brainEntity: number;
-  brainCoverageSnapshot: number;
-  brainCoverageCycle: number;
-  factAudienceMember: number;
-  // ── Knowledge Base pillar (ADR-0028) — added by #5160 ──
-  // knowledge_sync_credentials is a secret at rest: the same class of miss
-  // integration_credentials was (#3425), one pillar over.
-  knowledgeDocuments: number;
-  knowledgeLinks: number;
-  knowledgeSyncCredentials: number;
-  knowledgeSyncState: number;
-  // ── Remaining workspace-scoped tables the purge never reached (#5160) ──
-  // Found by the mechanical sweep behind lib/db/purge-scope.ts rather than by
-  // enumeration from memory — see that file for the per-table rationale.
-  agentRuns: number;
-  agentSessionMemory: number;
-  adminActionRetentionConfig: number;
-  connectionGroupDescriptions: number;
-  connectionProfileState: number;
-  semanticProfileStatus: number;
-  learnedPatternInjections: number;
-  suggestionUserClicks: number;
-  dashboardUserDrafts: number;
-  dashboardDraftCardCache: number;
-  userFavoritePrompts: number;
-  mcpActionPolicy: number;
-  oauthClientWorkspaceGrants: number;
-  oauthClientWorkspaceScope: number;
-  oauthClientRateLimits: number;
-  overageMeterReports: number;
-  workspaceModelCatalog: number;
-  workspaceProactiveConfig: number;
-  channelProactiveConfig: number;
-  proactivePauses: number;
-  proactiveMeterEvents: number;
-  proactiveClassificationReview: number;
-  proactivePublicDataset: number;
-  emailOutbox: number;
-  crmOutbox: number;
-  // Rows SCRUBBED rather than deleted: the operator accountability trail keeps
-  // WHAT happened to this workspace (action_type / target_type / timestamp /
-  // org_id) while losing WHO — actor_id, actor_email, ip_address and metadata
-  // are NULLed and target_id takes a sentinel. PRIOR operator actions only: the
-  // purge's own audit row is written after this function returns, stamped with
-  // the acting admin's org, so it is never in scope. See purge-scope.ts
-  // `anonymized`.
-  adminActionLogAnonymized: number;
-  // Better Auth tables
-  members: number;
-  betterAuthInvitations: number;
-  orphanedUsers: number;
-  organization: number;
+/** The registry, by type only — its VALUE is never read here. */
+type PurgeRegistry = typeof PURGE_TABLE_DECISIONS;
+
+/**
+ * The registry keys whose decision is `purged` — the exact set of tables
+ * `hardDeleteWorkspace` issues an explicit DELETE for, as a literal union.
+ */
+type PurgedTableName = {
+  [K in keyof PurgeRegistry]: PurgeRegistry[K]["decision"] extends "purged" ? K : never;
+}[keyof PurgeRegistry];
+
+/** `snake_case` → `camelCase`, at the type level. */
+type Camel<S extends string> = S extends `${infer Head}_${infer Tail}`
+  ? `${Head}${Capitalize<Camel<Tail>>}`
+  : S;
+
+/**
+ * The two count fields whose name is NOT the camelCase of their table. Both
+ * mismatches are meaningful rather than sloppy:
+ *
+ * - `chat_cache` → `slackInstallations`: the purge does not clear the table, it
+ *   clears the Slack installation rows INSIDE it (the `value->>'orgId'`
+ *   expression), so the table's own name would overstate what the count measures.
+ * - `subscription` → `subscriptions`: @better-auth/stripe names its table in the
+ *   singular, and the count field has been plural since #3425.
+ *
+ * These lived in a TEST's `REPORTED_UNDER` lookup until #5176, beside a
+ * plural-stem normalizer that existed to tolerate the second one. Here they are
+ * part of the type: an alias naming a field that does not exist is a compile
+ * error, and a table that quietly stops needing one is too.
+ */
+interface CountFieldAliases {
+  chat_cache: "slackInstallations";
+  subscription: "subscriptions";
 }
+
+type CountFieldFor<T extends string> = T extends keyof CountFieldAliases
+  ? CountFieldAliases[T]
+  : Camel<T>;
+
+/**
+ * Counts that do not come from the registry at all.
+ *
+ * `adminActionLogAnonymized` counts rows that SURVIVED — `admin_action_log` is
+ * `anonymized`, not `purged`, so it is deliberately not in the union above; see
+ * `SURVIVOR_COUNT_FIELDS` below, which excludes it from the destruction total.
+ * The other four are Better-Auth tables: global by ADR-0024, absent from
+ * `db/schema.ts`, and therefore absent from the registry that enumerates it.
+ */
+type NonRegistryCountField =
+  | "adminActionLogAnonymized"
+  | "members"
+  | "betterAuthInvitations"
+  | "orphanedUsers"
+  | "organization";
+
+type HardDeleteCountField = CountFieldFor<PurgedTableName> | NonRegistryCountField;
+
+/**
+ * Per-table row counts from a hard delete — DERIVED from the purge registry
+ * rather than hand-written (#5176).
+ *
+ * This was 92 hand-written `number` fields, and the field↔table correspondence
+ * was enforced by a test that regex-scanned this interface's own source,
+ * normalized plural stems, and consulted a hand-maintained alias map. Now:
+ * adding a `purged` entry to `PURGE_TABLE_DECISIONS` adds a required field here,
+ * so `hardDeleteWorkspace`'s return statement stops compiling until it reports a
+ * count for the table it has just claimed to delete. Deleting a count field, or
+ * misspelling one, fails the same way. That test is GONE rather than adapted —
+ * a test that still passes once the type lands is no longer what enforces the
+ * rule, and keeping it would suggest otherwise.
+ *
+ * It is a mapped type over a union of literal field names, which is what gives
+ * it an implicit index signature — so `Object.entries` in `totalRowsDeleted` and
+ * the route's `Record<string, number>` wire contract both work with no cast.
+ * That uniformity is only possible because `skippedTables` lives outside it.
+ *
+ * What this does NOT check is that the DELETE exists, that the delete ORDER
+ * respects the two RESTRICT FKs, or that the scrub's residue predicate covers
+ * its SET list. None of those are expressible here; they stay in
+ * `purge-scope.test.ts`.
+ */
+export type HardDeleteCounts = {
+  readonly [K in HardDeleteCountField]: number;
+};
 
 /**
  * Fields on `HardDeleteCounts` that count rows which SURVIVED the purge, and so

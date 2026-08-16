@@ -266,10 +266,21 @@ void mock.module("@atlas/api/lib/brain/warehouse-producer", () => ({
  * a test of the run.
  */
 let lockAcquired = true;
+let lockThrows: Error | null = null;
 let lockCalls: string[] = [];
+class FakeLockContractError extends Error {
+  override readonly name = "WarehouseRunLockContractError";
+}
 void mock.module("@atlas/api/lib/brain/warehouse-run-lock", () => ({
+  // ⚠️ ALL exports, not just the one the route imports today. `testing.md`'s
+  // mock-all-exports rule exists for exactly this: the day the route reaches for
+  // `WarehouseRunLockContractError` to give a lock fault its own status, a
+  // partial factory makes it `undefined` at runtime with no tripwire.
+  WAREHOUSE_RUN_LOCK_NAMESPACE: 5228,
+  WarehouseRunLockContractError: FakeLockContractError,
   withWarehouseRunLock: async <T,>(workspaceId: string, fn: () => Promise<T>) => {
     lockCalls.push(workspaceId);
+    if (lockThrows) throw lockThrows;
     return lockAcquired ? { acquired: true, value: await fn() } : { acquired: false };
   },
 }));
@@ -313,6 +324,7 @@ beforeEach(() => {
   loggedErrors.length = 0;
   produceCalls = [];
   lockAcquired = true;
+  lockThrows = null;
   lockCalls = [];
   produceReport = {
     workspaceId: CURRENT_ORG,
@@ -713,6 +725,27 @@ describe("POST /produce — running the producer", () => {
     expect(body.message).toContain("already in progress");
     expect(body.message).toContain("nothing was written");
     expect(body.requestId).toBe("test-req");
+  });
+
+  it("does NOT render a lock FAULT as 409 — a fault is a 500, not 'already in progress'", async () => {
+    lockThrows = new FakeLockContractError("the lock cannot report whether it is held");
+    const res = await post("/produce", {});
+
+    // ⚠️ The mutation this closes: `.catch(() => ({ acquired: false }))` around
+    // the lock. Pool exhaustion or a contract fault would then render as
+    // "a run is already in progress" — permanently, on every press, with no
+    // error the operator can see. That is verbatim the outcome the lock module
+    // refuses, arriving one layer above it.
+    expect(res.status).toBe(500);
+    expect(res.status).not.toBe(409);
+    expect(produceCalls).toHaveLength(0);
+    // ⚠️ **No assertion on the BODY here, deliberately.** This suite mocks
+    // `runEffect` away, so `classifyError` never runs and the 500 body is
+    // whatever Hono's fallback emits for a rejected handler — identical for
+    // every cause. Asserting `requestId` on it would be asserting the harness,
+    // not the route: it could not distinguish a lock fault from any other 500,
+    // which is the whole claim this test makes. The real error-to-HTTP mapping,
+    // `requestId` included, is `lib/effect/hono.ts`'s own suite.
   });
 
   it("403 outranks the lock — an unentitled reader is refused before it is taken", async () => {

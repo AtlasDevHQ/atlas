@@ -2653,9 +2653,11 @@ export function makeSchedulerLive(
         name: "brain_warehouse_cadence",
         intervalMs: () => {
           // oxlint-disable-next-line @typescript-eslint/no-require-imports -- read the interval synchronously at fiber-registration time (same pattern as brain_coverage_snapshot). NOTE the knob is hot-reloadable in the registry but is read ONCE here, so a change takes effect at restart.
-          const { getWarehouseCadenceIntervalMs } = require("@atlas/api/lib/scheduler/brain-warehouse-cadence") as {
-            getWarehouseCadenceIntervalMs: () => number;
-          };
+          // `as typeof import(...)`, not a hand-written module shape: a literal
+          // shape is a CLAIM about the module that drifts silently — rename or
+          // async-ify the function and the cast still compiles while the fiber
+          // gets a `Promise` as its interval.
+          const { getWarehouseCadenceIntervalMs } = require("@atlas/api/lib/scheduler/brain-warehouse-cadence") as typeof import("@atlas/api/lib/scheduler/brain-warehouse-cadence");
           return getWarehouseCadenceIntervalMs();
         },
         gate: {
@@ -2665,11 +2667,12 @@ export function makeSchedulerLive(
               hasInternalDB: () => boolean;
             };
             // oxlint-disable-next-line @typescript-eslint/no-require-imports -- same reason
-            const { isWarehouseCadenceEnabled } = require("@atlas/api/lib/scheduler/brain-warehouse-cadence") as {
-              isWarehouseCadenceEnabled: (workspaceId?: string) => boolean;
-            };
-            // No workspace argument: the PLATFORM gate. The per-workspace
-            // decision is read again inside the cycle, per workspace.
+            const { isWarehouseCadenceEnabled } = require("@atlas/api/lib/scheduler/brain-warehouse-cadence") as typeof import("@atlas/api/lib/scheduler/brain-warehouse-cadence");
+            // No workspace argument: the PLATFORM gate, and for a DEFAULT-OFF
+            // key it is the switch that decides the fiber exists at all. The
+            // per-workspace decision is read again inside the cycle and chooses
+            // WHICH workspaces run — the two compose as an AND, which is why the
+            // setting's description tells an admin both are needed.
             return hasInternalDB() && isWarehouseCadenceEnabled();
           },
           skipLog:
@@ -2705,12 +2708,19 @@ export function makeSchedulerLive(
             result.workspacesDeclinedLocked,
           "atlas.brain.warehouse_cadence.workspaces_succeeded": result.workspacesSucceeded,
           "atlas.brain.warehouse_cadence.workspaces_failed": result.workspacesFailed,
+          // ⚠️ A SUBSET of `succeeded`, and the one that needs a human. The run
+          // committed its facts, then `proposeAliasEdges` threw mid-batch — and
+          // it commits per proposal, so an auto-approved entity edge has already
+          // re-keyed part of the corpus. Without this the cycle reports that run
+          // as byte-identical to a clean one.
+          "atlas.brain.warehouse_cadence.workspaces_edge_pass_failed":
+            result.workspacesEdgePassFailed,
           // The queue this cycle added to. `created` is drafts a human must
           // review; `corroborated` is the cheap half and is here so a rising
           // `created` can be read against it rather than alone.
           "atlas.brain.warehouse_cadence.created": result.created,
           "atlas.brain.warehouse_cadence.corroborated": result.corroborated,
-          "atlas.brain.warehouse_cadence.refusals": result.refusals,
+          "atlas.brain.warehouse_cadence.refusals": result.refusalsTotal,
           // Scrubbed at every push site (`errorMessage`), which is what makes it
           // safe to put on a span at all.
           "atlas.brain.warehouse_cadence.error": result.error ?? "",

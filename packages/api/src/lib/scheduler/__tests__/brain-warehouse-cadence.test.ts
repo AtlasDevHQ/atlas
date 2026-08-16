@@ -25,6 +25,7 @@ import { makeProducerReach } from "@atlas/api/lib/brain/enrollment";
 import {
   WAREHOUSE_PRODUCER_PRINCIPAL,
   planWarehouseEmission,
+  runWarehouseProducer,
   type WarehouseEntityLookup,
   type WarehouseProducerReport,
 } from "@atlas/api/lib/brain/warehouse-producer";
@@ -33,11 +34,14 @@ import {
   DEFAULT_WAREHOUSE_CADENCE_INTERVAL_MS,
   MIN_WAREHOUSE_CADENCE_INTERVAL_MS,
   WAREHOUSE_CADENCE_PRINCIPAL,
+  WAREHOUSE_CADENCE_DEFAULTS,
   WAREHOUSE_CADENCE_WORKSPACES_SQL,
+  getWarehouseCadenceIntervalMs,
   isWarehouseCadenceEnabled,
   runWarehouseCadenceCycle,
   type WarehouseCadenceDeps,
 } from "@atlas/api/lib/scheduler/brain-warehouse-cadence";
+import { withWarehouseRunLock } from "@atlas/api/lib/brain/warehouse-run-lock";
 
 /** A report with the fields the cycle tallies; the rest are irrelevant here. */
 function report(overrides: Partial<WarehouseProducerReport> = {}): WarehouseProducerReport {
@@ -163,6 +167,34 @@ describe("warehouse cadence — enablement", () => {
   });
 });
 
+/**
+ * ⚠️ **The production wiring had no reader at all, and that is the same class as
+ * the `isEnabled` survivor one file over.** Every seam is optional and the shared
+ * `deps()` helper injects all four, so defaulting `withLock` to a pass-through —
+ * the scheduled trigger taking NO LOCK, which is the entire subject of this
+ * issue — left all fourteen tests green. Identity assertions are the cheapest
+ * thing that can fail here.
+ */
+describe("warehouse cadence — the production wiring", () => {
+  it("defaults the lock seam to the REAL run lock", () => {
+    expect(WAREHOUSE_CADENCE_DEFAULTS.withLock).toBe(withWarehouseRunLock);
+  });
+
+  it("defaults the producer and enablement seams to the real ones", () => {
+    expect(WAREHOUSE_CADENCE_DEFAULTS.runProducer).toBe(runWarehouseProducer);
+    expect(WAREHOUSE_CADENCE_DEFAULTS.isEnabled).toBe(isWarehouseCadenceEnabled);
+  });
+
+  it("answers NO enrolled workspaces — not an error — when there is no internal DB", async () => {
+    // ⚠️ Reachable only because the defaults are hoisted; `listEnrolledWorkspaces`
+    // is module-private. Deleting its `hasInternalDB()` guard used to change
+    // nothing here, and in production it turns a supported self-hosted
+    // configuration into a `status: "failure"` plus an error log every single
+    // tick, forever — which the function's own docstring calls "not an outage".
+    expect(await WAREHOUSE_CADENCE_DEFAULTS.listWorkspaces()).toEqual([]);
+  });
+});
+
 describe("warehouse cadence — the lock", () => {
   it("takes the run lock for EVERY scheduled run", async () => {
     const locked: string[] = [];
@@ -207,6 +239,21 @@ describe("warehouse cadence — the lock", () => {
     expect(result.status).toBe("success");
   });
 
+  it("still reports success when EVERY workspace declined", async () => {
+    // The case the result docstring names by hand. With only the mixed test
+    // above, a status rule that special-cased "all declined" as degraded stayed
+    // green — and it would page an operator every time a tick landed behind a
+    // long-running run, which is the ordinary shape of a busy workspace.
+    const result = await runWarehouseCadenceCycle(
+      deps({ withLock: async () => ({ acquired: false }) }),
+    );
+
+    expect(result.workspacesDeclinedLocked).toBe(2);
+    expect(result.workspacesSucceeded).toBe(0);
+    expect(result.status).toBe("success");
+    expect(result.error).toBeNull();
+  });
+
   it("runs workspaces SEQUENTIALLY — never two locked runs in flight at once", async () => {
     let inFlight = 0;
     let maxInFlight = 0;
@@ -230,7 +277,99 @@ describe("warehouse cadence — the lock", () => {
   });
 });
 
+describe("warehouse cadence — what it tallies", () => {
+  it("counts refusals across workspaces", async () => {
+    // Every `report()` defaulted to `refusals: []`, so deleting the tally line
+    // entirely stayed green — and that counter rides a span attribute, so a
+    // fleet where every pair is being refused would report zero refusals.
+    const refusal = {
+      entity: "accounts",
+      dimension: "status",
+      reason: "ambiguous-dimension" as const,
+      message: "enrolled on two entities",
+    };
+    const result = await runWarehouseCadenceCycle(
+      deps({
+        // Deliberately unequal to `created` and `corroborated` so a tally
+        // reading the wrong field cannot pass.
+        runProducer: async (p) =>
+          p.workspaceId === "ws-a"
+            ? report({ refusals: [refusal, refusal], created: 1 })
+            : report({ refusals: [refusal], created: 1 }),
+      }),
+    );
+
+    expect(result.refusalsTotal).toBe(3);
+    expect(result.created).toBe(2);
+  });
+
+  it("flags a run whose ENTITY-EDGE PASS threw, without demoting it to a failure", async () => {
+    // The run committed its facts, so it is a success — but `proposeAliasEdges`
+    // commits per proposal, so a mid-batch throw has already re-keyed part of
+    // the corpus. Dropping this made a partial, corpus-mutating failure
+    // byte-identical to a clean run.
+    const result = await runWarehouseCadenceCycle(
+      deps({
+        runProducer: async (p) =>
+          p.workspaceId === "ws-a"
+            ? report({
+                created: 1,
+                entityEdges: {
+                  kind: "failed",
+                  // The LAST phase — a batch that was half-committed, which is
+                  // the arm with corpus consequences. `store-read` (never read)
+                  // is the harmless end of the same union.
+                  reached: {
+                    phase: "proposing",
+                    entries: 3,
+                    ambiguous: 0,
+                    selfEdges: 0,
+                    unmintedIds: 0,
+                    proposalsAttempted: 2,
+                  },
+                  message: "edge pass threw",
+                },
+              })
+            : report({ created: 1 }),
+      }),
+    );
+
+    expect(result.workspacesEdgePassFailed).toBe(1);
+    // Still counted as succeeded — the facts landed — and the cycle is not
+    // degraded, because nothing threw out of the run.
+    expect(result.workspacesSucceeded).toBe(2);
+    expect(result.status).toBe("success");
+  });
+});
+
 describe("warehouse cadence — the audit trail", () => {
+  it("passes the producer EXACTLY the run context, and nothing that narrows it", async () => {
+    // ⚠️ Asserted as a WHOLE OBJECT. Collecting `workspaceId`/`triggeredBy`/
+    // `requestId` into three separate arrays let a fourth key — say an
+    // `entities: [...]` narrowing argument, which is precisely the whole-reach
+    // decision this issue records — be added with every test still green. A
+    // deep-equal is what makes that decision enforceable rather than merely
+    // documented.
+    const calls: unknown[] = [];
+    await runWarehouseCadenceCycle(
+      deps({
+        listWorkspaces: async () => ["ws-a"],
+        runProducer: async (p) => {
+          calls.push(p);
+          return report();
+        },
+      }),
+    );
+
+    expect(calls).toEqual([
+      {
+        workspaceId: "ws-a",
+        triggeredBy: WAREHOUSE_CADENCE_PRINCIPAL,
+        requestId: expect.stringMatching(/^whc-/) as unknown,
+      },
+    ]);
+  });
+
   it("triggers under a principal distinguishable from an operator's and from the attribution", async () => {
     const seen: string[] = [];
     await runWarehouseCadenceCycle(
@@ -293,6 +432,67 @@ describe("warehouse cadence — failure handling", () => {
     expect(result.created).toBe(4);
     expect(result.corroborated).toBe(10);
     expect(result.error).toContain("warehouse unreachable");
+    // PREFIXED with the workspace. Bare, a fleet-wide fault reads
+    // "connection terminated; connection terminated; …" and an operator cannot
+    // tell one tenant retrying from three tenants down.
+    expect(result.error).toContain("ws-a");
+  });
+
+  it("does not lose the whole tick when a workspace's ENABLEMENT read throws", async () => {
+    // `isEnabled` used to sit outside the per-workspace try. A settings read
+    // throwing for one workspace aborted the cycle, discarded every counter
+    // already accumulated, and produced no result and no span at all — a fourth
+    // outcome the `status` union cannot express.
+    const result = await runWarehouseCadenceCycle(
+      deps({
+        listWorkspaces: async () => ["ws-a", "ws-b"],
+        isEnabled: (workspaceId) => {
+          if (workspaceId === "ws-a") throw new Error("settings cache corrupt");
+          return true;
+        },
+      }),
+    );
+
+    expect(result.status).toBe("degraded");
+    expect(result.workspacesFailed).toBe(1);
+    expect(result.workspacesSucceeded).toBe(1);
+    expect(result.error).toContain("settings cache corrupt");
+  });
+
+  it("de-duplicates one fault shared by many workspaces", async () => {
+    // Ten tenants behind one broken dependency otherwise write the same sentence
+    // ten times onto a span attribute — and the field's own docstring called them
+    // "distinct" while nothing de-duplicated. The workspace prefix is what keeps
+    // genuinely different faults apart after the dedupe.
+    const result = await runWarehouseCadenceCycle(
+      deps({
+        listWorkspaces: async () => ["ws-a", "ws-b", "ws-c"],
+        runProducer: async () => {
+          throw new Error("internal db unreachable");
+        },
+      }),
+    );
+
+    expect(result.workspacesFailed).toBe(3);
+    // Three DISTINCT reasons, because each is prefixed by its own workspace —
+    // and the count is bounded rather than unbounded.
+    expect(result.error?.split("; ")).toHaveLength(3);
+  });
+
+  it("bounds the reason list rather than growing it per workspace", async () => {
+    const result = await runWarehouseCadenceCycle(
+      deps({
+        listWorkspaces: async () => ["w1", "w2", "w3", "w4", "w5", "w6", "w7"],
+        runProducer: async () => {
+          throw new Error("warehouse down");
+        },
+      }),
+    );
+
+    expect(result.workspacesFailed).toBe(7);
+    // FAILURE_REASONS_MAX. Unbounded, a thousand-tenant region writes a thousand
+    // sentences onto one span attribute.
+    expect(result.error?.split("; ")).toHaveLength(5);
   });
 
   it("reports FAILURE, not success, when the workspace scan itself throws", async () => {
@@ -314,6 +514,18 @@ describe("warehouse cadence — failure handling", () => {
 });
 
 describe("warehouse cadence — the interval knob", () => {
+  function withIntervalEnv(value: string | undefined, assertion: () => void): void {
+    const prior = process.env.ATLAS_BRAIN_WAREHOUSE_CADENCE_INTERVAL_HOURS;
+    if (value === undefined) delete process.env.ATLAS_BRAIN_WAREHOUSE_CADENCE_INTERVAL_HOURS;
+    else process.env.ATLAS_BRAIN_WAREHOUSE_CADENCE_INTERVAL_HOURS = value;
+    try {
+      assertion();
+    } finally {
+      if (prior === undefined) delete process.env.ATLAS_BRAIN_WAREHOUSE_CADENCE_INTERVAL_HOURS;
+      else process.env.ATLAS_BRAIN_WAREHOUSE_CADENCE_INTERVAL_HOURS = prior;
+    }
+  }
+
   it("has a constant FLOOR below the configurable value", () => {
     // The knob is open in the safe direction (longer) and stopped by a constant
     // in the unsafe one, which is `WAREHOUSE_ROW_CAP`'s argument applied to time:
@@ -328,10 +540,77 @@ describe("warehouse cadence — the interval knob", () => {
   it("declares the interval where a human can change it without a deploy", () => {
     const def = getSettingDefinition("ATLAS_BRAIN_WAREHOUSE_CADENCE_INTERVAL_HOURS");
     expect(def?.type).toBe("number");
-    expect(def?.default).toBe("24");
     // Platform-scoped: the cost it governs — a warehouse read per enrolled
     // workspace per tick — is the operator's.
     expect(def?.scope).toBe("platform");
+    // ⚠️ Tied ARITHMETICALLY to the constant rather than restated as `"24"`.
+    // The registry default, `DEFAULT_WAREHOUSE_CADENCE_INTERVAL_MS` and the
+    // customer-facing description are three hand-maintained spellings of one
+    // number; a literal here agrees with the registry by construction and lets
+    // all three drift together while staying green.
+    expect(Number(def?.default) * 60 * 60_000).toBe(DEFAULT_WAREHOUSE_CADENCE_INTERVAL_MS);
+    expect(def?.description).toContain("default 24");
+  });
+
+  /**
+   * ⚠️ **`getWarehouseCadenceIntervalMs` had NO caller in this suite**, so the
+   * clamp, the non-finite guard and — worse — the setting KEY itself were all
+   * unfalsifiable. A typo in the key compiles, returns `undefined`, and silently
+   * yields the default forever. Its `isWarehouseCadenceEnabled` sibling was
+   * pinned through the real env path; this one was not.
+   */
+  describe("read through the real settings path", () => {
+    it("returns the default when unset", () => {
+      withIntervalEnv(undefined, () =>
+        expect(getWarehouseCadenceIntervalMs()).toBe(DEFAULT_WAREHOUSE_CADENCE_INTERVAL_MS),
+      );
+    });
+
+    it("honours a LONGER cadence — the safe, unbounded direction", () => {
+      withIntervalEnv("48", () =>
+        expect(getWarehouseCadenceIntervalMs()).toBe(48 * 60 * 60_000),
+      );
+    });
+
+    it("CLAMPS a shorter-than-floor cadence instead of honouring it", () => {
+      // Without the clamp a `0.01` setting is a 36-second polling loop against a
+      // customer warehouse, filing drafts faster than anyone can review them.
+      withIntervalEnv("0.5", () =>
+        expect(getWarehouseCadenceIntervalMs()).toBe(MIN_WAREHOUSE_CADENCE_INTERVAL_MS),
+      );
+    });
+
+    it("falls back to the default on an unparseable value", () => {
+      withIntervalEnv("abc", () =>
+        expect(getWarehouseCadenceIntervalMs()).toBe(DEFAULT_WAREHOUSE_CADENCE_INTERVAL_MS),
+      );
+    });
+
+    it("falls back to the default on a non-finite value", () => {
+      // `Infinity` parses and is positive, so only the `Number.isFinite` guard
+      // catches it. Left through, the fiber starts and never ticks — no error,
+      // no log, just a cadence that silently does not exist.
+      withIntervalEnv("Infinity", () =>
+        expect(getWarehouseCadenceIntervalMs()).toBe(DEFAULT_WAREHOUSE_CADENCE_INTERVAL_MS),
+      );
+    });
+
+    it("reads the numeric prefix of a trailing-unit value", () => {
+      // `Number.parseFloat("48h")` is 48; `Number("48h")` is NaN, which falls
+      // through to the default. This pins WHICH parser is in use, on exactly the
+      // input an operator is most likely to type.
+      //
+      // ⚠️ **`48h`, not `24h`, and that is the whole test.** With `24h` the
+      // parseFloat branch yields 24h and the NaN branch yields the DEFAULT —
+      // which is also 24h — so the assertion could not tell them apart and the
+      // `parseFloat` → `Number` mutation survived it. Measured, not spotted: the
+      // first draft of this test passed against both parsers. The expected value
+      // has to differ from the default for the branch to be observable.
+      withIntervalEnv("48h", () =>
+        expect(getWarehouseCadenceIntervalMs()).toBe(48 * 60 * 60_000),
+      );
+      expect(48 * 60 * 60_000).not.toBe(DEFAULT_WAREHOUSE_CADENCE_INTERVAL_MS);
+    });
   });
 });
 

@@ -210,6 +210,60 @@ describeIfPg("warehouse run lock (real Postgres)", () => {
   );
 
   it(
+    "is WORKSPACE-scoped — two workspaces overlapping both acquire and both write",
+    async () => {
+      // ⚠️ **Nothing else in this file can tell a workspace-scoped lock from a
+      // GLOBAL one.** Every other test uses a single workspace id, so
+      // `hashtext($2) * 0` — valid SQL, still binds `$2`, still matches every
+      // text assertion in the unit suite — passes all of them while making the
+      // lock fleet-wide. An operator pressing Run in workspace B during
+      // workspace A's cadence run would then get "a run is already in progress
+      // for this workspace" about a workspace that has no run.
+      const other = `${workspace}-second`;
+      await enroll("status");
+      await pool.query(
+        `INSERT INTO brain_enrollment (workspace_id, entity, dimension, enrolled_by, note)
+         VALUES ($1, $2, 'status', 'user-1', NULL)`,
+        [other, ENTITY],
+      );
+
+      let open!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        open = resolve;
+      });
+
+      const first = withWarehouseRunLock(workspace, () =>
+        produce(new Date("2026-08-16T12:00:00.000Z"), "active", gate),
+      );
+      await new Promise((r) => setTimeout(r, 50));
+
+      // A DIFFERENT workspace, while the first still holds its lock.
+      const second = await withWarehouseRunLock(other, () =>
+        runWarehouseProducer(
+          { workspaceId: other, triggeredBy: "user-1" },
+          deps(new Date("2026-08-16T12:00:00.500Z"), "churned"),
+        ),
+      );
+
+      open();
+      const firstOutcome = await first;
+
+      // BOTH acquired. A global lock declines the second.
+      expect(firstOutcome.acquired).toBe(true);
+      expect(second.acquired).toBe(true);
+
+      // And each workspace's facts are its own.
+      expect(await factObjects()).toEqual(["active"]);
+      const { rows } = await pool.query<{ object: string }>(
+        `SELECT object FROM brain_facts WHERE workspace_id = $1`,
+        [other],
+      );
+      expect(rows.map((r) => r.object)).toEqual(["churned"]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
     "POSITIVE CONTROL: without the lock the same overlap writes BOTH readings",
     async () => {
       await enroll("status");

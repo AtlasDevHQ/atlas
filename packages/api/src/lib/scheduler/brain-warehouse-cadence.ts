@@ -63,6 +63,7 @@ import { getSettingAuto } from "@atlas/api/lib/settings";
 import {
   runWarehouseProducer,
   type WarehouseProducerReport,
+  type WarehouseRunContext,
 } from "@atlas/api/lib/brain/warehouse-producer";
 import {
   withWarehouseRunLock,
@@ -126,13 +127,32 @@ export const MIN_WAREHOUSE_CADENCE_INTERVAL_MS = 60 * 60_000;
 /**
  * Is the cadence switched on for this scope?
  *
- * No argument reads the PLATFORM value — the fiber's own boot gate, an
- * operator's process-wide off switch. With one it reads the workspace override.
+ * No argument reads the PLATFORM value; with one it reads the workspace
+ * override, falling back through platform → env → the registry default.
  *
- * ⚠️ **`=== "true"`, not `!== "false"`.** Its neighbours in the registry default
- * ON and are written the other way round; copying their spelling here would make
- * every unset workspace opted-in, which is the sweep ADR-0039 rejects arriving
- * as a default rather than as a feature.
+ * ⚠️ **THE GATE IS AN AND, AND FOR A DEFAULT-OFF KEY THAT IS NOT THE SAME
+ * SENTENCE ITS NEIGHBOURS CARRY.** `layers.ts` evaluates `isWarehouseCadenceEnabled()`
+ * with NO workspace once at registration, so the platform value alone decides
+ * whether the fiber exists; the per-workspace read below then decides which
+ * workspaces it runs for.
+ *
+ * For `AUDIENCE_SYNC` and `COVERAGE_SNAPSHOT` that composition is invisible,
+ * because they default `"true"` — the boot gate passes with nothing set, and a
+ * workspace override genuinely is the only knob that matters. This key defaults
+ * `"false"`, so with nothing set the fiber **never starts** and a workspace
+ * turning itself on in the admin UI changes nothing. The registry comment here
+ * originally copied the neighbours' wording ("a workspace with an explicit
+ * `true` override keeps running while the platform value is unset") — true for
+ * them, false for this key, and a user-facing lie in the one direction where the
+ * feature silently does nothing.
+ *
+ * So: **the platform switch turns the cadence ON; the workspace switch chooses
+ * who gets it.** Both must say yes.
+ *
+ * ⚠️ **`=== "true"`, not `!== "false"`.** Its neighbours default ON and are
+ * written the other way round; copying their spelling here would make every
+ * unset workspace opted-in, which is the sweep ADR-0039 rejects arriving as a
+ * default rather than as a feature.
  */
 export function isWarehouseCadenceEnabled(workspaceId?: string): boolean {
   return getSettingAuto("ATLAS_BRAIN_WAREHOUSE_CADENCE_ENABLED", workspaceId) === "true";
@@ -206,7 +226,14 @@ async function listEnrolledWorkspaces(): Promise<readonly string[]> {
   return rows.map((r) => r.workspace_id);
 }
 
-/** How many distinct failure reasons the cycle result carries. */
+/**
+ * How many distinct failure reasons the cycle result carries.
+ *
+ * The bound is what stops a fleet-wide fault building one sentence per tenant
+ * into a span attribute. It is a real bound rather than a formality: the reasons
+ * are per WORKSPACE, so a thousand-tenant region with one broken dependency
+ * would otherwise write a thousand of them.
+ */
 const FAILURE_REASONS_MAX = 5;
 
 export interface WarehouseCadenceCycleResult {
@@ -233,10 +260,28 @@ export interface WarehouseCadenceCycleResult {
   readonly workspacesDeclinedLocked: number;
   readonly workspacesSucceeded: number;
   readonly workspacesFailed: number;
+  /**
+   * Runs that COMMITTED facts but whose entity-edge pass threw (#5043, #5277).
+   *
+   * ⚠️ A subset of `workspacesSucceeded`, not a sibling of it — the run did
+   * succeed, and its facts are in the queue. It is reported because
+   * `proposeAliasEdges` commits per proposal, so a mid-batch throw has already
+   * re-keyed part of the corpus, and without this the cycle reports that run as
+   * indistinguishable from a clean one.
+   */
+  readonly workspacesEdgePassFailed: number;
   readonly created: number;
+  readonly refusalsTotal: number;
   readonly corroborated: number;
-  readonly refusals: number;
-  /** The first few distinct faults, scrubbed. `null` when nothing failed. */
+  /**
+   * The first few distinct faults, scrubbed and prefixed with their workspace.
+   * `null` when nothing failed.
+   *
+   * De-duplicated, unlike the coverage sibling's — ten workspaces failing on one
+   * broken warehouse otherwise write the same sentence ten times onto a span
+   * attribute. The workspace prefix is what keeps genuinely distinct faults
+   * distinct after the dedupe.
+   */
   readonly error: string | null;
 }
 
@@ -244,17 +289,47 @@ export interface WarehouseCadenceCycleResult {
 export interface WarehouseCadenceDeps {
   readonly listWorkspaces?: () => Promise<readonly string[]>;
   readonly isEnabled?: (workspaceId: string) => boolean;
-  readonly runProducer?: (params: {
-    readonly workspaceId: string;
-    readonly triggeredBy: string;
-    readonly requestId: string;
-  }) => Promise<WarehouseProducerReport>;
+  /**
+   * ⚠️ Typed off {@link WarehouseRunContext} rather than re-spelling its fields.
+   * The hand-rolled duplicate that used to be here was faithful on the day it was
+   * written and had no way to stay so: an OPTIONAL field added to the real
+   * context drifts silently, with no diagnostic anywhere — and `requestId` itself
+   * was an optional field of exactly that kind.
+   *
+   * The intersection keeps the one deliberate STRENGTHENING: `requestId` is
+   * optional on the real context and required here, so the call site cannot
+   * forget the cycle id that is a background fiber's only correlation handle.
+   */
+  readonly runProducer?: (
+    context: WarehouseRunContext & { readonly requestId: string },
+  ) => Promise<WarehouseProducerReport>;
   readonly withLock?: <T>(
     workspaceId: string,
     fn: () => Promise<T>,
   ) => Promise<WarehouseRunLockOutcome<T>>;
   readonly now?: () => Date;
 }
+
+/**
+ * The production wiring, as a VALUE so a test can assert what it is.
+ *
+ * ⚠️ **Every seam below is `?`-optional and every cadence test injects all of
+ * them, so the production bindings had no reader at all.** Measured: defaulting
+ * `withLock` to a pass-through — the scheduled trigger taking NO LOCK, i.e. the
+ * defect this whole issue exists to prevent — left all fourteen tests green.
+ * Same for `runProducer`, `isEnabled` and `listWorkspaces`.
+ *
+ * Hoisting the defaults here turns "the fiber is wired to the real lock" into a
+ * one-line identity assertion (`toBe`), which is the cheapest thing that can
+ * fail. It is the `enrollment-writers.test.ts` tripwire shape, applied to
+ * wiring rather than to writers.
+ */
+export const WAREHOUSE_CADENCE_DEFAULTS = {
+  listWorkspaces: listEnrolledWorkspaces,
+  isEnabled: isWarehouseCadenceEnabled,
+  runProducer: runWarehouseProducer,
+  withLock: withWarehouseRunLock,
+} as const satisfies Required<Omit<WarehouseCadenceDeps, "now">>;
 
 /**
  * One cadence tick: every enabled, enrolled workspace gets one locked producer
@@ -276,10 +351,10 @@ export async function runWarehouseCadenceCycle(
   deps: WarehouseCadenceDeps = {},
 ): Promise<WarehouseCadenceCycleResult> {
   const now = deps.now ?? (() => new Date());
-  const isEnabled = deps.isEnabled ?? isWarehouseCadenceEnabled;
-  const listWorkspaces = deps.listWorkspaces ?? listEnrolledWorkspaces;
-  const runProducer = deps.runProducer ?? runWarehouseProducer;
-  const withLock = deps.withLock ?? withWarehouseRunLock;
+  const isEnabled = deps.isEnabled ?? WAREHOUSE_CADENCE_DEFAULTS.isEnabled;
+  const listWorkspaces = deps.listWorkspaces ?? WAREHOUSE_CADENCE_DEFAULTS.listWorkspaces;
+  const runProducer = deps.runProducer ?? WAREHOUSE_CADENCE_DEFAULTS.runProducer;
+  const withLock = deps.withLock ?? WAREHOUSE_CADENCE_DEFAULTS.withLock;
 
   const empty = {
     workspacesConsidered: 0,
@@ -290,7 +365,8 @@ export async function runWarehouseCadenceCycle(
     workspacesFailed: 0,
     created: 0,
     corroborated: 0,
-    refusals: 0,
+    workspacesEdgePassFailed: 0,
+    refusalsTotal: 0,
   };
 
   /**
@@ -319,50 +395,77 @@ export async function runWarehouseCadenceCycle(
   const reasons: string[] = [];
 
   for (const workspaceId of workspaces) {
-    if (!isEnabled(workspaceId)) {
-      counters.workspacesSkippedDisabled++;
-      continue;
-    }
-    counters.workspacesAttempted++;
-    let outcome: WarehouseRunLockOutcome<WarehouseProducerReport>;
+    // ⚠️ **`isEnabled` is INSIDE the try, and moving it there was a fix.** It is
+    // an injectable seam that reaches `getSettingAuto`; outside the try, one
+    // workspace's settings read throwing aborted the whole tick, discarded every
+    // counter already accumulated, and produced NO result and NO span — a fourth
+    // cycle outcome the `status` union cannot express. `layers.ts` even says the
+    // per-workspace settings read "sits outside that net". Counting it as this
+    // workspace's failure is both honest and expressible.
     try {
-      outcome = await withLock(workspaceId, () =>
-        runProducer({
+      if (!isEnabled(workspaceId)) {
+        counters.workspacesSkippedDisabled++;
+        continue;
+      }
+      counters.workspacesAttempted++;
+      const outcome: WarehouseRunLockOutcome<WarehouseProducerReport> = await withLock(
+        workspaceId,
+        () =>
+          runProducer({
+            workspaceId,
+            triggeredBy: WAREHOUSE_CADENCE_PRINCIPAL,
+            requestId: cycleId,
+          }),
+      );
+      if (!outcome.acquired) {
+        counters.workspacesDeclinedLocked++;
+        continue;
+      }
+      const report = outcome.value;
+      counters.workspacesSucceeded++;
+      counters.created += report.created;
+      counters.corroborated += report.corroborated;
+      counters.refusalsTotal += report.refusals.length;
+      // ⚠️ **The edge pass's verdict rides this line, and its absence was a
+      // silent reclassification.** `entityEdges.kind === "failed"` means
+      // `proposeAliasEdges` threw MID-BATCH — and it commits per proposal, so an
+      // auto-approved entity edge has already re-keyed part of the corpus. The
+      // route treats surfacing it as mandatory ("without it the line reads as an
+      // unqualified success for a run whose edge pass threw"); the cadence used
+      // to drop it entirely, counting a partial, corpus-mutating failure as a
+      // clean success with `error: null` and no span attribute.
+      if (report.entityEdges.kind === "failed") counters.workspacesEdgePassFailed++;
+      log.info(
+        {
+          cycleId,
           workspaceId,
           triggeredBy: WAREHOUSE_CADENCE_PRINCIPAL,
-          requestId: cycleId,
-        }),
+          enrolled: report.enrolled,
+          created: report.created,
+          corroborated: report.corroborated,
+          refusals: report.refusals.length,
+          entityEdgeKind: report.entityEdges.kind,
+          // The remedy for a store that was never read is not the remedy for a
+          // batch that was half-committed.
+          entityEdgePhase:
+            report.entityEdges.kind === "failed" ? report.entityEdges.reached.phase : undefined,
+        },
+        "Company-brain warehouse cadence: scheduled producer run completed",
       );
     } catch (err) {
       counters.workspacesFailed++;
       const message = errorMessage(err);
-      if (reasons.length < FAILURE_REASONS_MAX) reasons.push(message);
+      // ⚠️ PREFIXED with the workspace. Bare, `atlas.brain.warehouse_cadence.error`
+      // reads `connection terminated; connection terminated; connection terminated`
+      // and an operator cannot tell one tenant retrying from three tenants down.
+      // The coverage sibling prefixes for the same reason.
+      const reason = `${workspaceId}: ${message}`;
+      if (!reasons.includes(reason) && reasons.length < FAILURE_REASONS_MAX) reasons.push(reason);
       log.error(
         { cycleId, workspaceId, triggeredBy: WAREHOUSE_CADENCE_PRINCIPAL, err: message },
         "Company-brain warehouse cadence: a scheduled producer run failed — the rest of the cycle continues",
       );
-      continue;
     }
-    if (!outcome.acquired) {
-      counters.workspacesDeclinedLocked++;
-      continue;
-    }
-    counters.workspacesSucceeded++;
-    counters.created += outcome.value.created;
-    counters.corroborated += outcome.value.corroborated;
-    counters.refusals += outcome.value.refusals.length;
-    log.info(
-      {
-        cycleId,
-        workspaceId,
-        triggeredBy: WAREHOUSE_CADENCE_PRINCIPAL,
-        enrolled: outcome.value.enrolled,
-        created: outcome.value.created,
-        corroborated: outcome.value.corroborated,
-        refusals: outcome.value.refusals.length,
-      },
-      "Company-brain warehouse cadence: scheduled producer run completed",
-    );
   }
 
   return {

@@ -2048,16 +2048,23 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     //
     // Workspace-scoped because it is the tenant's decision — they enrolled the
     // pairs and they staff the review queue. The fiber ALSO reads this key with
-    // no workspace, which resolves to the platform value: the operator's
-    // process-wide off switch, applied at RESTART (the gate is evaluated once
-    // at registration). A workspace with an explicit `true` override keeps
-    // running while the platform value is unset, since workspace precedence
-    // beats platform.
+    // no workspace, which resolves to the platform value, and that read is the
+    // boot gate.
+    //
+    // ⚠️ **The two reads compose as an AND, and for a DEFAULT-OFF key that is a
+    // different sentence from the one the neighbours above carry.** Their
+    // default is `"true"`, so their boot gate passes with nothing set and a
+    // workspace override really is the only knob. This one defaults `"false"`:
+    // with no platform value the fiber never starts, and a workspace switching
+    // itself on changes nothing. This comment used to claim the neighbours'
+    // behaviour verbatim — true for them, false here, in the direction where the
+    // feature silently does nothing. The platform switch turns the cadence ON;
+    // the workspace switch chooses who gets it.
     key: "ATLAS_BRAIN_WAREHOUSE_CADENCE_ENABLED",
     section: "Knowledge Base",
     label: "Company Atlas Warehouse Cadence",
     description:
-      "Re-read this workspace's enrolled warehouse dimensions on a schedule instead of only when an admin presses Run. Off by default. Each run reads the same (entity, dimension) pairs a human enrolled and files what it finds as drafts for review — an unchanged value is corroborated rather than re-filed, so a quiet warehouse costs no review; a changed one costs a draft and a tension edge. Turning it off stops future scheduled runs and leaves every fact already emitted exactly where it is. A workspace change takes effect on the next tick; the platform-wide switch is read once at boot, so turning the fiber on at all applies at restart.",
+      "Re-read this workspace's enrolled warehouse dimensions on a schedule instead of only when an admin presses Run. Off by default. Each run reads the same (entity, dimension) pairs a human enrolled and files what it finds as drafts for review — an unchanged value is corroborated rather than re-filed, so a quiet warehouse costs no review; a changed one costs a draft and a tension edge. Turning it off stops future scheduled runs and leaves every fact already emitted exactly where it is. Two levels have to agree: the deployment-wide value starts the scheduler at all (read once at boot, so it applies at restart), and the per-workspace value chooses which workspaces it runs for (read each tick). Setting only the workspace value does nothing until the deployment-wide one is on.",
     type: "boolean",
     default: "false",
     envVar: "ATLAS_BRAIN_WAREHOUSE_CADENCE_ENABLED",

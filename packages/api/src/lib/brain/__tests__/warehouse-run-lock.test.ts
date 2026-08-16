@@ -140,7 +140,53 @@ describe("withWarehouseRunLock — declining", () => {
     // from releasing a lock this session does hold for another reason, and it
     // would log a spurious "the lock was not held" error on every declined run.
     expect(rec.sql).toHaveLength(1);
+    // A DECLINE is the one path that proves the session is lock-free, so this is
+    // the only non-acquiring exit that may pool the client. Contrast the two
+    // unknown-verdict tests below, which must destroy it.
     expect(rec.released).toEqual([undefined]);
+  });
+});
+
+describe("withWarehouseRunLock — the connection", () => {
+  it("checks out exactly ONE client for the whole run", async () => {
+    // ⚠️ The recorder hands back the SAME client every time, so a `connect()`
+    // moved into the `finally` — unlocking on a DIFFERENT session, returning
+    // `false`, poisoning the wrong connection and leaking the locked one — is
+    // invisible to every other assertion in this file. Counting is the only way
+    // to see it from outside.
+    let connects = 0;
+    const rec = recorder({});
+    await withWarehouseRunLock(WORKSPACE, async () => "report", {
+      connect: async () => {
+        connects++;
+        return rec.client;
+      },
+    });
+
+    expect(connects).toBe(1);
+  });
+
+  it("propagates a checkout failure rather than reporting it as a decline", async () => {
+    let ran = false;
+
+    // Pool exhaustion rendered as `{ acquired: false }` would tell an operator a
+    // run is already in progress — permanently, on every press, with no error
+    // anywhere. That is the failure this module exists to refuse, arriving
+    // through the one seam that has not run a statement yet.
+    await expect(
+      withWarehouseRunLock(
+        WORKSPACE,
+        async () => {
+          ran = true;
+        },
+        {
+          connect: async () => {
+            throw new Error("pool exhausted");
+          },
+        },
+      ),
+    ).rejects.toThrow("pool exhausted");
+    expect(ran).toBe(false);
   });
 });
 
@@ -197,13 +243,19 @@ describe("withWarehouseRunLock — an unreadable verdict", () => {
       WarehouseRunLockContractError,
     );
     expect(ran).toBe(false);
-    // Nothing was locked, so nothing is unlocked, and the client goes back
-    // clean — a contract fault must not also cost a connection.
     expect(rec.sql).toHaveLength(1);
-    expect(rec.released).toEqual([undefined]);
+    // ⚠️ **DESTROYED, and the previous version of this assertion was the bug.**
+    // It read `toEqual([undefined])` under the comment "Nothing was locked, so
+    // nothing is unlocked" — a premise nothing establishes. An unreadable
+    // verdict means the ROW SHAPE was unreadable, never that the function did
+    // not run, and `"t"` / `1` are what a driver or a pooling proxy produce for
+    // a lock that genuinely WAS taken. Pooling that client wedges this
+    // workspace's producer behind a permanent, legitimate-looking "already in
+    // progress" — the exact outcome this module's docstring refuses.
+    expect(rec.released[0]).toBeInstanceOf(Error);
   });
 
-  it("throws when the lock statement returns no row at all", async () => {
+  it("throws — and destroys the connection — when the lock statement returns no row at all", async () => {
     const released: (Error | undefined)[] = [];
     const client: InternalPoolClient = {
       query: async () => ({ rows: [] as Record<string, unknown>[] }),
@@ -213,6 +265,47 @@ describe("withWarehouseRunLock — an unreadable verdict", () => {
     await expect(
       withWarehouseRunLock(WORKSPACE, async () => "report", { connect: async () => client }),
     ).rejects.toThrow(WarehouseRunLockContractError);
-    expect(released).toEqual([undefined]);
+    expect(released[0]).toBeInstanceOf(Error);
+  });
+
+  it("destroys the connection when the ACQUISITION STATEMENT itself rejects", async () => {
+    const rec = recorder({ lockThrows: new Error("canceling statement due to statement timeout") });
+    let ran = false;
+
+    await expect(run(rec, async () => void (ran = true))).rejects.toThrow("statement timeout");
+    expect(ran).toBe(false);
+    // Measured, not argued: a session-scoped advisory lock survives its
+    // transaction's ROLLBACK, so a cancel arriving AFTER the function evaluated
+    // leaves the lock held while the caller sees only a rejection. "We saw an
+    // error, therefore nothing was locked" is false.
+    expect(rec.released[0]).toBeInstanceOf(Error);
+  });
+});
+
+describe("the advisory-lock namespace", () => {
+  it("does not collide with any peer in the two-arg space", () => {
+    // ⚠️ HAND-TYPED, deliberately. `expect(NAMESPACE).toEqual(NAMESPACE)` is the
+    // fixture that agrees by construction: setting the constant to 4771 —
+    // reconcile's namespace, which would serialize every producer run against
+    // `reconcileFacts` — left every test in the tree green. Two independent
+    // spellings is the whole mechanism (`brain-facts.test.ts` does the same).
+    //
+    // The peer list is the complete two-arg space as of #5228. The module's own
+    // enumeration shipped INCOMPLETE in review round 1 — it omitted 5022 and
+    // 5024 while concluding "all eight are pairwise distinct" — so this list is
+    // the one that has to be re-derived when a namespace is added.
+    const peers = [
+      2870, // lead-outbox
+      3001, // chat-install gate
+      3158, // last-admin guard
+      3445, // Stripe webhook
+      3683, // demo seed
+      4235, // knowledge-collection install
+      4771, // brain reconcile stage
+      5022, // vocabulary
+      5024, // identity mutation
+    ];
+    expect(peers).not.toContain(WAREHOUSE_RUN_LOCK_NAMESPACE);
+    expect(new Set(peers).size).toBe(peers.length);
   });
 });

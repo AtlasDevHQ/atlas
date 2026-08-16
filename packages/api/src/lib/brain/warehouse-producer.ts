@@ -1680,6 +1680,37 @@ function seamKind(value: unknown): string {
 }
 
 /**
+ * `err instanceof WarehouseProducerContractError`, made total (#5257).
+ *
+ * ⚠️ **`instanceof` walks the prototype chain, so it is an OPERATION on a value a
+ * seam chose — {@link seamRead}'s rule, arriving at the one site written to keep a
+ * seam's failure from taking the run down.** The transaction `.catch` classifies
+ * whatever `withTransaction` rejected with, and a revoked Proxy there threw out of
+ * the classification itself: measured escaping `runWarehouseProducer` with ZERO log
+ * lines, from inside the handler whose entire purpose is turning a failed
+ * transaction into one refused entity plus an `error` line naming what had already
+ * committed.
+ *
+ * ⚠️ **`false` on a throw, and the direction is the safe one rather than a
+ * fallback CLAUDE.md forbids.** `false` routes the value to the per-entity refusal,
+ * which LOGS it at `error` and accounts for every pair — so nothing is swallowed.
+ * `true` would re-throw, which is the 500-for-the-whole-run this arm exists to
+ * prevent, chosen on the strength of a prototype walk that just failed. A hostile
+ * value cannot be one of this module's own contract defects anyway: the sole
+ * {@link WarehouseProducerContractError} in this file is constructed at its throw
+ * expression, so a value that defeats `instanceof` did not come from there.
+ */
+function seamIsContractError(err: unknown): boolean {
+  try {
+    return err instanceof WarehouseProducerContractError;
+  } catch {
+    // Not silence — the caller logs `err` on the very next statement. See above for
+    // why the answer is `false` rather than a re-throw.
+    return false;
+  }
+}
+
+/**
  * Run the producer over one workspace's reach.
  *
  * One transaction per ENTITY, not one per run: an entity whose snapshot fails
@@ -1732,9 +1763,27 @@ export async function runWarehouseProducer(
       // rejects the whole `Promise.all`, killing the run for every unrelated
       // enrolled entity and returning a 500 in place of the report whose entire job
       // is explaining why a pair produced nothing.
-      let raw: Record<string, unknown> | null;
+      let entity: WarehouseEntity | null;
       try {
-        raw = await loadEntity(workspaceId, name);
+        const raw = await loadEntity(workspaceId, name);
+        if (raw === null) {
+          entityShapes.set(name, { kind: "not-published" });
+          return;
+        }
+        // ⚠️ **PARSING IS INSIDE THE `try`, and the move is the whole of this site's
+        // fix (#5257).** {@link parseWarehouseEntity} does `raw.table`,
+        // `Object.entries(raw.dimensions)` and `isRecord` — every one an operation on
+        // a value THIS seam returned, per {@link seamRead}'s rule. Outside, a
+        // `{ get table() { throw } }` entity rejected the `Promise.all` and produced
+        // the exact 500 the catch below is written to prevent, measured; inside, it
+        // lands on the `load-threw` arm, which is already the right refusal — the
+        // lookup did not yield a readable entity, and its `why` says the server log
+        // carries the reason.
+        //
+        // `raw === null` is an identity comparison rather than a read, so it is total
+        // on any value; it stays here so the `not-published` arm keeps its own shape
+        // instead of being folded into `load-threw`.
+        entity = parseWarehouseEntity(name, raw);
       } catch (err) {
         log.warn(
           { ...runLog, entity: name, err },
@@ -1757,11 +1806,6 @@ export async function runWarehouseProducer(
         });
         return;
       }
-      if (raw === null) {
-        entityShapes.set(name, { kind: "not-published" });
-        return;
-      }
-      const entity = parseWarehouseEntity(name, raw);
       entityShapes.set(
         name,
         entity === null
@@ -2120,8 +2164,16 @@ export async function runWarehouseProducer(
       // than lie — see {@link seamRead}, where narrowing the container was measured
       // insufficient. Reading each once, through the guard, is what makes every field
       // below a statement about a value rather than about a property access.
-      const returnedEntity = seamRead(validated, "entity");
-      const returnedWorkspaceId = seamRead(validated, "workspaceId");
+      // ⚠️ **RE-TYPED TO `unknown` FOR THIS ARM, and the widening is a guard rather
+      // than a tidy-up (#5257).** `validated` is a `ValidatedSnapshotRequest`, so the
+      // compiler ACTIVELY ENCOURAGES `validated.table.slice(0, 200)` on this line — it
+      // typechecks, it looks like every other field, and it is the exact shape that
+      // recurred three times through #5256's rounds. Through `seam`, an unguarded read
+      // of a future field is a compile error instead of a review catch; every read
+      // below has to go through {@link seamRead} or {@link seamKind}.
+      const seam: unknown = validated;
+      const returnedEntity = seamRead(seam, "entity");
+      const returnedWorkspaceId = seamRead(seam, "workspaceId");
       // ⚠️ `connectionId` is on this line because the capture note above names it as
       // the residual: `defaultRunSnapshot` selects the POOL from the returned
       // workspace and connection, so a verdict identical in workspace, entity and
@@ -2129,8 +2181,8 @@ export async function runWarehouseProducer(
       // wrong-datasource read — and it was previously indistinguishable here from a
       // benign re-wrap. Two connection groups exposing identically-named tables is an
       // ordinary workspace; it is why `AmbiguousEntityError` exists.
-      const returnedConnectionId = seamRead(validated, "connectionId");
-      const returnedSql = seamRead(validated, "sql");
+      const returnedConnectionId = seamRead(seam, "connectionId");
+      const returnedSql = seamRead(seam, "sql");
       // Normalised through the SAME expression as the returned side, so a legitimately
       // absent connection on both sides reads as a match rather than as a difference.
       const submittedConnectionId = entityPlan.entity.connection ?? undefined;
@@ -2150,7 +2202,7 @@ export async function runWarehouseProducer(
       // matched"*, on the field this arm's own comment calls the alert key. (`{}`
       // still reads true, and correctly so — both sides are genuinely absent; see
       // `returnedRequestMatch` below for why that is safe.)
-      const returnedRequestType = seamKind(validated);
+      const returnedRequestType = seamKind(seam);
       const returnedIsRecord = returnedRequestType === "<record>";
       log.error(
         {
@@ -2252,13 +2304,91 @@ export async function runWarehouseProducer(
       continue;
     }
 
-    let rows: readonly Record<string, unknown>[];
+    /**
+     * Everything derived from the snapshot runner's return value, decided INSIDE the
+     * `try` below (#5257).
+     *
+     * ⚠️ **The row-cap read and the claim build used to sit between the snapshot
+     * `catch` and the transaction `.catch`, where nothing encloses them.**
+     * {@link WarehouseSnapshotRunner} is one of the five names
+     * `warehouse-producer-bypass.test.ts` pins as castable, so its return value is a
+     * seam value under exactly the threat model #5248 spent its rounds on for the
+     * validator — and `rows.length` is an operation on it, not a fact about it. NINE
+     * shapes were run against the unfixed producer; EIGHT escaped it as a whole-run
+     * 500 with no log line at all — `null`, `undefined`, a bare string, a throwing
+     * `length` getter, a `length` whose `valueOf` throws, a hostile `Symbol.iterator`,
+     * a `null` row, and a row with a throwing `atlas_brain_subject` getter. The ninth,
+     * a revoked-Proxy array, survived — but only because `await` happened to trap it
+     * inside the `try` that was already here.
+     *
+     * ⚠️ **A hostile CELL is IN scope, deliberately, and this sentence exists because
+     * silence here read as "already handled".** {@link buildWarehouseClaims} iterates
+     * the array and reads `row[SUBJECT_ALIAS]` and each dimension alias off it, so a
+     * `null` row or a throwing cell getter is the same class one level down and gets
+     * the same answer: this entity is refused, the run continues. **Stated cost:** a
+     * genuine defect in this module's own pure claim-building now reports as a failed
+     * snapshot — logged at `warn` with the Error, never swallowed, but wearing the
+     * wrong label. That is the cheaper of the two mistakes, because the alternative is
+     * one hostile cell taking down a run in which earlier entities have committed.
+     *
+     * ⚠️ **NOT in scope: an iterator that never ends.** A `Symbol.iterator` yielding
+     * forever hangs inside the `for…of` the claim builder runs, and no `try` catches a
+     * hang. The row cap cannot help: `length` is a separate property, so an array
+     * reporting `0` can still iterate forever. That is a liveness problem wanting a
+     * timeout, not a shape problem wanting a guard — and leaving it unsaid here is the
+     * "already handled" silence this comment exists to remove.
+     *
+     * Two arms rather than a bare `rows`, because the cap is a REFUSAL with its own
+     * reason (`row-cap-exceeded`, not `snapshot-failed`) and its own operator message,
+     * and folding it into the catch would relabel it.
+     */
+    let snapshot:
+      | {
+          readonly kind: "rows";
+          readonly rows: readonly Record<string, unknown>[];
+          readonly claims: WarehouseClaims;
+        }
+      | { readonly kind: "row-cap" };
     try {
       // `validated`, the value the guard compared — NOT a fresh `validation.request`,
       // which would be a second read of a property the seam controls. See the capture
       // above.
-      rows = await runSnapshot(validated);
+      const returned: unknown = await runSnapshot(validated);
+      // ⚠️ **`Array.isArray` FIRST, and it is inside the `try` for the revoked-Proxy
+      // reason {@link seamRead} states: it THROWS on one rather than answering.** That
+      // throw is wanted here — it lands on the refusal arm below instead of taking the
+      // run — but it is only safe because it is guarded, which is the property the
+      // three previous instances of this class all lacked. It also buys the diagnosis:
+      // `{ length: 5 }` would otherwise pass the cap check and die as *"not iterable"*
+      // deep inside the claim builder, and `seamKind` names what actually came back.
+      if (!Array.isArray(returned)) {
+        throw new TypeError(
+          `the snapshot runner answered ${seamKind(returned)} rather than an array of rows`,
+        );
+      }
+      const rows: readonly Record<string, unknown>[] = returned;
+      snapshot =
+        rows.length > rowCap
+          ? { kind: "row-cap" }
+          : {
+              kind: "rows",
+              rows,
+              claims: buildWarehouseClaims({
+                workspaceId,
+                plan: entityPlan,
+                rows,
+                snapshotAt,
+              }),
+            };
     } catch (err) {
+      // ⚠️ **No {@link WarehouseProducerContractError} re-throw here, unlike the
+      // transaction handler below, and the asymmetry is deliberate rather than an
+      // omission.** This module raises that error in exactly one place —
+      // {@link insertSnapshotEpisode}, which runs INSIDE the transaction — so a
+      // re-throw on this arm would be unreachable machinery that also converted a
+      // seam throwing one into a whole-run 500. Everything reachable here is a seam
+      // failure or a hostile row, and one refused entity is the proportionate answer.
+      //
       // The Error itself, not `.message`. `scrubErrSerializer` emits type, message,
       // stack AND pg's `code` with credentials already stripped — and `42P01` vs
       // `ECONNREFUSED` is the difference between "fix your YAML" and "your warehouse
@@ -2285,7 +2415,7 @@ export async function runWarehouseProducer(
       continue;
     }
 
-    if (rows.length > rowCap) {
+    if (snapshot.kind === "row-cap") {
       // ⚠️ REFUSED, not truncated — see WAREHOUSE_ROW_CAP.
       log.warn(
         { ...runLog, entity: entityPlan.entity.name, rowCap },
@@ -2301,12 +2431,7 @@ export async function runWarehouseProducer(
       continue;
     }
 
-    const claims = buildWarehouseClaims({
-      workspaceId,
-      plan: entityPlan,
-      rows,
-      snapshotAt,
-    });
+    const { rows, claims } = snapshot;
 
     if (claims.unsurfaceableCells > 0) {
       // An enrollment mistake rather than an empty column — see `isAbsentCell`. It
@@ -2527,7 +2652,10 @@ export async function runWarehouseProducer(
       // A defect in this module's own contract stays FATAL — see
       // `WarehouseProducerContractError`. Everything below is for OPERATIONAL
       // failures, where refusing one entity is the proportionate answer.
-      if (err instanceof WarehouseProducerContractError) throw err;
+      // ⚠️ Through {@link seamIsContractError}, because a bare `instanceof` here walks
+      // the prototype chain of a value `withTransaction` chose — a revoked Proxy threw
+      // out of this very line and escaped the run with no log at all (#5257).
+      if (seamIsContractError(err)) throw err;
       // ⚠️ **REFUSED PER ENTITY, NOT RE-THROWN — and this reverses an earlier
       // decision in this file rather than extending it.**
       //

@@ -1151,3 +1151,257 @@ describe("warehouse producer logging", () => {
     }
   });
 });
+
+/**
+ * The seam-read ratchet, applied past the validator (#5257).
+ *
+ * #5248 closed one class for `validateSnapshotSql`: *narrowing is an OPERATION on
+ * the seam value, not a fact about it.* These are the same principle on the SIBLING
+ * seams of the same loop — the snapshot runner's return value, the entity loader's
+ * return value, and the value `withTransaction` rejects with.
+ *
+ * ⚠️ **Every case here was measured RED against the unfixed producer**, by restoring
+ * the pre-fix file from a backup and re-running this suite — not reasoned about.
+ * Reasoning has been wrong on this principle three times in this file's history, and
+ * a `runWarehouseProducer` that REJECTS is the failure: one refused entity becomes a
+ * 500 for the whole run, with no log line at all, which is why every case below
+ * asserts a resolved report AND a log line rather than only the first.
+ */
+describe("warehouse producer seam reads past the validator (#5257)", () => {
+  /**
+   * A snapshot runner returning `value`, with the seam's return type asserted away.
+   *
+   * The whole point of these cases is a runner that does NOT honour its declared
+   * return type — a substituted implementation, a plugin, a wire — so the assertion
+   * is the fixture, not a shortcut around one.
+   */
+  const returning = (value: unknown) => async () =>
+    value as readonly Record<string, unknown>[];
+
+  describe("the snapshot runner's return value", () => {
+    // ⚠️ The rendered kinds are DELIBERATELY not all distinct — two records render
+    // `<record>` — but the shapes are, and each one escaped through a different
+    // expression before the fix: `.length` on `null`, a `length` GETTER, and
+    // `valueOf` during the `>` comparison. Collapsing them into one case would let a
+    // guard that closes only the first stay green.
+    const nonArrays: readonly { readonly label: string; readonly kind: string; readonly make: () => unknown }[] = [
+      { label: "null", kind: "<null>", make: () => null },
+      { label: "undefined", kind: "<undefined>", make: () => undefined },
+      { label: "a string", kind: "<string>", make: () => "rows" },
+      {
+        label: "an object whose `length` getter throws",
+        kind: "<record>",
+        make: () => {
+          const hostile = {};
+          Object.defineProperty(hostile, "length", {
+            enumerable: true,
+            get() {
+              throw new TypeError("hostile length getter");
+            },
+          });
+          return hostile;
+        },
+      },
+      {
+        label: "an object whose `length` coerces by throwing",
+        kind: "<record>",
+        make: () => ({
+          length: {
+            valueOf() {
+              throw new TypeError("hostile length valueOf");
+            },
+          },
+        }),
+      },
+    ];
+
+    for (const { label, kind, make } of nonArrays) {
+      it(`refuses ONE entity when the runner answers ${label}, rather than 500ing the run`, async () => {
+        const report = await run({ runSnapshot: returning(make()) });
+
+        // Resolved at all — the pre-fix producer REJECTED here, so this line is the
+        // falsifier and the payload assertions below are the diagnosis.
+        expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-failed"]);
+        expect(report.entities).toEqual([]);
+
+        const payload = payloadOf(warns, "snapshot failed");
+        expect(payload.entity).toBe("Accounts");
+        // ⚠️ The message NAMES what came back. Without it the five shapes above
+        // produce one identical line, which is the collapse `seamKind` exists to
+        // undo — and an operator cannot tell a runner returning `null` from one
+        // returning a hostile object.
+        expect(payload.err).toBeInstanceOf(Error);
+        expect((payload.err as Error).message).toContain(kind);
+        // A shape fault is not an incident for the whole run.
+        expect(messages(errors)).toEqual([]);
+      });
+    }
+
+    it("survives an array whose `Symbol.iterator` throws", async () => {
+      // ⚠️ `Array.isArray` answers TRUE here and `.length` is honest, so the shape
+      // check alone does not save this one — the claim builder's `for…of` is where it
+      // throws, which is why the whole consumption of the returned rows moved inside
+      // the `try` rather than only the length read.
+      const rows: Record<string, unknown>[] = [
+        { [producer.SUBJECT_ALIAS]: "Acme Corp", [`${producer.DIMENSION_ALIAS_PREFIX}0`]: "active" },
+      ];
+      Object.defineProperty(rows, Symbol.iterator, {
+        get() {
+          throw new TypeError("hostile iterator");
+        },
+      });
+
+      const report = await run({ runSnapshot: returning(rows) });
+      expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-failed"]);
+      expect(payloadOf(warns, "snapshot failed").entity).toBe("Accounts");
+    });
+
+    it("survives a REVOKED PROXY array, where `Array.isArray` itself throws", async () => {
+      // ⚠️ **A PIN, not a falsifier, and saying so is the honest half.** Measured
+      // GREEN against the unfixed producer: a revoked Proxy is trapped by the `await`
+      // inside the existing `try`, so this case survived by luck rather than by
+      // design. It stays because the fix's own `Array.isArray` is an operation on the
+      // seam value and would throw here — correct only because it sits inside the
+      // `try`. No local mutation of the fix REDs it (every consumption of the returned
+      // rows is now guarded, so the case is caught whichever expression throws first),
+      // which is precisely the shape of "covered by construction" worth recording
+      // rather than dressing up as a measurement.
+      const { proxy, revoke } = Proxy.revocable([{ [producer.SUBJECT_ALIAS]: "Acme Corp" }], {});
+      revoke();
+
+      const report = await run({ runSnapshot: returning(proxy) });
+      expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-failed"]);
+      expect(payloadOf(warns, "snapshot failed").entity).toBe("Accounts");
+    });
+
+    it("survives a NULL row inside a well-formed array", async () => {
+      // ⚠️ A hostile CELL is IN scope, and this case plus the next are what make that
+      // sentence in the producer a claim rather than a hope. Two rows, not one, so a
+      // fix that merely dropped the bad row would still have to explain the survivor.
+      const report = await run({
+        runSnapshot: returning([
+          { [producer.SUBJECT_ALIAS]: "Acme Corp", [`${producer.DIMENSION_ALIAS_PREFIX}0`]: "active" },
+          null,
+        ]),
+      });
+      expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-failed"]);
+      expect(payloadOf(warns, "snapshot failed").entity).toBe("Accounts");
+    });
+
+    it("survives a row whose subject getter throws", async () => {
+      const hostileRow = {};
+      Object.defineProperty(hostileRow, producer.SUBJECT_ALIAS, {
+        enumerable: true,
+        get() {
+          throw new TypeError("hostile subject getter");
+        },
+      });
+
+      const report = await run({ runSnapshot: returning([hostileRow]) });
+      expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-failed"]);
+      expect(payloadOf(warns, "snapshot failed").entity).toBe("Accounts");
+    });
+
+    it("still refuses an over-cap snapshot under its OWN reason, not `snapshot-failed`", async () => {
+      // ⚠️ The shape check moved the cap read inside the `try`, and a `try` that
+      // swallowed the cap arm would relabel a routine, well-diagnosed refusal as a
+      // failed snapshot — advice that sends an admin to check their warehouse instead
+      // of their enrollment. Measured: deleting the `row-cap` arm and letting the
+      // catch handle it passes every OTHER case in this describe.
+      const report = await run({
+        rowCap: 1,
+        runSnapshot: returning([
+          { [producer.SUBJECT_ALIAS]: "Acme Corp", [`${producer.DIMENSION_ALIAS_PREFIX}0`]: "active" },
+          { [producer.SUBJECT_ALIAS]: "Globex", [`${producer.DIMENSION_ALIAS_PREFIX}0`]: "churned" },
+        ]),
+      });
+      expect(report.refusals.map((r) => r.reason)).toEqual(["row-cap-exceeded"]);
+      expect(payloadOf(warns, "exceeds the row cap").rowCap).toBe(1);
+      expect(warns.filter((c) => c.message.includes("snapshot failed"))).toEqual([]);
+    });
+  });
+
+  describe("the entity loader's return value", () => {
+    it("refuses ONE entity whose YAML shape throws, leaving its neighbour's run intact", async () => {
+      // ⚠️ TWO enrolled entities, and the second one is the whole assertion. The
+      // parse sat outside the `try` whose own comment says an uncaught throw *"rejects
+      // the whole `Promise.all`, killing the run for every unrelated enrolled
+      // entity"* — so a one-entity fixture would prove only that the run resolved,
+      // never that the unrelated entity survived.
+      const hostileYaml: Record<string, unknown> = {};
+      Object.defineProperty(hostileYaml, "table", {
+        enumerable: true,
+        get() {
+          throw new TypeError("hostile table getter");
+        },
+      });
+
+      const report = await run({
+        loadReach: async () => ({
+          pairs: [
+            { entity: "Accounts", dimension: "status", naming: false },
+            { entity: "Hostile", dimension: "status", naming: false },
+          ],
+          entities: ["Accounts", "Hostile"],
+          namingDimension: new Map<string, string>(),
+          has: () => true,
+        }),
+        loadEntity: async (_workspaceId: string, name: string) =>
+          name === "Hostile" ? hostileYaml : ACCOUNTS_YAML,
+      });
+
+      // The hostile one is refused under the arm that already had the right cause.
+      expect(report.refusals.map((r) => `${r.entity}:${r.reason}`)).toEqual([
+        "Hostile:entity-unreadable",
+      ]);
+      // ⚠️ And the UNRELATED entity still produced its outcome. Asserting only the
+      // refusal above would stay green for a fix that refused every entity in the
+      // run, which is the 500 wearing a different hat.
+      expect(report.entities.map((e) => e.entity)).toEqual(["Accounts"]);
+      expect(payloadOf(warns, "entity lookup failed").entity).toBe("Hostile");
+    });
+
+    it("keeps `not-published` distinct from a throwing shape", async () => {
+      // The arm the move must not swallow: `null` is an ordinary unpublished entity
+      // and gets `entity-not-published`, not the loader's failure arm. Without this,
+      // folding the null check into the catch passes the case above.
+      const report = await run({ loadEntity: async () => null });
+      expect(report.refusals.map((r) => r.reason)).toEqual(["entity-not-published"]);
+      expect(warns.filter((c) => c.message.includes("entity lookup failed"))).toEqual([]);
+    });
+  });
+
+  describe("the value the transaction rejects with", () => {
+    it("cannot escape the `instanceof` in the transaction handler", async () => {
+      // ⚠️ `err instanceof WarehouseProducerContractError` walks the prototype chain,
+      // so it is an operation on a value the transaction seam chose. Measured before
+      // the fix: a revoked Proxy escaped `runWarehouseProducer` with ZERO log lines,
+      // out of the handler written to stop precisely that.
+      const { proxy, revoke } = Proxy.revocable({}, {});
+      revoke();
+
+      const report = await run({
+        withTransaction: async () => {
+          throw proxy;
+        },
+      });
+      expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-failed"]);
+      expect(payloadOf(errors, "transaction failed").committedEntities).toEqual([]);
+    });
+
+    it("still lets this module's OWN contract defect stay fatal", async () => {
+      // ⚠️ **The anti-constant falsifier, and without it the guard is satisfiable by
+      // `() => false`.** Every other case in this describe wants the classification
+      // to answer "not a contract error"; only this one wants a `true`, and it is the
+      // one that keeps the fatal/operational split from collapsing into "nothing is
+      // ever fatal".
+      await expect(
+        run({
+          withTransaction: async () => {
+            throw new producer.WarehouseProducerContractError("RETURNING clause and reader disagree");
+          },
+        }),
+      ).rejects.toThrow("RETURNING clause and reader disagree");
+    });
+  });
+});

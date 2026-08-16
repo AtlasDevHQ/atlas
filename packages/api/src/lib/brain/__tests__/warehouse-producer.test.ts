@@ -877,6 +877,16 @@ function harness(options: {
   entityStore?: () => Promise<readonly EntityStoreEntry[]>;
   /** What the vocabulary seam reports back. */
   edgeCounters?: AliasProducerCounters;
+  /**
+   * Make the vocabulary seam THROW after it has been handed a batch (#5277).
+   *
+   * ⚠️ The batch is recorded in `edgeBatches` BEFORE the throw, deliberately: that
+   * is what the real `proposeAliasEdges` does — it commits per proposal, so a
+   * mid-batch failure leaves approved edges behind. A seam that threw without
+   * recording would model "nothing was submitted", which is the OTHER failure and
+   * the one this option exists to be distinguishable from.
+   */
+  edgeProposeThrows?: string;
 }): RunHarness {
   const store = new RunStore();
   const snapshots: WarehouseSnapshotRequest[] = [];
@@ -949,6 +959,7 @@ function harness(options: {
             })),
       proposeAliasEdges: async (_ws, proposals) => {
         edgeBatches.push(proposals);
+        if (options.edgeProposeThrows !== undefined) throw new Error(options.edgeProposeThrows);
         return options.edgeCounters ?? EMPTY_EDGE_COUNTERS;
       },
       now: () => SNAPSHOT_AT,
@@ -1917,9 +1928,16 @@ describe("the entity store", () => {
     // would send an operator looking at their data for a decision they never made.
     expect(report.entities[0]?.unnamedRows).toBe(0);
     expect(h.store.entityStoreWrites()).toEqual([]);
-    // `null`, not zeroed counters — nothing to propose is not the same as
-    // proposing and having everything refused.
-    expect(report.entityEdges).toBeNull();
+    // `nothing-to-propose`, not zeroed counters — nothing to propose is not the
+    // same as proposing and having everything refused. `entries: 0` is the store
+    // the pass actually read, which is what says WHY there was nothing.
+    expect(report.entityEdges).toEqual({
+      kind: "nothing-to-propose",
+      entries: 0,
+      ambiguous: 0,
+      selfEdges: 0,
+      unmintedIds: 0,
+    });
     expect(h.edgeBatches).toEqual([]);
     // The CONTROL: the claims still landed, so this is a store that abstained
     // rather than a producer that did nothing.
@@ -2027,7 +2045,103 @@ describe("the entity store", () => {
 
     const report = await run(h);
 
-    expect(report.entityEdges).toEqual({ ...EMPTY_EDGE_COUNTERS, rejected: 2 });
+    expect(report.entityEdges).toEqual({
+      kind: "proposed",
+      entries: 1,
+      ambiguous: 0,
+      selfEdges: 0,
+      unmintedIds: 0,
+      counters: { ...EMPTY_EDGE_COUNTERS, rejected: 2 },
+    });
+  });
+
+  test("a wholly natural-key store is `nothing-to-propose` with entries > 0 and NOTHING wrong", async () => {
+    // ⚠️ The arm's own stated raison d'être, which nothing exercised: every other
+    // `nothing-to-propose` assertion in this file is `(0,0)` — an empty store — or
+    // `(2,2)` — everything ambiguous. The third point in the space is a store that
+    // is FULL, HEALTHY and has nothing to do, and it is the one the docstring uses
+    // as its example ("a run that wrote 500 natural-key entries lands HERE").
+    //
+    // The name cell IS the key, so `keyNorm === canonicalNorm` and every entry is a
+    // benign self-edge.
+    const h = harness({
+      pairs: [...namedPairs],
+      entities: { Accounts: ACCOUNTS },
+      rows: {
+        Accounts: [snapshotRow("Acme", "Acme", "gold"), snapshotRow("Beta", "Beta", "silver")],
+      },
+    });
+
+    const report = await run(h);
+
+    // ⚠️ `selfEdges: 2` is what separates this from an unminted-id store, and
+    // before the round-1 fix it was invisible: `{entries: 2, ambiguous: 0}` was
+    // byte-identical for this healthy store and for two rows whose ids no producer
+    // could have minted, which resolve NOTHING.
+    expect(report.entityEdges).toEqual({
+      kind: "nothing-to-propose",
+      entries: 2,
+      ambiguous: 0,
+      selfEdges: 2,
+      unmintedIds: 0,
+    });
+    // The control: nothing was handed to the vocabulary seam, because an empty
+    // batch would take the workspace lock to say nothing.
+    expect(h.edgeBatches).toEqual([]);
+    // ...and the store really was written, so this is "nothing to do" rather than
+    // "nothing was named".
+    expect(report.entities[0]?.entitiesStored).toBe(2);
+  });
+
+  test("an UNMINTED-id store is distinguishable from a healthy natural-key one", async () => {
+    // ⚠️ The pair the round-1 panel found missing, and the reason `unmintedIds` is
+    // on the report at all — two reviewers converged on it independently. A store
+    // of ids no producer could have minted (a hand-edited or downgraded bundle)
+    // resolves NOTHING, ever, and its remedy is a re-import rather than a warehouse
+    // edit. Under the first cut of this union it reported `{entries: 2,
+    // ambiguous: 0}` — byte-identical to the healthy store in the test above.
+    //
+    // That is #5277's own charter failing one counter over: the union exists
+    // because a lock timeout read as "nobody has named anything" to the admin whose
+    // next action was to go name something.
+    const h = harness({
+      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
+      entities: { Accounts: ACCOUNTS },
+      rows: { Accounts: [snapshotRow("ACC-42", "gold")] },
+      entityStore: async () => [
+        {
+          // Not `wh_` + 64 hex digits, so `isWarehouseRowId` refuses it.
+          entityId: "wh_handedited" as WarehouseRowId,
+          entity: "Accounts",
+          keySurface: "ACC-42",
+          keyNorm: "acc 42",
+          canonicalSurface: "Acme",
+          canonicalNorm: "acme",
+        },
+        {
+          entityId: "wh_downgraded" as WarehouseRowId,
+          entity: "Contacts",
+          keySurface: "C-9",
+          keyNorm: "c 9",
+          canonicalSurface: "Beta",
+          canonicalNorm: "beta",
+        },
+      ] satisfies readonly EntityStoreEntry[],
+    });
+
+    const report = await run(h);
+
+    // ⚠️ The SAME `kind` and the SAME `entries`/`ambiguous`/`selfEdges` as the
+    // healthy store above — `unmintedIds` is the ONLY field that differs, which is
+    // exactly why its absence was invisible rather than merely incomplete.
+    expect(report.entityEdges).toEqual({
+      kind: "nothing-to-propose",
+      entries: 2,
+      ambiguous: 0,
+      selfEdges: 0,
+      unmintedIds: 2,
+    });
+    expect(h.edgeBatches).toEqual([]);
   });
 
   test("an edge-pass failure does NOT fail the run — the facts are already committed", async () => {
@@ -2047,28 +2161,250 @@ describe("the entity store", () => {
 
     expect(report.created).toBeGreaterThan(0);
     expect(report.entities[0]?.entitiesStored).toBe(1);
-    expect(report.entityEdges).toBeNull();
-    // ⚠️ **THE FIELD THAT MAKES THE FAILURE READABLE.** `entityEdges: null`
-    // alone is what a healthy idle run reports too, so before this the two were
-    // byte-identical on the wire — a vocabulary lock timeout told the admin
-    // "nobody has named anything", whose next action is to go name something.
-    // The message travels because "it failed" without a reason is a 500 with
-    // extra steps.
+    // ⚠️ **THE ARM THAT MAKES THE FAILURE READABLE.** Under #5043's three fields
+    // a failing run and a healthy idle run were byte-identical apart from one
+    // sibling string — a vocabulary lock timeout told the admin "nobody has named
+    // anything", whose next action is to go name something. The discriminant is
+    // now the report's own vocabulary rather than a `null` a reader has to decode.
+    //
+    // ⚠️ **`reached: {phase: "store-read"}` carries NO COUNT AT ALL**, and that is
+    // stronger than the `entries: null` the first cut used. Reporting `0` would
+    // claim an empty, unambiguous store to an operator whose store may hold every
+    // row it ever did — ADR-0039's invisible failure as a confident number — but a
+    // nullable field beside a non-nullable `proposalsAttempted` also SPELLS
+    // combinations that are not runs. Absent-where-unknown says the same thing and
+    // makes the impossible ones unrepresentable.
+    //
+    // The paired test below is the same failure at a LATER phase, and the pair is
+    // the whole point of the arm.
+    //
+    // `toEqual`, not `toMatchObject`: a field added to this arm must be a visible
+    // edit rather than silently admitted.
+    expect(report.entityEdges).toEqual({
+      kind: "failed",
+      reached: { phase: "store-read" },
+      message: expect.any(String),
+    });
+    expect(h.edgeBatches).toEqual([]);
     // ⚠️ **The failure is REPORTED but the driver's text is NOT.** Both throw
     // sources are internal-DB-backed, so `err.message` here is a `pg` string —
     // `FATAL: password authentication failed for user "atlas"`, a host, a role.
     // The first cut of this field put it straight in a 200 body, which is the
     // one thing this file already refuses for `snapshot-failed`.
-    expect(report.entityEdgesFailed).not.toBeNull();
-    expect(report.entityEdgesFailed).not.toContain("vocabulary lock timeout");
+    const failed = report.entityEdges;
+    expect(failed.kind).toBe("failed");
+    if (failed.kind !== "failed") throw new Error("unreachable: asserted above");
+    expect(failed.message).not.toContain("vocabulary lock timeout");
     // …and it carries the handle that makes the real reason findable, which is
     // what stops the redaction from being a dead end.
-    expect(report.entityEdgesFailed).toContain("req-1");
+    expect(failed.message).toContain("req-1");
     // ⚠️ It must NOT claim the clean case either. `proposeAliasEdges` commits
     // PER PROPOSAL, so a mid-batch throw leaves approved edges behind — and an
     // auto-approved entity edge re-keys the corpus. "No vocabulary edge was
     // raised this run" was false in exactly that case.
-    expect(report.entityEdgesFailed).not.toContain("no vocabulary edge was raised");
+    expect(failed.message).not.toContain("no vocabulary edge was raised");
+
+    // ⚠️ **THE MODULE'S REGISTER, capital and all.** Sibling refusals in
+    // `warehouse-producer.ts` say "This is an Atlas fault", the logging suite asserts
+    // that exact string on them, and a case-sensitive grep is what an operator runs
+    // over a pile of support tickets. The first cut of this clause wrote "this is an
+    // Atlas fault rather than a transient one" — which that grep misses, on the arm
+    // most likely to be grepped for — under a comment claiming it matched them.
+    //
+    // No count here on purpose: the phrase is split across string concatenations at
+    // several of those sites, so any hand-written tally of them is wrong in a way
+    // `grep -c` will not tell you. This diff produced four such miscounts.
+    expect(failed.message).toContain("This is an Atlas fault");
+    // ...and the permanence TEST names a comparison the reader can make. It used to
+    // say "if it fails again identically", which is unfalsifiable by construction:
+    // this sentence is byte-identical for every failure, so two bodies always look
+    // the same. It now points at `reached`, the half that genuinely varies, and
+    // excludes the contention case — this pass takes the workspace lock up to
+    // `2 × entries` times, so two presses during a concurrent run repeat identically
+    // and are NOT a defect.
+    expect(failed.message).toContain("stops at the same point");
+    expect(failed.message).toContain("otherwise idle workspace");
+  });
+
+  test("a store seam that RESOLVES the wrong shape lands on `failed`, not on a schema degrade", async () => {
+    // ⚠️ Built because the guard it covers was measured UNFALSIFIABLE: removing
+    // `if (!Array.isArray(store)) throw` left all 186 tests green, which by this
+    // repo's rule makes it decoration rather than a guard.
+    //
+    // A seam that THROWS is caught. The one shape that escapes is a seam that
+    // RESOLVES something that is not an array — a partial mock, a stubbed module, a
+    // future loader returning `{rows: [...]}`. Without the guard `store.length` is
+    // `undefined`, which flows into the report as an `undefined` count, fails
+    // `BrainWarehouseRunReportSchema`, and hands the operator "the report could not
+    // be serialized" — a true statement about the wrong subsystem, on a run whose
+    // actual fault is one seam over.
+    //
+    // The cast is the point of the test: the seam is TYPED, so only a caller that
+    // lies about the type can produce this, which is exactly what a partial mock is.
+    const h = harness({
+      pairs: [...namedPairs],
+      entities: { Accounts: ACCOUNTS },
+      rows: { Accounts: [snapshotRow("42", "Acme Corp", "gold")] },
+      entityStore: (async () => ({ rows: [] })) as unknown as () => Promise<
+        readonly EntityStoreEntry[]
+      >,
+    });
+
+    const report = await run(h);
+
+    // The run still succeeds and the facts are still committed…
+    expect(report.created).toBeGreaterThan(0);
+    // …and the failure is attributed to the pass that actually failed, at the phase
+    // that actually failed — nothing was read, so no count is reported.
+    expect(report.entityEdges).toEqual({
+      kind: "failed",
+      reached: { phase: "store-read" },
+      message: expect.any(String),
+    });
+    expect(h.edgeBatches).toEqual([]);
+  });
+
+  test("the PLANNING phase: the store was read, then planning threw (#5277)", async () => {
+    // ⚠️ The one arm round 1 covered on the wire but not at the producer. Deleting
+    // the `reached = {phase: "planning", …}` assignment outright left every suite
+    // green, because no fixture threw in the window between the store read and the
+    // batch submission — every failure fixture threw in `loadStore` (→ `store-read`)
+    // or in `proposeAliasEdges` (→ `proposing`).
+    //
+    // A hostile getter is what reaches it: the array passes `Array.isArray`, so
+    // `entries` is established, and `entityEdgeProposals` throws while reading the
+    // entry. That is a code defect rather than an operational failure, which is
+    // exactly why the arm must be reportable — `entries` is known and nothing was
+    // submitted, and a shape that could not say so would have to fold it into a
+    // neighbour and lie about one of the two.
+    const h = harness({
+      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
+      entities: { Accounts: ACCOUNTS },
+      rows: { Accounts: [snapshotRow("ACC-42", "gold")] },
+      entityStore: async () =>
+        [
+          {
+            get entityId(): WarehouseRowId {
+              throw new Error("hostile getter");
+            },
+            entity: "Accounts",
+            keySurface: "ACC-42",
+            keyNorm: "acc 42",
+            canonicalSurface: "Acme",
+            canonicalNorm: "acme",
+          },
+        ] as unknown as readonly EntityStoreEntry[],
+    });
+
+    const report = await run(h);
+
+    // `entries: 1` — established BEFORE the throw, and the number that separates this
+    // from `store-read`, where no count exists at all.
+    expect(report.entityEdges).toEqual({
+      kind: "failed",
+      reached: { phase: "planning", entries: 1 },
+      message: expect.any(String),
+    });
+    // Nothing was handed to the vocabulary seam, so nothing can have been committed.
+    expect(h.edgeBatches).toEqual([]);
+  });
+
+  test("PARTIAL PROGRESS: a throw AFTER the batch was submitted is a different wire value (#5277)", async () => {
+    // ⚠️ The state #5043's shape could not represent, and the reason the union
+    // exists. `proposeAliasEdges` COMMITS PER PROPOSAL and an auto-approved entity
+    // edge RE-KEYS THE CORPUS, so "threw before proposing anything" and "threw
+    // after committing 900 edges" are materially different runs — different
+    // remedies, different blast radius — and both used to be `entityEdges: null`
+    // plus the same sentence. The prose said so; the type could not.
+    const h = harness({
+      pairs: [...namedPairs],
+      entities: { Accounts: ACCOUNTS },
+      rows: {
+        Accounts: [
+          snapshotRow("42", "Acme Corp", "gold"),
+          snapshotRow("43", "Beta LLC", "silver"),
+          // ⚠️ A THIRD row whose name cell is empty, and it is here for one reason:
+          // with two rows, `proposalsAttempted` (2 positions × 2 entries = 4) was
+          // EQUAL to `report.created` (2 rows × 2 dimensions = 4), under a comment
+          // claiming the number "can be confused with nothing else on this report".
+          // That claim was false and structurally so — the panel caught it. An
+          // unnamed row makes a fact without making an entry, which separates them.
+          snapshotRow("44", null, "bronze"),
+          // ⚠️ A FOURTH row that IS stored but earns NO edge — its name cell is its
+          // key, so it is a benign self-edge. Without it the census was three
+          // interchangeable zeros and `proposalsAttempted` was exactly `2 × entries`
+          // in every fixture that carried it, so `proposalsAttempted = entries * 2`
+          // passed the whole suite. A refused entry is what makes the two differ.
+          snapshotRow("Gamma", "Gamma", "platinum"),
+        ],
+      },
+      edgeProposeThrows: "deadlock detected on brain_vocabulary_edge",
+    });
+
+    const report = await run(h);
+
+    // ⚠️ The three numbers ASSERTED here are each distinct from
+    // `proposalsAttempted: 4`, so a field copied into another cannot pass.
+    //
+    // ⚠️ **NOT "every number on this report" — `rows` is 4 as well**, because it
+    // counts the snapshot rows the seam returned and there are four of them. That
+    // universal was the FOURTH wrong version of this one claim (4, then 5, then 7,
+    // then "every"), in a comment that boasted about having measured the previous
+    // three. The numbers that discriminate are asserted; the sentence no longer
+    // quantifies over ones that are not.
+    expect(report.created).toBe(7);
+    expect(report.entities[0]?.entitiesStored).toBe(3);
+    expect(report.entities[0]?.unnamedRows).toBe(1);
+    // Two positions × the two entries that EARN an edge — `Gamma` is stored and
+    // refused, so this is no longer `2 × entries`.
+    expect(h.edgeBatches[0]).toHaveLength(4);
+    expect(report.entityEdges).toEqual({
+      kind: "failed",
+      reached: {
+        // ⚠️ The LATER phase, and the whole pair: same `kind` as the read failure
+        // above, different knowledge. The census is present here because the read
+        // and the planning both succeeded; on that one it is absent entirely.
+        //
+        // ⚠️ `selfEdges: 1` is what makes `proposalsAttempted` independent of
+        // `entries`: 3 entries, 1 refused, 2 earners, 4 proposals. With an all-zero
+        // census the two were locked together and `proposalsAttempted = entries * 2`
+        // passed every test in the repo.
+        phase: "proposing",
+        entries: 3,
+        ambiguous: 0,
+        selfEdges: 1,
+        unmintedIds: 0,
+        proposalsAttempted: 4,
+      },
+      message: expect.any(String),
+    });
+    // ⚠️ The SENTENCE is identical to the read-failure case above. That is the
+    // rule (#5043): a fixed sentence plus the correlation handle, never the
+    // driver's message — so what varies between the two failures is the STRUCTURED
+    // half, which a machine can read without parsing prose.
+    const failed = report.entityEdges;
+    if (failed.kind !== "failed") throw new Error("unreachable: asserted above");
+    expect(failed.message).not.toContain("deadlock detected");
+    expect(failed.message).toContain("req-1");
+
+    // ⚠️ "FIXED" asserted directly rather than inferred from two `not.toContain`s:
+    // the same bytes come back from a completely different failure with a
+    // completely different driver message. A `message` that interpolated anything
+    // about the cause would differ here, which is how `err.message` would come
+    // back in through the door #5043 closed.
+    const readFailure = await run(
+      harness({
+        pairs: [...namedPairs],
+        entities: { Accounts: ACCOUNTS },
+        rows: { Accounts: [snapshotRow("42", "Acme Corp", "gold")] },
+        entityStore: async () => {
+          throw new Error('FATAL: password authentication failed for user "atlas"');
+        },
+      }),
+    );
+    const readFailed = readFailure.entityEdges;
+    if (readFailed.kind !== "failed") throw new Error("unreachable: the store read threw");
+    expect(readFailed.message).toBe(failed.message);
   });
 
   test("a run with NOTHING to do is distinguishable from a run that FAILED", async () => {
@@ -2085,12 +2421,16 @@ describe("the entity store", () => {
 
     const report = await run(h);
 
-    // Same `entityEdges: null` as the failing run above…
-    expect(report.entityEdges).toBeNull();
-    // …and the ONE field that separates them. Before it, these two runs were
-    // byte-identical on the wire.
-    expect(report.entityEdgesFailed).toBeNull();
-    expect(report.entityEdgesAmbiguous).toBe(0);
+    // ⚠️ A DIFFERENT `kind` from the failing run above, where the old shape gave
+    // both the same `entityEdges: null` and leaned on a sibling string to separate
+    // them. The discriminant is now the first thing a reader sees.
+    expect(report.entityEdges).toEqual({
+      kind: "nothing-to-propose",
+      entries: 0,
+      ambiguous: 0,
+      selfEdges: 0,
+      unmintedIds: 0,
+    });
   });
 
   test("the edge pass runs even when EVERY enrolled pair was refused", async () => {
@@ -2100,8 +2440,8 @@ describe("the entity store", () => {
     // un-published — skipped it while `brain_entity` still held every row.
     // Un-enrolling deletes no entry and no reaper exists yet, so that is exactly
     // the run an operator is staring at when they ask why the store stopped
-    // working, and it reported `entityEdgesAmbiguous: 0` over a store that may
-    // be entirely ambiguous.
+    // working, and it reported the then-flat `entityEdgesAmbiguous: 0` over a
+    // store that may be entirely ambiguous.
     const h = harness({
       pairs: [{ entity: "Ghost", dimension: "tier", naming: false }],
       // Not in the published semantic layer → every pair refused → `emit` empty.
@@ -2132,9 +2472,15 @@ describe("the entity store", () => {
     expect(report.entities).toEqual([]);
     expect(report.refusals.length).toBeGreaterThan(0);
     // …and the edge pass ran anyway, over the PERSISTED store, and found the
-    // collision. `0` here is the report saying "no name collisions" about a
-    // store where neither entity resolves.
-    expect(report.entityEdgesAmbiguous).toBe(2);
+    // collision. `ambiguous: 0` here would be the report saying "no name
+    // collisions" about a store where neither entity resolves.
+    expect(report.entityEdges).toEqual({
+      kind: "nothing-to-propose",
+      entries: 2,
+      ambiguous: 2,
+      selfEdges: 0,
+      unmintedIds: 0,
+    });
   });
 
   test("the edge pass runs even when THIS run stored nothing — the re-run case", async () => {
@@ -2165,7 +2511,14 @@ describe("the entity store", () => {
     expect(report.entities[0]?.entitiesStored).toBe(0);
     // The pass ran anyway, and its counters reached the report.
     expect(h.edgeBatches).toHaveLength(1);
-    expect(report.entityEdges).toEqual({ ...EMPTY_EDGE_COUNTERS, rejected: 2 });
+    expect(report.entityEdges).toEqual({
+      kind: "proposed",
+      entries: 1,
+      ambiguous: 0,
+      selfEdges: 0,
+      unmintedIds: 0,
+      counters: { ...EMPTY_EDGE_COUNTERS, rejected: 2 },
+    });
   });
 
   test("ambiguous entries are COUNTED on the report, not just skipped", async () => {
@@ -2180,15 +2533,31 @@ describe("the entity store", () => {
         Accounts: [
           snapshotRow("ACC-42", "Acme", "gold"),
           snapshotRow("ACC-43", "acme", "silver"),
-          snapshotRow("ACC-44", "Gamma", "bronze"),
+          // ⚠️ A THIRD spelling of the same name, added because the previous
+          // fixture claimed "three distinct numbers" and had only two:
+          // `ambiguous` and the proposal count were BOTH 2, so the mutation
+          // `ambiguous = batch.proposals.length` passed this test. Now the four
+          // numbers are 4 / 3 / 0 / 1 and no two can be swapped unnoticed.
+          snapshotRow("ACC-44", "ACME", "platinum"),
+          snapshotRow("ACC-45", "Gamma", "bronze"),
         ],
       },
     });
 
     const report = await run(h);
 
-    expect(report.entityEdgesAmbiguous).toBe(2);
-    // The control: the third row is NOT ambiguous and its edge was proposed, so
+    // Four DISTINCT numbers — entries 4, ambiguous 3, selfEdges 0, proposals 2 —
+    // so an implementation that put every row in one bucket, or copied one counter
+    // into another, cannot satisfy this.
+    expect(report.entityEdges).toEqual({
+      kind: "proposed",
+      entries: 4,
+      ambiguous: 3,
+      selfEdges: 0,
+      unmintedIds: 0,
+      counters: EMPTY_EDGE_COUNTERS,
+    });
+    // The control: the last row is NOT ambiguous and its edge was proposed, so
     // this is a count of the refused rather than of everything.
     expect(h.edgeBatches[0]).toHaveLength(2);
   });
@@ -2200,9 +2569,18 @@ describe("the entity store", () => {
       pairs: [...namedPairs],
       entities: { Accounts: ACCOUNTS },
       rows: { Accounts: [snapshotRow("42", "Acme", "gold")] },
+      // ⚠️ REAL minted ids, not `"wh_this"`/`"wh_prior"`. Those fail
+      // `isWarehouseRowId`, so both entries were counted as `unmintedIds` and
+      // skipped BEFORE the ambiguity test ever ran — the pass returned no batch
+      // for the wrong reason entirely, and both of this test's original
+      // assertions (`entityEdges === null`, `entitiesStored === 1`) held either
+      // way. Caught by the `ambiguous`/`unmintedIds` assertion below, which is the
+      // first one in this test that could tell the two mechanisms apart — and
+      // `unmintedIds: 0` is now what pins that the ids ARE minted, so a revert to
+      // the old fixture reds here rather than passing for the wrong reason.
       entityStore: async () => [
         {
-          entityId: "wh_this" as WarehouseRowId,
+          entityId: warehouseRowId(WORKSPACE, "Accounts", "42"),
           entity: "Accounts",
           keySurface: "42",
           keyNorm: "42",
@@ -2210,7 +2588,7 @@ describe("the entity store", () => {
           canonicalNorm: "acme",
         },
         {
-          entityId: "wh_prior" as WarehouseRowId,
+          entityId: warehouseRowId(WORKSPACE, "Contacts", "9"),
           entity: "Contacts",
           keySurface: "9",
           keyNorm: "9",
@@ -2225,11 +2603,20 @@ describe("the entity store", () => {
     // No batch is handed to the vocabulary seam at all — an empty one would take
     // the workspace lock to say nothing.
     expect(h.edgeBatches).toEqual([]);
-    expect(report.entityEdges).toBeNull();
-    // ⚠️ The control that separates this from the no-naming-dimension case
-    // above, where `entityEdges` is also null: the store DID write an entry.
-    // Both facts together are what say "the edge was refused on ambiguity"
-    // rather than "nothing was named".
+    // ⚠️ The same `kind` as the no-naming-dimension case above, and the numbers
+    // are what separate them now: there the store was empty (`entries: 0,
+    // ambiguous: 0`), here it holds two entries that collide. Under the old shape
+    // both were a bare `null` and the separation lived in a second assertion about
+    // a different field.
+    expect(report.entityEdges).toEqual({
+      kind: "nothing-to-propose",
+      entries: 2,
+      ambiguous: 2,
+      selfEdges: 0,
+      unmintedIds: 0,
+    });
+    // The control: the store DID write an entry, so this is "the edge was refused
+    // on ambiguity" rather than "nothing was named".
     expect(report.entities[0]?.entitiesStored).toBe(1);
   });
 });

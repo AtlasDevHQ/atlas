@@ -1,6 +1,7 @@
 /**
  * The SQL-gate name allowlist (#5042, re-pointed at #5230's spelling, widened to
- * whole-file name occurrence by #5249).
+ * whole-file name occurrence by #5249, given its completeness direction and five more
+ * scanned roots by #5255).
  *
  * ## WHY THIS FILE EXISTS
  *
@@ -91,8 +92,8 @@
  * and no unlisted file names it, which makes it the cheapest innocuous-looking
  * uncaught mint. Fixtures that agree by construction (#5000, #5068), one layer up.
  *
- * Three failures are closed by four mechanisms, none subsuming another, and a fourth
- * failure is open — say which is which before touching any of them:
+ * Four failures are closed by six mechanisms, none subsuming another — say which is
+ * which before touching any of them:
  *
  * - **DELETION** — a name leaving the array. Closed at COMPILE time by the fixed-arity
  *   tuple (`bun run type`) and at RUNTIME by the length assertion (`bun test`, which
@@ -106,10 +107,15 @@
  *   RUNTIME by reading `warehouse-producer.ts`; the compiler cannot see inside a
  *   concatenation, so nothing else can close this. The reading machinery has its own
  *   fixture block, because a checker with no falsifier is how its blind spots ship.
- * - **A SIXTH branded type being exported and nobody adding it here** — OPEN, and
- *   deliberately: deriving the set from the module needs a tagging convention in
- *   production source. Tracked as a follow-up rather than improvised in a review
- *   round. A green run does not claim the five are still the whole set.
+ * - **A SIXTH branded type being exported and nobody adding it here** — closed by
+ *   #5255, with two mechanisms rather than one. The `@sql-gate-guarded` TAG on each
+ *   defining declaration makes membership reviewable at the definition site and is
+ *   asserted set-equal to {@link GUARDED_NAMES} in both directions. But a tag is
+ *   something a person has to remember, so the tag scan alone would have restated the
+ *   hole rather than closed it: the CLOSURE — every top-level exported type in the
+ *   module that transitively names the brand symbol — is computed from source and
+ *   cannot be forgotten. A green run now DOES claim the five are the whole set, for
+ *   every sixth type that names one of them.
  *
  * ## What this does NOT prove
  *
@@ -125,20 +131,28 @@
  * (`Parameters<typeof someRunner>[0]`). Those need no assertion and name nothing; the
  * negative controls below pin that limit rather than leave it to prose.
  *
- * ⚠️ **The scanned roots are three, and they are NOT every root a mint could live
- * in.** {@link ROOTS} says which, and says plainly which sibling directories are
- * knowingly unscanned. Read a green run as *"no new file under those three roots
- * names one"*, nothing more.
+ * ⚠️ **The scanned roots are EIGHT since #5255, and they are still not every directory
+ * in the repo.** {@link ROOTS} says which, why each earns a place, and which siblings
+ * remain unscanned and on what argument. Read a green run as *"no unlisted file under
+ * those eight roots names one"*, nothing more.
  *
- * ⚠️ **`--affected` will not select this file for the event it exists to catch.** The
- * affected-test runner keys on quoted module specifiers, and a brand-new mint at
- * `lib/brain/<new-file>.ts` is named in no string here. The two sentinel strings DO
- * name files under `ee/src` and `packages/cli/src`, but the runner needs its token
- * immediately before the closing quote and `"validate.ts"` ends in `.ts`, so they
- * select nothing either — and those roots are outside this package regardless. So the
- * local pre-flight is blind to a new mint and only full CI catches it. This is the
- * repo's known glob-scanning-guard-is-`--affected`-blind pattern; do not read a green
- * pre-flight as covering it.
+ * ⚠️ **`--affected` will not select this file for the event it exists to catch.** Run
+ * against the runner's own `collectAffectedTests` rather than reasoned about, because
+ * #5255 took the sentinel count from three to eight and the previous version of this
+ * paragraph was an argument about two of them:
+ *
+ * - a brand-new mint at `lib/brain/<new-file>.ts` — NOT selected. Its token appears in
+ *   no string here, which is the whole point: an unnamed new file is the event.
+ * - a change to any of the EIGHT sentinels — NOT selected. The runner's token is the
+ *   STEM and the quoted string has to end at it, so every sentinel spelling ends in
+ *   `.ts` and matches nothing; six of the eight roots are outside this package anyway.
+ * - a change to `warehouse-producer.ts` — SELECTED, through the `./warehouse-producer`
+ *   specifier in the escape-spelling fixture. That one edge does reach it, and it is
+ *   the edge that matters for the completeness assertions, which read that module.
+ *
+ * So the local pre-flight is blind to a NEW MINT and only full CI catches it. This is
+ * the repo's known glob-scanning-guard-is-`--affected`-blind pattern; do not read a
+ * green pre-flight as covering it.
  *
  * It also does not pin the ANTI-REPLAY half. A mint listed below hands back a token
  * for the request it was given; a mint that hands back a token for some OTHER request
@@ -164,19 +178,44 @@ const SRC_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 /**
  * The roots this guard scans, with a floor on how much each must yield.
  *
- * ⚠️ **These are the three roots with brain-adjacent imports today. They are NOT
- * "every root a mint could live in", and an earlier draft of this comment claimed
- * they were.** All five guarded names are EXPORTED and nothing gates who imports
- * `@atlas/api/*` — only the api→ee direction is gated — so the same argument that
- * put `ee/src` and `packages/cli/src` here applies verbatim to directories that are
- * knowingly unscanned: every `plugins/<name>/src` (24 of the 25 import `@atlas/api`
- * today), `packages/cli/bin`, `packages/cli/lib`, `packages/api/scripts`, and
- * `packages/mcp/src`. None names a guarded type today, verified by repo-wide grep, so
- * the gap is latent rather than live. Widening the scan needs glob expansion and is
- * tracked as a follow-up.
+ * ⚠️ **#5255 WIDENED this from three to eight, and the argument for the widening was
+ * already written in the old version of this comment.** All five guarded names are
+ * EXPORTED and nothing gates who imports `@atlas/api/*` — only the api→ee direction
+ * is gated — so the same reasoning that put `ee/src` and `packages/cli/src` here
+ * applied verbatim to five directories that were knowingly unscanned, one of which
+ * (`packages/cli/bin/brain-paraphrase-eval.ts`, importing `@atlas/api/lib/brain/extract`)
+ * was the comment's own example of brain-touching code outside its scan. A rationale
+ * that names its own counterexample is a rationale for widening, not for a follow-up.
  *
- * ⚠️ **The roots are NAMED in the failure message too.** An enumeration is only as
- * honest as its scope. If a root is added here, add it there.
+ * What is now scanned, and why each one could hold a mint:
+ *
+ * - `packages/api/src` — the module's own package.
+ * - `ee/src` — imports `@atlas/api/*` freely; the gate is only api→ee.
+ * - `packages/cli/src` — the `atlas` CLI's command layer.
+ * - `packages/cli/bin` — the entrypoints and the eval harnesses, including the
+ *   brain-touching one named above.
+ * - `packages/cli/lib` — the CLI's shared helpers, `tenant-db.ts` among them.
+ * - `packages/api/scripts` — build/eval/ops scripts that import the api package
+ *   directly and run with its credentials.
+ * - `packages/mcp/src` — the MCP server, a second front door onto the same libs.
+ * - `plugins` — walked WHOLE rather than as one root per `plugins/<name>/src`, because
+ *   a glob of 25 roots would need 25 sentinels and 25 floors, most of them over
+ *   directories of one or two files where a floor asserts nothing. One root over the
+ *   whole tree is both simpler and STRICTLY more coverage: it also sees each plugin's
+ *   root-level `.ts` files and test directories, which a per-plugin `src` glob misses.
+ *
+ * ⚠️ **What is still unscanned, stated rather than implied.** `apps/` (docs and www —
+ * Next.js surfaces that speak HTTP and import no api lib), `packages/web`, and the
+ * other published `@useatlas/*` packages. None imports `@atlas/api/*`; the frontend
+ * convention is that it never does. That is an argument from a convention rather than
+ * from a compiler, so it is weaker than the eight above — read a green run as *"no
+ * unlisted file under those eight roots names one"*, nothing more.
+ *
+ * ⚠️ **The roots are NAMED in the failure message too, and that is now ASSERTED
+ * rather than kept in sync by hand** (#5255) — see {@link SCAN_SCOPE_MESSAGE} and the
+ * test that pins it. The message is hand-written on purpose: generating it from these
+ * labels would make the assertion agree by construction, which is the failure #5249
+ * measured one array over.
  *
  * ⚠️ **Root EXISTENCE is not root CORRECTNESS, and a VOLUME floor is only a proxy
  * for it — a proxy that was measured insufficient.** A first attempt set floors at
@@ -197,7 +236,10 @@ const SRC_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
  * Measured: skipping `brain` leaves 1,789 files — clears the 1,000 floor, but REDs
  * the sentinel. Skipping `src/api` leaves 1,651 — clears the floor AND still reaches
  * the sentinel, so both mechanisms miss it. Tightening the extension test to `.ts`
- * drops nothing at all, since no root holds a `.tsx`, `.mts` or `.cts` today. A scan
+ * would now drop the five `.tsx` files under `plugins/chat/src/cards/` — this line
+ * said it dropped nothing, which was true of the three roots #5249 scanned and
+ * stopped being true the moment #5255 added `plugins`. `.mts`/`.cts` still match
+ * nothing under any of the eight. A scan
  * narrowed away from the sentinel's path is not covered here.
  *
  * The floors stay because they catch a different thing: a scan that still reaches the
@@ -218,7 +260,16 @@ type ScanRoot = {
   /** Root-relative path that MUST be reached — the direct answer to "right directory?". */
   readonly sentinel: string;
 };
-const ROOTS: readonly [ScanRoot, ScanRoot, ScanRoot] = [
+const ROOTS: readonly [
+  ScanRoot,
+  ScanRoot,
+  ScanRoot,
+  ScanRoot,
+  ScanRoot,
+  ScanRoot,
+  ScanRoot,
+  ScanRoot,
+] = [
   {
     dir: SRC_ROOT,
     label: "",
@@ -236,6 +287,42 @@ const ROOTS: readonly [ScanRoot, ScanRoot, ScanRoot] = [
     label: "packages/cli/src/",
     minFiles: 30,
     sentinel: "validate.ts",
+  },
+  {
+    dir: fileURLToPath(new URL("../../../../../cli/bin/", import.meta.url)),
+    label: "packages/cli/bin/",
+    // 37 files, largest child `__tests__` at 23 — the floor clears the repoint.
+    minFiles: 30,
+    sentinel: "brain-paraphrase-eval.ts",
+  },
+  {
+    dir: fileURLToPath(new URL("../../../../../cli/lib/", import.meta.url)),
+    label: "packages/cli/lib/",
+    // 23 files, largest child `learn/` at 5.
+    minFiles: 15,
+    sentinel: "tenant-db.ts",
+  },
+  {
+    dir: fileURLToPath(new URL("../../../../scripts/", import.meta.url)),
+    label: "packages/api/scripts/",
+    // 27 files, largest child `mutations/` at 13.
+    minFiles: 20,
+    sentinel: "mutate.ts",
+  },
+  {
+    dir: fileURLToPath(new URL("../../../../../mcp/src/", import.meta.url)),
+    label: "packages/mcp/src/",
+    // 75 files, largest child `__tests__` at 39.
+    minFiles: 50,
+    sentinel: "mcp-dispatch.ts",
+  },
+  {
+    dir: fileURLToPath(new URL("../../../../../../plugins/", import.meta.url)),
+    label: "plugins/",
+    // 191 files across 25 plugins, largest child `chat/` at 52 — so a repoint at the
+    // biggest plugin still REDs on the floor as well as on the sentinel.
+    minFiles: 100,
+    sentinel: "chat/src/index.ts",
   },
 ];
 
@@ -352,9 +439,44 @@ const NAME_ALLOWLIST: readonly {
 /** Kinds are counted, not merely declared — see the test that pins this. */
 const EXPECTED_BY_KIND: Record<AllowlistKind, number> = { bypass: 4, annotation: 0 };
 
+/**
+ * The failure a reviewer actually reads when a new file names a guarded type.
+ *
+ * ⚠️ **Hoisted so its scope enumeration can be ASSERTED rather than kept in sync by
+ * hand** (#5255). The previous version was an inline string listing three roots under
+ * a {@link ROOTS} docstring that said "if a root is added here, add it there" and
+ * enforced nothing — the same prose-synchronisation defect PR #5234 corrected in this
+ * very message once already. A message asserting a NARROWER scope than the test proves
+ * tells a reader they are safe in directories nobody checked.
+ *
+ * ⚠️ **Written by hand, NOT generated from {@link ROOTS}.** Interpolating the labels
+ * would make the assertion below true by construction and it would survive every root
+ * being deleted — fixtures that agree by construction (#5000, #5068, and #5249 one
+ * array over). Two independent spellings that must agree is the entire mechanism.
+ */
+const SCAN_SCOPE_MESSAGE =
+  "the set of files that NAME one of the five guarded SQL-gate types has changed. The " +
+  "scanned roots are packages/api/src/, ee/src/, packages/cli/src/, packages/cli/bin/, " +
+  "packages/cli/lib/, packages/api/scripts/, packages/mcp/src/ and plugins/. Since #5249 " +
+  "an entry means 'may name', not 'may cast' — so a file that merely ANNOTATES one of " +
+  "these types lands here too, and that is expected: add it to NAME_ALLOWLIST with kind " +
+  "'annotation'. A new PRODUCTION site that MINTS a passing verdict is kind 'bypass', and " +
+  "it is a second door onto an unvalidated statement reaching a customer's datasource — " +
+  "the thing to argue rather than merge.";
+
 function* walk(dir: string): Generator<string> {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
+    // ⚠️ **SYMLINKED DIRECTORIES ARE NOT FOLLOWED, and that is a decision rather
+    // than an oversight.** `Dirent.isDirectory()` is false for a symlink, so a
+    // subtree reached only through one contributes nothing — a silent-narrowing
+    // vector of exactly the class this file refuses elsewhere. It stays because
+    // following them is worse here: this repo's worktrees carry per-package
+    // `node_modules` SYMLINKS (they are why `gitignore`'s `node_modules/` does not
+    // match them), and a followed link would walk into dependency trees or loop.
+    // No root's real source reaches this scan through a link today; a sentinel
+    // catches it if one ever does, but only when the sentinel's own path is what
+    // was lost.
     if (entry.isDirectory()) {
       if (entry.name === "node_modules" || entry.name === "dist") continue;
       yield* walk(full);
@@ -407,7 +529,12 @@ function withoutComments(source: string): string {
  */
 function isExported(source: string, name: string): boolean {
   const stripped = withoutComments(source);
-  const declared = new RegExp(`^export (?:declare )?(?:type|interface|class) ${name}\\b`, "m");
+  // ⚠️ **THE THIRD MATCHER, and it is why "written once" was false.** The hoist that
+  // created {@link DECLARATION_HEAD} routed the tag scan and the declaration parser
+  // through it and missed this one, which went on spelling its own copy — so `class`
+  // and `declare` here were in exactly the state round 1 found them in the other two,
+  // with the pin covering neither. Three matchers, one head.
+  const declared = new RegExp(`^export ${DECLARATION_HEAD} ${name}\\b`, "m");
   // A barrel re-export is a legal refactor for a 2,378-line module and must not RED.
   // ⚠️ The negative lookahead matters: `export type { X as V2 }` means X is NO LONGER
   // exported under that spelling, which is precisely the rename this check exists to
@@ -416,7 +543,174 @@ function isExported(source: string, name: string): boolean {
   return declared.test(stripped) || reExported.test(stripped);
 }
 
-describe("the SQL-gate name allowlist (#5042, #5230, #5249)", () => {
+/**
+ * The module-private brand symbol every guarded type ultimately reaches.
+ *
+ * Not a guarded name itself — it is never exported, so nothing can assert to it —
+ * which is why it is spelled contiguously here while the five are not.
+ */
+const BRAND_SYMBOL = "validatedSnapshotSql";
+
+/** The definition-site marker. See the convention block in the defining module. */
+const GUARD_TAG = "@sql-gate-guarded";
+
+/**
+ * Every declaration carrying {@link GUARD_TAG} in the JSDoc block IMMEDIATELY above it.
+ *
+ * ⚠️ The gap between the tag and the `export` is bounded by "up to the end of THIS
+ * comment block", never further. A tag mentioned in a standalone comment that is not
+ * attached to a declaration therefore matches nothing rather than latching onto the
+ * next unrelated export. Executed, not reasoned: the fixture block below runs it.
+ *
+ * ⚠️ **No deduplication, because a duplicate is not constructible — and the first draft
+ * of this function added a `Set` for one that isn't.** The defining module explains the
+ * convention INSIDE the docstring of a declaration that also carries the tag, so the
+ * word appears twice above one `export`. That yields ONE name, not two: each match runs
+ * from the tag to the end of the declaration line, so the earlier mention's match
+ * swallows the later tag and `matchAll` resumes past it. Two matches capturing the same
+ * name would need two non-overlapping spans ending at the same declaration, which
+ * cannot happen. Measured, after the `Set` was added on the opposite belief and removing
+ * it again changed no result — the file's own AC-4 rule (execute, don't reason) applied
+ * to the code written to satisfy it.
+ *
+ * ⚠️ **Honest bound, in the fail-CLOSED direction:** the tag named in prose inside an
+ * UNTAGGED declaration's own docstring reads as a tag on that declaration. It reds
+ * rather than passes, and the fix is the repo's usual one — reword.
+ */
+function taggedNames(source: string): string[] {
+  const re = new RegExp(
+    `${GUARD_TAG}(?:(?!\\*/)[\\s\\S])*\\*/\\s*export ${DECLARATION_HEAD} (\\w+)`,
+    "g",
+  );
+  return [...source.matchAll(re)].map((m) => m[1] ?? "");
+}
+
+/**
+ * The declaration spellings all THREE matchers accept — written once, so they cannot
+ * disagree, and enumerated so every one of them can be driven by a fixture.
+ *
+ * ⚠️ **THIS IS A RATCHET, not a tidy-up, and it exists because the same defect was
+ * found twice in one review round.** Round 1 found the `class` alternative had no
+ * fixture — deleting `|class` from either matcher left the whole suite green. The fix
+ * added a `class` to the fixture module, and the audit of THAT fix immediately found
+ * `(?:declare )?`, the optional group directly to its left, in exactly the same
+ * state: no declaration anywhere — not in the fixture, not in the real module —
+ * spells `export declare`, so deleting the group changed no result either.
+ *
+ * Two instances of one class is this repo's threshold for replacing prose with a
+ * mechanism, so the alternatives are no longer written inline in two regex literals
+ * where a third can be added silently. {@link DECLARATION_SPELLINGS} drives the
+ * fixture module, and the test that pins {@link DECLARATION_HEAD}'s source is what
+ * asserts what {@link DECLARATION_HEAD} accepts against an independently-written
+ * candidate set, so a widening or a narrowing reds with a message naming this list.
+ *
+ * ⚠️ It makes the change VISIBLE, not impossible — an earlier draft of this line
+ * claimed the latter. A single hunk editing the head and this list together is
+ * green, exactly as the kind-count assertion further down honestly concedes for
+ * itself. Visible-to-a-reviewer is the property on offer.
+ */
+const DECLARATION_SPELLINGS: readonly [
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+] = [
+  "type",
+  "interface",
+  "class",
+  // ⚠️ `abstract class` was a live hole, not a completeness flourish: the head
+  // required `declare `/`type`/`interface`/`class` immediately after `export `, so
+  // `export abstract class Foo` matched NONE OF THE THREE. The module already exports
+  // a class, so marking one `abstract` is an ordinary edit — and a brand-carrying
+  // one would have been invisible to the tag scan AND to the closure, leaving the
+  // completeness test green with a sixth guarded type in the file.
+  "abstract class",
+  "declare type",
+  "declare interface",
+  "declare class",
+  "declare abstract class",
+] as const;
+
+/**
+ * The `export …` head all THREE matchers share. See {@link DECLARATION_SPELLINGS}.
+ *
+ * ⚠️ **`enum` is deliberately absent.** An enum's members are values, so nothing can
+ * intersect it with the module-private brand symbol and no assertion to one can mint
+ * a passing verdict. If that ever stops being true it belongs in the list above, and
+ * the candidate-set check below is what will notice.
+ */
+const DECLARATION_HEAD = "(?:declare )?(?:type|interface|(?:abstract )?class)";
+
+/** One top-level exported type-ish declaration, and the source it spans. */
+type Decl = { readonly name: string; readonly body: string };
+
+/**
+ * Every top-level `export type|interface|class` in a module, with its own source.
+ *
+ * A declaration's body runs from its `export` keyword to the next COLUMN-ZERO
+ * declaration keyword. Interface members, union arms and parameter lists are all
+ * indented or start with a punctuator, so nothing inside a declaration ends it; the
+ * next `export`/`declare`/`const`/`function` at column zero does.
+ *
+ * Callers pass source that has already been through {@link withoutComments}, so a
+ * `{@link}` in a docstring cannot make a declaration look like it references anything.
+ * That matters: {@link WarehouseSnapshotRequest}'s own docstring names a guarded type
+ * and the request is NOT guarded.
+ */
+function topLevelExportedTypeDecls(stripped: string): Decl[] {
+  const DECL = new RegExp(`^export ${DECLARATION_HEAD} (\\w+)`, "gm");
+  const BOUNDARY = /^(?:export|declare|const|let|var|function|async|interface|type|class)\b/gm;
+  const boundaries = [...stripped.matchAll(BOUNDARY)].map((m) => m.index);
+  return [...stripped.matchAll(DECL)].map((m) => ({
+    name: m[1] ?? "",
+    body: stripped.slice(m.index, boundaries.find((b) => b > m.index) ?? stripped.length),
+  }));
+}
+
+/**
+ * The STRUCTURAL answer to "which exported types carry the brand?" — #5255's point.
+ *
+ * ⚠️ **This is the mechanism; {@link GUARD_TAG} is the documentation.** A tag is
+ * something a person has to remember, so the sixth brand-carrying type added without
+ * one would be invisible to a tag scan — which is precisely the hole #5255 exists to
+ * close, and asserting tags against a hand-maintained array would have closed nothing
+ * but restated it. This closure is computed from the module's own source and cannot be
+ * forgotten.
+ *
+ * Transitive, because the brand travels by reference: the request names the symbol, the
+ * runner and the verdict name the request, the validator names the verdict, and the
+ * deps interface names the validator and the runner. Only the first hop is direct.
+ *
+ * ⚠️ A declaration's own name is NOT stripped from its body, and it does not need to
+ * be: a declaration already in the closure is skipped, and one that is not cannot be
+ * added by matching itself, since the only names searched for are the seed and names
+ * already in the closure. A `slice` doing that strip was written here and MEASURED
+ * dead — removing it changed no result — so it is gone rather than kept as a comment
+ * about a case that cannot arise.
+ */
+function brandCarryingExports(strippedSource: string, seed: string): string[] {
+  const decls = topLevelExportedTypeDecls(strippedSource);
+  const carrying = new Set<string>();
+  for (;;) {
+    const before = carrying.size;
+    for (const decl of decls) {
+      if (carrying.has(decl.name)) continue;
+      for (const ref of [seed, ...carrying]) {
+        if (new RegExp(`\\b${ref}\\b`).test(decl.body)) {
+          carrying.add(decl.name);
+          break;
+        }
+      }
+    }
+    if (carrying.size === before) return [...carrying].toSorted();
+  }
+}
+
+describe("the SQL-gate name allowlist (#5042, #5230, #5249, #5255)", () => {
   test("every assembled name is really exported — a rename must RED, not go vacuous", () => {
     // ⚠️ The one test that assembly makes mandatory. Fragments are invisible to the
     // compiler, so nothing but this read connects them to the real exports. It closes
@@ -480,12 +774,335 @@ describe("the SQL-gate name allowlist (#5042, #5230, #5249)", () => {
     expect(isExported(`export type ${N}V2 = X; /* was:\nexport type ${N} = Y;\n*/`, N)).toBe(false);
     // The anchor: an indented match is not a top-level export.
     expect(isExported(`  export type ${N} = X;`, N)).toBe(false);
+
+    // ⚠️ **EVERY SPELLING, because this matcher had none of its own.** Its fixtures
+    // were all `export type`; `interface` survived only incidentally (one of the five
+    // guarded names happens to be one), and `class`, `abstract` and `declare` were
+    // unexercised — the exact state round 1 found the other two matchers in, in the
+    // one copy the hoist had missed. Driven off the shared list so a new spelling
+    // cannot be added here without a case either.
+    for (const [i, spelling] of DECLARATION_SPELLINGS.entries()) {
+      const source = spelling.endsWith("type")
+        ? `export ${spelling} ${N} = X;`
+        : `export ${spelling} ${N} { readonly x: number; }`;
+      expect(isExported(source, N), `the export check missed the \`${spelling}\` spelling`).toBe(
+        true,
+      );
+      // ...and the mirror: the SAME spelling commented out is a rename in progress,
+      // not an export. One per spelling, because the comment strip runs before the
+      // anchor and a widening could pass the positive while breaking this.
+      expect(isExported(`/*\n${source}\n*/`, N), `prose satisfied \`${spelling}\``).toBe(false);
+      // A name that merely STARTS with the guarded one must not match, per spelling —
+      // the `\b` is what keeps this from being a prefix test.
+      expect(isExported(source.replace(N, `${N}V${i}`), N)).toBe(false);
+    }
+  });
+
+  test("COMPLETENESS: a sixth brand-carrying export cannot arrive unnoticed (#5255)", () => {
+    // ⚠️ The direction this file did NOT hold until #5255, and its header said so: the
+    // list was hand-maintained, so a sixth brand-carrying export needed no file to
+    // change for the guard to go stale. #5230 took the list from one name to five, and
+    // the same edit today would have left a sixth uncovered from birth.
+    //
+    // TWO derivations, asserted against the assembled array and so against each other.
+    // Neither subsumes the other and the difference is which failure each closes:
+    //
+    //   - TAGS answer "is the membership decision visible at the definition site?" They
+    //     catch a tag added without a list entry, and a list entry whose tag was
+    //     deleted. They CANNOT catch a sixth type nobody tagged.
+    //   - The CLOSURE answers "which exported types actually reach the brand?" It is
+    //     computed from the module's source, so it catches the sixth type nobody
+    //     tagged. It cannot see a type that reaches the brand without naming anything
+    //     — the `any`-wiring hole the negative controls below already pin.
+    const source = readFileSync(DEFINING_MODULE, "utf8");
+    const expected = [...GUARDED_NAMES].toSorted();
+
+    const tagged = taggedNames(source).toSorted();
+    expect(
+      tagged,
+      `the set of declarations tagged ${GUARD_TAG} in lib/brain/warehouse-producer.ts is not ` +
+        `GUARDED_NAMES. A tagged name missing here means a guarded type nobody listed; a listed ` +
+        `name missing there means a tag that was deleted or detached from its declaration.`,
+    ).toEqual(expected);
+
+    const stripped = withoutComments(source);
+    const decls = topLevelExportedTypeDecls(stripped);
+    // ⚠️ THE PARSER'S OWN FLOOR, and without it the assertion below is vacuous in the
+    // most embarrassing way: a parser that finds NOTHING yields an empty closure, and a
+    // parser that finds only the five yields the five.
+    //
+    // ⚠️ The floor is `> 12` and the exact figure is NOT restated here, deliberately.
+    // It was written as 19, then corrected to 20, and 20 was wrong too — #5277 added
+    // TWO declarations, not one. Three hand-written values, two of them wrong, on a
+    // number no assertion depends on. The floor is the claim worth making; the count
+    // is one `grep -cE '^export (declare )?(type|interface|class) '` away for anyone
+    // who wants it, which is strictly better than a fourth guess in a comment.
+    expect(
+      decls.length,
+      "the declaration parser found almost nothing — the closure below would be vacuous",
+    ).toBeGreaterThan(12);
+    // ...and it must see the ones the closure REJECTS, or "rejected" means "never
+    // looked at". The UNvalidated request is the sibling this whole guard must stay
+    // clear of, and it is the name a broken parser would most plausibly still find.
+    expect(
+      decls.map((d) => d.name),
+      "the parser no longer sees the module's UNguarded exports, so exclusion proves nothing",
+    ).toContain("Warehouse" + "SnapshotRequest");
+    // ⚠️ The guard EXERCISED on a real new export rather than only on the five it
+    // was written around. #5277 added `EntityEdgeOutcome` to this module in the same
+    // arc; it is a report shape naming `AliasProducerCounters` and nothing branded,
+    // so the correct answer is "seen, and out of scope" — both halves asserted,
+    // because "not in the closure" is what a parser that never saw it also says.
+    expect(
+      decls.map((d) => d.name),
+      "the parser stopped seeing EntityEdgeOutcome, so its exclusion below proves nothing",
+    ).toContain("EntityEdgeOutcome");
+    expect(
+      brandCarryingExports(stripped, BRAND_SYMBOL),
+      "EntityEdgeOutcome now reaches the brand — tag it and list it, or remove the reference",
+    ).not.toContain("EntityEdgeOutcome");
+
+    expect(
+      brandCarryingExports(stripped, BRAND_SYMBOL),
+      `the set of exported types in lib/brain/warehouse-producer.ts that transitively reach the ` +
+        `${BRAND_SYMBOL} brand is not GUARDED_NAMES. If a SIXTH one was just added, it is a ` +
+        `sixth way to write a passing verdict by assertion: tag it ${GUARD_TAG}, add it to ` +
+        `GUARDED_NAMES (widening the tuple), and add any file that names it to NAME_ALLOWLIST. ` +
+        `If instead a type merely MENTIONS a guarded one incidentally, the mention is the thing ` +
+        `to remove — a public type naming a branded one is a seam whether or not it meant to be.`,
+    ).toEqual(expected);
+  });
+
+  test("the completeness machinery itself: fixtures, because a checker with no falsifier ships its blind spots", () => {
+    // ⚠️ #5249's lesson applied to #5255's machinery on the way in rather than a round
+    // later: the rename check shipped with no falsifier and its block-comment hole went
+    // undetected until fixtures existed. These use INVENTED names and an invented seed,
+    // so they are independent of the real module AND cannot put this file into its own
+    // result set.
+    const mod = [
+      // ⚠️ **DECLARED BEFORE THE CARRIER IT REFERENCES, and that ordering is the
+      // entire fixture.** A fixpoint is only NEEDED when a dependent appears above
+      // its carrier. Every other declaration here — and every one of the five in
+      // the real module — is in dependency order, so a SINGLE-PASS closure reaches
+      // all of them and the whole suite stayed green with the loop removed. The
+      // panel measured that in round 1. This entry is the only thing that requires
+      // iterating to a fixpoint rather than walking once.
+      "/** Declared ABOVE its carrier — only a fixpoint reaches this.",
+      " * @sql-gate-guarded",
+      " */",
+      "export interface Early {",
+      "  readonly c: Carrier;",
+      "}",
+      "",
+      "/** The seed's own carrier.",
+      " * @sql-gate-guarded",
+      " */",
+      "export type Carrier = Base & { readonly [brandSeed]: true };",
+      "",
+      "/** One hop out — reaches the seed only through Carrier.",
+      " * @sql-gate-guarded",
+      " */",
+      "export interface Holder {",
+      "  readonly run: (c: Carrier) => void;",
+      "}",
+      "",
+      // ⚠️ A CLASS, tagged and brand-carrying. Both regexes accept
+      // `type|interface|class` and nothing exercised the third alternative — the
+      // module's one exported class is unbranded, so deleting `|class` from either
+      // regex left the suite green. `export class Gate { readonly c: Carrier }` is
+      // an ordinary sixth carrier and the closure has to see it.
+      "/** A CLASS carrier — the third alternative in both matchers.",
+      " * @sql-gate-guarded",
+      " */",
+      "export class Gate {",
+      "  readonly c: Carrier;",
+      "}",
+      "",
+      "/** Names Carrier in PROSE only — {@link Carrier} — and must NOT be guarded. */",
+      "export type Bystander = { readonly n: number };",
+      "",
+      "/** Not exported, so no assertion can be written to it from outside. */",
+      "type Private = Carrier;",
+      "",
+      "export type Unrelated = string;",
+    ].join("\n");
+
+    // The tag scan reads RAW source (the tag lives in a comment), the closure reads
+    // stripped source. Two inputs, deliberately.
+    const expectedFixture = ["Carrier", "Early", "Gate", "Holder"];
+    expect(taggedNames(mod).toSorted()).toEqual(expectedFixture);
+    expect(brandCarryingExports(withoutComments(mod), "brandSeed")).toEqual(expectedFixture);
+
+    // ⚠️ FOUR, and each one is a different arm: `Carrier` is the direct hop,
+    // `Holder` the transitive one, `Early` the out-of-order one that needs the
+    // fixpoint, `Gate` the `class` alternative.
+    //
+    // ⚠️ **The SET assertion above is what discriminates them, not this length.** A
+    // previous version of this comment claimed the sizes told every degraded
+    // implementation apart, and listed two that are the same number — single-pass
+    // and `type|interface`-only both return three. The length is a cheap smoke
+    // reading; `{Carrier,Early,Holder}` vs `{Carrier,Gate,Holder}` is the assertion
+    // that separates those two (#5110's accidental equality, where a fixture made
+    // two states the same value).
+    expect(brandCarryingExports(withoutComments(mod), "brandSeed").length).toBe(4);
+
+    // A sixth carrier added with NO tag: the closure catches it, the tag scan does not.
+    // This is the whole reason both exist.
+    const withUntagged = `${mod}\nexport type Sneaky = { readonly h: Holder };`;
+    expect(taggedNames(withUntagged).toSorted()).toEqual(expectedFixture);
+    expect(brandCarryingExports(withoutComments(withUntagged), "brandSeed")).toEqual([
+      ...expectedFixture,
+      "Sneaky",
+    ].toSorted());
+
+    // A tag DETACHED from its declaration — a stray mention in a comment of its own —
+    // latches onto nothing. Without the "up to the end of THIS comment" bound it claims
+    // the next export it can reach, which is a FALSE membership rather than a missing
+    // one, and a false membership reds with a message about the wrong type entirely.
+    //
+    // ⚠️ The intervening comment is the whole fixture, and a first draft of this
+    // assertion left it out and measured VACUOUS: with the stray tag placed directly
+    // before a tagged declaration, a lazy unbounded gap reaches exactly the same name
+    // the real tag reaches, so both matchers agree and the fixture discriminates
+    // nothing. Replacing the bound with `[\s\S]*?` left the whole suite GREEN. What
+    // separates them is a `*/` the gap must not cross to reach an UNTAGGED export.
+    const strayTag = [
+      "/** See @sql-gate-guarded for the convention. */",
+      "/** An ordinary doc comment on an ordinary type. */",
+      "export type Innocent = string;",
+      "",
+      mod,
+    ].join("\n");
+    expect(taggedNames(strayTag).toSorted()).toEqual(expectedFixture);
+
+    // ...and the shape the real module actually has: the convention is EXPLAINED inside
+    // the docstring of a declaration that also carries the tag, so the word appears
+    // twice above one `export`. ONE name comes back, because the earlier mention's match
+    // runs through the declaration and `matchAll` resumes past the second tag. Asserted
+    // rather than assumed: a `Set` was added here for the duplicate this shape was
+    // believed to produce, and removing the `Set` again changed no result.
+    const explained = mod.replace(
+      "/** The seed's own carrier.",
+      "/** The seed's own carrier. Tagged @sql-gate-guarded, see the convention.",
+    );
+    expect(taggedNames(explained).toSorted()).toEqual(expectedFixture);
+
+    // ⚠️ A tag on something that is not a TYPE declaration is silently ignored —
+    // `export const`, `export function`, a variable. That is fail-OPEN, unlike the
+    // detached-tag bound above, and it is pinned here so the scope is a decision
+    // rather than an accident: the guarded set is types an assertion can be written
+    // TO, and a value cannot be one. Someone tagging a factory function learns
+    // nothing today; if that ever needs to red, this is the assertion to invert.
+    const taggedValue = `${mod}\n/** @sql-gate-guarded */\nexport const mintGate = () => null;`;
+    expect(taggedNames(taggedValue).toSorted()).toEqual(expectedFixture);
+
+    // ⚠️ **EVERY ACCEPTED SPELLING, driven off the list rather than hand-picked.**
+    // This is the ratchet {@link DECLARATION_SPELLINGS} exists for: `class` had no
+    // fixture until round 1 found it, and `declare` had none until the audit of THAT
+    // fix found it one group over. Hand-adding a third would have been the same bet a
+    // third time.
+    //
+    // Each spelling gets a tagged declaration that references `Carrier`, so it must
+    // appear in BOTH derivations — the tag scan over raw source and the closure over
+    // stripped source. The names are derived from the list; the MATCHERS are not, so
+    // this is not a fixture agreeing with itself by construction (#5249's lesson).
+    const everySpelling = [
+      "/** The carrier the spellings below reference.",
+      " * @sql-gate-guarded",
+      " */",
+      "export type Carrier = Base & { readonly [brandSeed]: true };",
+      ...DECLARATION_SPELLINGS.flatMap((spelling, i) => [
+        "",
+        `/** Spelled \`${spelling}\`.`,
+        " * @sql-gate-guarded",
+        " */",
+        // ⚠️ A type ALIAS takes `= {...};` and a class/interface takes a body. The
+        // first cut emitted a body for every spelling, so `export type Spelling0 {
+        // … }` — a string TypeScript cannot produce — was being asserted as
+        // acceptable. The matchers only read as far as the name, so it measured the
+        // right thing by luck; a fixture that is not valid source is one nobody can
+        // check by compiling it.
+        ...(spelling.endsWith("type")
+          ? [`export ${spelling} Spelling${i} = { readonly c: Carrier };`]
+          : [`export ${spelling} Spelling${i} {`, "  readonly c: Carrier;", "}"]),
+      ]),
+    ].join("\n");
+    const spellingNames = DECLARATION_SPELLINGS.map((_, i) => `Spelling${i}`);
+    // Every spelling in the list, plus the carrier. A matcher that lost ANY
+    // alternative returns fewer. (No numeral: the list gained two members after this
+    // line first said "six", and the arity is pinned below anyway.)
+    expect(taggedNames(everySpelling).toSorted()).toEqual(
+      ["Carrier", ...spellingNames].toSorted(),
+    );
+    expect(brandCarryingExports(withoutComments(everySpelling), "brandSeed")).toEqual(
+      ["Carrier", ...spellingNames].toSorted(),
+    );
+
+    // ⚠️ **THE PIN, and it is a candidate SET rather than a literal string.** A
+    // literal pin only NOTIFIES: updating it is one keystroke, and nothing then
+    // forces the list edit, so the new alternative still ships with no fixture. This
+    // form asks the head itself which spellings it accepts, out of a candidate list
+    // written independently of both — so it reds on a widening AND on a narrowing,
+    // including one whose author "fixed" a literal pin.
+    //
+    // Independence is the whole mechanism: `CANDIDATE_HEADS` is hand-written here and
+    // deliberately contains spellings the head must REJECT, so it cannot agree with
+    // `DECLARATION_SPELLINGS` by construction the way a derived list would (#5249).
+    // ⚠️ It contains spellings TypeScript cannot produce (`abstract type`,
+    // `abstract interface`) on purpose. `abstract` is only legal before `class`, so a
+    // head that admits it elsewhere is too loose — and the first cut of the head was,
+    // which this check caught on the way in rather than a round later.
+    const CANDIDATE_HEADS = [
+      "type",
+      "interface",
+      "class",
+      "enum",
+      "const enum",
+      "function",
+      "const",
+      "let",
+      "var",
+      "namespace",
+      ...["", "declare ", "abstract ", "declare abstract "].flatMap((prefix) =>
+        ["type", "interface", "class", "enum"].map((kind) => prefix + kind),
+      ),
+    ].filter((candidate, i, all) => all.indexOf(candidate) === i);
+    const head = new RegExp(`^(?:${DECLARATION_HEAD})$`);
+    expect(
+      CANDIDATE_HEADS.filter((candidate) => head.test(candidate)).toSorted(),
+      "the shared declaration head no longer accepts exactly DECLARATION_SPELLINGS. If you " +
+        "widened it, add the new spelling to that list so the fixture above drives it — an " +
+        "alternative with no fixture is one nothing can falsify, which this round measured " +
+        "twice (`class`, then `declare`). If you narrowed it, say why in its docstring.",
+    ).toEqual([...DECLARATION_SPELLINGS].toSorted());
+    // ⚠️ Arity + a runtime length, the two mechanisms this file mandates for its
+    // other two arrays and did not give this one. Deleting a spelling shrinks the
+    // fixture and its expectation together — the same silent narrowing measured on
+    // `GUARDED_NAMES` — so the tuple type makes it a compile error and this makes it
+    // a runtime one.
+    expect(DECLARATION_SPELLINGS.length).toBe(8);
+
+    // Prose alone must not enter the closure: `Bystander` names Carrier in a docstring.
+    expect(brandCarryingExports(withoutComments(mod), "brandSeed")).not.toContain("Bystander");
+    // A non-exported alias must not either — nothing outside can assert to it.
+    expect(brandCarryingExports(withoutComments(mod), "brandSeed")).not.toContain("Private");
+    // ...and a seed that appears nowhere yields nothing, so a mistyped seed reds the
+    // real assertion instead of quietly agreeing with an emptied array.
+    expect(brandCarryingExports(withoutComments(mod), "noSuchSymbol")).toEqual([]);
   });
 
   test("every scanned root exists, reaches its sentinel, and still yields its floor", () => {
     // ⚠️ Asserted rather than filtered. `existsSync`-and-skip would turn a renamed
     // directory into a silently smaller scan that still passes.
-    expect(ROOTS.length, "a root left the list; the scan silently stopped covering it").toBe(3);
+    expect(ROOTS.length, "a root left the list; the scan silently stopped covering it").toBe(8);
+    // ⚠️ Arity is not distinctness — the same gap {@link GUARDED_NAMES} has its own
+    // assertion for, one array over. A copy-paste that duplicates one root's `dir`
+    // and drops another keeps the tuple at 8 and keeps every surviving sentinel
+    // reachable, so both mechanisms above pass while coverage silently halves.
+    expect(
+      new Set(ROOTS.map((r) => r.dir)).size,
+      "two roots point at the same directory — one root's coverage was silently dropped",
+    ).toBe(ROOTS.length);
     for (const { dir, label, minFiles, sentinel } of ROOTS) {
       const name = label || "packages/api/src/";
       expect(existsSync(dir), `scan root missing: ${name} (${dir})`).toBe(true);
@@ -517,16 +1134,45 @@ describe("the SQL-gate name allowlist (#5042, #5230, #5249)", () => {
         }
       }
     }
+    expect(found.toSorted(), SCAN_SCOPE_MESSAGE).toEqual(
+      NAME_ALLOWLIST.map((b) => b.file).toSorted(),
+    );
+  });
+
+  test("the failure message enumerates every scanned root — asserted, not hand-synchronised", () => {
+    // ⚠️ #5255 AC-3. The {@link ROOTS} docstring used to say "if a root is added here,
+    // add it there" and nothing enforced it, so a widened scan could ship under a
+    // message asserting the OLD, narrower scope — telling a reader they were unchecked
+    // in a directory that is now checked, or (worse, in the other direction) that a
+    // directory is covered when it is not.
+    for (const { label } of ROOTS) {
+      const name = label || "packages/api/src/";
+      expect(
+        SCAN_SCOPE_MESSAGE,
+        `the failure message does not name the scanned root ${name}. Add it — an enumeration ` +
+          `is only as honest as its scope.`,
+      ).toContain(name);
+    }
+    // ⚠️ The other direction, and it is not symmetric with the loop above: the loop
+    // catches a root added to ROOTS and forgotten in the message; this catches a root
+    // REMOVED from ROOTS and left in the message, which over-claims coverage. Counting
+    // the root-shaped labels is the cheapest way to see the surplus one.
+    //
+    // ⚠️ The pattern is SHAPE-based rather than an enumeration of the roots that exist
+    // today. A first cut spelled the three known shapes (`packages/x/y`, `ee/src`,
+    // `plugins`), so a future root labelled `apps/docs/` would satisfy the loop above —
+    // the author having added it to the message — and then fail HERE with "the message
+    // names a root the scan no longer covers", which is the opposite of what happened.
+    // Fail-closed either way, but a guard whose message misdirects costs a debugging
+    // round.
     expect(
-      found.toSorted(),
-      "the set of files under packages/api/src, ee/src and packages/cli/src that NAME one of " +
-        "the five guarded SQL-gate types has changed. Since #5249 an entry means 'may name', " +
-        "not 'may cast' — so a file that merely ANNOTATES one of these types lands here too, " +
-        "and that is expected: add it to NAME_ALLOWLIST with kind 'annotation'. A new " +
-        "PRODUCTION site that MINTS a passing verdict is kind 'bypass', and it is a second " +
-        "door onto an unvalidated statement reaching a customer's datasource — the thing to " +
-        "argue rather than merge.",
-    ).toEqual(NAME_ALLOWLIST.map((b) => b.file).toSorted());
+      SCAN_SCOPE_MESSAGE.match(/\b[a-z][a-z-]*(?:\/[a-z][a-z-]*)*\//g)?.length,
+      "the message names a root the scan no longer covers — it now over-claims coverage",
+    ).toBe(ROOTS.length);
+    // ⚠️ And the guard against the guard: an empty-ish message would satisfy neither of
+    // the above if ROOTS were also empty. The tuple type makes that a compile error, and
+    // this pins the runtime half.
+    expect(SCAN_SCOPE_MESSAGE.length).toBeGreaterThan(200);
   });
 
   test("the allowlist's kinds are counted, so adding a bypass is a visible edit", () => {

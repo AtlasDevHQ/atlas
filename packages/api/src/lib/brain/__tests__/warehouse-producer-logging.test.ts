@@ -244,6 +244,107 @@ describe("warehouse producer logging", () => {
     expect(messages(errors)).toEqual([]);
   });
 
+  it("logs the entity-edge failure at ERROR carrying `err` AND how far it got (#5277)", async () => {
+    // ⚠️ **THE REDACTION'S COUNTERPART, and nothing asserted it.** The report's
+    // fixed sentence withholds the driver's text and promises *"the server log for
+    // request X carries the reason"* — that promise is the entire justification for
+    // the redaction. The unit suite asserts the handle is IN the sentence; only
+    // this asserts the line it points at exists and carries a reason.
+    //
+    // Measured before this test existed: deleting `err` from the `log.error`
+    // payload left the unit suite, the route suite and this suite all green, while
+    // the report went on telling operators to read a line with no reason in it.
+    // Both reviewers reached it independently in round 1.
+    //
+    // This suite stubs `loadEntityStore` empty precisely so the edge pass never
+    // fails; this case overrides that stub, which is why it is the only place the
+    // arm is reachable.
+    await run({
+      loadEntityStore: async () => {
+        const err = new Error('FATAL: password authentication failed for user "atlas"');
+        (err as Error & { code?: string }).code = "28P01";
+        throw err;
+      },
+    });
+
+    const payload = payloadOf(errors, "entity-edge pass failed part-way");
+    // The Error OBJECT, so pino's serializer emits the stack and pg's `code` — for
+    // a pool or lock failure the stack is the actionable half.
+    expect(payload.err).toBeInstanceOf(Error);
+    expect((payload.err as Error & { code?: string }).code).toBe("28P01");
+    // ⚠️ And the STRUCTURED half travels too: the log says how far the pass got,
+    // which is the same question the report's `reached` answers. The store read
+    // threw, so the phase is `store-read` and NO count is present — a payload
+    // carrying `entries: 0` here would be the confident-number failure one field
+    // over.
+    expect(payload.reached).toEqual({ phase: "store-read" });
+    // The correlation handle both halves are joined by.
+    expect(payload.requestId).toBe("req-1");
+  });
+
+  it("logs the entity-edge failure's LATER phase, with the census it established (#5277)", async () => {
+    // ⚠️ The pair, and it is what stops `reached` being a constant. A payload
+    // hard-coded to `{phase: "store-read"}` satisfies the test above; only a second
+    // phase with a different shape can tell that apart from a real value.
+    await run({
+      loadEntityStore: async () => [
+        {
+          entityId: producer.warehouseRowId(WORKSPACE, "Accounts", "ACC-1"),
+          entity: "Accounts",
+          keySurface: "ACC-1",
+          keyNorm: "acc 1",
+          canonicalSurface: "Acme Corp",
+          canonicalNorm: "acme corp",
+        },
+      ],
+      proposeAliasEdges: async () => {
+        throw new Error("deadlock detected on brain_vocabulary_edge");
+      },
+    });
+
+    const payload = payloadOf(errors, "entity-edge pass failed part-way");
+    expect(payload.err).toBeInstanceOf(Error);
+    // One entry earning an edge → two positions submitted. Distinct from `entries`,
+    // so the two cannot be swapped unnoticed.
+    expect(payload.reached).toEqual({
+      phase: "proposing",
+      entries: 1,
+      ambiguous: 0,
+      selfEdges: 0,
+      unmintedIds: 0,
+      proposalsAttempted: 2,
+    });
+  });
+
+  it("logs the entity-edge failure's MIDDLE phase — read, then planning threw (#5277)", async () => {
+    // ⚠️ The third phase, and the one neither test above reaches. With only
+    // `store-read` and `proposing` covered, a payload could still be right for the
+    // two shapes that were checked and wrong for the one in between — and the
+    // producer-side assignment for this phase had no falsifier at all until its
+    // sibling unit test was added.
+    await run({
+      loadEntityStore: async () =>
+        [
+          {
+            get entityId(): never {
+              throw new Error("hostile getter");
+            },
+            entity: "Accounts",
+            keySurface: "ACC-1",
+            keyNorm: "acc 1",
+            canonicalSurface: "Acme Corp",
+            canonicalNorm: "acme corp",
+          },
+        ] as never,
+    });
+
+    const payload = payloadOf(errors, "entity-edge pass failed part-way");
+    expect(payload.err).toBeInstanceOf(Error);
+    // `entries` established, nothing handed over — a shape that is neither of the
+    // other two phases.
+    expect(payload.reached).toEqual({ phase: "planning", entries: 1 });
+  });
+
   it("logs unsurfaceable cells at WARN — the enrollment mistake that is otherwise silent", async () => {
     await run({
       runSnapshot: async () => [

@@ -187,6 +187,23 @@ function checkedRun(report: WarehouseProducerReport, workspaceId: string, reques
   // failure, and the response tells the operator to go read it.
   const parsed = BrainWarehouseRunReportSchema.safeParse(report);
   if (parsed.success) return { ...parsed.data, reportComplete: true as const };
+  // ⚠️ **THE COUNTS, RECOVERED THROUGH A SECOND PARSE — never read off `report`.**
+  // The drift is usually ONE field (`entities[]` is the largest and most drift-prone
+  // array), so `created`/`corroborated` are primitives that parsed fine. Losing them
+  // here is the one path where the run COMMITTED facts into the review queue and
+  // nothing anywhere says how many — while the 200 body tells the operator to go read
+  // this very log line. Recovered by parsing, not by reading, so the class the
+  // pre-validation fix closed stays closed: a drifted or hostile report cannot throw
+  // here, it just yields `null`.
+  const counts = z
+    .object({
+      enrolled: z.number(),
+      created: z.number(),
+      corroborated: z.number(),
+      refusals: z.array(z.unknown()),
+    })
+    .partial()
+    .safeParse(report);
   log.error(
     {
       requestId,
@@ -199,6 +216,14 @@ function checkedRun(report: WarehouseProducerReport, workspaceId: string, reques
         code: i.code,
         message: i.message,
       })),
+      recoveredCounts: counts.success
+        ? {
+            enrolled: counts.data.enrolled,
+            created: counts.data.created,
+            corroborated: counts.data.corroborated,
+            refusals: counts.data.refusals?.length,
+          }
+        : null,
     },
     "Warehouse producer report failed its own response schema — the run COMMITTED; the report shape drifted",
   );
@@ -833,24 +858,56 @@ adminBrainEnrollment.openapi(produceRoute, async (c) => {
         catch: toError,
       });
 
-      log.info(
-        {
-          workspaceId: orgId,
-          requestId,
-          enrolled: report.enrolled,
-          created: report.created,
-          corroborated: report.corroborated,
-          refusals: report.refusals.length,
-        },
-        "Warehouse producer run requested from the admin surface",
-      );
       // ⚠️ `checkedRun`, NOT `checked` — this is the case the file's own docstring
       // above says to take `checkedWrite` for. Every field of this response is
       // derived from the semantic layer, the warehouse and `reconcileFacts`, and it
       // is built AFTER N transactions have committed. A schema drift here is
       // deterministic under retry, so `checked` would tell an admin the run failed,
       // forever, while each press files another full round of drafts.
-      return c.json(checkedRun(report, orgId, requestId), 200);
+      const response = checkedRun(report, orgId, requestId);
+      // ⚠️ **VALIDATED FIRST, then logged — the log reads `response`, never `report`.**
+      // This line used to run BEFORE the parse and read four fields straight off the
+      // producer's return, one of them nested (`report.refusals.length`). On a DRIFTED
+      // report — the case `checkedRun` exists for, and which the degraded-report test
+      // models by omitting a field — a nested access throws, and a throw here turns a
+      // committed run into the 500 this route spends three paragraphs refusing to
+      // return.
+      //
+      // Measured twice, and the second time is the point: adding `entityEdges.kind` to
+      // the old line 500'd immediately, and narrowing THAT ONE FIELD from `unknown`
+      // left `refusals.length` beside it doing exactly the same thing. Reading only
+      // post-parse values closes the class instead of the instance — there is no
+      // pre-validation read left to get wrong.
+      //
+      // The edge pass's verdict is here because without it the line reads as an
+      // unqualified success for a run whose edge pass threw: the producer's own
+      // `log.error` fires, but an operator grepping THIS line — keyed by `requestId` —
+      // saw a clean run and nothing else.
+      log.info(
+        response.reportComplete
+          ? {
+              workspaceId: orgId,
+              requestId,
+              enrolled: response.enrolled,
+              created: response.created,
+              corroborated: response.corroborated,
+              refusals: response.refusals.length,
+              entityEdgeKind: response.entityEdges.kind,
+              // ⚠️ `kind: "failed"` alone stops one question short: the remedy for a
+              // store that was never read is not the remedy for a batch that was
+              // half-committed. Post-parse, so it costs nothing.
+              entityEdgePhase:
+                response.entityEdges.kind === "failed"
+                  ? response.entityEdges.reached.phase
+                  : undefined,
+            }
+          : // The drifted arm says so rather than reporting numbers it does not have.
+            // `checkedRun`'s own `log.error` carries the zod issues; this line exists
+            // so the route's success line is never the last word on a failed parse.
+            { workspaceId: orgId, requestId, reportComplete: false },
+        "Warehouse producer run requested from the admin surface",
+      );
+      return c.json(response, 200);
     }),
     { label: "run brain warehouse producer" },
   );

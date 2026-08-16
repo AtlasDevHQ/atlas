@@ -296,7 +296,13 @@ beforeEach(() => {
     refusals: [],
     created: 0,
     corroborated: 0,
-    entityEdges: null,
+    entityEdges: {
+      kind: "nothing-to-propose",
+      entries: 0,
+      ambiguous: 0,
+      selfEdges: 0,
+      unmintedIds: 0,
+    },
   };
   entityOptions = [{ name: "accounts", table: "public.accounts", description: null }];
   dimensionOptions = [
@@ -686,22 +692,33 @@ describe("POST /produce — running the producer", () => {
       ],
       created: 4,
       corroborated: 1,
-      // Non-null here, `null` in the `beforeEach` default — so both arms of the
-      // nullable field cross the wire in this file, and a schema that dropped
-      // the section would go red on one of them.
+      // The `proposed` arm here, `nothing-to-propose` in the `beforeEach` default
+      // and `failed` in the test below — so ALL THREE arms of the union cross the
+      // wire in this file, and a schema that dropped one goes red (#5277). Every
+      // number distinct, for this block's stated reason.
+      // ⚠️ The three REFUSAL counts are disjoint partitions of `entries`, so the
+      // fixture has to be an arithmetically possible run: 5 + 15 + 16 = 36 refused of
+      // 40 entries, so 4 earned an edge. The first draft of this fixture used
+      // `entries: 7` with
+      // those same three counts — 36 refusals in a 7-entry store — because "every
+      // number distinct" was the only rule being followed. The schema's own
+      // cross-check now refuses it, which is the invariant paying for itself on the
+      // way in.
       entityEdges: {
-        queued: 8,
-        autoApproved: 10,
-        deduped: 11,
-        alreadyApproved: 12,
-        rejected: 13,
-        refused: 14,
+        kind: "proposed",
+        entries: 40,
+        ambiguous: 5,
+        selfEdges: 15,
+        unmintedIds: 16,
+        counters: {
+          queued: 8,
+          autoApproved: 10,
+          deduped: 11,
+          alreadyApproved: 12,
+          rejected: 13,
+          refused: 14,
+        },
       },
-      // Non-null here and `null` in the `beforeEach` default, so BOTH arms of
-      // the field cross the wire in this file — a schema that dropped it goes
-      // red on one of them.
-      entityEdgesFailed: "vocabulary lock timeout",
-      entityEdgesAmbiguous: 5,
     };
     const res = await post("/produce", {});
     expect(res.status).toBe(200);
@@ -709,6 +726,250 @@ describe("POST /produce — running the producer", () => {
     // cannot pass. `reportComplete: true` is the discriminant that makes this arm
     // distinguishable from the degraded one below — without it a caller cannot tell
     // a real result from a report the server could not serialize.
+    expect(await res.json()).toEqual({ ...produceReport, reportComplete: true });
+  });
+
+  it("carries the FAILED arm at its LAST phase — partial progress and all (#5277)", async () => {
+    // ⚠️ The third arm of the union, and its NESTED discriminant is the thing a
+    // schema is most likely to get wrong: `reached` is a union in its own right,
+    // and only its `proposing` phase carries a census or a `proposalsAttempted`.
+    // A `z.discriminatedUnion` that flattened it, or a `strictObject` that rejected
+    // the nested keys, reds on this and on nothing else.
+    //
+    // This is the "threw after submitting a batch" run: read succeeded, planning
+    // succeeded, four proposals went out. Every number distinct so a handler that
+    // copied one field into another cannot pass.
+    produceReport = {
+      workspaceId: CURRENT_ORG,
+      snapshotAt: "2026-08-14T10:00:00.000Z",
+      enrolled: 3,
+      entities: [],
+      refusals: [],
+      created: 0,
+      corroborated: 0,
+      entityEdges: {
+        kind: "failed",
+        reached: {
+          // ⚠️ 2 + 5 + 6 = 13 refused out of 20, so SEVEN entries earned an edge and
+          // at least seven proposals went out — the real producer sends two per
+          // earner, so 14. This said `proposalsAttempted: 4` under a comment
+          // asserting it was arithmetically possible; it was not, and `positive()`
+          // could not see it. `checkCensus`'s count relation refuses it now.
+          phase: "proposing",
+          entries: 20,
+          ambiguous: 2,
+          selfEdges: 5,
+          unmintedIds: 6,
+          proposalsAttempted: 14,
+        },
+        message: "The entity-edge pass failed part-way. …request req-1 carries the reason.",
+      },
+    };
+    const res = await post("/produce", {});
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ...produceReport, reportComplete: true });
+  });
+
+  it("carries the FAILED arm's EARLIEST phase — a store that was never read (#5277)", async () => {
+    // ⚠️ The paired phase, and it is not the same assertion as the one above:
+    // `phase: "store-read"` carries NO count at all, because none was taken. A
+    // schema that gave every phase the census — or made the counts nullable
+    // instead of absent — passes the test above and reds here. That is the split
+    // that makes "unknown" mean something other than zero.
+    produceReport = {
+      workspaceId: CURRENT_ORG,
+      snapshotAt: "2026-08-14T10:00:00.000Z",
+      enrolled: 3,
+      entities: [],
+      refusals: [],
+      created: 0,
+      corroborated: 0,
+      entityEdges: {
+        kind: "failed",
+        reached: { phase: "store-read" },
+        message: "The entity-edge pass failed part-way. …request req-1 carries the reason.",
+      },
+    };
+    const res = await post("/produce", {});
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ...produceReport, reportComplete: true });
+  });
+
+  it("REFUSES a census that cannot describe a real run — the boundary cross-check (#5277)", async () => {
+    // ⚠️ The falsifier for the invariant itself. TypeScript cannot express a sum
+    // relation, so `entries`/`ambiguous`/`selfEdges`/`unmintedIds` type-check in any
+    // combination — including `{entries: 2, ambiguous: 9}`, "nine of the two entries
+    // were refused", which is the "counted five in a store never read" illegal state
+    // reached by arithmetic rather than by a `null`. Zod CAN express it, the report
+    // is parsed right here, and two siblings in `schemas/brain.ts` already argue that
+    // a cross-check whose operands ride the wire together belongs at the boundary.
+    //
+    // ⚠️ It lands on the DEGRADED arm, not a 500 — which is the whole post-commit
+    // posture: the run committed, so an impossible count is a report bug to log and
+    // disclose, never a reason to tell the admin to press Run again.
+    produceReport = {
+      workspaceId: CURRENT_ORG,
+      snapshotAt: "2026-08-14T10:00:00.000Z",
+      enrolled: 3,
+      entities: [],
+      refusals: [],
+      created: 0,
+      corroborated: 0,
+      entityEdges: {
+        kind: "nothing-to-propose",
+        entries: 2,
+        ambiguous: 9,
+        selfEdges: 0,
+        unmintedIds: 0,
+      },
+    };
+    const res = await post("/produce", {});
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ reportComplete: false, workspaceId: CURRENT_ORG });
+    // The control: the SAME shape with an arithmetically possible census parses, so
+    // this test measures the cross-check rather than the arm's field list.
+    produceReport = {
+      ...produceReport,
+      entityEdges: {
+        kind: "nothing-to-propose",
+        entries: 9,
+        ambiguous: 2,
+        selfEdges: 3,
+        unmintedIds: 4,
+      },
+    };
+    const ok = await post("/produce", {});
+    expect(await ok.json()).toEqual({ ...produceReport, reportComplete: true });
+  });
+
+  it("REFUSES a submitted batch from a store where nothing earned an edge (#5277)", async () => {
+    // ⚠️ The other half of the cross-check, and the illegal state the union's own
+    // docstring claimed to have removed and had not: `proposalsAttempted: 4` over a
+    // census in which every entry was refused. If nothing earned an edge there was
+    // nothing to submit, so the pass would have returned `nothing-to-propose` before
+    // it ever reached this phase.
+    produceReport = {
+      workspaceId: CURRENT_ORG,
+      snapshotAt: "2026-08-14T10:00:00.000Z",
+      enrolled: 3,
+      entities: [],
+      refusals: [],
+      created: 0,
+      corroborated: 0,
+      entityEdges: {
+        kind: "failed",
+        reached: {
+          phase: "proposing",
+          entries: 6,
+          ambiguous: 2,
+          selfEdges: 3,
+          unmintedIds: 1,
+          proposalsAttempted: 4,
+        },
+        message: "The entity-edge pass failed part-way. …request req-1 carries the reason.",
+      },
+    };
+    const res = await post("/produce", {});
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ reportComplete: false });
+
+    // ⚠️ And the neighbouring impossibility, which the sum check does NOT cover: a
+    // phase whose definition is "the batch was handed over", reporting that zero
+    // proposals were. `positive()` rather than `nonNegative()` is what refuses it,
+    // and without this case that one word has no falsifier.
+    produceReport = {
+      ...produceReport,
+      entityEdges: {
+        kind: "failed",
+        reached: {
+          phase: "proposing",
+          entries: 9,
+          ambiguous: 2,
+          selfEdges: 3,
+          unmintedIds: 1,
+          proposalsAttempted: 0,
+        },
+        message: "The entity-edge pass failed part-way. …request req-1 carries the reason.",
+      },
+    };
+    const zero = await post("/produce", {});
+    expect(await zero.json()).toMatchObject({ reportComplete: false });
+
+    // ⚠️ ...and the range BETWEEN them, which neither `positive()` nor the sum check
+    // covers: 9 entries, 6 refused, so three earned an edge and at least three
+    // proposals must have gone out. `2` is positive, and the census sums correctly,
+    // and it is still a run that cannot have happened. This is the case a wire
+    // fixture in this very file got wrong.
+    produceReport = {
+      ...produceReport,
+      entityEdges: {
+        kind: "failed",
+        reached: {
+          phase: "proposing",
+          entries: 9,
+          ambiguous: 2,
+          selfEdges: 3,
+          unmintedIds: 1,
+          proposalsAttempted: 2,
+        },
+        message: "The entity-edge pass failed part-way. …request req-1 carries the reason.",
+      },
+    };
+    const tooFew = await post("/produce", {});
+    expect(await tooFew.json()).toMatchObject({ reportComplete: false });
+  });
+
+  it("survives a drifted report that omits `refusals` — every pre-parse read is gone (#5277)", async () => {
+    // ⚠️ **The CLASS, not the instance.** The route's success log used to read four
+    // fields off the producer's return BEFORE `checkedRun` validated it, one of them
+    // nested (`report.refusals.length`). Adding a fifth nested read (`entityEdges.kind`)
+    // 500'd immediately — and narrowing only THAT field left `refusals.length` beside
+    // it doing exactly the same thing, which the fix's own audit caught.
+    //
+    // The degraded fixture below models drift as a MISSING FIELD, and the existing one
+    // keeps `refusals` a well-formed array — which is precisely why no test could fail
+    // on it. This one omits `refusals` itself. Under any pre-parse read of
+    // `report.refusals.length` it is a `TypeError` and a 500; the run committed, so the
+    // only correct answer is the degraded 200.
+    produceReport = {
+      workspaceId: CURRENT_ORG,
+      snapshotAt: "2026-08-14T10:00:00.000Z",
+      enrolled: 2,
+      entities: [],
+      created: 3,
+      corroborated: 0,
+      entityEdges: { kind: "nothing-to-propose", entries: 0, ambiguous: 0, selfEdges: 0, unmintedIds: 0 },
+      // `refusals` deliberately absent.
+    } as unknown as typeof produceReport;
+
+    const res = await post("/produce", {});
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ reportComplete: false, workspaceId: CURRENT_ORG });
+  });
+
+  it("carries the FAILED arm's MIDDLE phase — read, but planning threw (#5277)", async () => {
+    // ⚠️ The third phase, which neither of the two above reaches. It is the one a
+    // reshape would most plausibly drop as "can't happen": `entityEdgeProposals` is
+    // a pure function over an array already in memory, so getting here means a code
+    // defect rather than an operational failure. That is exactly why it has to be
+    // reportable — `entries` is established, nothing was submitted, and a shape
+    // that cannot say so would have to fold it into one of its neighbours and lie.
+    produceReport = {
+      workspaceId: CURRENT_ORG,
+      snapshotAt: "2026-08-14T10:00:00.000Z",
+      enrolled: 3,
+      entities: [],
+      refusals: [],
+      created: 0,
+      corroborated: 0,
+      entityEdges: {
+        kind: "failed",
+        reached: { phase: "planning", entries: 11 },
+        message: "The entity-edge pass failed part-way. …request req-1 carries the reason.",
+      },
+    };
+    const res = await post("/produce", {});
+    expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ...produceReport, reportComplete: true });
   });
 
@@ -757,6 +1018,21 @@ describe("POST /produce — running the producer", () => {
     const { issues } = drift.payload as { issues: { path: string }[] };
     expect(issues.length).toBeGreaterThan(0);
     expect(issues.map((i) => i.path).join(",")).toContain("entities");
+
+    // ⚠️ **AND THE COUNTS, which this line is now the only record of.** The drift is
+    // one field — `entities[]` here — so `enrolled`/`created`/`corroborated` are
+    // primitives that parsed fine. Moving the route's success log after the parse
+    // (to close a pre-validation read) silently took them away on the ONE path where
+    // the run COMMITTED facts into the review queue and nothing else says how many,
+    // while the 200 body tells the operator to go read this very line.
+    //
+    // Recovered through a SECOND parse rather than by reading `report`, so the class
+    // that fix closed stays closed: a hostile or drifted report yields `null` here
+    // instead of throwing. Asserted because without it the recovery was measured
+    // GREEN under deletion — a fix with no falsifier is decoration.
+    expect(drift.payload).toMatchObject({
+      recoveredCounts: { enrolled: 2, created: 9, corroborated: 0, refusals: 1 },
+    });
   });
 });
 

@@ -32,6 +32,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { Pool } from "pg";
 import { Effect } from "effect";
+import * as Cause from "effect/Cause";
+import * as Runtime from "effect/Runtime";
 import { PgClient } from "@effect/sql-pg";
 import { SqlClient } from "@effect/sql";
 import { internalQuery, _resetPool } from "@atlas/api/lib/db/internal";
@@ -118,6 +120,19 @@ describeIfPg("unique-violation classification against real Postgres", () => {
     // and it is the assertion that fails if someone "simplifies" it away.
     expect(Object.getOwnPropertyNames(wrapped as object)).not.toContain("cause");
     expect((wrapped as Record<string, unknown>).cause).toBeUndefined();
+  });
+
+  it("⭐ the SQLSTATE is reachable ONLY through the symbol-keyed Cause", () => {
+    // The positive half of the two assertions above: not merely "the naive
+    // reads miss it" but "here is where it actually lives". Without this a
+    // future refactor could satisfy the negatives by breaking the error
+    // entirely. (Adopted from #5276, which measured this independently.)
+    const cause = (wrapped as Record<symbol, unknown>)[Runtime.FiberFailureCauseId];
+    expect(cause).toBeDefined();
+    const squashed = Cause.squash(cause as Cause.Cause<unknown>) as Record<string, unknown>;
+    expect(squashed._tag).toBe("SqlError");
+    expect(squashed.code).toBeUndefined();
+    expect((squashed.cause as Record<string, unknown>)?.code).toBe(PG_UNIQUE_VIOLATION);
   });
 
   it("classifies the wrapped rejection, with the driver's diagnostics intact", () => {

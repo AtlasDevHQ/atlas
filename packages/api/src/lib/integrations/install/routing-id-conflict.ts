@@ -66,7 +66,13 @@ interface PgErrorLike {
  * loop was DEAD on exactly the two Effect paths the paragraph above cites.**
  * `Effect.runPromise` rejects with a `FiberFailure`, which exposes no `cause`
  * own-property — its `Cause` hangs off a symbol — so the loop read `undefined`
- * at depth 0 and returned `false` for every wrapped collision. Measured in
+ * at depth 0 and returned `false` for every wrapped collision.
+ *
+ * The concrete route in: `persist-form-install.ts` catches with
+ * `.catch(raiseWriteError)` on a promise, so what reaches here is the
+ * `FiberFailure` rather than the `SqlError` an in-program catch would see. That
+ * made #3167's "already connected elsewhere" message unreachable on that path
+ * and handed the losing installer a raw 500. Measured in
  * #5272 against a real database with the index deliberately named
  * {@link CHAT_ROUTING_ID_UNIQUE_INDEX}, so the constraint check could not be
  * what failed: it returned `false` on the real error and `true` on the

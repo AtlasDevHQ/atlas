@@ -103,13 +103,16 @@ const MAX_CAUSE_DEPTH = 8;
  * walk that starts with `err.cause` reads `undefined` and stops at depth 0 —
  * which is precisely how `routing-id-conflict.ts`'s walk was failing on the two
  * `internalQuery`/`queryEffect` paths its own docstring claimed to cover.
+ *
+ * Uses Effect's own `isFiberFailure` guard rather than testing for the symbol
+ * by hand, so a runtime change to how the wrapper is marked surfaces as a type
+ * error instead of a silently-undefined lookup that would make every collision
+ * unclassified again — which is the exact failure mode this function exists to
+ * end. (Adopted from the parallel fix in #5276, which reached this module
+ * independently.)
  */
 function unwrapFiberFailure(err: unknown): unknown {
-  if (typeof err !== "object" || err === null) return err;
-  if (!(Runtime.FiberFailureCauseId in err)) return err;
-  const cause = (err as Record<symbol, unknown>)[Runtime.FiberFailureCauseId];
-  if (cause === undefined || cause === null) return err;
-  return Cause.squash(cause as Cause.Cause<unknown>);
+  return Runtime.isFiberFailure(err) ? Cause.squash(err[Runtime.FiberFailureCauseId]) : err;
 }
 
 /**

@@ -45,6 +45,7 @@
  */
 
 import { afterEach, beforeAll, describe, expect, it, mock } from "bun:test";
+import { createHash } from "node:crypto";
 
 interface Captured {
   readonly payload: unknown;
@@ -193,6 +194,18 @@ const run = (over: Partial<Parameters<ProducerModule["runWarehouseProducer"]>[1]
   );
 
 const messages = (sink: readonly Captured[]) => sink.map((c) => c.message);
+
+/**
+ * The digest the mismatch line should carry, computed INDEPENDENTLY of the module
+ * under test.
+ *
+ * ⚠️ Deliberately not imported from the producer, and that is this repo's recorded
+ * lesson rather than a style choice: a fixture that derives its expectation from the
+ * implementation agrees with it by construction, so swapping the algorithm — or
+ * hashing the wrong side of the comparison — stays green. Spelled out here, changing
+ * either REDs.
+ */
+const digest = (sql: string) => createHash("sha256").update(sql).digest("hex").slice(0, 16);
 
 /**
  * The one line in `sink` whose message contains `fragment`, or a failure.
@@ -374,10 +387,728 @@ describe("warehouse producer logging", () => {
     // tenant's statement, and the second is the one that has to be greppable.
     expect(payload.returnedEntity).toBe("Impostor");
     expect(payload.returnedWorkspaceId).toBe("ws-other-tenant");
+    // ⚠️ The only case that ASSERTS `returnedEntityMatch` against a real,
+    // non-throwing, DIFFERENT string. Without this, `returnedEntityMatch` was satisfiable by
+    // `returnedEntity !== SEAM_THREW` — measured green — because every other case
+    // either matches by construction or threw, so the comparison was never tested
+    // against a genuine difference.
+    expect(payload.returnedEntityMatch).toBe(false);
+    expect(payload.returnedRequestMatch).toBe(false);
     expect(payload.requestId).toBe("req-1");
     // ABSENT from warn, not merely present in error — a demotion is how this line
     // stops being an incident while still being "logged".
     expect(messages(warns).filter((m) => m.includes("different request"))).toEqual([]);
+  });
+
+  it("separates a forged statement from a benign replay on the mismatch line (#5248)", async () => {
+    // ⚠️ **THE COLLAPSE FALSIFIER.** Identity is the acceptance test, so BOTH of these
+    // land on the same arm and were logged identically before #5248: a token minted
+    // for a different statement (the aliased case, worth paging on) and the same
+    // statement arriving under a fresh object (a retry, routine). Refused either way,
+    // so nothing here is a correctness hole — but an alert that cannot tell them apart
+    // fires on the routine one and stays quiet for the other. Deleting either digest
+    // field, or hardcoding `sqlDigestMatch`, collapses the two shapes back onto one
+    // and REDs below.
+    const FORGED_SQL = "SELECT 1 AS forged";
+    let submitted = "";
+
+    // (1) a genuine-looking verdict minted for a DIFFERENT statement.
+    await run({
+      validateSnapshotSql: async (request: WarehouseSnapshotRequest) => {
+        submitted = request.sql;
+        return {
+          valid: true as const,
+          request: { ...request, sql: FORGED_SQL } as ValidatedSnapshotRequest,
+        };
+      },
+    });
+    const forged = payloadOf(errors, "verdict for a different request");
+    expect(forged.sqlDigestMatch).toBe(false);
+    expect(forged.sqlDigest).toBe(digest(submitted));
+    // ⚠️ Derived from what came BACK. The measured sibling of this file's
+    // `returnedEntity` note: a field that digests the SUBMITTED statement under a
+    // `returned*` name passes every other assertion here and reports every forgery as
+    // a replay, which is the exact inversion of the signal.
+    expect(forged.returnedSqlDigest).toBe(digest(FORGED_SQL));
+    expect(forged.returnedSqlDigest).not.toBe(forged.sqlDigest);
+
+    errors.length = 0;
+
+    // (2) THE SAME statement, under a different object — the benign replay.
+    await run({
+      validateSnapshotSql: async (request: WarehouseSnapshotRequest) => ({
+        valid: true as const,
+        request: { ...request } as ValidatedSnapshotRequest,
+      }),
+    });
+    const replay = payloadOf(errors, "verdict for a different request");
+    expect(replay.sqlDigestMatch).toBe(true);
+    expect(replay.returnedSqlDigest).toBe(replay.sqlDigest);
+    // The same fixture builds the same statement, so the replay's digest is the
+    // forged run's SUBMITTED one — which is what "the same statement" means here.
+    expect(replay.sqlDigest).toBe(digest(submitted));
+
+    // ⚠️ **THE PREMISE, ASSERTED RATHER THAN NARRATED.** The comment at the top of
+    // this case claims the two shapes were logged identically before #5248; nothing
+    // proved it. The forged fixture keeps `entity` and `workspaceId` IDENTICAL and
+    // varies only the statement — so the pre-existing `returned*` fields are blind to
+    // it, which is exactly what makes the digest load-bearing. Measured: the two
+    // payloads are byte-identical apart from these two keys. A reader arriving from
+    // the #5230 case above (whose fixture DOES forge entity and workspace) would
+    // otherwise reasonably assume the older fields already separate them.
+    const differing = [...new Set([...Object.keys(forged), ...Object.keys(replay)])]
+      .filter((k) => JSON.stringify(forged[k]) !== JSON.stringify(replay[k]))
+      .sort();
+    expect(differing).toEqual(["returnedSqlDigest", "sqlDigestMatch"]);
+
+    // ⚠️ The claim the two runs exist to make, asserted directly rather than left as
+    // an inference from the two blocks above. A single hardcoded value satisfies
+    // roughly half the assertions in each block; nothing satisfies this one.
+    expect(forged.sqlDigestMatch).not.toBe(replay.sqlDigestMatch);
+  });
+
+  it("catches a cross-tenant forgery whose statement text MATCHES (#5248)", async () => {
+    // ⚠️ **THE CASE THAT NEARLY SHIPPED MISCLASSIFIED, and it is the worst forgery
+    // this arm can see.** `buildSnapshotSql` emits no workspace and no connection, so
+    // two workspaces enrolled on the same table with the same dimension names build
+    // BYTE-IDENTICAL statements — the ordinary outcome for tenants onboarded from one
+    // connector template. A token minted against ANOTHER workspace's request therefore
+    // arrives with `sqlDigestMatch: TRUE`. An operator alerting only on
+    // `sqlDigestMatch: false` would never see it, while `defaultRunSnapshot` selects the pool
+    // from the returned workspace and connection, i.e. the cross-tenant read the
+    // capture note names as the residual.
+    await run({
+      validateSnapshotSql: async (request: WarehouseSnapshotRequest) => ({
+        valid: true as const,
+        request: {
+          ...request,
+          workspaceId: "ws-other-tenant",
+          connectionId: "other-group",
+        } as ValidatedSnapshotRequest,
+      }),
+    });
+
+    const payload = payloadOf(errors, "verdict for a different request");
+    // The statement text genuinely matches — this is the whole trap.
+    expect(payload.sqlDigestMatch).toBe(true);
+    // ...and these are what an alert must actually key on. Delete either and a
+    // cross-tenant mint is indistinguishable from a re-wrap.
+    expect(payload.returnedWorkspaceIdMatch).toBe(false);
+    expect(payload.returnedConnectionIdMatch).toBe(false);
+    // The entity is untouched, so its own match field must NOT fire — otherwise a
+    // single always-false constant would satisfy the two assertions above.
+    expect(payload.returnedEntityMatch).toBe(true);
+    expect(payload.returnedWorkspaceId).toBe("ws-other-tenant");
+    expect(payload.returnedConnectionId).toBe("other-group");
+  });
+
+  it("reads a legitimately absent connection as a MATCH on both sides (#5248)", async () => {
+    // ⚠️ The other half of the field above, and the reason both sides normalise
+    // through one expression. `ACCOUNTS_YAML` names no `connection:`, so the submitted
+    // id is `undefined` — and a submitted `"(default)"` compared against a returned
+    // `undefined` would report every benign replay as a connection mismatch, turning
+    // the new alert into noise on its first day.
+    await run({
+      validateSnapshotSql: async (request: WarehouseSnapshotRequest) => ({
+        valid: true as const,
+        request: { ...request } as ValidatedSnapshotRequest,
+      }),
+    });
+
+    const payload = payloadOf(errors, "verdict for a different request");
+    expect(payload.returnedConnectionIdMatch).toBe(true);
+    // Both sides render through the same helper, so both read `<undefined>` rather
+    // than one of them inventing a placeholder.
+    expect(payload.connectionId).toBe("<undefined>");
+    expect(payload.returnedConnectionId).toBe("<undefined>");
+    // ⚠️ **THE `true` DIRECTIONS, and nothing pinned them.** Hardcoding
+    // `returnedWorkspaceIdMatch: false` was measured green across all four warehouse
+    // suites — only the cross-tenant case asserted it, and only in the `false`
+    // direction. Stuck false, the alert those fields exist for fires on every benign
+    // replay too, which is the same "noise on its first day" outcome this case was
+    // written to prevent one field over.
+    expect(payload.returnedWorkspaceIdMatch).toBe(true);
+    expect(payload.returnedEntityMatch).toBe(true);
+    expect(payload.returnedRequestMatch).toBe(true);
+  });
+
+  it("compares the connection group itself, not just its absence (#5248)", async () => {
+    // ⚠️ `ACCOUNTS_YAML` names no `connection:`, so every other case in this file
+    // leaves the SUBMITTED side `undefined` and the comparison degenerates to "is the
+    // returned connection absent". Measured: replacing `submittedConnectionId` with a
+    // literal `undefined` stayed green across all four suites. A workspace whose
+    // entity DOES name a group is the population that breaks under that, and it is an
+    // ordinary workspace.
+    const GROUPED_YAML: Record<string, unknown> = { ...ACCOUNTS_YAML, connection: "grp-a" };
+
+    // (1) a benign replay from a grouped entity — the connection MATCHES.
+    await run({
+      loadEntity: async () => GROUPED_YAML,
+      validateSnapshotSql: async (request: WarehouseSnapshotRequest) => ({
+        valid: true as const,
+        request: { ...request } as ValidatedSnapshotRequest,
+      }),
+    });
+    const replay = payloadOf(errors, "verdict for a different request");
+    expect(replay.connectionId).toBe("grp-a");
+    expect(replay.returnedConnectionId).toBe("grp-a");
+    expect(replay.returnedConnectionIdMatch).toBe(true);
+    expect(replay.returnedRequestMatch).toBe(true);
+
+    errors.length = 0;
+
+    // (2) same workspace, same entity, same statement — a DIFFERENT connection group.
+    // This is the same-workspace wrong-datasource read: `defaultRunSnapshot` selects
+    // the pool from the returned connection, and nothing else on the line differs.
+    await run({
+      loadEntity: async () => GROUPED_YAML,
+      validateSnapshotSql: async (request: WarehouseSnapshotRequest) => ({
+        valid: true as const,
+        request: { ...request, connectionId: "grp-b" } as ValidatedSnapshotRequest,
+      }),
+    });
+    const crossGroup = payloadOf(errors, "verdict for a different request");
+    expect(crossGroup.returnedConnectionId).toBe("grp-b");
+    expect(crossGroup.returnedConnectionIdMatch).toBe(false);
+    // Everything else about the request matches — which is exactly what makes this
+    // the case the field was added for.
+    expect(crossGroup.sqlDigestMatch).toBe(true);
+    expect(crossGroup.returnedWorkspaceIdMatch).toBe(true);
+    expect(crossGroup.returnedEntityMatch).toBe(true);
+    expect(crossGroup.returnedRequestMatch).toBe(false);
+  });
+
+  it("fingerprints the statements and never carries one (#5248)", async () => {
+    let submitted = "";
+    await run({
+      validateSnapshotSql: async (request: WarehouseSnapshotRequest) => {
+        submitted = request.sql;
+        return { valid: true as const, request: { ...request } as ValidatedSnapshotRequest };
+      },
+    });
+
+    const payload = payloadOf(errors, "verdict for a different request");
+    // ⚠️ POSITIVE ANCHOR first. Without it every `not.toContain` below is satisfied by
+    // a fixture that built no statement at all, and the whole case goes vacuous.
+    expect(submitted).toContain("SELECT");
+    expect(submitted).toContain("lifecycle_status");
+
+    // ⚠️ EVERY sink, not just the mismatch payload. Scoped to one line, the case's own
+    // title ("never carries one") overclaimed — a future line elsewhere in the run
+    // logging the raw statement would pass. The positive anchors above keep the
+    // widening non-vacuous.
+    const serialized = JSON.stringify([...errors, ...warns, ...infos, ...debugs]);
+    expect(serialized).not.toContain(submitted);
+    // ⚠️ And not a FRAGMENT of it. The statement is assembled from admin-authored
+    // `table:` and `sql:` expressions, so the identifying part is the column names
+    // rather than the whole string — a line that truncated the SELECT to 200
+    // characters would pass the assertion above and still put a customer's schema in
+    // the log, which is what CLAUDE.md forbids.
+    expect(serialized).not.toContain("lifecycle_status");
+    expect(payload.sqlDigest).toMatch(/^[0-9a-f]{16}$/);
+    expect(payload.returnedSqlDigest).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it("reads the returned statement ONCE, so a getter cannot answer the digest and the comparison differently (#5248, #5230)", async () => {
+    // ⚠️ #5230's aliasing finding, one level down and inside the line written to
+    // report it. `validation.request` is captured once — but its PROPERTIES are still
+    // expressions the seam controls, so a getter that answers honestly for the digest
+    // and dishonestly for the comparison puts a forged statement's mismatch on the log
+    // as a benign replay. A per-site read proves nothing about the next site; only the
+    // count does.
+    const SECOND_READ = "SELECT 1 AS second_read";
+    let sqlReads = 0;
+    let honest = "";
+
+    await run({
+      validateSnapshotSql: async (request: WarehouseSnapshotRequest) => {
+        honest = request.sql;
+        const copy = { ...request } as Record<string, unknown>;
+        Object.defineProperty(copy, "sql", {
+          enumerable: true,
+          get() {
+            sqlReads += 1;
+            return sqlReads === 1 ? honest : SECOND_READ;
+          },
+        });
+        return { valid: true as const, request: copy as unknown as ValidatedSnapshotRequest };
+      },
+    });
+
+    const payload = payloadOf(errors, "verdict for a different request");
+    // ⚠️ The whole case. Two reads — one for the digest field, one for the comparison
+    // — makes this 2 and is the defect; the assertions below cannot see it on their
+    // own, because a second read that happens to agree looks identical.
+    expect(sqlReads).toBe(1);
+    expect(payload.returnedSqlDigest).toBe(digest(honest));
+    expect(payload.returnedSqlDigest).not.toBe(digest(SECOND_READ));
+    // The first read IS the submitted statement, so this mismatch is a replay.
+    expect(payload.sqlDigestMatch).toBe(true);
+  });
+
+  // ⚠️ The mismatch arm has NO enclosing `try` — the per-entity catches wrap the
+  // validator call, the snapshot and the transaction, and this branch sits BETWEEN
+  // them — so anything raised while building the log payload escapes
+  // `runWarehouseProducer` entirely, reaches the route's `Effect.tryPromise`, and
+  // turns ONE refused entity into a 500 for the whole run with no log line at all.
+  // Every cast below compiles; `warehouse-producer-bypass.test.ts` pins the sites
+  // that may write one.
+  //
+  // ⚠️ `{}` alone does NOT exercise the container guard, and that was measured: `{}`
+  // IS a record, so `isRecord`'s false arm is never taken and deleting the guard
+  // leaves the suite green while a `null` verdict throws. `null` and `undefined` are
+  // the load-bearing classes — a bare string survives without the guard too.
+  // `expectedType` is spelled out per fixture rather than derived, so the assertion
+  // cannot agree with the implementation by construction.
+  const MALFORMED_VERDICTS: readonly {
+    readonly label: string;
+    readonly request: unknown;
+    readonly expectedType: string;
+    /**
+     * ⚠️ `true` ONLY for the empty record, and that is the honest answer rather than
+     * a hole. Both sides are absent — the submitted connection is `undefined` for
+     * this default-connection fixture — so the comparison is literally satisfied.
+     * Demanding presence instead would report every benign default-connection replay
+     * as a connection mismatch. `returnedRequestMatch` is the field that separates
+     * them, and it is asserted `false` for every fixture here.
+     */
+    readonly expectedConnectionMatch: boolean;
+  }[] = [
+    { label: "an object with no fields", request: {}, expectedType: "<record>", expectedConnectionMatch: true },
+    { label: "null", request: null, expectedType: "<null>", expectedConnectionMatch: false },
+    { label: "undefined", request: undefined, expectedType: "<undefined>", expectedConnectionMatch: false },
+    // ⚠️ The TYPE, never the content — see the privacy case below. An array is
+    // `<object>` rather than `<record>`, which is the one distinction `isRecord`'s
+    // `Array.isArray` clause carries and nothing else pinned.
+    { label: "a string", request: "SELECT 1", expectedType: "<string>", expectedConnectionMatch: false },
+    { label: "an array", request: [], expectedType: "<object>", expectedConnectionMatch: false },
+    { label: "a number", request: 42, expectedType: "<number>", expectedConnectionMatch: false },
+  ];
+
+  for (const { label, request, expectedType, expectedConnectionMatch } of MALFORMED_VERDICTS) {
+    it(`logs a mismatch rather than throwing when the verdict's request is ${label} (#5248)`, async () => {
+      const report = await run({
+        validateSnapshotSql: async () => ({
+          valid: true as const,
+          request: request as ValidatedSnapshotRequest,
+        }),
+      });
+      // The BEHAVIOURAL outcome, not only the log line: a throw fails here first.
+      expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-failed"]);
+
+      const payload = payloadOf(errors, "verdict for a different request");
+      // Sentinels, not silence: an operator needs to know the field was absent rather
+      // than empty, and the digest must still say the statements differ.
+      expect(payload.returnedEntity).toBe("<undefined>");
+      expect(payload.returnedWorkspaceId).toBe("<undefined>");
+      // ⚠️ `<undefined>`, NOT a `<non-string>` catch-all. `sql` is the field that
+      // identifies the forgery class, so it is the last one that should collapse
+      // absent / null / numeric into one sentinel — the collapse this arm exists to
+      // undo, one level down.
+      expect(payload.returnedSqlDigest).toBe("<undefined>");
+      expect(payload.sqlDigestMatch).toBe(false);
+      expect(payload.returnedReadThrew).toBe(false);
+      // ⚠️ Which malformation it was. Without this field the non-record verdicts —
+      // null, undefined, a string, an array, a number — produce one identical payload
+      // of sentinels, so several different wiring faults become one line.
+      expect(payload.returnedRequestType).toBe(expectedType);
+      // ⚠️ **THE MATCH BOOLEANS, on the fixtures where they used to LIE.** A match
+      // claim needs a readable container: `seamRead` answers `undefined` for an
+      // absent field and for a non-record alike, and the submitted connection is
+      // `undefined` for this default-connection fixture — so `returnedConnectionIdMatch`
+      // read TRUE for a verdict that carried no request at all. Measured on all four
+      // of these before the guard, and asserted on none of them, which is why it
+      // shipped green.
+      expect(payload.returnedConnectionIdMatch).toBe(expectedConnectionMatch);
+      expect(payload.returnedWorkspaceIdMatch).toBe(false);
+      expect(payload.returnedEntityMatch).toBe(false);
+      // ⚠️ The alert key, `false` on EVERY malformation including the empty record
+      // whose connection comparison is satisfied. This is the assertion that makes
+      // the per-field booleans safe to be diagnostic rather than authoritative.
+      expect(payload.returnedRequestMatch).toBe(false);
+      // ...and the SUBMITTED side is unaffected, so the line still identifies the run.
+      expect(payload.entity).toBe("Accounts");
+      expect(payload.sqlDigest).toMatch(/^[0-9a-f]{16}$/);
+    });
+  }
+
+  it("logs <threw> rather than dying when a verdict's accessor THROWS (#5248)", async () => {
+    // ⚠️ Narrowing the container closes a verdict that is the wrong SHAPE; it does
+    // nothing about one whose getter runs hostile code. `isRecord` answers true for
+    // `{ get entity() { throw } }` — the container IS the right shape and the read
+    // still escaped, measured before `seamRead` existed as the TypeError propagating
+    // out of `runWarehouseProducer`. A getter is not exotic here: the read-once case
+    // above builds one. (A revoked Proxy is a different failure — `isRecord` itself
+    // throws on one; see the revoked-Proxy case below.)
+    let entityReads = 0;
+    const report = await run({
+      validateSnapshotSql: async (req: WarehouseSnapshotRequest) => {
+        const copy = { ...req } as Record<string, unknown>;
+        Object.defineProperty(copy, "entity", {
+          enumerable: true,
+          get() {
+            entityReads += 1;
+            throw new TypeError("hostile getter");
+          },
+        });
+        return { valid: true as const, request: copy as unknown as ValidatedSnapshotRequest };
+      },
+    });
+    // A throw would have taken the whole run, so this line is the case.
+    expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-failed"]);
+    expect(entityReads).toBe(1);
+
+    const payload = payloadOf(errors, "verdict for a different request");
+    // ⚠️ `<threw>`, distinct from `<undefined>`. "The getter blew up" and "the field
+    // was absent" are different faults, and a helper that folded them together would
+    // pass a laxer assertion here.
+    expect(payload.returnedEntity).toBe("<threw>");
+    expect(payload.returnedReadThrew).toBe(true);
+    expect(payload.returnedEntityMatch).toBe(false);
+    // ⚠️ The OTHER fields survive, which is why each read is guarded individually
+    // rather than the whole payload wrapped in one `try`. A single outer catch would
+    // lose the statement comparison — the forensic payload this line exists for — to
+    // an unrelated field's getter.
+    expect(payload.returnedWorkspaceId).toBe(WORKSPACE);
+    expect(payload.sqlDigestMatch).toBe(true);
+  });
+
+  it("never lets an Error's message pose as a digest (#5248)", async () => {
+    // ⚠️ **A hole the closing round's own fix opened.** `seamString` renders an Error
+    // by its message, and `seamSqlDigest` used to route every non-string through it —
+    // so a verdict carrying `sql: new Error("<16 hex chars>")` put an ATTACKER-CHOSEN
+    // string in `returnedSqlDigest`, indistinguishable from a real digest, and equal
+    // to the submitted one if they copy it. `seamKind` brackets every non-string,
+    // which is what makes "nothing in this field can be mistaken for a digest" true
+    // rather than merely claimed.
+    let submitted = "";
+    await run({
+      validateSnapshotSql: async (request: WarehouseSnapshotRequest) => {
+        submitted = request.sql;
+        return {
+          valid: true as const,
+          request: {
+            ...request,
+            sql: new Error(digest(request.sql)),
+          } as unknown as ValidatedSnapshotRequest,
+        };
+      },
+    });
+
+    const payload = payloadOf(errors, "verdict for a different request");
+    expect(payload.sqlDigest).toBe(digest(submitted));
+    // The forgery's whole point: it chose a value equal to the submitted digest.
+    expect(payload.returnedSqlDigest).not.toBe(digest(submitted));
+    expect(payload.returnedSqlDigest).toBe("<record>");
+    expect(String(payload.returnedSqlDigest)).not.toMatch(/^[0-9a-f]{16}$/);
+    expect(payload.sqlDigestMatch).toBe(false);
+  });
+
+  it("never echoes a STRING verdict's content, only its type (#5248)", async () => {
+    // ⚠️ **A MEASURED PRIVACY HOLE, not a hypothetical.** `returnedRequestType` used
+    // to fall through to `seamString` for non-records, which echoes a string verbatim
+    // up to 200 characters. A validator that crosses a wire — or a serialising proxy
+    // — answers `JSON.stringify(request)`, and that is the whole SELECT with its
+    // table and column names, landing in the log two hundred lines below the
+    // docstring that says the statement is never an option. The privacy sweep below
+    // could not see it: its fixture returns an OBJECT, so the echo was in the wrong
+    // fixture rather than the wrong sink.
+    let submitted = "";
+    await run({
+      validateSnapshotSql: async (request: WarehouseSnapshotRequest) => {
+        submitted = request.sql;
+        return {
+          valid: true as const,
+          // The realistic hostile shape: the request, serialised.
+          request: JSON.stringify(request) as unknown as ValidatedSnapshotRequest,
+        };
+      },
+    });
+
+    const payload = payloadOf(errors, "verdict for a different request");
+    expect(submitted).toContain("lifecycle_status");
+    expect(payload.returnedRequestType).toBe("<string>");
+    const serialized = JSON.stringify([...errors, ...warns, ...infos, ...debugs]);
+    expect(serialized).not.toContain("lifecycle_status");
+    expect(serialized).not.toContain(submitted);
+  });
+
+  it("reports WHICH seam read threw, one key at a time (#5248)", async () => {
+    // ⚠️ Only two fixtures existed — `entity` throws, or everything throws — so three
+    // of `returnedReadThrew`'s five disjuncts were individually unfalsifiable (the
+    // fifth, a throwing `.request`, has its own case below):
+    // dropping the `sql` one, or the `workspaceId` + `connectionId` pair, was
+    // measured green. The contradiction that produces is a payload reading
+    // `returnedSqlDigest: "<threw>"` beside `returnedReadThrew: false`, on the field
+    // that identifies the forgery class.
+    const KEYS = ["entity", "workspaceId", "connectionId", "sql"] as const;
+    const FIELD: Record<(typeof KEYS)[number], string> = {
+      entity: "returnedEntity",
+      workspaceId: "returnedWorkspaceId",
+      connectionId: "returnedConnectionId",
+      sql: "returnedSqlDigest",
+    };
+
+    for (const key of KEYS) {
+      errors.length = 0;
+      const report = await run({
+        validateSnapshotSql: async (req: WarehouseSnapshotRequest) => {
+          const copy = { ...req } as Record<string, unknown>;
+          Object.defineProperty(copy, key, {
+            enumerable: true,
+            get() {
+              throw new TypeError(`hostile ${key}`);
+            },
+          });
+          return { valid: true as const, request: copy as unknown as ValidatedSnapshotRequest };
+        },
+      });
+      expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-failed"]);
+      const payload = payloadOf(errors, "verdict for a different request");
+      expect(payload.returnedReadThrew, `${key} should set returnedReadThrew`).toBe(true);
+      expect(payload[FIELD[key]], `${key} should render <threw>`).toBe("<threw>");
+    }
+  });
+
+  it("keeps the forensic line when the verdict's REQUEST getter throws (#5248)", async () => {
+    // ⚠️ **A hostile validator must not be able to choose the quiet arm.** Reading
+    // `verdict.request` unguarded inside the gate-call `try` sent this to the
+    // gate-threw arm: a `warn` reading "the SQL gate threw rather than answering",
+    // with no digests and no match booleans — so throwing from `.request` demoted a
+    // forgery to something that looks like a transient module-init blip. Detectability
+    // is this change's whole deliverable, so the read is guarded separately and an
+    // unreadable request falls through to the arm that reports it.
+    const report = await run({
+      validateSnapshotSql: async (req: WarehouseSnapshotRequest) => {
+        const verdict = { valid: true as const };
+        Object.defineProperty(verdict, "request", {
+          enumerable: true,
+          get() {
+            throw new TypeError("hostile request getter");
+          },
+        });
+        void req;
+        return verdict as unknown as { valid: true; request: ValidatedSnapshotRequest };
+      },
+    });
+    expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-failed"]);
+    // The ERROR line, not the gate-threw warn — that is the case.
+    const payload = payloadOf(errors, "verdict for a different request");
+    expect(payload.returnedReadThrew).toBe(true);
+    expect(payload.returnedRequestMatch).toBe(false);
+    expect(payload.sqlDigest).toMatch(/^[0-9a-f]{16}$/);
+    expect(messages(warns).filter((m) => m.includes("threw rather than answering"))).toEqual([]);
+  });
+
+  it("renders a throwing `error` getter as <threw>, keeping the verdict's permanence (#5248)", async () => {
+    // An unguarded read landed this on the gate-threw arm, demoting the entity from
+    // permanent to transient. The gate DID answer invalid; only its reason was
+    // unreadable, so it keeps that verdict's permanence.
+    const report = await run({
+      validateSnapshotSql: async () => {
+        const verdict = { valid: false as const };
+        Object.defineProperty(verdict, "error", {
+          enumerable: true,
+          get() {
+            throw new TypeError("hostile error getter");
+          },
+        });
+        return verdict as { valid: false; error: string };
+      },
+    });
+    expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-rejected"]);
+    expect(report.refusals[0]?.message).toContain("<threw>");
+    expect(payloadOf(warns, "did not pass SQL validation").reason).toBe("<threw>");
+  });
+
+  it("renders an Error `error` by its message, not as <object> (#5248)", async () => {
+    // `<object>` is `undefined` with extra steps, on a PERMANENT refusal whose own
+    // text says re-running will not help — the generic message CLAUDE.md forbids,
+    // arriving through the renderer added to remove it. An Error is the likeliest
+    // non-string a plugin-supplied validator puts here.
+    const report = await run({
+      validateSnapshotSql: async () =>
+        ({ valid: false, error: new Error('relation "accounts" does not exist') }) as unknown as {
+          valid: false;
+          error: string;
+        },
+    });
+    expect(report.refusals[0]?.message).toContain('relation "accounts" does not exist');
+    expect(report.refusals[0]?.message).not.toContain("<object>");
+  });
+
+  it("bounds the REJECTED arm's reason too, not only the mismatch arm's (#5248)", async () => {
+    // The bound was pinned on the mismatch arm only; the rejected arm's `reason`
+    // reaches a 200-response message, which is the one that leaves the process.
+    const report = await run({
+      validateSnapshotSql: async () => ({ valid: false as const, error: "X".repeat(5000) }),
+    });
+    expect(report.refusals[0]?.message).toContain(`${"X".repeat(200)}…(5000)`);
+    expect(report.refusals[0]?.message).not.toContain("X".repeat(201));
+  });
+
+  it("treats a non-boolean `valid` as a gate that did not answer (#5248)", async () => {
+    // ⚠️ Routing this to `snapshot-rejected` would be a REGRESSION — that arm tells
+    // the admin "re-running will not change this" and to un-enroll a pair that is
+    // fine. Tightening `if (verdict.valid)` to `=== true` produces exactly that, and
+    // was green across all four warehouse suites until this case existed.
+    const report = await run({
+      validateSnapshotSql: async () =>
+        ({ valid: "yes" }) as unknown as { valid: false; error: string },
+    });
+    expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-failed"]);
+    // ⚠️ It reaches the MISMATCH arm — a truthy-but-not-boolean `valid` carries no
+    // `request`, so the identity check refuses it — and that arm is `snapshot-failed`
+    // too. Both routes are transient, which is the property the behaviour table
+    // claimed; this assertion names which one actually happens rather than asserting
+    // the gate-threw wording and passing for the wrong reason.
+    expect(report.refusals[0]?.message).toContain("could not confirm its SQL gate checked");
+    expect(payloadOf(errors, "verdict for a different request").returnedRequestMatch).toBe(false);
+  });
+
+  it("survives a REVOKED PROXY verdict, where the narrowing itself throws (#5248)", async () => {
+    // ⚠️ **THE THIRD INSTANCE OF ONE PRINCIPLE IN THIS CHANGE, and the one that
+    // looked safest.** `isRecord` calls `Array.isArray`, which THROWS on a revoked
+    // Proxy rather than answering — measured in this runtime: *"Array.isArray cannot
+    // be called on a Proxy that has been revoked"* — while `typeof` and `!== null`
+    // pass it cleanly first. So the guard written to make the seam read total was
+    // itself an unguarded seam operation, sitting one line ABOVE the `try` meant to
+    // cover it. Nothing about the shape of that code looks wrong, which is exactly
+    // why it needs a test rather than a comment.
+    const { proxy, revoke } = Proxy.revocable({ entity: "x" }, {});
+    revoke();
+
+    const report = await run({
+      validateSnapshotSql: async () => ({
+        valid: true as const,
+        request: proxy as unknown as ValidatedSnapshotRequest,
+      }),
+    });
+    // A throw anywhere in the arm takes the whole run, so this is the case.
+    expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-failed"]);
+
+    const payload = payloadOf(errors, "verdict for a different request");
+    expect(payload.returnedEntity).toBe("<threw>");
+    expect(payload.returnedReadThrew).toBe(true);
+    // ⚠️ And the SHAPE field too — it is computed by its own `isRecord` call, which
+    // was the second unguarded instance and would have escaped independently of the
+    // four property reads.
+    expect(payload.returnedRequestType).toBe("<threw>");
+    expect(payload.sqlDigestMatch).toBe(false);
+  });
+
+  it("survives a verdict whose DISCRIMINANT throws, before any arm is chosen (#5248)", async () => {
+    // The same class one step earlier: `verdict.valid` is a seam-controlled read that
+    // used to happen outside every `try`, so a hostile discriminant took the run down
+    // before either refusal arm could be reached. It now lands on the gate-threw arm,
+    // which is the honest one — a gate that cannot say `valid` has not answered.
+    const report = await run({
+      validateSnapshotSql: async () => {
+        const verdict = {};
+        Object.defineProperty(verdict, "valid", {
+          enumerable: true,
+          get() {
+            throw new TypeError("hostile discriminant");
+          },
+        });
+        return verdict as { valid: false; error: string };
+      },
+    });
+    expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-failed"]);
+    // TRANSIENT, not permanent: "re-running will not change this" is the wrong advice
+    // for a broken gate implementation, and it tells the admin to un-enroll a pair
+    // that is fine.
+    const refusal = report.refusals[0];
+    expect(refusal?.message).toContain("the next run");
+    expect(payloadOf(warns, "threw rather than answering").err).toBeInstanceOf(Error);
+  });
+
+  it("survives a NULL verdict, which throws on the discriminant read (#5248)", async () => {
+    const report = await run({
+      validateSnapshotSql: async () => null as unknown as { valid: false; error: string },
+    });
+    expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-failed"]);
+    expect(payloadOf(warns, "threw rather than answering").err).toBeInstanceOf(Error);
+  });
+
+  it("bounds a seam string and says so, rather than truncating silently (#5248)", async () => {
+    // ⚠️ The bound was prose until now: deleting `.slice(0, 200)` left the suite green,
+    // measured. It matters on THIS line specifically — the line's whole job is
+    // comparing what came back against what was sent, and a silently truncated
+    // 5,000-character value reads as a genuine 200-character one.
+    await run({
+      validateSnapshotSql: async (req: WarehouseSnapshotRequest) => ({
+        valid: true as const,
+        request: { ...req, entity: "E".repeat(5000) } as ValidatedSnapshotRequest,
+      }),
+    });
+
+    const payload = payloadOf(errors, "verdict for a different request");
+    expect(payload.returnedEntity).toBe(`${"E".repeat(200)}…(5000)`);
+    // The suffix is what makes truncation visible; without it this is 200 chars of E
+    // and no way to tell it from a real one.
+    expect(String(payload.returnedEntity)).not.toBe("E".repeat(200));
+  });
+
+  it("distinguishes an explicitly null seam field from an absent one (#5248)", async () => {
+    // Deleting the `<null>` arm leaves `<object>` — measured green before this case.
+    // Cheap to pin, and `null` is what a JSON round-trip through a region bundle
+    // produces where `undefined` would have been.
+    await run({
+      validateSnapshotSql: async (req: WarehouseSnapshotRequest) => ({
+        valid: true as const,
+        request: { ...req, entity: null, sql: null } as unknown as ValidatedSnapshotRequest,
+      }),
+    });
+
+    const payload = payloadOf(errors, "verdict for a different request");
+    expect(payload.returnedEntity).toBe("<null>");
+    expect(payload.returnedSqlDigest).toBe("<null>");
+    expect(payload.sqlDigestMatch).toBe(false);
+  });
+
+  it("reads the REJECTED arm's reason once, guarded and bounded (#5248)", async () => {
+    // ⚠️ **THE SIBLING SWEEP'S CATCH — the same seam, the same two defects, one arm
+    // up.** `validation.error` was read TWICE, once into the log and once into the
+    // operator-facing refusal, so a getter could make them disagree about why the
+    // entity was refused. It was also unguarded and unbounded: `{ valid: false }`
+    // rendered *"does not pass its SQL gate: undefined"*, the generic message
+    // CLAUDE.md forbids, and a throwing accessor escaped the template literal as a
+    // 500 for the whole run.
+    let errorReads = 0;
+    const report = await run({
+      validateSnapshotSql: async () => {
+        const verdict = { valid: false as const };
+        Object.defineProperty(verdict, "error", {
+          enumerable: true,
+          get() {
+            errorReads += 1;
+            return `reason-read-${errorReads}`;
+          },
+        });
+        return verdict as { valid: false; error: string };
+      },
+    });
+
+    expect(errorReads).toBe(1);
+    const refusal = report.refusals.find((r) => r.reason === "snapshot-rejected");
+    const payload = payloadOf(warns, "did not pass SQL validation");
+    // ⚠️ The two sites AGREE, which is the whole claim. A second read makes the log
+    // say `reason-read-1` while the admin reads `reason-read-2`.
+    expect(payload.reason).toBe("reason-read-1");
+    expect(refusal?.message).toContain("reason-read-1");
+    expect(refusal?.message).not.toContain("reason-read-2");
+  });
+
+  it("never puts the word undefined in the REJECTED arm's operator message (#5248)", async () => {
+    // The `{ valid: false }` cast, which `SnapshotSqlVerdict`'s docstring argues the
+    // type forbids — the same argument this PR's neighbour disproves.
+    const report = await run({
+      validateSnapshotSql: async () => ({ valid: false }) as { valid: false; error: string },
+    });
+    const refusal = report.refusals.find((r) => r.reason === "snapshot-rejected");
+    expect(refusal?.message).toContain("<undefined>");
+    expect(refusal?.message).not.toContain(": undefined.");
   });
 
   it("carries the request id and the trigger on every line, including the failures", async () => {

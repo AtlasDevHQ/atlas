@@ -46,14 +46,31 @@ const record =
     });
   };
 
+/**
+ * ⚠️ MOCK-ALL-EXPORTS, per the repo's testing rule. Only `createLogger` is
+ * needed today, but a partial `mock.module` replaces the whole module: the
+ * moment anything in this file's import graph resolves `getLogger()` at import
+ * time, a partial mock turns into `undefined is not a function` several files
+ * away from the cause.
+ */
+const stubLogger = {
+  info: record("info"),
+  warn: record("warn"),
+  error: record("error"),
+  debug: record("debug"),
+};
+
 void mock.module("@atlas/api/lib/logger", () => ({
-  createLogger: () => ({
-    info: record("info"),
-    warn: record("warn"),
-    error: record("error"),
-    debug: record("debug"),
-  }),
+  ACTOR_KINDS: ["human", "agent", "mcp", "scheduler", "api_key"] as const,
+  createLogger: () => stubLogger,
+  getLogger: () => stubLogger,
   getRequestContext: () => undefined,
+  withRequestContext: <T,>(_ctx: unknown, fn: () => T): T => fn(),
+  redactPaths: [] as string[],
+  scrubErrSerializer: (value: unknown) => value,
+  scrubLogFormatter: (obj: unknown) => obj,
+  hashShareToken: () => "",
+  setLogLevel: () => false,
 }));
 
 const {
@@ -119,11 +136,16 @@ describe("seedBuiltinKnowledgeCatalog — a slug held under a foreign id (#5239)
     expect(perRow).toHaveLength(1);
     // The row is named by BOTH of its identifiers: the slug is what collided,
     // the canonical id is what an operator has to go look at.
-    expect(perRow[0]!.payload).toMatchObject({
+    expect(perRow[0]?.payload).toMatchObject({
       id: BUILTIN_ZOOM_TRANSCRIPTS_CATALOG_ROW.id,
       slug: ZOOM_SLUG,
       constraint: "plugin_catalog_slug_key",
       detail: `Key (slug)=(${ZOOM_SLUG}) already exists.`,
+      // The raw message too: `constraint` and `detail` are both optional, so a
+      // driver populating neither would otherwise leave a warning with no
+      // evidence of what actually collided (see the diagnostics-free case at
+      // the end of this file, where these two ARE undefined).
+      err: 'duplicate key value violates unique constraint "plugin_catalog_slug_key"',
     });
     // No `info` may claim the pass simply completed.
     expect(logged.filter((c) => c.level === "info")).toHaveLength(0);
@@ -206,6 +228,12 @@ describe("seedBuiltinKnowledgeCatalog — a slug held under a foreign id (#5239)
     const perRow = logged.find(
       (c) => c.level === "warn" && (c.payload as { slug?: unknown }).slug === ZOOM_SLUG,
     );
-    expect(perRow?.payload).toMatchObject({ constraint: undefined, detail: undefined });
+    // Both diagnostics absent — and the raw message is the ONLY thing left
+    // saying what happened, which is why it is on the payload.
+    expect(perRow?.payload).toMatchObject({
+      constraint: undefined,
+      detail: undefined,
+      err: "duplicate key",
+    });
   });
 });

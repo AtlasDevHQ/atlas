@@ -75,10 +75,14 @@
  * The window is narrow — `slug` is settable only at create, per
  * `lib/integrations/catalog-crud.ts`, so it needs an operator-created row that
  * predates the built-in ever being seeded — but it is production-reachable.
- * `blockedSlugs` rides on the result rather than into `/health`: the boot Layer
- * has no arm between "seeded" and "error", and a blocked built-in row is an
- * operator's own row holding a name, not a failed boot. The warning is the
- * signal; the field is what a caller can assert on.
+ *
+ * `blockedSlugs` is carried on the result and threaded through the boot Layer's
+ * `BuiltinKnowledgeCatalogSeedShape`. **Nothing serves that shape over HTTP
+ * today** — the `BuiltinKnowledgeCatalogSeed` Tag is boot ordering plus logging,
+ * with no `/health` reader — so the operator-visible signal is the `log.warn`
+ * below, and the field is what a caller (or a test) can assert on. Threading it
+ * anyway is deliberate: the alternative is a boot Layer whose only description
+ * of an incomplete catalog is the word "seeded".
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -906,6 +910,24 @@ export interface BuiltinKnowledgeCatalogSeedDb {
   query<T = unknown>(sql: string, params?: unknown[]): Promise<{ rows: T[] }>;
 }
 
+/**
+ * ⚠️ TWO PRECONDITIONS ON THAT SEAM, both load-bearing for the #5239 recovery
+ * below, and neither expressible in the type.
+ *
+ * 1. **It must autocommit.** The loop recovers from a per-row `23505` by
+ *    logging and continuing. Inside an open transaction the first one poisons
+ *    it, so every remaining INSERT fails `25P02` — not `23505`, so it rethrows
+ *    and aborts the pass with `current transaction is aborted`, and the header's
+ *    "carries on to the remaining rows" becomes false. The one production
+ *    caller passes a `Pool` (see `runBuiltinKnowledgeCatalogSeedBoot`), where
+ *    each statement is its own transaction.
+ * 2. **It must surface pg errors FLAT.** `asUniqueViolation` reads a top-level
+ *    `code`. `@effect/sql` wraps the driver error and moves it under `.cause`
+ *    (`lib/integrations/install/routing-id-conflict.ts` walks the chain for
+ *    exactly that reason), so an Effect-backed client would make every
+ *    collision an unclassified throw — worse than before #5239, not better.
+ */
+
 export interface BuiltinKnowledgeCatalogSeedResult {
   /** True when any `ON CONFLICT (id) DO NOTHING` ran an insert (a row didn't exist). */
   readonly inserted: boolean;
@@ -914,9 +936,15 @@ export interface BuiltinKnowledgeCatalogSeedResult {
   /**
    * The slugs a `23505` blocked — a DIFFERENT catalog id already holds the
    * slug, so the built-in row does not exist under its canonical id and this
-   * pass could not create it (#5239). Distinct from "not inserted": every
-   * other row in `BUILTIN_KNOWLEDGE_CATALOG_ROWS` absent from BOTH lists was
-   * already present and correct.
+   * pass could not create it (#5239). Distinct from "not inserted": a row
+   * absent from BOTH lists already existed under its canonical id.
+   *
+   * ⚠️ "Already existed", NOT "already correct". The seed is insert-only and
+   * never reads the row back, so its CONTENT is unobserved — an operator who
+   * rewrote a built-in row through `catalog-crud.ts` lands in this same
+   * bucket, which is the whole reason a field change takes a migration. An
+   * earlier draft of this comment said "present and correct", which is the
+   * same species of over-claim #5239 exists to remove.
    */
   readonly blockedSlugs: ReadonlyArray<string>;
 }
@@ -957,7 +985,10 @@ function asUniqueViolation(
  * ⚠️ The sibling built-in DATASOURCE seed (`seed-builtin-datasource-catalog.ts`)
  * still inserts with an unqualified `ON CONFLICT DO NOTHING` and so still has
  * the swallow described in this file's header. #5239 scoped itself to the
- * knowledge catalog; the class is the same one file over.
+ * knowledge catalog; the class is the same one file over — and worse there,
+ * because that seeder derives `preservedSlugs` as *all minus inserted* and its
+ * docstring calls them rows that "already existed". A blocked row is therefore
+ * positively REPORTED as present, where this seeder merely omitted it.
  */
 export async function seedBuiltinKnowledgeCatalog(
   db: BuiltinKnowledgeCatalogSeedDb,
@@ -1003,8 +1034,20 @@ export async function seedBuiltinKnowledgeCatalog(
           slug: row.slug,
           constraint: collision.constraint,
           detail: collision.detail,
+          // ⚠️ The raw message, because `constraint` and `detail` are both
+          // OPTIONAL — a driver that populates neither would otherwise leave
+          // the operator a warning with no evidence of WHAT collided, and the
+          // sentence below would be the only (inferred) diagnosis on offer.
+          // Safe to log: every unique value on `plugin_catalog` is a slug or a
+          // catalog id, neither of which is a secret.
+          err: err instanceof Error ? err.message : String(err),
         },
-        "Built-in Knowledge Base catalog row NOT seeded — another catalog row already holds one of its unique values (normally the slug) under a different id, so this row does not exist under its canonical id. /admin/knowledge will not list it and every migration keyed on that id will correctly find nothing. Resolve by renaming or removing the conflicting row.",
+        // Deliberately hedged. `plugin_catalog` has exactly two unique
+        // constraints today — PK `id` (consumed by the conflict target) and
+        // UNIQUE `slug` — so a 23505 arriving here IS a slug collision. That is
+        // an inference from the current schema, not something this catch
+        // verified, and a unique index added later would silently widen it.
+        "Built-in Knowledge Base catalog row NOT seeded — another catalog row already holds one of its unique values (the slug, unless a new unique index says otherwise — see `constraint`) under a different id, so this row does not exist under its canonical id. /admin/knowledge will not list it and every migration keyed on that id will correctly find nothing. Find the conflicting row with `SELECT id, name FROM plugin_catalog WHERE slug = '<slug>'`, then rename or remove it.",
       );
       continue;
     }
@@ -1041,11 +1084,14 @@ export type BuiltinKnowledgeCatalogSeedBootResult =
       readonly inserted: boolean;
       /**
        * Rows a foreign-id slug collision blocked (#5239). `seeded` with a
-       * non-empty `blocked` is a real state — the pass ran, and some rows are
-       * missing from the catalog. The boot Layer maps `seeded` to one health
-       * outcome either way; this field is what a caller can assert on.
+       * non-empty `blockedSlugs` is a real state — the pass ran, and the
+       * catalog is missing rows it was asked to seed — so `kind` alone no
+       * longer partitions the outcomes; this field does.
+       *
+       * Same name as on `BuiltinKnowledgeCatalogSeedResult` deliberately: one
+       * concept either side of a call boundary.
        */
-      readonly blocked: ReadonlyArray<string>;
+      readonly blockedSlugs: ReadonlyArray<string>;
     }
   | { readonly kind: "error"; readonly message: string };
 
@@ -1076,7 +1122,7 @@ export async function runBuiltinKnowledgeCatalogSeedBoot(): Promise<BuiltinKnowl
 
   try {
     const result = await seedBuiltinKnowledgeCatalog(db);
-    return { kind: "seeded", inserted: result.inserted, blocked: result.blockedSlugs };
+    return { kind: "seeded", inserted: result.inserted, blockedSlugs: result.blockedSlugs };
   } catch (err) {
     const normalized = err instanceof Error ? err : new Error(String(err));
     log.error(

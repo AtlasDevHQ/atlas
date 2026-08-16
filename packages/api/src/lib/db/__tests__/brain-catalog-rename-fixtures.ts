@@ -154,10 +154,29 @@ function configHelpOf(row: {
   return field.description;
 }
 
-export const CONFIG_HELP_PAIRS = RENAME_PAIRS.map(({ label, row, decoyId }) => {
-  const help = configHelpOf(row);
-  return { label, row, help, oldHelp: preRenameConfigHelp(help), decoyId };
-});
+/**
+ * ⚠️ BUILT AS AN EXPLICIT TUPLE, not `RENAME_PAIRS.map(...)`. `RENAME_PAIRS` is
+ * `as const` — a readonly 2-tuple — and `.map` collapses that to
+ * `Array<...>`, which loses "there are exactly two, both present" at the type
+ * level. Downstream that cost 13 non-null assertions in the `-pg` suite
+ * (`ROWS[0]!`, `zoomPair!`, …), every one of them noise today and every one of
+ * them load-bearing the day `noUncheckedIndexedAccess` goes on.
+ */
+const configHelpPair = (pair: (typeof RENAME_PAIRS)[number]) => {
+  const help = configHelpOf(pair.row);
+  return {
+    label: pair.label,
+    row: pair.row,
+    help,
+    oldHelp: preRenameConfigHelp(help),
+    decoyId: pair.decoyId,
+  } as const;
+};
+
+export const CONFIG_HELP_PAIRS = [
+  configHelpPair(RENAME_PAIRS[0]),
+  configHelpPair(RENAME_PAIRS[1]),
+] as const;
 
 /**
  * The 0203 counterpart of {@link assertPinnedToMigration}, and it fails in the

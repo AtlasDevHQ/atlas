@@ -7,12 +7,21 @@
  * `jsonb_array_elements … WITH ORDINALITY`, a `jsonb_set` on one matched
  * element, and a guard that has to see through JSONB's normalisation — none of
  * that is visible to a text pin, and the failure mode it exists to prevent
- * (rebuilding the array and losing a field, a flag, or the field ORDER the
- * install form renders in) is silent everywhere else.
+ * (rebuilding the array and losing a field or a flag) is silent everywhere
+ * else.
  *
  * The load-bearing assertion is `config_schema` coming out EQUAL TO THE SEED
  * CONSTANT — not "contains the new string". Equality is what says the rewrite
- * touched one string and left every other field, flag and position alone.
+ * touched one string and left every other field and flag alone.
+ *
+ * ⚠️ IT DOES NOT PROVE THE `ORDER BY`, and an earlier draft of this header
+ * claimed it did. Measured: deleting `ORDER BY f.ord` from the migration
+ * returns the fields in byte-identical order on Postgres 17, because
+ * `jsonb_array_elements … WITH ORDINALITY` already emits them in order and
+ * `jsonb_agg` follows its input — so every case here stays green. The ORDER
+ * half of the claim is carried by a TEXT assertion in
+ * `seed-builtin-knowledge-catalog.test.ts`; the fields and flags halves are
+ * carried here.
  *
  * ⚠️ Every case runs over both rows (`CONFIG_HELP_PAIRS`): the two statements
  * are copy-paste twins, so a guard dropped from one survives a suite that
@@ -73,25 +82,38 @@ interface CapturedNotice {
 }
 
 /**
+ * A value as Postgres would hand it back.
+ *
+ * ⚠️ THE ROUND TRIP IS THE POINT, not ceremony. `ConfigSchemaField` is not
+ * structurally `Json` (`default?: unknown`), so moving one into a JSON position
+ * needs an assertion either way — but a bare `as unknown as Json` also leaves
+ * the fixture and the expectation built by DIFFERENT routes: `expectedSchema`
+ * round-tripped and `preRenameSchema` did not. They agree today only because
+ * every field on these two rows is a string or a boolean. One helper, one
+ * route, and the single remaining cast sits on `JSON.parse`'s inherently-`any`
+ * return.
+ */
+const toJson = (value: unknown): Json => JSON.parse(JSON.stringify(value)) as Json;
+
+/**
  * The row's `config_schema` as a region held it before 0203: the seed constant
  * with its helper text put back to the pre-rename string.
  *
  * Derived from the constant so the fixture and the expectation can only differ
  * in the one field under test — the #5000 lesson. Everything else in the array
- * is exactly what the seeder writes, which is what makes "byte-identical
- * afterwards" a real claim rather than a claim about a hand-typed stub.
+ * is exactly what the seeder writes, which is what makes "identical afterwards"
+ * a real claim rather than a claim about a hand-typed stub.
  */
 function preRenameSchema(row: BuiltinKnowledgeCatalogRow, oldHelp: string): Json[] {
-  return row.configSchema.map((field) =>
-    field.key === CONFIG_HELP_FIELD_KEY
-      ? ({ ...field, description: oldHelp } as unknown as Json)
-      : (field as unknown as Json),
-  );
+  return toJson(
+    row.configSchema.map((field) =>
+      field.key === CONFIG_HELP_FIELD_KEY ? { ...field, description: oldHelp } : field,
+    ),
+  ) as Json[];
 }
 
 /** The constant's own schema, as JSON — the post-migration expectation. */
-const expectedSchema = (row: BuiltinKnowledgeCatalogRow): Json =>
-  JSON.parse(JSON.stringify(row.configSchema)) as Json;
+const expectedSchema = (row: BuiltinKnowledgeCatalogRow): Json => toJson(row.configSchema);
 
 /**
  * A JSON value with every object's keys sorted, for comparing two values by
@@ -145,10 +167,13 @@ describeIfPg("migration 0203 — the config_schema helper text (#5240)", () => {
 
     // The projection 0203 touches. `config_schema` is nullable here exactly as
     // it is in `schema.ts`, because a NULL is one of the shapes the guard has
-    // to survive.
+    // to survive. `slug` is present and UNIQUE because the squatter arm reads
+    // it — a fixture without it would make that arm unreachable rather than
+    // failing loudly.
     await pool.query(`
       CREATE TABLE plugin_catalog (
         id            TEXT PRIMARY KEY,
+        slug          TEXT UNIQUE,
         config_schema JSONB,
         updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
       )
@@ -198,42 +223,50 @@ describeIfPg("migration 0203 — the config_schema helper text (#5240)", () => {
     return row;
   }
 
-  async function insertRow(id: string, configSchema: Json | null): Promise<void> {
+  async function insertRow(
+    id: string,
+    configSchema: Json | null,
+    slug: string | null = null,
+  ): Promise<void> {
     await pool.query(
-      `INSERT INTO plugin_catalog (id, config_schema, updated_at)
-         VALUES ($1, $2::jsonb, TIMESTAMPTZ '2020-01-01 00:00:00+00')`,
-      [id, configSchema === null ? null : JSON.stringify(configSchema)],
+      `INSERT INTO plugin_catalog (id, slug, config_schema, updated_at)
+         VALUES ($1, $2, $3::jsonb, TIMESTAMPTZ '2020-01-01 00:00:00+00')`,
+      [id, slug, configSchema === null ? null : JSON.stringify(configSchema)],
     );
   }
 
-  /** An unrelated vendor row whose help carries the old noun deliberately. */
+  /**
+   * An unrelated vendor row, used as the "don't rewrite the table" decoy.
+   *
+   * ⚠️ SYNTHETIC — no region holds this. The real Notion row's help says "this
+   * knowledge collection"; only the Zoom and Outlook rows ever carried "brain
+   * source". It is given the old string deliberately, so a statement that lost
+   * its `WHERE id` rewrites it and this case reds.
+   */
   const NOTION_ID = BUILTIN_NOTION_KNOWLEDGE_CATALOG_ROW.id;
   const NOTION_SCHEMA: Json = [
     { key: "description", type: "string", description: "Optional. A human description of this brain source." },
   ];
 
-  /** A foreign id carrying a Company Atlas row's exact stock schema. */
-  const decoyIdFor = (index: number): string => ROWS[index]!.decoyId;
-
   async function seedPreRename(): Promise<void> {
     await pool.query(`TRUNCATE plugin_catalog`);
-    for (const [i, { row, oldHelp }] of ROWS.entries()) {
-      await insertRow(row.id, preRenameSchema(row, oldHelp));
+    for (const { row, oldHelp, decoyId } of ROWS) {
+      await insertRow(row.id, preRenameSchema(row, oldHelp), row.slug);
       // The id-scoping decoy, ONE PER ROW: same stock schema, foreign id. A
       // statement that kept the JSONB predicates but lost or widened
       // `id = '…'` rewrites it. Production-reachable — an operator can create a
       // catalog row through the CRUD path.
-      await insertRow(decoyIdFor(i), preRenameSchema(row, oldHelp));
+      await insertRow(decoyId, preRenameSchema(row, oldHelp), `${row.slug}-operator-copy`);
     }
-    await insertRow(NOTION_ID, NOTION_SCHEMA);
+    await insertRow(NOTION_ID, NOTION_SCHEMA, BUILTIN_NOTION_KNOWLEDGE_CATALOG_ROW.slug);
   }
 
   it("the two rows' fixtures are distinct from each other", () => {
     // A shared fixture would make a statement that wrote the wrong row's schema
     // invisible to every per-row assertion below.
     expect(ROWS).toHaveLength(2);
-    expect(ROWS[0]!.row.id).not.toBe(ROWS[1]!.row.id);
-    expect(ROWS[0]!.decoyId).not.toBe(ROWS[1]!.decoyId);
+    expect(ROWS[0].row.id).not.toBe(ROWS[1].row.id);
+    expect(ROWS[0].decoyId).not.toBe(ROWS[1].decoyId);
     // The two schemas are the same LENGTH (five fields each), so length is no
     // discriminator at all — content is. Every whole-schema assertion below
     // therefore compares against that row's own constant, and
@@ -249,7 +282,7 @@ describeIfPg("migration 0203 — the config_schema helper text (#5240)", () => {
       await pool.query(MIGRATION_SQL);
     }, PG_TIMEOUT_MS);
 
-    for (const [i, { label, row, oldHelp }] of ROWS.entries()) {
+    for (const { label, row, oldHelp, decoyId } of ROWS) {
       it(`rewrites ${label}'s helper text and leaves the REST of config_schema identical`, async () => {
         // Equality against the seed constant, not a substring check: this is
         // the assertion that catches a rebuild which dropped a field, lost the
@@ -269,7 +302,7 @@ describeIfPg("migration 0203 — the config_schema helper text (#5240)", () => {
           (f, idx) => canonical(f as Json) !== canonical(before[idx] as Json),
         );
         expect(changed).toHaveLength(1);
-        expect(changed[0]!.key).toBe(CONFIG_HELP_FIELD_KEY);
+        expect(changed[0]?.key).toBe(CONFIG_HELP_FIELD_KEY);
       });
 
       it(`bumps updated_at on the ${label} row it wrote`, async () => {
@@ -282,7 +315,7 @@ describeIfPg("migration 0203 — the config_schema helper text (#5240)", () => {
         // `id = '…'` and adding an `OR` on the JSONB predicate. The text pins
         // cannot see it, and the unrelated-row case below catches only a
         // `WHERE` dropped outright.
-        const stored = await requireRow(decoyIdFor(i));
+        const stored = await requireRow(decoyId);
         expect(stored.config_schema).toEqual(preRenameSchema(row, oldHelp));
         expect(stored.updated_at.toISOString()).toBe("2020-01-01T00:00:00.000Z");
       });
@@ -344,15 +377,58 @@ describeIfPg("migration 0203 — the config_schema helper text (#5240)", () => {
         const twinKey = "not_the_description_field";
         const withTwin: Json[] = [
           ...preRenameSchema(row, oldHelp),
-          { key: twinKey, type: "string", description: oldHelp } as unknown as Json,
+          toJson({ key: twinKey, type: "string", description: oldHelp }),
         ];
         await insertRow(row.id, withTwin);
-        await pool.query(MIGRATION_SQL);
+        // ⚠️ Through the notice capture, because this is the ONLY fixture where
+        // both breadcrumb arms fire at once: the rewrite lands (rewritten=1)
+        // AND a string reading "brain source" survives on the twin, so the
+        // residue WARNING must also fire. Every other notice case is
+        // rewrote-and-silent or warned-and-rewrote-nothing, so two arms
+        // collapsed into one would go unnoticed there.
+        const notices = await runMigrationCapturingNotices();
         const stored = (await requireRow(row.id)).config_schema as Array<Record<string, Json>>;
         expect(stored.find((f) => f.key === CONFIG_HELP_FIELD_KEY)?.description).toBe(
           row.configSchema.find((f) => f.key === CONFIG_HELP_FIELD_KEY)?.description,
         );
         expect(stored.find((f) => f.key === twinKey)?.description).toBe(oldHelp);
+        expect(
+          notices.some(
+            (n) =>
+              n.severity === "NOTICE" &&
+              n.message.includes(`${row.id}: present=1, config_schema helper text rewritten=1`),
+          ),
+        ).toBe(true);
+        expect(
+          notices.filter((n) => n.severity === "WARNING" && n.message.includes(row.id)),
+        ).toHaveLength(1);
+      }, PG_TIMEOUT_MS);
+
+      it(`WARNS about a non-array config_schema on ${label} that still reads "brain source"`, async () => {
+        // The residue detector's blind spot before review: gated on
+        // `jsonb_typeof(...) = 'array'` it could not see this row at all, so
+        // the operator got `present=1, rewritten=0` plus a NOTICE asserting
+        // the field "was already renamed" — false. Detection is a whole-value
+        // text scan for exactly this reason; it writes nothing.
+        await insertRow(row.id, toJson({ fields: [{ description: oldHelp }] }));
+        const notices = await runMigrationCapturingNotices();
+        expect(
+          notices.some((n) => n.severity === "WARNING" && n.message.includes(row.id)),
+        ).toBe(true);
+      }, PG_TIMEOUT_MS);
+
+      it(`WARNS about the old noun on a ${label} LABEL, not only on a description`, async () => {
+        // The second thing the text scan buys: the rewrite is scoped to the
+        // `description` key, so a `label` carrying the old noun is left alone
+        // — correctly — but the operator must still be told it is there.
+        await insertRow(
+          row.id,
+          toJson([{ key: "x", type: "string", label: "Your brain source id" }]),
+        );
+        const notices = await runMigrationCapturingNotices();
+        expect(
+          notices.some((n) => n.severity === "WARNING" && n.message.includes(row.id)),
+        ).toBe(true);
       }, PG_TIMEOUT_MS);
 
       it(`survives a NULL config_schema on ${label} without erroring`, async () => {
@@ -394,12 +470,12 @@ describeIfPg("migration 0203 — the config_schema helper text (#5240)", () => {
       // failure aborts the pass mid-list, and #5239's slug collision leaves a
       // canonical id unseeded. The statements are independent.
       const [zoomPair, outlookPair] = ROWS;
-      await insertRow(zoomPair!.row.id, preRenameSchema(zoomPair!.row, zoomPair!.oldHelp));
+      await insertRow(zoomPair.row.id, preRenameSchema(zoomPair.row, zoomPair.oldHelp));
       await pool.query(MIGRATION_SQL);
-      expect((await requireRow(zoomPair!.row.id)).config_schema).toEqual(
-        expectedSchema(zoomPair!.row),
+      expect((await requireRow(zoomPair.row.id)).config_schema).toEqual(
+        expectedSchema(zoomPair.row),
       );
-      expect(await rowOf(outlookPair!.row.id)).toBeUndefined();
+      expect(await rowOf(outlookPair.row.id)).toBeUndefined();
     }, PG_TIMEOUT_MS);
   });
 
@@ -432,21 +508,64 @@ describeIfPg("migration 0203 — the config_schema helper text (#5240)", () => {
       // rollback window in 0203's header. Both halves in one case deliberately:
       // the claim is that they are DISTINGUISHABLE.
       const [zoomPair, outlookPair] = ROWS;
-      await insertRow(outlookPair!.row.id, expectedSchema(outlookPair!.row));
+      await insertRow(outlookPair.row.id, expectedSchema(outlookPair.row));
       const notices = await runMigrationCapturingNotices();
       expect(
         notices.some((n) =>
-          n.message.includes(`${zoomPair!.row.id}: present=0, config_schema helper text rewritten=0`),
+          n.message.includes(`${zoomPair.row.id}: present=0, config_schema helper text rewritten=0`),
         ),
       ).toBe(true);
       expect(
         notices.some((n) =>
           n.message.includes(
-            `${outlookPair!.row.id}: present=1, config_schema helper text rewritten=0`,
+            `${outlookPair.row.id}: present=1, config_schema helper text rewritten=0`,
           ),
         ),
       ).toBe(true);
       expect(notices.filter((n) => n.severity === "WARNING")).toHaveLength(0);
+    }, PG_TIMEOUT_MS);
+
+    it("⭐ distinguishes the #5239 SQUATTER from the rollback window on present=0", async () => {
+      // The two halves of this PR meeting. `present=0` has two causes that want
+      // OPPOSITE actions: the rollback window (the seeder WILL create the row,
+      // and which helper text it gets depends on the image), or a foreign row
+      // holding the slug — in which case the seeder can NEVER create it, and
+      // telling the operator to wait for the boot seeder is the wrong story in
+      // the one case where the breadcrumb matters.
+      //
+      // Zoom: absent, and squatted. Outlook: absent, nothing holding its slug.
+      // Both rows in one fixture so a warning that fired unconditionally on
+      // `present=0` fails on the Outlook half.
+      const [zoomPair, outlookPair] = ROWS;
+      await insertRow("catalog:operator-made-this", toJson([]), zoomPair.row.slug);
+      const notices = await runMigrationCapturingNotices();
+
+      const squatterWarnings = notices.filter(
+        (n) => n.severity === "WARNING" && n.message.includes("is ABSENT because another catalog row"),
+      );
+      expect(squatterWarnings).toHaveLength(1);
+      expect(squatterWarnings[0]?.message).toContain(zoomPair.row.id);
+      expect(squatterWarnings[0]?.message).not.toContain(outlookPair.row.id);
+      // Both still report present=0 — the NOTICE is not what tells them apart.
+      for (const { row } of ROWS) {
+        expect(
+          notices.some((n) => n.message.includes(`${row.id}: present=0`)),
+        ).toBe(true);
+      }
+    }, PG_TIMEOUT_MS);
+
+    it("does NOT cry squatter when the row is present and merely already renamed", async () => {
+      // The other direction: a squatting row can coexist with a correctly
+      // seeded canonical row only if the slugs differ, but the arm is gated on
+      // `present = 0` and this pins that gate. Without it, every region with a
+      // similarly-named operator row would get a spurious #5239 warning.
+      const [zoomPair] = ROWS;
+      await insertRow(zoomPair.row.id, expectedSchema(zoomPair.row), zoomPair.row.slug);
+      await insertRow("catalog:operator-made-this", toJson([]), `${zoomPair.row.slug}-ours`);
+      const notices = await runMigrationCapturingNotices();
+      expect(
+        notices.filter((n) => n.message.includes("is ABSENT because another catalog row")),
+      ).toHaveLength(0);
     }, PG_TIMEOUT_MS);
 
     it("RAISES A WARNING per row when help text still reads 'brain source'", async () => {

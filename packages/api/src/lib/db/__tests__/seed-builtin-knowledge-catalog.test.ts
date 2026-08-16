@@ -537,7 +537,15 @@ describe("built-in catalog copy lock (#5082)", () => {
     // above; this covers the JSONB.
     for (const row of [BUILTIN_ZOOM_TRANSCRIPTS_CATALOG_ROW, BUILTIN_OUTLOOK_MAIL_CATALOG_ROW]) {
       for (const field of row.configSchema) {
-        for (const text of [field.label, field.description]) {
+        // ⚠️ `options` too, not just label/description. Neither of these rows
+        // has a `select` field today, so this arm is latent — but the test's
+        // name says "anywhere in either row's config_schema", and a sweep that
+        // walks two of the three customer-read string positions is the kind of
+        // near-miss that lets the next one through.
+        const optionLabels = (field.options ?? []).map((o) =>
+          typeof o === "string" ? o : o.label,
+        );
+        for (const text of [field.label, field.description, ...optionLabels]) {
           expect(text?.toLowerCase() ?? "").not.toContain("brain");
         }
       }
@@ -604,23 +612,43 @@ describe("Company Atlas config_schema help ↔ migration 0203 (#5240, ADR-0038)"
   });
 
   it("rebuilds the array element-wise rather than round-tripping config_schema through text", () => {
-    // The statement shape #5240 exists to avoid: `config_schema::text` +
-    // `replace()` is unanchored (JSONB normalises key order and whitespace on
-    // storage) and would rewrite the phrase wherever else it appeared.
-    expect(MIGRATION_SQL).not.toMatch(/config_schema\s*::\s*text/i);
+    // The statement shape #5240 exists to avoid: a `config_schema::text` +
+    // `replace()` REWRITE is unanchored (JSONB normalises key order and
+    // whitespace on storage) and would hit the phrase wherever else it
+    // appeared. `replace(` is the tell, and it appears nowhere.
     expect(MIGRATION_SQL).not.toMatch(/\breplace\s*\(/i);
     expect(MIGRATION_SQL).toContain("jsonb_agg");
     expect(MIGRATION_SQL).toContain("jsonb_set");
-    // Order is part of what "leaves the rest byte-identical" means — an
-    // unordered `jsonb_agg` may reorder the install form's fields.
+    // ⚠️ THE `::text` CAST IS PERMITTED, AND ONLY OUTSIDE A `SET`. Detection is
+    // a whole-value text scan on purpose — it writes nothing, so JSONB's
+    // normalisation cannot corrupt anything, and gating the DETECTOR on
+    // `jsonb_typeof = 'array'` (as the rewrite must be) left an operator's
+    // non-array schema unreported while the NOTICE claimed it was already
+    // renamed. So: assert no cast reaches an assignment, rather than banning
+    // the cast outright.
+    for (const setClause of MIGRATION_SQL.match(/SET config_schema =[\s\S]*?updated_at = now\(\)/g) ?? []) {
+      expect(setClause).not.toMatch(/config_schema\s*::\s*text/i);
+    }
+    expect(MIGRATION_SQL.match(/SET config_schema =/g)).toHaveLength(2);
+    // ⚠️ THIS IS THE ONLY GUARD ON FIELD ORDER. Measured: deleting
+    // `ORDER BY f.ord` leaves the real-Postgres suite entirely green, because
+    // `WITH ORDINALITY` already emits in order and `jsonb_agg` follows its
+    // input. Aggregate input order is not contractual, so the clause stays —
+    // but a behavioural test cannot be the thing that keeps it.
     expect(MIGRATION_SQL).toContain("WITH ORDINALITY");
     expect(MIGRATION_SQL).toMatch(/ORDER BY\s+f\.ord/i);
   });
 
-  it("scopes the rewrite to the field with key 'description'", () => {
+  it("scopes the rewrite to the field with key 'description' at every site", () => {
     // Without the key predicate the guard is "any field whose help is exactly
     // this string", which is the same rewrite by a looser route.
-    expect(MIGRATION_SQL.match(/f\.field->>'key'\s*=\s*'description'/g) ?? []).not.toHaveLength(0);
+    //
+    // ⚠️ AN EXACT COUNT, not `not.toHaveLength(0)`. The predicate appears twice
+    // per DO block — the `CASE WHEN` arm and the `UPDATE … WHERE EXISTS` — and
+    // a "greater than zero" assertion survives deleting it from three of the
+    // four sites. The behavioural twin-key case covers the `CASE` arm; this
+    // covers the rest.
+    expect(MIGRATION_SQL.match(/f\.field->>'key'\s*=\s*'description'/g)).toHaveLength(4);
   });
 
   it("leaves every OTHER built-in row's copy out of the migration entirely", () => {
@@ -777,7 +805,38 @@ describe("runBuiltinKnowledgeCatalogSeedBoot (discriminated outcomes)", () => {
       expect(result.inserted).toBe(true);
       // `seeded` no longer implies "every row is in the catalog" — it carries
       // what was blocked (#5239). Nothing is, here.
-      expect(result.blocked).toEqual([]);
+      expect(result.blockedSlugs).toEqual([]);
+    }
+  });
+
+  it("⭐ forwards a NON-EMPTY blockedSlugs across the boot seam", async () => {
+    // Without this, `blockedSlugs: result.blockedSlugs` in the boot wrapper can
+    // be hard-coded to `[]` and the whole suite stays green — measured. The
+    // happy-path case above pins the empty value, which is the value a broken
+    // forward produces.
+    hasInternalDBReturns = true;
+    mockQuery.mockImplementation((_sql: string, params?: unknown[]) => {
+      if (params?.[2] === "gitbook") {
+        return Promise.reject(
+          Object.assign(new Error("duplicate key value violates unique constraint"), {
+            code: "23505",
+            constraint: "plugin_catalog_slug_key",
+          }),
+        );
+      }
+      return Promise.resolve({ rows: [{ slug: params?.[2] }] });
+    });
+    const { runBuiltinKnowledgeCatalogSeedBoot } = await import(
+      "@atlas/api/lib/db/seed-builtin-knowledge-catalog"
+    );
+    const result = await runBuiltinKnowledgeCatalogSeedBoot();
+    expect(result.kind).toBe("seeded");
+    if (result.kind === "seeded") {
+      expect(result.blockedSlugs).toEqual(["gitbook"]);
+      // Still `inserted` — the other 13 rows landed. A boot result that
+      // conflated "blocked something" with "inserted nothing" would be the
+      // same overloading one layer up.
+      expect(result.inserted).toBe(true);
     }
   });
 

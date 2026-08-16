@@ -999,7 +999,10 @@ export const BuiltinDatasourceCatalogSeedLive: Layer.Layer<
  * Mirrors {@link BuiltinDatasourceCatalogSeedOutcome}.
  *
  * - `skipped-gate`  — InternalDB or Migration upstream not satisfied
- * - `seeded`        — seed ran (`inserted` false on re-boot with both rows present)
+ * - `seeded`        — the seed pass ran. `inserted` is false on a re-boot where
+ *                     every row already exists; it is ALSO false when nothing
+ *                     could be inserted, so read `blockedSlugs` before treating
+ *                     this as a complete catalog (#5239)
  * - `error`         — the boot wrapper or its dynamic import threw;
  *                     pre-existing rows answer admin-UI reads
  */
@@ -1015,7 +1018,21 @@ export interface BuiltinKnowledgeCatalogSeedShape {
    */
   readonly inserted: boolean;
   readonly outcome: BuiltinKnowledgeCatalogSeedOutcome;
-  /** Scrubbed error message when `outcome === "error"`. */
+  /**
+   * Built-in slugs a foreign-id collision blocked (#5239) — the catalog is
+   * missing these rows and a re-boot will not fix it. Always `[]` on the
+   * `skipped-gate` and `error` arms, where the pass never got far enough to
+   * know. Nothing serves this shape over HTTP today; the operator-visible
+   * signal is the seeder's own `log.warn`.
+   */
+  readonly blockedSlugs: ReadonlyArray<string>;
+  /**
+   * The raw driver message when `outcome === "error"`.
+   *
+   * ⚠️ NOT scrubbed, despite what this comment said until #5239. A `pg`
+   * connection failure message can carry host and port, so do not surface it
+   * over HTTP without scrubbing it first.
+   */
   readonly error?: string;
 }
 
@@ -1027,7 +1044,9 @@ export class BuiltinKnowledgeCatalogSeed extends Context.Tag(
  * Idempotent boot-time seed of the built-in Knowledge Base catalog rows —
  * `okf-upload` (#4206) and `bundle-sync` (#4211), ADR-0028. Code-seeded
  * through the operator-curated seam and re-asserted on every boot via
- * `ON CONFLICT DO NOTHING`.
+ * `ON CONFLICT (id) DO NOTHING` — qualified on the PK since #5239, so a slug
+ * held under a foreign id surfaces as a blocked row rather than as silent
+ * success. See `outcome`/`blockedSlugs` above.
  *
  * Depends on `Migration` so migration 0161's widened pillar CHECK (which
  * admits `pillar = 'knowledge'`) is guaranteed before the INSERTs; depends on
@@ -1052,6 +1071,7 @@ export const BuiltinKnowledgeCatalogSeedLive: Layer.Layer<
       return {
         inserted: false,
         outcome: "skipped-gate",
+        blockedSlugs: [],
       } satisfies BuiltinKnowledgeCatalogSeedShape;
     }
 
@@ -1066,17 +1086,20 @@ export const BuiltinKnowledgeCatalogSeedLive: Layer.Layer<
             return {
               inserted: false,
               outcome: "skipped-gate",
+              blockedSlugs: [],
             } satisfies BuiltinKnowledgeCatalogSeedShape;
           case "seeded":
             return {
               inserted: result.inserted,
               outcome: "seeded",
+              blockedSlugs: result.blockedSlugs,
             } satisfies BuiltinKnowledgeCatalogSeedShape;
           case "error":
             return {
               inserted: false,
               outcome: "error",
               error: result.message,
+              blockedSlugs: [],
             } satisfies BuiltinKnowledgeCatalogSeedShape;
         }
       },
@@ -1088,6 +1111,7 @@ export const BuiltinKnowledgeCatalogSeedLive: Layer.Layer<
           inserted: false,
           outcome: "error",
           error: errorMessage(err),
+          blockedSlugs: [],
         } satisfies BuiltinKnowledgeCatalogSeedShape);
       }),
     );

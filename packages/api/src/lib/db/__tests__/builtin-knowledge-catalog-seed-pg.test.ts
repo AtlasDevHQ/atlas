@@ -61,6 +61,13 @@ describeIfPg("built-in Knowledge Base catalog seed against real Postgres (#5239)
     // The columns the seeder's INSERT names, with the two constraints the
     // conflict target is about: `id` PRIMARY KEY and `slug` UNIQUE. Without
     // the UNIQUE on slug this whole file would pass with either spelling.
+    //
+    // ⚠️ THE FOUR CHECKs ARE COPIED FROM `schema.ts` DELIBERATELY. This file is
+    // the only place that can prove the seeder writes values the real table
+    // ACCEPTS — the seeder's own header calls migration 0161's widened pillar
+    // CHECK load-bearing for `pillar = 'knowledge'`, and without these clauses
+    // the sole guard on that is a text pin asserting the string appears in the
+    // SQL. A fixture looser than production cannot fail where production would.
     await pool.query(`
       CREATE TABLE plugin_catalog (
         id                    TEXT PRIMARY KEY,
@@ -77,7 +84,15 @@ describeIfPg("built-in Knowledge Base catalog seed against real Postgres (#5239)
         saas_eligible         BOOLEAN NOT NULL,
         config_schema         JSONB,
         created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
-        updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+        updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+        CONSTRAINT chk_plugin_catalog_type
+          CHECK (type IN ('datasource', 'context', 'interaction', 'action', 'sandbox', 'chat', 'integration')),
+        CONSTRAINT chk_plugin_catalog_install_model
+          CHECK (install_model IN ('oauth', 'form', 'static-bot', 'oauth-datasource')),
+        CONSTRAINT chk_plugin_catalog_pillar
+          CHECK (pillar IN ('datasource', 'chat', 'action', 'knowledge')),
+        CONSTRAINT chk_plugin_catalog_implementation_status
+          CHECK (implementation_status IN ('available', 'coming_soon'))
       )
     `);
 
@@ -142,7 +157,7 @@ describeIfPg("built-in Knowledge Base catalog seed against real Postgres (#5239)
     // The behaviour the fix depends on, asserted directly against Postgres
     // rather than inferred from the seeder's catch.
     await insertSquatter();
-    let raised: { code?: unknown; constraint?: unknown } | undefined;
+    let raised: { code?: unknown; constraint?: unknown; detail?: unknown } | undefined;
     try {
       await pool.query(
         `INSERT INTO plugin_catalog
@@ -154,9 +169,17 @@ describeIfPg("built-in Knowledge Base catalog seed against real Postgres (#5239)
         [SQUATTED.id, SQUATTED.slug],
       );
     } catch (err) {
-      raised = err as { code?: unknown; constraint?: unknown };
+      raised = err as { code?: unknown; constraint?: unknown; detail?: unknown };
     }
     expect(raised?.code).toBe("23505");
+    // ⚠️ THE SHAPE TOO, not only the code. The mocked collision suite asserts a
+    // warn payload carrying `constraint: "plugin_catalog_slug_key"` and
+    // `detail: "Key (slug)=(…) already exists."` — both hand-written in that
+    // file's own fixture, so it is agreeing with itself. These two lines are
+    // where those strings are checked against Postgres, and the operator reads
+    // the constraint name out of the warning.
+    expect(raised?.constraint).toBe("plugin_catalog_slug_key");
+    expect(String(raised?.detail)).toContain(`Key (slug)=(${SQUATTED.slug})`);
   }, PG_TIMEOUT_MS);
 
   it("⭐ and the UNQUALIFIED target swallows exactly that collision — the defect, measured", async () => {
@@ -199,11 +222,19 @@ describeIfPg("built-in Knowledge Base catalog seed against real Postgres (#5239)
       [SQUATTED.id],
     );
     expect(rows).toHaveLength(0);
-    const { rows: others } = await pool.query<{ n: string }>(
-      `SELECT COUNT(*)::text AS n FROM plugin_catalog WHERE id LIKE 'catalog:%'`,
+    // ⚠️ THE ID SET, NOT A COUNT. "13 built-ins + the squatter" and "all 14
+    // built-ins, squatter clobbered" are both 14 rows, so a count cannot tell
+    // apart the world where the seeder lost this contest from the world where
+    // it won it — and the seeder is supposed to lose.
+    const { rows: present } = await pool.query<{ id: string }>(
+      `SELECT id FROM plugin_catalog ORDER BY id`,
     );
-    // 14 built-ins minus the blocked one, plus the squatter itself.
-    expect(others[0]?.n).toBe(String(ALL_SLUGS.length));
+    expect(present.map((r) => r.id)).toEqual(
+      [
+        SQUATTER_ID,
+        ...BUILTIN_KNOWLEDGE_CATALOG_ROWS.filter((r) => r.slug !== SQUATTED.slug).map((r) => r.id),
+      ].sort(),
+    );
   }, PG_TIMEOUT_MS);
 
   it("does not clobber the squatter's own row", async () => {

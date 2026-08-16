@@ -3855,7 +3855,7 @@ type Camel<S extends string> = S extends `${infer Head}_${infer Tail}`
 
 /**
  * The two count fields whose name is NOT the camelCase of their table. Both
- * mismatches are meaningful rather than sloppy:
+ * mismatches are deliberate:
  *
  * - `chat_cache` → `slackInstallations`: the purge does not clear the table, it
  *   clears the Slack installation rows INSIDE it (the `value->>'orgId'`
@@ -3906,6 +3906,19 @@ type CountFieldFor<T extends string> = T extends keyof CountFieldAliases
  * them, and `purge-scope.test.ts` covers them instead — it asserts each has a
  * real DELETE, which is the claim that matters for a user-keyed erasure.
  */
+/**
+ * The one name `skippedTables` can carry that is a skipped WRITE, not a skipped
+ * DELETE — the #3468 tombstone.
+ *
+ * Exported because the purge route has to tell the two apart when it explains an
+ * incomplete erasure to an operator, and the consequences are opposite: a
+ * skipped delete means rows survive; a skipped tombstone means late Stripe
+ * cancellation webhooks can REGROW ledger rows the purge did clear. The route
+ * used to recover this by string-matching a literal authored here, in another
+ * module, with nothing tying the two together.
+ */
+export const PURGE_TOMBSTONE_RELATION = "stripe_purged_subscriptions";
+
 export const NON_REGISTRY_COUNT_FIELDS = [
   "adminActionLogAnonymized",
   "members",
@@ -3935,10 +3948,13 @@ type HardDeleteCountField = CountFieldFor<PurgedTableName> | NonRegistryCountFie
  * The implicit index signature that lets `Object.entries` in `totalRowsDeleted`
  * and the route's `Record<string, number>` wire contract work without a cast
  * comes from this being a `type` ALIAS of an object type rather than an
- * `interface` — not from its mapped-ness. That distinction is load-bearing: a
- * later "tidy" into `interface HardDeleteCounts` compiles, then reintroduces
- * both casts. Uniform numeric-ness is separately only possible because
- * `skippedTables` lives outside it.
+ * `interface` — not from its mapped-ness. That distinction is load-bearing, and
+ * it is narrower than it first looks: a tidy into an interface with ENUMERATED
+ * members (`interface HardDeleteCounts { readonly auditLog: number; … }`)
+ * compiles and reintroduces both casts, while `interface … extends
+ * Record<HardDeleteCountField, number>` keeps the index signature and does not.
+ * Uniform numeric-ness is separately only possible because `skippedTables`
+ * lives outside it.
  *
  * What this does NOT check is that the DELETE exists, that the delete ORDER
  * respects the two RESTRICT FKs, or that the scrub's residue predicate covers
@@ -4092,8 +4108,8 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
      * decides whether the falsifier can fail at all.
      *
      * `ViaParentTableName` is the union of registry keys that HAVE a
-     * declaration, so a call for any other table does not compile and the link
-     * below can never be undefined.
+     * declaration, so a call for any other table does not compile, and the
+     * lookup inside `viaParentDeleteSql` can never hit an undefined link.
      */
     const delViaParent = async (table: ViaParentTableName) =>
       delRaw(viaParentDeleteSql(table));
@@ -4456,7 +4472,7 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     // that silently does not happen when `subscription` is absent, and without
     // them the operator is told one relation was skipped when three operations
     // were.
-    if (await tableExists("subscription", ["stripe_webhook_events", "stripe_purged_subscriptions"])) {
+    if (await tableExists("subscription", ["stripe_webhook_events", PURGE_TOMBSTONE_RELATION])) {
       // Tombstone the purged subscription ids FIRST (#3468): the remote
       // teardown's cancellations generate `customer.subscription.deleted`
       // webhooks that arrive after this transaction commits, and the

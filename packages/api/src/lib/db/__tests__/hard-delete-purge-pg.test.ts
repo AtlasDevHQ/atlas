@@ -190,8 +190,15 @@ interface ColumnMeta {
  * a seeder pointing the child at the wrong parent column seeds an unreachable
  * row, and "zero rows remain" then holds for the wrong reason.
  *
- * Because the seeder and the purge now read one declaration, mutating it breaks
- * this suite — which is the property the three copies never had.
+ * ⚠️ What this suite can and cannot catch, since it and the purge now read ONE
+ * declaration: a declaration that is simply INVALID (a column that does not
+ * exist, a scope column the parent lacks) fails the seed loudly. A declaration
+ * that is WRONG but internally consistent does NOT — the seeder points the child
+ * at whatever the purge deletes by, and FK enforcement is off during the seed
+ * (`session_replication_role = replica`), so a mis-pointed parent id inserts
+ * cleanly. Measured: repointing `messages` at `dashboards` leaves this suite
+ * 17/17 green. THAT check lives in `purge-scope.test.ts`, against db/schema.ts's
+ * own foreign keys — an independent third party this file cannot be.
  */
 // String-indexed view: the registry's literal-keyed type (via `satisfies`)
 // rejects arbitrary-string indexing, which is what every lookup here does.

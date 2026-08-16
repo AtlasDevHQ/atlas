@@ -308,17 +308,13 @@ export function buildInternalDbMockDefaults(deps: {
     hardDeleteWorkspace: mock(async () => ({ counts: {}, skippedTables: [] })),
     // #5160 — the purge route imports this alongside hardDeleteWorkspace, so it
     // must be in the complete surface or the named import SyntaxErrors under bun
-    // and every route in the file 404s. Mirrors the real implementation: sum the
-    // numeric fields, skip `skippedTables` (an array) and the anonymized count
-    // (rows that SURVIVED), so a test asserting on totalRows exercises the same
-    // arithmetic the route does.
+    // and every route in the file 404s. The real class, not a stand-in:
+    // `domainError` matches it with `instanceof`.
     PurgeAbortedError: RealPurgeAbortedError,
-    // #5160 — mirrors the real `totalRowsDeleted`: sum the numeric fields, skip
-    // `skippedTables` (an array) and the anonymized count (rows that SURVIVED).
-    // Duplicated rather than imported because this mock surface stands in for the
-    // very module the function lives in. The drift risk is real but bounded:
-    // `purge-scope.test.ts` pins the `anonymized` category to exactly one table,
-    // so a second survivor field cannot appear without that guard failing first.
+    // #5160 — mirrors the real `totalRowsDeleted` over `result.counts`. Only the
+    // LOOP is duplicated (this surface stands in for the module the helper lives
+    // in); the survivor exclusion is imported, so renaming that field breaks the
+    // compile rather than silently counting survivors as destroyed.
     totalRowsDeleted: (result: { counts?: Record<string, unknown> }) => {
       // Reads `result.counts` (#5176) — the counts live in their own uniformly
       // numeric container, with `skippedTables` outside it.

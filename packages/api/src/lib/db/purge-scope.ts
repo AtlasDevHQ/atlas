@@ -44,9 +44,11 @@
  *   EIGHT while listing NINE and omitting `stripe_webhook_events`; measured
  *   2026-08-12 by enumerating the Drizzle schema, there are ELEVEN scope-less
  *   `purged` tables — the ten above plus `chat_cache`, which is scoped by an
- *   expression rather than a parent (see its entry). Since #5176 that list of
- *   ten is not prose you have to keep in step: each of those entries carries a
- *   `viaParent` declaration, and `ViaParentTableName` derives the set from them.
+ *   expression rather than a parent (see its entry). Since #5176 the SET is
+ *   derived rather than declared here — each of those entries carries a
+ *   `viaParent`, and `ViaParentTableName` computes the union from them. The
+ *   names above are a reading aid and are still hand-written; trust the
+ *   declarations, not this sentence.
  *   Several SCOPED tables would cascade
  *   too — `agent_runs`, `agent_session_memory`, `learned_pattern_injections` —
  *   and are deleted explicitly all the same.
@@ -131,9 +133,11 @@ interface PurgeTableScopeBase {
 interface PurgedTableScope extends PurgeTableScopeBase {
   readonly decision: "purged";
   /**
-   * Present only on `purged` tables with no scope column of their own. Its
-   * presence is what makes `hardDeleteWorkspace` reach the table by subquery,
-   * and it is also the ORDER constraint: the child must be deleted before the
+   * Present only on `purged` tables with no scope column of their own. It
+   * supplies the relation `delViaParent(<table>)` builds its subquery from — the
+   * call site is still explicit, and `purge-scope.test.ts` fails a declaration
+   * with no call, so this alone does not purge anything. It is also the ORDER
+   * constraint: the child must be deleted before the
    * parent, or the subquery finds no parent rows and the child is silently left
    * behind — no error, no count, exactly the shape of #5160's original bug.
    */
@@ -148,10 +152,9 @@ interface UnpurgedTableScope extends PurgeTableScopeBase {
    * it makes a stray declaration on a non-purged table a compile error at the
    * registry's own `satisfies`.
    *
-   * That is not hypothetical. `user_trial_grants` is `retained` precisely so it
-   * SURVIVES the purge, and a `viaParent` on it would read as a route to delete
-   * it through a parent — the one decision this registry exists to make
-   * deliberate.
+   * `user_trial_grants` is `retained` precisely so it SURVIVES the purge, and a
+   * `viaParent` on it would read as a route to delete it through a parent — the
+   * one decision this registry exists to make deliberate.
    */
   readonly viaParent?: undefined;
 }
@@ -355,9 +358,10 @@ export type ViaParentTableName = {
  * The subquery that selects a parent's keys for the purged workspace, with `$1`
  * bound to the org id.
  *
- * Exported because it is needed TWICE for `subscription`: once inside
+ * Exported because the subscription relation is needed twice: once inside
  * `stripe_webhook_events`'s DELETE, and once by the #3468 tombstone INSERT that
- * records the same subscription ids before they are removed. Building both from
+ * records the same subscription ids before they are removed. Both call sites
+ * pass the CHILD key, `stripe_webhook_events`. Building both from
  * the one declaration is the point — a fourth hand-written copy of the relation
  * is exactly what #5176 removed.
  *
@@ -386,8 +390,9 @@ export function parentKeySubquery(table: ViaParentTableName): string {
  * link is what makes that safe.
  *
  * There is no room in this template for a status/kind/state predicate, which is
- * the narrowing `purge-scope.test.ts` forbids for every DELETE: a purge must
- * remove ALL of a workspace's rows in a table, not the ones in one state.
+ * the narrowing `purge-scope.test.ts` forbids for every DELETE but `chat_cache`'s
+ * expression scope: a purge must remove ALL of a workspace's rows in a table,
+ * not the ones in one state.
  */
 export function viaParentDeleteSql(table: ViaParentTableName): string {
   const link: PurgeParentLink = PURGE_TABLE_DECISIONS[table].viaParent;

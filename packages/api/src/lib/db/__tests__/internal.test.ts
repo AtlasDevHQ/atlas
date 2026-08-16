@@ -1066,8 +1066,8 @@ describe("totalRowsDeleted()", () => {
   //
   // The values are deliberately distinct (3/5/7/11): with all-equal counts, a
   // sum that included the wrong field would still land on a plausible number.
-  // Cast because the real `HardDeleteCounts` has ~96 fields and this fixture
-  // names four; the arithmetic under test does not read the others.
+  // Cast because the real `HardDeleteCounts` names every purged table and this
+  // fixture names four; the arithmetic under test does not read the others.
   const base = {
     counts: {
       conversations: 3,

@@ -38,6 +38,7 @@ import {
   hardDeleteWorkspace,
   totalRowsDeleted,
   PurgeAbortedError,
+  PURGE_TOMBSTONE_RELATION,
   type WorkspaceRow,
   type PlanTier,
   type WorkspaceStatus,
@@ -254,7 +255,7 @@ const purgeWorkspaceRoute = createRoute({
   path: "/workspaces/{id}/purge",
   tags: ["Platform Admin"],
   summary: "Purge workspace (GDPR hard delete)",
-  description: "SaaS only. Permanently removes ALL workspace data — conversations, messages, company-brain claims and episodes, knowledge-base documents, semantic layer, dashboards, integrations and their encrypted credentials, members, and orphaned users. Two deliberate exceptions: the admin action log is retained with its identifying columns scrubbed (counted separately as `adminActionLogAnonymized`), and pending Stripe teardown records are kept until they settle. The workspace must already be soft-deleted. This action is irreversible. Check `complete` — when false, `skippedTables` names the work that did not run (relations absent from this region, plus the deletes and writes gated behind them) and that data was NOT deleted.",
+  description: "SaaS only. Permanently removes ALL workspace data — conversations, messages, company-brain claims and episodes, knowledge-base documents, semantic layer, dashboards, integrations and their encrypted credentials, members, and orphaned users. Two deliberate exceptions: the admin action log is retained with its identifying columns scrubbed (counted separately as `adminActionLogAnonymized`), and pending Stripe teardown records are kept until they settle. The workspace must already be soft-deleted. This action is irreversible. Check `complete` — when false, `skippedTables` names the work that did not run (relations absent from this region, plus the deletes and writes gated behind them). For a skipped DELETE that data was NOT deleted; for a skipped WRITE the consequence is different, so read `message`, which names it per entry.",
   responses: {
     200: {
       description: "Workspace purged",
@@ -857,10 +858,54 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
     // is finished", not "the table loop finished".
     const incomplete = skippedTables.length > 0 || billing.warnings.length > 0;
 
+    const reasons: string[] = [];
+    if (skippedTables.length > 0) {
+      // ⚠️ "so that data was NOT deleted" is wrong for one of the names this
+      // list can contain, and on a DPA erasure receipt that inversion matters.
+      // `stripe_purged_subscriptions` is skipped as a WRITE, not a delete: it is
+      // the #3468 tombstone, and its absence means post-commit
+      // `customer.subscription.deleted` webhooks can REGROW the ledger rows the
+      // purge just cleared. Naming the consequence rather than mislabelling the
+      // operation, since the operator's next action differs for the two.
+      // The relation name is IMPORTED, not re-spelled: it is authored in
+      // internal.ts's `alsoSkipped` array, and recovering it by string match
+      // meant a rename there silently reverted this split to the inversion it
+      // exists to remove.
+      const notDeleted = skippedTables.filter((t) => t !== PURGE_TOMBSTONE_RELATION);
+      if (notDeleted.length > 0) {
+        reasons.push(
+          `${notDeleted.length} delete(s) did not run because a relation was absent from ` +
+            `this region's schema, so that data was NOT deleted (${notDeleted.join(", ")})`,
+        );
+      }
+      if (skippedTables.includes(PURGE_TOMBSTONE_RELATION)) {
+        reasons.push(
+          `the ${PURGE_TOMBSTONE_RELATION} tombstone was NOT written, so late Stripe ` +
+            `cancellation webhooks ` +
+            `may regrow stripe_webhook_events rows for this workspace (#3468)`,
+        );
+      }
+    }
+    if (billing.warnings.length > 0) {
+      reasons.push(`Stripe teardown did not fully settle (see \`warnings\`)`);
+    }
+    // Logged AFTER `reasons` is built, so the line states the cause that
+    // actually occurred. It used to say "some relations were absent from this
+    // region" for ANY incompleteness — including a Stripe-teardown warning with
+    // an empty `skippedTables` — and this is the log an operator correlates by
+    // requestId when the response says INCOMPLETE.
     log.info(
-      { workspaceId, totalRows, adminActionLogAnonymized, skippedTables, stripe: billing, requestId },
+      {
+        workspaceId,
+        totalRows,
+        adminActionLogAnonymized,
+        skippedTables,
+        reasons,
+        stripe: billing,
+        requestId,
+      },
       incomplete
-        ? "Workspace purged (GDPR hard delete) — INCOMPLETE: some relations were absent from this region"
+        ? `Workspace purged (GDPR hard delete) — INCOMPLETE: ${reasons.join("; ")}`
         : "Workspace purged (GDPR hard delete)",
     );
 
@@ -871,8 +916,9 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
       scope: "platform",
       metadata: {
         // `counts`, not `purged`: since #5176 `purged` nests them, and spreading
-        // the container here would record `skippedTables` twice — once inside
-        // `purged` and once as its own key.
+        // the container would bury `skippedTables` inside a key named "purged"
+        // as well as beside it. Readers of this audit row key off the top-level
+        // fields.
         purged: counts,
         totalRows,
         adminActionLogAnonymized,
@@ -899,33 +945,6 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
     // re-purge would be an instruction that cannot be followed, which on a
     // compliance remedy is worse than saying nothing. The residue sweep in
     // platform-admin.mdx is the procedure that actually works.
-    const reasons: string[] = [];
-    if (skippedTables.length > 0) {
-      // ⚠️ "so that data was NOT deleted" is wrong for one of the names this
-      // list can contain, and on a DPA erasure receipt that inversion matters.
-      // `stripe_purged_subscriptions` is skipped as a WRITE, not a delete: it is
-      // the #3468 tombstone, and its absence means post-commit
-      // `customer.subscription.deleted` webhooks can REGROW the ledger rows the
-      // purge just cleared. Naming the consequence rather than mislabelling the
-      // operation, since the operator's next action differs for the two.
-      const TOMBSTONE = "stripe_purged_subscriptions";
-      const notDeleted = skippedTables.filter((t) => t !== TOMBSTONE);
-      if (notDeleted.length > 0) {
-        reasons.push(
-          `${notDeleted.length} delete(s) did not run because a relation was absent from ` +
-            `this region's schema, so that data was NOT deleted (${notDeleted.join(", ")})`,
-        );
-      }
-      if (skippedTables.includes(TOMBSTONE)) {
-        reasons.push(
-          `the ${TOMBSTONE} tombstone was NOT written, so late Stripe cancellation webhooks ` +
-            `may regrow stripe_webhook_events rows for this workspace (#3468)`,
-        );
-      }
-    }
-    if (billing.warnings.length > 0) {
-      reasons.push(`Stripe teardown did not fully settle (see \`warnings\`)`);
-    }
     const incompleteMessage =
       `Workspace purged, but INCOMPLETE: ${reasons.join("; ")}. The organization record is ` +
       `already gone, so this endpoint cannot be re-run — migrate this region, then clear the ` +

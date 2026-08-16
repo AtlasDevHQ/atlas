@@ -817,8 +817,10 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
         //
         // Position-matching picks the child column's own counterpart on the
         // intermediate table, then requires THAT column to carry a single-column
-        // FK reaching the declared parent/key. `user_id`'s counterpart reaches
-        // `user`, not `dashboards`, so it is rejected.
+        // FK reaching the declared parent/key. `user_id`'s counterpart on
+        // `dashboard_user_drafts` carries NO single-column FK at all, so it
+        // leads nowhere and is rejected. (An earlier version of this comment
+        // said it reaches `user` — it does not; verified against schema.ts.)
         const composite = fksOf(child).find((f) => f.columns.length > 1);
         if (composite) {
           checkedAgainstComposite++;
@@ -963,16 +965,10 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
       const field = aliases[table] ?? camel(table);
       byField.set(field, [...(byField.get(field) ?? []), table]);
     }
-    // Vacuity pin, matching the four siblings added alongside it: an empty
-    // PURGED_TABLES would yield an empty map and a green pass.
-    expect(byField.size, "distinct count fields (registry + non-registry)").toBe(
-      PURGED_TABLES.size + NON_REGISTRY_COUNT_FIELDS.length,
-    );
-    // LOW: alias VALUES are unconstrained by `satisfies` (it constrains keys),
-    // so a non-identifier value would become a required field on
-    // HardDeleteCounts that the return statement dutifully supplies.
-    const badAlias = Object.values(COUNT_FIELD_ALIASES).filter((v) => !/^[a-z][A-Za-z0-9]*$/.test(v));
-    expect(badAlias, `alias value(s) that are not camelCase identifiers: ${badAlias.join(", ")}`).toEqual([]);
+    // ⚠️ THE COLLISION ASSERTION COMES FIRST, and that ordering is the whole
+    // point: a collision is exactly what makes `byField.size` SMALLER, so a
+    // size check ahead of it throws on a bare arithmetic diff
+    // (`expected 98 to be 97`) and the named diagnostic below never renders.
     const collisions = [...byField.entries()]
       .filter(([, tables]) => tables.length > 1)
       .map(([field, tables]) => `${field} <- ${tables.join(" + ")}`);
@@ -982,6 +978,21 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
         `the second table would report under the first's count and HardDeleteCounts would not ` +
         `notice. Give one of them an entry in COUNT_FIELD_ALIASES.`,
     ).toEqual([]);
+    // ⚠️ NOT a vacuity pin, and an earlier comment here claimed it was.
+    // MEASURED: with `PURGED_TABLES` emptied, this PASSES — the non-registry
+    // seed contributes to BOTH sides of the equation, so it balances at 0 + 5.
+    // It is a second, weaker statement of the collision check above, kept only
+    // because it also catches a future edit that stops appending to `byField`.
+    // Vacuity is pinned separately, on the registry itself:
+    expect(PURGED_TABLES.size, "registry produced no purged tables").toBeGreaterThan(80);
+    expect(byField.size, "distinct count fields (registry + non-registry)").toBe(
+      PURGED_TABLES.size + NON_REGISTRY_COUNT_FIELDS.length,
+    );
+    // Alias VALUES are unconstrained by `satisfies`, which constrains keys only:
+    // a non-identifier value would just become a required field on
+    // HardDeleteCounts that the return statement dutifully supplies.
+    const badAlias = Object.values(COUNT_FIELD_ALIASES).filter((v) => !/^[a-z][A-Za-z0-9]*$/.test(v));
+    expect(badAlias, `alias value(s) that are not camelCase identifiers: ${badAlias.join(", ")}`).toEqual([]);
   });
 
   it("names a real column on a real parent in every viaParent declaration", () => {

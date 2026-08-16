@@ -26,6 +26,7 @@ import {
   type SecuritySensitiveKey,
   type SecuritySensitiveAuditInput,
   type SettingDefinition,
+  type AuditedValue,
   _resetSettingsCache,
 } from "../settings";
 import { ANSWER_STYLE_NAMES, isAnswerStyle } from "../answer-styles";
@@ -1517,6 +1518,13 @@ describe("securitySensitiveAuditFields — alias auto-approve authority (#5161)"
 // The redaction is a pure function of the DEFINITION, so it is tested here
 // against real registry entries without DB or logger plumbing — the same
 // treatment `securitySensitiveAuditFields` gets above.
+/**
+ * Build an expected `AuditedValue`. Tests have to name the strings they expect,
+ * and `AuditedValue` is branded precisely so production code cannot — this cast
+ * is the test's side of that trade, and it is the only one in the file.
+ */
+const audited = (value: string): AuditedValue => value as AuditedValue;
+
 describe("audit value redaction (#5180)", () => {
   const RPM: SecuritySensitiveKey = "ATLAS_TRIAL_IP_RATE_LIMIT_RPM";
   const SOURCES: SecuritySensitiveKey = "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES";
@@ -1535,57 +1543,89 @@ describe("audit value redaction (#5180)", () => {
     expect(PLAIN_DEF?.secret).not.toBe(true);
   });
 
-  it("masks a secret definition's value — plaintext absent, not merely different", () => {
-    const written = "sk-ant-api03-SUPERSECRET-payload";
-    const { value, masked } = redactAuditValue(SECRET_DEF, written);
+  // ⚠️ NO CHARACTERS SURVIVE, AT ANY LENGTH. The audit path deliberately does
+  // NOT reuse `maskSecret`, whose `first4••••last4` long arm is a recognition
+  // affordance for one admin looking at their own key on their own settings
+  // page. A log stream is retained, exported and broadly readable, and that
+  // mask leaks 8 of 9 characters of a short secret into it. These fixtures
+  // straddle the boundary the display mask cares about (8 / 9 / 32 chars) to
+  // pin that the audit path has no such boundary left.
+  it.each([
+    ["sk-ant-api03-SUPERSECRET-payload", 32],
+    ["abcdefghi", 9],
+    ["hunter22", 8],
+    ["   ", 3],
+    ["x", 1],
+  ])("withholds a secret's value entirely — %p (%p chars)", (written) => {
+    const { value, masked, maskReason } = redactAuditValue(SECRET_DEF, written);
     expect(masked).toBe(true);
-    expect(value).not.toBe(written);
+    expect(maskReason).toBe("secret");
+    expect(value).toBe(audited("[redacted]"));
+    // Not merely "different from the input" — no fragment of it survives.
+    for (const ch of new Set(written.replace(/[a-z[\]]/g, ""))) {
+      expect(value).not.toContain(ch);
+    }
     expect(value).not.toContain("SUPERSECRET");
-    expect(value).toBe("sk-a••••load");
-  });
-
-  it("masks a short secret to a fixed run, revealing no characters at all", () => {
-    // `maskSecret`'s <= 8 arm. Asserted separately because the long arm above
-    // reveals eight characters by design, and a secret short enough to be
-    // reconstructed from its ends must not fall through to it.
-    expect(redactAuditValue(SECRET_DEF, "hunter22")).toEqual({
-      value: "••••••••",
-      masked: true,
-    });
   });
 
   // ⚠️ THE CONTROL. The fix must not be "mask everything": the written value is
   // what tells an incident responder WHICH WAY a control moved, and an audit
   // line that redacts a rate limit has thrown away its own subject.
   it("leaves a non-secret definition's value verbatim", () => {
-    expect(redactAuditValue(PLAIN_DEF, "0")).toEqual({ value: "0", masked: false });
-    expect(redactAuditValue(getSettingDefinition(SOURCES), "warehouse_key,extractor")).toEqual({
-      value: "warehouse_key,extractor",
+    expect(redactAuditValue(PLAIN_DEF, "0")).toEqual({
+      value: audited("0"),
       masked: false,
+      maskReason: undefined,
+    });
+    expect(redactAuditValue(getSettingDefinition(SOURCES), "warehouse_key,extractor")).toEqual({
+      value: audited("warehouse_key,extractor"),
+      masked: false,
+      maskReason: undefined,
     });
   });
 
-  it("fails closed on an unknown definition", () => {
+  it("fails closed on an unknown definition, and says WHY", () => {
     // "We could not tell whether this is a secret" is not a licence to print.
+    // The reason is separate from the routine one because a sensitive key with
+    // no registry entry is drift — reported as a plain masked write it would be
+    // indistinguishable from the healthy case, and the backstop would fire
+    // silently.
     expect(redactAuditValue(undefined, "mystery-value-here")).toEqual({
-      value: "myst••••here",
+      value: audited("[redacted]"),
       masked: true,
+      maskReason: "unknown_definition",
     });
   });
 
   it("a clear carries no value and is not reported as masked", () => {
     // `masked: true` here would be a lie in the audit's own metadata — nothing
     // was withheld, there was nothing to withhold.
-    expect(redactAuditValue(SECRET_DEF, undefined)).toEqual({ value: undefined, masked: false });
-    expect(redactAuditValue(PLAIN_DEF, undefined)).toEqual({ value: undefined, masked: false });
+    expect(redactAuditValue(SECRET_DEF, undefined)).toEqual({
+      value: undefined,
+      masked: false,
+      maskReason: undefined,
+    });
+    expect(redactAuditValue(PLAIN_DEF, undefined)).toEqual({
+      value: undefined,
+      masked: false,
+      maskReason: undefined,
+    });
   });
 
-  it("an empty write to a secret key masks to undefined — `action` marks the clear", () => {
-    // `maskSecret("")` is undefined: there is nothing in "" to reveal. The
-    // set/clear distinction survives because it lives in `action`, not in
-    // whether `value` is present.
-    expect(redactAuditValue(SECRET_DEF, "")).toEqual({ value: undefined, masked: true });
-    expect(redactAuditValue(PLAIN_DEF, "")).toEqual({ value: "", masked: false });
+  it("an empty write to a secret key yields undefined — `action` marks the clear", () => {
+    // There is nothing in "" to withhold, and emitting the placeholder would
+    // imply content that does not exist. The set/clear distinction survives
+    // because it lives in `action`, not in whether `value` is present.
+    expect(redactAuditValue(SECRET_DEF, "")).toEqual({
+      value: undefined,
+      masked: true,
+      maskReason: "secret",
+    });
+    expect(redactAuditValue(PLAIN_DEF, "")).toEqual({
+      value: audited(""),
+      masked: false,
+      maskReason: undefined,
+    });
   });
 });
 
@@ -1604,7 +1644,7 @@ describe("securitySensitiveAuditLine (#5180)", () => {
       key: RPM,
       definition: getSettingDefinition(RPM),
       action: "set",
-      value: "0",
+      value: audited("0"),
       actorId: "user_1",
       orgId: "org_1",
       ...overrides,
@@ -1623,8 +1663,9 @@ describe("securitySensitiveAuditLine (#5180)", () => {
     expect(lineFor()).toEqual({
       key: RPM,
       action: "set",
-      value: "0",
+      value: audited("0"),
       valueMasked: false,
+      maskReason: undefined,
       disablesControl: true,
       widensAuthority: false,
       actorId: "user_1",
@@ -1640,12 +1681,39 @@ describe("securitySensitiveAuditLine (#5180)", () => {
         action: "clear",
         value: undefined,
         valueMasked: false,
+        maskReason: undefined,
         disablesControl: false,
         widensAuthority: false,
         actorId: undefined,
         orgId: undefined,
         event: "security_setting.changed",
       });
+  });
+
+  // Credential rotation on a sensitive key: the exact scenario the "a
+  // `secret: true` key IS allowed in the set" rationale rests on, and the one
+  // combination the payload builder never saw in a test. Nothing is withheld
+  // because a clear carries no value — the audit's whole content here is that
+  // the override went away, and that survives redaction intact.
+  it("audits a CLEAR on a secret key with nothing withheld", () => {
+    expect(
+      lineFor({
+        definition: definitionWithSecret(RPM, true),
+        action: "clear",
+        value: undefined,
+      }),
+    ).toEqual({
+      key: RPM,
+      action: "clear",
+      value: undefined,
+      valueMasked: false,
+      maskReason: undefined,
+      disablesControl: false,
+      widensAuthority: false,
+      actorId: "user_1",
+      orgId: "org_1",
+      event: "security_setting.changed",
+    });
   });
 
   // ⚠️ THE ROW THE WHOLE ISSUE IS ABOUT, and it is only reachable because
@@ -1659,9 +1727,10 @@ describe("securitySensitiveAuditLine (#5180)", () => {
       definition: definitionWithSecret(RPM, true),
       value: "sk-ant-api03-SUPERSECRET-payload",
     });
-    expect(line?.value).toBe("sk-a••••load");
+    expect(line?.value).toBe(audited("[redacted]"));
     expect(line?.value).not.toContain("SUPERSECRET");
     expect(line?.valueMasked).toBe(true);
+    expect(line?.maskReason).toBe("secret");
   });
 
   // ⚠️ REDACTION MUST NOT BLIND THE CLASSIFICATION. The obvious way to close a
@@ -1670,16 +1739,17 @@ describe("securitySensitiveAuditLine (#5180)", () => {
   // masked value parses as nothing. The flags are the reason this line exists;
   // losing them to protect the value would be a worse audit than the leak.
   //
-  // `"0"` is the fixture that can see it: masked it is `••••••••`, which
-  // `Number` reads as NaN → "the reader kept its default" → disablesControl
-  // false. Raw, it is the documented disabled sentinel → true. A longer secret
-  // masks to something equally unparseable, so the two agree and the test
-  // cannot fail — which is exactly what the first draft of this assertion did.
+  // `"0"` is the fixture that can see it: withheld it becomes `[redacted]`,
+  // which `Number` reads as NaN → "the reader kept its default" →
+  // disablesControl false. Raw, it is the documented disabled sentinel → true.
+  // ANY other secret redacts to that same unparseable placeholder, so masked
+  // and raw agree and the test cannot fail — which is exactly what the first
+  // draft of this assertion did, with a 32-char key on both sides.
   it("decides the flags from the WRITTEN value even when the payload is masked", () => {
     const line = lineFor({ definition: definitionWithSecret(RPM, true), value: "0" });
     expect(line?.disablesControl).toBe(true);
     expect(line?.valueMasked).toBe(true);
-    expect(line?.value).toBe("••••••••");
+    expect(line?.value).toBe(audited("[redacted]"));
   });
 
   // The control, at the payload level: the fix must not be "mask everything".
@@ -1688,7 +1758,7 @@ describe("securitySensitiveAuditLine (#5180)", () => {
       definition: definitionWithSecret(RPM, false),
       value: "sk-ant-api03-SUPERSECRET-payload",
     });
-    expect(line?.value).toBe("sk-ant-api03-SUPERSECRET-payload");
+    expect(line?.value).toBe(audited("sk-ant-api03-SUPERSECRET-payload"));
     expect(line?.valueMasked).toBe(false);
   });
 
@@ -1700,14 +1770,18 @@ describe("securitySensitiveAuditLine (#5180)", () => {
       definition: definitionWithSecret("ATLAS_ROW_LIMIT", false),
       value: "mystery-value-here",
     });
-    expect(line?.value).toBe("myst••••here");
+    expect(line?.value).toBe(audited("[redacted]"));
     expect(line?.valueMasked).toBe(true);
+    // Reported as drift, not as a routine masked write — the mismatch is a
+    // caller bug, and an anomaly that logs like the healthy case is silent.
+    expect(line?.maskReason).toBe("unknown_definition");
   });
 
   it("fails closed when there is no definition at all", () => {
     const line = lineFor({ definition: undefined, value: "mystery-value-here" });
-    expect(line?.value).toBe("myst••••here");
+    expect(line?.value).toBe(audited("[redacted]"));
     expect(line?.valueMasked).toBe(true);
+    expect(line?.maskReason).toBe("unknown_definition");
   });
 
   // The general claim over the real set, so it stays live as the set grows
@@ -1715,11 +1789,19 @@ describe("securitySensitiveAuditLine (#5180)", () => {
   // non-secret, so this is the verbatim control; the day a `secret: true` key
   // joins SECURITY_SENSITIVE_KEYS it becomes the masking assertion with no
   // edit here, which is the future this issue exists to cover.
+  //
+  // ⚠️ The registry lookup is asserted BEFORE it is used. Written as
+  // `def?.secret === true`, a key renamed out of the registry collapses into
+  // "not secret", so the row would demand the value verbatim while
+  // `redactAuditValue` correctly fails closed — going red with a message that
+  // accuses the redaction of a bug that is actually a rename. The assertion
+  // below names the real cause; `:1327` owns the claim itself.
   it.each([...SECURITY_SENSITIVE_KEYS])(
     "%s redacts exactly as its own registry definition dictates",
     (key) => {
       const written = "audit-probe-0123456789";
       const def = getSettingDefinition(key);
+      expect(def).toBeDefined();
       const line = securitySensitiveAuditLine({
         key,
         definition: def,
@@ -1728,10 +1810,10 @@ describe("securitySensitiveAuditLine (#5180)", () => {
         actorId: undefined,
         orgId: undefined,
       });
-      const isSecret = def?.secret === true;
+      const withheld = def === undefined || def.secret === true;
       expect(line).not.toBeNull();
-      expect(line?.valueMasked).toBe(isSecret);
-      expect(line?.value).toBe(isSecret ? "audi••••6789" : written);
+      expect(line?.valueMasked).toBe(withheld);
+      expect(line?.value).toBe(audited(withheld ? "[redacted]" : written));
     },
   );
 });

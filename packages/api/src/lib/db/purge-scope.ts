@@ -123,10 +123,13 @@ export interface PurgeParentLink {
   readonly parentKeyNullable?: boolean;
 }
 
-export interface PurgeTableScope {
-  readonly decision: PurgeDecision;
+interface PurgeTableScopeBase {
   /** Why this decision is correct — required, non-empty. */
   readonly reason: string;
+}
+
+interface PurgedTableScope extends PurgeTableScopeBase {
+  readonly decision: "purged";
   /**
    * Present only on `purged` tables with no scope column of their own. Its
    * presence is what makes `hardDeleteWorkspace` reach the table by subquery,
@@ -136,6 +139,29 @@ export interface PurgeTableScope {
    */
   readonly viaParent?: PurgeParentLink;
 }
+
+interface UnpurgedTableScope extends PurgeTableScopeBase {
+  readonly decision: Exclude<PurgeDecision, "purged">;
+  /**
+   * Never present. Declared as `undefined` rather than omitted for two reasons:
+   * it makes `entry.viaParent` readable across the union without narrowing, and
+   * it makes a stray declaration on a non-purged table a compile error at the
+   * registry's own `satisfies`.
+   *
+   * That is not hypothetical. `user_trial_grants` is `retained` precisely so it
+   * SURVIVES the purge, and a `viaParent` on it would read as a route to delete
+   * it through a parent — the one decision this registry exists to make
+   * deliberate.
+   */
+  readonly viaParent?: undefined;
+}
+
+/**
+ * A table's purge decision. Discriminated on `decision` so `viaParent` — which
+ * only means anything for a table the purge DELETEs — cannot be attached to a
+ * `retained`, `anonymized`, `user_scoped` or `platform` entry.
+ */
+export type PurgeTableScope = PurgedTableScope | UnpurgedTableScope;
 
 /**
  * Column names that make a table workspace-scoped.
@@ -336,8 +362,30 @@ export type ViaParentTableName = {
  * is exactly what #5176 removed.
  */
 export function parentKeySubquery(link: PurgeParentLink): string {
+  assertPlainIdentifiers(link.parentKey, link.parent, link.parentScope);
   const notNull = link.parentKeyNullable ? ` AND "${link.parentKey}" IS NOT NULL` : "";
   return `SELECT "${link.parentKey}" FROM "${link.parent}" WHERE "${link.parentScope}" = $1${notNull}`;
+}
+
+/**
+ * Refuse to quote anything that is not a bare SQL identifier.
+ *
+ * Every value these builders interpolate is an `as const` literal in this file,
+ * so there is no live injection today — but they are EXPORTED, they build
+ * statements on an erasure path, and `"` quoting alone is not an escape. An
+ * additive refusal costs nothing and cannot make a currently-accepted link
+ * behave differently: the ten declarations all match, verified by the suite.
+ */
+function assertPlainIdentifiers(...identifiers: readonly string[]): void {
+  for (const id of identifiers) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(id)) {
+      throw new Error(
+        `purge SQL builder: refusing to quote "${id}" — not a bare SQL identifier. ` +
+          `The purge registry's table and column names are literals; a value reaching ` +
+          `here that is not one means the registry has been fed data from elsewhere.`,
+      );
+    }
+  }
 }
 
 /**
@@ -353,6 +401,7 @@ export function parentKeySubquery(link: PurgeParentLink): string {
  * remove ALL of a workspace's rows in a table, not the ones in one state.
  */
 export function viaParentDeleteSql(table: string, link: PurgeParentLink): string {
+  assertPlainIdentifiers(table, link.column);
   return `DELETE FROM "${table}" WHERE "${link.column}" IN (${parentKeySubquery(link)}) RETURNING 1`;
 }
 

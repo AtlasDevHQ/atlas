@@ -3864,14 +3864,26 @@ type Camel<S extends string> = S extends `${infer Head}_${infer Tail}`
  *   singular, and the count field has been plural since #3425.
  *
  * These lived in a TEST's `REPORTED_UNDER` lookup until #5176, beside a
- * plural-stem normalizer that existed to tolerate the second one. Here they are
- * part of the type: an alias naming a field that does not exist is a compile
- * error, and a table that quietly stops needing one is too.
+ * plural-stem normalizer that existed to tolerate the second one.
+ *
+ * `satisfies Partial<Record<PurgedTableName, string>>` is what makes the KEYS
+ * mean something. Without it an alias for a table that is not in the registry —
+ * or a misspelling of one — sits here inert: the aliased table never matches, so
+ * the entry is dead and nothing says so. With it, a bogus key is TS2353 and a
+ * table that stops being `purged` fails on this line rather than silently
+ * leaving a dangling alias behind.
+ *
+ * A `const` rather than an `interface` deliberately: an interface is
+ * declaration-mergeable, so a second declaration elsewhere could add an alias
+ * invisibly, and a value can be read by the test that checks two tables never
+ * map to the same field name.
  */
-interface CountFieldAliases {
-  chat_cache: "slackInstallations";
-  subscription: "subscriptions";
-}
+export const COUNT_FIELD_ALIASES = {
+  chat_cache: "slackInstallations",
+  subscription: "subscriptions",
+} as const satisfies Partial<Record<PurgedTableName, string>>;
+
+type CountFieldAliases = typeof COUNT_FIELD_ALIASES;
 
 type CountFieldFor<T extends string> = T extends keyof CountFieldAliases
   ? CountFieldAliases[T]
@@ -3885,6 +3897,14 @@ type CountFieldFor<T extends string> = T extends keyof CountFieldAliases
  * `SURVIVOR_COUNT_FIELDS` below, which excludes it from the destruction total.
  * The other four are Better-Auth tables: global by ADR-0024, absent from
  * `db/schema.ts`, and therefore absent from the registry that enumerates it.
+ *
+ * The exemptions stop one class short of complete, deliberately: the purge also
+ * DELETEs `session`, `account`, `user_onboarding` and `email_preferences` for
+ * orphaned users and discards all four counts. The first two are Better-Auth;
+ * the last two are `user_scoped` registry entries, which `PurgedTableName`
+ * filters out because it selects on `decision === "purged"`. Nothing here counts
+ * them, and `purge-scope.test.ts` covers them instead — it asserts each has a
+ * real DELETE, which is the claim that matters for a user-keyed erasure.
  */
 type NonRegistryCountField =
   | "adminActionLogAnonymized"
@@ -3909,19 +3929,36 @@ type HardDeleteCountField = CountFieldFor<PurgedTableName> | NonRegistryCountFie
  * a test that still passes once the type lands is no longer what enforces the
  * rule, and keeping it would suggest otherwise.
  *
- * It is a mapped type over a union of literal field names, which is what gives
- * it an implicit index signature — so `Object.entries` in `totalRowsDeleted` and
- * the route's `Record<string, number>` wire contract both work with no cast.
- * That uniformity is only possible because `skippedTables` lives outside it.
+ * The implicit index signature that lets `Object.entries` in `totalRowsDeleted`
+ * and the route's `Record<string, number>` wire contract work without a cast
+ * comes from this being a `type` ALIAS of an object type rather than an
+ * `interface` — not from its mapped-ness. That distinction is load-bearing: a
+ * later "tidy" into `interface HardDeleteCounts` compiles, then reintroduces
+ * both casts. Uniform numeric-ness is separately only possible because
+ * `skippedTables` lives outside it.
  *
  * What this does NOT check is that the DELETE exists, that the delete ORDER
  * respects the two RESTRICT FKs, or that the scrub's residue predicate covers
  * its SET list. None of those are expressible here; they stay in
- * `purge-scope.test.ts`.
+ * `purge-scope.test.ts`. Nor does it catch two purged tables whose names map to
+ * the SAME count field — a union dedupes rather than conflicts, so the second
+ * table would satisfy the guarantee using the first's count. That one is
+ * checked by `purge-scope.test.ts`'s field-name cardinality assertion.
  */
 export type HardDeleteCounts = {
   readonly [K in HardDeleteCountField]: number;
 };
+
+/**
+ * Pins the guarantee itself: if `Camel<S>` or the registry ever degenerated so
+ * that `HardDeleteCountField` widened to `string`, `HardDeleteCounts` would gain
+ * an index signature and accept ANY return literal — the type would look like a
+ * guard and be decoration. That is the #5068 failure mode at the type level, and
+ * it is silent, so it gets an assertion rather than a comment.
+ */
+type _CountFieldsAreLiteral = string extends HardDeleteCountField ? never : true;
+const _countFieldsAreLiteral: _CountFieldsAreLiteral = true;
+void _countFieldsAreLiteral;
 
 /**
  * Fields on `HardDeleteCounts` that count rows which SURVIVED the purge, and so

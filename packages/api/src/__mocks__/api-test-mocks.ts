@@ -300,7 +300,7 @@ export function buildInternalDbMockDefaults(deps: {
         ? { withhold: false, clause: `(org_id = ${placeholder} OR org_id IS NULL)` }
         : { withhold: false, clause: "org_id IS NULL" },
     AMENDMENT_CLAIM_STALE_MINUTES: 10,
-    hardDeleteWorkspace: mock(async () => ({})),
+    hardDeleteWorkspace: mock(async () => ({ counts: {}, skippedTables: [] })),
     // #5160 — the purge route imports this alongside hardDeleteWorkspace, so it
     // must be in the complete surface or the named import SyntaxErrors under bun
     // and every route in the file 404s. Mirrors the real implementation: sum the
@@ -315,12 +315,23 @@ export function buildInternalDbMockDefaults(deps: {
     // `purge-scope.test.ts` pins the `anonymized` category to exactly one table,
     // so a second survivor field cannot appear without that guard failing first.
     totalRowsDeleted: (result: { counts?: Record<string, unknown> }) => {
-      let total = 0;
       // Reads `result.counts` (#5176): the counts live in their own uniformly
       // numeric container, with `skippedTables` outside it. The `typeof` guard
-      // is kept HERE and only here — a mock is handed whatever a suite's fake
-      // returns, which the real type does not police.
-      for (const [field, value] of Object.entries(result.counts ?? {})) {
+      // below is kept HERE and only here — a mock is handed whatever a suite's
+      // fake returns, which the real type does not police.
+      //
+      // A `?? {}` here would answer 0 for a fake still returning the pre-#5176
+      // FLAT shape — a silent fallback on exactly the number an operator reads
+      // as "rows destroyed". #5176 reshaped every hard-delete fake in the tree,
+      // so that is the drift most likely to exist.
+      if (!result.counts) {
+        throw new Error(
+          "totalRowsDeleted mock: the suite's hardDeleteWorkspace fake returned no `counts`. " +
+            "Since #5176 HardDeleteResult is { counts, skippedTables } — nest the counts.",
+        );
+      }
+      let total = 0;
+      for (const [field, value] of Object.entries(result.counts)) {
         if (typeof value !== "number") continue;
         if (field === "adminActionLogAnonymized") continue;
         total += value;

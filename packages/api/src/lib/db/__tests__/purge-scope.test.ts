@@ -39,11 +39,14 @@ import {
   WORKSPACE_SCOPE_COLUMNS,
   USER_SCOPE_COLUMNS,
   viaParentDeleteSql,
+  type PurgeParentLink,
   type PurgeTableScope,
 } from "../purge-scope";
+import { COUNT_FIELD_ALIASES } from "../internal";
 
-// String-indexed view: the registry's literal-keyed type (via `satisfies`)
-// rejects arbitrary-string indexing, which is exactly what this suite does.
+// String-indexed view: the registry's literal key type (from `as const`; the
+// `satisfies` clause type-checks the values without widening) rejects
+// arbitrary-string indexing, which is exactly what this suite does.
 const decisionFor: Readonly<Record<string, PurgeTableScope | undefined>> = PURGE_TABLE_DECISIONS;
 
 // ── Enumerate the live schema ────────────────────────────────────────
@@ -88,8 +91,16 @@ const rawPurgeFnBody = (() => {
  * FROM organization` appeared three times, two of them prose. So deleting the
  * REAL statement left this suite passing 15/15, satisfied by the sentence
  * describing it — and because `-pg` suites skip silently without
- * TEST_DATABASE_URL, this tripwire is the entire completeness gate for anyone
- * running the suite locally.
+ * TEST_DATABASE_URL, this tripwire is what stands between a deleted statement
+ * and a green local run.
+ *
+ * ⚠️ That used to read "the entire completeness gate for anyone running the
+ * suite locally", and #5176 made it false in one direction: whether every purged
+ * table REPORTS A COUNT is now enforced by `HardDeleteCounts`, a mapped type over
+ * the registry, so it fails `bun run type` rather than any test here. Still
+ * covered — type-check is in both the pre-flight and CI — but `bun test` alone
+ * no longer signals it. What this file still uniquely covers is the DELETE
+ * existing at all, its ORDER, and the scrub's residue predicate.
  *
  * A lexical guard cannot tell a quotation from an assertion. The repo's rule for
  * that is reword-not-exempt, but here the quotations are legitimate and load
@@ -138,7 +149,11 @@ const deleteTargets = new Set(deleteMatches);
  */
 const deleteIndexOf = (table: string): number => {
   const viaIdx = purgeFnBody.indexOf(`delViaParent("${table}")`);
-  return viaIdx !== -1 ? viaIdx : purgeFnBody.indexOf(`DELETE FROM ${table}`);
+  if (viaIdx !== -1) return viaIdx;
+  // Anchored on a word boundary, not a prefix: a bare
+  // `indexOf("DELETE FROM " + table)` makes `dashboards` match a future
+  // `dashboards_v2` and silently compare the wrong statement's position.
+  return purgeFnBody.search(new RegExp(`DELETE FROM "?${table}"?\\b`));
 };
 
 const updateTargets = new Set(
@@ -603,13 +618,22 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
     // registry says nothing about where in the function a delete is issued, so
     // moving `delViaParent("messages")` below `DELETE FROM conversations` fails
     // here by name.
+    //
+    // It is also the CYCLE guard, and gets one for free rather than by design:
+    // a self-referential link needs `idx(x) < idx(x)`, and a two-table cycle
+    // needs `idx(a) < idx(b)` and `idx(b) < idx(a)` — both unsatisfiable, so
+    // either fails here immediately. Measured: pointing `prompt_items` at itself
+    // fails this test plus the two schema checks, in 0.42ms, rather than
+    // spinning. Nothing walks the relation at runtime — the child and parent
+    // sets are disjoint today, so it is one hop deep — but the guard does not
+    // depend on that staying true.
     const childBeforeParent = Object.entries(decisionFor).flatMap(([child, entry]) =>
       entry?.viaParent ? [[child, entry.viaParent.parent] as const] : [],
     );
-    expect(
-      childBeforeParent.length,
-      "no viaParent declarations found — this test would be vacuous",
-    ).toBe(10);
+    // Pinned to the exact count rather than a floor: 0 means the derivation
+    // broke and this test is vacuous, anything else means a declaration was
+    // added or removed. Update this number deliberately when that happens.
+    expect(childBeforeParent.length, "viaParent declarations found").toBe(10);
     for (const [child, parent] of childBeforeParent) {
       const childIdx = deleteIndexOf(child);
       const parentIdx = deleteIndexOf(parent);
@@ -667,21 +691,43 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
     // the migrations, nothing here can edit it to agree, and seven of the ten
     // declarations have one — so for those, a mis-pointed parent fails HERE.
     //
-    // The three without a single-column FK are pinned by value below, because
-    // there is nothing to derive them from. Each says why.
-    const NO_SINGLE_COLUMN_FK: Readonly<Record<string, { parent: string; parentKey: string }>> = {
-      // Deliberately no FK — the registry entry says so ("no FK to cascade
-      // from"). The mapping exists only in the purge's own subquery.
-      slack_threads: { parent: "conversations", parentKey: "id" },
-      // `subscription` is a @better-auth/stripe table created by migration 0152,
-      // not declared in db/schema.ts, so no Drizzle FK can reference it.
-      stripe_webhook_events: { parent: "subscription", parentKey: "stripeSubscriptionId" },
-      // Its FK is COMPOSITE, to dashboard_user_drafts(user_id, dashboard_id).
-      // The purge deliberately routes it to the GRANDPARENT `dashboards`
-      // instead — a `dashboard_id` subquery reaches every draft's cache in one
-      // statement, and neither this table nor its parent carries a scope column
-      // to narrow on.
-      dashboard_draft_card_cache: { parent: "dashboards", parentKey: "id" },
+    // ⚠️ THE PIN BELOW IS THE REMOVED COPY, COMING BACK FOR 3 OF 10. Say it
+    // plainly rather than calling it derivation: three declarations have no
+    // single-column FK to check against, so their fields are restated here.
+    //
+    // What makes it better than the `PARENT_LINK` this PR deleted is only that
+    // it lives NEXT TO the assertion that compares it — a one-site edit fails,
+    // where the old copies sat in three files that never met. It cannot catch a
+    // coordinated edit of both sites, and nothing here pretends otherwise.
+    //
+    // It pins ALL FOUR fields, and that is the fix for a measured hole: pinning
+    // only `parent`/`parentKey` left `column` anchored to nothing, and changing
+    // `dashboard_draft_card_cache.column` from `dashboard_id` to `card_id` was
+    // green across all three suites (22/22 + 98/98 + 17/17) while the emitted
+    // statement matched ZERO rows — on a table holding `cached_rows`,
+    // materialized customer query results.
+    const NO_SINGLE_COLUMN_FK: Readonly<Record<string, PurgeParentLink>> = {
+      // No FK in the schema at all — the registry entry says so ("no FK to
+      // cascade from"). The mapping exists only in the purge's own subquery.
+      slack_threads: {
+        column: "conversation_id", parent: "conversations", parentKey: "id", parentScope: "org_id",
+      },
+      // Also declares NO foreign keys: the webhook ledger is written by handlers
+      // that may see an event before the subscription row exists, so an FK would
+      // reject legitimate rows. (`subscription` itself IS in db/schema.ts —
+      // an earlier version of this comment said otherwise and was wrong.)
+      stripe_webhook_events: {
+        column: "stripe_subscription_id", parent: "subscription",
+        parentKey: "stripeSubscriptionId", parentScope: "referenceId", parentKeyNullable: true,
+      },
+      // Its only FK is COMPOSITE, to dashboard_user_drafts(user_id,
+      // dashboard_id). The purge deliberately routes it to the GRANDPARENT
+      // `dashboards` — one subquery reaches every draft's cache, and neither
+      // this table nor its parent carries a scope column to narrow on. The
+      // composite is still used below to check `column` by derivation.
+      dashboard_draft_card_cache: {
+        column: "dashboard_id", parent: "dashboards", parentKey: "id", parentScope: "org_id",
+      },
     };
 
     const fksOf = (table: string) =>
@@ -698,9 +744,22 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
 
     const wrong: string[] = [];
     let checkedAgainstFk = 0;
+    let checkedAgainstComposite = 0;
     for (const [child, entry] of Object.entries(decisionFor)) {
       const link = entry?.viaParent;
       if (!link) continue;
+
+      // `parentScope` is what `$1` is compared against, so it must be a real
+      // workspace scope column on the parent. An existing-but-wrong column
+      // (`parentScope: "id"`) yields a subquery matching nothing and a silent
+      // 0-count DELETE — #5160's shape, and derivable, so no pin needed.
+      if (!(WORKSPACE_SCOPE_COLUMNS as readonly string[]).includes(link.parentScope)) {
+        wrong.push(
+          `${child}: parentScope ${link.parent}.${link.parentScope} is not one of ` +
+            `WORKSPACE_SCOPE_COLUMNS, so the subquery would not scope by workspace`,
+        );
+      }
+
       const fk = fksOf(child).find((f) => f.columns.length === 1 && f.columns[0] === link.column);
       if (!fk) {
         const pinned = NO_SINGLE_COLUMN_FK[child];
@@ -709,11 +768,43 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
             `${child}.${link.column} has no single-column FK and is not pinned — add it to ` +
               `NO_SINGLE_COLUMN_FK with the reason no FK exists`,
           );
-        } else if (pinned.parent !== link.parent || pinned.parentKey !== link.parentKey) {
-          wrong.push(
-            `${child} declares ${link.parent}(${link.parentKey}) but is pinned to ` +
-              `${pinned.parent}(${pinned.parentKey})`,
-          );
+          continue;
+        }
+        // Whole-link comparison, KEY-DRIVEN rather than a hand-written field
+        // list. Pinning a subset is what let `column` drift in the first place,
+        // and a hand-written list is that same defect deferred: a sixth field
+        // added to `PurgeParentLink` (the `where?:` the narrowing test already
+        // speculates about) would join the unchecked set silently. Taking the
+        // union of both objects' keys means a new field is covered the moment it
+        // appears on either side.
+        //
+        // `?? false` normalizes the optional boolean, where absent and `false`
+        // mean the same thing; it is a no-op for the string fields.
+        const fields = new Set<keyof PurgeParentLink>([
+          ...(Object.keys(pinned) as (keyof PurgeParentLink)[]),
+          ...(Object.keys(link) as (keyof PurgeParentLink)[]),
+        ]);
+        for (const field of fields) {
+          if ((pinned[field] ?? false) !== (link[field] ?? false)) {
+            wrong.push(
+              `${child}: ${field} is ${JSON.stringify(link[field])} but pinned as ` +
+                `${JSON.stringify(pinned[field])}`,
+            );
+          }
+        }
+        // Where a COMPOSITE FK covers the column, that is a real independent
+        // source even though the single-column lookup missed it — use it, so
+        // `dashboard_draft_card_cache.column` is derived rather than only pinned.
+        const composite = fksOf(child).find((f) => f.columns.length > 1);
+        if (composite) {
+          checkedAgainstComposite++;
+          if (!composite.columns.includes(link.column)) {
+            wrong.push(
+              `${child}.${link.column} is not part of its composite FK ` +
+                `(${composite.columns.join(", ")}) — the purge would join on a column that ` +
+                `does not hold the parent's key`,
+            );
+          }
         }
         continue;
       }
@@ -729,9 +820,101 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
       wrong,
       `viaParent declaration(s) disagreeing with the schema: ${wrong.join("; ")}`,
     ).toEqual([]);
-    // Guards this test against becoming an empty loop if `viaParent` is renamed
-    // or the FK introspection changes shape.
-    expect(checkedAgainstFk, "no declaration was checked against a real FK").toBe(7);
+    // Pinned to the exact counts rather than a floor, so this cannot quietly
+    // become an empty loop. Update them DELIBERATELY when adding or removing a
+    // declaration: 7 links carry a single-column FK, and 1 of the 3 pinned ones
+    // is additionally covered by a composite.
+    expect(checkedAgainstFk, "declarations checked against a single-column FK").toBe(7);
+    expect(checkedAgainstComposite, "pinned declarations also covered by a composite FK").toBe(1);
+  });
+
+  it("declares parentKeyNullable iff the schema says the parent key is nullable", () => {
+    // `parentKeyNullable` is the one link field whose only consequence is a
+    // production abort, so it is the one most able to be deleted as dead weight.
+    // Measured before this test existed: removing `parentKeyNullable: true` from
+    // `stripe_webhook_events` was green 22/22 + 98/98 + 17/17.
+    //
+    // What it prevents: `parentKeySubquery` feeds BOTH the ledger DELETE and the
+    // #3468 tombstone INSERT, and that INSERT targets
+    // `stripe_purged_subscriptions.stripe_subscription_id`, a PRIMARY KEY. A
+    // `subscription` row with a NULL Stripe id — which @better-auth/stripe
+    // writes at checkout, before the webhook lands — would raise a not-null
+    // violation that `ON CONFLICT` does not cover, aborting the whole purge
+    // transaction and leaving the workspace permanently unpurgeable.
+    //
+    // Derived from Drizzle's own `notNull`, so it is not another copy.
+    const nullableOf = (table: string, column: string): boolean | undefined => {
+      const col = schemaTables.find((t) => t.name === table)?.columns.find((c) => c.name === column);
+      return col === undefined ? undefined : !col.notNull;
+    };
+
+    const wrong: string[] = [];
+    let checked = 0;
+    for (const [child, entry] of Object.entries(decisionFor)) {
+      const link = entry?.viaParent;
+      if (!link) continue;
+      const nullable = nullableOf(link.parent, link.parentKey);
+      if (nullable === undefined) {
+        wrong.push(`${child}: ${link.parent}.${link.parentKey} not found in the schema`);
+        continue;
+      }
+      checked++;
+      if (Boolean(link.parentKeyNullable) !== nullable) {
+        wrong.push(
+          `${child}: parentKeyNullable=${Boolean(link.parentKeyNullable)} but ` +
+            `${link.parent}.${link.parentKey} is ${nullable ? "NULLABLE" : "NOT NULL"}`,
+        );
+      }
+    }
+    expect(
+      wrong,
+      `parentKeyNullable disagreeing with the schema: ${wrong.join("; ")}`,
+    ).toEqual([]);
+    // All ten are checkable: `subscription` IS declared in db/schema.ts.
+    expect(checked, "declarations checked for parent-key nullability").toBe(10);
+  });
+
+  it("maps no two purged tables onto the same count field", () => {
+    // The one input where `HardDeleteCounts` does NOT fail. It is a union of
+    // field names, so two tables producing the same name DEDUPE rather than
+    // conflict — the second table then satisfies "is it counted?" using the
+    // first's count, and the compiler says nothing. Measured: adding a
+    // `subscriptions` or `slack_installations` purged entry compiles clean.
+    //
+    // There are no collisions today; this pins that. It reads the same alias map
+    // the type does, so the two cannot disagree on THAT axis.
+    //
+    // ⚠️ `camel` below is a RUNTIME re-implementation of the type-level
+    // `Camel<S>`, i.e. a second copy of the transform — the shape this PR exists
+    // to remove. It cannot be shared (one is a type, the other a value), so the
+    // premise that makes them agree is asserted instead of assumed: the two
+    // diverge only on consecutive or trailing underscores (`a__b` is `aB` to the
+    // type and `a_B` to this regex), so requiring single internal underscores
+    // makes them provably identical over the actual key space.
+    const WELL_FORMED = /^[a-z][a-z0-9]*(_[a-z0-9]+)*$/;
+    const malformed = [...PURGED_TABLES].filter((t) => !WELL_FORMED.test(t));
+    expect(
+      malformed,
+      `Registry key(s) that are not plain snake_case: ${malformed.join(", ")}. The runtime ` +
+        `camel() below and the type-level Camel<S> disagree on consecutive/trailing ` +
+        `underscores, so this check's premise fails and its result would be meaningless.`,
+    ).toEqual([]);
+    const camel = (s: string) => s.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
+    const aliases: Readonly<Record<string, string | undefined>> = COUNT_FIELD_ALIASES;
+    const byField = new Map<string, string[]>();
+    for (const table of PURGED_TABLES) {
+      const field = aliases[table] ?? camel(table);
+      byField.set(field, [...(byField.get(field) ?? []), table]);
+    }
+    const collisions = [...byField.entries()]
+      .filter(([, tables]) => tables.length > 1)
+      .map(([field, tables]) => `${field} <- ${tables.join(" + ")}`);
+    expect(
+      collisions,
+      `Purged table(s) sharing a count field: ${collisions.join("; ")}. A union dedupes, so ` +
+        `the second table would report under the first's count and HardDeleteCounts would not ` +
+        `notice. Give one of them an entry in COUNT_FIELD_ALIASES.`,
+    ).toEqual([]);
   });
 
   it("names a real column on a real parent in every viaParent declaration", () => {
@@ -739,13 +922,18 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
     // `parentScope` is only caught where the names meet the schema. Checked
     // against the live Drizzle enumeration, which is the same source the
     // "every schema table has a decision" tripwire reads.
+    //
+    // ⚠️ This ran with `if (link.parent === "subscription") continue;` on the
+    // premise that `subscription` is created by migration 0152 and so invisible
+    // to the enumeration. That premise is FALSE — schema.ts declares it as a
+    // pgTable precisely so check-schema-drift.sh sees one, and the sibling
+    // "no stale registry entries" test passes only because the enumeration finds
+    // it. The skip removed all four checks from `stripe_webhook_events`, the one
+    // declaration with quote-sensitive camelCase identifiers.
     const bad: string[] = [];
     for (const [child, entry] of Object.entries(decisionFor)) {
       const link = entry?.viaParent;
       if (!link) continue;
-      // `subscription` is a @better-auth/stripe table, created by migration 0152
-      // rather than declared in db/schema.ts, so the enumeration cannot see it.
-      if (link.parent === "subscription") continue;
       if (!columnsOf(child).includes(link.column)) bad.push(`${child}.${link.column} does not exist`);
       if (!schemaTableNames.includes(link.parent)) bad.push(`${child}: parent ${link.parent} is not a table`);
       if (!columnsOf(link.parent).includes(link.parentKey)) {

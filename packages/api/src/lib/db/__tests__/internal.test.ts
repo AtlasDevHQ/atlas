@@ -1094,16 +1094,21 @@ describe("totalRowsDeleted()", () => {
     ).toBe(19);
   });
 
-  it("reads `counts`, so the skipped-table array can never enter the sum", () => {
-    // `skippedTables` is an array, and since #5176 it is a SIBLING of `counts`
-    // rather than a field inside it — so the runtime `typeof value !== "number"`
-    // guard this used to need is gone. What is still falsifiable is that the
-    // helper reads `result.counts`: rewriting it as `Object.values(result)`
-    // sums the counts OBJECT and the string array, which string-concatenates
-    // rather than totalling and fails here.
+  it("totals the same whatever skippedTables holds", () => {
+    // Distinct from the two above only in that `skippedTables` is NON-EMPTY.
+    // It no longer needs to defend the sum against the array — since #5176 the
+    // array is a sibling of `counts`, not a member, so it cannot reach the
+    // arithmetic by construction. What it still pins is that a non-empty skip
+    // list does not perturb the total, which is what an operator reads off a
+    // partially-completed erasure.
+    //
+    // The previous version of this test claimed to falsify "rewriting the helper
+    // as Object.values(result)". It did not: with `skippedTables: []` the
+    // sibling test above already fails on that mutation, so this one rejected no
+    // input its sibling accepted. Retitled rather than deleted because the
+    // non-empty case is a real state the route reports on.
     const skipped = { ...base, skippedTables: ["scim_group_mappings", "subscription"] };
     expect(totalRowsDeleted(skipped as typeof base)).toBe(19);
-    expect(typeof totalRowsDeleted(skipped as typeof base)).toBe("number");
   });
 });
 
@@ -1363,6 +1368,20 @@ describe("hardDeleteWorkspace()", () => {
     );
     expect(tombstoneIdx).toBeGreaterThan(-1);
     expect(ledgerDeleteIdx).toBeGreaterThan(-1);
+    // The generated statement pinned by VALUE, written out by hand rather than
+    // via `viaParentDeleteSql(...)` — deriving it would be a fixture agreeing by
+    // construction with the thing it checks.
+    //
+    // This is the second independent catch for `parentKeyNullable`, whose only
+    // consequence is a production abort: `AND "stripeSubscriptionId" IS NOT NULL`
+    // also guards the tombstone INSERT above, whose target column is a PRIMARY
+    // KEY. Measured before this line existed, deleting the flag was green across
+    // all three suites.
+    expect(queries[ledgerDeleteIdx]).toBe(
+      `DELETE FROM "stripe_webhook_events" WHERE "stripe_subscription_id" IN (` +
+        `SELECT "stripeSubscriptionId" FROM "subscription" WHERE "referenceId" = $1` +
+        ` AND "stripeSubscriptionId" IS NOT NULL) RETURNING 1`,
+    );
     expect(subscriptionDeleteIdx).toBeGreaterThan(-1);
     expect(tombstoneIdx).toBeLessThan(ledgerDeleteIdx);
     expect(tombstoneIdx).toBeLessThan(subscriptionDeleteIdx);

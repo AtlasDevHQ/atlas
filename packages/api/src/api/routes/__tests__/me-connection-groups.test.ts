@@ -136,7 +136,7 @@ void mock.module("@atlas/api/lib/db/internal", () => {
     getWorkspaceHealthSummary: async () => ({}),
     updateWorkspaceByot: async () => {},
     setWorkspaceTrialEndsAt: async () => {},
-    hardDeleteWorkspace: async () => ({}),
+    hardDeleteWorkspace: async () => ({ counts: {}, skippedTables: [] }),
   };
 });
 

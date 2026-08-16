@@ -4,9 +4,16 @@
  * Two surfaces under test:
  *
  *  1. `seedBuiltinDatasourceCatalog(db)` — the runtime seeder. Asserts
- *     the eight rows are inserted with `ON CONFLICT DO NOTHING` semantics
- *     and that the result accounting (inserted vs preserved) tracks the
- *     RETURNING row set.
+ *     the nine rows are inserted with `ON CONFLICT (id) DO NOTHING`
+ *     semantics and that the result accounting partitions the expected
+ *     slugs across inserted / preserved / blocked (#5266).
+ *
+ *     ⚠️ THE BLOCKED OUTCOME IS NOT HERE, and cannot be: this file's mock
+ *     pool returns whatever the fixture says, so it can no more raise a
+ *     real 23505 than it can prove Postgres would.
+ *     `seed-builtin-datasource-catalog-collision.test.ts` covers what the
+ *     seeder DOES with a rejection; `builtin-datasource-catalog-seed-pg.
+ *     test.ts` covers that the rejection happens at all.
  *
  *  2. `BUILTIN_DATASOURCE_CATALOG_ROWS` — the in-process source of truth.
  *     Asserts content-level invariants: all eight slugs, only
@@ -36,6 +43,16 @@ interface CapturedQuery {
   params: unknown[];
 }
 
+/**
+ * Per-row mock pool (#5266 — the seeder issues one statement per row now).
+ *
+ * `conflictWith` names slugs whose row already exists under its canonical id:
+ * the `ON CONFLICT (id) DO NOTHING` path, which returns zero rows and no
+ * error. That is the PRESERVED outcome, and it is deliberately not the same
+ * thing as the BLOCKED outcome — a foreign id holding the slug raises 23505
+ * instead, which this mock cannot express and
+ * `seed-builtin-datasource-catalog-collision.test.ts` covers.
+ */
 const captureDb = (
   conflictWith: ReadonlyArray<string> = [],
 ): { db: BuiltinDatasourceCatalogSeedDb; captured: CapturedQuery[] } => {
@@ -43,11 +60,11 @@ const captureDb = (
   const db: BuiltinDatasourceCatalogSeedDb = {
     async query<T = unknown>(sql: string, params?: unknown[]) {
       captured.push({ sql, params: params ?? [] });
-      // Simulate ON CONFLICT DO NOTHING ... RETURNING slug:
-      // return slugs that did NOT conflict (i.e. that actually inserted).
-      const allSlugs = BUILTIN_DATASOURCE_CATALOG_ROWS.map((r) => r.slug);
-      const inserted = allSlugs.filter((s) => !conflictWith.includes(s));
-      return { rows: inserted.map((slug) => ({ slug })) as T[] };
+      // The seeder binds (id, name, slug, …) — slug is the third param.
+      const slug = String((params ?? [])[2]);
+      return {
+        rows: (conflictWith.includes(slug) ? [] : [{ slug }]) as T[],
+      };
     },
   };
   return { db, captured };
@@ -144,35 +161,39 @@ describe("BUILTIN_DATASOURCE_CATALOG_ROWS", () => {
 });
 
 describe("seedBuiltinDatasourceCatalog (idempotent boot seed)", () => {
-  it("issues a single bulk INSERT covering all eight rows", async () => {
+  it("issues one INSERT per row, with the conflict target QUALIFIED on id (#5266)", async () => {
     const { db, captured } = captureDb();
     await seedBuiltinDatasourceCatalog(db);
-    expect(captured).toHaveLength(1);
-    expect(captured[0]!.sql).toContain("INSERT INTO plugin_catalog");
-    // Unqualified ON CONFLICT DO NOTHING covers both the slug unique
-    // index AND the id PK — see seed module's JSDoc for the edge case
-    // (operator-edited row with a clashing `catalog:<slug>` id).
-    expect(captured[0]!.sql).toContain("ON CONFLICT DO NOTHING");
-    expect(captured[0]!.sql).not.toContain("ON CONFLICT (slug)");
-    expect(captured[0]!.sql).toContain("RETURNING slug");
+    // One statement per row — the shape that makes per-row recovery
+    // expressible at all. A bulk INSERT rejects the whole batch on the first
+    // 23505, so it cannot report WHICH row is missing.
+    expect(captured).toHaveLength(BUILTIN_DATASOURCE_CATALOG_ROWS.length);
+    for (const q of captured) {
+      expect(q.sql).toContain("INSERT INTO plugin_catalog");
+      // ⚠️ Qualified on `(id)`. The unqualified spelling ALSO covers the slug
+      // unique index, which is exactly the defect: it swallows a slug held
+      // under a foreign id instead of raising 23505.
+      expect(q.sql).toContain("ON CONFLICT (id) DO NOTHING");
+      expect(q.sql).not.toMatch(/ON CONFLICT\s+DO NOTHING/);
+      expect(q.sql).not.toContain("ON CONFLICT (slug)");
+      expect(q.sql).toContain("RETURNING slug");
+    }
   });
 
   it("emits 8 params per row (id, name, slug, description, install_model, auto_install, saas_eligible, config_schema)", async () => {
     const { db, captured } = captureDb();
     await seedBuiltinDatasourceCatalog(db);
-    // 9 rows × 8 params per row = 72 bound params total.
-    expect(captured[0]!.params).toHaveLength(9 * 8);
+    for (const q of captured) expect(q.params).toHaveLength(8);
   });
 
   it("binds saas_eligible per row — DuckDB false, every other row true (#3301)", async () => {
     const { db, captured } = captureDb();
     await seedBuiltinDatasourceCatalog(db);
-    // Each row's 7th param (index 6, 14, 22, …) is the saas_eligible boolean,
+    // Each statement's 7th param (index 6) is the saas_eligible boolean,
     // bound rather than a SQL literal so DuckDB lands `false` on a fresh DB.
     for (let i = 0; i < BUILTIN_DATASOURCE_CATALOG_ROWS.length; i++) {
       const row = BUILTIN_DATASOURCE_CATALOG_ROWS[i]!;
-      const param = captured[0]!.params[i * 8 + 6];
-      expect(param).toBe(row.slug === "duckdb" ? false : true);
+      expect(captured[i]!.params[6]).toBe(row.slug === "duckdb" ? false : true);
     }
   });
 
@@ -183,15 +204,19 @@ describe("seedBuiltinDatasourceCatalog (idempotent boot seed)", () => {
       [...BUILTIN_DATASOURCE_CATALOG_SLUGS].sort(),
     );
     expect(result.preservedSlugs).toHaveLength(0);
+    expect(result.blockedSlugs).toHaveLength(0);
   });
 
-  it("reports preserved slugs when rows already exist (ON CONFLICT DO NOTHING path)", async () => {
+  it("reports preserved slugs when rows already exist (ON CONFLICT (id) DO NOTHING path)", async () => {
     const { db } = captureDb(["postgres", "demo-postgres"]);
     const result = await seedBuiltinDatasourceCatalog(db);
     const preserved: string[] = [...result.preservedSlugs];
     expect(preserved.sort()).toEqual(["demo-postgres", "postgres"]);
     expect(result.insertedSlugs).toHaveLength(7);
     expect(result.insertedSlugs).not.toContain("postgres");
+    // Preserved is now a POSITIVE observation (the empty RETURNING set), not
+    // "everything that isn't inserted" — so nothing blocked can leak in here.
+    expect(result.blockedSlugs).toHaveLength(0);
   });
 
   it("reports all preserved on a fully-populated catalog (true idempotent re-boot)", async () => {
@@ -201,14 +226,27 @@ describe("seedBuiltinDatasourceCatalog (idempotent boot seed)", () => {
     expect([...result.preservedSlugs].sort()).toEqual(
       [...BUILTIN_DATASOURCE_CATALOG_SLUGS].sort(),
     );
+    expect(result.blockedSlugs).toHaveLength(0);
+  });
+
+  it("partitions the expected slugs across the three outcome lists", async () => {
+    // ⚠️ The invariant #5266 is about, stated as a partition rather than as
+    // three separate counts: every expected slug appears exactly once. The old
+    // derivation (`all minus inserted`) satisfied "covers everything" while
+    // putting blocked rows in the wrong bucket.
+    const { db } = captureDb(["postgres"]);
+    const result = await seedBuiltinDatasourceCatalog(db);
+    const all = [...result.insertedSlugs, ...result.preservedSlugs, ...result.blockedSlugs];
+    expect(all.sort()).toEqual([...BUILTIN_DATASOURCE_CATALOG_SLUGS].sort());
+    expect(new Set(all).size).toBe(all.length);
   });
 
   it("serializes config_schema as JSON in the bound params (matches ::jsonb cast in SQL)", async () => {
     const { db, captured } = captureDb();
     await seedBuiltinDatasourceCatalog(db);
-    // Each row's 8th param (index 7, 15, 23, …) is the JSON-serialized configSchema.
+    // Each statement's 8th param (index 7) is the JSON-serialized configSchema.
     for (let i = 0; i < BUILTIN_DATASOURCE_CATALOG_ROWS.length; i++) {
-      const param = captured[0]!.params[i * 8 + 7];
+      const param = captured[i]!.params[7];
       expect(typeof param).toBe("string");
       const parsed = JSON.parse(param as string);
       expect(parsed).toEqual(BUILTIN_DATASOURCE_CATALOG_ROWS[i]!.configSchema);
@@ -389,12 +427,10 @@ describe("runBuiltinDatasourceCatalogSeedBoot (discriminated outcomes)", () => {
 
   it("returns `{ kind: 'seeded' }` on a successful seed", async () => {
     hasInternalDBReturns = true;
-    // Simulate every row inserted (no conflicts) — match the bulk INSERT
-    // RETURNING contract.
-    mockQuery.mockImplementation(() =>
-      Promise.resolve({
-        rows: BUILTIN_DATASOURCE_CATALOG_ROWS.map((r) => ({ slug: r.slug })),
-      }),
+    // Simulate every row inserted (no conflicts) — one statement per row,
+    // each returning its own slug, matching the per-row RETURNING contract.
+    mockQuery.mockImplementation((_sql, params) =>
+      Promise.resolve({ rows: [{ slug: String((params ?? [])[2]) }] }),
     );
     const { runBuiltinDatasourceCatalogSeedBoot } = await import(
       "@atlas/api/lib/db/seed-builtin-datasource-catalog"
@@ -404,6 +440,7 @@ describe("runBuiltinDatasourceCatalogSeedBoot (discriminated outcomes)", () => {
     if (result.kind === "seeded") {
       expect(result.insertedSlugs).toHaveLength(9);
       expect(result.preservedSlugs).toHaveLength(0);
+      expect(result.blockedSlugs).toHaveLength(0);
     }
   });
 

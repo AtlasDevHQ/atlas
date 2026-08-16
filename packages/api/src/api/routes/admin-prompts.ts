@@ -10,6 +10,7 @@ import { Effect } from "effect";
 import type { Context as HonoContext } from "hono";
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
+import { PG_UNIQUE_VIOLATION } from "@atlas/api/lib/db/pg-errors";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
@@ -25,14 +26,12 @@ import {
 const log = createLogger("admin-prompts");
 
 /**
- * SQLSTATE 23505 = unique_violation. The `prompt_collections_org_name_uniq`
- * index introduced in migration 0054 (#2169) collapses `COALESCE(org_id, '')`
- * + `lower(name)`, so two collections in the same workspace can't share a
- * case-insensitive name. We translate the violation into a typed result so
- * create/rename routes can return a 409 instead of leaking a generic 500.
+ * The `prompt_collections_org_name_uniq` index introduced in migration 0054
+ * (#2169) collapses `COALESCE(org_id, '')` + `lower(name)`, so two collections
+ * in the same workspace can't share a case-insensitive name. We translate the
+ * violation into a typed result so create/rename routes can return a 409
+ * instead of leaking a generic 500.
  */
-const PG_UNIQUE_VIOLATION = "23505";
-
 function isUniqueViolation(err: unknown): boolean {
   return (err as { code?: string } | null | undefined)?.code === PG_UNIQUE_VIOLATION;
 }

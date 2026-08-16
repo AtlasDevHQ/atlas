@@ -872,7 +872,9 @@ export const CatalogSeedLive: Layer.Layer<
  * addition to the atlas.config.ts seed, not instead of it.
  *
  * - `skipped-gate`  — InternalDB or Migration upstream not satisfied
- * - `seeded`        — seed ran (preservedSlugs may include all eight on re-boot)
+ * - `seeded`        — seed ran (preservedSlugs may include all nine on re-boot).
+ *                     Read `blockedSlugs` before treating this as a complete
+ *                     catalog: the pass can finish having written nothing (#5266)
  * - `error`         — the boot wrapper or its dynamic import threw;
  *                     pre-existing rows answer admin-UI reads
  */
@@ -885,10 +887,27 @@ export interface BuiltinDatasourceCatalogSeedShape {
   /** Slugs whose row was newly inserted this boot. */
   readonly insertedSlugs: ReadonlyArray<string>;
   /**
-   * Slugs whose row already existed and was preserved (ON CONFLICT DO
-   * NOTHING). Re-boots on a healthy DB land every built-in slug here.
+   * Slugs whose row already existed under its canonical id and was preserved
+   * (the `ON CONFLICT (id) DO NOTHING` path). Re-boots on a healthy DB land
+   * every built-in slug here.
+   *
+   * ⚠️ Disjoint from {@link blockedSlugs} since #5266. It used to be derived
+   * as *every expected slug minus the inserted ones*, which reported a row a
+   * foreign-id collision had blocked as preserved — the caller was told a row
+   * the catalog does not have is fine.
    */
   readonly preservedSlugs: ReadonlyArray<string>;
+  /**
+   * Built-in slugs a foreign-id collision blocked (#5266) — the catalog is
+   * missing these rows and a re-boot will not fix it.
+   *
+   * `[]` on `skipped-gate` means nothing ran. `[]` on `error` means
+   * **unknown**, NOT "none": a throw mid-loop abandons the list the seeder had
+   * accumulated, so a pass that blocked one row and then hit a dead pool
+   * reports `[]` here. The seeder logs the partial list before rethrowing
+   * precisely because it cannot survive this field.
+   */
+  readonly blockedSlugs: ReadonlyArray<string>;
   readonly outcome: BuiltinDatasourceCatalogSeedOutcome;
   /** Scrubbed error message when `outcome === "error"`. */
   readonly error?: string;
@@ -929,6 +948,7 @@ export const BuiltinDatasourceCatalogSeedLive: Layer.Layer<
     const zeroCounts = {
       insertedSlugs: [] as ReadonlyArray<string>,
       preservedSlugs: [] as ReadonlyArray<string>,
+      blockedSlugs: [] as ReadonlyArray<string>,
     };
 
     if (!db.available || !migration.migrated) {
@@ -958,6 +978,7 @@ export const BuiltinDatasourceCatalogSeedLive: Layer.Layer<
             return {
               insertedSlugs: result.insertedSlugs,
               preservedSlugs: result.preservedSlugs,
+              blockedSlugs: result.blockedSlugs,
               outcome: "seeded",
             } satisfies BuiltinDatasourceCatalogSeedShape;
           case "error":

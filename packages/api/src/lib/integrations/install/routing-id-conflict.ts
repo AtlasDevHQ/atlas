@@ -22,7 +22,14 @@
  * index (the `workspace_plugins_id_unique` id index, the singleton index)
  * is a genuinely different failure and must NOT be relabelled as a
  * cross-workspace routing conflict.
+ *
+ * ⚠️ The SQLSTATE constant is shared (#5266); the classification around it is
+ * NOT. `pg-errors.ts`'s `asUniqueViolation` reads a FLAT top-level `code`,
+ * which is wrong on this path — see the chain-walk rationale on
+ * {@link isRoutingIdUniqueViolation}.
  */
+
+import { PG_UNIQUE_VIOLATION } from "@atlas/api/lib/db/pg-errors";
 
 /**
  * Name of the partial unique index created by migration 0120 and mirrored
@@ -30,9 +37,6 @@
  * `unique_violation` error when a concurrent install loses the race.
  */
 export const CHAT_ROUTING_ID_UNIQUE_INDEX = "workspace_plugins_chat_routing_id_unique";
-
-/** Postgres SQLSTATE for `unique_violation`. */
-const PG_UNIQUE_VIOLATION = "23505";
 
 /**
  * Max `.cause` links to follow. The pg error is at most a couple of links

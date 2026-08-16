@@ -118,6 +118,10 @@ import {
 } from "@atlas/api/lib/brain/ingest/outlook/config";
 import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 import { assertOperatorCatalogWrite } from "@atlas/api/lib/plugins/catalog-provenance";
+import {
+  asUniqueViolation,
+  PG_PLUGIN_CATALOG_SLUG_CONSTRAINT,
+} from "@atlas/api/lib/db/pg-errors";
 
 const log = createLogger("db.seed-builtin-knowledge-catalog");
 
@@ -948,40 +952,6 @@ export interface BuiltinKnowledgeCatalogSeedResult {
   readonly blockedSlugs: ReadonlyArray<string>;
 }
 
-/** Postgres `unique_violation` (23505). */
-const PG_UNIQUE_VIOLATION = "23505";
-
-/**
- * The one NAMED unique constraint this seeder's recovery models
- * (`0014_plugin_marketplace.sql`; mirrored in `db/schema.ts`).
- *
- * `plugin_catalog` has two unique constraints today — PK `id`, consumed by the
- * conflict target, and this one — so a 23505 reaching the catch is almost
- * certainly a slug collision. Naming it turns that inference into a condition
- * the code checks; an UNNAMED 23505 is still accepted, under the same hedge the
- * warning carries.
- */
-const PG_SLUG_CONSTRAINT = "plugin_catalog_slug_key";
-
-/**
- * The diagnostic fields of a `23505`, or `undefined` for any other rejection.
- *
- * `pg` rejects with a `DatabaseError` carrying untyped `code`/`constraint`/
- * `detail`, so this narrows rather than casts. It reads the CODE and not the
- * message: matching on prose would classify an unrelated failure whose message
- * happened to say "duplicate key" as a benign collision, and demoting a real
- * outage to a warning is the failure this catch exists to avoid.
- */
-function asUniqueViolation(
-  err: unknown,
-): { readonly constraint?: string; readonly detail?: string } | undefined {
-  if (typeof err !== "object" || err === null) return undefined;
-  if (!("code" in err) || err.code !== PG_UNIQUE_VIOLATION) return undefined;
-  const constraint = "constraint" in err && typeof err.constraint === "string" ? err.constraint : undefined;
-  const detail = "detail" in err && typeof err.detail === "string" ? err.detail : undefined;
-  return { constraint, detail };
-}
-
 /**
  * Idempotently seed every row in `BUILTIN_KNOWLEDGE_CATALOG_ROWS`.
  *
@@ -1045,7 +1015,8 @@ export async function seedBuiltinKnowledgeCatalog(
       // the recovery below, where the message's hedge covers it.
       const modelled =
         collision !== undefined &&
-        (collision.constraint === undefined || collision.constraint === PG_SLUG_CONSTRAINT);
+        (collision.constraint === undefined ||
+          collision.constraint === PG_PLUGIN_CATALOG_SLUG_CONSTRAINT);
       if (!modelled) {
         // ⚠️ `blockedSlugs` DOES NOT SURVIVE THIS THROW. The boot wrapper turns
         // it into `{ kind: "error" }` and the Layer reports `blockedSlugs: []`,

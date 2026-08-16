@@ -24,6 +24,7 @@ import { AuthContext, RequestContext } from "@atlas/api/lib/effect/services";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { isSafeExternalUrl } from "@atlas/api/lib/sandbox/validate";
 import { createLogger } from "@atlas/api/lib/logger";
+import { PG_UNIQUE_VIOLATION } from "@atlas/api/lib/db/pg-errors";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { createSubscription } from "@atlas/api/lib/sub-processor-publisher";
 
@@ -36,8 +37,6 @@ import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 import { validationHook } from "./validation-hook";
 
 const log = createLogger("sub-processor-subscriptions");
-
-const PG_UNIQUE_VIOLATION = "23505";
 
 const CreateSubscriptionBodySchema = z.object({
   url: z

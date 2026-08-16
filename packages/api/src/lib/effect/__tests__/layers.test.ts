@@ -1433,6 +1433,7 @@ describe("ImplementationStatusOverrideLive", () => {
     Layer.succeed(BuiltinDatasourceCatalogSeed, {
       insertedSlugs: [],
       preservedSlugs: [],
+      blockedSlugs: [],
       outcome: "seeded" as const,
     }),
   );

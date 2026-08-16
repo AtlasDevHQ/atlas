@@ -327,6 +327,13 @@ export const SCHEDULER_WORK_SPAN_NAMES = {
   // non-zero count means part of a workspace's map is beyond its credentials,
   // which is a legitimate state and also what a revoked scope looks like.
   brain_coverage_snapshot: "atlas.scheduler.brain_coverage_snapshot",
+  // #5228 — the tier-1 warehouse producer's cadence trigger (ADR-0039). The one
+  // fiber in this record that WRITES CLAIMS rather than counting or resolving,
+  // which is why it is the one that is off by default per workspace.
+  // `workspaces_declined_locked` is the attribute worth watching: sustained
+  // non-zero means runs are overrunning the cadence, and it is the only signal
+  // that separates that from a quiet warehouse.
+  brain_warehouse_cadence: "atlas.scheduler.brain_warehouse_cadence",
   // #4457 — internal-DB scheduled backups. The tick claims the current
   // cadence window atomically (partial UNIQUE index on
   // `backups.scheduled_window`), then create→verify→purge through the
@@ -2627,6 +2634,92 @@ export function makeSchedulerLive(
           message: "Company-brain coverage snapshot tick failed — will retry next interval",
         },
         startLog: "Company-brain coverage snapshot scheduler started",
+      });
+
+      // ── Periodic fiber: warehouse producer cadence (#5228, ADR-0039) ─────
+      // ADR-0039 answered *when it runs* — "on enrollment, and on a cadence
+      // thereafter. Cadence stops being frightening once scope is human-chosen"
+      // — and #5042 shipped only the operator's button. This is that cadence.
+      //
+      // ⚠️ The one fiber here that FILES CLAIMS. Every other brain cycle counts
+      // or resolves; this one puts drafts in front of a person, so its
+      // per-workspace default is OFF while theirs are ON (ADR-0040: availability
+      // is automatic, authority never is).
+      //
+      // The `yield* Migration` barrier above sequences it after `MigrationLive`,
+      // so the eager boot tick cannot race the migration creating
+      // `brain_enrollment`.
+      yield* registerPeriodicFiber({
+        name: "brain_warehouse_cadence",
+        intervalMs: () => {
+          // oxlint-disable-next-line @typescript-eslint/no-require-imports -- read the interval synchronously at fiber-registration time (same pattern as brain_coverage_snapshot). NOTE the knob is hot-reloadable in the registry but is read ONCE here, so a change takes effect at restart.
+          const { getWarehouseCadenceIntervalMs } = require("@atlas/api/lib/scheduler/brain-warehouse-cadence") as {
+            getWarehouseCadenceIntervalMs: () => number;
+          };
+          return getWarehouseCadenceIntervalMs();
+        },
+        gate: {
+          check: () => {
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
+            const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
+              hasInternalDB: () => boolean;
+            };
+            // oxlint-disable-next-line @typescript-eslint/no-require-imports -- same reason
+            const { isWarehouseCadenceEnabled } = require("@atlas/api/lib/scheduler/brain-warehouse-cadence") as {
+              isWarehouseCadenceEnabled: (workspaceId?: string) => boolean;
+            };
+            // No workspace argument: the PLATFORM gate. The per-workspace
+            // decision is read again inside the cycle, per workspace.
+            return hasInternalDB() && isWarehouseCadenceEnabled();
+          },
+          skipLog:
+            "Company-brain warehouse cadence not started — needs an internal database and ATLAS_BRAIN_WAREHOUSE_CADENCE_ENABLED",
+        },
+        tick: Effect.tryPromise({
+          try: () => import("@atlas/api/lib/scheduler/brain-warehouse-cadence"),
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }).pipe(
+          Effect.flatMap((m) =>
+            // `tryPromise`, NOT `promise` — `brain_coverage_snapshot`'s argument
+            // verbatim: the cycle catches its own scan and per-workspace faults,
+            // but the per-workspace settings read sits outside that net, and a
+            // defect would kill this fiber for the life of the process with no
+            // signal but an ABSENCE of spans.
+            Effect.tryPromise({
+              try: () => m.runWarehouseCadenceCycle(),
+              catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+            }),
+          ),
+        ),
+        spanResultAttributes: (result) => ({
+          "atlas.brain.warehouse_cadence.status": result.status,
+          "atlas.brain.warehouse_cadence.workspaces_considered": result.workspacesConsidered,
+          "atlas.brain.warehouse_cadence.workspaces_skipped_disabled":
+            result.workspacesSkippedDisabled,
+          "atlas.brain.warehouse_cadence.workspaces_attempted": result.workspacesAttempted,
+          // ⚠️ The lock's own counter, and the reason it is on the span rather
+          // than only in the log: a tick where every workspace declined is
+          // byte-identical at rest to a tick that ran cleanly and found nothing.
+          // Sustained non-zero means runs are overrunning the cadence.
+          "atlas.brain.warehouse_cadence.workspaces_declined_locked":
+            result.workspacesDeclinedLocked,
+          "atlas.brain.warehouse_cadence.workspaces_succeeded": result.workspacesSucceeded,
+          "atlas.brain.warehouse_cadence.workspaces_failed": result.workspacesFailed,
+          // The queue this cycle added to. `created` is drafts a human must
+          // review; `corroborated` is the cheap half and is here so a rising
+          // `created` can be read against it rather than alone.
+          "atlas.brain.warehouse_cadence.created": result.created,
+          "atlas.brain.warehouse_cadence.corroborated": result.corroborated,
+          "atlas.brain.warehouse_cadence.refusals": result.refusals,
+          // Scrubbed at every push site (`errorMessage`), which is what makes it
+          // safe to put on a span at all.
+          "atlas.brain.warehouse_cadence.error": result.error ?? "",
+        }),
+        onTickFailure: {
+          level: "warn",
+          message: "Company-brain warehouse cadence tick failed — will retry next interval",
+        },
+        startLog: "Company-brain warehouse cadence scheduler started",
       });
 
       // ── Periodic fiber: malformed-grant sweep (#4797, ADR-0036) ──────────

@@ -31451,6 +31451,31 @@
               }
             }
           },
+          "409": {
+            "description": "A run is already in progress for this workspace — this press, or the cadence fiber (#5228). Nothing was read and nothing was written. Two overlapping runs take two snapshot instants, so the episode table's conflict clause dedupes neither, and each changed value would cost two drafts and two tension edges instead of one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {

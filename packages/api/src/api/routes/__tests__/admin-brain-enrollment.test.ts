@@ -250,6 +250,30 @@ void mock.module("@atlas/api/lib/brain/warehouse-producer", () => ({
   },
 }));
 
+/**
+ * The run lock, replaced (#5228).
+ *
+ * Its real implementation checks a client out of the internal pool, which this
+ * suite has mocked away — and more to the point, whether the lock EXCLUDES is a
+ * property of Postgres and is settled in
+ * `lib/brain/__tests__/warehouse-run-lock-pg.test.ts`. What this suite owns is
+ * the route's two arms: that the run goes through the lock at all, and what a
+ * decline looks like on the wire.
+ *
+ * ⚠️ `lockAcquired` defaults to `true`, so the twelve pre-existing `/produce`
+ * tests describe the same route they always did. A default of `false` would turn
+ * every one of them into an assertion about the 409 path while still reading as
+ * a test of the run.
+ */
+let lockAcquired = true;
+let lockCalls: string[] = [];
+void mock.module("@atlas/api/lib/brain/warehouse-run-lock", () => ({
+  withWarehouseRunLock: async <T,>(workspaceId: string, fn: () => Promise<T>) => {
+    lockCalls.push(workspaceId);
+    return lockAcquired ? { acquired: true, value: await fn() } : { acquired: false };
+  },
+}));
+
 const { adminBrainEnrollment } = await import("../admin-brain-enrollment");
 
 const post = (path: string, body: unknown) =>
@@ -288,6 +312,8 @@ beforeEach(() => {
   dimensionCalls.length = 0;
   loggedErrors.length = 0;
   produceCalls = [];
+  lockAcquired = true;
+  lockCalls = [];
   produceReport = {
     workspaceId: CURRENT_ORG,
     snapshotAt: "2026-08-14T10:00:00.000Z",
@@ -660,6 +686,45 @@ describe("POST /produce — running the producer", () => {
     const res = await post("/produce", {});
     expect(res.status).toBe(200);
     expect(produceCalls[0]?.triggeredBy).toBe("local-operator");
+  });
+
+  it("runs the producer INSIDE the workspace run lock (#5228)", async () => {
+    await post("/produce", {});
+    // Since the cadence fiber exists, "an operator presses Run while a scheduled
+    // run is in flight" is ordinary. Two overlapping runs take two snapshot
+    // instants, so the episode table's conflict clause dedupes neither.
+    expect(lockCalls).toEqual([CURRENT_ORG]);
+  });
+
+  it("409s when a run is already in progress, and does NOT run a second one", async () => {
+    lockAcquired = false;
+    const res = await post("/produce", {});
+
+    expect(res.status).toBe(409);
+    // The half that matters: the producer never started. A 409 returned AFTER a
+    // run would be the exact duplicate the lock exists to prevent, wearing the
+    // status code that says it was prevented.
+    expect(produceCalls).toHaveLength(0);
+    const body = (await res.json()) as { error: string; message: string; requestId: string };
+    expect(body.error).toBe("run-in-progress");
+    // ⚠️ Not a generic message. "A run is in progress" and "your reach produced
+    // nothing" are the two readings an operator has to tell apart, and the one
+    // that reads as the second gets a working pair un-enrolled.
+    expect(body.message).toContain("already in progress");
+    expect(body.message).toContain("nothing was written");
+    expect(body.requestId).toBe("test-req");
+  });
+
+  it("403 outranks the lock — an unentitled reader is refused before it is taken", async () => {
+    READER_ROLE = "member";
+    lockAcquired = false;
+    const res = await post("/produce", {});
+
+    // Order matters for the reason it always does here: a member who gets 409
+    // learns a run is happening in a workspace they have no authority over, and
+    // would retry forever waiting for a turn they are never entitled to.
+    expect(res.status).toBe(403);
+    expect(lockCalls).toHaveLength(0);
   });
 
   it("returns the report through its wire schema", async () => {

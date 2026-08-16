@@ -2036,6 +2036,54 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     saasVisible: false,
   },
   {
+    // The warehouse producer's cadence trigger (#5228, ADR-0039).
+    //
+    // ⚠️ Default OFF, and it is the ONLY brain cycle in this section that is.
+    // Its neighbours count rosters and resolve memberships — availability work,
+    // which ADR-0040 says is automatic. This one files claims into the review
+    // queue a human has to drain, which is the resource ADR-0039 exists to
+    // protect, so a workspace gets scheduled runs only after somebody said so.
+    // The manual `POST /admin/brain-enrollment/produce` is unaffected either
+    // way; turning this on adds a second trigger, it does not gate the first.
+    //
+    // Workspace-scoped because it is the tenant's decision — they enrolled the
+    // pairs and they staff the review queue. The fiber ALSO reads this key with
+    // no workspace, which resolves to the platform value: the operator's
+    // process-wide off switch, applied at RESTART (the gate is evaluated once
+    // at registration). A workspace with an explicit `true` override keeps
+    // running while the platform value is unset, since workspace precedence
+    // beats platform.
+    key: "ATLAS_BRAIN_WAREHOUSE_CADENCE_ENABLED",
+    section: "Knowledge Base",
+    label: "Company Atlas Warehouse Cadence",
+    description:
+      "Re-read this workspace's enrolled warehouse dimensions on a schedule instead of only when an admin presses Run. Off by default. Each run reads the same (entity, dimension) pairs a human enrolled and files what it finds as drafts for review — an unchanged value is corroborated rather than re-filed, so a quiet warehouse costs no review; a changed one costs a draft and a tension edge. Turning it off stops future scheduled runs and leaves every fact already emitted exactly where it is. A workspace change takes effect on the next tick; the platform-wide switch is read once at boot, so turning the fiber on at all applies at restart.",
+    type: "boolean",
+    default: "false",
+    envVar: "ATLAS_BRAIN_WAREHOUSE_CADENCE_ENABLED",
+    scope: "workspace",
+    saasVisible: false,
+  },
+  {
+    // Cadence of the scheduled producer run. A knob rather than a constant in
+    // the LENGTHENING direction only — the shortening direction is stopped by
+    // `MIN_WAREHOUSE_CADENCE_INTERVAL_MS` in
+    // `lib/scheduler/brain-warehouse-cadence.ts`, which carries
+    // `WAREHOUSE_ROW_CAP`'s argument verbatim: a shorter cadence is a claim
+    // about how much a human can review. Only the operator knows how long their
+    // warehouse's meaning stays put, so lengthening is theirs and is unbounded.
+    key: "ATLAS_BRAIN_WAREHOUSE_CADENCE_INTERVAL_HOURS",
+    section: "Knowledge Base",
+    label: "Company Atlas Warehouse Cadence Interval",
+    description:
+      "How often the enrolled warehouse dimensions are re-read, in hours (default 24). This is also roughly how far behind the warehouse a published claim can be. Values below one hour are clamped to one hour: a shorter cadence files drafts faster than a person can review them, which is the queue the enrollment gate exists to protect. Applies at restart; non-positive or unparseable values fall back to the default.",
+    type: "number",
+    default: "24",
+    envVar: "ATLAS_BRAIN_WAREHOUSE_CADENCE_INTERVAL_HOURS",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
     // The time bound on the interval knob's promise (#4808). Without it, "the
     // answer is one interval" holds only while the roster reads SUCCEED — a
     // channel Atlas was removed from fails every cycle forever and keeps

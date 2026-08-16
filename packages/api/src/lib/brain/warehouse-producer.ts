@@ -65,10 +65,14 @@
  * never a key, a surface column or a join arm. (This line used to say "not the
  * entity store" and "`subject_cmp` and nothing else". Building the store
  * falsified both.)
- * Not a scheduler: the only trigger that ships with it is the operator-initiated
- * `POST /api/v1/admin/brain-enrollment/produce`. A cadence is a second trigger
- * with its own enablement, cadence and audit questions, on the precedent
- * `alias-proposal.ts` sets for exactly the same deferral.
+ * Still not a scheduler, and the distinction survived #5228 rather than being
+ * tidied away: this module runs ONE run when it is called, and the two things
+ * that call it — the operator's `POST /api/v1/admin/brain-enrollment/produce`
+ * and the cadence fiber (`lib/scheduler/brain-warehouse-cadence.ts`) — own the
+ * enablement, cadence and audit answers between them. What DOES bind both is
+ * `lib/brain/warehouse-run-lock.ts`: a run must be called under that lock,
+ * because two overlapping runs take two snapshot instants and nothing in here
+ * can tell them apart afterwards.
  */
 
 import { createHash } from "node:crypto";

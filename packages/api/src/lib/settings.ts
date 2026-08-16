@@ -2472,14 +2472,23 @@ export async function setSetting(key: string, value: string, userId?: string, or
   // Bust live cache so next read picks up the new value immediately
   _liveCache.clear();
 
+  // #3797 — louder audit trail when a runtime-mutable abuse control is changed
+  // (especially disabled via the documented `0` sentinel), so weakening it is
+  // traceable during an incident rather than buried in settings-change noise.
+  //
+  // ⚠️ BEFORE the side effect, not after. The row is committed and both caches
+  // are updated by this point, so the security-relevant change is already live;
+  // a side-effect handler that throws would otherwise take the audit down with
+  // it and leave a landed change with no record. The audit needs nothing the
+  // side effect produces, so the ordering is free. No handler throws today —
+  // the only one catches internally — which makes this cheap insurance rather
+  // than a live fix.
+  auditSecuritySensitiveChange(key, "set", value, userId, effectiveOrgId);
+
   // Apply runtime side effects for hot-reloadable settings
   applySettingSideEffect(key, value);
 
   log.info({ key, orgId: effectiveOrgId, actorId: userId }, "Setting override saved");
-  // #3797 — louder audit trail when a runtime-mutable abuse control is changed
-  // (especially disabled via the documented `0` sentinel), so weakening it is
-  // traceable during an incident rather than buried in settings-change noise.
-  auditSecuritySensitiveChange(key, "set", value, userId, effectiveOrgId);
 }
 
 /**
@@ -2518,6 +2527,12 @@ export async function deleteSetting(key: string, userId?: string, orgId?: string
   // Bust live cache so next read picks up the reverted value
   _liveCache.clear();
 
+  // #3797 — clearing an abuse-control override reverts it to env/default,
+  // which is itself a security-relevant change; audit it too. Before the side
+  // effect for the same reason as `setSetting`: the delete has committed, so
+  // the audit must not be reachable-only-if the revert succeeds.
+  auditSecuritySensitiveChange(key, "clear", undefined, userId, effectiveOrgId);
+
   // Apply runtime side effects (e.g., revert log level to env var / default)
   const revertedValue = getSetting(key, effectiveOrgId);
   if (revertedValue !== undefined) {
@@ -2525,9 +2540,6 @@ export async function deleteSetting(key: string, userId?: string, orgId?: string
   }
 
   log.info({ key, orgId: effectiveOrgId, actorId: userId }, "Setting override removed");
-  // #3797 — clearing an abuse-control override reverts it to env/default,
-  // which is itself a security-relevant change; audit it too.
-  auditSecuritySensitiveChange(key, "clear", undefined, userId, effectiveOrgId);
 }
 
 /**
@@ -2817,7 +2829,15 @@ function isSaasImmutableKey(key: string): key is SaasImmutableKey {
  * Adding a family means adding a rule in {@link SECURITY_SENSITIVE_RULES}; the
  * table below IS the key set, so there is no way to join one without the other.
  */
-/** The structured fields {@link auditSecuritySensitiveChange} logs. */
+/**
+ * What a settings write did: persisted a value, or removed the override and
+ * reverted to the next tier. One definition rather than five inline copies —
+ * the audit rule, the flag decision, the payload, the builder input and the
+ * emitter all have to agree, and a third action would otherwise drift.
+ */
+export type SettingAuditAction = "set" | "clear";
+
+/** The rule-derived flags carried by {@link SecuritySensitiveAuditLine}. */
 export interface SecuritySensitiveAudit {
   readonly disablesControl: boolean;
   readonly widensAuthority: boolean;
@@ -2825,7 +2845,7 @@ export interface SecuritySensitiveAudit {
 
 /** How one sensitive key decides its audit flags from a written value. */
 type SecuritySensitiveRule = (
-  action: "set" | "clear",
+  action: SettingAuditAction,
   value: string | undefined,
 ) => SecuritySensitiveAudit;
 
@@ -2944,6 +2964,13 @@ const aliasThresholdRule: SecuritySensitiveRule = (action, value) => {
  * compile error, and a typo in a key name a compile error rather than a silent
  * fall-through. This is #5161's own defect class one level up: a claim whose
  * subject was enlarged without re-checking the predicate riding on it.
+ *
+ * ⚠️ **A key marked `secret: true` in the registry may join this list.** Its
+ * value is withheld from the audit line rather than the key being refused
+ * (#5180) — {@link securitySensitiveAuditLine} carries why that call went the
+ * way it did. Nothing else about adding a key changes: you do not need to touch
+ * the logging path, which is the property that made this defect worth closing
+ * before it had a subject.
  */
 const SECURITY_SENSITIVE_KEYS_LITERAL = [
   "ATLAS_TRIAL_IP_RATE_LIMIT_RPM",
@@ -2992,7 +3019,7 @@ function isSecuritySensitiveKey(key: string): key is SecuritySensitiveKey {
  */
 export function securitySensitiveAuditFields(
   key: string,
-  action: "set" | "clear",
+  action: SettingAuditAction,
   value: string | undefined,
 ): SecuritySensitiveAudit | null {
   if (!isSecuritySensitiveKey(key)) return null;
@@ -3000,32 +3027,367 @@ export function securitySensitiveAuditFields(
 }
 
 /**
+ * What an audit line records in place of a value it must not disclose.
+ *
+ * ⚠️ **Deliberately NOT {@link maskSecret}, and that divergence is the point.**
+ * `maskSecret` emits `first4••••last4` as a *recognition* affordance: one
+ * authenticated platform admin, looking at their own key on their own settings
+ * page, needs to tell which credential is installed. A `log.warn` has neither
+ * property — the stream is retained, exported, and readable by anyone with log
+ * access, in SaaS potentially a third party — and the display mask's reveal
+ * rate is calamitous at the short end: `"hunter2!!"` becomes `hunt••••r2!!`,
+ * which is eight of nine characters. Inheriting a UX threshold into a security
+ * sink imports a trade nobody made there.
+ *
+ * The audit's subject is *which control moved, and which way*. For a
+ * secret-valued key that is not derivable from the characters anyway, so
+ * withholding all of them costs the audit nothing. `key`, `action` and the two
+ * rule flags carry the whole signal; `valueMasked` says the value was withheld.
+ *
+ * A truncated digest was considered and rejected: it correlates rotations
+ * nicely, but a short or low-entropy secret is brute-forceable from one, which
+ * adds a disclosure channel rather than removing one. So does a length marker,
+ * for less benefit — and the empty string is withheld the same way as any
+ * other value for exactly that reason: `value: undefined` where every other
+ * secret reads `[withheld…]` would be a one-bit oracle on the secret's
+ * content, which for the empty secret discloses it completely.
+ *
+ * ⚠️ Deliberately not any of the three placeholders it sits near, and one of
+ * them is a trap rather than a style choice:
+ * - `plugins/secrets.ts`'s `MASKED_PLACEHOLDER` (`••••••••`) is a
+ *   ROUND-TRIPPING sentinel — `restoreMaskedSecrets` reads it back as "keep the
+ *   stored value". Sharing it would make an audit line's contents meaningful to
+ *   a settings writer, which is the opposite of what a redaction is for.
+ * - pino's own default censor is `[Redacted]`, written into this same stream by
+ *   `redact: redactPaths` for any field named `apiKey`/`token`/`secret`/…. A
+ *   placeholder differing from it by one capital letter, meaning something
+ *   else, is a trap for anyone grepping the stream.
+ * - `maskSecret`'s `••••••••`, per the whole argument above.
+ *
+ * Self-describing, so a reader of the stream knows which mechanism withheld it
+ * and does not have to guess. Kept module-private so a second sink with a
+ * different audience cannot adopt it without deciding, here, that the trade
+ * still holds.
+ */
+const REDACTED_AUDIT_VALUE = "[withheld:secret-setting]";
+
+/**
+ * Why {@link redactAuditValue} withheld a value.
+ *
+ * Three arms rather than two, because collapsing the latter two mislabels an
+ * alert. `"unknown_definition"` reads as *registry drift* and sends an operator
+ * to grep `SETTINGS_REGISTRY`; for a definition that belongs to a DIFFERENT key
+ * the entry is right there and the bug is at the call site. Reported as drift,
+ * that alert is closed as a false positive.
+ */
+export type AuditMaskReason = "secret" | "unknown_definition" | "definition_mismatch";
+
+declare const auditedValueBrand: unique symbol;
+
+/**
+ * A string that has been through {@link redactAuditValue} — the ONLY thing an
+ * audit line may carry in its `value` field.
+ *
+ * ⚠️ **The brand is the guard, and it is here because nothing else could be.**
+ * Review measured that `log.warn({ ...line, value }, …)` at the emitter —
+ * issue #5180 verbatim, plaintext back in the log stream — passed all 154
+ * tests. Not because the tests were weak: no sensitive key is `secret: true`
+ * today, so the redacted value and the raw value are *identical on every
+ * reachable input*, and the edit is a behavioural no-op until the day it is a
+ * breach. An assertion cannot see a difference that does not yet exist.
+ *
+ * So the check is a type rather than a test: {@link emitSecuritySensitiveAudit}
+ * takes a {@link SecuritySensitiveAuditLine}, whose `value` is branded, and a
+ * raw `string` is not assignable to it. That one-keystroke edit is now a
+ * compile error, on the day it is harmless and on the day it is not.
+ *
+ * This is the repo's own rule applied to itself — brand the OUTPUT, not just
+ * the parameter — and the escalation the review loop asks for once a principle
+ * has been argued twice: stop restating it in prose and make the state
+ * unrepresentable.
+ *
+ * ⚠️ **WHAT THE BRAND DOES NOT CLOSE**, stated because a brand invites exactly
+ * the wrong confidence, and both survivors were measured rather than guessed:
+ *
+ * - **A leak that never mentions the seam.** `log.warn` types its first
+ *   parameter as `<T extends object>`, inferring `T` from the literal, so
+ *   `log.warn({ ...line, value: raw }, …)` type-checks clean. The brand bites
+ *   only where something is *expected* to carry it — hence
+ *   {@link warnAuditLine}. Inline `log.warn` back and the fence is gone.
+ * - **A dishonest `definition`.** The brand fences the OUTPUT of the decision;
+ *   the INPUT is an ordinary structural value, so `{ …, secret: false }` at the
+ *   call site reaches the verbatim arm with no cast.
+ *
+ * Both are closed by the registry-flip test in `settings-audit-log.test.ts`,
+ * which makes redacted and raw differ on a reachable input. The brand and that
+ * test cover disjoint edits and neither is redundant: the type catches the
+ * seam-preserving spelling on a day nobody runs the suite, the test catches the
+ * seam-removing one, which is the cheaper edit.
+ *
+ * The brand asserts "this went through the decision" — NOT "this is safe to
+ * disclose". On the non-secret arm it carries the written value verbatim, by
+ * design, so a second sink must not read it as a clearance.
+ */
+export type AuditedValue = string & { readonly [auditedValueBrand]: true };
+
+/** {@link redactAuditValue}'s decision: what to log, and why. */
+export interface RedactedAuditValue {
+  readonly value: AuditedValue | undefined;
+  readonly masked: boolean;
+  /** `undefined` exactly when `masked` is false. */
+  readonly maskReason: AuditMaskReason | undefined;
+}
+
+/**
+ * The written value as an audit line may record it (#5180), plus whether — and
+ * why — it was withheld.
+ *
+ * Takes the DEFINITION rather than the key on purpose: the decision genuinely
+ * depends on `def.secret`, and passing `undefined` explicitly is what makes the
+ * fail-closed contract legible — and testable — at the call site.
+ *
+ * ⚠️ It takes the WHOLE `SettingDefinition`, and an earlier draft narrowing it
+ * to `Pick<…, "key" | "secret">` was measured to be a net loss. The narrowing
+ * looked like good hygiene, but the only thing standing between this function
+ * and a fabricated definition is how tedious one is to write: against the full
+ * record a fake needs seven required fields and reads as a deliberate act,
+ * while `{ key, secret: false }` reads as tidying — and `secret` is optional in
+ * the `Pick`, so even `{ key }` lands in the verbatim arm. The registry-flip
+ * test in `settings-audit-log.test.ts` is what actually closes that class; this
+ * signature just declines to make it cheap.
+ *
+ * ⚠️ FAIL CLOSED ON AN UNKNOWN DEFINITION. A key with no registry entry cannot
+ * be *shown* to be non-secret, and "we could not tell" is not a licence to
+ * print. `settings.test.ts` pins every member of {@link SECURITY_SENSITIVE_KEYS}
+ * to a registry entry, so through {@link securitySensitiveAuditLine} this arm is
+ * a backstop against a rename rather than a live path — which is exactly why it
+ * must not be the permissive one.
+ *
+ * ⚠️ It reports a `maskReason` rather than a bare boolean because the arms are
+ * not the same event, and they route an operator to different places. See
+ * {@link AuditMaskReason}.
+ *
+ * The empty string is withheld like any other value. An earlier draft returned
+ * `undefined` for it — "nothing in `""` to withhold" — which was true about the
+ * string and wrong about the stream: every other secret reads
+ * `[withheld:secret-setting]`, so `undefined` singled the empty one out and
+ * disclosed it exactly. Uniformity is the property; `action` carries set-vs-
+ * clear, which is the distinction that was worth keeping.
+ */
+export function redactAuditValue(
+  def: SettingDefinition | undefined,
+  value: string | undefined,
+): RedactedAuditValue {
+  // The sole minting site for {@link AuditedValue}. Every `as` below is a
+  // string that has just been through the decision above it — that is what the
+  // brand asserts, and keeping the casts in one function is what keeps the
+  // assertion true.
+  const audited = (v: string): AuditedValue => v as AuditedValue;
+
+  if (value === undefined) return { value: undefined, masked: false, maskReason: undefined };
+  if (def === undefined) {
+    return { value: audited(REDACTED_AUDIT_VALUE), masked: true, maskReason: "unknown_definition" };
+  }
+  if (def.secret === true) {
+    return { value: audited(REDACTED_AUDIT_VALUE), masked: true, maskReason: "secret" };
+  }
+  return { value: audited(value), masked: false, maskReason: undefined };
+}
+
+/** The full structured payload {@link auditSecuritySensitiveChange} logs. */
+export interface SecuritySensitiveAuditLine extends SecuritySensitiveAudit {
+  readonly key: string;
+  readonly action: SettingAuditAction;
+  /**
+   * The written value — verbatim, or replaced by {@link REDACTED_AUDIT_VALUE}
+   * when the registry definition carries `secret: true`. Read it together with
+   * `valueMasked`: without that flag a placeholder is indistinguishable from a
+   * setting whose literal value happens to be that string.
+   *
+   * Branded, so only {@link redactAuditValue} can produce one — see
+   * {@link AuditedValue} for why a type and not a test.
+   */
+  readonly value: AuditedValue | undefined;
+  /** Whether `value` was withheld rather than recorded verbatim (#5180). */
+  readonly valueMasked: boolean;
+  /**
+   * Why it was withheld. `"unknown_definition"` is the one worth alerting on —
+   * it means a sensitive key has no registry entry, which is drift rather than
+   * a routine masked write.
+   */
+  readonly maskReason: AuditMaskReason | undefined;
+  readonly actorId: string | undefined;
+  readonly orgId: string | undefined;
+  readonly event: "security_setting.changed";
+}
+
+/** Everything {@link securitySensitiveAuditLine} needs to build one line. */
+export interface SecuritySensitiveAuditInput {
+  readonly key: string;
+  /**
+   * `key`'s registry entry, or `undefined` when it has none.
+   *
+   * Passed in rather than looked up so the builder stays a pure function of its
+   * inputs and the secret arm is reachable from a unit test without touching
+   * the registry. The WHOLE definition, not a `Pick` of the two fields read —
+   * see {@link redactAuditValue} for why narrowing it was a net loss.
+   */
+  readonly definition: SettingDefinition | undefined;
+  readonly action: SettingAuditAction;
+  readonly value: string | undefined;
+  readonly actorId: string | undefined;
+  readonly orgId: string | undefined;
+}
+
+/**
+ * The exact payload the security-audit `log.warn` line carries, or `null` when
+ * `key` is not sensitive (no audit). Pure, and exported so that
+ * `settings-audit-log.test.ts` can assert the *emitted* object equals this
+ * builder's output — pinning the pass-through itself, not just the payload.
+ *
+ * ⚠️ **A `secret: true` key IS allowed in {@link SECURITY_SENSITIVE_KEYS}; its
+ * value is masked instead (#5180).** The alternative — refusing the
+ * combination outright — was considered and rejected on three counts:
+ *
+ * 1. "Audit the change, never the content" is a legitimate pairing, not a
+ *    contradiction. Rotating a credential that gates an abuse control is
+ *    precisely the event an audit trail exists to record; refusing membership
+ *    would make that rotation emit *nothing*, which is strictly worse than a
+ *    line with a masked value.
+ * 2. It is not expressible where it would have to be. `secret` lives on
+ *    {@link SettingDefinition} inside a `SettingDefinition[]`, not on a
+ *    literal-typed const, so `Record<SecuritySensitiveKey, …>` cannot see it —
+ *    enforcement would be a runtime boot guard, trading a masked log line for a
+ *    refusal to boot on a defect the mask already closes.
+ * 3. The audit still records the *event* — who, when, which key, and which way
+ *    the two rule flags moved. Only the characters go, and for a secret-valued
+ *    key those were never the audit's subject. See {@link REDACTED_AUDIT_VALUE}
+ *    for why this path does NOT reuse the display mask.
+ *
+ * The payload is built here in full — including `key` and `action` — so the
+ * emitter has nothing left to assemble and no reason to name `value` again.
+ *
+ * ⚠️ That is a shape, not a guarantee, and the distinction was measured. An
+ * earlier draft of this comment claimed the emitter "has no raw `value` in
+ * scope to reach for"; `value` is its third parameter, so reaching for it is
+ * one keystroke, and `log.warn({ ...line, value }, …)` reintroduced #5180 with
+ * the whole suite green.
+ *
+ * It takes BOTH halves to close, and this comment has now been wrong in both
+ * directions, so the split is worth stating exactly:
+ *
+ * - {@link AuditedValue} plus {@link warnAuditLine} close every spelling that
+ *   still routes through {@link emitSecuritySensitiveAudit}.
+ * - The registry-flip test in `settings-audit-log.test.ts` closes the spelling
+ *   that inlines `log.warn` back here — which no type can see, because
+ *   `log.warn`'s first parameter is untyped.
+ *
+ * Neither closes it alone. The second draft of this comment credited the test
+ * alone (it could not see the leak: `value` is a declared field, so the edit
+ * overwrites rather than adds, and raw equals redacted for every key shipping
+ * today). The third credited the type alone, and missed that removing the seam
+ * removes the type. The test only became possible once it stopped assuming the
+ * registry was fixed: flipping a definition to `secret: true` for one test
+ * makes raw and redacted differ on a fully reachable input.
+ */
+export function securitySensitiveAuditLine(
+  input: SecuritySensitiveAuditInput,
+): SecuritySensitiveAuditLine | null {
+  const { key, action, value, actorId, orgId } = input;
+  const fields = securitySensitiveAuditFields(key, action, value);
+  if (!fields) return null;
+  // A definition belonging to some OTHER key tells us nothing about this one,
+  // so it is discarded rather than trusted, and `redactAuditValue` fails closed
+  // on the `undefined`.
+  //
+  // ⚠️ This closes "someone else's definition". It structurally CANNOT close
+  // "this key's definition, lying about `secret`" — a fabricated
+  // `{ key, secret: false }` passes the check and reaches the verbatim arm. The
+  // registry-flip test in `settings-audit-log.test.ts` is what covers that, by
+  // making redacted and raw differ on a reachable input.
+  const mismatched = input.definition !== undefined && input.definition.key !== key;
+  const redacted = redactAuditValue(mismatched ? undefined : input.definition, value);
+  return {
+    key,
+    action,
+    value: redacted.value,
+    valueMasked: redacted.masked,
+    // A mismatch is a caller bug, not registry drift; reporting it as drift
+    // sends the operator to grep a registry where the key is present and fine.
+    maskReason: mismatched ? "definition_mismatch" : redacted.maskReason,
+    disablesControl: fields.disablesControl,
+    widensAuthority: fields.widensAuthority,
+    actorId,
+    orgId,
+    event: "security_setting.changed",
+  };
+}
+
+/**
  * Emit a security-audit `log.warn` when a {@link SECURITY_SENSITIVE_KEYS}
  * setting is changed or cleared at runtime. `action` is `set` (a new value
  * persisted) or `clear` (override deleted → reverts to env/default). A no-op
  * for non-sensitive keys.
+ *
+ * ⚠️ It emits through {@link emitSecuritySensitiveAudit} rather than calling
+ * `log.warn` directly, and the indirection is load-bearing: `log.warn` takes
+ * an untyped object, so `log.warn({ ...line, value }, …)` — #5180 verbatim —
+ * has no target type to be checked against and compiles. Routed through a
+ * parameter typed {@link SecuritySensitiveAuditLine}, the same edit fails to
+ * type-check, because `value` there is an {@link AuditedValue}.
  */
 function auditSecuritySensitiveChange(
   key: string,
-  action: "set" | "clear",
+  action: SettingAuditAction,
   value: string | undefined,
   actorId: string | undefined,
   orgId: string | undefined,
 ): void {
-  const fields = securitySensitiveAuditFields(key, action, value);
-  if (!fields) return;
-  log.warn(
-    {
-      key,
-      action,
-      value,
-      disablesControl: fields.disablesControl,
-      widensAuthority: fields.widensAuthority,
-      actorId,
-      orgId,
-      event: "security_setting.changed",
-    },
-    `Security-sensitive setting ${action === "clear" ? "override cleared" : "changed"} at runtime: ${key}`,
+  const line = securitySensitiveAuditLine({
+    key,
+    definition: getSettingDefinition(key),
+    action,
+    value,
+    actorId,
+    orgId,
+  });
+  if (!line) return;
+  emitSecuritySensitiveAudit(line);
+}
+
+/**
+ * `log.warn`, narrowed to this one payload shape.
+ *
+ * ⚠️ **The narrowing is what gives {@link AuditedValue} teeth, and calling
+ * `log.warn` directly does not.** Pino types its log functions as
+ * `<T extends object>(obj: T, …)`, so `T` is INFERRED from whatever literal you
+ * hand it: there is no target type, no excess-property check, and no branded-
+ * field check. Measured — `log.warn({ ...line, value: raw }, …)` type-checks
+ * clean, while the same object assigned into a `SecuritySensitiveAuditLine`
+ * position is `TS2322`. A brand only bites where something is expected to have
+ * it. This alias creates that expectation.
+ */
+const warnAuditLine: (line: SecuritySensitiveAuditLine, msg: string) => void = (line, msg) => {
+  log.warn(line, msg);
+};
+
+/**
+ * Write one built audit line to the log stream.
+ *
+ * ⚠️ Takes the payload and nothing else, deliberately, and emits through
+ * {@link warnAuditLine} rather than `log.warn`. Both halves are load-bearing:
+ * the parameter list keeps the raw value out of scope, and the typed alias
+ * makes putting it back a compile error rather than a silent no-op.
+ *
+ * The message is built from `line`, never from the caller's arguments — a
+ * template literal is a leak channel no type can close, so the only defence
+ * there is that the raw value is not reachable from here. `settings-audit-log.
+ * test.ts` asserts the message text and that it does not contain the value.
+ */
+function emitSecuritySensitiveAudit(line: SecuritySensitiveAuditLine): void {
+  warnAuditLine(
+    line,
+    `Security-sensitive setting ${line.action === "clear" ? "override cleared" : "changed"} at runtime: ${line.key}`,
   );
 }
 

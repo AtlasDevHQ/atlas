@@ -128,6 +128,7 @@ describeIfPg("warehouse run lock (real Postgres)", () => {
     snapshotAt: Date,
     status: string,
     gate?: Promise<void>,
+    onStart?: () => void,
   ): WarehouseProducerDeps {
     return {
       loadEntity: async () => ACCOUNTS_YAML,
@@ -136,6 +137,9 @@ describeIfPg("warehouse run lock (real Postgres)", () => {
         request: request as ValidatedSnapshotRequest,
       }),
       runSnapshot: async () => {
+        // Signalled BEFORE awaiting the gate, so a waiter knows run A is
+        // genuinely inside the snapshot — and therefore holding its lock.
+        onStart?.();
         if (gate) await gate;
         return [{ [SUBJECT_ALIAS]: SUBJECT, [`${DIMENSION_ALIAS_PREFIX}0`]: status }];
       },
@@ -143,11 +147,40 @@ describeIfPg("warehouse run lock (real Postgres)", () => {
     };
   }
 
-  const produce = (snapshotAt: Date, status: string, gate?: Promise<void>) =>
+  const produce = (
+    snapshotAt: Date,
+    status: string,
+    gate?: Promise<void>,
+    onStart?: () => void,
+  ) =>
     runWarehouseProducer(
       { workspaceId: workspace, triggeredBy: "user-1" },
-      deps(snapshotAt, status, gate),
+      deps(snapshotAt, status, gate, onStart),
     );
+
+  /**
+   * A barrier pair: `started` resolves when run A is inside `runSnapshot`,
+   * `open` releases it.
+   *
+   * ⚠️ **This replaced a 50 ms `setTimeout`, and the sleep was not merely
+   * slow — it flaked in the direction that HIDES a defect.** In the overlap test
+   * a late run A fails loudly (visible). In the two-workspace scoping test it
+   * does the opposite: under a global-lock mutation, if B goes first it
+   * completes and releases before A arrives, so both acquire and the test passes
+   * while the lock is fleet-wide. A test whose flake is green on the mutation it
+   * exists to catch is worse than no test.
+   */
+  function barrier(): { started: Promise<void>; onStart: () => void; open: () => void; gate: Promise<void> } {
+    let onStart!: () => void;
+    let open!: () => void;
+    const started = new Promise<void>((resolve) => {
+      onStart = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    return { started, onStart, open, gate };
+  }
 
   async function episodeSourceIds(): Promise<string[]> {
     const { rows } = await pool.query<{ source_id: string }>(
@@ -170,18 +203,14 @@ describeIfPg("warehouse run lock (real Postgres)", () => {
     "declines the second of two overlapping runs — one snapshot's worth of facts lands",
     async () => {
       await enroll("status");
-      let open!: () => void;
-      const gate = new Promise<void>((resolve) => {
-        open = resolve;
-      });
+      const { started, onStart, open, gate } = barrier();
 
       // Run A is inside `runSnapshot`, holding the lock, when B arrives.
       const first = withWarehouseRunLock(workspace, () =>
-        produce(new Date("2026-08-16T10:00:00.000Z"), "active", gate),
+        produce(new Date("2026-08-16T10:00:00.000Z"), "active", gate, onStart),
       );
-      // Let A reach the barrier before B tries the lock. Without this the two
-      // could interleave the other way and the test would pass by luck.
-      await new Promise((r) => setTimeout(r, 50));
+      // Deterministic: A has ENTERED the snapshot, so it holds the lock.
+      await started;
 
       let secondRan = false;
       const second = await withWarehouseRunLock(workspace, () => {
@@ -210,6 +239,38 @@ describeIfPg("warehouse run lock (real Postgres)", () => {
   );
 
   it(
+    "RELEASES the lock — a second, sequential run acquires and writes",
+    async () => {
+      // ⚠️ **Nothing in the tree could see a wrong unlock key.** The unit suite
+      // asserts the statement's bound params and that it contains
+      // `pg_advisory_unlock`; both survive `pg_advisory_unlock($1, 0)`. And in
+      // `-pg`, a wrong-key unlock returns `false`, which poisons and DESTROYS the
+      // socket — so the server drops the session lock anyway and every overlap
+      // assertion still holds. The lock would silently depend on connection
+      // destruction, with a `log.error` and a torn-down pooled connection on
+      // every single run. Only a sequential SECOND acquisition can tell.
+      await enroll("status");
+
+      const first = await withWarehouseRunLock(workspace, () =>
+        produce(new Date("2026-08-16T13:00:00.000Z"), "active"),
+      );
+      const second = await withWarehouseRunLock(workspace, () =>
+        produce(new Date("2026-08-16T13:05:00.000Z"), "churned"),
+      );
+
+      expect(first.acquired).toBe(true);
+      expect(second.acquired).toBe(true);
+      // Two genuine readings at two instants — the re-emission ADR-0037 §4
+      // describes, which can only happen if the first lock was actually let go.
+      expect(await episodeSourceIds()).toEqual([
+        `warehouse:${ENTITY}@2026-08-16T13:00:00.000Z`,
+        `warehouse:${ENTITY}@2026-08-16T13:05:00.000Z`,
+      ]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
     "is WORKSPACE-scoped — two workspaces overlapping both acquire and both write",
     async () => {
       // ⚠️ **Nothing else in this file can tell a workspace-scoped lock from a
@@ -227,15 +288,17 @@ describeIfPg("warehouse run lock (real Postgres)", () => {
         [other, ENTITY],
       );
 
-      let open!: () => void;
-      const gate = new Promise<void>((resolve) => {
-        open = resolve;
-      });
+      const { started, onStart, open, gate } = barrier();
 
       const first = withWarehouseRunLock(workspace, () =>
-        produce(new Date("2026-08-16T12:00:00.000Z"), "active", gate),
+        produce(new Date("2026-08-16T12:00:00.000Z"), "active", gate, onStart),
       );
-      await new Promise((r) => setTimeout(r, 50));
+      // ⚠️ Deterministic, and here it is load-bearing rather than tidy: with a
+      // sleep, a late run A lets B complete and release FIRST, so under a
+      // global-lock mutation both still acquire and this test passes while the
+      // lock is fleet-wide — a flake that is green on the defect it exists to
+      // catch.
+      await started;
 
       // A DIFFERENT workspace, while the first still holds its lock.
       const second = await withWarehouseRunLock(other, () =>
@@ -267,15 +330,12 @@ describeIfPg("warehouse run lock (real Postgres)", () => {
     "POSITIVE CONTROL: without the lock the same overlap writes BOTH readings",
     async () => {
       await enroll("status");
-      let open!: () => void;
-      const gate = new Promise<void>((resolve) => {
-        open = resolve;
-      });
+      const { started, onStart, open, gate } = barrier();
 
       // Identical overlap, no lock. This is the state the codebase was in before
       // #5228, and the assertions below are the damage the lock removes.
-      const first = produce(new Date("2026-08-16T11:00:00.000Z"), "active", gate);
-      await new Promise((r) => setTimeout(r, 50));
+      const first = produce(new Date("2026-08-16T11:00:00.000Z"), "active", gate, onStart);
+      await started;
       const second = await produce(new Date("2026-08-16T11:00:00.500Z"), "churned");
       open();
       await first;

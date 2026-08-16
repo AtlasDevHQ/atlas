@@ -2038,11 +2038,12 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
   {
     // The warehouse producer's cadence trigger (#5228, ADR-0039).
     //
-    // ⚠️ Default OFF, and it is the ONLY brain cycle in this section that is.
-    // Its neighbours count rosters and resolve memberships — availability work,
-    // which ADR-0040 says is automatic. This one files claims into the review
-    // queue a human has to drain, which is the resource ADR-0039 exists to
-    // protect, so a workspace gets scheduled runs only after somebody said so.
+    // ⚠️ Default OFF, like the extraction cycle above and for the same reason:
+    // both file drafts into the review queue a human has to drain, which is the
+    // resource ADR-0039 exists to protect. The roster/membership cycles beside
+    // them (coverage snapshot, audience sync) default ON because they only count
+    // and resolve — ADR-0040: availability is automatic, authority never is. So
+    // a workspace gets scheduled runs only after somebody said so.
     // The manual `POST /admin/brain-enrollment/produce` is unaffected either
     // way; turning this on adds a second trigger, it does not gate the first.
     //
@@ -2056,10 +2057,8 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     // default is `"true"`, so their boot gate passes with nothing set and a
     // workspace override really is the only knob. This one defaults `"false"`:
     // with no platform value the fiber never starts, and a workspace switching
-    // itself on changes nothing. This comment used to claim the neighbours'
-    // behaviour verbatim — true for them, false here, in the direction where the
-    // feature silently does nothing. The platform switch turns the cadence ON;
-    // the workspace switch chooses who gets it.
+    // itself on changes nothing. **The platform switch turns the cadence ON; the
+    // workspace switch chooses who gets it.**
     key: "ATLAS_BRAIN_WAREHOUSE_CADENCE_ENABLED",
     section: "Knowledge Base",
     label: "Company Atlas Warehouse Cadence",

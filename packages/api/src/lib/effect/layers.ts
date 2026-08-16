@@ -327,12 +327,12 @@ export const SCHEDULER_WORK_SPAN_NAMES = {
   // non-zero count means part of a workspace's map is beyond its credentials,
   // which is a legitimate state and also what a revoked scope looks like.
   brain_coverage_snapshot: "atlas.scheduler.brain_coverage_snapshot",
-  // #5228 — the tier-1 warehouse producer's cadence trigger (ADR-0039). The one
-  // fiber in this record that WRITES CLAIMS rather than counting or resolving,
-  // which is why it is the one that is off by default per workspace.
-  // `workspaces_declined_locked` is the attribute worth watching: sustained
-  // non-zero means runs are overrunning the cadence, and it is the only signal
-  // that separates that from a quiet warehouse.
+  // #5228 — the tier-1 warehouse producer's cadence trigger (ADR-0039). Files
+  // drafts into the review queue, like `brain_extraction` above and unlike the
+  // roster cycles, which only count and resolve — which is why both of those
+  // two default OFF. `workspaces_declined_locked` is the attribute worth
+  // watching: sustained non-zero means runs are overrunning the cadence, and it
+  // is the only signal that separates that from a quiet warehouse.
   brain_warehouse_cadence: "atlas.scheduler.brain_warehouse_cadence",
   // #4457 — internal-DB scheduled backups. The tick claims the current
   // cadence window atomically (partial UNIQUE index on
@@ -2641,10 +2641,10 @@ export function makeSchedulerLive(
       // thereafter. Cadence stops being frightening once scope is human-chosen"
       // — and #5042 shipped only the operator's button. This is that cadence.
       //
-      // ⚠️ The one fiber here that FILES CLAIMS. Every other brain cycle counts
-      // or resolves; this one puts drafts in front of a person, so its
-      // per-workspace default is OFF while theirs are ON (ADR-0040: availability
-      // is automatic, authority never is).
+      // ⚠️ Files claims, like `brain_extraction`; unlike the coverage and
+      // audience cycles, which count and resolve. That is the split behind the
+      // defaults — this one and extraction are OFF, the roster cycles are ON
+      // (ADR-0040: availability is automatic, authority never is).
       //
       // The `yield* Migration` barrier above sequences it after `MigrationLive`,
       // so the eager boot tick cannot race the migration creating

@@ -22,6 +22,9 @@ import {
   withWarehouseRunLock,
 } from "@atlas/api/lib/brain/warehouse-run-lock";
 import type { InternalPoolClient } from "@atlas/api/lib/db/internal";
+import { RECONCILE_LOCK_NAMESPACE } from "@atlas/api/lib/brain/reconcile";
+import { VOCABULARY_LOCK_NAMESPACE } from "@atlas/api/lib/brain/vocabulary";
+import { IDENTITY_MUTATION_LOCK_NAMESPACE } from "@atlas/api/lib/brain/identity";
 
 const WORKSPACE = "ws-5228";
 
@@ -49,21 +52,41 @@ function recorder(opts: {
   const sql: string[] = [];
   const params: unknown[][] = [];
   const released: (Error | undefined)[] = [];
+  /** The key the lock was actually taken on — `null` until it is taken. */
+  let heldKey: string | null = null;
   const client: InternalPoolClient = {
     query: async (statement: string, args?: unknown[]) => {
       sql.push(statement);
       params.push(args ?? []);
+      // The KEY a statement resolves to: the advisory function's ARGUMENT LIST
+      // (`$1, hashtext($2)`) plus the values bound to it. Taking the argument
+      // list rather than the whole statement is what lets the lock's and the
+      // unlock's keys be compared despite their different result aliases.
+      const argList = /advisory_(?:un)?lock\((.*?)\)\s+AS/.exec(statement)?.[1] ?? statement;
+      const key = `${JSON.stringify(args ?? [])}|${argList}`;
       if (statement.includes("pg_try_advisory_lock")) {
         if (opts.lockThrows) throw opts.lockThrows;
+        const locked = "lock" in opts ? opts.lock : true;
+        if (locked === true) heldKey = key;
         // ⚠️ `in`, not `??`. With `opts.lock ?? true` a scripted `null` — one of
         // the unreadable verdicts this suite exists to pin — silently became
         // `true`, and the test asserting the throw passed the producer through
         // the lock instead. Caught by running it; reading it, `??` looks right.
-        return { rows: [{ locked: "lock" in opts ? opts.lock : true }] };
+        return { rows: [{ locked, key: 12345 }] };
       }
       if (statement.includes("pg_advisory_unlock")) {
         if (opts.unlockThrows) throw opts.unlockThrows;
-        return { rows: [{ released: "unlock" in opts ? opts.unlock : true }] };
+        if ("unlock" in opts) return { rows: [{ released: opts.unlock }] };
+        // ⚠️ **Models Postgres: releasing a key this session does not hold
+        // answers `false`.** A flat `true` agreed with ANY unlock statement — so
+        // changing `UNLOCK_SQL` to `pg_advisory_unlock($1, 0)` was green here,
+        // and green in `-pg` too (there the false answer poisons, the socket is
+        // destroyed, and the server drops the session lock anyway, so every
+        // overlap assertion still holds). The lock's correctness would have
+        // rested silently on connection destruction, tearing down a pooled
+        // connection on every single run. Only a fixture that knows which key it
+        // handed out can see it.
+        return { rows: [{ released: key === heldKey }] };
       }
       throw new Error(`unexpected statement: ${statement}`);
     },
@@ -91,6 +114,14 @@ describe("withWarehouseRunLock — acquiring", () => {
     // files a second reading, which is the duplicate the lock exists to prevent.
     expect(rec.sql[0]).not.toMatch(/pg_advisory_lock\(/);
     expect(rec.params[0]).toEqual([WAREHOUSE_RUN_LOCK_NAMESPACE, WORKSPACE]);
+  });
+
+  it("carries a NULL run result without merging it into the decline", async () => {
+    // The union's stated reason — "`null` is a value a producer trigger could
+    // legitimately return and the two must never merge" — had no test, so a
+    // `T | null` return type would have satisfied everything else in this file.
+    const rec = recorder({});
+    expect(await run(rec, async () => null)).toEqual({ acquired: true, value: null });
   });
 
   it("releases the lock and returns the client CLEAN when the run succeeds", async () => {
@@ -212,6 +243,36 @@ describe("withWarehouseRunLock — the release path", () => {
     expect(rec.released[0]).toBeInstanceOf(Error);
   });
 
+  it("does not let a THROWING release replace the run's error", async () => {
+    // ⚠️ The existing "does not swallow" test makes the UNLOCK STATEMENT throw,
+    // not `release` — so deleting the try/catch around `client.release(poison)`
+    // was green. node-postgres throws on a double release, and a `finally` that
+    // throws replaces the run's error with a pool-internals one, which is the
+    // error the caller actually needs.
+    const sql: string[] = [];
+    const client: InternalPoolClient = {
+      query: async (statement: string) => {
+        sql.push(statement);
+        return statement.includes("pg_try_advisory_lock")
+          ? { rows: [{ locked: true, key: 1 }] }
+          : { rows: [{ released: true }] };
+      },
+      release: () => {
+        throw new Error("Release called on client which has already been released");
+      },
+    };
+
+    await expect(
+      withWarehouseRunLock(
+        WORKSPACE,
+        async () => {
+          throw new Error("snapshot failed");
+        },
+        { connect: async () => client },
+      ),
+    ).rejects.toThrow("snapshot failed");
+  });
+
   it("does not swallow the RUN's error while destroying the connection", async () => {
     const rec = recorder({ unlockThrows: new Error("connection reset") });
 
@@ -295,15 +356,19 @@ describe("the advisory-lock namespace", () => {
     // 5024 while concluding "all eight are pairwise distinct" — so this list is
     // the one that has to be re-derived when a namespace is added.
     const peers = [
-      2870, // lead-outbox
-      3001, // chat-install gate
-      3158, // last-admin guard
-      3445, // Stripe webhook
-      3683, // demo seed
-      4235, // knowledge-collection install
-      4771, // brain reconcile stage
-      5022, // vocabulary
-      5024, // identity mutation
+      // The three that are EXPORTED are imported, so they cannot drift from
+      // their definitions. The other six are module-private constants, so a
+      // literal is the only option — the module docstring says which is which
+      // rather than claiming a derivation this test does not perform.
+      RECONCILE_LOCK_NAMESPACE,
+      VOCABULARY_LOCK_NAMESPACE,
+      IDENTITY_MUTATION_LOCK_NAMESPACE,
+      2870, // lead-outbox/outbox.ts
+      3001, // chat-install gate — billing/enforcement.ts
+      3158, // last-admin guard — db/internal.ts
+      3445, // Stripe webhook — db/internal.ts
+      3683, // demo seed — db/internal.ts
+      4235, // knowledge-collection install — billing/enforcement.ts
     ];
     expect(peers).not.toContain(WAREHOUSE_RUN_LOCK_NAMESPACE);
     expect(new Set(peers).size).toBe(peers.length);

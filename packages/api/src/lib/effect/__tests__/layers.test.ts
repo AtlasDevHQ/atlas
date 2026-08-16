@@ -589,6 +589,18 @@ describe("makeSchedulerLive", () => {
       expect(layersSource).toContain("getBillingReconcileIntervalMs");
       expect(layersSource).toContain("getUnclaimedGraceReapIntervalMs");
     });
+
+    test("the warehouse cadence is wired to its getter AND its gate (#5228)", () => {
+      // ⚠️ Both halves were orphanable, and the second one is the dangerous one.
+      // Re-hardcoding `intervalMs` leaves the registry knob doing nothing while
+      // all six interval tests stay green. Dropping `isWarehouseCadenceEnabled()`
+      // from the gate is worse: a DEFAULT-OFF fiber that files claims into a
+      // review queue then starts on every deployment with an internal DB, which
+      // is the ADR-0040 line this issue is built on.
+      expect(layersSource).toContain("getWarehouseCadenceIntervalMs");
+      expect(layersSource).toContain("isWarehouseCadenceEnabled");
+      expect(layersSource).toContain("runWarehouseCadenceCycle");
+    });
   });
 
   // ── registerPeriodicFiber behavioral contract (#4130) ─────────────────

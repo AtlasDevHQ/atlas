@@ -8,7 +8,7 @@
  *      itself rather than restated, because a test that hardcodes `false` beside
  *      a registry that says `true` is green and wrong.
  *   2. **The lock** — every scheduled run goes through it, and a decline is
- *      counted apart from a success. `../brain/__tests__/warehouse-run-lock-pg.test.ts`
+ *      counted apart from a success. `../../brain/__tests__/warehouse-run-lock-pg.test.ts`
  *      owns whether the lock actually excludes; this owns whether the cycle uses it.
  *   3. **The principal** — a scheduled run is distinguishable in the log from an
  *      operator-triggered one, and from the ATTRIBUTION principal, which is a
@@ -38,6 +38,7 @@ import {
   WAREHOUSE_CADENCE_WORKSPACES_SQL,
   getWarehouseCadenceIntervalMs,
   isWarehouseCadenceEnabled,
+  listEnrolledWorkspaces,
   runWarehouseCadenceCycle,
   type WarehouseCadenceDeps,
 } from "@atlas/api/lib/scheduler/brain-warehouse-cadence";
@@ -95,7 +96,7 @@ describe("warehouse cadence — enablement", () => {
    * file injects `isEnabled`, and the default assertion above reads the registry
    * — so flipping the predicate from `=== "true"` to its neighbours' `!== "false"`
    * killed NOTHING. Measured, not suspected: the mutation ran green across all
-   * fourteen tests.
+   * every test in this file.
    *
    * The two spellings are not equivalent, and the difference is the whole point
    * of the split. They agree on `"true"` and `"false"`; they disagree on
@@ -172,7 +173,7 @@ describe("warehouse cadence — enablement", () => {
  * the `isEnabled` survivor one file over.** Every seam is optional and the shared
  * `deps()` helper injects all four, so defaulting `withLock` to a pass-through —
  * the scheduled trigger taking NO LOCK, which is the entire subject of this
- * issue — left all fourteen tests green. Identity assertions are the cheapest
+ * issue — left the whole suite green. Identity assertions are the cheapest
  * thing that can fail here.
  */
 describe("warehouse cadence — the production wiring", () => {
@@ -180,9 +181,65 @@ describe("warehouse cadence — the production wiring", () => {
     expect(WAREHOUSE_CADENCE_DEFAULTS.withLock).toBe(withWarehouseRunLock);
   });
 
-  it("defaults the producer and enablement seams to the real ones", () => {
+  it("defaults the producer, enablement and workspace-scan seams to the real ones", () => {
     expect(WAREHOUSE_CADENCE_DEFAULTS.runProducer).toBe(runWarehouseProducer);
     expect(WAREHOUSE_CADENCE_DEFAULTS.isEnabled).toBe(isWarehouseCadenceEnabled);
+    // `listWorkspaces` had only a BEHAVIOUR test (it answers `[]` with no DB),
+    // which `async () => []` satisfies — so the substitute that makes the cadence
+    // silently consider zero workspaces forever was green.
+    expect(WAREHOUSE_CADENCE_DEFAULTS.listWorkspaces).toBe(listEnrolledWorkspaces);
+  });
+
+  /**
+   * ⚠️ **These two are the ones that matter, and the identity block above is not
+   * a substitute for them.** The identity assertions pin the CONSTANT; the cycle
+   * reads the constant at its own use site, and nothing tied the two together —
+   * so replacing just the `withLock` fallback with a pass-through, leaving
+   * `WAREHOUSE_CADENCE_DEFAULTS` untouched, left the whole suite green. Measured.
+   * The tests below call the cycle with the seam OMITTED, so they observe the
+   * resolution rather than the table.
+   */
+  it("reaches the REAL lock when the withLock seam is not injected", async () => {
+    let produced = 0;
+    const result = await runWarehouseCadenceCycle({
+      listWorkspaces: async () => ["ws-x"],
+      isEnabled: () => true,
+      runProducer: async () => {
+        produced++;
+        return report();
+      },
+      // withLock deliberately NOT injected.
+    });
+
+    // No internal DB in this suite, so the real lock's `connect()` throws, the
+    // per-workspace catch counts it, and the producer never runs. A pass-through
+    // default would have run it and reported success — which is this issue's
+    // entire defect.
+    expect(produced).toBe(0);
+    expect(result.workspacesFailed).toBe(1);
+    expect(result.workspacesSucceeded).toBe(0);
+  });
+
+  it("reaches the REAL enablement read when the isEnabled seam is not injected", async () => {
+    let produced = 0;
+    const result = await runWarehouseCadenceCycle({
+      listWorkspaces: async () => ["ws-x"],
+      runProducer: async () => {
+        produced++;
+        return report();
+      },
+      withLock: async <T,>(_w: string, fn: () => Promise<T>) => ({
+        acquired: true as const,
+        value: await fn(),
+      }),
+      // isEnabled deliberately NOT injected — and the env var is unset, so the
+      // registry default (`"false"`) is what decides.
+    });
+
+    // `() => true` as the default would be the sweep ADR-0039 rejects, arriving
+    // as a default rather than as a feature.
+    expect(produced).toBe(0);
+    expect(result.workspacesSkippedDisabled).toBe(1);
   });
 
   it("answers NO enrolled workspaces — not an error — when there is no internal DB", async () => {
@@ -339,6 +396,64 @@ describe("warehouse cadence — what it tallies", () => {
     // degraded, because nothing threw out of the run.
     expect(result.workspacesSucceeded).toBe(2);
     expect(result.status).toBe("success");
+    // The span's `error` names it too. Without this, a tick where every edge
+    // pass threw reports `status: "success"` and `error: null`, so the two
+    // attributes an alert is built on both say nothing happened.
+    expect(result.error).toContain("entity-edge pass failed at proposing");
+  });
+
+  it("does not flag the HEALTHY `proposed` arm — the union has three members", async () => {
+    // ⚠️ The fixtures used only `nothing-to-propose` and `failed`, so widening
+    // the check to `!== "nothing-to-propose"` was green — and in production that
+    // raises the counter on every clean run that actually had edges to propose,
+    // i.e. pages a human about success. The third arm is the whole test.
+    const result = await runWarehouseCadenceCycle(
+      deps({
+        listWorkspaces: async () => ["ws-a", "ws-b", "ws-c"],
+        runProducer: async (p) => {
+          if (p.workspaceId === "ws-a") {
+            return report({
+              entityEdges: {
+                kind: "failed",
+                reached: {
+                  phase: "proposing",
+                  entries: 3,
+                  ambiguous: 0,
+                  selfEdges: 0,
+                  unmintedIds: 0,
+                  proposalsAttempted: 2,
+                },
+                message: "edge pass threw",
+              },
+            });
+          }
+          if (p.workspaceId === "ws-b") {
+            return report({
+              entityEdges: {
+                kind: "proposed",
+                entries: 4,
+                ambiguous: 0,
+                selfEdges: 0,
+                unmintedIds: 0,
+                counters: {
+                  queued: 4,
+                  autoApproved: 0,
+                  deduped: 0,
+                  alreadyApproved: 0,
+                  rejected: 0,
+                  refused: 0,
+                },
+              },
+            });
+          }
+          return report();
+        },
+      }),
+    );
+
+    // Exactly ONE — the failed arm. Three succeeded.
+    expect(result.workspacesEdgePassFailed).toBe(1);
+    expect(result.workspacesSucceeded).toBe(3);
   });
 });
 
@@ -407,8 +522,38 @@ describe("warehouse cadence — the audit trail", () => {
     // The producer's own log lines are keyed by `requestId`, and a background
     // fiber has none — without this, a `snapshot-failed` refusal (which returns
     // successfully and exists nowhere but the log) has nothing to group by.
-    expect(seen[0]).toStartWith("whc-");
+    // ⚠️ The instant is asserted, not just the stem: `whc-` alone was satisfied
+    // by a hardcoded constant, which makes two ticks share one id and defeats
+    // the "pull a whole tick out of the log" purpose entirely.
+    expect(seen[0]).toMatch(/^whc-\d{4}-\d{2}-\d{2}T[\d:.]+Z-[a-z0-9]+$/);
     expect(seen[0]).toBe(seen[1] as string);
+  });
+
+  it("mints a DIFFERENT correlation id per tick, from the injected clock", async () => {
+    const idOf = async (at: string): Promise<string> => {
+      const seen: string[] = [];
+      await runWarehouseCadenceCycle(
+        deps({
+          listWorkspaces: async () => ["ws-a"],
+          now: () => new Date(at),
+          runProducer: async (p) => {
+            seen.push(p.requestId);
+            return report();
+          },
+        }),
+      );
+      return seen[0] as string;
+    };
+
+    const first = await idOf("2026-08-16T00:00:00.000Z");
+    const second = await idOf("2026-08-17T00:00:00.000Z");
+
+    // Two ticks, two ids. A constant satisfied every other assertion in the file.
+    expect(first).not.toBe(second);
+    // And the `now` seam is actually read — otherwise it is dead weight the
+    // tests pretend to exercise.
+    expect(first).toContain("2026-08-16T00:00:00.000Z");
+    expect(second).toContain("2026-08-17T00:00:00.000Z");
   });
 });
 
@@ -457,13 +602,49 @@ describe("warehouse cadence — failure handling", () => {
     expect(result.workspacesFailed).toBe(1);
     expect(result.workspacesSucceeded).toBe(1);
     expect(result.error).toContain("settings cache corrupt");
+    // ⚠️ And it says WHICH fault. Folded into the run's catch, the same throw
+    // reads "a scheduled producer run failed" — for a workspace where no run was
+    // attempted and nothing touched the warehouse, sending an operator to the
+    // customer's datasource for a defect in Atlas's settings path. Asserting only
+    // the counters left that message free to be wrong.
+    expect(result.error).toContain("enablement read failed");
+    // NOT attempted: the run never started, so the counter must not claim it did.
+    expect(result.workspacesAttempted).toBe(1);
   });
 
-  it("de-duplicates one fault shared by many workspaces", async () => {
-    // Ten tenants behind one broken dependency otherwise write the same sentence
-    // ten times onto a span attribute — and the field's own docstring called them
-    // "distinct" while nothing de-duplicated. The workspace prefix is what keeps
-    // genuinely different faults apart after the dedupe.
+  it("puts a workspace in exactly ONE bucket when the producer's report is malformed", async () => {
+    // ⚠️ **The guard is the ORDER of two statements, and only a drifted report
+    // can see it.** Every read off `report` happens before `workspacesSucceeded++`
+    // — with the increment first, a report missing `refusals` threw AFTER the
+    // workspace was counted succeeded, the catch then counted it failed, and the
+    // counters stopped partitioning: `succeeded + failed > attempted`, with
+    // `status: degraded` blaming the producer for a report-shape defect.
+    //
+    // Every other fixture in this file is well-formed, so the ordering was
+    // unfalsifiable until this test existed.
+    const result = await runWarehouseCadenceCycle(
+      deps({
+        listWorkspaces: async () => ["ws-a"],
+        runProducer: async () =>
+          // A report that lost `refusals` — the degraded-report case the route
+          // suite models the same way.
+          ({ ...report(), refusals: undefined }) as unknown as WarehouseProducerReport,
+      }),
+    );
+
+    expect(result.workspacesAttempted).toBe(1);
+    expect(result.workspacesSucceeded + result.workspacesFailed).toBe(1);
+    expect(result.workspacesSucceeded).toBe(0);
+    expect(result.workspacesFailed).toBe(1);
+  });
+
+  it("keeps identically-failing workspaces DISTINCT rather than collapsing them", async () => {
+    // ⚠️ Renamed from "de-duplicates one fault shared by many workspaces", which
+    // was the opposite of what it asserted: three reasons from three
+    // identically-failing workspaces is the NON-deduplicated answer. The old name
+    // described a `reasons.includes` guard that the workspace prefix had already
+    // made unreachable — deleting that guard changed nothing, so the test was
+    // certifying dead code.
     const result = await runWarehouseCadenceCycle(
       deps({
         listWorkspaces: async () => ["ws-a", "ws-b", "ws-c"],
@@ -474,12 +655,16 @@ describe("warehouse cadence — failure handling", () => {
     );
 
     expect(result.workspacesFailed).toBe(3);
-    // Three DISTINCT reasons, because each is prefixed by its own workspace —
-    // and the count is bounded rather than unbounded.
-    expect(result.error?.split("; ")).toHaveLength(3);
+    // The CONTENT, not just the count: three tenants down must be attributable to
+    // three tenants, which is the whole reason the prefix exists.
+    expect(result.error?.split("; ").map((r) => r.split(":")[0])).toEqual([
+      "ws-a",
+      "ws-b",
+      "ws-c",
+    ]);
   });
 
-  it("bounds the reason list rather than growing it per workspace", async () => {
+  it("bounds the reason list, keeps the FIRST five, and counts the overflow", async () => {
     const result = await runWarehouseCadenceCycle(
       deps({
         listWorkspaces: async () => ["w1", "w2", "w3", "w4", "w5", "w6", "w7"],
@@ -490,9 +675,15 @@ describe("warehouse cadence — failure handling", () => {
     );
 
     expect(result.workspacesFailed).toBe(7);
-    // FAILURE_REASONS_MAX. Unbounded, a thousand-tenant region writes a thousand
-    // sentences onto one span attribute.
-    expect(result.error?.split("; ")).toHaveLength(5);
+    const parts = result.error?.split("; ") ?? [];
+    // ⚠️ WHICH five, not just how many. Asserting only the length let a bound
+    // that keeps the LAST five (push-then-shift) pass identically — and the two
+    // differ for an operator reading a truncated list.
+    expect(parts.slice(0, 5).map((r) => r.split(":")[0])).toEqual(["w1", "w2", "w3", "w4", "w5"]);
+    // The overflow ANNOUNCES itself. A truncated string with no "+N more" is one
+    // an operator reads as the complete list of what went wrong.
+    expect(parts[5]).toContain("+2 further faults");
+    expect(parts[5]).toContain("whc-");
   });
 
   it("reports FAILURE, not success, when the workspace scan itself throws", async () => {
@@ -579,6 +770,20 @@ describe("warehouse cadence — the interval knob", () => {
         expect(getWarehouseCadenceIntervalMs()).toBe(MIN_WAREHOUSE_CADENCE_INTERVAL_MS),
       );
     });
+
+    it.each(["0", "-3"])(
+      "falls back to the default — not the floor — on the non-positive value %p",
+      (value) => {
+        // ⚠️ Deleting `|| hours <= 0` was green, because these two inputs then
+        // reach the CLAMP and come back as one hour. The registry description
+        // promises "non-positive or unparseable values fall back to the default",
+        // so the clamp answer is a documented-contract violation — and it is
+        // distinguishable only because MIN (1h) and DEFAULT (24h) differ.
+        withIntervalEnv(value, () =>
+          expect(getWarehouseCadenceIntervalMs()).toBe(DEFAULT_WAREHOUSE_CADENCE_INTERVAL_MS),
+        );
+      },
+    );
 
     it("falls back to the default on an unparseable value", () => {
       withIntervalEnv("abc", () =>

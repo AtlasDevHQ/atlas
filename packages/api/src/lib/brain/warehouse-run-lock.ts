@@ -24,13 +24,18 @@
  *
  * ## A SESSION lock, not a transaction lock, and that is forced
  *
- * Every other advisory lock in the tree is `pg_advisory_xact_lock` inside one
- * transaction (`internal.ts`). A producer run cannot be: it opens **one
- * transaction per entity** (`withBrainTransaction`, and the per-entity `catch`
- * that turns a failure into a typed refusal depends on that boundary). A
- * transaction-scoped lock would release at the first entity's COMMIT and guard
- * the run's first slice only — which is worse than no lock, because it looks
- * like one.
+ * Every two-arg, workspace-scoped advisory lock in the tree is
+ * `pg_advisory_xact_lock` inside one transaction (`internal.ts`). A producer run
+ * cannot be: it opens **one transaction per entity** (`withBrainTransaction`,
+ * and the per-entity `catch` that turns a failure into a typed refusal depends
+ * on that boundary). A transaction-scoped lock would release at the first
+ * entity's COMMIT and guard the run's first slice only — which is worse than no
+ * lock, because it looks like one.
+ *
+ * The session-scoped shape it takes instead is not new here: `db/migrate.ts` and
+ * `db/backfill-plugin-config.ts` already hold a single-arg session lock on a
+ * dedicated client with an explicit unlock. This applies the same shape per
+ * workspace rather than per process.
  *
  * So the lock is held on a DEDICATED pooled client for the whole run, and it is
  * released explicitly. That has two consequences a caller must respect:
@@ -57,6 +62,18 @@
  * than being handed a fabricated empty report: "a run is already in progress" and
  * "your reach produced nothing" are different sentences, and an operator who
  * cannot tell them apart will un-enroll a working pair.
+ *
+ * ⚠️ **The peers' `hashtext`-collision argument does NOT transfer to this lock.**
+ * Every two-arg peer in `db/internal.ts` carries the same reassurance — *"a
+ * cross-workspace hash collision only costs extra serialization, never
+ * correctness"* — and that holds because they are WAITING locks
+ * (`pg_advisory_xact_lock`). A collision here does not serialize, it DECLINES,
+ * and the decline is reported as *"a run is already in progress for this
+ * workspace"* about a workspace that has no run. The blast radius is one missed
+ * tick (the next one runs, and the loop is sequential, so it needs concurrent
+ * replicas or an operator press to bite at all) — but it is a false sentence in
+ * an operator's log, so the decline line carries the resolved key to make a
+ * collision greppable.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -82,16 +99,20 @@ const log = createLogger("brain.warehouse-run-lock");
  * peers and concluded "all eight are pairwise distinct" — omitting `5022` and
  * `5024`, both live two-arg namespaces. There was no collision, which is the
  * problem: a sentence that reads as a completed audit of the space, and isn't
- * one, is how the NEXT namespace collides. `__tests__/warehouse-run-lock.test.ts`
- * re-derives the peer set from the tree and pins this constant against
- * hand-typed literals, so neither the list nor the value can drift alone.
+ * one, is how the NEXT namespace collides.
+ *
+ * `__tests__/warehouse-run-lock.test.ts` pins it, and the three peers that are
+ * EXPORTED constants are IMPORTED there rather than retyped, so those three
+ * cannot drift from their definitions. The other six are literals because their
+ * constants are module-private — the test says which is which, rather than
+ * claiming a derivation it does not perform.
  */
 export const WAREHOUSE_RUN_LOCK_NAMESPACE = 5228;
 
 /**
  * The lock reported something that is neither `true` nor `false`.
  *
- * Its own class, and it is deliberately not folded into "declined". A reader
+ * Its own class. A reader
  * that cannot parse `pg_try_advisory_lock`'s answer does not know whether the
  * lock is held, and the two safe-looking guesses are both wrong in the direction
  * that matters: treating it as ACQUIRED runs the producer unguarded, and
@@ -118,8 +139,29 @@ export interface WarehouseRunLockDeps {
   readonly connect?: () => Promise<InternalPoolClient>;
 }
 
-const TRY_LOCK_SQL = "SELECT pg_try_advisory_lock($1, hashtext($2)) AS locked";
+// `key` comes back so a `hashtext` collision — two workspaces resolving to one
+// int4 — is visible by grep. Without it, a decline naming the wrong workspace is
+// indistinguishable in the log from a genuine one.
+const TRY_LOCK_SQL =
+  "SELECT pg_try_advisory_lock($1, hashtext($2)) AS locked, hashtext($2) AS key";
 const UNLOCK_SQL = "SELECT pg_advisory_unlock($1, hashtext($2)) AS released";
+
+/** The error's class name — non-secret, and lost when a stack is scrubbed away. */
+function errorName(err: unknown): string {
+  return err instanceof Error ? err.name : typeof err;
+}
+
+/**
+ * A pg `SQLSTATE`, when the thrown value carries one.
+ *
+ * Five characters, from a fixed vocabulary, and it cannot contain a credential —
+ * which is what makes it safe to log beside a scrubbed message.
+ */
+function pgCode(err: unknown): string | undefined {
+  if (typeof err !== "object" || err === null) return undefined;
+  const code = (err as { code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
+}
 
 /**
  * Run `fn` holding this workspace's producer lock, or decline.
@@ -154,10 +196,9 @@ export async function withWarehouseRunLock<T>(
   /**
    * Set when we cannot PROVE the session is lock-free.
    *
-   * ⚠️ **`held === false` does not mean "nothing was locked", and assuming it did
-   * was this module's worst bug** (#5228 review, round 1 — found independently by
-   * two reviewers). Two paths leave the try block without setting `held`, and on
-   * both the server may already hold the lock:
+   * ⚠️ **`held === false` does not mean "nothing was locked".** Two paths leave
+   * the try block without setting `held`, and on both the server may already
+   * hold the lock:
    *
    *   - the ACQUISITION STATEMENT REJECTING. Measured rather than argued: a
    *     session-scoped advisory lock taken inside a transaction survives that
@@ -170,31 +211,31 @@ export async function withWarehouseRunLock<T>(
    *     what a driver, a pooling proxy or a `::text` cast produce for a lock that
    *     genuinely WAS acquired.
    *
-   * Both used to `release()` the client CLEAN, which pools a connection holding a
-   * permanent lock — verbatim the failure {@link WarehouseRunLockContractError}
-   * spends its docstring refusing to allow, one path over. Destroying a socket on
-   * a fault that fires ~never is trivially cheaper than a wedged pool slot, so the
-   * default is "cannot prove it is free ⇒ destroy it".
+   * Destroying a socket on a fault that fires ~never is trivially cheaper than a
+   * wedged pool slot, so the default is "cannot prove it is free ⇒ destroy it".
    */
-  let lockStateUnknown = false;
+  let lockStateUnknown: "acquisition-rejected" | "unreadable-verdict" | undefined;
   try {
-    let res: { rows: Record<string, unknown>[] };
+    // `Awaited<ReturnType<...>>` rather than a hand-written shape: the real
+    // return also carries `rowCount`, and a literal annotation is a claim about
+    // another module that drifts.
+    let res: Awaited<ReturnType<InternalPoolClient["query"]>>;
     try {
       res = await client.query(TRY_LOCK_SQL, [WAREHOUSE_RUN_LOCK_NAMESPACE, workspaceId]);
     } catch (err) {
-      lockStateUnknown = true;
+      lockStateUnknown = "acquisition-rejected";
       throw err instanceof Error ? err : new Error(String(err));
     }
     const locked = res.rows[0]?.locked;
     if (locked === false) {
       log.info(
-        { workspaceId },
+        { workspaceId, lockKey: res.rows[0]?.key },
         "Warehouse producer: a run is already in progress for this workspace — declining rather than queueing a second reading",
       );
       return { acquired: false };
     }
     if (locked !== true) {
-      lockStateUnknown = true;
+      lockStateUnknown = "unreadable-verdict";
       throw new WarehouseRunLockContractError(
         `pg_try_advisory_lock answered ${typeof locked} rather than a boolean — the warehouse run lock cannot report whether it is held.`,
       );
@@ -203,12 +244,19 @@ export async function withWarehouseRunLock<T>(
     return { acquired: true, value: await fn() };
   } finally {
     if (!held && lockStateUnknown) {
+      // ⚠️ The CAUSE, not one sentence for both. The two paths lead an operator
+      // to different places: a rejected acquisition points at the internal DB's
+      // health and statement timeouts, an unreadable verdict points at the
+      // driver, a pooling proxy or a `::text` cast. One message would be right
+      // half the time.
       poison = new Error(
-        "the warehouse run lock's acquisition verdict was unreadable — the session may hold it",
+        `the warehouse run lock's state is unknown (${lockStateUnknown}) — the session may hold it`,
       );
       log.error(
-        { workspaceId },
-        "Warehouse producer: could not establish whether the run lock was taken — destroying the connection rather than pooling a session that may hold it",
+        { workspaceId, cause: lockStateUnknown },
+        lockStateUnknown === "acquisition-rejected"
+          ? "Warehouse producer: the run-lock acquisition statement was rejected — a session-scoped lock survives its transaction's rollback, so the session may hold it; destroying the connection"
+          : "Warehouse producer: pg_try_advisory_lock answered a shape this reader cannot parse — the session may hold it; destroying the connection",
       );
     }
     if (held) {
@@ -227,7 +275,13 @@ export async function withWarehouseRunLock<T>(
           // `errorMessage`, not the raw text: `error-scrub.ts` names pg error
           // strings as exactly the class that echoes a connection string, and a
           // failed unlock is the most likely place to meet one.
-          { workspaceId, err: errorMessage(err) },
+          //
+          // ⚠️ The scrub costs the STACK, which `warehouse-producer.ts` calls
+          // "the actionable half" for a pool-or-lock failure — so the two
+          // non-secret discriminators are carried back explicitly. `pgCode`
+          // (`57014`, `08006`, `53300`) is the single most useful field for this
+          // class and cannot contain a credential.
+          { workspaceId, err: errorMessage(err), errName: errorName(err), pgCode: pgCode(err) },
           "Warehouse producer: releasing the run lock failed — destroying the connection so the session lock cannot outlive it",
         );
       }
@@ -239,9 +293,18 @@ export async function withWarehouseRunLock<T>(
       // would REPLACE the run's error — the thing the caller actually needs —
       // with a pool-internals one. Logged rather than marked
       // `// intentionally ignored:`, since that marker means silence.
+      //
+      // ⚠️ **Two messages, because "the run is unaffected" is only half the
+      // story when we were POISONING.** If `poison` was set and this threw, the
+      // socket may not have been destroyed by us — which is the wedged-pool-slot
+      // outcome the whole `lockStateUnknown` mechanism exists to prevent,
+      // arriving through the one seam that runs after it. A single reassuring
+      // sentence would be the last word on it.
       log.error(
-        { workspaceId, err: errorMessage(err) },
-        "Warehouse producer: releasing the run lock's connection threw — the run's own outcome is unaffected",
+        { workspaceId, err: errorMessage(err), poisoned: poison !== undefined },
+        poison
+          ? "Warehouse producer: DESTROYING the run lock's connection threw — the socket may have been pooled while still holding this workspace's session lock; the run's own outcome is unaffected"
+          : "Warehouse producer: releasing the run lock's connection threw — the run's own outcome is unaffected",
       );
     }
   }

@@ -305,7 +305,7 @@ const ROOTS: readonly [
   {
     dir: fileURLToPath(new URL("../../../../scripts/", import.meta.url)),
     label: "packages/api/scripts/",
-    // 27 files, largest child `mutations/` at 13.
+    // 28 files, largest child `mutations/` at 14.
     minFiles: 20,
     sentinel: "mutate.ts",
   },

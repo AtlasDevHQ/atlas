@@ -11,25 +11,36 @@ suites are five different instruments and the interesting fact is usually
 which one holds a row up:
 
 - **producer** — what the run DECIDES against injected seams. The widest column:
-  the only one that catches the row cap, the collision guard, the absent-cell
-  split and the episode reader.
+  the only one that catches the collision guard, the `LIMIT` arithmetic, the
+  absent-cell split and the episode reader.
 - **logging** — PER-LEVEL sinks. A single-array capture cannot see a demotion, so
-  this is the only column that can fail on `log.error` becoming `log.warn` —
-  and the only one that fails on a warn deleted outright while the counter it
-  reports stays correct. Both of those rows are 0 in `producer`.
-- **bypass** — the `@sql-gate-guarded` closure. It pins WHICH names may assert a
-  passing SQL verdict and is blind to what the gate DECIDES, so it is 0 on every
-  behavioural row and non-zero only on the last one — which is there to prove
-  the column is a measurement rather than decoration.
+  this is the only column that can fail on `log.error` becoming `log.warn`, on
+  a warn deleted outright while the counter it reports stays correct, or on a
+  field dropped from a payload the operator-facing message promises. FOUR rows are
+  non-zero here and 0 in `producer` — the demotion, both row-drop warns, and the
+  edge pass losing `err`.
+- **bypass** — the guarded-name set, pinned at its definition site. It pins which
+  FILES may name the five guarded types and asserts that the tag set and the
+  structurally-derived closure are equal; since #5249 an entry means *may name*,
+  not *may cast*. Only the tag/closure half is reachable by editing THIS module —
+  no mutation here can make a different FILE name a guarded type — so both of its
+  kills are the set-equality assertion, once in each direction (a tag deleted, and
+  a brand-carrying export added untagged), and the whole-file scan contributes 0
+  to every row by construction rather than by omission.
 - **mint** — the production mint's by-reference contract (#5230), in its own file
-  because it needs `mock.module`, whose blast radius is the process.
-- **pg** — a live schema, and the reason it is here is the FIRST row. Everything
-  it settles that a mock cannot — a fact landing `draft`, `subject_cmp`
-  populated, re-emission staying tension-only — it settles through fixtures whose
-  `sql:` now differs from their `name:`, so the predicate split is exercised
-  against real rows as well as injected ones. It catches nothing else here, and
-  that is the honest shape of a six-test integration suite: the other fourteen
-  mutations are decisions the run makes before any row is written.
+  because it needs `mock.module`, whose blast radius is the process. It never
+  calls `runWarehouseProducer`, so it is 0 on every row except the two that edit
+  `defaultValidateSnapshotSql` itself.
+- **pg** — a live schema. It is non-zero on exactly the two rows where a stored row
+  settles something a mock cannot: the emitted predicate, and the surface the
+  cardinality proposal is keyed by. Both are the `name`/`sql` decision, and both
+  are exercised only because this suite's fixtures give every dimension a `sql:`
+  that differs from its `name:`. Its zeros elsewhere are honest for two different
+  reasons, and lumping them together is what an earlier draft of this bullet did:
+  most rows are decisions a mock can drive and a live schema adds nothing to, while
+  the transaction-failure and episode-reader rows are simply not reachable from a
+  real Postgres fixture — this suite injects no failing transaction, and a real
+  `RETURNING` never hands back a non-string id.
 
 ⚠️ **A zero here is a statement about ONE instrument, not about coverage.** The
 row that would matter is one that is zero EVERYWHERE, and there is none — every
@@ -37,16 +48,29 @@ mutation below dies in at least one column, and every column kills at least one
 mutation. If a future edit makes one of them survive across a whole row, the fix
 is a fixture, not a deleted row.
 
+⚠️ **Eight rows are held up by exactly ONE test in exactly one column**, and the
+runner has no floor warning to tell you when that stops being true — `mutate.ts`
+flags a suspiciously HIGH count and says nothing about a 1. Those rows are one
+weakened assertion from returning to unfalsifiable, and they are the ones to
+re-read first when a count moves. The opposite end is worth the same suspicion: the
+identity-check row's 23 is the largest here and was inspected rather than trusted;
+see its note.
+
 Every number is the count of tests that FAIL in that suite under that mutation, measured one mutation at a time against an otherwise clean tree. A `0` means the suite does not catch it — see the notes for whether that is honest or a gap.
 
 | Mutation | producer | logging | bypass | mint | pg |
 |---|---|---|---|---|---|
 | `predicate: dim.name` -> `dim.sql` — the qualified column expression emitted as the predicate | 4 | 0 | 0 | 0 | 2 |
 | `buildSnapshotSql` selects the bare NAME instead of the dimension's `sql:` expression | 2 | 2 | 0 | 0 | 0 |
+| `buildSnapshotSql` selects the bare primary-key NAME as the subject column | 1 | 0 | 0 | 0 | 0 |
+| the cardinality proposal is keyed by the dimension's `sql:` rather than its name | 2 | 1 | 0 | 0 | 1 |
 | the subject-collision guard compares ids again, so a duplicate primary key emits twice | 4 | 0 | 0 | 0 | 0 |
 | the row cap becomes `>=`, refusing every entity of exactly `cap` rows | 1 | 0 | 0 | 0 | 0 |
+| the row cap never fires — an over-cap entity emits a truncated snapshot | 1 | 1 | 0 | 0 | 0 |
+| `buildSnapshotSql` emits `LIMIT cap` — the extra row that makes the cap observable | 2 | 0 | 0 | 0 | 0 |
 | the production SQL gate deleted — `defaultValidateSnapshotSql` passes everything | 2 | 0 | 0 | 2 ⚠️ | 0 |
 | the gate's refusing verdict carries no reason | 2 | 0 | 0 | 1 | 0 |
+| the anti-replay identity check deleted — a token minted for another statement is accepted | 2 | 23 | 0 | 0 | 0 |
 | a validator THROW reported as `snapshot-rejected` — the permanence inversion | 3 | 2 | 0 | 0 | 0 |
 | a transaction failure re-thrown instead of refusing its entity | 1 | 4 | 0 | 0 | 0 |
 | the transaction-failure `log.error` demoted to `log.warn` | 0 | 4 | 0 | 0 | 0 |
@@ -56,26 +80,35 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | `isAbsentCell` loses its non-finite / invalid-Date arms | 1 | 0 | 0 | 0 | 0 |
 | the episode reader accepts a row whose `id` it cannot parse | 1 | 0 | 0 | 0 | 0 |
 | the `@sql-gate-guarded` tag deleted from the producer's deps interface | 0 | 0 | 1 | 0 | 0 |
+| a sixth brand-carrying export added with no `@sql-gate-guarded` tag | 0 | 0 | 1 | 0 | 0 |
+| the entity-edge pass's failure log drops `err` | 0 | 3 | 0 | 0 | 0 |
 
 Suite sizes: **producer** 71 tests (`src/lib/brain/__tests__/warehouse-producer.test.ts`) · **logging** 70 tests (`src/lib/brain/__tests__/warehouse-producer-logging.test.ts`) · **bypass** 13 tests (`src/lib/brain/__tests__/warehouse-producer-bypass.test.ts`) · **mint** 2 tests (`src/lib/brain/__tests__/warehouse-producer-mint.test.ts`) · **pg** 6 tests (`src/lib/brain/__tests__/warehouse-producer-pg.test.ts`).
 
 ## Notes
 
 - **`predicate: dim.name` -> `dim.sql` — the qualified column expression emitted as the predicate** — The row this table was filed for. It survived #5042's first review pass because every fixture set `sql:` equal to `name:`; both suites now derive a DIFFERENT column per dimension, so the split is exercised by every test rather than by one that remembers to.
-- **`buildSnapshotSql` selects the bare NAME instead of the dimension's `sql:` expression** — The same `name`/`sql` confusion at the OTHER end of the pipe, and it fails in the opposite direction: here the expression is what belongs and the bare name is wrong. One fixture change closed both, which is exactly why both need a row — a later fixture that re-collapses them would put both back.
+- **`buildSnapshotSql` selects the bare NAME instead of the dimension's `sql:` expression** — The same `name`/`sql` confusion at the OTHER end of the pipe, and it fails in the opposite direction: here the expression is what belongs and the bare name is wrong. One fixture change closed both, which is exactly why both need a row — a later fixture that re-collapses them would put both back. ⚠️ Two of its four kills are fixture ANCHORS rather than subjects: the `logging` pair asserts a column name appears in the submitted statement as the positive half of a secrecy check, and dies because the anchor string moved. The on-subject kill is the builder test in `producer`.
+- **`buildSnapshotSql` selects the bare primary-key NAME as the subject column** — The adjacent field in the same array literal as the row above, and the reason it gets its own row: fixing one half of a two-element list and calling the class closed is how the same defect comes back one line over. The subject position is the worse half — a key column that is an expression (`left(id,3)`) or simply named differently from its `sql:` makes the subject arrive from a column that may not exist, or from a different one that does, silently re-keying every `subject_cmp` in the run.
+- **the cardinality proposal is keyed by the dimension's `sql:` rather than its name** — The THIRD site of the same `name`/`sql` decision, and the quietest of the three. A `single` cardinality proposal filed under `col_status` while the emitted predicate is `status` refuses nothing and warns about nothing: the vocabulary simply never gates `in-tension-with` for the predicate that actually exists, so supersession stays dormant — the dormancy ADR-0037 section 4 spent four slices closing. It is also why the row above measures 2 in `pg` rather than 3: the `-pg` cardinality assertion reads this site, not that one.
 - **the subject-collision guard compares ids again, so a duplicate primary key emits twice** — The pre-#5042-review guard. Two rows with the SAME declared key mint the same id, fall through, and emit a second full candidate set for one subject — while `single` cardinality is proposed for those predicates in the same transaction. Nothing guarantees a declared key is unique: `primary_key: true` is admin-authored YAML, the table may be a view, and `sql:` may be an expression.
 - **the row cap becomes `>=`, refusing every entity of exactly `cap` rows** — An off-by-one that refuses a legal table rather than admitting an illegal one, so it is silent in production: the operator sees `row-cap-exceeded` on a table that is exactly at the bound and narrows an enrollment that did not need narrowing. `buildSnapshotSql` emits `LIMIT cap + 1` precisely so the boundary is observable.
-- **the production SQL gate deleted — `defaultValidateSnapshotSql` passes everything** — The second row this table was filed for. It survived #5042's first review pass: the suite-wide `ATLAS_*` strip made `validateSQL` return before it read the statement, and the positive control asserted inside a branch that could never be false. The gate is SELECT-only, single-statement and whitelist-scoped over a string assembled from admin-authored `table:` and `sql:` text, which is the one input it exists for. ⚠️ **The `whole-suite` flag on `mint` is honest and was checked.** That file holds exactly two tests and both are about this function — one asserts `validateSQL` was called with THIS statement, the other that a refusing gate is passed through — so deleting the gate kills its SUBJECT twice rather than its setup once. The flag fires on a ratio, and a two-test single-subject file cannot avoid tripping it.
-- **the gate's refusing verdict carries no reason** — The runtime half of the `error`-made-optional edit. A permanent refusal whose whole message is *“re-running will not change this”* then tells the admin nothing about what to fix — the generic message CLAUDE.md forbids, at the position where it costs the most. The type half is a compile-time claim and has no row here; see the header.
+- **the row cap never fires — an over-cap entity emits a truncated snapshot** — The row above moves the boundary in the SAFE direction; this one removes the guard entirely, which is the direction `WAREHOUSE_ROW_CAP` exists for. A truncated reading looks at rest exactly like a complete one, so a reviewer publishes three hundred account statuses believing they have seen the accounts. A guard is not falsified by a test that only ever exercises its conservative side.
+- **`buildSnapshotSql` emits `LIMIT cap` — the extra row that makes the cap observable** — The cap's evidence, deleted. At exactly `cap` rows a truncated read and a table of that size are the same result set, so the guard above it can never fire and the producer silently emits an arbitrary subset. Two edits one function apart hold one invariant between them, and only the pair of rows shows that.
+- **the production SQL gate deleted — `defaultValidateSnapshotSql` passes everything** — The second row this table was filed for. It survived #5042's first review pass: the suite-wide `ATLAS_*` strip made `validateSQL` return *“No valid datasource configured”* before it read the statement, and the positive control's assertion was a NEGATIVE match inside `if (!result.valid)` — which that string satisfies trivially. The block now sets a datasource, asserts unconditionally, and carries a positive tripwire on the shipped gate's own wording, so this mutation reds it two ways: the reason becomes empty and the refusal becomes a pass. ⚠️ **The `whole-suite` flag on `mint` is honest and was checked.** That file holds exactly two tests and both are about this function — one asserts `validateSQL` was called with THIS statement, the other that a refusing gate is passed through — so deleting the gate kills its SUBJECT twice rather than its setup once. The flag fires on a ratio, and a two-test single-subject file cannot avoid tripping it.
+- **the gate's refusing verdict carries no reason** — The runtime half of the `error`-made-optional edit. A permanent refusal whose whole message is *“re-running will not change this”* then tells the admin nothing about what to fix — the generic message CLAUDE.md forbids, at the position where it costs the most. The type half is a compile-time claim and has no row here — it reds `bun run type` with `TS2532: Object is possibly 'undefined'` where the negative control reads `.length` off the reason, measured rather than assumed; see the header.
+- **the anti-replay identity check deleted — a token minted for another statement is accepted** — The highest-blast-radius line in the module, and the row it had none of. The gate's verdict carries the request it passed, but nothing stops a validator handing back a genuine token minted for a DIFFERENT statement — `cached ??= await validate(BENIGN_REQUEST)` forges nothing and would let one benign statement authorize every entity in the run. The type narrows the door and only this comparison closes it, which the module's own docstring says in as many words. Because `defaultRunSnapshot` selects the pool from the RETURNED `workspaceId`/`connectionId`, the residual is a cross-tenant read rather than merely a gate bypass. The deleted-gate row does not stand in for it: with the gate stubbed to pass, the mint hands back the very object it was given and this check is satisfied. ⚠️ **Its 23 in `logging` was inspected rather than published on trust** — a count that size is usually a mutation breaking suite SETUP. It is not: all 23 are the #5230/#5248 mismatch block, every name of the form *“logs a mismatch rather than throwing when the verdict's request is …”* or *“catches a cross-tenant forgery …”*. One deleted comparison is the subject of an entire dedicated block, which is what a guard of this blast radius should look like.
 - **a validator THROW reported as `snapshot-rejected` — the permanence inversion** — A throw is not a verdict of invalid. The shipped gate dynamically imports a module and reads settings, so a module-init failure or a briefly-unavailable internal DB lands here — transient — and the rejected arm tells the admin to un-enroll a pair that is fine. One message cannot carry both *“retry”* and *“retrying will never work”*, which is why the two reasons exist.
-- **a transaction failure re-thrown instead of refusing its entity** — The producer's own first stated decision, reversed at #5042's closing round. The throw reaches `runEffect`, which answers a 500, while entities 1..N-1 have COMMITTED. The admin reads *“Failed to run”*, presses Run again, `now()` yields a fresh instant so `ON CONFLICT` dedupes nothing, and every committed entity files a second full round of drafts into the review queue this producer exists to keep reviewable.
+- **a transaction failure re-thrown instead of refusing its entity** — The producer's own first stated decision, reversed at #5042's closing round. The throw reaches `runEffect`, which answers a 500, while entities 1..N-1 have COMMITTED. The admin reads *“Failed to run”*, presses Run again, `now()` yields a fresh instant so `ON CONFLICT` dedupes nothing, and every committed entity files a second full round of drafts into the review queue this producer exists to keep reviewable. ⚠️ Measured both spellings: throwing in PLACE of the flag also deletes the `log.error` below it, which is the next row's subject, and the counts are identical either way (1 / 4). So the numbers never distinguished the two — the anchor is placed after the log anyway, because a row whose label names one change should not silently contain two.
 - **the transaction-failure `log.error` demoted to `log.warn`** — The one mutation only PER-LEVEL sinks can see. A single-array capture asserts the payload and the message and is structurally blind to the level — measured on #5042, where the same demotion killed zero tests in two of three logging files in the very commit that fixed it in the third. This is a partial rollback whose blast radius is an alert that never fires.
 - **the colliding-subject row-drop warn deleted** — Both row-drop counters reached the report and neither reached a log, while their sibling in the same object literal got a warn. Dropping a row is a data-affecting decision, and an operator asking *“why is account 4471 missing from the queue”* had nothing to grep — and under a degraded response the counters are withheld too, which makes the drop fully silent.
 - **the unsurfaceable-key row-drop warn deleted** — The sibling of the row above, and the reason they are two rows rather than one: fixing the reported instance and not the class is how the same defect returns one counter over. A `bytea` primary key makes every row of the entity unemittable, which is the case an operator most needs named.
 - **`isAbsentCell` loses its blank-string arm** — `''` and `'   '` are what a CSV or ETL load writes where a source system has a NOT NULL text default — the ordinary empty cell. Filed as an enrollment mistake, a benign column inflates `unsurfaceableCells` on every run forever AND makes a real `jsonb` enrollment indistinguishable from it, while the warn sends the operator hunting a `jsonb` column that need not exist.
 - **`isAbsentCell` loses its non-finite / invalid-Date arms** — The blank-string argument, one member short: `NaN` out of a `double precision` column is that column's null and `0000-00-00` out of MySQL is an Invalid Date. The COLUMN is fine and one row is bad. Replaced with an arm that is live TypeScript and reachable by nothing in the fixtures, so what is measured is the loss of these two rather than a syntax change.
-- **the episode reader accepts a row whose `id` it cannot parse** — `WAREHOUSE_EPISODE_INSERT_SQL` is exported precisely because it is expected to be edited, and a `RETURNING` clause the reader cannot parse would otherwise make every entity of every run report *“this snapshot instant is already recorded”* — a false sentence, at `info`, on a producer that would then look like a well-behaved no-op forever. This is the module's own contract, so it stays fatal rather than becoming a per-entity refusal.
-- **the `@sql-gate-guarded` tag deleted from the producer's deps interface** — The only row the bypass column can see, and it is here so that column is a measurement rather than decoration. The tag is the human-readable half of the membership decision; the STRUCTURAL closure — every exported declaration naming the brand symbol, transitively — is the enforcing half, and the suite asserts the two equal in BOTH directions. A tag deleted while the declaration still carries the brand is exactly the drift a hand-maintained list three directories away cannot detect. ⚠️ **The anchor is the DOCSTRING rather than the declaration below it, and that is deliberate.** This directory is one of the roots that suite scans, and it fails on any file merely NAMING one of the five guarded types — so anchoring on the `export interface` line would have made this spec trip the guard it exists to protect. Reworded, never exempted; do not "fix" the anchor by extending it downwards.
+- **the episode reader accepts a row whose `id` it cannot parse** — `WAREHOUSE_EPISODE_INSERT_SQL` is exported precisely because it is expected to be edited, and this reader is the only thing that notices when its `RETURNING` clause and this function stop agreeing. Mutated, an unreadable row travels onward as a real episode instead of being refused. ⚠️ **It does NOT produce the *“already recorded”* report, and an earlier draft of this note said it did.** That sentence is the consequence of folding this arm together with `rows.length === 0`, which is the split the source comment above it argues for — a different edit from this one. Stated here because a note that borrows its neighbour's consequence is exactly the unfalsifiable claim this file exists to retire.
+- **the `@sql-gate-guarded` tag deleted from the producer's deps interface** — One of the two rows the bypass column can see, and the pair is here so that column is a measurement rather than decoration. The tag is the human-readable half of the membership decision; the STRUCTURAL closure — every exported declaration naming the brand symbol, transitively — is the enforcing half, and the suite asserts the two equal in BOTH directions. A tag deleted while the declaration still carries the brand is exactly the drift a hand-maintained list three directories away cannot detect. ⚠️ **The anchor is the DOCSTRING rather than the declaration below it, and that is deliberate.** This directory is one of the roots that suite scans, and it fails on any file merely NAMING one of the five guarded types — so anchoring on the `export interface` line would have made this spec trip the guard it exists to protect. Reworded, never exempted; do not "fix" the anchor by extending it downwards.
+- **a sixth brand-carrying export added with no `@sql-gate-guarded` tag** — The other direction of the same set equality, and the failure #5255 was actually filed for: a tag is something a person has to remember, so the interesting case is not a tag deleted but a brand-carrying export added WITHOUT one. The suite derives the guarded set structurally — the transitive closure of *names the brand symbol, or names something already in the closure* — precisely so this cannot be forgotten, and a row that only ever deletes a tag would leave the half that does the enforcing unmeasured. ⚠️ The probe type is spelled to avoid the five guarded names for the reason the row above states; the brand SYMBOL is not one of them, which is what makes this expressible here at all.
+- **the entity-edge pass's failure log drops `err`** — A falsifier #5042 measured once, by hand, and left unprotected — which is this file's whole subject. The refusal body deliberately keeps the driver's text off the wire and PROMISES this line carries the reason, so the two are one claim: delete `err` and the report goes on pointing operators at a log line with nothing in it. The source comment records that this was green across every suite before the logging suite existed; the row is what stops that being a fact about one afternoon.
 
 ## ⚠️ Flagged
 

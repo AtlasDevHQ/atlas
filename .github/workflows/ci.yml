@@ -627,11 +627,18 @@ jobs:
     # are divided.
     #
     # Balance is lumpy: cost tracks a spec's mutation COUNT and round-robin
-    # ignores it. Measured by generated table rows (266 mutations over 13 specs)
-    # the shards carry 87 / 53 / 91 / 35, so the long pole is ~34% of the sweep
-    # against a ~20% floor set by the heaviest single spec (vocabulary-decide,
+    # ignores it. Measured by generated table rows (288 mutations over 14 specs)
+    # the shards carry 87 / 75 / 91 / 35, so the long pole is ~32% of the sweep
+    # against a ~18% floor set by the heaviest single spec (vocabulary-decide,
     # 53). Going under that floor needs `mutate.ts` to partition its own mutation
     # list, which is a change to the runner and wants its own PR.
+    #
+    # ⚠️ Mutation COUNT is the wrong unit for the newest spec and is kept only
+    # because it is the one number a reader can recount from the tables.
+    # `warehouse-producer` (22 rows, shard 2) runs FIVE target suites per
+    # mutation, four of which are sub-second — measured at ~124s locally against
+    # a `vocabulary-decide` whose 53 rows are minutes. Re-read the job timings
+    # before trusting the row counts to rank the shards.
     #
     # `ci-local.sh` still runs the `--affected` subset unsharded: one machine,
     # and a full sweep added to a ~10-minute pre-PR loop is how a gate gets

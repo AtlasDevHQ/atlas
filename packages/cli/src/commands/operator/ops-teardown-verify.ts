@@ -653,7 +653,9 @@ export async function handleTeardownVerifyAccounts(args: string[]): Promise<void
         // `adminActionLogAnonymized`, which counts rows that SURVIVED and so
         // made this command over-report destruction. The route had the identical
         // bug and was fixed by hand; this copy was not, which is why the
-        // arithmetic now has one home.
+        // arithmetic now has one home. Since #5176 the array is not even in the
+        // counts object, so the `as number[]` that started this could no longer
+        // be written truthfully.
         return { rowsPurged: totalRowsDeleted(purged), skippedTables: purged.skippedTables };
       },
     }, dryRun);

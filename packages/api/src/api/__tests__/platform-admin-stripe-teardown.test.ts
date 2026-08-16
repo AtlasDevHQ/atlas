@@ -69,15 +69,21 @@ let hardDeleteSkipped: string[] = [];
  * at all). The anonymized count is 7 — a value no other field carries and one
  * no subset of the others sums to — so a total that wrongly includes it lands
  * on a number the correct arithmetic cannot produce.
+ *
+ * Since #5176 the third shape sits OUTSIDE `counts`, which is the container
+ * split; the first two still share it, because both are numbers and only their
+ * meaning differs.
  */
 const mockHardDelete = mock(async () => {
   callOrder.push("hardDelete");
   return {
-    conversations: 3,
-    brainFacts: 5,
-    subscriptions: 1,
-    organization: 1,
-    adminActionLogAnonymized: 7,
+    counts: {
+      conversations: 3,
+      brainFacts: 5,
+      subscriptions: 1,
+      organization: 1,
+      adminActionLogAnonymized: 7,
+    },
     skippedTables: hardDeleteSkipped,
   };
 });

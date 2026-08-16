@@ -1066,11 +1066,15 @@ describe("totalRowsDeleted()", () => {
   //
   // The values are deliberately distinct (3/5/7/11): with all-equal counts, a
   // sum that included the wrong field would still land on a plausible number.
+  // Cast because the real `HardDeleteCounts` has ~96 fields and this fixture
+  // names four; the arithmetic under test does not read the others.
   const base = {
-    conversations: 3,
-    brainFacts: 5,
-    organization: 11,
-    adminActionLogAnonymized: 7,
+    counts: {
+      conversations: 3,
+      brainFacts: 5,
+      organization: 11,
+      adminActionLogAnonymized: 7,
+    },
     skippedTables: [] as readonly string[],
   } as unknown as Parameters<typeof totalRowsDeleted>[0];
 
@@ -1083,17 +1087,20 @@ describe("totalRowsDeleted()", () => {
     // rows are still in the table, so counting them as destroyed is the
     // overstatement #5160 was filed about, one metric layer down.
     expect(totalRowsDeleted(base)).not.toBe(26);
-    const more = { ...base, adminActionLogAnonymized: 1000 };
+    const more = { ...base, counts: { ...base.counts, adminActionLogAnonymized: 1000 } };
     expect(
       totalRowsDeleted(more as typeof base),
       "the total must not move when only the anonymized count changes",
     ).toBe(19);
   });
 
-  it("ignores the non-numeric skippedTables field", () => {
-    // `skippedTables` is an array. A `reduce((s, n) => s + n)` over
-    // Object.values would string-concatenate it into the total — which is
-    // exactly what the CLI's cast-based version would have done.
+  it("reads `counts`, so the skipped-table array can never enter the sum", () => {
+    // `skippedTables` is an array, and since #5176 it is a SIBLING of `counts`
+    // rather than a field inside it — so the runtime `typeof value !== "number"`
+    // guard this used to need is gone. What is still falsifiable is that the
+    // helper reads `result.counts`: rewriting it as `Object.values(result)`
+    // sums the counts OBJECT and the string array, which string-concatenates
+    // rather than totalling and fails here.
     const skipped = { ...base, skippedTables: ["scim_group_mappings", "subscription"] };
     expect(totalRowsDeleted(skipped as typeof base)).toBe(19);
     expect(typeof totalRowsDeleted(skipped as typeof base)).toBe("number");
@@ -1233,8 +1240,8 @@ describe("hardDeleteWorkspace()", () => {
       queries.some((q) => /DELETE FROM twenty_integrations WHERE workspace_id = \$1/.test(q)),
     ).toBe(true);
     // …and the counts are surfaced in HardDeleteResult.
-    expect(result.integrationCredentials).toBe(2);
-    expect(result.twentyIntegrations).toBe(3);
+    expect(result.counts.integrationCredentials).toBe(2);
+    expect(result.counts.twentyIntegrations).toBe(3);
     // #5160 — both probed relations are present here, so nothing was skipped.
     // This is the CONTROL for the region-drift test below: without a case that
     // shows `skippedTables` empty, "non-empty ⇒ the purge is incomplete" is a
@@ -1284,8 +1291,8 @@ describe("hardDeleteWorkspace()", () => {
       queries.some((q) => /DELETE FROM subscription WHERE "referenceId" = \$1/.test(q)),
     ).toBe(true);
     expect(queries.some((q) => q.includes("DELETE FROM stripe_webhook_events"))).toBe(true);
-    expect(result.subscriptions).toBe(1);
-    expect(result.stripeWebhookEvents).toBe(2);
+    expect(result.counts.subscriptions).toBe(1);
+    expect(result.counts.stripeWebhookEvents).toBe(2);
     // #5160 — the CONTROL for the region-drift assertions elsewhere in this
     // file: this mock answers `table_exists: true` to every probe, so nothing
     // was skipped and `skippedTables` must be EMPTY. Without a test that shows
@@ -1384,8 +1391,8 @@ describe("hardDeleteWorkspace()", () => {
 
     expect(queries.some((q) => q.includes("DELETE FROM subscription"))).toBe(false);
     expect(queries.some((q) => q.includes("DELETE FROM stripe_webhook_events"))).toBe(false);
-    expect(result.subscriptions).toBe(0);
-    expect(result.stripeWebhookEvents).toBe(0);
+    expect(result.counts.subscriptions).toBe(0);
+    expect(result.counts.stripeWebhookEvents).toBe(0);
   });
 
   it("completes the GDPR purge when scim_group_mappings is absent (region-DB drift, #4019)", async () => {
@@ -1435,10 +1442,10 @@ describe("hardDeleteWorkspace()", () => {
     // Resolves (no throw, no rollback) and skips the absent table.
     const result = await hardDeleteWorkspace("org-1");
 
-    expect(result.scimGroupMappings).toBe(0);
+    expect(result.counts.scimGroupMappings).toBe(0);
     expect(queries.some((q) => q.includes("DELETE FROM scim_group_mappings"))).toBe(false);
     // The rest of the cascade still ran — proof the purge completed, not aborted.
-    expect(result.subscriptions).toBe(1);
+    expect(result.counts.subscriptions).toBe(1);
     // #5160 — a skipped table must be REPORTED, not just survive. `0` rows is
     // indistinguishable from "there were none", and the purge response is the
     // artefact an operator attaches to a DPA erasure record, so the skip has to

@@ -897,7 +897,7 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     // nothing both leave zero rows behind for a workspace that was never
     // seeded. Since exactly one row per table was seeded, every reported count
     // must be >= 1 — a 0 here means the DELETE ran against the wrong column.
-    const zeroCounts = Object.entries(result)
+    const zeroCounts = Object.entries(result.counts)
       .filter(([, n]) => n === 0)
       .map(([field]) => field);
     expect(
@@ -1042,7 +1042,7 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     //   (3) target_id residue only              → scrubbed (the disjunct that
     //       had no runtime witness until this row existed)
     //   (4) already fully scrubbed              → SKIPPED, so the count is honest
-    expect(result.adminActionLogAnonymized).toBe(3);
+    expect(result.counts.adminActionLogAnonymized).toBe(3);
 
     const total = await pool.query<{ n: string }>(
       `SELECT count(*)::text AS n FROM admin_action_log WHERE org_id = $1`,
@@ -1157,7 +1157,7 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     expect(Number(row.with_actor), "actor_id/actor_email must be scrubbed").toBe(0);
     expect(Number(row.with_ip), "ip_address must be scrubbed").toBe(0);
     expect(Number(row.unstamped), "every scrubbed row must carry anonymized_at").toBe(0);
-    expect(result.adminActionLogAnonymized).toBeGreaterThan(0);
+    expect(result.counts.adminActionLogAnonymized).toBeGreaterThan(0);
 
     // The MEMBER's identity, which the first draft of the scrub left behind:
     // `metadata.targetUserEmail` and `target_id`.
@@ -1264,7 +1264,7 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     expect(org.rows.length).toBe(0);
     const user = await pool.query(`SELECT 1 FROM "user" WHERE id = $1`, [USER_ORPHAN]);
     expect(user.rows.length).toBe(0);
-    expect(result.organization).toBe(1);
-    expect(result.orphanedUsers).toBe(1);
+    expect(result.counts.organization).toBe(1);
+    expect(result.counts.orphanedUsers).toBe(1);
   });
 });

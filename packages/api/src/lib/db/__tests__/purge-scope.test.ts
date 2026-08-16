@@ -586,7 +586,7 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
     // AC: "HardDeleteResult reports the new counts, so the operator sees what
     // was removed rather than trusting the message." Checked structurally
     // against the interface so a new DELETE without a reported count fails.
-    const resultStart = internalSource.indexOf("export interface HardDeleteResult");
+    const resultStart = internalSource.indexOf("export interface HardDeleteCounts");
     const resultEnd = internalSource.indexOf("\n}", resultStart);
     const resultFields = new Set(
       [...internalSource.slice(resultStart, resultEnd).matchAll(/^\s{2}([a-zA-Z]+):\s*number;/gm)].map(

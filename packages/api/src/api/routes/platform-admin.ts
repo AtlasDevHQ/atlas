@@ -831,15 +831,18 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
     // The arithmetic lives in `totalRowsDeleted` rather than here: this used to
     // be a local `Object.values(purged).reduce(...)`, and so did the CLI's
     // teardown command, and fixing one by hand left the other over-reporting.
-    // `counts` excludes `skippedTables`, and that exclusion is the fix for a
-    // defect this PR's own earlier commit created: `purged` is published as
-    // `Record<string, number>`, so spreading the whole result put a string ARRAY
-    // inside a map of counts. A client doing the obvious
-    // `Object.values(body.purged).reduce(...)` would then string-concatenate it —
-    // bit for bit the bug removed from the CLI two commits ago, re-exported to
-    // every consumer of the admin API. The cast below is only true because of
-    // this line.
-    const { adminActionLogAnonymized, skippedTables, ...counts } = purged;
+    //
+    // `skippedTables` is no longer something this line has to remember to
+    // exclude — since #5176 it lives outside `counts`, so a string ARRAY can no
+    // longer reach the documented map of numbers. That leak was a real defect
+    // once (a client doing `Object.values(body.purged).reduce(...)` would
+    // string-concatenate it) and the fix was a destructure that any later edit
+    // could undo; now the type does it.
+    const { counts, skippedTables } = purged;
+    // `adminActionLogAnonymized` IS a number, so the type cannot separate it —
+    // it is excluded here because it counts SURVIVORS, and reported beside
+    // `totalRows` rather than inside the per-table map.
+    const { adminActionLogAnonymized, ...deletedCounts } = counts;
     const totalRows = totalRowsDeleted(purged);
 
     // A skipped table means the purge is INCOMPLETE for that relation, and the
@@ -867,7 +870,10 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
       targetId: workspaceId,
       scope: "platform",
       metadata: {
-        purged,
+        // `counts`, not `purged`: since #5176 `purged` nests them, and spreading
+        // the container here would record `skippedTables` twice — once inside
+        // `purged` and once as its own key.
+        purged: counts,
         totalRows,
         adminActionLogAnonymized,
         skippedTables,
@@ -912,9 +918,12 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
     return c.json({
       message: incomplete ? incompleteMessage : completeMessage,
       workspaceId,
-      // `counts`, not `purged` — see the destructure above. Shipping the whole
-      // result put a string array inside a documented map of numbers.
-      purged: counts as unknown as Record<string, number>,
+      // `deletedCounts`, not `purged` — see the destructure above. No cast:
+      // `HardDeleteCounts` is a uniformly-numeric mapped type since #5176, so
+      // it carries an implicit index signature and assigns to the wire schema
+      // directly. The old `as unknown as Record<string, number>` was only ever
+      // true because the destructure above removed a string array first.
+      purged: deletedCounts,
       totalRows,
       adminActionLogAnonymized,
       // Copied rather than passed through: `HardDeleteResult.skippedTables` is

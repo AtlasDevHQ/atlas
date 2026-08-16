@@ -314,9 +314,13 @@ export function buildInternalDbMockDefaults(deps: {
     // very module the function lives in. The drift risk is real but bounded:
     // `purge-scope.test.ts` pins the `anonymized` category to exactly one table,
     // so a second survivor field cannot appear without that guard failing first.
-    totalRowsDeleted: (result: Record<string, unknown>) => {
+    totalRowsDeleted: (result: { counts?: Record<string, unknown> }) => {
       let total = 0;
-      for (const [field, value] of Object.entries(result)) {
+      // Reads `result.counts` (#5176): the counts live in their own uniformly
+      // numeric container, with `skippedTables` outside it. The `typeof` guard
+      // is kept HERE and only here — a mock is handed whatever a suite's fake
+      // returns, which the real type does not police.
+      for (const [field, value] of Object.entries(result.counts ?? {})) {
         if (typeof value !== "number") continue;
         if (field === "adminActionLogAnonymized") continue;
         total += value;

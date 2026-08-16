@@ -3795,13 +3795,39 @@ export class PurgeAbortedError extends Error {
 }
 
 /**
- * Hard-delete result — a removal count per table, plus two fields that are NOT
- * removal counts: `adminActionLogAnonymized` (rows that SURVIVED, scrubbed) and
- * `skippedTables` (a string array). Use `totalRowsDeleted()` to total it; a bare
- * `Object.values(...).reduce(...)` over-reports destruction and string-
- * concatenates the array.
+ * Hard-delete result — the per-table counts, and separately the work the purge
+ * did NOT do.
+ *
+ * The split is what lets `HardDeleteCounts` be uniformly numeric (#5176). While
+ * `skippedTables` shared the object, every consumer had to filter it back out at
+ * runtime: `totalRowsDeleted` carried a `typeof value !== "number"` escape hatch,
+ * and the route cast the rest through `Record<string, number>` to publish it.
+ * Both were guarding against a field the type could simply not contain.
+ *
+ * `counts.adminActionLogAnonymized` is still a number that is NOT a removal
+ * count — it counts rows that SURVIVED with their identifiers scrubbed — so
+ * `totalRowsDeleted()` remains the only correct way to total this. A bare
+ * `Object.values(result.counts).reduce(...)` over-reports destruction.
  */
 export interface HardDeleteResult {
+  readonly counts: HardDeleteCounts;
+  /**
+   * Work the purge did NOT do (#5160): relations absent from this region's
+   * schema, PLUS the deletes and writes that were gated behind them. A missing
+   * `subscription` contributes three names — itself, `stripe_webhook_events`
+   * (whose delete reads it) and `stripe_purged_subscriptions` (whose tombstone
+   * INSERT never ran) — and only the first was actually absent.
+   *
+   * NOT a count, and it lives OUTSIDE `counts` for exactly that reason. A
+   * skipped table reports `0` rows, which is indistinguishable from "there were
+   * none", and the purge response is what an operator attaches to a DPA erasure
+   * record. Non-empty means the purge was INCOMPLETE and the route must say so.
+   */
+  readonly skippedTables: readonly string[];
+}
+
+/** Per-table row counts from a hard delete. Every field is a number. */
+export interface HardDeleteCounts {
   // Data tables (org_id)
   auditLog: number;
   conversations: number;
@@ -3931,30 +3957,17 @@ export interface HardDeleteResult {
   betterAuthInvitations: number;
   orphanedUsers: number;
   organization: number;
-  /**
-   * Work the purge did NOT do (#5160): relations absent from this region's
-   * schema, PLUS the deletes and writes that were gated behind them. A missing
-   * `subscription` contributes three names — itself, `stripe_webhook_events`
-   * (whose delete reads it) and `stripe_purged_subscriptions` (whose tombstone
-   * INSERT never ran) — and only the first was actually absent.
-   *
-   * NOT a count — the only non-numeric field, and deliberately so. A skipped
-   * table reports `0` rows, which is indistinguishable from "there were none",
-   * and the purge response is what an operator attaches to a DPA erasure record.
-   * Non-empty means the purge was INCOMPLETE and the route must say so.
-   */
-  skippedTables: readonly string[];
 }
 
 /**
- * Fields on `HardDeleteResult` that count rows which SURVIVED the purge, and so
+ * Fields on `HardDeleteCounts` that count rows which SURVIVED the purge, and so
  * must never be summed into a "rows destroyed" total.
  *
  * `satisfies` ties each entry to a real field, so renaming the field is a compile
  * error here rather than a silently-stale exclusion.
  */
 const SURVIVOR_COUNT_FIELDS: ReadonlySet<string> = new Set(
-  ["adminActionLogAnonymized"] satisfies readonly (keyof HardDeleteResult)[],
+  ["adminActionLogAnonymized"] satisfies readonly (keyof HardDeleteCounts)[],
 );
 
 /**
@@ -3965,11 +3978,16 @@ const SURVIVOR_COUNT_FIELDS: ReadonlySet<string> = new Set(
  * included `adminActionLogAnonymized`, which counts rows that SURVIVED. One
  * caller was fixed by hand and the other (`ops teardown-verify-accounts`) was
  * not, which is exactly the drift a shared helper prevents (#5160).
+ *
+ * No runtime type guard: `HardDeleteCounts` is uniformly numeric by construction
+ * since the counts/skipped split (#5176), so a `typeof value !== "number"`
+ * continue would be dead code claiming a non-numeric field can arrive here.
+ * `SURVIVOR_COUNT_FIELDS` is the only exclusion left, and it excludes a real
+ * number for a semantic reason rather than a shape one.
  */
 export function totalRowsDeleted(result: HardDeleteResult): number {
   let total = 0;
-  for (const [field, value] of Object.entries(result)) {
-    if (typeof value !== "number") continue; // skippedTables
+  for (const [field, value] of Object.entries(result.counts)) {
     if (SURVIVOR_COUNT_FIELDS.has(field)) continue;
     total += value;
   }
@@ -4569,104 +4587,106 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     await client.query("COMMIT");
 
     return {
-      auditLog,
-      conversations,
-      messages,
-      slackInstallations,
-      slackThreads,
-      actionLog,
-      scheduledTaskRuns,
-      scheduledTasks,
-      tokenUsage,
-      pluginSettings,
-      settings,
-      semanticEntityVersions,
-      semanticEntities,
-      learnedPatterns,
-      promptItems,
-      promptCollections,
-      querySuggestions,
-      ssoProviders,
-      ipAllowlist,
-      customRoles,
-      auditRetentionConfig,
-      workspaceModelConfig,
-      approvalQueue,
-      approvalRules,
-      workspaceBranding,
-      onboardingEmails,
-      piiColumnClassifications,
-      scimGroupMappings,
-      sandboxCredentials,
-      dashboardCards,
-      dashboards,
-      oauthState,
-      discordInstallations,
-      githubInstallations,
-      linearInstallations,
-      emailInstallations,
-      usageEvents,
-      usageSummaries,
-      abuseEvents,
-      customDomains,
-      slaMetrics,
-      slaAlerts,
-      slaThresholds,
-      regionMigrations,
-      workspacePlugins,
-      integrationCredentials,
-      twentyIntegrations,
-      subscriptions,
-      stripeWebhookEvents,
-      brainFacts,
-      brainEdges,
-      brainEpisodes,
-      brainVocabularyEdge,
-      brainVocabularyTarget,
-      brainVocabularyProposal,
-      brainPredicateCardinality,
-      brainAudienceReverifyAttempt,
-      brainSlackChannel,
-      brainSlackIngestScope,
-      brainEnrollment,
-      brainEntity,
-      brainCoverageSnapshot,
-      brainCoverageCycle,
-      factAudienceMember,
-      knowledgeDocuments,
-      knowledgeLinks,
-      knowledgeSyncCredentials,
-      knowledgeSyncState,
-      agentRuns,
-      agentSessionMemory,
-      adminActionRetentionConfig,
-      connectionGroupDescriptions,
-      connectionProfileState,
-      semanticProfileStatus,
-      learnedPatternInjections,
-      suggestionUserClicks,
-      dashboardUserDrafts,
-      dashboardDraftCardCache,
-      userFavoritePrompts,
-      mcpActionPolicy,
-      oauthClientWorkspaceGrants,
-      oauthClientWorkspaceScope,
-      oauthClientRateLimits,
-      overageMeterReports,
-      workspaceModelCatalog,
-      workspaceProactiveConfig,
-      channelProactiveConfig,
-      proactivePauses,
-      proactiveMeterEvents,
-      proactiveClassificationReview,
-      proactivePublicDataset,
-      emailOutbox,
-      crmOutbox,
-      adminActionLogAnonymized,
-      members,
-      betterAuthInvitations,
-      orphanedUsers,
-      organization,
+      counts: {
+        auditLog,
+        conversations,
+        messages,
+        slackInstallations,
+        slackThreads,
+        actionLog,
+        scheduledTaskRuns,
+        scheduledTasks,
+        tokenUsage,
+        pluginSettings,
+        settings,
+        semanticEntityVersions,
+        semanticEntities,
+        learnedPatterns,
+        promptItems,
+        promptCollections,
+        querySuggestions,
+        ssoProviders,
+        ipAllowlist,
+        customRoles,
+        auditRetentionConfig,
+        workspaceModelConfig,
+        approvalQueue,
+        approvalRules,
+        workspaceBranding,
+        onboardingEmails,
+        piiColumnClassifications,
+        scimGroupMappings,
+        sandboxCredentials,
+        dashboardCards,
+        dashboards,
+        oauthState,
+        discordInstallations,
+        githubInstallations,
+        linearInstallations,
+        emailInstallations,
+        usageEvents,
+        usageSummaries,
+        abuseEvents,
+        customDomains,
+        slaMetrics,
+        slaAlerts,
+        slaThresholds,
+        regionMigrations,
+        workspacePlugins,
+        integrationCredentials,
+        twentyIntegrations,
+        subscriptions,
+        stripeWebhookEvents,
+        brainFacts,
+        brainEdges,
+        brainEpisodes,
+        brainVocabularyEdge,
+        brainVocabularyTarget,
+        brainVocabularyProposal,
+        brainPredicateCardinality,
+        brainAudienceReverifyAttempt,
+        brainSlackChannel,
+        brainSlackIngestScope,
+        brainEnrollment,
+        brainEntity,
+        brainCoverageSnapshot,
+        brainCoverageCycle,
+        factAudienceMember,
+        knowledgeDocuments,
+        knowledgeLinks,
+        knowledgeSyncCredentials,
+        knowledgeSyncState,
+        agentRuns,
+        agentSessionMemory,
+        adminActionRetentionConfig,
+        connectionGroupDescriptions,
+        connectionProfileState,
+        semanticProfileStatus,
+        learnedPatternInjections,
+        suggestionUserClicks,
+        dashboardUserDrafts,
+        dashboardDraftCardCache,
+        userFavoritePrompts,
+        mcpActionPolicy,
+        oauthClientWorkspaceGrants,
+        oauthClientWorkspaceScope,
+        oauthClientRateLimits,
+        overageMeterReports,
+        workspaceModelCatalog,
+        workspaceProactiveConfig,
+        channelProactiveConfig,
+        proactivePauses,
+        proactiveMeterEvents,
+        proactiveClassificationReview,
+        proactivePublicDataset,
+        emailOutbox,
+        crmOutbox,
+        adminActionLogAnonymized,
+        members,
+        betterAuthInvitations,
+        orphanedUsers,
+        organization,
+      },
       skippedTables,
     };
   } catch (err) {

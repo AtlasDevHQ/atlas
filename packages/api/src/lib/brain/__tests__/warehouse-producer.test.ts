@@ -2203,6 +2203,27 @@ describe("the entity store", () => {
     // auto-approved entity edge re-keys the corpus. "No vocabulary edge was
     // raised this run" was false in exactly that case.
     expect(failed.message).not.toContain("no vocabulary edge was raised");
+
+    // ⚠️ **THE MODULE'S REGISTER, capital and all.** Sibling refusals in
+    // `warehouse-producer.ts` say "This is an Atlas fault", the logging suite asserts
+    // that exact string on them, and a case-sensitive grep is what an operator runs
+    // over a pile of support tickets. The first cut of this clause wrote "this is an
+    // Atlas fault rather than a transient one" — which that grep misses, on the arm
+    // most likely to be grepped for — under a comment claiming it matched them.
+    //
+    // No count here on purpose: the phrase is split across string concatenations at
+    // several of those sites, so any hand-written tally of them is wrong in a way
+    // `grep -c` will not tell you. This diff produced four such miscounts.
+    expect(failed.message).toContain("This is an Atlas fault");
+    // ...and the permanence TEST names a comparison the reader can make. It used to
+    // say "if it fails again identically", which is unfalsifiable by construction:
+    // this sentence is byte-identical for every failure, so two bodies always look
+    // the same. It now points at `reached`, the half that genuinely varies, and
+    // excludes the contention case — this pass takes the workspace lock up to
+    // `2 × entries` times, so two presses during a concurrent run repeat identically
+    // and are NOT a defect.
+    expect(failed.message).toContain("stops at the same point");
+    expect(failed.message).toContain("otherwise idle workspace");
   });
 
   test("a store seam that RESOLVES the wrong shape lands on `failed`, not on a schema degrade", async () => {
@@ -2243,6 +2264,51 @@ describe("the entity store", () => {
     expect(h.edgeBatches).toEqual([]);
   });
 
+  test("the PLANNING phase: the store was read, then planning threw (#5277)", async () => {
+    // ⚠️ The one arm round 1 covered on the wire but not at the producer. Deleting
+    // the `reached = {phase: "planning", …}` assignment outright left every suite
+    // green, because no fixture threw in the window between the store read and the
+    // batch submission — every failure fixture threw in `loadStore` (→ `store-read`)
+    // or in `proposeAliasEdges` (→ `proposing`).
+    //
+    // A hostile getter is what reaches it: the array passes `Array.isArray`, so
+    // `entries` is established, and `entityEdgeProposals` throws while reading the
+    // entry. That is a code defect rather than an operational failure, which is
+    // exactly why the arm must be reportable — `entries` is known and nothing was
+    // submitted, and a shape that could not say so would have to fold it into a
+    // neighbour and lie about one of the two.
+    const h = harness({
+      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
+      entities: { Accounts: ACCOUNTS },
+      rows: { Accounts: [snapshotRow("ACC-42", "gold")] },
+      entityStore: async () =>
+        [
+          {
+            get entityId(): WarehouseRowId {
+              throw new Error("hostile getter");
+            },
+            entity: "Accounts",
+            keySurface: "ACC-42",
+            keyNorm: "acc 42",
+            canonicalSurface: "Acme",
+            canonicalNorm: "acme",
+          },
+        ] as unknown as readonly EntityStoreEntry[],
+    });
+
+    const report = await run(h);
+
+    // `entries: 1` — established BEFORE the throw, and the number that separates this
+    // from `store-read`, where no count exists at all.
+    expect(report.entityEdges).toEqual({
+      kind: "failed",
+      reached: { phase: "planning", entries: 1 },
+      message: expect.any(String),
+    });
+    // Nothing was handed to the vocabulary seam, so nothing can have been committed.
+    expect(h.edgeBatches).toEqual([]);
+  });
+
   test("PARTIAL PROGRESS: a throw AFTER the batch was submitted is a different wire value (#5277)", async () => {
     // ⚠️ The state #5043's shape could not represent, and the reason the union
     // exists. `proposeAliasEdges` COMMITS PER PROPOSAL and an auto-approved entity
@@ -2264,6 +2330,12 @@ describe("the entity store", () => {
           // That claim was false and structurally so — the panel caught it. An
           // unnamed row makes a fact without making an entry, which separates them.
           snapshotRow("44", null, "bronze"),
+          // ⚠️ A FOURTH row that IS stored but earns NO edge — its name cell is its
+          // key, so it is a benign self-edge. Without it the census was three
+          // interchangeable zeros and `proposalsAttempted` was exactly `2 × entries`
+          // in every fixture that carried it, so `proposalsAttempted = entries * 2`
+          // passed the whole suite. A refused entry is what makes the two differ.
+          snapshotRow("Gamma", "Gamma", "platinum"),
         ],
       },
       edgeProposeThrows: "deadlock detected on brain_vocabulary_edge",
@@ -2271,15 +2343,20 @@ describe("the entity store", () => {
 
     const report = await run(h);
 
-    // ⚠️ Every number on this report is now DISTINCT from `proposalsAttempted: 4`
-    // — ASSERTED rather than claimed in a comment, because the previous version of
-    // that claim was measurably wrong and the replacement was wrong too on the
-    // first try. `created` is 5, not 6: the unnamed row contributes its `tier`
-    // fact and no `name` fact. Measured, then written down.
-    expect(report.created).toBe(5);
-    expect(report.entities[0]?.entitiesStored).toBe(2);
+    // ⚠️ The three numbers ASSERTED here are each distinct from
+    // `proposalsAttempted: 4`, so a field copied into another cannot pass.
+    //
+    // ⚠️ **NOT "every number on this report" — `rows` is 4 as well**, because it
+    // counts the snapshot rows the seam returned and there are four of them. That
+    // universal was the FOURTH wrong version of this one claim (4, then 5, then 7,
+    // then "every"), in a comment that boasted about having measured the previous
+    // three. The numbers that discriminate are asserted; the sentence no longer
+    // quantifies over ones that are not.
+    expect(report.created).toBe(7);
+    expect(report.entities[0]?.entitiesStored).toBe(3);
     expect(report.entities[0]?.unnamedRows).toBe(1);
-    // Two positions × two entries that earn an edge.
+    // Two positions × the two entries that EARN an edge — `Gamma` is stored and
+    // refused, so this is no longer `2 × entries`.
     expect(h.edgeBatches[0]).toHaveLength(4);
     expect(report.entityEdges).toEqual({
       kind: "failed",
@@ -2287,10 +2364,15 @@ describe("the entity store", () => {
         // ⚠️ The LATER phase, and the whole pair: same `kind` as the read failure
         // above, different knowledge. The census is present here because the read
         // and the planning both succeeded; on that one it is absent entirely.
+        //
+        // ⚠️ `selfEdges: 1` is what makes `proposalsAttempted` independent of
+        // `entries`: 3 entries, 1 refused, 2 earners, 4 proposals. With an all-zero
+        // census the two were locked together and `proposalsAttempted = entries * 2`
+        // passed every test in the repo.
         phase: "proposing",
-        entries: 2,
+        entries: 3,
         ambiguous: 0,
-        selfEdges: 0,
+        selfEdges: 1,
         unmintedIds: 0,
         proposalsAttempted: 4,
       },

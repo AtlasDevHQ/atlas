@@ -236,7 +236,10 @@ const SRC_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
  * Measured: skipping `brain` leaves 1,789 files — clears the 1,000 floor, but REDs
  * the sentinel. Skipping `src/api` leaves 1,651 — clears the floor AND still reaches
  * the sentinel, so both mechanisms miss it. Tightening the extension test to `.ts`
- * drops nothing at all, since no root holds a `.tsx`, `.mts` or `.cts` today. A scan
+ * would now drop the five `.tsx` files under `plugins/chat/src/cards/` — this line
+ * said it dropped nothing, which was true of the three roots #5249 scanned and
+ * stopped being true the moment #5255 added `plugins`. `.mts`/`.cts` still match
+ * nothing under any of the eight. A scan
  * narrowed away from the sentinel's path is not covered here.
  *
  * The floors stay because they catch a different thing: a scan that still reaches the
@@ -526,7 +529,12 @@ function withoutComments(source: string): string {
  */
 function isExported(source: string, name: string): boolean {
   const stripped = withoutComments(source);
-  const declared = new RegExp(`^export (?:declare )?(?:type|interface|class) ${name}\\b`, "m");
+  // ⚠️ **THE THIRD MATCHER, and it is why "written once" was false.** The hoist that
+  // created {@link DECLARATION_HEAD} routed the tag scan and the declaration parser
+  // through it and missed this one, which went on spelling its own copy — so `class`
+  // and `declare` here were in exactly the state round 1 found them in the other two,
+  // with the pin covering neither. Three matchers, one head.
+  const declared = new RegExp(`^export ${DECLARATION_HEAD} ${name}\\b`, "m");
   // A barrel re-export is a legal refactor for a 2,378-line module and must not RED.
   // ⚠️ The negative lookahead matters: `export type { X as V2 }` means X is NO LONGER
   // exported under that spelling, which is precisely the rename this check exists to
@@ -578,7 +586,7 @@ function taggedNames(source: string): string[] {
 }
 
 /**
- * The declaration spellings BOTH matchers accept — written once, so they cannot
+ * The declaration spellings all THREE matchers accept — written once, so they cannot
  * disagree, and enumerated so every one of them can be driven by a fixture.
  *
  * ⚠️ **THIS IS A RATCHET, not a tidy-up, and it exists because the same defect was
@@ -593,19 +601,49 @@ function taggedNames(source: string): string[] {
  * mechanism, so the alternatives are no longer written inline in two regex literals
  * where a third can be added silently. {@link DECLARATION_SPELLINGS} drives the
  * fixture module, and the test that pins {@link DECLARATION_HEAD}'s source is what
- * makes adding an alternative here without a fixture impossible to do quietly.
+ * asserts what {@link DECLARATION_HEAD} accepts against an independently-written
+ * candidate set, so a widening or a narrowing reds with a message naming this list.
+ *
+ * ⚠️ It makes the change VISIBLE, not impossible — an earlier draft of this line
+ * claimed the latter. A single hunk editing the head and this list together is
+ * green, exactly as the kind-count assertion further down honestly concedes for
+ * itself. Visible-to-a-reviewer is the property on offer.
  */
-const DECLARATION_SPELLINGS = [
+const DECLARATION_SPELLINGS: readonly [
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+  string,
+] = [
   "type",
   "interface",
   "class",
+  // ⚠️ `abstract class` was a live hole, not a completeness flourish: the head
+  // required `declare `/`type`/`interface`/`class` immediately after `export `, so
+  // `export abstract class Foo` matched NONE OF THE THREE. The module already exports
+  // a class, so marking one `abstract` is an ordinary edit — and a brand-carrying
+  // one would have been invisible to the tag scan AND to the closure, leaving the
+  // completeness test green with a sixth guarded type in the file.
+  "abstract class",
   "declare type",
   "declare interface",
   "declare class",
+  "declare abstract class",
 ] as const;
 
-/** The `export …` head both matchers share. See {@link DECLARATION_SPELLINGS}. */
-const DECLARATION_HEAD = "(?:declare )?(?:type|interface|class)";
+/**
+ * The `export …` head all THREE matchers share. See {@link DECLARATION_SPELLINGS}.
+ *
+ * ⚠️ **`enum` is deliberately absent.** An enum's members are values, so nothing can
+ * intersect it with the module-private brand symbol and no assertion to one can mint
+ * a passing verdict. If that ever stops being true it belongs in the list above, and
+ * the candidate-set check below is what will notice.
+ */
+const DECLARATION_HEAD = "(?:declare )?(?:type|interface|(?:abstract )?class)";
 
 /** One top-level exported type-ish declaration, and the source it spans. */
 type Decl = { readonly name: string; readonly body: string };
@@ -736,6 +774,28 @@ describe("the SQL-gate name allowlist (#5042, #5230, #5249, #5255)", () => {
     expect(isExported(`export type ${N}V2 = X; /* was:\nexport type ${N} = Y;\n*/`, N)).toBe(false);
     // The anchor: an indented match is not a top-level export.
     expect(isExported(`  export type ${N} = X;`, N)).toBe(false);
+
+    // ⚠️ **EVERY SPELLING, because this matcher had none of its own.** Its fixtures
+    // were all `export type`; `interface` survived only incidentally (one of the five
+    // guarded names happens to be one), and `class`, `abstract` and `declare` were
+    // unexercised — the exact state round 1 found the other two matchers in, in the
+    // one copy the hoist had missed. Driven off the shared list so a new spelling
+    // cannot be added here without a case either.
+    for (const [i, spelling] of DECLARATION_SPELLINGS.entries()) {
+      const source = spelling.endsWith("type")
+        ? `export ${spelling} ${N} = X;`
+        : `export ${spelling} ${N} { readonly x: number; }`;
+      expect(isExported(source, N), `the export check missed the \`${spelling}\` spelling`).toBe(
+        true,
+      );
+      // ...and the mirror: the SAME spelling commented out is a rename in progress,
+      // not an export. One per spelling, because the comment strip runs before the
+      // anchor and a widening could pass the positive while breaking this.
+      expect(isExported(`/*\n${source}\n*/`, N), `prose satisfied \`${spelling}\``).toBe(false);
+      // A name that merely STARTS with the guarded one must not match, per spelling —
+      // the `\b` is what keeps this from being a prefix test.
+      expect(isExported(source.replace(N, `${N}V${i}`), N)).toBe(false);
+    }
   });
 
   test("COMPLETENESS: a sixth brand-carrying export cannot arrive unnoticed (#5255)", () => {
@@ -769,11 +829,14 @@ describe("the SQL-gate name allowlist (#5042, #5230, #5249, #5255)", () => {
     const decls = topLevelExportedTypeDecls(stripped);
     // ⚠️ THE PARSER'S OWN FLOOR, and without it the assertion below is vacuous in the
     // most embarrassing way: a parser that finds NOTHING yields an empty closure, and a
-    // parser that finds only the five yields the five. Measured at 20 top-level exported
-    // type declarations in this module today — 19 before #5277 added `EntityEdgeOutcome`,
-    // and the stale 19 survived one round because a measurement in a comment is only as
-    // current as the last time someone ran it. The floor is well under that so ordinary
-    // refactoring does not trip it, and well over five so a broken parser does.
+    // parser that finds only the five yields the five.
+    //
+    // ⚠️ The floor is `> 12` and the exact figure is NOT restated here, deliberately.
+    // It was written as 19, then corrected to 20, and 20 was wrong too — #5277 added
+    // TWO declarations, not one. Three hand-written values, two of them wrong, on a
+    // number no assertion depends on. The floor is the claim worth making; the count
+    // is one `grep -cE '^export (declare )?(type|interface|class) '` away for anyone
+    // who wants it, which is strictly better than a fourth guess in a comment.
     expect(
       decls.length,
       "the declaration parser found almost nothing — the closure below would be vacuous",
@@ -872,10 +935,15 @@ describe("the SQL-gate name allowlist (#5042, #5230, #5249, #5255)", () => {
 
     // ⚠️ FOUR, and each one is a different arm: `Carrier` is the direct hop,
     // `Holder` the transitive one, `Early` the out-of-order one that needs the
-    // fixpoint, `Gate` the `class` alternative. Sizes differ from every degraded
-    // implementation's answer — 1 for direct-only, 3 for single-pass, 3 for
-    // `type|interface` only — so no two can be confused (#5110's accidental
-    // equality, where a fixture made two states the same value).
+    // fixpoint, `Gate` the `class` alternative.
+    //
+    // ⚠️ **The SET assertion above is what discriminates them, not this length.** A
+    // previous version of this comment claimed the sizes told every degraded
+    // implementation apart, and listed two that are the same number — single-pass
+    // and `type|interface`-only both return three. The length is a cheap smoke
+    // reading; `{Carrier,Early,Holder}` vs `{Carrier,Gate,Holder}` is the assertion
+    // that separates those two (#5110's accidental equality, where a fixture made
+    // two states the same value).
     expect(brandCarryingExports(withoutComments(mod), "brandSeed").length).toBe(4);
 
     // A sixth carrier added with NO tag: the closure catches it, the tag scan does not.
@@ -948,13 +1016,21 @@ describe("the SQL-gate name allowlist (#5042, #5230, #5249, #5255)", () => {
         `/** Spelled \`${spelling}\`.`,
         " * @sql-gate-guarded",
         " */",
-        `export ${spelling} Spelling${i} {`,
-        "  readonly c: Carrier;",
-        "}",
+        // ⚠️ A type ALIAS takes `= {...};` and a class/interface takes a body. The
+        // first cut emitted a body for every spelling, so `export type Spelling0 {
+        // … }` — a string TypeScript cannot produce — was being asserted as
+        // acceptable. The matchers only read as far as the name, so it measured the
+        // right thing by luck; a fixture that is not valid source is one nobody can
+        // check by compiling it.
+        ...(spelling.endsWith("type")
+          ? [`export ${spelling} Spelling${i} = { readonly c: Carrier };`]
+          : [`export ${spelling} Spelling${i} {`, "  readonly c: Carrier;", "}"]),
       ]),
     ].join("\n");
     const spellingNames = DECLARATION_SPELLINGS.map((_, i) => `Spelling${i}`);
-    // Six spellings + the carrier. A matcher that lost ANY alternative returns fewer.
+    // Every spelling in the list, plus the carrier. A matcher that lost ANY
+    // alternative returns fewer. (No numeral: the list gained two members after this
+    // line first said "six", and the arity is pinned below anyway.)
     expect(taggedNames(everySpelling).toSorted()).toEqual(
       ["Carrier", ...spellingNames].toSorted(),
     );
@@ -962,15 +1038,49 @@ describe("the SQL-gate name allowlist (#5042, #5230, #5249, #5255)", () => {
       ["Carrier", ...spellingNames].toSorted(),
     );
 
-    // ⚠️ And the pin that makes the list authoritative. Widening the shared head
-    // without adding the spelling above reds HERE, with a message saying where to go —
-    // which is the difference between a convention and a mechanism.
+    // ⚠️ **THE PIN, and it is a candidate SET rather than a literal string.** A
+    // literal pin only NOTIFIES: updating it is one keystroke, and nothing then
+    // forces the list edit, so the new alternative still ships with no fixture. This
+    // form asks the head itself which spellings it accepts, out of a candidate list
+    // written independently of both — so it reds on a widening AND on a narrowing,
+    // including one whose author "fixed" a literal pin.
+    //
+    // Independence is the whole mechanism: `CANDIDATE_HEADS` is hand-written here and
+    // deliberately contains spellings the head must REJECT, so it cannot agree with
+    // `DECLARATION_SPELLINGS` by construction the way a derived list would (#5249).
+    // ⚠️ It contains spellings TypeScript cannot produce (`abstract type`,
+    // `abstract interface`) on purpose. `abstract` is only legal before `class`, so a
+    // head that admits it elsewhere is too loose — and the first cut of the head was,
+    // which this check caught on the way in rather than a round later.
+    const CANDIDATE_HEADS = [
+      "type",
+      "interface",
+      "class",
+      "enum",
+      "const enum",
+      "function",
+      "const",
+      "let",
+      "var",
+      "namespace",
+      ...["", "declare ", "abstract ", "declare abstract "].flatMap((prefix) =>
+        ["type", "interface", "class", "enum"].map((kind) => prefix + kind),
+      ),
+    ].filter((candidate, i, all) => all.indexOf(candidate) === i);
+    const head = new RegExp(`^(?:${DECLARATION_HEAD})$`);
     expect(
-      DECLARATION_HEAD,
-      "the shared declaration head changed — add the new spelling to DECLARATION_SPELLINGS " +
-        "so the fixture above drives it, or the new alternative ships with no falsifier " +
-        "(measured twice in one round: `class`, then `declare`)",
-    ).toBe("(?:declare )?(?:type|interface|class)");
+      CANDIDATE_HEADS.filter((candidate) => head.test(candidate)).toSorted(),
+      "the shared declaration head no longer accepts exactly DECLARATION_SPELLINGS. If you " +
+        "widened it, add the new spelling to that list so the fixture above drives it — an " +
+        "alternative with no fixture is one nothing can falsify, which this round measured " +
+        "twice (`class`, then `declare`). If you narrowed it, say why in its docstring.",
+    ).toEqual([...DECLARATION_SPELLINGS].toSorted());
+    // ⚠️ Arity + a runtime length, the two mechanisms this file mandates for its
+    // other two arrays and did not give this one. Deleting a spelling shrinks the
+    // fixture and its expectation together — the same silent narrowing measured on
+    // `GUARDED_NAMES` — so the tuple type makes it a compile error and this makes it
+    // a runtime one.
+    expect(DECLARATION_SPELLINGS.length).toBe(8);
 
     // Prose alone must not enter the closure: `Bystander` names Carrier in a docstring.
     expect(brandCarryingExports(withoutComments(mod), "brandSeed")).not.toContain("Bystander");

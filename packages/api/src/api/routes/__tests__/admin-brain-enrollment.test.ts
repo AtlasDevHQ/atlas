@@ -696,9 +696,10 @@ describe("POST /produce — running the producer", () => {
       // and `failed` in the test below — so ALL THREE arms of the union cross the
       // wire in this file, and a schema that dropped one goes red (#5277). Every
       // number distinct, for this block's stated reason.
-      // ⚠️ The four counts are DISJOINT PARTITIONS of `entries`, so the fixture has
-      // to be an arithmetically possible run: 5 + 15 + 16 = 36 refused, 40 entries,
-      // so 4 earned an edge. The first draft of this fixture used `entries: 7` with
+      // ⚠️ The three REFUSAL counts are disjoint partitions of `entries`, so the
+      // fixture has to be an arithmetically possible run: 5 + 15 + 16 = 36 refused of
+      // 40 entries, so 4 earned an edge. The first draft of this fixture used
+      // `entries: 7` with
       // those same three counts — 36 refusals in a 7-entry store — because "every
       // number distinct" was the only rule being followed. The schema's own
       // cross-check now refuses it, which is the invariant paying for itself on the
@@ -749,15 +750,17 @@ describe("POST /produce — running the producer", () => {
       entityEdges: {
         kind: "failed",
         reached: {
-          // 2 + 5 + 6 = 13 refused out of 20, so 7 earned an edge and a batch was
-          // genuinely submitted. Every number distinct AND arithmetically possible —
-          // the schema's census cross-check enforces the second half.
+          // ⚠️ 2 + 5 + 6 = 13 refused out of 20, so SEVEN entries earned an edge and
+          // at least seven proposals went out — the real producer sends two per
+          // earner, so 14. This said `proposalsAttempted: 4` under a comment
+          // asserting it was arithmetically possible; it was not, and `positive()`
+          // could not see it. `checkCensus`'s count relation refuses it now.
           phase: "proposing",
           entries: 20,
           ambiguous: 2,
           selfEdges: 5,
           unmintedIds: 6,
-          proposalsAttempted: 4,
+          proposalsAttempted: 14,
         },
         message: "The entity-edge pass failed part-way. …request req-1 carries the reason.",
       },
@@ -871,9 +874,9 @@ describe("POST /produce — running the producer", () => {
     expect(await res.json()).toMatchObject({ reportComplete: false });
 
     // ⚠️ And the neighbouring impossibility, which the sum check does NOT cover: a
-    // phase whose definition is "the batch was submitted", reporting that zero
-    // proposals were submitted. `positive()` rather than `nonNegative()` is what
-    // refuses it, and without this case that one word has no falsifier.
+    // phase whose definition is "the batch was handed over", reporting that zero
+    // proposals were. `positive()` rather than `nonNegative()` is what refuses it,
+    // and without this case that one word has no falsifier.
     produceReport = {
       ...produceReport,
       entityEdges: {
@@ -891,6 +894,29 @@ describe("POST /produce — running the producer", () => {
     };
     const zero = await post("/produce", {});
     expect(await zero.json()).toMatchObject({ reportComplete: false });
+
+    // ⚠️ ...and the range BETWEEN them, which neither `positive()` nor the sum check
+    // covers: 9 entries, 6 refused, so three earned an edge and at least three
+    // proposals must have gone out. `2` is positive, and the census sums correctly,
+    // and it is still a run that cannot have happened. This is the case a wire
+    // fixture in this very file got wrong.
+    produceReport = {
+      ...produceReport,
+      entityEdges: {
+        kind: "failed",
+        reached: {
+          phase: "proposing",
+          entries: 9,
+          ambiguous: 2,
+          selfEdges: 3,
+          unmintedIds: 1,
+          proposalsAttempted: 2,
+        },
+        message: "The entity-edge pass failed part-way. …request req-1 carries the reason.",
+      },
+    };
+    const tooFew = await post("/produce", {});
+    expect(await tooFew.json()).toMatchObject({ reportComplete: false });
   });
 
   it("survives a drifted report that omits `refusals` — every pre-parse read is gone (#5277)", async () => {
@@ -992,6 +1018,21 @@ describe("POST /produce — running the producer", () => {
     const { issues } = drift.payload as { issues: { path: string }[] };
     expect(issues.length).toBeGreaterThan(0);
     expect(issues.map((i) => i.path).join(",")).toContain("entities");
+
+    // ⚠️ **AND THE COUNTS, which this line is now the only record of.** The drift is
+    // one field — `entities[]` here — so `enrolled`/`created`/`corroborated` are
+    // primitives that parsed fine. Moving the route's success log after the parse
+    // (to close a pre-validation read) silently took them away on the ONE path where
+    // the run COMMITTED facts into the review queue and nothing else says how many,
+    // while the 200 body tells the operator to go read this very line.
+    //
+    // Recovered through a SECOND parse rather than by reading `report`, so the class
+    // that fix closed stays closed: a hostile or drifted report yields `null` here
+    // instead of throwing. Asserted because without it the recovery was measured
+    // GREEN under deletion — a fix with no falsifier is decoration.
+    expect(drift.payload).toMatchObject({
+      recoveredCounts: { enrolled: 2, created: 9, corroborated: 0, refusals: 1 },
+    });
   });
 });
 

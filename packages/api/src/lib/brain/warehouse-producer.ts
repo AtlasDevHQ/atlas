@@ -1436,8 +1436,9 @@ export type EntityEdgeOutcome =
    * entries exist, and a run that wrote 500 natural-key entries lands HERE
    * because every one is a self-edge.
    *
-   * ⚠️ **All FOUR reasons are carried, and an earlier cut carried two.** It
-   * enumerated three causes in prose and claimed `entries` told them apart;
+   * ⚠️ **All THREE refusal reasons are carried beside `entries`, and an earlier cut
+   * carried only `ambiguous`.** It enumerated three causes in prose and claimed
+   * `entries` told them apart;
    * `entries` separates only empty from non-empty, and {@link unmintedIds} was
    * missing from the enumeration entirely. So `{entries: 500, ambiguous: 0}` was
    * byte-identical for a healthy all-natural-key store and for 500 rows whose ids
@@ -1509,8 +1510,12 @@ export type EntityEdgeOutcome =
  */
 export type EntityEdgeProgress =
   /**
-   * The store read itself threw. NOTHING is known and nothing can have been
-   * written — no count is reported because none was taken.
+   * NO STORE WAS OBTAINED — the read threw, or it answered a shape that is not a
+   * store. Nothing is known and nothing can have been written, so no count is
+   * reported because none was taken.
+   *
+   * ⚠️ Not "the read threw", which is what this line said until the non-array guard
+   * was added below: that guard lands here too, and there the read RETURNED.
    *
    * ⚠️ This is the arm that used to be `entries: null`, and the reason it was
    * right to distinguish: reporting `0` for a store nobody looked at is ADR-0039's
@@ -1528,20 +1533,22 @@ export type EntityEdgeProgress =
    */
   | { readonly phase: "planning"; readonly entries: number }
   /**
-   * The batch was submitted and the vocabulary seam threw part-way through it.
+   * The batch was HANDED TO the vocabulary seam, and the seam threw part-way.
    *
-   * ⚠️ {@link proposalsAttempted} is the count SUBMITTED, not the count
+   * ⚠️ "Handed to", not "submitted to the database". The assignment happens before
+   * the await, so a throw inside the seam's dynamic `import()` lands here having
+   * written nothing at all — the phase means the batch left this function, which is
+   * the only thing this function can honestly claim.
+   *
+   * ⚠️ {@link proposalsAttempted} is the count HANDED OVER, not the count
    * COMMITTED. `proposeAliasEdges` returns its counters only on success, so a
-   * throw takes them with it — the submitted size is the honest UPPER BOUND on
-   * the blast radius and the alias-producer's own aborted-batch log line for this
+   * throw takes them with it — the batch size is the honest UPPER BOUND on the
+   * blast radius, and the alias-producer's own aborted-batch log line for this
    * request carries the real counts.
    *
    * ⚠️ **Possibly NONE of them committed**, and an earlier version of this note
-   * said an unknown prefix definitely had. The production seam does a dynamic
-   * `import()` before its first write, so a module-resolution failure or a
-   * top-level throw inside `vocabulary-decide` lands here having written nothing.
-   * An operator reading "an unknown prefix is committed" would go and audit a
-   * corpus that was never touched.
+   * said an unknown prefix definitely had. An operator reading "an unknown prefix
+   * is committed" would go and audit a corpus that was never touched.
    */
   | {
       readonly phase: "proposing";
@@ -2146,10 +2153,10 @@ export async function runWarehouseProducer(
       // `store-read` and reports no count at all.
       reached = { phase: "planning", entries: store.length };
       const batch = entityEdgeProposals(store);
-      // Every reason an entry produced no proposal, all four of them, disjoint by
-      // construction (`entity-store.ts`). Carried together because the report's
-      // job is to say WHY there was nothing to do, and three of the four are
-      // invisible in `entries` alone.
+      // Every reason an entry produced no proposal — THREE of them, disjoint by
+      // construction (`entity-store.ts`) — beside the `entries` they partition.
+      // Carried together because the report's job is to say WHY there was nothing to
+      // do, and all three are invisible in `entries` alone.
       const census = {
         entries: store.length,
         ambiguous: batch.ambiguous,
@@ -2214,9 +2221,22 @@ export async function runWarehouseProducer(
       // shape, the non-array guard above. "Re-running is safe" is true about
       // double-writes and says nothing about outcomes, so a defect invites the
       // admin to press Run forever, filing another full round of drafts each time.
-      // The permanence clause is FIXED too (it varies with nothing but the request
-      // id), so it costs the byte-equality property nothing. Same wording as the
-      // gate-threw arm's, deliberately: one phrasing to grep support tickets for.
+      //
+      // ⚠️ **The permanence test names a comparison the reader can actually make,
+      // and the first cut did not.** It said "if it fails again identically" — but
+      // this sentence is byte-identical for EVERY failure by design, so two 200
+      // bodies always look identical and the instructed comparison always passes. It
+      // was also false for a reachable transient: this pass takes the workspace
+      // vocabulary lock up to `2 × entries` times, so two presses during a
+      // concurrent run repeat identically and are contention, not a defect. The test
+      // now points at `reached`, which is the half that genuinely varies, and
+      // excludes contention explicitly.
+      //
+      // ⚠️ **"This is an Atlas fault" is the module's REGISTER, capital and all.**
+      // The sibling refusal arms use it, tests assert that exact string on them, and
+      // a case-sensitive grep is what an operator runs; the first cut wrote "this is
+      // an Atlas fault rather than a transient one", which that grep misses — on the
+      // arm most likely to be grepped for.
       const message =
         "The entity-edge pass failed part-way. Any edge it had already proposed is committed — " +
         "the alias-producer log line for this run carries those counts — and every fact and store " +
@@ -2225,8 +2245,9 @@ export async function runWarehouseProducer(
         // the other — the rule the snapshot arm already states, applied to the outlier.
         `entry is committed too. Re-running is safe. The server log for request ${
           requestId ?? "unknown"
-        } carries the reason. If it fails again identically, this is an Atlas fault rather ` +
-        "than a transient one: report it with that request id.";
+        } carries the reason. If a re-run on an otherwise idle workspace stops at the same ` +
+        "point, the failure is not transient. This is an Atlas fault rather than a problem with " +
+        `your data — report it with request id ${requestId ?? "unknown"}.`;
       // `err` raw, so pino's serializer emits the stack — for a pool or lock
       // failure the stack is the actionable half, and the per-entity catch
       // already does it this way.
@@ -2813,8 +2834,12 @@ export async function runWarehouseProducer(
               "dimension's column that no longer exists. The server log for this run names what " +
               "actually failed; if it is a connection or module failure, that is an Atlas fault rather " +
               "than an entity one."
-          : // ⚠️ The ATLAS-fault register, borrowed verbatim from the gate-mismatch arm
-            // above, because these two arms now describe the same kind of event: Atlas
+          : // ⚠️ The ATLAS-fault register, taken from the gate-mismatch arm above —
+            // with `fault` where that one says `wiring fault`, since this arm does not
+            // know the cause is wiring. NOT "verbatim", which is what this line used to
+            // claim: the two strings differ by that word, so a case-sensitive grep for
+            // one does not find the other. The shared, greppable substring is
+            // "This is an Atlas". These two arms describe the same kind of event: Atlas
             // read the entity fine and then could not process what came back. Sending
             // this admin to "fix the entity YAML" is advice they can follow forever
             // without anything changing.

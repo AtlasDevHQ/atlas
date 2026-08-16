@@ -187,6 +187,23 @@ function checkedRun(report: WarehouseProducerReport, workspaceId: string, reques
   // failure, and the response tells the operator to go read it.
   const parsed = BrainWarehouseRunReportSchema.safeParse(report);
   if (parsed.success) return { ...parsed.data, reportComplete: true as const };
+  // ⚠️ **THE COUNTS, RECOVERED THROUGH A SECOND PARSE — never read off `report`.**
+  // The drift is usually ONE field (`entities[]` is the largest and most drift-prone
+  // array), so `created`/`corroborated` are primitives that parsed fine. Losing them
+  // here is the one path where the run COMMITTED facts into the review queue and
+  // nothing anywhere says how many — while the 200 body tells the operator to go read
+  // this very log line. Recovered by parsing, not by reading, so the class the
+  // pre-validation fix closed stays closed: a drifted or hostile report cannot throw
+  // here, it just yields `null`.
+  const counts = z
+    .object({
+      enrolled: z.number(),
+      created: z.number(),
+      corroborated: z.number(),
+      refusals: z.array(z.unknown()),
+    })
+    .partial()
+    .safeParse(report);
   log.error(
     {
       requestId,
@@ -199,6 +216,14 @@ function checkedRun(report: WarehouseProducerReport, workspaceId: string, reques
         code: i.code,
         message: i.message,
       })),
+      recoveredCounts: counts.success
+        ? {
+            enrolled: counts.data.enrolled,
+            created: counts.data.created,
+            corroborated: counts.data.corroborated,
+            refusals: counts.data.refusals?.length,
+          }
+        : null,
     },
     "Warehouse producer report failed its own response schema — the run COMMITTED; the report shape drifted",
   );
@@ -868,6 +893,13 @@ adminBrainEnrollment.openapi(produceRoute, async (c) => {
               corroborated: response.corroborated,
               refusals: response.refusals.length,
               entityEdgeKind: response.entityEdges.kind,
+              // ⚠️ `kind: "failed"` alone stops one question short: the remedy for a
+              // store that was never read is not the remedy for a batch that was
+              // half-committed. Post-parse, so it costs nothing.
+              entityEdgePhase:
+                response.entityEdges.kind === "failed"
+                  ? response.entityEdges.reached.phase
+                  : undefined,
             }
           : // The drifted arm says so rather than reporting numbers it does not have.
             // `checkedRun`'s own `log.error` carries the zod issues; this line exists

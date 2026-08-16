@@ -695,10 +695,11 @@ export interface ExportedBrainEnrollment {
  * regions' semantic layers name the entity differently, the imported rows are
  * never deleted, both sets go live, and every shared canonical norm is poisoned
  * — the store then resolves NOTHING for that entity until someone intervenes.
- * The run report's `entityEdges.ambiguous` is what makes that visible — on every
- * arm that got far enough to count it, so a run whose edge pass FAILED reports no
- * count and the condition stays invisible on exactly that run (#5277 folded the
- * old flat `entityEdgesAmbiguous` into the outcome union). The reaper (#5233) is
+ * The run report's `entityEdges.ambiguous` is what makes that visible — on every arm
+ * that got far enough to count it, which includes a FAILED pass that reached the
+ * `proposing` phase. Only a failure at `store-read` or `planning` reports no
+ * `ambiguous`, and the condition stays invisible on exactly those runs (#5277 folded
+ * the old flat `entityEdgesAmbiguous` into the outcome union). The reaper (#5233) is
  * what fixes the condition itself.
  *
  * The failure direction if it were dropped is ADR-0039's invisible one: the

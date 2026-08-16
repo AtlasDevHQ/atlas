@@ -640,28 +640,25 @@ export function entityEdgeProposals(entries: readonly StoredEntity[]): EntityEdg
   let ambiguous = 0;
   let unmintedIds = 0;
   for (const entry of entries) {
-    // ⚠️ **AMBIGUITY FIRST, self-edge second — the order is the finding.** With
-    // the self-edge check first, a natural-key table whose two rows share a name
-    // (`Acme` as the primary key of two entities) counted as two benign
-    // self-edges and reported `ambiguous: 0` — so the run said nothing was
-    // wrong about a store in which neither entity resolves by name, and the
-    // caller's warn never fired. A self-edge is only benign when the name is
-    // unambiguous.
-    // ⚠️ **UNMINTED FIRST, and the order is a finding rather than a style
-    // choice.** `resolvableIds` omits an unminted id, so without this arm such a
-    // row failed `resolvesToSelf` and landed in `ambiguous` — counted TWICE,
-    // making `ambiguous` mean three different things and `unmintedIds > 0`
-    // strictly imply `ambiguous > 0`. The two have different remedies (a
-    // re-import versus a warehouse edit), which is the whole reason they are two
-    // numbers.
+    // ⚠️ **THE ORDER IS THE FINDING: unminted, then ambiguity, then self-edge.**
+    // Both swaps were shipped once and both collapsed two counters into one.
+    //
+    // UNMINTED first: `resolvableIds` omits an unminted id, so without this arm
+    // such a row failed `resolvesToSelf` and landed in `ambiguous` — counted
+    // TWICE, making `ambiguous` mean three different things and `unmintedIds > 0`
+    // strictly imply `ambiguous > 0`. The two have different remedies (a re-import
+    // versus a warehouse edit), which is the whole reason they are two numbers.
+    //
+    // AMBIGUITY before self-edge: with the self-edge check first, a natural-key
+    // table whose two rows share a name (`Acme` as the primary key of two
+    // entities) counted as two benign self-edges and reported `ambiguous: 0` — so
+    // the run said nothing was wrong about a store in which neither entity
+    // resolves by name, and the caller's warn never fired. A self-edge is only
+    // benign when the name is unambiguous.
     if (!isWarehouseRowId(entry.entityId)) {
       unmintedIds++;
       continue;
     }
-    // AMBIGUITY next, self-edge last. With the self-edge test first, a
-    // natural-key table whose rows share a name counted two benign `selfEdges`
-    // and reported `ambiguous: 0` — the run saying nothing was wrong about a
-    // store in which neither entity resolves by name.
     const resolvesToSelf =
       ids.get(entry.keyNorm) === entry.entityId && ids.get(entry.canonicalNorm) === entry.entityId;
     if (!resolvesToSelf) {

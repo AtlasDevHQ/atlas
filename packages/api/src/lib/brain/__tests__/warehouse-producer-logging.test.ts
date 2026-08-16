@@ -316,6 +316,35 @@ describe("warehouse producer logging", () => {
     });
   });
 
+  it("logs the entity-edge failure's MIDDLE phase — read, then planning threw (#5277)", async () => {
+    // ⚠️ The third phase, and the one neither test above reaches. With only
+    // `store-read` and `proposing` covered, a payload could still be right for the
+    // two shapes that were checked and wrong for the one in between — and the
+    // producer-side assignment for this phase had no falsifier at all until its
+    // sibling unit test was added.
+    await run({
+      loadEntityStore: async () =>
+        [
+          {
+            get entityId(): never {
+              throw new Error("hostile getter");
+            },
+            entity: "Accounts",
+            keySurface: "ACC-1",
+            keyNorm: "acc 1",
+            canonicalSurface: "Acme Corp",
+            canonicalNorm: "acme corp",
+          },
+        ] as never,
+    });
+
+    const payload = payloadOf(errors, "entity-edge pass failed part-way");
+    expect(payload.err).toBeInstanceOf(Error);
+    // `entries` established, nothing handed over — a shape that is neither of the
+    // other two phases.
+    expect(payload.reached).toEqual({ phase: "planning", entries: 1 });
+  });
+
   it("logs unsurfaceable cells at WARN — the enrollment mistake that is otherwise silent", async () => {
     await run({
       runSnapshot: async () => [

@@ -19,6 +19,8 @@ import {
   BrainFactTensionViewSchema,
   BrainFactWillWidenSchema,
   BrainSearchTensionViewSchema,
+  BRAIN_CENSUS_ISSUES,
+  BrainEntityEdgeOutcomeSchema,
 } from "../brain";
 
 const visibleCounterpart = {
@@ -296,5 +298,161 @@ describe("BrainFactTensionSweepResponseSchema (#5029)", () => {
       BrainFactTensionSweepResponseSchema.parse({ minted: -1, truncated: false }),
     ).toThrow();
     expect(() => BrainFactTensionSweepResponseSchema.parse({ minted: 4 })).toThrow();
+  });
+});
+
+/**
+ * The entity-edge census's cross-field invariants (#5277), tested WHERE THEY LIVE.
+ *
+ * ⚠️ **These existed only as route tests, and that is why two of the branches could
+ * mask each other undetected.** Through the route every refusal collapses onto one
+ * `reportComplete: false`, so no assertion could name WHICH invariant fired — and an
+ * over-count on an idle arm trips two branches at once, leaving either individually
+ * deletable with the whole suite green. Naming the message is the whole point.
+ *
+ * The other thing this closes: nothing anywhere proved the refinements RUN AT ALL.
+ * `z.discriminatedUnion` has to carry a `superRefine`-wrapped member's discriminator
+ * through, and if it did not, every census check and `positive()` would be dead while
+ * every existing test stayed green.
+ */
+describe("the entity-edge census invariants (#5277)", () => {
+  const census = (over: Record<string, number> = {}) => ({
+    entries: 10,
+    ambiguous: 2,
+    selfEdges: 3,
+    unmintedIds: 1,
+    ...over,
+  });
+  const counters = {
+    queued: 0,
+    autoApproved: 0,
+    deduped: 0,
+    alreadyApproved: 0,
+    rejected: 0,
+    refused: 0,
+  };
+  /** The first issue message a parse produced, or `null` when it succeeded. */
+  const refusal = (value: unknown): string | null => {
+    const parsed = BrainEntityEdgeOutcomeSchema.safeParse(value);
+    return parsed.success ? null : (parsed.error.issues[0]?.message ?? "");
+  };
+
+  test("the refinements RUN — a discriminatedUnion member keeps its checks", () => {
+    // ⚠️ The load-bearing assertion. If `z.discriminatedUnion` dropped a
+    // `superRefine`-wrapped option's checks, every other assertion in this block
+    // would still pass on the happy path and every invariant added this round would
+    // be silently unenforced.
+    expect(
+      refusal({
+        kind: "nothing-to-propose",
+        ...census({ entries: 5, ambiguous: 0, selfEdges: 0, unmintedIds: 0 }),
+      }),
+    ).toBe(BRAIN_CENSUS_ISSUES.unaccountedYetIdle);
+    // ...and the control: a well-formed census on the same arm parses.
+    expect(refusal({ kind: "nothing-to-propose", ...census({ entries: 6 }) })).toBeNull();
+  });
+
+  test("over-counting is refused ON EVERY ARM, and names its own issue", () => {
+    // ⚠️ The branch that was individually deletable. It is the ONLY thing refusing an
+    // over-count on the two arms that DID propose — where the idle-arm branch cannot
+    // apply — so each arm needs its own case or the deletion hides behind a sibling.
+    expect(refusal({ kind: "nothing-to-propose", ...census({ entries: 3, ambiguous: 4 }) })).toBe(
+      BRAIN_CENSUS_ISSUES.overCounted,
+    );
+    expect(
+      refusal({ kind: "proposed", ...census({ entries: 3, ambiguous: 4 }), counters }),
+    ).toBe(BRAIN_CENSUS_ISSUES.overCounted);
+    expect(
+      refusal({
+        kind: "failed",
+        reached: {
+          phase: "proposing",
+          ...census({ entries: 3, ambiguous: 4 }),
+          proposalsAttempted: 2,
+        },
+        message: "…",
+      }),
+    ).toBe(BRAIN_CENSUS_ISSUES.overCounted);
+  });
+
+  test("a batch submitted from a store where NOTHING earned an edge is refused", () => {
+    // 2 + 3 + 1 = 6 refusals out of 6 entries, so no entry earned an edge — yet the
+    // arm says a batch went out. Distinct from over-counting: the sum is EXACT here,
+    // so the over-count branch cannot fire and cannot mask this one.
+    expect(refusal({ kind: "proposed", ...census({ entries: 6 }), counters })).toBe(
+      BRAIN_CENSUS_ISSUES.allRefusedYetProposed,
+    );
+    expect(refusal({ kind: "nothing-to-propose", ...census({ entries: 6 }) })).toBeNull();
+  });
+
+  test("an idle arm with entries left over is refused — they would have earned edges", () => {
+    // The mirror of the case above. The sum is SHORT of `entries` here, so again the
+    // over-count branch is inapplicable and this branch is measured alone.
+    expect(refusal({ kind: "nothing-to-propose", ...census({ entries: 9 }) })).toBe(
+      BRAIN_CENSUS_ISSUES.unaccountedYetIdle,
+    );
+    expect(refusal({ kind: "proposed", ...census({ entries: 9 }), counters })).toBeNull();
+  });
+
+  test("fewer proposals than earners is refused — `positive()` closed only zero", () => {
+    // ⚠️ 10 entries, 6 refused, so FOUR earned an edge and at least four proposals
+    // must have gone out. `positive()` admits 1, 2 and 3 — and a fixture in this very
+    // diff claimed 4 submissions for 7 earners, under a comment asserting it was
+    // arithmetically possible.
+    expect(
+      refusal({
+        kind: "failed",
+        reached: { phase: "proposing", ...census(), proposalsAttempted: 3 },
+        message: "…",
+      }),
+    ).toBe(BRAIN_CENSUS_ISSUES.tooFewProposals);
+    // One per earner parses, and so does the real producer's two-per-earner. The
+    // exact multiple is deliberately NOT enforced — see `checkCensus`.
+    for (const proposalsAttempted of [4, 8]) {
+      expect(
+        refusal({
+          kind: "failed",
+          reached: { phase: "proposing", ...census(), proposalsAttempted },
+          message: "…",
+        }),
+      ).toBeNull();
+    }
+  });
+
+  test("zero proposals on the submitted phase is refused by `positive()`, not by the census", () => {
+    // ⚠️ A DIFFERENT mechanism from the case above, and easy to conflate now that the
+    // count relation exists. Asserting the issue is NOT the census one is what keeps
+    // `positive()` independently falsifiable.
+    const zero = {
+      kind: "failed",
+      reached: { phase: "proposing", ...census(), proposalsAttempted: 0 },
+      message: "…",
+    };
+    expect(BrainEntityEdgeOutcomeSchema.safeParse(zero).success).toBe(false);
+    expect(refusal(zero)).not.toBe(BRAIN_CENSUS_ISSUES.tooFewProposals);
+  });
+
+  test("the phases that establish no census are not census-checked", () => {
+    // `store-read` carries nothing and `planning` carries only `entries`, so there is
+    // no partition to assert. A refinement attached to them would refuse every real
+    // failure of those kinds.
+    for (const reached of [{ phase: "store-read" }, { phase: "planning", entries: 11 }]) {
+      expect(refusal({ kind: "failed", reached, message: "…" })).toBeNull();
+    }
+  });
+
+  test("an empty store is not mistaken for an unaccounted one", () => {
+    // The boundary the equality branch must ADMIT: 0 = 0. This is the commonest real
+    // outcome of all, so a `>=` in place of the `!== 0` would refuse almost every
+    // healthy idle run.
+    expect(
+      refusal({
+        kind: "nothing-to-propose",
+        entries: 0,
+        ambiguous: 0,
+        selfEdges: 0,
+        unmintedIds: 0,
+      }),
+    ).toBeNull();
   });
 });

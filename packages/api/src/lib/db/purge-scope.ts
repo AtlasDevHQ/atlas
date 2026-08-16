@@ -44,7 +44,10 @@
  *   EIGHT while listing NINE and omitting `stripe_webhook_events`; measured
  *   2026-08-12 by enumerating the Drizzle schema, there are ELEVEN scope-less
  *   `purged` tables — the ten above plus `chat_cache`, which is scoped by an
- *   expression rather than a parent (see its entry). Several SCOPED tables would cascade
+ *   expression rather than a parent (see its entry). Since #5176 that list of
+ *   ten is not prose you have to keep in step: each of those entries carries a
+ *   `viaParent` declaration, and `ViaParentTableName` derives the set from them.
+ *   Several SCOPED tables would cascade
  *   too — `agent_runs`, `agent_session_memory`, `learned_pattern_injections` —
  *   and are deleted explicitly all the same.
  *
@@ -83,10 +86,55 @@ export type PurgeDecision =
   | "retained"
   | "platform";
 
+/**
+ * How a table with NO scope column of its own is reached: through its parent's
+ * rows, by subquery.
+ *
+ * This declaration is the ONLY copy of the child→parent relation (#5176). It was
+ * written three independent times — as SQL subqueries in `hardDeleteWorkspace`,
+ * as an ordering constraint in `purge-scope.test.ts`, and as a lookup map in
+ * `hard-delete-purge-pg.test.ts` — and each copy was internally self-consistent,
+ * so a drifted one still passed its own suite. That is the "fixtures that agree
+ * by construction" shape: nothing forced the three to agree with each other.
+ * All three now read this.
+ */
+export interface PurgeParentLink {
+  /** The child column holding the parent's key. */
+  readonly column: string;
+  /** The parent table. */
+  readonly parent: string;
+  /** The parent column the child points at. */
+  readonly parentKey: string;
+  /** The PARENT's workspace scope column — this is what `$1` is matched against. */
+  readonly parentScope: string;
+  /**
+   * True when `parentKey` is NULLABLE, which makes the subquery add
+   * `AND <parentKey> IS NOT NULL`.
+   *
+   * ⚠️ NOT for the DELETE's sake — `x IN (NULL, 'a')` is still TRUE for `'a'`,
+   * so a NULL in the list changes nothing there (it is `NOT IN` that three-valued
+   * logic breaks). The exclusion is load-bearing for the OTHER consumer of this
+   * subquery: the #3468 tombstone INSERT, whose `stripe_purged_subscriptions
+   * .stripe_subscription_id` is a PRIMARY KEY and therefore NOT NULL. A
+   * subscription row with no Stripe id would abort that INSERT — `ON CONFLICT`
+   * covers unique violations, not not-null ones — and take the whole purge
+   * transaction with it.
+   */
+  readonly parentKeyNullable?: boolean;
+}
+
 export interface PurgeTableScope {
   readonly decision: PurgeDecision;
   /** Why this decision is correct — required, non-empty. */
   readonly reason: string;
+  /**
+   * Present only on `purged` tables with no scope column of their own. Its
+   * presence is what makes `hardDeleteWorkspace` reach the table by subquery,
+   * and it is also the ORDER constraint: the child must be deleted before the
+   * parent, or the subquery finds no parent rows and the child is silently left
+   * behind — no error, no count, exactly the shape of #5160's original bug.
+   */
+  readonly viaParent?: PurgeParentLink;
 }
 
 /**
@@ -114,8 +162,8 @@ export const PURGE_TABLE_DECISIONS = {
 
   // Chat + agent pillar
   conversations: { decision: "purged", reason: "Core chat pillar — the conversation rows themselves." },
-  messages: { decision: "purged", reason: "Message bodies: the highest-volume carrier of customer prose. Cascades from conversations too, but deleted explicitly as a completeness guarantee for deployments predating the FK." },
-  slack_threads: { decision: "purged", reason: "Chat-adapter thread mapping. No scope column — deleted via a conversation_id subquery, since there is no FK to cascade from." },
+  messages: { decision: "purged", reason: "Message bodies: the highest-volume carrier of customer prose. Cascades from conversations too, but deleted explicitly as a completeness guarantee for deployments predating the FK.", viaParent: { column: "conversation_id", parent: "conversations", parentKey: "id", parentScope: "org_id" } },
+  slack_threads: { decision: "purged", reason: "Chat-adapter thread mapping. No scope column — deleted via a conversation_id subquery, since there is no FK to cascade from.", viaParent: { column: "conversation_id", parent: "conversations", parentKey: "id", parentScope: "org_id" } },
   agent_runs: { decision: "purged", reason: "Per-turn durable checkpoints (ADR-0020) whose `transcript` column holds the full agent trace — verbatim customer prose and query results. Cascades from conversations, but carries org_id, so it is deleted explicitly." },
   agent_session_memory: { decision: "purged", reason: "Long-lived durable working memory (ADR-0020) — model-authored notes about the workspace's data. Cascades from conversations; carries org_id, so explicit." },
 
@@ -141,7 +189,7 @@ export const PURGE_TABLE_DECISIONS = {
 
   // Knowledge Base pillar (ADR-0028) — the #5160 headline gap's other half.
   knowledge_documents: { decision: "purged", reason: "Every ingested KB document: bodies + frontmatter. Named in #5160 alongside the brain tables." },
-  knowledge_links: { decision: "purged", reason: "The KB link graph. No scope column — deleted via a source_document_id subquery before its parent, rather than relying on the cascade." },
+  knowledge_links: { decision: "purged", reason: "The KB link graph. No scope column — deleted via a source_document_id subquery before its parent, rather than relying on the cascade.", viaParent: { column: "source_document_id", parent: "knowledge_documents", parentKey: "id", parentScope: "workspace_id" } },
   knowledge_sync_credentials: { decision: "purged", reason: "AES-256-GCM ciphertext for KB sync connectors — a SECRET AT REST that survived every purge until #5160. The same class of miss as integration_credentials (#3425) one pillar over." },
   knowledge_sync_state: { decision: "purged", reason: "Per-connector sync cursors and bookkeeping for the purged workspace." },
 
@@ -154,22 +202,22 @@ export const PURGE_TABLE_DECISIONS = {
   learned_patterns: { decision: "purged", reason: "Learned query patterns — customer SQL plus the natural-language questions that produced it." },
   learned_pattern_injections: { decision: "purged", reason: "Injection telemetry linking patterns to conversations and request ids. Cascades from learned_patterns; carries org_id, so explicit." },
   query_suggestions: { decision: "purged", reason: "Derived suggestions, phrased in the customer's own domain language." },
-  suggestion_user_clicks: { decision: "purged", reason: "Per-user click telemetry on suggestions. No scope column — deleted via a suggestion_id subquery before its parent." },
+  suggestion_user_clicks: { decision: "purged", reason: "Per-user click telemetry on suggestions. No scope column — deleted via a suggestion_id subquery before its parent.", viaParent: { column: "suggestion_id", parent: "query_suggestions", parentKey: "id", parentScope: "org_id" } },
 
   // Dashboards (ADR-0029/0034)
   dashboards: { decision: "purged", reason: "Dashboard definitions and their parameters." },
-  dashboard_cards: { decision: "purged", reason: "Cards including `cached_columns`/`cached_rows` — snapshots of actual query RESULTS, i.e. customer data at rest in the internal DB." },
-  dashboard_user_drafts: { decision: "purged", reason: "Per-user drafts are content under the draft-first model (ADR-0029/0034). No scope column — deleted via a dashboard_id subquery." },
-  dashboard_draft_card_cache: { decision: "purged", reason: "Cached draft-card RESULTS — customer data, not just layout. No scope column; deleted via a dashboard_id subquery before its parents." },
+  dashboard_cards: { decision: "purged", reason: "Cards including `cached_columns`/`cached_rows` — snapshots of actual query RESULTS, i.e. customer data at rest in the internal DB.", viaParent: { column: "dashboard_id", parent: "dashboards", parentKey: "id", parentScope: "org_id" } },
+  dashboard_user_drafts: { decision: "purged", reason: "Per-user drafts are content under the draft-first model (ADR-0029/0034). No scope column — deleted via a dashboard_id subquery.", viaParent: { column: "dashboard_id", parent: "dashboards", parentKey: "id", parentScope: "org_id" } },
+  dashboard_draft_card_cache: { decision: "purged", reason: "Cached draft-card RESULTS — customer data, not just layout. No scope column; deleted via a dashboard_id subquery before its parents.", viaParent: { column: "dashboard_id", parent: "dashboards", parentKey: "id", parentScope: "org_id" } },
 
   // Prompts
   prompt_collections: { decision: "purged", reason: "Starter-prompt collections authored for the workspace." },
-  prompt_items: { decision: "purged", reason: "The prompt text itself. No scope column — deleted via a collection_id subquery." },
+  prompt_items: { decision: "purged", reason: "The prompt text itself. No scope column — deleted via a collection_id subquery.", viaParent: { column: "collection_id", parent: "prompt_collections", parentKey: "id", parentScope: "org_id" } },
   user_favorite_prompts: { decision: "purged", reason: "Per-user favourited prompt text, scoped by org_id. Previously unpurged despite carrying both a user id and customer-authored prose." },
 
   // Scheduling
   scheduled_tasks: { decision: "purged", reason: "Task definitions including their prompt text and delivery targets." },
-  scheduled_task_runs: { decision: "purged", reason: "Run history. No scope column — deleted via a task_id subquery." },
+  scheduled_task_runs: { decision: "purged", reason: "Run history. No scope column — deleted via a task_id subquery.", viaParent: { column: "task_id", parent: "scheduled_tasks", parentKey: "id", parentScope: "org_id" } },
 
   // Proactive chat (enterprise-gated)
   workspace_proactive_config: { decision: "purged", reason: "Per-workspace proactive configuration. Previously unpurged." },
@@ -222,7 +270,7 @@ export const PURGE_TABLE_DECISIONS = {
   overage_meter_reports: { decision: "purged", reason: "Overage meter reports carrying the org's Stripe customer id and reported spend. Previously unpurged, so billing linkage outlived the 'no billable Stripe linkage' guarantee #3425 established." },
   abuse_events: { decision: "purged", reason: "Per-workspace abuse events. Deleting these loses abuse memory for a re-created org id — accepted, and the settled precedent this registry follows for user_trial_grants' opposite call: abuse_events is workspace-keyed (a purged org id is not reused by a returning ACTOR), whereas the trial grant is user-keyed and its whole purpose is surviving org deletion." },
   subscription: { decision: "purged", reason: "@better-auth/stripe subscription rows (`referenceId` = org id). Probed with to_regclass — the table only exists post-0152 or on Stripe deployments. The REMOTE teardown runs before this cascade; this removes the local billable linkage (#3425)." },
-  stripe_webhook_events: { decision: "purged", reason: "Webhook dedupe-ledger rows for the org's subscription ids, matched via a subscription subquery, so they must go before the subscription rows." },
+  stripe_webhook_events: { decision: "purged", reason: "Webhook dedupe-ledger rows for the org's subscription ids, matched via a subscription subquery, so they must go before the subscription rows.", viaParent: { column: "stripe_subscription_id", parent: "subscription", parentKey: "stripeSubscriptionId", parentScope: "referenceId", parentKeyNullable: true } },
 
   // Residency
   region_migrations: { decision: "purged", reason: "Region-migration records for the workspace." },
@@ -260,6 +308,53 @@ export const PURGE_TABLE_DECISIONS = {
   sub_processor_subscriptions: { decision: "platform", reason: "Operator-managed sub-processor notification subscriptions (the compliance mailing list), keyed by URL and created_by_user_id — platform state, not workspace content." },
   sub_processor_snapshots: { decision: "platform", reason: "Published sub-processor list snapshots — a global compliance artifact." },
 } as const satisfies Record<string, PurgeTableScope>;
+
+/**
+ * The `purged` tables reached through a parent subquery — the keys carrying a
+ * `viaParent` declaration, as a literal union.
+ *
+ * `hardDeleteWorkspace`'s `delViaParent()` takes this rather than `string`, so a
+ * call naming a table with no declaration does not compile and cannot fall back
+ * to an undefined link at runtime.
+ */
+export type ViaParentTableName = {
+  [K in keyof typeof PURGE_TABLE_DECISIONS]: (typeof PURGE_TABLE_DECISIONS)[K] extends {
+    readonly viaParent: PurgeParentLink;
+  }
+    ? K
+    : never;
+}[keyof typeof PURGE_TABLE_DECISIONS];
+
+/**
+ * The subquery that selects a parent's keys for the purged workspace, with `$1`
+ * bound to the org id.
+ *
+ * Exported because it is needed TWICE for `subscription`: once inside
+ * `stripe_webhook_events`'s DELETE, and once by the #3468 tombstone INSERT that
+ * records the same subscription ids before they are removed. Building both from
+ * the one declaration is the point — a fourth hand-written copy of the relation
+ * is exactly what #5176 removed.
+ */
+export function parentKeySubquery(link: PurgeParentLink): string {
+  const notNull = link.parentKeyNullable ? ` AND "${link.parentKey}" IS NOT NULL` : "";
+  return `SELECT "${link.parentKey}" FROM "${link.parent}" WHERE "${link.parentScope}" = $1${notNull}`;
+}
+
+/**
+ * The DELETE for a table reached through its parent, including `RETURNING 1` so
+ * the caller can count rows.
+ *
+ * Identifiers are quoted unconditionally. For the snake_case names that is a
+ * no-op; for `subscription`'s camelCase Better-Auth columns it is required, and
+ * one uniform rule beats a per-name judgement in a string builder.
+ *
+ * There is no room in this template for a status/kind/state predicate, which is
+ * the narrowing `purge-scope.test.ts` forbids for every DELETE: a purge must
+ * remove ALL of a workspace's rows in a table, not the ones in one state.
+ */
+export function viaParentDeleteSql(table: string, link: PurgeParentLink): string {
+  return `DELETE FROM "${table}" WHERE "${link.column}" IN (${parentKeySubquery(link)}) RETURNING 1`;
+}
 
 /** Tables the purge deletes with an explicit statement. */
 export const PURGED_TABLES: ReadonlySet<string> = new Set(

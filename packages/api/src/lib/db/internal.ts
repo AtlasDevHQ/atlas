@@ -25,10 +25,17 @@ import { normalizeError } from "@atlas/api/lib/effect/errors";
 import { resolveStatusClause } from "@atlas/api/lib/content-mode/port";
 import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
 import { getConnectTimeoutMs } from "@atlas/api/lib/db/pool-config";
-// Type-only: `HardDeleteCounts` is derived from the registry, so the purge's
-// return statement stops compiling when a `purged` entry has no count (#5176).
-// Nothing here is needed at runtime, so this adds no import to the bundle.
-import type { PURGE_TABLE_DECISIONS } from "@atlas/api/lib/db/purge-scope";
+// The purge registry is BOTH the source of `HardDeleteCounts` (so the purge's
+// return statement stops compiling when a `purged` entry has no count) and the
+// single declaration of the child→parent relation the scope-less tables are
+// deleted through (#5176). purge-scope.ts itself imports nothing, so this edge
+// only ever points one way.
+import {
+  PURGE_TABLE_DECISIONS,
+  parentKeySubquery,
+  viaParentDeleteSql,
+  type ViaParentTableName,
+} from "@atlas/api/lib/db/purge-scope";
 import { foldRollingMean } from "@atlas/api/lib/learn/rolling-mean";
 import { REPEATED_PATTERN_MIN_REPETITIONS } from "@atlas/api/lib/learn/pattern-tiers";
 import {
@@ -4014,6 +4021,24 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
       const result = await client.query(sql, params);
       return result.rows.length;
     };
+    /**
+     * Delete a table that has no scope column of its own, through its parent's
+     * rows — the relation coming from the registry's `viaParent` rather than a
+     * subquery written here (#5176).
+     *
+     * The relation used to be written three times: here as SQL, in
+     * `purge-scope.test.ts` as an ordering constraint, and in
+     * `hard-delete-purge-pg.test.ts` as the map that makes the seeded child
+     * point at the seeded parent. Each was internally consistent, so a drifted
+     * copy still passed its own suite — and the falsifier's copy is the one that
+     * decides whether the falsifier can fail at all.
+     *
+     * `ViaParentTableName` is the union of registry keys that HAVE a
+     * declaration, so a call for any other table does not compile and the link
+     * below can never be undefined.
+     */
+    const delViaParent = async (table: ViaParentTableName) =>
+      delRaw(viaParentDeleteSql(table, PURGE_TABLE_DECISIONS[table].viaParent));
 
     // Tables this purge could NOT reach because the relation is absent from this
     // region's schema. Reported on HardDeleteResult and surfaced by the route as
@@ -4081,18 +4106,14 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     // ── Phase 1: Child tables with FK dependencies (delete children first) ──
 
     // slack_threads uses conversation_id (no FK constraint) — delete before conversations to avoid orphans
-    const slackThreads = await delRaw(
-      `DELETE FROM slack_threads WHERE conversation_id IN (SELECT id FROM conversations WHERE org_id = $1) RETURNING 1`,
-    );
+    const slackThreads = await delViaParent("slack_threads");
 
     // messages cascade from conversations via FK (schema.ts:107), but we delete
     // explicitly as a GDPR completeness guarantee — older deployments may predate the FK
-    const messages = await delRaw(`DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE org_id = $1) RETURNING 1`);
+    const messages = await delViaParent("messages");
 
     // scheduled_task_runs references scheduled_tasks via FK cascade
-    const scheduledTaskRuns = await delRaw(
-      `DELETE FROM scheduled_task_runs WHERE task_id IN (SELECT id FROM scheduled_tasks WHERE org_id = $1) RETURNING 1`,
-    );
+    const scheduledTaskRuns = await delViaParent("scheduled_task_runs");
 
     // semantic_entity_versions references semantic_entities via FK cascade
     const semanticEntityVersions = await del(
@@ -4100,37 +4121,29 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     );
 
     // prompt_items references prompt_collections via FK cascade
-    const promptItems = await delRaw(
-      `DELETE FROM prompt_items WHERE collection_id IN (SELECT id FROM prompt_collections WHERE org_id = $1) RETURNING 1`,
-    );
+    const promptItems = await delViaParent("prompt_items");
 
     // dashboard_cards references dashboards via FK cascade
-    const dashboardCards = await delRaw(
-      `DELETE FROM dashboard_cards WHERE dashboard_id IN (SELECT id FROM dashboards WHERE org_id = $1) RETURNING 1`,
-    );
+    const dashboardCards = await delViaParent("dashboard_cards");
 
     // dashboard_draft_card_cache → dashboard_user_drafts → dashboards (#5160).
     // Both cascade, but both are deleted explicitly for the same reason
     // `messages` is: neither carries a scope column, so a cascade is the ONLY
     // thing that would remove them, and the cache holds `cached_rows` —
-    // materialized query RESULTS, i.e. customer data at rest. Grandchild first.
-    const dashboardDraftCardCache = await delRaw(
-      `DELETE FROM dashboard_draft_card_cache WHERE dashboard_id IN (SELECT id FROM dashboards WHERE org_id = $1) RETURNING 1`,
-    );
-    const dashboardUserDrafts = await delRaw(
-      `DELETE FROM dashboard_user_drafts WHERE dashboard_id IN (SELECT id FROM dashboards WHERE org_id = $1) RETURNING 1`,
-    );
+    // materialized query RESULTS, i.e. customer data at rest.
+    //
+    // Both point at `dashboards` directly, so the grandchild/child pair has no
+    // ordering constraint BETWEEN them — only against the shared parent. That is
+    // visible in the registry now rather than inferable from statement order.
+    const dashboardDraftCardCache = await delViaParent("dashboard_draft_card_cache");
+    const dashboardUserDrafts = await delViaParent("dashboard_user_drafts");
 
     // knowledge_links references knowledge_documents via FK cascade (#5160).
     // No scope column of its own, so it goes via its parent's workspace_id.
-    const knowledgeLinks = await delRaw(
-      `DELETE FROM knowledge_links WHERE source_document_id IN (SELECT id FROM knowledge_documents WHERE workspace_id = $1) RETURNING 1`,
-    );
+    const knowledgeLinks = await delViaParent("knowledge_links");
 
     // suggestion_user_clicks references query_suggestions via FK cascade (#5160)
-    const suggestionUserClicks = await delRaw(
-      `DELETE FROM suggestion_user_clicks WHERE suggestion_id IN (SELECT id FROM query_suggestions WHERE org_id = $1) RETURNING 1`,
-    );
+    const suggestionUserClicks = await delViaParent("suggestion_user_clicks");
 
     // ── Phase 2: All org_id tables ──
 
@@ -4394,19 +4407,19 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
       // immediately regrows `stripe_webhook_events` rows. Stamped inside
       // the purge transaction (same atomicity as the deletes below);
       // consulted by `classifyStripeEvent`; pruned after 30 days.
+      //
+      // The SELECT is `parentKeySubquery` over the SAME `viaParent` declaration
+      // the ledger DELETE below uses (#5176). It was a fourth hand-written copy
+      // of the subscription relation, and the two had to agree: the tombstone
+      // must record exactly the ids whose ledger rows are about to be removed,
+      // or a webhook arriving for an unrecorded id regrows the row it names.
       await client.query(
         `INSERT INTO stripe_purged_subscriptions (stripe_subscription_id)
-         SELECT "stripeSubscriptionId" FROM subscription
-          WHERE "referenceId" = $1 AND "stripeSubscriptionId" IS NOT NULL
+         ${parentKeySubquery(PURGE_TABLE_DECISIONS.stripe_webhook_events.viaParent)}
          ON CONFLICT (stripe_subscription_id) DO NOTHING`,
         [orgId],
       );
-      stripeWebhookEvents = await delRaw(
-        `DELETE FROM stripe_webhook_events WHERE stripe_subscription_id IN (
-           SELECT "stripeSubscriptionId" FROM subscription
-            WHERE "referenceId" = $1 AND "stripeSubscriptionId" IS NOT NULL
-         ) RETURNING 1`,
-      );
+      stripeWebhookEvents = await delViaParent("stripe_webhook_events");
       subscriptions = await del(`DELETE FROM subscription WHERE "referenceId" = $1`);
     }
 

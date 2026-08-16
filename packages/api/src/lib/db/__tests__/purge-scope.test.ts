@@ -38,6 +38,7 @@ import {
   RETAINED_TABLES,
   WORKSPACE_SCOPE_COLUMNS,
   USER_SCOPE_COLUMNS,
+  viaParentDeleteSql,
   type PurgeTableScope,
 } from "../purge-scope";
 
@@ -109,10 +110,36 @@ const purgeFnBody = rawPurgeFnBody
   .replace(/\/\*[\s\S]*?\*\//g, "")
   .replace(/\/\/.*$/gm, "");
 
-const deleteMatches = [...purgeFnBody.matchAll(/DELETE\s+FROM\s+"?([a-z_][a-z0-9_]*)"?/gi)].map(
+/**
+ * The two SHAPES a delete takes in the source, and both count.
+ *
+ * A table with a scope column is a literal `DELETE FROM <table>`. A table with
+ * none is `delViaParent("<table>")`, whose SQL is built from the registry's
+ * `viaParent` declaration (#5176) and so never appears here as text.
+ *
+ * Scanning both keeps every check below saying what it always said — "the
+ * registry cannot claim a delete the implementation does not make" — because
+ * `delViaParent` is still one explicit call per table. What the registry now
+ * guarantees is the RELATION, not the call: a `viaParent` entry with no call
+ * site is still an entry outrunning the implementation, and still fails here.
+ */
+const viaParentCalls = [...purgeFnBody.matchAll(/delViaParent\("([a-z_][a-z0-9_]*)"\)/g)].map(
   (m) => m[1],
 );
+const deleteMatches = [
+  ...[...purgeFnBody.matchAll(/DELETE\s+FROM\s+"?([a-z_][a-z0-9_]*)"?/gi)].map((m) => m[1]),
+  ...viaParentCalls,
+];
 const deleteTargets = new Set(deleteMatches);
+
+/**
+ * Where a table's delete appears in the function, by whichever shape it takes.
+ * The ORDER assertions below compare these positions.
+ */
+const deleteIndexOf = (table: string): number => {
+  const viaIdx = purgeFnBody.indexOf(`delViaParent("${table}")`);
+  return viaIdx !== -1 ? viaIdx : purgeFnBody.indexOf(`DELETE FROM ${table}`);
+};
 
 const updateTargets = new Set(
   [...purgeFnBody.matchAll(/UPDATE\s+"?([a-z_][a-z0-9_]*)"?/gi)].map((m) => m[1]),
@@ -206,6 +233,16 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
       if (table === "chat_cache") continue;
       const m = clause.match(NARROWING);
       if (m) offenders.push(`${table} (narrowed on \`${m[0]}…\`)`);
+    }
+    // The ten `viaParent` tables have no literal statement to slice (#5176), so
+    // their SQL is GENERATED here from the same registry declaration and builder
+    // the implementation uses — checking the builder's real output rather than a
+    // restatement of it. If a narrowing predicate ever became expressible in the
+    // link (a `where?:` field, say), it would appear here.
+    for (const [table, entry] of Object.entries(decisionFor)) {
+      if (!entry?.viaParent) continue;
+      const m = viaParentDeleteSql(table, entry.viaParent).match(NARROWING);
+      if (m) offenders.push(`${table} (viaParent SQL narrowed on \`${m[0]}…\`)`);
     }
     expect(
       offenders,
@@ -539,8 +576,8 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
       ["brain_vocabulary_target", "brain_vocabulary_edge"],
     ];
     for (const [referencing, target] of restrictPairs) {
-      const refIdx = purgeFnBody.indexOf(`DELETE FROM ${referencing}`);
-      const targetIdx = purgeFnBody.indexOf(`DELETE FROM ${target}`);
+      const refIdx = deleteIndexOf(referencing);
+      const targetIdx = deleteIndexOf(target);
       expect(refIdx, `no DELETE for ${referencing}`).toBeGreaterThan(-1);
       expect(targetIdx, `no DELETE for ${target}`).toBeGreaterThan(-1);
       expect(
@@ -555,29 +592,170 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
     // None of these has a scope column, so their DELETE reads the parent's rows.
     // Deleting the parent first silently leaves them behind — no error, no
     // count, exactly the shape of the original bug.
-    const childBeforeParent: Array<[string, string]> = [
-      ["messages", "conversations"],
-      ["slack_threads", "conversations"],
-      ["dashboard_draft_card_cache", "dashboards"],
-      ["dashboard_user_drafts", "dashboards"],
-      ["dashboard_cards", "dashboards"],
-      ["knowledge_links", "knowledge_documents"],
-      ["suggestion_user_clicks", "query_suggestions"],
-      ["scheduled_task_runs", "scheduled_tasks"],
-      ["prompt_items", "prompt_collections"],
-      ["stripe_webhook_events", "subscription"],
-    ];
+    //
+    // The pairs are READ FROM THE REGISTRY (#5176). They used to be a
+    // hand-written list here, a third independent copy of the same relation
+    // alongside the SQL and the -pg falsifier's map — each self-consistent, so a
+    // drifted one still passed its own suite. This list can no longer disagree
+    // with the SQL, because the SQL is generated from what it iterates.
+    //
+    // What it still checks, and what makes it able to fail, is the ORDER: the
+    // registry says nothing about where in the function a delete is issued, so
+    // moving `delViaParent("messages")` below `DELETE FROM conversations` fails
+    // here by name.
+    const childBeforeParent = Object.entries(decisionFor).flatMap(([child, entry]) =>
+      entry?.viaParent ? [[child, entry.viaParent.parent] as const] : [],
+    );
+    expect(
+      childBeforeParent.length,
+      "no viaParent declarations found — this test would be vacuous",
+    ).toBe(10);
     for (const [child, parent] of childBeforeParent) {
-      const childIdx = purgeFnBody.indexOf(`DELETE FROM ${child}`);
-      const parentIdx = purgeFnBody.indexOf(`DELETE FROM ${parent}`);
-      expect(childIdx, `no DELETE for ${child}`).toBeGreaterThan(-1);
-      expect(parentIdx, `no DELETE for ${parent}`).toBeGreaterThan(-1);
+      const childIdx = deleteIndexOf(child);
+      const parentIdx = deleteIndexOf(parent);
+      expect(childIdx, `no delete for ${child}`).toBeGreaterThan(-1);
+      expect(parentIdx, `no delete for ${parent}`).toBeGreaterThan(-1);
       expect(
         childIdx,
         `${child} scopes through ${parent} via a subquery, so it must be deleted FIRST — ` +
           `otherwise the subquery finds no parent rows and ${child} is silently left behind.`,
       ).toBeLessThan(parentIdx);
     }
+  });
+
+  it("declares viaParent on exactly the purged tables with no scope column", () => {
+    // The registry's `viaParent` is now what routes a table through its parent,
+    // so the set has to match the tables that need routing — in BOTH directions.
+    // A scope-less table with no declaration is unreachable by the purge (the
+    // #5160 bug); a declaration on a table that has its own scope column is a
+    // subquery doing the work a `WHERE org_id = $1` would do directly, which is
+    // slower and drifts.
+    //
+    // `chat_cache` is the one legitimate scope-less table without one: it is
+    // scoped by an EXPRESSION (`key LIKE … AND value->>'orgId' = $1`), not by a
+    // parent row. Named singly so the next addition has to justify itself.
+    const EXPRESSION_SCOPED = new Set(["chat_cache"]);
+    const wrong: string[] = [];
+    for (const table of PURGED_TABLES) {
+      const declared = decisionFor[table]?.viaParent !== undefined;
+      const scoped = workspaceScopeColumnOf(table) !== undefined;
+      if (scoped && declared) wrong.push(`${table} (has ${workspaceScopeColumnOf(table)}, but declares viaParent)`);
+      if (!scoped && !declared && !EXPRESSION_SCOPED.has(table)) {
+        wrong.push(`${table} (no scope column and no viaParent — nothing reaches it)`);
+      }
+    }
+    expect(
+      wrong,
+      `viaParent declared on the wrong tables: ${wrong.join(", ")}.`,
+    ).toEqual([]);
+  });
+
+  it("matches the schema's own foreign key wherever one exists", () => {
+    // ⚠️ THE CHECK THAT KEEPS THE -pg FALSIFIER HONEST, and the reason it is
+    // here rather than there.
+    //
+    // Collapsing the relation to one declaration (#5176) removed three copies
+    // that could disagree — but it also means the seeder and the purge now read
+    // the SAME declaration, so a declaration that is WRONG but internally
+    // consistent satisfies both. Measured: pointing `messages` at `dashboards`
+    // makes the seeder insert a dashboard id and the purge delete by the same
+    // join, and the -pg suite stays green while the production DELETE would
+    // match nothing. That is "fixtures that agree by construction" arriving
+    // through the fix for it.
+    //
+    // The FK in db/schema.ts is the independent third party. It is written from
+    // the migrations, nothing here can edit it to agree, and seven of the ten
+    // declarations have one — so for those, a mis-pointed parent fails HERE.
+    //
+    // The three without a single-column FK are pinned by value below, because
+    // there is nothing to derive them from. Each says why.
+    const NO_SINGLE_COLUMN_FK: Readonly<Record<string, { parent: string; parentKey: string }>> = {
+      // Deliberately no FK — the registry entry says so ("no FK to cascade
+      // from"). The mapping exists only in the purge's own subquery.
+      slack_threads: { parent: "conversations", parentKey: "id" },
+      // `subscription` is a @better-auth/stripe table created by migration 0152,
+      // not declared in db/schema.ts, so no Drizzle FK can reference it.
+      stripe_webhook_events: { parent: "subscription", parentKey: "stripeSubscriptionId" },
+      // Its FK is COMPOSITE, to dashboard_user_drafts(user_id, dashboard_id).
+      // The purge deliberately routes it to the GRANDPARENT `dashboards`
+      // instead — a `dashboard_id` subquery reaches every draft's cache in one
+      // statement, and neither this table nor its parent carries a scope column
+      // to narrow on.
+      dashboard_draft_card_cache: { parent: "dashboards", parentKey: "id" },
+    };
+
+    const fksOf = (table: string) =>
+      schemaTables
+        .find((t) => t.name === table)
+        ?.foreignKeys.map((fk) => {
+          const ref = fk.reference();
+          return {
+            columns: ref.columns.map((c) => c.name),
+            foreignTable: getTableConfig(ref.foreignTable).name,
+            foreignColumns: ref.foreignColumns.map((c) => c.name),
+          };
+        }) ?? [];
+
+    const wrong: string[] = [];
+    let checkedAgainstFk = 0;
+    for (const [child, entry] of Object.entries(decisionFor)) {
+      const link = entry?.viaParent;
+      if (!link) continue;
+      const fk = fksOf(child).find((f) => f.columns.length === 1 && f.columns[0] === link.column);
+      if (!fk) {
+        const pinned = NO_SINGLE_COLUMN_FK[child];
+        if (!pinned) {
+          wrong.push(
+            `${child}.${link.column} has no single-column FK and is not pinned — add it to ` +
+              `NO_SINGLE_COLUMN_FK with the reason no FK exists`,
+          );
+        } else if (pinned.parent !== link.parent || pinned.parentKey !== link.parentKey) {
+          wrong.push(
+            `${child} declares ${link.parent}(${link.parentKey}) but is pinned to ` +
+              `${pinned.parent}(${pinned.parentKey})`,
+          );
+        }
+        continue;
+      }
+      checkedAgainstFk++;
+      if (fk.foreignTable !== link.parent || fk.foreignColumns[0] !== link.parentKey) {
+        wrong.push(
+          `${child}.${link.column} has an FK to ${fk.foreignTable}(${fk.foreignColumns[0]}) but ` +
+            `viaParent declares ${link.parent}(${link.parentKey})`,
+        );
+      }
+    }
+    expect(
+      wrong,
+      `viaParent declaration(s) disagreeing with the schema: ${wrong.join("; ")}`,
+    ).toEqual([]);
+    // Guards this test against becoming an empty loop if `viaParent` is renamed
+    // or the FK introspection changes shape.
+    expect(checkedAgainstFk, "no declaration was checked against a real FK").toBe(7);
+  });
+
+  it("names a real column on a real parent in every viaParent declaration", () => {
+    // The registry is a plain data file, so a typo in `column`/`parentKey`/
+    // `parentScope` is only caught where the names meet the schema. Checked
+    // against the live Drizzle enumeration, which is the same source the
+    // "every schema table has a decision" tripwire reads.
+    const bad: string[] = [];
+    for (const [child, entry] of Object.entries(decisionFor)) {
+      const link = entry?.viaParent;
+      if (!link) continue;
+      // `subscription` is a @better-auth/stripe table, created by migration 0152
+      // rather than declared in db/schema.ts, so the enumeration cannot see it.
+      if (link.parent === "subscription") continue;
+      if (!columnsOf(child).includes(link.column)) bad.push(`${child}.${link.column} does not exist`);
+      if (!schemaTableNames.includes(link.parent)) bad.push(`${child}: parent ${link.parent} is not a table`);
+      if (!columnsOf(link.parent).includes(link.parentKey)) {
+        bad.push(`${child}: ${link.parent}.${link.parentKey} does not exist`);
+      }
+      if (!columnsOf(link.parent).includes(link.parentScope)) {
+        bad.push(`${child}: ${link.parent}.${link.parentScope} does not exist`);
+      }
+    }
+    expect(bad, `viaParent declaration(s) naming something the schema does not have: ${bad.join("; ")}`).toEqual([]);
   });
 
   // ── The result contract ────────────────────────────────────────────

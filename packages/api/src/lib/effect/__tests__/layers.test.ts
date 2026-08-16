@@ -486,6 +486,13 @@ describe("makeSchedulerLive", () => {
         // behind a scheduled cycle precisely so no vendor call happens on a page
         // view, which makes the fiber's absence a page that cannot be correct.
         "brain_coverage_snapshot",
+        // #5228 — the tier-1 warehouse producer's cadence trigger (ADR-0039).
+        // The one fiber in this record gated OFF per workspace by default, and
+        // the split is ADR-0040's: its neighbours count and resolve, this one
+        // files claims into a review queue a person drains. Its absence is not a
+        // broken page but a warehouse whose claims are as fresh as the last time
+        // somebody remembered to press a button.
+        "brain_warehouse_cadence",
       ],
     },
   ] as const;
@@ -581,6 +588,18 @@ describe("makeSchedulerLive", () => {
       // the tuning-knob precedence tests stayed green.
       expect(layersSource).toContain("getBillingReconcileIntervalMs");
       expect(layersSource).toContain("getUnclaimedGraceReapIntervalMs");
+    });
+
+    test("the warehouse cadence is wired to its getter AND its gate (#5228)", () => {
+      // ⚠️ Both halves were orphanable, and the second one is the dangerous one.
+      // Re-hardcoding `intervalMs` leaves the registry knob doing nothing while
+      // all six interval tests stay green. Dropping `isWarehouseCadenceEnabled()`
+      // from the gate is worse: a DEFAULT-OFF fiber that files claims into a
+      // review queue then starts on every deployment with an internal DB, which
+      // is the ADR-0040 line this issue is built on.
+      expect(layersSource).toContain("getWarehouseCadenceIntervalMs");
+      expect(layersSource).toContain("isWarehouseCadenceEnabled");
+      expect(layersSource).toContain("runWarehouseCadenceCycle");
     });
   });
 

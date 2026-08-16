@@ -446,10 +446,15 @@ const NAME_ALLOWLIST: readonly {
     kind: "bypass",
     why: "the logging harness, same whitelist reason; its subject is the emitted log line",
   },
+  {
+    file: "lib/brain/__tests__/warehouse-run-lock-pg.test.ts",
+    kind: "bypass",
+    why: "the run-lock -pg harness (#5228), same whitelist reason as its `warehouse-producer-pg` sibling; its subject is whether two overlapping runs both write, and it drives the REAL producer to find out",
+  },
 ];
 
 /** Kinds are counted, not merely declared — see the test that pins this. */
-const EXPECTED_BY_KIND: Record<AllowlistKind, number> = { bypass: 4, annotation: 0 };
+const EXPECTED_BY_KIND: Record<AllowlistKind, number> = { bypass: 5, annotation: 0 };
 
 /**
  * The failure a reviewer actually reads when a new file names a guarded type.

@@ -3301,9 +3301,17 @@ export async function setWorkspaceRegion(
  * lock spaces fully disjoint, so this can never collide with any single-arg
  * user. The two-arg peers are the chat-install gate (`3001`), `lead-outbox`
  * (`2870`), the Stripe webhook lock (`3445`), the demo seed (`3683`), the
- * knowledge-collection install gate (`4235`), and the brain reconcile stage
- * (`4771`); all seven namespaces are pairwise distinct. Value is this guard's
- * issue number (#3158).
+ * knowledge-collection install gate (`4235`), the brain reconcile stage
+ * (`4771`), the vocabulary lock (`5022`), the identity-mutation lock (`5024`),
+ * and the warehouse producer's run lock (`5228` — the one SESSION-scoped
+ * member, held across a whole multi-transaction run rather than inside one); all
+ * listed namespaces are pairwise distinct. Value is this guard's issue number
+ * (#3158).
+ *
+ * ⚠️ No count in that sentence, deliberately. It read "all eight are pairwise
+ * distinct" while listing seven and omitting `5022`/`5024` — a numeral that
+ * reads as a completed audit of the space, over a list that was not one.
+ * `lib/brain/__tests__/warehouse-run-lock.test.ts` holds the checked list.
  */
 const LAST_ADMIN_LOCK_NAMESPACE = 3158;
 
@@ -3437,10 +3445,11 @@ export async function withWorkspaceAdminLock<T>(
  * Numeric namespace for the per-workspace demo-seed advisory lock — the
  * `classkey` arg of the two-arg `pg_advisory_xact_lock(int4, int4)`. Distinct
  * from the last-admin (`3158`), chat-install (`3001`), lead-outbox (`2870`),
- * Stripe webhook (`3445`), knowledge-install (`4235`) and brain-reconcile
- * (`4771`) two-arg namespaces; pairwise distinct so a demo seed
- * never serializes against an unrelated guard on the same workspace. Value is
- * this guard's issue number (#3683).
+ * Stripe webhook (`3445`), knowledge-install (`4235`), brain-reconcile
+ * (`4771`), vocabulary (`5022`), identity-mutation (`5024`) and warehouse-run
+ * (`5228`) two-arg namespaces; pairwise distinct so a demo seed never
+ * serializes against an unrelated guard on the same workspace. Value is this
+ * guard's issue number (#3683).
  */
 const DEMO_SEED_LOCK_NAMESPACE = 3683;
 
@@ -3519,9 +3528,10 @@ export async function withDemoSeedLock<T>(
  * Numeric namespace for the per-subscription Stripe webhook lock — the
  * `classkey` arg of the two-arg `pg_advisory_xact_lock(int4, int4)`.
  * Distinct from the last-admin (`3158`), chat-install (`3001`), lead-outbox
- * (`2870`), demo-seed (`3683`), knowledge-install (`4235`) and brain-reconcile
- * (`4771`) two-arg namespaces; all seven are pairwise distinct. Value is this
- * guard's issue number (#3445).
+ * (`2870`), demo-seed (`3683`), knowledge-install (`4235`), brain-reconcile
+ * (`4771`), vocabulary (`5022`), identity-mutation (`5024`) and warehouse-run
+ * (`5228`) two-arg namespaces; all listed namespaces are pairwise distinct.
+ * Value is this guard's issue number (#3445).
  */
 const STRIPE_SUBSCRIPTION_LOCK_NAMESPACE = 3445;
 

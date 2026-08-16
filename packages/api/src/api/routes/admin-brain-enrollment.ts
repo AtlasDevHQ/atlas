@@ -20,10 +20,17 @@
  * matters: running the producer fills the review queue an admin has to drain, so
  * it is an authority act wearing a read's shape.
  *
- * It is the ONLY trigger that ships. There is no on-connect hook and no cadence
- * fiber — a schedule is a second trigger with its own enablement, cadence and
- * audit questions, exactly the deferral `alias-proposal.ts` records for its own
- * producer.
+ * It is no longer the only trigger. #5228 added the cadence fiber ADR-0039
+ * promised (`lib/scheduler/brain-warehouse-cadence.ts`), which answered the
+ * enablement, cadence and audit questions this paragraph used to defer. There is
+ * still no on-connect hook, and that one is not a deferral — an enroll-on-connect
+ * affordance is the sweep the ADR rejects by name.
+ *
+ * Both triggers now go through the same workspace-scoped run lock
+ * (`lib/brain/warehouse-run-lock.ts`), so this verb can answer **409** for a
+ * reason it never could before: a scheduled run is in flight. That is a real
+ * outcome rather than a defensive one — two runs take two snapshot instants and
+ * the episode table's conflict clause cannot see them as the same reading.
  *
  * ## Why the surface exists
  *
@@ -89,6 +96,7 @@ import {
   runWarehouseProducer,
   type WarehouseProducerReport,
 } from "@atlas/api/lib/brain/warehouse-producer";
+import { withWarehouseRunLock } from "@atlas/api/lib/brain/warehouse-run-lock";
 import {
   BrainEnrollmentDimensionsResponseSchema,
   BrainEnrollmentEntitiesResponseSchema,
@@ -365,6 +373,14 @@ const produceRoute = createRoute({
     200: { description: "The run report", content: { "application/json": { schema: BrainWarehouseRunResponseSchema } } },
     400: { description: "No active organization", content: { "application/json": { schema: ErrorSchema } } },
     403: { description: "Not entitled", content: { "application/json": { schema: ErrorSchema } } },
+    409: {
+      description:
+        "A run is already in progress for this workspace — this press, or the cadence fiber (#5228). " +
+        "Nothing was read and nothing was written. Two overlapping runs take two snapshot instants, so " +
+        "the episode table's conflict clause dedupes neither, and each changed value would cost two " +
+        "drafts and two tension edges instead of one.",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -853,10 +869,41 @@ adminBrainEnrollment.openapi(produceRoute, async (c) => {
         );
       }
 
-      const report = yield* Effect.tryPromise({
-        try: () => runWarehouseProducer({ workspaceId: orgId, triggeredBy, requestId }),
+      // ⚠️ **The lock, and it is not belt-and-braces** (#5228). Since the cadence
+      // fiber exists, "an operator presses Run while a scheduled run is in
+      // flight" is an ordinary Tuesday rather than a race somebody has to
+      // engineer. Two overlapping runs take two `new Date()` readings, so the
+      // episode table's `ON CONFLICT (workspace_id, source, source_id)` — whose
+      // source id carries the snapshot instant — dedupes nothing, and every
+      // changed value costs two drafts and two tension edges where the product's
+      // whole argument is that a person reviews each one.
+      const outcome = yield* Effect.tryPromise({
+        try: () =>
+          withWarehouseRunLock(orgId, () =>
+            runWarehouseProducer({ workspaceId: orgId, triggeredBy, requestId }),
+          ),
         catch: toError,
       });
+      if (!outcome.acquired) {
+        // 409, not 200-with-an-empty-report. "A run is already in progress" and
+        // "your reach produced nothing" are different sentences, and an operator
+        // who cannot tell them apart un-enrolls a working pair.
+        log.info(
+          { workspaceId: orgId, triggeredBy, requestId },
+          "Warehouse producer run declined — a run is already in progress for this workspace",
+        );
+        return c.json(
+          errorBody(
+            "run-in-progress",
+            "A warehouse producer run is already in progress for this workspace — either a scheduled " +
+              "run or another press. Nothing was read and nothing was written by this request. Wait for " +
+              "it to finish and check the review queue before running again.",
+            requestId,
+          ),
+          409,
+        );
+      }
+      const report = outcome.value;
 
       // ⚠️ `checkedRun`, NOT `checked` — this is the case the file's own docstring
       // above says to take `checkedWrite` for. Every field of this response is

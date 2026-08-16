@@ -65,10 +65,14 @@
  * never a key, a surface column or a join arm. (This line used to say "not the
  * entity store" and "`subject_cmp` and nothing else". Building the store
  * falsified both.)
- * Not a scheduler: the only trigger that ships with it is the operator-initiated
- * `POST /api/v1/admin/brain-enrollment/produce`. A cadence is a second trigger
- * with its own enablement, cadence and audit questions, on the precedent
- * `alias-proposal.ts` sets for exactly the same deferral.
+ * Still not a scheduler, and the distinction survived #5228 rather than being
+ * tidied away: this module runs ONE run when it is called, and the two things
+ * that call it — the operator's `POST /api/v1/admin/brain-enrollment/produce`
+ * and the cadence fiber (`lib/scheduler/brain-warehouse-cadence.ts`) — own the
+ * enablement, cadence and audit answers between them. What DOES bind both is
+ * `lib/brain/warehouse-run-lock.ts`: a run must be called under that lock,
+ * because two overlapping runs take two snapshot instants and nothing in here
+ * can tell them apart afterwards.
  */
 
 import { createHash } from "node:crypto";
@@ -2117,15 +2121,18 @@ export async function runWarehouseProducer(
    *      `brain_entity` carries no run watermark. So a detector is a new table or
    *      column, a migration, a `schema.ts` mirror and a `-pg` smoke, whose own
    *      staleness failure mode is again the invisible one.
-   *   3. **The trigger is still one person pressing a button.** #5228 — the
-   *      cadence — is OPEN. The cost is bounded by how often a human runs the
-   *      producer, which is the condition under which "accepted" is a defensible
-   *      word.
+   *   3. **The cost is now per-interval, not per-press** (#5228 landed). The
+   *      cadence runs the whole reach on a schedule, so the edge pass's
+   *      lock-taking transactions recur whether or not anything moved. What
+   *      bounds them is no longer a human's patience but
+   *      `ATLAS_BRAIN_WAREHOUSE_CADENCE_INTERVAL_HOURS` — default 24h, floored
+   *      at 1h, and OFF unless a workspace and the platform both opt in.
    *
-   * ⚠️ **This decision EXPIRES when #5228 lands.** A cadence turns "thousands of
-   * lock-taking transactions per button press" into "per interval, forever", and
-   * point 3 evaporates while points 1 and 2 stay as the design constraints any
-   * detector has to satisfy. Whoever builds the cadence owns this line.
+   * ⚠️ **The bound moved; it did not disappear, and this is the line to re-read
+   * if the floor is ever lowered.** Points 1 and 2 are unchanged and remain the
+   * constraints any change-detector has to satisfy. (This paragraph used to say
+   * the decision expired when #5228 landed, and named whoever built the cadence
+   * as its owner — that is this note.)
    */
   const runEntityEdgePass = async (): Promise<EntityEdgeOutcome> => {
     // ⚠️ ONE variable declared OUTSIDE the try, advanced as each step ESTABLISHES

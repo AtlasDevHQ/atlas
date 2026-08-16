@@ -25,7 +25,7 @@ import {
   type QuerySuggestionRow,
 } from "@atlas/api/lib/db/internal";
 import { toQuerySuggestion } from "@atlas/api/lib/learn/suggestion-helpers";
-import { asUniqueViolation } from "@atlas/api/lib/db/pg-errors";
+import { asWrappedUniqueViolation } from "@atlas/api/lib/db/pg-errors";
 
 const log = createLogger("approval-store");
 
@@ -312,9 +312,9 @@ export async function createApprovedSuggestion(input: {
     }
     return toQuerySuggestion(rows[0]);
   } catch (err) {
-    // ⚠️ FLAT `code` on an `internalQuery` path — see the identical note in
-    // `starter-prompts/favorite-store.ts`. Tracked in #5272.
-    const collision = asUniqueViolation(err);
+    // ⚠️ The WRAPPED classifier on an `internalQuery` path — see the identical
+    // note in `starter-prompts/favorite-store.ts` (#5272).
+    const collision = asWrappedUniqueViolation(err);
     if (collision !== undefined) {
       throw new DuplicateSuggestionError();
     }

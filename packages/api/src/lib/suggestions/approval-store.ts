@@ -25,13 +25,12 @@ import {
   type QuerySuggestionRow,
 } from "@atlas/api/lib/db/internal";
 import { toQuerySuggestion } from "@atlas/api/lib/learn/suggestion-helpers";
+import { asUniqueViolation } from "@atlas/api/lib/db/pg-errors";
 
 const log = createLogger("approval-store");
 
 /** Upper bound on admin-authored prompt text. */
 export const SUGGESTION_TEXT_MAX_LENGTH = 2000;
-
-const PG_UNIQUE_VIOLATION = "23505";
 
 // ---------------------------------------------------------------------------
 // Typed errors
@@ -313,8 +312,10 @@ export async function createApprovedSuggestion(input: {
     }
     return toQuerySuggestion(rows[0]);
   } catch (err) {
-    const code = (err as { code?: string }).code;
-    if (code === PG_UNIQUE_VIOLATION) {
+    // ⚠️ FLAT `code` on an `internalQuery` path — see the identical note in
+    // `starter-prompts/favorite-store.ts`. Tracked in #5272.
+    const collision = asUniqueViolation(err);
+    if (collision !== undefined) {
       throw new DuplicateSuggestionError();
     }
     throw err instanceof Error ? err : new Error(String(err));

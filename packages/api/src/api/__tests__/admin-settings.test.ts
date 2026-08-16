@@ -47,6 +47,22 @@ void mock.module("@atlas/api/lib/audit", () => ({
   causeToError: (cause: unknown) => (cause instanceof Error ? cause : new Error(String(cause))),
 }));
 
+/**
+ * #5270/#5262 — the settings write path no longer builds its own audit entry;
+ * it hands the definition and the raw value to `auditSettingsWrite`, which
+ * redacts, stamps `scope` and awaits the row. The ENTRY's shape is pinned in
+ * `lib/audit/__tests__/settings-write.test.ts`; what belongs here is what the
+ * ROUTE passes — in particular that `platformTier` tracks the row the write
+ * actually landed on, which is #4669's claim restated at the new seam.
+ */
+const mockAuditSettingsWrite: Mock<(entry: Record<string, unknown>) => Promise<void>> = mock(
+  async () => {},
+);
+
+void mock.module("@atlas/api/lib/audit/settings-write", () => ({
+  auditSettingsWrite: mockAuditSettingsWrite,
+}));
+
 // --- Test-specific overrides ---
 
 let mockConfigOverride: Record<string, unknown> | null = null;
@@ -197,6 +213,19 @@ void mock.module("@atlas/api/lib/settings", () => ({
   isHotReloadedKey: mock(() => false),
   SECURITY_SENSITIVE_KEYS: new Set<string>(),
   securitySensitiveAuditFields: mock(() => undefined),
+  // #5270 — newly load-bearing: `lib/audit/settings-write.ts` resolves
+  // `redactAuditValue` from this module. A partial mock replaces the WHOLE
+  // module, so the moment anything in admin.ts's import graph reaches it,
+  // the omission surfaces as `undefined is not a function` several files from
+  // the cause. `securitySensitiveAuditLine` and `settingsCacheEverLoaded`
+  // were already missing; added for the same reason.
+  redactAuditValue: mock((_def: unknown, value: string | undefined) => ({
+    value,
+    masked: false,
+    maskReason: undefined,
+  })),
+  securitySensitiveAuditLine: mock(() => undefined),
+  settingsCacheEverLoaded: mock(() => true),
 }));
 
 // --- Import the app AFTER mocks ---
@@ -225,6 +254,7 @@ describe("admin settings routes", () => {
     mockSetSetting.mockClear();
     mockDeleteSetting.mockClear();
     mockLogAdminAction.mockClear();
+    mockAuditSettingsWrite.mockClear();
     mockIsSaasModeForGuard.mockClear();
     mockIsSaasModeForGuard.mockImplementation(saasGuardDefaultImpl);
   });
@@ -672,8 +702,8 @@ describe("admin settings routes", () => {
       expect(mockDeleteSetting).toHaveBeenCalledWith("ATLAS_ROW_LIMIT", "ws-admin-1", "org-1");
       // #4669 — DELETE's audit annotation is a separate copy of PUT's;
       // pin its workspace arm too.
-      expect(mockLogAdminAction).toHaveBeenCalledWith(
-        expect.objectContaining({ metadata: expect.objectContaining({ tier: "workspace" }) }),
+      expect(mockAuditSettingsWrite).toHaveBeenCalledWith(
+        expect.objectContaining({ platformTier: false }),
       );
     });
 
@@ -1198,8 +1228,8 @@ describe("admin settings routes", () => {
       // explicit tier targets the global row → orgId undefined.
       expect(mockSetSetting).toHaveBeenCalledWith("ATLAS_AGENT_AUTH_ENABLED", "true", "platform-admin-1", undefined);
       // Audit trail records the row the write actually landed on.
-      expect(mockLogAdminAction).toHaveBeenCalledWith(
-        expect.objectContaining({ metadata: expect.objectContaining({ tier: "platform" }) }),
+      expect(mockAuditSettingsWrite).toHaveBeenCalledWith(
+        expect.objectContaining({ platformTier: true }),
       );
     });
 
@@ -1211,8 +1241,8 @@ describe("admin settings routes", () => {
       expect(res.status).toBe(200);
       expect(mockDeleteSetting).toHaveBeenCalledTimes(1);
       expect(mockDeleteSetting).toHaveBeenCalledWith("ATLAS_AGENT_AUTH_ENABLED", "platform-admin-1", undefined);
-      expect(mockLogAdminAction).toHaveBeenCalledWith(
-        expect.objectContaining({ metadata: expect.objectContaining({ tier: "platform" }) }),
+      expect(mockAuditSettingsWrite).toHaveBeenCalledWith(
+        expect.objectContaining({ platformTier: true }),
       );
     });
 
@@ -1333,8 +1363,8 @@ describe("admin settings routes", () => {
       expect(res.status).toBe(200);
       expect(mockSetSetting).toHaveBeenCalledWith("ATLAS_AGENT_AUTH_ENABLED", "false", "ws-admin-1", "org-1");
       // Audit trail labels the workspace-row write accordingly.
-      expect(mockLogAdminAction).toHaveBeenCalledWith(
-        expect.objectContaining({ metadata: expect.objectContaining({ tier: "workspace" }) }),
+      expect(mockAuditSettingsWrite).toHaveBeenCalledWith(
+        expect.objectContaining({ platformTier: false }),
       );
     });
 
@@ -1359,6 +1389,236 @@ describe("admin settings routes", () => {
       // The router's shared validationHook defaultHook → 422 Unprocessable Entity.
       expect(res.status).toBe(422);
       expect(mockSetSetting).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── what the route hands the audit seam (#5270) ───────────────
+
+  describe("the route→seam audit contract (#5270)", () => {
+    // ⚠️ EVERY OTHER ASSERTION ON THIS SEAM IS `objectContaining({
+    // platformTier })`, which leaves `key`, `definition`, `value` and
+    // `action` unobserved. That matters because `definition` and `value` are
+    // the two inputs the redaction decision is made from, and both are
+    // type-legal to break in one word:
+    //
+    //   `definition: def` → `definition: undefined`
+    //        every write records `[withheld:secret-setting]` /
+    //        `unknown_definition` — the audit trail's usefulness is gone
+    //   `value` → `value: ""`
+    //        every write records an empty value
+    //
+    // Neither is a brand violation (the value still goes through
+    // `redactAuditValue`), so the type cannot see either. These are the
+    // seam-preserving edits the module docstring says the brand does not
+    // close.
+
+    it("⭐ PUT passes the full entry — key, definition, value, action, tier, ip", async () => {
+      // ⚠️ `x-forwarded-for` is SENT here. Round 1 asserted `ipAddress: null`,
+      // which is also what a route that stopped reading the headers produces
+      // — accidental equality, in the describe written to close exactly that.
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "x-forwarded-for": "203.0.113.7" },
+        body: JSON.stringify({ value: "500" }),
+      });
+      expect(res.status).toBe(200);
+      expect(mockAuditSettingsWrite).toHaveBeenCalledWith({
+        key: "ATLAS_ROW_LIMIT",
+        // The REAL definition for THIS key — not `undefined`, and not another
+        // key's entry (which the seam now withholds on; see
+        // `lib/audit/__tests__/settings-write.test.ts`).
+        definition: expect.objectContaining({ key: "ATLAS_ROW_LIMIT" }),
+        value: "500",
+        action: "update",
+        platformTier: expect.any(Boolean),
+        ipAddress: "203.0.113.7",
+      });
+    });
+
+    it("⭐ DELETE passes action reset_to_default and NO value", async () => {
+      // The untested mirror half. `metadata.action` is the ONLY thing
+      // separating the two verbs in `admin_action_log` — `ADMIN_ACTIONS
+      // .settings` has a single member, so PUT and DELETE both file
+      // `settings.update`. Flipping this to "update" made every DELETE
+      // indistinguishable from a PUT with nothing red.
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", { method: "DELETE" });
+      expect(res.status).toBe(200);
+      expect(mockAuditSettingsWrite).toHaveBeenCalledWith({
+        key: "ATLAS_ROW_LIMIT",
+        definition: expect.objectContaining({ key: "ATLAS_ROW_LIMIT" }),
+        value: undefined,
+        action: "reset_to_default",
+        platformTier: expect.any(Boolean),
+        ipAddress: null,
+      });
+    });
+
+    it("⭐ neither verb writes a SECOND row through the fire-and-forget sink", async () => {
+      // Re-adding the old `logAdminAction({ …, metadata: { key, value, tier }
+      // })` next to the new call would restore the unredacted, workspace-
+      // scoped durable row while every other test stayed green. `mockLog
+      // AdminAction` was declared and cleared but never asserted on.
+      await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "500" }),
+      });
+      await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", { method: "DELETE" });
+      expect(mockLogAdminAction).not.toHaveBeenCalled();
+    });
+
+    it("does NOT reach the seam at all when the secret-key gate 403s", async () => {
+      // ⚠️ THE REACHABILITY PREMISE, which had no test. `admin.ts` 403s a
+      // `secret: true` key before the write, which is why the seam's
+      // redaction is defense-in-depth rather than the live control #5270
+      // claimed. Pinning the gate here means that if it is ever relaxed — to
+      // let platform admins rotate a key from the UI, say — this test is what
+      // says the redaction has just become load-bearing.
+      // Uses the registry fixture's real `secret: true` entry rather than a
+      // hand-built definition — a fixture written for this test could agree
+      // with it by construction.
+      const res = await request("/api/v1/admin/settings/ANTHROPIC_API_KEY", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "sk-ant-live-secret" }),
+      });
+      expect(res.status).toBe(403);
+      expect(mockAuditSettingsWrite).not.toHaveBeenCalled();
+      expect(mockSetSetting).not.toHaveBeenCalled();
+    });
+
+    it("DELETE's secret gate also stops short of the seam", async () => {
+      // The mirror half — the PUT twin above had this and DELETE did not.
+      const res = await request("/api/v1/admin/settings/ANTHROPIC_API_KEY", {
+        method: "DELETE",
+      });
+      expect(res.status).toBe(403);
+      expect(mockAuditSettingsWrite).not.toHaveBeenCalled();
+      expect(mockDeleteSetting).not.toHaveBeenCalled();
+    });
+
+    it("⭐ an EMPTY activeOrganizationId is a platform-tier write, not a workspace one", async () => {
+      // ⚠️ The one input class where `!effectiveOrgId` and `=== undefined`
+      // disagree, and the reason the delta table at the call sites exists.
+      // `activeOrganizationId` is typed `string | undefined`, so `""` is in
+      // the type; `setSetting` treats it as the GLOBAL row (its own checks
+      // are truthiness), so the audit row must say platform. Under
+      // `=== undefined` this lands `platformTier: false` → `scope:
+      // "workspace"` → back onto the org-scoped read API this PR exists to
+      // keep it off. Round 1 wrote the table and shipped no test for it.
+      mocks.mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: {
+            id: "ws-admin-1",
+            mode: "better-auth",
+            label: "Admin",
+            role: "admin",
+            activeOrganizationId: "",
+          },
+        }),
+      );
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "500" }),
+      });
+      expect(res.status).toBe(200);
+      expect(mockAuditSettingsWrite).toHaveBeenCalledWith(
+        expect.objectContaining({ platformTier: true }),
+      );
+    });
+  });
+
+  // ─── the audit row is awaited (#5262) ──────────────────────────
+
+  describe("an audit row that cannot be committed (#5262)", () => {
+    // The residual #5262 is actually about: `logAdminAction` DROPS the row
+    // when the internal-DB circuit breaker is open, and past that breaker it
+    // emits nothing at any level — only an anonymous counter. The mechanism
+    // is stated once, in `lib/audit/settings-write.ts`'s header; this comment
+    // deliberately does not restate it, because round 1 corrected the header
+    // and left three restatements of the retracted version behind.
+    // Awaiting the row turns a silently unrecorded config change into a
+    // response the admin sees.
+    const auditDown = () => {
+      mockAuditSettingsWrite.mockImplementationOnce(() =>
+        Promise.reject(new Error("circuit breaker open")),
+      );
+    };
+
+    it("PUT 500s when the audit row is rejected", async () => {
+      auditDown();
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "500" }),
+      });
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { error: string; message: string; requestId: string };
+      expect(body.error).toBe("audit_not_committed");
+      // ⚠️ THE MESSAGE'S CLAIM, not just its presence. The write already
+      // landed and the cache is already updated, so a body implying the
+      // change did not apply would send the admin to re-check the wrong
+      // thing. It has to say the setting DID change and is unaudited.
+      expect(body.message).toContain("already in effect");
+      expect(body.message).toContain("unaudited");
+      expect(body.requestId).toBeTruthy();
+    });
+
+    it("⭐ and the write really did land — the 500 is about the record, not the write", async () => {
+      // Without this, a handler that rolled the setting back on audit failure
+      // would satisfy the status assertion above while doing something
+      // completely different, and the message would then be a lie.
+      auditDown();
+      await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "500" }),
+      });
+      expect(mockSetSetting).toHaveBeenCalledTimes(1);
+      // The submitted value, not a rollback to anything else.
+      expect(mockSetSetting).toHaveBeenCalledWith(
+        "ATLAS_ROW_LIMIT",
+        "500",
+        expect.any(String),
+        undefined,
+      );
+      // ⚠️ THE NEGATIVE, because the natural rollback is the OTHER verb.
+      // `toHaveBeenCalledTimes(1)` on setSetting catches a rollback written
+      // as a second `setSetting`; it cannot see `deleteSetting(key, …)` in
+      // the audit catch — which would make "already in effect" a lie while
+      // every assertion above stayed green.
+      expect(mockDeleteSetting).not.toHaveBeenCalled();
+    });
+
+    it("DELETE 500s the same way — the clear path is a write too", async () => {
+      auditDown();
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", { method: "DELETE" });
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { error: string; message: string; requestId: string };
+      expect(body.error).toBe("audit_not_committed");
+      expect(body.message).toContain("reset to its default");
+      expect(body.message).toContain("already in effect");
+      // The PUT twin asserts this; the DELETE one did not. Every 500 in this
+      // repo carries a requestId for log correlation, and this one more than
+      // most — it is the ONLY handle on a config change that was not audited.
+      expect(body.requestId).toBeTruthy();
+      expect(mockDeleteSetting).toHaveBeenCalledTimes(1);
+      // The mirror of the PUT negative: no rollback via the other verb.
+      expect(mockSetSetting).not.toHaveBeenCalled();
+    });
+
+    it("stays 200 when the audit row commits — the arm that must NOT fail", async () => {
+      // The other half of the claim: a route that 500'd unconditionally would
+      // pass all three tests above.
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "500" }),
+      });
+      expect(res.status).toBe(200);
     });
   });
 

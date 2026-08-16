@@ -867,12 +867,14 @@ export const CatalogSeedLive: Layer.Layer<
 /**
  * Discriminated outcome of the boot-time built-in Datasource catalog
  * seed. Distinct from {@link CatalogSeedOutcome} because the built-in
- * seed is code-driven (eight fixed rows) while the atlas.config.ts
+ * seed is code-driven (nine fixed rows) while the atlas.config.ts
  * seed is operator-driven. Per ADR-0007, the built-in seed runs in
  * addition to the atlas.config.ts seed, not instead of it.
  *
  * - `skipped-gate`  — InternalDB or Migration upstream not satisfied
- * - `seeded`        — seed ran (preservedSlugs may include all eight on re-boot)
+ * - `seeded`        — seed ran (preservedSlugs may include all nine on re-boot).
+ *                     Read `blockedSlugs` before treating this as a complete
+ *                     catalog: the pass can finish having written nothing (#5266)
  * - `error`         — the boot wrapper or its dynamic import threw;
  *                     pre-existing rows answer admin-UI reads
  */
@@ -885,10 +887,27 @@ export interface BuiltinDatasourceCatalogSeedShape {
   /** Slugs whose row was newly inserted this boot. */
   readonly insertedSlugs: ReadonlyArray<string>;
   /**
-   * Slugs whose row already existed and was preserved (ON CONFLICT DO
-   * NOTHING). Re-boots on a healthy DB land every built-in slug here.
+   * Slugs whose row already existed under its canonical id and was preserved
+   * (the `ON CONFLICT (id) DO NOTHING` path). Re-boots on a healthy DB land
+   * every built-in slug here.
+   *
+   * ⚠️ Disjoint from {@link blockedSlugs} since #5266. It used to be derived
+   * as *every expected slug minus the inserted ones*, which reported a row a
+   * foreign-id collision had blocked as preserved — the caller was told a row
+   * the catalog does not have is fine.
    */
   readonly preservedSlugs: ReadonlyArray<string>;
+  /**
+   * Built-in slugs a foreign-id collision blocked (#5266) — the catalog is
+   * missing these rows and a re-boot will not fix it.
+   *
+   * `[]` on `skipped-gate` means nothing ran. `[]` on `error` means
+   * **unknown**, NOT "none": a throw mid-loop abandons the list the seeder had
+   * accumulated, so a pass that blocked one row and then hit a dead pool
+   * reports `[]` here. The seeder logs the partial list before rethrowing
+   * precisely because it cannot survive this field.
+   */
+  readonly blockedSlugs: ReadonlyArray<string>;
   readonly outcome: BuiltinDatasourceCatalogSeedOutcome;
   /** Scrubbed error message when `outcome === "error"`. */
   readonly error?: string;
@@ -899,10 +918,12 @@ export class BuiltinDatasourceCatalogSeed extends Context.Tag(
 )<BuiltinDatasourceCatalogSeed, BuiltinDatasourceCatalogSeedShape>() {}
 
 /**
- * Idempotent boot-time seed of the eight built-in Datasource catalog
+ * Idempotent boot-time seed of the nine built-in Datasource catalog
  * rows. Per ADR-0007 these are code-seeded (not declared in
  * `atlas.config.ts`) and re-asserted on every boot via
- * `ON CONFLICT (slug) DO NOTHING`.
+ * `ON CONFLICT (id) DO NOTHING` — qualified on the primary key since
+ * #5266, so a slug held under a foreign id raises `23505` and is
+ * reported in `blockedSlugs` rather than being swallowed.
  *
  * Depends on `Migration` so the `pillar` / `implementation_status` /
  * `auto_install` columns added by migration 0092 exist before the
@@ -912,7 +933,7 @@ export class BuiltinDatasourceCatalogSeed extends Context.Tag(
  * the `connections` table; nothing consumes these rows yet. Slice 6
  * (#2744) pivots `ConnectionRegistry` to read from
  * `workspace_plugins WHERE pillar = 'datasource'`, at which point the
- * eight rows seeded here become live install targets.
+ * nine rows seeded here become live install targets.
  *
  * Non-fatal: the boot wrapper swallows errors and logs at error so a
  * failed seed leaves pre-existing rows authoritative.
@@ -929,6 +950,7 @@ export const BuiltinDatasourceCatalogSeedLive: Layer.Layer<
     const zeroCounts = {
       insertedSlugs: [] as ReadonlyArray<string>,
       preservedSlugs: [] as ReadonlyArray<string>,
+      blockedSlugs: [] as ReadonlyArray<string>,
     };
 
     if (!db.available || !migration.migrated) {
@@ -958,16 +980,24 @@ export const BuiltinDatasourceCatalogSeedLive: Layer.Layer<
             return {
               insertedSlugs: result.insertedSlugs,
               preservedSlugs: result.preservedSlugs,
+              blockedSlugs: result.blockedSlugs,
               outcome: "seeded",
             } satisfies BuiltinDatasourceCatalogSeedShape;
           case "error":
             // `runBuiltinDatasourceCatalogSeedBoot` already logged at
             // error; surface the message to health consumers via the
             // documented `outcome: "error"` contract.
+            //
+            // ⚠️ SCRUBBED, like the `catchAll` arm below and like the
+            // knowledge sibling. A `pg` connect failure carries
+            // `scheme://user:pass@host` in `message`, and the field is
+            // DOCUMENTED as scrubbed — one field with two producers must not
+            // have two guarantees. #5239 fixed exactly this asymmetry one
+            // Layer over; it was still live here.
             return {
               ...zeroCounts,
               outcome: "error",
-              error: result.message,
+              error: errorMessage(new Error(result.message)),
             } satisfies BuiltinDatasourceCatalogSeedShape;
         }
       },

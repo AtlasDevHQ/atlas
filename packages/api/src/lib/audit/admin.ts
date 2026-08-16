@@ -5,8 +5,8 @@
  * admin_action_log table (when DATABASE_URL is set). Fire-and-forget DB
  * writes — two layers of protection:
  *
- * 1. internalExecute() returns a promise whose rejections are swallowed
- *    (async errors — the .catch prevents unhandled rejection crashes).
+ * 1. internalExecute() returns void and handles its own async rejections
+ *    internally (its `.catch` prevents unhandled rejection crashes).
  * 2. The surrounding try/catch covers synchronous throws from getInternalDB()
  *    (e.g. pool not initialized).
  *

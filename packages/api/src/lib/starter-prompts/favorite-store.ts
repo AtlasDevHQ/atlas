@@ -16,6 +16,7 @@ import {
   hasInternalDB,
   internalQuery,
 } from "@atlas/api/lib/db/internal";
+import { asUniqueViolation } from "@atlas/api/lib/db/pg-errors";
 
 const log = createLogger("favorite-store");
 
@@ -26,8 +27,6 @@ const log = createLogger("favorite-store");
  * keeps the empty-state grid readable.
  */
 export const FAVORITE_TEXT_MAX_LENGTH = 2000;
-
-const PG_UNIQUE_VIOLATION = "23505";
 
 export interface FavoritePromptRow {
   readonly id: string;
@@ -217,8 +216,16 @@ export async function createFavorite(
     }
     return toRow(rows[0]);
   } catch (err) {
-    const code = (err as { code?: string }).code;
-    if (code === PG_UNIQUE_VIOLATION) {
+    // ⚠️ FLAT `code`, and this path writes through `internalQuery`, which
+    // wraps the driver error under `.cause` once the Effect Layer has booted
+    // — so this arm may be dead in production and a duplicate may surface as
+    // a 500 instead of the specific message below. Same hazard as
+    // `admin-prompts.ts` and `sub-processor-subscriptions.ts`; pre-existing,
+    // surfaced by the #5271 review panel, tracked in #5272. Noted on all four
+    // sites deliberately: a defect documented in half its instances is one
+    // that gets closed on the documented half.
+    const collision = asUniqueViolation(err);
+    if (collision !== undefined) {
       throw new DuplicateFavoriteError();
     }
     throw err instanceof Error ? err : new Error(String(err));

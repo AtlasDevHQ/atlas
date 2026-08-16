@@ -107,8 +107,6 @@ import { FRONT_CATALOG_ID, FRONT_SLUG } from "@atlas/api/lib/knowledge/front/con
 import { HELPSCOUT_CATALOG_ID, HELPSCOUT_SLUG } from "@atlas/api/lib/knowledge/helpscout/config";
 import { FRESHDESK_CATALOG_ID, FRESHDESK_SLUG } from "@atlas/api/lib/knowledge/freshdesk/config";
 import {
-} from "@atlas/api/lib/brain/ingest/slack/config";
-import {
   ZOOM_TRANSCRIPTS_CATALOG_ID,
   ZOOM_TRANSCRIPTS_SLUG,
 } from "@atlas/api/lib/brain/ingest/zoom/config";
@@ -118,6 +116,10 @@ import {
 } from "@atlas/api/lib/brain/ingest/outlook/config";
 import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 import { assertOperatorCatalogWrite } from "@atlas/api/lib/plugins/catalog-provenance";
+import {
+  asUniqueViolation,
+  PG_PLUGIN_CATALOG_SLUG_CONSTRAINT,
+} from "@atlas/api/lib/db/pg-errors";
 
 const log = createLogger("db.seed-builtin-knowledge-catalog");
 
@@ -948,40 +950,6 @@ export interface BuiltinKnowledgeCatalogSeedResult {
   readonly blockedSlugs: ReadonlyArray<string>;
 }
 
-/** Postgres `unique_violation` (23505). */
-const PG_UNIQUE_VIOLATION = "23505";
-
-/**
- * The one NAMED unique constraint this seeder's recovery models
- * (`0014_plugin_marketplace.sql`; mirrored in `db/schema.ts`).
- *
- * `plugin_catalog` has two unique constraints today — PK `id`, consumed by the
- * conflict target, and this one — so a 23505 reaching the catch is almost
- * certainly a slug collision. Naming it turns that inference into a condition
- * the code checks; an UNNAMED 23505 is still accepted, under the same hedge the
- * warning carries.
- */
-const PG_SLUG_CONSTRAINT = "plugin_catalog_slug_key";
-
-/**
- * The diagnostic fields of a `23505`, or `undefined` for any other rejection.
- *
- * `pg` rejects with a `DatabaseError` carrying untyped `code`/`constraint`/
- * `detail`, so this narrows rather than casts. It reads the CODE and not the
- * message: matching on prose would classify an unrelated failure whose message
- * happened to say "duplicate key" as a benign collision, and demoting a real
- * outage to a warning is the failure this catch exists to avoid.
- */
-function asUniqueViolation(
-  err: unknown,
-): { readonly constraint?: string; readonly detail?: string } | undefined {
-  if (typeof err !== "object" || err === null) return undefined;
-  if (!("code" in err) || err.code !== PG_UNIQUE_VIOLATION) return undefined;
-  const constraint = "constraint" in err && typeof err.constraint === "string" ? err.constraint : undefined;
-  const detail = "detail" in err && typeof err.detail === "string" ? err.detail : undefined;
-  return { constraint, detail };
-}
-
 /**
  * Idempotently seed every row in `BUILTIN_KNOWLEDGE_CATALOG_ROWS`.
  *
@@ -993,13 +961,13 @@ function asUniqueViolation(
  * header), and any other hard failure aborts the pass and propagates (the boot
  * wrapper logs and continues booting).
  *
- * ⚠️ The sibling built-in DATASOURCE seed (`seed-builtin-datasource-catalog.ts`)
- * still inserts with an unqualified `ON CONFLICT DO NOTHING` and so still has
- * the swallow described in this file's header. #5239 scoped itself to the
- * knowledge catalog; the class is the same one file over — and worse there,
- * because that seeder derives `preservedSlugs` as *all minus inserted* and its
- * docstring calls them rows that "already existed". A blocked row is therefore
- * positively REPORTED as present, where this seeder merely omitted it.
+ * The sibling built-in DATASOURCE seed (`seed-builtin-datasource-catalog.ts`)
+ * carried the same defect and was fixed in #5266 — worse there, because it
+ * derived `preservedSlugs` as *all minus inserted*, so a blocked row was
+ * positively REPORTED as present where this seeder merely omitted it. Both
+ * now qualify the conflict target and report `blockedSlugs` as its own
+ * outcome; they share `asUniqueViolation` and the SQLSTATE constants from
+ * `db/pg-errors.ts`.
  */
 export async function seedBuiltinKnowledgeCatalog(
   db: BuiltinKnowledgeCatalogSeedDb,
@@ -1045,7 +1013,8 @@ export async function seedBuiltinKnowledgeCatalog(
       // the recovery below, where the message's hedge covers it.
       const modelled =
         collision !== undefined &&
-        (collision.constraint === undefined || collision.constraint === PG_SLUG_CONSTRAINT);
+        (collision.constraint === undefined ||
+          collision.constraint === PG_PLUGIN_CATALOG_SLUG_CONSTRAINT);
       if (!modelled) {
         // ⚠️ `blockedSlugs` DOES NOT SURVIVE THIS THROW. The boot wrapper turns
         // it into `{ kind: "error" }` and the Layer reports `blockedSlugs: []`,

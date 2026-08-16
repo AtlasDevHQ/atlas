@@ -24,6 +24,7 @@ import { AuthContext, RequestContext } from "@atlas/api/lib/effect/services";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { isSafeExternalUrl } from "@atlas/api/lib/sandbox/validate";
 import { createLogger } from "@atlas/api/lib/logger";
+import { asUniqueViolation } from "@atlas/api/lib/db/pg-errors";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { createSubscription } from "@atlas/api/lib/sub-processor-publisher";
 
@@ -36,8 +37,6 @@ import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 import { validationHook } from "./validation-hook";
 
 const log = createLogger("sub-processor-subscriptions");
-
-const PG_UNIQUE_VIOLATION = "23505";
 
 const CreateSubscriptionBodySchema = z.object({
   url: z
@@ -147,9 +146,17 @@ router.openapi(createSubscriptionRoute, async (c) => {
           // Match by SQLSTATE, not error message — the message is locale-
           // and pg-version dependent. Same precedent as
           // packages/api/src/lib/starter-prompts/favorite-store.ts and
-          // packages/api/src/lib/suggestions/approval-store.ts.
-          const code = (err as { code?: string } | undefined)?.code;
-          if (code === PG_UNIQUE_VIOLATION) {
+          // packages/api/src/lib/suggestions/approval-store.ts (both of which
+          // now import the shared constant from `db/pg-errors.ts`).
+          //
+          // ⚠️ FLAT `code`, and this path writes through `internalQuery`,
+          // which wraps the driver error under `.cause` once the Layer has
+          // booted — so this `duplicate` arm may be dead in production and a
+          // duplicate URL may 500 instead. Same hazard as
+          // `admin-prompts.ts`'s `isUniqueViolation`; see the note there.
+          // Pre-existing, surfaced by the #5271 review panel, tracked in
+          // #5272.
+          if (asUniqueViolation(err) !== undefined) {
             return { kind: "duplicate" };
           }
           throw err instanceof Error ? err : new Error(String(err));

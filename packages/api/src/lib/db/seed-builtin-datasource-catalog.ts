@@ -13,15 +13,30 @@
  *   > in `atlas.config.ts` — they ship with Atlas.
  *
  * Idempotency:
- *   - Uses unqualified `ON CONFLICT DO NOTHING` (covers both the `slug`
- *     unique index AND the `id` primary key) so re-running on a populated
- *     catalog is a no-op. The atlas.config.ts catalog seeder
+ *   - Uses `ON CONFLICT (id) DO NOTHING` — the target is QUALIFIED on the
+ *     primary key, so re-running on a populated catalog is a no-op while a
+ *     slug held under a FOREIGN id still raises `23505` rather than
+ *     silently no-op'ing (#5266). The atlas.config.ts catalog seeder
  *     (`integrations/catalog-seeder.ts`) updates mutable fields on
  *     existing rows; this seed deliberately leaves them alone — once
  *     a built-in row exists, an operator who edited its `name` or
  *     `description` via SQL keeps that edit.
+ *   - Rows seed sequentially. A `23505` that names the slug index — OR
+ *     names no constraint at all, which is the hedge the recovery's own
+ *     warning carries — is recorded in `blockedSlugs` and the pass carries
+ *     on; a `23505` naming any OTHER constraint, and every other error,
+ *     propagates.
  *   - A seed-time failure logs at error and the API keeps booting —
  *     pre-existing rows answer admin-UI reads.
+ *
+ * ⚠️ **A BLOCKED ROW IS NOT A PRESERVED ROW, and this seeder used to say it
+ * was.** Before #5266 the target was unqualified, so a squatted slug was
+ * swallowed as a no-op — and `preservedSlugs` was derived by SUBTRACTION
+ * (every expected slug minus the inserted ones), which put the blocked row in
+ * the same bucket as a row that genuinely already existed. The caller was told
+ * a row it does not have is fine. That is strictly worse than #5239's sibling
+ * defect on the knowledge seeder, which merely omitted the row from an
+ * ambiguous count rather than positively asserting its presence.
  *
  * These rows are live: they surface as catalog entries in admin-UI listings
  * (integrations marketplace `pillar = 'datasource'` cards), and form-install
@@ -39,6 +54,10 @@ import {
 } from "@atlas/api/lib/db/datasource-pool-resolver";
 import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 import { assertOperatorCatalogWrite } from "@atlas/api/lib/plugins/catalog-provenance";
+import {
+  asUniqueViolation,
+  PG_PLUGIN_CATALOG_SLUG_CONSTRAINT,
+} from "@atlas/api/lib/db/pg-errors";
 
 const log = createLogger("db.seed-builtin-datasource-catalog");
 
@@ -416,26 +435,76 @@ export interface BuiltinDatasourceCatalogSeedDb {
   query<T = unknown>(sql: string, params?: unknown[]): Promise<{ rows: T[] }>;
 }
 
+/**
+ * ⚠️ TWO PRECONDITIONS ON THE SEAM ABOVE, both load-bearing for the #5266
+ * recovery below, and neither expressible in the type. Identical to the
+ * knowledge seeder's — one mechanism, two catalogs.
+ *
+ * 1. **It must autocommit.** The loop recovers from a per-row `23505` by
+ *    logging and continuing. Inside an open transaction the first one poisons
+ *    it, so every remaining INSERT fails `25P02` — not `23505`, so it rethrows
+ *    and aborts the pass with `current transaction is aborted`, and the
+ *    header's "carries on to the remaining rows" becomes false. The one
+ *    production caller passes a `Pool` (see
+ *    `runBuiltinDatasourceCatalogSeedBoot`), where each statement is its own
+ *    transaction.
+ * 2. **It must surface pg errors FLAT.** `asUniqueViolation` reads a top-level
+ *    `code`. `@effect/sql` wraps the driver error and moves it under `.cause`
+ *    (`lib/integrations/install/routing-id-conflict.ts` walks the chain for
+ *    exactly that reason), so an Effect-backed client would make every
+ *    collision an unclassified throw — worse than before #5266, not better.
+ */
+
 export interface BuiltinDatasourceCatalogSeedResult {
-  /** Slugs whose `ON CONFLICT DO NOTHING` ran an insert (row didn't exist). */
+  /** Slugs whose `ON CONFLICT (id) DO NOTHING` ran an insert (row didn't exist). */
   readonly insertedSlugs: ReadonlyArray<BuiltinDatasourceCatalogSlug>;
-  /** Slugs whose row already existed (the conflict path). */
+  /**
+   * Slugs whose row already existed under its canonical id (the conflict
+   * path).
+   *
+   * ⚠️ "Already existed", NOT "already correct". The seed is insert-only and
+   * never reads the row back, so its CONTENT is unobserved — an operator who
+   * rewrote a built-in row through `catalog-crud.ts` lands in this same
+   * bucket, which is the whole reason a field change takes a migration.
+   *
+   * ⚠️ It is now DISJOINT from {@link blockedSlugs}, and that is the whole
+   * point of #5266. It is no longer *everything that was not inserted*: a row
+   * a foreign-id collision blocked is absent from the catalog and belongs in
+   * `blockedSlugs`, not here. The three lists partition the expected slugs.
+   */
   readonly preservedSlugs: ReadonlyArray<BuiltinDatasourceCatalogSlug>;
+  /**
+   * The slugs a `23505` blocked — a DIFFERENT catalog row already holds the
+   * slug under a different id, so the built-in row does not exist under its
+   * canonical id and this pass could not create it (#5266).
+   *
+   * Same name and same meaning as the knowledge seeder's field (#5239): one
+   * concept, two catalogs.
+   */
+  readonly blockedSlugs: ReadonlyArray<BuiltinDatasourceCatalogSlug>;
 }
 
 /**
  * Idempotently seed the nine built-in Datasource catalog rows.
  *
- * Bulk INSERT keeps the seed cheap (single statement vs nine) and lets
- * the result set (`RETURNING slug`) report which rows actually inserted
- * vs which were preserved. Unqualified `ON CONFLICT DO NOTHING` covers
- * both the `slug` unique index AND the `id` primary key — so a stray
- * operator-edited row with one of our canonical `catalog:<slug>` ids
- * under a different slug doesn't crash the boot pass.
+ * Rows seed SEQUENTIALLY, one statement each, mirroring the knowledge seeder
+ * (#5239/#5260). `RETURNING slug` reports whether each row was inserted vs
+ * preserved; a slug held under a foreign id raises `23505`, is recorded in
+ * `blockedSlugs` and does not stop the pass. A `23505` naming a DIFFERENT
+ * constraint, and every other failure, propagates — an UNNAMED one is
+ * accepted into the recovery, under the hedge the warning carries.
  *
- * The bulk shape mirrors migration 0093's VALUES block exactly —
- * keeping them aligned is checked by the
- * `migration-and-seed-stay-aligned` test.
+ * ⚠️ **Per-row, not the bulk INSERT this used to issue — the shape IS the
+ * fix.** A single statement cannot report per-row outcomes: one `23505`
+ * rejects the whole batch, so recovering row-by-row is only expressible as
+ * row-by-row statements. Nine statements at boot is the price of being able
+ * to say WHICH row is missing, and the old bulk form paid for its cheapness
+ * by reporting the blocked row as present (#5266).
+ *
+ * The VALUES shape still mirrors migration 0093's block per row — keeping
+ * them aligned is checked by the `migration-and-seed-stay-aligned` test,
+ * which reads the migration SQL and this module's row table, not the
+ * statement count.
  */
 export async function seedBuiltinDatasourceCatalog(
   db: BuiltinDatasourceCatalogSeedDb,
@@ -453,63 +522,128 @@ export async function seedBuiltinDatasourceCatalog(
     }
   }
 
-  // Parameterised bulk INSERT — each row contributes 8 placeholders
-  // (id, name, slug, description, install_model, auto_install,
-  // saas_eligible, config_schema). The remaining 7 columns are SQL
-  // literals (`'datasource'` for type and pillar, `'available'` for
-  // status, `'starter'` for min_plan, one `true` for enabled, and two
-  // `NOW()` timestamps). `saas_eligible` is bound per row (#3301) so
-  // DuckDB lands `false` on a fresh DB; existing DBs are converged by
-  // migration 0124. Column order matches migration 0093's VALUES block —
-  // drift is checked by `__tests__/seed-builtin-datasource-catalog.test.ts`'s
-  // `migration-and-seed-stay-aligned` suite.
-  const placeholders: string[] = [];
-  const params: unknown[] = [];
-  let p = 0;
-  for (const row of BUILTIN_DATASOURCE_CATALOG_ROWS) {
-    const placeholder = `($${++p}, $${++p}, $${++p}, $${++p}, 'datasource', $${++p}, 'datasource', 'available', $${++p}, 'starter', true, $${++p}, $${++p}::jsonb, NOW(), NOW())`;
-    placeholders.push(placeholder);
-    params.push(
-      row.id,
-      row.name,
-      row.slug,
-      row.description,
-      row.installModel,
-      row.autoInstall,
-      row.saasEligible,
-      JSON.stringify(row.configSchema),
-    );
-  }
-
   // Operator-curated-only gate (#4174/#4099): rows here ship inside Atlas.
   assertOperatorCatalogWrite("builtin-datasource-seed");
-  const { rows } = await db.query<{ slug: BuiltinDatasourceCatalogSlug }>(
-    `INSERT INTO plugin_catalog
-       (id, name, slug, description, type, install_model, pillar,
-        implementation_status, auto_install, min_plan, enabled, saas_eligible,
-        config_schema, created_at, updated_at)
-     VALUES ${placeholders.join(", ")}
-     ON CONFLICT DO NOTHING
-     RETURNING slug`,
-    params,
-  );
 
-  const insertedSlugs = rows.map((r) => r.slug);
-  const insertedSet = new Set<string>(insertedSlugs);
-  const preservedSlugs = BUILTIN_DATASOURCE_CATALOG_ROWS.map((r) => r.slug).filter(
-    (slug) => !insertedSet.has(slug),
-  );
+  const insertedSlugs: BuiltinDatasourceCatalogSlug[] = [];
+  const blockedSlugs: BuiltinDatasourceCatalogSlug[] = [];
+  const preservedSlugs: BuiltinDatasourceCatalogSlug[] = [];
 
-  log.info(
-    {
-      insertedCount: insertedSlugs.length,
-      preservedCount: preservedSlugs.length,
-      insertedSlugs,
-    },
-    "Built-in Datasource catalog seed complete",
-  );
+  for (const row of BUILTIN_DATASOURCE_CATALOG_ROWS) {
+    let returned: { slug: BuiltinDatasourceCatalogSlug }[];
+    try {
+      // Each row binds 8 params (id, name, slug, description, install_model,
+      // auto_install, saas_eligible, config_schema). The remaining 7 columns
+      // are SQL literals (`'datasource'` for type and pillar, `'available'`
+      // for status, `'starter'` for min_plan, one `true` for enabled, and two
+      // `NOW()` timestamps). `saas_eligible` is bound per row (#3301) so
+      // DuckDB lands `false` on a fresh DB; existing DBs are converged by
+      // migration 0124. Column order matches migration 0093's VALUES block —
+      // drift is checked by
+      // `__tests__/seed-builtin-datasource-catalog.test.ts`'s
+      // `migration-and-seed-stay-aligned` suite.
+      const { rows } = await db.query<{ slug: BuiltinDatasourceCatalogSlug }>(
+        `INSERT INTO plugin_catalog
+           (id, name, slug, description, type, install_model, pillar,
+            implementation_status, auto_install, min_plan, enabled, saas_eligible,
+            config_schema, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'datasource', $5, 'datasource', 'available', $6,
+                 'starter', true, $7, $8::jsonb, NOW(), NOW())
+         ON CONFLICT (id) DO NOTHING
+         RETURNING slug`,
+        [
+          row.id,
+          row.name,
+          row.slug,
+          row.description,
+          row.installModel,
+          row.autoInstall,
+          row.saasEligible,
+          JSON.stringify(row.configSchema),
+        ],
+      );
+      returned = rows;
+    } catch (err) {
+      const collision = asUniqueViolation(err);
+      // ⚠️ RETHROW COVERS TWO CASES, and the second one is the hedge made
+      // structural. Anything that is not a unique violation is a real failure
+      // (as before #5266) — and a 23505 that NAMES a constraint other than
+      // the slug index is not the squatter this recovery models either.
+      // Recording that as a blocked SLUG would file a future `UNIQUE (name)`
+      // violation under "go rename the row holding this slug", which is a
+      // hedged message next to unhedged data; the data loses. An unnamed
+      // 23505 still lands in the recovery below, where the message's hedge
+      // covers it.
+      const modelled =
+        collision !== undefined &&
+        (collision.constraint === undefined ||
+          collision.constraint === PG_PLUGIN_CATALOG_SLUG_CONSTRAINT);
+      if (!modelled) {
+        // ⚠️ `blockedSlugs` DOES NOT SURVIVE THIS THROW. The boot wrapper
+        // turns it into `{ kind: "error" }` and the Layer reports
+        // `blockedSlugs: []`, so a pass that blocked row 2 and then hit a
+        // dead pool on row 6 would otherwise report nothing blocked at all —
+        // the same overloading #5266 exists to remove, one arm over. Emit
+        // the partial list here or it is lost.
+        if (blockedSlugs.length > 0) {
+          log.warn(
+            { blockedSlugs, insertedSlugs, abortingAt: row.id },
+            "Built-in Datasource catalog seed ABORTING with rows already blocked — this list is PARTIAL (the pass stopped early) and is NOT carried on the boot result, which will report an error with no blocked slugs",
+          );
+        }
+        throw err;
+      }
+      blockedSlugs.push(row.slug);
+      log.warn(
+        {
+          id: row.id,
+          slug: row.slug,
+          constraint: collision.constraint,
+          detail: collision.detail,
+          // ⚠️ The raw message, because `constraint` and `detail` are both
+          // OPTIONAL — a driver that populates neither would otherwise leave
+          // the operator a warning with no evidence of WHAT collided. Safe to
+          // log: every unique value on `plugin_catalog` is a slug or a
+          // catalog id, neither of which is a secret.
+          err: err instanceof Error ? err.message : String(err),
+        },
+        // Hedged in the diagnosis AND in the remedy: `plugin_catalog` has
+        // exactly two unique constraints today — PK `id` (consumed by the
+        // conflict target) and UNIQUE `slug` — so a 23505 arriving here is
+        // almost certainly a slug collision. That is an inference from the
+        // current schema, not something this catch verified, so the lookup
+        // instruction is conditioned on what `constraint` actually says.
+        "Built-in Datasource catalog row NOT seeded — a unique violation means another catalog row already holds one of this row's unique values under a different id, so the row does not exist under its canonical id: the datasource will not appear in the integrations marketplace, and form-install handlers reading its config_schema will correctly find nothing. WHICH value collided is in `constraint`/`detail`, or in `err` when the driver omits them. If `constraint` is `plugin_catalog_slug_key` (the only non-primary-key unique index on this table today), find the holder with `SELECT id, name FROM plugin_catalog WHERE slug = '<slug>'`; if it names anything else, look up the column that constraint covers instead. Then rename or remove that row.",
+      );
+      continue;
+    }
+    // `RETURNING slug` yields a row only when the INSERT actually ran. An
+    // empty result is the `ON CONFLICT (id) DO NOTHING` path — the row
+    // already exists under its canonical id, which is the ONLY thing
+    // "preserved" now means.
+    if (returned.length > 0) insertedSlugs.push(row.slug);
+    else preservedSlugs.push(row.slug);
+  }
 
-  return { insertedSlugs, preservedSlugs };
+  const summary = {
+    insertedCount: insertedSlugs.length,
+    preservedCount: preservedSlugs.length,
+    blockedCount: blockedSlugs.length,
+    insertedSlugs,
+    blockedSlugs,
+  };
+  if (blockedSlugs.length > 0) {
+    // Not `info`: the pass finished, but the catalog is missing rows it was
+    // asked to seed. Reporting that as completion is #5266's defect.
+    log.warn(
+      summary,
+      "Built-in Datasource catalog seed finished with BLOCKED rows — see the per-row warnings above",
+    );
+  } else {
+    log.info(summary, "Built-in Datasource catalog seed complete");
+  }
+
+  return { insertedSlugs, preservedSlugs, blockedSlugs };
 }
 
 /**
@@ -528,6 +662,13 @@ export type BuiltinDatasourceCatalogSeedBootResult =
       readonly kind: "seeded";
       readonly insertedSlugs: ReadonlyArray<BuiltinDatasourceCatalogSlug>;
       readonly preservedSlugs: ReadonlyArray<BuiltinDatasourceCatalogSlug>;
+      /**
+       * Rows a foreign-id slug collision blocked (#5266). `seeded` with a
+       * non-empty `blockedSlugs` is a real state — the pass ran, and the
+       * catalog is missing rows it was asked to seed — so `kind` alone no
+       * longer partitions the outcomes; this field does.
+       */
+      readonly blockedSlugs: ReadonlyArray<BuiltinDatasourceCatalogSlug>;
     }
   | { readonly kind: "error"; readonly message: string };
 
@@ -565,6 +706,7 @@ export async function runBuiltinDatasourceCatalogSeedBoot(): Promise<BuiltinData
       kind: "seeded",
       insertedSlugs: result.insertedSlugs,
       preservedSlugs: result.preservedSlugs,
+      blockedSlugs: result.blockedSlugs,
     };
   } catch (err) {
     const normalized = err instanceof Error ? err : new Error(String(err));

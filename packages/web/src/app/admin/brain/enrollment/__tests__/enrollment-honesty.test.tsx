@@ -91,6 +91,42 @@ const THREE_PAIRS_TWO_ENTITIES = [
   },
 ];
 
+/** What `POST /produce` answers, and with what status. */
+let runResponse: unknown = {};
+let runStatus = 200;
+
+/** A run where every enrolled pair was refused — `created: 0` with reasons. */
+const ALL_REFUSED = {
+  reportComplete: true,
+  workspaceId: "ws-1",
+  snapshotAt: "2026-08-16T22:15:03.546Z",
+  enrolled: 2,
+  entities: [],
+  refusals: [
+    {
+      entity: "accounts",
+      dimension: "tier",
+      reason: "entity-unreadable",
+      message: "“accounts” could not be read — check the datasource is reachable.",
+    },
+    {
+      entity: "accounts",
+      dimension: "arr_band",
+      reason: "entity-unreadable",
+      message: "“accounts” could not be read — check the datasource is reachable.",
+    },
+  ],
+  created: 0,
+  corroborated: 0,
+  entityEdges: {
+    kind: "nothing-to-propose",
+    entries: 0,
+    ambiguous: 0,
+    selfEdges: 0,
+    unmintedIds: 0,
+  },
+};
+
 /** What the page POSTed to `/naming`, in order. */
 type NamingBody = { entity: string; dimension: string | null };
 let namingBodies: NamingBody[] = [];
@@ -182,6 +218,14 @@ function installFetchStub() {
           : jsonResponse({ entity: "accounts", dimension: "arr_band", changed: writeChanged }),
       );
     }
+    // BEFORE the bare list arm, per the ordering note above — `/produce`
+    // contains `/brain-enrollment` and would otherwise be answered with the
+    // enrollment list, which parses as a run report with every count absent.
+    if (url.includes("/brain-enrollment/produce")) {
+      return Promise.resolve(
+        runStatus === 200 ? jsonResponse(runResponse) : jsonResponse(runResponse, runStatus),
+      );
+    }
     if (url.includes("/brain-enrollment")) {
       return Promise.resolve(
         listFails
@@ -257,6 +301,8 @@ beforeEach(() => {
   writeChanged = true;
   writeFails = false;
   namingBodies = [];
+  runResponse = ALL_REFUSED;
+  runStatus = 200;
   enrollments = [];
   entities = [{ name: "accounts", table: "public.accounts", description: null }];
   installFetchStub();
@@ -524,5 +570,100 @@ describe("un-enrolling is not retraction, and the page says so", () => {
     // place someone reads that it is.
     expect(text).toContain("arrives as a draft for your review");
     expect(text).toContain("never what is true");
+  });
+});
+
+/**
+ * The run report (#5197, #5284).
+ *
+ * `created: 0` has two causes that produce identical silence in `brain_facts` —
+ * an empty reach, and every pair refused. ADR-0039 names that indistinguishability
+ * as M5's central invisibility, which is why the report carries `enrolled` and
+ * `refusals` side by side. The panel has to say WHICH.
+ *
+ * Before this panel existed the producer had no UI trigger at all, so a refusal
+ * reached nobody: an admin enrolled a pair, read "Run the producer to apply it",
+ * and had nothing to press. That is how #5284 survived to prod.
+ */
+describe("a run that produced nothing says WHY it produced nothing", () => {
+  /** Press Run and wait for the report to land. */
+  async function runAndRead(): Promise<string> {
+    enrollments = THREE_PAIRS_TWO_ENTITIES;
+    const { container } = renderPage();
+    await waitFor(() => {
+      expect(container.textContent ?? "").not.toContain("Loading what is enrolled…");
+    });
+    fireEvent.click(screen.getByRole("button", { name: /run the producer/i }));
+    await waitFor(() => {
+      expect(container.textContent ?? "").not.toContain("Reading the warehouse…");
+    });
+    return container.textContent ?? "";
+  }
+
+  test("every pair refused reads as refused, not as a quiet warehouse", async () => {
+    const text = await runAndRead();
+    expect(text).toContain("Every enrolled pair was refused");
+    // The positive control the prohibition needs: a page rendering no report at
+    // all would satisfy any `not.toContain` below.
+    expect(text).toContain("2 refused");
+    // The SERVER's reason, verbatim — the thing an admin acts on.
+    expect(text).toContain("could not be read");
+    // …and it must NOT read as the benign case.
+    expect(text).not.toContain("A quiet warehouse costs no review");
+  });
+
+  test("a quiet run and a refused run do not render the same sentence", async () => {
+    runResponse = { ...ALL_REFUSED, refusals: [] };
+    const text = await runAndRead();
+    // Same `created: 0`, opposite meaning. This is the pair the panel exists for.
+    expect(text).toContain("A quiet warehouse costs no review");
+    expect(text).not.toContain("Every enrolled pair was refused");
+  });
+
+  test("the degraded arm reports NO counts — not even a zero", async () => {
+    runResponse = {
+      reportComplete: false,
+      workspaceId: "ws-1",
+      requestId: "req-degraded",
+      message: "The run committed but its counts could not be established.",
+    };
+    const text = await runAndRead();
+    expect(text).toContain("req-degraded");
+    expect(text).toContain("counts could not be established");
+    // ⚠️ The whole point of the withheld arm. `{enrolled: 2, created: 0}` from a
+    // run that may have refused everything is a confident all-clear handed to
+    // the one person whose next action is to press Run again — so the panel must
+    // not reconstruct one from fields the schema deliberately omits.
+    expect(text).not.toContain("filed as drafts");
+    expect(text).not.toContain("pairs in reach");
+    expect(text).not.toContain("No new claims");
+  });
+
+  test("a 409 from the run lock surfaces the server's sentence, not a crash", async () => {
+    runStatus = 409;
+    runResponse = {
+      error: "conflict",
+      message: "A scheduled run is already in flight for this workspace.",
+      requestId: "req-1",
+    };
+    const text = await runAndRead();
+    expect(text).toContain("already in flight");
+  });
+});
+
+describe("the run control is not offered where a run would mislead", () => {
+  /** `jest-dom` matchers are not installed here, so read the DOM property. */
+  const runButton = () =>
+    screen.getByRole("button", { name: /run the producer/i }) as HTMLButtonElement;
+
+  test("an empty reach disables it — a run over nothing reports like a broken producer", async () => {
+    await settledText();
+    expect(runButton().disabled).toBe(true);
+  });
+
+  test("a known, non-empty reach enables it", async () => {
+    enrollments = THREE_PAIRS_TWO_ENTITIES;
+    await settledText();
+    expect(runButton().disabled).toBe(false);
   });
 });

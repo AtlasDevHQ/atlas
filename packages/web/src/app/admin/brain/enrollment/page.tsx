@@ -9,6 +9,7 @@ import {
   BrainEnrollmentListResponseSchema,
   BrainEnrollmentWriteResponseSchema,
   BrainEnrollmentNamingResponseSchema,
+  BrainWarehouseRunResponseSchema,
 } from "@/ui/lib/admin-schemas";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
@@ -27,13 +28,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
-import { AlertTriangle, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, Play, Plus, Trash2 } from "lucide-react";
 
 type ListResponse = z.infer<typeof BrainEnrollmentListResponseSchema>;
 type EntitiesResponse = z.infer<typeof BrainEnrollmentEntitiesResponseSchema>;
 type DimensionsResponse = z.infer<typeof BrainEnrollmentDimensionsResponseSchema>;
 type WriteResponse = z.infer<typeof BrainEnrollmentWriteResponseSchema>;
 type NamingResponse = z.infer<typeof BrainEnrollmentNamingResponseSchema>;
+type RunResponse = z.infer<typeof BrainWarehouseRunResponseSchema>;
 
 /**
  * **Enrollment** — what the warehouse producer may hold claims about
@@ -95,6 +97,16 @@ function BrainEnrollment() {
   // defect the un-enroll slot was split out of the enroll card to fix.
   const [namingError, setNamingError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  /**
+   * The last run's report, and its own error slot.
+   *
+   * Kept in state rather than derived from the mutation, because the report is
+   * the ONLY record of a refusal: nothing persists it, and a page that dropped it
+   * on the next re-render would leave an admin who pressed Run with a queue that
+   * did not grow and no reason why. That is the state #5197 was filed against.
+   */
+  const [run, setRun] = useState<RunResponse | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
 
   const {
     data: list,
@@ -150,6 +162,10 @@ function BrainEnrollment() {
   });
   const namingMutation = useAdminMutation<NamingResponse>({
     path: "/api/v1/admin/brain-enrollment/naming",
+    method: "POST",
+  });
+  const produceMutation = useAdminMutation<RunResponse>({
+    path: "/api/v1/admin/brain-enrollment/produce",
     method: "POST",
   });
 
@@ -225,6 +241,36 @@ function BrainEnrollment() {
         ? `“${target.dimension}” now names “${target.entity}”. Atlas will file what it already knows about each of those rows under that name — so a claim someone made about “Acme Corp” and a row the warehouse calls “42” become the same subject. Run the producer to apply it.`
         : `“${target.entity}” no longer has a name column. Atlas stops matching its rows to what people call them, and goes back to matching on the warehouse key alone. Run the producer to apply it.`,
     );
+    void refetch();
+  }
+
+  /**
+   * Run the producer over the current reach.
+   *
+   * ⚠️ **An authority act wearing a read's shape** — `admin-brain-enrollment.ts`
+   * says so, and it is why this button lives beside the two writes rather than
+   * looking like a refresh: a run fills the review queue a human then has to
+   * drain. The copy says "files drafts", never "updates".
+   *
+   * The previous run's report is cleared BEFORE the request, not merged into it.
+   * A refusal list left standing beside a fresh run's counts would read as this
+   * run's refusals, which is the one misreading this panel exists to prevent.
+   */
+  async function onProduce() {
+    setRunError(null);
+    setNotice(null);
+    setRun(null);
+    const result = await produceMutation.mutate({});
+    if (!result.ok) {
+      // The server's prose verbatim — it distinguishes a 409 (a scheduled run
+      // holds the workspace lock, an ordinary outcome) from a 403, and a client
+      // sentence would be a second spelling of a rule the server owns.
+      setRunError(friendlyError(result.error));
+      return;
+    }
+    if (result.data !== undefined) setRun(result.data);
+    // The queue this just filled is on another page, and the reach counts can
+    // move if an entity stopped resolving. Both are stale now.
     void refetch();
   }
 
@@ -449,7 +495,29 @@ function BrainEnrollment() {
                 {reachKnown ? list.entityCount : "—"}
               </span>
             </div>
+            {/* The RUN control sits with the reach chips, because the reach is
+                exactly what it runs over — and disabled when the reach is empty
+                or unknown, since a run over nothing produces a report an admin
+                would read as "the producer is broken". */}
+            <Button
+              size="sm"
+              variant="secondary"
+              className="ml-auto"
+              disabled={!reachKnown || enrollments.length === 0 || produceMutation.saving}
+              onClick={() => void onProduce()}
+            >
+              <Play className="size-3.5" aria-hidden />
+              {produceMutation.saving ? "Reading the warehouse…" : "Run the producer"}
+            </Button>
           </div>
+
+          {runError !== null ? (
+            <Alert variant="destructive">
+              <AlertTriangle className="size-4" aria-hidden />
+              <AlertDescription>{runError}</AlertDescription>
+            </Alert>
+          ) : null}
+          {run !== null ? <RunReport report={run} /> : null}
 
           {namingError !== null ? (
             <Alert variant="destructive">
@@ -547,6 +615,109 @@ function BrainEnrollment() {
           </p>
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+/**
+ * What the last run did — the panel that makes a refusal visible.
+ *
+ * ## Why a zero is never rendered bare
+ *
+ * `created: 0` has two causes that produce identical silence in `brain_facts`:
+ * the reach was empty, or every pair was refused. ADR-0039 names that
+ * indistinguishability as the milestone's central invisibility, and it is why
+ * the report carries `enrolled` and `refusals` side by side. So this panel
+ * always says WHICH — a bare "0 facts" is the reading it exists to prevent, and
+ * it is exactly what an admin saw before this panel existed, because the run had
+ * no UI at all and its refusals reached nobody (#5197).
+ *
+ * ## The degraded arm renders NO numbers
+ *
+ * `reportComplete: false` means the route could not establish the counts after
+ * the transactions committed. The schema withholds every field of the report on
+ * that branch deliberately — `{enrolled: 8, created: 0}` from a run that may
+ * have refused everything is a confident all-clear handed to the one person
+ * whose next action is to press Run again. This component must not reconstruct
+ * one, so the branch renders the server's sentence and its request id, and
+ * nothing else.
+ */
+function RunReport({ report }: { report: RunResponse }) {
+  if (!report.reportComplete) {
+    return (
+      <Alert>
+        <AlertTriangle className="size-4" aria-hidden />
+        <AlertDescription>
+          {report.message} Nothing here reports what the run produced, because the counts could
+          not be established — check the review queue rather than re-running blind. Request id{" "}
+          <span className="font-mono text-xs">{report.requestId}</span>.
+        </AlertDescription>
+      </Alert>
+    );
+  }
+
+  const refused = report.refusals.length;
+  return (
+    <div className="border-border space-y-3 rounded-md border p-3">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+        <span className="font-medium">
+          {report.created === 0 && report.corroborated === 0
+            ? "No new claims"
+            : `${report.created} filed as drafts`}
+        </span>
+        {report.corroborated > 0 ? (
+          <span className="text-muted-foreground">
+            {report.corroborated} unchanged and corroborated
+          </span>
+        ) : null}
+        <span className="text-muted-foreground">
+          {report.enrolled} {report.enrolled === 1 ? "pair" : "pairs"} in reach
+        </span>
+        {refused > 0 ? (
+          <Badge variant="destructive">
+            {refused} refused
+          </Badge>
+        ) : null}
+      </div>
+
+      {/* The sentence that separates the two silences. */}
+      {report.created === 0 && report.corroborated === 0 ? (
+        <p className="text-muted-foreground text-sm">
+          {refused === report.enrolled && refused > 0
+            ? "Every enrolled pair was refused, so this run read nothing. The producer is not broken and the queue did not grow — each reason is below."
+            : refused > 0
+              ? "Some pairs were refused and the rest produced nothing new."
+              : "Every pair was read and none of them had anything Atlas did not already hold. A quiet warehouse costs no review."}
+        </p>
+      ) : (
+        <p className="text-muted-foreground text-sm">
+          Every claim landed as a draft. Nothing is published until you review it in Facts.
+        </p>
+      )}
+
+      {refused > 0 ? (
+        <ul className="space-y-2">
+          {report.refusals.map((refusal) => (
+            <li key={`${refusal.entity}/${refusal.dimension}/${refusal.reason}`} className="text-sm">
+              <span className="font-mono text-xs">
+                {refusal.entity} / {refusal.dimension}
+              </span>
+              {/* The SERVER's message — it "names what to do rather than what went
+                  wrong", per `WarehouseRefusal`. A client sentence keyed off
+                  `reason` would be a second spelling of that, and a worse one. */}
+              <p className="text-muted-foreground">{refusal.message}</p>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {report.entities.length > 0 ? (
+        <p className="text-muted-foreground text-xs">
+          {report.entities
+            .map((e) => `${e.entity}: ${e.rows} ${e.rows === 1 ? "row" : "rows"} read`)
+            .join(" · ")}
+        </p>
+      ) : null}
     </div>
   );
 }

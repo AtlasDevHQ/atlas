@@ -6,8 +6,8 @@
  * none of them routes through here.** `platform-demo.ts` files its own
  * `settings.update` with the fire-and-forget `logAdminAction` (it does pass
  * `scope: "platform"`, so only defect 3 below applies to it);
- * `onboarding.ts:943` writes `ATLAS_DEMO_INDUSTRY`; `admin-sandbox.ts:542`
- * clears `ATLAS_SANDBOX_BACKEND` with no audit row at all. They are outside
+ * `onboarding.ts` writes `ATLAS_DEMO_INDUSTRY`; `admin-sandbox.ts` clears
+ * `ATLAS_SANDBOX_BACKEND` with no audit row at all. They are outside
  * this PR, and naming them here is the point — the next reader must not take
  * "the seam" to mean coverage nobody built.
  *
@@ -19,11 +19,20 @@
  * 1. **The value was recorded verbatim — but a `secret: true` value cannot
  *    reach it.** `metadata: { key, value, tier }` carried the raw string, and
  *    #5270 claimed that put the seven `secret: true` credentials in a DB row.
- *    It does not: `admin.ts:3720` (PUT) and `:3876` (DELETE) both 403 a
- *    `secret: true` key *before* the write, and that guard is on `main`
- *    already — there was no window. So `redactAuditValue`'s `secret` arm and
- *    its `undefined`-definition fail-closed arm are BOTH route-unreachable
- *    today, and every production entry takes the verbatim arm.
+ *    It does not: both verbs in `api/routes/admin.ts` 403 a `secret: true`
+ *    key *before* the write — grep the guard by its copy, `"Secret settings
+ *    cannot be modified from the UI."`, which appears once per verb — and
+ *    that guard is on `main` already, so there was no window. So
+ *    `redactAuditValue`'s `secret` arm and its `undefined`-definition
+ *    fail-closed arm are BOTH route-unreachable today, and every production
+ *    entry takes the verbatim arm.
+ *
+ *    ⚠️ Cited by MESSAGE rather than by line, deliberately. The first draft of
+ *    this block pinned `admin.ts:3720`/`:3876` and both were stale within the
+ *    same round — the line numbers moved when this PR's own helper was added
+ *    forty lines above them. A citation that rots is worse than none, because
+ *    the next reader checks it, finds unrelated code, and stops trusting the
+ *    paragraph that was right.
  *
  *    The redaction is kept as defense in depth, and the honest claim is
  *    narrow: the 403 is the primary control, this is what remains if someone

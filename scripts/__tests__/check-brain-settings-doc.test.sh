@@ -286,12 +286,12 @@ check fail "a registry brain key with no doc row is caught" \
 restore_doc
 
 # --- doc side: the hidden-count sentence -------------------------------------
-mutate "$DOC" "$DOC_BACKUP" 's/All thirteen are hidden/All twelve are hidden/'
+mutate "$DOC" "$DOC_BACKUP" 's/All fifteen are hidden/All fourteen are hidden/'
 check fail "a stale hidden-count is caught" \
   'but the table lists'
 restore_doc
 
-mutate "$DOC" "$DOC_BACKUP" 's/All thirteen are hidden from the generic settings page/All of them are concealed from the generic settings page/'
+mutate "$DOC" "$DOC_BACKUP" 's/All fifteen are hidden from the generic settings page/All of them are concealed from the generic settings page/'
 check fail "REWORDING the hidden-count sentence fails loudly rather than going blind" \
   '"all N are hidden" sentence is gone'
 restore_doc
@@ -299,7 +299,7 @@ restore_doc
 # The hidden-count sentence's UNREADABLE arm. Its workspace twin has W-REWORD;
 # leaving this one unfixtured would recreate, inside the fixture suite, the very
 # asymmetry between the two checks that this suite exists because of.
-mutate "$DOC" "$DOC_BACKUP" 's/All thirteen are hidden from the generic settings page/All keys are hidden from the generic settings page/'
+mutate "$DOC" "$DOC_BACKUP" 's/All fifteen are hidden from the generic settings page/All keys are hidden from the generic settings page/'
 check fail "an unreadable hidden-count fails loudly" \
   'as a number word in the hidden-count sentence'
 restore_doc
@@ -317,7 +317,7 @@ restore_doc
 # ⚠️ W-REWORD and W-DIGITS are the two review empirically falsified. Before the
 # fix both exited 0 with no output, silently disabling the workspace check while
 # the run still reported PASS.
-mutate "$DOC" "$DOC_BACKUP" 's/Four are \*\*workspace-scoped\*\*/Four of them are **workspace-scoped**/'
+mutate "$DOC" "$DOC_BACKUP" 's/Five are \*\*workspace-scoped\*\*/Five of them are **workspace-scoped**/'
 check fail "W-REWORD: the reword that used to disable this check now fails loudly" \
   'Could not read "them" as a count in the workspace-scoped sentence'
 restore_doc
@@ -325,25 +325,25 @@ restore_doc
 # The other half: the sentence removed outright rather than reworded. Different
 # arm, different marker — a reword still MATCHES the pattern (capturing a
 # non-count word), so only a deletion reaches the missing-sentence branch.
-mutate "$DOC" "$DOC_BACKUP" 's/ Four are \*\*workspace-scoped\*\* — meaning each can hold a different value per workspace, set by a platform admin: `ATLAS_BRAIN_AUDIENCE_SYNC_ENABLED`, `ATLAS_BRAIN_COVERAGE_SNAPSHOT_ENABLED` and the two alias auto-approval keys.//'
+mutate "$DOC" "$DOC_BACKUP" 's/ Five are \*\*workspace-scoped\*\* — meaning each can hold a different value per workspace, set by a platform admin: `ATLAS_BRAIN_AUDIENCE_SYNC_ENABLED`, `ATLAS_BRAIN_COVERAGE_SNAPSHOT_ENABLED`, `ATLAS_BRAIN_WAREHOUSE_CADENCE_ENABLED` and the two alias auto-approval keys.//'
 check fail "W-MISSING: deleting the workspace sentence fails loudly rather than going blind" \
   'workspace-scoped**" sentence is gone'
 restore_doc
 
-mutate "$DOC" "$DOC_BACKUP" 's/Four are \*\*workspace-scoped\*\*/Five are **workspace-scoped**/'
+mutate "$DOC" "$DOC_BACKUP" 's/Five are \*\*workspace-scoped\*\*/Six are **workspace-scoped**/'
 check fail "a stale workspace-scoped count is caught" \
   'are workspace-scoped" but'
 restore_doc
 
 # W-DIGITS is a PASS fixture: digits are a legitimate reword, and the first
 # draft treated them as "unreadable" and fell through to silence. The count is
-# still verified — `4` is the true number, so this must pass for the right
+# still verified — `5` is the true number, so this must pass for the right
 # reason, which the next fixture pins by making the digit WRONG.
-mutate "$DOC" "$DOC_BACKUP" 's/Four are \*\*workspace-scoped\*\*/4 are **workspace-scoped**/'
+mutate "$DOC" "$DOC_BACKUP" 's/Five are \*\*workspace-scoped\*\*/5 are **workspace-scoped**/'
 check pass "W-DIGITS: a digit count is read, not silently skipped"
 restore_doc
 
-mutate "$DOC" "$DOC_BACKUP" 's/Four are \*\*workspace-scoped\*\*/7 are **workspace-scoped**/'
+mutate "$DOC" "$DOC_BACKUP" 's/Five are \*\*workspace-scoped\*\*/7 are **workspace-scoped**/'
 check fail "W-DIGITS is not vacuous — a WRONG digit count is caught" \
   'are workspace-scoped" but'
 restore_doc

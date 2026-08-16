@@ -1623,6 +1623,33 @@ describe("warehouse producer seam reads past the validator (#5257)", () => {
       expect(report.created).toBe(0);
     });
 
+    it("cannot escape on the RETURNED value either, before it is ever awaited", async () => {
+      // ⚠️ **The third read on this one seam, and the one a `.catch(…)` chain cannot
+      // guard — because `.catch` is itself a property access on the returned value.**
+      // A runner handing back a revoked Proxy threw at the `.catch` lookup, outside
+      // every `try`, after earlier entities had committed. `await` inside a `try/catch`
+      // has no such read: the revoked Proxy throws on the `.then` lookup instead, where
+      // it is caught.
+      const { proxy, revoke } = Proxy.revocable({}, {});
+      revoke();
+
+      const report = await run({ withTransaction: (() => proxy) as never });
+      expect(report.refusals.map((r) => r.reason)).toEqual(["snapshot-failed"]);
+      expect(report.entities).toEqual([]);
+
+      // ⚠️ A REAL Error, and `contractCheckThrew: false` — asserted because the first
+      // draft of this case guessed `true` and was measured wrong. What reaches the
+      // catch is the `TypeError` the runtime raises for the `.then` lookup on a revoked
+      // Proxy, NOT the Proxy itself, so the classification never touches a hostile
+      // value here. The distinction matters: it is why this case does not duplicate the
+      // revoked-Proxy REJECTION case above, which does hand one straight to
+      // `instanceof`.
+      const payload = payloadOf(errors, "transaction failed");
+      expect(payload.err).toBeInstanceOf(Error);
+      expect(payload.contractCheckThrew).toBe(false);
+      expect(payload.errKind).toBe("<record>");
+    });
+
     it("refuses when the runner resolves WITHOUT running the entity's work", async () => {
       // The same class with no hostility at all: a substituted runner that simply
       // forgets to invoke the callback resolves `undefined`, which passed both

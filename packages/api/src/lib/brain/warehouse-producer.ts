@@ -2655,7 +2655,16 @@ export async function runWarehouseProducer(
      */
     let producedOutcome: WarehouseEntityOutcome | null | undefined;
     let transactionAborted = false;
-    await withTransaction(async (tx) => {
+    // ⚠️ **`try`/`catch`, NOT `.catch(…)` on the returned value, and the difference is
+    // the last unguarded read on this seam** (#5257 review, round 2). `.catch` is
+    // itself a property access on whatever `withTransaction` returned: a non-thenable
+    // or a revoked Proxy threw THERE, outside every guard, after earlier entities had
+    // committed. `await` inside a `try` has no such read — a revoked Proxy throws on
+    // the `.then` lookup and lands in the catch, and a plain non-promise simply
+    // resolves to itself and leaves `producedOutcome` undefined, which the arm below
+    // already reports.
+    try {
+      await withTransaction(async (tx) => {
       const episode = await insertSnapshotEpisode(tx, {
         workspaceId,
         entity: entityPlan.entity.name,
@@ -2794,7 +2803,8 @@ export async function runWarehouseProducer(
         entitiesStored: claims.entityEntries.length,
         unnamedRows: claims.unnamedRows,
       } satisfies WarehouseEntityOutcome;
-    }).catch((err: unknown) => {
+      });
+    } catch (err: unknown) {
       // A defect in this module's own contract stays FATAL — see
       // `WarehouseProducerContractError`. Everything below is for OPERATIONAL
       // failures, where refusing one entity is the proportionate answer.
@@ -2844,7 +2854,7 @@ export async function runWarehouseProducer(
           "in this run DID commit, so a blind re-run re-files their drafts: drain the review queue " +
           "first, then re-run.",
       );
-    });
+    }
 
     if (transactionAborted) continue;
 

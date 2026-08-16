@@ -89,7 +89,8 @@
 DO $$
 DECLARE
   present   integer;
-  squatted  integer;
+  squatted   integer;
+  unexamined integer;
   rewritten integer;
   residue   integer;
 BEGIN
@@ -103,6 +104,19 @@ BEGIN
     FROM plugin_catalog
    WHERE slug = 'zoom-transcripts'
      AND id <> 'catalog:zoom-transcripts';
+
+  -- ⚠️ THE STATE THE UPDATE NEVER LOOKS AT. The rewrite is gated on
+  -- `jsonb_typeof(config_schema) = 'array'` because `jsonb_array_elements`
+  -- ERRORS on anything else and that would abort the boot migration. So a row
+  -- whose schema is an object, a scalar, or NULL is skipped silently — and
+  -- `rewritten=0` then means "not eligible" and "never examined" at once.
+  -- Counting it is what stops the notice below asserting the field was already
+  -- renamed about a row nothing read. `IS DISTINCT FROM` so a NULL counts as
+  -- unexamined rather than evaluating to NULL.
+  SELECT count(*) INTO unexamined
+    FROM plugin_catalog
+   WHERE id = 'catalog:zoom-transcripts'
+     AND jsonb_typeof(config_schema) IS DISTINCT FROM 'array';
 
   UPDATE plugin_catalog
      SET config_schema = (
@@ -133,10 +147,10 @@ BEGIN
 
   GET DIAGNOSTICS rewritten = ROW_COUNT;
 
-  RAISE NOTICE '[0203] catalog:zoom-transcripts: present=%, config_schema helper text rewritten=%. present=0 means the row does not exist under this id — see the squatter warning below, or, absent that, this region is exposed to the rollback window described in this file''s header. With present=1, a 0 means the field was already renamed or carries an operator''s own wording; the residue warning below fires if any config_schema string still reads the old product noun.', present, rewritten;
+  RAISE NOTICE '[0203] catalog:zoom-transcripts: present=%, config_schema helper text rewritten=%, unexamined=%. present=0 means the row does not exist under this id — see the squatter warning below, or, absent that, this region is exposed to the rollback window described in this file''s header. With present=1, a 0 means the field was already renamed or carries an operator''s own wording — UNLESS unexamined=1, which means config_schema is not a JSON array (an object, a scalar, or NULL) and this migration read no field at all; the residue warning below fires if any config_schema string contains "brain source".', present, rewritten, unexamined;
 
   IF present = 0 AND squatted > 0 THEN
-    RAISE WARNING '[0203] catalog:zoom-transcripts is ABSENT because another catalog row already holds the slug "zoom-transcripts" under a different id (#5239). This is NOT the rollback window: the boot seeder cannot create this row at all — it raises 23505, reports the slug as blocked, and will do so on every boot. Rename or remove the conflicting row (SELECT id, name FROM plugin_catalog WHERE slug = ''zoom-transcripts''), then re-seed; 0203 is recorded as applied in this transaction and will never retry, so the helper text will need a follow-up migration.';
+    RAISE WARNING '[0203] catalog:zoom-transcripts is ABSENT because another catalog row already holds the slug "zoom-transcripts" under a different id (#5239). This is NOT the rollback window: the boot seeder cannot create this row at all — it raises 23505, reports the slug as blocked, and will do so on every boot. Rename or remove the conflicting row (SELECT id, name FROM plugin_catalog WHERE slug = ''zoom-transcripts''), then re-seed. WHICH helper text the new row is born with depends on the image that seeds it, and only one of the two cases needs anything further: a build at or after #5240 writes the new wording and you are done, whereas an older image writes the old wording — and since 0203 is recorded as applied in this transaction and never retries, THAT case needs a follow-up migration.';
   END IF;
 
   -- ⚠️ DETECTION IS A WHOLE-VALUE TEXT SCAN, and deliberately NOT the array
@@ -156,14 +170,15 @@ BEGIN
      AND config_schema::text ILIKE '%brain source%';
 
   IF residue > 0 THEN
-    RAISE WARNING '[0203] catalog:zoom-transcripts config_schema STILL carries a string reading "brain source" after this migration ran. TWO causes, and only one is benign: an operator wrote that wording themselves through the catalog CRUD path (benign — their text stands), or the stored value drifted from what this migration matches on — a different field, a non-array schema, or an edited string — which is a defect. 0203 is recorded as applied in the same transaction and will never retry, so the defect case needs a follow-up migration rather than a re-run. Check the install form at /admin/knowledge on this region to tell them apart.';
+    RAISE WARNING '[0203] catalog:zoom-transcripts config_schema STILL carries a string reading "brain source" after this migration ran. THREE cases, and only the last is a defect: (a) the string sits on a field this migration does not target — a label, an option, another key — which is expected and left alone by design; (b) an operator wrote that wording themselves through the catalog CRUD path, and their text stands; (c) the `description` field''s stored value drifted from what this migration matches on (an edited string, or a config_schema that is not a JSON array), which is a defect. 0203 is recorded as applied in the same transaction and will never retry, so the defect case needs a follow-up migration rather than a re-run. Check the install form at /admin/knowledge on this region to tell them apart.';
   END IF;
 END $$;
 
 DO $$
 DECLARE
   present   integer;
-  squatted  integer;
+  squatted   integer;
+  unexamined integer;
   rewritten integer;
   residue   integer;
 BEGIN
@@ -177,6 +192,19 @@ BEGIN
     FROM plugin_catalog
    WHERE slug = 'outlook-mail'
      AND id <> 'catalog:outlook-mail';
+
+  -- ⚠️ THE STATE THE UPDATE NEVER LOOKS AT. The rewrite is gated on
+  -- `jsonb_typeof(config_schema) = 'array'` because `jsonb_array_elements`
+  -- ERRORS on anything else and that would abort the boot migration. So a row
+  -- whose schema is an object, a scalar, or NULL is skipped silently — and
+  -- `rewritten=0` then means "not eligible" and "never examined" at once.
+  -- Counting it is what stops the notice below asserting the field was already
+  -- renamed about a row nothing read. `IS DISTINCT FROM` so a NULL counts as
+  -- unexamined rather than evaluating to NULL.
+  SELECT count(*) INTO unexamined
+    FROM plugin_catalog
+   WHERE id = 'catalog:outlook-mail'
+     AND jsonb_typeof(config_schema) IS DISTINCT FROM 'array';
 
   UPDATE plugin_catalog
      SET config_schema = (
@@ -207,10 +235,10 @@ BEGIN
 
   GET DIAGNOSTICS rewritten = ROW_COUNT;
 
-  RAISE NOTICE '[0203] catalog:outlook-mail: present=%, config_schema helper text rewritten=%. present=0 means the row does not exist under this id — see the squatter warning below, or, absent that, this region is exposed to the rollback window described in this file''s header. With present=1, a 0 means the field was already renamed or carries an operator''s own wording; the residue warning below fires if any config_schema string still reads the old product noun.', present, rewritten;
+  RAISE NOTICE '[0203] catalog:outlook-mail: present=%, config_schema helper text rewritten=%, unexamined=%. present=0 means the row does not exist under this id — see the squatter warning below, or, absent that, this region is exposed to the rollback window described in this file''s header. With present=1, a 0 means the field was already renamed or carries an operator''s own wording — UNLESS unexamined=1, which means config_schema is not a JSON array (an object, a scalar, or NULL) and this migration read no field at all; the residue warning below fires if any config_schema string contains "brain source".', present, rewritten, unexamined;
 
   IF present = 0 AND squatted > 0 THEN
-    RAISE WARNING '[0203] catalog:outlook-mail is ABSENT because another catalog row already holds the slug "outlook-mail" under a different id (#5239). This is NOT the rollback window: the boot seeder cannot create this row at all — it raises 23505, reports the slug as blocked, and will do so on every boot. Rename or remove the conflicting row (SELECT id, name FROM plugin_catalog WHERE slug = ''outlook-mail''), then re-seed; 0203 is recorded as applied in this transaction and will never retry, so the helper text will need a follow-up migration.';
+    RAISE WARNING '[0203] catalog:outlook-mail is ABSENT because another catalog row already holds the slug "outlook-mail" under a different id (#5239). This is NOT the rollback window: the boot seeder cannot create this row at all — it raises 23505, reports the slug as blocked, and will do so on every boot. Rename or remove the conflicting row (SELECT id, name FROM plugin_catalog WHERE slug = ''outlook-mail''), then re-seed. WHICH helper text the new row is born with depends on the image that seeds it, and only one of the two cases needs anything further: a build at or after #5240 writes the new wording and you are done, whereas an older image writes the old wording — and since 0203 is recorded as applied in this transaction and never retries, THAT case needs a follow-up migration.';
   END IF;
 
   -- Whole-value text scan, for the reasons given on the Zoom block above.
@@ -220,6 +248,6 @@ BEGIN
      AND config_schema::text ILIKE '%brain source%';
 
   IF residue > 0 THEN
-    RAISE WARNING '[0203] catalog:outlook-mail config_schema STILL carries a string reading "brain source" after this migration ran. TWO causes, and only one is benign: an operator wrote that wording themselves through the catalog CRUD path (benign — their text stands), or the stored value drifted from what this migration matches on — a different field, a non-array schema, or an edited string — which is a defect. 0203 is recorded as applied in the same transaction and will never retry, so the defect case needs a follow-up migration rather than a re-run. Check the install form at /admin/knowledge on this region to tell them apart.';
+    RAISE WARNING '[0203] catalog:outlook-mail config_schema STILL carries a string reading "brain source" after this migration ran. THREE cases, and only the last is a defect: (a) the string sits on a field this migration does not target — a label, an option, another key — which is expected and left alone by design; (b) an operator wrote that wording themselves through the catalog CRUD path, and their text stands; (c) the `description` field''s stored value drifted from what this migration matches on (an edited string, or a config_schema that is not a JSON array), which is a defect. 0203 is recorded as applied in the same transaction and will never retry, so the defect case needs a follow-up migration rather than a re-run. Check the install form at /admin/knowledge on this region to tell them apart.';
   END IF;
 END $$;

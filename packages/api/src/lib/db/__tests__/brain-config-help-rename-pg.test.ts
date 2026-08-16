@@ -90,8 +90,10 @@ interface CapturedNotice {
  * the fixture and the expectation built by DIFFERENT routes: `expectedSchema`
  * round-tripped and `preRenameSchema` did not. They agree today only because
  * every field on these two rows is a string or a boolean. One helper, one
- * route, and the single remaining cast sits on `JSON.parse`'s inherently-`any`
- * return.
+ * route. Two assertions remain — `JSON.parse`'s inherently-`any` return here,
+ * and an `as Json[]` in `preRenameSchema` asserting array-ness of a value this
+ * helper types as `Json`. An earlier draft of this comment claimed there was
+ * only one.
  */
 const toJson = (value: unknown): Json => JSON.parse(JSON.stringify(value)) as Json;
 
@@ -173,7 +175,7 @@ describeIfPg("migration 0203 — the config_schema helper text (#5240)", () => {
     await pool.query(`
       CREATE TABLE plugin_catalog (
         id            TEXT PRIMARY KEY,
-        slug          TEXT UNIQUE,
+        slug          TEXT NOT NULL UNIQUE,
         config_schema JSONB,
         updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
       )
@@ -226,7 +228,7 @@ describeIfPg("migration 0203 — the config_schema helper text (#5240)", () => {
   async function insertRow(
     id: string,
     configSchema: Json | null,
-    slug: string | null = null,
+    slug: string = `slug-${id}`,
   ): Promise<void> {
     await pool.query(
       `INSERT INTO plugin_catalog (id, slug, config_schema, updated_at)
@@ -415,6 +417,18 @@ describeIfPg("migration 0203 — the config_schema helper text (#5240)", () => {
         expect(
           notices.some((n) => n.severity === "WARNING" && n.message.includes(row.id)),
         ).toBe(true);
+        // ⚠️ AND THE NOTICE MUST SAY IT LOOKED AT NOTHING. `rewritten=0` alone
+        // means "not eligible" and "never examined" at once — the UPDATE is
+        // gated on `jsonb_typeof = 'array'` because `jsonb_array_elements`
+        // errors otherwise — so without `unexamined` the breadcrumb asserts the
+        // field "was already renamed" about a row it never read. Measured: with
+        // this assertion absent, deleting the whole `unexamined` count from
+        // both blocks killed nothing.
+        expect(
+          notices.some((n) =>
+            n.message.includes(`${row.id}: present=1, config_schema helper text rewritten=0, unexamined=1`),
+          ),
+        ).toBe(true);
       }, PG_TIMEOUT_MS);
 
       it(`WARNS about the old noun on a ${label} LABEL, not only on a description`, async () => {
@@ -494,7 +508,9 @@ describeIfPg("migration 0203 — the config_schema helper text (#5240)", () => {
           notices.some(
             (n) =>
               n.severity === "NOTICE" &&
-              n.message.includes(`${row.id}: present=1, config_schema helper text rewritten=1`),
+              n.message.includes(
+                `${row.id}: present=1, config_schema helper text rewritten=1, unexamined=0`,
+              ),
           ),
         ).toBe(true);
       }
@@ -525,48 +541,57 @@ describeIfPg("migration 0203 — the config_schema helper text (#5240)", () => {
       expect(notices.filter((n) => n.severity === "WARNING")).toHaveLength(0);
     }, PG_TIMEOUT_MS);
 
-    it("⭐ distinguishes the #5239 SQUATTER from the rollback window on present=0", async () => {
-      // The two halves of this PR meeting. `present=0` has two causes that want
-      // OPPOSITE actions: the rollback window (the seeder WILL create the row,
-      // and which helper text it gets depends on the image), or a foreign row
-      // holding the slug — in which case the seeder can NEVER create it, and
-      // telling the operator to wait for the boot seeder is the wrong story in
-      // the one case where the breadcrumb matters.
-      //
-      // Zoom: absent, and squatted. Outlook: absent, nothing holding its slug.
-      // Both rows in one fixture so a warning that fired unconditionally on
-      // `present=0` fails on the Outlook half.
-      const [zoomPair, outlookPair] = ROWS;
-      await insertRow("catalog:operator-made-this", toJson([]), zoomPair.row.slug);
-      const notices = await runMigrationCapturingNotices();
+    // ⚠️ LOOPED OVER BOTH ROWS, and round 2 measured why: written for Zoom
+    // only, deleting the Outlook `IF present = 0 AND squatted > 0` arm outright
+    // left this whole suite at 35/35 green. That is the copy-paste-twin class
+    // this file's header names, reproduced inside the case added to close a
+    // different one. The OTHER row is the in-fixture control — it is equally
+    // absent and NOT squatted, so a warning that fired on `present=0` alone
+    // fails here.
+    for (const [i, { label, row }] of ROWS.entries()) {
+      const other = ROWS[i === 0 ? 1 : 0];
+      it(`⭐ distinguishes the #5239 SQUATTER from the rollback window — ${label}`, async () => {
+        // The two halves of this PR meeting. `present=0` has two causes that
+        // want OPPOSITE actions: the rollback window (the seeder WILL create
+        // the row), or a foreign row holding the slug — in which case the
+        // seeder can NEVER create it, and telling the operator to wait for the
+        // boot seeder is the wrong story in the one case that matters.
+        await insertRow("catalog:operator-made-this", toJson([]), row.slug);
+        const notices = await runMigrationCapturingNotices();
 
-      const squatterWarnings = notices.filter(
-        (n) => n.severity === "WARNING" && n.message.includes("is ABSENT because another catalog row"),
-      );
-      expect(squatterWarnings).toHaveLength(1);
-      expect(squatterWarnings[0]?.message).toContain(zoomPair.row.id);
-      expect(squatterWarnings[0]?.message).not.toContain(outlookPair.row.id);
-      // Both still report present=0 — the NOTICE is not what tells them apart.
-      for (const { row } of ROWS) {
+        const squatterWarnings = notices.filter(
+          (n) =>
+            n.severity === "WARNING" && n.message.includes("is ABSENT because another catalog row"),
+        );
+        expect(squatterWarnings).toHaveLength(1);
+        expect(squatterWarnings[0]?.message).toContain(row.id);
+        expect(squatterWarnings[0]?.message).not.toContain(other.row.id);
+        // Both rows still report present=0 — the NOTICE is not the thing that
+        // tells the two causes apart, which is the point of the arm.
+        for (const { row: r } of ROWS) {
+          expect(notices.some((n) => n.message.includes(`${r.id}: present=0`))).toBe(true);
+        }
+      }, PG_TIMEOUT_MS);
+
+      it(`does NOT cry squatter when ${label} is PRESENT and a foreign row holds its slug`, async () => {
+        // ⚠️ THE FIXTURE ROUND 2 CORRECTED. The first version gave the operator
+        // row a DIFFERENT slug, so `squatted` was 0 and the `present = 0` gate
+        // was never reached — deleting the gate entirely left the suite green,
+        // and the case's claim to pin it was false.
+        //
+        // Reaching `present = 1 AND squatted = 1` needs the canonical id to
+        // exist under a NON-canonical slug (an operator renamed it) while a
+        // foreign row holds the canonical one. Then the row is not missing, so
+        // the #5239 story does not apply and the arm must stay silent.
+        await insertRow(row.id, expectedSchema(row), `${row.slug}-renamed`);
+        await insertRow("catalog:operator-made-this", toJson([]), row.slug);
+        const notices = await runMigrationCapturingNotices();
         expect(
-          notices.some((n) => n.message.includes(`${row.id}: present=0`)),
-        ).toBe(true);
-      }
-    }, PG_TIMEOUT_MS);
-
-    it("does NOT cry squatter when the row is present and merely already renamed", async () => {
-      // The other direction: a squatting row can coexist with a correctly
-      // seeded canonical row only if the slugs differ, but the arm is gated on
-      // `present = 0` and this pins that gate. Without it, every region with a
-      // similarly-named operator row would get a spurious #5239 warning.
-      const [zoomPair] = ROWS;
-      await insertRow(zoomPair.row.id, expectedSchema(zoomPair.row), zoomPair.row.slug);
-      await insertRow("catalog:operator-made-this", toJson([]), `${zoomPair.row.slug}-ours`);
-      const notices = await runMigrationCapturingNotices();
-      expect(
-        notices.filter((n) => n.message.includes("is ABSENT because another catalog row")),
-      ).toHaveLength(0);
-    }, PG_TIMEOUT_MS);
+          notices.filter((n) => n.message.includes("is ABSENT because another catalog row")),
+        ).toHaveLength(0);
+        expect(notices.some((n) => n.message.includes(`${row.id}: present=1`))).toBe(true);
+      }, PG_TIMEOUT_MS);
+    }
 
     it("RAISES A WARNING per row when help text still reads 'brain source'", async () => {
       // The arm that answers the question an operator actually has. Both causes

@@ -147,6 +147,13 @@ describe("seedBuiltinKnowledgeCatalog — a slug held under a foreign id (#5239)
       // the end of this file, where these two ARE undefined).
       err: 'duplicate key value violates unique constraint "plugin_catalog_slug_key"',
     });
+    // ⚠️ THE MESSAGE, not only the payload. Round 2 measured that rewriting
+    // every sentence of this warning — the operator's entire remedy — left the
+    // suite 8/8 green, because nothing asserted on it. It must name the
+    // constraint (so the reader knows what to check) and condition the lookup
+    // on it rather than prescribing a slug query outright.
+    expect(perRow[0]?.message).toContain("constraint");
+    expect(perRow[0]?.message).toContain("plugin_catalog WHERE slug");
     // No `info` may claim the pass simply completed.
     expect(logged.filter((c) => c.level === "info")).toHaveLength(0);
     const summary = logged.filter((c) => c.level === "warn" && c.message.includes("BLOCKED"));
@@ -215,6 +222,51 @@ describe("seedBuiltinKnowledgeCatalog — a slug held under a foreign id (#5239)
     );
     await expect(seedBuiltinKnowledgeCatalog(db)).rejects.toThrow(/duplicate key/);
     expect(logged.filter((c) => c.level === "warn")).toHaveLength(0);
+  });
+
+  it("⭐ rethrows a 23505 that NAMES a different unique index", async () => {
+    // The hedge made structural. The message says "the slug, unless a new
+    // unique index says otherwise" — but `blockedSlugs` is a list of SLUGS, so
+    // filing a future `UNIQUE (name)` violation there would send an operator to
+    // rename the row holding a slug that is not the problem. Hedged prose next
+    // to unhedged data: the data wins. A 23505 naming something else is not the
+    // squatter this recovery models, so it propagates.
+    const { db } = dbBlocking(new Set([ZOOM_SLUG]), () =>
+      Object.assign(new Error("duplicate key value violates unique constraint"), {
+        code: "23505",
+        constraint: "plugin_catalog_name_key",
+      }),
+    );
+    await expect(seedBuiltinKnowledgeCatalog(db)).rejects.toThrow(/duplicate key/);
+    expect(
+      logged.filter(
+        (c) => c.level === "warn" && (c.payload as { slug?: unknown }).slug === ZOOM_SLUG,
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("⭐ logs the PARTIAL blocked list before aborting on an unrelated failure", async () => {
+    // `blockedSlugs` does not survive a throw: the boot wrapper turns it into
+    // `{ kind: "error" }` and the Layer reports `blockedSlugs: []`. So a pass
+    // that blocked GitBook (6th) and then hit a dead table on Zoom (13th) would
+    // report NOTHING blocked — the same overloading #5239 exists to remove, one
+    // arm over. The abort has to say what it already knew.
+    const { db } = dbBlocking(new Set([GITBOOK_SLUG, ZOOM_SLUG]), (slug) =>
+      slug === GITBOOK_SLUG
+        ? uniqueViolation(slug)
+        : Object.assign(new Error('relation "plugin_catalog" does not exist'), { code: "42P01" }),
+    );
+    await expect(seedBuiltinKnowledgeCatalog(db)).rejects.toThrow(/does not exist/);
+
+    const abort = logged.find((c) => c.level === "warn" && c.message.includes("ABORTING"));
+    expect(abort).toBeDefined();
+    expect(abort?.payload).toMatchObject({
+      blockedSlugs: [GITBOOK_SLUG],
+      abortingAt: BUILTIN_ZOOM_TRANSCRIPTS_CATALOG_ROW.id,
+    });
+    // And it says the list is partial — an operator reading it must not take
+    // one blocked slug for the whole story.
+    expect(abort?.message).toContain("PARTIAL");
   });
 
   it("tolerates a 23505 carrying no constraint or detail fields", async () => {

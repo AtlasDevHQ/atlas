@@ -1020,18 +1020,23 @@ export interface BuiltinKnowledgeCatalogSeedShape {
   readonly outcome: BuiltinKnowledgeCatalogSeedOutcome;
   /**
    * Built-in slugs a foreign-id collision blocked (#5239) — the catalog is
-   * missing these rows and a re-boot will not fix it. Always `[]` on the
-   * `skipped-gate` and `error` arms, where the pass never got far enough to
-   * know. Nothing serves this shape over HTTP today; the operator-visible
-   * signal is the seeder's own `log.warn`.
+   * missing these rows and a re-boot will not fix it.
+   *
+   * `[]` on `skipped-gate` means nothing ran. `[]` on `error` means **unknown**,
+   * NOT "none": a throw mid-loop abandons the list the seeder had accumulated,
+   * so a pass that blocked one row and then hit a dead pool reports `[]` here.
+   * The seeder logs the partial list before rethrowing precisely because it
+   * cannot survive this field. Nothing serves this shape over HTTP today; the
+   * operator-visible signal is the seeder's own `log.warn`.
    */
   readonly blockedSlugs: ReadonlyArray<string>;
   /**
-   * The raw driver message when `outcome === "error"`.
+   * The failure message when `outcome === "error"`, scrubbed via
+   * `errorMessage` on both producing arms (credential URIs masked, truncated).
    *
-   * ⚠️ NOT scrubbed, despite what this comment said until #5239. A `pg`
-   * connection failure message can carry host and port, so do not surface it
-   * over HTTP without scrubbing it first.
+   * ⚠️ Scrubbed is not safe-to-publish: a `pg` failure still carries host and
+   * port. An earlier version of this comment claimed "scrubbed" while one of
+   * the two arms passed the driver message through raw; both scrub now.
    */
   readonly error?: string;
 }
@@ -1098,7 +1103,12 @@ export const BuiltinKnowledgeCatalogSeedLive: Layer.Layer<
             return {
               inserted: false,
               outcome: "error",
-              error: result.message,
+              // Scrubbed at the Layer boundary, matching the `catchAll` arm
+              // below and `ImplementationStatusOverride`'s precedent in this
+              // same file: a pg connect failure echoes `scheme://user:pass@host`
+              // into `message`. Until #5239 this arm was the raw one while its
+              // sibling scrubbed — one field, two guarantees, one comment.
+              error: errorMessage(new Error(result.message)),
               blockedSlugs: [],
             } satisfies BuiltinKnowledgeCatalogSeedShape;
         }

@@ -626,10 +626,15 @@ describe("Company Atlas config_schema help ↔ migration 0203 (#5240, ADR-0038)"
     // non-array schema unreported while the NOTICE claimed it was already
     // renamed. So: assert no cast reaches an assignment, rather than banning
     // the cast outright.
-    for (const setClause of MIGRATION_SQL.match(/SET config_schema =[\s\S]*?updated_at = now\(\)/g) ?? []) {
+    // ⚠️ HOISTED AND COUNTED FIRST. As an inline `?? []`, any reflow that moved
+    // `updated_at = now()` would turn this guard into a loop over nothing while
+    // still reading green — a guard that stops running looks exactly like a
+    // guard that found nothing.
+    const setClauses = MIGRATION_SQL.match(/SET config_schema =[\s\S]*?updated_at = now\(\)/g) ?? [];
+    expect(setClauses).toHaveLength(2);
+    for (const setClause of setClauses) {
       expect(setClause).not.toMatch(/config_schema\s*::\s*text/i);
     }
-    expect(MIGRATION_SQL.match(/SET config_schema =/g)).toHaveLength(2);
     // ⚠️ THIS IS THE ONLY GUARD ON FIELD ORDER. Measured: deleting
     // `ORDER BY f.ord` leaves the real-Postgres suite entirely green, because
     // `WITH ORDINALITY` already emits in order and `jsonb_agg` follows its
@@ -661,6 +666,114 @@ describe("Company Atlas config_schema help ↔ migration 0203 (#5240, ADR-0038)"
       }
       expect(MIGRATION_SQL).not.toContain(other.id);
     }
+  });
+});
+
+/**
+ * ⚠️ THE RATCHET (`/review-panel` Step 5b): a principle swept for TWICE becomes
+ * a check, not a third comment.
+ *
+ * `fix-vs-finding` returned REPRODUCED twice in one round, on the same
+ * principle and in the same half of the sentence both times — an operator
+ * message whose DIAGNOSIS was correctly hedged and whose REMEDY then asserted
+ * the hedged inference as an instruction:
+ *
+ *  1. the seeder's blocked-row warning admitted the collision might not be the
+ *     slug, then told the operator to go look the row up BY SLUG;
+ *  2. migration 0203's squatter warning told the operator to re-seed and then
+ *     stated flatly that a follow-up migration would be needed — true only if
+ *     the re-seed is done by a pre-#5240 image, which it had not established.
+ *
+ * Prose does not scale to the next message, and the next message is where this
+ * keeps happening. So: every operator-facing string in this change that
+ * prescribes an ACTION must also carry a CONDITION.
+ *
+ * This is a lexical guard, and lexical guards cannot tell a quotation from an
+ * assertion — hence the negative control below, which is the half that catches
+ * a matcher too broad to mean anything.
+ */
+describe("operator-facing remedies are conditioned, not asserted (#5239/#5240 ratchet)", () => {
+  /**
+   * Words that mark a claim as contingent rather than flat.
+   *
+   * ⚠️ MATCHES THE CONCEPT, NOT THE SENTENCE THAT PROMPTED IT. The first draft
+   * listed the literal phrasings in the messages at the time (`only one case`,
+   * `two causes`), and rewording a WARNING from "TWO causes" to "THREE cases,
+   * and only the last is a defect" — strictly better prose, still conditioned —
+   * tripped the guard. A matcher pinned to a historical sentence walks past
+   * every natural reword, which is how a guard reads green over a live
+   * instance; the negative control below is what keeps the widening honest.
+   */
+  const CONDITION_MARKERS =
+    /\b(if|unless|depends on|whether|either|only (one|the last|that)|(two|three|four) (causes|cases))\b/i;
+  /** Prose that tells an operator to go and do something. */
+  const PRESCRIBES_ACTION = /\b(rename or remove|find the (conflicting )?holder|find the conflicting row|needs a follow-up migration|then re-seed|look up the column)\b/i;
+
+  const unconditionedRemedy = (message: string): boolean =>
+    PRESCRIBES_ACTION.test(message) && !CONDITION_MARKERS.test(message);
+
+  /**
+   * Every `RAISE NOTICE`/`RAISE WARNING` literal in 0203.
+   *
+   * ⚠️ Read here rather than reusing the `MIGRATION_SQL` above — that one is
+   * scoped to its own `describe`, and referencing it from this block threw a
+   * `ReferenceError` that bun reported as "1 error" while still printing
+   * "45 pass, 0 fail". A guard that does not run looks exactly like a guard
+   * that found nothing.
+   */
+  const MIGRATION_TEXT = stripSqlComments(
+    readFileSync(
+      join(import.meta.dir, "..", "migrations", "0203_brain_catalog_config_help_company_atlas.sql"),
+      "utf8",
+    ),
+  );
+  const raiseMessages = [
+    ...MIGRATION_TEXT.matchAll(/RAISE\s+(?:NOTICE|WARNING)\s+'((?:[^']|'')*)'/gi),
+  ].map((m) => (m[1] ?? "").replaceAll("''", "'"));
+
+  it("finds every RAISE message in the migration (the scan is not vacuous)", () => {
+    // Two NOTICEs + two squatter WARNINGs + two residue WARNINGs.
+    expect(raiseMessages).toHaveLength(6);
+  });
+
+  it("no RAISE message prescribes an action without a condition", () => {
+    expect(raiseMessages.filter(unconditionedRemedy)).toEqual([]);
+  });
+
+  it("no seeder warning prescribes an action without a condition", () => {
+    // Read off the source rather than re-typed, so the guard follows the string
+    // it is guarding.
+    const seederSource = readFileSync(
+      join(import.meta.dir, "..", "seed-builtin-knowledge-catalog.ts"),
+      "utf8",
+    );
+    const logMessages = [...seederSource.matchAll(/"(Built-in Knowledge Base catalog[^"]*)"/g)].map(
+      (m) => m[1]!,
+    );
+    expect(logMessages.length).toBeGreaterThanOrEqual(2);
+    expect(logMessages.filter(unconditionedRemedy)).toEqual([]);
+  });
+
+  it("⭐ the matcher can actually fail — positive AND negative controls", () => {
+    // POSITIVE control: the exact shape both REPRODUCED findings had. If this
+    // stops being flagged, the guard above has gone blind and every assertion
+    // in this block is decoration.
+    expect(
+      unconditionedRemedy(
+        "Rename or remove the conflicting row, then re-seed; the helper text will need a follow-up migration.",
+      ),
+    ).toBe(true);
+    // NEGATIVE control: legitimate conditioned prose must NOT trip it. Without
+    // this, a matcher broad enough to flag everything would pass the two
+    // assertions above by flagging nothing real — both sides hand-written by
+    // the same author is exactly how a guard certifies itself.
+    expect(
+      unconditionedRemedy(
+        "If `constraint` names the slug index, rename or remove the conflicting row; otherwise look up the column that constraint covers.",
+      ),
+    ).toBe(false);
+    // And a message with no remedy at all is not the guard's business.
+    expect(unconditionedRemedy("present=1, config_schema helper text rewritten=1.")).toBe(false);
   });
 });
 

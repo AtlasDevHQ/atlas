@@ -953,6 +953,17 @@ export interface BuiltinKnowledgeCatalogSeedResult {
 const PG_UNIQUE_VIOLATION = "23505";
 
 /**
+ * The ONE unique constraint this seeder's recovery models
+ * (`0014_plugin_marketplace.sql`; mirrored in `db/schema.ts`).
+ *
+ * `plugin_catalog` has exactly two unique constraints — PK `id`, consumed by
+ * the conflict target, and this one — so today every 23505 reaching the catch
+ * is a slug collision. Naming it turns that from an inference the message
+ * hedges into a condition the code checks.
+ */
+const PG_SLUG_CONSTRAINT = "plugin_catalog_slug_key";
+
+/**
  * The diagnostic fields of a `23505`, or `undefined` for any other rejection.
  *
  * `pg` rejects with a `DatabaseError` carrying untyped `code`/`constraint`/
@@ -1024,9 +1035,32 @@ export async function seedBuiltinKnowledgeCatalog(
       returned = rows;
     } catch (err) {
       const collision = asUniqueViolation(err);
-      // Anything that is not a unique violation is a real failure: rethrow it
-      // and let the pass abort, exactly as before #5239.
-      if (!collision) throw err;
+      // ⚠️ RETHROW COVERS TWO CASES, and the second one is the hedge made
+      // structural. Anything that is not a unique violation is a real failure
+      // (as before #5239) — and a 23505 that NAMES a constraint other than the
+      // slug index is not the squatter this recovery models either. Recording
+      // that as a blocked SLUG would file a future `UNIQUE (name)` violation
+      // under "go rename the row holding this slug", which is a hedged message
+      // next to unhedged data; the data loses. An unnamed 23505 still lands in
+      // the recovery below, where the message's hedge covers it.
+      const modelled =
+        collision !== undefined &&
+        (collision.constraint === undefined || collision.constraint === PG_SLUG_CONSTRAINT);
+      if (!modelled) {
+        // ⚠️ `blockedSlugs` DOES NOT SURVIVE THIS THROW. The boot wrapper turns
+        // it into `{ kind: "error" }` and the Layer reports `blockedSlugs: []`,
+        // so a pass that blocked row 6 and then hit a dead pool on row 9 would
+        // otherwise report nothing blocked at all — the same "not inserted"
+        // overloading #5239 exists to remove, one arm over. Emit the partial
+        // list here or it is lost.
+        if (blockedSlugs.length > 0) {
+          log.warn(
+            { blockedSlugs, insertedSlugs, abortingAt: row.id },
+            "Built-in Knowledge Base catalog seed ABORTING with rows already blocked — this list is PARTIAL (the pass stopped early) and is NOT carried on the boot result, which will report an error with no blocked slugs",
+          );
+        }
+        throw err;
+      }
       blockedSlugs.push(row.slug);
       log.warn(
         {
@@ -1042,12 +1076,17 @@ export async function seedBuiltinKnowledgeCatalog(
           // catalog id, neither of which is a secret.
           err: err instanceof Error ? err.message : String(err),
         },
-        // Deliberately hedged. `plugin_catalog` has exactly two unique
+        // ⚠️ HEDGED IN THE DIAGNOSIS *AND* IN THE REMEDY, because an earlier
+        // draft hedged only the first. `plugin_catalog` has exactly two unique
         // constraints today — PK `id` (consumed by the conflict target) and
-        // UNIQUE `slug` — so a 23505 arriving here IS a slug collision. That is
-        // an inference from the current schema, not something this catch
-        // verified, and a unique index added later would silently widen it.
-        "Built-in Knowledge Base catalog row NOT seeded — another catalog row already holds one of its unique values (the slug, unless a new unique index says otherwise — see `constraint`) under a different id, so this row does not exist under its canonical id. /admin/knowledge will not list it and every migration keyed on that id will correctly find nothing. Find the conflicting row with `SELECT id, name FROM plugin_catalog WHERE slug = '<slug>'`, then rename or remove it.",
+        // UNIQUE `slug` — so a 23505 arriving here is almost certainly a slug
+        // collision. That is an inference from the current schema, not
+        // something this catch verified. Admitting it and then telling the
+        // operator to go look the row up BY SLUG re-asserts the same inference
+        // as an instruction: on the branch the hedge exists for, that query
+        // returns nothing and the warning reads as wrong. So the lookup is
+        // conditioned on what `constraint` actually says.
+        "Built-in Knowledge Base catalog row NOT seeded — a unique violation means another catalog row already holds one of this row's unique values under a different id, so the row does not exist under its canonical id: /admin/knowledge will not list it, and every migration keyed on that id will correctly find nothing. WHICH value collided is in `constraint`/`detail`, or in `err` when the driver omits them. If `constraint` is `plugin_catalog_slug_key` (the only non-primary-key unique index on this table today), find the holder with `SELECT id, name FROM plugin_catalog WHERE slug = '<slug>'`; if it names anything else, look up the column that constraint covers instead. Then rename or remove that row.",
       );
       continue;
     }

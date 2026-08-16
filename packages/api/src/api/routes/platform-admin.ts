@@ -901,10 +901,27 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
     // platform-admin.mdx is the procedure that actually works.
     const reasons: string[] = [];
     if (skippedTables.length > 0) {
-      reasons.push(
-        `${skippedTables.length} operation(s) did not run because a relation was absent from ` +
-          `this region's schema, so that data was NOT deleted (${skippedTables.join(", ")})`,
-      );
+      // ⚠️ "so that data was NOT deleted" is wrong for one of the names this
+      // list can contain, and on a DPA erasure receipt that inversion matters.
+      // `stripe_purged_subscriptions` is skipped as a WRITE, not a delete: it is
+      // the #3468 tombstone, and its absence means post-commit
+      // `customer.subscription.deleted` webhooks can REGROW the ledger rows the
+      // purge just cleared. Naming the consequence rather than mislabelling the
+      // operation, since the operator's next action differs for the two.
+      const TOMBSTONE = "stripe_purged_subscriptions";
+      const notDeleted = skippedTables.filter((t) => t !== TOMBSTONE);
+      if (notDeleted.length > 0) {
+        reasons.push(
+          `${notDeleted.length} delete(s) did not run because a relation was absent from ` +
+            `this region's schema, so that data was NOT deleted (${notDeleted.join(", ")})`,
+        );
+      }
+      if (skippedTables.includes(TOMBSTONE)) {
+        reasons.push(
+          `the ${TOMBSTONE} tombstone was NOT written, so late Stripe cancellation webhooks ` +
+            `may regrow stripe_webhook_events rows for this workspace (#3468)`,
+        );
+      }
     }
     if (billing.warnings.length > 0) {
       reasons.push(`Stripe teardown did not fully settle (see \`warnings\`)`);

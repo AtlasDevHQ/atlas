@@ -3906,12 +3906,15 @@ type CountFieldFor<T extends string> = T extends keyof CountFieldAliases
  * them, and `purge-scope.test.ts` covers them instead — it asserts each has a
  * real DELETE, which is the claim that matters for a user-keyed erasure.
  */
-type NonRegistryCountField =
-  | "adminActionLogAnonymized"
-  | "members"
-  | "betterAuthInvitations"
-  | "orphanedUsers"
-  | "organization";
+export const NON_REGISTRY_COUNT_FIELDS = [
+  "adminActionLogAnonymized",
+  "members",
+  "betterAuthInvitations",
+  "orphanedUsers",
+  "organization",
+] as const;
+
+type NonRegistryCountField = (typeof NON_REGISTRY_COUNT_FIELDS)[number];
 
 type HardDeleteCountField = CountFieldFor<PurgedTableName> | NonRegistryCountField;
 
@@ -3943,7 +3946,15 @@ type HardDeleteCountField = CountFieldFor<PurgedTableName> | NonRegistryCountFie
  * `purge-scope.test.ts`. Nor does it catch two purged tables whose names map to
  * the SAME count field — a union dedupes rather than conflicts, so the second
  * table would satisfy the guarantee using the first's count. That one is
- * checked by `purge-scope.test.ts`'s field-name cardinality assertion.
+ * checked by `purge-scope.test.ts`'s field-name cardinality assertion — which
+ * seeds itself from `NON_REGISTRY_COUNT_FIELDS` too, because the union dedupes
+ * ACROSS its two arms and not just within the registry one. Measured: aliasing
+ * `chat_cache` to `"members"` and dropping `slackInstallations` from the return
+ * literal compiled clean AND passed every test, silently reporting a purged
+ * table's deletions under a Better-Auth count. Worse for
+ * `adminActionLogAnonymized`, which `SURVIVOR_COUNT_FIELDS` excludes from the
+ * destruction total — a collision there would SUBTRACT real deletions from the
+ * number an operator puts on a DPA erasure record.
  */
 export type HardDeleteCounts = {
   readonly [K in HardDeleteCountField]: number;
@@ -3955,6 +3966,16 @@ export type HardDeleteCounts = {
  * an index signature and accept ANY return literal — the type would look like a
  * guard and be decoration. That is the #5068 failure mode at the type level, and
  * it is silent, so it gets an assertion rather than a comment.
+ *
+ * Measured: degenerating `Camel<S>` to `string` produces exactly one diagnostic
+ * in the whole package — `TS2322: Type 'true' is not assignable to type 'never'`
+ * — on the line below. It covers the WIDENING half only; the opposite
+ * degeneration (`PurgedTableName` collapsing to `never`) is caught instead by
+ * excess-property checking on the purge's return literal, which still applies
+ * despite the implicit index signature.
+ *
+ * `void` is belt-and-braces: `noUnusedLocals` is off and oxlint's
+ * `no-unused-vars` ignores `^_`, so nothing requires it today.
  */
 type _CountFieldsAreLiteral = string extends HardDeleteCountField ? never : true;
 const _countFieldsAreLiteral: _CountFieldsAreLiteral = true;
@@ -3967,7 +3988,7 @@ void _countFieldsAreLiteral;
  * `satisfies` ties each entry to a real field, so renaming the field is a compile
  * error here rather than a silently-stale exclusion.
  */
-const SURVIVOR_COUNT_FIELDS: ReadonlySet<string> = new Set(
+export const SURVIVOR_COUNT_FIELDS: ReadonlySet<string> = new Set(
   ["adminActionLogAnonymized"] satisfies readonly (keyof HardDeleteCounts)[],
 );
 
@@ -4075,7 +4096,7 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
      * below can never be undefined.
      */
     const delViaParent = async (table: ViaParentTableName) =>
-      delRaw(viaParentDeleteSql(table, PURGE_TABLE_DECISIONS[table].viaParent));
+      delRaw(viaParentDeleteSql(table));
 
     // Tables this purge could NOT reach because the relation is absent from this
     // region's schema. Reported on HardDeleteResult and surfaced by the route as
@@ -4452,7 +4473,7 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
       // or a webhook arriving for an unrecorded id regrows the row it names.
       await client.query(
         `INSERT INTO stripe_purged_subscriptions (stripe_subscription_id)
-         ${parentKeySubquery(PURGE_TABLE_DECISIONS.stripe_webhook_events.viaParent)}
+         ${parentKeySubquery("stripe_webhook_events")}
          ON CONFLICT (stripe_subscription_id) DO NOTHING`,
         [orgId],
       );

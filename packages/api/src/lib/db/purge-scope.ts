@@ -360,32 +360,19 @@ export type ViaParentTableName = {
  * records the same subscription ids before they are removed. Building both from
  * the one declaration is the point — a fourth hand-written copy of the relation
  * is exactly what #5176 removed.
+ *
+ * Takes a registry KEY, not a link. Both builders interpolate identifiers into
+ * SQL, and taking the key means the only values they can ever interpolate are
+ * `as const` literals from this file — the injection state is unrepresentable
+ * rather than rejected. An earlier version took the link and validated it with a
+ * runtime regex; that guard was measured to be unreachable from anywhere in the
+ * tree (neutering it left every suite green), which makes it exactly the
+ * "deletable with zero test failures" shape #5176 is about.
  */
-export function parentKeySubquery(link: PurgeParentLink): string {
-  assertPlainIdentifiers(link.parentKey, link.parent, link.parentScope);
+export function parentKeySubquery(table: ViaParentTableName): string {
+  const link: PurgeParentLink = PURGE_TABLE_DECISIONS[table].viaParent;
   const notNull = link.parentKeyNullable ? ` AND "${link.parentKey}" IS NOT NULL` : "";
   return `SELECT "${link.parentKey}" FROM "${link.parent}" WHERE "${link.parentScope}" = $1${notNull}`;
-}
-
-/**
- * Refuse to quote anything that is not a bare SQL identifier.
- *
- * Every value these builders interpolate is an `as const` literal in this file,
- * so there is no live injection today — but they are EXPORTED, they build
- * statements on an erasure path, and `"` quoting alone is not an escape. An
- * additive refusal costs nothing and cannot make a currently-accepted link
- * behave differently: the ten declarations all match, verified by the suite.
- */
-function assertPlainIdentifiers(...identifiers: readonly string[]): void {
-  for (const id of identifiers) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(id)) {
-      throw new Error(
-        `purge SQL builder: refusing to quote "${id}" — not a bare SQL identifier. ` +
-          `The purge registry's table and column names are literals; a value reaching ` +
-          `here that is not one means the registry has been fed data from elsewhere.`,
-      );
-    }
-  }
 }
 
 /**
@@ -394,15 +381,17 @@ function assertPlainIdentifiers(...identifiers: readonly string[]): void {
  *
  * Identifiers are quoted unconditionally. For the snake_case names that is a
  * no-op; for `subscription`'s camelCase Better-Auth columns it is required, and
- * one uniform rule beats a per-name judgement in a string builder.
+ * one uniform rule beats a per-name judgement in a string builder. Quoting is
+ * not escaping — see `parentKeySubquery` for why taking the key rather than a
+ * link is what makes that safe.
  *
  * There is no room in this template for a status/kind/state predicate, which is
  * the narrowing `purge-scope.test.ts` forbids for every DELETE: a purge must
  * remove ALL of a workspace's rows in a table, not the ones in one state.
  */
-export function viaParentDeleteSql(table: string, link: PurgeParentLink): string {
-  assertPlainIdentifiers(table, link.column);
-  return `DELETE FROM "${table}" WHERE "${link.column}" IN (${parentKeySubquery(link)}) RETURNING 1`;
+export function viaParentDeleteSql(table: ViaParentTableName): string {
+  const link: PurgeParentLink = PURGE_TABLE_DECISIONS[table].viaParent;
+  return `DELETE FROM "${table}" WHERE "${link.column}" IN (${parentKeySubquery(table)}) RETURNING 1`;
 }
 
 /** Tables the purge deletes with an explicit statement. */

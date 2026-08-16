@@ -41,8 +41,9 @@ import {
   viaParentDeleteSql,
   type PurgeParentLink,
   type PurgeTableScope,
+  type ViaParentTableName,
 } from "../purge-scope";
-import { COUNT_FIELD_ALIASES } from "../internal";
+import { COUNT_FIELD_ALIASES, NON_REGISTRY_COUNT_FIELDS } from "../internal";
 
 // String-indexed view: the registry's literal key type (from `as const`; the
 // `satisfies` clause type-checks the values without widening) rejects
@@ -153,7 +154,8 @@ const deleteIndexOf = (table: string): number => {
   // Anchored on a word boundary, not a prefix: a bare
   // `indexOf("DELETE FROM " + table)` makes `dashboards` match a future
   // `dashboards_v2` and silently compare the wrong statement's position.
-  return purgeFnBody.search(new RegExp(`DELETE FROM "?${table}"?\\b`));
+  const escaped = table.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return purgeFnBody.search(new RegExp(`DELETE FROM "?${escaped}"?\\b`));
 };
 
 const updateTargets = new Set(
@@ -256,7 +258,7 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
     // link (a `where?:` field, say), it would appear here.
     for (const [table, entry] of Object.entries(decisionFor)) {
       if (!entry?.viaParent) continue;
-      const m = viaParentDeleteSql(table, entry.viaParent).match(NARROWING);
+      const m = viaParentDeleteSql(table as ViaParentTableName).match(NARROWING);
       if (m) offenders.push(`${table} (viaParent SQL narrowed on \`${m[0]}…\`)`);
     }
     expect(
@@ -706,7 +708,7 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
     // green across all three suites (22/22 + 98/98 + 17/17) while the emitted
     // statement matched ZERO rows — on a table holding `cached_rows`,
     // materialized customer query results.
-    const NO_SINGLE_COLUMN_FK: Readonly<Record<string, PurgeParentLink>> = {
+    const NO_SINGLE_COLUMN_FK = {
       // No FK in the schema at all — the registry entry says so ("no FK to
       // cascade from"). The mapping exists only in the purge's own subquery.
       slack_threads: {
@@ -728,7 +730,14 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
       dashboard_draft_card_cache: {
         column: "dashboard_id", parent: "dashboards", parentKey: "id", parentScope: "org_id",
       },
-    };
+      // `satisfies` constrains the KEYS to tables that actually declare a link —
+      // the same move COUNT_FIELD_ALIASES got, for the same reason. Measured
+      // before it: junk entries (`messages: {...WRONG}`, `nonexistent_table`)
+      // sat here inert at 24/24 green. A dead pin is not harmless — if
+      // `messages` ever lost its FK, that wrong pin would silently become the
+      // authority for it.
+    } satisfies Partial<Record<ViaParentTableName, PurgeParentLink>>;
+    const pinsConsulted = new Set<string>();
 
     const fksOf = (table: string) =>
       schemaTables
@@ -762,7 +771,9 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
 
       const fk = fksOf(child).find((f) => f.columns.length === 1 && f.columns[0] === link.column);
       if (!fk) {
-        const pinned = NO_SINGLE_COLUMN_FK[child];
+        const pinned: PurgeParentLink | undefined =
+          NO_SINGLE_COLUMN_FK[child as keyof typeof NO_SINGLE_COLUMN_FK];
+        if (pinned) pinsConsulted.add(child);
         if (!pinned) {
           wrong.push(
             `${child}.${link.column} has no single-column FK and is not pinned — add it to ` +
@@ -792,18 +803,44 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
             );
           }
         }
-        // Where a COMPOSITE FK covers the column, that is a real independent
-        // source even though the single-column lookup missed it — use it, so
-        // `dashboard_draft_card_cache.column` is derived rather than only pinned.
+        // Where a COMPOSITE FK covers the column, follow it — TWO HOPS, by
+        // POSITION, to the declared parent.
+        //
+        // ⚠️ A membership test (`composite.columns.includes(link.column)`) is
+        // NOT derivation and the first version of this was exactly that. The
+        // composite is `(user_id, dashboard_id) -> dashboard_user_drafts(...)`,
+        // so membership admits `user_id` — one of two candidates, and the one a
+        // careless edit produces. It would emit
+        // `WHERE "user_id" IN (SELECT "id" FROM "dashboards" ...)`, matching user
+        // ids against dashboard ids. In `-pg` that survives as a `text = uuid`
+        // type accident rather than an assertion, which is not a guard.
+        //
+        // Position-matching picks the child column's own counterpart on the
+        // intermediate table, then requires THAT column to carry a single-column
+        // FK reaching the declared parent/key. `user_id`'s counterpart reaches
+        // `user`, not `dashboards`, so it is rejected.
         const composite = fksOf(child).find((f) => f.columns.length > 1);
         if (composite) {
           checkedAgainstComposite++;
-          if (!composite.columns.includes(link.column)) {
+          const at = composite.columns.indexOf(link.column);
+          if (at === -1) {
             wrong.push(
               `${child}.${link.column} is not part of its composite FK ` +
                 `(${composite.columns.join(", ")}) — the purge would join on a column that ` +
                 `does not hold the parent's key`,
             );
+          } else {
+            const midColumn = composite.foreignColumns[at];
+            const hop = fksOf(composite.foreignTable).find(
+              (f) => f.columns.length === 1 && f.columns[0] === midColumn,
+            );
+            if (!hop || hop.foreignTable !== link.parent || hop.foreignColumns[0] !== link.parentKey) {
+              wrong.push(
+                `${child}.${link.column} reaches ${composite.foreignTable}.${midColumn}, which ` +
+                  `does not lead to ${link.parent}(${link.parentKey}) — the declared grandparent ` +
+                  `route does not exist in the schema`,
+              );
+            }
           }
         }
         continue;
@@ -826,6 +863,13 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
     // is additionally covered by a composite.
     expect(checkedAgainstFk, "declarations checked against a single-column FK").toBe(7);
     expect(checkedAgainstComposite, "pinned declarations also covered by a composite FK").toBe(1);
+    // Every pin must have been REACHED. `satisfies` stops a bogus key; this
+    // stops a key that is real but never consulted, which is what a pin for a
+    // table that (still) has an FK would be.
+    expect(
+      [...pinsConsulted].toSorted(),
+      "pin(s) declared but never consulted — the table has an FK, so the pin is dead",
+    ).toEqual(Object.keys(NO_SINGLE_COLUMN_FK).toSorted());
   });
 
   it("declares parentKeyNullable iff the schema says the parent key is nullable", () => {
@@ -902,10 +946,33 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
     const camel = (s: string) => s.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
     const aliases: Readonly<Record<string, string | undefined>> = COUNT_FIELD_ALIASES;
     const byField = new Map<string, string[]>();
+    // Seed the union's OTHER arm first. `HardDeleteCountField` is
+    // `CountFieldFor<PurgedTableName> | NonRegistryCountField`, and a union
+    // dedupes ACROSS its arms, not just within one — so a purged table whose
+    // camel name lands on `members` or `organization` would report under a
+    // Better-Auth count with nothing failing. Measured: aliasing `chat_cache` to
+    // `"members"` and dropping `slackInstallations` from the return literal
+    // compiled clean AND passed every test. Worst case is
+    // `adminActionLogAnonymized`, which SURVIVOR_COUNT_FIELDS excludes from the
+    // total — a collision there SUBTRACTS real deletions from the number an
+    // operator puts on a DPA erasure record.
+    for (const field of NON_REGISTRY_COUNT_FIELDS) {
+      byField.set(field, [`<non-registry: ${field}>`]);
+    }
     for (const table of PURGED_TABLES) {
       const field = aliases[table] ?? camel(table);
       byField.set(field, [...(byField.get(field) ?? []), table]);
     }
+    // Vacuity pin, matching the four siblings added alongside it: an empty
+    // PURGED_TABLES would yield an empty map and a green pass.
+    expect(byField.size, "distinct count fields (registry + non-registry)").toBe(
+      PURGED_TABLES.size + NON_REGISTRY_COUNT_FIELDS.length,
+    );
+    // LOW: alias VALUES are unconstrained by `satisfies` (it constrains keys),
+    // so a non-identifier value would become a required field on
+    // HardDeleteCounts that the return statement dutifully supplies.
+    const badAlias = Object.values(COUNT_FIELD_ALIASES).filter((v) => !/^[a-z][A-Za-z0-9]*$/.test(v));
+    expect(badAlias, `alias value(s) that are not camelCase identifiers: ${badAlias.join(", ")}`).toEqual([]);
     const collisions = [...byField.entries()]
       .filter(([, tables]) => tables.length > 1)
       .map(([field, tables]) => `${field} <- ${tables.join(" + ")}`);

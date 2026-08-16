@@ -30,7 +30,12 @@ import { PERMISSIONS as REAL_PERMISSIONS, isValidPermission as realIsValidPermis
 // (#5160). The purge route maps it with `domainError`, which matches by
 // `instanceof` — a hand-rolled stand-in here would never match, and the route's
 // 409s would silently degrade to generic 500s in every route test.
-import { PurgeAbortedError as RealPurgeAbortedError } from "@atlas/api/lib/db/internal";
+import {
+  PurgeAbortedError as RealPurgeAbortedError,
+  SURVIVOR_COUNT_FIELDS as REAL_SURVIVOR_COUNT_FIELDS,
+  COUNT_FIELD_ALIASES as REAL_COUNT_FIELD_ALIASES,
+  NON_REGISTRY_COUNT_FIELDS as REAL_NON_REGISTRY_COUNT_FIELDS,
+} from "@atlas/api/lib/db/internal";
 import {
   createConnectionMock,
   type ConnectionMockOverrides,
@@ -315,15 +320,17 @@ export function buildInternalDbMockDefaults(deps: {
     // `purge-scope.test.ts` pins the `anonymized` category to exactly one table,
     // so a second survivor field cannot appear without that guard failing first.
     totalRowsDeleted: (result: { counts?: Record<string, unknown> }) => {
-      // Reads `result.counts` (#5176): the counts live in their own uniformly
-      // numeric container, with `skippedTables` outside it. The `typeof` guard
-      // below is kept HERE and only here — a mock is handed whatever a suite's
-      // fake returns, which the real type does not police.
+      // Reads `result.counts` (#5176) — the counts live in their own uniformly
+      // numeric container, with `skippedTables` outside it.
       //
-      // A `?? {}` here would answer 0 for a fake still returning the pre-#5176
-      // FLAT shape — a silent fallback on exactly the number an operator reads
-      // as "rows destroyed". #5176 reshaped every hard-delete fake in the tree,
-      // so that is the drift most likely to exist.
+      // Both throws below are BACKSTOPS, and an earlier version of this comment
+      // claimed one of them was the primary detector. It is not: the purge route
+      // destructures `counts` one line BEFORE calling this, so a fake still
+      // returning the pre-#5176 flat shape dies there first. Measured — five
+      // opaque 500s, and this function never runs. What these catch is a future
+      // consumer that totals before destructuring, plus any suite calling the
+      // helper directly. Kept because they cost nothing and name the cause,
+      // which those 500s do not.
       if (!result.counts) {
         throw new Error(
           "totalRowsDeleted mock: the suite's hardDeleteWorkspace fake returned no `counts`. " +
@@ -332,12 +339,31 @@ export function buildInternalDbMockDefaults(deps: {
       }
       let total = 0;
       for (const [field, value] of Object.entries(result.counts)) {
-        if (typeof value !== "number") continue;
-        if (field === "adminActionLogAnonymized") continue;
+        // Loud, not skipped. A `continue` here silently dropped a string count
+        // and answered a plausible smaller total, while the real helper does
+        // `total += value` and would produce "03" on the wire — a mock that
+        // disagrees with production about arithmetic makes a wrong route look
+        // right.
+        if (typeof value !== "number") {
+          throw new Error(
+            `totalRowsDeleted mock: counts.${field} is ${typeof value}, not a number — ` +
+              "HardDeleteCounts is uniformly numeric since #5176.",
+          );
+        }
+        // The REAL exclusion set, imported rather than re-spelled. Hard-coding
+        // "adminActionLogAnonymized" meant renaming that field would break
+        // internal.ts's compile while this mock silently began counting
+        // SURVIVING rows as destroyed — #5160's overstatement, in tests.
+        if (REAL_SURVIVOR_COUNT_FIELDS.has(field)) continue;
         total += value;
       }
       return total;
     },
+    // Present so a transitive named import never SyntaxErrors under bun's
+    // partial-mock rules — #5176 added all three to internal.ts's surface.
+    SURVIVOR_COUNT_FIELDS: REAL_SURVIVOR_COUNT_FIELDS,
+    COUNT_FIELD_ALIASES: REAL_COUNT_FIELD_ALIASES,
+    NON_REGISTRY_COUNT_FIELDS: REAL_NON_REGISTRY_COUNT_FIELDS,
   
     // Remaining named exports with no behavior worth faking — present so
     // a transitive `import { x }` never SyntaxErrors at load time.

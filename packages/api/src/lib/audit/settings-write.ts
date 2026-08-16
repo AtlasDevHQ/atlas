@@ -6,8 +6,8 @@
  * none of them routes through here.** `platform-demo.ts` files its own
  * `settings.update` with the fire-and-forget `logAdminAction` (it does pass
  * `scope: "platform"`, so only defect 3 below applies to it);
- * `onboarding.ts` writes `ATLAS_DEMO_INDUSTRY`; `admin-sandbox.ts` clears
- * `ATLAS_SANDBOX_BACKEND` with no audit row at all. They are outside
+ * `onboarding.ts` writes `ATLAS_DEMO_INDUSTRY` and `admin-sandbox.ts` clears
+ * `ATLAS_SANDBOX_BACKEND`; neither files an audit row. They are outside
  * this PR, and naming them here is the point — the next reader must not take
  * "the seam" to mean coverage nobody built.
  *
@@ -60,23 +60,28 @@
  *    (`db/internal.ts:874-879`) increments `_droppedCount` and returns with
  *    NO log line at any level — the only trace is an anonymous count on a
  *    later recovery line, naming no key, actor or value. Before the breaker
- *    opens, the drop logs at `error` (`:889-898`), which `ATLAS_LOG_LEVEL`
- *    does not silence, and which names no key either. Either way the settings
- *    change is unrecorded and unattributable, so `logAdminActionAwait` is the
+ *    opens, the drop logs at `error` (`:889-898`), which names no key — and
+ *    which only `fatal` silences, a level that is itself in
+ *    `ATLAS_LOG_LEVEL`'s own option list, so even that trace is
+ *    operator-revocable — so #5262's instinct was not baseless; it named the
+ *    wrong line and the wrong branch. Either way the settings change is
+ *    unrecorded and unattributable, so
+ *    `logAdminActionAwait` is the
  *    right instrument — for the reason its own docstring gives about the
  *    audit-retention surface, not for the reason #5262 gave.
  *
  * ⚠️ **WHY THE WHOLE ENTRY IS BUILT HERE rather than at the route.** The
  * redaction is not something a call site can be trusted to remember: #5180
- * measured that re-inlining `log.warn({ ...line, value })` passed all 154
- * tests, because redacted equals raw on every currently-reachable input. The
+ * measured that re-inlining `log.warn({ ...line, value })` passed the whole
+ * suite, because redacted equals raw on every currently-reachable input. The
  * brand is the guard — and a brand only bites where something is EXPECTED to
  * carry it. `AdminActionEntry`'s `metadata` is `Record<string, unknown>`, so a
  * route that builds its own object gets no help at all. Hence: the route hands
  * over the definition and the raw value, and never touches `metadata`.
  *
  * ⚠️ **WHAT THIS DOES NOT CLOSE**, stated because the fence invites the wrong
- * confidence, and every item below was MEASURED rather than reasoned about:
+ * confidence. The spread case below was measured by compiling both spellings;
+ * the other two are stated from the type system's rules:
  *
  * - **A caller that goes back to `logAdminAction` with a hand-built metadata
  *   object** bypasses everything here, and no type can see it.
@@ -94,6 +99,7 @@
 
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminActionAwait } from "@atlas/api/lib/audit/admin";
+import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { ADMIN_ACTIONS } from "@atlas/api/lib/audit/actions";
 import {
   redactAuditValue,
@@ -144,9 +150,11 @@ interface SettingsAuditCommon {
   readonly definition: SettingDefinition | undefined;
   /**
    * True when the write targeted the GLOBAL row rather than a workspace's.
-   * The route computes this as `effectiveOrgId === undefined`, which is the
-   * same condition it already annotates as `tier` in the metadata — one fact,
-   * now driving both the metadata field and the row's `scope` column.
+   * The route computes this as `!effectiveOrgId` — the truthiness spelling,
+   * not `=== undefined`; see the ⚠️ table at the PUT call site in `admin.ts`
+   * for the input class where the two disagree. It is the same condition the
+   * route already annotates as `tier` in the metadata, so one fact now drives
+   * both the metadata field and the row's `scope` column.
    */
   readonly platformTier: boolean;
   readonly ipAddress: string | null;
@@ -191,8 +199,8 @@ export type SettingsAuditWrite = SettingsAuditCommon &
  */
 export async function auditSettingsWrite(entry: SettingsAuditWrite): Promise<void> {
   // ⚠️ A DEFINITION BELONGING TO A DIFFERENT KEY IS NOT EVIDENCE ABOUT THIS
-  // ONE. `securitySensitiveAuditLine` (settings.ts) has carried this check
-  // since #5180 and this module shipped without it — the brand fences the
+  // ONE. `securitySensitiveAuditLine` (settings.ts) carries this check and
+  // this module shipped without it — the brand fences the
   // OUTPUT of the redaction decision, so corrupting its INPUT costs no cast
   // and trips nothing. `auditSettingsWrite({ key: "RESEND_API_KEY",
   // definition: <ATLAS_MODEL's entry>, value: rawKey })` would otherwise
@@ -208,6 +216,31 @@ export async function auditSettingsWrite(entry: SettingsAuditWrite): Promise<voi
   const redacted = redactAuditValue(mismatched ? undefined : entry.definition, entry.value);
   const tier = entry.platformTier ? "platform" : "workspace";
 
+  // ⚠️ EMITTED UNCONDITIONALLY, AND NOT VIA `maskReason`. The first draft of
+  // this guard recorded the mismatch ONLY in `metadata.maskReason` — one
+  // JSONB field of one audit row, which nobody greps and nothing alerts on.
+  // Worse, on the `reset_to_default` path there is no value, so the whole
+  // metadata block below is skipped and `mismatched` was computed, found
+  // true, and then DISCARDED: a clear against the wrong registry entry was
+  // indistinguishable from a correct one.
+  //
+  // A definition that does not belong to its key is a programmer bug —
+  // registry drift after a rename, an alias resolver handing back the old
+  // entry, a call site reusing one `def` across keys in a loop. Detecting it
+  // and saying nothing is the swallow this module's own header is about. The
+  // #5180 sibling emits its whole line at `warn` for the same reason.
+  if (mismatched) {
+    log.warn(
+      {
+        key: entry.key,
+        definitionKey: entry.definition?.key,
+        action: entry.action,
+        maskReason: "definition_mismatch",
+      },
+      "Settings audit: the definition passed does not belong to this key — value withheld and the audit row records maskReason=definition_mismatch. This is a caller bug: check for registry drift after a rename, or a call site resolving the definition for a different key.",
+    );
+  }
+
   const metadata: SettingsAuditMetadata = {
     key: entry.key,
     tier,
@@ -216,12 +249,32 @@ export async function auditSettingsWrite(entry: SettingsAuditWrite): Promise<voi
       ? {
           value: redacted.value,
           valueMasked: redacted.masked,
-          ...(redacted.maskReason !== undefined || mismatched
+          // `mismatched` needs no disjunct here: it forces the
+          // `undefined`-definition arm, which always sets a `maskReason` when
+          // a value exists — so `redacted.maskReason !== undefined` is
+          // already true whenever this spread is reached.
+          ...(redacted.maskReason !== undefined
             ? { maskReason: mismatched ? ("definition_mismatch" as const) : redacted.maskReason }
             : {}),
         }
       : {}),
   };
+
+  // ⚠️ `logAdminActionAwait` RESOLVES WITHOUT INSERTING when there is no
+  // internal DB (`audit/admin.ts`), so the COMMITTED line below would
+  // otherwise assert a row that was never written. Both current callers check
+  // `hasInternalDB()` and 404 first, making this unreachable today — but this
+  // module's header invites three other settings writers to adopt the seam,
+  // and "true by caller precondition" is not a property this function should
+  // rely on when the failure is a log line confidently naming a row that does
+  // not exist.
+  if (!hasInternalDB()) {
+    log.warn(
+      { key: entry.key, tier, action: entry.action },
+      "Settings write audit row NOT persisted — no internal database configured. The pino line is the only trail for this configuration change.",
+    );
+    return;
+  }
 
   await logAdminActionAwait({
     actionType: ADMIN_ACTIONS.settings.update,

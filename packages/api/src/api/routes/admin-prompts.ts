@@ -42,9 +42,9 @@ const log = createLogger("admin-prompts");
  * name 500s instead. The existing tests cannot see it: they set `err.code`
  * directly on a hand-built rejection, a fixture agreeing with the assumption.
  * Surfaced by the #5271 review panel and NOT fixed there — it is pre-existing,
- * needs a `-pg` harness to settle, and changing two routes' error
- * classification is machinery this PR has no round left to review. Tracked in
- * #5272.
+ * needs a `-pg` harness to settle, and changing four call sites' error
+ * classification (two routes, two stores) is machinery this PR has no round
+ * left to review. Tracked in #5272.
  */
 function isUniqueViolation(err: unknown): boolean {
   return asUniqueViolation(err) !== undefined;

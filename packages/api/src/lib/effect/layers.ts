@@ -867,7 +867,7 @@ export const CatalogSeedLive: Layer.Layer<
 /**
  * Discriminated outcome of the boot-time built-in Datasource catalog
  * seed. Distinct from {@link CatalogSeedOutcome} because the built-in
- * seed is code-driven (eight fixed rows) while the atlas.config.ts
+ * seed is code-driven (nine fixed rows) while the atlas.config.ts
  * seed is operator-driven. Per ADR-0007, the built-in seed runs in
  * addition to the atlas.config.ts seed, not instead of it.
  *
@@ -933,7 +933,7 @@ export class BuiltinDatasourceCatalogSeed extends Context.Tag(
  * the `connections` table; nothing consumes these rows yet. Slice 6
  * (#2744) pivots `ConnectionRegistry` to read from
  * `workspace_plugins WHERE pillar = 'datasource'`, at which point the
- * eight rows seeded here become live install targets.
+ * nine rows seeded here become live install targets.
  *
  * Non-fatal: the boot wrapper swallows errors and logs at error so a
  * failed seed leaves pre-existing rows authoritative.

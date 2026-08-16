@@ -8,7 +8,8 @@
  *  2. a platform-tier write is stamped `scope: "platform"`, so it stays off
  *     the org-scoped `/admin/admin-actions` read API
  *  3. the row is AWAITED — a rejection propagates to the caller instead of
- *     being dropped with a `log.warn` the operator may have silenced
+ *     being dropped silently (the mechanism is in `settings-write.ts`'s
+ *     header; #5262's stated one was measured false)
  *
  * ⚠️ CLAIM 1 NEEDS A REGISTRY KEY THAT IS ACTUALLY `secret: true`, and it
  * needs redacted and raw to DIFFER on it. This is the trap #5180 documented:
@@ -19,7 +20,7 @@
  * not the placeholder.
  */
 
-import { describe, expect, it, mock, beforeEach } from "bun:test";
+import { describe, expect, it, mock, beforeEach, afterEach } from "bun:test";
 
 interface AwaitedEntry {
   readonly actionType: string;
@@ -50,6 +51,46 @@ void mock.module("@atlas/api/lib/audit/admin", () => ({
   },
 }));
 
+/**
+ * ⚠️ ONE SINK CARRYING THE LEVEL, for the same reason the seeder collision
+ * suite has one: a per-level array cannot see a `log.warn` demoted to
+ * `log.info`, and the mismatch guard's ENTIRE operator-visible signal is its
+ * level. Mock-all-exports per the repo rule.
+ */
+interface LoggedCall {
+  readonly level: "info" | "warn" | "error" | "debug";
+  readonly payload: unknown;
+  readonly message: string;
+}
+const logged: LoggedCall[] = [];
+const record =
+  (level: LoggedCall["level"]) =>
+  (payload: unknown, message?: string): void => {
+    logged.push({
+      level,
+      payload,
+      message: typeof payload === "string" ? payload : (message ?? ""),
+    });
+  };
+const stubLogger = {
+  info: record("info"),
+  warn: record("warn"),
+  error: record("error"),
+  debug: record("debug"),
+};
+void mock.module("@atlas/api/lib/logger", () => ({
+  ACTOR_KINDS: ["human", "agent", "mcp", "scheduler", "api_key"] as const,
+  createLogger: () => stubLogger,
+  getLogger: () => stubLogger,
+  getRequestContext: () => undefined,
+  withRequestContext: <T,>(_ctx: unknown, fn: () => T): T => fn(),
+  redactPaths: [] as string[],
+  scrubErrSerializer: (value: unknown) => value,
+  scrubLogFormatter: (obj: unknown) => obj,
+  hashShareToken: () => "",
+  setLogLevel: () => false,
+}));
+
 const { auditSettingsWrite } = await import("@atlas/api/lib/audit/settings-write");
 const { getSettingDefinition } = await import("@atlas/api/lib/settings");
 
@@ -58,17 +99,37 @@ const SECRET_DEF = getSettingDefinition("RESEND_API_KEY");
 /** A real non-secret entry, so the verbatim arm is exercised against the registry too. */
 const PLAIN_DEF = getSettingDefinition("ATLAS_MODEL");
 
-const SECRET_VALUE = "re_live_51H8xQ2eZvKYlo2C_not_a_placeholder";
+// ⚠️ Deliberately NOT a real provider prefix. `re_live_…` is Resend's live-key
+// shape and GitHub push protection scans for it — a fabricated value that trips
+// a secret scanner costs a CI round for nothing.
+const SECRET_VALUE = "resend_fake_51H8xQ2eZvKYlo2C_not_a_placeholder";
 const WITHHELD = "[withheld:secret-setting]";
 
 const lastAwaited = (): AwaitedEntry => awaited[awaited.length - 1]!;
 const meta = (): Record<string, unknown> => lastAwaited().metadata ?? {};
 
+let savedDbUrl: string | undefined;
+
 describe("auditSettingsWrite", () => {
   beforeEach(() => {
     awaited.length = 0;
     fireAndForget.length = 0;
+    logged.length = 0;
     awaitRejectsWith = undefined;
+    // ⚠️ `auditSettingsWrite` returns EARLY without a row when
+    // `hasInternalDB()` is false, and that is a pure
+    // `!!process.env.DATABASE_URL` read. Unit runs have no DATABASE_URL, so
+    // without this every test in this file exercises the no-DB arm and
+    // asserts against an entry that was never recorded — which is exactly
+    // what happened when the guard was added. Set per-test and restored in
+    // `afterEach`, never at module scope (the repo's self-containment rule).
+    savedDbUrl = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = "postgresql://unit-test/not-connected";
+  });
+
+  afterEach(() => {
+    if (savedDbUrl === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = savedDbUrl;
   });
 
   it("the fixture is sound — the registry entries this file relies on are what it claims", () => {
@@ -163,6 +224,70 @@ describe("auditSettingsWrite", () => {
       // unable to produce it.
       expect(meta().maskReason).toBe("definition_mismatch");
       expect(JSON.stringify(lastAwaited())).not.toContain(SECRET_VALUE);
+    });
+
+    it("⭐ WARNS on a mismatch — the event is not left to one JSONB field", async () => {
+      // Round 1 recorded the mismatch only in `metadata.maskReason`: one field
+      // of one audit row, which nothing alerts on and nobody greps. A
+      // definition that does not belong to its key is a PROGRAMMER bug —
+      // registry drift, an alias resolver, a `def` reused across keys in a
+      // loop — and detecting it while saying nothing is the swallow this
+      // module's header is about.
+      await auditSettingsWrite({
+        key: "RESEND_API_KEY",
+        definition: PLAIN_DEF,
+        value: SECRET_VALUE,
+        action: "update",
+        platformTier: true,
+        ipAddress: null,
+      });
+      const warns = logged.filter((c) => c.level === "warn");
+      expect(warns).toHaveLength(1);
+      expect(warns[0]?.payload).toMatchObject({
+        key: "RESEND_API_KEY",
+        definitionKey: "ATLAS_MODEL",
+        maskReason: "definition_mismatch",
+      });
+      // The message must say it is a CALLER bug, not a data condition — the
+      // remedy is different and the operator reads the message.
+      expect(warns[0]?.message).toContain("caller bug");
+      // ⚠️ And the warn must not carry the value it just withheld.
+      expect(JSON.stringify(warns[0])).not.toContain(SECRET_VALUE);
+    });
+
+    it("⭐ WARNS on a mismatch even on reset_to_default, where there is no value to mark", async () => {
+      // The arm round 1's fix could not reach at all: with `value: undefined`
+      // the whole metadata block is skipped, so `mismatched` was computed,
+      // found true, and DISCARDED. A clear filed against the wrong registry
+      // entry was indistinguishable from a correct one.
+      await auditSettingsWrite({
+        key: "RESEND_API_KEY",
+        definition: PLAIN_DEF,
+        action: "reset_to_default",
+        platformTier: true,
+        ipAddress: null,
+      });
+      const warns = logged.filter((c) => c.level === "warn");
+      expect(warns).toHaveLength(1);
+      expect(warns[0]?.payload).toMatchObject({ action: "reset_to_default" });
+      // No value field exists to carry `maskReason`, which is precisely why
+      // the log line has to.
+      expect("value" in meta()).toBe(false);
+      expect("maskReason" in meta()).toBe(false);
+    });
+
+    it("does NOT warn when the definition matches — the discriminating half", async () => {
+      // A guard that warned unconditionally would pass both tests above and
+      // fill the stream with noise on every settings write.
+      await auditSettingsWrite({
+        key: "ATLAS_MODEL",
+        definition: PLAIN_DEF,
+        value: "claude-opus-5",
+        action: "update",
+        platformTier: true,
+        ipAddress: null,
+      });
+      expect(logged.filter((c) => c.level === "warn")).toHaveLength(0);
     });
 
     it("a definition whose key MATCHES is still used — the guard is not a blanket withhold", async () => {
@@ -274,10 +399,42 @@ describe("auditSettingsWrite", () => {
       expect(fireAndForget).toHaveLength(0);
     });
 
+    it("⭐ says NOT PERSISTED rather than COMMITTED when there is no internal DB", async () => {
+      // `logAdminActionAwait` resolves without inserting when the internal DB
+      // is absent, so the post-commit line would otherwise announce a row
+      // that was never written. Unreachable through today's two callers
+      // (both 404 first), but the header invites three more writers to adopt
+      // this seam, and a log line confidently naming a nonexistent row is
+      // worse than no line.
+      // ⚠️ `hasInternalDB()` is a pure `!!process.env.DATABASE_URL` read, so
+      // this needs no module mock — which matters, because a PARTIAL
+      // `mock.module("@atlas/api/lib/db/internal")` replaces every one of its
+      // exports and breaks `lib/settings.ts`'s `internalQuery` import several
+      // files away from the cause. Measured: that is exactly what happened on
+      // the first draft of this test.
+      delete process.env.DATABASE_URL;
+      await auditSettingsWrite({
+        key: "ATLAS_MODEL",
+        definition: PLAIN_DEF,
+        value: "claude-opus-5",
+        action: "update",
+        platformTier: true,
+        ipAddress: null,
+      });
+      expect(awaited).toHaveLength(0);
+      const warns = logged.filter((c) => c.level === "warn");
+      expect(warns).toHaveLength(1);
+      expect(warns[0]?.message).toContain("NOT persisted");
+      expect(logged.filter((c) => c.message.includes("COMMITTED"))).toHaveLength(0);
+    });
+
     it("⭐ propagates a rejection instead of swallowing it", async () => {
       // The whole point of the await: when the row cannot be committed the
-      // caller has to find out. `logAdminAction` would have dropped this with
-      // a `log.warn` — which a raised ATLAS_LOG_LEVEL then eats.
+      // caller has to find out. `logAdminAction` drops it instead — and past
+      // an open circuit breaker it does so with NO log line at any level
+      // (`db/internal.ts`), leaving only an anonymous counter. See the
+      // module header; do not restate the mechanism here, restatements are
+      // what went stale last round.
       awaitRejectsWith = new Error("circuit breaker open");
       await expect(
         auditSettingsWrite({

@@ -10,8 +10,8 @@
  *
  * Prose is not a checked condition. This file makes it one — in particular the
  * wrapped case, which is the arm the header uses to justify NOT unifying the
- * two classifiers, and which #5272 is open against for two routes that read
- * the flat shape on a wrapped path.
+ * two classifiers, and which #5272 is open against for the four call sites
+ * (two routes, two stores) that read the flat shape on a wrapped path.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -50,7 +50,7 @@ describe("asUniqueViolation", () => {
   });
 
   it("classifies a 23505 carrying no diagnostics — both fields undefined, not absent", () => {
-    // Both consumers read `.constraint` immediately after the guard; an
+    // Both seeders read `.constraint` immediately after the guard; an
     // unguarded read on a driver that omits them would throw INSIDE the catch,
     // turning a reported collision into an aborted pass.
     const got = asUniqueViolation(violation());

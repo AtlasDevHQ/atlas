@@ -16,8 +16,10 @@
  * two it missed are cited BY PATH inside `sub-processor-subscriptions.ts` as
  * its own precedent — i.e. they were reachable from a file the same commit was
  * editing. A census in a header is a claim like any other; this one is now
- * `grep -rn '= "23505"'` over `packages/api/src` and `ee/`, which returns this
- * line and nothing else.
+ * `grep -rn 'const .* = "23505"'` over `packages/api/src` and `ee/`, which
+ * returns two lines: the declaration below, and this line quoting the recipe.
+ * (Constrained to DECLARATIONS on purpose — the unconstrained pattern also
+ * matches seven test fixtures that build a rejection by hand.)
  *
  * ⚠️ **Only the CONSTANT is universal; the classification around it is not.**
  * `asUniqueViolation` below reads a FLAT `code`, which is right for the `pg`
@@ -28,6 +30,14 @@
  * a wrapped violation from an unrelated layer as a benign collision, and a
  * flat read applied to the Effect path would classify every real collision as
  * an unhandled throw.
+ *
+ * ⚠️ FOUR of the six consumers are on exactly that Effect path today:
+ * `admin-prompts.ts`, `sub-processor-subscriptions.ts`,
+ * `starter-prompts/favorite-store.ts` and `suggestions/approval-store.ts` all
+ * read this flat classification off an `internalQuery` result, where the shape
+ * may be wrapped. Tracked in #5272; each site carries the same note. Do not
+ * read "flat is right for the `pg` driver" as "flat is right at every call
+ * site" — only the two seeders pass a raw `Pool`.
  */
 
 /** Postgres SQLSTATE for `unique_violation`. */
@@ -61,7 +71,10 @@ export function asUniqueViolation(
 
 /**
  * The one NAMED unique constraint the two `plugin_catalog` seeders' recovery
- * models (`0014_plugin_marketplace.sql`; mirrored in `db/schema.ts`).
+ * models. Postgres DERIVES this name from `slug TEXT NOT NULL UNIQUE` in
+ * `0014_plugin_marketplace.sql` — the literal string appears in neither the
+ * migration nor `db/schema.ts`, so grepping for it finds only this module and
+ * its tests.
  *
  * `plugin_catalog` has two unique constraints today — PK `id`, consumed by the
  * conflict target, and this one — so a 23505 reaching either seeder's catch is

@@ -21,9 +21,11 @@
  *     existing rows; this seed deliberately leaves them alone — once
  *     a built-in row exists, an operator who edited its `name` or
  *     `description` via SQL keeps that edit.
- *   - Rows seed sequentially. A `23505` naming the slug index is recorded
- *     in `blockedSlugs` and the pass carries on; a `23505` naming any
- *     OTHER constraint, and every other error, propagates.
+ *   - Rows seed sequentially. A `23505` that names the slug index — OR
+ *     names no constraint at all, which is the hedge the recovery's own
+ *     warning carries — is recorded in `blockedSlugs` and the pass carries
+ *     on; a `23505` naming any OTHER constraint, and every other error,
+ *     propagates.
  *   - A seed-time failure logs at error and the API keeps booting —
  *     pre-existing rows answer admin-UI reads.
  *
@@ -488,7 +490,9 @@ export interface BuiltinDatasourceCatalogSeedResult {
  * Rows seed SEQUENTIALLY, one statement each, mirroring the knowledge seeder
  * (#5239/#5260). `RETURNING slug` reports whether each row was inserted vs
  * preserved; a slug held under a foreign id raises `23505`, is recorded in
- * `blockedSlugs` and does not stop the pass; any other failure propagates.
+ * `blockedSlugs` and does not stop the pass. A `23505` naming a DIFFERENT
+ * constraint, and every other failure, propagates — an UNNAMED one is
+ * accepted into the recovery, under the hedge the warning carries.
  *
  * ⚠️ **Per-row, not the bulk INSERT this used to issue — the shape IS the
  * fix.** A single statement cannot report per-row outcomes: one `23505`

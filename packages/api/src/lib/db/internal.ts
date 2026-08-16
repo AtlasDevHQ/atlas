@@ -945,8 +945,10 @@ export function _hasRecoveryFiber(): boolean {
  * breaker. Read this *before* enqueueing a security-control audit row
  * (e.g. a rate-limit denial) so the call site can light up a
  * differentiated metric + `log.error` on drop. The fire-and-forget
- * `internalExecute` only logs an aggregate "Internal DB circuit breaker
- * open" once on open and a per-write debug line; without an exposed
+ * `internalExecute` logs an aggregate "Internal DB circuit breaker open"
+ * once on open, plus a per-write `log.error` that is SUPPRESSED for as long
+ * as the circuit stays open — so past that point a dropped row leaves no
+ * per-row trace at any level, only `_droppedCount`. Without an exposed
  * predicate, security-control callers can't tell their row was dropped
  * (#2183 item 3).
  */

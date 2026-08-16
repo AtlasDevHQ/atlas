@@ -16,7 +16,7 @@
  *     test.ts` covers that the rejection happens at all.
  *
  *  2. `BUILTIN_DATASOURCE_CATALOG_ROWS` — the in-process source of truth.
- *     Asserts content-level invariants: all eight slugs, only
+ *     Asserts content-level invariants: all nine slugs, only
  *     `demo-postgres` is auto_install, every catalog slug is recognised
  *     by the resolver, every secret field is flagged.
  *
@@ -452,8 +452,12 @@ describe("runBuiltinDatasourceCatalogSeedBoot (discriminated outcomes)", () => {
     // with a comment saying the same thing; #5266 did not carry it over, and
     // the review panel found the gap.
     //
-    // One blocked, one preserved, seven inserted — three DIFFERENT sizes, so
-    // no two of the lists can be swapped without a count disagreeing.
+    // ⚠️ One blocked, one preserved, seven inserted — blocked and preserved
+    // are the SAME size, so a count-only assertion could not tell a
+    // blocked↔preserved swap apart. That is why the two assertions below are
+    // `toEqual` on CONTENTS, not lengths. (The sibling collision suite gets
+    // three genuinely different sizes and says so; round 1 copied that
+    // comment into the one case where its own counterexample applies.)
     hasInternalDBReturns = true;
     mockQuery.mockImplementation((_sql, params) => {
       const slug = String((params ?? [])[2]);

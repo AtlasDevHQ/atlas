@@ -1412,10 +1412,13 @@ describe("admin settings routes", () => {
     // seam-preserving edits the module docstring says the brand does not
     // close.
 
-    it("⭐ PUT passes the full entry — key, definition, value, action, tier", async () => {
+    it("⭐ PUT passes the full entry — key, definition, value, action, tier, ip", async () => {
+      // ⚠️ `x-forwarded-for` is SENT here. Round 1 asserted `ipAddress: null`,
+      // which is also what a route that stopped reading the headers produces
+      // — accidental equality, in the describe written to close exactly that.
       const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-forwarded-for": "203.0.113.7" },
         body: JSON.stringify({ value: "500" }),
       });
       expect(res.status).toBe(200);
@@ -1428,7 +1431,7 @@ describe("admin settings routes", () => {
         value: "500",
         action: "update",
         platformTier: expect.any(Boolean),
-        ipAddress: null,
+        ipAddress: "203.0.113.7",
       });
     });
 
@@ -1483,14 +1486,60 @@ describe("admin settings routes", () => {
       expect(mockAuditSettingsWrite).not.toHaveBeenCalled();
       expect(mockSetSetting).not.toHaveBeenCalled();
     });
+
+    it("DELETE's secret gate also stops short of the seam", async () => {
+      // The mirror half — the PUT twin above had this and DELETE did not.
+      const res = await request("/api/v1/admin/settings/ANTHROPIC_API_KEY", {
+        method: "DELETE",
+      });
+      expect(res.status).toBe(403);
+      expect(mockAuditSettingsWrite).not.toHaveBeenCalled();
+      expect(mockDeleteSetting).not.toHaveBeenCalled();
+    });
+
+    it("⭐ an EMPTY activeOrganizationId is a platform-tier write, not a workspace one", async () => {
+      // ⚠️ The one input class where `!effectiveOrgId` and `=== undefined`
+      // disagree, and the reason the delta table at the call sites exists.
+      // `activeOrganizationId` is typed `string | undefined`, so `""` is in
+      // the type; `setSetting` treats it as the GLOBAL row (its own checks
+      // are truthiness), so the audit row must say platform. Under
+      // `=== undefined` this lands `platformTier: false` → `scope:
+      // "workspace"` → back onto the org-scoped read API this PR exists to
+      // keep it off. Round 1 wrote the table and shipped no test for it.
+      mocks.mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: {
+            id: "ws-admin-1",
+            mode: "better-auth",
+            label: "Admin",
+            role: "admin",
+            activeOrganizationId: "",
+          },
+        }),
+      );
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "500" }),
+      });
+      expect(res.status).toBe(200);
+      expect(mockAuditSettingsWrite).toHaveBeenCalledWith(
+        expect.objectContaining({ platformTier: true }),
+      );
+    });
   });
 
   // ─── the audit row is awaited (#5262) ──────────────────────────
 
   describe("an audit row that cannot be committed (#5262)", () => {
-    // The residual #5262 is actually about: `logAdminAction` dropped the row
-    // with a `log.warn` when the internal-DB circuit breaker was open, and a
-    // raised `ATLAS_LOG_LEVEL` — itself runtime-mutable — then ate the warn.
+    // The residual #5262 is actually about: `logAdminAction` DROPS the row
+    // when the internal-DB circuit breaker is open, and past that breaker it
+    // emits nothing at any level — only an anonymous counter. The mechanism
+    // is stated once, in `lib/audit/settings-write.ts`'s header; this comment
+    // deliberately does not restate it, because round 1 corrected the header
+    // and left three restatements of the retracted version behind.
     // Awaiting the row turns a silently unrecorded config change into a
     // response the admin sees.
     const auditDown = () => {

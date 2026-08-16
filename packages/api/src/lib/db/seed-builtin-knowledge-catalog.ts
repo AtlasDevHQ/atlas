@@ -1,9 +1,8 @@
 /**
  * Boot-time idempotent seed pass for the built-in Knowledge Base catalog rows
- * — the upload/bundle-sync arms plus the vendor connectors (Notion, Confluence
- * Cloud + Data Center, GitBook, Zendesk Guide, Salesforce Knowledge).
- * `BUILTIN_KNOWLEDGE_CATALOG_ROWS` is the authoritative list; adding a
- * connector is one append there.
+ * — the upload/bundle-sync arms, the vendor connectors, and the Company Atlas
+ * ingest sources. `BUILTIN_KNOWLEDGE_CATALOG_ROWS` is the authoritative list
+ * (fourteen today); adding a connector is one append there.
  *
  * The Knowledge Base lifecycle (ADR-0028 §5) started as one built-in catalog
  * row — `okf-upload`, an **explicit, degenerate form install** with no
@@ -60,10 +59,12 @@
  * ⚠️ A SLUG COLLISION UNDER A FOREIGN ID IS LOUD, NOT SILENT (#5239). Because
  * the conflict target names `(id)`, `DO NOTHING` covers the primary key only.
  * A row already holding one of these slugs under a DIFFERENT id therefore
- * raises `23505` rather than no-op'ing; the loop catches THAT code per row,
- * logs a `warn` naming the row, records the slug in `blockedSlugs`, and carries
- * on to the remaining rows. Every other error still propagates and aborts the
- * pass, so a real outage is never demoted to a warning.
+ * raises `23505` rather than no-op'ing. The loop recovers from a `23505` that
+ * names the slug index (or names no constraint at all), logs a `warn`, records
+ * the slug in `blockedSlugs`, and carries on. A `23505` naming any OTHER
+ * constraint propagates, as does every other error — so a real outage is never
+ * demoted to a warning, and a violation this recovery does not model is never
+ * filed as a blocked slug.
  *
  * Until #5239 the target was unqualified and the same collision was swallowed:
  * `insertedSlugs` stayed empty and the pass reported `{ kind: "seeded" }` with
@@ -911,7 +912,7 @@ export interface BuiltinKnowledgeCatalogSeedDb {
 }
 
 /**
- * ⚠️ TWO PRECONDITIONS ON THAT SEAM, both load-bearing for the #5239 recovery
+ * ⚠️ TWO PRECONDITIONS ON THE SEAM ABOVE, both load-bearing for the #5239 recovery
  * below, and neither expressible in the type.
  *
  * 1. **It must autocommit.** The loop recovers from a per-row `23505` by
@@ -942,9 +943,7 @@ export interface BuiltinKnowledgeCatalogSeedResult {
    * ⚠️ "Already existed", NOT "already correct". The seed is insert-only and
    * never reads the row back, so its CONTENT is unobserved — an operator who
    * rewrote a built-in row through `catalog-crud.ts` lands in this same
-   * bucket, which is the whole reason a field change takes a migration. An
-   * earlier draft of this comment said "present and correct", which is the
-   * same species of over-claim #5239 exists to remove.
+   * bucket, which is the whole reason a field change takes a migration.
    */
   readonly blockedSlugs: ReadonlyArray<string>;
 }
@@ -953,13 +952,14 @@ export interface BuiltinKnowledgeCatalogSeedResult {
 const PG_UNIQUE_VIOLATION = "23505";
 
 /**
- * The ONE unique constraint this seeder's recovery models
+ * The one NAMED unique constraint this seeder's recovery models
  * (`0014_plugin_marketplace.sql`; mirrored in `db/schema.ts`).
  *
- * `plugin_catalog` has exactly two unique constraints — PK `id`, consumed by
- * the conflict target, and this one — so today every 23505 reaching the catch
- * is a slug collision. Naming it turns that from an inference the message
- * hedges into a condition the code checks.
+ * `plugin_catalog` has two unique constraints today — PK `id`, consumed by the
+ * conflict target, and this one — so a 23505 reaching the catch is almost
+ * certainly a slug collision. Naming it turns that inference into a condition
+ * the code checks; an UNNAMED 23505 is still accepted, under the same hedge the
+ * warning carries.
  */
 const PG_SLUG_CONSTRAINT = "plugin_catalog_slug_key";
 

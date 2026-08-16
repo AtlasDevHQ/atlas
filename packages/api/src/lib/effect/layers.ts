@@ -1012,10 +1012,7 @@ export type BuiltinKnowledgeCatalogSeedOutcome =
   | "error";
 
 export interface BuiltinKnowledgeCatalogSeedShape {
-  /**
-   * True when ANY built-in knowledge catalog row (`okf-upload`,
-   * `bundle-sync`) was newly inserted this boot.
-   */
+  /** True when any built-in knowledge catalog row was newly inserted this boot. */
   readonly inserted: boolean;
   readonly outcome: BuiltinKnowledgeCatalogSeedOutcome;
   /**
@@ -1035,8 +1032,7 @@ export interface BuiltinKnowledgeCatalogSeedShape {
    * `errorMessage` on both producing arms (credential URIs masked, truncated).
    *
    * ⚠️ Scrubbed is not safe-to-publish: a `pg` failure still carries host and
-   * port. An earlier version of this comment claimed "scrubbed" while one of
-   * the two arms passed the driver message through raw; both scrub now.
+   * port.
    */
   readonly error?: string;
 }
@@ -1046,8 +1042,8 @@ export class BuiltinKnowledgeCatalogSeed extends Context.Tag(
 )<BuiltinKnowledgeCatalogSeed, BuiltinKnowledgeCatalogSeedShape>() {}
 
 /**
- * Idempotent boot-time seed of the built-in Knowledge Base catalog rows —
- * `okf-upload` (#4206) and `bundle-sync` (#4211), ADR-0028. Code-seeded
+ * Idempotent boot-time seed of every row in `BUILTIN_KNOWLEDGE_CATALOG_ROWS`
+ * (fourteen today, ADR-0028 §5). Code-seeded
  * through the operator-curated seam and re-asserted on every boot via
  * `ON CONFLICT (id) DO NOTHING` — qualified on the PK since #5239, so a slug
  * held under a foreign id surfaces as a blocked row rather than as silent

@@ -149,7 +149,7 @@ describe("seedBuiltinKnowledgeCatalog — a slug held under a foreign id (#5239)
     });
     // ⚠️ THE MESSAGE, not only the payload. Round 2 measured that rewriting
     // every sentence of this warning — the operator's entire remedy — left the
-    // suite 8/8 green, because nothing asserted on it. It must name the
+    // suite green, because nothing asserted on it. It must name the
     // constraint (so the reader knows what to check) and condition the lookup
     // on it rather than prescribing a slug query outright.
     expect(perRow[0]?.message).toContain("constraint");
@@ -225,12 +225,11 @@ describe("seedBuiltinKnowledgeCatalog — a slug held under a foreign id (#5239)
   });
 
   it("⭐ rethrows a 23505 that NAMES a different unique index", async () => {
-    // The hedge made structural. The message says "the slug, unless a new
-    // unique index says otherwise" — but `blockedSlugs` is a list of SLUGS, so
-    // filing a future `UNIQUE (name)` violation there would send an operator to
-    // rename the row holding a slug that is not the problem. Hedged prose next
-    // to unhedged data: the data wins. A 23505 naming something else is not the
-    // squatter this recovery models, so it propagates.
+    // The hedge made structural. The warning admits it cannot know WHICH unique
+    // value collided — but `blockedSlugs` is a list of SLUGS, so filing a
+    // future `UNIQUE (name)` violation there would send an operator to rename
+    // the row holding a slug that is not the problem. Hedged prose next to
+    // unhedged data: the data wins.
     const { db } = dbBlocking(new Set([ZOOM_SLUG]), () =>
       Object.assign(new Error("duplicate key value violates unique constraint"), {
         code: "23505",

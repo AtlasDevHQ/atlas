@@ -64,14 +64,19 @@
 -- EXPOSED to that window, not that it occurred; detecting the outcome is a
 -- deploy-verification step, not a migration's job.
 --
--- ⚠️ THE BREADCRUMB REPORTS present AND rewritten SEPARATELY, because they are
--- different situations: `present=0` is the row-is-absent case, while
--- `present=1, rewritten=0` means the row is here and already carries the new
--- text (or an operator's own). A single count would collapse the two.
+-- ⚠️ THE BREADCRUMB REPORTS present, rewritten AND unexamined SEPARATELY,
+-- because they are three situations. `present=0` is row-absent.
+-- `present=1, rewritten=0, unexamined=0` means the row is here and already
+-- carries the new text, or an operator's own wording. `unexamined=1` means
+-- `config_schema` is not a JSON array, so the UPDATE's `jsonb_typeof` gate
+-- skipped it and no field was read at all — without that third count,
+-- `rewritten=0` claims "already renamed" about a row nothing looked at.
 -- `rewritten` is `GET DIAGNOSTICS … ROW_COUNT` taken AFTER the UPDATE, not a
 -- pre-count of eligible rows as 0201 does: a pre-count is a prediction, and a
 -- trigger or policy filtering the write would make it report success over a
--- no-op. Here one row is one rewritten field, so ROW_COUNT is exact.
+-- no-op. These two rows carry one `description` field each, so ROW_COUNT is
+-- also the field count here — it counts ROWS, so a row with two matching
+-- fields would rewrite both and still report 1.
 --
 -- ⚠️ AND `present=0` HAS TWO CAUSES THAT WANT OPPOSITE ACTIONS, which is why
 -- there is a squatter arm below. The rollback window is one. The other is
@@ -157,10 +162,10 @@ BEGIN
   -- walk the rewrite uses. Two reasons, both learned from the arms above:
   -- `jsonb_typeof(...) = 'array'` is required on the UPDATE (jsonb_array_elements
   -- errors on a non-array, which would abort the boot migration) but on a
-  -- DETECTOR it is a blind spot — a `config_schema` an operator left as an
-  -- object would report `present=1, rewritten=0` with no warning at all, and
-  -- the NOTICE above would then assert the field "was already renamed", which
-  -- is false. And scanning the whole value catches the old noun on a `label` or
+  -- DETECTOR it is a blind spot: a `config_schema` an operator left as an
+  -- object reports `present=1, rewritten=0, unexamined=1` and nothing more —
+  -- the counter says the row went unread, but only a scan can say the old noun
+  -- is still in there. And scanning the whole value catches it on a `label` or
   -- an option label, not only on a `description`. A text scan is safe here in a
   -- way it is not for the rewrite: it writes nothing, so JSONB's normalisation
   -- of key order and whitespace cannot corrupt anything — it can only over-warn.

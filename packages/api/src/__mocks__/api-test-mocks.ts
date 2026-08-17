@@ -33,6 +33,8 @@ import { PERMISSIONS as REAL_PERMISSIONS, isValidPermission as realIsValidPermis
 import {
   PurgeAbortedError as RealPurgeAbortedError,
   SURVIVOR_COUNT_FIELDS as REAL_SURVIVOR_COUNT_FIELDS,
+  PURGE_TOMBSTONE_RELATION as REAL_PURGE_TOMBSTONE_RELATION,
+  PURGE_TEARDOWN_OUTBOX_RELATION as REAL_PURGE_TEARDOWN_OUTBOX_RELATION,
   COUNT_FIELD_ALIASES as REAL_COUNT_FIELD_ALIASES,
   NON_REGISTRY_COUNT_FIELDS as REAL_NON_REGISTRY_COUNT_FIELDS,
 } from "@atlas/api/lib/db/internal";
@@ -360,6 +362,13 @@ export function buildInternalDbMockDefaults(deps: {
     SURVIVOR_COUNT_FIELDS: REAL_SURVIVOR_COUNT_FIELDS,
     COUNT_FIELD_ALIASES: REAL_COUNT_FIELD_ALIASES,
     NON_REGISTRY_COUNT_FIELDS: REAL_NON_REGISTRY_COUNT_FIELDS,
+    // The two relation names the purge route imports to tell the THREE classes of
+    // skipped work apart (#5160, #5269). Imported rather than re-spelled, like
+    // `SURVIVOR_COUNT_FIELDS`, so a rename is a compile error here rather than an
+    // `undefined` in the route's `nonDeleteSkips` — which would then match nothing
+    // and mislabel a skipped write as a skipped delete.
+    PURGE_TOMBSTONE_RELATION: REAL_PURGE_TOMBSTONE_RELATION,
+    PURGE_TEARDOWN_OUTBOX_RELATION: REAL_PURGE_TEARDOWN_OUTBOX_RELATION,
   
     // Remaining named exports with no behavior worth faking — present so
     // a transitive `import { x }` never SyntaxErrors at load time.

@@ -39,6 +39,7 @@ import {
   WORKSPACE_SCOPE_COLUMNS,
   USER_SCOPE_COLUMNS,
   viaParentDeleteSql,
+  parentKeySubquery,
   type PurgeParentLink,
   type PurgeTableScope,
   type ViaParentTableName,
@@ -126,18 +127,34 @@ const purgeFnBody = rawPurgeFnBody
  * The two SHAPES a delete takes in the source, and both count.
  *
  * A table with a scope column is a literal `DELETE FROM <table>`. A table with
- * none is `delViaParent("<table>")`, whose SQL is built from the registry's
- * `viaParent` declaration (#5176) and so never appears here as text.
+ * none is `delViaParent("<table>")` — or, for the webhook ledger,
+ * `tombstoneAndDeleteViaParentSql("<table>", …)` — whose SQL is built from the
+ * registry's `viaParent` declaration (#5176) and so never appears here as text.
  *
  * Scanning both keeps every check below saying what it always said — "the
  * registry cannot claim a delete the implementation does not make" — because
  * `delViaParent` is still one explicit call per table. What the registry now
  * guarantees is the RELATION, not the call: a `viaParent` entry with no call
  * site is still an entry outrunning the implementation, and still fails here.
+ *
+ * ⚠️ TWO builder names, and the table name is followed by `[,)]` rather than `)`.
+ * Both widenings were forced by the guard CORRECTLY going red on a changed call
+ * shape, and both matter for the same reason: each time, `stripe_webhook_events`
+ * was reported as a `purged` table with NO delete at all.
+ *
+ *  - `delViaParent` took an optional second argument (#5269's
+ *    omit-a-missing-key-source options), so a `\)`-anchored pattern stopped
+ *    matching it.
+ *  - the webhook ledger's delete then MOVED into
+ *    `tombstoneAndDeleteViaParentSql`, which emits the tombstone INSERT and the
+ *    DELETE as one statement so they cannot read different snapshots.
+ *
+ * What this pattern must never become is a match on only one spelling: that would
+ * silently drop a table from three checks the moment its call site changed.
  */
-const viaParentCalls = [...purgeFnBody.matchAll(/delViaParent\("([a-z_][a-z0-9_]*)"\)/g)].map(
-  (m) => m[1],
-);
+const viaParentCalls = [
+  ...purgeFnBody.matchAll(/(?:delViaParent|tombstoneAndDeleteViaParentSql)\(\s*"([a-z_][a-z0-9_]*)"[,)]/g),
+].map((m) => m[1]);
 const deleteMatches = [
   ...[...purgeFnBody.matchAll(/DELETE\s+FROM\s+"?([a-z_][a-z0-9_]*)"?/gi)].map((m) => m[1]),
   ...viaParentCalls,
@@ -149,12 +166,19 @@ const deleteTargets = new Set(deleteMatches);
  * The ORDER assertions below compare these positions.
  */
 const deleteIndexOf = (table: string): number => {
-  const viaIdx = purgeFnBody.indexOf(`delViaParent("${table}")`);
+  // Same `[,)]` tolerance as `viaParentCalls` above, and for the same reason —
+  // `delViaParent` takes optional options since #5269. A `")"`-terminated
+  // `indexOf` here returned -1 for the one call that passes them, which made the
+  // child-before-parent ORDER assertion report "no delete for
+  // stripe_webhook_events" rather than compare two positions.
+  const escaped = table.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const viaIdx = purgeFnBody.search(
+    new RegExp(`(?:delViaParent|tombstoneAndDeleteViaParentSql)\\(\\s*"${escaped}"[,)]`),
+  );
   if (viaIdx !== -1) return viaIdx;
   // Anchored on a word boundary, not a prefix: a bare
   // `indexOf("DELETE FROM " + table)` makes `dashboards` match a future
   // `dashboards_v2` and silently compare the wrong statement's position.
-  const escaped = table.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return purgeFnBody.search(new RegExp(`DELETE FROM "?${escaped}"?\\b`));
 };
 
@@ -716,11 +740,19 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
       },
       // Also declares NO foreign keys: the webhook ledger is written by handlers
       // that may see an event before the subscription row exists, so an FK would
-      // reject legitimate rows. (`subscription` itself IS in db/schema.ts —
-      // an earlier version of this comment said otherwise and was wrong.)
+      // reject legitimate rows. (`subscription` itself IS declared in db/schema.ts,
+      // which is why the schema-enumeration checks below can reach it.)
+      // `additionalKeySources` (#5269) is pinned like every other field, and it
+      // is the field with the most to lose: it names a SECOND table the DELETE
+      // reads, so a drifted `scopeColumn` here is a cross-tenant delete rather
+      // than a missed row. Its own workspace-scope check is below, beside
+      // `parentScope`'s.
       stripe_webhook_events: {
         column: "stripe_subscription_id", parent: "subscription",
         parentKey: "stripeSubscriptionId", parentScope: "referenceId", parentKeyNullable: true,
+        additionalKeySources: [
+          { table: "stripe_teardown_pending", keyColumn: "stripe_sub_id", scopeColumn: "workspace_id" },
+        ],
       },
       // Its only FK is COMPOSITE, to dashboard_user_drafts(user_id,
       // dashboard_id). The purge deliberately routes it to the GRANDPARENT
@@ -769,6 +801,22 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
         );
       }
 
+      // The same demand of every ADDITIONAL key source (#5269), and here it is
+      // the stronger claim of the two. A wrong `parentScope` narrows a subquery
+      // to nothing and leaves rows behind; a wrong `scopeColumn` on an extra
+      // source UNIONs in ids that are not this workspace's — which the DELETE
+      // then removes from another tenant, and the #3468 tombstone stamps as
+      // permanently purged, so `classifyStripeEvent` silently drops that
+      // tenant's live billing events afterwards. Blast radius, not residue.
+      for (const source of link.additionalKeySources ?? []) {
+        if (!(WORKSPACE_SCOPE_COLUMNS as readonly string[]).includes(source.scopeColumn)) {
+          wrong.push(
+            `${child}: additional key source ${source.table}.${source.scopeColumn} is not one of ` +
+              `WORKSPACE_SCOPE_COLUMNS — it would union in OTHER workspaces' ids`,
+          );
+        }
+      }
+
       const fk = fksOf(child).find((f) => f.columns.length === 1 && f.columns[0] === link.column);
       if (!fk) {
         const pinned: PurgeParentLink | undefined =
@@ -791,12 +839,20 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
         //
         // `?? false` normalizes the optional boolean, where absent and `false`
         // mean the same thing; it is a no-op for the string fields.
+        //
+        // Compared through JSON rather than `!==`, because `additionalKeySources`
+        // (#5269) is an ARRAY: two independently-written literals are never
+        // reference-equal, so `!==` would report every pinned link as drifted —
+        // and the obvious "fix", exempting the field, would restore exactly the
+        // silent-unchecked-field hole this key-driven loop exists to close.
+        const same = (a: unknown, b: unknown): boolean =>
+          JSON.stringify(a ?? false) === JSON.stringify(b ?? false);
         const fields = new Set<keyof PurgeParentLink>([
           ...(Object.keys(pinned) as (keyof PurgeParentLink)[]),
           ...(Object.keys(link) as (keyof PurgeParentLink)[]),
         ]);
         for (const field of fields) {
-          if ((pinned[field] ?? false) !== (link[field] ?? false)) {
+          if (!same(pinned[field], link[field])) {
             wrong.push(
               `${child}: ${field} is ${JSON.stringify(link[field])} but pinned as ` +
                 `${JSON.stringify(pinned[field])}`,
@@ -1020,8 +1076,65 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
       if (!columnsOf(link.parent).includes(link.parentScope)) {
         bad.push(`${child}: ${link.parent}.${link.parentScope} does not exist`);
       }
+      // Same three checks for every ADDITIONAL key source (#5269). These names
+      // reach SQL through the identical builder, and unlike the parent link they
+      // have no FK anywhere in the schema to corroborate them — this enumeration
+      // is the only thing that can say the table and both columns are real.
+      for (const source of link.additionalKeySources ?? []) {
+        if (!schemaTableNames.includes(source.table)) {
+          bad.push(`${child}: additional key source ${source.table} is not a table`);
+          continue;
+        }
+        if (!columnsOf(source.table).includes(source.keyColumn)) {
+          bad.push(`${child}: ${source.table}.${source.keyColumn} does not exist`);
+        }
+        if (!columnsOf(source.table).includes(source.scopeColumn)) {
+          bad.push(`${child}: ${source.table}.${source.scopeColumn} does not exist`);
+        }
+      }
     }
     expect(bad, `viaParent declaration(s) naming something the schema does not have: ${bad.join("; ")}`).toEqual([]);
+  });
+
+  it("unions every additional key source into the SQL both consumers read", () => {
+    // `parentKeySubquery` feeds the ledger DELETE *and* the #3468 tombstone
+    // INSERT, and #5269's whole correctness argument rests on them widening
+    // TOGETHER: a tombstone narrower than the delete means the outbox sweep's own
+    // cancellation webhook regrows the row the purge just removed.
+    //
+    // Checked on the builder's real output rather than on the declaration, so
+    // a builder that accepted the field and dropped it — the shape that makes a
+    // registry entry decorative — is caught here rather than in `-pg` only.
+    let declared = 0;
+    for (const [child, entry] of Object.entries(decisionFor)) {
+      const sources = entry?.viaParent?.additionalKeySources ?? [];
+      if (sources.length === 0) continue;
+      const sql = parentKeySubquery(child as ViaParentTableName);
+      for (const source of sources) {
+        declared++;
+        expect(sql, `${child}: ${source.table} is declared but absent from the subquery`).toContain(
+          `FROM "${source.table}"`,
+        );
+        // The scope predicate is what keeps it a per-WORKSPACE delete. Asserted
+        // as the exact clause, because `toContain("workspace_id")` also passes
+        // for a source that merely SELECTs the column.
+        expect(sql, `${child}: ${source.table} is not scoped to the workspace`).toContain(
+          `WHERE "${source.scopeColumn}" = $1`,
+        );
+        // NULLs are excluded unconditionally — the tombstone's PRIMARY KEY is
+        // NOT NULL, and a NULL contributes nothing to the `IN (…)` either way.
+        expect(sql, `${child}: ${source.table}.${source.keyColumn} may contribute a NULL`).toContain(
+          `AND "${source.keyColumn}" IS NOT NULL`,
+        );
+      }
+      // A UNION, not a replacement: the parent must still be a source.
+      expect(sql, `${child}: the parent link was displaced by its additional sources`).toContain(
+        `FROM "${entry?.viaParent?.parent ?? ""}"`,
+      );
+    }
+    // Pinned, so this cannot quietly become an empty loop the day the one
+    // declaration is removed — the same standard the FK counts above hold.
+    expect(declared, "additional key sources declared across the registry").toBe(1);
   });
 
   // ── The result contract ────────────────────────────────────────────

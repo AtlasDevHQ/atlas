@@ -268,7 +268,29 @@ function BrainEnrollment() {
       setRunError(friendlyError(result.error));
       return;
     }
-    if (result.data !== undefined) setRun(result.data);
+    // ⚠️ PARSED, not cast. `useAdminMutation` has no `schema` option — its body is
+    // `(await res.json()) as TResponse` — so every read on this page is validated and
+    // this one write was not, on the single payload the panel below dereferences
+    // deeply (`report.refusals.map`, `report.entities.map`). Two 200s reach here that
+    // are not run reports: a proxy interposing on `/produce`, whose path contains
+    // `/brain-enrollment` and would otherwise be answered with the enrollment LIST —
+    // which parses as a report with every count absent — and a deploy-overlap window
+    // where the server predates this response shape. Cast, the first renders the
+    // degraded panel as "undefined … Request id undefined", and the second throws
+    // inside render and the page-level ErrorBoundary blanks the whole surface,
+    // including the reach list.
+    const parsed = BrainWarehouseRunResponseSchema.safeParse(result.data);
+    if (!parsed.success) {
+      // The run COMMITTED — `produce` is an authority act, and by the time its body
+      // is unreadable the drafts are already filed. So the copy must not invite a
+      // re-run; it points at the queue instead.
+      setRunError(
+        "The run finished, but Atlas could not read the report of it. Any drafts it filed are in " +
+          "the review queue — check Facts rather than running again.",
+      );
+      return;
+    }
+    setRun(parsed.data);
     // The queue this just filled is on another page, and the reach counts can
     // move if an entity stopped resolving. Both are stale now.
     void refetch();

@@ -4,6 +4,7 @@ import { createElement, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
 import { AtlasProvider, type AtlasAuthClient } from "@/ui/context";
+import { BrainWarehouseRunResponseSchema } from "@/ui/lib/admin-schemas";
 
 /**
  * The enrollment surface's honesty rules (#5196, ADR-0039).
@@ -26,10 +27,38 @@ import { AtlasProvider, type AtlasAuthClient } from "@/ui/context";
  * rendered nothing at all would satisfy all three `not.toContain` assertions.
  */
 
+/**
+ * ⚠️ The factory must stay SYNC (an async one deadlocks `bun:test`), and the export
+ * list has to be complete rather than the three hooks this page happens to call
+ * today. A partial `mock.module` replaces the whole module, so the first shadcn
+ * primitive or provider that reaches for `useParams()` dies with a `TypeError` that
+ * reads as a React bug rather than as a missing mock.
+ */
 void mock.module("next/navigation", () => ({
   usePathname: () => "/admin/brain/enrollment",
-  useRouter: () => ({ push: () => {}, replace: () => {}, back: () => {} }),
+  useRouter: () => ({
+    push: () => {},
+    replace: () => {},
+    back: () => {},
+    forward: () => {},
+    refresh: () => {},
+    prefetch: () => {},
+  }),
   useSearchParams: () => new URLSearchParams(),
+  useParams: () => ({}),
+  useSelectedLayoutSegment: () => null,
+  useSelectedLayoutSegments: () => [],
+  useServerInsertedHTML: () => {},
+  redirect: () => {
+    throw new Error("redirect() called in a test");
+  },
+  permanentRedirect: () => {
+    throw new Error("permanentRedirect() called in a test");
+  },
+  notFound: () => {
+    throw new Error("notFound() called in a test");
+  },
+  ReadonlyURLSearchParams: URLSearchParams,
 }));
 
 const stubAuthClient: AtlasAuthClient = {
@@ -95,8 +124,33 @@ const THREE_PAIRS_TWO_ENTITIES = [
 let runResponse: unknown = {};
 let runStatus = 200;
 
-/** A run where every enrolled pair was refused — `created: 0` with reasons. */
-const ALL_REFUSED = {
+/**
+ * Parse a fixture through the wire schema AND narrow it to the complete arm.
+ *
+ * The narrowing is the second half of the same job: `BrainWarehouseRunResponseSchema`
+ * is a discriminated union, so a bare `.parse()` hands back "complete OR degraded"
+ * and every fixture field a test wants to vary — `refusals`, `enrolled` — stops
+ * existing on the type. Asserting the discriminant here keeps the contract check and
+ * leaves callers a concrete shape.
+ */
+function completeReport(input: unknown) {
+  const parsed = BrainWarehouseRunResponseSchema.parse(input);
+  if (!parsed.reportComplete) {
+    throw new Error("fixture is meant to be a COMPLETE run report");
+  }
+  return parsed;
+}
+
+/**
+ * A run where every enrolled pair was refused — `created: 0` with reasons.
+ *
+ * ⚠️ **PARSED through the wire schema, not just hand-written to match.** Both halves
+ * of this file are authored by the same hand — the fixture and the assertions — so
+ * without this call nothing checks either against the contract the server actually
+ * sends, and the schema gaining a required field would leave these tests green over
+ * a payload that can never arrive.
+ */
+const ALL_REFUSED = completeReport({
   reportComplete: true,
   workspaceId: "ws-1",
   snapshotAt: "2026-08-16T22:15:03.546Z",
@@ -125,7 +179,7 @@ const ALL_REFUSED = {
     selfEdges: 0,
     unmintedIds: 0,
   },
-};
+});
 
 /** What the page POSTed to `/naming`, in order. */
 type NamingBody = { entity: string; dimension: string | null };
@@ -618,6 +672,77 @@ describe("a run that produced nothing says WHY it produced nothing", () => {
     // Same `created: 0`, opposite meaning. This is the pair the panel exists for.
     expect(text).toContain("A quiet warehouse costs no review");
     expect(text).not.toContain("Every enrolled pair was refused");
+  });
+
+  test("SOME pairs refused does not read as EVERY pair refused", async () => {
+    // ⚠️ `ALL_REFUSED` sets `enrolled: 2` with two refusals, so `refused ===
+    // report.enrolled` holds by CONSTRUCTION and the middle arm of the three was
+    // unreachable from any fixture. Measured: relaxing the guard to `refused > 0`
+    // was green — and then one refusal out of eight rendered "Every enrolled pair
+    // was refused, so this run read nothing", a false statement about the admin's
+    // own run, in the panel written to stop exactly that.
+    runResponse = { ...ALL_REFUSED, enrolled: 8, refusals: [ALL_REFUSED.refusals[0]] };
+    const text = await runAndRead();
+    expect(text).toContain("Some pairs were refused");
+    expect(text).not.toContain("Every enrolled pair was refused");
+    // Positive controls, at a size that cannot be confused with the fixture above.
+    expect(text).toContain("1 refused");
+    expect(text).toContain("8 pairs in reach");
+  });
+
+  test("a run that PRODUCED something says so, and never reports a bare zero", async () => {
+    // Every fixture in this file had `created: 0`, so the entire success rendering
+    // was unexercised — on a page that exists because prod runs produced nothing.
+    // Measured: inverting the chip's ternary was green, and rendered "0 filed as
+    // drafts" — the confident zero the component was written to prevent.
+    runResponse = {
+      ...ALL_REFUSED,
+      enrolled: 3,
+      created: 5,
+      corroborated: 2,
+      refusals: [],
+      entities: [
+        {
+          entity: "accounts",
+          rows: 900,
+          candidates: 7,
+          created: 5,
+          corroborated: 2,
+          blocked: 0,
+          comparable: 7,
+          unidentifiedRows: 0,
+          collidingSubjectRows: 0,
+          unsurfaceableCells: 0,
+          unsurfaceableKeyRows: 0,
+          cardinalityProposed: [],
+          entitiesStored: 900,
+          unnamedRows: 0,
+        },
+      ],
+    };
+    const text = await runAndRead();
+    expect(text).toContain("5 filed as drafts");
+    expect(text).toContain("2 unchanged and corroborated");
+    expect(text).toContain("Every claim landed as a draft");
+    // The two silences must both be absent — this run was neither.
+    expect(text).not.toContain("No new claims");
+    expect(text).not.toContain("A quiet warehouse costs no review");
+  });
+
+  test("a 200 that is not a run report is refused, not rendered as one", async () => {
+    // ⚠️ `/produce`'s path contains `/brain-enrollment`, so a proxy interposing on
+    // it answers with the enrollment LIST — a 200 that casts cleanly to a report
+    // with every count absent. Cast (which is what `useAdminMutation` does), the
+    // degraded arm then renders `undefined` where its message and request id go,
+    // which is the panel that exists to say "go read the log for this id".
+    runResponse = { enrollments: [], entities: [] };
+    const text = await runAndRead();
+    expect(text).toContain("could not read the report");
+    // It must not invite a re-run: `produce` is an authority act and the drafts
+    // are already filed by the time the body is unreadable.
+    expect(text).toContain("review queue");
+    expect(text).not.toContain("undefined");
+    expect(text).not.toContain("filed as drafts");
   });
 
   test("the degraded arm reports NO counts — not even a zero", async () => {

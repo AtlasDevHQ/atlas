@@ -79,6 +79,7 @@ import {
   buildSnapshotSql,
   buildWarehouseClaims,
   defaultValidateSnapshotSql,
+  mapEntitiesToConnectionIds,
   parseWarehouseEntity,
   planWarehouseEmission,
   runWarehouseProducer,
@@ -93,6 +94,8 @@ import {
   type SnapshotSqlValidator,
   type SnapshotSqlVerdict,
   type ValidatedSnapshotRequest,
+  type WarehouseConnectionId,
+  type WarehouseConnectionPlacement,
   type WarehouseRowId,
   type WarehouseSnapshotRequest,
   type WarehouseSnapshotRunner,
@@ -100,6 +103,24 @@ import {
 
 const WORKSPACE = "ws-5042";
 const SNAPSHOT_AT = new Date("2026-08-14T10:00:00.000Z");
+
+/**
+ * A {@link WarehouseConnectionPlacement} from the placed pairs alone.
+ *
+ * The cast is the point of the brand rather than a hole in it: a test is allowed to
+ * assert "this string IS a connection id", and production has exactly one such cast,
+ * where `loadVisibleGroups` answers. What the brand refuses is the SILENT swap — a
+ * connection GROUP id flowing into the value position because both are `string`.
+ */
+const placement = (
+  placed: Readonly<Record<string, string>>,
+  unplaceable: WarehouseConnectionPlacement["unplaceable"] = [],
+): WarehouseConnectionPlacement => ({
+  placed: new Map(
+    Object.entries(placed).map(([name, id]) => [name, id as WarehouseConnectionId]),
+  ),
+  unplaceable,
+});
 
 // ── fixtures ────────────────────────────────────────────────────────────────
 
@@ -1003,6 +1024,197 @@ const snapshotRow = (subject: unknown, ...values: readonly unknown[]) =>
     ...values.map((v, i) => [`${DIMENSION_ALIAS_PREFIX}${i}`, v] as const),
   ]);
 
+/**
+ * The placement rule, driven directly (#5284).
+ *
+ * ⚠️ **These exist because the I/O half CANNOT be driven here at all, and that made
+ * the rule dead code no mutation could kill.** `test-setup.ts` strips `DATABASE_URL`
+ * and points `ATLAS_SEMANTIC_ROOT` at an empty directory, so `listAdminEntities`
+ * takes its disk branch over an empty root and answers `[]`. Every run test in this
+ * file therefore exercised the shipped resolver returning an empty placement — they
+ * passed *because it did nothing*, and `defaultResolveConnectionIds → return {placed:
+ * new Map(), unplaceable: []}` survived the entire tree.
+ */
+describe("mapEntitiesToConnectionIds (#5284)", () => {
+  const visible = new Map<string, WarehouseConnectionId>([
+    ["g-eu", "eu-prod" as WarehouseConnectionId],
+    ["g-us", "us-prod" as WarehouseConnectionId],
+  ]);
+
+  /** The placed map as plain strings — the brand is a producer-side guarantee, not
+   * something an assertion should have to restate. */
+  const placedOf = (out: WarehouseConnectionPlacement) => Object.fromEntries<string>(out.placed);
+
+  test("a group-scoped entity resolves to its group's PRIMARY member", () => {
+    const out = mapEntitiesToConnectionIds(
+      [
+        { name: "Accounts", connectionId: "g-eu" },
+        { name: "Orders", connectionId: "g-us" },
+      ],
+      new Set(["Accounts", "Orders"]),
+      visible,
+      true,
+    );
+
+    expect(placedOf(out)).toEqual({ Accounts: "eu-prod", Orders: "us-prod" });
+    expect(out.unplaceable).toEqual([]);
+  });
+
+  test("an entity nobody enrolled is not placed", () => {
+    const out = mapEntitiesToConnectionIds(
+      [
+        { name: "Accounts", connectionId: "g-eu" },
+        { name: "Secrets", connectionId: "g-us" },
+      ],
+      new Set(["Accounts"]),
+      visible,
+      true,
+    );
+
+    expect([...out.placed.keys()]).toEqual(["Accounts"]);
+    expect(out.unplaceable).toEqual([]);
+  });
+
+  test("a FLAT entity is left unplaced rather than resolved to the literal \"default\"", () => {
+    const out = mapEntitiesToConnectionIds(
+      [{ name: "Accounts", connectionId: null }],
+      new Set(["Accounts"]),
+      visible,
+      true,
+    );
+
+    // ⚠️ The arm the review caught: `resolveGroupPrimaryConnectionId` answers
+    // `"default"` for a null group, and that string is NOT interchangeable with the
+    // `undefined` this workspace produced before the seam existed — `validateSQL`
+    // sends it to `getDBType("default")`, which throws `ConnectionNotRegisteredError`
+    // until something has touched the default pool, where `undefined` takes
+    // `detectDBType()`. Placing it would refuse every flat workspace to fix grouped ones.
+    expect(out.placed.size).toBe(0);
+    expect(out.placed.get("Accounts")).toBeUndefined();
+    expect(out.unplaceable).toEqual([]);
+  });
+
+  test("a name published under TWO groups is unplaceable, not silently defaulted", () => {
+    const out = mapEntitiesToConnectionIds(
+      [
+        { name: "Accounts", connectionId: "g-eu" },
+        // The `__global__` shadow case: the catalog read is `org_id = $1 OR org_id =
+        // '__global__'`, while the run loop's `getEntity` is `org_id = $1` alone. So
+        // this name looks ambiguous HERE and resolves cleanly THERE — and the old
+        // code's justification for omitting it ("the loader is about to refuse it
+        // anyway") is false for exactly this population.
+        { name: "Accounts", connectionId: null },
+        { name: "Orders", connectionId: "g-us" },
+      ],
+      new Set(["Accounts", "Orders"]),
+      visible,
+      true,
+    );
+
+    expect(out.unplaceable).toEqual([{ entity: "Accounts", cause: "ambiguous-group" }]);
+    // The positive control, at a different size: the sibling in the same call still
+    // resolves, so this is not "the whole placement collapsed".
+    expect(placedOf(out)).toEqual({ Orders: "us-prod" });
+  });
+
+  test("two rows of the SAME group are overlay state, not ambiguity", () => {
+    const out = mapEntitiesToConnectionIds(
+      [
+        { name: "Accounts", connectionId: "g-eu" },
+        { name: "Accounts", connectionId: "g-eu" },
+      ],
+      new Set(["Accounts"]),
+      visible,
+      true,
+    );
+
+    // Ambiguity is "multiple GROUPS", not "multiple rows" — `getEntity`'s own
+    // definition. Counting rows (which the first cut did) refuses an entity for
+    // being ordinary: one group holding a published and a draft row is normal.
+    expect(out.unplaceable).toEqual([]);
+    expect(placedOf(out)).toEqual({ Accounts: "eu-prod" });
+  });
+
+  test("a group missing from the visible set is unplaceable", () => {
+    const out = mapEntitiesToConnectionIds(
+      [
+        { name: "Accounts", connectionId: "g-hidden" },
+        { name: "Orders", connectionId: "g-us" },
+      ],
+      new Set(["Accounts", "Orders"]),
+      visible,
+      true,
+    );
+
+    // Previously this degraded to submitting the GROUP ID as a connection id, which
+    // surfaced as `Connection "g-hidden" is not registered` under the TRANSIENT
+    // "the next run tries again" wording — for a condition that repeats every run.
+    expect(out.unplaceable).toEqual([{ entity: "Accounts", cause: "group-not-visible" }]);
+    expect(placedOf(out)).toEqual({ Orders: "us-prod" });
+  });
+
+  test("an enrolled name absent from a GROUP-SCOPED catalog is unplaceable", () => {
+    const out = mapEntitiesToConnectionIds(
+      [{ name: "Orders", connectionId: "g-us" }],
+      new Set(["Accounts", "Orders"]),
+      visible,
+      true,
+    );
+
+    expect(out.unplaceable).toEqual([{ entity: "Accounts", cause: "absent-from-catalog" }]);
+    expect(placedOf(out)).toEqual({ Orders: "us-prod" });
+  });
+
+  test("an enrolled name absent from a NON-authoritative catalog is left to the default", () => {
+    const out = mapEntitiesToConnectionIds(
+      [{ name: "Orders", connectionId: null }],
+      new Set(["Accounts", "Orders"]),
+      visible,
+      false,
+    );
+
+    // The disk fallback — pure-YAML self-hosted, or no workspace in scope — where
+    // connection groups are not the scoping mechanism and the deployment default is
+    // right, exactly as before #5284. This is also the shape this whole suite runs
+    // under, which is why the flag is a passed-in FACT and not an inference.
+    expect(out.unplaceable).toEqual([]);
+    expect(out.placed.size).toBe(0);
+  });
+
+  test("an entity whose group was hidden is refused even when the clause DELETED its row", () => {
+    // ⚠️ **The asymmetry that the first cut of this fix got wrong, and it reproduced
+    // the exact defect the fix exists to end.** That cut inferred "is this catalog
+    // group-scoped" from `summaries.some((s) => s.connectionId !== null)` — but the
+    // visibility clause in `listEntityRows` is what REMOVES a group-scoped row from
+    // the catalog when its datasource is unpublished. So a workspace whose only group
+    // just went invisible keeps its `__global__` demo rows (group `null`), the
+    // inference read FALSE, and the enrolled entity was defaulted to the demo
+    // database with nothing refused.
+    //
+    // Same condition, two shapes, and they must agree:
+    //   row SURVIVES the clause  → `group-not-visible`  (the test above)
+    //   row DELETED by the clause → `absent-from-catalog` (this one)
+    const out = mapEntitiesToConnectionIds(
+      // Only the ungrouped `__global__` demo rows are left. Nothing here is
+      // group-scoped, which is precisely what made the old inference say "flat".
+      [{ name: "DemoAccounts", connectionId: null }],
+      new Set(["Accounts"]),
+      visible,
+      true,
+    );
+
+    expect(out.unplaceable).toEqual([{ entity: "Accounts", cause: "absent-from-catalog" }]);
+    expect(out.placed.size).toBe(0);
+  });
+
+  test("an EMPTY catalog places nothing and refuses nothing", () => {
+    const out = mapEntitiesToConnectionIds([], new Set(["Accounts"]), visible, false);
+
+    expect(out.placed.size).toBe(0);
+    expect(out.unplaceable).toEqual([]);
+  });
+});
+
 describe("runWarehouseProducer", () => {
   test("reads only enrolled dimensions, and emits only for enrolled pairs", async () => {
     const h = harness({
@@ -1044,12 +1256,29 @@ describe("runWarehouseProducer", () => {
       rows: { Accounts: [snapshotRow("Acme Corp", "gold")] },
     });
 
+    // ⚠️ The stub RECORDS its arguments instead of ignoring them. Every stub here
+    // used to be `async () => new Map([...])`, so nothing asserted what the producer
+    // actually passed — and two mutations were green against the whole tree because
+    // of it: `resolveConnectionIds(workspaceId, [])`, which places nothing and puts
+    // every entity back on the default datasource (#5284 verbatim), and
+    // `resolveConnectionIds("", reach.entities)`, which sends `listAdminEntities` an
+    // empty org and falls to its DISK-ROOT branch — a SaaS workspace resolving its
+    // connection groups from whatever YAML is on the box.
+    const calls: { ws: string; names: readonly string[] }[] = [];
     const report = await runWarehouseProducer(
       { workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-1" },
-      { ...h.deps, resolveConnectionIds: async () => new Map([["Accounts", "us-prod"]]) },
+      {
+        ...h.deps,
+        resolveConnectionIds: async (ws, names) => {
+          calls.push({ ws, names });
+          return placement({ Accounts: "us-prod" });
+        },
+      },
     );
 
-    // Before #5197 this was `undefined`: the run read the YAML hint, found null,
+    expect(calls).toEqual([{ ws: WORKSPACE, names: ["Accounts"] }]);
+
+    // Before #5284 this was `undefined`: the run read the YAML hint, found null,
     // and sent every snapshot to the deployment's `default` datasource. On a SaaS
     // deploy that is a DIFFERENT database, so the entity refused with `relation
     // "accounts" does not exist` while its pair sat in the list looking enrolled.
@@ -1060,6 +1289,41 @@ describe("runWarehouseProducer", () => {
     // property, not either one alone.
     expect(h.validations[0]?.connectionId).toBe("us-prod");
     expect(report.created).toBe(1);
+  });
+
+  test("the connection is resolved ONCE per run, not once per entity", async () => {
+    const h = harness({
+      pairs: [
+        { entity: "Accounts", dimension: "tier", naming: false },
+        { entity: "Orders", dimension: "status", naming: false },
+      ],
+      entities: {
+        Accounts: entityYaml({ table: "accounts", primaryKey: "id", dimensions: ["id", "tier"] }),
+        Orders: entityYaml({ table: "orders", primaryKey: "id", dimensions: ["id", "status"] }),
+      },
+      rows: {
+        Accounts: [snapshotRow("Acme Corp", "gold")],
+        Orders: [snapshotRow("Order 1", "shipped")],
+      },
+    });
+
+    let resolveCalls = 0;
+    await runWarehouseProducer(
+      { workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-1" },
+      {
+        ...h.deps,
+        resolveConnectionIds: async (_ws, names) => {
+          resolveCalls += 1;
+          return placement(Object.fromEntries(names.map((n) => [n, "us-prod"])));
+        },
+      },
+    );
+
+    // The claim the call site's comment makes ("ONE resolution per run, not one per
+    // entity"). Moving the call inside the per-entity loop killed nothing while the
+    // stubs were idempotent — two entities is the smallest fixture that can tell.
+    expect(resolveCalls).toBe(1);
+    expect(h.snapshots).toHaveLength(2);
   });
 
   test("a YAML `connection:` hint still overrides the resolved group", async () => {
@@ -1078,7 +1342,7 @@ describe("runWarehouseProducer", () => {
 
     await runWarehouseProducer(
       { workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-1" },
-      { ...h.deps, resolveConnectionIds: async () => new Map([["Accounts", "us-prod"]]) },
+      { ...h.deps, resolveConnectionIds: async () => placement({ Accounts: "us-prod" }) },
     );
 
     // An author naming a datasource outright is more specific than the row's
@@ -1087,7 +1351,129 @@ describe("runWarehouseProducer", () => {
     expect(h.snapshots[0]?.connectionId).toBe("authored");
   });
 
-  test("an entity the resolver could not place falls back to the default connection", async () => {
+  test("a YAML `connection: default` hint is the flat scope, not a connection named \"default\"", async () => {
+    const h = harness({
+      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
+      entities: {
+        // ⚠️ `connection: default` is this repo's OWN spelling of the flat root — the
+        // implied group name in `whitelist.ts`, and a documented entity YAML value.
+        Accounts: entityYaml({
+          table: "accounts",
+          connection: "default",
+          primaryKey: "id",
+          dimensions: ["id", "tier"],
+        }),
+      },
+      rows: { Accounts: [snapshotRow("Acme Corp", "gold")] },
+    });
+
+    const report = await run(h);
+
+    // ⚠️ The two spellings are NOT interchangeable downstream, and the runner and the
+    // gate disagree about them: `defaultRunSnapshot` collapses `undefined` and
+    // `"default"` to one pool, while `validateSQL` sends the literal to
+    // `getDBType("default")`, which throws until something has touched the default
+    // pool. Passed through, this entity took a PERMANENT `snapshot-rejected` blaming
+    // the whitelist — on the flat self-hosted workspace the arm exists to protect.
+    expect(h.validations[0]?.connectionId).toBeUndefined();
+    expect(h.snapshots[0]?.connectionId).toBeUndefined();
+    // Positive controls: it ran, and it produced.
+    expect(h.snapshots).toHaveLength(1);
+    expect(report.created).toBe(1);
+    expect(report.refusals).toEqual([]);
+  });
+
+  test("an UNPLACED entity reads the default connection; an UNPLACEABLE one reads nothing", async () => {
+    const h = harness({
+      pairs: [
+        { entity: "Accounts", dimension: "tier", naming: false },
+        { entity: "Orders", dimension: "status", naming: false },
+      ],
+      entities: {
+        Accounts: entityYaml({ table: "accounts", primaryKey: "id", dimensions: ["id", "tier"] }),
+        Orders: entityYaml({ table: "orders", primaryKey: "id", dimensions: ["id", "status"] }),
+      },
+      rows: {
+        Accounts: [snapshotRow("Acme Corp", "gold")],
+        Orders: [snapshotRow("Order 1", "shipped")],
+      },
+    });
+
+    const report = await runWarehouseProducer(
+      { workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-1" },
+      {
+        ...h.deps,
+        // The two states a bare `ReadonlyMap` could not tell apart, in ONE run and
+        // with DIFFERENT outcomes: `Accounts` is simply ungrouped (a flat workspace,
+        // where the deployment default is right), `Orders` is a name Atlas could not
+        // place at all (where the default is the #5284 bug).
+        resolveConnectionIds: async () =>
+          placement({}, [{ entity: "Orders", cause: "ambiguous-group" }]),
+      },
+    );
+
+    // The unplaced one ran, against the default connection — `undefined`, never the
+    // literal `"default"`, which takes a different branch in the SQL gate.
+    expect(h.snapshots.map((s) => s.entity)).toEqual(["Accounts"]);
+    expect(h.snapshots[0]?.connectionId).toBeUndefined();
+
+    // ⚠️ THE POSITIVE CONTROL. `toBeUndefined()` alone was satisfied by
+    // `h.snapshots.length === 0` — this file's own documented hazard #1, a producer
+    // that emitted nothing at all passing a test about what it emitted. The two
+    // sides are deliberately different sizes (1 snapshot, 1 refusal, 1 created).
+    expect(report.created).toBe(1);
+
+    // The unplaceable one never reached the datasource, and is REFUSED rather than
+    // dropped — every enrolled pair stays accounted for in the report.
+    expect(h.validations.map((v) => v.entity)).toEqual(["Accounts"]);
+    expect(report.refusals).toEqual([
+      {
+        entity: "Orders",
+        dimension: "status",
+        reason: "connection-unresolved",
+        message: expect.stringContaining("more than one connection group"),
+      },
+    ]);
+  });
+
+  test("each unplaceable cause names its OWN remedy", async () => {
+    // One shared "check your connection groups" would be the generic message
+    // CLAUDE.md forbids, on a refusal whose own text says re-running will not help.
+    // The three causes are three different jobs, so the messages must differ.
+    const causes = ["ambiguous-group", "group-not-visible", "absent-from-catalog"] as const;
+    const messages: string[] = [];
+
+    for (const cause of causes) {
+      const h = harness({
+        pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
+        entities: {
+          Accounts: entityYaml({ table: "accounts", primaryKey: "id", dimensions: ["id", "tier"] }),
+        },
+        rows: { Accounts: [snapshotRow("Acme Corp", "gold")] },
+      });
+      const report = await runWarehouseProducer(
+        { workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-1" },
+        {
+          ...h.deps,
+          resolveConnectionIds: async () => placement({}, [{ entity: "Accounts", cause }]),
+        },
+      );
+      expect(h.snapshots).toHaveLength(0);
+      messages.push(report.refusals[0]?.message ?? "");
+    }
+
+    expect(new Set(messages).size).toBe(causes.length);
+    expect(messages[0]).toContain("Rename one of them");
+    expect(messages[1]).toContain("Check the datasource is published");
+    expect(messages[2]).toContain("Republish the entity");
+    // ⚠️ The `group-not-visible` remedy must admit the DEGRADED case as well as the
+    // unpublished one: `loadVisibleGroups` never throws — it answers `[]` when the
+    // whitelist read fails — so this arm also fires for a datasource that IS
+    // published, and a remedy naming only "unpublished" would be false there.
+    expect(messages[1]).toContain("could not read the workspace's whitelist");
+  });
+
+  test("a failed connection resolution ABANDONS the run rather than defaulting it", async () => {
     const h = harness({
       pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
       entities: {
@@ -1096,15 +1482,25 @@ describe("runWarehouseProducer", () => {
       rows: { Accounts: [snapshotRow("Acme Corp", "gold")] },
     });
 
-    await runWarehouseProducer(
-      { workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-1" },
-      // Empty map — the shipped resolver omits a name that resolves in more than
-      // one connection group, because `getAdminEntity` is about to refuse to
-      // choose between them too.
-      { ...h.deps, resolveConnectionIds: async () => new Map() },
-    );
+    // The third member of the propagating set, alongside the reach and the
+    // vocabulary. Degrading to an empty placement here is indistinguishable from "no
+    // entity is group-scoped" — #5284 applied to the whole workspace at once — so a
+    // resolver that cannot answer must take the run down, not guess.
+    await expect(
+      runWarehouseProducer(
+        { workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-1" },
+        {
+          ...h.deps,
+          resolveConnectionIds: async () => {
+            throw new Error("internal DB down");
+          },
+        },
+      ),
+    ).rejects.toThrow("internal DB down");
 
-    expect(h.snapshots[0]?.connectionId).toBeUndefined();
+    // Nothing was read and nothing was stamped on the way down.
+    expect(h.snapshots).toHaveLength(0);
+    expect(h.validations).toHaveLength(0);
   });
 
   test("validates the built statement BEFORE the snapshot seam is reached", async () => {

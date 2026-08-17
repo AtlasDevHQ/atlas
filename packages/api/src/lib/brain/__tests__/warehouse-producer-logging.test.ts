@@ -110,6 +110,8 @@ type WarehouseSnapshotRequest =
   import("@atlas/api/lib/brain/warehouse-producer").WarehouseSnapshotRequest;
 type ValidatedSnapshotRequest =
   import("@atlas/api/lib/brain/warehouse-producer").ValidatedSnapshotRequest;
+type WarehouseConnectionId =
+  import("@atlas/api/lib/brain/warehouse-producer").WarehouseConnectionId;
 type ReconcileModule = typeof import("@atlas/api/lib/brain/reconcile");
 
 let producer: ProducerModule;
@@ -687,6 +689,67 @@ describe("warehouse producer logging", () => {
     expect(crossGroup.returnedWorkspaceIdMatch).toBe(true);
     expect(crossGroup.returnedEntityMatch).toBe(true);
     expect(crossGroup.returnedRequestMatch).toBe(false);
+  });
+
+  it("compares the RESOLVED connection group, not just the YAML hint (#5284)", async () => {
+    // ⚠️ **The test above is not enough, and the gap is measured.** It reaches a
+    // grouped entity through a YAML `connection:` hint — the one path the mismatch
+    // arm's own recomputation still covered. On a DB-backed semantic layer NO entity
+    // carries that hint (that is the whole of #5284): the group arrives from the
+    // connection resolver instead. The submitted side is built once at the top of the
+    // loop and gained that arm; the mismatch arm went on recomputing
+    // `entity.connection ?? undefined` and so compared against `undefined` on every
+    // iteration of an ordinary group-scoped workspace.
+    //
+    // Measured before this test existed: reverting the hoist and letting the arm
+    // recompute from the hint alone was GREEN across all four producer suites.
+    const RESOLVED = {
+      placed: new Map([["Accounts", "eu-prod" as WarehouseConnectionId]]),
+      unplaceable: [],
+    };
+
+    // (1) THE MISSED ALARM, and it is the one that matters. A verdict minted for a
+    // DEFAULT-connection request — matching workspace, entity and statement, carrying
+    // `connectionId: undefined` — against an entity that actually reads `eu-prod`.
+    // With the submitted side recomputed from the (absent) hint, both sides read
+    // `undefined`, `returnedRequestMatch` reports TRUE, and the predicate an alert
+    // keys on calls a token authorizing the wrong datasource benign.
+    await run({
+      resolveConnectionIds: async () => RESOLVED,
+      validateSnapshotSql: async (request: WarehouseSnapshotRequest) => ({
+        valid: true as const,
+        request: { ...request, connectionId: undefined } as ValidatedSnapshotRequest,
+      }),
+    });
+    const missed = payloadOf(errors, "verdict for a different request");
+    expect(missed.connectionId).toBe("eu-prod");
+    // `"<undefined>"` is how this line renders an absent field — the file's existing
+    // convention, and the reason the assertion is not `toBeUndefined()`.
+    expect(missed.returnedConnectionId).toBe("<undefined>");
+    expect(missed.returnedConnectionIdMatch).toBe(false);
+    expect(missed.returnedRequestMatch).toBe(false);
+    // Everything else agrees — which is what makes the connection the only signal.
+    expect(missed.returnedWorkspaceIdMatch).toBe(true);
+    expect(missed.returnedEntityMatch).toBe(true);
+    expect(missed.sqlDigestMatch).toBe(true);
+
+    errors.length = 0;
+
+    // (2) THE FALSE ALARM, the same defect in the other direction: an honest re-wrap
+    // that returns the real resolved connection. Recomputing from the hint reports
+    // this benign replay with the signature of a cross-datasource forgery.
+    await run({
+      resolveConnectionIds: async () => RESOLVED,
+      validateSnapshotSql: async (request: WarehouseSnapshotRequest) => ({
+        valid: true as const,
+        request: { ...request } as ValidatedSnapshotRequest,
+      }),
+    });
+    const benign = payloadOf(errors, "verdict for a different request");
+    expect(benign.connectionId).toBe("eu-prod");
+    expect(benign.returnedConnectionId).toBe("eu-prod");
+    expect(benign.returnedConnectionIdMatch).toBe(true);
+    expect(benign.returnedRequestMatch).toBe(true);
   });
 
   it("fingerprints the statements and never carries one (#5248)", async () => {

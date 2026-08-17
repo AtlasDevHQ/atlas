@@ -123,6 +123,15 @@ describeIfPg("warehouse run lock (real Postgres)", () => {
    * `gate` is awaited INSIDE `runSnapshot`, which is what makes the overlap real
    * rather than staged: the first run is genuinely mid-flight, holding whatever
    * it holds, when the second one arrives.
+   *
+   * ⚠️ **`resolveConnectionIds` is injected for the same reason `loadEntity` is: the
+   * entity exists ONLY to these stubs.** The shipped resolver reads the workspace's
+   * authoritative published catalog (`semantic_entities`), which this suite never
+   * seeds, so with a live internal DB it correctly refuses {@link ENTITY} as
+   * `connection-unresolved` (#5284) — and then `runSnapshot` is never reached, the
+   * barrier's `onStart` never fires, and the overlap tests time out rather than
+   * failing on the lock. Left un-injected, this file would be asserting lock
+   * behaviour about a run that refuses before it takes anything.
    */
   function deps(
     snapshotAt: Date,
@@ -132,6 +141,8 @@ describeIfPg("warehouse run lock (real Postgres)", () => {
   ): WarehouseProducerDeps {
     return {
       loadEntity: async () => ACCOUNTS_YAML,
+      // The flat default scope, matching the entity YAML above — no group, no hint.
+      resolveConnectionIds: async () => ({ placed: new Map(), unplaceable: [] }),
       validateSnapshotSql: async (request) => ({
         valid: true,
         request: request as ValidatedSnapshotRequest,

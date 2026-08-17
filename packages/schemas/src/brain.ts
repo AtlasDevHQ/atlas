@@ -1681,6 +1681,27 @@ export const BRAIN_WAREHOUSE_REFUSAL_REASONS = [
    * never named" while the enrollment surface still showed it as named.
    */
   "naming-dimension-refused",
+  /**
+   * Atlas could not establish which datasource the entity's snapshot should read
+   * (#5284). Its name resolves under more than one connection group, its group did
+   * not resolve to a visible primary, or it is absent from the DB-backed published
+   * catalog the workspace was resolved against.
+   *
+   * ⚠️ **A REFUSAL rather than a fallback, and that is the whole point of the arm.**
+   * The producer previously answered this question from the entity YAML's
+   * `connection:` hint alone and read its absence as *"the deployment's default
+   * datasource"*. On a DB-backed semantic layer that hint is null for every entity,
+   * so every group-scoped workspace silently sent every snapshot to the default —
+   * on a stock SaaS deploy, the demo database. Defaulting when the answer is
+   * UNKNOWN is what made that invisible: a wrong-datasource read is
+   * indistinguishable from a correct one until someone reads the claims.
+   *
+   * So an unplaceable entity produces nothing and says so. The cost is a refusal an
+   * admin has to act on; the alternative is drafts about the customer's company
+   * built from another database's rows, filed under the enrolled entity's
+   * provenance.
+   */
+  "connection-unresolved",
 ] as const;
 
 export const BrainWarehouseRefusalSchema = z.strictObject({

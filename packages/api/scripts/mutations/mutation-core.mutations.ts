@@ -126,7 +126,7 @@ it, and that header is exactly what stops a reviewer looking closer.
           newString: "  return total > 0 && fail >= Math.floor(total * WHOLE_SUITE_WARN_RATIO);",
         },
       ],
-      note: "Measured at 0 kills before this row existed: at 51 tests both roundings agree, at 58 both agree, and every `countCell` case uses a total of 10 where `10 * 0.9` is exactly 9 in IEEE-754. It is load-bearing anyway — `check-mutation-tables.test.sh`'s `GOOD_TARGET` is deliberately 2-of-3 so the cell renders `2` and not `2 ⚠️`, and under `floor` that suite aborts in its own setup for a reason no message explains.",
+      note: "Kills only 1: at 51 tests both roundings agree, at 58 both agree, and every `countCell` case uses a total of 10 where `10 * 0.9` is exactly 9 in IEEE-754. It is load-bearing anyway — `check-mutation-tables.test.sh`'s `GOOD_TARGET` is deliberately 2-of-3 so the cell renders `2` and not `2 ⚠️`, and under `floor` that suite aborts in its own setup for a reason no message explains.",
     },
     {
       label: "`validateSpec` stops rejecting a no-op edit",

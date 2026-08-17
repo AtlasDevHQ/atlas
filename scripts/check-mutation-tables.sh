@@ -212,7 +212,7 @@ if [ "$MODE" = "affected" ]; then
     else
       # Untracked files too — a brand-new corpus or spec is invisible to `git
       # diff`, and that narrows silently.
-      # ⚠️ The THIRD instance of this twin in this one file, which is why the
+      # ⚠️ Another instance of this twin in this one file, which is why the
       # sweep has to be mechanical rather than remembered. Same command family,
       # same failure modes (index.lock, EACCES, an unreadable excludesFile), same
       # consequence: an empty result narrows the selector, a brand-new spec or
@@ -248,8 +248,8 @@ $UNTRACKED"
       MODE="all"
     else
       for spec in "${SPECS[@]}"; do
-        # ⚠️ THE FOURTH INSTANCE OF THIS TWIN IN THIS SELECTOR, and the one that
-        # was missed. The three above widen on a failing git call; this one is a
+        # ⚠️ ANOTHER INSTANCE OF THIS TWIN IN THIS SELECTOR, and one that the
+        # earlier sweeps missed. The three above widen on a failing git call; this one is a
         # bare `$(...)` in an assignment under `set -e`, so a non-zero `--files`
         # aborts the whole script with status 1 — which is this script's code for
         # STALE. The operator then regenerates tables that never drifted, and the
@@ -307,9 +307,12 @@ $UNTRACKED"
           # prefixing produced `packages/api/../types/src/migration.ts`, which
           # git never emits, so that dependency could NEVER select its spec.
           # Silently, and only for the cross-package case.
-          # ⚠️ THE FIFTH INSTANCE of the twin this file documents three times, and
-          # the one the round-1 sweep missed while its own comment called the
-          # `--files` capture "THE FOURTH INSTANCE … and the one that was missed".
+          # ⚠️ ANOTHER INSTANCE of the twin this file repeats throughout its
+          # selector, and one the round-1 sweep missed while numbering the others.
+          # (The ordinals are gone: they contradicted each other — two sites both
+          # claimed "fourth", and the one claiming "fifth" sat before one of them —
+          # and a comment asserting a position in a sequence rots on every
+          # insertion. It rotted twice on one branch.)
           # A `realpath` without GNU coreutils (BSD, busybox) has no
           # `--relative-to`, exits non-zero, and `set -e` kills the script with 1 —
           # this script's code for STALE. The operator then regenerates tables that
@@ -359,7 +362,7 @@ $UNTRACKED"
         HEAD_SHA=$(cd "$ROOT" && git rev-parse HEAD 2>&1) || HEAD_SHA=""
         BASE_SHA=$(cd "$ROOT" && git rev-parse "$BASE" 2>&1) || BASE_SHA=""
         if [ -z "$HEAD_SHA" ] || [ -z "$BASE_SHA" ]; then
-          # Widen, never narrow — the fourth instance of this twin in this file.
+          # Widen, never narrow — the same twin again.
           # An unresolvable ref here cannot prove the set is non-empty by
           # construction, and "cannot tell" must never render as a green PASS.
           echo "check-mutation-tables: cannot resolve HEAD or '$BASE' to compare them — declining."

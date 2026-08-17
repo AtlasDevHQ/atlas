@@ -27,8 +27,8 @@
 # SCHEDULE (race- and flake-safe, not max-parallel)
 #   Stage 0  serial    `bun run type` — the ONLY gate that writes SDK dist/.
 #                      Runs alone first so nothing reads a half-written dist/.
-#   Stage 1  parallel  lint + lint:type-aware + syncpack + ~30 read-only
-#                      drift/check scripts (33 launches, 2 of them net-gated).
+#   Stage 1  parallel  lint + lint:type-aware + syncpack + ~31 read-only
+#                      drift/check scripts (34 launches, 2 of them net-gated).
 #                      None touch dist/, so they fan out safely (CI_LOCAL_JOBS).
 #   Stage 2  serial    the tree-WRITING gates (gate-fixtures, mutation-tables).
 #                      Both rewrite sources in place — `mutate.ts` per mutation,
@@ -235,7 +235,7 @@ launch railway-watch             bash scripts/check-railway-watch.sh
 launch template-drift            g_template_drift
 launch security-headers-drift    bash scripts/check-security-headers-drift.sh
 launch lighthouse-report-paths   bash scripts/check-lighthouse-report-paths.sh
-launch gate-fixtures-wired      bash scripts/check-gate-fixtures-wired.sh
+launch gate-fixtures-wired       bash scripts/check-gate-fixtures-wired.sh
 launch pricing-parity            bash scripts/check-pricing-parity.sh
 launch plugin-count              bash scripts/check-plugin-count.sh
 launch plugin-lockstep           bun scripts/check-plugin-lockstep.ts

@@ -182,9 +182,11 @@ extract_sources() {
 # INCLUDED.
 #
 # ⚠️ **THE ACTUAL SHARED READING, and it exists because the previous attempt at
-# sharing was a comment rather than a mechanism.** `is_broad_copy_token` was
-# introduced to be "ONE PREDICATE, read by BOTH arms" — and was called from
-# `extract_sources` only, while `has_broad_copy` kept an independent grep. The two
+# sharing was a comment rather than a mechanism.** The token predicate below was
+# DOCUMENTED as shared and was called from `extract_sources` only, while
+# `has_broad_copy` kept an independent grep. (Paraphrased rather than quoted: the
+# sentence it made is still live below as a now-true claim, and a grep returning
+# one assertion and one citation-as-past-falsehood lies both ways.) The two
 # then disagreed on the DESTINATION spelling: that regex accepted only `.`, `./`,
 # `/` or empty as a destination, so `COPY . /app` (with `WORKDIR /app` — the more
 # common Docker idiom, and semantically identical to `COPY . .`) was skipped by
@@ -300,6 +302,15 @@ extract_dockerfile_context() {
 # in the repo. That line is the TRIGGER for the two arms below: it is what makes
 # the set of change-relevant files bigger than the set of COPY sources, and the
 # COPY-source arm skips it by design.
+# Whether ONE COPY source token is the broad whole-context copy. `.`, `./`, `/`
+# and the empty string all count.
+is_broad_copy_token() { # is_broad_copy_token TOKEN
+  case "${1%/}" in
+    "." | "") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # ⚠️ ONE PREDICATE, read by BOTH arms, because two spellings of "the broad copy"
 # is a live false negative. `extract_sources` skips a source token of `.` OR `./`;
 # this recognised only the bare `COPY . .`. So `COPY ./ ./`, `COPY . ./`, or
@@ -311,13 +322,6 @@ extract_dockerfile_context() {
 #
 # `deploy/docs/Dockerfile` already opts into `# syntax=docker/dockerfile:1.7`, so
 # `--link` is available today.
-is_broad_copy_token() { # is_broad_copy_token TOKEN
-  case "${1%/}" in
-    "." | "") return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 has_broad_copy() {
   local src
   while IFS= read -r src; do

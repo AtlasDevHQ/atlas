@@ -73,11 +73,33 @@ for fixture in "${FIXTURES[@]}"; do
   rel="scripts/__tests__/$(basename "$fixture")"
   wired=""
   for wf in "${WORKFLOWS[@]}"; do
-    # `grep -qF` on the repo-relative PATH, not the bare basename: a workflow
-    # COMMENT mentioning the file by name would satisfy a basename match, and a
-    # comment does not run anything. The path as written in a `run:` line is the
-    # thing that executes it.
-    if grep -qF -- "$rel" "$wf"; then
+    # ⚠️ **COMMENTS STRIPPED BEFORE MATCHING, and the first cut of this gate did
+    # not — while claiming it did.** Its comment said matching the repo-relative
+    # path rather than the basename meant "a comment does not run anything". That
+    # was a different distinction from the one the code made, and the gap was
+    # LIVE in two places:
+    #
+    #   image-scan.yml:249      a comment naming scripts/__tests__/scan-image.test.sh
+    #   lighthouse.yml:280      a comment naming scripts/__tests__/lighthouse-comment.test.sh
+    #
+    # Both are full repo-relative paths, so deleting either suite's `run:` step
+    # left this gate green off the prose alone — and those two are precisely the
+    # suites whose wiring is least obvious, one running from a different workflow
+    # and one from `ci.yml`. A gate that reads its own documentation as evidence
+    # is the defect this whole change is about, reproduced in the change's own
+    # newest guard.
+    #
+    # `sed 's/#.*//'` is crude — it would also cut a `#` inside a quoted string —
+    # but the error direction is LOUD: over-stripping can only make a real `run:`
+    # line unmatched, which reports a wired suite as unwired and fails the build.
+    # It cannot manufacture a false pass.
+    # ⚠️ PROCESS SUBSTITUTION, not a pipe, and this cost a debugging round.
+    # `sed … | grep -q` under `set -o pipefail` INVERTS: `grep -q` exits on its
+    # first match, `sed` takes SIGPIPE, and the pipeline's status is therefore
+    # non-zero — so a MATCH reads as NO MATCH. Measured: it reported 18 of 24
+    # suites unwired. It failed loudly rather than silently, which is the only
+    # reason it was cheap to find.
+    if grep -qF -- "$rel" <(sed 's/#.*//' "$wf"); then
       wired="$(basename "$wf")"
       break
     fi

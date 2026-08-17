@@ -88,17 +88,32 @@ else
   printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
 fi
 
-# 4. ⚠️ A COMMENT IS NOT A RUN. The gate greps the repo-relative PATH rather than
-# the basename precisely so a workflow that only MENTIONS a suite does not count —
-# which is the shape the deleted census was (prose naming the files).
+# 4. ⚠️ A COMMENT IS NOT A RUN — asserted with a FULL REPO-RELATIVE PATH, which is
+# the case that mattered and the case the first cut could not fail on.
+#
+# That version appended a BASENAME mention and passed, so it established only "a
+# basename in a comment does not count" while its name claimed the stronger
+# property. The stronger property was FALSE: the gate grepped the whole file, and
+# `image-scan.yml` and `lighthouse.yml` both carry a comment with the full path to
+# a real suite. Deleting either `run:` step left the gate green.
+new_tree no
+echo "      # see also scripts/__tests__/check-beta.test.sh for the beta gate" >>"$TREE/.github/workflows/ci.yml"
+run_gate
+if [ "$RC" = "1" ] && printf '%s' "$OUT" | grep -qF "check-beta.test.sh"; then
+  pass "a comment carrying the FULL PATH does not count as running it"
+else
+  fail "full-path comment mention — expected exit 1, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 4b. …and the basename form too, which is the weaker case the first cut tested.
 new_tree no
 echo "      # see also check-beta.test.sh for the beta gate" >>"$TREE/.github/workflows/ci.yml"
 run_gate
-if [ "$RC" = "1" ] && printf '%s' "$OUT" | grep -qF "check-beta.test.sh"; then
-  pass "a workflow COMMENT naming a suite does not count as running it"
+if [ "$RC" = "1" ]; then
+  pass "a BASENAME mention in a comment likewise does not count"
 else
-  fail "comment-only mention — expected exit 1, got $RC"
-  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+  fail "basename comment mention — expected exit 1, got $RC"
 fi
 
 # 5. ANY workflow counts, not just ci.yml — `scan-image.test.sh` really does live
@@ -151,7 +166,7 @@ else
 fi
 
 # ⚠️ AN ABSOLUTE LITERAL, for the reason its siblings carry one.
-EXPECTED_CASES=8
+EXPECTED_CASES=9
 TOTAL=$((PASS + FAIL))
 if [ "$TOTAL" -eq "$EXPECTED_CASES" ]; then
   pass "all $EXPECTED_CASES cases ran"

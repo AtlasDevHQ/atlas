@@ -17,7 +17,7 @@
  * slice (20→22, 11→13, 3→4, 2→3) because a later review round appended tests
  * and edited the prose without re-running anything.
  *
- * ## The three guardrails, and the failure each one closes
+ * ## The four guardrails, and the failure each one closes
  *
  *   1. **Baseline first, abort if red.** Every count here is `fail` under a
  *      mutation. Against a tree that was already failing, that number is the
@@ -35,7 +35,11 @@
  *      normally carries uncommitted work — this runner is used mid-slice, which
  *      is the whole point — and `git checkout -- <file>` would destroy it.
  *
- * The logic behind all three lives in `mutation-core.ts` and is unit-tested;
+ *   4. **The baseline measured something.** A deflated baseline reads as honest
+ *      and silently rescales every cell — `pass` is the published suite size and
+ *      `isWholeSuite`'s denominator. `baselineProblem` is the check.
+ *
+ * The logic behind all four lives in `mutation-core.ts` and is unit-tested;
  * this file is the process around it. Same split as `signal-retry.ts`.
  *
  * ## The whole-suite trap
@@ -318,8 +322,9 @@ async function measure(
       console.error(`${position} ${RED}ANCHOR${RESET} ${mutation.label}\n         ${err.message}`);
       for (const target of targets) {
         // `unmeasured`, so the run REFUSES this rather than rendering it as a
-        // stable byte that `--check` then blesses forever. One of four members
-        // of that class; the discriminant is what the refusal reads.
+        // stable byte that `--check` then blesses forever. One of the causes
+        // `Cell`'s docstring enumerates; the discriminant is what the refusal
+        // reads, not the cause.
         cells.set(target.name, { kind: "unmeasured", reason: `ANCHOR: ${err.matches} matches` });
       }
       continue;
@@ -451,8 +456,8 @@ if (options.files) {
   // `--all` on every push to main is the backstop for the deeper graph.
   for (const seed of seeds) {
     const abs = resolve(ROOT, seed);
-    // ⚠️ GUARDED, and this is the fourth instance of a twin `check-mutation-
-    // tables.sh` documents three times ("widen, never narrow"). The read is NEW
+    // ⚠️ GUARDED, and this is the same widen-never-narrow twin
+    // `check-mutation-tables.sh` repeats throughout its selector. The read is NEW
     // with the import hop — before it, `--files` touched no filesystem and could
     // not fail this way. `existsSync` is true for a DIRECTORY, so a `target.file`
     // that has become one throws EISDIR, `--files` exits non-zero, and the shell
@@ -609,16 +614,15 @@ try {
 // anchor mirroring that literal, the table regenerated with a tombstone where a
 // measured `2` had been, and `--check` said `CHECK OK`.
 //
-// ⚠️ That first version refused on ONE member — a dead anchor — and the class
-// has FIVE. A mutated run that skips tests, one whose buckets do not account
-// for what bun ran, one that registered ZERO tests, and one whose suite failed
-// to compile all produced an honest-looking cell that `--check` blessed forever.
+// ⚠️ That first version refused on ONE cause — a dead anchor — and `Cell`'s
+// docstring enumerates the rest (a skipped or TODO'd run, an unaccounted bucket,
+// a run that registered zero tests, a compile error, a non-timeout signal kill).
+// Every one produced an honest-looking cell that `--check` blessed forever.
 // Refusing on the DISCRIMINANT rather than on any particular cause is what makes
-// one refusal cover all of them; `uncommittableReason`'s `never` pin is what
-// stops a SIXTH being added without its author deciding whether it may be
-// committed. (An earlier draft of this comment claimed the union left "nowhere
-// else to put it" — that was false: an inline `kind === "unmeasured"` test gave
-// a new variant no compile pressure at all.)
+// one refusal cover all of them — and a cause added later needs no edit here for
+// the same reason. (Two earlier drafts of this comment overclaimed: the union
+// does not leave "nowhere else to put it", and the `never` pin constrains a new
+// VARIANT, not a new cause.)
 //
 // `measure()` still keeps going after an `AnchorError` — one bad anchor should
 // not cost the other twenty measurements — so this refuses at the END, naming

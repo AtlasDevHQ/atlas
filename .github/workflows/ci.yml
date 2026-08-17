@@ -161,11 +161,36 @@ jobs:
           if [ $ERRORS -gt 0 ]; then exit 1; fi
           echo "All Dockerfiles pin bun $EXPECTED"
 
+      # ⚠️ THE GUARD THAT REPLACED A HAND-MAINTAINED CENSUS. `ci-local.sh` GLOBS
+      # `scripts/__tests__/*.test.sh` while this workflow ENUMERATES them, so a new
+      # suite runs locally and never runs in CI — a guard measuring nothing on the
+      # gate that decides whether code ships. That was tracked by a comment
+      # counting the suites, which had to be rewritten three times in the change
+      # that removed it. It is now checked.
+      - name: Check every fixture suite is run by a workflow (#5296)
+        run: bash scripts/check-gate-fixtures-wired.sh
+
+      - name: Adversarial fixtures for the gate-fixtures-wired gate (#5296)
+        run: bash scripts/__tests__/check-gate-fixtures-wired.test.sh
+
       - name: Check Dockerfile workspace completeness
         run: bash scripts/check-dockerfile-workspace.sh
 
-      - name: Check Railway watchPatterns coverage
+      # ⚠️ Two arms, and the second one is the reason this gate can now fail for
+      # the class it was filed for. The COPY-source arm skips the api
+      # Dockerfile's broad `COPY . .` by design — and that one line bundles every
+      # package in the repo, so the set of change-relevant files is the workspace
+      # dependency CLOSURE of what the image ships, not the set of COPY sources.
+      # A miss there does not fail a deploy, it SKIPS one: Railway answers
+      # `skippedReason: "No changes to watched files"` and the release silently
+      # never ships (#4733/#4734, hand-fixed in #4737). Measured before this
+      # change: the gate reported "All 54 COPY sources covered" and exit 0 while
+      # `packages/okf-bundle` was copied into the api image and watched by nobody.
+      - name: Check Railway watchPatterns cover every bundled workspace path (#4738)
         run: bash scripts/check-railway-watch.sh
+
+      - name: Adversarial fixtures for the railway-watch gate (#4738)
+        run: bash scripts/__tests__/check-railway-watch.test.sh
 
       - name: Check template drift
         run: bash scripts/check-template-drift.sh
@@ -189,6 +214,30 @@ jobs:
 
       - name: Adversarial fixtures for the Caddyfile config gate (#5242)
         run: bash scripts/__tests__/check-caddyfile.test.sh
+
+      # The Lighthouse report path was duplicated EIGHT ways — `lighthouserc.js`'s
+      # `upload.outputDir`, the verify step's `dir=`, its diagnostic `find`, the
+      # artifact `path:` and `name:`, the renderer's `REPORT_ROOT`, `.gitignore`,
+      # and a customer-facing claim in `apps/docs`. #4899 was born of exactly that
+      # shape: a `mv` target that no longer agreed with what lhci wrote, silent for
+      # three months. The gate EXECUTES lighthouserc.js rather than grepping it, and
+      # derives the form-factor allowlist from that config's own validation error.
+      - name: Check Lighthouse report paths agree with lighthouserc.js (#5174)
+        run: bash scripts/check-lighthouse-report-paths.sh
+
+      - name: Adversarial fixtures for the lighthouse-report-paths gate (#5174)
+        run: bash scripts/__tests__/check-lighthouse-report-paths.test.sh
+
+      # The PR-comment renderer, plus the RETIRED-WORDING RATCHET that used to
+      # live only in an uncommitted out-of-tree harness. It renders a claim about
+      # a run, and #4899 was a false one that stood for 1200+ runs; its fix
+      # produced six false-or-overreaching message claims across two rounds, four
+      # of them introduced by the fix for a previous one. The ratchet runs over
+      # RENDERED BODIES, never the source — the renderer's comments name the
+      # retired wordings in order to explain them, so a source scan would flag its
+      # own documentation.
+      - name: Adversarial fixtures for the Lighthouse comment renderer (#5174)
+        run: bash scripts/__tests__/lighthouse-comment.test.sh
 
       - name: Check no publishable package version is merged-but-unpublished
         run: bun scripts/check-unpublished-versions.ts
@@ -291,12 +340,16 @@ jobs:
 
       # ⚠️ Enumerated here because this workflow lists each fixture suite BY NAME
       # while ci-local.sh globs the directory — so a new suite runs locally and
-      # silently never runs in CI. This was the only one missing at the time, of
-      # thirteen suites then. There are 20 now, all covered: 19 named in this
-      # workflow plus `scan-image.test.sh` in image-scan.yml. (#5242 added the
-      # twentieth, `check-caddyfile.test.sh`, named in the drift job above.)
+      # silently never runs in CI.
+      #
+      # ⚠️ THE CENSUS THAT USED TO LIVE HERE IS GONE, replaced by
+      # `scripts/check-gate-fixtures-wired.sh`. It was a hand-maintained count
+      # ("there are N now, all covered") that nothing verified — and it had to be
+      # rewritten three times in the single change that removed it. A number
+      # nothing checks, sitting in the workflow that runs the mutation gate, is
+      # the exact shape that gate exists to refuse.
       # It builds throwaway trees and needs no Postgres; ~2 seconds.
-      - name: Adversarial fixtures for the mutation-tables gate (#5077)
+      - name: Adversarial fixtures for the mutation-tables gate (#5077, #5097)
         run: bash scripts/__tests__/check-mutation-tables.test.sh
 
       # Enumerated here for the reason stated above. This one covers the

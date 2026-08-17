@@ -17,28 +17,46 @@
 # Locks in, in the order they would hurt:
 #   1. a hand-edited generated table is CAUGHT             (the #5060 threat model)
 #   2. a target carrying `.skip` is REFUSED                (guardrail 4, #5077)
+#  2b. a target carrying `.todo` is REFUSED                (the second bucket, #5097)
 #   3. an unresolvable base WIDENS rather than passing     (the fail-safe)
 #   4. TEST_DATABASE_URL unset exits 3, not 0              (SKIP, never PASS)
 #   5. POSITIVE CONTROL: a current table passes            (or the above is vacuous)
 #   6. HEAD == base exits 3, and HEAD-ahead still exits 0  (#5151, a PAIR)
+#  6b. a COMMITTED TOMBSTONE is refused, not blessed       (#5097)
+#  6c. a CORPUS-ONLY commit selects its spec               (#5097)
 #   7. every spec lands on exactly one shard               (the partition)
 #   8. a malformed --shard is a hard error                 (never a silent no-op)
 #   9. an empty shard is honest, an impossible one is not  (the exit-0 path)
 #  10. --affected + --shard still covers the affected set  (what CI runs on a PR)
 #
 # ⚠️ EVERY fixture here was proven sensitive by DELETING the guard it pins and
-# confirming it goes red. Two more (`.todo` refused, dead anchor refused) were
-# written, measured VACUOUS — their trees generate no table, so `--check` exits
-# 1 with "is stale" whether or not the guard exists — and REMOVED rather than
-# shipped green. They need a tree carrying a committed tombstone, and
-# `check()` needs to assert on a discriminating phrase rather than on an exit
-# code five failure modes share. Tracked in #5097.
+# confirming it goes red.
+#
+# ⚠️ 2b, 6b and 6c are the three #5077 wrote, measured VACUOUS, and deleted
+# rather than shipped green — and the reason they were vacuous was `check()`,
+# not the trees. It asserted only an EXIT CODE, and exit 1 is shared by at least
+# five states (STALE, a dead anchor, a deflated baseline, an unknown argument,
+# no specs found), so "the guard fired" and "my fixture tree was broken" were
+# indistinguishable. Deleting the entire anchor refusal left all seven fixtures
+# green. `check()` now requires a DISCRIMINATING PHRASE alongside the code, 6b
+# manufactures a committed tombstone with the refusal bypassed in the fixture's
+# own copy of the runner, and 6c is the one fixture here whose two outcomes share
+# an exit code entirely — pre-fix exit 0 "nothing to verify", post-fix exit 1
+# STALE — so it could not have existed at all before the phrase argument.
 #
 # ⚠️ The numbers above are the ONLY numbering. The per-fixture comments below
 # are ordered to match them; an earlier draft kept labels from a seven-fixture
-# scheme, and one of those labels claimed the `.todo` bucket that this header
-# says was removed.
+# scheme, and one of those labels claimed the `.todo` bucket that the header then
+# said was removed.
 
+# ⚠️ `-e` here, unlike this file's three sibling suites, which drop it so a failing
+# case cannot abort the tally. Kept deliberately: `make_tree`'s premise checks
+# (the tombstone bypass, the corpus table) signal a BROKEN FIXTURE by exiting
+# non-zero from a command substitution, and aborting loudly is the right response
+# to "the tree I was about to test does not exist". The cost is real and worth
+# naming: an abort skips the `EXPECTED_CASES` guard at the bottom, so the device
+# that notices a DELETED case is unreachable on the failure mode most likely to
+# delete one. An abort is still a non-zero exit, so it cannot read as a pass.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -111,16 +129,31 @@ test("a", () => { expect(answer()).toBe(42); });
 test("b", () => { expect(answer()).toBe(42); });
 test("c", () => { expect(1).toBe(1); });'
 
-check() { # check EXPECTED_EXIT NAME TREE [ARGS...]
-  local expected="$1" name="$2" tmp="$3"; shift 3
+# ⚠️ ASSERTS AN EXIT CODE **AND** A DISCRIMINATING PHRASE (#5097).
+#
+# The exit-code-only version of this helper is what made two fixtures vacuous
+# and got them deleted rather than shipped. Exit 1 is shared by at least five
+# states — STALE, a dead anchor, a deflated baseline, an unknown argument, and
+# "no specs found" — so `rc == 1` cannot tell "the guard fired" from "my fixture
+# tree was broken". Both deleted fixtures failed exactly that way: their trees
+# generated no table, so `--check` exited 1 with *"is stale"* whether or not the
+# guard existed, and deleting the entire anchor refusal left all seven green.
+#
+# The `shard_reject` helper below already had this discipline for the same
+# reason; the phrase argument brings the main helper into line, and it is
+# REQUIRED rather than optional so a new fixture cannot silently opt out.
+check() { # check EXPECTED_EXIT PHRASE NAME TREE [ARGS...]
+  local expected="$1" phrase="$2" name="$3" tmp="$4"; shift 4
   local rc=0 out
   out=$( cd "$tmp" && TEST_DATABASE_URL="${TEST_DATABASE_URL:-x}" \
          MUTATION_SPEC_GLOB="scripts/mutations/f.mutations.ts" \
          bash scripts/check-mutation-tables.sh "$@" 2>&1 ) || rc=$?
-  if [ "$rc" = "$expected" ]; then
+  # `--` before the pattern: a phrase may legitimately begin with `-`.
+  if [ "$rc" = "$expected" ] && printf '%s' "$out" | grep -qF -- "$phrase"; then
     echo "  ok    $name (exit $rc)"; PASS=$((PASS + 1))
   else
-    echo "  FAIL  $name — expected exit $expected, got $rc"; echo "$out" | sed 's/^/        /' | tail -12
+    echo "  FAIL  $name — expected exit $expected containing '$phrase', got $rc"
+    echo "$out" | sed 's/^/        /' | tail -14
     FAIL=$((FAIL + 1))
   fi
   rm -rf "$tmp"
@@ -131,30 +164,134 @@ echo ":: check-mutation-tables.sh adversarial fixtures"
 # 5. POSITIVE CONTROL, run first — everything below is vacuous without it.
 T=$(make_tree "$GOOD_TARGET" '"  return 42;"' \
    'bun run scripts/mutate.ts scripts/mutations/f.mutations.ts >/dev/null 2>&1')
-check 0 "POSITIVE CONTROL — a freshly generated table passes" "$T" --all
+check 0 "verified table(s) current" \
+  "POSITIVE CONTROL — a freshly generated table passes" "$T" --all
 
 # 1. The #5060 threat model: a hand-edited number.
+#
+# ⚠️ The phrase is `STALE <spec>`, which only the verification loop prints. A
+# bare exit 1 would also be satisfied by "no specs found" — the way the two
+# deleted fixtures passed while asserting nothing.
 T=$(make_tree "$GOOD_TARGET" '"  return 42;"' \
    'bun run scripts/mutate.ts scripts/mutations/f.mutations.ts >/dev/null 2>&1; grep -q "| 2 |" scripts/mutations/f.md && sed -i "s/| 2 |/| 99 |/" scripts/mutations/f.md')
-check 1 "a hand-edited generated table is caught" "$T" --all
+check 1 "STALE scripts/mutations/f.mutations.ts" \
+  "a hand-edited generated table is caught" "$T" --all
 
-# 2. Guardrail 4, the `.skip` bucket ONLY. A skipped test cannot be killed, so
-# the count deflates. ⚠️ bun does not fold `todo` into `skip`, and the `.todo`
-# fixture that would pin that second bucket was measured vacuous and removed
-# (see the header, and #5097) — so nothing in this suite covers it.
+# 2. Guardrail 4, the `.skip` bucket. A skipped test cannot be killed, so the
+# count deflates. bun does not fold `todo` into `skip`; fixture 2b pins that
+# second bucket, which the header used to say nothing covered.
 SKIP_TARGET='import { expect, test } from "bun:test";
 import { answer } from "./subject";
 test("a", () => { expect(answer()).toBe(42); });
 test.skip("b", () => { expect(answer()).toBe(42); });'
 T=$(make_tree "$SKIP_TARGET" '"  return 42;"' \
    'bun run scripts/mutate.ts scripts/mutations/f.mutations.ts >/dev/null 2>&1 || true')
-check 1 "a target carrying .skip is REFUSED" "$T" --all
+check 1 "SKIPPED 1 of 2 tests" \
+  "a target carrying .skip is REFUSED" "$T" --all
+
+# 2b. THE `.todo` BUCKET — reinstated from #5077, where it was measured VACUOUS
+# and deleted rather than shipped green (#5097).
+#
+# ⚠️ The vacuity was in the ASSERTION, not the tree. With the guard present the
+# generation step refuses, no `f.md` is written, and `--check` exits 1 saying
+# *"is stale"* — the same 1 the guard produces. The phrase is what discriminates:
+# `marked TODO on 1 of 2 tests` can only come from the deflation arm. Measured
+# by deleting that arm: the tree then generates a table, `--check` says CHECK OK,
+# and this fixture goes red.
+TODO_TARGET='import { expect, test } from "bun:test";
+import { answer } from "./subject";
+test("a", () => { expect(answer()).toBe(42); });
+test.todo("b");'
+T=$(make_tree "$TODO_TARGET" '"  return 42;"' \
+   'bun run scripts/mutate.ts scripts/mutations/f.mutations.ts >/dev/null 2>&1 || true')
+check 1 "marked TODO on 1 of 2 tests" \
+  "a target carrying .todo is REFUSED — bun does not fold it into skip" "$T" --all
+
+# 2c. ⚠️ THE PER-MUTATION REFUSAL, which had NO falsifier anywhere.
+#
+# Fixtures 2 and 2b deflate the BASELINE, so they exercise `baselineProblem` →
+# `fail()`. Fixture 6b's tombstone reaches the refusal through `measure()`'s
+# AnchorError path. NOTHING reached `mutate.ts`'s per-mutation arm — which is
+# #5097's headline claim, the thing #5077 detected and then removed. Deleting
+# that arm published a deflated count as an honest number and every suite in the
+# repo stayed green.
+#
+# Here the baseline is CLEAN — 3 pass, 0 skip, since `describe.skipIf(42 !== 42)`
+# does NOT skip — and the MUTATION causes the skip: `return 0` makes the predicate
+# true and the gated test drops out. The phrase comes only from
+# `UnmeasurableOutcome.cell`; the baseline path prints `.message`, which for this
+# arm reads "SKIPPED 1 of 3 tests" and cannot contain "SKIPPED 1 —". The two
+# strings are textually disjoint, which is what makes the phrase discriminate.
+SKIPIF_TARGET='import { describe, expect, test } from "bun:test";
+import { answer } from "./subject";
+test("a", () => { expect(answer()).toBe(42); });
+test("b", () => { expect(1).toBe(1); });
+describe.skipIf(answer() !== 42)("gated", () => {
+  test("c", () => { expect(answer()).toBe(42); });
+});'
+T=$(make_tree "$SKIPIF_TARGET" '"  return 42;"' \
+   'bun run scripts/mutate.ts scripts/mutations/f.mutations.ts >/dev/null 2>&1 || true')
+check 1 "SKIPPED 1 — count would be deflated" \
+  "a MUTATION that makes the suite SKIP is refused per-mutation, not published" "$T" --all
+
+# 2d. …and the EMPTY case, measured live on bun 1.3.13: a corpus-driven target
+# whose array the mutation empties prints ` 0 pass` / ` 0 fail`, which NO other
+# arm catches. `isWholeSuite(0, n)` is false, so the runner published a `0` —
+# the byte the generated header defines as "the suite does not catch it" — for a
+# run that registered no tests at all. #5097's own class, found in review.
+EMPTY_TARGET='import { expect, test } from "bun:test";
+import { answer } from "./subject";
+const CORPUS = answer() === 42 ? [1, 2] : [];
+for (const c of CORPUS) {
+  test(`c${c}`, () => { expect(answer()).toBe(42); });
+}'
+T=$(make_tree "$EMPTY_TARGET" '"  return 42;"' \
+   'bun run scripts/mutate.ts scripts/mutations/f.mutations.ts >/dev/null 2>&1 || true')
+check 1 "ZERO tests ran — nothing was measured" \
+  "a MUTATION that empties the suite is refused, not published as a 0" "$T" --all
+
+# 2e. AN UNREADABLE SEED DOES NOT ABORT THE SELECTOR, and the gate SAYS the
+# dependency list is short.
+#
+# ⚠️ `--files` reads each seed's source to walk its imports, which is NEW — before
+# the import hop it touched no filesystem and could not fail. `existsSync` is true
+# for a DIRECTORY, so a `target.file` that has become one throws EISDIR. MEASURED:
+# unguarded, `--files` exits 1, and a bare `$(...)` under `set -e` then aborts the
+# whole gate with status 1 — which this script's header calls its code for STALE.
+# The operator regenerates tables that never drifted while the real fault (a
+# rotted spec path) sits in a log tail.
+#
+# The phrase pins BOTH halves: the selector survived, AND the warning reached the
+# log instead of being swallowed by a `2>/dev/null`.
+T=$(make_tree "$GOOD_TARGET" '"  return 42;"' \
+   'bun run scripts/mutate.ts scripts/mutations/f.mutations.ts >/dev/null 2>&1; git add -A >/dev/null && git commit --quiet -m generated && git branch base-ref HEAD; rm -f src/subject.test.ts && mkdir -p src/subject.test.ts && git add -A >/dev/null && git commit --quiet -m "target became a directory"')
+check 1 "dependency list is INCOMPLETE" \
+  "an UNREADABLE seed leaves the selector running and says the list is short" "$T" --affected base-ref
+
+# 2f. …and when `--files` genuinely CANNOT run, the selector WIDENS rather than
+# aborting. An unloadable spec is the reachable case: `loadSpec` fails before any
+# of the read guarding above, so this is falsifiable independently of it.
+#
+# Pre-fix the script died at the assignment and printed no widen at all, so the
+# phrase — not the exit code, which is 1 either way — is what discriminates.
+T=$(make_tree "$GOOD_TARGET" '"  return 42;"' \
+   'bun run scripts/mutate.ts scripts/mutations/f.mutations.ts >/dev/null 2>&1; printf "this is not valid typescript (((\n" > scripts/mutations/f.mutations.ts && git add -A >/dev/null && git commit --quiet -m "break the spec"')
+# ⚠️ The phrase is `cannot list dependencies for`, NOT `falling back to --all`.
+# FOUR gate sites emit that second string (the base diff, the working-tree diff,
+# the untracked list, and this one), so it cannot say WHICH widen fired — and this
+# suite's own header is an essay about exit 1 being shared by five states. The
+# narrower phrase sits on the same `echo`, so it still implies the widen.
+check 1 "cannot list dependencies for" \
+  "an unloadable spec WIDENS the selector rather than aborting as STALE" "$T" --affected main
 
 # 3. The fail-safe. An unresolvable base must WIDEN to --all (and then catch the
 # hand-edit), never quietly select nothing and exit 0.
 T=$(make_tree "$GOOD_TARGET" '"  return 42;"' \
    'bun run scripts/mutate.ts scripts/mutations/f.mutations.ts >/dev/null 2>&1; grep -q "| 2 |" scripts/mutations/f.md && sed -i "s/| 2 |/| 99 |/" scripts/mutations/f.md')
-check 1 "an unresolvable base WIDENS to --all rather than passing" "$T" --affected origin/nope
+# Likewise unique to the base-diff widen, so this fixture and 2f pin DIFFERENT
+# sites rather than both resting on one shared sentence.
+check 1 "cannot diff against" \
+  "an unresolvable base WIDENS to --all rather than passing" "$T" --affected origin/nope
 
 # 4. Declining to verify is not passing.
 T=$(make_tree "$GOOD_TARGET" '"  return 42;"' 'true')
@@ -178,14 +315,127 @@ rm -rf "$T"
 # loop itself (`mutate.ts --files` per spec). Fixtures 1/2/5 pass --all, and 3
 # widens on an unresolvable base before the loop is reached.
 T=$(make_tree "$GOOD_TARGET" '"  return 42;"' 'true')
-check 3 "HEAD == base exits 3 (SKIP) — the affected set is empty BY CONSTRUCTION" "$T" --affected main
+check 3 "empty BY CONSTRUCTION" \
+  "HEAD == base exits 3 (SKIP) — the affected set is empty BY CONSTRUCTION" "$T" --affected main
 
 # The negative control. HEAD is one commit ahead of the base and that commit
 # touches nothing any spec depends on, so the empty selection is a real answer
 # rather than an artefact of there being no delta at all — exit 0 is honest here.
 T=$(make_tree "$GOOD_TARGET" '"  return 42;"' \
    'git branch base-ref HEAD && echo note > ../../notes.md && git add -A >/dev/null && git commit --quiet -m irrelevant')
-check 0 "HEAD ahead of base, no spec dep touched — still a genuine PASS" "$T" --affected base-ref
+check 0 "nothing to verify" \
+  "HEAD ahead of base, no spec dep touched — still a genuine PASS" "$T" --affected base-ref
+
+# 6b. A COMMITTED TOMBSTONE is refused — the dead-anchor fixture reinstated
+# from #5077, where it was measured VACUOUS and deleted rather than shipped
+# (#5097).
+#
+# The tree it needs is the historical artefact: a table whose cell already reads
+# `⚠️ ANCHOR: 0 matches`, committed. `--check` compares BYTES, so without the
+# refusal the runner regenerates that tombstone, finds it identical, and says
+# CHECK OK — verifying a table that measures nothing, forever.
+#
+# ⚠️ The artefact is manufactured with the refusal BYPASSED IN THE FIXTURE'S OWN
+# COPY of the runner, which `make_tree` already keeps in the throwaway tree. That
+# is the only honest way to produce bytes the shipped runner refuses to write.
+# The gate then runs against the PRISTINE copy.
+#
+# ⚠️ And the bypass VERIFIES ITS OWN PREMISE, twice, because a silently-missed
+# `sed` is how this fixture was vacuous the first time: if the refusal line moves,
+# no table is written, `--check` exits 1 with "is stale", and an exit-code-only
+# fixture would have reported ok. Both `grep -q` guards exit non-zero, which
+# aborts the suite under `set -e` — loud, not green.
+TOMBSTONE_SETUP='cp scripts/mutate.ts scripts/mutate.pristine.ts
+grep -q "const unmeasured = unmeasuredRows(rows);" scripts/mutate.ts \
+  || { echo "FIXTURE PREMISE BROKEN: mutate.ts has no unmeasuredRows refusal to bypass"; exit 9; }
+sed -i "s/const unmeasured = unmeasuredRows(rows);/const unmeasured: { label: string; reason: string }[] = [];/" scripts/mutate.ts
+bun run scripts/mutate.ts scripts/mutations/f.mutations.ts >/dev/null 2>&1
+mv scripts/mutate.pristine.ts scripts/mutate.ts
+grep -q "ANCHOR: 0 matches" scripts/mutations/f.md \
+  || { echo "FIXTURE PREMISE BROKEN: the bypass wrote no committed tombstone"; exit 9; }
+git add -A >/dev/null && git commit --quiet -m tombstone'
+# `return 43;` appears nowhere in subject.ts, so the anchor is dead by construction.
+T=$(make_tree "$GOOD_TARGET" '"  return 43;"' "$TOMBSTONE_SETUP")
+check 1 "MEASURED NOTHING" \
+  "a COMMITTED TOMBSTONE (dead anchor) is refused, not blessed as current" "$T" --all
+
+# 6c. A CORPUS-ONLY EDIT SELECTS ITS SPEC (#5097).
+#
+# `mutate.ts --files` listed a spec's targets and edit files and nothing they
+# import — so `__tests__/identity-corpus.ts` and seven siblings were invisible to
+# `--affected`. Those are the highest-risk dependencies in the set: they are
+# data-driven inputs, so adding one row changes the published suite size AND
+# every kill count. A corpus-only PR got "nothing to verify" and exit 0.
+#
+# ⚠️ THE EXIT CODE CANNOT DISCRIMINATE HERE, which is why this fixture needed
+# the phrase argument to exist. Pre-fix the gate exits 0 saying "nothing to
+# verify"; post-fix it exits 1 saying STALE. The commit adds a corpus ROW, so
+# the table genuinely goes stale and the selection has something to find.
+make_corpus_tree() {
+  local tmp; tmp="$(mktemp -d)"
+  mkdir -p "$tmp/packages/api/scripts/mutations" "$tmp/packages/api/src/__tests__" "$tmp/scripts"
+  for f in mutate.ts mutation-core.ts mutation-spec.ts signal-retry.ts; do
+    cp "$REPO_ROOT/packages/api/scripts/$f" "$tmp/packages/api/scripts/"
+  done
+  ln -s "$REPO_ROOT/node_modules" "$tmp/node_modules"
+  cp "$SCRIPT" "$tmp/scripts/check-mutation-tables.sh"
+
+  cat >"$tmp/packages/api/src/subject.ts" <<'TS'
+export function answer(): number {
+  return 42;
+}
+TS
+  cat >"$tmp/packages/api/src/__tests__/corpus.ts" <<'TS'
+export const CORPUS = [1, 2];
+TS
+  # ⚠️ A MULTI-LINE import, deliberately: the statement-shaped regex a reader
+  # reaches for matches none of these, and that is the spelling every real
+  # corpus import in this repo uses.
+  cat >"$tmp/packages/api/src/subject.test.ts" <<'TS'
+import { expect, test } from "bun:test";
+import {
+  CORPUS,
+} from "./__tests__/corpus";
+import { answer } from "./subject";
+for (const c of CORPUS) {
+  test(`corpus ${c}`, () => { expect(answer()).toBe(42); });
+}
+test("filler", () => { expect(1).toBe(1); });
+TS
+  cat >"$tmp/packages/api/scripts/mutations/f.mutations.ts" <<'SPEC'
+import type { MutationSpec } from "../mutation-spec";
+const spec: MutationSpec = {
+  title: "corpus fixture",
+  out: "scripts/mutations/f.md",
+  targets: [{ name: "subject", file: "src/subject.test.ts" }],
+  mutations: [
+    { label: "answer returns the wrong number", edits: [{ file: "src/subject.ts", oldString: "  return 42;", newString: "  return 0;" }] },
+  ],
+};
+export default spec;
+SPEC
+  ( cd "$tmp/packages/api" && bun run scripts/mutate.ts scripts/mutations/f.mutations.ts >/dev/null 2>&1 )
+  grep -q '| 2 |' "$tmp/packages/api/scripts/mutations/f.md" \
+    || { echo "FIXTURE PREMISE BROKEN: the corpus tree's table did not record 2 kills"; exit 9; }
+  ( cd "$tmp" && git init --quiet -b main && git config user.email t@t.t && git config user.name t \
+      && git add -A >/dev/null && git commit --quiet -m base && git branch base-ref HEAD )
+  # The ONLY change: one more corpus row. Nothing the pre-fix selector could see.
+  cat >"$tmp/packages/api/src/__tests__/corpus.ts" <<'TS'
+export const CORPUS = [1, 2, 3];
+TS
+  ( cd "$tmp" && git add -A >/dev/null && git commit --quiet -m "add a corpus row" )
+  echo "$tmp"
+}
+
+# ⚠️ THE PHRASE PINS THE SELECTION, not the STALE catch, and the difference
+# matters. `(1, "STALE …")` is produced by TWO paths: the corpus-following
+# selector, and any of four git calls WIDENING to `--all` — which also verifies
+# every spec and finds this one stale. So the pair a stale-catch phrase asserts
+# is not what this fixture claims to measure. `N of M spec(s) affected by this
+# branch` comes only from the affected selector's own report.
+T=$(make_corpus_tree)
+check 1 "1 of 1 spec(s) affected by this branch" \
+  "a CORPUS-ONLY commit SELECTS its spec (not a widen), and the stale table is caught" "$T" --affected base-ref
 
 # 7. The shard partition is TOTAL and DISJOINT.
 #
@@ -453,6 +703,21 @@ else
   echo "  FAIL  repeated --shard — expected exit 1 saying 'given twice', got $rc"; FAIL=$((FAIL + 1))
 fi
 rm -rf "$T"
+
+# ⚠️ AN ABSOLUTE LITERAL, and this suite is the one that most needed it: its own
+# recorded history is TWO fixtures deleted in #5077, and this change reinstates
+# five. A count derived from the cases cannot notice a deleted case — measured on
+# `check-docs-brain-snippets.test.sh`, which reported `40 passed, 0 failed` with
+# cases removed. Its three sibling suites in this change all carry one; this file
+# shipped without, which is exactly the asymmetry a reviewer caught.
+EXPECTED_CASES=28
+TOTAL=$((PASS + FAIL))
+if [ "$TOTAL" -eq "$EXPECTED_CASES" ]; then
+  echo "  ok    all $EXPECTED_CASES cases ran"; PASS=$((PASS + 1))
+else
+  echo "  FAIL  expected $EXPECTED_CASES cases, $TOTAL ran — a fixture was added or deleted without updating EXPECTED_CASES"
+  FAIL=$((FAIL + 1))
+fi
 
 echo ":: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

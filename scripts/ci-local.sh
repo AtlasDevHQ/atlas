@@ -27,8 +27,8 @@
 # SCHEDULE (race- and flake-safe, not max-parallel)
 #   Stage 0  serial    `bun run type` — the ONLY gate that writes SDK dist/.
 #                      Runs alone first so nothing reads a half-written dist/.
-#   Stage 1  parallel  lint + lint:type-aware + syncpack + ~29 read-only
-#                      drift/check scripts (32 launches, 2 of them net-gated).
+#   Stage 1  parallel  lint + lint:type-aware + syncpack + ~31 read-only
+#                      drift/check scripts (34 launches, 2 of them net-gated).
 #                      None touch dist/, so they fan out safely (CI_LOCAL_JOBS).
 #   Stage 2  serial    the tree-WRITING gates (gate-fixtures, mutation-tables).
 #                      Both rewrite sources in place — `mutate.ts` per mutation,
@@ -234,6 +234,8 @@ launch dockerfile-workspace      bash scripts/check-dockerfile-workspace.sh
 launch railway-watch             bash scripts/check-railway-watch.sh
 launch template-drift            g_template_drift
 launch security-headers-drift    bash scripts/check-security-headers-drift.sh
+launch lighthouse-report-paths   bash scripts/check-lighthouse-report-paths.sh
+launch gate-fixtures-wired       bash scripts/check-gate-fixtures-wired.sh
 launch pricing-parity            bash scripts/check-pricing-parity.sh
 launch plugin-count              bash scripts/check-plugin-count.sh
 launch plugin-lockstep           bun scripts/check-plugin-lockstep.ts
@@ -321,7 +323,7 @@ fi
 # half-written. RESULT's existence = run finished; its contents = the report.
 #
 # ⚠️ The verdict logic itself lives in scripts/lib/ci-local-report.sh so it can
-# be tested WITHOUT running 36 gates. It cannot be tested by invoking this
+# be tested WITHOUT running 38 gates. It cannot be tested by invoking this
 # script: `g_gate_fixtures` above runs every scripts/__tests__/*.test.sh, so
 # such a test would recurse. See scripts/__tests__/ci-local-verdict.test.sh.
 # shellcheck source=lib/ci-local-report.sh

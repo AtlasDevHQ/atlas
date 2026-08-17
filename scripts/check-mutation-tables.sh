@@ -212,7 +212,7 @@ if [ "$MODE" = "affected" ]; then
     else
       # Untracked files too — a brand-new corpus or spec is invisible to `git
       # diff`, and that narrows silently.
-      # ⚠️ The THIRD instance of this twin in this one file, which is why the
+      # ⚠️ Another instance of this twin in this one file, which is why the
       # sweep has to be mechanical rather than remembered. Same command family,
       # same failure modes (index.lock, EACCES, an unreadable excludesFile), same
       # consequence: an empty result narrows the selector, a brand-new spec or
@@ -248,7 +248,58 @@ $UNTRACKED"
       MODE="all"
     else
       for spec in "${SPECS[@]}"; do
-        DEPS="$spec"$'\n'"$(bun run scripts/mutate.ts "$spec" --files)"
+        # ⚠️ ANOTHER INSTANCE OF THIS TWIN IN THIS SELECTOR, and one that the
+        # earlier sweeps missed. The three above widen on a failing git call; this one is a
+        # bare `$(...)` in an assignment under `set -e`, so a non-zero `--files`
+        # aborts the whole script with status 1 — which is this script's code for
+        # STALE. The operator then regenerates tables that never drifted, and the
+        # real fault sits in a log tail. `--files` can now fail: it reads the
+        # seeds' source to walk their imports, and `existsSync` is true for a
+        # directory, so a `target.file` that has become one throws EISDIR.
+        # ⚠️ STDERR CAPTURED SEPARATELY, not merged and not discarded. Merging it
+        # would put diagnostics into a list every line of which is read as a
+        # dependency path; discarding it would hide `--files`' own warnings —
+        # and those warnings are the ONLY signal that a seed was unreadable and
+        # its imports are therefore missing from the list. A quietly shorter
+        # dependency list is this gate's one unacceptable failure.
+        DEP_ERR=$(mktemp)
+        if ! DEP_OUT=$(bun run scripts/mutate.ts "$spec" --files 2>"$DEP_ERR"); then
+          echo "check-mutation-tables: cannot list dependencies for $spec — falling back to --all."
+          sed 's/^/  /' "$DEP_ERR"
+          rm -f "$DEP_ERR"
+          MODE="all"
+          SELECTED=()
+          break
+        fi
+        if [ -s "$DEP_ERR" ]; then
+          # ⚠️ WIDENS, and the first cut of this arm only ANNOUNCED. The comment
+          # above calls a quietly shorter dependency list this gate's one
+          # unacceptable failure — and then this arm echoed and fell through, so
+          # an unreadable corpus produced a short list, no spec was selected, and
+          # the gate exited 0 with "nothing to verify". A green PASS row for the
+          # exact edit shape the import hop was added to catch.
+          #
+          # ⚠️ It cannot tell a NARROWING warning (an unreadable seed) from a
+          # WIDENING one (`statCandidate`'s "I could not stat it, so I am
+          # including it"), because both land in this sink. A reader that cannot
+          # distinguish them must assume the worst — which is the same
+          # widen-never-narrow rule the three git arms above follow.
+          #
+          # ⚠️ Widening HERE while the empty-by-construction arm below DECLINES is
+          # not an inconsistency, and the difference is worth stating: declining
+          # there is right because the full sweep would re-verify a SHA remote CI
+          # already covers, buying no coverage for minutes of cost. Here the
+          # dependency GRAPH is unreadable, so we do not know which tables are at
+          # risk — the sweep buys real coverage.
+          echo "check-mutation-tables: $spec's dependency list is INCOMPLETE — falling back to --all."
+          sed 's/^/  /' "$DEP_ERR"
+          rm -f "$DEP_ERR"
+          MODE="all"
+          SELECTED=()
+          break
+        fi
+        rm -f "$DEP_ERR"
+        DEPS="$spec"$'\n'"$DEP_OUT"
         while IFS= read -r dep; do
           [ -z "$dep" ] && continue
           # ⚠️ NORMALISE. A spec may legitimately reach outside packages/api —
@@ -256,13 +307,36 @@ $UNTRACKED"
           # prefixing produced `packages/api/../types/src/migration.ts`, which
           # git never emits, so that dependency could NEVER select its spec.
           # Silently, and only for the cross-package case.
-          rel=$(cd "$ROOT/packages/api" && realpath -m --relative-to="$ROOT" "$dep")
+          # ⚠️ ANOTHER INSTANCE of the twin this file repeats throughout its
+          # selector, and one the round-1 sweep missed while numbering the others.
+          # (The ordinals are gone: they contradicted each other — two sites both
+          # claimed "fourth", and the one claiming "fifth" sat before one of them —
+          # and a comment asserting a position in a sequence rots on every
+          # insertion. It rotted twice on one branch.)
+          # A `realpath` without GNU coreutils (BSD, busybox) has no
+          # `--relative-to`, exits non-zero, and `set -e` kills the script with 1 —
+          # this script's code for STALE. The operator then regenerates tables that
+          # never drifted while the real fault sits in a log tail.
+          if ! rel=$(cd "$ROOT/packages/api" && realpath -m --relative-to="$ROOT" "$dep" 2>&1); then
+            echo "check-mutation-tables: cannot normalise dependency '$dep' ($rel) — falling back to --all."
+            MODE="all"
+            SELECTED=()
+            break 2
+          fi
           if printf '%s\n' "$CHANGED" | grep -qxF "$rel"; then
             SELECTED+=("$spec"); break
           fi
         done <<< "$DEPS"
       done
-      if [ ${#SELECTED[@]} -eq 0 ]; then
+      # ⚠️ A widen inside the loop above already decided every table is in scope,
+      # exactly as the base-diff / working-tree / untracked widens do. Without
+      # this arm, execution falls into the empty-selection block below and can
+      # `exit 3` or `exit 0` — so the gate would ANNOUNCE a widen and then do the
+      # opposite. That is the same dead-widen defect measured earlier in this
+      # file, one door over.
+      if [ "$MODE" = "all" ]; then
+        :
+      elif [ ${#SELECTED[@]} -eq 0 ]; then
         # ⚠️ TWO different states reach here and they are NOT the same verdict.
         # Collapsing them into `exit 0` was the last false-green left in this
         # file, and it fired at the worst possible moment (#5151).
@@ -288,7 +362,7 @@ $UNTRACKED"
         HEAD_SHA=$(cd "$ROOT" && git rev-parse HEAD 2>&1) || HEAD_SHA=""
         BASE_SHA=$(cd "$ROOT" && git rev-parse "$BASE" 2>&1) || BASE_SHA=""
         if [ -z "$HEAD_SHA" ] || [ -z "$BASE_SHA" ]; then
-          # Widen, never narrow — the fourth instance of this twin in this file.
+          # Widen, never narrow — the same twin again.
           # An unresolvable ref here cannot prove the set is non-empty by
           # construction, and "cannot tell" must never render as a green PASS.
           echo "check-mutation-tables: cannot resolve HEAD or '$BASE' to compare them — declining."
@@ -305,8 +379,9 @@ $UNTRACKED"
         echo "check-mutation-tables: no spec's targets or sources changed vs $BASE — nothing to verify."
         echo "  (push: main runs --all, so a table that drifted for another reason is still caught there.)"
         exit 0
+      else
+        echo "check-mutation-tables: ${#SELECTED[@]} of ${#SPECS[@]} spec(s) affected by this branch."
       fi
-      echo "check-mutation-tables: ${#SELECTED[@]} of ${#SPECS[@]} spec(s) affected by this branch."
     fi
   fi
 fi

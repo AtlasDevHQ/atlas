@@ -81,7 +81,7 @@ When Atlas opens to a community, `/triage` runs first (move new issues through t
 | Situation | Use |
 | --- | --- |
 | Pre-PR gate | Remote CI on a **draft** PR — push first, review while it runs. Local pre-flight is only `--affected` + `lint` + `type` |
-| Full local battery — 36 gates, ~25 min | `/ci` (Atlas) — only when remote CI is broken, a mutation anchor moved, or before `/release`. See `/ship-issue` Step 4 |
+| Full local battery — 38 gates, ~25 min | `/ci` (Atlas) — only when remote CI is broken, a mutation anchor moved, or before `/release`. See `/ship-issue` Step 4 |
 | Open a PR | `/pr` (Atlas) — branch, commit, push, create PR (add `--draft` when the panel hasn't run yet) |
 | Milestone is fully shipped | `/closeout` (Atlas) — docs audit, changelog, close GH milestone |
 | Handing the in-flight session to another agent / clone / day | `/handoff` (Matt Pocock — compacts the session into a handoff doc) |

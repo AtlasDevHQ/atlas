@@ -1,6 +1,10 @@
 # Architecture Wins
 
-Tracking module-deepening refactors discovered by the `improve-codebase-architecture` skill. Each entry captures the before/after state and measurable impact.
+Tracking module-deepening refactors — a contract that had copies now has one home, a seam that had two shapes now has one. Each entry captures the before/after state and measurable impact.
+
+**Where entries come from:** originally the `improve-codebase-architecture` skill, and that is no longer the only source — #101 came from a milestone-wide architecture review, #104 and #105 from `/ship-issue` on an `architecture`-labelled issue. The test for an entry is the **shape of the win**, not which skill found it.
+
+**What does NOT earn an entry**, even carrying the `architecture` label: a guard refinement, a type-expression tightening, or a feature that merely touches many files. Those are recorded in `ROADMAP.md` and stop there. `/tidy` §2b applies this split.
 
 ---
 
@@ -2846,3 +2850,25 @@ The consequence was structural rather than incidental: any surface had exactly t
 - **What it deliberately did NOT buy is recorded at the seam.** Nothing at the type level prevents a new route from shipping with no gate — `@hono/zod-openapi` intersects route middleware into the handler env rather than checking it against the app's, so making the context flag required produces no compile error at any call site. The runtime tripwire is the enforcement, and a `createGatedRoute` wrapper that would make omission a compile error is filed rather than pretended.
 
 **Category:** A refinement-only gate that structurally could not grant → a sibling gate that authorizes on its own, with the fail-closed posture shared rather than forked, and the residual type-level gap named instead of papered over.
+
+---
+
+## 105. The GDPR purge's result type and child→parent relation derive from one registry — four copies of the relation collapse, and three regex tripwires retire with a named RED each (#5176)
+
+**Date:** 2026-08-16
+**Issue:** #5176
+**PR:** #5261
+**Commit:** 42dbeac72
+
+**Problem:** `hardDeleteWorkspace`'s contract was maintained by hand in parallel with the registry that actually drives it. `HardDeleteResult` spelled out **92 count fields** one per purged table, kept in agreement with `PURGE_TABLE_DECISIONS` by a *regex over the interface's own source* — a test that read the type as text, normalized plural stems, and carried a `REPORTED_UNDER` alias map to paper over the names that didn't match. The child→parent relation for the ten scope-less tables was written **four** times: the purge SQL, the ordering test, the `-pg` seeder's own `PARENT_LINK`, and a fourth copy nobody had counted — the #3468 tombstone INSERT, whose SELECT has to name exactly the ids the ledger DELETE names or a cancellation webhook regrows the row it just deleted. Two runtime guards existed only to check a shape the type could have forbidden (`typeof value !== "number"` in `totalRowsDeleted`, an `as unknown as Record<string, number>` in the route).
+
+**Solution:** `HardDeleteResult` splits into `{ counts, skippedTables }` — the mapped type cannot be uniform while a string array shares the object — and `HardDeleteCounts` becomes a mapped type over `PURGE_TABLE_DECISIONS`, imported **type-only** so `purge-scope.ts` stays a pure data file with zero imports. `viaParent` moves onto the registry entry, and both SQL builders plus the `-pg` seeder read that one declaration.
+
+**Impact:**
+- **+1,266 / −470 across 14 files**, and the net is *up* — the deletions are the hand-written copies, the additions are the guards that replace them. Same tables, same predicates, same order; the only two behaviour changes are corrections to what the purge *says* (the incomplete message no longer describes a skipped tombstone WRITE as undeleted data, and the INCOMPLETE log no longer asserts a cause that may not have occurred).
+- **Every retired tripwire has a named replacement RED, measured by editing the tree and restoring from a backup** — because a retired tripwire with no named RED is a coverage regression wearing a refactor's clothes. The count-completeness regex → `TS2741` at the purge's own return statement on an identifier that exists nowhere on disk, so only a live derivation can produce it; its misspelling arm → excess-property `TS2561`; its alias arm → `COUNT_FIELD_ALIASES` under `satisfies Partial<Record<PurgedTableName, string>>`; the seeder's `PARENT_LINK` → the one declaration; the hand-written `childBeforeParent` pair list → the same assertion with pairs derived.
+- ⚠️ **Collapsing to one declaration OPENED a hole the issue's AC assumed away, and the fix is a source the registry cannot edit.** Once the seeder and the purge read one declaration, a **wrong-but-internally-consistent** declaration satisfies both: repointing `messages.parent` at `dashboards` left `-pg` green 17/17 while the production DELETE matched zero rows, and repointing `slack_threads` (registry **and** pin together) was green 24/24 + 98/98 + 17/17 — not rescued by any type accident, since `conversation_id` and `dashboards.id` are both `uuid`. The AC's property holds only for mutations that make the SQL *invalid*. What closes it is `db/schema.ts`'s own foreign keys, written from the migrations: **7 of 10** fully derived from a single-column FK, **1** through a two-hop position-matched walk of a composite FK (a membership test admitted `user_id` — one of two candidates, and the one a careless edit produces), and **2 pinned by value, stated plainly as the removed copy coming back** rather than dressed as derivation.
+- **A guard added in this PR was itself deletable with zero test failures** — `assertPlainIdentifiers`, in the very commit headlined *"`parentKeyNullable` was deletable with zero test failures"*. It was **removed rather than tested**: both builders now take a `ViaParentTableName` and read the link themselves, so the injection state is unrepresentable instead of runtime-rejected. Same class for the tombstone message split, which had zero coverage and joined to its source by a hand-copied table name in another module (reverting it wholesale left both route suites green).
+- **The declaration is already carrying weight it was not built for.** #5289 → PR #5291 extended the same entry with `additionalKeySources` to widen the ledger delete, and collapsed the tombstone + DELETE into a single `WITH` — one builder, one call site, so handing two builders different options became unrepresentable. That extension cost one field on an existing declaration rather than a fifth copy.
+
+**Category:** A contract maintained in parallel with its data by a regex over the type's own source text → a mapped type derived from the registry, with the relation declared once and the consistency the collapse *cannot* check delegated to the schema's foreign keys.

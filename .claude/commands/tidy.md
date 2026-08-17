@@ -84,7 +84,15 @@ For each category, build a list of actions needed:
 - **Issues missing labels** -> every issue needs a type label AND area label(s):
   - Type (exactly one): `bug`, `feature`, `refactor`, `chore`, `docs`
   - Area (one or more): `area: api`, `area: web`, `area: cli`, `area: plugins`, `area: sandbox`, `area: deploy`, `area: ci`, `area: sdk`, `area: mcp`, `area: starter`, `area: docs`, `area: testing`
-  - Special: `architecture` — for module-deepening refactors from `/improve-codebase-architecture`. When an `architecture` issue is closed, check if `.claude/research/architecture-wins.md` was updated with the win. If not, add a reminder comment on the closed issue
+  - Special: `architecture` — check closed `architecture` issues against `.claude/research/architecture-wins.md`. **Not every `architecture` closure earns an entry**: that file tracks module-deepening (a contract that had copies now has one home, a seam that had two shapes now has one), which is most often `refactor` + `architecture`. A guard refinement, a type-expression tightening, or a feature that merely touches a lot of files is recorded in ROADMAP and stops there. When one *does* qualify, **write the entry** — do not file a reminder comment on a closed issue, which is the follow-up farming the repo rule forbids
+- **Stale WAITING-state labels** -> `needs-triage` and `needs-info` assert a live obligation, so remove both from any **closed** issue. `ready-for-agent` / `ready-for-human` / `wontfix` are KEPT on closed issues (they record routing and verdict, not an obligation). Convention: `docs/agents/triage-labels.md`. GraphQL 503s during this sweep are common — use REST and verify by re-listing rather than trusting exit codes:
+  ```bash
+  # find, per label
+  gh api --paginate "repos/AtlasDevHQ/atlas/issues?state=closed&labels=needs-triage&per_page=100" \
+    --jq '.[] | select(.pull_request == null) | .number'
+  # remove, then RE-LIST to verify — a failed DELETE is silent
+  gh api -X DELETE "repos/AtlasDevHQ/atlas/issues/<N>/labels/needs-triage"
+  ```
 - **Issues missing milestone** -> assign to the appropriate milestone if one exists
 - Parent issues with shipped sub-issues -> add status comment listing what shipped and what remains
 

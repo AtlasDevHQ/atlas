@@ -29,6 +29,20 @@ Atlas issues carry labels on **two orthogonal axes**:
 
 See `docs/agents/issue-tracker.md` for the full kind/area vocabulary and how to apply both axes together.
 
+## The two WAITING states are cleared when an issue closes
+
+`needs-triage` and `needs-info` assert a **live obligation** — "a maintainer still has to evaluate this", "we are still waiting on someone". On a closed issue both are false by construction, so they are removed at close. `/tidy` sweeps any that survive (§2b).
+
+The other three are **not** swept, and the asymmetry is the point:
+
+| Label | On a closed issue | Why |
+| --- | --- | --- |
+| `needs-triage` / `needs-info` | **removed** | Claims an obligation that closing discharged |
+| `ready-for-agent` / `ready-for-human` | kept | Records who the work was routed to — history, not a claim about the present |
+| `wontfix` | kept | It *is* the verdict, and the verdict is why the issue is closed |
+
+⚠️ **A stale `needs-triage` reads as a real open question in every label view**, and it accumulates silently because closing an issue is the one moment nobody is looking at its labels. 75 closed issues had carried one — the oldest since 2026-06-14 — and both `needs-info` survivors were `state_reason: completed`, i.e. resolved issues advertising that we were still waiting on the reporter. Swept 2026-08-17.
+
 ## When triage isn't relevant
 
 Today, almost every Atlas issue is self-filed by the maintainer with a clear next step — those issues don't need to pass through the triage funnel. Skip the triage-state label for internal issues, and rely on the milestone + kind/area labels alone.

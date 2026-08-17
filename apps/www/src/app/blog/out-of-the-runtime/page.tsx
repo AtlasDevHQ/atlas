@@ -120,14 +120,9 @@ export default function OutOfTheRuntime() {
           Atlas began as a commit in February, co-authored with the agent from
           line one. I didn&apos;t arrive empty-handed. I brought over a handful
           of commands from the previous project I&apos;d just walked away from:{" "}
-          <a
-            href="https://github.com/AtlasDevHQ/atlas/blob/main/.claude/commands/next.md"
-            className="link-accent"
-          >
-            one to decide what to work on next
-          </a>
-          , one to research the codebase, one to check its health. Three small
-          text files. That was the whole system.
+          one to decide what to work on next*, one to research the codebase,
+          one to check its health. Three small text files. That was the whole
+          system.
         </P>
         <P>
           Everything between those commands was manual, and I was the part that
@@ -225,47 +220,29 @@ export default function OutOfTheRuntime() {
           :
         </P>
         <DefList>
-          <DefItem
-            term={
-              <a
-                href="https://github.com/AtlasDevHQ/atlas/blob/main/.claude/commands/ship-issue.md"
-                className="link-accent font-mono"
-              >
-                ship-issue
-              </a>
-            }
-          >
+          <DefItem term={<span className="font-mono">ship-issue*</span>}>
             One issue, nothing to merged. Picks the craft loop, runs the panel,
             passes CI, opens the PR, services every comment until it lands.
           </DefItem>
-          <DefItem
-            term={
-              <a
-                href="https://github.com/AtlasDevHQ/atlas/blob/main/.claude/commands/ship-batch.md"
-                className="link-accent font-mono"
-              >
-                ship-batch
-              </a>
-            }
-          >
+          <DefItem term={<span className="font-mono">ship-batch*</span>}>
             A handful at once. The top few ready issues, each dispatched to its
             own isolated worktree agent, then collected when they finish.
           </DefItem>
-          <DefItem
-            term={
-              <a
-                href="https://github.com/AtlasDevHQ/atlas/blob/main/.claude/commands/ship-milestone.md"
-                className="link-accent font-mono"
-              >
-                ship-milestone
-              </a>
-            }
-          >
+          <DefItem term={<span className="font-mono">ship-milestone*</span>}>
             The whole thing, on a heartbeat. It grinds an entire milestone to
             merged, waking itself each time a PR lands to dispatch the next
             unblocked issue. This is the one behind the good mornings.
           </DefItem>
         </DefList>
+        <P>
+          <em>
+            * Retired since this was written. These commands were deleted in
+            August 2026, along with most of the workflow layer around them —
+            what they describe is how the loop ran at the time, not how it runs
+            today. The replacement is much smaller, and deliberately so; a
+            future post will cover what changed and why.
+          </em>
+        </P>
         <P>
           The dispatcher I used to be is a command now. So is the reviewer, and
           the scheduler, and the person who used to sit refreshing a PR for six

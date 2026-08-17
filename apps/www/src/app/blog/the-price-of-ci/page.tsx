@@ -79,50 +79,30 @@ export default function ThePriceOfCi() {
           eating something like a tenth of my weekly token budget, and the
           reason took a minute to track down. <InlineCode>/ci</InlineCode>{" "}
           sits as a mandatory gate inside nearly every other command that
-          ships code here —{" "}
-          <a
-            href="https://github.com/AtlasDevHQ/atlas/blob/main/.claude/commands/pr.md"
-            className="link-accent font-mono"
-          >
-            /pr
-          </a>
-          ,{" "}
+          ships code here — <InlineCode>/pr</InlineCode>*,{" "}
           <a
             href="https://github.com/AtlasDevHQ/atlas/blob/main/.claude/commands/release.md"
             className="link-accent font-mono"
           >
             /release
           </a>
-          ,{" "}
-          <a
-            href="https://github.com/AtlasDevHQ/atlas/blob/main/.claude/commands/next.md"
-            className="link-accent font-mono"
-          >
-            /next
-          </a>
-          , and{" "}
-          <a
-            href="https://github.com/AtlasDevHQ/atlas/blob/main/.claude/commands/ship-issue.md"
-            className="link-accent font-mono"
-          >
-            /ship-issue
-          </a>
-          . Which means{" "}
-          <a
-            href="https://github.com/AtlasDevHQ/atlas/blob/main/.claude/commands/ship-batch.md"
-            className="link-accent font-mono"
-          >
-            /ship-batch
-          </a>{" "}
-          and{" "}
-          <a
-            href="https://github.com/AtlasDevHQ/atlas/blob/main/.claude/commands/ship-milestone.md"
-            className="link-accent font-mono"
-          >
-            /ship-milestone
-          </a>{" "}
-          run it once per issue, all night, unattended, while I sleep.
+          , <InlineCode>/next</InlineCode>*, and{" "}
+          <InlineCode>/ship-issue</InlineCode>*. Which means{" "}
+          <InlineCode>/ship-batch</InlineCode>* and{" "}
+          <InlineCode>/ship-milestone</InlineCode>* run it once per issue, all
+          night, unattended, while I sleep.
         </Lead>
+        <P>
+          <em>
+            * Retired since this was written. The workflow layer these commands
+            belonged to was deleted in August 2026 and replaced by something a
+            great deal smaller — the shipping process described here is the one
+            that ran at the time. <InlineCode>/ci</InlineCode> and{" "}
+            <InlineCode>/release</InlineCode> are still here and still do what
+            this post says they do. A future post will cover what replaced the
+            rest, and why.
+          </em>
+        </P>
         <P>
           Each of those invocations ran 16 separate gates: lint, the type
           checker, the full test suite, a dozen drift and security scripts.
@@ -309,7 +289,7 @@ RESULT: FAIL — 1 of 27 gates failed: test
         <H2>Where it stops</H2>
         <P>
           By the end of the same day, the same move went into{" "}
-          <InlineCode>/ship-issue</InlineCode>&apos;s external-review step —
+          <InlineCode>/ship-issue</InlineCode>*&apos;s external-review step —
           the part that used to sweep three GitHub endpoints by hand and poll
           them every 30 to 60 seconds, up to ten minutes, three rounds deep. A
           second wrapper,{" "}

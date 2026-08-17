@@ -1232,10 +1232,28 @@ export const OpenApiDatasourceCatalogSeedLive: Layer.Layer<
               outcome: "seeded",
             } satisfies OpenApiDatasourceCatalogSeedShape;
           case "error":
+            // ⚠️ SCRUBBED — and this arm was the THIRD instance of one defect.
+            //
+            // `OpenApiDatasourceCatalogSeedShape.error` is DOCUMENTED as "Scrubbed
+            // error message" and the `catchAll` arm below has always
+            // scrubbed, so this producer made the field mean two different things
+            // depending on which path filled it. #5239 fixed exactly that asymmetry
+            // on the knowledge Layer; #5273's tests pinned it on the knowledge and
+            // datasource Layers; this sibling still had it, found only because that
+            // review read the enclosing FILE rather than the changed lines.
+            //
+            // A `pg` connect failure carries `scheme://user:pass@host` in
+            // `message`, and one field with two producers must not have two
+            // guarantees. The lexical guard in
+            // `effect/__tests__/builtin-catalog-seed-layers.test.ts` fails on this
+            // exact SPELLING — the one that has now occurred three times. A
+            // differently-named local (`error: r.message`) still slips past it, so
+            // the guard narrows the odds rather than closing the class; three
+            // hand-fixes is simply where prose stopped being enough on its own.
             return {
               inserted: false,
               outcome: "error",
-              error: result.message,
+              error: errorMessage(new Error(result.message)),
             } satisfies OpenApiDatasourceCatalogSeedShape;
         }
       },

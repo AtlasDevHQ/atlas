@@ -3842,7 +3842,8 @@ admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", asy
   // nothing (`String` accepts `unknown`) and asserted something false. An object
   // body passed the null/undefined check above, stringified to
   // `"[object Object]"`, and was PERSISTED: `def.type` validation catches it for
-  // `number`, `boolean` and `select`, but a `type: "string"` setting accepted it,
+  // `number`, `boolean` and any `select` that declares `options` (all of today's
+  // do), but a `type: "string"` setting accepted it,
   // wrote it, audited it and echoed it back as though it were the admin's value.
   //
   // Rejecting it here is also what makes the coercion below honest — every

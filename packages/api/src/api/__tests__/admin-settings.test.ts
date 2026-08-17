@@ -334,17 +334,18 @@ void mock.module("@atlas/api/lib/settings", () => ({
 // a difference in either direction.
 type Equal<X, Y> =
   (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y ? 1 : 2 ? true : false;
-type Simplify<T> = { readonly [K in keyof T]: T[K] };
+/** Normalises mutability so `Equal` compares shapes, not `readonly` modifiers. */
+type AllReadonly<T> = { readonly [K in keyof T]: T[K] };
 type SchemaMatchesResponseType = Equal<
   // Both sides normalised: `z.infer` yields mutable properties while
   // `SettingUpdateResponse` is `readonly` throughout, and `Equal` is strict about
-  // that. `Simplify` also flattens the intersection so the comparison is between
+  // that. `AllReadonly` also flattens the intersection so the comparison is between
   // two plain property bags rather than an object and an `A & B`.
-  Simplify<z.infer<typeof settingUpdateResponseSchema>>,
-  Simplify<
-    Readonly<Omit<SettingUpdateResponse, "success" | "value">> & {
-      readonly success: boolean;
-      readonly value: string;
+  AllReadonly<z.infer<typeof settingUpdateResponseSchema>>,
+  AllReadonly<
+    Omit<SettingUpdateResponse, "success" | "value"> & {
+      success: boolean;
+      value: string;
     }
   >
 >;

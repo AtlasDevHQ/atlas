@@ -9,14 +9,13 @@
  * its written values straight into `metadata` with no redaction, which is
  * structurally defect 1, safe only because those keys are not `secret: true`);
  * `onboarding.ts` writes `ATLAS_DEMO_INDUSTRY` and `admin-sandbox.ts` clears
- * `ATLAS_SANDBOX_BACKEND`; neither files an audit row. They are outside
- * this PR, and naming them here is the point — the next reader must not take
- * "the seam" to mean coverage nobody built.
+ * `ATLAS_SANDBOX_BACKEND`. None of the three files an audit row today, so "the
+ * seam" must not be read as coverage nobody built.
  *
- * ⚠️ **THREE DEFECTS SHARED ONE CALL SITE. ONE WAS LIVE; TWO WERE NOT WHAT
- * THE ISSUES SAID THEY WERE.** Both stated mechanisms were checked and both
- * were wrong — recorded here rather than quietly corrected, because a fix
- * resting on a false rationale is one verification away from being deleted:
+ * ⚠️ **THREE DEFECTS SHARED ONE CALL SITE. ONE WAS LIVE; TWO WERE NOT WHAT THE
+ * ISSUES SAID THEY WERE.** Both stated mechanisms were checked and both were
+ * wrong, recorded because a fix resting on a false rationale gets deleted at the
+ * first verification:
  *
  * 1. **The value was recorded verbatim — but a `secret: true` value cannot
  *    reach it.** `metadata: { key, value, tier }` carried the raw string, and
@@ -26,18 +25,14 @@
  *    key *before* the write — grep the guard by its copy, `"Secret settings
  *    cannot be modified from the UI."`, which appears once per verb — and
  *    that guard is on `main` already, so there was no window. So
- *    `redactAuditValue`'s `secret` arm and its `undefined`-definition
- *    fail-closed arm are BOTH route-unreachable today, and every production
- *    entry THAT CARRIES A VALUE takes the verbatim arm. (Not every entry: the
- *    union below forces `value?: undefined` on `reset_to_default`, so a DELETE
- *    row takes the no-value arm instead.)
+ *    all THREE of the decision's withholding arms — `secret`,
+ *    `unknown_definition` and `definition_mismatch` — are route-unreachable
+ *    today, and every production entry THAT CARRIES A VALUE takes the verbatim
+ *    arm. (Not every entry: the union below forces `value?: undefined` on
+ *    `reset_to_default`, so a DELETE row takes the no-value arm instead.)
  *
- *    ⚠️ Cited by MESSAGE rather than by line, deliberately. The first draft of
- *    this block pinned `admin.ts:3720`/`:3876` and both were stale within the
- *    same round — the line numbers moved when this PR's own helper was added
- *    forty lines above them. A citation that rots is worse than none, because
- *    the next reader checks it, finds unrelated code, and stops trusting the
- *    paragraph that was right.
+ *    ⚠️ Cited by MESSAGE, not line: line pins here went stale within one round,
+ *    and a citation that rots is worse than none.
  *
  *    The redaction is kept as defense in depth, and the honest claim is
  *    narrow: the 403 is the primary control, this is what remains if someone
@@ -74,11 +69,6 @@
  *    unattributable, so `logAdminActionAwait` is the right instrument — for the
  *    reason its own docstring gives about the audit-retention surface, not for
  *    the reason #5262 gave.
- *
- *    ⚠️ Both `db/internal.ts` sites cited by SYMBOL, not line. The first draft
- *    pinned `:874-879` and `:889-898`, which were accurate and in a file this
- *    change does not touch — so they drift independently, which is exactly what
- *    the paragraph below says makes a citation worse than none.
  *
  * ⚠️ **AND THE RULE FLAGS LAND HERE TOO (#5262, the surviving finding).** The
  * row carries `disablesControl` / `widensAuthority` for a
@@ -171,14 +161,16 @@ export type SettingsWriteAction = "update" | "reset_to_default";
  * is ill-typed and the rules answer confidently either way, so the swap is a
  * test's job.
  *
- * ⚠️ **A SWAP IS ONLY VISIBLE FROM THE `update` SIDE**, which is where the tests
- * drive it. Measured against the shipped rules: on `reset_to_default` there is no
+ * ⚠️ **A SWAPPED `rule` IS ONLY VISIBLE FROM THE `update` SIDE**, which is where
+ * the tests drive it. (A swap of the whole ROWS is caught on the clear path
+ * instead, by `metadataAction` — the exact-shape assertion there pins
+ * `action: "reset_to_default"` alongside `judgement`.) Measured against the shipped rules: on `reset_to_default` there is no
  * value, and with `value: undefined` all three rules return `false`/`false`
  * whichever action they are handed — the abuse rule short-circuits on
  * `action !== "set"` *and* on the missing value, the alias source rule's
  * `(value ?? "")` splits to nothing, and the alias threshold rule has its own
- * `value === undefined` guard. So a clear-path-only suite would pass with the two
- * exchanged. Driven from `update`, `ATLAS_TRIAL_IP_RATE_LIMIT_RPM="0"` and
+ * `value === undefined` guard. So a clear-path-only suite would pass with the two `rule`
+ * values exchanged. Driven from `update`, `ATLAS_TRIAL_IP_RATE_LIMIT_RPM="0"` and
  * `ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES="warehouse_key,extractor"` both go
  * `true → false` under a swap. The axis that hides a swap is the VERB, not the
  * family — recorded because the wrong axis sends the next reader to add a second
@@ -270,8 +262,8 @@ type SettingsAuditMetadataBase = {
 /**
  * The metadata shape that reaches `admin_action_log.metadata` (#5262).
  *
- * ⚠️ **`Partial<SecuritySensitiveAudit>` RATHER THAN THE TWO FLAGS RESTATED, and
- * the restatement was the bug.** The first draft declared `disablesControl?:
+ * ⚠️ **DERIVED FROM {@link RuleFields} RATHER THAN THE FLAGS RESTATED, and the
+ * restatement was the bug.** The first draft declared `disablesControl?:
  * boolean` and `widensAuthority?: boolean` here and copied them across
  * field-by-field. Add a third flag to `SecuritySensitiveAudit` and the pino line
  * would get it for free — `SecuritySensitiveAuditLine extends
@@ -288,22 +280,22 @@ type SettingsAuditMetadataBase = {
  * nesting would move every reader to `metadata->'security'->>'disablesControl'`
  * for no gain the spread does not already give.
  *
- * ⚠️ **`Partial<RuleFields>`, and what that does and does not forbid is worth
- * being exact about.** It replaced `Partial<SecuritySensitiveAudit>` plus a
- * `judgement` declared separately on the base — which meant `judgement` was
- * representable with no flags at all, a row claiming "nobody checked" while
- * claiming no rule applied. Deriving from {@link RuleFields} removes that: the
- * caveat now exists only alongside the flags it qualifies, and a third flag added
- * to {@link SecuritySensitiveAudit} flows in the day it is added.
+ * ⚠️ **`Partial<RuleFields>` FORBIDS NOTHING STRUCTURALLY, and an earlier draft of
+ * this paragraph claimed it forbade a bare `judgement`.** Measured: `Partial` is
+ * homomorphic over `keyof (SecuritySensitiveAudit & { judgement?: … })`, so all
+ * three properties are optional and both
+ * `{ key, tier, judgement: "reverted_value_not_evaluated" }` (nobody checked, and
+ * no rule applied) and `{ key, tier, disablesControl: true }` (half a pair) compile
+ * clean.
  *
- * What it does NOT forbid is one flag without the other. A discriminated union
- * (`RuleFields | all-absent`) would, and was tried: it does not check a
- * spread-built literal — the conditional spreads widen every property to optional,
- * so the compiler cannot prove which arm the object is, and the assignment fails
- * outright. Building both arms as whole literals inside the branch would fix that
- * and is not worth the churn, because the VALUE side is already atomic: the only
- * producer is the `ruleFields` binding, typed `RuleFields | undefined` and spread
- * whole, so no code path can emit a half pair. Do not hand-build one.
+ * What deriving from {@link RuleFields} actually buys is narrower and still worth
+ * having: the caveat is DECLARED next to the flags it qualifies rather than on the
+ * base type, and a third flag added to {@link SecuritySensitiveAudit} flows in the
+ * day it is added.
+ *
+ * The atomicity is on the VALUE side, not the type side: the only producer is the
+ * `ruleFields` binding, typed `RuleFields | undefined` and spread whole, so no code
+ * path can emit a half pair. Do not hand-build one.
  */
 type SettingsAuditMetadata = SettingsAuditMetadataBase & Partial<RuleFields>;
 
@@ -448,29 +440,17 @@ export async function auditSettingsWrite(entry: SettingsAuditWrite): Promise<voi
     entry.value,
   );
 
-  /**
-   * ⚠️ **THE FLAGS AND THEIR CAVEAT, BOUND TOGETHER, because separating them
-   * once was enough.** The first draft spread `ruleFlags` into the metadata and
-   * added `judgement` beside it, then spread `ruleFlags` ALONE into the no-DB
-   * warn below — so on a sensitive clear that branch emitted the `false`/`false`
-   * pair with no caveat, which is the exoneration this marker exists to prevent,
-   * on the one path that has no second record. A review pass caught it one
-   * branch over from the fix.
-   *
-   * One binding rather than two spreads and a rule in prose: every sink that
-   * reports the judgement now reports its limits with it, and a third sink
-   * cannot take the flags without the caveat because there is nothing else to
-   * take.
-   */
+  // The flags travel WITH their caveat: every sink that reports the judgement
+  // reports its limits, and no sink can take one without the other because there
+  // is nothing else to take.
   // ⚠️ ANNOTATED `RuleFields | undefined`, and a nested ternary rather than a
   // conditional spread, because excess-property checking does not reach spread-in
   // properties. Misspelling the field as `judgment` inside a `...(cond ? {…} : {})`
   // lands the typo in the JSONB and makes the documented query return nothing
   // while the row still reads `disablesControl: false`.
   //
-  // ⚠️ **AND `| undefined` RATHER THAN `| Record<never, never>`, which is not a
-  // style choice — it is the difference between the check working and not.**
-  // Measured, both spellings, with the typo applied:
+  // ⚠️ **AND `| undefined`, NOT `| Record<never, never>`.** Measured, both
+  // spellings, with the typo applied:
   //
   //   `RuleFields | Record<never, never>`  ->  0 errors. EPC is skipped entirely
   //                                            when ANY union member is an empty
@@ -478,10 +458,6 @@ export async function auditSettingsWrite(entry: SettingsAuditWrite): Promise<voi
   //                                            lets `const x: {} = { a: 1 }` pass.
   //   `RuleFields | undefined`             ->  TS2561, with a "did you mean
   //                                            'judgement'?" hint.
-  //
-  // The first spelling shipped for one round with a comment claiming it checked
-  // the name. It did not, and only a review pass asking for the measurement
-  // caught it — so the annotation is load-bearing and so is which annotation.
   //
   // `RuleFields` also states the pair-plus-caveat as one type, so the atomicity is
   // declared rather than left as a fact about an inferred union.
@@ -495,13 +471,12 @@ export async function auditSettingsWrite(entry: SettingsAuditWrite): Promise<voi
   const metadata: SettingsAuditMetadata = {
     key: entry.key,
     tier,
-    // ⚠️ A TOTAL `Record`, for the reason `AUDIT_ACTION`'s docstring gives about
-    // itself. This line was a ternary with a silent `{}` default, two statements
-    // below a comment arguing that a ternary is what lets a third verb fall
-    // through — and this is the field where the fall-through actually costs
-    // something: `ADMIN_ACTIONS.settings` has ONE member, so `metadata.action`
-    // is the only thing separating the two verbs in `admin_action_log`. A third
-    // verb would have filed rows indistinguishable from an `update`.
+    // ⚠️ From the total table, for the reason {@link VERBS} gives. This was a
+    // ternary with a silent `{}` default, and this is the field where a
+    // fall-through actually costs something: `ADMIN_ACTIONS.settings` has ONE
+    // member, so `metadata.action` is the only thing separating the two verbs in
+    // `admin_action_log`. A third verb would have filed rows indistinguishable
+    // from an `update`.
     // See {@link VERBS} for why `update` maps to absence.
     ...(verb.metadataAction !== null ? { action: verb.metadataAction } : {}),
     // ⚠️ SPREAD WHOLE, never field-by-field — see {@link SettingsAuditMetadata}.

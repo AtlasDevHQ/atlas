@@ -441,6 +441,10 @@ export interface ApiTestMocks {
    * test, which then observed actor `platform-admin-1`/org `"org-1"` instead of
    * the default it never chose, and passed anyway.
    *
+   * The queue itself was deleted at source, so the 422 test's comment records the
+   * reproduction and this function's own falsifier is the starred test in
+   * `admin-settings.test.ts`'s audit-failure describe.
+   *
    * The isolated runner does not cover this: `bun test` resets module mocks per
    * FILE, not per test.
    */

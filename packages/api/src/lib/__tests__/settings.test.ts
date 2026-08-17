@@ -1894,7 +1894,7 @@ describe("securitySensitiveAuditLine (#5180)", () => {
   // masked value parses as nothing. The flags are the reason this line exists;
   // losing them to protect the value would be a worse audit than the leak.
   //
-  // `"0"` is the fixture that can see it: withheld it becomes `[redacted]`,
+  // `"0"` is the fixture that can see it: withheld it becomes `[withheld:secret-setting]`,
   // which `Number` reads as NaN → "the reader kept its default" →
   // disablesControl false. Raw, it is the documented disabled sentinel → true.
   // ANY other secret redacts to that same unparseable placeholder, so masked
@@ -1953,7 +1953,7 @@ describe("securitySensitiveAuditLine (#5180)", () => {
   // "not secret", so the row would demand the value verbatim while
   // `redactAuditValue` correctly fails closed — going red with a message that
   // accuses the redaction of a bug that is actually a rename. The assertion
-  // below names the real cause; `:1327` owns the claim itself.
+  // below names the real cause; the `"every sensitive key exists in the settings registry"` test owns the claim itself.
   it.each([...SECURITY_SENSITIVE_KEYS])(
     "%s redacts exactly as its own registry definition dictates",
     (key) => {

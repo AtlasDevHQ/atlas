@@ -14,7 +14,7 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, normalize, resolve } from "node:path";
 import type { Mutation, MutationSpec, MutationTarget } from "./mutation-spec";
 
 /**
@@ -241,6 +241,74 @@ export function suiteTimeoutMs(baselineMs: number): number {
 }
 
 // ---------------------------------------------------------------------------
+// Dependency discovery (`mutate.ts --files`)
+// ---------------------------------------------------------------------------
+
+/**
+ * Every module specifier a TypeScript source names.
+ *
+ * ⚠️ **Deliberately LOOSE, because the two error directions are not
+ * symmetrical here.** This feeds `--files`, which feeds
+ * `check-mutation-tables.sh --affected`: a specifier this misses is a file
+ * whose edit selects no spec, so the gate prints *"nothing to verify"* and a
+ * table goes stale unnoticed — the exact silence #5060 and #5077 were both
+ * filed for. A specifier this over-reports selects one extra spec on one PR,
+ * which costs minutes and catches more. Widen, never narrow.
+ *
+ * So it matches `from "…"` and bare `import "…"` ANYWHERE, rather than parsing
+ * import statements: a multi-line `import {\n a,\n b,\n} from "./x"` defeats
+ * any single-line statement pattern, and that shape is the common one in this
+ * repo. A `from "…"` inside a string literal or a comment is a false positive
+ * this accepts on purpose.
+ */
+export function importSpecifiers(source: string): string[] {
+  const found: string[] = [];
+  for (const match of source.matchAll(/\bfrom\s*["']([^"'\n]+)["']/g)) {
+    if (match[1] !== undefined) found.push(match[1]);
+  }
+  for (const match of source.matchAll(/\bimport\s*["']([^"'\n]+)["']/g)) {
+    if (match[1] !== undefined) found.push(match[1]);
+  }
+  return found;
+}
+
+/** Extension-less specifiers are tried in this order, mirroring bun's resolver. */
+const IMPORT_SUFFIXES = ["", ".ts", ".tsx", "/index.ts", "/index.tsx"] as const;
+
+/**
+ * Candidate paths for one specifier, relative to `packages/api`, or `[]` for a
+ * specifier this walker does not follow.
+ *
+ * PURE — it does not touch the filesystem — so the whole resolution table is
+ * unit-testable and `mutate.ts` only has to decide which candidate exists.
+ *
+ * ⚠️ Two specifier shapes are followed and no others:
+ *
+ * - **relative** (`./`, `../`), which is how a target reaches its corpus
+ *   (`./__tests__/identity-corpus`) and how `bundle-identity` reaches
+ *   `../types/src/migration.ts` from outside `packages/api` at all;
+ * - **`@atlas/api/*`**, the package's own tsconfig alias for `./src/*`.
+ *
+ * A bare package specifier is NOT followed. `node_modules` cannot change a
+ * suite's size on a branch, and a workspace sibling reached by its package name
+ * would drag its whole graph in — which matters because this gate's cost is a
+ * correctness property (a gate that doubles the pre-PR loop gets disabled).
+ */
+export function importCandidates(fromFile: string, specifier: string): string[] {
+  let base: string;
+  if (specifier.startsWith("./") || specifier.startsWith("../")) {
+    base = `${dirname(fromFile)}/${specifier}`;
+  } else if (specifier.startsWith("@atlas/api/")) {
+    base = `src/${specifier.slice("@atlas/api/".length)}`;
+  } else {
+    return [];
+  }
+  // A `.js` specifier is TypeScript's NodeNext spelling for a `.ts` file.
+  const stem = base.endsWith(".js") ? base.slice(0, -3) : base;
+  return IMPORT_SUFFIXES.map((suffix) => normalize(`${stem}${suffix}`));
+}
+
+// ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------
 
@@ -283,57 +351,119 @@ export function validateSpec(spec: MutationSpec): string[] {
 // Rendering
 // ---------------------------------------------------------------------------
 
-/** What one mutation did to one target. */
-export interface Cell {
-  readonly kind: "count" | "error";
-  readonly fail: number;
-  /** Present when `kind` is `error`, or when the count tripped the ratio. */
-  readonly flag?: string;
-  /**
-   * The cell measured NOTHING because the mutation's anchor did not resolve.
-   *
-   * ⚠️ **Its own field rather than a substring of {@link flag}, because the
-   * gate has to act on it and `flag` is free-form prose.** Guardrail 2 calls a
-   * 0-match *"a number for a mutation that was never performed, which is worse
-   * than reporting nothing"* — but `--check` compares BYTES, so once
-   * `⚠️ ANCHOR: 0 matches` is in the committed table it becomes the expected
-   * output and the table passes forever. Measured on this very change: adding a
-   * field to `SuiteOutcome` rotted the anchor mirroring that literal, the table
-   * regenerated with a tombstone where a measured `2` had been, and
-   * `--check` said `CHECK OK`.
-   *
-   * So a rotted anchor is a distinct, machine-readable state, and
-   * {@link anchorFailures} is what {@link module:mutate} refuses on. A
-   * timeout flag must stay merely a flag — that is a real measurement of a real
-   * hang — which is exactly the distinction a substring match could not draw.
-   */
-  readonly anchorFailed?: true;
-}
+/**
+ * What one mutation did to one target — a DISCRIMINATED UNION, and the
+ * discriminant is the whole point (#5097).
+ *
+ * ⚠️ **`--check` compares BYTES, so any cell recording "this measured nothing"
+ * becomes the expected output forever once committed, and the gate then
+ * certifies a table that measures nothing.** #5077 closed exactly one member of
+ * that class with a `Cell.anchorFailed?: true` flag beside a free-form `flag`
+ * string — which left `{ kind: "error", fail: 0, flag: "ANCHOR: 0 matches" }`
+ * typechecking, rendering the blessed byte, and reporting no anchor failure.
+ * The tombstone STRING could exist without the tombstone STATE.
+ *
+ * Three variants make that unrepresentable, and they partition the cell space
+ * by one question — *was anything actually measured?*
+ *
+ * - `count` — a real number. `wholeSuite` marks the ratio trip, which is a
+ *   caveat on a real measurement, not an absence of one.
+ * - `error` — nothing was counted, but the RUN is the finding: a mutation that
+ *   HANGS the suite is a measured fact about the mutation. This is the
+ *   carve-out, and it is deliberately the only one.
+ * - `unmeasured` — nothing was measured, so no byte may be committed. Every
+ *   member of the class lands here: a dead anchor, a mutated run that SKIPPED
+ *   or TODO'd tests (its count is deflated), an unaccounted bucket, a compile
+ *   error, a kill by a signal that was not the timeout.
+ *
+ * {@link unmeasuredRows} is the single mechanism {@link module:mutate} refuses
+ * on. There is no second one.
+ */
+export type Cell =
+  | {
+      readonly kind: "count";
+      readonly fail: number;
+      /** The count reached ~every test in the file — see {@link isWholeSuite}. */
+      readonly wholeSuite?: true;
+    }
+  | {
+      readonly kind: "error";
+      /**
+       * ⚠️ Reserved for a real measurement of a real hang. A timeout cell is
+       * legitimately committable: the mutation's effect IS the hang, and the
+       * bytes describe it honestly. Anything else that produced no count is
+       * `unmeasured` — the distinction a substring match over prose could never
+       * draw, which is why #5077's flag-plus-boolean shape leaked.
+       */
+      readonly flag: string;
+    }
+  | {
+      readonly kind: "unmeasured";
+      /** Cell-sized prose. Never committed — the run refuses first. */
+      readonly reason: string;
+    };
 
 export function renderCell(cell: Cell): string {
-  if (cell.kind === "error") return `⚠️ ${cell.flag ?? "ERROR"}`;
-  return cell.flag === undefined ? String(cell.fail) : `${cell.fail} ⚠️`;
+  switch (cell.kind) {
+    case "unmeasured":
+      return `⚠️ ${cell.reason}`;
+    case "error":
+      return `⚠️ ${cell.flag}`;
+    case "count":
+      return cell.wholeSuite === true ? `${cell.fail} ⚠️` : String(cell.fail);
+  }
 }
 
 /**
- * Every mutation label whose cells recorded a dead anchor.
+ * The cell's entry in the table's `## ⚠️ Flagged` section, or `undefined` when
+ * it has none.
+ *
+ * One function rather than a `flag` field, because the field is what let the
+ * tombstone string exist without the tombstone state. Derived, it cannot.
+ */
+export function cellFlag(cell: Cell): string | undefined {
+  switch (cell.kind) {
+    case "unmeasured":
+      return cell.reason;
+    case "error":
+      return cell.flag;
+    case "count":
+      return cell.wholeSuite === true ? "whole-suite" : undefined;
+  }
+}
+
+/**
+ * Every mutation label with a cell that MEASURED NOTHING, and why.
+ *
+ * ⚠️ **ONE mechanism for the whole class, which is #5097's entire point.** Its
+ * predecessor (`anchorFailures`) refused exactly one member — a dead anchor —
+ * so a mutated run that skipped tests rendered a deflated count as an honest
+ * number and `--check` blessed it forever. Refusing on the DISCRIMINANT rather
+ * than on any particular cause means a member added later is refused by
+ * construction: there is nowhere else for "nothing was measured" to live.
  *
  * Returned as a LIST rather than a boolean so the runner can name all of them
  * in one pass — `measure()` deliberately keeps going after an `AnchorError` so
  * one bad anchor does not cost the other twenty measurements, and the same
  * courtesy should extend to repairing them.
+ *
+ * One entry per LABEL, from its first unmeasured target: the label is the row a
+ * human repairs, and a spec with four targets should not print the same repair
+ * four times.
  */
-export function anchorFailures(rows: ReadonlyMap<string, ReadonlyMap<string, Cell>>): string[] {
-  const dead: string[] = [];
+export function unmeasuredRows(
+  rows: ReadonlyMap<string, ReadonlyMap<string, Cell>>,
+): { label: string; reason: string }[] {
+  const unmeasured: { label: string; reason: string }[] = [];
   for (const [label, cells] of rows) {
     for (const cell of cells.values()) {
-      if (cell.anchorFailed === true) {
-        dead.push(label);
+      if (cell.kind === "unmeasured") {
+        unmeasured.push({ label, reason: cell.reason });
         break;
       }
     }
   }
-  return dead;
+  return unmeasured;
 }
 
 /**
@@ -366,6 +496,63 @@ export function anchorFailures(rows: ReadonlyMap<string, ReadonlyMap<string, Cel
  *    `Ran N tests` closes every bucket bun has now and every one it adds later,
  *    rather than chasing its release notes.
  */
+/**
+ * Why a run's counts cannot be trusted because tests DID NOT RUN, or `null`.
+ *
+ * ⚠️ **Shared by the baseline guard and the per-mutation refusal, so the two
+ * cannot drift.** #5077 detected a deflated MUTATED run and then flagged it
+ * rather than refusing it, and the detection was removed rather than shipped —
+ * so today's runner renders a deflated count as an honest number. Reinstating
+ * that as a second copy of these two arms would be a sibling one edit away from
+ * disagreeing with this one; there is one copy, and both callers read it.
+ *
+ * The arms deliberately exclude RED and EMPTY, which are baseline-only:
+ * under a mutation, `fail !== 0` is the POINT, and `pass === 0` is a legitimate
+ * whole-suite kill.
+ */
+export interface DeflationProblem {
+  readonly kind: "unaccounted" | "deflated";
+  /** Operator-facing prose, for the baseline's hard refusal. */
+  readonly message: string;
+  /**
+   * Cell-sized prose, for an `unmeasured` {@link Cell}.
+   *
+   * Produced HERE rather than by the caller so a cell and the message
+   * explaining it can never describe different arms.
+   */
+  readonly cell: string;
+}
+
+export function deflationProblem(outcome: SuiteOutcome): DeflationProblem | null {
+  const accounted = outcome.pass + outcome.fail + outcome.skip + outcome.todo;
+  if (outcome.ran !== null && accounted !== outcome.ran) {
+    const missing = outcome.ran - accounted;
+    return {
+      kind: "unaccounted",
+      message:
+        `ran ${outcome.ran} tests but only ${accounted} are accounted for (${missing} unclassified). ` +
+        "A test that did not run cannot be killed by a mutation, so every count would be deflated.",
+      cell: `${missing} UNACCOUNTED — count would be deflated`,
+    };
+  }
+  if (outcome.skip !== 0 || outcome.todo !== 0) {
+    const what =
+      outcome.todo === 0
+        ? `SKIPPED ${outcome.skip}`
+        : outcome.skip === 0
+          ? `marked TODO on ${outcome.todo}`
+          : `SKIPPED ${outcome.skip} and marked TODO on ${outcome.todo}`;
+    return {
+      kind: "deflated",
+      message:
+        `${what} of ${accounted} tests. A skipped test cannot be killed by a mutation, so every count ` +
+        "would be silently deflated and the generated file would overwrite real numbers with zeros.",
+      cell: `${what} — count would be deflated`,
+    };
+  }
+  return null;
+}
+
 export interface BaselineProblem {
   /**
    * ⚠️ Present so the CALLER can decide which remediation to print.
@@ -393,31 +580,12 @@ export function baselineProblem(outcome: SuiteOutcome): BaselineProblem | null {
         "mutation's, which is indistinguishable from a strong result. Fix the tree first.",
     };
   }
-  const accounted = outcome.pass + outcome.fail + outcome.skip + outcome.todo;
-  if (outcome.ran !== null && accounted !== outcome.ran) {
-    const missing = outcome.ran - accounted;
-    return {
-      kind: "unaccounted",
-      message:
-        `ran ${outcome.ran} tests but only ${accounted} are accounted for (${missing} unclassified). ` +
-        "A test that did not run cannot be killed by a mutation, so every count would be deflated.",
-    };
-  }
-  if (outcome.skip !== 0 || outcome.todo !== 0) {
-    const total = accounted;
-    const what =
-      outcome.todo === 0
-        ? `SKIPPED ${outcome.skip}`
-        : outcome.skip === 0
-          ? `marked TODO on ${outcome.todo}`
-          : `SKIPPED ${outcome.skip} and marked TODO on ${outcome.todo}`;
-    return {
-      kind: "deflated",
-      message:
-        `${what} of ${total} tests. A skipped test cannot be killed by a mutation, so every count ` +
-        "would be silently deflated and the generated file would overwrite real numbers with zeros.",
-    };
-  }
+  // ⚠️ The two deflation arms live in `deflationProblem` — ONE copy, read by the
+  // baseline here and by the per-mutation refusal in `mutate.ts`. Their ORDERING
+  // relative to the arms around them is still this function's decision, and the
+  // comment below is why.
+  const deflation = deflationProblem(outcome);
+  if (deflation !== null) return deflation;
   // ⚠️ LAST, and the ordering is the finding. Placed before the deflation arms
   // it swallowed THREE OF FIVE `-pg` targets: a suite with no non-`-pg` tests
   // reports `0 pass / 29 skip`, which is a DEFLATED baseline, but `pass === 0`
@@ -532,7 +700,7 @@ export function render(
   }
 
   const flagged = mutations.filter((m) =>
-    [...(rows.get(m.label)?.values() ?? [])].some((c) => c.flag !== undefined),
+    [...(rows.get(m.label)?.values() ?? [])].some((c) => cellFlag(c) !== undefined),
   );
   if (flagged.length > 0) {
     lines.push("## ⚠️ Flagged");
@@ -547,7 +715,8 @@ export function render(
       const cells = rows.get(mutation.label);
       const detail = targets
         .map((t) => {
-          const flag = cells?.get(t.name)?.flag;
+          const cell = cells?.get(t.name);
+          const flag = cell === undefined ? undefined : cellFlag(cell);
           return flag === undefined ? null : `${escapeCell(t.name)}: ${flag}`;
         })
         .filter((entry): entry is string => entry !== null);

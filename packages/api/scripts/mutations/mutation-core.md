@@ -26,14 +26,19 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | `validateSpec` stops rejecting an empty anchor | 2 |
 | `validateSpec` returns the FIRST problem instead of all of them | 1 |
 | `countOccurrences` loops forever on an empty needle (guard removed) | ⚠️ timed out after 30s — the mutation HANGS the suite rather than failing it |
-| an errored cell renders as its `fail` number instead of a warning | 2 |
+| `renderCell` loses its `unmeasured` arm (a no-count cell renders as `undefined`) | 3 |
+| ⚠️ `unmeasuredRows` refuses only the DEAD-ANCHOR member again (#5077's shape) | 1 |
+| `deflationProblem` stops refusing a SKIPPED or TODO'd run | 6 |
+| `deflationProblem` stops cross-checking the buckets against `Ran N` | 5 |
+| `importSpecifiers` sees only SINGLE-LINE import statements | 1 |
+| `importCandidates` drops the `@atlas/api/*` alias arm | 1 |
 | `render` defaults an unmeasured cell to `0` instead of a dash | 1 |
 | `escapeCell` stops escaping `\|` | 2 |
 | `render` stamps the output with a date (determinism lost) | 1 |
 | `render` drops the DO-NOT-EDIT header | 1 |
 | `render` drops the suite-size line | 1 |
 
-Suite sizes: **mutate-core.test.ts** 59 tests (`src/__tests__/mutate-core.test.ts`).
+Suite sizes: **mutate-core.test.ts** 74 tests (`src/__tests__/mutate-core.test.ts`).
 
 ## Notes
 
@@ -45,7 +50,11 @@ Suite sizes: **mutate-core.test.ts** 59 tests (`src/__tests__/mutate-core.test.t
 - **`parseBunSummary` stops anchoring the PASS count to a line start** — The pass count is the table's denominator and the input to `isWholeSuite`, so corrupting it silently rescales every flag decision.
 - **`isWholeSuite` only fires on an exact total (`>=` ratio → `>= total`)** — A setup break that spares one trivially-green test is the same defect, and this spelling lets it through unflagged.
 - **`countOccurrences` loops forever on an empty needle (guard removed)** — Left in the list deliberately: if this row ever reports a count rather than a timeout, the guard is genuinely gone and the empty-needle case hangs the runner.
-- **an errored cell renders as its `fail` number instead of a warning** — Turns *nothing was measured* into a published `0`, which is the exact lie the anchor guard exists to prevent — arriving through the renderer instead.
+- **`renderCell` loses its `unmeasured` arm (a no-count cell renders as `undefined`)** — The successor to the deleted `fail`-leak row: the same defect one variant over. A cell that measured nothing must never render as anything a reader could take for a measurement.
+- **⚠️ `unmeasuredRows` refuses only the DEAD-ANCHOR member again (#5077's shape)** — The single row this whole change exists for. It reinstates exactly what #5077 shipped — one member refused, the rest rendered as honest numbers — so a `0` here would mean nothing notices the class reopening.
+- **`deflationProblem` stops refusing a SKIPPED or TODO'd run** — Kills the baseline guard and the per-mutation refusal at once, which is the point of there being one copy.
+- **`deflationProblem` stops cross-checking the buckets against `Ran N`** — The general arm — the one that closes a bucket bun invents later without naming it.
+- **`importSpecifiers` sees only SINGLE-LINE import statements** — The spelling a reader reaches for, and the one that misses every multi-line import — which is how `__tests__/*-corpus.ts` stayed invisible to `--files` after #5077 claimed to have fixed the class.
 - **`render` stamps the output with a date (determinism lost)** — A `--check` gate needs byte-identical regeneration; a timestamp makes every run diff, and a diff that always appears is a diff nobody reads.
 - **`render` drops the suite-size line** — Without the denominator a reader cannot tell 3-of-5 from 3-of-500.
 

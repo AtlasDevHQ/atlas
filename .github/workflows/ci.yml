@@ -296,7 +296,7 @@ jobs:
       # workflow plus `scan-image.test.sh` in image-scan.yml. (#5242 added the
       # twentieth, `check-caddyfile.test.sh`, named in the drift job above.)
       # It builds throwaway trees and needs no Postgres; ~2 seconds.
-      - name: Adversarial fixtures for the mutation-tables gate (#5077)
+      - name: Adversarial fixtures for the mutation-tables gate (#5077, #5097)
         run: bash scripts/__tests__/check-mutation-tables.test.sh
 
       # Enumerated here for the reason stated above. This one covers the

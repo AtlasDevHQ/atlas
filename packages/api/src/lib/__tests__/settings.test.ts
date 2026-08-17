@@ -1705,6 +1705,36 @@ describe("settingUpdateResponseBody — the PUT echo (#5263)", () => {
     expect(JSON.stringify(body)).not.toContain("SUPERSECRET");
   });
 
+  it("⭐ withholds when the definition belongs to a DIFFERENT key", () => {
+    // The discard `auditSettingsWrite` has and this builder did not. Without it
+    // the two sinks apply different fail-closed rules: the row would withhold
+    // the characters and record `maskReason: "definition_mismatch"` while this
+    // body echoed the plaintext — the third sink leaking exactly what #5263
+    // closed, in the one input class the seam was hardened against.
+    //
+    // Unreachable through today's route (`SETTINGS_MAP` is keyed by `def.key`,
+    // so `mismatched` is always false there) and reachable the day
+    // `getSettingDefinition` gains alias or rename resolution.
+    //
+    // ⚠️ A NON-SECRET definition, and that is the whole reason this test can
+    // fail. The first draft passed `SECRET_DEF`, which reaches the withheld
+    // placeholder through its OWN `secret: true` arm whether or not the discard
+    // exists — measured: deleting the discard left the suite green. With a
+    // non-secret definition for another key, the discard is the only thing
+    // standing between this value and the verbatim arm.
+    const body = settingUpdateResponseBody(PLAIN_DEF, "ATLAS_MODEL", "0");
+    expect(body.value).toBe(audited("[withheld:secret-setting]"));
+    expect(body.valueMasked).toBe(true);
+  });
+
+  it("a definition whose key MATCHES is still used — the discard is not a blanket withhold", () => {
+    // The discriminating half. A builder that discarded every definition would
+    // pass the test above and withhold every value in the product.
+    expect(
+      settingUpdateResponseBody(PLAIN_DEF, "ATLAS_TRIAL_IP_RATE_LIMIT_RPM", "0").value,
+    ).toBe(audited("0"));
+  });
+
   it("echoes the key it was given, not the definition's", () => {
     // A body naming the definition's key would misreport which setting the
     // caller just wrote whenever the two disagree — the same wrong-definition

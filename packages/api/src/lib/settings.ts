@@ -2885,9 +2885,11 @@ function isSaasImmutableKey(key: string): key is SaasImmutableKey {
  */
 /**
  * What a settings write did: persisted a value, or removed the override and
- * reverted to the next tier. One definition rather than five inline copies —
- * the audit rule, the flag decision, the payload, the builder input and the
- * emitter all have to agree, and a third action would otherwise drift.
+ * reverted to the next tier. One definition rather than a copy at every consumer
+ * — the audit rule, the flag decision, the payload, the builder input, the
+ * emitter and `settings-write.ts`'s verb mapping all have to agree, and a third
+ * action would otherwise drift. (The count that stood here said "five"; #5262's
+ * `AUDIT_ACTION` made it six, which is why it is no longer a number.)
  */
 export type SettingAuditAction = "set" | "clear";
 
@@ -2999,8 +3001,8 @@ const aliasThresholdRule: SecuritySensitiveRule = (action, value) => {
  * Every sensitive key, paired with the rule that reads it.
  *
  * ⚠️ THE TABLE IS THE SET — that is the whole point of the shape, and it is the
- * same `as const`-plus-closed-union device `SAAS_IMMUTABLE_KEYS` uses forty
- * uses above it for the same reason. A hand-maintained `Set` with a `switch`
+ * same `as const`-plus-closed-union device `SAAS_IMMUTABLE_KEYS` uses for the
+ * same reason. A hand-maintained `Set` with a `switch`
  * beside it lets a fifth key be added with no rule, where it falls through to
  * whatever arm is last — and review measured that against the NUMERIC rule of
  * the day: a boolean key landing on {@link abuseThresholdRule} reported
@@ -3142,7 +3144,8 @@ declare const auditedValueBrand: unique symbol;
  * A string that has been through {@link redactAuditValue} — the ONLY thing an
  * audit line may carry in its `value` field.
  *
- * ⚠️ **The brand is the guard, and it is here because the suite it was measured
+ * ⚠️ **The brand closes the seam-PRESERVING edit; the registry-flip test closes
+ * the seam-REMOVING one. It is here because the suite it was measured
  * against could not be.** Round 1 ran `log.warn({ ...line, value }, …)` at the
  * emitter — issue #5180 verbatim, plaintext back in the log stream — against a
  * suite that took the registry's contents as fixed, and it passed every test.
@@ -3261,6 +3264,41 @@ export interface RedactedAuditValue {
  * {@link AuditedValue}'s last paragraph is the standing warning, and a fourth
  * sink with a different audience owes the same paragraph this one does.
  */
+/**
+ * The present-value arms, split out so the compiler CHECKS what the narrow
+ * overload below merely asserts.
+ *
+ * ⚠️ **An overload is an unchecked claim, and this one had already been broken
+ * once.** TypeScript compares an overload signature to the IMPLEMENTATION
+ * signature bivariantly, so a wide `RedactedAuditValue` implementation satisfies
+ * a narrow `… & { value: AuditedValue }` overload without any arm being
+ * verified. The docstring below records that an earlier draft returned
+ * `undefined` for `""` — re-adding that arm reads as tidying, would have
+ * type-checked clean, and would have shipped a 200 body missing a field the
+ * published spec marks `required`.
+ *
+ * With the arms behind this annotated return type, that edit is `TS2322` here,
+ * on the day it is written. Nothing about the decision moved; only who checks it.
+ */
+function redactPresentAuditValue(
+  def: SettingDefinition | undefined,
+  value: string,
+): RedactedAuditValue & { readonly value: AuditedValue } {
+  // The sole minting site for {@link AuditedValue}. Every `as` below is a
+  // string that has just been through the decision above it — that is what the
+  // brand asserts, and keeping the casts in one function is what keeps the
+  // assertion true.
+  const audited = (v: string): AuditedValue => v as AuditedValue;
+
+  if (def === undefined) {
+    return { value: audited(REDACTED_AUDIT_VALUE), masked: true, maskReason: "unknown_definition" };
+  }
+  if (def.secret === true) {
+    return { value: audited(REDACTED_AUDIT_VALUE), masked: true, maskReason: "secret" };
+  }
+  return { value: audited(value), masked: false, maskReason: undefined };
+}
+
 export function redactAuditValue(
   def: SettingDefinition | undefined,
   value: string,
@@ -3272,29 +3310,20 @@ export function redactAuditValue(
 /**
  * ⚠️ The overload above is the only reason a caller holding a `string` can put
  * the result straight into a non-optional field. `value: undefined` is the sole
- * input producing `value: undefined` — read the arms below — so a present input
+ * input producing `value: undefined` — the one arm below — so a present input
  * yields a present {@link AuditedValue}, and saying so in the signature is what
  * keeps the `PUT` response from needing a `?? rawValue` fallback to satisfy its
  * schema. That fallback is the whole defect written as a type workaround.
+ *
+ * The promise is CHECKED rather than asserted: every present-value arm lives in
+ * {@link redactPresentAuditValue} behind an annotated return type.
  */
 export function redactAuditValue(
   def: SettingDefinition | undefined,
   value: string | undefined,
 ): RedactedAuditValue {
-  // The sole minting site for {@link AuditedValue}. Every `as` below is a
-  // string that has just been through the decision above it — that is what the
-  // brand asserts, and keeping the casts in one function is what keeps the
-  // assertion true.
-  const audited = (v: string): AuditedValue => v as AuditedValue;
-
   if (value === undefined) return { value: undefined, masked: false, maskReason: undefined };
-  if (def === undefined) {
-    return { value: audited(REDACTED_AUDIT_VALUE), masked: true, maskReason: "unknown_definition" };
-  }
-  if (def.secret === true) {
-    return { value: audited(REDACTED_AUDIT_VALUE), masked: true, maskReason: "secret" };
-  }
-  return { value: audited(value), masked: false, maskReason: undefined };
+  return redactPresentAuditValue(def, value);
 }
 
 /** The 200 body `PUT /admin/settings/{key}` returns (#5263). */
@@ -3348,7 +3377,22 @@ export function settingUpdateResponseBody(
   key: string,
   value: string,
 ): SettingUpdateResponse {
-  const audited = redactAuditValue(def, value);
+  // ⚠️ THE SAME DISCARD `auditSettingsWrite` APPLIES, and it is here because the
+  // first draft of this function did not have it while claiming the two sinks
+  // "cannot disagree". They could. The seam withholds on a definition belonging
+  // to another key; this builder had no such check, so the invariant actually
+  // holding the two together was unstated and in a third place — `SETTINGS_MAP`
+  // is keyed by `def.key`, making `mismatched` always false at today's route.
+  //
+  // That invariant moves in a normal-looking change: `getSettingDefinition`
+  // gaining alias or rename resolution, so `ATLAS_OLD_NAME` returns the new
+  // entry. At that moment the audit row would withhold the characters and record
+  // `maskReason: "definition_mismatch"` while this body echoed the plaintext —
+  // the third sink leaking exactly what #5263 closed, in the one input class the
+  // seam was hardened against. Applying the discard makes the two agree by
+  // construction instead of by a coincidence documented nowhere.
+  const mismatched = def !== undefined && def.key !== key;
+  const audited = redactAuditValue(mismatched ? undefined : def, value);
   return { success: true, key, value: audited.value, valueMasked: audited.masked };
 }
 
@@ -3441,13 +3485,10 @@ export interface SecuritySensitiveAuditInput {
  *   infers `log.warn`'s first parameter from the literal, leaving no target
  *   type to check against.
  *
- * Neither closes it alone. The second draft of this comment credited the test
- * alone (it could not see the leak: `value` is a declared field, so the edit
- * overwrites rather than adds, and raw equals redacted for every key shipping
- * today). The third credited the type alone, and missed that removing the seam
- * removes the type. The test only became possible once it stopped assuming the
- * registry was fixed: flipping a definition to `secret: true` for one test
- * makes raw and redacted differ on a fully reachable input.
+ * Neither closes it alone: removing the seam removes the type, and the test only
+ * became possible once it stopped assuming the registry was fixed — flipping a
+ * definition to `secret: true` for one test makes raw and redacted differ on a
+ * fully reachable input.
  */
 export function securitySensitiveAuditLine(
   input: SecuritySensitiveAuditInput,
@@ -3492,7 +3533,8 @@ export function securitySensitiveAuditLine(
  *
  * ⚠️ It emits through {@link emitSecuritySensitiveAudit} rather than calling
  * `log.warn` directly, and the indirection is load-bearing: `log.warn` takes
- * an untyped object, so `log.warn({ ...line, value }, …)` — #5180 verbatim —
+ * a first parameter it infers from the literal, so `log.warn({ ...line, value },
+ * …)` — #5180 verbatim —
  * has no target type to be checked against and compiles. Routed through a
  * parameter typed {@link SecuritySensitiveAuditLine}, the same edit fails to
  * type-check, because `value` there is an {@link AuditedValue}.

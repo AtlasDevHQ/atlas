@@ -3710,7 +3710,13 @@ function settingsAuditFailureBody(
   );
   return {
     error: "audit_not_committed",
-    message: `"${key}" was ${verb}, and the change is already in effect — but the admin action-log entry recording it could not be written, so this change is currently unaudited. Check the internal database's health, then re-apply the setting to produce a logged entry.`,
+    // ⚠️ It does NOT name the internal database as the cause. The catch above it
+    // is deliberately broad, so it also covers a serializer throw, a non-
+    // serialisable metadata field, and an actor-assertion failure — and an
+    // earlier draft told the operator to "check the internal database's health",
+    // which for any of those sends them to look at a healthy database and close
+    // the alert. The requestId is the handle; the log line has the cause.
+    message: `"${key}" was ${verb}, and the change is already in effect — but the admin action-log entry recording it could not be written, so this change is currently unaudited. Re-apply the setting to produce a logged entry. If the internal database is healthy, quote requestId ${requestId}: an audit write that fails against a healthy database is a defect, not a transient.`,
     requestId,
   };
 }
@@ -3804,7 +3810,12 @@ admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", asy
     return c.json({ error: "invalid_request", message: "Missing 'value' in request body." }, 400);
   }
 
-  const value = String(body.value as string | number | boolean);
+  // `String` accepts `unknown`, so the `as string | number | boolean` this
+  // replaced bought nothing and asserted something false — an object body
+  // reaches here and stringifies to "[object Object]". Narrowing the INPUT is
+  // the real fix and is a behaviour change (a new 400), so it is filed rather
+  // than smuggled in here; see the PR body.
+  const value = String(body.value);
 
   // Type-specific validation
   if (def.type === "number") {
@@ -3904,13 +3915,18 @@ admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", asy
   // true` to get a dedicated write surface, and a secret key acquiring the same
   // treatment reads as routine.
   //
-  // ⚠️ Same policy, same arguments as the seam's — both reach
-  // `redactAuditValue(def, value)` with the `def` this route resolved — so the
-  // echo and the row cannot disagree about what was stored. Two calls rather
-  // than one value threaded out of `auditSettingsWrite`: the audit runs AFTER
-  // `setSetting` and may reject, in which case the 500 above returns and this
-  // line is never reached, so threading it would buy nothing and give the audit
-  // a second job.
+  // ⚠️ Same policy AND the same fail-closed discard as the seam's, which is what
+  // makes the echo and the row agree about what was stored. An earlier draft of
+  // this comment claimed they "cannot disagree" because both reach
+  // `redactAuditValue(def, value)`; they did not — the seam discards a definition
+  // belonging to another key and the builder did not, so what actually held them
+  // together was `SETTINGS_MAP` being keyed by `def.key`, in a third file and
+  // stated nowhere. `settingUpdateResponseBody` now carries the discard too.
+  //
+  // Two calls rather than one value threaded out of `auditSettingsWrite`: the
+  // audit runs AFTER `setSetting` and may reject, in which case the 500 above
+  // returns and this line is never reached — so threading it would buy nothing
+  // and give the audit a second job.
   return c.json(settingUpdateResponseBody(def, key, value), 200);
 }));
 

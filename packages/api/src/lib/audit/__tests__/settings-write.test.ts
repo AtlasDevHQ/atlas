@@ -119,7 +119,14 @@ const THRESHOLD_DEF = getSettingDefinition(THRESHOLD_KEY);
 const SECRET_VALUE = "resend_fake_51H8xQ2eZvKYlo2C_not_a_placeholder";
 const WITHHELD = "[withheld:secret-setting]";
 
-const lastAwaited = (): AwaitedEntry => awaited[awaited.length - 1]!;
+const lastAwaited = (): AwaitedEntry => {
+  const last = awaited[awaited.length - 1];
+  // Diagnostic rather than a `TypeError` several frames away: reaching here with
+  // an empty array means the test exercised the no-DB arm (or 404'd) and every
+  // `meta()` assertion below it is about a row that was never recorded.
+  if (!last) throw new Error("no audit row was awaited — did this test reach the no-internal-DB arm?");
+  return last;
+};
 const meta = (): Record<string, unknown> => lastAwaited().metadata ?? {};
 
 let savedDbUrl: string | undefined;
@@ -411,6 +418,14 @@ describe("auditSettingsWrite", () => {
       // ⚠️ Different lengths (1 vs 0), so the two sinks cannot be swapped
       // without a count disagreeing.
       expect(fireAndForget).toHaveLength(0);
+      // ⚠️ THE LEVEL, not just the message. The COMMITTED line's whole argument
+      // for being `info` rather than `debug` is that an operator greps it to
+      // tell a committed row from an emitted-then-lost one — and the only other
+      // assertion on it filters by message across every level, so a demotion to
+      // `debug` (off in production) went unnoticed.
+      expect(
+        logged.filter((c) => c.level === "info" && c.message.includes("COMMITTED")),
+      ).toHaveLength(1);
     });
 
     it("⭐ says NOT PERSISTED rather than COMMITTED when there is no internal DB", async () => {
@@ -442,6 +457,32 @@ describe("auditSettingsWrite", () => {
       expect(logged.filter((c) => c.message.includes("COMMITTED"))).toHaveLength(0);
     });
 
+    it("⭐ the no-DB warn carries the judgement AND its caveat, not the flags alone", async () => {
+      // The arm a fix-vs-finding pass caught one branch over from the fix: this
+      // path spread the rule flags without `judgement`, so on a sensitive CLEAR
+      // it emitted `disablesControl: false` — the exoneration the marker exists
+      // to prevent — on the one path that has no durable row to correct it.
+      //
+      // ⚠️ A CLEAR of a SENSITIVE key, both at once. An update would carry no
+      // marker by design, and a non-sensitive key would carry no flags, so
+      // either alone passes whether or not the caveat travels.
+      delete process.env.DATABASE_URL;
+      await auditSettingsWrite({
+        key: RPM_KEY,
+        definition: RPM_DEF,
+        action: "reset_to_default",
+        platformTier: true,
+        ipAddress: null,
+      });
+      expect(awaited).toHaveLength(0);
+      const warns = logged.filter((c) => c.level === "warn");
+      expect(warns).toHaveLength(1);
+      expect(warns[0]?.payload).toMatchObject({
+        disablesControl: false,
+        judgement: "reverted_value_not_evaluated",
+      });
+    });
+
     it("⭐ propagates a rejection instead of swallowing it", async () => {
       // The whole point of the await: when the row cannot be committed the
       // caller has to find out. `logAdminAction` drops it instead — and past
@@ -460,6 +501,11 @@ describe("auditSettingsWrite", () => {
           ipAddress: null,
         }),
       ).rejects.toThrow(/circuit breaker open/);
+      // ⚠️ AND NOTHING CLAIMED THE ROW LANDED. The line is `info` and sits after
+      // the await for exactly this input; moving it above the await would make
+      // the stream confidently name a row that was rolled back, and asserting
+      // only the rejection cannot see that.
+      expect(logged.filter((c) => c.message.includes("COMMITTED"))).toHaveLength(0);
     });
   });
 
@@ -497,6 +543,29 @@ describe("auditSettingsWrite", () => {
       // ignored: the abuse family has no notion of widening, so a rule table
       // wired to one shared rule would light both here.
       expect(meta().widensAuthority).toBe(false);
+    });
+
+    it("the fully-populated sensitive arm has EXACTLY these fields", async () => {
+      // The metadata is four conditional spreads; every other test here reads
+      // one field, so a stray or clobbered field on this path is invisible. One
+      // `toEqual` pins the whole union cheaply — and would have caught the
+      // `judgement` marker leaking onto the update path.
+      await auditSettingsWrite({
+        key: RPM_KEY,
+        definition: RPM_DEF,
+        value: "0",
+        action: "update",
+        platformTier: true,
+        ipAddress: null,
+      });
+      expect(meta()).toEqual({
+        key: RPM_KEY,
+        tier: "platform",
+        value: "0",
+        valueMasked: false,
+        disablesControl: true,
+        widensAuthority: false,
+      });
     });
 
     it("⭐ records widensAuthority on an alias source list naming a class beyond warehouse_key", async () => {
@@ -607,6 +676,74 @@ describe("auditSettingsWrite", () => {
       // Likewise: the source list only widens under `set`.
       expect(meta().widensAuthority).toBe(true);
     });
+
+    it("⭐ marks a sensitive CLEAR as un-judged, so `false` cannot read as an exoneration", async () => {
+      // The rules judge the WRITTEN value and a clear has none, so they return
+      // false/false on every key — accurate about the rule, and read by an
+      // operator as "this write weakened nothing". It can be the opposite:
+      // clearing a "10" override on the RPM key while the env var holds "0"
+      // turns the per-IP limiter OFF, and the row said disablesControl: false.
+      await auditSettingsWrite({
+        key: RPM_KEY,
+        definition: RPM_DEF,
+        action: "reset_to_default",
+        platformTier: true,
+        ipAddress: null,
+      });
+      expect(meta().judgement).toBe("reverted_value_not_evaluated");
+      // ⚠️ The flags are deliberately still there and still false — both sinks
+      // share `securitySensitiveAuditFields`, so changing them would move the
+      // pino line's #3797/#5161 semantics too. The marker is additive.
+      expect(meta().disablesControl).toBe(false);
+      expect(meta().widensAuthority).toBe(false);
+    });
+
+    it("⭐ does NOT mark an update, nor a clear of a non-sensitive key", async () => {
+      // The discriminating half, on both axes. A marker on every row is a marker
+      // on nothing: the incident query
+      //   WHERE disablesControl = 'true' OR judgement = 'reverted_value_not_evaluated'
+      // would return every settings write in the table.
+      await auditSettingsWrite({
+        key: RPM_KEY,
+        definition: RPM_DEF,
+        value: "0",
+        action: "update",
+        platformTier: true,
+        ipAddress: null,
+      });
+      expect("judgement" in meta()).toBe(false);
+
+      await auditSettingsWrite({
+        key: "ATLAS_MODEL",
+        definition: PLAIN_DEF,
+        action: "reset_to_default",
+        platformTier: true,
+        ipAddress: null,
+      });
+      expect("judgement" in meta()).toBe(false);
+    });
+
+    // ⚠️ NO RUNTIME TEST FOR THE THIRD-FLAG DRIFT, and the reason is worth
+    // recording rather than leaving as a gap someone re-derives.
+    //
+    // The defect was #5262's own asymmetry one field over: the first draft
+    // copied the two flags into the metadata BY NAME, so a flag added to
+    // `SecuritySensitiveAudit` would reach the pino line by inheritance
+    // (`SecuritySensitiveAuditLine extends` it) and miss the durable row with no
+    // compile error. Observing that at runtime needs
+    // `securitySensitiveAuditFields` to return a field the real rules do not —
+    // which needs `mock.module` on `@atlas/api/lib/settings`, and that replaces
+    // all 22 exports including the `getSettingDefinition` every fixture in this
+    // file depends on. A monkeypatch is not available either: this module
+    // imports the function directly, and ESM bindings cannot be reassigned from
+    // outside.
+    //
+    // So the guard is structural instead of asserted: `SettingsAuditMetadata` is
+    // `… & Partial<SecuritySensitiveAudit>` rather than two re-declared fields,
+    // and the builder spreads `ruleFlags` whole. The type tracks the interface by
+    // derivation; the value tracks it by the spread. What is NOT closed — and a
+    // reader should not assume otherwise — is the spelling revert: going back to
+    // named fields compiles, and only re-reading the seam catches it.
 
     it("maps `reset_to_default` to `clear`, which flags nothing on either family", async () => {
       // A clear reverts to a platform override that may itself be wide, so the

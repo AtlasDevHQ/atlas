@@ -213,6 +213,24 @@ const echoResponseBodyImpl = (key: string, value: string): SettingUpdateBody => 
 let settingUpdateResponseBodyImpl: (key: string, value: string) => SettingUpdateBody =
   echoResponseBodyImpl;
 
+/**
+ * ⚠️ HOISTED TO A NAMED `Mock`, unlike the first draft's inline factory, because
+ * the ARGUMENT contract is the half that matters and an inline stand-in gives
+ * nothing to assert on. `_def` was discarded and unobservable, so
+ * `settingUpdateResponseBody(undefined, key, value)` at the route — one word —
+ * type-checks, keeps every test green, and makes every PUT 200 return
+ * `value: "[withheld:secret-setting]", valueMasked: true`. That is the exact
+ * "redact everything" failure the control below was written to prevent, which it
+ * could not see while measuring its own echo stub.
+ *
+ * The neighbouring `#5270` describe already makes this argument for
+ * `auditSettingsWrite` ("`definition: def → definition: undefined` is
+ * type-legal"); it was applied to one of the handler's two call sites.
+ */
+const mockSettingUpdateResponseBody: Mock<
+  (def: unknown, key: string, value: string) => SettingUpdateBody
+> = mock((_def: unknown, key: string, value: string) => settingUpdateResponseBodyImpl(key, value));
+
 void mock.module("@atlas/api/lib/settings", () => ({
   getSettingsForAdmin: mockGetSettingsForAdmin,
   getSettingsRegistry: mockGetSettingsRegistry,
@@ -233,7 +251,12 @@ void mock.module("@atlas/api/lib/settings", () => ({
   HOT_RELOADED_KEYS: new Set<string>(),
   isHotReloadedKey: mock(() => false),
   SECURITY_SENSITIVE_KEYS: new Set<string>(),
-  securitySensitiveAuditFields: mock(() => undefined),
+  // `null`, not `undefined` — the real signature is `SecuritySensitiveAudit |
+  // null`, and `auditSettingsWrite` tests `!== null`. A stub returning
+  // `undefined` would pass that guard and then throw on a property read. Not
+  // reachable here (the seam itself is mocked), but `mock.module` factories are
+  // untyped, so nothing would report it when it becomes reachable.
+  securitySensitiveAuditFields: mock(() => null),
   // #5270 — newly load-bearing: `lib/audit/settings-write.ts` resolves
   // `redactAuditValue` from this module. A partial mock replaces the WHOLE
   // module, so the moment anything in admin.ts's import graph reaches it,
@@ -255,10 +278,8 @@ void mock.module("@atlas/api/lib/settings", () => ({
   // written does not see (`AuditedValue` is assignable to `z.string()`; a
   // branded schema WOULD catch it and stops the OpenAPI spec generating —
   // measured, see `settingUpdateResponseBody`'s docstring).
-  settingUpdateResponseBody: mock((_def: unknown, key: string, value: string) =>
-    settingUpdateResponseBodyImpl(key, value),
-  ),
-  securitySensitiveAuditLine: mock(() => undefined),
+  settingUpdateResponseBody: mockSettingUpdateResponseBody,
+  securitySensitiveAuditLine: mock(() => null),
   settingsCacheEverLoaded: mock(() => true),
 }));
 
@@ -288,13 +309,20 @@ describe("admin settings routes", () => {
     mockSetSetting.mockClear();
     mockDeleteSetting.mockClear();
     mockLogAdminAction.mockClear();
-    mockAuditSettingsWrite.mockClear();
+    // ⚠️ `mockReset`, not `mockClear`: the audit-failure tests queue a one-shot
+    // rejection with `mockImplementationOnce`, and `mockClear` drops recorded
+    // CALLS while leaving the queue intact. Today every such test consumes its
+    // own, but a future one that 403s before the seam would park a rejection for
+    // whichever test runs next, failing far from the cause.
+    mockAuditSettingsWrite.mockReset();
+    mockAuditSettingsWrite.mockImplementation(async () => {});
     mockIsSaasModeForGuard.mockClear();
     mockIsSaasModeForGuard.mockImplementation(saasGuardDefaultImpl);
     // ⚠️ Restored here, not in the one test that swaps it: a leaked sentinel
     // body would make every other PUT assertion in this file read
     // "BUILDER-VALUE" and fail somewhere far from the cause.
     settingUpdateResponseBodyImpl = echoResponseBodyImpl;
+    mockSettingUpdateResponseBody.mockClear();
   });
 
   // ─── GET /settings ──────────────────────────────────────────────
@@ -396,6 +424,30 @@ describe("admin settings routes", () => {
         value: "500",
         valueMasked: false,
       });
+    });
+
+    it("⭐ hands the builder the DEFINITION it resolved, not undefined", async () => {
+      // ⚠️ THE ARGUMENT, which no other test in this file could see. Passing
+      // `undefined` here routes `redactAuditValue` to its fail-closed arm, so
+      // every PUT 200 would return the withheld placeholder with
+      // `valueMasked: true` — "redact everything", the failure mode the control
+      // above exists to catch and cannot, because it measures the echo stub
+      // rather than the real builder.
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "500" }),
+      });
+      expect(res.status).toBe(200);
+      expect(mockSettingUpdateResponseBody).toHaveBeenCalledTimes(1);
+      expect(mockSettingUpdateResponseBody).toHaveBeenCalledWith(
+        // The registry entry for this key — not a different key's, and not
+        // `undefined`. `objectContaining` rather than the whole literal so a
+        // registry edit elsewhere does not break this on an unrelated field.
+        expect.objectContaining({ key: "ATLAS_ROW_LIMIT" }),
+        "ATLAS_ROW_LIMIT",
+        "500",
+      );
     });
 
     it("rejects unknown setting keys", async () => {

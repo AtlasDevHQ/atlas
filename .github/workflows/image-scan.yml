@@ -17,7 +17,8 @@ name: Image Scan
 # .trivyignore. Read those two files for the reasoning. In short:
 #
 #   blocks    fixable HIGH/CRITICAL in OS packages, minus the dated
-#             .trivyignore baseline (which is currently EMPTY — see that file)
+#             .trivyignore baseline (which is NOT empty — read that file for
+#             what is in it and why each entry is legitimate)
 #   reports   every FIXABLE finding at every severity and package type, from the
 #             BUILT images only, via SARIF to GitHub code scanning
 #   logs      everything else, unfixed included, as a census in the job log

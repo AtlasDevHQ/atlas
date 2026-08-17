@@ -141,7 +141,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # oven/bun:1.3.13 (Debian trixie) — runtime base for deploy/api, deploy/web,
 # packages/sandbox-sidecar, examples/docker and the create-atlas docker
-# templates. All seven are cleared by the `apt-get upgrade` in every runtime
+# templates. All eight are cleared by the `apt-get upgrade` in every runtime
 # stage; they persist only in the bare base, which is what base-images scans.
 # ─────────────────────────────────────────────────────────────────────────────
 # HIGH     libssl3t64 / openssl-provider-legacy  3.5.5-1~deb13u1 -> u2
@@ -158,6 +158,14 @@ CVE-2026-31789 exp:2026-11-01
 CVE-2026-45447 exp:2026-11-01
 # HIGH     libcap2  1:2.75-10+b8 -> 1:2.75-10+deb13u1
 CVE-2026-4878 exp:2026-11-01
+# HIGH     util-linux and its eight siblings — bsdutils, libblkid1, libmount1,
+#          libsmartcols1, libuuid1, liblastlog2-2, mount, login
+#          2.41-5 -> 2.41.5-0+deb13u1
+# Disclosed after the 2026-08-12 pass, so it is the first entry added since. It
+# reddened the base-images leg of every PR while main stayed green on a run
+# predating the advisory — the gate working as designed, on debt no PR
+# introduced.
+CVE-2026-53615 exp:2026-11-01
 
 # ─────────────────────────────────────────────────────────────────────────────
 # caddy:2.11.4-alpine — runtime base for deploy/docs only. Cleared by the

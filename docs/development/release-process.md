@@ -32,7 +32,7 @@ PR → /ci → /pr → review → merge to main
 
 ### 1. Land changes on `main`
 
-Standard PR flow — `/ci` to pass gates, `/pr` to open the PR, review, merge. The merge triggers a Railway deploy of `main` to staging across the 2 staging services (`api-staging`, `web-staging`), and to the `docs` and `www` prod services (both are direct-from-main).
+Standard PR flow — `/ci` to pass gates, open the PR as a draft, review, merge. The merge triggers a Railway deploy of `main` to staging across the 2 staging services (`api-staging`, `web-staging`), and to the `docs` and `www` prod services (both are direct-from-main).
 
 ### 2. Soak on staging
 

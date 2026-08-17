@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 
 /**
  * Lightweight summary used by the chat empty state to surface "Atlas knows
- * N tables in your data" — directly serves the .impeccable.md "Transparency
+ * N tables in your data" — directly serves PRODUCT.md's "Transparency
  * builds trust" principle. Any non-OK response soft-fails to `null` so the
  * empty state collapses to a neutral headline rather than throwing — the
  * status and request id are logged so a backend regression isn't invisible

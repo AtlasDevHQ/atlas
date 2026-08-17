@@ -42,7 +42,7 @@ completion is observable **from disk**, independent of any agent hand-off:
 Historic failure mode: `/ci` was delegated to a background subagent and the
 main thread ended its turn "waiting for the report". When that completion
 hand-off was lost (subagent died or its reply never arrived), the calling loop
-(`/ship-issue`) sat idle until a human poked it. The fix is a protocol, not a
+sat idle until a human poked it. The fix is a protocol, not a
 hope: **whoever kicks off the run owns a watchdog loop, and `.ci-local/RESULT`
 on disk — not any agent's reply — is the completion signal.**
 
@@ -97,22 +97,24 @@ pass); `CI_LOCAL_NO_NET=1` skips the two npm-registry gates for offline runs;
 It is a **superset of the historic /ci list** — it adds the drift gates real CI
 runs that the old /ci skipped (so you stop discovering them only after a push).
 The roster is `GATE_NAMES` in `scripts/ci-local.sh`, which is the authority; all
-35 of them, in run order:
+38 of them, in run order:
 `type`, `lint`, `lint-type-aware` (oxlint `--type-aware` via tsgolint — the
 promoted type-aware rules at `error`; permanent `warn` residuals don't fail it),
 `syncpack`, `dockerfile-bun-pins`, `dockerfile-workspace`,
 `railway-watch`, `template-drift`, `security-headers-drift`, `pricing-parity`,
+`lighthouse-report-paths`, `gate-fixtures-wired`,
 `plugin-count`, `plugin-lockstep`, `enforcement-parity`, `schema-drift`,
 `migration-rename`, `oauth-helper-drift`, `ee-imports`, `twenty-resolver`,
 `no-admin-plugin`, `streaming-cors`, `no-legacy-connections`,
 `brain-fact-promotion`, `test-discipline`, `settings-readers`, `saas-env-doc`,
+`brain-settings-doc`,
 `docs-links`, `docs-brain-snippets`, `auth-md-parity`, `apex-discovery-drift`,
 `openapi-drift`, `published-symbols`, `unpublished-versions` (both net-gated),
 `gate-fixtures` (the adversarial `scripts/__tests__/*.test.sh` suites),
 `mutation-tables`, and the full `test` suite.
 
-35 is the **default-configuration** count: `CI_LOCAL_NO_NET=1` drops the two
-registry gates (33), `CI_LOCAL_NO_TEST=1` drops `test` (34), both drop to 32.
+38 is the **default-configuration** count: `CI_LOCAL_NO_NET=1` drops the two
+registry gates (36), `CI_LOCAL_NO_TEST=1` drops `test` (37), both drop to 35.
 
 It does **not** run the GitHub-only required checks (Deploy Validation,
 `Image Scan`, `Analyze (javascript-typescript)` / CodeQL, `ee-stub-build`) or

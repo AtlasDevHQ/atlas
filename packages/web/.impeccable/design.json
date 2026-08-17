@@ -1,0 +1,210 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-17T00:00:00Z",
+  "title": "Design System: Atlas Product Surface",
+  "extensions": {
+    "colorMeta": {
+      "validator-green": {
+        "role": "primary",
+        "displayName": "Validator Green",
+        "canonical": "oklch(0.4 0.115 158)",
+        "tonalRamp": [
+          "oklch(0.15 0.045 158)",
+          "oklch(0.25 0.075 158)",
+          "oklch(0.33 0.1 158)",
+          "oklch(0.4 0.115 158)",
+          "oklch(0.5 0.12 158)",
+          "oklch(0.62 0.12 158)",
+          "oklch(0.78 0.09 158)",
+          "oklch(0.95 0.03 158)"
+        ]
+      },
+      "terminal-spark": {
+        "role": "secondary",
+        "displayName": "Terminal Spark",
+        "canonical": "oklch(0.759 0.148 167.71)",
+        "tonalRamp": [
+          "oklch(0.2 0.06 167.71)",
+          "oklch(0.32 0.09 167.71)",
+          "oklch(0.45 0.12 167.71)",
+          "oklch(0.58 0.14 167.71)",
+          "oklch(0.68 0.148 167.71)",
+          "oklch(0.759 0.148 167.71)",
+          "oklch(0.85 0.12 167.71)",
+          "oklch(0.95 0.05 167.71)"
+        ]
+      },
+      "warm-paper": {
+        "role": "neutral",
+        "displayName": "Warm Paper",
+        "canonical": "oklch(0.955 0.017 83)",
+        "tonalRamp": [
+          "oklch(0.2 0.012 83)",
+          "oklch(0.35 0.014 83)",
+          "oklch(0.5 0.016 83)",
+          "oklch(0.65 0.018 83)",
+          "oklch(0.78 0.02 83)",
+          "oklch(0.892 0.021 83)",
+          "oklch(0.955 0.017 83)",
+          "oklch(0.995 0.004 83)"
+        ]
+      },
+      "forest-ink": {
+        "role": "neutral",
+        "displayName": "Forest Ink",
+        "canonical": "oklch(0.245 0.026 158)",
+        "tonalRamp": [
+          "oklch(0.165 0.012 158)",
+          "oklch(0.245 0.026 158)",
+          "oklch(0.34 0.026 158)",
+          "oklch(0.435 0.026 158)",
+          "oklch(0.55 0.02 158)",
+          "oklch(0.72 0.012 158)",
+          "oklch(0.87 0.008 158)",
+          "oklch(0.97 0.004 158)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "body": {
+        "displayName": "Body",
+        "purpose": "Table cells, chat text, form values. The default register."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Buttons, nav items, column headers — anything actionable."
+      },
+      "code": {
+        "displayName": "Code",
+        "purpose": "SQL, YAML, agent replies. Always monospace, always below body size."
+      }
+    },
+    "shadows": [
+      {
+        "name": "drag-lift",
+        "value": "0 14px 32px oklch(0 0 0 / 0.18)",
+        "purpose": "A dashboard tile in motion. The only resting-to-active shadow in the system."
+      },
+      {
+        "name": "control-hairline",
+        "value": "0 1px 2px 0 rgb(0 0 0 / 0.05)",
+        "purpose": "shadcn's shadow-xs on outlined controls. The faintest possible separation."
+      }
+    ],
+    "motion": [
+      {
+        "name": "typing-dot",
+        "value": "typing-dot 1.2s ease-in-out infinite",
+        "purpose": "The agent's thinking indicator; dots lift 2px and brighten in sequence."
+      },
+      {
+        "name": "transition-all-default",
+        "value": "transition-all",
+        "purpose": "shadcn control state changes — hover, focus, disabled."
+      }
+    ],
+    "breakpoints": [
+      { "name": "sm", "value": "640px" },
+      { "name": "md", "value": "768px" },
+      { "name": "lg", "value": "1024px" },
+      { "name": "xl", "value": "1280px" },
+      { "name": "2xl", "value": "1536px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The confirming action. Validator Green fill, cream foreground.",
+      "html": "<button class=\"ds-btn-primary\">Run query</button>",
+      "css": ".ds-btn-primary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 36px; padding: 8px 16px; border: none; border-radius: 8px; background: oklch(0.4 0.115 158); color: oklch(0.965 0.016 88); font-size: 0.875rem; font-weight: 500; white-space: nowrap; cursor: pointer; transition: all 0.15s ease; } .ds-btn-primary:hover { background: oklch(0.45 0.12 158); } .ds-btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 3px oklch(0.4 0.115 158 / 0.5); } .ds-btn-primary:disabled { opacity: 0.5; pointer-events: none; }"
+    },
+    {
+      "name": "Outline Button",
+      "kind": "button",
+      "refersTo": "button-outline",
+      "description": "Secondary action. Hairline border on the page ground, no fill at rest.",
+      "html": "<button class=\"ds-btn-outline\">Cancel</button>",
+      "css": ".ds-btn-outline { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 36px; padding: 8px 16px; border: 1px solid oklch(0.91 0.006 83); border-radius: 8px; background: oklch(0.995 0.004 83); color: oklch(0.21 0.012 158); font-size: 0.875rem; font-weight: 500; box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05); cursor: pointer; transition: all 0.15s ease; } .ds-btn-outline:hover { background: oklch(0.955 0.008 83); } .ds-btn-outline:focus-visible { outline: none; box-shadow: 0 0 0 3px oklch(0.4 0.115 158 / 0.5); }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Hairline field on the page ground; focus takes the forest ring.",
+      "html": "<input class=\"ds-input\" placeholder=\"Ask a question\" />",
+      "css": ".ds-input { height: 36px; width: 100%; padding: 8px 12px; border: 1px solid oklch(0.91 0.006 83); border-radius: 8px; background: oklch(0.995 0.004 83); color: oklch(0.21 0.012 158); font-size: 0.875rem; transition: all 0.15s ease; } .ds-input::placeholder { color: oklch(0.52 0.012 158); } .ds-input:focus-visible { outline: none; border-color: oklch(0.4 0.115 158); box-shadow: 0 0 0 3px oklch(0.4 0.115 158 / 0.5); }"
+    },
+    {
+      "name": "Sidebar Nav Item",
+      "kind": "nav",
+      "refersTo": "sidebar-item",
+      "description": "Active item takes Validator Green as its ground — the accent marking where you are.",
+      "html": "<nav class=\"ds-nav\"><a class=\"ds-nav-item\" href=\"#\">Datasources</a><a class=\"ds-nav-item ds-nav-item-active\" href=\"#\">Company Atlas</a></nav>",
+      "css": ".ds-nav { display: flex; flex-direction: column; gap: 2px; padding: 8px; background: oklch(0.975 0.006 83); border-radius: 10px; min-width: 200px; } .ds-nav-item { display: block; padding: 8px 12px; border-radius: 8px; color: oklch(0.21 0.012 158); font-size: 0.875rem; font-weight: 500; text-decoration: none; transition: background 0.15s ease; } .ds-nav-item:hover { background: oklch(0.955 0.008 83); } .ds-nav-item-active { background: oklch(0.4 0.115 158); color: oklch(0.965 0.016 88); } .ds-nav-item:focus-visible { outline: none; box-shadow: 0 0 0 3px oklch(0.4 0.115 158 / 0.5); }"
+    },
+    {
+      "name": "Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "White paper on the warm ground. Flat at rest — the one place pure white is correct.",
+      "html": "<div class=\"ds-card\"><div class=\"ds-card-title\">Rows returned</div><div class=\"ds-card-value\">1,284</div></div>",
+      "css": ".ds-card { padding: 16px; border: 1px solid oklch(0.91 0.006 83); border-radius: 10px; background: oklch(1 0 0); color: oklch(0.21 0.012 158); } .ds-card-title { font-size: 0.875rem; font-weight: 500; color: oklch(0.52 0.012 158); } .ds-card-value { margin-top: 4px; font-size: 1.5rem; font-weight: 600; }"
+    },
+    {
+      "name": "SQL Pane (current, off-brand)",
+      "kind": "custom",
+      "refersTo": "sql-block",
+      "description": "The signature component, rendered as it actually is today: a light grey pane, not the dark terminal window the North Star and PRODUCT.md Principle 5 call for. Kept in the sidecar as evidence of the gap, not as a pattern to copy.",
+      "html": "<pre class=\"ds-sql-block\">SELECT customer_id, SUM(amount)\nFROM orders\nGROUP BY 1</pre>",
+      "css": ".ds-sql-block { overflow-x: auto; padding: 12px; border-radius: 10px; background: oklch(0.967 0.001 286.375); color: oklch(0.21 0.012 158); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.75rem; line-height: 1.5; margin: 0; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Lit Terminal",
+    "overview": "A warm paper ground with dark code windows floating on it. The inversion is the whole idea: where a dev tool reflexively goes dark-everything, Atlas puts the page on warm paper and reserves darkness for the thing that earns it — the SQL, the YAML, the agent's reply. Code is the hero asset, lit like an object on a desk rather than camouflaged against a black chrome.\n\nForest green carries every act of confirmation. The product's one thesis is trust the answer, and the accent exists to say a thing was checked: the whitelist passed, the statement parsed, the query is one SELECT. That is why the primary is a deep, unshowy green and never the bright teal — the teal is a spark, and a spark that appears everywhere stops meaning anything.\n\nThis is an Operate surface. Dense tables, long sessions, charts, filters, pagination. Scanability and consistency outrank expression, and the brand lives in precise details rather than in chrome: the radius ladder, the forest focus ring, the warmth of a ground that is not quite white.",
+    "keyCharacteristics": [
+      "Warm paper ground — never pure white, never neutral gray",
+      "Forest as the only primary, in both modes; teal never promoted",
+      "Flat at rest; depth from tonal layering, not shadow",
+      "shadcn primitives left close to stock — precise and unshowy",
+      "Dark code panes as the signature object"
+    ],
+    "rules": [
+      {
+        "name": "The One Primary Rule",
+        "body": "Forest is the primary in both modes. Dark mode lightens it; it never flips to teal. The moment the accent goes teal-on-black, this is the dev-tool lane the brand deliberately left.",
+        "section": "colors"
+      },
+      {
+        "name": "The Spark Confinement Rule",
+        "body": "Terminal Spark appears only on dark or green surfaces. Never on paper, never as a button fill, never as the primary of anything.",
+        "section": "colors"
+      },
+      {
+        "name": "The No-Neutral-Gray Rule",
+        "body": "Grounds and text carry hue — 83 warm on light, 158 forest on dark. zinc, slate, gray and #fff are all wrong answers here, however convenient.",
+        "section": "colors"
+      },
+      {
+        "name": "The Flat-At-Rest Rule",
+        "body": "A surface gets a shadow only as a response to state — drag, and currently nothing else. If a card needs a resting shadow to read, the tonal step underneath it is wrong; fix the ground, not the elevation.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do drive every color through a CSS variable — bg-background, text-foreground, bg-primary — so a surface is one edit. brand.css is the source of truth and globals.css is only an adapter onto shadcn's names.",
+      "Do compose from shadcn primitives before inventing a component; the radius, focus ring, and dark-mode behavior come free and stay consistent.",
+      "Do keep the forest accent scarce enough to mean something. It marks confirmation and action, not decoration.",
+      "Do state depth with a tonal step first, and reach for shadow only when a surface is genuinely in motion."
+    ],
+    "donts": [
+      "Don't hardcode a color utility on a themed surface. bg-white, text-zinc-900, bg-zinc-950, bg-zinc-100 all bypass the token system and break the warm ground and the forest-tinted dark. The root layout.tsx:61 currently does exactly this.",
+      "Don't promote Terminal Spark to a primary, or place it on a paper ground.",
+      "Don't let dark mode drift to neutral gray. The dark ground carries hue 158 on purpose; zinc-950 is not a substitute.",
+      "Don't add a resting shadow to a card. Flat at rest is the rule, and the tonal ramp exists to make it work.",
+      "Don't assume Sora or JetBrains Mono are available here. They are a brand commitment this package does not yet load."
+    ]
+  }
+}

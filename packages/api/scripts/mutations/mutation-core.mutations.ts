@@ -184,18 +184,23 @@ it, and that header is exactly what stops a reviewer looking closer.
       note: "The successor to the deleted `fail`-leak row: the same defect one variant over. A cell that measured nothing must never render as anything a reader could take for a measurement.",
     },
     {
-      label: "⚠️ `unmeasuredRows` refuses only the DEAD-ANCHOR member again (#5077's shape)",
+      label: "⚠️ the refusal narrows to the DEAD-ANCHOR member again (#5077's shape)",
       edits: [
         {
           file: SOURCE,
-          oldString: '      if (cell.kind === "unmeasured") {',
-          newString: '      if (cell.kind === "unmeasured" && cell.reason.startsWith("ANCHOR")) {',
+          // ⚠️ Extended past the `case` line: `cellFlag` has the identical two
+          // lines, so the short anchor matched TWICE and the runner refused it —
+          // which is guardrail 2 doing its job on this very spec.
+          oldString:
+            '    case "unmeasured":\n      return cell.reason;\n    // The one committable no-count cell: a real measurement of a real hang.',
+          newString:
+            '    case "unmeasured":\n      return cell.reason.startsWith("ANCHOR") ? cell.reason : null;\n    // The one committable no-count cell: a real measurement of a real hang.',
         },
       ],
       note: "The single row this whole change exists for. It reinstates exactly what #5077 shipped — one member refused, the rest rendered as honest numbers — so a `0` here would mean nothing notices the class reopening.",
     },
     {
-      label: "`deflationProblem` stops refusing a SKIPPED or TODO'd run",
+      label: "`unmeasurableOutcome` stops refusing a SKIPPED or TODO'd run",
       edits: [
         {
           file: SOURCE,
@@ -206,7 +211,7 @@ it, and that header is exactly what stops a reviewer looking closer.
       note: "Kills the baseline guard and the per-mutation refusal at once, which is the point of there being one copy.",
     },
     {
-      label: "`deflationProblem` stops cross-checking the buckets against `Ran N`",
+      label: "`unmeasurableOutcome` stops cross-checking the buckets against `Ran N`",
       edits: [
         {
           file: SOURCE,
@@ -215,6 +220,74 @@ it, and that header is exactly what stops a reviewer looking closer.
         },
       ],
       note: "The general arm — the one that closes a bucket bun invents later without naming it.",
+    },
+    {
+      label: "⚠️ `unmeasurableOutcome` stops refusing a run that registered ZERO tests",
+      edits: [
+        {
+          file: SOURCE,
+          oldString: "  if (outcome.pass === 0 && outcome.fail === 0) {",
+          newString: "  if (false) {",
+        },
+      ],
+      note: "MEASURED live on bun 1.3.13: an emptied corpus prints `0 pass` / `0 fail` and no other arm fires, so before this guard `measure()` published a `0` — the byte the generated header defines as *the suite does not catch it* — from a run that measured nothing.",
+    },
+    {
+      label: "`unmeasurableOutcome`'s EMPTY arm swallows a whole-suite kill (`&& fail === 0` dropped)",
+      edits: [
+        {
+          file: SOURCE,
+          oldString: "  if (outcome.pass === 0 && outcome.fail === 0) {",
+          newString: "  if (outcome.pass === 0) {",
+        },
+      ],
+      note: "The other direction, and the one that would refuse real results: a mutation that kills every test reports `0 pass` with a large `fail`, which is the strongest measurement the runner can make.",
+    },
+    {
+      label: "the `-pg` hint decision is re-derived instead of read off the problem",
+      edits: [
+        {
+          file: SOURCE,
+          oldString: "      pgHint: false,\n    };\n  }\n  return null;\n}",
+          newString: "      pgHint: true,\n    };\n  }\n  return null;\n}",
+        },
+      ],
+      note: "Flips the EMPTY arm's hint to true, which is what a hand-copied kind list or a structural `\"cell\" in problem` test both produce — sending an operator to start Postgres and hunt a `.skip` in a suite that registered no tests.",
+    },
+    {
+      label: "`countCell` stops deriving `wholeSuite`, so a near-total publishes unflagged",
+      edits: [
+        {
+          file: SOURCE,
+          oldString:
+            '  return isWholeSuite(fail, total) ? { kind: "count", fail, wholeSuite: true } : { kind: "count", fail };',
+          newString: '  return { kind: "count", fail };',
+        },
+      ],
+    },
+    {
+      label: "`cellFlag` stops naming WHY a row measured nothing",
+      edits: [
+        {
+          file: SOURCE,
+          oldString:
+            '    case "unmeasured":\n      return cell.reason;\n    case "timeout":\n      return "HANGS — timed out";',
+          newString:
+            '    case "unmeasured":\n      return "unmeasured";\n    case "timeout":\n      return "HANGS — timed out";',
+        },
+      ],
+      note: "The flag IS the repair information a reader meets in the Flagged section — which mutation measured nothing, and why. A `toBeDefined()` assertion could not see this.",
+    },
+    {
+      label: "the TIMEOUT cell carries a wall-clock number again (determinism lost)",
+      edits: [
+        {
+          file: SOURCE,
+          oldString: 'export const TIMEOUT_CELL = "⚠️ HANGS — timed out";',
+          newString: 'export const TIMEOUT_CELL = "⚠️ HANGS — timed out after 30s";',
+        },
+      ],
+      note: "The one committable no-count cell. Its first spelling interpolated `round(timeoutMs / 1000)`, which derives from the baseline's MEASURED duration — so the byte was stable only while that suite stayed under 3s, and for a `-pg` target never. `--check` compares bytes and is a required gate.",
     },
     {
       label: "`importSpecifiers` sees only SINGLE-LINE import statements",

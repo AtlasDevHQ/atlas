@@ -199,6 +199,77 @@ T=$(make_tree "$TODO_TARGET" '"  return 42;"' \
 check 1 "marked TODO on 1 of 2 tests" \
   "a target carrying .todo is REFUSED — bun does not fold it into skip" "$T" --all
 
+# 2c. ⚠️ THE PER-MUTATION REFUSAL, which had NO falsifier anywhere.
+#
+# Fixtures 2 and 2b deflate the BASELINE, so they exercise `baselineProblem` →
+# `fail()`. Fixture 6b's tombstone reaches the refusal through `measure()`'s
+# AnchorError path. NOTHING reached `mutate.ts`'s per-mutation arm — which is
+# #5097's headline claim, the thing #5077 detected and then removed. Deleting
+# that arm published a deflated count as an honest number and every suite in the
+# repo stayed green.
+#
+# Here the baseline is CLEAN (2 pass, 0 skip) and the MUTATION causes the skip:
+# `describe.skipIf(answer() !== 42)` is true only while `answer()` returns 42, so
+# `return 0` skips the gated test. The phrase comes only from
+# `UnmeasurableOutcome.cell` — the baseline's own prose reads "SKIPPED 1 of 2
+# tests", which does not contain "SKIPPED 1 —".
+SKIPIF_TARGET='import { describe, expect, test } from "bun:test";
+import { answer } from "./subject";
+test("a", () => { expect(answer()).toBe(42); });
+test("b", () => { expect(1).toBe(1); });
+describe.skipIf(answer() !== 42)("gated", () => {
+  test("c", () => { expect(answer()).toBe(42); });
+});'
+T=$(make_tree "$SKIPIF_TARGET" '"  return 42;"' \
+   'bun run scripts/mutate.ts scripts/mutations/f.mutations.ts >/dev/null 2>&1 || true')
+check 1 "SKIPPED 1 — count would be deflated" \
+  "a MUTATION that makes the suite SKIP is refused per-mutation, not published" "$T" --all
+
+# 2d. …and the EMPTY case, measured live on bun 1.3.13: a corpus-driven target
+# whose array the mutation empties prints ` 0 pass` / ` 0 fail`, which NO other
+# arm catches. `isWholeSuite(0, n)` is false, so the runner published a `0` —
+# the byte the generated header defines as "the suite does not catch it" — for a
+# run that registered no tests at all. #5097's own class, found in review.
+EMPTY_TARGET='import { expect, test } from "bun:test";
+import { answer } from "./subject";
+const CORPUS = answer() === 42 ? [1, 2] : [];
+for (const c of CORPUS) {
+  test(`c${c}`, () => { expect(answer()).toBe(42); });
+}'
+T=$(make_tree "$EMPTY_TARGET" '"  return 42;"' \
+   'bun run scripts/mutate.ts scripts/mutations/f.mutations.ts >/dev/null 2>&1 || true')
+check 1 "ZERO tests ran — nothing was measured" \
+  "a MUTATION that empties the suite is refused, not published as a 0" "$T" --all
+
+# 2e. AN UNREADABLE SEED DOES NOT ABORT THE SELECTOR, and the gate SAYS the
+# dependency list is short.
+#
+# ⚠️ `--files` reads each seed's source to walk its imports, which is NEW — before
+# the import hop it touched no filesystem and could not fail. `existsSync` is true
+# for a DIRECTORY, so a `target.file` that has become one throws EISDIR. MEASURED:
+# unguarded, `--files` exits 1, and a bare `$(...)` under `set -e` then aborts the
+# whole gate with status 1 — which this script's header calls its code for STALE.
+# The operator regenerates tables that never drifted while the real fault (a
+# rotted spec path) sits in a log tail.
+#
+# The phrase pins BOTH halves: the selector survived, AND the warning reached the
+# log instead of being swallowed by a `2>/dev/null`.
+T=$(make_tree "$GOOD_TARGET" '"  return 42;"' \
+   'bun run scripts/mutate.ts scripts/mutations/f.mutations.ts >/dev/null 2>&1; git add -A >/dev/null && git commit --quiet -m generated && git branch base-ref HEAD; rm -f src/subject.test.ts && mkdir -p src/subject.test.ts && git add -A >/dev/null && git commit --quiet -m "target became a directory"')
+check 1 "dependency list is INCOMPLETE" \
+  "an UNREADABLE seed leaves the selector running and says the list is short" "$T" --affected base-ref
+
+# 2f. …and when `--files` genuinely CANNOT run, the selector WIDENS rather than
+# aborting. An unloadable spec is the reachable case: `loadSpec` fails before any
+# of the read guarding above, so this is falsifiable independently of it.
+#
+# Pre-fix the script died at the assignment and printed no widen at all, so the
+# phrase — not the exit code, which is 1 either way — is what discriminates.
+T=$(make_tree "$GOOD_TARGET" '"  return 42;"' \
+   'bun run scripts/mutate.ts scripts/mutations/f.mutations.ts >/dev/null 2>&1; printf "this is not valid typescript (((\n" > scripts/mutations/f.mutations.ts && git add -A >/dev/null && git commit --quiet -m "break the spec"')
+check 1 "falling back to --all" \
+  "an unloadable spec WIDENS the selector rather than aborting as STALE" "$T" --affected main
+
 # 3. The fail-safe. An unresolvable base must WIDEN to --all (and then catch the
 # hand-edit), never quietly select nothing and exit 0.
 T=$(make_tree "$GOOD_TARGET" '"  return 42;"' \
@@ -340,9 +411,15 @@ TS
   echo "$tmp"
 }
 
+# ⚠️ THE PHRASE PINS THE SELECTION, not the STALE catch, and the difference
+# matters. `(1, "STALE …")` is produced by TWO paths: the corpus-following
+# selector, and any of four git calls WIDENING to `--all` — which also verifies
+# every spec and finds this one stale. So the pair a stale-catch phrase asserts
+# is not what this fixture claims to measure. `N of M spec(s) affected by this
+# branch` comes only from the affected selector's own report.
 T=$(make_corpus_tree)
-check 1 "STALE scripts/mutations/f.mutations.ts" \
-  "a CORPUS-ONLY commit selects its spec and the stale table is caught" "$T" --affected base-ref
+check 1 "1 of 1 spec(s) affected by this branch" \
+  "a CORPUS-ONLY commit SELECTS its spec (not a widen), and the stale table is caught" "$T" --affected base-ref
 
 # 7. The shard partition is TOTAL and DISJOINT.
 #
@@ -610,6 +687,21 @@ else
   echo "  FAIL  repeated --shard — expected exit 1 saying 'given twice', got $rc"; FAIL=$((FAIL + 1))
 fi
 rm -rf "$T"
+
+# ⚠️ AN ABSOLUTE LITERAL, and this suite is the one that most needed it: its own
+# recorded history is TWO fixtures deleted in #5077, and this change reinstates
+# five. A count derived from the cases cannot notice a deleted case — measured on
+# `check-docs-brain-snippets.test.sh`, which reported `40 passed, 0 failed` with
+# cases removed. Its three sibling suites in this change all carry one; this file
+# shipped without, which is exactly the asymmetry a reviewer caught.
+EXPECTED_CASES=28
+TOTAL=$((PASS + FAIL))
+if [ "$TOTAL" -eq "$EXPECTED_CASES" ]; then
+  echo "  ok    all $EXPECTED_CASES cases ran"; PASS=$((PASS + 1))
+else
+  echo "  FAIL  expected $EXPECTED_CASES cases, $TOTAL ran — a fixture was added or deleted without updating EXPECTED_CASES"
+  FAIL=$((FAIL + 1))
+fi
 
 echo ":: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

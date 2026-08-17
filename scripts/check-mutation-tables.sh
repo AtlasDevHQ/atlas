@@ -248,7 +248,35 @@ $UNTRACKED"
       MODE="all"
     else
       for spec in "${SPECS[@]}"; do
-        DEPS="$spec"$'\n'"$(bun run scripts/mutate.ts "$spec" --files)"
+        # ⚠️ THE FOURTH INSTANCE OF THIS TWIN IN THIS SELECTOR, and the one that
+        # was missed. The three above widen on a failing git call; this one is a
+        # bare `$(...)` in an assignment under `set -e`, so a non-zero `--files`
+        # aborts the whole script with status 1 — which is this script's code for
+        # STALE. The operator then regenerates tables that never drifted, and the
+        # real fault sits in a log tail. `--files` can now fail: it reads the
+        # seeds' source to walk their imports, and `existsSync` is true for a
+        # directory, so a `target.file` that has become one throws EISDIR.
+        # ⚠️ STDERR CAPTURED SEPARATELY, not merged and not discarded. Merging it
+        # would put diagnostics into a list every line of which is read as a
+        # dependency path; discarding it would hide `--files`' own warnings —
+        # and those warnings are the ONLY signal that a seed was unreadable and
+        # its imports are therefore missing from the list. A quietly shorter
+        # dependency list is this gate's one unacceptable failure.
+        DEP_ERR=$(mktemp)
+        if ! DEP_OUT=$(bun run scripts/mutate.ts "$spec" --files 2>"$DEP_ERR"); then
+          echo "check-mutation-tables: cannot list dependencies for $spec — falling back to --all."
+          sed 's/^/  /' "$DEP_ERR"
+          rm -f "$DEP_ERR"
+          MODE="all"
+          SELECTED=()
+          break
+        fi
+        if [ -s "$DEP_ERR" ]; then
+          echo "check-mutation-tables: $spec's dependency list is INCOMPLETE —"
+          sed 's/^/  /' "$DEP_ERR"
+        fi
+        rm -f "$DEP_ERR"
+        DEPS="$spec"$'\n'"$DEP_OUT"
         while IFS= read -r dep; do
           [ -z "$dep" ] && continue
           # ⚠️ NORMALISE. A spec may legitimately reach outside packages/api —
@@ -262,7 +290,15 @@ $UNTRACKED"
           fi
         done <<< "$DEPS"
       done
-      if [ ${#SELECTED[@]} -eq 0 ]; then
+      # ⚠️ A widen inside the loop above already decided every table is in scope,
+      # exactly as the base-diff / working-tree / untracked widens do. Without
+      # this arm, execution falls into the empty-selection block below and can
+      # `exit 3` or `exit 0` — so the gate would ANNOUNCE a widen and then do the
+      # opposite. That is the same dead-widen defect measured earlier in this
+      # file, one door over.
+      if [ "$MODE" = "all" ]; then
+        :
+      elif [ ${#SELECTED[@]} -eq 0 ]; then
         # ⚠️ TWO different states reach here and they are NOT the same verdict.
         # Collapsing them into `exit 0` was the last false-green left in this
         # file, and it fired at the worst possible moment (#5151).
@@ -305,8 +341,9 @@ $UNTRACKED"
         echo "check-mutation-tables: no spec's targets or sources changed vs $BASE — nothing to verify."
         echo "  (push: main runs --all, so a table that drifted for another reason is still caught there.)"
         exit 0
+      else
+        echo "check-mutation-tables: ${#SELECTED[@]} of ${#SPECS[@]} spec(s) affected by this branch."
       fi
-      echo "check-mutation-tables: ${#SELECTED[@]} of ${#SPECS[@]} spec(s) affected by this branch."
     fi
   fi
 fi

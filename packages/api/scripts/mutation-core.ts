@@ -387,15 +387,28 @@ export type Cell =
       readonly wholeSuite?: true;
     }
   | {
-      readonly kind: "error";
       /**
-       * ⚠️ Reserved for a real measurement of a real hang. A timeout cell is
-       * legitimately committable: the mutation's effect IS the hang, and the
-       * bytes describe it honestly. Anything else that produced no count is
-       * `unmeasured` — the distinction a substring match over prose could never
-       * draw, which is why #5077's flag-plus-boolean shape leaked.
+       * A real measurement of a real hang, and the ONE committable no-count
+       * cell. The mutation's effect IS the hang, so the bytes describe it
+       * honestly.
+       *
+       * ⚠️ **PAYLOAD-FREE, and that is the whole point of the variant.** The
+       * first cut of this union kept a `flag: string` here, which left
+       * `{ kind: "error", flag: "ANCHOR: 0 matches" }` typechecking, rendering
+       * the blessed byte, and escaping {@link unmeasuredRows} — so the union
+       * RELOCATED #5077's hole rather than closing it. Two fields that could
+       * disagree had become one field that could be wrong. With no field for
+       * prose, a tombstone string has nowhere to live but `unmeasured`.
+       *
+       * ⚠️ It also makes the cell DETERMINISTIC. The flag used to carry
+       * `timed out after ${round(timeoutMs / 1000)}s`, and `timeoutMs` derives
+       * from the clean baseline's measured duration — so the committed byte was
+       * stable only while that suite stayed under 3s, and for any `-pg` target
+       * it could never be stable at all. `--check` compares BYTES and is a
+       * required CI gate, so a wall-clock-derived cell is the same defect class
+       * as a timestamp. The seconds stay on the console, where they help.
        */
-      readonly flag: string;
+      readonly kind: "timeout";
     }
   | {
       readonly kind: "unmeasured";
@@ -403,14 +416,44 @@ export type Cell =
       readonly reason: string;
     };
 
+/** The committed text for a {@link Cell} of kind `timeout`. Deterministic. */
+export const TIMEOUT_CELL = "⚠️ HANGS — timed out";
+
+/**
+ * The only way to build a `count` cell, so `wholeSuite` cannot disagree with
+ * {@link isWholeSuite}.
+ *
+ * ⚠️ Two representable-but-wrong states motivated this, and both are the kind of
+ * thing nothing would notice. FORGETTING the flag publishes an unflagged
+ * near-total — *"a defect in the mutation, not a triumph of the tests"*, per
+ * `mutate.ts`'s header. And `{ fail: 0, wholeSuite: true }` is nonsense
+ * (`isWholeSuite(0, n)` is false for every n) yet typechecks. The flag is never
+ * a judgement call — it is this predicate at every site — so deriving it is the
+ * same move `cellFlag` makes one function up: *"One function rather than a
+ * field, because the field is what let the tombstone string exist without the
+ * tombstone state. Derived, it cannot."*
+ */
+export function countCell(fail: number, total: number): Cell {
+  return isWholeSuite(fail, total) ? { kind: "count", fail, wholeSuite: true } : { kind: "count", fail };
+}
+
 export function renderCell(cell: Cell): string {
   switch (cell.kind) {
     case "unmeasured":
       return `⚠️ ${cell.reason}`;
-    case "error":
-      return `⚠️ ${cell.flag}`;
+    case "timeout":
+      return TIMEOUT_CELL;
     case "count":
       return cell.wholeSuite === true ? `${cell.fail} ⚠️` : String(cell.fail);
+    default: {
+      // ⚠️ The repo's `_exhaustive: never` idiom (metrics.ts, admin-publish.ts,
+      // dashboards.ts and five more). Here it is BELT AND BRACES: this
+      // function's return type already excludes `undefined`, so a fourth
+      // variant is a TS2366 on its own — measured. The two functions below have
+      // no such backstop, which is why the pin is not optional there.
+      const _exhaustive: never = cell;
+      throw new Error(`unhandled Cell kind: ${JSON.stringify(_exhaustive)}`);
+    }
   }
 }
 
@@ -425,10 +468,20 @@ export function cellFlag(cell: Cell): string | undefined {
   switch (cell.kind) {
     case "unmeasured":
       return cell.reason;
-    case "error":
-      return cell.flag;
+    case "timeout":
+      return "HANGS — timed out";
     case "count":
       return cell.wholeSuite === true ? "whole-suite" : undefined;
+    default: {
+      // ⚠️ NOT belt and braces here, unlike `renderCell`. This return type
+      // INCLUDES `undefined`, so falling off the end is legal and
+      // `noImplicitReturns` is set nowhere in this repo — measured by adding a
+      // fourth variant and compiling: `renderCell` went red with TS2366 and
+      // this function did not. Without the pin, a new variant silently gets no
+      // entry in the `## ⚠️ Flagged` section.
+      const _exhaustive: never = cell;
+      throw new Error(`unhandled Cell kind: ${JSON.stringify(_exhaustive)}`);
+    }
   }
 }
 
@@ -439,8 +492,10 @@ export function cellFlag(cell: Cell): string | undefined {
  * predecessor (`anchorFailures`) refused exactly one member — a dead anchor —
  * so a mutated run that skipped tests rendered a deflated count as an honest
  * number and `--check` blessed it forever. Refusing on the DISCRIMINANT rather
- * than on any particular cause means a member added later is refused by
- * construction: there is nowhere else for "nothing was measured" to live.
+ * than on any particular cause means one refusal covers every cause that
+ * already exists, and {@link uncommittableReason}'s `never` pin means a cause
+ * added LATER cannot compile until its author states which side of the
+ * committable line it sits on.
  *
  * Returned as a LIST rather than a boolean so the runner can name all of them
  * in one pass — `measure()` deliberately keeps going after an `AnchorError` so
@@ -453,12 +508,17 @@ export function cellFlag(cell: Cell): string | undefined {
  */
 export function unmeasuredRows(
   rows: ReadonlyMap<string, ReadonlyMap<string, Cell>>,
-): { label: string; reason: string }[] {
-  const unmeasured: { label: string; reason: string }[] = [];
+): readonly { readonly label: string; readonly reason: string }[] {
+  const unmeasured: { readonly label: string; readonly reason: string }[] = [];
   for (const [label, cells] of rows) {
+    // ⚠️ Scans EVERY cell, not the first. A four-target spec where only the
+    // `-pg` column deflated is the realistic shape — `measure()` marks one
+    // target at a time — so stopping at the first measured cell would let the
+    // deflated column through.
     for (const cell of cells.values()) {
-      if (cell.kind === "unmeasured") {
-        unmeasured.push({ label, reason: cell.reason });
+      const reason = uncommittableReason(cell);
+      if (reason !== null) {
+        unmeasured.push({ label, reason });
         break;
       }
     }
@@ -467,51 +527,63 @@ export function unmeasuredRows(
 }
 
 /**
- * Why this outcome cannot serve as a BASELINE, or `null` if it can.
+ * Why this cell may not be committed, or `null` when it may.
  *
- * ⚠️ **A pure function in this file rather than an inline block in
- * `mutate.ts`, because that is this module's stated split** — *"the logic
- * behind all three [guardrails] lives in `mutation-core.ts` and is unit-tested;
- * [mutate.ts] is the process around it"*. Guardrail 4 was written inline, and
- * the consequence was measurable: deleting the entire guard left every test
- * green and regenerated every table byte-identically. A guardrail that its own
- * suite cannot see is the shape this whole runner exists to refuse.
+ * ⚠️ **A `switch` with a `never` pin, and that is what makes the refusal
+ * structural rather than aspirational.** The first cut asked
+ * `cell.kind === "unmeasured"` inline, which gave a fifth variant NO compile
+ * pressure at all: a `{ kind: "deflated-count"; fail: number }` would have
+ * sailed past the refusal and only `renderCell` would have objected. Measured
+ * by adding a fourth variant and compiling.
  *
- * ## The three ways a baseline lies, and why counting buckets is not enough
- *
- * `pass` becomes the published suite size (`render`'s *"Suite sizes: N tests"*)
- * and `isWholeSuite`'s denominator, so a deflated baseline silently deflates
- * every cell measured against it.
- *
- * 1. **RED** — inflates. Already caught before this existed.
- * 2. **EMPTY** — `0 pass` with no error is a target whose file was renamed or
- *    emptied. Every cell then renders an honest-looking `0` meaning *"the suite
- *    does not catch this"*.
- * 3. **UNACCOUNTED** — the buckets do not sum to what bun says it ran. This is
- *    the general form of #5077, and it is deliberately NOT spelled as
- *    `skip !== 0`: bun prints `todo` on its own summary line and does not fold
- *    it into `skip`, so a `test.todo` deflates the denominator exactly like a
- *    `.skip` and slipped straight past the first cut of this guard. `filtered
- *    out` is a third bucket with the same effect. Checking the SUM against
- *    `Ran N tests` closes every bucket bun has now and every one it adds later,
- *    rather than chasing its release notes.
+ * The claim this supports is narrow and worth stating exactly: a new variant
+ * cannot be added without its author STATING which side of the committable line
+ * it sits on. That is not the same as "nowhere else for it to live", which is
+ * what an earlier draft of this docstring claimed and could not deliver.
  */
+function uncommittableReason(cell: Cell): string | null {
+  switch (cell.kind) {
+    case "unmeasured":
+      return cell.reason;
+    // The one committable no-count cell: a real measurement of a real hang.
+    case "timeout":
+      return null;
+    case "count":
+      return null;
+    default: {
+      const _exhaustive: never = cell;
+      throw new Error(`unhandled Cell kind: ${JSON.stringify(_exhaustive)}`);
+    }
+  }
+}
+
 /**
- * Why a run's counts cannot be trusted because tests DID NOT RUN, or `null`.
+ * Why a run measured NOTHING USABLE — tests that did not run, or none at all —
+ * or `null` when its counts can be trusted.
  *
- * ⚠️ **Shared by the baseline guard and the per-mutation refusal, so the two
- * cannot drift.** #5077 detected a deflated MUTATED run and then flagged it
- * rather than refusing it, and the detection was removed rather than shipped —
- * so today's runner renders a deflated count as an honest number. Reinstating
- * that as a second copy of these two arms would be a sibling one edit away from
- * disagreeing with this one; there is one copy, and both callers read it.
+ * ⚠️ **ONE copy, read by the baseline guard AND the per-mutation refusal.**
+ * #5077 detected a deflated MUTATED run, flagged it rather than refusing it, and
+ * was then removed rather than shipped — so before this change the runner
+ * rendered a deflated count as an honest number. Reinstating that as a second
+ * copy of these arms would be a sibling one edit from disagreeing with this one.
  *
- * The arms deliberately exclude RED and EMPTY, which are baseline-only:
- * under a mutation, `fail !== 0` is the POINT, and `pass === 0` is a legitimate
- * whole-suite kill.
+ * The arms deliberately exclude RED, which is baseline-only: under a mutation,
+ * `fail !== 0` is the POINT.
+ *
+ * ⚠️ EMPTY is **not** baseline-only, and an earlier draft of this comment said
+ * it was — on the argument that `pass === 0` is a legitimate whole-suite kill.
+ * That is true only when `fail > 0`. `{ pass: 0, fail: 0 }` is a suite that
+ * registered NO TESTS, and bun really does print that: measured on bun 1.3.13,
+ * an empty `describe` and a `for (const c of []) test(...)` corpus both emit
+ * ` 0 pass`, ` 0 fail`, `Ran 0 tests`. Neither the accounting arm nor the
+ * skip/todo arm fires, `isWholeSuite(0, n)` is false, and `measure()` therefore
+ * published a `0` — which the generated header defines as *"the suite does not
+ * catch it"*. A coverage claim, from a run that measured nothing. That is
+ * #5097's own class, and the emptied-corpus shape is reachable by exactly the
+ * data-driven mutation this PR's `--files` hop was added to track.
  */
-export interface DeflationProblem {
-  readonly kind: "unaccounted" | "deflated";
+export interface UnmeasurableOutcome {
+  readonly kind: "unaccounted" | "deflated" | "empty";
   /** Operator-facing prose, for the baseline's hard refusal. */
   readonly message: string;
   /**
@@ -521,9 +593,22 @@ export interface DeflationProblem {
    * explaining it can never describe different arms.
    */
   readonly cell: string;
+  /**
+   * Whether the `TEST_DATABASE_URL` hint applies.
+   *
+   * ⚠️ **CARRIED ON THE PROBLEM, not re-derived by the caller, and this field is
+   * the reason two individually-correct fixes compose.** `mutate.ts` used to ask
+   * `kind === "deflated" || kind === "unaccounted"` — a hand-copied list that
+   * happened to give the right answer until a kind was added. Adding `empty`
+   * here is exactly that event: an `empty` run told to "find the .skip/.todo in
+   * the target" sends an operator hunting a skip in a suite that registered no
+   * tests, which is the misdirecting-diagnostic defect `kind` exists to prevent.
+   * A structural `"cell" in problem` test would have made the same mistake.
+   */
+  readonly pgHint: boolean;
 }
 
-export function deflationProblem(outcome: SuiteOutcome): DeflationProblem | null {
+export function unmeasurableOutcome(outcome: SuiteOutcome): UnmeasurableOutcome | null {
   const accounted = outcome.pass + outcome.fail + outcome.skip + outcome.todo;
   if (outcome.ran !== null && accounted !== outcome.ran) {
     const missing = outcome.ran - accounted;
@@ -533,6 +618,7 @@ export function deflationProblem(outcome: SuiteOutcome): DeflationProblem | null
         `ran ${outcome.ran} tests but only ${accounted} are accounted for (${missing} unclassified). ` +
         "A test that did not run cannot be killed by a mutation, so every count would be deflated.",
       cell: `${missing} UNACCOUNTED — count would be deflated`,
+      pgHint: true,
     };
   }
   if (outcome.skip !== 0 || outcome.todo !== 0) {
@@ -548,29 +634,89 @@ export function deflationProblem(outcome: SuiteOutcome): DeflationProblem | null
         `${what} of ${accounted} tests. A skipped test cannot be killed by a mutation, so every count ` +
         "would be silently deflated and the generated file would overwrite real numbers with zeros.",
       cell: `${what} — count would be deflated`,
+      pgHint: true,
+    };
+  }
+  // ⚠️ LAST, and the ordering is the finding. Placed before the two arms above
+  // it swallowed THREE OF FIVE `-pg` targets: a suite with no non-`-pg` tests
+  // reports `0 pass / 29 skip`, which is DEFLATED, but a `pass === 0` test
+  // claimed it first and printed "check the target's path" — sending an operator
+  // after a path that is fine while Postgres is down. "Ran nothing AND explains
+  // why" beats "ran nothing", so every arm that can explain goes first.
+  //
+  // ⚠️ `fail === 0` too, not `pass === 0` alone: a whole-suite kill reports
+  // `0 pass` with a large `fail` and is a real, publishable measurement.
+  if (outcome.pass === 0 && outcome.fail === 0) {
+    return {
+      kind: "empty",
+      message:
+        "ran ZERO tests — neither passing nor failing — and reported no skips, todos or " +
+        "unaccounted tests to explain it. Every cell would render an honest-looking 0 meaning " +
+        "'the suite does not catch this'. Check the target's path, and whether the mutation " +
+        "stopped the suite from registering its tests at all.",
+      cell: "ZERO tests ran — nothing was measured",
+      // ⚠️ FALSE. A self-skipped `-pg` suite reports `skip !== 0` and lands on
+      // the deflated arm above; reaching here means no test was DISCOVERED, so
+      // pointing at Postgres would be the misdirection this field exists to stop.
+      pgHint: false,
     };
   }
   return null;
 }
 
-export interface BaselineProblem {
-  /**
-   * ⚠️ Present so the CALLER can decide which remediation to print.
-   *
-   * The first cut returned a bare string and `mutate.ts` appended the
-   * TEST_DATABASE_URL hint to all of them — so a suite that was simply RED got
-   * told to "find the .skip/.todo in the target", sending an operator hunting a
-   * skip that does not exist. That is the same misdirecting-diagnostic defect
-   * the empty-string env check fixed one arm over, reintroduced by the fix for
-   * it. Only `deflated` and `unaccounted` are about tests that did not run.
-   */
-  readonly kind: "errored" | "red" | "empty" | "unaccounted" | "deflated";
-  readonly message: string;
-}
+/**
+ * Why this outcome cannot serve as a BASELINE, or `null` if it can.
+ *
+ * ⚠️ **A pure function in this file rather than an inline block in
+ * `mutate.ts`, because that is this module's stated split** — *"the logic
+ * behind all three [guardrails] lives in `mutation-core.ts` and is unit-tested;
+ * [mutate.ts] is the process around it"*. Guardrail 4 was written inline, and
+ * the consequence was measurable: deleting the entire guard left every test
+ * green and regenerated every table byte-identically. A guardrail that its own
+ * suite cannot see is the shape this whole runner exists to refuse.
+ *
+ * ## The ways a baseline lies, and why counting buckets is not enough
+ *
+ * `pass` becomes the published suite size (`render`'s *"Suite sizes: N tests"*)
+ * and `isWholeSuite`'s denominator, so a deflated baseline silently deflates
+ * every cell measured against it.
+ *
+ * 1. **RED** — inflates. Already caught before this existed, and the one arm
+ *    that is genuinely baseline-only.
+ * 2. **EMPTY** — `0 pass` and `0 fail` with no error is a target whose file was
+ *    renamed or emptied. Every cell then renders an honest-looking `0` meaning
+ *    *"the suite does not catch this"*.
+ * 3. **UNACCOUNTED** — the buckets do not sum to what bun says it ran. This is
+ *    the general form of #5077, and it is deliberately NOT spelled as
+ *    `skip !== 0`: bun prints `todo` on its own summary line and does not fold
+ *    it into `skip`, so a `test.todo` deflates the denominator exactly like a
+ *    `.skip` and slipped straight past the first cut of this guard. `filtered
+ *    out` is a third bucket with the same effect. Checking the SUM against
+ *    `Ran N tests` closes every bucket bun has now and every one it adds later,
+ *    rather than chasing its release notes.
+ *
+ * 2 and 3 — and the skip/todo arm — live in {@link unmeasurableOutcome},
+ * because a MUTATED run can produce all three too. Only RED is decided here.
+ */
+export type BaselineProblem =
+  | {
+      /**
+       * ⚠️ The kinds present so the CALLER can decide which remediation to
+       * print — but the DECISION now travels as `pgHint` on
+       * {@link UnmeasurableOutcome} rather than as a kind list the caller
+       * re-derives. The first cut returned a bare string and `mutate.ts`
+       * appended the TEST_DATABASE_URL hint to all of them, so a suite that was
+       * simply RED got told to "find the .skip/.todo in the target".
+       */
+      readonly kind: "errored" | "red";
+      readonly message: string;
+      readonly pgHint: false;
+    }
+  | UnmeasurableOutcome;
 
 export function baselineProblem(outcome: SuiteOutcome): BaselineProblem | null {
   if (outcome.error !== undefined) {
-    return { kind: "errored", message: `did not run: ${outcome.error}` };
+    return { kind: "errored", message: `did not run: ${outcome.error}`, pgHint: false };
   }
   if (outcome.fail !== 0) {
     return {
@@ -578,36 +724,13 @@ export function baselineProblem(outcome: SuiteOutcome): BaselineProblem | null {
       message:
         `is RED — ${outcome.fail} failing. Every mutation count would be this breakage plus the ` +
         "mutation's, which is indistinguishable from a strong result. Fix the tree first.",
+      pgHint: false,
     };
   }
-  // ⚠️ The two deflation arms live in `deflationProblem` — ONE copy, read by the
-  // baseline here and by the per-mutation refusal in `mutate.ts`. Their ORDERING
-  // relative to the arms around them is still this function's decision, and the
-  // comment below is why.
-  const deflation = deflationProblem(outcome);
-  if (deflation !== null) return deflation;
-  // ⚠️ LAST, and the ordering is the finding. Placed before the deflation arms
-  // it swallowed THREE OF FIVE `-pg` targets: a suite with no non-`-pg` tests
-  // reports `0 pass / 29 skip`, which is a DEFLATED baseline, but `pass === 0`
-  // claimed it first and printed "check the target's path" — sending an
-  // operator after a path that is fine while Postgres is down. That is the
-  // misdirecting diagnostic `182eb6536` removed, reintroduced by the fix for it
-  // and on the more common shape; `identity-consumers-pg` was only diagnosed
-  // correctly because it happens to carry six unrelated tests.
-  //
-  // "Ran nothing AND explains why" beats "ran nothing", so every arm that can
-  // explain goes first. Reaching here means the suite genuinely discovered no
-  // tests at all.
-  if (outcome.pass === 0) {
-    return {
-      kind: "empty",
-      message:
-        "ran ZERO tests, and reported no skips, todos or unaccounted tests to explain it. A " +
-        "baseline of nothing is not a baseline: every cell would render an honest-looking 0 " +
-        "meaning 'the suite does not catch this'. Check the target's path.",
-    };
-  }
-  return null;
+  // Every remaining way a baseline lies is a way a MUTATED run lies too, so it
+  // lives in the shared function — including the arm ordering, which the
+  // comments there record.
+  return unmeasurableOutcome(outcome);
 }
 
 /**

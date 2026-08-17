@@ -1566,8 +1566,8 @@ describe("audit value redaction (#5180)", () => {
   // but it stripped lowercase letters before comparing, so for `"abcdefghi"`
   // and `"x"` it iterated ZERO times and asserted nothing at all. The property
   // worth pinning is stronger and uniform: the output does not depend on the
-  // input. `maskSecret` produces five DIFFERENT strings for these five values,
-  // two of them revealing eight characters, so it goes red here.
+  // input. `maskSecret` reveals eight characters of two of these five values,
+  // so it goes red here.
   it("produces one identical placeholder for every secret, whatever its length", () => {
     const outputs = new Set(SECRET_LENGTHS.map((w) => redactAuditValue(SECRET_DEF, w).value));
     expect(outputs.size).toBe(1);

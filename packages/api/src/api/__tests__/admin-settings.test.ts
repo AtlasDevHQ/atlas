@@ -251,8 +251,10 @@ void mock.module("@atlas/api/lib/settings", () => ({
   // echo, and a body built inline could only ever be asserted on the verbatim
   // arm. The redaction ITSELF is pinned in `lib/__tests__/settings.test.ts`
   // against real registry definitions; what this mock exists to catch is the
-  // route going back to `{ success: true, key, value }`, which no type can
-  // see (`AuditedValue` is assignable to the schema's `z.string()`).
+  // route going back to `{ success: true, key, value }`, which the schema as
+  // written does not see (`AuditedValue` is assignable to `z.string()`; a
+  // branded schema WOULD catch it and stops the OpenAPI spec generating —
+  // measured, see `settingUpdateResponseBody`'s docstring).
   settingUpdateResponseBody: mock((_def: unknown, key: string, value: string) =>
     settingUpdateResponseBodyImpl(key, value),
   ),
@@ -354,7 +356,7 @@ describe("admin settings routes", () => {
     // `lib/__tests__/settings.test.ts` against real registry entries, because
     // the `def.secret` 403 makes it unreachable from here. What is only
     // observable here is whether the route still ROUTES through the builder —
-    // the cheaper edit, and the one no type catches.
+    // the cheaper edit, and the one the shipped schema does not catch.
     it("⭐ the 200 body is the builder's output, not an inlined literal", async () => {
       settingUpdateResponseBodyImpl = () => ({
         success: true,

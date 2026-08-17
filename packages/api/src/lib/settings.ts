@@ -3142,18 +3142,27 @@ declare const auditedValueBrand: unique symbol;
  * A string that has been through {@link redactAuditValue} — the ONLY thing an
  * audit line may carry in its `value` field.
  *
- * ⚠️ **The brand is the guard, and it is here because nothing else could be.**
- * Review measured that `log.warn({ ...line, value }, …)` at the emitter —
- * issue #5180 verbatim, plaintext back in the log stream — passed all 154
- * tests. Not because the tests were weak: no sensitive key is `secret: true`
- * today, so the redacted value and the raw value are *identical on every
- * reachable input*, and the edit is a behavioural no-op until the day it is a
- * breach. An assertion cannot see a difference that does not yet exist.
+ * ⚠️ **The brand is the guard, and it is here because the suite it was measured
+ * against could not be.** Round 1 ran `log.warn({ ...line, value }, …)` at the
+ * emitter — issue #5180 verbatim, plaintext back in the log stream — against a
+ * suite that took the registry's contents as fixed, and it passed every test.
+ * Not because the tests were weak: no shipped sensitive key is `secret: true`,
+ * so redacted and raw were identical on every input that suite reached, and the
+ * edit was a behavioural no-op until the day it is a breach.
  *
- * So the check is a type rather than a test: {@link emitSecuritySensitiveAudit}
- * takes a {@link SecuritySensitiveAuditLine}, whose `value` is branded, and a
- * raw `string` is not assignable to it. That one-keystroke edit is now a
- * compile error, on the day it is harmless and on the day it is not.
+ * ⚠️ That measurement is a fact about a suite, not a law about assertions, and
+ * an earlier draft of this paragraph stated it as the latter — "an assertion
+ * cannot see a difference that does not yet exist" — in the same docstring as
+ * the section describing the assertion that sees it. A later round stopped assuming
+ * the registry was fixed: flipping a definition to `secret: true` for one test
+ * makes the difference reachable, and the leak becomes ordinary. See
+ * "WHAT THE BRAND DOES NOT CLOSE" below for the split.
+ *
+ * The type is still the right instrument for the seam-PRESERVING edit:
+ * {@link emitSecuritySensitiveAudit} takes a {@link SecuritySensitiveAuditLine},
+ * whose `value` is branded, and a raw `string` is not assignable to it. That
+ * one-keystroke edit is a compile error on the day it is harmless and on the day
+ * it is not — and unlike a test, it does not need anyone to run the suite.
  *
  * This is the repo's own rule applied to itself — brand the OUTPUT, not just
  * the parameter — and the escalation the review loop asks for once a principle
@@ -3163,10 +3172,10 @@ declare const auditedValueBrand: unique symbol;
  * ⚠️ **WHAT THE BRAND DOES NOT CLOSE**, stated because a brand invites exactly
  * the wrong confidence, and both survivors were measured rather than guessed:
  *
- * - **A leak that never mentions the seam.** `log.warn` types its first
- *   parameter as `<T extends object>`, inferring `T` from the literal, so
- *   `log.warn({ ...line, value: raw }, …)` type-checks clean. The brand bites
- *   only where something is *expected* to carry it — hence
+ * - **A leak that never mentions the seam.** pino infers the first parameter's
+ *   type from the literal you hand it, so there is no target type to check
+ *   against and `log.warn({ ...line, value: raw }, …)` type-checks clean. The
+ *   brand bites only where something is *expected* to carry it — hence
  *   {@link warnAuditLine}. Inline `log.warn` back and the fence is gone.
  * - **A dishonest `definition`.** The brand fences the OUTPUT of the decision;
  *   the INPUT is an ordinary structural value, so `{ …, secret: false }` at the
@@ -3311,16 +3320,26 @@ export interface SettingUpdateResponse {
  * ever exercise the verbatim arm, which passes identically with the fix and
  * without it. That is #5180's accidental-equality trap arriving one sink later.
  * Pulled out here, the secret arm takes a real registry definition
- * (`RESEND_API_KEY`) in a unit test and the plaintext's absence is a measured
+ * (`ANTHROPIC_API_KEY`) in a unit test and the plaintext's absence is a measured
  * fact instead of an argument.
  *
- * ⚠️ It does NOT close the route inlining `{ success: true, key, value }` again.
- * Nothing can: the 200 schema's `value` is `z.string()` and {@link AuditedValue}
- * is assignable to `string`, so — measured by compiling the raw spelling against
- * the schema — the echo type-checks clean either way. Branding the schema was
- * the alternative and costs the OpenAPI generator a type it cannot render. So
- * that spelling is closed by a test in `admin-settings.test.ts` asserting the
- * response IS this builder's output, which is the same split
+ * ⚠️ It does NOT close the route inlining `{ success: true, key, value }` again,
+ * and that is a TRADE rather than an impossibility — an earlier draft of this
+ * paragraph said "nothing can", which the experiment below falsified. Both arms
+ * were measured:
+ *
+ * - As shipped, the 200 schema's `value` is `z.string()` and
+ *   {@link AuditedValue} is assignable to `string`, so the raw echo type-checks
+ *   clean. `c.json` IS checked against the response schema; it just has nothing
+ *   to object to in that direction.
+ * - Branding the schema (`z.custom<AuditedValue>()`) DOES make the raw echo
+ *   `TS2322` — and then `scripts/extract-openapi.ts` dies with
+ *   `UnknownZodTypeError: Unknown zod object type`, even with `.openapi()`
+ *   attached, so the spec and the api-reference docs stop generating.
+ *
+ * A compile-time guard on one unreachable arm is not worth the published spec,
+ * so the seam-removing spelling is closed by a test in `admin-settings.test.ts`
+ * asserting the response IS this builder's output. That is the same split
  * {@link AuditedValue} documents: a type for the seam-preserving edit, a test
  * for the seam-removing one.
  */
@@ -3418,8 +3437,9 @@ export interface SecuritySensitiveAuditInput {
  * - {@link AuditedValue} plus {@link warnAuditLine} close every spelling that
  *   still routes through {@link emitSecuritySensitiveAudit}.
  * - The registry-flip test in `settings-audit-log.test.ts` closes the spelling
- *   that inlines `log.warn` back here — which no type can see, because
- *   `log.warn`'s first parameter is untyped.
+ *   that inlines `log.warn` back here — which no type can see, because pino
+ *   infers `log.warn`'s first parameter from the literal, leaving no target
+ *   type to check against.
  *
  * Neither closes it alone. The second draft of this comment credited the test
  * alone (it could not see the leak: `value` is a declared field, so the edit
@@ -3440,10 +3460,12 @@ export function securitySensitiveAuditLine(
   // on the `undefined`.
   //
   // ⚠️ This closes "someone else's definition". It structurally CANNOT close
-  // "this key's definition, lying about `secret`" — a fabricated
-  // `{ key, secret: false }` passes the check and reaches the verbatim arm. The
-  // registry-flip test in `settings-audit-log.test.ts` is what covers that, by
-  // making redacted and raw differ on a reachable input.
+  // "this key's definition, lying about `secret`": the compiling spelling is
+  // `{ ...def, secret: false }`, which passes the check and reaches the verbatim
+  // arm. Two tests cover it from opposite ends — `definitionWithSecret` in
+  // `settings.test.ts` builds that spread and drives the builder with it, and
+  // the registry-flip block in `settings-audit-log.test.ts` mutates the shipped
+  // definition so redacted and raw differ on a reachable input.
   const mismatched = input.definition !== undefined && input.definition.key !== key;
   const redacted = redactAuditValue(mismatched ? undefined : input.definition, value);
   return {
@@ -3498,13 +3520,13 @@ function auditSecuritySensitiveChange(
  * `log.warn`, narrowed to this one payload shape.
  *
  * ⚠️ **The narrowing is what gives {@link AuditedValue} teeth, and calling
- * `log.warn` directly does not.** Pino types its log functions as
- * `<T extends object>(obj: T, …)`, so `T` is INFERRED from whatever literal you
- * hand it: there is no target type, no excess-property check, and no branded-
- * field check. Measured — `log.warn({ ...line, value: raw }, …)` type-checks
- * clean, while the same object assigned into a `SecuritySensitiveAuditLine`
- * position is `TS2322`. A brand only bites where something is expected to have
- * it. This alias creates that expectation.
+ * `log.warn` directly does not.** pino infers the first parameter's type from
+ * whatever literal you hand it, so there is no target type to check against: no
+ * excess-property check, and no branded-field check. Measured —
+ * `log.warn({ ...line, value: raw }, …)` type-checks clean, while the same
+ * object assigned into a `SecuritySensitiveAuditLine` position is `TS2322`. A
+ * brand only bites where something is expected to have it. This alias creates
+ * that expectation.
  */
 const warnAuditLine: (line: SecuritySensitiveAuditLine, msg: string) => void = (line, msg) => {
   log.warn(line, msg);

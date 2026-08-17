@@ -56,9 +56,27 @@ Applied:
   claim. A named mutation is worth more than a taken one anyway: it lands in a spec and
   keeps working, while a measured-and-reverted one is gone the moment it is restored.
 
+## What survived the deletion, and on what grounds
+
+**Eight operational runbooks** in `.claude/commands/`: `release`, `publish`, `deploy`,
+`ci`, `verify-mcp-cli`, `verify-prod-signup`, `dev`, `deps-update`. They are step
+sequences against external systems — npm tags in groups of ≤3, the prod fast-forward, the
+staging soak — where the cost of re-deriving is real and the failure mode is a broken
+deploy, not a missed review finding. **No finding in the audit implicated them**, and two
+are cited by live code: `scripts/ci-local.sh` and `scripts/lib/ci-local-report.sh` defer to
+`ci.md` for the launch-and-watch protocol, and ADR-0008 names `release.md` as the canonical
+tagging path.
+
+The 26 that were deleted are the ones the diagnosis was actually about: the review and
+workflow loop, where a rule's only enforcement was an author's willingness to follow it.
+
+That is the line, and it is worth stating as a general test: **delete the practice whose
+enforcement was your own diligence; keep the sequence whose enforcement is an external
+system that will fail loudly.**
+
 ## What is deliberately not here
 
-No command catalogue, no per-phase ritual, no restatement of anything CLAUDE.md or
+No workflow ritual, no per-phase catalogue, no restatement of anything CLAUDE.md or
 `.claude/rules/**` already says. Both of those are enforced — CLAUDE.md by review and the
 rules by the guards they name — and a second copy is a second thing to keep true. The
 previous layer had three copies of several rules and they disagreed.

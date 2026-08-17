@@ -4520,6 +4520,23 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     // the local billable linkage for GDPR completeness. The stripe_webhook_events
     // dedupe ledger rows are matched via the org's subscription ids, so they must
     // go before the subscription rows.
+    //
+    // Since #5269 "the org's subscription ids" is a UNION of two workspace-scoped
+    // sources rather than the `subscription` table alone: the ledger declares no
+    // FK to `subscription`, so a row whose subscription never synced locally was
+    // reachable from neither the DELETE nor the tombstone and survived a purge
+    // that reported `complete: true`. The second source is
+    // `stripe_teardown_pending`, whose drift arm records exactly those ids, and
+    // it is read from the registry declaration so the DELETE and the tombstone
+    // INSERT below widen together. Full argument — including why the tombstone
+    // table itself is the WRONG second source — is on the registry entry.
+    //
+    // ⚠️ `stripe_teardown_pending` (migration 0141) is NOT probed, unlike
+    // `subscription`. On a region behind 0141 the subquery raises 42P01 and
+    // aborts the purge, which the arm above reports as `region_schema_behind`
+    // with "run this region's migrations" — the honest outcome for a region that
+    // cannot execute the purge as specified, and the same treatment the other
+    // ~93 unprobed relations already get.
     let subscriptions = 0;
     let stripeWebhookEvents = 0;
     // Probed through the same helper as scim_group_mappings (#5160), which means

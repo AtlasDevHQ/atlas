@@ -833,6 +833,33 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
       throw new Error(`Seed failed for ${seedErrors.length} table(s):\n${seedErrors.join("\n")}`);
     }
 
+    // ── ORPHAN ledger rows (#5269) ──
+    //
+    // The generic pass gives each workspace ONE `stripe_webhook_events` row,
+    // keyed through `subscription` — the case the delete already handled. The
+    // defect was the row whose subscription row is not there to be joined
+    // through, so it has to be seeded on purpose: `sub_teardown-<ws>` is the id
+    // the `stripe_teardown_pending` seed carries, and there is deliberately no
+    // `subscription` row for it (that fixture's id is `sub_purge-seed-<ws>`).
+    // That is the drift shape `detectCustomerSubscriptionDrift` records — live
+    // in Stripe, no local subscription row — which is the population this widening
+    // exists for.
+    //
+    // ⚠️ The counts are ASYMMETRIC on purpose: one orphan for ORG, TWO for the
+    // neighbour. With one each, "purged ORG's" and "purged the neighbour's" leave
+    // the same total behind, and the assertion could not tell them apart.
+    for (const [workspaceId, copies] of [[ORG, 1], [NEIGHBOUR, 2]] as const) {
+      for (let i = 0; i < copies; i++) {
+        await pool.query(
+          `INSERT INTO stripe_webhook_events
+             (event_id, event_type, event_created, stripe_subscription_id, applied_plan_tier)
+           VALUES ('evt-orphan-' || $2 || '-' || $1, 'customer.subscription.deleted', now(),
+                   'sub_teardown-' || $1, 'pro')`,
+          [workspaceId, String(i)],
+        );
+      }
+    }
+
     result = await hardDeleteWorkspace(ORG);
   }, PG_TIMEOUT_MS);
 
@@ -1106,6 +1133,10 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     const wrong: string[] = [];
     for (const table of VIA_PARENT_TABLES) {
       if (!seeded.has(table)) continue;
+      // stripe_webhook_events carries the extra ORPHAN rows this loop's "exactly
+      // one" arithmetic cannot express, and its survivors are asserted by
+      // identity — not by count — in the #5269 test below.
+      if (table === "stripe_webhook_events") continue;
       const link = parentLinkFor(table);
       const r = await pool.query<{ n: string }>(`SELECT count(*)::text AS n FROM "${table}"`);
       const n = Number(r.rows[0].n);
@@ -1220,6 +1251,81 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
       "the purge must tombstone the subscription ids it removed (#3468)",
     ).toBe(1);
   });
+
+  it("removes ORPHAN ledger rows whose subscription row never existed (#5269)", async () => {
+    // The defect: `stripe_webhook_events` declares no FK to `subscription`, so a
+    // ledger row keyed on an id with no `subscription` row for this org was
+    // matched by neither the DELETE nor the #3468 tombstone SELECT — and the
+    // response still said `complete: true`. `stripe_teardown_pending` is the
+    // second, workspace-scoped source that reaches them.
+    //
+    // Asserted by IDENTITY, per key, rather than by a total. A total of 3 is
+    // reachable by deleting the right rows and by deleting three wrong ones.
+    const countByKey = async (key: string): Promise<number> => {
+      const r = await pool.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM stripe_webhook_events WHERE stripe_subscription_id = $1`,
+        [key],
+      );
+      return Number(r.rows[0].n);
+    };
+
+    // ORG: both classes gone — the parented row AND the orphan.
+    expect(await countByKey(`sub_purge-seed-${ORG}`), "the parented ledger row survived").toBe(0);
+    expect(
+      await countByKey(`sub_teardown-${ORG}`),
+      "the ORPHAN ledger row survived the purge — this is #5269",
+    ).toBe(0);
+
+    // The neighbour keeps BOTH classes, in the counts it was seeded with. The
+    // widened source is `stripe_teardown_pending`, which holds a row for the
+    // neighbour too, so a delete that forgot `WHERE workspace_id = $1` on the
+    // new arm would clear these and pass every "ORG is empty" assertion above.
+    expect(await countByKey(`sub_purge-seed-${NEIGHBOUR}`)).toBe(1);
+    expect(
+      await countByKey(`sub_teardown-${NEIGHBOUR}`),
+      "the purge reached across into the neighbour's orphan rows",
+    ).toBe(2);
+
+    // Nothing else is left over: exactly the neighbour's three rows remain.
+    const total = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM stripe_webhook_events`,
+    );
+    expect(Number(total.rows[0].n)).toBe(3);
+
+    // The count the operator reads must include the orphan. Reporting 1 while
+    // deleting 2 is the same class of untrue-response the purge scope exists to
+    // prevent, one field over.
+    expect(
+      result.counts.stripeWebhookEvents,
+      "the reported count must cover the orphan the widened delete removed",
+    ).toBe(2);
+
+    // ⚠️ And the tombstone must widen WITH the delete (#3468). Both are built
+    // from the one `parentKeySubquery`, so this is the assertion that would
+    // catch them being split: without the orphan id tombstoned, the outbox
+    // sweep's own cancellation webhook regrows the row just deleted.
+    const tombstoned = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM stripe_purged_subscriptions
+        WHERE stripe_subscription_id = 'sub_teardown-' || $1`,
+      [ORG],
+    );
+    expect(
+      Number(tombstoned.rows[0].n),
+      "the orphan's id was deleted but not tombstoned — the next webhook regrows it",
+    ).toBe(1);
+    // The neighbour's id is NOT tombstoned: a tombstone is terminal, and
+    // stamping a live workspace's subscription would make `classifyStripeEvent`
+    // silently drop its real billing events.
+    const neighbourTombstone = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM stripe_purged_subscriptions
+        WHERE stripe_subscription_id = 'sub_teardown-' || $1`,
+      [NEIGHBOUR],
+    );
+    expect(
+      Number(neighbourTombstone.rows[0].n),
+      "the purge tombstoned a LIVE workspace's subscription id",
+    ).toBe(0);
+  }, PG_TIMEOUT_MS);
 
   it("keeps the anti-abuse trial grant of a user who survives the purge", async () => {
     // The claim: `user_trial_grants` is `retained`, so the purge must not delete

@@ -1382,15 +1382,37 @@ describe("hardDeleteWorkspace()", () => {
     // also guards the tombstone INSERT above, whose target column is a PRIMARY
     // KEY. Measured before this line existed, deleting the flag was green across
     // all three suites.
+    //
+    // The second arm of the UNION is #5269's widening. `stripe_teardown_pending`
+    // is the workspace-scoped record of subscription ids that never had a local
+    // `subscription` row, and `WHERE "workspace_id" = $1` is the whole reason it
+    // is safe to read: without it this DELETE would reach every tenant's ledger.
+    const KEY_SOURCES =
+      `SELECT "stripeSubscriptionId" FROM "subscription" WHERE "referenceId" = $1` +
+      ` AND "stripeSubscriptionId" IS NOT NULL` +
+      ` UNION SELECT "stripe_sub_id" FROM "stripe_teardown_pending" WHERE "workspace_id" = $1` +
+      ` AND "stripe_sub_id" IS NOT NULL`;
     expect(queries[ledgerDeleteIdx]).toBe(
-      `DELETE FROM "stripe_webhook_events" WHERE "stripe_subscription_id" IN (` +
-        `SELECT "stripeSubscriptionId" FROM "subscription" WHERE "referenceId" = $1` +
-        ` AND "stripeSubscriptionId" IS NOT NULL) RETURNING 1`,
+      `DELETE FROM "stripe_webhook_events" WHERE "stripe_subscription_id" IN (${KEY_SOURCES}) RETURNING 1`,
     );
     expect(subscriptionDeleteIdx).toBeGreaterThan(-1);
     expect(tombstoneIdx).toBeLessThan(ledgerDeleteIdx);
     expect(tombstoneIdx).toBeLessThan(subscriptionDeleteIdx);
-    expect(queries[tombstoneIdx]).toContain("ON CONFLICT (stripe_subscription_id) DO NOTHING");
+    // ⚠️ The tombstone is pinned to the SAME id set, by value (#5269). Ordering
+    // and an `ON CONFLICT` clause were all this asserted, and neither can see the
+    // failure that matters: a tombstone NARROWER than the delete leaves the
+    // outbox sweep's own cancellation webhook free to regrow the row the purge
+    // just removed, which is the exact regression #3468 exists to prevent —
+    // silently, one webhook after a "complete" purge.
+    //
+    // Whitespace-normalized, and only whitespace: the INSERT is a multi-line
+    // template in the source, so an exact match would pin its INDENTATION and
+    // break on a reformat that changed no SQL. Every identifier, predicate and
+    // clause is still compared by value.
+    expect(queries[tombstoneIdx].replace(/\s+/g, " ").trim()).toBe(
+      `INSERT INTO stripe_purged_subscriptions (stripe_subscription_id) ${KEY_SOURCES} ` +
+        `ON CONFLICT (stripe_subscription_id) DO NOTHING`,
+    );
   });
 
   it("skips Stripe linkage deletes when the plugin's subscription table is absent (self-hosted)", async () => {

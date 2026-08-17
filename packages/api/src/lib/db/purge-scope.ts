@@ -123,6 +123,43 @@ export interface PurgeParentLink {
    * transaction with it.
    */
   readonly parentKeyNullable?: boolean;
+  /**
+   * FURTHER workspace-scoped sources of the same key values, UNIONed into
+   * `parentKeySubquery` (#5269).
+   *
+   * The parent is not always the only place a workspace's keys are recorded,
+   * and a child row whose parent row never existed — or was removed before the
+   * purge — is reachable from nowhere else. See the `stripe_webhook_events`
+   * entry for the case this exists for, and for why the obvious second source
+   * was the wrong one.
+   */
+  readonly additionalKeySources?: readonly PurgeKeySource[];
+}
+
+/**
+ * A second table that records key values belonging to a workspace.
+ *
+ * Unlike `PurgeParentLink` this is NOT a parent: nothing about it constrains
+ * delete ORDER, because it is read for its ids and is not itself required to
+ * survive, to be deleted, or to be deleted in any particular position. What it
+ * MUST be is workspace-scoped — a source with no `$1` predicate would union in
+ * other tenants' ids and turn a per-workspace purge into a cross-tenant delete,
+ * which is exactly what ruled out the obvious candidate in
+ * `stripe_webhook_events`'s entry.
+ *
+ * There is no `nullable` flag: `keyColumn IS NOT NULL` is applied
+ * unconditionally. A NULL contributes nothing to the `IN (…)` this feeds and
+ * would abort the #3468 tombstone INSERT it also feeds, so there is no reading
+ * on which including one is correct — see `parentKeyNullable` just above for
+ * why that INSERT is the consumer that decides this.
+ */
+export interface PurgeKeySource {
+  /** The table holding the ids. */
+  readonly table: string;
+  /** The column holding the child's key value. */
+  readonly keyColumn: string;
+  /** That table's workspace scope column — this is what `$1` is matched against. */
+  readonly scopeColumn: string;
 }
 
 interface PurgeTableScopeBase {
@@ -299,7 +336,7 @@ export const PURGE_TABLE_DECISIONS = {
   overage_meter_reports: { decision: "purged", reason: "Overage meter reports carrying the org's Stripe customer id and reported spend. Previously unpurged, so billing linkage outlived the 'no billable Stripe linkage' guarantee #3425 established." },
   abuse_events: { decision: "purged", reason: "Per-workspace abuse events. Deleting these loses abuse memory for a re-created org id — accepted, and the settled precedent this registry follows for user_trial_grants' opposite call: abuse_events is workspace-keyed (a purged org id is not reused by a returning ACTOR), whereas the trial grant is user-keyed and its whole purpose is surviving org deletion." },
   subscription: { decision: "purged", reason: "@better-auth/stripe subscription rows (`referenceId` = org id). Probed with to_regclass — the table only exists post-0152 or on Stripe deployments. The REMOTE teardown runs before this cascade; this removes the local billable linkage (#3425)." },
-  stripe_webhook_events: { decision: "purged", reason: "Webhook dedupe-ledger rows for the org's subscription ids, matched via a subscription subquery, so they must go before the subscription rows.", viaParent: { column: "stripe_subscription_id", parent: "subscription", parentKey: "stripeSubscriptionId", parentScope: "referenceId", parentKeyNullable: true } },
+  stripe_webhook_events: { decision: "purged", reason: "Webhook dedupe-ledger rows for the subscription ids that belonged to this workspace, matched via a UNION of two workspace-scoped sources and therefore deleted before the subscription rows. #5269 asked that the choice between widening this delete and accepting the residue be RECORDED rather than made by omission; it is widened, and this is the record. THE ORPHAN: the table declares no FK to `subscription` by design — the ledger is written by webhook handlers that may see an event before the subscription row is synced — so a ledger row whose subscription row never existed for this org, or was already gone, was matched by neither this DELETE nor the #3468 tombstone SELECT beside it, and the response still reported `complete: true`. NOT `stripe_purged_subscriptions`, which #5269 named as the natural second source: measured, it is a no-op here and a cross-tenant delete everywhere else. The tombstone carries no org column (see schema.ts), so 'tombstoned FOR THIS ORG' is not expressible from it; the rows it does hold for this org are inserted, in this same transaction, from the very subquery the ledger DELETE already uses, so the id sets are identical; and what remains in it belongs to OTHER purged workspaces. `stripe_teardown_pending` is the source that works, because it is keyed on `workspace_id` AND is populated with exactly the ids that go missing: `detectCustomerSubscriptionDrift` (#3679) enqueues every subscription live in Stripe with no local `subscription` row, and the purge route runs that teardown BEFORE this cascade. That reaches the live path #5265 documents — @better-auth/stripe writes a NULL `stripeSubscriptionId` at checkout initiation while the webhook has already recorded the real id, so `listStripeSubscriptions`'s IS NOT NULL filter returns no rows and drift detection runs (gated on the org carrying a `stripeCustomerId`). Widening the source widens the #3468 tombstone in lockstep because `parentKeySubquery` builds both, and that is required rather than incidental: the tombstone must record exactly the ids whose ledger rows are removed, or the outbox sweep's own cancellation webhook regrows the row it names. ACCEPTED RESIDUE: an orphan whose subscription was already terminal in Stripe at teardown is in neither source and survives. That is billing bookkeeping, not a DPA gap — the columns are event_id, event_type, stripe_subscription_id and applied_plan_tier, no personal data — and `pruneStripeEventLedger` removes it after STRIPE_EVENT_LEDGER_RETENTION_DAYS (30).", viaParent: { column: "stripe_subscription_id", parent: "subscription", parentKey: "stripeSubscriptionId", parentScope: "referenceId", parentKeyNullable: true, additionalKeySources: [{ table: "stripe_teardown_pending", keyColumn: "stripe_sub_id", scopeColumn: "workspace_id" }] } },
 
   // Residency
   region_migrations: { decision: "purged", reason: "Region-migration records for the workspace." },
@@ -376,7 +413,22 @@ export type ViaParentTableName = {
 export function parentKeySubquery(table: ViaParentTableName): string {
   const link: PurgeParentLink = PURGE_TABLE_DECISIONS[table].viaParent;
   const notNull = link.parentKeyNullable ? ` AND "${link.parentKey}" IS NOT NULL` : "";
-  return `SELECT "${link.parentKey}" FROM "${link.parent}" WHERE "${link.parentScope}" = $1${notNull}`;
+  const fromParent = `SELECT "${link.parentKey}" FROM "${link.parent}" WHERE "${link.parentScope}" = $1${notNull}`;
+  // A UNION rather than a second statement, so BOTH consumers widen together
+  // (#5269). Splitting the extra ids into their own DELETE would leave the
+  // tombstone INSERT reading the narrow set, and the invariant this file's
+  // docstring states — the tombstone records exactly the ids whose ledger rows
+  // are removed — would break silently, one post-commit webhook later.
+  //
+  // `UNION` (not `UNION ALL`) because the sources overlap by design: a
+  // subscription that is both live locally and pending teardown appears in
+  // both, and the tombstone's PRIMARY KEY has no interest in the duplicate.
+  const fromExtras = (link.additionalKeySources ?? []).map(
+    (source) =>
+      `SELECT "${source.keyColumn}" FROM "${source.table}" ` +
+      `WHERE "${source.scopeColumn}" = $1 AND "${source.keyColumn}" IS NOT NULL`,
+  );
+  return [fromParent, ...fromExtras].join(" UNION ");
 }
 
 /**

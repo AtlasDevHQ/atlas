@@ -83,3 +83,14 @@ previous layer had three copies of several rules and they disagreed.
 
 Evidence for every claim above is in `.claude/research/ROADMAP.md`, which is the record.
 This file is the practice. When they conflict, the record wins and this file is wrong.
+
+## This file does not yet meet its own bar
+
+By the test above, everything here is currently a **note**: no gate enforces it. That is
+worth stating rather than hiding, because an unenforced rule that presents as enforced is
+the exact defect this file was written about.
+
+The first piece of enforcement is filed as
+[#5299](https://github.com/AtlasDevHQ/atlas/issues/5299) — a guard that fails when any doc
+here references a repo path that does not exist. All three false claims in the audit that
+produced this rebuild were of that shape, and all three were found by hand.

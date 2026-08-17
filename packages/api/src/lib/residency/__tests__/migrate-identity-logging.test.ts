@@ -84,14 +84,25 @@ void mock.module("@atlas/api/lib/logger", () => {
 type ImportBundle = typeof import("@atlas/api/api/routes/admin-migrate")["importBundle"];
 type UnkeyableError =
   typeof import("@atlas/api/api/routes/admin-migrate")["RegionImportUnkeyableError"];
-let importBundle: ImportBundle;
+let importBundleWithCorrelationId: ImportBundle;
+/**
+ * `importBundle` with #5112's correlation token defaulted — same shim, and same
+ * reasoning, as `api/__tests__/admin-migrate.test.ts`. Every case in this file is
+ * about the identity-loss warn, not about the token.
+ */
+const importBundle = (
+  client: Parameters<ImportBundle>[0],
+  bundle: Parameters<ImportBundle>[1],
+  orgId: Parameters<ImportBundle>[2],
+  correlationId: Parameters<ImportBundle>[3] = "req-migrate-identity-logging",
+) => importBundleWithCorrelationId(client, bundle, orgId, correlationId);
 // Loaded through the same dynamic import as `importBundle`, not a static one:
 // this file mocks the logger module, so a static import would bind the real one
 // before the mock is installed.
 let RegionImportUnkeyableError: UnkeyableError;
 
 beforeAll(async () => {
-  ({ importBundle, RegionImportUnkeyableError } = await import(
+  ({ importBundle: importBundleWithCorrelationId, RegionImportUnkeyableError } = await import(
     "@atlas/api/api/routes/admin-migrate"
   ));
 });

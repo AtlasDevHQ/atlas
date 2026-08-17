@@ -100,6 +100,15 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
   getPendingAmendmentCount: async () => 0,
 }));
 
+// ⚠️ This file's `import { … } from "../cleanup"` is STATIC and therefore hoisted
+// above every `mock.module` call here — and `cleanup.ts` calls `createLogger()` at
+// MODULE SCOPE, so it binds the real logger before this mock lands. The DB and
+// misrouting mocks work anyway because their exports are only reached at call time.
+// Capturing log output from this file is therefore not possible without converting
+// the import to a dynamic one; #5112's log assertions live in
+// `cleanup-refusal-audit.test.ts`, which imports dynamically for exactly that
+// reason. Do not "fix" this by asserting on logs here — it will silently pass
+// against a real logger writing to stdout.
 void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
@@ -180,6 +189,10 @@ function setEligible(overrides?: {
         {
           status: overrides?.status ?? "completed",
           source_cleaned_at: overrides?.source_cleaned_at ?? null,
+          // #5112's `vocabulary_edges_refused` is deliberately ABSENT here, which
+          // is what a row written before migration 0204 looks like — so every case
+          // in this file keeps exercising the unknown path. The column's own
+          // behaviour lives in `cleanup-refusal-audit.test.ts`.
         },
       ],
     },

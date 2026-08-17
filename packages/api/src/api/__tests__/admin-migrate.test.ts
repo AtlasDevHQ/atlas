@@ -14,7 +14,56 @@ import type {
   ImportResult,
 } from "@useatlas/types";
 import type { InternalPoolClient } from "@atlas/api/lib/db/internal";
-import { importBundle, validateBundle } from "../routes/admin-migrate";
+import { importBundle as importBundleWithCorrelationId, validateBundle } from "../routes/admin-migrate";
+
+/**
+ * `importBundle` with #5112's correlation token defaulted.
+ *
+ * The token is REQUIRED on the real signature, deliberately: it is stamped on
+ * every vocabulary-refusal line so two attempts at the same bundle stop emitting
+ * byte-identical line sets, and a parameter a production caller can omit is one a
+ * production caller will omit. That argument is about PRODUCTION callers — the
+ * compile error still fires for every one of them — so the tests in this file,
+ * none of which is about the token, opt in through one named shim rather than
+ * threading a constant through forty call sites. The token's own behaviour is pinned
+ * in `lib/brain/__tests__/vocabulary-merge-pg.test.ts` (group 8, which passes it
+ * explicitly and compares two attempts' whole payloads) and in
+ * `api/routes/__tests__/admin-migrate-import-errors.test.ts` (which pins the join key
+ * from the per-refusal line to the post-COMMIT confirmation, end to end).
+ *
+ * ⚠️ An earlier version of this sentence named `migrate-refusal-durability.test.ts`,
+ * which does not exist, and credited `migrate-roundtrip-pg.test.ts` with token
+ * assertions it does not make — it uses the same shim. A pointer to coverage is a
+ * claim like any other; both halves were wrong.
+ */
+type ImportBundleArgs = Parameters<typeof importBundleWithCorrelationId>;
+const importBundle = (
+  client: ImportBundleArgs[0],
+  bundle: ImportBundleArgs[1],
+  orgId: ImportBundleArgs[2],
+  correlationId: ImportBundleArgs[3] = "req-admin-migrate-test",
+) => importBundleWithCorrelationId(client, bundle, orgId, correlationId);
+
+/**
+ * ⚠️ `importBundle`'s 4th parameter is REQUIRED, pinned here because the shim above
+ * hides it — and nothing pinned it until the comment sweep went looking.
+ *
+ * The docstring on `importBundle` argues the token must be required because "a
+ * parameter a caller can omit is one a caller will omit". Relaxing it to
+ * `correlationId?: string` leaves this shim and `migrate-roundtrip-pg.test.ts`'s
+ * compiling — `ImportBundleArgs[3]` merely becomes `string | undefined` and the default
+ * still fills it — so the argument was documentation with no guard.
+ *
+ * An optional 4th argument makes `length` the union `3 | 4`, which fails `extends 4`.
+ * (`vocabulary-merge-pg.test.ts` carries the twin pin for `mergeApprovedEdges`; two
+ * functions took this parameter, and each needs its own.)
+ */
+const _importBundleTokenIsRequired: Parameters<
+  typeof importBundleWithCorrelationId
+>["length"] extends 4
+  ? true
+  : never = true;
+void _importBundleTokenIsRequired;
 import { warehouseRowId } from "@atlas/api/lib/brain/warehouse-producer";
 
 // ---------------------------------------------------------------------------
@@ -263,7 +312,7 @@ describe("bundle round-trip shape", () => {
       brainEdges: { imported: 4, skipped: 0 },
       factAudienceMembers: { imported: 2, skipped: 5 },
       // Three counters here alone (#5036).
-      brainVocabularyEdges: { imported: 1, skipped: 4, refused: 6 },
+      brainVocabularyEdges: { imported: 1, skipped: 4, refused: 6, refusalDetails: [] },
       brainSlackChannelExclusions: { imported: 2, skipped: 1, refused: 0 },
       brainEnrollments: { imported: 3, skipped: 1, namingDropped: 2, namingApplied: 4 },
       brainEntities: { imported: 6, skipped: 2 },
@@ -292,8 +341,14 @@ describe("bundle round-trip shape", () => {
     // fourth counter slips past both. The reconciliation behaviour that would
     // need revisiting is pinned in `migrate.test.ts`; this file pins shape, and
     // `bun run type` is what enforces it.
+    //
+    // `refusalDetails` joins the set at #5112, and it is a PAYLOAD rather than a
+    // counter — the only one in the whole type. It earns its place here on the
+    // same grounds: required, so dropping it stops the literal above
+    // type-checking, and named, so renaming it goes red.
     expect(Object.keys(result.brainVocabularyEdges).toSorted()).toEqual([
       "imported",
+      "refusalDetails",
       "refused",
       "skipped",
     ]);

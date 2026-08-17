@@ -26,6 +26,12 @@ import { SLACK_CHANNEL_ID_PATTERN } from "@atlas/api/lib/brain/ingest/slack/conf
 import {
   VOCABULARY_LOCK_NAMESPACE,
   VOCABULARY_LOCK_SQL,
+  // ⚠️ The refusal-payload cap lives HERE, not in `@useatlas/types` beside the type
+  // it bounds. A VALUE import from the published package resolves at runtime against
+  // the version the scaffold template pins, and this file is copied into that
+  // template — see the constant's own docstring for the CI failure that proved it.
+  // Type imports from `@useatlas/types` are erased and therefore free.
+  VOCABULARY_REFUSAL_DETAIL_CAP,
   loadClaimVocabulary,
   mergeApprovedEdges,
 } from "@atlas/api/lib/brain/vocabulary";
@@ -991,6 +997,50 @@ const ImportResultSchema = z.object({
     imported: z.number(),
     skipped: z.number(),
     refused: z.number(),
+    // The refused edges themselves (#5112). The ONE section that returns
+    // payloads rather than counts, because it is the one section whose dropped
+    // outcome is not re-derivable: the source region schedules the delete of its
+    // own `brain_vocabulary_edge` rows, so once the grace period closes this
+    // array is the last copy of N human review decisions.
+    //
+    // Capped by the producer at `VOCABULARY_REFUSAL_DETAIL_CAP`, so
+    // `refusalDetails.length < refused` means truncated. No `truncated` flag: a
+    // flag and a derivable comparison can disagree.
+    //
+    // ⚠️ EVERY ITEM FIELD REQUIRED, including the two nullable ones — and the reach
+    // of the pin below is MEASURED, not assumed. Three experiments, run against
+    // `tsgo --noEmit`:
+    //
+    //   - drop a required item field from this side only  → RED (pinned)
+    //   - drop `.nullable()` from this side only          → RED (pinned)
+    //   - add an OPTIONAL item field to this side only    → GREEN (NOT pinned)
+    //
+    // So the hole the pin's own comment names one level up — an optional NESTED
+    // member — extends to the array ITEM's fields too, which is a second level of
+    // nesting it does not mention. `.nullable()` keeps a field present-and-null and
+    // is therefore pinned; `.optional()` on either spelling is pinned by nothing.
+    // That is the whole reason all eight are required here.
+    refusalDetails: z
+      .array(
+        z.object({
+          slotPosition: z.string(),
+          fromNorm: z.string(),
+          toNorm: z.string(),
+          approvedBy: z.string().nullable(),
+          approvedAt: z.string(),
+          refusal: z.string(),
+          existingTarget: z.string().nullable(),
+          reason: z.string(),
+        }),
+      )
+      // ⚠️ DOCUMENTATION, NOT ENFORCEMENT, and worth having for exactly that. Nothing
+      // validates a RESPONSE against this schema at runtime, so the two `.slice()`
+      // calls (here and in `residency/migrate.ts`) remain the enforcement. What
+      // `.max()` buys is the bound appearing in the published OpenAPI spec, where a
+      // consumer can see it — otherwise the contract says `array` and the cap is
+      // folklore. `z.infer` is unchanged, so the `_SchemaMatchesWireType` pin below
+      // is unaffected.
+      .max(VOCABULARY_REFUSAL_DETAIL_CAP),
   }),
   // Three counters for `brainVocabularyEdges`' reason, one arm over. `skipped`
   // is an exclusion this region already holds — an idempotent re-import.
@@ -1695,10 +1745,21 @@ function importedIdentity(fact: ExportedBrainFact, source: IdentitySource): Impo
   };
 }
 
+/**
+ * Import one export bundle into `orgId`, inside the caller's transaction.
+ *
+ * `correlationId` is the caller's per-attempt token (`requestId` on both routes).
+ * REQUIRED rather than optional: it is stamped on every vocabulary refusal line
+ * so two attempts at the same bundle stop emitting byte-identical line sets
+ * (#5112), and a parameter a caller can omit is one a caller will omit. It is
+ * carried, never persisted — the durable half is the source region's
+ * `region_migrations.vocabulary_refusals`.
+ */
 export async function importBundle(
   client: InternalPoolClient,
   bundle: ExportBundle,
   orgId: string,
+  correlationId: string,
 ): Promise<ImportResult> {
   const result: ImportResult = {
     conversations: { imported: 0, skipped: 0 },
@@ -1713,7 +1774,7 @@ export async function importBundle(
     brainFacts: { imported: 0, skipped: 0 },
     brainEdges: { imported: 0, skipped: 0 },
     factAudienceMembers: { imported: 0, skipped: 0 },
-    brainVocabularyEdges: { imported: 0, skipped: 0, refused: 0 },
+    brainVocabularyEdges: { imported: 0, skipped: 0, refused: 0, refusalDetails: [] },
     brainSlackChannelExclusions: { imported: 0, skipped: 0, refused: 0 },
     brainEnrollments: { imported: 0, skipped: 0, namingDropped: 0, namingApplied: 0 },
     brainEntities: { imported: 0, skipped: 0 },
@@ -2147,6 +2208,9 @@ export async function importBundle(
       approvedBy: edge.approvedBy ?? null,
       approvedAt: edge.approvedAt,
     })),
+    // The caller's per-attempt token, stamped on every refusal line so a retry's
+    // line set is distinguishable from the first attempt's (#5112).
+    correlationId,
   );
 
   // Three counters, and the split is the point of the slice. `skipped` is the
@@ -2164,6 +2228,42 @@ export async function importBundle(
   result.brainVocabularyEdges.imported = vocabularyMerge.applied;
   result.brainVocabularyEdges.skipped = vocabularyMerge.duplicate;
   result.brainVocabularyEdges.refused = vocabularyMerge.refusals.length;
+
+  // ⚠️ THE PAYLOADS, NOT JUST THE COUNT — this line is #5112 (#5036 read
+  // `refusals.length` here and threw the array away).
+  //
+  // The refused edge is a human review decision the SOURCE region approved and
+  // this region declined. The source is the party that cuts over and schedules
+  // the cleanup that DELETEs its own `brain_vocabulary_edge` rows after the grace
+  // period, so without this the party owning the irreversible act got a number
+  // while the record that would let anyone undo it lived only in THIS region's
+  // log retention. `residency/migrate.ts` reads these off the response and writes
+  // them to the source's `region_migrations` row, which cleanup never deletes.
+  //
+  // Capped: a hand-built or corrupted bundle can conflict with itself on every
+  // edge, and this array becomes an HTTP response body AND a `jsonb` column. The
+  // count above is always the true total, so a shorter array is the truncation
+  // signal — see `VOCABULARY_REFUSAL_DETAIL_CAP`.
+  //
+  // Field-by-field rather than spread: `VocabularyMergeRefusal` nests the edge
+  // and carries `existingTarget` on only one arm, and the wire type is FLAT with
+  // `existingTarget` always present. Spreading would put a nested `edge` object
+  // on the wire and make the field absent on three of the four refusal kinds —
+  // and "absent" and "there is no conflicting edge" read identically to the
+  // operator this payload exists for, which is the same distinction the
+  // target-side warn already makes with an explicit `null`.
+  result.brainVocabularyEdges.refusalDetails = vocabularyMerge.refusals
+    .slice(0, VOCABULARY_REFUSAL_DETAIL_CAP)
+    .map((refusal) => ({
+      slotPosition: refusal.edge.position,
+      fromNorm: refusal.edge.fromNorm,
+      toNorm: refusal.edge.toNorm,
+      approvedBy: refusal.edge.approvedBy ?? null,
+      approvedAt: refusal.edge.approvedAt,
+      refusal: refusal.refusal,
+      existingTarget: refusal.refusal === "already-aliased" ? refusal.existingTarget : null,
+      reason: refusal.message,
+    }));
 
   // --- 9b. The Slack ingest-scope narrowings (#5203) ---
   // Written BEFORE the episodes below, and that ordering is load-bearing: the
@@ -2863,6 +2963,123 @@ export async function importBundle(
   return result;
 }
 
+/**
+ * The post-`COMMIT` confirmation that turns "WILL DROP" into "DID DROP" (#5112).
+ *
+ * `mergeApprovedEdges` emits one `log.warn` per refusal in the FUTURE TENSE, and
+ * that tense is correct: the merge is section 9 of ~13 inside the caller's
+ * transaction, so the closure rebuild, the brain's identity refusal or any driver
+ * error can still roll the whole import back — and then no edge was dropped
+ * because none was applied. The cost of being correct there is that nothing ever
+ * said the drop HAPPENED. An operator following the recovery path could not tell
+ * a committed loss from a rolled-back attempt whose retry succeeded.
+ *
+ * ⚠️ CALLED AFTER `COMMIT`, NEVER INSIDE THE `try` BEFORE IT, and the position is
+ * the whole content of the line. Moved one statement earlier it makes exactly the
+ * over-report the future tense exists to avoid.
+ *
+ * `correlationId` is the same token the per-refusal lines carry, so the two line
+ * sets join on one grep. The payloads are repeated rather than referenced: the
+ * warns and this line can be separated by minutes of unrelated traffic, and a
+ * confirmation that says only "the 3 lines above are real" is unreadable once
+ * they are not above it.
+ *
+ * Silent when nothing was refused — a `refused: 0` confirmation would fire on
+ * every import that carries a vocabulary and train an operator to skip the line.
+ *
+ * ## Why THIS side logs the payloads and the source side logs only counts
+ *
+ * A deliberate asymmetry, recorded because the two halves look inconsistent and a
+ * later reader will otherwise "fix" one to match the other. In the TARGET region
+ * the log IS the recovery path — this is the only process that ever holds the
+ * refused edges, so a count here would discard the thing worth keeping. In the
+ * SOURCE region (`residency/migrate.ts`) the payloads go to a DATABASE COLUMN and
+ * the log carries counts, because that module's whole argument is that a log line
+ * does not outlive the data it describes.
+ *
+ * The cost is real and accepted: these lines put customer-derived lexical norms and
+ * approver user ids into this region's log stream, which is a retention surface. It
+ * is the same data the region already holds in `brain_vocabulary_edge`, it is
+ * bounded by the cap, and it fires only when a human decision was actually dropped.
+ */
+function logVocabularyRefusalsCommitted(
+  correlationId: string,
+  orgId: string,
+  result: ImportResult,
+): void {
+  const { refused, refusalDetails } = result.brainVocabularyEdges;
+  if (refused === 0) return;
+  logRefusalConfirmation(correlationId, orgId, refused, refusalDetails);
+}
+
+/**
+ * The confirmation's body, wrapped so it CANNOT fail the request (panel round 1).
+ *
+ * Both handlers call `logVocabularyRefusalsCommitted` inside the `try`, after
+ * `COMMIT` — the position the confirmation's whole meaning depends on. The residual
+ * that round 1 caught: a throw in that window (a pino transport EPIPE on a closed
+ * stdout, a full transport buffer) lands in the catch, where `ROLLBACK`-after-COMMIT
+ * succeeds, so `uncertain` is false and the handler answers **500 `import_failed`**
+ * — whose message says the import did not take effect — for a transaction that
+ * committed, refusals included. `transferBundleToTarget` then maps that 500 to
+ * "Target region import failed", aborts the migration, and discards the very
+ * refusal evidence it was about to persist.
+ *
+ * So the disclosure is made unable to invalidate the thing it discloses. Additive
+ * rather than a restructure: hoisting the post-`COMMIT` statements out of the `try`
+ * would need a new response code for "committed but reporting failed", which is new
+ * machinery for a strictly worse outcome — the data DID land, and a 200 that lost
+ * one log line is the honest answer.
+ *
+ * The catch logs at `error` and re-narrows, so the failure is never silent: what is
+ * lost is the confirmation, and that loss is itself announced.
+ */
+function logRefusalConfirmation(
+  correlationId: string,
+  orgId: string,
+  refused: number,
+  refusalDetails: ImportResult["brainVocabularyEdges"]["refusalDetails"],
+): void {
+  try {
+    emitRefusalConfirmation(correlationId, orgId, refused, refusalDetails);
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), correlationId, orgId, refused },
+      "Import COMMITTED and its refusal confirmation could not be emitted — the data landed and " +
+        "the refusals ARE dropped; the per-refusal WILL DROP lines carrying this correlationId " +
+        "are the surviving record",
+    );
+  }
+}
+
+function emitRefusalConfirmation(
+  correlationId: string,
+  orgId: string,
+  refused: number,
+  refusalDetails: ImportResult["brainVocabularyEdges"]["refusalDetails"],
+): void {
+  log.warn(
+    {
+      correlationId,
+      orgId,
+      refused,
+      // Both numbers, always. `refused` is the truth and `refusalDetails` is
+      // capped, so a reader who sees only the array reads a smaller loss than
+      // happened. Naming the cap in the payload is what makes the difference
+      // legible rather than looking like an inconsistency.
+      detailsCarried: refusalDetails.length,
+      detailCap: VOCABULARY_REFUSAL_DETAIL_CAP,
+      refusalDetails,
+    },
+    "Vocabulary merge DID DROP arriving alias edges — the import COMMITTED, so this many " +
+      "approved human review decisions are permanently not applied in this region. Every " +
+      "preceding 'WILL DROP' line carrying this correlationId is now a fact. The source " +
+      "region's own brain_vocabulary_edge rows are the recovery path and its cleanup deletes " +
+      "them once the grace period expires; the same payloads are recorded on the source's " +
+      "region_migrations row, which cleanup never touches.",
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -2911,9 +3128,10 @@ adminMigrate.openapi(importRoute, async (c) => {
   try {
     await client.query("BEGIN");
     begun = true;
-    const result = await importBundle(client, bundle, orgId);
+    const result = await importBundle(client, bundle, orgId, requestId);
     await client.query("COMMIT");
 
+    logVocabularyRefusalsCommitted(requestId, orgId, result);
     log.info({ requestId, orgId, result }, "Migration import complete");
     return c.json(result, 200);
   } catch (err) {
@@ -3091,9 +3309,10 @@ internalMigrate.post("/import", async (c) => {
   try {
     await client.query("BEGIN");
     begun = true;
-    const result = await importBundle(client, bundle, orgId);
+    const result = await importBundle(client, bundle, orgId, requestId);
     await client.query("COMMIT");
 
+    logVocabularyRefusalsCommitted(requestId, orgId, result);
     log.info({ requestId, orgId, result }, "Internal cross-region import complete");
     return c.json(result, 200);
   } catch (err) {

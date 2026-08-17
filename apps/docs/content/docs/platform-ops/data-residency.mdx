@@ -229,7 +229,7 @@ curl http://localhost:3001/api/v1/admin/residency/migration \
 | Scheduled tasks (definitions) | Moves in the bundle; the next run time is recomputed in the target so its scheduler re-plans. Run history stays behind. Connection-group / plugin references resolve again once the datasource or plugin is re-installed in the target |
 | Durable agent session memory | Moves in the bundle (keyed to migrated conversations) |
 | Company brain (episodes, reviewed facts, provenance graph, audience membership) | Moves in the bundle. Each fact travels with its provenance, its visibility grant, its review status, and its full validity history — including retracted and superseded claims, so "what we believed on Monday" still answers correctly in the target. Audience membership moves with it, so `audience:`-scoped facts stay visible to the right people |
-| Company brain vocabulary (approved term aliases) | Moves in the bundle. The approved aliases — the decisions a reviewer made about which two spellings name the same thing — travel with the brain, because they are what every migrated claim's identity is built from. An alias already approved in the target region wins: an arriving edge for a term that is already aliased there is skipped rather than applied over the top. The derived lookup they compose into is rebuilt in the target rather than copied |
+| Company brain vocabulary (approved term aliases) | Moves in the bundle. The approved aliases — the decisions a reviewer made about which two spellings name the same thing — travel with the brain, because they are what every migrated claim's identity is built from. An alias already approved in the target region wins: an arriving edge that would contradict one already there — taking a second parent for the same term, or closing a loop between two spellings — is **refused**, not merged over the top. A refusal is a reviewer's decision that this region will not hold, so it is recorded rather than dropped quietly: the count appears in the CLI's import summary and in the migration's audit events, and the refused edges themselves are stored on the migration record, which survives the 7-day cleanup — up to a bound, and only when the target region's build returns them. Compare the stored payload count against the refusal count before relying on it. **Act on a non-zero count before the grace period expires** — see the recovery note below. The derived lookup the aliases compose into is rebuilt in the target rather than copied |
 | Company brain enrollment (which warehouse dimensions Atlas may hold claims about) | Moves in the bundle. The pairs a person deliberately enrolled travel with the brain, because they are what bounds anything it produces from your warehouse in the first place. An enrollment already made in the target region wins — an arriving one for a pair already enrolled there is skipped rather than re-attributed to whoever enrolled it in the source region. Losing them would leave the target's producer reaching nothing at all, which looks identical to a working system, so they are carried rather than re-created by hand |
 | Company brain entity store (the names Atlas resolves your warehouse rows by) | Moves in the bundle. Each entry pairs one warehouse row's primary key with the human-readable name a person picked for it, and the identifiers in those entries are already written onto the facts that travel beside them — so leaving the store behind would land facts whose comparison values nothing in the target could explain. An entry already in the target region wins, including when the arriving snapshot is newer, because a stale name arriving from an older export would silently re-file every fact about that entity under it |
 | In-flight agent run checkpoints | Stays — resume leases are region-local and cannot be resumed cross-region; an interrupted turn is simply re-asked in the target |
@@ -358,6 +358,44 @@ When `executeRegionMigration` fails after Phase 3 succeeded, the row will be `st
 4. **Audit the recovery.** File an `admin_action_log` row referencing the migration ID, the chosen direction, and the operator who performed it. The forensic trail must show that the 409 guard fired and was resolved deliberately, not papered over. The `/migrate/:id/retry` endpoint already records the rejected attempt with `status = 'failure'`; the recovery action is the matching follow-up.
 
 > The `region_updated` column is the single source of truth for "destination has taken ownership." It is set inside the same migration executor process that performs the cutover, immediately after `organization.region` is updated, before Phase 4 starts. If you ever need to manually flip `region_updated`, treat it as a destructive operation — the guard exists exactly because the wrong value here corrupts customer data.
+
+### Recovering refused vocabulary aliases (7-day window)
+
+A migration can complete successfully and still drop reviewer decisions. The target region **refuses** an arriving alias edge that would contradict a decision already made there — taking a second parent for the same term, or closing a loop between two spellings — because a cyclic vocabulary has no answer for "what is the canonical spelling of this", and destination-wins is what keeps the target consistent at every step. That is the right trade, and it is not free: each refusal is one reviewer's approved decision the destination will never hold.
+
+**Where the count appears.** Any of:
+
+- the CLI's import summary — the `Refused` column on the `Alias edges` row, plus an itemised block listing each dropped edge;
+- the migration's own audit events (`region_migration_completed` and `region_migration_cleanup_scheduled`, the latter naming the same 7-day timer);
+- the source region's `region_migrations` row.
+
+**The window.** The source region keeps its own `brain_vocabulary_edge` rows for the whole grace period, then deletes them. That copy needs no cooperation from anyone and is the one to use:
+
+```sql
+-- Everything the source still holds, before the cleanup runs.
+SELECT slot_position, from_norm, to_norm, approved_by, approved_at
+  FROM brain_vocabulary_edge
+ WHERE workspace_id = '<workspaceId>'
+ ORDER BY slot_position, from_norm;
+```
+
+After the cleanup has run, the surviving record is on the migration row — which is platform-classified, so the sweep never touches it:
+
+```sql
+SELECT vocabulary_edges_refused,
+       jsonb_array_length(COALESCE(vocabulary_refusals, '[]'::jsonb)) AS payloads_recorded,
+       vocabulary_refusals
+  FROM region_migrations
+ WHERE id = '<migrationId>';
+```
+
+`payloads_recorded` short of `vocabulary_edges_refused` means part of the set has no payload here — the target's build predated the payload contract, the response's bound truncated the list, or an entry was unreadable. For the remainder, the target region's own log carries the refusal lines for this workspace.
+
+**What to do with them.** Re-approve the ones the target should hold, in the target region, through the normal alias review path — approving re-derives the affected claims' identity under the target's vocabulary. A refusal is not a bug to be fixed by forcing the edge in: the two regions genuinely disagreed, and a human has to decide which spelling wins.
+
+<Callout type="warn" title="Do not wait out the grace period">
+  `vocabulary_edges_refused > 0` is the one migration outcome with a deadline attached. The migration reports success, the workspace serves normally, and nothing degrades — so the only signal is the count, and the source rows it refers to are deleted on schedule.
+</Callout>
 
 ## Limitations
 

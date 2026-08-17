@@ -64,20 +64,48 @@ let statements: string[] = [];
 let rollbackFailure: Error | null = null;
 /** When set, `BEGIN` throws this — a socket that was dead before anything ran. */
 let beginFailure: Error | null = null;
+/**
+ * When set, `COMMIT` throws this (#5112).
+ *
+ * The one failure that lets the whole import RUN and then keeps it from taking
+ * effect — which is the input class the post-`COMMIT` refusal confirmation exists
+ * to distinguish. Every other injection in this file fails before the vocabulary
+ * merge, so none of them can tell "the confirmation is after COMMIT" from "the
+ * confirmation is after the merge".
+ */
+let commitFailure: Error | null = null;
 /** What `release()` was called WITH. `undefined` = pooled; an Error = destroyed. */
 let releasedWith: unknown[] = [];
 /** Saved so the suite leaves the environment as it found it. */
 let priorInternalSecret: string | undefined;
+
+/**
+ * Rows the fake client answers for statements matching a substring (#5112).
+ *
+ * The default `{ rows: [] }` is right for the error cases above — nothing is ever
+ * "already present" and the importer takes every INSERT path. It is NOT enough to
+ * reach a vocabulary REFUSAL, which is a decision made from rows: the merge's
+ * advisory-lock PROBE refuses to proceed unless it reads a count, and
+ * `admitAliasEdge` refuses `already-aliased` only when it finds an existing edge.
+ * So the refusal cases script exactly those two reads and nothing else.
+ */
+let rowResponders: Array<{ pattern: string; rows: Record<string, unknown>[] }> = [];
 
 const FAKE_CLIENT = {
   query: async (sql: string) => {
     statements.push(typeof sql === "string" ? sql : String(sql));
     if (sql === "BEGIN" && beginFailure !== null) throw beginFailure;
     if (sql === "ROLLBACK" && rollbackFailure !== null) throw rollbackFailure;
-    // BEGIN and COMMIT always succeed: a failure there is a different test, and
-    // one here would mask the arm under test.
+    if (sql === "COMMIT" && commitFailure !== null) throw commitFailure;
+    // Otherwise BEGIN/ROLLBACK/COMMIT succeed: a failure there is a different
+    // test, and an unrequested one here would mask the arm under test.
     if (sql === "BEGIN" || sql === "ROLLBACK" || sql === "COMMIT") return { rows: [], rowCount: 0 };
     if (queryFailure !== null) throw queryFailure;
+    for (const responder of rowResponders) {
+      if (sql.includes(responder.pattern)) {
+        return { rows: responder.rows, rowCount: responder.rows.length };
+      }
+    }
     return { rows: [], rowCount: 0 };
   },
   release: (err?: unknown) => {
@@ -162,6 +190,14 @@ const {
   RegionImportVocabularyTargetError,
   IMPORT_FAILED_MESSAGE,
 } = await import("../admin-migrate");
+// ⚠️ DYNAMIC, and it has to be. A STATIC import of `lib/brain/vocabulary` is hoisted
+// above every `mock.module` call in this file, and that module calls `createLogger()`
+// at MODULE SCOPE — so it binds the REAL logger and `mergeApprovedEdges`' per-refusal
+// warn stops reaching `logged`. Measured: importing the cap statically made the
+// per-refusal line invisible while every assertion still passed, because the
+// post-COMMIT confirmation QUOTES the phrase `WILL DROP` and the lookup matched that
+// instead. Same trap `cleanup.test.ts` documents from the other side.
+const { VOCABULARY_REFUSAL_DETAIL_CAP } = await import("@atlas/api/lib/brain/vocabulary");
 
 /**
  * A bundle `validateBundle` accepts that makes the importer ISSUE A STATEMENT.
@@ -208,11 +244,21 @@ interface ErrorBody {
 interface Handler {
   readonly name: string;
   readonly post: (body: unknown) => Promise<Response>;
+  /**
+   * The correlation token this handler must use, where it has a request-scoped one.
+   *
+   * The admin route reads `c.get("requestId")`, which the mocked `requireOrgContext`
+   * sets to a known value — so it is assertable. The internal route has no
+   * middleware and mints its own `crypto.randomUUID()`, so there is nothing to
+   * compare against and this stays `undefined`.
+   */
+  readonly expectedToken?: string;
 }
 
 const HANDLERS: Handler[] = [
   {
     name: "admin",
+    expectedToken: "test-req",
     post: async (body: unknown) =>
       adminMigrate.request("/import", {
         method: "POST",
@@ -239,8 +285,10 @@ describe("the import's error responses — both handlers", () => {
     queryFailure = null;
     rollbackFailure = null;
     beginFailure = null;
+    commitFailure = null;
     releasedWith = [];
     statements = [];
+    rowResponders = [];
     logged.length = 0;
     priorInternalSecret = process.env.ATLAS_INTERNAL_SECRET;
     process.env.ATLAS_INTERNAL_SECRET = INTERNAL_SECRET;
@@ -594,6 +642,215 @@ describe("the import's error responses — both handlers", () => {
       // anything the caller did not already send.
       expect(refused.message).toContain("0f8c4a2e-4444-4000-8000-000000000003");
       expect(failed.message).not.toContain("0f8c4a2e-4444-4000-8000-000000000003");
+    });
+  });
+
+
+  // ── #5112 — the post-COMMIT "DID DROP" confirmation, both handlers ──
+  //
+  // `mergeApprovedEdges` emits one FUTURE-TENSE warn per refusal, and that tense
+  // is correct: the merge is section 9 of ~13 inside the transaction, so the
+  // closure rebuild, the brain's identity refusal or any driver error can still
+  // roll the whole import back — and then no edge was dropped because none was
+  // applied. The cost of being correct there is that nothing ever said the drop
+  // HAPPENED, so an operator following the recovery path could not tell a
+  // committed loss from a rolled-back attempt whose retry succeeded.
+  //
+  // Asserted over BOTH handlers, for this file's founding reason: the two
+  // post-COMMIT blocks are copies, so the realistic defect is a line added to one.
+
+  /**
+   * Make the merge REFUSE one arriving edge.
+   *
+   * Two scripted reads and no more. The advisory-lock probe must answer a count
+   * or the merge refuses to run at all (it cannot verify it holds the lock), and
+   * `admitAliasEdge`'s first SELECT must find an existing edge onto a DIFFERENT
+   * target — same target is a `duplicate`, which is the benign half and no
+   * refusal at all.
+   */
+  function scriptOneRefusal(): void {
+    rowResponders = [
+      { pattern: "pg_locks", rows: [{ n: 1 }] },
+      { pattern: "SELECT to_norm FROM brain_vocabulary_edge", rows: [{ to_norm: "cost" }] },
+    ];
+  }
+
+  /**
+   * A bundle `validateBundle` accepts that carries `count` alias edges.
+   *
+   * Distinct `fromNorm`s, because `validateBundle` refuses an empty norm and a
+   * self-edge and the merge would otherwise count duplicates rather than refusals.
+   */
+  function bundleWithEdges(count: number): ExportBundle {
+    return {
+      ...minimalBundle(),
+      brainVocabularyEdges: Array.from({ length: count }, (_, i) => ({
+        slotPosition: "predicate",
+        fromNorm: `price ${i}`,
+        toNorm: "priced at",
+        approvedBy: "source-admin",
+        approvedAt: "2026-06-01T00:00:00.000Z",
+      })),
+    };
+  }
+
+  const bundleWithOneEdge = (): ExportBundle => bundleWithEdges(1);
+
+  const CONFIRMATION = "Vocabulary merge DID DROP";
+  /**
+   * The per-refusal, future-tense line from `mergeApprovedEdges`.
+   *
+   * ⚠️ NOT `"WILL DROP"`, which is what this started as and which matched the
+   * CONFIRMATION — that message quotes the phrase ("Every preceding 'WILL DROP' line
+   * carrying this correlationId is now a fact"), so the lookup found the confirmation,
+   * the join-key assertion compared the confirmation to itself, and both passed while
+   * the per-refusal line was absent entirely. A lexical matcher cannot tell a
+   * quotation from the thing it quotes; this one matches wording only the real line
+   * has.
+   */
+  const WILL_DROP = "WILL DROP an arriving alias edge";
+
+  describe.each(HANDLERS)("$name handler — refusal confirmation", ({ post, expectedToken }) => {
+    it("⭐ warns DID DROP after COMMIT, carrying the payloads and the requestId", async () => {
+      scriptOneRefusal();
+
+      const res = await post(bundleWithOneEdge());
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        brainVocabularyEdges: { refused: number; refusalDetails: unknown[] };
+      };
+
+      // Premise guard: the test is vacuous unless an edge really was refused. The
+      // first cut of the scripting above returned no rows and every assertion
+      // below passed against `refused: 0`.
+      expect(body.brainVocabularyEdges.refused).toBe(1);
+      expect(body.brainVocabularyEdges.refusalDetails).toHaveLength(1);
+
+      // `COMMIT` ran at all. ⚠️ THIS IS A PRESENCE CHECK, NOT A POSITION CHECK, and
+      // an earlier version of this comment claimed otherwise — `statements` and
+      // `logged` are unrelated arrays with no interleaving, so moving the
+      // confirmation one line ABOVE the `COMMIT` passes this outright. The position
+      // is guarded by the `commitFailure` case at the end of this block, which is
+      // the only injection that lets the merge run and then keeps the transaction
+      // from taking effect.
+      expect(statements).toContain("COMMIT");
+
+      const confirmation = logged.find((l) => l.message.includes(CONFIRMATION));
+      expect(confirmation).toBeDefined();
+      // `warn`, not `info`: dropping a human's approved decision is not routine.
+      // The level travels with the payload here for that reason.
+      expect(confirmation?.level).toBe("warn");
+      expect(confirmation?.payload).toMatchObject({
+        refused: 1,
+        detailsCarried: 1,
+        // Asserted, because it was in the payload and pinned by nothing — and the
+        // whole reason it is there is to make a `detailsCarried` short of `refused`
+        // legible rather than looking like an inconsistency.
+        detailCap: VOCABULARY_REFUSAL_DETAIL_CAP,
+      });
+      // The token is asserted as a JOIN KEY below rather than as a literal, because
+      // the two handlers mint it differently and both are correct: the admin route
+      // reads `c.get("requestId")`, while the internal route has no middleware and
+      // mints its own `crypto.randomUUID()`. What must hold in both is that it is a
+      // real value and that the same one appears on the WILL-DROP line.
+      const token = (confirmation?.payload as { correlationId: unknown }).correlationId;
+      expect(typeof token).toBe("string");
+      expect(token).not.toBe("");
+      // The payloads are REPEATED rather than referenced: the per-refusal warns
+      // and this line can be separated by minutes of unrelated traffic, and a
+      // confirmation saying "the lines above are real" is unreadable once they
+      // are not above it.
+      expect(
+        (confirmation?.payload as { refusalDetails: Array<{ existingTarget: string }> })
+          .refusalDetails[0].existingTarget,
+      ).toBe("cost");
+
+      // ⚠️ THE JOIN KEY. The same token appears on the per-refusal WILL-DROP line,
+      // which is what converts that line's future tense into a fact. Without this
+      // the confirmation is a second, unrelated line about the same event.
+      const willDrop = logged.find((l) => l.message.includes(WILL_DROP));
+      expect(willDrop).toBeDefined();
+      expect((willDrop?.payload as { correlationId: unknown }).correlationId).toBe(token);
+
+      // ⚠️ AND, where the handler has one, the token IS the request's own id. Asserted
+      // per-handler rather than globally because the two mint differently and both are
+      // correct — but "a non-empty string that joins to WILL DROP" is satisfied by a
+      // freshly-minted UUID that correlates to NOTHING else in the request, which
+      // would silently break the join to the 500 body's `requestId` and to every
+      // other line the request emits.
+      if (expectedToken !== undefined) expect(token).toBe(expectedToken);
+    });
+
+    it("⭐ CAPS the payloads it carries, and reports both numbers", async () => {
+      // `detailsCarried === refused` in the case above, which is the accidental
+      // equality that makes `detailsCarried: refused` an invisible mutation — and the
+      // route's own comment says naming both numbers is the point precisely BECAUSE
+      // they can differ. Here they must: one more edge than the cap.
+      const over = VOCABULARY_REFUSAL_DETAIL_CAP + 1;
+      scriptOneRefusal();
+
+      const res = await post(bundleWithEdges(over));
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        brainVocabularyEdges: { refused: number; refusalDetails: unknown[] };
+      };
+
+      // Every edge refused (the scripted read answers `already-aliased` for all of
+      // them), and the response carries only the cap's worth.
+      expect(body.brainVocabularyEdges.refused).toBe(over);
+      expect(body.brainVocabularyEdges.refusalDetails).toHaveLength(
+        VOCABULARY_REFUSAL_DETAIL_CAP,
+      );
+
+      const confirmation = logged.find((l) => l.message.includes(CONFIRMATION));
+      expect(confirmation?.payload).toMatchObject({
+        refused: over,
+        detailsCarried: VOCABULARY_REFUSAL_DETAIL_CAP,
+        detailCap: VOCABULARY_REFUSAL_DETAIL_CAP,
+      });
+      // The two numbers DIFFER, which is the property this case exists for.
+      expect(over).not.toBe(VOCABULARY_REFUSAL_DETAIL_CAP);
+    });
+
+    it("⭐ says NOTHING when no edge was refused", async () => {
+      // The other input class at the same guard. A confirmation that fired on
+      // every import carrying a vocabulary would train an operator to skip the
+      // line, which is the alarm fatigue the source-side disclosure already
+      // guards against — and deleting `if (refused === 0) return` is the mutation
+      // this catches.
+      rowResponders = [{ pattern: "pg_locks", rows: [{ n: 1 }] }];
+
+      const res = await post(bundleWithOneEdge());
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { brainVocabularyEdges: { refused: number } };
+      // Premise guard the other way: the edge was APPLIED, so there was a
+      // vocabulary section and it produced no refusal.
+      expect(body.brainVocabularyEdges.refused).toBe(0);
+
+      expect(logged.filter((l) => l.message.includes(CONFIRMATION))).toEqual([]);
+      expect(logged.filter((l) => l.message.includes(WILL_DROP))).toEqual([]);
+    });
+
+    it("⭐ says nothing when the COMMIT itself failed — a rollback dropped nothing", async () => {
+      // The load-bearing negative, and the ONLY injection in this file that can
+      // make it: the whole import runs, the refusal is computed, the WILL-DROP line
+      // is emitted — and then `COMMIT` throws, so no edge was dropped because none
+      // was applied. A confirmation here would send an operator to re-author
+      // decisions that are still in the source region.
+      //
+      // A failure earlier in the transaction could not test this: the merge would
+      // never run, so a confirmation placed right after the merge — the defect —
+      // would stay silent for the wrong reason and the test would pass.
+      scriptOneRefusal();
+      commitFailure = new Error("connection terminated during COMMIT");
+
+      const res = await post(bundleWithOneEdge());
+      expect(res.status).toBe(500);
+
+      // The merge DID run and DID decide — that is what makes the silence below a
+      // property of the confirmation's position rather than of the merge's.
+      expect(logged.some((l) => l.message.includes(WILL_DROP))).toBe(true);
+      expect(logged.filter((l) => l.message.includes(CONFIRMATION))).toEqual([]);
     });
   });
 

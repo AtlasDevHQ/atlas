@@ -796,6 +796,63 @@ export interface ExportBundle {
 // Import result
 // ---------------------------------------------------------------------------
 
+/**
+ * One refused alias edge, carried back to the SOURCE region (#5112).
+ *
+ * ## Why this is on the wire at all
+ *
+ * The refused edge is a HUMAN's approved decision the destination is dropping,
+ * and #5036 made the target region's `log.warn` the entire recovery path. But
+ * the SOURCE region is the one that cuts over and schedules the cleanup which
+ * DELETEs its own `brain_vocabulary_edge` rows after the grace period — so the
+ * party owning the irreversible act held only a COUNT, while the record that
+ * would let anyone undo it lived in another region's log retention, outliving
+ * the data by only as long as that retention.
+ *
+ * These fields are exactly the target-side warn's payload, so one shape carries
+ * the recovery information whether it is read out of a log line or out of the
+ * source's `region_migrations.vocabulary_refusals` column.
+ *
+ * ⚠️ **FOREIGN INPUT on the source side.** This is another region's JSON and
+ * possibly another region's BUILD: a target predating #5112 omits the field
+ * entirely, and nothing about the transport guarantees the shape. `migrate.ts`
+ * screens every entry before it writes one into its own database.
+ *
+ * ⚠️ **BOUNDED, and the bound is deliberately NOT exported from this package.**
+ * The producer caps the array; `refused` is always the true total, so a
+ * `refusalDetails` shorter than `refused` is what says the list was truncated.
+ * The number itself lives with the producer
+ * (`VOCABULARY_REFUSAL_DETAIL_CAP` in `packages/api/src/lib/brain/vocabulary.ts`)
+ * because a value export here is a RUNTIME symbol, and `packages/api/src` is
+ * copied into the scaffold template — which installs the published version of
+ * this package and cannot see a symbol added in the same commit. That constant's
+ * docstring carries the full diagnosis. Consumers should read the comparison, not
+ * the constant, which we reserve the right to change.
+ */
+export interface VocabularyRefusalDetail {
+  /** The slot position the edge was approved at, verbatim from the source row. */
+  slotPosition: string;
+  fromNorm: string;
+  toNorm: string;
+  /** `null` is an auto-approved edge, not an unknown one. */
+  approvedBy: string | null;
+  /** The SOURCE region's approval timestamp, carried verbatim (never re-stamped). */
+  approvedAt: string;
+  /** Which of the four rules refused it — `already-aliased`, `would-cycle`, … */
+  refusal: string;
+  /**
+   * What the DESTINATION holds for `fromNorm` instead, or `null` for the arms
+   * that have no conflicting edge.
+   *
+   * `null` rather than absent, on the target-side warn's reasoning: a missing key
+   * and a key whose value is "there is no conflicting edge" read identically in
+   * a log aggregator or a JSONB query, and only one of them is true.
+   */
+  existingTarget: string | null;
+  /** The refusal's human-readable reason, as the destination phrased it. */
+  reason: string;
+}
+
 /** Summary returned by the import endpoint. */
 export interface ImportResult {
   conversations: { imported: number; skipped: number };
@@ -845,7 +902,38 @@ export interface ImportResult {
    * region's response model that with their own cross-version type, as
    * `migrate.ts` and `cli/migrate-import.ts` already do for whole sections.
    */
-  brainVocabularyEdges: { imported: number; skipped: number; refused: number };
+  brainVocabularyEdges: {
+    imported: number;
+    skipped: number;
+    refused: number;
+    /**
+     * The refused edges themselves, capped by the producer (#5112).
+     *
+     * The cap is NOT a `{@link}` to a symbol in this package, deliberately — see
+     * {@link VocabularyRefusalDetail}. Read the bound as the comparison
+     * `refusalDetails.length < refused`, which is what says the list was
+     * truncated, rather than as a number this package publishes.
+     *
+     * THE ONLY SECTION THAT RETURNS PAYLOADS RATHER THAN COUNTS, and the reason
+     * is the same asymmetry that earned `refused` its own counter one field up:
+     * every other outcome in this type is re-derivable. A skipped conversation
+     * is still in both regions; a refused alias edge is a human review decision
+     * the destination declined, and the only copy that survives a cutover is the
+     * SOURCE's — for as long as the grace period lasts.
+     *
+     * REQUIRED, on `refused`'s reasoning: this type describes what THIS region
+     * answers, and an optional field is one a producer can quietly stop
+     * populating without the `_SchemaMatchesWireType` pin in `admin-migrate.ts`
+     * noticing (it cannot see an optional NESTED member). A target predating
+     * #5112 omits it, and `migrate.ts` models a foreign region's response with
+     * its own cross-version type, exactly as it already does for `refused`.
+     *
+     * `[]` means NONE when `refused === 0`. When `refused > 0` it means the
+     * target answered without payloads — an older build — which is not the same
+     * as "nothing to recover", and the source's disclosure says so.
+     */
+    refusalDetails: VocabularyRefusalDetail[];
+  };
   brainSlackChannelExclusions: { imported: number; skipped: number; refused: number };
   /**
    * The warehouse producer's enrolled reach (#5196, ADR-0039).

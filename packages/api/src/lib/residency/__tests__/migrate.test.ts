@@ -6,6 +6,11 @@
  */
 
 import { describe, it, expect, beforeEach, mock, afterEach, afterAll } from "bun:test";
+// A plain const, so a static import cannot bind ahead of the `mock.module` calls
+// below the way a logger or DB import would. From `lib/brain/vocabulary`, not
+// `@useatlas/types` — see the constant's docstring for why a VALUE export in the
+// published package broke every scaffold build.
+import { VOCABULARY_REFUSAL_DETAIL_CAP } from "@atlas/api/lib/brain/vocabulary";
 
 // ── Mocks ────────────────────────────────────────────────────────────
 
@@ -82,18 +87,50 @@ void mock.module("@atlas/api/lib/db/internal", () => ({
  */
 const capturedWarns: Array<{ payload: Record<string, unknown>; message: string }> = [];
 
+/**
+ * Captured `log.info` payloads — `logMigrationEvent`'s channel (#5112).
+ *
+ * A SECOND array rather than one sink with the level in the payload, for
+ * `capturedWarns`' reason exactly: the refusal disclosure is a `warn` and the
+ * audit events are `info`, and a merged sink would pass a mutation that swapped
+ * them. Two arrays make "which channel said this" part of what the assertions
+ * can see.
+ */
+const capturedInfos: Array<{ payload: Record<string, unknown>; message: string }> = [];
+/**
+ * Captured `log.error` payloads — its own sink, for `capturedWarns`' reason.
+ *
+ * Needed since #5297's review: the fix that stopped driver text reaching the durable
+ * `error_message` has TWO halves, and the second is that the raw text still goes
+ * somewhere. A sink that merged levels would let "log it at debug" pass.
+ */
+const capturedErrors: Array<{ payload: Record<string, unknown>; message: string }> = [];
+
 void mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
-    info: () => {},
+    info: (payload: unknown, message?: unknown) =>
+      capturedInfos.push({
+        payload: (payload ?? {}) as Record<string, unknown>,
+        message: typeof message === "string" ? message : String(payload),
+      }),
     warn: (payload: unknown, message?: unknown) =>
       capturedWarns.push({
         payload: (payload ?? {}) as Record<string, unknown>,
         message: typeof message === "string" ? message : String(payload),
       }),
-    error: () => {},
+    error: (payload: unknown, message?: unknown) =>
+      capturedErrors.push({
+        payload: (payload ?? {}) as Record<string, unknown>,
+        message: typeof message === "string" ? message : String(payload),
+      }),
     debug: () => {},
   }),
 }));
+
+/** Find one `logMigrationEvent` emission by its `event` name. */
+function migrationEvent(event: string): Record<string, unknown> | undefined {
+  return capturedInfos.find((i) => i.payload.event === event)?.payload;
+}
 
 const mockFlushCache = mock(async () => {});
 const mockFlushCacheByOrg = mock(async (_orgId: string) => 0);
@@ -142,6 +179,14 @@ interface SectionAck {
   skipped: number;
   /** #5036's third vocabulary counter. Absent from every other section. */
   refused?: number;
+  /**
+   * #5112's refusal payloads. `unknown` deliberately, and not
+   * `VocabularyRefusalDetail[]`: half the cases here answer with something a
+   * well-behaved region would never send, which is the input the screening exists
+   * for. A typed field would make those cases uncompilable and quietly narrow the
+   * suite to the happy path.
+   */
+  refusalDetails?: unknown;
 }
 
 function acknowledgeAll(options?: RequestInit): Record<string, SectionAck> {
@@ -193,6 +238,7 @@ const {
   getCleanupDueMigrations,
   resetMigrationForRetry,
   cancelMigration,
+  screenRefusalDetails,
 } = await import("../migrate");
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -211,6 +257,8 @@ function resetMocks() {
   mockFetchError = null;
   reshapeAck = null;
   capturedWarns.length = 0;
+  capturedInfos.length = 0;
+  capturedErrors.length = 0;
   capturedFetchCalls = [];
   mockConfig = { ...DEFAULT_MOCK_CONFIG };
   process.env.ATLAS_INTERNAL_SECRET = "test-secret";
@@ -481,6 +529,395 @@ describe("executeRegionMigration", () => {
     expect(disclosure?.message).toContain("grace period");
   });
 
+  // ── #5112 — the refusal record, durable at the SOURCE ───────────────
+  //
+  // #5036 gave the source a COUNT and left the recovery payload in the TARGET
+  // region's log. This region schedules the cleanup that DELETEs its own
+  // `brain_vocabulary_edge` rows after the grace period, so the party owning the
+  // irreversible act held the number and another region's log retention held the
+  // record. These cases pin the four places that changed: the durable write, the
+  // two audit events, and the executor's own result.
+
+  /**
+   * One refusal payload as a well-behaved target sends it.
+   *
+   * `existingTarget` non-null, so the field is live: an implementation that wrote
+   * `null` for every arm would satisfy a fixture whose value was already null,
+   * which is this repo's recorded accidental-equality shape.
+   */
+  const refusalDetail = (fromNorm: string) => ({
+    slotPosition: "predicate",
+    fromNorm,
+    toNorm: "priced at",
+    approvedBy: "source-admin",
+    approvedAt: "2026-06-01T00:00:00Z",
+    refusal: "already-aliased",
+    existingTarget: "cost",
+    reason: `"${fromNorm}" is already aliased to "cost"`,
+  });
+
+  /**
+   * Answer with a mixed vocabulary section: 2 imported, 1 refused out of 3
+   * exported, plus `refusalDetails`.
+   *
+   * The three numbers stay DISTINCT for the reason the #5036 case above records —
+   * with `expected`, `imported` and `refused` all equal, an implementation that
+   * reported any one of them satisfies assertions about all of them.
+   */
+  /**
+   * The exported vocabulary count the last `ackWithRefusals` actually saw.
+   *
+   * ⚠️ A PREMISE GUARD, and its absence was a real hole. The #5036 case above
+   * captures the same number and asserts `toBe(3)` specifically so a fixture that
+   * stopped exporting alias edges cannot make a test vacuous — `reshapeAck`'s
+   * `if (ack.brainVocabularyEdges)` would go false, the write would record `0`/`null`,
+   * and every `refused: 0` case here would still pass while proving nothing.
+   * `expectVocabularyExported()` is what closes that.
+   */
+  let vocabularyExportedCount = -1;
+
+  function ackWithRefusals(details: unknown, refused = 1): void {
+    vocabularyExportedCount = -1;
+    mockQueryResults["SELECT id, workspace_id"] = [
+      { id: "mig-1", workspace_id: "org-1", source_region: "us-east", target_region: "eu-west", status: "pending" },
+    ];
+    mockQueryResults["UPDATE region_migrations"] = [];
+    reshapeAck = (ack) => {
+      const vocabulary = ack.brainVocabularyEdges;
+      vocabularyExportedCount = vocabulary?.imported ?? 0;
+      if (vocabulary) {
+        ack.brainVocabularyEdges = {
+          imported: 3 - refused,
+          skipped: 0,
+          refused,
+          refusalDetails: details,
+        };
+      }
+      return ack;
+    };
+  }
+
+  /**
+   * Assert the fixture really exported three alias edges.
+   *
+   * Exactly 3, not merely non-zero: `imported: 3 - refused` and every "distinct
+   * numbers" claim in this group depend on the section carrying three rows, so a
+   * fixture change that collapsed it to one would silently restore the accidental
+   * equality the numbers are chosen to avoid.
+   */
+  function expectVocabularyExported(): void {
+    expect(vocabularyExportedCount).toBe(3);
+  }
+
+  /** The `UPDATE region_migrations SET vocabulary_edges_refused = …` write. */
+  function refusalRecordWrite(): { sql: string; params: unknown[] } | undefined {
+    return capturedQueries.find((q) => q.sql.includes("vocabulary_edges_refused"));
+  }
+
+  it("⭐ RECORDS the refused count AND payloads on the source's own migration row", async () => {
+    ackWithRefusals([refusalDetail("price")]);
+
+    const result = await executeRegionMigration("mig-1");
+    expect(result.success).toBe(true);
+    expectVocabularyExported();
+
+    const write = refusalRecordWrite();
+    expect(write).toBeDefined();
+    // `region_migrations`, not some other table — the platform-classified row is
+    // the entire reason this survives the cleanup.
+    expect(write?.sql).toContain("UPDATE region_migrations");
+    expect(write?.params[0]).toBe("mig-1");
+    // 1, which is neither the section total (3) nor the imported count (2).
+    expect(write?.params[1]).toBe(1);
+    // The payload goes in as JSON text bound to a `::jsonb` parameter. Parsed and
+    // compared field-by-field: a length assertion would pass an implementation
+    // that wrote the wrong arm of `VocabularyMergeRefusal`.
+    expect(JSON.parse(String(write?.params[2]))).toEqual([refusalDetail("price")]);
+  });
+
+  it("⭐ KEEPS the refusal record when the migration fails AFTER the write", async () => {
+    // The other half of the "PERSISTED BEFORE CUTOVER, not in Phase 4" decision, and
+    // the half nothing tested. The comment's stated reason for the position is that
+    // "the record exists even for a migration that never completes" — so a mutation
+    // moving the write down past the cutover would satisfy every other case here
+    // (the abort case only checks that cutover did NOT happen) while re-opening the
+    // documented window: the target has committed a partial import, and the source
+    // holds no record of it.
+    ackWithRefusals([refusalDetail("price")]);
+    // The cutover's `UPDATE organization ... RETURNING id` answering no rows is how
+    // this file already makes Phase 3 throw.
+    mockPoolQueryResult = { rows: [] };
+
+    const result = await executeRegionMigration("mig-1");
+    expectVocabularyExported();
+
+    // Failed — after the record was written.
+    expect(result.success).toBe(false);
+    const write = refusalRecordWrite();
+    expect(write).toBeDefined();
+    expect(write?.params[1]).toBe(1);
+    // The PAYLOAD too, not just the count: a write that landed the count and lost the
+    // array would satisfy a presence check and leave nothing to re-author from.
+    expect(JSON.parse(String(write?.params[2]))).toEqual([refusalDetail("price")]);
+  });
+
+  it("⭐ ABORTS BEFORE CUTOVER when the refusal record cannot be written", async () => {
+    // The polarity that makes this feature worth having. Continuing past a failed
+    // write would cut over and schedule the destructive cleanup while the only
+    // durable record of a dropped human decision is a log line in another region —
+    // the exact state #5112 removes, re-entered through the error path.
+    ackWithRefusals([refusalDetail("price")]);
+    // A driver message carrying the three kinds of infrastructure detail that must
+    // never reach a workspace admin: an internal host and port, a row fragment, and an
+    // internal column spelling. `errorMessage`'s scrub covers NONE of them — it
+    // rewrites credential URIs only — so the guard has to be that the throw site does
+    // not interpolate driver text at all.
+    const DRIVER_LEAK =
+      "connect ECONNREFUSED 10.0.3.7:5432 - DETAIL: Key (workspace_id)=(org-1) already exists, " +
+      'column "vocabulary_refusals_internal" does not exist';
+    mockInternalQueryRejectPattern = {
+      pattern: "vocabulary_edges_refused",
+      error: new Error(DRIVER_LEAK),
+    };
+
+    const result = await executeRegionMigration("mig-1");
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain("refused alias edge");
+      expect(result.error).toContain("BEFORE cutover");
+      // ⭐ `result.error` IS `region_migrations.error_message`, which
+      // `admin-residency.ts` returns verbatim to a workspace admin. The whole string
+      // and each distinctive fragment, both directions — asserting only the whole
+      // string passes a message that appended the detail, and asserting only the
+      // fragments passes one that echoed a DIFFERENT driver error.
+      expect(result.error).not.toContain(DRIVER_LEAK);
+      for (const fragment of [
+        "ECONNREFUSED",
+        "10.0.3.7",
+        "Key (workspace_id)=",
+        "vocabulary_refusals_internal",
+      ]) {
+        expect(result.error, `the durable error message leaked ${fragment}`).not.toContain(fragment);
+      }
+      // And it says where the detail went, so the operator is not left guessing.
+      expect(result.error).toContain("recorded server-side");
+    }
+    // ⚠️ THE OTHER HALF: the raw text is not discarded, it is logged. Without this the
+    // fix could be "drop the message entirely", which trades a leak for a blind spot.
+    // `capturedErrors` is its own sink, so the LEVEL is part of the claim.
+    expect(
+      capturedErrors.some((e) => String(e.payload.err).includes("ECONNREFUSED")),
+      "the driver error was neither returned nor logged — it was swallowed",
+    ).toBe(true);
+    // ⚠️ THE LOAD-BEARING HALF: nothing was cut over, so nothing will be deleted.
+    // Without this, an implementation that threw AFTER the cutover would satisfy
+    // every assertion above while having scheduled the delete anyway.
+    const cutover = capturedQueries.find(
+      (q) => q.sql.includes("UPDATE organization") || q.sql.includes("region_updated = TRUE"),
+    );
+    expect(cutover).toBeUndefined();
+  });
+
+  it("⭐ SCRUBS a credential URI out of the durable error message", async () => {
+    // The half `errorMessage` genuinely covers, and it was unfalsified until this case:
+    // removing `errorMessage(err)` from the durable field left all 60 tests green,
+    // because no fixture drove a credential-bearing error down that path. The scrub was
+    // decoration.
+    //
+    // `error_message` is returned VERBATIM to a workspace admin by
+    // `admin-residency.ts`'s `failed` arm, and `error-scrub.ts`'s own header names this
+    // exact hazard: "pg / better-auth error text sometimes echoes the connection
+    // string, so the DB password lands in the audit row verbatim".
+    ackWithRefusals(undefined, 0);
+    mockPoolQueryError = new Error(
+      "connection terminated: postgres://atlas:hunter2@db.internal:5432/atlas",
+    );
+
+    const result = await executeRegionMigration("mig-1");
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      // The PASSWORD is gone and the scrubbed form is present — both, because asserting
+      // only the absence passes a message that dropped the whole string, and asserting
+      // only the presence passes one that appended the raw copy beside it.
+      expect(result.error).not.toContain("hunter2");
+      expect(result.error).toContain("postgres://***@db.internal:5432/atlas");
+    }
+    // And the raw text still reaches an operator, which is the same two-halves split the
+    // abort case above pins.
+    expect(capturedErrors.some((e) => String(e.payload.err).includes("hunter2"))).toBe(true);
+  });
+
+  it("does NOT abort when the record write fails and nothing was refused", async () => {
+    // The other input class at the same guard. A migration that is going to lose
+    // nothing must not fail on the bookkeeping FOR the loss — the two branches of
+    // `evidence.refused > 0` are what make that a decision rather than an
+    // accident, and a single-input test cannot tell them apart.
+    ackWithRefusals(undefined, 0);
+    mockInternalQueryRejectPattern = {
+      pattern: "vocabulary_edges_refused",
+      error: new Error("column does not exist"),
+    };
+
+    const result = await executeRegionMigration("mig-1");
+
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.vocabularyEdgesRefused).toBe(0);
+    const cutover = capturedQueries.find(
+      (q) => q.sql.includes("UPDATE organization") || q.sql.includes("region_updated = TRUE"),
+    );
+    expect(cutover).toBeDefined();
+    // ⚠️ AND THE CATCH SAID SO. Continuing is right; continuing SILENTLY is a
+    // swallowed error, and the `log.warn` on that arm is the only signal it emits.
+    // Without this, deleting the warn leaves a catch that says nothing and the test
+    // stays green — which is the exact shape CLAUDE.md's error-handling rule forbids.
+    expect(
+      capturedWarns.some((w) =>
+        w.message.includes("Could not record the vocabulary-refusal bookkeeping"),
+      ),
+      "the record-write catch continued without emitting anything",
+    ).toBe(true);
+  });
+
+  it("records `null` rather than an empty array when there is nothing to recover", async () => {
+    // So "migrations with recoverable payloads" is `IS NOT NULL` and does not have
+    // to also know that `'[]'::jsonb` means the same thing.
+    ackWithRefusals(undefined, 0);
+
+    const result = await executeRegionMigration("mig-1");
+    expect(result.success).toBe(true);
+
+    const write = refusalRecordWrite();
+    // `0`, not null — the target ANSWERED and refused nothing. NULL on the column
+    // is reserved for "this build never asked", which is what a pre-0204 row is.
+    expect(write?.params[1]).toBe(0);
+    expect(write?.params[2]).toBeNull();
+  });
+
+  it("⭐ routes the count through BOTH migration audit events", async () => {
+    // The disclosure was a bare `log.warn` sitting beside an audit channel built
+    // for exactly this. `cleanup_scheduled` fires for the 7-day timer the
+    // disclosure names, so the deadline and what expires with it are now one
+    // record; `completed` carries it so the question "did this migration lose any
+    // curated decisions" is answerable from the terminal event alone.
+    ackWithRefusals([refusalDetail("price")]);
+
+    const result = await executeRegionMigration("mig-1");
+    expect(result.success).toBe(true);
+
+    expectVocabularyExported();
+
+    const scheduled = migrationEvent("region_migration_cleanup_scheduled");
+    expect(scheduled).toBeDefined();
+    expect(scheduled).toMatchObject({
+      vocabularyEdgesRefused: 1,
+      vocabularyRefusalDetailsRecorded: 1,
+      gracePeriodDays: expect.any(Number) as unknown as number,
+    });
+
+    const completed = migrationEvent("region_migration_completed");
+    expect(completed).toBeDefined();
+    expect(completed).toMatchObject({ vocabularyEdgesRefused: 1 });
+  });
+
+  it("⭐ surfaces the count on MigrationResult, distinct from imported and total", async () => {
+    // AC-4's server half: the operator who pressed the button gets the number
+    // without grepping a log stream. `1` is neither the section total (3) nor the
+    // imported count (2), so an implementation returning either fails.
+    ackWithRefusals([refusalDetail("price")]);
+
+    const result = await executeRegionMigration("mig-1");
+
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.vocabularyEdgesRefused).toBe(1);
+  });
+
+  it("carries the count on the success arm even when nothing was refused", async () => {
+    // `0` is a claim, and it is the claim the CLI renders. An implementation that
+    // only populated the field on the non-zero path would leave it `undefined`
+    // here and the CLI would print nothing at all.
+    ackWithRefusals(undefined, 0);
+    const result = await executeRegionMigration("mig-1");
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.vocabularyEdgesRefused).toBe(0);
+  });
+
+  it("keeps the count when a target predating #5112 sends NO payloads", async () => {
+    // The cross-version case. A target between #5036 and #5112 answers with
+    // `refused` and no `refusalDetails` at all — which must not abort, because
+    // #5036's remedy (this region still holds its own rows for the grace period)
+    // is intact. `refused` still has to survive.
+    ackWithRefusals(undefined, 1);
+
+    const result = await executeRegionMigration("mig-1");
+
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.vocabularyEdgesRefused).toBe(1);
+    const write = refusalRecordWrite();
+    expect(write?.params[1]).toBe(1);
+    expect(write?.params[2]).toBeNull();
+    // And the disclosure says the payload count is SHORT of the refusal count,
+    // which is the operator's signal that part of this has no record here.
+    const disclosure = capturedWarns.find((w) => w.message.includes("REFUSED curated alias edges"));
+    expect(disclosure?.payload).toMatchObject({ refused: 1, detailsRecorded: 0, malformedDetails: 0 });
+  });
+
+  it("⭐ SCREENS malformed refusal entries on the way to the durable row", async () => {
+    // The integration half of the screening: what survives is what gets written and
+    // what the disclosure counts. Every ARM of the screen, and the cap, are covered
+    // by `screenRefusalDetails`' own describe below — the reconciliation here bounds
+    // `refused` to the three edges the fixture exports, so those cases are simply
+    // not expressible from this side.
+    //
+    // ⚠️ TWO distinct numbers do the work here — 1 kept, 2 dropped — so a screen that
+    // kept everything (3/0) or nothing (0/3) fails. The `refused: 3` is NOT a third
+    // independent number: with three edges exported it is simultaneously the section
+    // total and the refusal count, so `params[1] === 3` cannot tell "reported the
+    // refusal count" from "reported the section total". The siblings are what separate
+    // those — the case above has refused 1 against a total of 3, and the payload cases
+    // have 1 refused against 0 details. An earlier version of this comment claimed
+    // three distinct numbers and was wrong about which ones were load-bearing.
+    ackWithRefusals(
+      [
+        refusalDetail("price"),
+        "not an object",
+        { ...refusalDetail("margin"), fromNorm: undefined },
+      ],
+      3,
+    );
+
+    const result = await executeRegionMigration("mig-1");
+
+    // Screening DROPS; it does not abort. The count still reconciles and this
+    // region still holds its own rows, so failing a cutover over an unreadable
+    // log-grade field would make the improvement a new way to fail.
+    expect(result.success).toBe(true);
+
+    const write = refusalRecordWrite();
+    expect(write?.params[1]).toBe(3);
+    expect(JSON.parse(String(write?.params[2]))).toEqual([refusalDetail("price")]);
+
+    const disclosure = capturedWarns.find((w) => w.message.includes("REFUSED curated alias edges"));
+    expect(disclosure?.payload).toMatchObject({
+      refused: 3,
+      detailsRecorded: 1,
+      malformedDetails: 2,
+    });
+  });
+
+  it("counts a non-array `refusalDetails` as malformed rather than throwing", async () => {
+    ackWithRefusals({ nope: true }, 1);
+
+    const result = await executeRegionMigration("mig-1");
+
+    expect(result.success).toBe(true);
+    const write = refusalRecordWrite();
+    expect(write?.params[2]).toBeNull();
+    const disclosure = capturedWarns.find((w) => w.message.includes("REFUSED curated alias edges"));
+    expect(disclosure?.payload).toMatchObject({ detailsRecorded: 0, malformedDetails: 1 });
+  });
+
   it("ABORTS on a NEGATIVE counter, which would otherwise mask an over-import (#5036)", async () => {
     // The fail-OPEN direction, and the one an arithmetic guard cannot see on its
     // own. `acknowledged` is `as`-cast from another region's JSON and only its
@@ -735,6 +1172,167 @@ describe("executeRegionMigration", () => {
     expect(failedUpdate).toBeDefined();
     expect(failedUpdate!.params).toContain(false);
     expect(failedUpdate!.params).not.toContain(true);
+  });
+});
+
+describe("screenRefusalDetails (#5112)", () => {
+  /**
+   * One well-formed entry. `existingTarget` is a STRING here, so the field is
+   * live: an implementation that hardcoded `null` would satisfy a fixture whose
+   * value was already null.
+   */
+  const good = (fromNorm: string) => ({
+    slotPosition: "predicate",
+    fromNorm,
+    toNorm: "priced at",
+    approvedBy: "source-admin",
+    approvedAt: "2026-06-01T00:00:00Z",
+    refusal: "already-aliased",
+    existingTarget: "cost",
+    reason: `"${fromNorm}" is already aliased to "cost"`,
+  });
+
+  it("passes a well-formed entry through unchanged", () => {
+    const { details, malformed } = screenRefusalDetails([good("price")]);
+    // Field-by-field, not by length: a screen that dropped `existingTarget` or
+    // `reason` on the way through would still return one entry.
+    expect(details).toEqual([good("price")]);
+    expect(malformed).toBe(0);
+  });
+
+  it("⭐ STRIPS keys the type does not declare", () => {
+    // The property that makes this a SCREEN rather than a cast, and the one every
+    // other fixture in this file agreed with by construction — they all carry exactly
+    // the eight declared keys, so `push(entry as VocabularyRefusalDetail)` satisfies
+    // them all. That mutation puts a foreign region's arbitrary extra keys — unbounded
+    // size, unvalidated content — into this region's `jsonb` column under a name that
+    // claims a shape, which is the whole thesis of the function.
+    //
+    // `toEqual` fails on EXTRA properties (unlike `toMatchObject`), which is what makes
+    // this assertion able to go red.
+    const raw = {
+      ...good("price"),
+      attacker: "<script>alert(1)</script>",
+      nested: { deep: [1, 2, 3] },
+    };
+    const { details, malformed } = screenRefusalDetails([raw]);
+    expect(details).toEqual([good("price")]);
+    expect(malformed).toBe(0);
+    // Named explicitly, because the `toEqual` above is the kind of assertion whose
+    // strictness a future reader might soften without realising what it was for.
+    expect(Object.keys(details[0])).not.toContain("attacker");
+  });
+
+  it("treats `undefined` and `null` as NOTHING TO SCREEN, not as malformed", () => {
+    // A target predating #5112 omits the key entirely. That is a build, not a bug,
+    // and reporting it as malformed would tell an operator a region is broken.
+    expect(screenRefusalDetails(undefined)).toEqual({ details: [], malformed: 0 });
+    expect(screenRefusalDetails(null)).toEqual({ details: [], malformed: 0 });
+  });
+
+  it("counts a non-array as ONE malformed thing", () => {
+    // Not an array at all — an object, a string, a number. One malformed
+    // "collection", because there are no entries to count individually.
+    for (const raw of [{ nope: true }, "refusals", 7, true]) {
+      expect(screenRefusalDetails(raw)).toEqual({ details: [], malformed: 1 });
+    }
+  });
+
+  it("⭐ drops each malformed ENTRY KIND and keeps the good ones beside them", () => {
+    // ⚠️ Four bad entries, each a different SHAPE, with a good entry either side so
+    // a screen that bailed on the first bad one cannot pass. FOUR bad, TWO good —
+    // distinct counts, so neither "kept everything" nor "kept nothing" satisfies
+    // this.
+    //
+    // ⚠️ These four are not four independently falsifiable ARMS, and the comment
+    // that first said they were was wrong. Measured: deleting `Array.isArray(entry)`
+    // from the screen kills nothing, because an array carries none of the required
+    // string fields and the field check rejects it regardless. The array and `null`
+    // cases are here as SHAPES a foreign region might really send, not as proof that
+    // each clause is load-bearing — only `null` and the missing-string case are.
+    const { details, malformed } = screenRefusalDetails([
+      good("price"),
+      // Not an object at all.
+      "not an object",
+      // An array — `typeof "object"`, but with no fields. Rejected by the field
+      // check even without the explicit `Array.isArray` clause.
+      [good("margin")],
+      // `null` — also `typeof "object"`, and the one that THROWS without the
+      // explicit null check rather than merely failing it.
+      null,
+      // A required string missing.
+      { ...good("margin"), toNorm: undefined },
+      good("cost"),
+    ]);
+
+    expect(details).toEqual([good("price"), good("cost")]);
+    expect(malformed).toBe(4);
+  });
+
+  it("⭐ requires `approvedBy` and `existingTarget` to be PRESENT, null included", () => {
+    // `null` is a VALUE on both — an auto-approved edge, and a refusal arm with no
+    // conflicting edge. So `null` passes and MISSING is malformed: reading a missing
+    // key as `null` would invent "auto-approved" for an entry that never said, and
+    // invent "there is no conflicting edge" for one that simply omitted it.
+    //
+    // Two assertions in one test because they are one rule, and the pair is what
+    // makes it falsifiable: a screen that accepted `undefined` passes the first
+    // half's `null` case on its own.
+    const nulls = { ...good("price"), approvedBy: null, existingTarget: null };
+    expect(screenRefusalDetails([nulls])).toEqual({ details: [nulls], malformed: 0 });
+
+    const { approvedBy: _a, ...missingApprovedBy } = good("price");
+    const { existingTarget: _e, ...missingExistingTarget } = good("margin");
+    expect(screenRefusalDetails([missingApprovedBy, missingExistingTarget])).toEqual({
+      details: [],
+      malformed: 2,
+    });
+  });
+
+  it("rejects a non-string, non-null value on the nullable fields", () => {
+    // `0` and `false` are the ones a truthiness check lets through.
+    const { details, malformed } = screenRefusalDetails([
+      { ...good("price"), approvedBy: 0 },
+      { ...good("margin"), existingTarget: false },
+    ]);
+    expect(details).toEqual([]);
+    expect(malformed).toBe(2);
+  });
+
+  it("⭐ CAPS what it returns, and the excess is BOUNDED rather than malformed", () => {
+    // The producer's cap is a promise about a well-behaved region; this one is a
+    // property of what this region will store in its own `jsonb` column, and a
+    // target that ignores the cap is exactly the target whose payload should not
+    // size a row here.
+    //
+    // Counting the excess malformed would report a target bug for behaviour this
+    // build defines — so `malformed` must be 0 even though entries were discarded.
+    const over = VOCABULARY_REFUSAL_DETAIL_CAP + 7;
+    const { details, malformed } = screenRefusalDetails(
+      Array.from({ length: over }, (_, i) => good(`norm-${i}`)),
+    );
+    expect(details).toHaveLength(VOCABULARY_REFUSAL_DETAIL_CAP);
+    expect(malformed).toBe(0);
+    // The FIRST cap entries, not an arbitrary slice — the arriving order is the
+    // source's export order (`slot_position, from_norm ASC`), so a truncated list
+    // that started in the middle would be harder to reconcile against the source.
+    expect(details[0]).toEqual(good("norm-0"));
+    expect(details[VOCABULARY_REFUSAL_DETAIL_CAP - 1]).toEqual(
+      good(`norm-${VOCABULARY_REFUSAL_DETAIL_CAP - 1}`),
+    );
+  });
+
+  it("counts malformed entries only within the cap it examines", () => {
+    // A pathological target sending cap+N entries where the bad ones are past the
+    // cap. Nothing beyond the cap is read, so nothing beyond it can be reported —
+    // which keeps `malformed` a statement about what this region looked at.
+    const raw: unknown[] = Array.from({ length: VOCABULARY_REFUSAL_DETAIL_CAP }, (_, i) =>
+      good(`norm-${i}`),
+    );
+    raw.push("garbage", "more garbage");
+    const { details, malformed } = screenRefusalDetails(raw);
+    expect(details).toHaveLength(VOCABULARY_REFUSAL_DETAIL_CAP);
+    expect(malformed).toBe(0);
   });
 });
 

@@ -252,7 +252,7 @@ describe("migration types", () => {
       brainEdges: { imported: 5, skipped: 0 },
       factAudienceMembers: { imported: 3, skipped: 1 },
       // The one section with a THIRD counter (#5036).
-      brainVocabularyEdges: { imported: 2, skipped: 1, refused: 4 },
+      brainVocabularyEdges: { imported: 2, skipped: 1, refused: 4, refusalDetails: [] },
       brainSlackChannelExclusions: { imported: 3, skipped: 2, refused: 0 },
       brainEnrollments: { imported: 4, skipped: 1, namingDropped: 2, namingApplied: 5 },
       // Distinct numbers from every neighbour, so a mis-wired section cannot be
@@ -273,8 +273,12 @@ describe("migration types", () => {
     // someone edits it and this fires — but an OPTIONAL one changes nothing
     // here. `bun run type` is the real enforcement of the shape; this is the
     // runtime half, and it catches a rename or a removal.
+    // `refusalDetails` joins the set at #5112 — the only PAYLOAD in a type otherwise
+    // made of counters, and required for `refused`'s reason. Named, so a rename goes
+    // red here as well as at the Zod pin one package over.
     expect(Object.keys(result.brainVocabularyEdges).toSorted()).toEqual([
       "imported",
+      "refusalDetails",
       "refused",
       "skipped",
     ]);

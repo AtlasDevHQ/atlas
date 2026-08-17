@@ -2537,6 +2537,17 @@ export async function setSetting(key: string, value: string, userId?: string, or
   // side effect produces, so the ordering is free. No handler throws today —
   // the only one catches internally — which makes this cheap insurance rather
   // than a live fix.
+  //
+  // ⚠️ **THIS ORDERING ARGUMENT COVERS THE PINO LINE ONLY, and it was written when
+  // that was the only audit.** Since #5262 the DURABLE `admin_action_log` row is
+  // filed by the CALLER, after `setSetting` returns — so a throw from
+  // `applySettingSideEffect` below, or from the caller's own `log.info`, escapes
+  // the route's `SaasImmutableSettingError`-only catch, reaches `runHandler`, and
+  // returns the GENERIC 500. That 500 implies the write did not land while the
+  // setting is live and no row was filed, which is the opposite of what
+  // `settingsAuditFailureBody` was written to say. Insurance-only today for the
+  // same reason as above; the point is that the reasoning here no longer reaches
+  // the row that matters most.
   auditSecuritySensitiveChange(key, "set", value, userId, effectiveOrgId);
 
   // Apply runtime side effects for hot-reloadable settings
@@ -2880,14 +2891,19 @@ function isSaasImmutableKey(key: string): key is SaasImmutableKey {
  *   Membership is the audit half of #5161; `saasVisible: false` on the defs is
  *   the access half.
  *
- * Adding a family means adding a rule in {@link SECURITY_SENSITIVE_RULES}; the
- * table below IS the key set, so there is no way to join one without the other.
+ * Adding a family means adding a rule in {@link SECURITY_SENSITIVE_RULES}. The
+ * `as const` literal IS the key set and the rules are a `Record` over it, so a key
+ * without a rule — or a rule without a key — is a compile error.
+ *
+ * ⚠️ This block documents {@link SECURITY_SENSITIVE_KEYS_LITERAL}, which is
+ * declared further down the file; it sits here for reading order, not because it
+ * attaches to the declaration below it.
  */
 /**
  * What a settings write did: persisted a value, or removed the override and
- * reverted to the next tier. One definition rather than five inline copies —
- * the audit rule, the flag decision, the payload, the builder input and the
- * emitter all have to agree, and a third action would otherwise drift.
+ * reverted to the next tier. One definition rather than a copy at every consumer,
+ * all of which have to agree — a count stood here and #5262 invalidated it, which
+ * is why there is no longer a count or a list.
  */
 export type SettingAuditAction = "set" | "clear";
 
@@ -2999,8 +3015,8 @@ const aliasThresholdRule: SecuritySensitiveRule = (action, value) => {
  * Every sensitive key, paired with the rule that reads it.
  *
  * ⚠️ THE TABLE IS THE SET — that is the whole point of the shape, and it is the
- * same `as const`-plus-closed-union device `SAAS_IMMUTABLE_KEYS` uses forty
- * uses above it for the same reason. A hand-maintained `Set` with a `switch`
+ * same `as const`-plus-closed-union device `SAAS_IMMUTABLE_KEYS` uses for the
+ * same reason. A hand-maintained `Set` with a `switch`
  * beside it lets a fifth key be added with no rule, where it falls through to
  * whatever arm is last — and review measured that against the NUMERIC rule of
  * the day: a boolean key landing on {@link abuseThresholdRule} reported
@@ -3142,18 +3158,28 @@ declare const auditedValueBrand: unique symbol;
  * A string that has been through {@link redactAuditValue} — the ONLY thing an
  * audit line may carry in its `value` field.
  *
- * ⚠️ **The brand is the guard, and it is here because nothing else could be.**
- * Review measured that `log.warn({ ...line, value }, …)` at the emitter —
- * issue #5180 verbatim, plaintext back in the log stream — passed all 154
- * tests. Not because the tests were weak: no sensitive key is `secret: true`
- * today, so the redacted value and the raw value are *identical on every
- * reachable input*, and the edit is a behavioural no-op until the day it is a
- * breach. An assertion cannot see a difference that does not yet exist.
+ * ⚠️ **The brand closes the seam-PRESERVING edit; the registry-flip test closes
+ * the seam-REMOVING one. It is here because the suite it was measured
+ * against could not be.** Round 1 ran `log.warn({ ...line, value }, …)` at the
+ * emitter — issue #5180 verbatim, plaintext back in the log stream — against a
+ * suite that took the registry's contents as fixed, and it passed every test.
+ * Not because the tests were weak: no shipped sensitive key is `secret: true`,
+ * so redacted and raw were identical on every input that suite reached, and the
+ * edit was a behavioural no-op until the day it is a breach.
  *
- * So the check is a type rather than a test: {@link emitSecuritySensitiveAudit}
- * takes a {@link SecuritySensitiveAuditLine}, whose `value` is branded, and a
- * raw `string` is not assignable to it. That one-keystroke edit is now a
- * compile error, on the day it is harmless and on the day it is not.
+ * ⚠️ That measurement is a fact about a suite, not a law about assertions, and
+ * an earlier draft of this paragraph stated it as the latter — "an assertion
+ * cannot see a difference that does not yet exist" — in the same docstring as
+ * the section describing the assertion that sees it. A later round stopped assuming
+ * the registry was fixed: flipping a definition to `secret: true` for one test
+ * makes the difference reachable, and the leak becomes ordinary. See
+ * "WHAT THE BRAND DOES NOT CLOSE" below for the split.
+ *
+ * The type is still the right instrument for the seam-PRESERVING edit:
+ * {@link emitSecuritySensitiveAudit} takes a {@link SecuritySensitiveAuditLine},
+ * whose `value` is branded, and a raw `string` is not assignable to it. That
+ * one-keystroke edit is a compile error on the day it is harmless and on the day
+ * it is not — and unlike a test, it does not need anyone to run the suite.
  *
  * This is the repo's own rule applied to itself — brand the OUTPUT, not just
  * the parameter — and the escalation the review loop asks for once a principle
@@ -3163,10 +3189,10 @@ declare const auditedValueBrand: unique symbol;
  * ⚠️ **WHAT THE BRAND DOES NOT CLOSE**, stated because a brand invites exactly
  * the wrong confidence, and both survivors were measured rather than guessed:
  *
- * - **A leak that never mentions the seam.** `log.warn` types its first
- *   parameter as `<T extends object>`, inferring `T` from the literal, so
- *   `log.warn({ ...line, value: raw }, …)` type-checks clean. The brand bites
- *   only where something is *expected* to carry it — hence
+ * - **A leak that never mentions the seam.** pino infers the first parameter's
+ *   type from the literal you hand it, so there is no target type to check
+ *   against and `log.warn({ ...line, value: raw }, …)` type-checks clean. The
+ *   brand bites only where something is *expected* to carry it — hence
  *   {@link warnAuditLine}. Inline `log.warn` back and the fence is gone.
  * - **A dishonest `definition`.** The brand fences the OUTPUT of the decision;
  *   the INPUT is an ordinary structural value, so `{ …, secret: false }` at the
@@ -3184,21 +3210,110 @@ declare const auditedValueBrand: unique symbol;
  */
 export type AuditedValue = string & { readonly [auditedValueBrand]: true };
 
-/** {@link redactAuditValue}'s decision: what to log, and why. */
-export interface RedactedAuditValue {
-  readonly value: AuditedValue | undefined;
-  readonly masked: boolean;
-  /** `undefined` exactly when `masked` is false. */
-  readonly maskReason: AuditMaskReason | undefined;
+/**
+ * {@link redactAuditValue}'s decision: what to log, and why.
+ *
+ * ⚠️ **A UNION, so the correlation between the three fields is a compiler fact.**
+ * It was an interface with `masked: boolean` and a docstring reading
+ * "`maskReason` is `undefined` exactly when `masked` is false" — a biconditional
+ * enforced by nothing, which `settings-write.ts` then spent a comment deriving a
+ * consequence of. Worse, the prose was already violated: on a clear with a
+ * mismatched definition, {@link securitySensitiveAuditLine} produced
+ * `masked: false` WITH a `maskReason`, because it rebuilt the reason after the
+ * decision had discarded it.
+ *
+ * As a union, `masked: true` implies both a present `maskReason` and a present
+ * value, and `if (redacted.masked)` narrows all three at once.
+ */
+export type RedactedAuditValue =
+  | {
+      readonly value: AuditedValue | undefined;
+      readonly masked: false;
+      readonly maskReason?: undefined;
+    }
+  | {
+      readonly value: AuditedValue;
+      readonly masked: true;
+      readonly maskReason: AuditMaskReason;
+    };
+
+/**
+ * Does this definition belong to this key?
+ *
+ * ⚠️ **ONE PREDICATE, TWO QUESTIONS, and conflating them caused a regression.**
+ * The wrong-key condition is asked for two different purposes:
+ *
+ * - *what reason to record for a withheld value* — {@link redactPresentAuditValue}
+ * - *whether the CALLER has a bug* — `auditSettingsWrite`'s unconditional warn
+ *
+ * An attempt to serve the second by reading the first's `maskReason` broke the
+ * clear path: with no value there is nothing to redact, so the decision never
+ * consults the definition and reports no reason — while the caller bug is just as
+ * real and just as worth warning about. A definition mismatch on a DELETE was
+ * silently dropped, which is the defect `auditSettingsWrite`'s own warn exists to
+ * prevent, and an existing test caught it.
+ *
+ * So the predicate is shared and the two uses stay separate. That is still one
+ * source of truth — what it is not is one call site.
+ */
+export function definitionMismatchesKey(
+  key: string,
+  def: SettingDefinition | undefined,
+): boolean {
+  return def !== undefined && def.key !== key;
+}
+
+/**
+ * The present-value arms, annotated so the non-optional `value` is CHECKED rather
+ * than asserted.
+ *
+ * ⚠️ **An overload is an unchecked claim, and this one had already been broken
+ * once.** TypeScript compares an overload signature to the IMPLEMENTATION
+ * signature bivariantly, so a wide `RedactedAuditValue` implementation satisfies
+ * a narrow `… & { value: AuditedValue }` overload without any arm being
+ * verified. The docstring below records that an earlier draft returned
+ * `undefined` for `""` — re-adding that arm reads as tidying, would have
+ * type-checked clean, and would have shipped a 200 body missing a field the
+ * published spec marks `required`.
+ *
+ * With the arms behind this annotated return type, that edit is `TS2322` here,
+ * on the day it is written. Nothing about the decision moved; only who checks it.
+ */
+export function redactPresentAuditValue(
+  key: string,
+  def: SettingDefinition | undefined,
+  value: string,
+): RedactedAuditValue & { readonly value: AuditedValue } {
+  // The sole minting site for {@link AuditedValue}. Every `as` below is a
+  // string that has just been through the decision above it — that is what the
+  // brand asserts, and keeping the casts in one function is what keeps the
+  // assertion true.
+  const audited = (v: string): AuditedValue => v as AuditedValue;
+
+  if (def === undefined) {
+    return { value: audited(REDACTED_AUDIT_VALUE), masked: true, maskReason: "unknown_definition" };
+  }
+  // ⚠️ BEFORE the `secret` arm, and the order is observable: a definition that is
+  // both mismatched and secret reports `definition_mismatch`, because the caller
+  // bug is the actionable fact and the secrecy of someone else's key is not
+  // evidence about this one.
+  if (definitionMismatchesKey(key, def)) {
+    return {
+      value: audited(REDACTED_AUDIT_VALUE),
+      masked: true,
+      maskReason: "definition_mismatch",
+    };
+  }
+  if (def.secret === true) {
+    return { value: audited(REDACTED_AUDIT_VALUE), masked: true, maskReason: "secret" };
+  }
+  return { value: audited(value), masked: false, maskReason: undefined };
 }
 
 /**
  * The written value as an audit line may record it (#5180), plus whether — and
- * why — it was withheld.
- *
- * Takes the DEFINITION rather than the key on purpose: the decision genuinely
- * depends on `def.secret`, and passing `undefined` explicitly is what makes the
- * fail-closed contract legible — and testable — at the call site.
+ * why — it was withheld. Takes the KEY as well as the definition, so the decision
+ * owns every reason it can report.
  *
  * ⚠️ It takes the WHOLE `SettingDefinition`, and an earlier draft narrowing it
  * to `Pick<…, "key" | "secret">` was measured to be a net loss. The narrowing
@@ -3227,25 +3342,131 @@ export interface RedactedAuditValue {
  * `[withheld:secret-setting]`, so `undefined` singled the empty one out and
  * disclosed it exactly. Uniformity is the property; `action` carries set-vs-
  * clear, which is the distinction that was worth keeping.
+ *
+ * ⚠️ **THREE SINKS NOW, AND THE `Audit` IN THE NAME IS THE NARROWER WORD.**
+ * #5263 asked whether the sink-generic name had become a liability once a
+ * second sink adopted it — the #5180 review called it "a latent invitation".
+ * The answer taken, deliberately, is that the trade GENERALISES and the name
+ * stays:
+ *
+ * - the pino `security_setting.changed` line ({@link securitySensitiveAuditLine})
+ * - the `admin_action_log.metadata` row (`lib/audit/settings-write.ts`)
+ * - the settings `PUT` 200 body (`api/routes/admin.ts`, #5263)
+ *
+ * Renaming it to say which sink it serves was the alternative, and it is not
+ * available: it serves three, and one of them is not an audit. The trade being
+ * inherited is *withhold every character rather than reveal some* — see
+ * {@link REDACTED_AUDIT_VALUE} for why that is not {@link maskSecret} — and it
+ * holds at the response too, for a reason worth stating rather than assuming.
+ * The `PUT` caller already holds the value it just sent, so withholding it in
+ * the echo costs that caller nothing; what the echo owes is *what is now
+ * stored*, and `valueMasked` says the characters were withheld rather than
+ * leaving the placeholder indistinguishable from a literal.
+ *
+ * What does NOT generalise is any reading of the brand as a clearance —
+ * {@link AuditedValue}'s last paragraph is the standing warning, and a fourth
+ * sink with a different audience owes the same paragraph this one does.
+ *
+ *
+ * ⚠️ **NO OVERLOADS, deliberately, and a round of review was spent learning
+ * why.** This had a narrow `(def, value: string)` overload promising a present
+ * {@link AuditedValue}. TypeScript checks an overload against the IMPLEMENTATION
+ * signature bivariantly, so the promise was never verified against any arm — and
+ * the wrapper's own body was the natural home for the edit that breaks it
+ * (`value === "" ⇒ undefined`, which this file's history shows was shipped once).
+ * Measured: adding that arm to the wrapper produced ZERO type errors.
+ *
+ * A caller holding a `string` calls {@link redactPresentAuditValue} directly and
+ * gets a checked non-optional value. This function is the wide entry for callers
+ * whose value may be absent. Nothing asserts a return the compiler has not
+ * checked.
  */
 export function redactAuditValue(
+  key: string,
   def: SettingDefinition | undefined,
   value: string | undefined,
 ): RedactedAuditValue {
-  // The sole minting site for {@link AuditedValue}. Every `as` below is a
-  // string that has just been through the decision above it — that is what the
-  // brand asserts, and keeping the casts in one function is what keeps the
-  // assertion true.
-  const audited = (v: string): AuditedValue => v as AuditedValue;
-
   if (value === undefined) return { value: undefined, masked: false, maskReason: undefined };
-  if (def === undefined) {
-    return { value: audited(REDACTED_AUDIT_VALUE), masked: true, maskReason: "unknown_definition" };
-  }
-  if (def.secret === true) {
-    return { value: audited(REDACTED_AUDIT_VALUE), masked: true, maskReason: "secret" };
-  }
-  return { value: audited(value), masked: false, maskReason: undefined };
+  return redactPresentAuditValue(key, def, value);
+}
+
+/** The 200 body `PUT /admin/settings/{key}` returns (#5263). */
+export interface SettingUpdateResponse {
+  readonly success: true;
+  readonly key: string;
+  /**
+   * What is now stored, as {@link redactAuditValue} permits it to be echoed —
+   * NOT the request's value played back. Read it with `valueMasked`.
+   */
+  readonly value: AuditedValue;
+  /** True when `value` is the withheld placeholder rather than the characters. */
+  readonly valueMasked: boolean;
+  /**
+   * Why it was withheld, when it was. Present exactly when `valueMasked` is true.
+   *
+   * ⚠️ **THE HUMAN-FACING SINK IS THE ONE THAT MOST NEEDS IT, and it shipped
+   * without it.** The placeholder is `[withheld:secret-setting]`, so an admin who
+   * just set a NON-secret key whose definition failed the key check was told
+   * their setting was withheld as a *secret* — a wrong message, not merely a
+   * generic one. The other two sinks carry a `maskReason`; this one had no field
+   * to put it in.
+   */
+  readonly maskReason?: AuditMaskReason;
+}
+
+/**
+ * Build the settings `PUT` 200 body, withholding a `secret: true` value (#5263).
+ *
+ * ⚠️ **A BUILDER RATHER THAN THREE LINES AT THE ROUTE, for the one reason that
+ * survives: it is the only way to MEASURE the secret arm.** The route 403s a
+ * `secret: true` key before any response body exists, so no request can carry a
+ * secret value to the echo — an assertion written against the route can only
+ * ever exercise the verbatim arm, which passes identically with the fix and
+ * without it. That is #5180's accidental-equality trap arriving one sink later.
+ * Pulled out here, the secret arm takes a real registry definition
+ * (`ANTHROPIC_API_KEY`) in a unit test and the plaintext's absence is a measured
+ * fact instead of an argument.
+ *
+ * ⚠️ It does NOT close the route inlining `{ success: true, key, value }` again,
+ * and that is a TRADE rather than an impossibility — an earlier draft of this
+ * paragraph said "nothing can", which the experiment below falsified. Both arms
+ * were measured:
+ *
+ * - As shipped, the 200 schema's `value` is `z.string()` and
+ *   {@link AuditedValue} is assignable to `string`, so the raw echo type-checks
+ *   clean. `c.json` IS checked against the response schema; it just has nothing
+ *   to object to in that direction.
+ * - Branding the schema (`z.custom<AuditedValue>()`) DOES make the raw echo
+ *   `TS2322` — and then `scripts/extract-openapi.ts` dies with
+ *   `UnknownZodTypeError: Unknown zod object type`, even with `.openapi()`
+ *   attached, so the spec and the api-reference docs stop generating.
+ *
+ * A compile-time guard on one unreachable arm is not worth the published spec,
+ * so the seam-removing spelling is closed by a test in `admin-settings.test.ts`
+ * asserting the response IS this builder's output. That is the same split
+ * {@link AuditedValue} documents: a type for the seam-preserving edit, a test
+ * for the seam-removing one.
+ */
+export function settingUpdateResponseBody(
+  def: SettingDefinition | undefined,
+  key: string,
+  value: string,
+): SettingUpdateResponse {
+  // ⚠️ NO LOCAL MISMATCH CHECK — the decision owns it. This function briefly had
+  // a hand-copied `def.key !== key` guard, which made it the THIRD copy of one
+  // rule and the only copy that could not report the reason it found, because
+  // `SettingUpdateResponse` had no field for it. Both are fixed at the source:
+  // `redactPresentAuditValue` returns `definition_mismatch` itself, so the echo
+  // and the audit row now agree because they are the SAME decision rather than
+  // two implementations of it.
+  const audited = redactPresentAuditValue(key, def, value);
+  return {
+    success: true,
+    key,
+    value: audited.value,
+    valueMasked: audited.masked,
+    ...(audited.masked ? { maskReason: audited.maskReason } : {}),
+  };
 }
 
 /** The full structured payload {@link auditSecuritySensitiveChange} logs. */
@@ -3272,6 +3493,18 @@ export interface SecuritySensitiveAuditLine extends SecuritySensitiveAudit {
   readonly maskReason: AuditMaskReason | undefined;
   readonly actorId: string | undefined;
   readonly orgId: string | undefined;
+  /**
+   * Why the two rule flags cannot be read as an exoneration, when they cannot.
+   *
+   * ⚠️ **THE SAME CAVEAT THE DURABLE ROW CARRIES, for symmetry that is the whole
+   * point of #5262.** On a `clear` every rule short-circuits and returns
+   * `false`/`false` — accurate about what the rule answered, and read by an
+   * operator as "this write weakened nothing", which the rules explicitly decline
+   * to establish for a clear. The value is derivable from `action` here, so this
+   * is discoverability rather than new information; it exists so a reader of
+   * either channel does not have to know that.
+   */
+  readonly judgement?: "reverted_value_not_evaluated";
   readonly event: "security_setting.changed";
 }
 
@@ -3333,16 +3566,15 @@ export interface SecuritySensitiveAuditInput {
  * - {@link AuditedValue} plus {@link warnAuditLine} close every spelling that
  *   still routes through {@link emitSecuritySensitiveAudit}.
  * - The registry-flip test in `settings-audit-log.test.ts` closes the spelling
- *   that inlines `log.warn` back here — which no type can see, because
- *   `log.warn`'s first parameter is untyped.
+ *   that inlines `log.warn` back here — which no type can see, because pino
+ *   infers `log.warn`'s first parameter from the literal, leaving no target
+ *   type to check against.
  *
- * Neither closes it alone. The second draft of this comment credited the test
- * alone (it could not see the leak: `value` is a declared field, so the edit
- * overwrites rather than adds, and raw equals redacted for every key shipping
- * today). The third credited the type alone, and missed that removing the seam
- * removes the type. The test only became possible once it stopped assuming the
- * registry was fixed: flipping a definition to `secret: true` for one test
- * makes raw and redacted differ on a fully reachable input.
+ * Neither closes it alone: removing the seam removes the type, and the test only
+ * became possible once it stopped assuming the registry was fixed — flipping a
+ * definition to `secret: true` for one test makes raw and redacted differ on a
+ * input that is reachable once a `secret: true` key joins
+ * {@link SECURITY_SENSITIVE_KEYS}, which this module explicitly permits.
  */
 export function securitySensitiveAuditLine(
   input: SecuritySensitiveAuditInput,
@@ -3350,25 +3582,28 @@ export function securitySensitiveAuditLine(
   const { key, action, value, actorId, orgId } = input;
   const fields = securitySensitiveAuditFields(key, action, value);
   if (!fields) return null;
-  // A definition belonging to some OTHER key tells us nothing about this one,
-  // so it is discarded rather than trusted, and `redactAuditValue` fails closed
-  // on the `undefined`.
+  // ⚠️ The wrong-key check lives in the decision now, not here. This site used to
+  // discard the definition and then REBUILD the reason below — which is how the
+  // union's `masked: false` + present `maskReason` state became reachable on a
+  // clear. One call, one reason, no fixup.
   //
-  // ⚠️ This closes "someone else's definition". It structurally CANNOT close
-  // "this key's definition, lying about `secret`" — a fabricated
-  // `{ key, secret: false }` passes the check and reaches the verbatim arm. The
-  // registry-flip test in `settings-audit-log.test.ts` is what covers that, by
-  // making redacted and raw differ on a reachable input.
-  const mismatched = input.definition !== undefined && input.definition.key !== key;
-  const redacted = redactAuditValue(mismatched ? undefined : input.definition, value);
+  // It structurally CANNOT close "this key's definition, lying about `secret`":
+  // the compiling spelling is `{ ...def, secret: false }`, which passes the key
+  // check and reaches the verbatim arm. Two tests cover that from opposite ends —
+  // `definitionWithSecret` in `settings.test.ts` builds the spread and drives the
+  // builder with it, and the registry-flip block in `settings-audit-log.test.ts`
+  // mutates the shipped definition so redacted and raw differ on a reachable
+  // input.
+  const redacted = redactAuditValue(key, input.definition, value);
   return {
     key,
     action,
     value: redacted.value,
     valueMasked: redacted.masked,
-    // A mismatch is a caller bug, not registry drift; reporting it as drift
-    // sends the operator to grep a registry where the key is present and fine.
-    maskReason: mismatched ? "definition_mismatch" : redacted.maskReason,
+    maskReason: redacted.maskReason,
+    // Mirrors `auditSettingsWrite`'s row: a clear cannot be exonerated by flags
+    // that only judge a written value.
+    ...(action === "clear" ? { judgement: "reverted_value_not_evaluated" as const } : {}),
     disablesControl: fields.disablesControl,
     widensAuthority: fields.widensAuthority,
     actorId,
@@ -3385,7 +3620,8 @@ export function securitySensitiveAuditLine(
  *
  * ⚠️ It emits through {@link emitSecuritySensitiveAudit} rather than calling
  * `log.warn` directly, and the indirection is load-bearing: `log.warn` takes
- * an untyped object, so `log.warn({ ...line, value }, …)` — #5180 verbatim —
+ * a first parameter it infers from the literal, so `log.warn({ ...line, value },
+ * …)` — #5180 verbatim —
  * has no target type to be checked against and compiles. Routed through a
  * parameter typed {@link SecuritySensitiveAuditLine}, the same edit fails to
  * type-check, because `value` there is an {@link AuditedValue}.
@@ -3413,13 +3649,13 @@ function auditSecuritySensitiveChange(
  * `log.warn`, narrowed to this one payload shape.
  *
  * ⚠️ **The narrowing is what gives {@link AuditedValue} teeth, and calling
- * `log.warn` directly does not.** Pino types its log functions as
- * `<T extends object>(obj: T, …)`, so `T` is INFERRED from whatever literal you
- * hand it: there is no target type, no excess-property check, and no branded-
- * field check. Measured — `log.warn({ ...line, value: raw }, …)` type-checks
- * clean, while the same object assigned into a `SecuritySensitiveAuditLine`
- * position is `TS2322`. A brand only bites where something is expected to have
- * it. This alias creates that expectation.
+ * `log.warn` directly does not.** pino infers the first parameter's type from
+ * whatever literal you hand it, so there is no target type to check against: no
+ * excess-property check, and no branded-field check. Measured —
+ * `log.warn({ ...line, value: raw }, …)` type-checks clean, while the same
+ * object assigned into a `SecuritySensitiveAuditLine` position is `TS2322`. A
+ * brand only bites where something is expected to have it. This alias creates
+ * that expectation.
  */
 const warnAuditLine: (line: SecuritySensitiveAuditLine, msg: string) => void = (line, msg) => {
   log.warn(line, msg);

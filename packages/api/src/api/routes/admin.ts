@@ -40,6 +40,7 @@ import {
   setSetting,
   deleteSetting,
   isSaasModeForGuard,
+  settingUpdateResponseBody,
 } from "@atlas/api/lib/settings";
 import { SaasImmutableSettingError } from "@atlas/api/lib/settings-errors";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
@@ -1518,6 +1519,30 @@ const getSettingsRoute = createRoute({
   },
 });
 
+/**
+ * The settings `PUT` 200 body, hoisted so `admin-settings.test.ts` can assert it
+ * against {@link SettingUpdateResponse} at compile time.
+ *
+ * ⚠️ **THREE REPRESENTATIONS OF ONE BODY, and nothing used to tie them.** The TS
+ * type in `lib/settings.ts`, this schema (which generates the published spec), and
+ * the test's fake. `c.json`'s argument is a function RETURN VALUE rather than a
+ * fresh object literal, so excess-property checking does not apply — a field added
+ * to the builder ships in the body and is absent from the spec. The type assertion
+ * in the test makes "added a field to one side, forgot the other" a compile error,
+ * with the one deliberate divergence (`value` is branded in TS, `z.string()` here)
+ * written down as a type rather than a paragraph.
+ */
+export const settingUpdateResponseSchema = z.object({
+  success: z.boolean(),
+  key: z.string(),
+  // #5263 — the value as the audit row records it, not as the request sent it.
+  // Identical for every key reachable today (a `secret: true` key is 403'd), so
+  // read `valueMasked` rather than comparing against what you sent.
+  value: z.string().openapi({ description: "The stored value, withheld for a `secret: true` definition — see `valueMasked` (#5263)." }),
+  valueMasked: z.boolean().openapi({ description: "True when `value` is a withheld-placeholder rather than the stored characters. Without it the placeholder is indistinguishable from a setting whose literal value is that string." }),
+  maskReason: z.enum(["secret", "unknown_definition", "definition_mismatch"]).optional().openapi({ description: "Why `value` was withheld, present exactly when `valueMasked` is true. `secret` is a credential; the other two are defects — `unknown_definition` means the key has no registry entry, `definition_mismatch` means the caller resolved another key's entry." }),
+});
+
 const updateSettingRoute = createRoute({
   method: "put",
   path: "/settings/{key}",
@@ -1535,7 +1560,11 @@ const updateSettingRoute = createRoute({
   responses: {
     200: {
       description: "Setting saved",
-      content: { "application/json": { schema: z.object({ success: z.boolean(), key: z.string(), value: z.string() }) } },
+      content: {
+        "application/json": {
+          schema: settingUpdateResponseSchema,
+        },
+      },
     },
     400: { description: "Invalid request", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -3690,13 +3719,31 @@ function settingsAuditFailureBody(
   // the thing that was just lost. This log.error is the closest surviving
   // record of an unaudited configuration change, and without the actor it
   // takes a join on `requestId` against the earlier info line to answer "who".
+  // ⚠️ THE ERROR OBJECT, not `err.message`. The message below promises the log
+  // has the cause, and `.message` is a string — `scrubErrSerializer` takes its
+  // string branch and emits one scrubbed sentence, dropping `type`, `stack` and
+  // the whitelisted `code`/`constraint`. Every failure this broad catch is
+  // documented to cover is diagnosed by exactly those fields: a pg `22001`
+  // value-too-long on a fat `metadata`, a `resolveEntry` TypeError, a serializer
+  // throw. The operator quoted the requestId, found this line, and learned
+  // nothing the response had not already told them.
+  //
+  // Safe: `scrubErrSerializer` scrubs `message` AND `stack` for connection-string
+  // userinfo and is fail-open, and the response body is unchanged — so this adds
+  // no disclosure while making the promise above true.
   log.error(
-    { err: err instanceof Error ? err.message : String(err), requestId, key, actorId },
+    { err: err instanceof Error ? err : new Error(String(err)), requestId, key, actorId },
     "Settings write succeeded but its admin_action_log row could not be committed",
   );
   return {
     error: "audit_not_committed",
-    message: `"${key}" was ${verb}, and the change is already in effect — but the admin action-log entry recording it could not be written, so this change is currently unaudited. Check the internal database's health, then re-apply the setting to produce a logged entry.`,
+    // ⚠️ It does NOT name the internal database as the cause. The catch above it
+    // is deliberately broad, so it also covers a serializer throw, a non-
+    // serialisable metadata field, and an actor-assertion failure — and an
+    // earlier draft told the operator to "check the internal database's health",
+    // which for any of those sends them to look at a healthy database and close
+    // the alert. The requestId is the handle; the log line has the cause.
+    message: `"${key}" was ${verb}, and the change is already in effect — but the admin action-log entry recording it could not be written, so this change is currently unaudited. Repeat the same request to produce a logged entry. If the internal database is healthy, quote requestId ${requestId}: an audit write that fails against a healthy database is a defect, not a transient.`,
     requestId,
   };
 }
@@ -3790,7 +3837,32 @@ admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", asy
     return c.json({ error: "invalid_request", message: "Missing 'value' in request body." }, 400);
   }
 
-  const value = String(body.value as string | number | boolean);
+  // ⚠️ NARROW THE INPUT, don't coerce whatever arrived. This was
+  // `String(body.value as string | number | boolean)` — a cast that bought
+  // nothing (`String` accepts `unknown`) and asserted something false. An object
+  // body passed the null/undefined check above, stringified to
+  // `"[object Object]"`, and was PERSISTED: `def.type` validation catches it for
+  // `number`, `boolean` and any `select` that declares `options` (all of today's
+  // do), but a `type: "string"` setting accepted it,
+  // wrote it, audited it and echoed it back as though it were the admin's value.
+  //
+  // Rejecting it here is also what makes the coercion below honest — every
+  // remaining input has a faithful string form.
+  if (
+    typeof body.value !== "string"
+    && typeof body.value !== "number"
+    && typeof body.value !== "boolean"
+  ) {
+    return c.json(
+      {
+        error: "invalid_request",
+        message: `"${key}" must be a string, number or boolean — received ${Array.isArray(body.value) ? "an array" : typeof body.value}.`,
+        requestId,
+      },
+      400,
+    );
+  }
+  const value = String(body.value);
 
   // Type-specific validation
   if (def.type === "number") {
@@ -3877,7 +3949,27 @@ admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", asy
     return c.json(settingsAuditFailureBody(err, key, requestId, "updated", authResult.user?.id), 500);
   }
 
-  return c.json({ success: true, key, value }, 200);
+  // #5263 — the response is the THIRD sink for this value, and it was the last
+  // one still echoing the request verbatim. `auditSettingsWrite` already routes
+  // `metadata.value` through `redactAuditValue`; the 200 body did not, so the
+  // `secret: true` plaintext had one surviving exit.
+  //
+  // ⚠️ NOT a live leak, and the honest claim is narrow — the `def.secret` 403
+  // above returns before any of this, so no request can reach here with a
+  // secret key today. That guard STAYS and remains the primary control; this is
+  // what is left if someone relaxes it, and relaxing it is a normal-looking
+  // change: the sandbox keys already carry `saasVisible: false, saasWritable:
+  // true` to get a dedicated write surface, and a secret key acquiring the same
+  // treatment reads as routine.
+  //
+  // ⚠️ The echo and the audit row agree because they are the SAME decision:
+  // `redactPresentAuditValue(key, def, value)`, which owns the secret,
+  // unknown-definition and wrong-key arms and reports which one it took. Two
+  // calls rather than one value threaded out of `auditSettingsWrite`, because the
+  // audit runs AFTER `setSetting` and may reject — the 500 above then returns and
+  // this line is never reached, so threading it would buy nothing and give the
+  // audit a second job.
+  return c.json(settingUpdateResponseBody(def, key, value), 200);
 }));
 
 admin.openapi(deleteSettingRoute, async (c) => runHandler(c, "delete setting", async () => {

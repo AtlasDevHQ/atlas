@@ -76969,13 +76969,28 @@
                       "type": "string"
                     },
                     "value": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "The stored value, withheld for a `secret: true` definition — see `valueMasked` (#5263)."
+                    },
+                    "valueMasked": {
+                      "type": "boolean",
+                      "description": "True when `value` is a withheld-placeholder rather than the stored characters. Without it the placeholder is indistinguishable from a setting whose literal value is that string."
+                    },
+                    "maskReason": {
+                      "type": "string",
+                      "enum": [
+                        "secret",
+                        "unknown_definition",
+                        "definition_mismatch"
+                      ],
+                      "description": "Why `value` was withheld, present exactly when `valueMasked` is true. `secret` is a credential; the other two are defects — `unknown_definition` means the key has no registry entry, `definition_mismatch` means the caller resolved another key's entry."
                     }
                   },
                   "required": [
                     "success",
                     "key",
-                    "value"
+                    "value",
+                    "valueMasked"
                   ]
                 }
               }

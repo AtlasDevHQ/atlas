@@ -3,17 +3,17 @@
  *
  * `settings.test.ts` pins the payload builder. This file pins the one line that
  * consumes it, and it exists because review measured that the builder's tests
- * cannot see that line at all: with 150 pure-function assertions green,
- * `log.warn({ ...line, value }, …)` — issue #5180 verbatim, plaintext straight
- * back into the log stream — passed the entire suite. So did dropping the
- * definition (withholding every value, which silently destroys the "do not
- * withhold everything" control), and so did deleting the audit outright.
+ * cannot see that line at all: `log.warn({ ...line, value }, …)` — issue #5180
+ * verbatim, plaintext straight back into the log stream — passed that whole
+ * suite green. So did dropping the definition (withholding every value, which
+ * silently destroys the "do not withhold everything" control), and so did
+ * deleting the audit outright.
  *
  * A SEPARATE FILE, deliberately. `settings.test.ts` avoids `mock.module` on
  * purpose — it injects the pool via `_resetPool(mockPool)` — and a module mock
- * applies to a whole file, so installing a logger mock there would put all 150
- * of its tests behind a fake logger. The isolated runner gives each file its
- * own module registry, which is what makes this split free.
+ * applies to a whole file, so installing a logger mock there would put every
+ * test in it behind a fake logger. The isolated runner gives each file its own
+ * module registry, which is what makes this split free.
  *
  * Most assertions compare the EMITTED object against
  * `securitySensitiveAuditLine`'s own output rather than a hand-written literal.
@@ -203,9 +203,8 @@ describe("auditSecuritySensitiveChange — what reaches the log stream (#5180)",
 
   it("records the message, and the message does not carry the value", async () => {
     // A template literal is a leak channel no type can close: `${line.value}`
-    // and `${rawValue}` are both just strings there. Nothing else in this file
-    // looks at the message at all, so without this the emitter could append
-    // the secret to the text and stay green.
+    // and `${rawValue}` are both just strings there, so the message needs an
+    // assertion of its own rather than riding on the payload's.
     await setSetting(SOURCES, "warehouse_key,extractor", "user_1");
     const [, msg] = auditCall();
     expect(msg).toBe(`Security-sensitive setting changed at runtime: ${SOURCES}`);
@@ -305,8 +304,8 @@ describe("auditSecuritySensitiveChange — what reaches the log stream (#5180)",
   // `secret` on it for the duration of one test makes redacted and raw differ
   // on a fully reachable input, and the leak becomes an ordinary assertion —
   // which also catches the two edits the brand cannot see: inlining `log.warn`
-  // back into the caller, and fabricating a `{ key, secret: false }` definition
-  // at the call site.
+  // back into the caller, and handing the call site a `{ ...def, secret: false }`
+  // definition that lies about the key it belongs to.
   //
   // Scoped and restored. Never at top level, and the isolated runner gives this
   // file its own module registry, so the flip cannot reach another file.

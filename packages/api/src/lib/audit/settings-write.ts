@@ -5,34 +5,34 @@
  * ⚠️ **NOT "the one seam for settings writes" — three other writers exist and
  * none of them routes through here.** `platform-demo.ts` files its own
  * `settings.update` with the fire-and-forget `logAdminAction` (it does pass
- * `scope: "platform"`, so only defect 3 below applies to it);
+ * `scope: "platform"`, so defect 2 below does not apply to it — but it puts
+ * its written values straight into `metadata` with no redaction, which is
+ * structurally defect 1, safe only because those keys are not `secret: true`);
  * `onboarding.ts` writes `ATLAS_DEMO_INDUSTRY` and `admin-sandbox.ts` clears
- * `ATLAS_SANDBOX_BACKEND`; neither files an audit row. They are outside
- * this PR, and naming them here is the point — the next reader must not take
- * "the seam" to mean coverage nobody built.
+ * `ATLAS_SANDBOX_BACKEND`. None of the three files an audit row today, so "the
+ * seam" must not be read as coverage nobody built.
  *
- * ⚠️ **THREE DEFECTS SHARED ONE CALL SITE. ONE WAS LIVE; TWO WERE NOT WHAT
- * THE ISSUES SAID THEY WERE.** Both stated mechanisms were checked and both
- * were wrong — recorded here rather than quietly corrected, because a fix
- * resting on a false rationale is one verification away from being deleted:
+ * ⚠️ **THREE DEFECTS SHARED ONE CALL SITE. ONE WAS LIVE; TWO WERE NOT WHAT THE
+ * ISSUES SAID THEY WERE.** Both stated mechanisms were checked and both were
+ * wrong, recorded because a fix resting on a false rationale gets deleted at the
+ * first verification:
  *
  * 1. **The value was recorded verbatim — but a `secret: true` value cannot
  *    reach it.** `metadata: { key, value, tier }` carried the raw string, and
- *    #5270 claimed that put the seven `secret: true` credentials in a DB row.
+ *    #5270 claimed that put the registry's `secret: true` credentials in a DB
+ *    row.
  *    It does not: both verbs in `api/routes/admin.ts` 403 a `secret: true`
  *    key *before* the write — grep the guard by its copy, `"Secret settings
  *    cannot be modified from the UI."`, which appears once per verb — and
  *    that guard is on `main` already, so there was no window. So
- *    `redactAuditValue`'s `secret` arm and its `undefined`-definition
- *    fail-closed arm are BOTH route-unreachable today, and every production
- *    entry takes the verbatim arm.
+ *    all THREE of the decision's withholding arms — `secret`,
+ *    `unknown_definition` and `definition_mismatch` — are route-unreachable
+ *    today, and every production entry THAT CARRIES A VALUE takes the verbatim
+ *    arm. (Not every entry: the union below forces `value?: undefined` on
+ *    `reset_to_default`, so a DELETE row takes the no-value arm instead.)
  *
- *    ⚠️ Cited by MESSAGE rather than by line, deliberately. The first draft of
- *    this block pinned `admin.ts:3720`/`:3876` and both were stale within the
- *    same round — the line numbers moved when this PR's own helper was added
- *    forty lines above them. A citation that rots is worse than none, because
- *    the next reader checks it, finds unrelated code, and stops trusting the
- *    paragraph that was right.
+ *    ⚠️ Cited by MESSAGE, not line: line pins here went stale within one round,
+ *    and a citation that rots is worse than none.
  *
  *    The redaction is kept as defense in depth, and the honest claim is
  *    narrow: the 403 is the primary control, this is what remains if someone
@@ -55,33 +55,54 @@
  *
  * 3. **The audit row was fire-and-forget — and the drop is SILENT, which is
  *    a stronger reason than the one #5262 gave.** #5262 argued a raised
- *    `ATLAS_LOG_LEVEL` silences the drop's `log.warn`. There is no such warn.
- *    Once the internal-DB circuit breaker is open, `internalExecute`
- *    (`db/internal.ts:874-879`) increments `_droppedCount` and returns with
- *    NO log line at any level — the only trace is an anonymous count on a
- *    later recovery line, naming no key, actor or value. Before the breaker
- *    opens, the drop logs at `error` (`:889-898`), which names no key — and
- *    which only `fatal` silences, a level that is itself in
+ *    `ATLAS_LOG_LEVEL` silences the drop's `log.warn`. There IS such a warn on
+ *    the synchronous-throw drop in `logAdminAction` (`audit/admin.ts`), but not
+ *    on the drop that matters. Once the internal-DB circuit breaker is open,
+ *    `internalExecute`'s `_circuitOpen` early return increments `_droppedCount`
+ *    and returns with NO log line at any level — the only trace is an anonymous
+ *    count on a later recovery line, naming no key, actor or value. Before the
+ *    breaker opens, its `if (!_circuitOpen)` branch logs at `error`, which names
+ *    no key — and which only `fatal` silences, a level that is itself in
  *    `ATLAS_LOG_LEVEL`'s own option list, so even that trace is
- *    operator-revocable — so #5262's instinct was not baseless; it named the
- *    wrong line and the wrong branch. Either way the settings change is
- *    unrecorded and unattributable, so
- *    `logAdminActionAwait` is the
- *    right instrument — for the reason its own docstring gives about the
- *    audit-retention surface, not for the reason #5262 gave.
+ *    operator-revocable. #5262's instinct was not baseless; it named the wrong
+ *    line and the wrong branch. Either way the settings change is unrecorded and
+ *    unattributable, so `logAdminActionAwait` is the right instrument — for the
+ *    reason its own docstring gives about the audit-retention surface, not for
+ *    the reason #5262 gave.
+ *
+ * ⚠️ **AND THE RULE FLAGS LAND HERE TOO (#5262, the surviving finding).** The
+ * row carries `disablesControl` / `widensAuthority` for a
+ * `SECURITY_SENSITIVE_KEYS` member, so the durable channel holds the JUDGEMENT
+ * and not only the fact. Before that the split was backwards — the pino
+ * `security_setting.changed` line had the analysis and `admin_action_log` had
+ * the value — which meant reading *"that disabled an abuse control"* out of the
+ * retained table required reimplementing the rules against it. Folded in at this
+ * seam precisely because it already holds `key`, `definition`, `value` and
+ * `action`: no new sink, and no second classification of "which writes are
+ * weakening" to drift from the first. The two callers of
+ * `securitySensitiveAuditFields` are both in `lib/` (the pino builder in
+ * `settings.ts` and this one); the route layer has none.
  *
  * ⚠️ **WHY THE WHOLE ENTRY IS BUILT HERE rather than at the route.** The
  * redaction is not something a call site can be trusted to remember: #5180
- * measured that re-inlining `log.warn({ ...line, value })` passed the whole
- * suite, because redacted equals raw on every currently-reachable input. The
- * brand is the guard — and a brand only bites where something is EXPECTED to
- * carry it. `AdminActionEntry`'s `metadata` is `Record<string, unknown>`, so a
- * route that builds its own object gets no help at all. Hence: the route hands
+ * measured that re-inlining `log.warn({ ...line, value })` passed the suite AS
+ * IT THEN STOOD, because redacted equalled raw on every input that suite
+ * reached. (Not "on every reachable input" — the registry-flip block in
+ * `settings-audit-log.test.ts` later made them differ on a fully reachable one.
+ * That distinction is #5264 item 3, and this paragraph was carrying the same
+ * stale premise one file over.) The brand is a guard for the seam-preserving
+ * edit — and a brand only bites where something is EXPECTED to carry it.
+ * `AdminActionEntry`'s `metadata` is `Record<string, unknown>`, so a route that
+ * builds its own object gets no help at all. Hence: the route hands
  * over the definition and the raw value, and never touches `metadata`.
  *
+ * A definition belonging to a DIFFERENT key IS closed, by the `mismatched`
+ * check below — added after review caught that its #5180 sibling had one and
+ * this module did not.
+ *
  * ⚠️ **WHAT THIS DOES NOT CLOSE**, stated because the fence invites the wrong
- * confidence. The spread case below was measured by compiling both spellings;
- * the other two are stated from the type system's rules:
+ * confidence. The spread case was measured by compiling both spellings; the
+ * other is stated from the type system's rules:
  *
  * - **A caller that goes back to `logAdminAction` with a hand-built metadata
  *   object** bypasses everything here, and no type can see it.
@@ -92,9 +113,6 @@
  *   spread form is caught only by `settings-write.test.ts`'s whole-entry
  *   `JSON.stringify` negative assertion, which is why that assertion is on
  *   the serialized entry rather than on `metadata.value`.
- * - **A definition belonging to a DIFFERENT key** — closed below by the
- *   `mismatched` check, which this module was missing until review caught
- *   that its #5180 sibling has one and it did not.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -102,9 +120,13 @@ import { logAdminActionAwait } from "@atlas/api/lib/audit/admin";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { ADMIN_ACTIONS } from "@atlas/api/lib/audit/actions";
 import {
+  definitionMismatchesKey,
   redactAuditValue,
+  securitySensitiveAuditFields,
   type AuditedValue,
   type AuditMaskReason,
+  type SecuritySensitiveAudit,
+  type SettingAuditAction,
   type SettingDefinition,
 } from "@atlas/api/lib/settings";
 
@@ -119,14 +141,114 @@ const log = createLogger("audit.settings-write");
 export type SettingsWriteAction = "update" | "reset_to_default";
 
 /**
- * The metadata shape that reaches `admin_action_log.metadata`.
+ * Everything that depends on WHICH VERB produced the row, in one table (#5262).
+ *
+ * ⚠️ **THREE DISPATCHES BECAME ONE, and the third is why.** This module had two
+ * total `Record`s — the rule-engine vocabulary and the row's discriminator — and
+ * then grew an inline `entry.action === "reset_to_default"` ternary for
+ * `judgement`, in the same commit that praised the `Record`s for making a missing
+ * verb a compile error. Adding a third valueless verb would have reddened both
+ * tables and forced a line, while the ternary answered `false` silently: the row
+ * would carry `disablesControl: false, widensAuthority: false` with no caveat on
+ * a write whose value the rules never saw — exactly the false exoneration
+ * `judgement` exists to prevent, reachable by the one edit the tables are
+ * designed for.
+ *
+ * `null` rather than `undefined` throughout, so "deliberately absent" is an
+ * answer a third verb has to give rather than the default of forgetting.
+ *
+ * ⚠️ It closes a MISSING verb, not a SWAPPED one. Nothing about `update → clear`
+ * is ill-typed and the rules answer confidently either way, so the swap is a
+ * test's job.
+ *
+ * ⚠️ **A SWAPPED `rule` IS ONLY VISIBLE FROM THE `update` SIDE**, which is where
+ * the tests drive it. (A swap of the whole ROWS is caught on the clear path
+ * instead, by `metadataAction` — the exact-shape assertion there pins
+ * `action: "reset_to_default"` alongside `judgement`.) Measured against the shipped rules: on `reset_to_default` there is no
+ * value, and with `value: undefined` all three rules return `false`/`false`
+ * whichever action they are handed — the abuse rule short-circuits on
+ * `action !== "set"` *and* on the missing value, the alias source rule's
+ * `(value ?? "")` splits to nothing, and the alias threshold rule has its own
+ * `value === undefined` guard. So a clear-path-only suite would pass with the two `rule`
+ * values exchanged. Driven from `update`, `ATLAS_TRIAL_IP_RATE_LIMIT_RPM="0"` and
+ * `ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES="warehouse_key,extractor"` both go
+ * `true → false` under a swap. The axis that hides a swap is the VERB, not the
+ * family — recorded because the wrong axis sends the next reader to add a second
+ * family instead of a second verb.
+ */
+const VERBS: Record<
+  SettingsWriteAction,
+  {
+    /** How the rule engine names this verb ({@link SettingAuditAction}). */
+    readonly rule: SettingAuditAction;
+    /**
+     * The row's `metadata.action`. `null` for `update` because absence already
+     * means `update` in every row written before the field existed; labelling it
+     * would split one verb across two spellings and break those rows' readers.
+     */
+    readonly metadataAction: "reset_to_default" | null;
+    /**
+     * The caveat the row carries for a security-sensitive key. `null` where the
+     * rules judged the written value, so no caveat is owed.
+     */
+    readonly judgement: "reverted_value_not_evaluated" | null;
+  }
+> = {
+  update: { rule: "set", metadataAction: null, judgement: null },
+  reset_to_default: {
+    rule: "clear",
+    metadataAction: "reset_to_default",
+    judgement: "reverted_value_not_evaluated",
+  },
+};
+
+/**
+ * The rule flags plus the caveat that qualifies them, as one type.
+ *
+ * The pair is all-or-nothing because `securitySensitiveAuditFields` returns both
+ * or `null`; `judgement` is present on a clear of a SECURITY-SENSITIVE key. A
+ * clear of any other key produces no `RuleFields` at all. Naming the shape is what
+ * lets the builder write the field as a checked literal instead of an unchecked
+ * spread — see the binding for the measured typo hole.
+ */
+type RuleFields = SecuritySensitiveAudit & {
+  /**
+   * Present only on a clear: the two rule flags describe what the RULE answered,
+   * and for a clear that is structurally `false`/`false` on every key — the rules
+   * judge the WRITTEN value, and a clear has none. What the setting reverts to
+   * (the env var, the default, or a platform override that may itself be wide) is
+   * not evaluated.
+   *
+   * ⚠️ **It exists because `false` would otherwise read as an exoneration.**
+   * Clearing a `"10"` override on `ATLAS_TRIAL_IP_RATE_LIMIT_RPM` when the env var
+   * holds `"0"` turns the per-IP limiter OFF, and the row said
+   * `disablesControl: false`. So the incident query is
+   *
+   * ```sql
+   * WHERE metadata->>'disablesControl' = 'true'
+   *    OR metadata->>'widensAuthority' = 'true'
+   *    OR metadata->>'judgement'       = 'reverted_value_not_evaluated'
+   * ```
+   *
+   * and the last disjunct is the difference between "no weakening" and "nobody
+   * checked". ⚠️ The `widensAuthority` disjunct is not optional: it is the ONLY
+   * flag the alias family ever sets — `disablesControl` is structurally `false` on
+   * both alias keys by design — so a query without it never surfaces an
+   * alias-family WIDENING. It still surfaces alias clears, via the last disjunct.
+   */
+  readonly judgement?: "reverted_value_not_evaluated";
+};
+
+/**
+ * Everything in the row's metadata except the rule flags, which are derived from
+ * {@link SecuritySensitiveAudit} by {@link SettingsAuditMetadata} below.
  *
  * ⚠️ `value` is {@link AuditedValue}, not `string`. That is the compile-time
  * half of defect (1) above: the only way to obtain one is
  * {@link redactAuditValue}, so `value: rawValue` here is a type error on the
  * day it is harmless and on the day it is a breach.
  */
-type SettingsAuditMetadata = {
+type SettingsAuditMetadataBase = {
   readonly key: string;
   readonly tier: "workspace" | "platform";
   readonly action?: "reset_to_default";
@@ -136,6 +258,46 @@ type SettingsAuditMetadata = {
   /** Present only when `valueMasked` is true. */
   readonly maskReason?: AuditMaskReason;
 };
+
+/**
+ * The metadata shape that reaches `admin_action_log.metadata` (#5262).
+ *
+ * ⚠️ **DERIVED FROM {@link RuleFields} RATHER THAN THE FLAGS RESTATED, and the
+ * restatement was the bug.** The first draft declared `disablesControl?:
+ * boolean` and `widensAuthority?: boolean` here and copied them across
+ * field-by-field. Add a third flag to `SecuritySensitiveAudit` and the pino line
+ * would get it for free — `SecuritySensitiveAuditLine extends
+ * SecuritySensitiveAudit` — while this row silently would not, with no compile
+ * error anywhere. That is the exact pino-has-it / durable-row-lacks-it asymmetry
+ * #5262 was filed to remove, reproduced one field over by its own fix.
+ *
+ * Deriving from the interface makes it one fact. The builder spreads `ruleFlags`
+ * whole rather than naming fields, so a third flag flows into the row the day it
+ * is added.
+ *
+ * FLAT, not nested under a `security` key, deliberately: #5262's acceptance
+ * criterion writes the incident query as `metadata->>'disablesControl'`, and
+ * nesting would move every reader to `metadata->'security'->>'disablesControl'`
+ * for no gain the spread does not already give.
+ *
+ * ⚠️ **`Partial<RuleFields>` FORBIDS NOTHING STRUCTURALLY, and an earlier draft of
+ * this paragraph claimed it forbade a bare `judgement`.** Measured: `Partial` is
+ * homomorphic over `keyof (SecuritySensitiveAudit & { judgement?: … })`, so all
+ * three properties are optional and both
+ * `{ key, tier, judgement: "reverted_value_not_evaluated" }` (nobody checked, and
+ * no rule applied) and `{ key, tier, disablesControl: true }` (half a pair) compile
+ * clean.
+ *
+ * What deriving from {@link RuleFields} actually buys is narrower and still worth
+ * having: the caveat is DECLARED next to the flags it qualifies rather than on the
+ * base type, and a third flag added to {@link SecuritySensitiveAudit} flows in the
+ * day it is added.
+ *
+ * The atomicity is on the VALUE side, not the type side: the only producer is the
+ * `ruleFields` binding, typed `RuleFields | undefined` and spread whole, so no code
+ * path can emit a half pair. Do not hand-build one.
+ */
+type SettingsAuditMetadata = SettingsAuditMetadataBase & Partial<RuleFields>;
 
 interface SettingsAuditCommon {
   readonly key: string;
@@ -212,8 +374,15 @@ export async function auditSettingsWrite(entry: SettingsAuditWrite): Promise<voi
   // "the call site passed the wrong entry" send an operator to different
   // places — the distinction `AuditMaskReason` exists to draw, and which this
   // module advertised in its type while being unable to produce it.
-  const mismatched = entry.definition !== undefined && entry.definition.key !== entry.key;
-  const redacted = redactAuditValue(mismatched ? undefined : entry.definition, entry.value);
+  const verb = VERBS[entry.action];
+  const redacted = redactAuditValue(entry.key, entry.definition, entry.value);
+  // ⚠️ THE SHARED PREDICATE, not `redacted.maskReason`. Reading the reason off the
+  // redaction looks tidier and is wrong on the clear path: with no value the
+  // decision never consults the definition, so it reports nothing — while the
+  // caller bug is just as real. Deriving it that way silently dropped the warn on
+  // a DELETE, and the test for that arm caught it. `definitionMismatchesKey` is
+  // the one rule; the row's `maskReason` and this warn are its two consumers.
+  const mismatched = definitionMismatchesKey(entry.key, entry.definition);
   const tier = entry.platformTier ? "platform" : "workspace";
 
   // ⚠️ EMITTED UNCONDITIONALLY, AND NOT VIA `maskReason`. The first draft of
@@ -241,21 +410,92 @@ export async function auditSettingsWrite(entry: SettingsAuditWrite): Promise<voi
     );
   }
 
+  // ⚠️ **THE JUDGEMENT, IN THE DURABLE CHANNEL (#5262).** Before this the split
+  // was backwards: the pino `security_setting.changed` line carried
+  // `disablesControl`/`widensAuthority` while `admin_action_log` carried the
+  // value — so the SUPPRESSIBLE channel held the analysis and the RETAINED one
+  // held only the fact. An incident query could see *"someone set
+  // ATLAS_TRIAL_IP_RATE_LIMIT_RPM to 0"* and not *"that disabled an abuse
+  // control"*, and the only way to learn the second was to reimplement
+  // `securitySensitiveAuditFields` against the row — a second classification of
+  // "which writes are weakening", which is a second thing that drifts from the
+  // first.
+  //
+  // ⚠️ Computed from `entry.key`, NOT from `entry.definition` — so the mismatch
+  // above does not touch it, and that is correct rather than an oversight. The
+  // rules key off the setting's NAME and the written value; a definition
+  // belonging to another key is evidence about neither. The value's characters
+  // may be withheld from the row while the judgement derived from them is
+  // recorded in full, which is the whole point: the analysis is the part worth
+  // retaining.
+  //
+  // ⚠️ `null` for a non-sensitive key, and the flags are then ABSENT rather than
+  // `false`. A row that always carries `disablesControl: false` cannot be
+  // filtered on — `WHERE metadata->>'disablesControl' = 'false'` would match
+  // every settings write in the table — so absence has to mean "no rule
+  // applies" and `false` has to mean "a rule ran and said no".
+  const ruleFlags = securitySensitiveAuditFields(
+    entry.key,
+    verb.rule,
+    entry.value,
+  );
+
+  // The flags travel WITH their caveat: every sink that reports the judgement
+  // reports its limits, and no sink can take one without the other because there
+  // is nothing else to take.
+  // ⚠️ ANNOTATED `RuleFields | undefined`, and a nested ternary rather than a
+  // conditional spread, because excess-property checking does not reach spread-in
+  // properties. Misspelling the field as `judgment` inside a `...(cond ? {…} : {})`
+  // lands the typo in the JSONB and makes the documented query return nothing
+  // while the row still reads `disablesControl: false`.
+  //
+  // ⚠️ **AND `| undefined`, NOT `| Record<never, never>`.** Measured, both
+  // spellings, with the typo applied:
+  //
+  //   `RuleFields | Record<never, never>`  ->  0 errors. EPC is skipped entirely
+  //                                            when ANY union member is an empty
+  //                                            object type, the same rule that
+  //                                            lets `const x: {} = { a: 1 }` pass.
+  //   `RuleFields | undefined`             ->  TS2561, with a "did you mean
+  //                                            'judgement'?" hint.
+  //
+  // `RuleFields` also states the pair-plus-caveat as one type, so the atomicity is
+  // declared rather than left as a fact about an inferred union.
+  const ruleFields: RuleFields | undefined =
+    ruleFlags === null
+      ? undefined
+      : verb.judgement !== null
+        ? { ...ruleFlags, judgement: verb.judgement }
+        : ruleFlags;
+
   const metadata: SettingsAuditMetadata = {
     key: entry.key,
     tier,
-    ...(entry.action === "reset_to_default" ? { action: "reset_to_default" as const } : {}),
+    // ⚠️ From the total table, for the reason {@link VERBS} gives. This was a
+    // ternary with a silent `{}` default, and this is the field where a
+    // fall-through actually costs something: `ADMIN_ACTIONS.settings` has ONE
+    // member, so `metadata.action` is the only thing separating the two verbs in
+    // `admin_action_log`. A third verb would have filed rows indistinguishable
+    // from an `update`.
+    // See {@link VERBS} for why `update` maps to absence.
+    ...(verb.metadataAction !== null ? { action: verb.metadataAction } : {}),
+    // ⚠️ SPREAD WHOLE, never field-by-field — see {@link SettingsAuditMetadata}.
+    // Naming the fields here is what let the first draft reproduce #5262's own
+    // asymmetry: a third flag added to `SecuritySensitiveAudit` reaches the pino
+    // line by inheritance and would have missed the durable row silently.
+    //
+    // `ruleFields`, not `ruleFlags` — the judgement travels with its caveat; see
+    // that binding above for the branch that proved they must not be separable.
+    ...(ruleFields ?? {}),
     ...(redacted.value !== undefined
       ? {
           value: redacted.value,
           valueMasked: redacted.masked,
-          // `mismatched` needs no disjunct here: it forces the
-          // `undefined`-definition arm, which always sets a `maskReason` when
-          // a value exists — so `redacted.maskReason !== undefined` is
-          // already true whenever this spread is reached.
-          ...(redacted.maskReason !== undefined
-            ? { maskReason: mismatched ? ("definition_mismatch" as const) : redacted.maskReason }
-            : {}),
+          // No fixup: the decision already reported the right reason, so this is
+          // a pass-through. It used to overwrite `maskReason` with a locally
+          // recomputed `definition_mismatch`, which is how the two sinks came to
+          // hold two implementations of one rule.
+          ...(redacted.masked ? { maskReason: redacted.maskReason } : {}),
         }
       : {}),
   };
@@ -269,8 +509,13 @@ export async function auditSettingsWrite(entry: SettingsAuditWrite): Promise<voi
   // rely on when the failure is a log line confidently naming a row that does
   // not exist.
   if (!hasInternalDB()) {
+    // ⚠️ The flags ride along, because on THIS branch the pino line is the only
+    // trail — so it should carry the most, not the least. The first draft
+    // computed `ruleFlags` above and dropped them here, which is the same
+    // computed-then-discarded defect this module fixes forty lines up for
+    // `mismatched`, reappearing on the one path that has no second record.
     log.warn(
-      { key: entry.key, tier, action: entry.action },
+      { key: entry.key, tier, action: entry.action, ...(ruleFields ?? {}) },
       "Settings write audit row NOT persisted — no internal database configured. The pino line is the only trail for this configuration change.",
     );
     return;
@@ -296,5 +541,11 @@ export async function auditSettingsWrite(entry: SettingsAuditWrite): Promise<voi
   // duplicates fields the pre-commit line already has; at `info` it is the
   // difference an operator greps for between a committed row and an
   // emitted-then-lost one.
+  //
+  // ⚠️ NOT wrapped in a try/catch. Swallowing a fault here would make this line's
+  // ABSENCE ambiguous between "the row was lost" and "the logger faulted", and the
+  // absence is the whole signal. If a synchronous throw is ever observed, the fix
+  // is a `console.error` fallback that keeps the COMMITTED fact recorded — not a
+  // silent catch.
   log.info({ key: entry.key, tier, action: entry.action }, "Settings write audit row COMMITTED");
 }

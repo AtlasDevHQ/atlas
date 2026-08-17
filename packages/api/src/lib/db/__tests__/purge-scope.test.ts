@@ -127,8 +127,9 @@ const purgeFnBody = rawPurgeFnBody
  * The two SHAPES a delete takes in the source, and both count.
  *
  * A table with a scope column is a literal `DELETE FROM <table>`. A table with
- * none is `delViaParent("<table>")`, whose SQL is built from the registry's
- * `viaParent` declaration (#5176) and so never appears here as text.
+ * none is `delViaParent("<table>")` — or, for the webhook ledger,
+ * `tombstoneAndDeleteViaParentSql("<table>", …)` — whose SQL is built from the
+ * registry's `viaParent` declaration (#5176) and so never appears here as text.
  *
  * Scanning both keeps every check below saying what it always said — "the
  * registry cannot claim a delete the implementation does not make" — because
@@ -136,18 +137,24 @@ const purgeFnBody = rawPurgeFnBody
  * guarantees is the RELATION, not the call: a `viaParent` entry with no call
  * site is still an entry outrunning the implementation, and still fails here.
  *
- * ⚠️ The table name is followed by `[,)]`, not `)`. `delViaParent` takes an
- * optional second argument since #5269 (the omit-a-missing-key-source options),
- * and a `\)`-anchored pattern silently stopped recognising the one call that
- * passes it — reporting `stripe_webhook_events` as a `purged` table with NO
- * delete at all. That is the guard behaving correctly on a changed call shape;
- * what it must not do is keep matching only the argument-less spelling, because
- * then adding an argument to any other call would quietly remove that table from
- * three checks at once.
+ * ⚠️ TWO builder names, and the table name is followed by `[,)]` rather than `)`.
+ * Both widenings were forced by the guard CORRECTLY going red on a changed call
+ * shape, and both matter for the same reason: each time, `stripe_webhook_events`
+ * was reported as a `purged` table with NO delete at all.
+ *
+ *  - `delViaParent` took an optional second argument (#5269's
+ *    omit-a-missing-key-source options), so a `\)`-anchored pattern stopped
+ *    matching it.
+ *  - the webhook ledger's delete then MOVED into
+ *    `tombstoneAndDeleteViaParentSql`, which emits the tombstone INSERT and the
+ *    DELETE as one statement so they cannot read different snapshots.
+ *
+ * What this pattern must never become is a match on only one spelling: that would
+ * silently drop a table from three checks the moment its call site changed.
  */
-const viaParentCalls = [...purgeFnBody.matchAll(/delViaParent\("([a-z_][a-z0-9_]*)"[,)]/g)].map(
-  (m) => m[1],
-);
+const viaParentCalls = [
+  ...purgeFnBody.matchAll(/(?:delViaParent|tombstoneAndDeleteViaParentSql)\(\s*"([a-z_][a-z0-9_]*)"[,)]/g),
+].map((m) => m[1]);
 const deleteMatches = [
   ...[...purgeFnBody.matchAll(/DELETE\s+FROM\s+"?([a-z_][a-z0-9_]*)"?/gi)].map((m) => m[1]),
   ...viaParentCalls,
@@ -164,14 +171,14 @@ const deleteIndexOf = (table: string): number => {
   // `indexOf` here returned -1 for the one call that passes them, which made the
   // child-before-parent ORDER assertion report "no delete for
   // stripe_webhook_events" rather than compare two positions.
+  const escaped = table.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const viaIdx = purgeFnBody.search(
-    new RegExp(`delViaParent\\("${table.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"[,)]`),
+    new RegExp(`(?:delViaParent|tombstoneAndDeleteViaParentSql)\\(\\s*"${escaped}"[,)]`),
   );
   if (viaIdx !== -1) return viaIdx;
   // Anchored on a word boundary, not a prefix: a bare
   // `indexOf("DELETE FROM " + table)` makes `dashboards` match a future
   // `dashboards_v2` and silently compare the wrong statement's position.
-  const escaped = table.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return purgeFnBody.search(new RegExp(`DELETE FROM "?${escaped}"?\\b`));
 };
 
@@ -733,8 +740,8 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
       },
       // Also declares NO foreign keys: the webhook ledger is written by handlers
       // that may see an event before the subscription row exists, so an FK would
-      // reject legitimate rows. (`subscription` itself IS in db/schema.ts —
-      // an earlier version of this comment said otherwise and was wrong.)
+      // reject legitimate rows. (`subscription` itself IS declared in db/schema.ts,
+      // which is why the schema-enumeration checks below can reach it.)
       // `additionalKeySources` (#5269) is pinned like every other field, and it
       // is the field with the most to lose: it names a SECOND table the DELETE
       // reads, so a drifted `scopeColumn` here is a cross-tenant delete rather
@@ -1126,7 +1133,7 @@ describe("GDPR purge-scope drift tripwire (#5160)", () => {
       );
     }
     // Pinned, so this cannot quietly become an empty loop the day the one
-    // declaration is removed — the same standard the FK counts below hold.
+    // declaration is removed — the same standard the FK counts above hold.
     expect(declared, "additional key sources declared across the registry").toBe(1);
   });
 

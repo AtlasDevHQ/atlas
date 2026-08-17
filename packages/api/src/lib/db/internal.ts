@@ -32,8 +32,8 @@ import { getConnectTimeoutMs } from "@atlas/api/lib/db/pool-config";
 // only ever points one way.
 import {
   PURGE_TABLE_DECISIONS,
-  parentKeySubquery,
   viaParentDeleteSql,
+  tombstoneAndDeleteViaParentSql,
   type KeySourceOptions,
   type ViaParentTableName,
 } from "@atlas/api/lib/db/purge-scope";
@@ -3823,31 +3823,61 @@ export type PurgeAbortCode =
   | "purge_outcome_unknown";
 
 /**
- * A Postgres SQLSTATE: exactly five alphanumerics.
+ * A Postgres SQLSTATE: exactly five characters from digits and uppercase Latin,
+ * which is how the standard defines one.
  *
- * `err.code` reaches an operator-facing string on an erasure path, so its SHAPE
- * is checked rather than assumed. A five-character class code carries no row
- * content and is the whole diagnosis; anything else on a `code` property is an
- * unreviewed channel out of a driver's error object, and `Object.assign(err,
- * { code })` is not a contract anyone has audited.
+ * `err.code` reaches an operator-facing string on an erasure path, so its shape is
+ * checked rather than assumed: anything else on a `code` property is an unreviewed
+ * channel out of a driver's error object, and `Object.assign(err, { code })` is not
+ * a contract anyone has audited. `[0-9A-Z]` rather than `[0-9A-Za-z]` for the same
+ * reason — lowercase was already wider than the domain.
  */
 const SQLSTATE_SHAPE = /^[0-9A-Z]{5}$/;
 
 /**
- * The error's SQLSTATE, or `undefined` when it does not have one.
+ * The error's SQLSTATE, or `undefined` when it does not have a WELL-FORMED one.
+ *
+ * Validating here rather than at the formatter is load-bearing, because the
+ * result decides more than wording: `code !== undefined` is what the catch below
+ * reads as *"this is a database condition"* to answer 409-retryable instead of a
+ * logged 500. An unvalidated `.code` collapses two states the caller must tell
+ * apart — absent, and present-but-not-a-SQLSTATE — and the second one really
+ * occurs: `Object.assign(new TypeError(…), { code: "ERR_INVALID_ARG_TYPE" })` is
+ * a Node/driver programming error, and it used to be answered with a 409
+ * asserting *"the database transaction rolled back"* on evidence that is not a
+ * database code. Returning `undefined` for it puts it back on the defect path.
  *
  * Deliberately NOT `String(err.code)`. `"code" in err` is true for
  * `{ code: undefined }`, so the coercion manufactured the literal string
  * `"undefined"` — which then read like a value in the one log line an operator
  * correlates by requestId — and would happily stringify an object with a
- * `toString`. Returning the honest `string | undefined` removes both.
+ * `toString`.
  */
 function sqlStateOf(err: unknown): string | undefined {
   const raw =
     typeof err === "object" && err !== null && "code" in err
       ? (err as { code: unknown }).code
       : undefined;
-  return typeof raw === "string" ? raw : undefined;
+  if (typeof raw !== "string") return undefined;
+  return SQLSTATE_SHAPE.test(raw) ? raw : undefined;
+}
+
+/**
+ * Did POSTGRES answer, as opposed to the connection dying under the statement?
+ *
+ * The distinction only matters for `COMMIT`, and there it decides whether the
+ * outcome is knowable. A SQLSTATE means the backend processed the command and
+ * refused it, so the transaction did NOT commit — determinate. Connection-class
+ * codes are the exception: class `08` is `connection_exception`, and the `57P0*`
+ * prefix covers admin and crash shutdown, cannot-connect-now, database-dropped and
+ * idle-session-timeout — matched as a PREFIX rather than as a list, because any
+ * `57P0x` means the session ended under the statement. All of them say the
+ * connection is gone rather than that the command was rejected. A commit that
+ * ends that way may or may not have landed.
+ */
+function backendAnswered(code: string | undefined): boolean {
+  if (code === undefined) return false;
+  return !code.startsWith("08") && !code.startsWith("57P0");
 }
 
 /**
@@ -3859,16 +3889,11 @@ function sqlStateOf(err: unknown): string | undefined {
  * interpolate its message, because a relation or column name is not customer
  * data — that asymmetry is deliberate, not an oversight.
  *
- * ⚠️ `code.length === 5` is not redundant beside the regex. JS `$` without the
- * `m` flag still matches at the position BEFORE a final newline, so
- * `/^[0-9A-Z]{5}$/.test("42P01\n")` is TRUE — and this function's whole purpose
- * is that `err.code` is an unreviewed channel out of a driver's error object.
- * The character class is `[0-9A-Z]` rather than `[0-9A-Za-z]` for the same
- * reason: SQLSTATE is defined as five characters from digits and uppercase
- * Latin, so admitting lowercase was already wider than the domain.
+ * Takes an already-validated code — `sqlStateOf` is its only producer — so this
+ * only formats.
  */
 function purgeAbortOrigin(code: string | undefined): string {
-  return code !== undefined && code.length === 5 && SQLSTATE_SHAPE.test(code)
+  return code !== undefined
     ? `an unexpected database error (SQLSTATE ${code})`
     : "an unexpected error with no SQLSTATE";
 }
@@ -4191,11 +4216,17 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
    * committed and lost the acknowledgement, so "nothing was deleted" stops being
    * knowable and the catch must say so rather than guess.
    *
-   * Annotated `: boolean` on purpose — `let x = false` infers the literal type
-   * `false`, and TypeScript's control-flow analysis does not account for an
-   * assignment made later in the same function when narrowing at the catch.
+   * ⚠️ `true` means "committing OR committed", because nothing advances it after
+   * `COMMIT` resolves. That is safe only because the sole statement after it is
+   * the `return { counts, skippedTables }` literal, which cannot throw. Add
+   * ANYTHING post-commit inside this `try` — a log, a read, a counts tweak — and
+   * a throw there would report `purge_outcome_unknown` ("may be fully purged or
+   * entirely intact", "Do NOT record this erasure yet") for a purge that
+   * definitively committed. At that point this wants to become
+   * `"open" | "committing" | "committed"` with a third arm in the catch.
+   *
    */
-  let commitAttempted: boolean = false;
+  let commitAttempted = false;
 
   try {
     await client.query("BEGIN");
@@ -4209,17 +4240,29 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     );
     const status = (statusCheck.rows[0] as Record<string, unknown> | undefined)?.workspace_status;
     if (statusCheck.rows.length === 0 || status !== "deleted") {
-      await client.query("ROLLBACK").catch((rbErr: unknown) => {
-        rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
-        log.warn(
-          { orgId, err: rollbackErr.message },
-          "ROLLBACK failed during hardDeleteWorkspace status check — client will be destroyed",
-        );
-      });
-      // Tagged so the racing admin gets the same 409 the non-racing path gets
-      // from the route's pre-check. As a plain Error this produced a generic
-      // 500, so losing the race looked like a server fault rather than the
-      // conflict it is.
+      // ⚠️ LOGGED HERE, because nothing downstream will. A 4xx domain error is
+      // invisible to every logger in the chain: `classifyError` logs only when the
+      // code is unmapped or the status is >= 500, and `app.onError` forwards an
+      // `HTTPException` before reaching its own `log.error`. Its three sibling
+      // abort codes all log at their throw site; this one did not, so a racing
+      // reactivation on a GDPR purge left ZERO server-side record that anyone
+      // attempted the erasure — `logAdminAction` runs only on the success path, so
+      // it was not in `admin_action_log` either. It is also the only abort that
+      // describes a CONCURRENT operator action, which is what an audit trail is for.
+      log.warn(
+        { orgId, status: typeof status === "string" ? status : null, found: statusCheck.rows.length > 0 },
+        "hardDeleteWorkspace refused — workspace was reactivated (or removed) after the route pre-check; nothing was deleted",
+      );
+      // No ROLLBACK here: the closing catch's ROLLBACK is unconditional and owns
+      // the client-destroy bookkeeping. Rolling back twice raised a
+      // no-transaction-in-progress WARNING on the server for every purge race, and
+      // if the FIRST one failed the second logged "ROLLBACK failed after purge
+      // transaction error" — misattributing the cause, since the transaction error
+      // was this guard rather than a query fault.
+      //
+      // Tagged so the racing admin gets the same 409 the non-racing path gets from
+      // the route's pre-check. As a plain Error this produced a generic 500, so
+      // losing the race looked like a server fault rather than the conflict it is.
       throw new PurgeAbortedError(
         "not_soft_deleted",
         "Workspace is not in deleted status — purge aborted. It was reactivated after the " +
@@ -4424,9 +4467,10 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     // rolling the whole cascade back, and records the skip so the operator is
     // not told the purge was complete.
     //
-    // Only two of the ~95 relations here are probed, and that asymmetry is a
-    // decision rather than an oversight: these are the two with observed region
-    // drift. For every other table an absent relation aborts the transaction,
+    // Only three of the ~95 relations here are probed, and that asymmetry is a
+    // decision rather than an oversight: two have observed region drift, and the
+    // third (`stripe_teardown_pending`) is a widening SOURCE whose absence must
+    // degrade the reach rather than refuse the erasure. For every other table an absent relation aborts the transaction,
     // which is the SAFER failure (nothing is deleted, nothing is claimed) but
     // also a workspace that cannot be purged until the region is migrated. The
     // route surfaces the aborting relation's name so that is diagnosable.
@@ -4678,10 +4722,11 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
             `hardDeleteWorkspace — refusing to guess whether the relation exists. Nothing was deleted.`,
         );
       }
-      // ONE options value, handed to BOTH builders. Computing it twice is the
-      // way the tombstone and the DELETE would come to read different id sets —
-      // see `KeySourceOptions`.
-      const keySourceOpts = teardownRow.table_exists
+      // Annotated, so the object literal's freshness is checked against the
+      // interface. Measured: the typo `omitSource` IS caught either way (2 type
+      // errors), so this is intent rather than a fix — but it is the assignment a
+      // reader checks to learn what shape the builders accept.
+      const keySourceOpts: KeySourceOptions = teardownRow.table_exists
         ? {}
         : { omitSources: [PURGE_TEARDOWN_OUTBOX_RELATION] };
       if (!teardownRow.table_exists) {
@@ -4693,46 +4738,65 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
             "rows for this workspace may survive (migrate this region, then clear the residue)",
         );
       }
-      // Tombstone the purged subscription ids FIRST (#3468): the remote
-      // teardown's cancellations generate `customer.subscription.deleted`
-      // webhooks that arrive after this transaction commits, and the
-      // webhook ledger records events keyed on the subscription id even
-      // when no org resolves — without the tombstone, a completed purge
-      // immediately regrows `stripe_webhook_events` rows. Stamped inside
-      // the purge transaction (same atomicity as the deletes below);
-      // consulted by `classifyStripeEvent`; pruned after 30 days.
-      //
-      // The SELECT is `parentKeySubquery` over the SAME `viaParent` declaration
-      // the ledger DELETE below uses (#5176). It was a fourth hand-written copy
-      // of the subscription relation, and the two had to agree: the tombstone
-      // must record exactly the ids whose ledger rows are about to be removed,
-      // or a webhook arriving for an unrecorded id regrows the row it names.
-      const tombstoned = await client.query(
-        `INSERT INTO stripe_purged_subscriptions (stripe_subscription_id)
-         ${parentKeySubquery("stripe_webhook_events", keySourceOpts)}
-         ON CONFLICT (stripe_subscription_id) DO NOTHING
-         RETURNING stripe_subscription_id`,
+      // ONE statement tombstones the ids and deletes their ledger rows (#3468,
+      // #5269): both read the same `ids` CTE, so they cannot see different id sets.
+      // The tombstone is what stops the remote teardown's post-commit
+      // `customer.subscription.deleted` webhooks regrowing rows a completed purge
+      // just cleared — the ledger records events keyed on the subscription id even
+      // when no org resolves. Consulted by `classifyStripeEvent`; pruned after 30
+      // days. Why one statement rather than two: `tombstoneAndDeleteViaParentSql`.
+      const paired = await client.query(
+        tombstoneAndDeleteViaParentSql(
+          "stripe_webhook_events",
+          PURGE_TOMBSTONE_RELATION,
+          "stripe_subscription_id",
+          keySourceOpts,
+        ),
         [orgId],
       );
+      const pairedRow = paired.rows[0] as
+        | { removed_count?: unknown; tombstoned_ids?: unknown }
+        | undefined;
+      // Fail CLOSED on an unshaped answer, like the probes above: a coerced 0
+      // would under-report destruction on the artefact an operator attaches to a
+      // DPA erasure record.
+      if (paired.rows.length !== 1 || typeof pairedRow?.removed_count !== "number") {
+        throw new Error(
+          `The stripe_webhook_events tombstone+delete returned an unexpected shape during ` +
+            `hardDeleteWorkspace — refusing to report a row count it did not give. Nothing was deleted.`,
+        );
+      }
+      stripeWebhookEvents = pairedRow.removed_count;
       // A tombstone PERMANENTLY suppresses webhook processing for these ids
-      // (`classifyStripeEvent` → "purged", 30-day window), and
-      // `stripe_purged_subscriptions` carries no org column — so this line is the
-      // only attribution that will ever exist for which workspace stamped them.
-      // Stripe subscription ids are opaque handles, not personal data, so logging
-      // them does not undercut the erasure. #5269 widened where these ids come
-      // from, which is what makes the attribution worth having.
-      // Narrowed per row rather than via a type argument: `InternalPoolClient
-      // .query` is deliberately non-generic (it returns
-      // `Record<string, unknown>[]` so lightweight mocks stay assignable), and a
-      // blanket cast here would let a renamed RETURNING column log `undefined`.
-      const tombstonedIds = tombstoned.rows
-        .map((r) => r.stripe_subscription_id)
-        .filter((id): id is string => typeof id === "string");
+      // (`classifyStripeEvent` -> "purged", 30-day window), and
+      // `stripe_purged_subscriptions` carries no org column — so the log below is
+      // the only attribution that will ever exist for which workspace stamped
+      // them. Stripe subscription ids are opaque handles, not personal data (the
+      // same values the tombstone table deliberately retains), so logging them
+      // does not undercut the erasure.
+      //
+      // Narrowed per element rather than cast: `InternalPoolClient.query` is
+      // deliberately non-generic, returning `Record<string, unknown>[]` so
+      // lightweight mocks stay assignable.
+      const rawIds = pairedRow.tombstoned_ids;
+      const tombstonedIds = Array.isArray(rawIds)
+        ? rawIds.filter((id): id is string => typeof id === "string")
+        : [];
+      // ⚠️ A cardinality MISMATCH is warned about, not filtered away. The filter
+      // alone made a renamed RETURNING column indistinguishable from "this
+      // workspace had no subscriptions" — both produce `[]` — which is deleting
+      // the signal in the name of guarding it.
+      if (Array.isArray(rawIds) && tombstonedIds.length !== rawIds.length) {
+        log.warn(
+          { orgId, returned: rawIds.length, usable: tombstonedIds.length },
+          "Tombstone RETURNING produced values that were not strings — the purge's only attribution " +
+            "for these Stripe subscription ids is incomplete (RETURNING column renamed?)",
+        );
+      }
       log.info(
         { orgId, tombstoned: tombstonedIds },
         "Purge tombstoned Stripe subscription ids to stop post-commit webhooks regrowing the ledger (#3468)",
       );
-      stripeWebhookEvents = await delViaParent("stripe_webhook_events", keySourceOpts);
       subscriptions = await del(`DELETE FROM subscription WHERE "referenceId" = $1`);
     }
 
@@ -4987,12 +5051,10 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     // 409 as a generic abort and replace a remedy that works ("soft-delete it
     // again") with one that does not ("re-run the endpoint").
     //
-    // The existence probes are deliberately NOT in this set — both throw plain
-    // Errors so they stay logged 500s (see `tableExists`). An earlier draft of
-    // this comment listed them here, which stopped being true the moment that was
-    // fixed and would have read as licence to convert them back.
+    // The existence probes are deliberately NOT in this set: both throw plain
+    // Errors so they stay logged 500s (see `tableExists`).
     if (err instanceof PurgeAbortedError) throw err;
-    // Region drift gets a message that names its own cause (#5160). Only two of
+    // Region drift gets a message that names its own cause (#5160). Only THREE of
     // the ~95 relations are probed, so for every other one an absent table or
     // column aborts the whole transaction — the safe failure, but one that
     // otherwise reaches the operator as a bare 500 with the relation name
@@ -5022,24 +5084,18 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     }
     const detail = err instanceof Error ? err.message : String(err);
 
-    // ⚠️ FIRST: is the outcome even knowable? (#5265 review.) Exactly ONE
-    // condition makes it not, and it is `commitAttempted`: the failure may BE the
-    // COMMIT, so the backend can have committed and lost the acknowledgement, in
-    // which case the workspace is fully and irreversibly purged.
+    // ⚠️ TWO conditions, and both are load-bearing. `commitAttempted` means the
+    // failure may BE the COMMIT, so the backend can have committed and lost the
+    // acknowledgement. `!backendAnswered` is what keeps a COMMIT that Postgres
+    // REFUSED (40001, 25P02) out of here: a SQLSTATE means the command was
+    // processed and did not commit, so the outcome IS known. A failed ROLLBACK is
+    // NOT a third condition — if COMMIT was never issued the transaction cannot
+    // have committed, whatever the ROLLBACK did, and the 42P01 arm above already
+    // reports "Nothing was deleted" for that state.
     //
-    // ⚠️ A FAILED ROLLBACK IS NOT THE SECOND CONDITION, and the first draft of
-    // this arm wrongly made it one. If `COMMIT` was never ISSUED the transaction
-    // cannot have committed — Postgres aborts an open transaction when the
-    // connection drops — so `!commitAttempted` is positive evidence that nothing
-    // landed, whatever the ROLLBACK did. `rollbackErr` is a DIRTY-SOCKET fact,
-    // which is why `client.release(rollbackErr)` destroys the client below; it
-    // says nothing about a commit that was never sent.
-    //
-    // That draft also contradicted its own neighbour: the 42P01 arm above reports
-    // "Nothing was deleted" for the identical `(commitAttempted=false,
-    // rollbackErr≠null)` state. Two arms of one catch disagreeing about one state
-    // means at least one of them is lying, on a DPA erasure receipt.
-    if (commitAttempted) {
+    // Claiming either outcome here would put a false statement on the artefact an
+    // operator attaches to a DPA erasure record.
+    if (commitAttempted && !backendAnswered(code)) {
       log.error(
         { orgId, code, err: detail, commitAttempted, rollbackFailed: rollbackErr !== null },
         "hardDeleteWorkspace failed with an INDETERMINATE outcome — the commit may or may not have landed",
@@ -5083,13 +5139,22 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
       );
     }
 
-    // No SQLSTATE ⇒ not a database condition ⇒ a PROGRAM defect (a `TypeError`,
-    // a bug in this function). Re-thrown BARE on purpose: `runEffect` logs it and
-    // answers a 500 with a requestId, which is the honest classification. A 409
-    // would claim the operator can resolve the cause and retry — false for an
-    // Atlas bug — and would hide a regression that broke every purge in a region
-    // from all 5xx alerting. #5265 is scoped to SQLSTATEs, and this is the line
-    // that keeps it there.
+    // No well-formed SQLSTATE. Re-thrown BARE on purpose: `runEffect` logs it and
+    // answers a 500 with a requestId, which is the honest classification for a
+    // PROGRAM defect. A 409 would claim the operator can resolve the cause and
+    // retry — false for an Atlas bug — and would hide a regression that broke
+    // every purge in a region from all 5xx alerting. #5265 is scoped to SQLSTATEs,
+    // and this is the line that keeps it there.
+    //
+    // ⚠️ "No SQLSTATE" does NOT mean "not a database condition". A dropped socket during any of
+    // the ~95 DELETEs — the likeliest transient failure on a long purge
+    // transaction — carries no SQLSTATE and lands here, so it reaches the operator
+    // as an unclassified 500 even though its outcome IS known (`!commitAttempted`,
+    // so nothing landed) and it is plainly retryable. That case is NOT fixed here:
+    // separating a driver transport error from an Error this function threw itself
+    // needs either message matching (fragile) or a dedicated class for the probe
+    // guards, and #5265's acceptance is scoped to SQLSTATEs. Stated rather than
+    // implied, because the previous wording made it look handled.
     throw err;
   } finally {
     client.release(rollbackErr ?? undefined);

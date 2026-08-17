@@ -363,13 +363,10 @@ export function buildInternalDbMockDefaults(deps: {
     COUNT_FIELD_ALIASES: REAL_COUNT_FIELD_ALIASES,
     NON_REGISTRY_COUNT_FIELDS: REAL_NON_REGISTRY_COUNT_FIELDS,
     // The two relation names the purge route imports to tell the THREE classes of
-    // skipped work apart (#5160, #5269). Both were reaching tests only because
-    // this file imports the real module at the top for `PurgeAbortedError`'s
-    // `instanceof` identity, so unmocked names kept their real values — i.e. by
-    // accident. Imported like `SURVIVOR_COUNT_FIELDS`, so a rename is a compile
-    // error here rather than an `undefined` that quietly defeats the route's
-    // `filter(t => t !== undefined)` and mislabels a skipped write as a skipped
-    // delete.
+    // skipped work apart (#5160, #5269). Imported rather than re-spelled, like
+    // `SURVIVOR_COUNT_FIELDS`, so a rename is a compile error here rather than an
+    // `undefined` in the route's `nonDeleteSkips` — which would then match nothing
+    // and mislabel a skipped write as a skipped delete.
     PURGE_TOMBSTONE_RELATION: REAL_PURGE_TOMBSTONE_RELATION,
     PURGE_TEARDOWN_OUTBOX_RELATION: REAL_PURGE_TEARDOWN_OUTBOX_RELATION,
   

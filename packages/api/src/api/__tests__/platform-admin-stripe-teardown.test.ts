@@ -330,7 +330,17 @@ describe("POST /api/v1/platform/workspaces/:id/purge — Stripe teardown", () =>
     // A skipped table reports 0 rows, which reads exactly like "there were
     // none". The response has to distinguish them, because it is the artefact
     // an operator attaches to an erasure record.
-    hardDeleteSkipped = ["scim_group_mappings", "subscription"];
+    // The fixture is a list `internal.ts` can actually EMIT: its `subscription`
+    // probe records three names at once (`tableExists("subscription",
+    // ["stripe_webhook_events", PURGE_TOMBSTONE_RELATION])`), so the shorter
+    // combination this used to seed was unreachable in production — a fixture that
+    // tests a shape the only producer cannot produce.
+    hardDeleteSkipped = [
+      "scim_group_mappings",
+      "subscription",
+      "stripe_webhook_events",
+      "stripe_purged_subscriptions",
+    ];
     try {
       const res = await app.fetch(platformRequest("POST", "/api/v1/platform/workspaces/org-1/purge"));
       const body = (await res.json()) as {
@@ -341,7 +351,12 @@ describe("POST /api/v1/platform/workspaces/:id/purge — Stripe teardown", () =>
 
       expect(res.status).toBe(200);
       expect(body.complete).toBe(false);
-      expect(body.skippedTables).toEqual(["scim_group_mappings", "subscription"]);
+      expect(body.skippedTables).toEqual([
+        "scim_group_mappings",
+        "subscription",
+        "stripe_webhook_events",
+        "stripe_purged_subscriptions",
+      ]);
       expect(body.message).toContain("INCOMPLETE");
       expect(body.message).toContain("scim_group_mappings");
     } finally {
@@ -353,8 +368,7 @@ describe("POST /api/v1/platform/workspaces/:id/purge — Stripe teardown", () =>
     // ⚠️ THE FIXTURE IS THE POINT. `internal.ts` is the only producer of this
     // field, and its `subscription` probe records THREE names at once —
     // `tableExists("subscription", ["stripe_webhook_events",
-    // PURGE_TOMBSTONE_RELATION])` — so the tombstone never arrives alone, and
-    // the sibling test above uses a combination the producer cannot emit.
+    // PURGE_TOMBSTONE_RELATION])` — so the tombstone never arrives alone.
     //
     // The inversion this pins: calling an unwritten tombstone "data that was NOT
     // deleted" is backwards. The tombstone is a WRITE that did not happen, and

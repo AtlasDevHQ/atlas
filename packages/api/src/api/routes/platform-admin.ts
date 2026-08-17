@@ -282,20 +282,12 @@ const purgeWorkspaceRoute = createRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Workspace not found", content: { "application/json": { schema: ErrorSchema } } },
-    // ⚠️ This described ONE cause while the status now carries four (#5265). It
-    // is a published contract statement on the erasure endpoint, and OpenAPI
-    // drift is a CI build gate, so a caller reads this rather than the code —
-    // which makes a stale single-cause description the same defect as a stale
-    // error message, one surface out. `error` is the discriminator; `message`
-    // carries the remedy, which differs per code and is why they are not merged.
+    // Published contract: keep this list in sync with `PurgeAbortCode`. A caller
+    // reads this rather than the code, and OpenAPI drift is a CI build gate.
+    // `error` is the discriminator; `message` carries the remedy, which differs per
+    // code. "no WORKSPACE data" is deliberate — remote Stripe teardown runs before
+    // the cascade and no database rollback covers it.
     409: {
-      // ⚠️ "no WORKSPACE DATA", not "nothing". An earlier draft of this line
-      // summarised `purge_rolled_back` as "nothing was deleted", flattening away
-      // the qualifier the code itself is careful to state: remote Stripe teardown
-      // runs BEFORE the cascade and no database rollback covers it. A published
-      // contract line that claims more than the implementation guarantees is the
-      // same defect as a wrong error message, one surface out — and this is the
-      // surface a caller actually reads.
       description:
         "Purge refused or aborted — `error` is one of `not_soft_deleted` (soft-delete it again), " +
         "`region_schema_behind` (run this region's migrations), `purge_rolled_back` (no workspace " +
@@ -843,7 +835,25 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
 
     const purged = yield* Effect.tryPromise({
       try: () => hardDeleteWorkspace(workspaceId),
-      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      // ⚠️ The teardown outcome is recorded HERE, before the error propagates.
+      // `billing` is otherwise surfaced only on the success path (`withWarnings`
+      // + the success `log.info`), and `classifyError` builds an abort's 409 body
+      // from the error alone — so every warning the REMOTE teardown produced
+      // ("Failed to delete Stripe customer cus_… — a GDPR purge must not leave a
+      // billable customer record") vanished whenever the cascade then aborted.
+      // That is work already attempted against Stripe, on the request where an
+      // operator most needs to know it happened, and it is why the abort messages
+      // say "no WORKSPACE DATA was deleted" rather than "nothing was deleted":
+      // the database rollback does not reach Stripe.
+      catch: (err) => {
+        if (billing.attempted && (billing.actions.length > 0 || billing.warnings.length > 0)) {
+          log.warn(
+            { workspaceId, requestId, stripe: { actions: billing.actions, warnings: billing.warnings } },
+            "Purge cascade aborted AFTER remote Stripe teardown ran — the teardown is not covered by the database rollback",
+          );
+        }
+        return err instanceof Error ? err : new Error(String(err));
+      },
     });
 
     // `adminActionLogAnonymized` counts rows that SURVIVED with their
@@ -890,8 +900,8 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
       // `customer.subscription.deleted` webhooks can REGROW the ledger rows the
       // purge just cleared. Naming the consequence rather than mislabelling the
       // operation, since the operator's next action differs for the two.
-      // The relation name is IMPORTED, not re-spelled: it is authored in
-      // internal.ts's `alsoSkipped` array, and recovering it by string match
+      // The relation name is IMPORTED, not re-spelled: it is authored as
+      // `PURGE_TOMBSTONE_RELATION` in internal.ts, and recovering it by string match
       // meant a rename there silently reverted this split to the inversion it
       // exists to remove.
       // THREE consequences now, not two (#5269). The third is a skipped widening
@@ -1011,16 +1021,17 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
   }), {
     label: "purge workspace (GDPR)",
     // Without this the purge's operator-actionable aborts fall through to the
-    // generic 500 body and their messages are discarded (#5160). All three codes
+    // generic 500 body and their messages are discarded (#5160). All FOUR codes
     // map to 409 — a conflict the operator resolves and retries, not a server
     // fault — and 4xx is also what makes `classifyError` pass the message through
     // rather than replacing it with an opaque reference.
     //
-    // `purge_rolled_back` is the catch-all added by #5265, and it is why this map
-    // can no longer go stale silently: `domainError` requires an entry for every
-    // member of `PurgeAbortCode`, so a fourth code is a compile error here rather
-    // than an unmapped code defaulting to 500 — i.e. defaulting back into exactly
-    // the opaque-reference body these mappings exist to escape.
+    // This map cannot go stale silently. Measured, both directions: `domainError`
+    // requires an entry for every member of `PurgeAbortCode`, so a FIFTH code is a
+    // compile error here rather than an unmapped code defaulting to 500 — i.e.
+    // defaulting back into exactly the opaque-reference body these mappings exist
+    // to escape — AND a misspelled extra entry is TS2353 rather than a dead key
+    // that silently covers nothing.
     // `purge_outcome_unknown` is 409 rather than 500 for one specific reason:
     // `classifyError` REPLACES the message of a 5xx domain error with an opaque
     // reference, and this is the one abort whose message an operator must read

@@ -40,6 +40,7 @@ import {
   setSetting,
   deleteSetting,
   isSaasModeForGuard,
+  settingUpdateResponseBody,
 } from "@atlas/api/lib/settings";
 import { SaasImmutableSettingError } from "@atlas/api/lib/settings-errors";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
@@ -1535,7 +1536,20 @@ const updateSettingRoute = createRoute({
   responses: {
     200: {
       description: "Setting saved",
-      content: { "application/json": { schema: z.object({ success: z.boolean(), key: z.string(), value: z.string() }) } },
+      content: {
+        "application/json": {
+          schema: z.object({
+            success: z.boolean(),
+            key: z.string(),
+            // #5263 — the value as the audit row records it, not as the request
+            // sent it. Identical for every key reachable today (a `secret: true`
+            // key is 403'd above), so read `valueMasked` rather than comparing
+            // against what you sent.
+            value: z.string().openapi({ description: "The stored value, withheld for a `secret: true` definition — see `valueMasked` (#5263)." }),
+            valueMasked: z.boolean().openapi({ description: "True when `value` is a withheld-placeholder rather than the stored characters. Without it the placeholder is indistinguishable from a setting whose literal value is that string." }),
+          }),
+        },
+      },
     },
     400: { description: "Invalid request", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -3877,7 +3891,27 @@ admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", asy
     return c.json(settingsAuditFailureBody(err, key, requestId, "updated", authResult.user?.id), 500);
   }
 
-  return c.json({ success: true, key, value }, 200);
+  // #5263 — the response is the THIRD sink for this value, and it was the last
+  // one still echoing the request verbatim. `auditSettingsWrite` already routes
+  // `metadata.value` through `redactAuditValue`; the 200 body did not, so the
+  // `secret: true` plaintext had one surviving exit.
+  //
+  // ⚠️ NOT a live leak, and the honest claim is narrow — the `def.secret` 403
+  // above returns before any of this, so no request can reach here with a
+  // secret key today. That guard STAYS and remains the primary control; this is
+  // what is left if someone relaxes it, and relaxing it is a normal-looking
+  // change: the sandbox keys already carry `saasVisible: false, saasWritable:
+  // true` to get a dedicated write surface, and a secret key acquiring the same
+  // treatment reads as routine.
+  //
+  // ⚠️ Same policy, same arguments as the seam's — both reach
+  // `redactAuditValue(def, value)` with the `def` this route resolved — so the
+  // echo and the row cannot disagree about what was stored. Two calls rather
+  // than one value threaded out of `auditSettingsWrite`: the audit runs AFTER
+  // `setSetting` and may reject, in which case the 500 above returns and this
+  // line is never reached, so threading it would buy nothing and give the audit
+  // a second job.
+  return c.json(settingUpdateResponseBody(def, key, value), 200);
 }));
 
 admin.openapi(deleteSettingRoute, async (c) => runHandler(c, "delete setting", async () => {

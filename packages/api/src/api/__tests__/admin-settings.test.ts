@@ -192,6 +192,27 @@ const saasGuardDefaultImpl = () =>
   (mockConfigOverride as { deployMode?: string } | null)?.deployMode === "saas";
 const mockIsSaasModeForGuard = mock(saasGuardDefaultImpl);
 
+/**
+ * #5263 — swappable stand-in for `settingUpdateResponseBody`.
+ *
+ * ⚠️ It is a MUTABLE binding rather than a fixed mock because `mock.module` is
+ * module-scoped and the two claims need opposite behaviour: the default echoes
+ * the value so every existing PUT assertion keeps its meaning, while one test
+ * swaps in a body sharing no field with the request and asserts the response
+ * carries it. Without that swap "the route returns the builder's output" and
+ * "the route returns an object literal that happens to match" are the same
+ * observation, because the pass-through is the identity on a non-secret key.
+ */
+type SettingUpdateBody = { success: true; key: string; value: string; valueMasked: boolean };
+const echoResponseBodyImpl = (key: string, value: string): SettingUpdateBody => ({
+  success: true,
+  key,
+  value,
+  valueMasked: false,
+});
+let settingUpdateResponseBodyImpl: (key: string, value: string) => SettingUpdateBody =
+  echoResponseBodyImpl;
+
 void mock.module("@atlas/api/lib/settings", () => ({
   getSettingsForAdmin: mockGetSettingsForAdmin,
   getSettingsRegistry: mockGetSettingsRegistry,
@@ -224,6 +245,17 @@ void mock.module("@atlas/api/lib/settings", () => ({
     masked: false,
     maskReason: undefined,
   })),
+  // #5263 — the route's 200 body is this builder's output rather than an
+  // object literal, so that the withheld arm is measurable at all: the
+  // `def.secret` 403 above means no request can carry a secret value to the
+  // echo, and a body built inline could only ever be asserted on the verbatim
+  // arm. The redaction ITSELF is pinned in `lib/__tests__/settings.test.ts`
+  // against real registry definitions; what this mock exists to catch is the
+  // route going back to `{ success: true, key, value }`, which no type can
+  // see (`AuditedValue` is assignable to the schema's `z.string()`).
+  settingUpdateResponseBody: mock((_def: unknown, key: string, value: string) =>
+    settingUpdateResponseBodyImpl(key, value),
+  ),
   securitySensitiveAuditLine: mock(() => undefined),
   settingsCacheEverLoaded: mock(() => true),
 }));
@@ -257,6 +289,10 @@ describe("admin settings routes", () => {
     mockAuditSettingsWrite.mockClear();
     mockIsSaasModeForGuard.mockClear();
     mockIsSaasModeForGuard.mockImplementation(saasGuardDefaultImpl);
+    // ⚠️ Restored here, not in the one test that swaps it: a leaked sentinel
+    // body would make every other PUT assertion in this file read
+    // "BUILDER-VALUE" and fail somewhere far from the cause.
+    settingUpdateResponseBodyImpl = echoResponseBodyImpl;
   });
 
   // ─── GET /settings ──────────────────────────────────────────────
@@ -311,6 +347,53 @@ describe("admin settings routes", () => {
       expect(data.key).toBe("ATLAS_ROW_LIMIT");
       expect(data.value).toBe("500");
       expect(mockSetSetting).toHaveBeenCalledTimes(1);
+    });
+
+    // ⚠️ #5263 — THE SEAM, not the policy. The policy (what a `secret: true`
+    // definition does to the echoed value) is measured in
+    // `lib/__tests__/settings.test.ts` against real registry entries, because
+    // the `def.secret` 403 makes it unreachable from here. What is only
+    // observable here is whether the route still ROUTES through the builder —
+    // the cheaper edit, and the one no type catches.
+    it("⭐ the 200 body is the builder's output, not an inlined literal", async () => {
+      settingUpdateResponseBodyImpl = () => ({
+        success: true,
+        key: "BUILDER-KEY",
+        value: "BUILDER-VALUE",
+        valueMasked: true,
+      });
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "500" }),
+      });
+      expect(res.status).toBe(200);
+      // Every field differs from what an inlined `{ success: true, key, value }`
+      // would produce, so this cannot pass by coincidence.
+      expect(await res.json()).toEqual({
+        success: true,
+        key: "BUILDER-KEY",
+        value: "BUILDER-VALUE",
+        valueMasked: true,
+      });
+    });
+
+    it("reports valueMasked on the ordinary non-secret write", async () => {
+      // The control for the assertion above: with the real builder shape the
+      // response says the characters were NOT withheld, so a client can tell
+      // the placeholder from a literal. A route hardcoding `valueMasked: true`
+      // would pass the seam test and lie on every normal write.
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "500" }),
+      });
+      expect(await res.json()).toEqual({
+        success: true,
+        key: "ATLAS_ROW_LIMIT",
+        value: "500",
+        valueMasked: false,
+      });
     });
 
     it("rejects unknown setting keys", async () => {

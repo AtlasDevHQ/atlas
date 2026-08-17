@@ -21,6 +21,7 @@ import {
   securitySensitiveAuditFields,
   securitySensitiveAuditLine,
   redactAuditValue,
+  settingUpdateResponseBody,
   settingsCacheEverLoaded,
   SECURITY_SENSITIVE_KEYS,
   type SecuritySensitiveKey,
@@ -1638,6 +1639,77 @@ describe("audit value redaction (#5180)", () => {
       masked: false,
       maskReason: undefined,
     });
+  });
+});
+
+describe("settingUpdateResponseBody — the PUT echo (#5263)", () => {
+  // The third sink for a written value, and the last one that played the
+  // request back verbatim. Driven here rather than through the route because
+  // the route 403s a `secret: true` key before a body exists: an assertion
+  // written against `PUT /admin/settings/{key}` can only ever reach the
+  // verbatim arm, which passes identically with this fix and without it.
+  const SECRET_DEF = getSettingDefinition("ANTHROPIC_API_KEY");
+  const PLAIN_DEF = getSettingDefinition("ATLAS_TRIAL_IP_RATE_LIMIT_RPM");
+  const SECRET_VALUE = "sk-ant-api03-SUPERSECRET-payload";
+
+  it("the two fixtures differ on the only axis under test", () => {
+    // ⚠️ `toBeDefined` on the plain one FIRST: `expect(PLAIN_DEF?.secret)
+    // .not.toBe(true)` passes when `PLAIN_DEF` is `undefined`, which would
+    // route the "verbatim" case through the fail-closed arm and make the
+    // control below assert the placeholder while reading as a pass.
+    expect(SECRET_DEF?.secret).toBe(true);
+    expect(PLAIN_DEF).toBeDefined();
+    expect(PLAIN_DEF?.secret).not.toBe(true);
+  });
+
+  it("⭐ withholds a `secret: true` value from the response body", () => {
+    const body = settingUpdateResponseBody(SECRET_DEF, "ANTHROPIC_API_KEY", SECRET_VALUE);
+    expect(body.value).toBe(audited("[withheld:secret-setting]"));
+    expect(body.valueMasked).toBe(true);
+    // ⚠️ THE WHOLE SERIALIZED BODY, not just `value`. A future field carrying
+    // the plaintext — `previousValue`, a diff, an echo of the request — would
+    // satisfy the assertion above and still be the disclosure.
+    expect(JSON.stringify(body)).not.toContain("SUPERSECRET");
+  });
+
+  // ⚠️ THE CONTROL. "Redact everything" passes the test above and destroys the
+  // response's only useful content: an admin UI that cannot read back what it
+  // just stored has no way to show the write took effect.
+  it("records a non-secret value verbatim, and says it was not masked", () => {
+    expect(settingUpdateResponseBody(PLAIN_DEF, "ATLAS_TRIAL_IP_RATE_LIMIT_RPM", "0")).toEqual({
+      success: true,
+      key: "ATLAS_TRIAL_IP_RATE_LIMIT_RPM",
+      value: audited("0"),
+      valueMasked: false,
+    });
+  });
+
+  // ⚠️ The two flags must not agree by accident. `valueMasked` is the ONLY
+  // thing separating the placeholder from a setting whose literal value is
+  // that string, so a builder hardcoding it either way passes one of the two
+  // tests above and lies on the other.
+  it("`valueMasked` tracks the arm taken, on both arms", () => {
+    expect(settingUpdateResponseBody(SECRET_DEF, "ANTHROPIC_API_KEY", "x").valueMasked).toBe(true);
+    expect(
+      settingUpdateResponseBody(PLAIN_DEF, "ATLAS_TRIAL_IP_RATE_LIMIT_RPM", "x").valueMasked,
+    ).toBe(false);
+  });
+
+  it("fails closed on a key with no registry entry", () => {
+    // The route 400s an unknown key before the write, so this is a backstop
+    // against a rename rather than a live path — which is exactly why it must
+    // not be the permissive one.
+    const body = settingUpdateResponseBody(undefined, "ATLAS_SOMETHING_RENAMED", SECRET_VALUE);
+    expect(body.value).toBe(audited("[withheld:secret-setting]"));
+    expect(body.valueMasked).toBe(true);
+    expect(JSON.stringify(body)).not.toContain("SUPERSECRET");
+  });
+
+  it("echoes the key it was given, not the definition's", () => {
+    // A body naming the definition's key would misreport which setting the
+    // caller just wrote whenever the two disagree — the same wrong-definition
+    // input class `auditSettingsWrite` guards, arriving at the response.
+    expect(settingUpdateResponseBody(PLAIN_DEF, "ATLAS_MODEL", "x").key).toBe("ATLAS_MODEL");
   });
 });
 

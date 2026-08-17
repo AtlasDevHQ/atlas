@@ -3227,6 +3227,46 @@ export interface RedactedAuditValue {
  * `[withheld:secret-setting]`, so `undefined` singled the empty one out and
  * disclosed it exactly. Uniformity is the property; `action` carries set-vs-
  * clear, which is the distinction that was worth keeping.
+ *
+ * ⚠️ **THREE SINKS NOW, AND THE `Audit` IN THE NAME IS THE NARROWER WORD.**
+ * #5263 asked whether the sink-generic name had become a liability once a
+ * second sink adopted it — the #5180 review called it "a latent invitation".
+ * The answer taken, deliberately, is that the trade GENERALISES and the name
+ * stays:
+ *
+ * - the pino `security_setting.changed` line ({@link securitySensitiveAuditLine})
+ * - the `admin_action_log.metadata` row (`lib/audit/settings-write.ts`)
+ * - the settings `PUT` 200 body (`api/routes/admin.ts`, #5263)
+ *
+ * Renaming it to say which sink it serves was the alternative, and it is not
+ * available: it serves three, and one of them is not an audit. The trade being
+ * inherited is *withhold every character rather than reveal some* — see
+ * {@link REDACTED_AUDIT_VALUE} for why that is not {@link maskSecret} — and it
+ * holds at the response too, for a reason worth stating rather than assuming.
+ * The `PUT` caller already holds the value it just sent, so withholding it in
+ * the echo costs that caller nothing; what the echo owes is *what is now
+ * stored*, and `valueMasked` says the characters were withheld rather than
+ * leaving the placeholder indistinguishable from a literal.
+ *
+ * What does NOT generalise is any reading of the brand as a clearance —
+ * {@link AuditedValue}'s last paragraph is the standing warning, and a fourth
+ * sink with a different audience owes the same paragraph this one does.
+ */
+export function redactAuditValue(
+  def: SettingDefinition | undefined,
+  value: string,
+): RedactedAuditValue & { readonly value: AuditedValue };
+export function redactAuditValue(
+  def: SettingDefinition | undefined,
+  value: string | undefined,
+): RedactedAuditValue;
+/**
+ * ⚠️ The overload above is the only reason a caller holding a `string` can put
+ * the result straight into a non-optional field. `value: undefined` is the sole
+ * input producing `value: undefined` — read the arms below — so a present input
+ * yields a present {@link AuditedValue}, and saying so in the signature is what
+ * keeps the `PUT` response from needing a `?? rawValue` fallback to satisfy its
+ * schema. That fallback is the whole defect written as a type workaround.
  */
 export function redactAuditValue(
   def: SettingDefinition | undefined,
@@ -3246,6 +3286,51 @@ export function redactAuditValue(
     return { value: audited(REDACTED_AUDIT_VALUE), masked: true, maskReason: "secret" };
   }
   return { value: audited(value), masked: false, maskReason: undefined };
+}
+
+/** The 200 body `PUT /admin/settings/{key}` returns (#5263). */
+export interface SettingUpdateResponse {
+  readonly success: true;
+  readonly key: string;
+  /**
+   * What is now stored, as {@link redactAuditValue} permits it to be echoed —
+   * NOT the request's value played back. Read it with `valueMasked`.
+   */
+  readonly value: AuditedValue;
+  /** True when `value` is the withheld placeholder rather than the characters. */
+  readonly valueMasked: boolean;
+}
+
+/**
+ * Build the settings `PUT` 200 body, withholding a `secret: true` value (#5263).
+ *
+ * ⚠️ **A BUILDER RATHER THAN THREE LINES AT THE ROUTE, for the one reason that
+ * survives: it is the only way to MEASURE the secret arm.** The route 403s a
+ * `secret: true` key before any response body exists, so no request can carry a
+ * secret value to the echo — an assertion written against the route can only
+ * ever exercise the verbatim arm, which passes identically with the fix and
+ * without it. That is #5180's accidental-equality trap arriving one sink later.
+ * Pulled out here, the secret arm takes a real registry definition
+ * (`RESEND_API_KEY`) in a unit test and the plaintext's absence is a measured
+ * fact instead of an argument.
+ *
+ * ⚠️ It does NOT close the route inlining `{ success: true, key, value }` again.
+ * Nothing can: the 200 schema's `value` is `z.string()` and {@link AuditedValue}
+ * is assignable to `string`, so — measured by compiling the raw spelling against
+ * the schema — the echo type-checks clean either way. Branding the schema was
+ * the alternative and costs the OpenAPI generator a type it cannot render. So
+ * that spelling is closed by a test in `admin-settings.test.ts` asserting the
+ * response IS this builder's output, which is the same split
+ * {@link AuditedValue} documents: a type for the seam-preserving edit, a test
+ * for the seam-removing one.
+ */
+export function settingUpdateResponseBody(
+  def: SettingDefinition | undefined,
+  key: string,
+  value: string,
+): SettingUpdateResponse {
+  const audited = redactAuditValue(def, value);
+  return { success: true, key, value: audited.value, valueMasked: audited.masked };
 }
 
 /** The full structured payload {@link auditSecuritySensitiveChange} logs. */

@@ -33,7 +33,7 @@ These hold everywhere. The rest of this file is orientation, not rules.
 
 ### Tests
 - **`bun run test`, never bare `bun test`** — isolated per-file runner. Single file OK: `bun test path/to/file.test.ts`
-- **Remote CI on the PR is the gate, not a local `/ci`** — push, open the PR as a **draft**, and let `ci.yml` run (~4 min, parallel) while you review. The local pre-flight is the cheap subset: `cd packages/api && bun run scripts/test-isolated.ts --affected`, plus `bun run lint`, `bun run type` and `bun run lint:type-aware`. **`lint:type-aware` is on that list because it is its own CI-blocking job and costs ~11s** — leaving it off is what let a single type-aware diagnostic red-flag two CI jobs on #5083 *after* the pre-flight came back clean. Run the full `scripts/ci-local.sh` (36 gates, ~25 min, serial, rewrites source in place for the mutation gate) only when remote CI is broken, when you reshaped something `mutation-tables` anchors on, or before `/release`. Exceptions and the arithmetic: `/ship-issue` Step 4
+- **Remote CI on the PR is the gate, not a local `/ci`** — push, open the PR as a **draft**, and let `ci.yml` run (~4 min, parallel) while you review. The local pre-flight is the cheap subset: `cd packages/api && bun run scripts/test-isolated.ts --affected`, plus `bun run lint`, `bun run type` and `bun run lint:type-aware`. **`lint:type-aware` is on that list because it is its own CI-blocking job and costs ~11s** — leaving it off is what let a single type-aware diagnostic red-flag two CI jobs on #5083 *after* the pre-flight came back clean. Run the full `scripts/ci-local.sh` (36 gates, ~25 min, serial, rewrites source in place for the mutation gate) only when remote CI is broken, when you reshaped something `mutation-tables` anchors on, or before tagging a release
 
 ### Merge discipline
 Rationale + override rules: [docs/development/branch-protection.md](docs/development/branch-protection.md). These are workflow rules — no file-read triggers them, so they stay here:
@@ -41,7 +41,7 @@ Rationale + override rules: [docs/development/branch-protection.md](docs/develop
 - **NEVER merge a fork PR** — head repo ≠ `AtlasDevHQ/atlas` (`isCrossRepository: true`) is an external contributor's code. An agent must never merge one, not even fully green. Needs in-session human confirmation **and** a recorded security diff review; the `external-approved` label applied by hand **is** the sign-off. Surface provenance first: `gh pr view <PR> --json headRepositoryOwner,author,isCrossRepository,reviews`. See #3772
   - `fork-pr-gate` is a **required status check**, so red genuinely blocks the merge button. It was missing from the live config until 2026-07-26 — for that window the backstop was policy only, since a red *non-required* check blocks nothing. If you ever need to know whether it's still enforced, don't trust this line: `gh api repos/AtlasDevHQ/atlas/branches/main/protection --jq '.required_status_checks.contexts'`
 - **`--admin` is for a broken gate, not a slow one** — merge only after `gh pr checks <PR> --watch` is green on the head SHA. "Tests are slow" doesn't qualify (#2206). **A check that *structurally cannot run* on a class of PR is a stop sign, not an override invitation** — CodeQL never runs on fork PRs and `fork-pr-gate` is red by design. Admin-merging past a missing-by-design gate is forbidden for agents (#3772)
-- **Never target `prod` with a PR** — it's a Railway-tracking artifact advanced only by `/release`
+- **Never target `prod` with a PR** — it's a Railway-tracking artifact, advanced only by the release flow in [release-process.md](docs/development/release-process.md)
 - **Check `git rev-list --count origin/prod..origin/main` before any hotfix** — the documented hotfix flow assumes `main` ≈ prod + your fix. When an unreleased arc sits on `main` (a held minor tag), tagging from `main` ships it. Branch from the tag `prod` is on instead; `/release` refuses off-`main`, so the lane is manual and CI needs a `workflow_dispatch` to reach the hotfix SHA. Full lane: [release-process.md § When `main` is NOT a safe hotfix source](docs/development/release-process.md#when-main-is-not-a-safe-hotfix-source)
 - **`milestone/**` is the one integration-branch exception** — but branch protection is `main`-only, so **nothing blocks a bad merge into a milestone branch**; green checks there are discipline, not enforcement. CodeQL is deferred to the milestone→`main` PR — deferred, not waived
 - **Required reviews are intentionally off** — solo dev + parallel-claude workflow. Don't enable without rethinking the model
@@ -102,7 +102,7 @@ Beyond `effect/`, `db/`, `semantic/`, `tools/`: `billing/` (Stripe subscriptions
 Three independent version trains that **never coordinate** — git tags, GitHub milestones, per-package npm semver. Rules and release flow: [ADR-0008](docs/adr/0008-versioning-and-release-tags.md) + [release-process.md](docs/development/release-process.md); milestone naming: [ADR-0009](docs/adr/0009-tag-organized-roadmap.md).
 
 - The shipped internal milestone `1.0.0 — SaaS Launch` (#24) is **not** the future git tag `v1.0.0` — say "internal milestone 1.0.0". `v1.0.0` is reserved for when REST + MCP + plugin SDK contracts freeze
-- The docs changelog is a **per-tag feed**, not banked for `v0.1.0`. `/release` owns writing it
+- The docs changelog is a **per-tag feed**, not banked for `v0.1.0`. It is written as part of tagging — [release-process.md](docs/development/release-process.md)
 - **New integration?** Create the staging app/credentials first — staging is the soak environment. Don't OAuth-register a new platform straight against prod
 
 ## Commands
@@ -123,10 +123,21 @@ bun run atlas -- diff    # Compare DB schema vs semantic layer
 
 Env vars: see `.env.example`. Key ones — `ATLAS_PROVIDER`, `ATLAS_MODEL`, `ATLAS_DATASOURCE_URL`, `DATABASE_URL`, `ATLAS_AUTH_MODE`, `BETTER_AUTH_SECRET`.
 
-## Agent skills
+## Agent practices
 
-- **Workflow** — how Atlas commands (`/next`, `/tidy`, `/investigate`, `/elevate`, `/kickoff`, `/closeout`, `/ci`, `/pr`) compose with the Matt Pocock skills. See `docs/agents/workflow.md`
-- **Issue tracker** — GitHub issues at `AtlasDevHQ/atlas` via `gh` (always `-R AtlasDevHQ/atlas`). Atlas body format (`## Key files / ## Acceptance criteria / ## Dependencies`); labels on two axes (kind+area AND triage state). See `docs/agents/issue-tracker.md`
-- **Triage labels** — `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix` (created lazily). See `docs/agents/triage-labels.md`
-- **Audit commands** — all prefixed `/audit-*` so they list together: `/audit-docs`, `/audit-www`, `/audit-readme`, `/audit-prod`, `/audit-contracts`. Shared conventions in `docs/agents/audits.md`: Step-0 self-check, discover-don't-enumerate, guard-first, the promote-to-CI ratchet, and the pre-tag battery
-- **Domain docs** — single-context `CONTEXT.md` + `docs/adr/` at repo root, produced lazily by `/grill-with-docs`. See `docs/agents/domain.md`
+**The 34-command workflow layer was deleted on 2026-08-17** — 7,893 lines across
+`.claude/commands/`, `.claude/agents/` and `docs/agents/`. It was not wrong; it was
+satisfied nominally, three escalations deep, while the defect moved up a level each time.
+The replacement is one page: **[docs/agents/practices.md](docs/agents/practices.md)** — the
+bar a practice must clear (a gate, or a measurement that can fail, or it is a note in
+ROADMAP), and the one structural rule (the actor that builds a check may not be its only
+judge). Read it before adding any process.
+
+- **Engineering skills** come from the upstream plugin: `claude plugin install mattpocock-skills`
+  (`/to-spec`, `/to-tickets`, `/triage`, `/grill-with-docs`, `/wayfinder`, `/tdd`, …).
+  A fresh checkout carries none of them. `/setup-matt-pocock-skills` regenerates this repo's
+  tracker, triage-label and domain-doc conventions from the maintained upstream — that is the
+  path back, not a hand-written replacement, because a hand-written one rots unwatched
+- **Issue tracker** — GitHub issues at `AtlasDevHQ/atlas` via `gh` (always `-R AtlasDevHQ/atlas`). Atlas body format: `## Key files / ## Acceptance criteria / ## Dependencies`. Two label axes — kind+area, and triage state (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`, created lazily)
+- **Domain docs** — single-context `CONTEXT.md` + `docs/adr/` at repo root, produced lazily by `/grill-with-docs`
+- **The record** — `.claude/research/ROADMAP.md` is where measured findings live, and it survived the deletion deliberately. The commands were a lossy copy of it

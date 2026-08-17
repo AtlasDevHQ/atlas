@@ -17,6 +17,24 @@ This is L1.5 — `/next`'s selection + `/ship-issue`'s dispatch, capped. Use it 
 
 ---
 
+⚠️ **First ask whether a BUNDLE ISSUE is the better shape — usually it is.** The panel is what this command costs, and a batch pays it per worker: each `/ship-issue` runs `/review-panel` (3 code reviewers + a comment sweep, up to 3 rounds, plus `fix-vs-finding`) ≈ 10 agent invocations, so 5 workers ≈ 50 where one bundle over the combined diff ≈ 10. **Parallel wall-clock is the only thing this command buys.** Raised by the maintainer 2026-08-17 mid-dispatch, which is why it sits at the top.
+
+`/ship-issue` takes one issue number, so the mechanism is a parent issue naming its members with a load-bearing order, shipped as **one commit per member** — the shape #5247/#5252, #5289/#5291 and #5290/#5292 already use.
+
+| | `/ship-batch` | bundle issue → `/ship-issue` |
+|---|---|---|
+| Select for | **independence** (avoid worktree collisions) | **shared surface** (one panel reads one coherent diff) |
+| Two issues editing one file | one of them rebases | free — sequential commits on one branch |
+| Panels | N | 1 |
+| Wall-clock | parallel | serial |
+| Practical size | ≤ 5 (hard cap) | **≤ 3** — beyond that round-1 findings balloon and round 2's defect-in-prior-fix ratio stops meaning anything across unrelated code |
+
+**Strip `ready-for-agent` from every member** when you bundle, and comment where it went. It is an execution trigger this command and `/ship-milestone` both select on, so a member still carrying it can be started independently and collide with its own bundle.
+
+Reach for `/ship-batch` when wall-clock genuinely matters more than tokens, or when the issues share no surface at all.
+
+---
+
 **Step 1 — Select (skip if explicit issue numbers were given)**
 
 Reuse `/next`'s priority order against the **active milestone**:

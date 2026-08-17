@@ -52,19 +52,27 @@ mutation below dies in at least one column, and every column kills at least one
 mutation. If a future edit makes one of them survive across a whole row, the fix
 is a fixture, not a deleted row.
 
-⚠️ **Eight rows are held up by exactly ONE test in exactly one column**, and the
-runner has no floor warning to tell you when that stops being true — `mutate.ts`
-flags a suspiciously HIGH count and says nothing about a 1. Those rows are one
-weakened assertion from returning to unfalsifiable, and they are the ones to
-re-read first when a count moves.
+⚠️ **A large minority of rows are held up by exactly ONE test in exactly one
+column** — read the generated table for which, rather than trusting a count here;
+this paragraph is hand-written prose and the counts move with every added row. The
+runner has no floor warning to tell you when a row drops to 1: `mutate.ts` flags a
+suspiciously HIGH count and says nothing about a 1. Those rows are one weakened
+assertion from returning to unfalsifiable, and they are the ones to re-read first
+when a count moves.
 
-⚠️ **Six of those eight sit in three PAIRS behind one test each**, which is worse
-than eight independent single points: one deleted assertion returns TWO rows to
-unfalsifiable at once, and for the two `@sql-gate-guarded` rows it zeroes the
-whole `bypass` column. The pairs are the two tag/closure rows, the two row-drop
-warns, and the two row-cap rows. The cap pair is the one that still discriminates,
-and only through `logging`: at a cap of 1 with two rows, `>=` still refuses
-while `overCap = false` does not.
+⚠️ **Several of those single points sit in PAIRS behind one test each**, which is
+worse than the same number of independent single points: one deleted assertion
+returns TWO rows to unfalsifiable at once, and for the two `@sql-gate-guarded`
+rows it zeroes the whole `bypass` column. The pairs are the two tag/closure rows,
+the two row-drop warns, and the two row-cap rows. The cap pair is the one that
+still discriminates, and only through `logging`: at a cap of 1 with two rows,
+`>=` still refuses while `overCap = false` does not.
+
+⚠️ **The #5284 rows are the newest single points, and one of them was measured
+GREEN across all four suites before its falsifier was written** — the mismatch
+arm recomputing the submitted connection from the YAML hint. That is the shape
+this file exists for: a fix whose defect nothing could see, sitting one binding
+away from the fix that closed it.
 
 The opposite end deserves the same suspicion. The identity-check row carries the
 largest count here and was inspected rather than trusted; see its note.
@@ -83,7 +91,7 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | `buildSnapshotSql` emits `LIMIT cap` — the extra row that makes the cap observable | 2 | 0 | 0 | 0 | 0 |
 | the production SQL gate deleted — `defaultValidateSnapshotSql` passes everything | 2 | 0 | 0 | 2 ⚠️ | 0 |
 | the gate's refusing verdict carries no reason | 2 | 0 | 0 | 1 | 0 |
-| the anti-replay identity check deleted — a token minted for another statement is accepted | 2 | 20 | 0 | 0 | 0 |
+| the anti-replay identity check deleted — a token minted for another statement is accepted | 2 | 21 | 0 | 0 | 0 |
 | a validator THROW reported as `snapshot-rejected` — the permanence inversion | 3 | 2 | 0 | 0 | 0 |
 | a transaction failure re-thrown instead of refusing its entity | 1 | 4 | 0 | 0 | 0 |
 | the transaction-failure `log.error` demoted to `log.warn` | 0 | 4 | 0 | 0 | 0 |
@@ -95,8 +103,17 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | the `@sql-gate-guarded` tag deleted from the producer's deps interface | 0 | 0 | 1 | 0 | 0 |
 | a sixth brand-carrying export added with no `@sql-gate-guarded` tag | 0 | 0 | 1 | 0 | 0 |
 | the entity-edge pass's failure log drops `err` | 0 | 3 | 0 | 0 | 0 |
+| the snapshot's connection falls back to the YAML hint alone, ignoring the group | 2 | 3 | 0 | 0 | 0 |
+| the mismatch arm recomputes the submitted connection from the YAML hint | 0 | 1 | 0 | 0 | 0 |
+| the placement rule answers an empty placement for every catalog | 7 | 0 | 0 | 0 | 0 |
+| a name published under two connection groups resolves instead of refusing | 1 | 0 | 0 | 0 | 0 |
+| an unplaceable entity is snapshotted anyway rather than refused | 2 | 0 | 0 | 0 | 0 |
+| the flat scope resolves to the literal "default" instead of staying absent | 2 | 0 | 0 | 0 | 0 |
+| a YAML `connection: default` hint reaches the gate as the literal "default" | 1 | 0 | 0 | 0 | 0 |
+| the catalog's authority is INFERRED from its contents instead of passed in | 1 | 0 | 0 | 0 | 0 |
+| the connection resolver is asked about no entities | 1 | 0 | 0 | 0 | 0 |
 
-Suite sizes: **producer** 71 tests (`src/lib/brain/__tests__/warehouse-producer.test.ts`) · **logging** 70 tests (`src/lib/brain/__tests__/warehouse-producer-logging.test.ts`) · **bypass** 13 tests (`src/lib/brain/__tests__/warehouse-producer-bypass.test.ts`) · **mint** 2 tests (`src/lib/brain/__tests__/warehouse-producer-mint.test.ts`) · **pg** 6 tests (`src/lib/brain/__tests__/warehouse-producer-pg.test.ts`).
+Suite sizes: **producer** 88 tests (`src/lib/brain/__tests__/warehouse-producer.test.ts`) · **logging** 71 tests (`src/lib/brain/__tests__/warehouse-producer-logging.test.ts`) · **bypass** 13 tests (`src/lib/brain/__tests__/warehouse-producer-bypass.test.ts`) · **mint** 2 tests (`src/lib/brain/__tests__/warehouse-producer-mint.test.ts`) · **pg** 6 tests (`src/lib/brain/__tests__/warehouse-producer-pg.test.ts`).
 
 ## Notes
 
@@ -122,6 +139,15 @@ Suite sizes: **producer** 71 tests (`src/lib/brain/__tests__/warehouse-producer.
 - **the `@sql-gate-guarded` tag deleted from the producer's deps interface** — One of the two rows the bypass column can see, and the pair is here so that column is a measurement rather than decoration. The tag is the human-readable half of the membership decision; the STRUCTURAL closure — every exported declaration naming the brand symbol, transitively — is the enforcing half, and the suite asserts the two equal in BOTH directions. A tag deleted while the declaration still carries the brand is exactly the drift a hand-maintained list three directories away cannot detect. ⚠️ **The anchor is the DOCSTRING rather than the declaration below it, and that is deliberate.** This directory is one of the roots that suite scans, and it fails on any file merely NAMING one of the five guarded types — so anchoring on the `export interface` line would have made this spec trip the guard it exists to protect. Reworded, never exempted; do not "fix" the anchor by extending it downwards.
 - **a sixth brand-carrying export added with no `@sql-gate-guarded` tag** — The other direction of the same set equality, and the failure #5255 was actually filed for: a tag is something a person has to remember, so the interesting case is not a tag deleted but a brand-carrying export added WITHOUT one. The suite derives the guarded set structurally — the transitive closure of *names the brand symbol, or names something already in the closure* — precisely so this cannot be forgotten, and a row that only ever deletes a tag would leave the half that does the enforcing unmeasured. ⚠️ The probe type is spelled to avoid the five guarded names for the reason the row above states; the brand SYMBOL is not one of them, which is what makes this expressible here at all.
 - **the entity-edge pass's failure log drops `err`** — A falsifier #5042 measured once, by hand, and left unprotected — which is this file's whole subject. The refusal body deliberately keeps the driver's text off the wire and PROMISES this line carries the reason, so the two are one claim: delete `err` and the report goes on pointing operators at a log line with nothing in it. The source comment records that this was green across every suite before the logging suite existed; the row is what stops that being a fact about one afternoon.
+- **the snapshot's connection falls back to the YAML hint alone, ignoring the group** — **The #5284 defect, restored verbatim at the submitted side.** It is the shipped line as it stood through #5042, #5230 and #5228, and it reached prod: on a DB-backed semantic layer the YAML `connection:` hint is null for EVERY entity — the scope lives in the row's `connection_group_id` — so every group-scoped workspace sent every snapshot to the deployment's `default` datasource, and each entity refused with `relation "…" does not exist` while its pairs sat in the enrollment list looking live. ⚠️ The row exists because this class is **structurally invisible to a unit suite**: `defaultValidateSnapshotSql`'s own header notes that a test workspace has no whitelist, so the gate rejects on the table whatever the statement says, and a producer that refuses every entity in production reads from in here exactly like one that works. The single kill is the seam assertion that the request carries the RESOLVED id rather than `undefined` — thin by design, and thin is the point: nothing else in five suites notices, which is why it took a prod run on #5197 to find.
+- **the mismatch arm recomputes the submitted connection from the YAML hint** — **The review finding that nothing caught: the alert predicate reading benign on the case it was added for.** The submitted connection is built once at the top of the loop and handed to `Object.freeze`; this arm used to REBUILD it from `entity.connection ?? undefined` and compare against that. The moment the real expression gained the connection-group arm the two stopped agreeing — and on a DB-backed semantic layer `entity.connection` is null for every entity, so the side being compared against was `undefined` on every iteration of an ordinary group-scoped workspace. Both directions break, and the dangerous one is silent: a verdict minted for a DEFAULT-connection request — matching workspace, entity and statement, carrying `connectionId: undefined` — satisfies `returnedConnectionId === submittedConnectionId` and reports `returnedRequestMatch: true` on a token that authorizes the wrong datasource. ⚠️ Measured GREEN across all four suites before its falsifier existed; `logging`'s *"compares the RESOLVED connection group"* is what kills it, and it needs an entity whose group came from the RESOLVER rather than a YAML hint — the sibling test one block up reaches a grouped entity through the hint, which is the one path the broken recomputation still covered.
+- **the placement rule answers an empty placement for every catalog** — The whole placement rule, neutralised. ⚠️ This row exists because the rule was **uncoverable where it used to live**: inside `defaultResolveConnectionIds`, below two I/O calls that cannot run under the unit suite at all — `test-setup.ts` strips `DATABASE_URL` and points `ATLAS_SEMANTIC_ROOT` at an empty directory, so `listAdminEntities` takes its disk branch over an empty root and answers `[]`. Every run test therefore exercised a resolver that returned nothing, and passed *because* it did. Splitting the rule out as `mapEntitiesToConnectionIds` is what makes this row killable; before the split the equivalent mutation was green across the tree.
+- **a name published under two connection groups resolves instead of refusing** — The `__global__` shadow case. The catalog read is `org_id = $1 OR org_id = '__global__'` while the run loop's `getEntity` is `org_id = $1` alone, so a workspace shadowing a built-in entity with its own of the same name looks ambiguous to the resolver and resolves cleanly to the loader — which is why the original code's justification for silently omitting it (*"the loader is about to refuse it anyway"*) was false for exactly that population, and the entity was snapshotted against the deployment default with nothing refused and nothing logged.
+- **an unplaceable entity is snapshotted anyway rather than refused** — The refusal arm removed, so an entity Atlas could not place falls through to `?? undefined` and reads the deployment's default datasource — #5284 restored through the door the fix left open. This is the arm that turns *"we could not work out which database this is"* from a silent default into a `connection-unresolved` refusal an admin can act on.
+- **the flat scope resolves to the literal "default" instead of staying absent** — ⚠️ **The regression the fix for #5284 nearly shipped, in the opposite population.** `resolveGroupPrimaryConnectionId` answers `"default"` for a null group, and that string is NOT interchangeable with the `undefined` a flat workspace produced before this seam existed: `validateSQL` routes it to `getDBType("default")`, which does a bare `entries.get` and throws `ConnectionNotRegisteredError` until something has touched the default pool, where `undefined` takes the `detectDBType()` branch. So placing it would refuse every flat, self-hosted workspace — under the PERMANENT `snapshot-rejected` wording, *"re-running will not change this"* — to fix grouped ones.
+- **a YAML `connection: default` hint reaches the gate as the literal "default"** — ⚠️ **The #5284 fix's OWN second defect, caught by a `fix-vs-finding` pass.** The fix kept the literal `"default"` out of the GROUP arm and left the YAML-hint arm — the first operand of the same `??` chain — free to place it. `connection: default` is not exotic: it is what the flat root's implied group is called in `whitelist.ts`, and `semantic.test.ts` has a case named for it. The two spellings diverge downstream, and the module contains both halves of the divergence: `defaultRunSnapshot` collapses them (`request.connectionId ?? "default"`) while `defaultValidateSnapshotSql` does not — `validateSQL` takes `getDBType("default")`, which throws `ConnectionNotRegisteredError` until something has touched the default pool, where `undefined` takes `detectDBType()`. So the entity took a PERMANENT `snapshot-rejected` blaming the workspace whitelist, on precisely the flat self-hosted deployment the arm exists to protect. The lesson banked with it: singleness of a sentinel is a property of the FIELD, and guarding one arm does not establish it.
+- **the catalog's authority is INFERRED from its contents instead of passed in** — ⚠️ **The first cut of the #5284 fix, which reproduced the defect it was written to end — caught by a `fix-vs-finding` pass, not by any reviewer.** It asked *"does this catalog scope anything by group?"* and treated `false` as *"this workspace is flat, the default is correct"*. But the visibility clause in `listEntityRows` is exactly what REMOVES a group-scoped row from the catalog when its datasource is unpublished, while `getEntity` has no such clause. So a workspace whose only group just went invisible keeps its ungrouped `__global__` demo rows, the inference reads FALSE, and the enrolled entity — still found by the loader, still planned — is snapshotted against the demo database with nothing refused and nothing logged. The asymmetry is the tell: the SAME condition refuses `group-not-visible` when the row survives the clause and defaulted when the clause deleted it. An empty `.some()` establishes what the carried rows are and nothing about a name the catalog does not carry, which is a measured-nothing cell blessed as a determined answer.
+- **the connection resolver is asked about no entities** — Nothing is placed, so every entity falls back to the deployment default — #5284 verbatim, past a green tree. Green before its falsifier existed, because every stub in the suite ignored its arguments (`async () => new Map([...])`). The kill is the stub that RECORDS what it was passed. Its sibling — passing `""` as the workspace, which sends `listAdminEntities` to its disk-root branch and resolves a SaaS workspace's connection groups from whatever YAML is on the box — is caught by the same assertion.
 
 ## ⚠️ Flagged
 

@@ -70,6 +70,7 @@ export {
   BrainEnrollmentDimensionsResponseSchema,
   BrainEnrollmentWriteResponseSchema,
   BrainEnrollmentNamingResponseSchema,
+  BrainWarehouseRunResponseSchema,
   AbuseStatusSchema,
   AbuseThresholdConfigSchema,
   AbuseDetailSchema,

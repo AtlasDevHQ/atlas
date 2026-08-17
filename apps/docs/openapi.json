@@ -31112,7 +31112,8 @@
                                   "snapshot-rejected",
                                   "snapshot-failed",
                                   "snapshot-already-recorded",
-                                  "naming-dimension-refused"
+                                  "naming-dimension-refused",
+                                  "connection-unresolved"
                                 ]
                               },
                               "message": {

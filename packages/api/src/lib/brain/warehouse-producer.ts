@@ -216,7 +216,16 @@ export interface WarehouseDimension {
 export interface WarehouseEntity {
   readonly name: string;
   readonly table: string;
-  /** The YAML `connection:` group, or `null` for the default group. */
+  /**
+   * The YAML `connection:` HINT — an author naming a datasource directly.
+   *
+   * ⚠️ Not the entity's connection group, and the distinction is the #5197 bug:
+   * on a DB-backed semantic layer the scope lives in the row's
+   * `connection_group_id` and this field is `null` for every entity, so reading
+   * `null` as "the default connection" pointed every SaaS snapshot at the wrong
+   * database. {@link defaultResolveConnectionIds} answers the group question;
+   * this field only ever overrides it.
+   */
   readonly connection: string | null;
   readonly dimensions: readonly WarehouseDimension[];
   readonly measures: ReadonlySet<string>;
@@ -683,7 +692,26 @@ export function buildSnapshotSql(plan: WarehouseEntityPlan, rowCap = WAREHOUSE_R
 export interface WarehouseSnapshotRequest {
   readonly workspaceId: string;
   readonly entity: string;
-  /** The connection the entity's group routes to; `undefined` is the default connection. */
+  /**
+   * Which datasource to read: the entity YAML's `connection:` hint if its author set
+   * one, otherwise the primary member of the entity's connection group.
+   *
+   * `undefined` is the flat default scope and the ONLY spelling of it. Both arms are
+   * normalised at the call site: the literal `"default"` — which the YAML hint may
+   * legitimately carry, since that is what the flat root's implied group is called —
+   * is collapsed to `undefined` before it reaches this field.
+   *
+   * ⚠️ **Stated as a property of THE FIELD, because stating it of one arm is how it
+   * was first got wrong.** An earlier draft asserted this singleness on the grounds
+   * that the group resolver never emits `"default"`, which was true and insufficient:
+   * the hint arm beside it does. The two spellings diverge downstream — the runner
+   * collapses them (`request.connectionId ?? "default"`), the gate does not
+   * (`getDBType("default")` throws where `detectDBType()` does not) — so a field
+   * carrying both silently sends flat workspaces to a permanent refusal.
+   *
+   * An entity whose connection could not be established never reaches this type; it
+   * is refused `connection-unresolved` instead.
+   */
   readonly connectionId: string | undefined;
   readonly sql: string;
 }
@@ -1308,6 +1336,86 @@ export type SnapshotSqlValidator = (
 ) => Promise<SnapshotSqlVerdict>;
 
 /**
+ * A resolved datasource id, distinct from the connection GROUP id it came from.
+ *
+ * ⚠️ **The two are both bare strings and the swap compiles.**
+ * `AdminEntitySummary.connectionId` is a `connection_group_id`
+ * despite its name, so `out.set(name, summary.connectionId)` reads correctly at
+ * every call site in {@link mapEntitiesToConnectionIds} and is wrong. Branding the
+ * value position makes it red at the one place a group could be mistaken for a
+ * connection, on {@link WarehouseRowId}'s precedent and for its reason.
+ *
+ * Branded at THIS seam rather than on `resolveGroupPrimaryConnectionId`'s return:
+ * that function is shared with the amendment path and its own suites, and
+ * the cast belongs where an answer becomes a snapshot's target.
+ */
+export type WarehouseConnectionId = string & {
+  readonly __warehouseConnectionId: unique symbol;
+};
+
+/** Why one enrolled entity could not be placed in a connection group. */
+export type WarehouseUnplaceableCause =
+  /** The name resolves under more than one group in the published catalog. */
+  | "ambiguous-group"
+  /** Its single group did not resolve to a visible primary member. */
+  | "group-not-visible"
+  /** It is absent from the workspace's authoritative (DB-backed) published catalog. */
+  | "absent-from-catalog";
+
+/**
+ * The admin-facing remedy per cause — one sentence each, and they differ.
+ *
+ * ⚠️ One sentence per cause, because the jobs differ: rename or un-enroll, publish
+ * the datasource, republish the entity. A shared "check your connection groups" is
+ * the generic message CLAUDE.md forbids, on a refusal that says re-running will not
+ * help — the admin follows it, nothing changes, and the real defect is never named.
+ *
+ * No group id or connection id appears here. The cause is on the wire; the
+ * identifiers are in the log line beside it.
+ */
+const UNPLACEABLE_REMEDY: Record<WarehouseUnplaceableCause, string> = {
+  "ambiguous-group":
+    "Its name is published under more than one connection group in this workspace — including " +
+    "a workspace entity that shadows a built-in one of the same name — so more than one database " +
+    "answers to it. Rename one of them, or un-enroll the pair.",
+  "group-not-visible":
+    "Its connection group was not reachable from this workspace on this run: the datasource " +
+    "is unpublished, content mode hides it, or Atlas could not read the workspace's " +
+    "whitelist. Check the datasource is published, then run again.",
+  "absent-from-catalog":
+    "It is not in this workspace's published entity list. Republish the entity, or un-enroll " +
+    "the pair.",
+};
+
+/**
+ * Where each enrolled entity's snapshot reads, and which entities have no answer.
+ *
+ * ⚠️ **Two states, because ABSENCE IS AMBIGUOUS and reading it as one thing is the
+ * #5284 defect.** An entity missing from `placed` can mean *"this workspace is flat,
+ * the deployment default is correct"* or *"Atlas could not work out which database
+ * this is"* — and the second must never be answered with the first. A bare
+ * `ReadonlyMap` cannot tell them apart, so the map carries only positive,
+ * group-derived answers and everything unanswerable is named in `unplaceable`.
+ */
+export interface WarehouseConnectionPlacement {
+  /**
+   * Entity name → the connection its snapshot must read.
+   *
+   * Group-derived answers ONLY. An entity of a flat, ungrouped workspace is
+   * deliberately ABSENT rather than mapped to `"default"`: the literal `"default"`
+   * takes a different branch in the SQL gate (`getDBType("default")`, which throws
+   * `ConnectionNotRegisteredError` before anything has touched the default pool)
+   * than the `undefined` that same workspace produced before this seam existed.
+   */
+  readonly placed: ReadonlyMap<string, WarehouseConnectionId>;
+  /** Entities with no derivable connection. Refused, never defaulted. */
+  readonly unplaceable: readonly {
+    readonly entity: string;
+    readonly cause: WarehouseUnplaceableCause;
+  }[];
+}
+
+/**
  * Every I/O seam the run touches, each defaulted to its production wiring.
  *
  * @sql-gate-guarded
@@ -1329,6 +1437,27 @@ export interface WarehouseProducerDeps {
     workspaceId: string,
     entity: string,
   ) => Promise<Record<string, unknown> | null>;
+  /**
+   * Which datasource each enrolled entity's snapshot reads.
+   *
+   * A seam of its own rather than a field on {@link loadEntity}'s result: the
+   * answer is not in the entity YAML at all (see
+   * {@link defaultResolveConnectionIds}), so a loader returning the parsed
+   * document could not carry it without also becoming a group resolver.
+   *
+   * ⚠️ **It may THROW, and the throw PROPAGATES — this is the third member of the
+   * propagating set named in {@link runWarehouseProducer}'s contract, alongside the
+   * reach and the vocabulary, and unlike every per-entity seam around it.** The
+   * shipped implementation reads the internal DB, so a transient outage rejects
+   * here. Degrading to an empty answer instead would be indistinguishable from *"no
+   * entity is group-scoped"* — which is precisely #5284, applied to the whole
+   * workspace at once. A run that cannot establish where to read is abandoned
+   * rather than pointed at the default datasource.
+   */
+  readonly resolveConnectionIds?: (
+    workspaceId: string,
+    entities: readonly string[],
+  ) => Promise<WarehouseConnectionPlacement>;
   readonly validateSnapshotSql?: SnapshotSqlValidator;
   readonly runSnapshot?: WarehouseSnapshotRunner;
   readonly loadVocabulary?: (workspaceId: string) => Promise<ClaimVocabulary>;
@@ -1903,10 +2032,15 @@ function seamContractCheck(err: unknown): { readonly isContract: boolean; readon
  * Errors from a snapshot, from its validation, from an entity lookup and from an
  * entity's TRANSACTION are caught PER ENTITY and become a typed refusal — the run
  * continues, nothing is stamped, and every pair of that entity is accounted for.
- * Errors from the reach and the vocabulary PROPAGATE: an empty reach and a failed
- * reach read produce identical silence (ADR-0039's *"a producer nobody enrolls
- * anything into leaves M4 exactly as dead as it is today, with every test green"*),
- * and a swallowed one would be indistinguishable from the honest zero.
+ * Errors from the reach, the vocabulary and the CONNECTION RESOLUTION PROPAGATE: an
+ * empty reach and a failed reach read produce identical silence (ADR-0039's *"a
+ * producer nobody enrolls anything into leaves M4 exactly as dead as it is today,
+ * with every test green"*), and a swallowed one would be indistinguishable from the
+ * honest zero. The third is the same argument on the datasource axis — a resolution
+ * that failed and a workspace that scopes nothing by group both look like an empty
+ * placement, and reading the first as the second is #5284 applied to every entity at
+ * once. Only the connection resolution logs before rethrowing; the reach and the
+ * vocabulary reads propagate unlogged.
  */
 export async function runWarehouseProducer(
   context: WarehouseRunContext,
@@ -1920,6 +2054,7 @@ export async function runWarehouseProducer(
   const rowCap = Math.max(1, Math.trunc(deps.rowCap ?? WAREHOUSE_ROW_CAP));
   const loadReach = deps.loadReach ?? loadProducerReach;
   const loadEntity = deps.loadEntity ?? defaultLoadEntity;
+  const resolveConnectionIds = deps.resolveConnectionIds ?? defaultResolveConnectionIds;
   const validateSnapshotSql = deps.validateSnapshotSql ?? defaultValidateSnapshotSql;
   const runSnapshot = deps.runSnapshot ?? defaultRunSnapshot;
   const loadVocabulary = deps.loadVocabulary ?? defaultLoadVocabulary;
@@ -1931,6 +2066,46 @@ export async function runWarehouseProducer(
 
   const snapshotAt = now();
   const reach = await loadReach(workspaceId);
+
+  // ONE resolution per run, not one per entity — and deliberately not inside the
+  // `Promise.all` below: every enrolled entity of one group shares an answer, and
+  // the lookup reads the workspace's visible groups each time it is called.
+  //
+  // ⚠️ Log-and-RETHROW, not the `// intentionally ignored:` marker, which means
+  // silence. The throw is the intended behaviour (see the seam's docstring) but it
+  // previously left no line carrying this run's own context, so a 500 from a DB blip
+  // here was indistinguishable at the log from one raised anywhere else in the run.
+  let placement: WarehouseConnectionPlacement;
+  try {
+    placement = await resolveConnectionIds(workspaceId, reach.entities);
+  } catch (err) {
+    log.error(
+      { ...runLog, err: err instanceof Error ? err.message : String(err) },
+      "Warehouse producer: could not resolve which datasource the enrolled entities read — the run is abandoned rather than reading the deployment default for every one of them",
+    );
+    throw err;
+  }
+  const connectionIds = placement.placed;
+  /** Enrolled name → why it has no connection. Refused below, never defaulted. */
+  const unplaceable = new Map(placement.unplaceable.map((u) => [u.entity, u.cause]));
+
+  // ⚠️ The one line an operator has to find when an entity reads the wrong database.
+  // This seam chooses WHICH customer datasource is read and logged nothing at all
+  // until #5284 — while the refusal messages it can produce point the operator at this
+  // run's server log. `unplaced` is the benign flat-scope
+  // set; `unplaceable` is the refused one, and they are separate fields because
+  // collapsing them is the ambiguity the placement type exists to remove.
+  log.info(
+    {
+      ...runLog,
+      placed: Object.fromEntries(connectionIds),
+      unplaced: reach.entities.filter(
+        (name) => !connectionIds.has(name) && !unplaceable.has(name),
+      ),
+      unplaceable: Object.fromEntries(unplaceable),
+    },
+    "Warehouse producer: resolved each enrolled entity's connection group",
+  );
 
   // One entity read per DISTINCT entity, not one per pair — `reach.entities` is
   // that set, and it is the same set the fail-closed rule is evaluated across.
@@ -2299,6 +2474,26 @@ export async function runWarehouseProducer(
   const vocabulary = await loadVocabulary(workspaceId);
 
   for (const entityPlan of plan.emit) {
+    // ⚠️ BEFORE the statement is built, and before the gate — an entity Atlas cannot
+    // place has no datasource to be validated against, and the whole point of the arm
+    // is that it reads nothing. Refusing here rather than omitting the entity keeps
+    // every enrolled pair accounted for in the report, which is the rule the rest of
+    // this loop follows.
+    const unplaceableCause = unplaceable.get(entityPlan.entity.name);
+    if (unplaceableCause !== undefined) {
+      log.warn(
+        { ...runLog, entity: entityPlan.entity.name, cause: unplaceableCause },
+        "Warehouse producer: no connection could be resolved for the entity — refused rather than read against the deployment default",
+      );
+      refuseEntity(
+        entityPlan,
+        "connection-unresolved",
+        `Atlas could not work out which datasource "${entityPlan.entity.table}" should be read ` +
+          `from, so it read none. ${UNPLACEABLE_REMEDY[unplaceableCause]} **Re-running will not ` +
+          "change this** — the entity's connection group has to be settled first.",
+      );
+      continue;
+    }
     const sql = buildSnapshotSql(entityPlan, rowCap);
     // ⚠️ FROZEN, one of three things the identity check below needs. Identity proves
     // the gate answered about THIS OBJECT; freezing stops the object changing under
@@ -2314,10 +2509,34 @@ export async function runWarehouseProducer(
     // silently no-ops, so the run proceeds with the statement the gate DID see.
     // Shallow is total here: every field of {@link WarehouseSnapshotRequest} is a
     // primitive, which is a property of that interface rather than of this line.
+    // The YAML hint WINS where an author set one: it names a connection directly,
+    // which is more specific than the row's group. Resolved once per entity and
+    // carried into the frozen `request`; the mismatch arm reads its submitted sides
+    // off `request`, never off this binding — see the note there.
+    const resolvedConnection =
+      entityPlan.entity.connection ?? connectionIds.get(entityPlan.entity.name);
+    // ⚠️ **NORMALISED HERE, at the one point both arms converge — and normalising only
+    // the group arm was this fix's own second defect.** `"default"` is a real second
+    // spelling of the flat default scope, not a hypothetical one: it is what the flat
+    // root's implied group is called in `whitelist.ts`, and `connection: default` is a
+    // documented entity YAML value. So an author writing it put the literal straight
+    // past a guard that had been placed on the resolver instead of on the field.
+    //
+    // The two spellings are NOT interchangeable downstream, which is the whole point:
+    // `defaultRunSnapshot` collapses them (`request.connectionId ?? "default"`) while
+    // the gate does not — `validateSQL` takes `getDBType("default")`, which throws
+    // `ConnectionNotRegisteredError` until something has touched the default pool,
+    // where `undefined` takes `detectDBType()`. That divergence surfaced as a
+    // PERMANENT `snapshot-rejected` ("re-running will not change this", blaming the
+    // whitelist) for exactly the flat self-hosted workspace this arm protects.
+    // Collapsing to `undefined` makes the gate agree with the runner, which is the
+    // invariant {@link WarehouseSnapshotRequest.connectionId} states.
+    const submittedConnectionId: string | undefined =
+      resolvedConnection === "default" ? undefined : resolvedConnection;
     const request: WarehouseSnapshotRequest = Object.freeze({
       workspaceId,
       entity: entityPlan.entity.name,
-      connectionId: entityPlan.entity.connection ?? undefined,
+      connectionId: submittedConnectionId,
       sql,
     });
 
@@ -2521,19 +2740,27 @@ export async function runWarehouseProducer(
       // ordinary workspace; it is why `AmbiguousEntityError` exists.
       const returnedConnectionId = seamRead(seam, "connectionId");
       const returnedSql = seamRead(seam, "sql");
-      // Normalised through the SAME expression as the returned side, so a legitimately
-      // absent connection on both sides reads as a match rather than as a difference.
-      const submittedConnectionId = entityPlan.entity.connection ?? undefined;
-      // ⚠️ Digests, never the statements — see {@link sqlDigest}. `sql` is this
-      // iteration's own local, so the submitted side cannot be aliased at all, and its
+      // ⚠️ **Every submitted side below is read off `request`, and the history is why.**
+      // This arm used to recompute `entityPlan.entity.connection ?? undefined` locally,
+      // which silently stopped matching the request the moment the submitted side
+      // gained the connection-group arm — the compared-against value and the submitted
+      // value were two spellings, and two spellings drift. Replacing that one
+      // recomputation with a hoisted binding fixed the instance and left `entity`
+      // re-reading `entityPlan.entity.name` a third time, which is the same class one
+      // line over. Reading all four fields off the frozen object closes the class: a
+      // legitimately absent connection on both sides still reads as a match, because
+      // `request.connectionId` is the `undefined` that was actually submitted.
+      // ⚠️ Digests, never the statements — see {@link sqlDigest}. Read off `request`
+      // like every other submitted side in this arm, so all four come from one object
+      // rather than from four spellings that have to stay in agreement by hand; its
       // `string` parameter type is what stops two absent statements matching.
-      const submittedSqlDigest = sqlDigest(sql);
+      const submittedSqlDigest = sqlDigest(request.sql);
       const returnedSqlDigest = seamSqlDigest(returnedSql);
       // ⚠️ **A MATCH CLAIM REQUIRES A READABLE CONTAINER, and leaving that out
       // reproduced — one field over, in this same object literal — the defect the
       // `sqlDigest(sql: string)` split had just closed.** `seamRead` answers
       // `undefined` both for an absent field AND for a non-record, and
-      // `submittedConnectionId` is `undefined` for every default-connection
+      // `request.connectionId` is `undefined` for every default-connection
       // workspace, which is the ordinary case. So `returnedConnectionIdMatch` read
       // TRUE for a verdict that was `null`, `undefined`, a bare string, an array or a
       // number — *"the gate returned no request at all"* reported as *"the connection
@@ -2547,7 +2774,7 @@ export async function runWarehouseProducer(
           ...runLog,
           entity: entityPlan.entity.name,
           table: entityPlan.entity.table,
-          connectionId: seamString(submittedConnectionId),
+          connectionId: seamString(request.connectionId),
           // ⚠️ What CAME BACK, under its OWN keys so `runLog`'s workspaceId is not
           // shadowed. Without these, the replay this branch exists for (a cached
           // token for the first entity) and a token minted against ANOTHER
@@ -2593,10 +2820,23 @@ export async function runWarehouseProducer(
           // `sql: new Error(<the submitted digest>)` otherwise reported a match.
           sqlDigestMatch:
             typeof returnedSql === "string" && submittedSqlDigest === returnedSqlDigest,
-          returnedWorkspaceIdMatch: returnedIsRecord && returnedWorkspaceId === workspaceId,
-          returnedEntityMatch: returnedIsRecord && returnedEntity === entityPlan.entity.name,
+          // ⚠️ **EVERY submitted side is read off `request` — the frozen object that
+          // was actually handed to the gate — rather than re-derived here.** Hoisting
+          // one binding per field would work and has already failed once: the
+          // connection pair drifted the moment the submitted side gained an arm,
+          // because "the same value, spelled twice" stops being the same value
+          // silently and the comparison goes on returning a boolean. `entity` was
+          // still re-reading `entityPlan.entity.name` a third time after that fix,
+          // which is the identical class one line up. One source removes the whole
+          // class instead of its instances: `request` IS the submitted request, so
+          // these cannot disagree with it by construction.
+          //
+          // Frozen and captured before the gate ran, so a substituted validator
+          // cannot move the target either.
+          returnedWorkspaceIdMatch: returnedIsRecord && returnedWorkspaceId === request.workspaceId,
+          returnedEntityMatch: returnedIsRecord && returnedEntity === request.entity,
           returnedConnectionIdMatch:
-            returnedIsRecord && returnedConnectionId === submittedConnectionId,
+            returnedIsRecord && returnedConnectionId === request.connectionId,
           // ⚠️ **THE PREDICATE AN ALERT KEYS ON — the three components above are
           // DIAGNOSTIC and at least one of them cannot carry the alert alone.**
           // `returnedConnectionIdMatch` is `true` for a verdict of `{}`, and that is
@@ -2616,9 +2856,9 @@ export async function runWarehouseProducer(
           // than pinned by a test that could not fail.
           returnedRequestMatch:
             returnedIsRecord &&
-            returnedWorkspaceId === workspaceId &&
-            returnedEntity === entityPlan.entity.name &&
-            returnedConnectionId === submittedConnectionId,
+            returnedWorkspaceId === request.workspaceId &&
+            returnedEntity === request.entity &&
+            returnedConnectionId === request.connectionId,
         },
         "Warehouse producer: the SQL gate returned a verdict for a different request — refusing rather than reading",
       );
@@ -3334,6 +3574,193 @@ async function defaultLoadEntity(
   const { getAdminEntity } = await import("@atlas/api/lib/semantic/admin-source");
   const detail = await getAdminEntity({ name: entity, orgId: workspaceId, mode: "published" });
   return detail === null ? null : (detail.entity as Record<string, unknown>);
+}
+
+/**
+ * Place each enrolled entity in a connection — the PURE half of the #5284 fix.
+ *
+ * Exported and separated from {@link defaultResolveConnectionIds} because the I/O
+ * half cannot be driven under the unit suite at all: `test-setup.ts` strips
+ * `DATABASE_URL` and points `ATLAS_SEMANTIC_ROOT` at an empty directory, so
+ * `listAdminEntities` takes its disk branch over an empty root and answers `[]`.
+ * Every rule below would then be dead code that no mutation could kill — which is
+ * exactly what the review found. The rules live here so they can be tested against
+ * hand-built catalogs, and the shell above is left with only the two reads.
+ *
+ * @param summaries every published entity the workspace can see, with the
+ *   `connection_group_id` each one is scoped to (`null` = flat/ungrouped).
+ * @param wanted the enrolled names being placed.
+ * @param visiblePrimaries group id → its primary member's connection id, from
+ *   `loadVisibleGroups`. A group ABSENT from this map is invisible to the
+ *   workspace — content mode hid it, it belongs to another workspace, or the
+ *   whitelist load degraded.
+ * @param catalogIsAuthoritative whether `summaries` is the workspace's real
+ *   published list (the DB branch of `listAdminEntities`) rather than the disk
+ *   fallback. See {@link WarehouseConnectionPlacement} for why an inference will
+ *   not do here.
+ */
+export function mapEntitiesToConnectionIds(
+  summaries: readonly { readonly name: string; readonly connectionId: string | null }[],
+  wanted: ReadonlySet<string>,
+  visiblePrimaries: ReadonlyMap<string, WarehouseConnectionId>,
+  catalogIsAuthoritative: boolean,
+): WarehouseConnectionPlacement {
+  /**
+   * Distinct GROUPS per name, not row COUNT — the same definition of "ambiguous"
+   * `getEntity` uses ("Ambiguity is *multiple GROUPS*, not multiple rows — a single
+   * group with both a published and a draft row is normal overlay state"). Counting
+   * rows would refuse an entity for being ordinary.
+   */
+  const groupsByName = new Map<string, Set<string | null>>();
+  for (const summary of summaries) {
+    if (!wanted.has(summary.name)) continue;
+    const groups = groupsByName.get(summary.name) ?? new Set<string | null>();
+    groups.add(summary.connectionId);
+    groupsByName.set(summary.name, groups);
+  }
+
+  const placed = new Map<string, WarehouseConnectionId>();
+  const unplaceable: { entity: string; cause: WarehouseUnplaceableCause }[] = [];
+
+  for (const name of wanted) {
+    const groups = groupsByName.get(name);
+    if (groups === undefined) {
+      // ⚠️ **`catalogIsAuthoritative` is a FACT passed in, and the first cut of this
+      // fix inferred it instead — `summaries.some((s) => s.connectionId !== null)`,
+      // "does the catalog scope anything by group". That inference reproduced the
+      // very defect this function exists to end, because THE VISIBILITY CLAUSE IS
+      // WHAT REMOVES GROUP-SCOPED ROWS FROM THE CATALOG.** `listEntityRows` filters a
+      // published row out entirely when its `connection_group_id` is not a currently
+      // published datasource install; `getEntity` has no such clause. So a workspace
+      // whose only group was just unpublished keeps its `__global__` demo rows
+      // (`connection_group_id IS NULL`), the inference reads FALSE, and the enrolled
+      // group-scoped entity — still found by the loader, still planned — was
+      // defaulted to the demo database with nothing refused.
+      //
+      // The asymmetry is the tell: the SAME condition refuses `group-not-visible`
+      // when the row survives the clause and defaulted when the clause deleted it.
+      // An empty `.some()` establishes only what the rows it carries are; it
+      // establishes nothing about a name the catalog does not carry.
+      if (catalogIsAuthoritative) unplaceable.push({ entity: name, cause: "absent-from-catalog" });
+      continue;
+    }
+    if (groups.size > 1) {
+      // ⚠️ REFUSED, where an earlier round of this fix fell through to the default datasource
+      // on the argument that `getAdminEntity` would throw `AmbiguousEntityError` and
+      // the run loop would refuse the entity anyway. It does not always throw: its
+      // published lookup is scoped `org_id = $1` with no `__global__` arm, while the
+      // catalog read here is `org_id = $1 OR org_id = '__global__'`. So a workspace
+      // shadowing a `__global__` demo entity with its own looks ambiguous HERE and
+      // resolves cleanly THERE — and the entity was snapshotted against the default
+      // datasource with nothing refused and nothing logged.
+      //
+      // The two seams cannot be made to agree from this data (`AdminEntitySummary`
+      // carries no `org_id`, so the org-owned row is not identifiable), so this
+      // refuses rather than guesses. That is a live behaviour change for shadowing
+      // workspaces — they now get a refusal naming the collision instead of silently
+      // correct-looking claims built from the demo database.
+      unplaceable.push({ entity: name, cause: "ambiguous-group" });
+      continue;
+    }
+    const [group] = groups;
+    // The flat scope stays ABSENT rather than resolving to the literal `"default"`.
+    // `resolveGroupPrimaryConnectionId` answers `"default"` for a null group, and
+    // that string takes a different branch in the SQL gate than the `undefined` this
+    // arm produced before the seam existed: `validateSQL` calls
+    // `getDBType("default")`, which throws `ConnectionNotRegisteredError` until
+    // something has touched the default pool, where `undefined` takes `detectDBType()`.
+    // A fix for group-scoped workspaces must not refuse flat ones.
+    if (group === null || group === undefined) continue;
+    const primary = visiblePrimaries.get(group);
+    if (primary === undefined) {
+      // The group is real but invisible. An earlier round of this fix called
+      // `resolveGroupPrimaryConnectionId` per group, which degrades to returning the
+      // GROUP ID — that id was then submitted as a connection id and
+      // surfaced as `Connection "<group>" is not registered` under the TRANSIENT
+      // `snapshot-failed` wording ("the next run tries again") for a condition that
+      // repeats every run. Named honestly here instead.
+      unplaceable.push({ entity: name, cause: "group-not-visible" });
+      continue;
+    }
+    placed.set(name, primary);
+  }
+
+  return { placed, unplaceable };
+}
+
+/**
+ * Which datasource each enrolled entity's snapshot reads (#5284).
+ *
+ * ⚠️ **The producer used to answer this from {@link WarehouseEntity.connection}
+ * alone — the YAML `connection:` hint — and read `null` as "the default
+ * connection". On a DB-backed semantic layer that field is null for every
+ * entity**, because the scope lives in the row's `connection_group_id` and NOT
+ * in the YAML; `admin-source.ts` names the two as distinct fields for exactly
+ * this reason. So every group-scoped workspace sent every snapshot to the
+ * deployment's `default` datasource — on a stock SaaS deploy, the demo database
+ * — and each entity refused with `relation "…" does not exist` while its pairs
+ * sat in the enrollment list looking live. It is invisible to a test workspace
+ * with no whitelist — see {@link defaultValidateSnapshotSql}'s header.
+ *
+ * The placement rule is {@link mapEntitiesToConnectionIds}; this function is only
+ * the two reads it needs, and both are awaited together.
+ *
+ * **On `loadVisibleGroups` rather than {@link resolveGroupPrimaryConnectionId}:**
+ * that function is the amendment path's resolver (#4513, *"evidence runs where the
+ * change lives"*) and this used to call it per group. It is the same derivation —
+ * `visible.find((g) => g.id === groupId)?.primary` — but its `Promise<string>`
+ * return COLLAPSES the case this fix exists to separate: an invisible group and a
+ * successfully resolved one both come back as a plain string, so "could not place"
+ * is unrepresentable in its answer. Reading the visible groups directly keeps that
+ * distinction, and costs ONE whitelist read for the run instead of one per group.
+ *
+ * ⚠️ `listAdminEntities` PROPAGATES on failure — see
+ * {@link WarehouseProducerDeps.resolveConnectionIds}. `loadVisibleGroups` never throws: it
+ * degrades to `[]`, which refuses every group-scoped entity `group-not-visible` rather
+ * than defaulting it. Fail-closed in both directions, by two different mechanisms.
+ */
+async function defaultResolveConnectionIds(
+  workspaceId: string,
+  entities: readonly string[],
+): Promise<WarehouseConnectionPlacement> {
+  const [{ listAdminEntities }, { loadVisibleGroups }, { hasInternalDB }] = await Promise.all([
+    import("@atlas/api/lib/semantic/admin-source"),
+    import("@atlas/api/lib/group-reach/lookup"),
+    import("@atlas/api/lib/db/internal"),
+  ]);
+
+  // ⚠️ The SAME condition `listAdminEntities` branches on, read here so the rule
+  // below knows WHICH catalog it was handed rather than guessing from its contents.
+  // True → these summaries are the workspace's authoritative published list, and a
+  // name missing from them is a question Atlas cannot answer. False → the disk
+  // fallback (pure-YAML self-hosted, or no workspace in scope), where connection
+  // a name MISSING from the catalog is not evidence of anything, so absence is not
+  // refused. (A disk catalog can still carry group scoping — ADR-0012 group dirs — and
+  // a name PRESENT under one is placed or refused exactly as the DB branch would.)
+  const catalogIsAuthoritative = Boolean(workspaceId) && hasInternalDB();
+
+  const [{ entities: summaries }, visible] = await Promise.all([
+    listAdminEntities({ orgId: workspaceId, mode: "published" }),
+    // `"published"` explicitly, matching the catalog read above. Omitting the mode
+    // resolves whatever content mode is ambient, which need not be the scope the
+    // entities were listed under — a third scope in a chain whose first two must
+    // already agree.
+    loadVisibleGroups(workspaceId, "published"),
+  ]);
+
+  const visiblePrimaries = new Map<string, WarehouseConnectionId>(
+    // The ONE cast that turns a group's primary MEMBER into a connection id, sited
+    // where that is what the value means. {@link WarehouseConnectionId} exists so the
+    // group id two lines up cannot be written here by accident.
+    visible.map((group) => [group.id, group.primary as WarehouseConnectionId]),
+  );
+
+  return mapEntitiesToConnectionIds(
+    summaries,
+    new Set(entities),
+    visiblePrimaries,
+    catalogIsAuthoritative,
+  );
 }
 
 /**

@@ -157,10 +157,22 @@ describeIfPg("warehouse producer (real Postgres)", () => {
    * the cardinality proposal are all the SHIPPED ones against the live schema —
    * only the semantic-layer read and the datasource query are injected, because
    * neither has a schema this test could stand up.
+   *
+   * ⚠️ **`resolveConnectionIds` is injected too, and it has to be — the entity this
+   * file runs on exists ONLY to the injected loader.** The shipped resolver reads
+   * `semantic_entities`, which this suite never seeds, so with a live internal DB it
+   * correctly reports {@link ENTITY} as absent from the workspace's authoritative
+   * catalog and refuses every pair `connection-unresolved` (#5284). That refusal is
+   * right about the fixture and wrong about the intent: the fixture's premise is that
+   * the entity IS published, asserted by injecting `loadEntity`. Injecting both keeps
+   * the two halves of that premise from disagreeing.
    */
   function deps(snapshotAt: Date, rows: readonly Record<string, unknown>[]): WarehouseProducerDeps {
     return {
       loadEntity: async () => ACCOUNTS_YAML,
+      // The flat default scope — no `connection:` hint, no group — which is what this
+      // suite's snapshots ran against before the seam existed.
+      resolveConnectionIds: async () => ({ placed: new Map(), unplaceable: [] }),
       // The SQL gate is workspace-whitelist-scoped and this schema has no
       // whitelist, so it is stubbed here and driven for real in the unit suite
       // (`what it builds is never rejected for its FORM`).

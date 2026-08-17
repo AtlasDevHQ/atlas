@@ -1547,6 +1547,7 @@ const updateSettingRoute = createRoute({
             // against what you sent.
             value: z.string().openapi({ description: "The stored value, withheld for a `secret: true` definition — see `valueMasked` (#5263)." }),
             valueMasked: z.boolean().openapi({ description: "True when `value` is a withheld-placeholder rather than the stored characters. Without it the placeholder is indistinguishable from a setting whose literal value is that string." }),
+            maskReason: z.enum(["secret", "unknown_definition", "definition_mismatch"]).optional().openapi({ description: "Why `value` was withheld, present exactly when `valueMasked` is true. `secret` is a credential; the other two are defects — `unknown_definition` means the key has no registry entry, `definition_mismatch` means the caller resolved another key's entry." }),
           }),
         },
       },
@@ -3704,8 +3705,20 @@ function settingsAuditFailureBody(
   // the thing that was just lost. This log.error is the closest surviving
   // record of an unaudited configuration change, and without the actor it
   // takes a join on `requestId` against the earlier info line to answer "who".
+  // ⚠️ THE ERROR OBJECT, not `err.message`. The message below promises the log
+  // has the cause, and `.message` is a string — `scrubErrSerializer` takes its
+  // string branch and emits one scrubbed sentence, dropping `type`, `stack` and
+  // the whitelisted `code`/`constraint`. Every failure this broad catch is
+  // documented to cover is diagnosed by exactly those fields: a pg `22001`
+  // value-too-long on a fat `metadata`, a `resolveEntry` TypeError, a serializer
+  // throw. The operator quoted the requestId, found this line, and learned
+  // nothing the response had not already told them.
+  //
+  // Safe: `scrubErrSerializer` scrubs `message` AND `stack` for connection-string
+  // userinfo and is fail-open, and the response body is unchanged — so this adds
+  // no disclosure while making the promise above true.
   log.error(
-    { err: err instanceof Error ? err.message : String(err), requestId, key, actorId },
+    { err: err instanceof Error ? err : new Error(String(err)), requestId, key, actorId },
     "Settings write succeeded but its admin_action_log row could not be committed",
   );
   return {
@@ -3716,7 +3729,7 @@ function settingsAuditFailureBody(
     // earlier draft told the operator to "check the internal database's health",
     // which for any of those sends them to look at a healthy database and close
     // the alert. The requestId is the handle; the log line has the cause.
-    message: `"${key}" was ${verb}, and the change is already in effect — but the admin action-log entry recording it could not be written, so this change is currently unaudited. Re-apply the setting to produce a logged entry. If the internal database is healthy, quote requestId ${requestId}: an audit write that fails against a healthy database is a defect, not a transient.`,
+    message: `"${key}" was ${verb}, and the change is already in effect — but the admin action-log entry recording it could not be written, so this change is currently unaudited. Repeat the same request to produce a logged entry. If the internal database is healthy, quote requestId ${requestId}: an audit write that fails against a healthy database is a defect, not a transient.`,
     requestId,
   };
 }
@@ -3915,18 +3928,13 @@ admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", asy
   // true` to get a dedicated write surface, and a secret key acquiring the same
   // treatment reads as routine.
   //
-  // ⚠️ Same policy AND the same fail-closed discard as the seam's, which is what
-  // makes the echo and the row agree about what was stored. An earlier draft of
-  // this comment claimed they "cannot disagree" because both reach
-  // `redactAuditValue(def, value)`; they did not — the seam discards a definition
-  // belonging to another key and the builder did not, so what actually held them
-  // together was `SETTINGS_MAP` being keyed by `def.key`, in a third file and
-  // stated nowhere. `settingUpdateResponseBody` now carries the discard too.
-  //
-  // Two calls rather than one value threaded out of `auditSettingsWrite`: the
-  // audit runs AFTER `setSetting` and may reject, in which case the 500 above
-  // returns and this line is never reached — so threading it would buy nothing
-  // and give the audit a second job.
+  // ⚠️ The echo and the audit row agree because they are the SAME decision:
+  // `redactPresentAuditValue(key, def, value)`, which owns the secret,
+  // unknown-definition and wrong-key arms and reports which one it took. Two
+  // calls rather than one value threaded out of `auditSettingsWrite`, because the
+  // audit runs AFTER `setSetting` and may reject — the 500 above then returns and
+  // this line is never reached, so threading it would buy nothing and give the
+  // audit a second job.
   return c.json(settingUpdateResponseBody(def, key, value), 200);
 }));
 

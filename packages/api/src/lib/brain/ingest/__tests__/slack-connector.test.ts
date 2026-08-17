@@ -42,7 +42,11 @@ void mock.module("@atlas/api/lib/settings", () => ({
   refreshSettingsTick: async () => {},
   isHotReloadedKey: () => false,
   isSaasModeForGuard: () => false,
-  securitySensitiveAuditFields: () => ({}),
+  // `null`, matching `SecuritySensitiveAudit | null`. A truthy `{}` passes
+  // `auditSettingsWrite`'s `!== null` guard and then reads properties off an
+  // empty object — unreachable from this suite, and reported by nothing, because
+  // `mock.module` factories are untyped.
+  securitySensitiveAuditFields: () => null,
   _resetSettingsCache: () => {},
   HOT_RELOADED_KEYS: new Set<string>(),
   SECURITY_SENSITIVE_KEYS: new Set<string>(),

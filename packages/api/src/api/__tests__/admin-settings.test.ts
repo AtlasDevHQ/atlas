@@ -18,6 +18,16 @@ import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 // dereference resolves against the mock (a stub without that path would
 // TypeError inside the handler).
 import { ADMIN_ACTIONS as REAL_ADMIN_ACTIONS } from "@atlas/api/lib/audit/actions";
+// ⚠️ TYPE-ONLY, so importing from a module this file MOCKS is safe — type imports
+// are erased and never reach the runtime registry. These are what let the mock
+// factory's `satisfies` check the stubs against the real exports.
+import type {
+  AuditedValue,
+  RedactedAuditValue,
+  SettingDefinition,
+  SettingUpdateResponse,
+  SettingWithValue,
+} from "@atlas/api/lib/settings";
 
 // --- Unified mocks ---
 
@@ -73,7 +83,7 @@ void mock.module("@atlas/api/lib/config", () => ({
 }));
 
 // Settings registry data used by mocks
-const settingsRegistryData = [
+const settingsRegistryData: SettingDefinition[] = [
   {
     key: "ATLAS_ROW_LIMIT",
     section: "Query Limits",
@@ -156,7 +166,7 @@ const settingsRegistryData = [
   },
 ];
 
-const mockGetSettingsForAdmin = mock(() => [
+const mockGetSettingsForAdmin = mock((): SettingWithValue[] => [
   {
     ...settingsRegistryData[0],
     currentValue: "1000",
@@ -203,11 +213,14 @@ const mockIsSaasModeForGuard = mock(saasGuardDefaultImpl);
  * "the route returns an object literal that happens to match" are the same
  * observation, because the pass-through is the identity on a non-secret key.
  */
-type SettingUpdateBody = { success: true; key: string; value: string; valueMasked: boolean };
+// ⚠️ The REAL response type, not a hand-rolled twin. A local shape would drift
+// from `SettingUpdateResponse` silently — and this file's whole premise is that
+// the route's contract is observed.
+type SettingUpdateBody = SettingUpdateResponse;
 const echoResponseBodyImpl = (key: string, value: string): SettingUpdateBody => ({
   success: true,
   key,
-  value,
+  value: value as AuditedValue,
   valueMasked: false,
 });
 let settingUpdateResponseBodyImpl: (key: string, value: string) => SettingUpdateBody =
@@ -228,8 +241,10 @@ let settingUpdateResponseBodyImpl: (key: string, value: string) => SettingUpdate
  * type-legal"); it was applied to one of the handler's two call sites.
  */
 const mockSettingUpdateResponseBody: Mock<
-  (def: unknown, key: string, value: string) => SettingUpdateBody
-> = mock((_def: unknown, key: string, value: string) => settingUpdateResponseBodyImpl(key, value));
+  (def: SettingDefinition | undefined, key: string, value: string) => SettingUpdateResponse
+> = mock((_def: SettingDefinition | undefined, key: string, value: string) =>
+  settingUpdateResponseBodyImpl(key, value),
+);
 
 void mock.module("@atlas/api/lib/settings", () => ({
   getSettingsForAdmin: mockGetSettingsForAdmin,
@@ -263,11 +278,22 @@ void mock.module("@atlas/api/lib/settings", () => ({
   // the omission surfaces as `undefined is not a function` several files from
   // the cause. `securitySensitiveAuditLine` and `settingsCacheEverLoaded`
   // were already missing; added for the same reason.
-  redactAuditValue: mock((_def: unknown, value: string | undefined) => ({
-    value,
-    masked: false,
-    maskReason: undefined,
-  })),
+  redactAuditValue: mock(
+    (_key: string, _def: unknown, value: string | undefined): RedactedAuditValue => ({
+      value: value as AuditedValue | undefined,
+      masked: false,
+    }),
+  ),
+  redactPresentAuditValue: mock(
+    (
+      _key: string,
+      _def: unknown,
+      value: string,
+    ): RedactedAuditValue & { readonly value: AuditedValue } => ({
+      value: value as AuditedValue,
+      masked: false,
+    }),
+  ),
   // #5263 — the route's 200 body is this builder's output rather than an
   // object literal, so that the withheld arm is measurable at all: the
   // `def.secret` 403 above means no request can carry a secret value to the
@@ -281,7 +307,12 @@ void mock.module("@atlas/api/lib/settings", () => ({
   settingUpdateResponseBody: mockSettingUpdateResponseBody,
   securitySensitiveAuditLine: mock(() => null),
   settingsCacheEverLoaded: mock(() => true),
-}));
+  // ⚠️ `satisfies` IS THE RATCHET. `mock.module` factories are untyped, so a stub
+  // whose shape drifts from the real export — a changed arity, a `{}` where the
+  // signature says `| null` — is reported by nothing until it throws several files
+  // from the cause. Four sibling suites shipped exactly that. This makes the next
+  // signature change a compile error here instead.
+}) satisfies Partial<typeof import("@atlas/api/lib/settings")>);
 
 // --- Import the app AFTER mocks ---
 
@@ -316,6 +347,11 @@ describe("admin settings routes", () => {
     // whichever test runs next, failing far from the cause.
     mockAuditSettingsWrite.mockReset();
     mockAuditSettingsWrite.mockImplementation(async () => {});
+    // ⚠️ Drains per-test session overrides. `mockAuthenticateRequest` is driven
+    // with `mockImplementationOnce` throughout this file, and a request that
+    // short-circuits before the handler leaves its queued session unconsumed —
+    // see the 422 test for the measured instance.
+    mocks.resetPerTest();
     mockIsSaasModeForGuard.mockClear();
     mockIsSaasModeForGuard.mockImplementation(saasGuardDefaultImpl);
     // ⚠️ Restored here, not in the one test that swaps it: a leaked sentinel
@@ -389,8 +425,11 @@ describe("admin settings routes", () => {
       settingUpdateResponseBodyImpl = () => ({
         success: true,
         key: "BUILDER-KEY",
-        value: "BUILDER-VALUE",
+        // The brand is minted only inside `redactPresentAuditValue`; a sentinel
+        // needs the cast, and the cast is confined to this one test literal.
+        value: "BUILDER-VALUE" as AuditedValue,
         valueMasked: true,
+        maskReason: "secret",
       });
       const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
         method: "PUT",
@@ -405,6 +444,7 @@ describe("admin settings routes", () => {
         key: "BUILDER-KEY",
         value: "BUILDER-VALUE",
         valueMasked: true,
+        maskReason: "secret",
       });
     });
 
@@ -1517,7 +1557,21 @@ describe("admin settings routes", () => {
     });
 
     it("unknown tier value is schema-rejected (422), no inference", async () => {
-      asPlatformAdminWithOrg();
+      // ⚠️ NO `asPlatformAdminWithOrg()` HERE, and its absence is the point.
+      // `z.enum(["platform"])` rejects this in the router's shared
+      // `validationHook`, BEFORE the handler — and `adminAuthAndContext`
+      // authenticates inside the handler, so `authenticateRequest` is never
+      // called. A session queued with `mockImplementationOnce` is therefore left
+      // UNCONSUMED and leaks into the next test; nothing resets this mock between
+      // tests at all.
+      //
+      // Measured: with the queue here, the "PUT passes the full entry" test below
+      // received actor `platform-admin-1` / orgId `"org-1"` instead of the
+      // `admin-1` default it never chose, and passed anyway because
+      // `platformTier: expect.any(Boolean)` accepts either. The session was
+      // pointless for a request that 422s at validation, so deleting it removes
+      // the leak at source, and `createApiTestMocks` now exposes `resetPerTest()`
+      // for the general case.
       const res = await request("/api/v1/admin/settings/ATLAS_AGENT_AUTH_ENABLED?tier=workspace", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -1559,6 +1613,12 @@ describe("admin settings routes", () => {
         body: JSON.stringify({ value: "500" }),
       });
       expect(res.status).toBe(200);
+      // ⚠️ THE ACTOR AND ORG, which nothing here asserted. This describe's whole
+      // premise is "every argument is observed", and it was observing a session
+      // leaked from another test — see the 422 test above. Asserting the default
+      // session makes that leak fail loudly instead of silently changing what
+      // this test measures.
+      expect(mockSetSetting).toHaveBeenCalledWith("ATLAS_ROW_LIMIT", "500", "admin-1", undefined);
       expect(mockAuditSettingsWrite).toHaveBeenCalledWith({
         key: "ATLAS_ROW_LIMIT",
         // The REAL definition for THIS key — not `undefined`, and not another
@@ -1611,7 +1671,7 @@ describe("admin settings routes", () => {
       // claimed. Pinning the gate here means that if it is ever relaxed — to
       // let platform admins rotate a key from the UI, say — this test is what
       // says the redaction has just become load-bearing.
-      // Uses the registry fixture's real `secret: true` entry rather than a
+      // Uses the file's shared registry fixture rather than a
       // hand-built definition — a fixture written for this test could agree
       // with it by construction.
       const res = await request("/api/v1/admin/settings/ANTHROPIC_API_KEY", {
@@ -1747,7 +1807,55 @@ describe("admin settings routes", () => {
       expect(mockSetSetting).not.toHaveBeenCalled();
     });
 
+    it("⭐ resetPerTest drains a queued SESSION override, not just recorded calls", async () => {
+      // ⚠️ THE FALSIFIER FOR `mocks.resetPerTest()`, which otherwise has none —
+      // the auth leak was fixed at its source (the 422 test no longer queues a
+      // pointless session), so nothing would notice the reset being removed.
+      // Written order-independently: queue, drain, then observe, all in one test,
+      // rather than relying on two tests running adjacently.
+      mocks.mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "simple-key",
+          user: { id: "leaked-actor", role: "platform_admin", activeOrganizationId: "org-leak" },
+        }),
+      );
+      mocks.resetPerTest();
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "500" }),
+      });
+      expect(res.status).toBe(200);
+      // The DEFAULT actor, not the queued one. `mockClear` would leave the queue
+      // intact and this would read `leaked-actor`.
+      expect(mockSetSetting).toHaveBeenCalledWith("ATLAS_ROW_LIMIT", "500", "admin-1", undefined);
+    });
+
+    it("⭐ a queued audit rejection does NOT leak past a request that 403s before the seam", async () => {
+      // ⚠️ THE FALSIFIER FOR THE `mockReset` IN `beforeEach`, which had none —
+      // every existing `auditDown()` test consumes its own queued rejection, so
+      // `mockReset` vs `mockClear` was behaviourally identical under this suite
+      // and reverting the fix could not go red.
+      //
+      // This queues a rejection and then sends a request that 403s on
+      // `def.secret` BEFORE reaching the seam, so the queue is left unconsumed.
+      // The next test then decides whether `beforeEach` drained it: with
+      // `mockClear` the parked rejection lands on the following request and
+      // 500s it, far from the cause.
+      auditDown();
+      const res = await request("/api/v1/admin/settings/ANTHROPIC_API_KEY", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "x" }),
+      });
+      expect(res.status).toBe(403);
+      expect(mockAuditSettingsWrite).not.toHaveBeenCalled();
+    });
+
     it("stays 200 when the audit row commits — the arm that must NOT fail", async () => {
+      // ⚠️ ALSO the assertion half of the leak test above: it runs immediately
+      // after, so a rejection that survived `beforeEach` fails HERE with a 500.
       // The other half of the claim: a route that 500'd unconditionally would
       // pass all three tests above.
       const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {

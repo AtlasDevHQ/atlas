@@ -428,6 +428,23 @@ export interface ApiTestMockOverrides {
 }
 
 export interface ApiTestMocks {
+  /**
+   * Drain per-test overrides and restore defaults. Call from `beforeEach`.
+   *
+   * ⚠️ **`mockClear()` IS NOT ENOUGH, and the difference is a measured bug.** It
+   * clears recorded CALLS and leaves the `mockImplementationOnce` QUEUE intact, so
+   * a test that queues a session and then takes a path where `authenticateRequest`
+   * is never called parks that session for whichever test runs next. Measured in
+   * `admin-settings.test.ts`: a request rejected by the router's `validationHook`
+   * 422s BEFORE the handler, and `adminAuthAndContext` authenticates inside the
+   * handler — so the queued platform-admin session survived into the following
+   * test, which then observed actor `platform-admin-1`/org `"org-1"` instead of
+   * the default it never chose, and passed anyway.
+   *
+   * The isolated runner does not cover this: `bun test` resets module mocks per
+   * FILE, not per test.
+   */
+  resetPerTest: () => void;
   /** The authenticateRequest mock — override per test via .mockImplementation(), .mockImplementationOnce(), or .mockResolvedValue(). */
   mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>>;
   /** The checkRateLimit mock. */
@@ -508,19 +525,25 @@ export function createApiTestMocks(
       ? { twoFactorEnabled: true }
       : undefined;
 
+  /**
+   * The default session, hoisted so {@link ApiTestMocks.resetPerTest} can put it
+   * back. `mockReset()` alone would leave the mock with NO implementation, which
+   * fails every test rather than restoring the default.
+   */
+  const defaultAuthImpl = (): Promise<unknown> =>
+    Promise.resolve({
+      authenticated: true,
+      mode: authUser.mode,
+      user: {
+        ...authUser,
+        ...(defaultClaims !== undefined
+          ? { claims: { ...defaultClaims, ...(authUser.claims ?? {}) } }
+          : {}),
+      },
+    });
+
   const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> =
-    mock(() =>
-      Promise.resolve({
-        authenticated: true,
-        mode: authUser.mode,
-        user: {
-          ...authUser,
-          ...(defaultClaims !== undefined
-            ? { claims: { ...defaultClaims, ...(authUser.claims ?? {}) } }
-            : {}),
-        },
-      }),
-    );
+    mock(defaultAuthImpl);
 
   const mockCheckRateLimit: Mock<AnyFn> = mock(() => ({ allowed: true }));
 
@@ -1152,6 +1175,14 @@ export function createApiTestMocks(
     setOrgAdmin,
     setPlatformAdmin,
     setMember,
+    resetPerTest: () => {
+      // `mockReset` drains the once-queue AND removes the implementation, so the
+      // default has to be reinstalled rather than merely cleared.
+      mockAuthenticateRequest.mockReset();
+      mockAuthenticateRequest.mockImplementation(defaultAuthImpl);
+      mockCheckRateLimit.mockReset();
+      mockCheckRateLimit.mockImplementation(() => ({ allowed: true }));
+    },
     cleanup,
   };
 }

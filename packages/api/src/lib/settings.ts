@@ -3196,13 +3196,32 @@ declare const auditedValueBrand: unique symbol;
  */
 export type AuditedValue = string & { readonly [auditedValueBrand]: true };
 
-/** {@link redactAuditValue}'s decision: what to log, and why. */
-export interface RedactedAuditValue {
-  readonly value: AuditedValue | undefined;
-  readonly masked: boolean;
-  /** `undefined` exactly when `masked` is false. */
-  readonly maskReason: AuditMaskReason | undefined;
-}
+/**
+ * {@link redactAuditValue}'s decision: what to log, and why.
+ *
+ * ⚠️ **A UNION, so the correlation between the three fields is a compiler fact.**
+ * It was an interface with `masked: boolean` and a docstring reading
+ * "`maskReason` is `undefined` exactly when `masked` is false" — a biconditional
+ * enforced by nothing, which `settings-write.ts` then spent a comment deriving a
+ * consequence of. Worse, the prose was already violated: on a clear with a
+ * mismatched definition, {@link securitySensitiveAuditLine} produced
+ * `masked: false` WITH a `maskReason`, because it rebuilt the reason after the
+ * decision had discarded it.
+ *
+ * As a union, `masked: true` implies both a present `maskReason` and a present
+ * value, and `if (redacted.masked)` narrows all three at once.
+ */
+export type RedactedAuditValue =
+  | {
+      readonly value: AuditedValue | undefined;
+      readonly masked: false;
+      readonly maskReason?: undefined;
+    }
+  | {
+      readonly value: AuditedValue;
+      readonly masked: true;
+      readonly maskReason: AuditMaskReason;
+    };
 
 /**
  * The written value as an audit line may record it (#5180), plus whether — and
@@ -3280,7 +3299,34 @@ export interface RedactedAuditValue {
  * With the arms behind this annotated return type, that edit is `TS2322` here,
  * on the day it is written. Nothing about the decision moved; only who checks it.
  */
-function redactPresentAuditValue(
+/**
+ * Does this definition belong to this key?
+ *
+ * ⚠️ **ONE PREDICATE, TWO QUESTIONS, and conflating them caused a regression.**
+ * The wrong-key condition is asked for two different purposes:
+ *
+ * - *what reason to record for a withheld value* — {@link redactPresentAuditValue}
+ * - *whether the CALLER has a bug* — `auditSettingsWrite`'s unconditional warn
+ *
+ * An attempt to serve the second by reading the first's `maskReason` broke the
+ * clear path: with no value there is nothing to redact, so the decision never
+ * consults the definition and reports no reason — while the caller bug is just as
+ * real and just as worth warning about. A definition mismatch on a DELETE was
+ * silently dropped, which is the defect `auditSettingsWrite`'s own warn exists to
+ * prevent, and an existing test caught it.
+ *
+ * So the predicate is shared and the two uses stay separate. That is still one
+ * source of truth — what it is not is one call site.
+ */
+export function definitionMismatchesKey(
+  key: string,
+  def: SettingDefinition | undefined,
+): boolean {
+  return def !== undefined && def.key !== key;
+}
+
+export function redactPresentAuditValue(
+  key: string,
   def: SettingDefinition | undefined,
   value: string,
 ): RedactedAuditValue & { readonly value: AuditedValue } {
@@ -3293,37 +3339,49 @@ function redactPresentAuditValue(
   if (def === undefined) {
     return { value: audited(REDACTED_AUDIT_VALUE), masked: true, maskReason: "unknown_definition" };
   }
+  // ⚠️ BEFORE the `secret` arm, and the order is observable: a definition that is
+  // both mismatched and secret reports `definition_mismatch`, because the caller
+  // bug is the actionable fact and the secrecy of someone else's key is not
+  // evidence about this one. That is the order the three call sites produced by
+  // hand, preserved here so centralising is behaviour-neutral.
+  if (definitionMismatchesKey(key, def)) {
+    return {
+      value: audited(REDACTED_AUDIT_VALUE),
+      masked: true,
+      maskReason: "definition_mismatch",
+    };
+  }
   if (def.secret === true) {
     return { value: audited(REDACTED_AUDIT_VALUE), masked: true, maskReason: "secret" };
   }
   return { value: audited(value), masked: false, maskReason: undefined };
 }
 
-export function redactAuditValue(
-  def: SettingDefinition | undefined,
-  value: string,
-): RedactedAuditValue & { readonly value: AuditedValue };
-export function redactAuditValue(
-  def: SettingDefinition | undefined,
-  value: string | undefined,
-): RedactedAuditValue;
 /**
- * ⚠️ The overload above is the only reason a caller holding a `string` can put
- * the result straight into a non-optional field. `value: undefined` is the sole
- * input producing `value: undefined` — the one arm below — so a present input
- * yields a present {@link AuditedValue}, and saying so in the signature is what
- * keeps the `PUT` response from needing a `?? rawValue` fallback to satisfy its
- * schema. That fallback is the whole defect written as a type workaround.
+ * The written value as an audit line may record it, plus whether — and why — it
+ * was withheld. Takes the KEY as well as the definition, so the decision owns
+ * every reason it can report.
  *
- * The promise is CHECKED rather than asserted: every present-value arm lives in
- * {@link redactPresentAuditValue} behind an annotated return type.
+ * ⚠️ **NO OVERLOADS, deliberately, and a round of review was spent learning
+ * why.** This had a narrow `(def, value: string)` overload promising a present
+ * {@link AuditedValue}. TypeScript checks an overload against the IMPLEMENTATION
+ * signature bivariantly, so the promise was never verified against any arm — and
+ * the wrapper's own body was the natural home for the edit that breaks it
+ * (`value === "" ⇒ undefined`, which this file's history shows was shipped once).
+ * Measured: adding that arm to the wrapper produced ZERO type errors.
+ *
+ * A caller holding a `string` calls {@link redactPresentAuditValue} directly and
+ * gets a checked non-optional value. This function is the wide entry for callers
+ * whose value may be absent. Nothing asserts a return the compiler has not
+ * checked.
  */
 export function redactAuditValue(
+  key: string,
   def: SettingDefinition | undefined,
   value: string | undefined,
 ): RedactedAuditValue {
   if (value === undefined) return { value: undefined, masked: false, maskReason: undefined };
-  return redactPresentAuditValue(def, value);
+  return redactPresentAuditValue(key, def, value);
 }
 
 /** The 200 body `PUT /admin/settings/{key}` returns (#5263). */
@@ -3337,6 +3395,17 @@ export interface SettingUpdateResponse {
   readonly value: AuditedValue;
   /** True when `value` is the withheld placeholder rather than the characters. */
   readonly valueMasked: boolean;
+  /**
+   * Why it was withheld, when it was. Present exactly when `valueMasked` is true.
+   *
+   * ⚠️ **THE HUMAN-FACING SINK IS THE ONE THAT MOST NEEDS IT, and it shipped
+   * without it.** The placeholder is `[withheld:secret-setting]`, so an admin who
+   * just set a NON-secret key whose definition failed the key check was told
+   * their setting was withheld as a *secret* — a wrong message, not merely a
+   * generic one. The other two sinks carry a `maskReason`; this one had no field
+   * to put it in.
+   */
+  readonly maskReason?: AuditMaskReason;
 }
 
 /**
@@ -3377,23 +3446,21 @@ export function settingUpdateResponseBody(
   key: string,
   value: string,
 ): SettingUpdateResponse {
-  // ⚠️ THE SAME DISCARD `auditSettingsWrite` APPLIES, and it is here because the
-  // first draft of this function did not have it while claiming the two sinks
-  // "cannot disagree". They could. The seam withholds on a definition belonging
-  // to another key; this builder had no such check, so the invariant actually
-  // holding the two together was unstated and in a third place — `SETTINGS_MAP`
-  // is keyed by `def.key`, making `mismatched` always false at today's route.
-  //
-  // That invariant moves in a normal-looking change: `getSettingDefinition`
-  // gaining alias or rename resolution, so `ATLAS_OLD_NAME` returns the new
-  // entry. At that moment the audit row would withhold the characters and record
-  // `maskReason: "definition_mismatch"` while this body echoed the plaintext —
-  // the third sink leaking exactly what #5263 closed, in the one input class the
-  // seam was hardened against. Applying the discard makes the two agree by
-  // construction instead of by a coincidence documented nowhere.
-  const mismatched = def !== undefined && def.key !== key;
-  const audited = redactAuditValue(mismatched ? undefined : def, value);
-  return { success: true, key, value: audited.value, valueMasked: audited.masked };
+  // ⚠️ NO LOCAL MISMATCH CHECK — the decision owns it. This function briefly had
+  // a hand-copied `def.key !== key` guard, which made it the THIRD copy of one
+  // rule and the only copy that could not report the reason it found, because
+  // `SettingUpdateResponse` had no field for it. Both are fixed at the source:
+  // `redactPresentAuditValue` returns `definition_mismatch` itself, so the echo
+  // and the audit row now agree because they are the SAME decision rather than
+  // two implementations of it.
+  const audited = redactPresentAuditValue(key, def, value);
+  return {
+    success: true,
+    key,
+    value: audited.value,
+    valueMasked: audited.masked,
+    ...(audited.masked ? { maskReason: audited.maskReason } : {}),
+  };
 }
 
 /** The full structured payload {@link auditSecuritySensitiveChange} logs. */
@@ -3496,27 +3563,25 @@ export function securitySensitiveAuditLine(
   const { key, action, value, actorId, orgId } = input;
   const fields = securitySensitiveAuditFields(key, action, value);
   if (!fields) return null;
-  // A definition belonging to some OTHER key tells us nothing about this one,
-  // so it is discarded rather than trusted, and `redactAuditValue` fails closed
-  // on the `undefined`.
+  // ⚠️ The wrong-key check lives in the decision now, not here. This site used to
+  // discard the definition and then REBUILD the reason below — which is how the
+  // union's `masked: false` + present `maskReason` state became reachable on a
+  // clear. One call, one reason, no fixup.
   //
-  // ⚠️ This closes "someone else's definition". It structurally CANNOT close
-  // "this key's definition, lying about `secret`": the compiling spelling is
-  // `{ ...def, secret: false }`, which passes the check and reaches the verbatim
-  // arm. Two tests cover it from opposite ends — `definitionWithSecret` in
-  // `settings.test.ts` builds that spread and drives the builder with it, and
-  // the registry-flip block in `settings-audit-log.test.ts` mutates the shipped
-  // definition so redacted and raw differ on a reachable input.
-  const mismatched = input.definition !== undefined && input.definition.key !== key;
-  const redacted = redactAuditValue(mismatched ? undefined : input.definition, value);
+  // It structurally CANNOT close "this key's definition, lying about `secret`":
+  // the compiling spelling is `{ ...def, secret: false }`, which passes the key
+  // check and reaches the verbatim arm. Two tests cover that from opposite ends —
+  // `definitionWithSecret` in `settings.test.ts` builds the spread and drives the
+  // builder with it, and the registry-flip block in `settings-audit-log.test.ts`
+  // mutates the shipped definition so redacted and raw differ on a reachable
+  // input.
+  const redacted = redactAuditValue(key, input.definition, value);
   return {
     key,
     action,
     value: redacted.value,
     valueMasked: redacted.masked,
-    // A mismatch is a caller bug, not registry drift; reporting it as drift
-    // sends the operator to grep a registry where the key is present and fine.
-    maskReason: mismatched ? "definition_mismatch" : redacted.maskReason,
+    maskReason: redacted.maskReason,
     disablesControl: fields.disablesControl,
     widensAuthority: fields.widensAuthority,
     actorId,

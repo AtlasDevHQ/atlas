@@ -21,6 +21,7 @@ import {
   securitySensitiveAuditFields,
   securitySensitiveAuditLine,
   redactAuditValue,
+  redactPresentAuditValue,
   settingUpdateResponseBody,
   settingsCacheEverLoaded,
   SECURITY_SENSITIVE_KEYS,
@@ -1555,7 +1556,7 @@ describe("audit value redaction (#5180)", () => {
   const SECRET_LENGTHS = ["sk-ant-api03-SUPERSECRET-payload", "abcdefghi", "hunter22", "   ", "x"];
 
   it.each(SECRET_LENGTHS)("withholds a secret's value entirely — %p", (written) => {
-    const { value, masked, maskReason } = redactAuditValue(SECRET_DEF, written);
+    const { value, masked, maskReason } = redactAuditValue("ANTHROPIC_API_KEY", SECRET_DEF, written);
     expect(masked).toBe(true);
     expect(maskReason).toBe("secret");
     expect(value).toBe(audited("[withheld:secret-setting]"));
@@ -1569,11 +1570,11 @@ describe("audit value redaction (#5180)", () => {
   // input. `maskSecret` reveals eight characters of two of these five values,
   // so it goes red here.
   it("produces one identical placeholder for every secret, whatever its length", () => {
-    const outputs = new Set(SECRET_LENGTHS.map((w) => redactAuditValue(SECRET_DEF, w).value));
+    const outputs = new Set(SECRET_LENGTHS.map((w) => redactAuditValue("ANTHROPIC_API_KEY", SECRET_DEF, w).value));
     expect(outputs.size).toBe(1);
     expect([...outputs][0]).toBe(audited("[withheld:secret-setting]"));
     // And the distinctive one, named directly rather than derived.
-    expect(redactAuditValue(SECRET_DEF, "sk-ant-api03-SUPERSECRET-payload").value).not.toContain(
+    expect(redactAuditValue("ANTHROPIC_API_KEY", SECRET_DEF, "sk-ant-api03-SUPERSECRET-payload").value).not.toContain(
       "SUPERSECRET",
     );
   });
@@ -1582,12 +1583,12 @@ describe("audit value redaction (#5180)", () => {
   // what tells an incident responder WHICH WAY a control moved, and an audit
   // line that redacts a rate limit has thrown away its own subject.
   it("leaves a non-secret definition's value verbatim", () => {
-    expect(redactAuditValue(PLAIN_DEF, "0")).toEqual({
+    expect(redactAuditValue(RPM, PLAIN_DEF, "0")).toEqual({
       value: audited("0"),
       masked: false,
       maskReason: undefined,
     });
-    expect(redactAuditValue(getSettingDefinition(SOURCES), "warehouse_key,extractor")).toEqual({
+    expect(redactAuditValue(SOURCES, getSettingDefinition(SOURCES), "warehouse_key,extractor")).toEqual({
       value: audited("warehouse_key,extractor"),
       masked: false,
       maskReason: undefined,
@@ -1600,7 +1601,7 @@ describe("audit value redaction (#5180)", () => {
     // no registry entry is drift — reported as a plain masked write it would be
     // indistinguishable from the healthy case, and the backstop would fire
     // silently.
-    expect(redactAuditValue(undefined, "mystery-value-here")).toEqual({
+    expect(redactAuditValue("ATLAS_SOMETHING_RENAMED", undefined, "mystery-value-here")).toEqual({
       value: audited("[withheld:secret-setting]"),
       masked: true,
       maskReason: "unknown_definition",
@@ -1610,12 +1611,12 @@ describe("audit value redaction (#5180)", () => {
   it("a clear carries no value and is not reported as masked", () => {
     // `masked: true` here would be a lie in the audit's own metadata — nothing
     // was withheld, there was nothing to withhold.
-    expect(redactAuditValue(SECRET_DEF, undefined)).toEqual({
+    expect(redactAuditValue("ANTHROPIC_API_KEY", SECRET_DEF, undefined)).toEqual({
       value: undefined,
       masked: false,
       maskReason: undefined,
     });
-    expect(redactAuditValue(PLAIN_DEF, undefined)).toEqual({
+    expect(redactAuditValue(RPM, PLAIN_DEF, undefined)).toEqual({
       value: undefined,
       masked: false,
       maskReason: undefined,
@@ -1629,12 +1630,12 @@ describe("audit value redaction (#5180)", () => {
   // set/clear distinction it was protecting lives in `action`, which is where
   // it always was.
   it("withholds an empty write to a secret key like any other value", () => {
-    expect(redactAuditValue(SECRET_DEF, "")).toEqual({
+    expect(redactAuditValue("ANTHROPIC_API_KEY", SECRET_DEF, "")).toEqual({
       value: audited("[withheld:secret-setting]"),
       masked: true,
       maskReason: "secret",
     });
-    expect(redactAuditValue(PLAIN_DEF, "")).toEqual({
+    expect(redactAuditValue(RPM, PLAIN_DEF, "")).toEqual({
       value: audited(""),
       masked: false,
       maskReason: undefined,
@@ -1703,6 +1704,36 @@ describe("settingUpdateResponseBody — the PUT echo (#5263)", () => {
     expect(body.value).toBe(audited("[withheld:secret-setting]"));
     expect(body.valueMasked).toBe(true);
     expect(JSON.stringify(body)).not.toContain("SUPERSECRET");
+  });
+
+  it("⭐ reports definition_mismatch, not unknown_definition — the arms are distinguishable", () => {
+    // ⚠️ THE REASON, not just the withholding, and driven through all THREE sinks
+    // that share the decision. `unknown_definition` reads as registry drift and
+    // sends an operator to grep `SETTINGS_REGISTRY`; for a definition belonging to
+    // another key the entry is right there and the bug is at the call site.
+    // Reported as drift, that alert is closed as a false positive.
+    //
+    // Before centralisation each sink recomputed this after discarding the
+    // evidence, and the response sink could not report it at all.
+    const body = settingUpdateResponseBody(PLAIN_DEF, "ATLAS_MODEL", "0");
+    expect(body.maskReason).toBe("definition_mismatch");
+
+    const decided = redactPresentAuditValue("ATLAS_MODEL", PLAIN_DEF, "0");
+    expect(decided.maskReason).toBe("definition_mismatch");
+
+    // …and the genuinely-absent case still says drift, so the two are not merged.
+    expect(redactPresentAuditValue("ATLAS_NOPE", undefined, "0").maskReason).toBe(
+      "unknown_definition",
+    );
+  });
+
+  it("a mismatched AND secret definition reports the caller bug, not the secrecy", () => {
+    // Order is observable and was preserved from the three hand-written copies:
+    // the caller bug is the actionable fact, and another key's secrecy is not
+    // evidence about this one.
+    expect(
+      redactPresentAuditValue("ATLAS_MODEL", SECRET_DEF, "x").maskReason,
+    ).toBe("definition_mismatch");
   });
 
   it("⭐ withholds when the definition belongs to a DIFFERENT key", () => {

@@ -15,9 +15,10 @@
  * needs redacted and raw to DIFFER on it. This is the trap #5180 documented:
  * for a key whose value is not secret, the redacted and raw strings are
  * identical, so an assertion comparing them passes under a fix and under its
- * removal alike. Every claim-1 test below therefore drives a real
- * `secret: true` definition (`RESEND_API_KEY`) with a value that is visibly
- * not the placeholder.
+ * removal alike. The WITHHOLDING tests therefore drive `RESEND_API_KEY`'s real
+ * `secret: true` entry with a value visibly unlike the placeholder; their
+ * controls drive `ATLAS_MODEL`'s non-secret entry, and the empty-secret case
+ * drives `""` on purpose.
  */
 
 import { describe, expect, it, mock, beforeEach, afterEach } from "bun:test";
@@ -100,11 +101,12 @@ const SECRET_DEF = getSettingDefinition("RESEND_API_KEY");
 const PLAIN_DEF = getSettingDefinition("ATLAS_MODEL");
 
 /**
- * One key from EACH security-sensitive family (#5262). They weaken in opposite
- * directions — a LOW abuse threshold disables a control, a WIDE alias source
- * list grants authority, and each family's other flag is structurally always
- * `false` — so a single fixture would leave one rule unexercised and could not
- * tell a per-key rule table from one rule applied to everything.
+ * One key per RULE (#5262): the abuse threshold, plus both alias knobs, which
+ * have separate rules. The two families weaken in opposite directions — a LOW
+ * abuse threshold disables a control, a WIDE alias source list grants authority,
+ * and each family's other flag is structurally always `false` — so a single
+ * fixture would leave rules unexercised and could not tell a per-key rule table
+ * from one rule applied to everything.
  */
 const RPM_KEY = "ATLAS_TRIAL_IP_RATE_LIMIT_RPM";
 const SOURCES_KEY = "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES";
@@ -566,6 +568,20 @@ describe("auditSettingsWrite", () => {
         disablesControl: true,
         widensAuthority: false,
       });
+      // ⚠️ THE KEY SET TOO, because `toEqual` IGNORES keys whose value is
+      // `undefined` — so dropping the `!== undefined` guard on the `action`
+      // spread gives every update row `action: undefined` and the assertion
+      // above stays green. Production-inert (`JSON.stringify` drops it) but the
+      // test's NAME claims exactness, and a test that claims more than it checks
+      // is the thing this PR is about.
+      expect(Object.keys(meta()).sort()).toEqual([
+        "disablesControl",
+        "key",
+        "tier",
+        "value",
+        "valueMasked",
+        "widensAuthority",
+      ]);
     });
 
     it("⭐ records widensAuthority on an alias source list naming a class beyond warehouse_key", async () => {
@@ -690,12 +706,21 @@ describe("auditSettingsWrite", () => {
         platformTier: true,
         ipAddress: null,
       });
-      expect(meta().judgement).toBe("reverted_value_not_evaluated");
-      // ⚠️ The flags are deliberately still there and still false — both sinks
-      // share `securitySensitiveAuditFields`, so changing them would move the
-      // pino line's #3797/#5161 semantics too. The marker is additive.
-      expect(meta().disablesControl).toBe(false);
-      expect(meta().widensAuthority).toBe(false);
+      // ⚠️ THE WHOLE ARM, not field-by-field. This is the shape this PR ADDED and
+      // it is the widest one the seam produces, so it earns the exact-shape check
+      // its update sibling has. It also pins that a clear carries NO `value` —
+      // asserted elsewhere only for a secret key, not for a sensitive one — and
+      // that the flags are deliberately still present and still `false`, because
+      // both sinks share `securitySensitiveAuditFields` and changing them would
+      // move the pino line's #3797/#5161 semantics. The marker is additive.
+      expect(meta()).toEqual({
+        key: RPM_KEY,
+        tier: "platform",
+        action: "reset_to_default",
+        disablesControl: false,
+        widensAuthority: false,
+        judgement: "reverted_value_not_evaluated",
+      });
     });
 
     it("⭐ does NOT mark an update, nor a clear of a non-sensitive key", async () => {
@@ -723,27 +748,35 @@ describe("auditSettingsWrite", () => {
       expect("judgement" in meta()).toBe(false);
     });
 
-    // ⚠️ NO RUNTIME TEST FOR THE THIRD-FLAG DRIFT, and the reason is worth
-    // recording rather than leaving as a gap someone re-derives.
-    //
-    // The defect was #5262's own asymmetry one field over: the first draft
-    // copied the two flags into the metadata BY NAME, so a flag added to
-    // `SecuritySensitiveAudit` would reach the pino line by inheritance
-    // (`SecuritySensitiveAuditLine extends` it) and miss the durable row with no
-    // compile error. Observing that at runtime needs
-    // `securitySensitiveAuditFields` to return a field the real rules do not —
-    // which needs `mock.module` on `@atlas/api/lib/settings`, and that replaces
-    // all 22 exports including the `getSettingDefinition` every fixture in this
-    // file depends on. A monkeypatch is not available either: this module
-    // imports the function directly, and ESM bindings cannot be reassigned from
-    // outside.
-    //
-    // So the guard is structural instead of asserted: `SettingsAuditMetadata` is
-    // `… & Partial<SecuritySensitiveAudit>` rather than two re-declared fields,
-    // and the builder spreads `ruleFlags` whole. The type tracks the interface by
-    // derivation; the value tracks it by the spread. What is NOT closed — and a
-    // reader should not assume otherwise — is the spelling revert: going back to
-    // named fields compiles, and only re-reading the seam catches it.
+    it("⭐ the row carries EVERY field the rule engine returns", async () => {
+      // ⚠️ A DORMANT TRIPWIRE. Deriving the expected key set from the real
+      // function's own output makes the assertion track the interface the same
+      // way the builder's spread does — no mocking needed.
+      //
+      // It goes RED when a REQUIRED flag joins `SecuritySensitiveAudit` and the
+      // builder has stopped spreading `ruleFlags` whole. That is #5262's own
+      // asymmetry, which this PR reproduced once, one field over.
+      //
+      // ⚠️ Two cases survive, and the precondition is worth naming because it is
+      // load-bearing: this reads the flags THIS key's rule returns, so a flag
+      // added optionally, or one only the alias rules populate, never enters the
+      // key set. It works today because `SecuritySensitiveRule` returns
+      // `SecuritySensitiveAudit` with required properties, forcing every rule to
+      // carry a new flag. The other survivor is the spelling revert with no new
+      // flag — the key sets agree then, and only re-reading the seam catches it.
+      const { securitySensitiveAuditFields } = await import("@atlas/api/lib/settings");
+      const fields = securitySensitiveAuditFields(RPM_KEY, "set", "0");
+      expect(fields).not.toBeNull();
+      await auditSettingsWrite({
+        key: RPM_KEY,
+        definition: RPM_DEF,
+        value: "0",
+        action: "update",
+        platformTier: true,
+        ipAddress: null,
+      });
+      for (const k of Object.keys(fields ?? {})) expect(meta()).toHaveProperty(k);
+    });
 
     it("maps `reset_to_default` to `clear`, which flags nothing on either family", async () => {
       // A clear reverts to a platform override that may itself be wide, so the

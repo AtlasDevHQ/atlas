@@ -11,6 +11,7 @@
       "packages/web/**",
       "packages/api/**",
       "packages/react/**",
+      "packages/sdk/**",
       "packages/types/**",
       "packages/schemas/**",
       "packages/**/package.json",

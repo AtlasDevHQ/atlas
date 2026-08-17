@@ -1725,6 +1725,31 @@ export const regionMigrations = pgTable(
     // due query filters on it. Stamped in the same transaction as the
     // deletes, so a partial failure rolls back to "still due".
     sourceCleanedAt: timestamp("source_cleaned_at", { withTimezone: true }),
+    // #5112 — the refused alias edges, durable on the SOURCE region's own row.
+    // `region_migrations` is classified `platform` in bundle-scope.ts, so the
+    // cleanup sweep never deletes it; that is what makes these two columns
+    // outlive the grace-period delete of `brain_vocabulary_edge` they describe.
+    //
+    // NULL on both = UNKNOWN, not zero: a row written before this migration, a
+    // source build that did not ask, or a migration that failed before the
+    // target answered. `0` = the target answered and refused nothing.
+    //
+    // The count is NOT derivable from the array length — the array is capped at
+    // VOCABULARY_REFUSAL_DETAIL_CAP and an older target answers with a count and
+    // no payloads, so a shorter array beside a larger count is exactly the "part
+    // of this is unrecoverable" signal.
+    //
+    // ⚠️ `jsonb` is deliberately BARE — no `.$type<VocabularyRefusalDetail[]>()`.
+    // Drizzle then infers `unknown`, which forces any future reader to narrow, and
+    // that is the correct posture: these rows are read back from a database whose
+    // contents may have been written by an older build, by a region running a
+    // different payload contract, or by hand. `$type` would claim a validation the
+    // read path does not perform, contradicting the screening policy
+    // `residency/migrate.ts` applies on the way IN. There is no TypeScript reader
+    // today (every access is raw `internalQuery`; this table is a drift mirror), so
+    // the annotation would buy nothing and assert something false.
+    vocabularyEdgesRefused: integer("vocabulary_edges_refused"),
+    vocabularyRefusals: jsonb("vocabulary_refusals"),
   },
   (t) => [
     index("idx_region_migrations_workspace").on(t.workspaceId),

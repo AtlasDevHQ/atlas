@@ -59106,12 +59106,62 @@
                         },
                         "refused": {
                           "type": "number"
+                        },
+                        "refusalDetails": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "slotPosition": {
+                                "type": "string"
+                              },
+                              "fromNorm": {
+                                "type": "string"
+                              },
+                              "toNorm": {
+                                "type": "string"
+                              },
+                              "approvedBy": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "approvedAt": {
+                                "type": "string"
+                              },
+                              "refusal": {
+                                "type": "string"
+                              },
+                              "existingTarget": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "slotPosition",
+                              "fromNorm",
+                              "toNorm",
+                              "approvedBy",
+                              "approvedAt",
+                              "refusal",
+                              "existingTarget",
+                              "reason"
+                            ]
+                          },
+                          "maxItems": 50
                         }
                       },
                       "required": [
                         "imported",
                         "skipped",
-                        "refused"
+                        "refused",
+                        "refusalDetails"
                       ]
                     },
                     "brainSlackChannelExclusions": {

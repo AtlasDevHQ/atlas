@@ -627,6 +627,52 @@ export interface ArrivingAliasEdge extends AliasEdgeInput {
 }
 
 /**
+ * The maximum number of refusal payloads that travel back to the source region
+ * on one import response, and the maximum this region will store (#5112).
+ *
+ * A bound is required rather than prudent. The payloads become an HTTP response
+ * body between regions AND a `jsonb` column on the source's `region_migrations`
+ * row, and a hand-built or corrupted bundle can conflict with itself on every
+ * edge — so an unbounded array is a bundle-sized response and a bundle-sized row.
+ * `refused` is always the true total, so `refusalDetails.length < refused` is what
+ * says the list was truncated; there is no separate flag, because a flag and a
+ * derivable comparison can disagree and only one of them can be right.
+ *
+ * 50 is chosen against the population, not as a round number: a refusal is rare
+ * by construction (two regions holding CONTRADICTORY curated decisions at the
+ * same norm), so a real migration produces single digits. A response carrying 50
+ * is already telling the operator the two vocabularies disagree structurally
+ * rather than incidentally, and the fifty-first payload adds nothing.
+ *
+ * ## ⚠️ Why this lives HERE and not in `@useatlas/types` beside the type it bounds
+ *
+ * It did, for one CI run, and `Deploy Validation`'s scaffold build is what caught
+ * it: *"Export VOCABULARY_REFUSAL_DETAIL_CAP doesn't exist in target module
+ * .../node_modules/@useatlas/types/dist/index.js"*.
+ *
+ * `create-atlas/scripts/prepare-templates.sh` copies `packages/api/src` into the
+ * scaffold template, which installs the PUBLISHED `@useatlas/types` — pinned
+ * `^0.7.0`, so it cannot even reach the workspace's 0.10.x. A **type** import from
+ * that package is erased at build time and therefore free; a **value** import is
+ * a runtime resolution against a version that predates the symbol. The monorepo
+ * hides this completely, because `Standalone Example Build` compiles against the
+ * local workspace build and passed on the same commit.
+ *
+ * So the rule is narrower than "don't add exports to the published package":
+ * `packages/api/src` has ~376 legitimate value imports from `@useatlas/*`, and
+ * they work because those symbols exist in the pinned version. A NEW runtime
+ * symbol that `packages/api` consumes is unusable until it is published AND the
+ * template's caret range is bumped to reach it — two coordinated steps for what is
+ * an implementation detail of the producer. The wire contract is "bounded, and a
+ * short list means truncated"; the specific number is nobody's business but ours,
+ * and publishing it would invite a consumer to depend on a value we may change.
+ *
+ * The check is already mechanical and already required — `Deploy Validation` — so
+ * this comment is the missing half: the diagnosis, at the place someone would
+ * consider moving the constant back.
+ */
+export const VOCABULARY_REFUSAL_DETAIL_CAP = 50;
+
 /**
  * One arriving edge the merge would not write, and everything needed to
  * re-author it by hand.
@@ -636,6 +682,11 @@ export interface ArrivingAliasEdge extends AliasEdgeInput {
  * whole edge, not a norm pair. An operator reading one of these has to be able
  * to reconstruct the source row without the bundle, which by then may be
  * deleted (`stays` cleanup, #4458).
+ *
+ * Since #5112 the log is no longer the ONLY path: `admin-migrate.ts` maps these
+ * onto `ImportResult`'s `refusalDetails` and the source region persists them on
+ * its own `region_migrations` row, which the cleanup never deletes. The payload
+ * still has to be the whole edge for the same reason.
  */
 export type VocabularyMergeRefusal =
   | {
@@ -740,11 +791,27 @@ export interface VocabularyMergeResult {
  * re-derivable from it; a per-row version would be a third representation to
  * keep consistent, and an imported row would carry a FOREIGN version that means
  * nothing in this region.
+ *
+ * ## `correlationId` is REQUIRED, and that is the whole point of it (#5112)
+ *
+ * One opaque per-attempt token, stamped on every refusal line. Before it, two
+ * attempts at the same bundle emitted BYTE-IDENTICAL line sets: the payload is
+ * derived entirely from the arriving edge and this region's rows, so a retry
+ * after a rollback produced a second copy of the first attempt's lines with
+ * nothing to tell them apart — and the future tense the lines are written in
+ * ("WILL DROP ... when this transaction commits") makes each line individually
+ * honest while leaving the aggregate unreadable. An operator grepping the norm
+ * cannot tell three attempts at one edge from one attempt at three.
+ *
+ * REQUIRED rather than optional so a caller cannot omit it, which is the same
+ * defect one argument over. The route passes its `requestId`; a caller with no
+ * request of its own owes a token it minted, not `""`.
  */
 export async function mergeApprovedEdges(
   tx: VocabularyExecutor,
   workspaceId: string,
   edges: readonly ArrivingAliasEdge[],
+  correlationId: string,
 ): Promise<VocabularyMergeResult> {
   // No edges, no lock. Not an optimization — the lock is only meaningful around
   // a write, and taking it here would make every import of a bundle that
@@ -869,6 +936,15 @@ export async function mergeApprovedEdges(
     log.warn(
       {
         workspaceId,
+        // ⚠️ ONE TOKEN PER ATTEMPT, and it is what makes this line set countable
+        // (#5112). See the `correlationId` section of this function's docstring:
+        // every other field here is derived from the arriving edge or from this
+        // region's rows, so without it a retry emits a byte-identical set and an
+        // operator cannot tell N attempts at one edge from one attempt at N. It
+        // is also the join key to the post-COMMIT "DID DROP" confirmation the
+        // route emits, which is what converts this line's future tense into a
+        // fact.
+        correlationId,
         position: refusal.edge.position,
         fromNorm: refusal.edge.fromNorm,
         toNorm: refusal.edge.toNorm,

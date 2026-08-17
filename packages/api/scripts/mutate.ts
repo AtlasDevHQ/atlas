@@ -17,7 +17,7 @@
  * slice (20→22, 11→13, 3→4, 2→3) because a later review round appended tests
  * and edited the prose without re-running anything.
  *
- * ## The three guardrails, and the failure each one closes
+ * ## The four guardrails, and the failure each one closes
  *
  *   1. **Baseline first, abort if red.** Every count here is `fail` under a
  *      mutation. Against a tree that was already failing, that number is the
@@ -35,7 +35,11 @@
  *      normally carries uncommitted work — this runner is used mid-slice, which
  *      is the whole point — and `git checkout -- <file>` would destroy it.
  *
- * The logic behind all three lives in `mutation-core.ts` and is unit-tested;
+ *   4. **The baseline measured something.** A deflated baseline reads as honest
+ *      and silently rescales every cell — `pass` is the published suite size and
+ *      `isWholeSuite`'s denominator. `baselineProblem` is the check.
+ *
+ * The logic behind all four lives in `mutation-core.ts` and is unit-tested;
  * this file is the process around it. Same split as `signal-retry.ts`.
  *
  * ## The whole-suite trap
@@ -51,21 +55,24 @@
  * not a triumph of the tests.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { runFileWithSignalRetry } from "./signal-retry";
 import {
   AnchorError,
-  anchorFailures,
   applyMutation,
   baselineProblem,
+  countCell,
   diskStore,
-  isWholeSuite,
+  importCandidates,
+  importSpecifiers,
   parseBunSummary,
   render,
   restoreAll,
   suiteTimeoutMs,
   SUITE_TIMEOUT_FLOOR_MS,
+  unmeasurableOutcome,
+  unmeasuredRows,
   validateSpec,
   type Cell,
   type SuiteOutcome,
@@ -154,6 +161,41 @@ function parseArgs(argv: readonly string[]): Options {
   return { specPath, only, targets, check, files, timeoutMs };
 }
 
+/**
+ * Whether `abs` is a regular file — THREE-VALUED, and the third value is the
+ * point.
+ *
+ * ⚠️ The first cut returned `boolean` and answered "I could not tell" with
+ * `false`, three lines under a comment calling a silently-narrower selector
+ * *"this gate's one unacceptable failure"*. `"unknown"` lets the caller WIDEN
+ * instead, which is the rule `importSpecifiers` states one module over.
+ *
+ * ⚠️ Note the correct widen is NOT "treat unknown as a file": the candidate list
+ * is ORDERED and the caller `break`s on the first hit, so claiming an
+ * unstattable extension-less candidate would swallow the `/index.ts` behind it —
+ * narrowing by a different route. The caller adds it and keeps looking.
+ *
+ * One `statSync` rather than `existsSync` + `statSync`: two syscalls with a
+ * TOCTOU window between them, and `throwIfNoEntry` distinguishes absence from
+ * a permission fault, which is exactly the distinction this return type carries.
+ */
+function statCandidate(abs: string): "file" | "not-file" | "unknown" {
+  try {
+    const stat = statSync(abs, { throwIfNoEntry: false });
+    if (stat === undefined) return "not-file";
+    return stat.isFile() ? "file" : "not-file";
+  } catch (err) {
+    // ⚠️ `console.warn` — STDERR. `check-mutation-tables.sh` captures `--files`'
+    // stdout with `$(...)` and reads every line as a dependency path, so a
+    // diagnostic on stdout would join the dependency list.
+    console.warn(
+      `${YELLOW}warn${RESET}  cannot stat ${abs}: ${err instanceof Error ? err.message : String(err)}` +
+        " — treating it as a dependency rather than narrowing the selector.",
+    );
+    return "unknown";
+  }
+}
+
 async function loadSpec(specPath: string): Promise<MutationSpec> {
   const abs = resolve(ROOT, specPath);
   let mod: { default?: unknown };
@@ -209,8 +251,13 @@ async function runTarget(
   // then — so the timeout text below must not say there is. Measured: a loaded
   // machine timed out a 113ms baseline and the runner reported "the mutation
   // HANGS the suite", sending the operator to audit a spec that was fine.
-  phase: "baseline" | "mutation" = "mutation",
-): Promise<SuiteOutcome & { durationMs: number }> {
+  // ⚠️ NO DEFAULT, deliberately. The comment above records that mislabelling a
+  // baseline timeout as "the mutation HANGS the suite" was MEASURED and sent an
+  // operator to audit a spec that was fine. A default makes exactly that the
+  // failure mode of a new baseline-side call site that forgets the argument;
+  // required, forgetting is a compile error.
+  phase: "baseline" | "mutation",
+): Promise<SuiteOutcome & { durationMs: number; timedOut?: true }> {
   const abs = resolve(ROOT, target.file);
   const result = await runFileWithSignalRetry(
     abs,
@@ -230,6 +277,13 @@ async function runTarget(
       todo: 0,
       ran: null,
       durationMs: result.durationMs,
+      // ⚠️ RETURNED AS A FLAG, not left to be recovered from the prose below.
+      // `measure()` has to tell the ONE committable no-count outcome (a real
+      // hang) from every uncommittable one, and a substring match over
+      // free-form prose is exactly the discrimination #5077's `flag` +
+      // `anchorFailed` pair failed to make. A killed-by-SIGKILL run reads as a
+      // timeout to any reasonable regex and measured nothing.
+      ...(timedOut ? { timedOut: true as const } : {}),
       error: timedOut
         ? phase === "baseline"
           ? `timed out after ${Math.round(timeoutMs / 1000)}s on the UNMUTATED tree — no mutation ` +
@@ -267,37 +321,76 @@ async function measure(
       // measurements — but it must never render as a number.
       console.error(`${position} ${RED}ANCHOR${RESET} ${mutation.label}\n         ${err.message}`);
       for (const target of targets) {
-        cells.set(target.name, {
-          kind: "error",
-          fail: 0,
-          flag: `ANCHOR: ${err.matches} matches`,
-          // Machine-readable, so the run can REFUSE this rather than rendering
-          // it as a stable byte that `--check` then blesses forever.
-          anchorFailed: true,
-        });
+        // `unmeasured`, so the run REFUSES this rather than rendering it as a
+        // stable byte that `--check` then blesses forever. One of the causes
+        // `Cell`'s docstring enumerates; the discriminant is what the refusal
+        // reads, not the cause.
+        cells.set(target.name, { kind: "unmeasured", reason: `ANCHOR: ${err.matches} matches` });
       }
       continue;
     }
 
     try {
       for (const target of targets) {
-        const outcome = await runTarget(target, timeouts.get(target.name) ?? SUITE_TIMEOUT_FLOOR_MS);
+        const outcome = await runTarget(
+          target,
+          timeouts.get(target.name) ?? SUITE_TIMEOUT_FLOOR_MS,
+          "mutation",
+        );
         const total = baselines.get(target.name) ?? 0;
 
         if (outcome.error !== undefined) {
-          cells.set(target.name, { kind: "error", fail: 0, flag: outcome.error });
+          // ⚠️ THE TIMEOUT CARVE-OUT, and it is the only one. A hang is a real
+          // measurement of a real hang — `mutation-core.md` publishes exactly
+          // such a cell for the empty-needle row and that byte is honest. Every
+          // other no-count outcome (a compile error, a kill by some other
+          // signal) measured NOTHING and must not reach the file.
+          cells.set(
+            target.name,
+            outcome.timedOut === true
+              ? { kind: "timeout" }
+              : { kind: "unmeasured", reason: outcome.error },
+          );
           console.error(
             `${position} ${RED}ERROR${RESET}  ${mutation.label} @ ${target.name}: ${outcome.error}`,
           );
           continue;
         }
 
-        const whole = isWholeSuite(outcome.fail, total);
-        cells.set(target.name, {
-          kind: "count",
-          fail: outcome.fail,
-          flag: whole ? "whole-suite" : undefined,
-        });
+        // ⚠️ A MUTATED RUN CAN MEASURE NOTHING WITHOUT ERRORING (#5097).
+        //
+        // `baselineProblem` catches this on the clean tree, but a mutation can
+        // introduce it three ways, and all three produce an honest-LOOKING
+        // number:
+        //
+        //   SKIPPED/TODO — an edit that makes a `describe.skipIf(...)` predicate
+        //     false, or that breaks the import a suite's own gate reads, skips
+        //     tests the baseline ran. The count is real-looking and smaller than
+        //     the truth. #5077 detected exactly this and merely FLAGGED it, then
+        //     removed the detection rather than shipping it.
+        //   UNACCOUNTED — the buckets stop summing to what bun says it ran.
+        //   EMPTY — the suite registers NO tests. Measured on bun 1.3.13: an
+        //     emptied corpus (`for (const c of []) test(...)`) prints ` 0 pass`
+        //     / ` 0 fail` and NOTHING else fires, so this arm is what stops a
+        //     `0` — the byte the generated header defines as "the suite does not
+        //     catch it" — being published by a run that measured nothing.
+        //
+        // One function decides all three, and the baseline reads the same copy.
+        const unmeasurable = unmeasurableOutcome(outcome);
+        if (unmeasurable !== null) {
+          cells.set(target.name, { kind: "unmeasured", reason: unmeasurable.cell });
+          console.error(
+            `${position} ${RED}UNMEASURED${RESET} ${mutation.label} @ ${target.name}: ${unmeasurable.message}`,
+          );
+          continue;
+        }
+
+        // ⚠️ `countCell`, not a literal: `wholeSuite` is derived from
+        // `isWholeSuite` so it cannot disagree with it, and forgetting the flag
+        // (publishing an unflagged near-total) is unrepresentable.
+        const cell = countCell(outcome.fail, total);
+        cells.set(target.name, cell);
+        const whole = cell.kind === "count" && cell.wholeSuite === true;
 
         const colour = outcome.fail === 0 ? YELLOW : GREEN;
         console.log(
@@ -339,6 +432,70 @@ if (options.files) {
   const deps = new Set<string>();
   for (const t of spec.targets) deps.add(t.file);
   for (const m of spec.mutations) for (const e of m.edits) deps.add(e.file);
+  // The seeds ARE the dep set so far — snapshotted before the loop below grows
+  // it, which is what keeps the hop to one. A parallel `seeds` array duplicated
+  // this by construction and could disagree with it.
+  const seeds = [...deps];
+  // ⚠️ ONE HOP THROUGH THE SEEDS' IMPORTS, and the hole it closes is the one
+  // this list advertises and did not cover (#5097).
+  //
+  // A spec's corpus is a SEPARATE file the target imports —
+  // `__tests__/identity-corpus.ts`, `__tests__/alias-proposal-corpus.ts`, and
+  // six more. Those are the highest-risk dependencies in the whole set, because
+  // they are data-driven inputs (`for (const c of AGREEMENT_CORPUS) test(...)`):
+  // adding one row changes both the published suite size AND every kill count.
+  // Missing them meant a corpus-only PR selected NO spec and the gate printed
+  // "nothing to verify" — for exactly the edit shape it was built to catch.
+  //
+  // ⚠️ ONE hop, not the transitive closure, and that bound is deliberate.
+  // Following imports all the way reaches `db/`, `effect/` and half the app
+  // from any `-pg` target, so every PR would select every spec and the sweep
+  // costs minutes-not-seconds (see `check-mutation-tables.sh`'s header). This
+  // gate's cost is a correctness property: one that doubles the pre-PR loop gets
+  // disabled inside a week, and a disabled gate catches nothing. Remote CI's
+  // `--all` on every push to main is the backstop for the deeper graph.
+  for (const seed of seeds) {
+    const abs = resolve(ROOT, seed);
+    // ⚠️ GUARDED, and this is the same widen-never-narrow twin
+    // `check-mutation-tables.sh` repeats throughout its selector. The read is NEW
+    // with the import hop — before it, `--files` touched no filesystem and could
+    // not fail this way. `existsSync` is true for a DIRECTORY, so a `target.file`
+    // that has become one throws EISDIR, `--files` exits non-zero, and the shell
+    // aborts with status 1 — which that script's header calls "this script's code
+    // for STALE". The operator would then regenerate tables that never drifted
+    // while the real fault (a rotted spec path) sat in a log tail.
+    //
+    // A missing or unreadable seed is a broken spec, not a reason to abort or to
+    // return a SHORTER list: `validateSpec` has already passed and the baseline
+    // will surface it loudly. Selecting fewer files here is the silent failure.
+    let source: string;
+    try {
+      source = readFileSync(abs, "utf8");
+    } catch (err) {
+      console.warn(
+        `${YELLOW}warn${RESET}  cannot read seed ${seed}: ${err instanceof Error ? err.message : String(err)}` +
+          " — its imports are not in this dependency list.",
+      );
+      continue;
+    }
+    for (const specifier of importSpecifiers(source)) {
+      for (const candidate of importCandidates(seed, specifier)) {
+        // ⚠️ `statCandidate`, not `existsSync`. `./__tests__/vocabulary` is a
+        // real DIRECTORY under several targets, and the extension-less candidate
+        // would match it — putting a directory path in a list git never emits, so
+        // the `/index.ts` candidate behind it never got tried and the real file
+        // stayed unselected.
+        const decision = statCandidate(resolve(ROOT, candidate));
+        if (decision === "file") {
+          deps.add(candidate);
+          break;
+        }
+        // ⚠️ WIDEN, and do NOT break: claiming an unstattable candidate would
+        // consume the `/index.ts` behind it and narrow by a second route.
+        if (decision === "unknown") deps.add(candidate);
+      }
+    }
+  }
   // ⚠️ The GENERATED TABLE is a dependency of its own verdict. Without it, a
   // hand-edited `.md` — bumping a number so it "matches" — selects no spec and
   // the gate prints "nothing to verify". That hand-edit is #5060's original
@@ -413,8 +570,14 @@ for (const target of targets) {
     // told to "find the .skip/.todo" sends the operator hunting something that
     // is not there — measured on this very change, when a dead Postgres made
     // two suites RED and the runner blamed a skip.
-    const deflation = problem.kind === "deflated" || problem.kind === "unaccounted";
-    const pgHint = !deflation
+    // ⚠️ READ FROM THE PROBLEM, never re-derived from a kind list here. The
+    // hand-copied `kind === "deflated" || kind === "unaccounted"` that stood
+    // here was correct until a kind was added — and this change adds `empty`,
+    // for which the hint is actively misdirecting (a suite that registered no
+    // tests has no `.skip` to find and Postgres is not the cause). A structural
+    // `"cell" in problem` test would have made the same mistake, because the
+    // empty arm carries a cell too.
+    const pgHint = !problem.pgHint
       ? ""
       : process.env.TEST_DATABASE_URL === undefined || process.env.TEST_DATABASE_URL === ""
         ? "\n         TEST_DATABASE_URL is UNSET (or empty), which is almost certainly the " +
@@ -440,31 +603,43 @@ try {
   restoreAll(diskStore, backups);
 }
 
-// ⚠️ A DEAD ANCHOR IS NOT A RESULT, and it must never become a committed byte.
+// ⚠️ A CELL THAT MEASURED NOTHING IS NOT A RESULT, and it must never become a
+// committed byte. ONE refusal for the whole class (#5097).
 //
 // Guardrail 2 calls a 0-match "a number for a mutation that was never
 // performed, which is worse than reporting nothing" — but `--check` compares
 // BYTES, so once `⚠️ ANCHOR: 0 matches` is in the file it IS the expected
-// output and the table passes forever. Measured on the change that added this:
-// a new field on `SuiteOutcome` rotted the anchor mirroring that literal, the
-// table regenerated with a tombstone where a measured `2` had been, and
-// `--check` said `CHECK OK`. The gate would have ratcheted rot in as green.
+// output and the table passes forever. Measured on the change that added the
+// first version of this refusal: a new field on `SuiteOutcome` rotted the
+// anchor mirroring that literal, the table regenerated with a tombstone where a
+// measured `2` had been, and `--check` said `CHECK OK`.
+//
+// ⚠️ That first version refused on ONE cause — a dead anchor — and `Cell`'s
+// docstring enumerates the rest (a skipped or TODO'd run, an unaccounted bucket,
+// a run that registered zero tests, a compile error, a non-timeout signal kill).
+// Every one produced an honest-looking cell that `--check` blessed forever.
+// Refusing on the DISCRIMINANT rather than on any particular cause is what makes
+// one refusal cover all of them — and a cause added later needs no edit here for
+// the same reason. (Two earlier drafts of this comment overclaimed: the union
+// does not leave "nowhere else to put it", and the `never` pin constrains a new
+// VARIANT, not a new cause.)
 //
 // `measure()` still keeps going after an `AnchorError` — one bad anchor should
 // not cost the other twenty measurements — so this refuses at the END, naming
-// every rotted row at once.
+// every affected row at once, each with its own reason.
 //
 // ⚠️ Deliberately NOT gated on `--check`. The write path is the one that
 // PRODUCES the tombstone; refusing only on check would let a regenerate commit
 // it and the next check bless it.
-const dead = anchorFailures(rows);
-if (dead.length > 0) {
+const unmeasured = unmeasuredRows(rows);
+if (unmeasured.length > 0) {
   fail(
-    `${dead.length} mutation(s) in ${options.specPath} have a DEAD ANCHOR — their oldString no ` +
-      "longer matches the source exactly once, so they measured nothing:\n" +
-      dead.map((label) => `           - ${label}`).join("\n") +
-      "\n         Repair the anchors in the spec. Writing this table would record a tombstone " +
-      "where a real number belongs, and every later --check would accept it as current.",
+    `${unmeasured.length} mutation(s) in ${options.specPath} MEASURED NOTHING, so no number of ` +
+      "theirs can be published:\n" +
+      unmeasured.map(({ label, reason }) => `           - ${label} — ${reason}`).join("\n") +
+      "\n         Repair the spec (a dead anchor) or the tree (a skipped, unaccounted or " +
+      "uncompilable suite). Writing this table would record a tombstone where a real number " +
+      "belongs, and every later --check would accept it as current.",
   );
 }
 

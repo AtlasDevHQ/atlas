@@ -32,12 +32,26 @@ import { warehouseRowId } from "@atlas/api/lib/brain/warehouse-producer";
 import {
   RegionImportUnkeyableError,
   RegionImportVocabularyTargetError,
-  importBundle,
+  importBundle as importBundleWithCorrelationId,
   validateBundle,
 } from "../../../api/routes/admin-migrate";
 import { PROVISIONAL_PREDICATE } from "@atlas/api/lib/brain/candidates";
 import { buildCleanupStatements, runSourceCleanupSweep } from "../cleanup";
+import { recordVocabularyRefusals } from "../migrate";
 import type { ImportResult } from "@useatlas/types";
+
+/**
+ * `importBundle` with #5112's correlation token defaulted — see the same shim in
+ * `api/__tests__/admin-migrate.test.ts` for why the real parameter is required and
+ * why these suites take it through one named wrapper.
+ */
+type ImportBundleArgs = Parameters<typeof importBundleWithCorrelationId>;
+const importBundle = (
+  client: ImportBundleArgs[0],
+  bundle: ImportBundleArgs[1],
+  orgId: ImportBundleArgs[2],
+  correlationId: ImportBundleArgs[3] = "req-migrate-roundtrip-pg",
+) => importBundleWithCorrelationId(client, bundle, orgId, correlationId);
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -535,7 +549,15 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       expect(result.brainFacts).toEqual({ imported: 3, skipped: 0 });
       expect(result.brainEdges).toEqual({ imported: 2, skipped: 0 });
       expect(result.factAudienceMembers).toEqual({ imported: 1, skipped: 0 });
-      expect(result.brainVocabularyEdges).toEqual({ imported: 2, skipped: 0, refused: 0 });
+      expect(result.brainVocabularyEdges).toEqual({
+        imported: 2,
+        skipped: 0,
+        refused: 0,
+        // `[]` here MEANS none, because `refused` is 0 (#5112). It is the same
+        // literal a broken forward produces, which is why the refusal cases in
+        // this file assert contents rather than length.
+        refusalDetails: [],
+      });
       // Both exclusions IMPORTED — including the one that hit an existing
       // membership row. A `DO NOTHING` conflict arm would have dropped
       // C0LEGAL's exclusion (over-disclosure, the unrecoverable direction) and
@@ -1064,7 +1086,7 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         // decision, which is what an operator reads the counter to find out.
         // A merge that counted every conflict as a refusal would report two
         // dropped approvals on the most routine path there is.
-        brainVocabularyEdges: { imported: 0, skipped: 2, refused: 0 },
+        brainVocabularyEdges: { imported: 0, skipped: 2, refused: 0, refusalDetails: [] },
         // #5203: both exclusions are already here from the first import, so
         // the re-import skips them — `skipped`, not `refused`, on the
         // vocabulary edges' reasoning above: the channels ARE excluded,
@@ -1289,7 +1311,15 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         );
         await client.query("COMMIT");
         expect(result.brainFacts).toEqual({ imported: 1, skipped: 0 });
-        expect(result.brainVocabularyEdges).toEqual({ imported: 2, skipped: 0, refused: 0 });
+        expect(result.brainVocabularyEdges).toEqual({
+        imported: 2,
+        skipped: 0,
+        refused: 0,
+        // `[]` here MEANS none, because `refused` is 0 (#5112). It is the same
+        // literal a broken forward produces, which is why the refusal cases in
+        // this file assert contents rather than length.
+        refusalDetails: [],
+      });
       } finally {
         client.release();
       }
@@ -1453,7 +1483,34 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         );
         await client.query("COMMIT");
         // The import COMMITS — one refusal, and the fact still lands.
-        expect(result.brainVocabularyEdges).toEqual({ imported: 0, skipped: 0, refused: 1 });
+        //
+        // ⚠️ THE PAYLOAD, NOT JUST THE COUNT (#5112). `refused: 1` beside
+        // `refusalDetails: []` was the whole defect: the source region gets the
+        // count and schedules the delete of its own copy, so an empty payload here
+        // means the only record of this human decision is a log line in this
+        // region. Asserted field-by-field rather than by length, because
+        // `refusalDetails` mapped from the wrong arm of `VocabularyMergeRefusal`
+        // would still be length 1.
+        expect(result.brainVocabularyEdges).toEqual({
+          imported: 0,
+          skipped: 0,
+          refused: 1,
+          refusalDetails: [
+            {
+              slotPosition: "predicate",
+              fromNorm: "price",
+              toNorm: "priced at",
+              approvedBy: "source-admin",
+              approvedAt: "2026-06-01T00:00:00Z",
+              refusal: "already-aliased",
+              // What THIS region holds instead — the field that makes the payload
+              // re-authorable rather than merely descriptive, and the one an
+              // `undefined`-instead-of-`null` bug would blank.
+              existingTarget: "cost",
+              reason: expect.stringContaining("cost") as unknown as string,
+            },
+          ],
+        });
         expect(result.brainFacts).toEqual({ imported: 1, skipped: 0 });
       } finally {
         client.release();
@@ -1601,7 +1658,12 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
 
         await holder.query("COMMIT");
         const result = await blocked;
-        expect(result.brainVocabularyEdges).toEqual({ imported: 1, skipped: 0, refused: 0 });
+        expect(result.brainVocabularyEdges).toEqual({
+          imported: 1,
+          skipped: 0,
+          refused: 0,
+          refusalDetails: [],
+        });
         await importer.query("COMMIT");
       } catch (err) {
         // intentionally ignored: the assertion failure below is the real
@@ -1790,7 +1852,30 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
 
       // One applied, one refused, nothing duplicated — three distinct values, so
       // a merge that mixed two counters up cannot satisfy this.
-      expect(result.brainVocabularyEdges).toEqual({ imported: 1, skipped: 0, refused: 1 });
+      //
+      // ⚠️ The payload names the CYCLE arm (#5112), which is the arm with NO
+      // `existingTarget`: the refusal is a statement about the closure, not about a
+      // conflicting edge at `c`. `null` rather than absent, so a JSONB query and a
+      // log aggregator both read "there is no conflicting edge" instead of "the
+      // field is missing" — the same reason the target-side warn writes it
+      // explicitly.
+      expect(result.brainVocabularyEdges).toEqual({
+        imported: 1,
+        skipped: 0,
+        refused: 1,
+        refusalDetails: [
+          {
+            slotPosition: "predicate",
+            fromNorm: "c",
+            toNorm: "a",
+            approvedBy: "source-admin",
+            approvedAt: "2026-06-01T00:00:00Z",
+            refusal: "would-cycle",
+            existingTarget: null,
+            reason: expect.any(String) as unknown as string,
+          },
+        ],
+      });
 
       // The target keeps its own two decisions, GAINS the non-cycling arrival,
       // and never receives `c → a`.
@@ -2771,6 +2856,275 @@ describeIfPg("region import: a fact whose key cannot be supplied (#5047)", () =>
         [KEEP_ORG],
       );
       expect(rows[0]!.invalidated_at.toISOString()).toBe(original);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The refusal record OUTLIVES the source cleanup (#5112)
+// ---------------------------------------------------------------------------
+
+/**
+ * #5112's falsifier, stated by the issue: *a migration with a refusal leaves a
+ * record still readable AFTER the source cleanup has run.*
+ *
+ * That is a claim about two tables with opposite fates in the same transaction.
+ * `runSourceCleanupSweep` DELETEs `brain_vocabulary_edge` — the source's own
+ * approved decisions, the copy #5036 named as the recovery path — while
+ * `region_migrations` is classified `platform` in `bundle-scope.ts` and is never
+ * touched. Everything about this issue rests on that asymmetry holding against a
+ * real Postgres and a real sweep, so a mocked sweep would test the wrong thing.
+ *
+ * Its own `describeIfPg` block with its own schema, deliberately: the sweep test
+ * above asserts an exact `{ due, cleaned, skipped, blocked }` tuple, so adding a
+ * migration row to its fixture would break it for a reason unrelated to what it
+ * measures.
+ */
+describeIfPg("a refused alias edge's record outlives the source cleanup (#5112)", () => {
+  let pool: Pool;
+  const schemaName = `refusal_durability_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+  const ORG = "org-refusal-durability";
+  const MIGRATION_ID = "mig-refusal-durability-1";
+
+  /** The payload as the target region returns it, and as the source persists it. */
+  const REFUSAL = {
+    slotPosition: "predicate",
+    fromNorm: "price",
+    toNorm: "priced at",
+    approvedBy: "source-admin",
+    approvedAt: "2026-06-01T00:00:00.000Z",
+    refusal: "already-aliased",
+    existingTarget: "cost",
+    reason: '"price" is already aliased to "cost" in this region',
+  };
+
+  const ORIGINAL_DATABASE_URL = process.env.DATABASE_URL;
+
+  beforeAll(async () => {
+    // `search_path` pinned at connection STARTUP, not via an unawaited `SET` —
+    // `runSourceCleanupSweep` opens its own client off the pool it is handed, and
+    // an un-awaited SET races the first statement on it.
+    pool = new Pool({
+      connectionString: TEST_DB_URL,
+      options: `-c search_path="${schemaName}"`,
+    });
+    const admin = new Pool({ connectionString: TEST_DB_URL });
+    await admin.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
+    await admin.end();
+    await runMigrations(pool, { skip: MANAGED_AUTH_MIGRATIONS });
+
+    // The sweep reads through the MODULE-level internal pool, not the one this
+    // block holds — so it has to be pointed at this schema or it cleans nothing
+    // and the test passes for the wrong reason.
+    process.env.DATABASE_URL = TEST_DB_URL;
+    _resetPool(pool as unknown as InternalPool, null);
+  }, PG_TEST_TIMEOUT_MS);
+
+  afterAll(async () => {
+    if (!pool) return;
+    _resetPool(null, null);
+    if (ORIGINAL_DATABASE_URL === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = ORIGINAL_DATABASE_URL;
+    await pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
+    await pool.end();
+  });
+
+  it(
+    "⭐ the sweep DELETES brain_vocabulary_edge and the refusal payload is still readable",
+    async () => {
+      // ── The source region, after a completed migration ──────────────
+      //
+      // Its own approved decision — the row the operator would re-author FROM,
+      // and the row the sweep is about to destroy. TWO of them, at different
+      // norms, so "the edges are gone" is a count going 2 → 0 rather than 1 → 0:
+      // a sweep that deleted one row and left another would still satisfy a
+      // `not.toBe(1)` style assertion.
+      await pool.query(
+        `INSERT INTO brain_vocabulary_edge
+           (workspace_id, slot_position, from_norm, to_norm, approved_by, approved_at)
+         VALUES ($1, 'predicate', 'price', 'cost', 'target-admin', now()),
+                ($1, 'predicate', 'margin', 'cost', 'target-admin', now())`,
+        [ORG],
+      );
+      // Minimal Better-Auth `organization` mirror for the cutover guard — that
+      // table is in `MANAGED_AUTH_MIGRATIONS`, so `runMigrations` skips it and the
+      // sweep test above builds the same two columns by hand.
+      await pool.query(
+        `CREATE TABLE IF NOT EXISTS organization (id text PRIMARY KEY, region text)`,
+      );
+      // Homed in the TARGET region. The cutover guard refuses to delete while it
+      // still points HERE, so getting this wrong would make the sweep skip and the
+      // test would prove nothing — which is what the `edgesAfter` assertion catches.
+      await pool.query(`INSERT INTO organization (id, region) VALUES ($1, 'eu-test')`, [ORG]);
+      // Past the grace period, so the sweep is actually due.
+      await pool.query(
+        `INSERT INTO region_migrations
+           (id, workspace_id, source_region, target_region, status, completed_at,
+            region_updated, vocabulary_edges_refused, vocabulary_refusals)
+         VALUES ($1, $2, 'us-test', 'eu-test', 'completed', now() - interval '8 days',
+                 TRUE, 1, $3::jsonb)`,
+        [MIGRATION_ID, ORG, JSON.stringify([REFUSAL])],
+      );
+
+      // ⚠️ THE BEFORE HALF, and it is not ceremony. Without it a sweep that
+      // deleted nothing at all would pass every assertion below — the payload
+      // would still be readable because nothing had happened.
+      const edgesBefore = await pool.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM brain_vocabulary_edge WHERE workspace_id = $1`,
+        [ORG],
+      );
+      expect(edgesBefore.rows[0].n).toBe(2);
+
+      const savedRegion = process.env.ATLAS_API_REGION;
+      process.env.ATLAS_API_REGION = "us-test";
+      let sweep: Awaited<ReturnType<typeof runSourceCleanupSweep>>;
+      try {
+        sweep = await runSourceCleanupSweep();
+      } finally {
+        if (savedRegion === undefined) delete process.env.ATLAS_API_REGION;
+        else process.env.ATLAS_API_REGION = savedRegion;
+      }
+
+      // The irreversible act really ran.
+      expect(sweep.cleaned).toBeGreaterThanOrEqual(1);
+      const edgesAfter = await pool.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM brain_vocabulary_edge WHERE workspace_id = $1`,
+        [ORG],
+      );
+      expect(edgesAfter.rows[0].n).toBe(0);
+
+      // ⭐ AND THE RECORD SURVIVED IT. This is the whole issue: the last copy of
+      // a human's approved decision is now this row, and the sweep that destroyed
+      // the original never touched it.
+      const row = await pool.query<{
+        source_cleaned_at: Date | null;
+        vocabulary_edges_refused: number | null;
+        vocabulary_refusals: unknown;
+      }>(
+        `SELECT source_cleaned_at, vocabulary_edges_refused, vocabulary_refusals
+           FROM region_migrations WHERE id = $1`,
+        [MIGRATION_ID],
+      );
+      expect(row.rows).toHaveLength(1);
+      // The stamp proves we are reading the row AFTER the cleanup, not before it.
+      expect(row.rows[0].source_cleaned_at).not.toBeNull();
+      expect(row.rows[0].vocabulary_edges_refused).toBe(1);
+      // Field-by-field. A `toBeDefined()` or a length check would pass a cleanup
+      // that had blanked the column's contents while leaving the row.
+      expect(row.rows[0].vocabulary_refusals).toEqual([REFUSAL]);
+      // Named explicitly, because it is the field that makes the payload
+      // RE-AUTHORABLE rather than merely descriptive — the operator needs to know
+      // what this region holds at `price` instead.
+      expect((row.rows[0].vocabulary_refusals as Array<{ existingTarget: string }>)[0].existingTarget).toBe("cost");
+
+      // Belt and braces on the classification itself, since that is WHY the row
+      // survives. A future `platform` → `exported` reclassification of
+      // `region_migrations` would put a DELETE for it in the statement set, and
+      // this test's premise would silently invert.
+      expect(buildCleanupStatements().map((s) => s.table)).not.toContain("region_migrations");
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "⭐ the WRITER's own statement runs against the real schema",
+    async () => {
+      // ⚠️ THE GAP BETWEEN THE TWO HALVES OF THIS FEATURE'S COVERAGE, and the one this
+      // file exists to close for everything else. `migrate.test.ts` finds the write by
+      // grepping `capturedQueries` for a substring and inspects `params` — the SQL
+      // string is never executed. The case above seeds the row with its OWN `INSERT`.
+      // Both are hand-written statements about the same two columns, so neither
+      // confronts the writer's SQL with the migrated table.
+      //
+      // Measured: renaming the column in `recordVocabularyRefusals` to
+      // `vocabulary_refusals_json` left every other test green, because the substring
+      // the mock suite greps for (`vocabulary_edges_refused`) is on the same statement.
+      // In production that throws, and since `refused > 0` aborts, it fails EVERY
+      // migration carrying a refusal.
+      const WRITER_MIGRATION = "mig-refusal-writer-1";
+      const payload = [
+        { ...REFUSAL, fromNorm: "writer-a" },
+        { ...REFUSAL, fromNorm: "writer-b", approvedBy: null, existingTarget: null },
+      ];
+
+      // The row starts WITHOUT the two columns populated, so anything read back was
+      // put there by the function under test.
+      await pool.query(
+        `INSERT INTO region_migrations
+           (id, workspace_id, source_region, target_region, status, completed_at, region_updated)
+         VALUES ($1, $2, 'us-test', 'eu-test', 'completed', now(), TRUE)`,
+        [WRITER_MIGRATION, `${ORG}-writer`],
+      );
+
+      await recordVocabularyRefusals(WRITER_MIGRATION, {
+        refused: 5,
+        details: payload,
+        malformedDetails: 1,
+      });
+
+      const row = await pool.query<{
+        vocabulary_edges_refused: number | null;
+        vocabulary_refusals: unknown;
+      }>(
+        `SELECT vocabulary_edges_refused, vocabulary_refusals
+           FROM region_migrations WHERE id = $1`,
+        [WRITER_MIGRATION],
+      );
+      expect(row.rows).toHaveLength(1);
+      // 5 refused with 2 payloads — DISTINCT numbers, so a writer that stored the
+      // array's length in the count column (or vice versa) fails.
+      expect(row.rows[0].vocabulary_edges_refused).toBe(5);
+      // Round-tripped through real `jsonb`. This pins the `JSON.stringify` — without
+      // it `pg` sends a JS array as a Postgres array literal and the statement raises
+      // (measured: 1 fail).
+      //
+      // ⚠️ It does NOT pin the `::jsonb` cast, and an earlier version of this comment
+      // claimed it did. Measured: deleting the cast leaves all 18 tests green, because
+      // Postgres implicitly casts the text parameter on assignment to a `jsonb`
+      // column. The cast is belt-and-braces — kept because it states the intent at the
+      // call site and costs nothing — but nothing here falsifies it.
+      expect(row.rows[0].vocabulary_refusals).toEqual(payload);
+      // And the nullable fields survived as `null`, not as absent or "null".
+      const stored = row.rows[0].vocabulary_refusals as Array<Record<string, unknown>>;
+      expect(stored[1].approvedBy).toBeNull();
+      expect(stored[1].existingTarget).toBeNull();
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "⭐ records NULL rather than an empty array when there is nothing to recover",
+    async () => {
+      // The other arm of the writer's one conditional, against the real column — so
+      // "migrations with recoverable payloads" really is `IS NOT NULL` and does not
+      // also have to know that `'[]'::jsonb` means the same thing.
+      const EMPTY_MIGRATION = "mig-refusal-writer-2";
+      await pool.query(
+        `INSERT INTO region_migrations
+           (id, workspace_id, source_region, target_region, status, completed_at, region_updated)
+         VALUES ($1, $2, 'us-test', 'eu-test', 'completed', now(), TRUE)`,
+        [EMPTY_MIGRATION, `${ORG}-writer-empty`],
+      );
+
+      await recordVocabularyRefusals(EMPTY_MIGRATION, {
+        refused: 0,
+        details: [],
+        malformedDetails: 0,
+      });
+
+      const row = await pool.query<{
+        vocabulary_edges_refused: number | null;
+        vocabulary_refusals: unknown;
+      }>(
+        `SELECT vocabulary_edges_refused, vocabulary_refusals
+           FROM region_migrations WHERE id = $1`,
+        [EMPTY_MIGRATION],
+      );
+      // `0`, not NULL — the target answered and refused nothing, which is a claim.
+      expect(row.rows[0].vocabulary_edges_refused).toBe(0);
+      // NULL, not `[]`.
+      expect(row.rows[0].vocabulary_refusals).toBeNull();
     },
     PG_TEST_TIMEOUT_MS,
   );

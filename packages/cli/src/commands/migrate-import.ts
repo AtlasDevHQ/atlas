@@ -8,6 +8,123 @@ import * as fs from "fs";
 import pc from "picocolors";
 import { getFlag } from "../../lib/cli-utils";
 
+/**
+ * The vocabulary section as a FOREIGN response may actually contain it (#5112).
+ *
+ * Every member optional, and `refusalDetails` a `Partial<...>` array — because this
+ * value comes from an unchecked `as` cast of another server's `resp.json()`, and
+ * this file already reasons about cross-version targets and proxies everywhere else.
+ * Declaring the payload fully-shaped here while `residency/migrate.ts` screens the
+ * identical value entry-by-entry ("every field is foreign input") would be one
+ * payload with two opposite policies, which is what review round 1 found.
+ */
+interface CrossVersionVocabularySection {
+  imported?: number;
+  skipped?: number;
+  refused?: number;
+  refusalDetails?: Array<Partial<import("@useatlas/types").VocabularyRefusalDetail>>;
+}
+
+/**
+ * Print the refusal disclosure for one import response.
+ *
+ * Extracted from the handler and given an injectable sink so its branches are
+ * reachable from a test. They are the ONLY operator-facing surface for a dropped
+ * human review decision, and before this they had no test at all: deleting the
+ * "target did not return the refused edges" branch collapsed two different states
+ * into silence, and deleting the "N more not listed" line made the CLI report a
+ * smaller loss than happened. Both were green.
+ */
+export function renderRefusalNotice(
+  vocabulary: CrossVersionVocabularySection | undefined,
+  write: (line: string) => void = console.log,
+): void {
+  if (!vocabulary) return;
+
+  // ⚠️ THREE STATES, not two. `refused` ABSENT is a target between #5022 and #5036:
+  // it folded contradictory decisions into `skipped` and cannot tell us. Rendering
+  // that as `0` — which `?? 0` did — is the most misleading value available, because
+  // it is a positive claim that nothing was refused AND it silences the whole block
+  // below. This is the same absent-vs-zero distinction the table's `-` filler makes
+  // for sections that have no refusal outcome at all.
+  if (typeof vocabulary.refused !== "number") {
+    write(
+      pc.yellow(
+        "  ! This target build does not report refused alias edges. A dropped review decision",
+      ),
+    );
+    write(
+      "    would be counted under Skipped — compare the source region's brain_vocabulary_edge",
+    );
+    write("    rows before its cleanup grace period expires.");
+    return;
+  }
+
+  const refused = vocabulary.refused;
+  if (refused <= 0) return;
+
+  const details = vocabulary.refusalDetails ?? [];
+  write("");
+  write(
+    pc.yellow(
+      `  ! ${refused} curated alias edge(s) were REFUSED — approved review decisions the ` +
+        "destination did not apply.",
+    ),
+  );
+
+  if (details.length === 0) {
+    // A count with no payloads, which is NOT "nothing to recover" — the difference
+    // is a build. A target between #5036 and #5112 reports the count and carries no
+    // details at all.
+    write("    The target did not return the refused edges (its build predates them). Retrieve them");
+    write("    from the SOURCE region's brain_vocabulary_edge rows before its cleanup grace period");
+    write("    expires.");
+  } else {
+    // ⚠️ RENDERED DEFENSIVELY, field by field. `d.approvedBy ?? "auto-approval"` was
+    // the defect: `null` means auto-approved and ABSENT means the target did not say,
+    // and `??` collapses them — inventing an attribution, which is verbatim the
+    // misread `residency/migrate.ts` refuses by treating `undefined` as malformed.
+    let unreadable = 0;
+    for (const d of details) {
+      if (typeof d.fromNorm !== "string" || typeof d.toNorm !== "string") {
+        unreadable++;
+        continue;
+      }
+      const held =
+        d.existingTarget === null || d.existingTarget === undefined
+          ? ""
+          : ` (destination holds "${d.existingTarget}")`;
+      const position = typeof d.slotPosition === "string" ? d.slotPosition : "unknown position";
+      const reason = typeof d.refusal === "string" ? d.refusal : "unreported reason";
+      write(`    - [${position}] "${d.fromNorm}" → "${d.toNorm}" — ${reason}${held}`);
+      const approver =
+        d.approvedBy === null
+          ? "auto-approval"
+          : typeof d.approvedBy === "string"
+            ? d.approvedBy
+            : "(approver not reported)";
+      const when = typeof d.approvedAt === "string" ? d.approvedAt : "(time not reported)";
+      write(`      approved by ${approver} at ${when}`);
+    }
+    if (unreadable > 0) {
+      write(
+        pc.yellow(
+          `    ! ${unreadable} refusal record(s) were unreadable — a bug in the target region; ` +
+            "check its logs.",
+        ),
+      );
+    }
+    // Both numbers whenever they differ. Printing only the list would report a
+    // smaller loss than happened. Two causes read alike from here — the response's
+    // cap, or a target that truncated for its own reason — so the wording names the
+    // consequence rather than guessing the cause.
+    if (details.length < refused) {
+      write(`    ... ${refused - details.length} more were refused but not listed here.`);
+    }
+  }
+  write("    Re-author them here, or export them from the source region's vocabulary.");
+}
+
 export async function handleMigrateImport(
   args: string[],
 ): Promise<void> {
@@ -177,9 +294,20 @@ export async function handleMigrateImport(
     // omits the v2 sections entirely, so they are optional HERE even though
     // the current ImportResult wire type requires them — the cast must not
     // claim more than the runtime guards below check.
+    //
+    // `brainVocabularyEdges` joins the optional set at #5112. It was absent from
+    // BOTH halves before then, so this table never printed a vocabulary counter at
+    // all — including `refused`, the one counter in the whole response that means
+    // a human's approved decision was dropped. Its nested `refusalDetails` is
+    // #5112's payload and a target between #5036 and #5112 omits it, which is why
+    // the render below treats an empty list beside a non-zero count as a distinct
+    // case rather than as "nothing to recover".
     type CrossVersionImportResult =
       Pick<import("@useatlas/types").ImportResult, "conversations" | "semanticEntities" | "learnedPatterns" | "settings"> &
-      Partial<Pick<import("@useatlas/types").ImportResult, "dashboards" | "knowledgeDocuments" | "scheduledTasks" | "agentSessionMemory" | "brainEpisodes" | "brainFacts" | "brainEdges" | "factAudienceMembers">>;
+      Partial<Pick<import("@useatlas/types").ImportResult, "dashboards" | "knowledgeDocuments" | "scheduledTasks" | "agentSessionMemory" | "brainEpisodes" | "brainFacts" | "brainEdges" | "factAudienceMembers">> &
+      {
+        brainVocabularyEdges?: CrossVersionVocabularySection;
+      };
     let result: CrossVersionImportResult;
     try {
       result =
@@ -209,70 +337,79 @@ export async function handleMigrateImport(
       process.exit(1);
     }
 
-    console.log(`${pc.green("\u2713")} Import complete!\n`);
+    // THREE columns since #5112. The third exists for one section today, and the
+    // two possible fillers for the rest are NOT interchangeable:
+    //
+    //   - `-` means the section HAS NO refusal outcome. There is nothing it could
+    //     report there, in any build.
+    //   - `0` would be a positive claim that it refused nothing — a different
+    //     sentence, and one those sections cannot make.
+    //
+    // Same distinction the target-side refusal warn makes by writing an explicit
+    // `null` for `existingTarget` rather than omitting the key: a blank and a zero
+    // read identically to someone skimming, and only one of them is true here.
+    const NO_REFUSAL_OUTCOME = "-";
+    /** The section CAN refuse, but this target's build does not report the counter. */
+    const REFUSAL_NOT_REPORTED = "?";
+    const row = (
+      label: string,
+      counts: { imported?: number; skipped?: number },
+      // Three cell kinds, and they are three different sentences: a NUMBER is what
+      // the target reported, `-` means the section has no refusal outcome in any
+      // build, and `?` means this section HAS one but the target's build cannot
+      // report it. Collapsing any pair loses a distinction an operator acts on.
+      refused: number | typeof NO_REFUSAL_OUTCOME | typeof REFUSAL_NOT_REPORTED,
+    ): void => {
+      console.log(
+        `  ${label.padEnd(17)} ${String(counts.imported ?? 0).padStart(8)}  ${String(counts.skipped ?? 0).padStart(7)}  ${String(refused).padStart(7)}`,
+      );
+    };
+
+    console.log(`${pc.green("✓")} Import complete!\n`);
     console.log(
-      "  Entity            Imported  Skipped",
+      "  Entity            Imported  Skipped  Refused",
     );
     console.log(
-      "  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500  \u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+      "  ────────────────  ────────  ───────  ───────",
     );
-    console.log(
-      `  Conversations     ${String(result.conversations.imported).padStart(8)}  ${String(result.conversations.skipped).padStart(7)}`,
-    );
-    console.log(
-      `  Semantic entities ${String(result.semanticEntities.imported).padStart(8)}  ${String(result.semanticEntities.skipped).padStart(7)}`,
-    );
-    console.log(
-      `  Learned patterns  ${String(result.learnedPatterns.imported).padStart(8)}  ${String(result.learnedPatterns.skipped).padStart(7)}`,
-    );
-    console.log(
-      `  Settings          ${String(result.settings.imported).padStart(8)}  ${String(result.settings.skipped).padStart(7)}`,
-    );
+    row("Conversations", result.conversations, NO_REFUSAL_OUTCOME);
+    row("Semantic entities", result.semanticEntities, NO_REFUSAL_OUTCOME);
+    row("Learned patterns", result.learnedPatterns, NO_REFUSAL_OUTCOME);
+    row("Settings", result.settings, NO_REFUSAL_OUTCOME);
     // v2 sections (#4460) — absent from an older server's response.
-    if (result.dashboards) {
-      console.log(
-        `  Dashboards        ${String(result.dashboards.imported).padStart(8)}  ${String(result.dashboards.skipped).padStart(7)}`,
-      );
-    }
-    if (result.knowledgeDocuments) {
-      console.log(
-        `  Knowledge docs    ${String(result.knowledgeDocuments.imported).padStart(8)}  ${String(result.knowledgeDocuments.skipped).padStart(7)}`,
-      );
-    }
-    if (result.scheduledTasks) {
-      console.log(
-        `  Scheduled tasks   ${String(result.scheduledTasks.imported).padStart(8)}  ${String(result.scheduledTasks.skipped).padStart(7)}`,
-      );
-    }
-    if (result.agentSessionMemory) {
-      console.log(
-        `  Session memory    ${String(result.agentSessionMemory.imported).padStart(8)}  ${String(result.agentSessionMemory.skipped).padStart(7)}`,
-      );
-    }
+    if (result.dashboards) row("Dashboards", result.dashboards, NO_REFUSAL_OUTCOME);
+    if (result.knowledgeDocuments) row("Knowledge docs", result.knowledgeDocuments, NO_REFUSAL_OUTCOME);
+    if (result.scheduledTasks) row("Scheduled tasks", result.scheduledTasks, NO_REFUSAL_OUTCOME);
+    if (result.agentSessionMemory) row("Session memory", result.agentSessionMemory, NO_REFUSAL_OUTCOME);
     // Company brain (#4767). Reported per-section so a migration that moved
     // ZERO brain rows can't print a summary identical to one that moved
     // everything — the operator-visible half of "silent loss is worse than
     // loud failure".
-    if (result.brainEpisodes) {
-      console.log(
-        `  Brain episodes    ${String(result.brainEpisodes.imported).padStart(8)}  ${String(result.brainEpisodes.skipped).padStart(7)}`,
+    if (result.brainEpisodes) row("Brain episodes", result.brainEpisodes, NO_REFUSAL_OUTCOME);
+    if (result.brainFacts) row("Brain facts", result.brainFacts, NO_REFUSAL_OUTCOME);
+    if (result.brainEdges) row("Brain edges", result.brainEdges, NO_REFUSAL_OUTCOME);
+    if (result.factAudienceMembers) row("Fact audiences", result.factAudienceMembers, NO_REFUSAL_OUTCOME);
+    // The curated identity vocabulary (#5036, #5112). Absent from this table
+    // ENTIRELY until #5112 — so the one counter in the whole response that reports
+    // a dropped human decision was the one counter the operator who pressed the
+    // button never saw.
+    const vocabulary = result.brainVocabularyEdges;
+    // `?` for a target that cannot report the counter at all — distinct from `0`
+    // ("refused nothing") and from `-` ("has no refusal outcome"). Three states,
+    // three cells; `?? 0` collapsed the first into the second.
+    if (vocabulary) {
+      row(
+        "Alias edges",
+        vocabulary,
+        typeof vocabulary.refused === "number" ? vocabulary.refused : REFUSAL_NOT_REPORTED,
       );
     }
-    if (result.brainFacts) {
-      console.log(
-        `  Brain facts       ${String(result.brainFacts.imported).padStart(8)}  ${String(result.brainFacts.skipped).padStart(7)}`,
-      );
-    }
-    if (result.brainEdges) {
-      console.log(
-        `  Brain edges       ${String(result.brainEdges.imported).padStart(8)}  ${String(result.brainEdges.skipped).padStart(7)}`,
-      );
-    }
-    if (result.factAudienceMembers) {
-      console.log(
-        `  Fact audiences    ${String(result.factAudienceMembers.imported).padStart(8)}  ${String(result.factAudienceMembers.skipped).padStart(7)}`,
-      );
-    }
+
+    // ⚠️ NOT A TABLE CELL. A number in a column is something to skim past. This is
+    // the only outcome in the response that says a human's approved review decision
+    // was discarded and the destination will never hold it, so it gets prose and the
+    // payloads. Extracted so its branches are testable — see `renderRefusalNotice`.
+    renderRefusalNotice(vocabulary);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     if (

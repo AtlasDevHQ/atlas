@@ -18,11 +18,14 @@
 import { describe, expect, test } from "bun:test";
 import {
   AnchorError,
-  anchorFailures,
   applyMutation,
   baselineProblem,
+  cellFlag,
+  countCell,
   countOccurrences,
   escapeCell,
+  importCandidates,
+  importSpecifiers,
   isWholeSuite,
   parseBunSummary,
   render,
@@ -31,9 +34,13 @@ import {
   suiteTimeoutMs,
   SUITE_TIMEOUT_FACTOR,
   SUITE_TIMEOUT_FLOOR_MS,
+  TIMEOUT_CELL,
+  unmeasurableOutcome,
+  unmeasuredRows,
   validateSpec,
   WHOLE_SUITE_WARN_RATIO,
   type Cell,
+  type UnmeasurableOutcome,
   type FileStore,
 } from "../../scripts/mutation-core";
 import type { Mutation, MutationSpec } from "../../scripts/mutation-spec";
@@ -283,13 +290,59 @@ describe("parseBunSummary", () => {
     expect(parseBunSummary("\n 64 pass\n 0 fail\n").skip).toBe(0);
   });
 
+  test("⚠️ the VERBATIM bun footer is pinned, or `ran` silently reverts to null", () => {
+    // `ran: null` is FAIL-OPEN: it disables `unmeasurableOutcome`'s accounting arm
+    // and is indistinguishable from "we failed to parse `Ran N`". Nothing
+    // pinned the footer's wording, so a bun release that reworded it would
+    // quietly demote the guard back to bucket-chasing — the exact regression
+    // the accounting arm exists to make impossible.
+    //
+    // ⚠️ CAPTURED VERBATIM from `bun test v1.3.13 (bf2e2cec)` over a two-file
+    // tree carrying 2+1 passing tests, one `.skip` and two `.todo`. Do not
+    // hand-edit it: re-take it by running such a tree. The four buckets are
+    // deliberately all DIFFERENT numbers — with `skip` and `todo` both 1,
+    // swapping the two regexes passes this test.
+    const footer = [
+      "bun test v1.3.13 (bf2e2cec)",
+      "",
+      " 3 pass",
+      " 1 skip",
+      " 2 todo",
+      " 0 fail",
+      " 3 expect() calls",
+      "Ran 6 tests across 2 files. [13.00ms]",
+    ].join("\n");
+    expect(parseBunSummary(footer)).toEqual({ pass: 3, fail: 0, skip: 1, todo: 2, ran: 6 });
+    // …and the SINGULAR spelling, which is a different string and the common
+    // case: `Ran 59 tests across 1 file.` The `tests?` in the pattern is what
+    // covers a one-test file; `file` vs `files` is outside the capture, but a
+    // pattern tightened to `files` would break every single-file target.
+    expect(parseBunSummary("\n 59 pass\n 0 fail\n\nRan 59 tests across 1 file. [94.00ms]\n").ran).toBe(
+      59,
+    );
+    // ⚠️ …and the SINGULAR `Ran 1 test`, which is what the `tests?` in the
+    // pattern exists for and which no fixture reached. `ran: null` is FAIL-OPEN
+    // — it disables the accounting arm — so a single-test target would have
+    // silently demoted the guard while this test's own comment claimed coverage.
+    expect(parseBunSummary("\n 1 pass\n 0 fail\n\nRan 1 test across 1 file. [3.00ms]\n").ran).toBe(1);
+  });
+
   test("a skip count mid-line is not mistaken for the summary either", () => {
     // The anchoring the pass/fail arms already have, extended to the new one: a
     // test whose NAME contains `12 skip` must not become the summary.
-    const output = ["(fail) mutate > reports 12 skip rows", " 56 pass", " 3 skip", " 2 fail"].join(
-      "\n",
-    );
-    expect(parseBunSummary(output)).toEqual({ pass: 56, fail: 2, skip: 3, todo: 0, ran: null });
+    // ⚠️ Extended to the TODO and RAN arms, which are anchored identically and
+    // had no decoy at all. Every number here is distinct from every other, so a
+    // regex that loses its `^` anchor picks up the decoy rather than coinciding
+    // with the right answer.
+    const output = [
+      "(fail) mutate > reports 12 skip and 7 todo rows, Ran 99 tests",
+      " 56 pass",
+      " 3 skip",
+      " 4 todo",
+      " 2 fail",
+      "Ran 65 tests across 1 file.",
+    ].join("\n");
+    expect(parseBunSummary(output)).toEqual({ pass: 56, fail: 2, skip: 3, todo: 4, ran: 65 });
   });
 });
 
@@ -374,33 +427,374 @@ describe("⚠️ baselineProblem — every way a baseline can lie (#5077)", () =
   });
 });
 
-describe("⚠️ anchorFailures — a dead anchor must never become a committed byte", () => {
-  const count = (fail: number): Cell => ({ kind: "count", fail });
-  const anchor = (): Cell => ({ kind: "error", fail: 0, flag: "ANCHOR: 0 matches", anchorFailed: true });
-  const timeout = (): Cell => ({ kind: "error", fail: 0, flag: "timed out after 30s" });
-
-  test("POSITIVE CONTROL: a table of real counts reports nothing", () => {
-    expect(anchorFailures(new Map([["m1", new Map([["t", count(3)]])]]))).toEqual([]);
+describe("⚠️ unmeasurableOutcome — the ONE copy both the baseline and the mutation read (#5097)", () => {
+  test("POSITIVE CONTROL: a fully accounted run has no problem", () => {
+    expect(unmeasurableOutcome({ pass: 64, fail: 0, skip: 0, todo: 0, ran: 64 })).toBeNull();
+    // …and a run with no `Ran N` line is still acceptable: the accounting arm is
+    // a cross-check, not a requirement.
+    expect(unmeasurableOutcome({ pass: 64, fail: 0, skip: 0, todo: 0, ran: null })).toBeNull();
   });
 
-  test("names the mutation whose anchor rotted", () => {
+  test("⚠️ a FAILING run is not deflated — under a mutation, failing is the point", () => {
+    // The reason RED lives in `baselineProblem` and not here. `unmeasurableOutcome`
+    // is asked about mutated runs too, where a high fail count is the
+    // measurement; refusing it would refuse every strong result in the repo.
+    expect(unmeasurableOutcome({ pass: 2, fail: 61, skip: 0, todo: 0, ran: 63 })).toBeNull();
+    // ⚠️ A WHOLE-SUITE KILL reports `0 pass` with a large `fail`, and it is a
+    // real, publishable measurement. This is the case the EMPTY arm below must
+    // NOT swallow, and `pass === 0` alone would have swallowed it.
+    expect(unmeasurableOutcome({ pass: 0, fail: 63, skip: 0, todo: 0, ran: 63 })).toBeNull();
+  });
+
+  test("⚠️ EMPTY — a run that registered ZERO tests is refused, not published as a `0`", () => {
+    // MEASURED on bun 1.3.13: an empty `describe`, and a corpus-driven file
+    // whose array is empty, both print ` 0 pass` / ` 0 fail` / `Ran 0 tests`.
+    // Nothing else here fires, `isWholeSuite(0, n)` is false, so before this arm
+    // `measure()` published a `0` — the byte the generated header defines as
+    // "the suite does not catch it". A coverage claim from a run that measured
+    // nothing, which is #5097's own class.
+    const empty = unmeasurableOutcome({ pass: 0, fail: 0, skip: 0, todo: 0, ran: 0 });
+    expect(empty?.kind).toBe("empty");
+    expect(empty?.cell).toBe("ZERO tests ran — nothing was measured");
+    // …and with no `Ran N` line at all, which is how a crashed reporter looks.
+    expect(unmeasurableOutcome({ pass: 0, fail: 0, skip: 0, todo: 0, ran: null })?.kind).toBe("empty");
+  });
+
+  test("⚠️ only the DEFLATION arms carry the -pg hint — `empty` must not", () => {
+    // The hint says "*-pg.test.ts self-skips without TEST_DATABASE_URL". A
+    // self-skip reports `skip !== 0` and lands on the deflated arm, so an EMPTY
+    // run told to go start Postgres is sent hunting a `.skip` that cannot exist.
+    // That is the misdirecting-diagnostic defect `kind` was split to prevent,
+    // and it is why the decision travels as `pgHint` rather than as a kind list
+    // the caller re-derives — a `"cell" in problem` test would get this wrong
+    // too, because the empty arm carries a cell.
+    expect(unmeasurableOutcome({ pass: 1, fail: 0, skip: 2, todo: 0, ran: 3 })?.pgHint).toBe(true);
+    expect(unmeasurableOutcome({ pass: 5, fail: 0, skip: 0, todo: 0, ran: 9 })?.pgHint).toBe(true);
+    expect(unmeasurableOutcome({ pass: 0, fail: 0, skip: 0, todo: 0, ran: 0 })?.pgHint).toBe(false);
+    // …and neither baseline-only arm does.
+    expect(baselineProblem({ pass: 0, fail: 2, skip: 0, todo: 0, ran: 2 })?.pgHint).toBe(false);
+    expect(
+      baselineProblem({ pass: 0, fail: 0, skip: 0, todo: 0, ran: null, error: "boom" })?.pgHint,
+    ).toBe(false);
+  });
+
+  test("⚠️ an EMPTY outcome CANNOT claim the -pg hint — enforced by the compiler", () => {
+    // ⚠️ `@ts-expect-error` is the falsifier, and it is the right instrument
+    // because this guard is type-level: the directive itself FAILS TO COMPILE the
+    // moment the error stops occurring, so `bun run type` — a CI-blocking job —
+    // catches a regression here with no runtime assertion involved.
+    //
+    // A mutation row cannot cover it. The first cut typed `pgHint: boolean`, which
+    // made `{ kind: "empty", pgHint: true }` legal and a run-time flip
+    // expressible; splitting the union by hint value makes that state
+    // unrepresentable, so the spec row that used to flip it was DELETED rather
+    // than re-anchored — a successor pointing at an unreachable state is the
+    // tombstone this PR already refused once.
+    //
+    // MEASURED before writing this: a probe assigning that object reported
+    // `TS2322: Type '{ kind: "empty"; …; pgHint: true; }' is not assignable to
+    // type 'UnmeasurableOutcome'`, while the `pgHint: false` sibling compiled.
+    // ⚠️ The directive sits on the ASSIGNMENT, not on the offending property:
+    // TS reports the excess/mismatch against the whole object literal, so a
+    // `@ts-expect-error` above `pgHint` is an UNUSED directive (TS2578) — which
+    // fails the build for the wrong reason and would have read as this guard
+    // working. Learned by running it.
+    // @ts-expect-error - the empty arm pins pgHint to false; a -pg hint here
+    // would send an operator hunting a .skip in a suite that registered none.
+    const bad: UnmeasurableOutcome = {
+      kind: "empty",
+      message: "m",
+      cell: "c",
+      pgHint: true,
+    };
+    expect(bad.kind).toBe("empty");
+
+    // …and the converse, so this is not satisfied by a type nothing can build:
+    // the correct pairing must still compile.
+    const good: UnmeasurableOutcome = { kind: "empty", message: "m", cell: "c", pgHint: false };
+    expect(good.pgHint).toBe(false);
+  });
+
+  test("the accounting arm fires in BOTH directions, not just when buckets are short", () => {
+    // Every other unaccounted fixture has `accounted < ran`, so `!==` → `<`
+    // survives them all. The arm's whole point is "a bucket bun invents
+    // tomorrow", and an invented bucket could push the sum either way.
+    expect(unmeasurableOutcome({ pass: 8, fail: 0, skip: 0, todo: 0, ran: 5 })?.kind).toBe(
+      "unaccounted",
+    );
+  });
+
+  test("the message and the CELL describe the same arm", () => {
+    // Both strings come from ONE PRODUCER rather than being assembled by the two
+    // callers, which is what keeps them describing the same arm — a property of
+    // there being one producer, NOT of the types, which are two independent
+    // strings. (An earlier version of this comment claimed a cell "can never"
+    // name a different arm; that is exactly the certification-beyond-the-code
+    // shape this PR keeps finding, so it is stated as what it is.) The two must
+    // be different TEXT — the cell is one table cell wide — while agreeing on
+    // the arm.
+    const skipped = unmeasurableOutcome({ pass: 1, fail: 0, skip: 2, todo: 0, ran: 3 });
+    expect(skipped?.kind).toBe("deflated");
+    expect(skipped?.message).toContain("SKIPPED 2 of 3 tests");
+    expect(skipped?.cell).toBe("SKIPPED 2 — count would be deflated");
+    expect(skipped?.cell).not.toBe(skipped?.message);
+
+    const unaccounted = unmeasurableOutcome({ pass: 5, fail: 0, skip: 0, todo: 0, ran: 9 });
+    expect(unaccounted?.kind).toBe("unaccounted");
+    expect(unaccounted?.message).toContain("4 unclassified");
+    expect(unaccounted?.cell).toBe("4 UNACCOUNTED — count would be deflated");
+
+    // ⚠️ THE THIRD `what` BRANCH, which no fixture reached. It is the realistic
+    // operator-facing case — a `-pg` file carrying a `.skip` AND a `.todo`, the
+    // exact shape #5077 and its first correction both produced — and it is the
+    // only wording that tells them they have two things to find. 2/3/6 are all
+    // distinct, so a swapped skip/todo in the template fails.
+    const both = unmeasurableOutcome({ pass: 1, fail: 0, skip: 2, todo: 3, ran: 6 });
+    expect(both?.message).toContain("SKIPPED 2 and marked TODO on 3 of 6 tests");
+    expect(both?.cell).toBe("SKIPPED 2 and marked TODO on 3 — count would be deflated");
+
+    // …and the todo-ONLY cell, whose text was asserted nowhere.
+    expect(unmeasurableOutcome({ pass: 1, fail: 0, skip: 0, todo: 3, ran: 4 })?.cell).toBe(
+      "marked TODO on 3 — count would be deflated",
+    );
+  });
+
+  test("⚠️ baselineProblem does not DIVERGE from this function", () => {
+    // ⚠️ The claim is DIVERGENCE, not duplication, and an earlier version of this
+    // comment overstated it as "the falsifier for the sharing itself". A
+    // byte-identical second copy inside `baselineProblem` passes this test; what
+    // it catches is the copy DRIFTING, which is the failure that actually
+    // happened (#5077's mutated-run detection was such a copy, one edit from
+    // disagreeing). Nothing here can see a second copy that still agrees.
+    for (const outcome of [
+      { pass: 1, fail: 0, skip: 2, todo: 0, ran: 3 },
+      { pass: 1, fail: 0, skip: 0, todo: 3, ran: 4 },
+      { pass: 5, fail: 0, skip: 0, todo: 0, ran: 9 },
+      { pass: 0, fail: 0, skip: 0, todo: 0, ran: 0 },
+    ]) {
+      const shared = unmeasurableOutcome(outcome);
+      expect(shared).not.toBeNull();
+      expect(baselineProblem(outcome)).toEqual(shared);
+    }
+  });
+});
+
+describe("⚠️ unmeasuredRows — ONE refusal for the whole measured-nothing class (#5097)", () => {
+  const count = (fail: number): Cell => ({ kind: "count", fail });
+  const wholeSuite = (fail: number): Cell => ({ kind: "count", fail, wholeSuite: true });
+  const anchor = (): Cell => ({ kind: "unmeasured", reason: "ANCHOR: 0 matches" });
+  const deflated = (): Cell => ({ kind: "unmeasured", reason: "SKIPPED 2 — count would be deflated" });
+  const unaccounted = (): Cell => ({
+    kind: "unmeasured",
+    reason: "4 UNACCOUNTED — count would be deflated",
+  });
+  const killed = (): Cell => ({ kind: "unmeasured", reason: "killed by SIGKILL" });
+  const timeout = (): Cell => ({ kind: "timeout" });
+
+  test("POSITIVE CONTROL: a table of real counts reports nothing", () => {
+    expect(unmeasuredRows(new Map([["m1", new Map([["t", count(3)]])]]))).toEqual([]);
+  });
+
+  test("names the mutation AND why it measured nothing", () => {
     const rows = new Map([
       ["healthy", new Map([["t", count(3)]])],
       ["rotted", new Map([["t", anchor()]])],
     ]);
-    expect(anchorFailures(rows)).toEqual(["rotted"]);
+    expect(unmeasuredRows(rows)).toEqual([{ label: "rotted", reason: "ANCHOR: 0 matches" }]);
   });
 
-  test("⚠️ a TIMEOUT is not an anchor failure — that is a real measurement", () => {
-    // The distinction a substring match on the flag could not draw, and the
-    // reason `anchorFailed` is its own field rather than prose. A hang is a
-    // genuine result about a genuine mutation; a dead anchor measured nothing.
-    expect(anchorFailures(new Map([["slow", new Map([["t", timeout()]])]]))).toEqual([]);
+  test("⚠️ THE CLASS, not the instance: a dead anchor and a deflated run come back TOGETHER", () => {
+    // #5077 refused exactly one member of this class with an `anchorFailed`
+    // boolean, and FLAGGED the other — so a mutated run that skipped tests
+    // rendered a deflated count as an honest number and `--check` blessed it
+    // forever. The whole point of keying on the discriminant is that a second
+    // cause needs no second refusal.
+    //
+    // The two reasons are deliberately DIFFERENT strings: with one shared
+    // reason, an implementation that only ever reported the anchor case would
+    // satisfy this assertion.
+    const rows = new Map([
+      ["rotted", new Map([["t", anchor()]])],
+      ["skipped", new Map([["t", deflated()]])],
+    ]);
+    expect(unmeasuredRows(rows)).toEqual([
+      { label: "rotted", reason: "ANCHOR: 0 matches" },
+      { label: "skipped", reason: "SKIPPED 2 — count would be deflated" },
+    ]);
   });
 
-  test("reports each mutation once even when several targets rotted", () => {
+  test("⚠️ a TIMEOUT is not unmeasured — that is a real measurement of a real hang", () => {
+    // The one carve-out, and the reason the discriminant is a `kind` rather
+    // than prose: a hang is a genuine result about a genuine mutation, and
+    // `mutation-core.md` publishes exactly such a cell for the empty-needle
+    // row. A substring match over the flag text could not draw this line.
+    expect(unmeasuredRows(new Map([["slow", new Map([["t", timeout()]])]]))).toEqual([]);
+  });
+
+  test("a whole-suite count is a caveat on a real number, not an absence of one", () => {
+    expect(unmeasuredRows(new Map([["broad", new Map([["t", wholeSuite(29)]])]]))).toEqual([]);
+  });
+
+  test("reports each mutation once even when several targets measured nothing", () => {
     const rows = new Map([["rotted", new Map([["a", anchor()], ["b", anchor()]])]]);
-    expect(anchorFailures(rows)).toEqual(["rotted"]);
+    expect(unmeasuredRows(rows)).toEqual([{ label: "rotted", reason: "ANCHOR: 0 matches" }]);
+  });
+
+  test("⚠️ scans PAST a measured cell to reach an unmeasured one", () => {
+    // The realistic shape, and the one every homogeneous fixture above misses: a
+    // multi-target spec where only the `-pg` column deflated. `measure()` marks
+    // ONE target at a time, so a loop that stopped at the first measured cell
+    // would publish the deflated column. The ordering here is deliberate — the
+    // healthy cell comes first.
+    const rows = new Map([
+      ["mixed", new Map([["here", count(3)], ["pg", deflated()]])],
+    ]);
+    expect(unmeasuredRows(rows)).toEqual([
+      { label: "mixed", reason: "SKIPPED 2 — count would be deflated" },
+    ]);
+  });
+
+  test("⚠️ NO reason prefix is privileged — a signal kill and an unaccounted bucket too", () => {
+    // The class has five members and the fixtures above cover two. These are the
+    // two that would most embarrass the docstring: neither reason starts with
+    // `ANCHOR` or `SKIPPED`, so an implementation narrowed to either prefix — the
+    // #5077 shape — publishes a compile-error or signal-killed cell as a number.
+    expect(unmeasuredRows(new Map([["killed", new Map([["t", killed()]])]]))).toEqual([
+      { label: "killed", reason: "killed by SIGKILL" },
+    ]);
+    expect(unmeasuredRows(new Map([["short", new Map([["t", unaccounted()]])]]))).toEqual([
+      { label: "short", reason: "4 UNACCOUNTED — count would be deflated" },
+    ]);
+  });
+
+  test("⚠️ countCell derives `wholeSuite`, so it cannot disagree with isWholeSuite", () => {
+    // Two representable-but-wrong states are unreachable through this: an
+    // unflagged near-total (forgetting the flag) and `{ fail: 0, wholeSuite: true }`
+    // (nonsense — `isWholeSuite(0, n)` is false for every n). The numbers are
+    // distinct from the ratio boundary so an off-by-one in either direction shows.
+    expect(countCell(3, 10)).toEqual({ kind: "count", fail: 3 });
+    expect(countCell(10, 10)).toEqual({ kind: "count", fail: 10, wholeSuite: true });
+    // Just over the 0.9 ratio: 9 of 10 trips it, and this is the case an
+    // exact-total test would miss.
+    expect(countCell(9, 10)).toEqual({ kind: "count", fail: 9, wholeSuite: true });
+    expect(countCell(8, 10)).toEqual({ kind: "count", fail: 8 });
+    // A zero can never be a whole suite, whatever the denominator.
+    expect(countCell(0, 10)).toEqual({ kind: "count", fail: 0 });
+    expect(countCell(0, 0)).toEqual({ kind: "count", fail: 0 });
+  });
+
+  test("⚠️ a no-count cell carries NO `fail`, so a phantom `0` is unrepresentable", () => {
+    // #5077's shape was one interface with `fail: number` always present, so
+    // every error cell carried a `fail: 0` that only `renderCell`'s early
+    // return kept out of the table — a renderer edit away from publishing "the
+    // suite does not catch this" over a mutation that never ran. `render`'s own
+    // test asserts that leak cannot happen; the union is why it cannot.
+    //
+    // Behaviourally: neither no-count variant renders as anything a reader
+    // could mistake for a measurement, and the reason travels WITH the state.
+    expect(renderCell(anchor())).toBe("⚠️ ANCHOR: 0 matches");
+    expect(renderCell(deflated())).toBe("⚠️ SKIPPED 2 — count would be deflated");
+    expect(renderCell(timeout())).toBe(TIMEOUT_CELL);
+    for (const cell of [anchor(), deflated(), killed(), timeout()]) {
+      expect(renderCell(cell)).not.toMatch(/^\d/);
+    }
+
+    // ⚠️ EXACT VALUES, not `toBeDefined()`. The flag is the REPAIR INFORMATION a
+    // reader meets in the `## ⚠️ Flagged` section — which mutation measured
+    // nothing and why — so `case "unmeasured": return "unmeasured"` satisfies a
+    // defined-ness check while deleting the only thing the variant carries.
+    expect(cellFlag(anchor())).toBe("ANCHOR: 0 matches");
+    expect(cellFlag(deflated())).toBe("SKIPPED 2 — count would be deflated");
+    expect(cellFlag(killed())).toBe("killed by SIGKILL");
+    expect(cellFlag(timeout())).toBe("HANGS — timed out");
+    // A real count, by contrast, has no flag at all unless the ratio tripped.
+    expect(cellFlag(count(3))).toBeUndefined();
+    expect(cellFlag(wholeSuite(29))).toBe("whole-suite");
+  });
+
+  test("⚠️ the TIMEOUT cell is DETERMINISTIC — no wall-clock number in the bytes", () => {
+    // `--check` compares BYTES and is a required CI gate, and the timeout cell is
+    // the one no-count cell that gets committed. Its first spelling carried
+    // `timed out after ${round(timeoutMs / 1000)}s`, where `timeoutMs` derives
+    // from the clean baseline's MEASURED duration — so the byte was stable only
+    // while that suite stayed under 3s, and for a `-pg` target never. A
+    // machine-dependent cell in a byte-compared file is the same defect class as
+    // a timestamp, which `render`'s own determinism test forbids.
+    expect(TIMEOUT_CELL).not.toMatch(/\d/);
+    expect(renderCell({ kind: "timeout" })).toBe(renderCell({ kind: "timeout" }));
+  });
+});
+
+describe("⚠️ importSpecifiers / importCandidates — the corpus files `--files` used to miss (#5097)", () => {
+  test("finds a MULTI-LINE import, which is the common shape in this repo", () => {
+    // A statement-shaped regex (`import[^;\n]*from`) matches none of these, and
+    // that is how every `__tests__/*-corpus.ts` stayed invisible to `--files`.
+    const source = [
+      'import { describe, expect, test } from "bun:test";',
+      "import {",
+      "  AGREEMENT_CORPUS,",
+      "  SAME_CLAIM,",
+      '} from "./__tests__/identity-corpus";',
+      'import type { Fact } from "@atlas/api/lib/brain/types";',
+      'export { helper } from "../shared/helper";',
+      'import "./side-effect";',
+    ].join("\n");
+    expect(importSpecifiers(source)).toEqual([
+      "bun:test",
+      "./__tests__/identity-corpus",
+      "@atlas/api/lib/brain/types",
+      "../shared/helper",
+      "./side-effect",
+    ]);
+  });
+
+  test("a relative specifier resolves against the IMPORTING file's directory", () => {
+    const candidates = importCandidates(
+      "src/lib/brain/__tests__/object-cmp.test.ts",
+      "./object-cmp-corpus",
+    );
+    expect(candidates).toContain("src/lib/brain/__tests__/object-cmp-corpus.ts");
+    // `/index.ts` is tried too, and AFTER the bare file — a directory named
+    // like the module must not shadow a sibling `.ts`.
+    expect(candidates.indexOf("src/lib/brain/__tests__/object-cmp-corpus.ts")).toBeLessThan(
+      candidates.indexOf("src/lib/brain/__tests__/object-cmp-corpus/index.ts"),
+    );
+  });
+
+  test("⚠️ a specifier can leave packages/api entirely, and must normalise", () => {
+    // `bundle-identity` mutates `../types/src/migration.ts`, so its seeds sit
+    // outside the package. Naive prefixing produced
+    // `packages/api/../types/src/…`, which git never emits — the same defect
+    // `check-mutation-tables.sh` normalises for one layer up.
+    expect(importCandidates("../types/src/migration.ts", "./conversation")).toContain(
+      "../types/src/conversation.ts",
+    );
+    // …and from inside `src/`, four levels up lands on the sibling package —
+    // one fewer and it would resolve INSIDE packages/api, which is the silent
+    // half of this bug: a path that exists nowhere selects nothing.
+    expect(
+      importCandidates("src/lib/brain/identity.ts", "../../../../types/src/conversation"),
+    ).toContain("../types/src/conversation.ts");
+  });
+
+  test("the package's own `@atlas/api/*` alias maps to `src/*`", () => {
+    expect(importCandidates("src/lib/x.ts", "@atlas/api/lib/brain/types")).toContain(
+      "src/lib/brain/types.ts",
+    );
+  });
+
+  test("⚠️ a bare package specifier is NOT followed — the cost bound", () => {
+    // Not timidity: following `@atlas/mcp` or `pg` by package name reaches half
+    // the monorepo from any target, and the sweep this selector feeds costs
+    // minutes per spec. Selecting every spec on every PR is how the gate gets
+    // disabled, and a disabled gate catches nothing.
+    expect(importCandidates("src/lib/x.ts", "bun:test")).toEqual([]);
+    expect(importCandidates("src/lib/x.ts", "@atlas/mcp")).toEqual([]);
+    expect(importCandidates("src/lib/x.ts", "node:fs")).toEqual([]);
+  });
+
+  test("a `.js` specifier is TypeScript's NodeNext spelling for a `.ts` file", () => {
+    expect(importCandidates("src/lib/x.ts", "./sibling.js")).toContain("src/lib/sibling.ts");
   });
 });
 
@@ -425,6 +819,22 @@ describe("isWholeSuite — the `could not determine data type` trap", () => {
     // total 0 means the baseline never reported — flagging there would be a
     // guess dressed as a measurement.
     expect(isWholeSuite(5, 0)).toBe(false);
+  });
+
+  test("⚠️ the threshold ROUNDS UP — `floor` would flag the shell fixtures' 2-of-3", () => {
+    // Nothing discriminated `Math.ceil` from `Math.floor`: at 51 tests both give
+    // true, at 58 both give false, and `countCell`'s cases all use total 10 where
+    // `10 * 0.9` is exactly 9 in IEEE-754. This input is the one that separates
+    // them — ceil(2.7) = 3 so 2 of 3 is NOT a whole suite, while floor(2.7) = 2
+    // would flag it.
+    //
+    // It is load-bearing rather than academic: `check-mutation-tables.test.sh`'s
+    // `GOOD_TARGET` is deliberately 2-of-3 so the cell renders `2` and not `2 ⚠️`,
+    // and its hand-edit fixtures `grep -q "| 2 |"`. Under `floor` that grep fails,
+    // `make_tree`'s setup returns non-zero, and the whole suite aborts for a
+    // reason no message explains.
+    expect(isWholeSuite(2, 3)).toBe(false);
+    expect(Math.ceil(3 * WHOLE_SUITE_WARN_RATIO)).toBe(3);
   });
 
   test("the ratio is below 1, or the near-total case above cannot fire", () => {
@@ -590,7 +1000,7 @@ describe("render", () => {
       baselines,
       rowsOf({
         "guard deleted": {
-          here: { kind: "error", fail: 0, flag: "ANCHOR: 0 matches" },
+          here: { kind: "unmeasured", reason: "ANCHOR: 0 matches" },
           corpus: { kind: "count", fail: 5 },
         },
       }),
@@ -598,9 +1008,27 @@ describe("render", () => {
     );
 
     expect(out).toContain("⚠️ ANCHOR: 0 matches");
-    // The `fail: 0` on an error cell must not leak into the table as a `0`.
+    // A no-count cell must never leak into the table as a `0` reading "the
+    // suite does not catch this". Under the union it CANNOT carry a `fail` at
+    // all, so this is now a regression test on the renderer rather than on a
+    // field that has to be remembered.
     expect(out).not.toContain("| guard deleted | 0 |");
     expect(out).toContain("## ⚠️ Flagged");
+  });
+
+  test("a TIMEOUT cell is committable and lands in the Flagged section", () => {
+    // The one no-count cell that is a real measurement — `mutation-core.md`
+    // publishes exactly this for the empty-needle row.
+    const out = render(
+      spec,
+      spec.targets,
+      spec.mutations,
+      baselines,
+      rowsOf({ "guard deleted": { here: { kind: "timeout" } } }),
+      "spec.ts",
+    );
+    expect(out).toContain(TIMEOUT_CELL);
+    expect(out).toContain("- **guard deleted** — here: HANGS — timed out");
   });
 
   test("a whole-suite count is marked in the table, not just on the console", () => {
@@ -609,10 +1037,10 @@ describe("render", () => {
       spec.targets,
       spec.mutations,
       baselines,
-      rowsOf({ "guard deleted": { here: { kind: "count", fail: 10, flag: "whole-suite" } } }),
+      rowsOf({ "guard deleted": { here: { kind: "count", fail: 7, wholeSuite: true } } }),
       "spec.ts",
     );
-    expect(out).toContain("10 ⚠️");
+    expect(out).toContain("7 ⚠️");
     expect(out).toContain("whole-suite");
   });
 
@@ -658,8 +1086,9 @@ describe("cell and label escaping", () => {
     expect(escapeCell("`\\s+`")).toBe("`\\s+`");
   });
 
-  test("renderCell distinguishes a real zero from an error", () => {
+  test("renderCell distinguishes a real zero from a cell that measured nothing", () => {
     expect(renderCell({ kind: "count", fail: 0 })).toBe("0");
-    expect(renderCell({ kind: "error", fail: 0, flag: "boom" })).toBe("⚠️ boom");
+    expect(renderCell({ kind: "timeout" })).toBe(TIMEOUT_CELL);
+    expect(renderCell({ kind: "unmeasured", reason: "boom" })).toBe("⚠️ boom");
   });
 });

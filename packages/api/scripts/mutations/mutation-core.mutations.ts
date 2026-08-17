@@ -118,6 +118,17 @@ it, and that header is exactly what stops a reviewer looking closer.
       note: "A setup break that spares one trivially-green test is the same defect, and this spelling lets it through unflagged.",
     },
     {
+      label: "⚠️ `isWholeSuite` rounds the threshold DOWN (`Math.ceil` → `Math.floor`)",
+      edits: [
+        {
+          file: SOURCE,
+          oldString: "  return total > 0 && fail >= Math.ceil(total * WHOLE_SUITE_WARN_RATIO);",
+          newString: "  return total > 0 && fail >= Math.floor(total * WHOLE_SUITE_WARN_RATIO);",
+        },
+      ],
+      note: "Kills only 1: at 51 tests both roundings agree, at 58 both agree, and every `countCell` case uses a total of 10 where `10 * 0.9` is exactly 9 in IEEE-754. It is load-bearing anyway — `check-mutation-tables.test.sh`'s `GOOD_TARGET` is deliberately 2-of-3 so the cell renders `2` and not `2 ⚠️`, and under `floor` that suite aborts in its own setup for a reason no message explains.",
+    },
+    {
       label: "`validateSpec` stops rejecting a no-op edit",
       edits: [
         {
@@ -161,16 +172,170 @@ it, and that header is exactly what stops a reviewer looking closer.
       ],
       note: "Left in the list deliberately: if this row ever reports a count rather than a timeout, the guard is genuinely gone and the empty-needle case hangs the runner.",
     },
+    // ⚠️ The row that stood here — *"an errored cell renders as its `fail`
+    // number instead of a warning"* — is DELETED rather than re-anchored, and
+    // that is the honest move (#5097). It deleted `renderCell`'s error arm so
+    // the `fail: 0` sitting on an error cell would be published as a `0`. That
+    // `fail` no longer exists: `Cell` is a discriminated union and the no-count
+    // variants carry no count to leak. There is nothing to move the anchor to,
+    // and inventing a successor pointing at whatever replaced it would record a
+    // number for a state no input can reach.
+    //
+    // The rows below price the guards that made it unreachable instead — those
+    // have tests, and therefore real numbers.
     {
-      label: "an errored cell renders as its `fail` number instead of a warning",
+      // ⚠️ The label said "renders as `undefined`", which is FALSE and was being
+      // published into the generated table: `renderCell` has no fall-off path, so
+      // deleting the arm drops through to `default:` and THROWS. On a change whose
+      // thesis is "a claim formatted like a measurement", a wrong label inside the
+      // mutation table is the defect itself. The measured count is 3 either way.
+      label: "`renderCell` loses its `unmeasured` arm (a no-count cell throws instead of rendering its reason)",
       edits: [
         {
           file: SOURCE,
-          oldString: '  if (cell.kind === "error") return `⚠️ ${cell.flag ?? "ERROR"}`;\n',
+          oldString: '    case "unmeasured":\n      return `⚠️ ${cell.reason}`;\n',
           newString: "",
         },
       ],
-      note: "Turns *nothing was measured* into a published `0`, which is the exact lie the anchor guard exists to prevent — arriving through the renderer instead.",
+      note: "The successor to the deleted `fail`-leak row: the same defect one variant over. A cell that measured nothing must never render as anything a reader could take for a measurement.",
+    },
+    {
+      label: "⚠️ the refusal narrows to the DEAD-ANCHOR member again (#5077's shape)",
+      edits: [
+        {
+          file: SOURCE,
+          // ⚠️ Extended past the `case` line: `cellFlag` has the identical two
+          // lines, so the short anchor matched TWICE and the runner refused it —
+          // which is guardrail 2 doing its job on this very spec.
+          oldString:
+            '    case "unmeasured":\n      return cell.reason;\n    // The one committable no-count cell: a real measurement of a real hang.',
+          newString:
+            '    case "unmeasured":\n      return cell.reason.startsWith("ANCHOR") ? cell.reason : null;\n    // The one committable no-count cell: a real measurement of a real hang.',
+        },
+      ],
+      note: "The single row this whole change exists for. It reinstates exactly what #5077 shipped — one member refused, the rest rendered as honest numbers — so a `0` here would mean nothing notices the class reopening.",
+    },
+    {
+      label: "`unmeasurableOutcome` stops refusing a SKIPPED or TODO'd run",
+      edits: [
+        {
+          file: SOURCE,
+          oldString: "  if (outcome.skip !== 0 || outcome.todo !== 0) {",
+          newString: "  if (false) {",
+        },
+      ],
+      note: "Kills the baseline guard and the per-mutation refusal at once, which is the point of there being one copy.",
+    },
+    {
+      label: "`unmeasurableOutcome` stops cross-checking the buckets against `Ran N`",
+      edits: [
+        {
+          file: SOURCE,
+          oldString: "  if (outcome.ran !== null && accounted !== outcome.ran) {",
+          newString: "  if (false) {",
+        },
+      ],
+      note: "The general arm — the one that closes a bucket bun invents later without naming it.",
+    },
+    {
+      label: "⚠️ `unmeasurableOutcome` stops refusing a run that registered ZERO tests",
+      edits: [
+        {
+          file: SOURCE,
+          oldString: "  if (outcome.pass === 0 && outcome.fail === 0) {",
+          newString: "  if (false) {",
+        },
+      ],
+      note: "MEASURED live on bun 1.3.13: an emptied corpus prints `0 pass` / `0 fail` and no other arm fires, so before this guard `measure()` published a `0` — the byte the generated header defines as *the suite does not catch it* — from a run that measured nothing.",
+    },
+    {
+      label: "`unmeasurableOutcome`'s EMPTY arm swallows a whole-suite kill (`&& fail === 0` dropped)",
+      edits: [
+        {
+          file: SOURCE,
+          oldString: "  if (outcome.pass === 0 && outcome.fail === 0) {",
+          newString: "  if (outcome.pass === 0) {",
+        },
+      ],
+      note: "The other direction, and the one that would refuse real results: a mutation that kills every test reports `0 pass` with a large `fail`, which is the strongest measurement the runner can make.",
+    },
+    // ⚠️ DELETED, not re-anchored: *"the `-pg` hint decision is re-derived instead
+    // of read off the problem"*. It flipped the EMPTY arm's `pgHint: false` to
+    // `true` — a runtime change while `UnmeasurableOutcome` typed that field as
+    // `boolean`. It no longer is: the union is split by hint value, so
+    // `{ kind: "empty", pgHint: true }` does not compile, and a "mutation" that
+    // cannot compile measures the compiler rather than the suite.
+    //
+    // Its falsifier moved to where the guard now lives — a `@ts-expect-error` in
+    // `mutate-core.test.ts`, which FAILS TO COMPILE if the error stops occurring,
+    // so `bun run type` enforces it. Pointing a replacement row at an
+    // unrepresentable state would be the tombstone the dead-anchor arm refuses.
+    {
+      label: "`countCell` stops deriving `wholeSuite`, so a near-total publishes unflagged",
+      edits: [
+        {
+          file: SOURCE,
+          oldString:
+            '  return isWholeSuite(fail, total) ? { kind: "count", fail, wholeSuite: true } : { kind: "count", fail };',
+          newString: '  return { kind: "count", fail };',
+        },
+      ],
+    },
+    {
+      label: "`cellFlag` stops naming WHY a row measured nothing",
+      edits: [
+        {
+          file: SOURCE,
+          oldString:
+            '    case "unmeasured":\n      return cell.reason;\n    case "timeout":\n      return "HANGS — timed out";',
+          newString:
+            '    case "unmeasured":\n      return "unmeasured";\n    case "timeout":\n      return "HANGS — timed out";',
+        },
+      ],
+      note: "The flag IS the repair information a reader meets in the Flagged section — which mutation measured nothing, and why. A `toBeDefined()` assertion could not see this.",
+    },
+    {
+      label: "the TIMEOUT cell carries a wall-clock number again (determinism lost)",
+      edits: [
+        {
+          file: SOURCE,
+          oldString: 'export const TIMEOUT_CELL = "⚠️ HANGS — timed out";',
+          newString: 'export const TIMEOUT_CELL = "⚠️ HANGS — timed out after 30s";',
+        },
+      ],
+      note: "The one committable no-count cell. Its first spelling interpolated `round(timeoutMs / 1000)`, which derives from the baseline's MEASURED duration — so the byte was stable only while that suite stayed under 3s, and for a `-pg` target never. `--check` compares bytes and is a required gate.",
+    },
+    {
+      label: "`importSpecifiers` sees only SINGLE-LINE import statements",
+      edits: [
+        {
+          file: SOURCE,
+          oldString: `  const found: string[] = [];
+  for (const match of source.matchAll(/\\bfrom\\s*["']([^"'\\n]+)["']/g)) {
+    if (match[1] !== undefined) found.push(match[1]);
+  }
+  for (const match of source.matchAll(/\\bimport\\s*["']([^"'\\n]+)["']/g)) {
+    if (match[1] !== undefined) found.push(match[1]);
+  }
+  return found;`,
+          newString: `  const found: string[] = [];
+  for (const match of source.matchAll(/^\\s*import[^;\\n]*?\\bfrom\\s*["']([^"'\\n]+)["']/gm)) {
+    if (match[1] !== undefined) found.push(match[1]);
+  }
+  return found;`,
+        },
+      ],
+      note: "The spelling a reader reaches for, and the one that misses every multi-line import — which is how `__tests__/*-corpus.ts` stayed invisible to `--files` after #5077 claimed to have fixed the class.",
+    },
+    {
+      label: "`importCandidates` drops the `@atlas/api/*` alias arm",
+      edits: [
+        {
+          file: SOURCE,
+          oldString: '  } else if (specifier.startsWith("@atlas/api/")) {\n    base = `src/${specifier.slice("@atlas/api/".length)}`;\n',
+          newString: "  } else if (false) {\n",
+        },
+      ],
     },
     {
       label: "`render` defaults an unmeasured cell to `0` instead of a dash",

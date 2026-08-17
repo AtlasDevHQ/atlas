@@ -286,6 +286,77 @@ mutate deploy/svc/railway.json 's#"DOCKERFILE"#"NIXPACKS"#'
 expect "a NIXPACKS service is skipped while its DOCKERFILE sibling is still checked" 0 \
   "builder=NIXPACKS — SKIPPED"
 
+# 13a. ⚠️ THE COPY-SOURCE ARM'S VACUITY FLOOR MUST *SUPPRESS* ITS CLEAN LINE, NOT
+# JUST COUNT THE VACUITY.
+#
+# Indenting the COPY lines defeats the `^COPY` anchor, so `extract_sources` reads
+# nothing. The first cut of this floor detected that and incremented
+# `CANNOT_LOOK` — and then fell through to print `All 0 COPY sources covered`, the
+# exact string its own comment quotes as the defect. Counting a vacuity is not
+# suppressing the negative it produces, and every OTHER floor in that loop
+# `continue`s, which is what stops them doing the same.
+#
+# So this case asserts BOTH halves: the non-zero exit, and the ABSENCE of the
+# clean sentence. Either alone passes the broken version.
+new_tree
+mutate deploy/svc/Dockerfile 's#^COPY package.json ./#  COPY package.json ./#'
+if [ "$MUTATED" -ne 1 ]; then
+  fail "FIXTURE SETUP FAILED: could not indent the COPY line, so NOTHING was tested"
+else
+  rc_vac=0
+  out_vac=$(RAILWAY_WATCH_ROOT="$TREE" bash "$GATE" 2>&1) || rc_vac=$?
+  if [ "$rc_vac" = "2" ] \
+     && printf '%s' "$out_vac" | grep -qF "verified NOTHING for this service" \
+     && ! printf '%s' "$out_vac" | grep -qF "All 0 COPY sources covered"; then
+    pass "an unreadable COPY set exits 2 AND never prints 'All 0 COPY sources covered' (exit $rc_vac)"
+  else
+    fail "COPY-source vacuity — expected exit 2, the CANNOT-LOOK error, and NO 'All 0 …' line; got $rc_vac"
+    printf '%s\n' "$out_vac" | sed 's/^/       | /' >&2
+  fi
+fi
+
+# 13a2. ⚠️ AND THE CLOSURE ARM'S CLEAN LINE MUST NAME WHAT IT ACTUALLY COVERED.
+#
+# A broad-COPY service whose image paths resolve to NO workspace package gets no
+# closure computed at all — and the line still said "bundled workspace/image
+# path(s)" over a set containing none. An honest count with a misleading scope,
+# which is the same defect as a vacuous count one degree weaker.
+NOPKG_TREE="$TMPROOT/no-package-roots"
+mkdir -p "$NOPKG_TREE/deploy/svc" "$NOPKG_TREE/semantic"
+cat >"$NOPKG_TREE/package.json" <<'JSON'
+{ "name": "root", "private": true, "workspaces": ["packages/*"] }
+JSON
+mkdir -p "$NOPKG_TREE/packages/only"
+cat >"$NOPKG_TREE/packages/only/package.json" <<'JSON'
+{ "name": "@t/only" }
+JSON
+cat >"$NOPKG_TREE/deploy/svc/Dockerfile" <<'DOCKER'
+FROM base AS builder
+COPY package.json ./
+COPY . .
+FROM base AS runner
+COPY --from=builder /app/semantic ./semantic
+DOCKER
+cat >"$NOPKG_TREE/deploy/svc/railway.json" <<'JSON'
+{
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "deploy/svc/Dockerfile",
+    "dockerfileContext": "../..",
+    "watchPatterns": ["package.json", "semantic/**", "deploy/svc/**"]
+  }
+}
+JSON
+rc_nopkg=0
+out_nopkg=$(RAILWAY_WATCH_ROOT="$NOPKG_TREE" bash "$GATE" 2>&1) || rc_nopkg=$?
+if printf '%s' "$out_nopkg" | grep -qF "NO workspace closure was computed" \
+   && ! printf '%s' "$out_nopkg" | grep -qF "bundled workspace/image path(s) covered"; then
+  pass "a service with no workspace-package image paths says NO closure was computed"
+else
+  fail "no-package-roots — expected the scope-qualified line and NOT the 'bundled workspace' one (exit $rc_nopkg)"
+  printf '%s\n' "$out_nopkg" | sed 's/^/       | /' >&2
+fi
+
 # 13b. ⚠️ THE CRITICAL ONE: A RUN THAT EXAMINED ZERO SERVICES MUST NOT PRINT ITS
 # CLEAN NEGATIVE. `nullglob` is unset, so an empty `deploy/*/railway.json` glob
 # runs the loop once with the literal pattern, `[ -f ]` fails, `continue` fires,
@@ -474,7 +545,7 @@ fi
 # ⚠️ AN ABSOLUTE LITERAL. A count derived from the cases cannot notice a deleted
 # case — measured on `check-docs-brain-snippets.test.sh`, which reported
 # `40 passed, 0 failed` with cases removed.
-EXPECTED_CASES=25
+EXPECTED_CASES=27
 TOTAL=$((PASS + FAIL))
 if [ "$TOTAL" -eq "$EXPECTED_CASES" ]; then
   pass "all $EXPECTED_CASES cases ran"

@@ -505,7 +505,21 @@ for railway_json in "$ROOT"/deploy/*/railway.json; do
     fi
   done
 
-  if [ $missing_for_svc -eq 0 ]; then
+  # ⚠️ **GATED ON HAVING READ SOMETHING, not just on having found no miss.** The
+  # floor above DETECTED the vacuity and counted it — and then fell through to
+  # here with `missing_for_svc` still 0 and printed `All 0 COPY sources covered`:
+  # the exact string its own comment quotes as the defect. Counting a vacuity is
+  # not suppressing the negative it produces, and every OTHER floor in this loop
+  # ends in `continue`, which is what keeps them from doing the same. This one was
+  # extending the pattern to the older arm and inherited the counter without the
+  # suppression.
+  #
+  # It stays a suppression rather than a `continue` on purpose: the closure arm
+  # reads the same Dockerfile differently and may well succeed, so skipping it
+  # would trade a false clean line for lost coverage.
+  if [ "${#sources[@]}" -eq 0 ]; then
+    echo "  (no COPY sources read — nothing verified by this arm)"
+  elif [ $missing_for_svc -eq 0 ]; then
     echo "  All ${#sources[@]} COPY sources covered"
   fi
 
@@ -588,6 +602,8 @@ for railway_json in "$ROOT"/deploy/*/railway.json; do
   done
 
   required=()
+  # 1 once the workspace-closure arm has actually produced a closure.
+  closure_checked=0
   # ⚠️ DEDUPED AND EMPTY-STRIPPED BEFORE THE FLOOR READS IT. Two arithmetic
   # mismatches lived in these four lines, and one is live on `web` today:
   #
@@ -650,6 +666,7 @@ for railway_json in "$ROOT"/deploy/*/railway.json; do
       fi
     done
     required+=("${closure_dirs[@]}")
+    closure_checked=1
   else
     # ⚠️ An ERROR for the same reason as the arm above: a broad-COPY service whose
     # image paths resolve to no workspace package got the closure arm verifying
@@ -687,8 +704,17 @@ for railway_json in "$ROOT"/deploy/*/railway.json; do
       ERRORS=$((ERRORS + 1))
     fi
   done
+  # ⚠️ NAMES WHAT IT ACTUALLY COVERED. When `closure_roots` was empty the arm
+  # above already errored, but this line still said "bundled workspace/image
+  # path(s)" over a set containing NO workspace closure at all — an honest count
+  # with a misleading scope, which is the same defect as a vacuous count one
+  # degree weaker. `$closure_checked` says which of the two arms actually ran.
   if [ $missing_closure -eq 0 ]; then
-    echo "  All ${#required[@]} bundled workspace/image path(s) covered"
+    if [ "$closure_checked" -eq 1 ]; then
+      echo "  All ${#required[@]} bundled workspace/image path(s) covered"
+    else
+      echo "  All ${#required[@]} exact image path(s) covered — NO workspace closure was computed"
+    fi
   fi
 done
 

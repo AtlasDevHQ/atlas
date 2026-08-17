@@ -65,7 +65,7 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | the exporter feeds identity values through a cast instead of `textOrNull` | 0 | 0 | 2 | 0 | 0 | 0 |
 | the importer writes `predicate_cardinality` again (from the legacy field) | 9 | 0 | 0 | 0 | 1 | 0 |
 
-Suite sizes: **roundtrip-pg** 15 tests (`src/lib/residency/__tests__/migrate-roundtrip-pg.test.ts`) · **admin-migrate** 114 tests (`src/api/__tests__/admin-migrate.test.ts`) · **export** 24 tests (`src/lib/residency/__tests__/export.test.ts`) · **object-cmp** 64 tests (`src/lib/brain/__tests__/object-cmp.test.ts`) · **v3 pin** 6 tests (`src/lib/residency/__tests__/bundle-identity-v3.test.ts`) · **logging** 9 tests (`src/lib/residency/__tests__/migrate-identity-logging.test.ts`).
+Suite sizes: **roundtrip-pg** 18 tests (`src/lib/residency/__tests__/migrate-roundtrip-pg.test.ts`) · **admin-migrate** 114 tests (`src/api/__tests__/admin-migrate.test.ts`) · **export** 24 tests (`src/lib/residency/__tests__/export.test.ts`) · **object-cmp** 64 tests (`src/lib/brain/__tests__/object-cmp.test.ts`) · **v3 pin** 6 tests (`src/lib/residency/__tests__/bundle-identity-v3.test.ts`) · **logging** 9 tests (`src/lib/residency/__tests__/migrate-identity-logging.test.ts`).
 
 ## Notes
 

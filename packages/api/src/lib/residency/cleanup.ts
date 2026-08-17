@@ -473,8 +473,27 @@ export async function cleanupMigrationSourceData(migration: {
 
     // Re-check eligibility under a row lock — the loser of a concurrent
     // sweep (multi-instance deploy) sees the winner's stamp and skips.
+    // BOTH #5112 columns ride the SAME `FOR UPDATE` read — no extra query, and
+    // read under the lock that pins the verdict to the deletes. This sweep is the
+    // irreversible act: after it, the source's own `brain_vocabulary_edge` rows are
+    // gone and the payloads on this row are the last copy of those approved
+    // decisions. The audit event below is where that becomes visible at the moment
+    // it becomes true, rather than only in a phase-2 warn emitted seven days
+    // earlier.
+    //
+    // ⚠️ `vocabulary_refusals` is read as a LENGTH, not as the array. The warn
+    // below tells an operator to go and re-author from that column, and round 1 of
+    // this PR's review caught it making that promise unconditionally — while the
+    // column is NULL for a target that predated #5112 (count answered, no payloads)
+    // and shorter than the count whenever the cap bit or an entry was screened out.
+    // A recovery instruction pointing at an empty column, emitted at the instant
+    // the originals become unrecoverable, is worse than no instruction.
     const rows = await client.query(
-      `SELECT status, source_cleaned_at FROM region_migrations WHERE id = $1 FOR UPDATE`,
+      `SELECT status,
+              source_cleaned_at,
+              vocabulary_edges_refused,
+              COALESCE(jsonb_array_length(vocabulary_refusals), 0) AS vocabulary_refusals_recorded
+         FROM region_migrations WHERE id = $1 FOR UPDATE`,
       [migrationId],
     );
     const row = rows.rows[0];
@@ -482,6 +501,17 @@ export async function cleanupMigrationSourceData(migration: {
       await client.query("ROLLBACK");
       return { outcome: "already_resolved" };
     }
+    // NULL means UNKNOWN, not zero — a row written before migration 0204, or a
+    // migration whose source build never asked the target. Kept as `null` rather
+    // than coerced to `0`, because `0` is a positive claim that nothing was
+    // refused and this column cannot make it for those rows.
+    const vocabularyEdgesRefused: number | null =
+      typeof row.vocabulary_edges_refused === "number" ? row.vocabulary_edges_refused : null;
+    // `0` here IS a claim — `COALESCE(..., 0)` folds "column NULL" and "empty
+    // array" together deliberately, because both mean the same thing to the
+    // operator: no payload is recoverable from this row.
+    const vocabularyRefusalsRecorded: number =
+      typeof row.vocabulary_refusals_recorded === "number" ? row.vocabulary_refusals_recorded : 0;
 
     // Cutover guard: never delete a workspace that is homed HERE. After a
     // normal cutover the source DB's organization row points at the target
@@ -561,11 +591,48 @@ export async function cleanupMigrationSourceData(migration: {
       sourceRegion,
       deletedRows,
       deletedByTable,
+      // #5112 — the counts travel with the deletion audit, because THIS is the
+      // event that made the loss permanent. `null` = unknown (pre-0204 row).
+      vocabularyEdgesRefused,
+      vocabularyRefusalsRecorded,
     });
     log.info(
-      { migrationId, workspaceId, sourceRegion, deletedRows },
+      { migrationId, workspaceId, sourceRegion, deletedRows, vocabularyEdgesRefused },
       "Source-region data cleanup completed",
     );
+    // ⚠️ A SEPARATE `warn`, not a clause on the `info` above, and only when the
+    // number is non-zero (#5112). The line above is routine — it fires for every
+    // migration — and an operator who greps for it is looking at row counts. This
+    // one says an irreversible thing just happened to a human's approved decisions
+    // and points at where they can still be found, which from this instant on is
+    // the only remaining copy.
+    if (vocabularyEdgesRefused !== null && vocabularyEdgesRefused > 0) {
+      // ⚠️ THREE MESSAGES, because there are three states and only one of them can
+      // honestly say "re-author them from this row". Round 1 of this PR's review
+      // caught a single unconditional message that promised the payloads whether or
+      // not any had been recorded — the worst possible moment to be wrong, since it
+      // fires exactly when the originals stop existing.
+      const recovery =
+        vocabularyRefusalsRecorded === 0
+          ? "NO recovery payload was recorded for this migration (the target region's build " +
+            "predated the payload contract, or every entry it sent was unreadable), so the " +
+            "target region's own log is the only surviving copy — search it for this " +
+            "workspace's refusal lines."
+          : vocabularyRefusalsRecorded < vocabularyEdgesRefused
+            ? `Only ${vocabularyRefusalsRecorded} of the ${vocabularyEdgesRefused} recovery ` +
+              "payloads are on this migration's region_migrations.vocabulary_refusals " +
+              "(platform-classified, so this sweep never touches it); the remainder exist only " +
+              "in the target region's log."
+            : "The recovery payloads are all on this migration's " +
+              "region_migrations.vocabulary_refusals (platform-classified, so this sweep never " +
+              "touches it); re-author them there.";
+      log.warn(
+        { migrationId, workspaceId, sourceRegion, vocabularyEdgesRefused, vocabularyRefusalsRecorded },
+        "Source cleanup DELETED the brain_vocabulary_edge rows behind refused alias edges — that " +
+          "many approved human review decisions were never applied in the target region and " +
+          `their source rows are now gone. ${recovery}`,
+      );
+    }
     return { outcome: "cleaned", deletedRows };
   } catch (err) {
     try {

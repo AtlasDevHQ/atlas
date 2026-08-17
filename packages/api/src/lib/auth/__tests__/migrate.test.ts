@@ -618,6 +618,10 @@ describe("migrateAuthTables", () => {
             // text (#5240) — again a data-only UPDATE on `plugin_catalog`, so
             // the same grounds as 0196–0202.
             { name: "0203_brain_catalog_config_help_company_atlas.sql" },
+            // 0204 adds two nullable columns to `region_migrations` (#5112) —
+            // an Atlas-owned table Better Auth has no stake in, so the same
+            // grounds as 0196–0203.
+            { name: "0204_region_migrations_vocabulary_refusals.sql" },
           ],
         };
       }

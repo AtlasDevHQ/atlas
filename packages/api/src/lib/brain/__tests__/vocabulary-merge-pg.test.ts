@@ -35,6 +35,10 @@
  *      merge and must still account three ways.
  *   7. **The transaction** — the merge refuses to run outside one, and takes no
  *      lock when there is nothing to merge.
+ *   8. **The correlation token** (#5112) — every refusal line carries it, and two
+ *      attempts at the SAME bundle in the SAME workspace stop emitting
+ *      byte-identical payloads. That equality was the defect, so the assertion
+ *      compares the whole serialized payload rather than the token alone.
  *
  * ## Why the logger is mocked here
  *
@@ -108,7 +112,53 @@ const PG_TEST_TIMEOUT_MS = 60_000;
 // DYNAMIC, after the mock above is installed.
 const { runMigrations } = await import("@atlas/api/lib/db/migrate");
 const { MANAGED_AUTH_MIGRATIONS, _resetPool } = await import("@atlas/api/lib/db/internal");
-const { approveAliasEdge, mergeApprovedEdges } = await import("@atlas/api/lib/brain/vocabulary");
+const { approveAliasEdge, mergeApprovedEdges: mergeApprovedEdgesWithCorrelationId } = await import(
+  "@atlas/api/lib/brain/vocabulary"
+);
+
+/**
+ * The default correlation token for this file's cases (#5112).
+ *
+ * Distinct per attempt in production — a `requestId` — and every existing case
+ * here makes exactly one attempt, so one constant is faithful. The two cases that
+ * exist to exercise the token (group 8, at the end of this file) pass their own.
+ */
+const DEFAULT_CORRELATION_ID = "req-vocabulary-merge-pg";
+
+type MergeArgs = Parameters<typeof mergeApprovedEdgesWithCorrelationId>;
+/**
+ * `mergeApprovedEdges` with the token defaulted. REQUIRED on the real signature so a
+ * production caller cannot omit it; defaulted through one named shim here so the cases
+ * that are not about the token do not each restate it.
+ */
+const mergeApprovedEdges = (
+  tx: MergeArgs[0],
+  workspaceId: MergeArgs[1],
+  edges: MergeArgs[2],
+  correlationId: MergeArgs[3] = DEFAULT_CORRELATION_ID,
+) => mergeApprovedEdgesWithCorrelationId(tx, workspaceId, edges, correlationId);
+
+/**
+ * ⚠️ The 4th parameter is REQUIRED, pinned here because the shim above hides it.
+ *
+ * `mergeApprovedEdges`' docstring argues at length that the token must be required
+ * because "a parameter a caller can omit is one a caller will omit" — and nothing
+ * enforced that: relaxing THIS signature to `correlationId?: string` leaves the shim
+ * above compiling (`MergeArgs[3]` merely becomes `string | undefined`, and the default
+ * still fills it), so the argument was documentation with no guard.
+ *
+ * The two `importBundle` shims — `api/__tests__/admin-migrate.test.ts` and
+ * `residency/__tests__/migrate-roundtrip-pg.test.ts` — hide the same parameter on the
+ * OTHER function; its arity is pinned in the first of those.
+ *
+ * An optional 4th argument makes `length` the union `3 | 4`, which fails `extends 4`.
+ */
+const _correlationIdIsRequired: Parameters<
+  typeof mergeApprovedEdgesWithCorrelationId
+>["length"] extends 4
+  ? true
+  : never = true;
+void _correlationIdIsRequired;
 type ArrivingAliasEdge = import("@atlas/api/lib/brain/vocabulary").ArrivingAliasEdge;
 type SlotPosition = import("@atlas/api/lib/brain/identity").SlotPosition;
 
@@ -843,6 +893,75 @@ describeIfPg("merging two vocabularies (#5036)", () => {
       const merge = await mergeApprovedEdges(pool, ws, []);
       expect(merge).toEqual({ applied: 0, duplicate: 0, refusals: [], positionsRecomputed: [] });
       expect(warns).toEqual([]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  // ── 8. #5112 — the correlation token ───────────────────────────────
+
+  it(
+    "⭐ stamps the correlation token on EVERY refusal line",
+    async () => {
+      // Before it, this payload was derived entirely from the arriving edge and this
+      // region's rows, so nothing in a refusal line said which ATTEMPT produced it.
+      const ws = freshWorkspace();
+      const merge = await inTx((tx) =>
+        mergeApprovedEdges(
+          tx,
+          ws,
+          // TWO refusals, so "every line" is a real claim: an implementation that
+          // stamped only the first would satisfy a single-refusal fixture.
+          [arriving("", "price"), arriving("price", "price")],
+          "req-attempt-alpha",
+        ),
+      );
+
+      expect(merge.refusals).toHaveLength(2);
+      expect(warns).toHaveLength(2);
+      expect(warns.map((w) => w.payload.correlationId)).toEqual([
+        "req-attempt-alpha",
+        "req-attempt-alpha",
+      ]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "⭐ makes two attempts at the SAME bundle distinguishable",
+    async () => {
+      // The defect, stated exactly: two attempts at one bundle emitted BYTE-IDENTICAL
+      // line sets. A retry after a rollback produced a second copy of the first
+      // attempt's lines, and the future tense the lines are written in ("WILL DROP …
+      // when this transaction commits") makes each line individually honest while
+      // leaving the aggregate unreadable — an operator grepping the norm cannot tell
+      // three attempts at one edge from one attempt at three.
+      //
+      // ⚠️ THE SAME WORKSPACE AND THE SAME EDGE, twice. A fixture that varied the
+      // workspace or the norms would produce different lines for a reason that has
+      // nothing to do with the token, which is what makes this the falsifiable form.
+      const ws = freshWorkspace();
+      const bundle = [arriving("", "price")];
+
+      await inTx((tx) => mergeApprovedEdges(tx, ws, bundle, "req-attempt-one"));
+      const first = warns.map((w) => JSON.stringify(w.payload));
+      warns.length = 0;
+
+      await inTx((tx) => mergeApprovedEdges(tx, ws, bundle, "req-attempt-two"));
+      const second = warns.map((w) => JSON.stringify(w.payload));
+
+      expect(first).toHaveLength(1);
+      expect(second).toHaveLength(1);
+      // ⚠️ The WHOLE payload compared, not just the token: without the token the two
+      // serializations are equal, and that equality IS the bug. Asserting only that
+      // the tokens differ would pass an implementation that stamped the token
+      // somewhere the line never carries.
+      expect(second[0]).not.toBe(first[0]);
+      // …and the difference is the token and nothing else, which is what makes the
+      // two lines comparable rather than merely unequal.
+      expect(JSON.parse(second[0]) as Record<string, unknown>).toEqual({
+        ...(JSON.parse(first[0]) as Record<string, unknown>),
+        correlationId: "req-attempt-two",
+      });
     },
     PG_TEST_TIMEOUT_MS,
   );

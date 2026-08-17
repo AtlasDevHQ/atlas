@@ -379,7 +379,14 @@ describe("runMigrations", () => {
     //   guarded rewrite of one string INSIDE the JSONB array — the array is
     //   rebuilt element-wise with `jsonb_agg … WITH ORDINALITY` so every other
     //   field, flag and position survives byte-identical) = 204.
-    expect(count).toBe(204);
+    //   Plus 0204 (region_migrations_vocabulary_refusals — #5112: the refused
+    //   alias edges, durable on the SOURCE region's own migration row. Two
+    //   columns, both nullable, on a table classified `platform` in
+    //   bundle-scope.ts — which is what makes them outlive the grace-period
+    //   delete of the `brain_vocabulary_edge` rows they describe. NULL means
+    //   UNKNOWN, not zero: a row written before this migration, or a source
+    //   build that never asked the target) = 205.
+    expect(count).toBe(205);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -612,6 +619,7 @@ describe("runMigrations", () => {
         "0201_brain_catalog_rows_company_atlas.sql",
         "0202_brain_coverage_snapshot.sql",
         "0203_brain_catalog_config_help_company_atlas.sql",
+        "0204_region_migrations_vocabulary_refusals.sql",
       ],
     });
 

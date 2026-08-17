@@ -164,8 +164,21 @@ jobs:
       - name: Check Dockerfile workspace completeness
         run: bash scripts/check-dockerfile-workspace.sh
 
-      - name: Check Railway watchPatterns coverage
+      # ⚠️ Two arms, and the second one is the reason this gate can now fail for
+      # the class it was filed for. The COPY-source arm skips the api
+      # Dockerfile's broad `COPY . .` by design — and that one line bundles every
+      # package in the repo, so the set of change-relevant files is the workspace
+      # dependency CLOSURE of what the image ships, not the set of COPY sources.
+      # A miss there does not fail a deploy, it SKIPS one: Railway answers
+      # `skippedReason: "No changes to watched files"` and the release silently
+      # never ships (#4733/#4734, hand-fixed in #4737). Measured before this
+      # change: the gate reported "All 54 COPY sources covered" and exit 0 while
+      # `packages/okf-bundle` was copied into the api image and watched by nobody.
+      - name: Check Railway watchPatterns cover every bundled workspace path (#4738)
         run: bash scripts/check-railway-watch.sh
+
+      - name: Adversarial fixtures for the railway-watch gate (#4738)
+        run: bash scripts/__tests__/check-railway-watch.test.sh
 
       - name: Check template drift
         run: bash scripts/check-template-drift.sh
@@ -316,10 +329,11 @@ jobs:
       # ⚠️ Enumerated here because this workflow lists each fixture suite BY NAME
       # while ci-local.sh globs the directory — so a new suite runs locally and
       # silently never runs in CI. This was the only one missing at the time, of
-      # thirteen suites then. There are 22 now, all covered: 21 named in this
+      # thirteen suites then. There are 23 now, all covered: 22 named in this
       # workflow plus `scan-image.test.sh` in image-scan.yml. (#5242 added
       # `check-caddyfile.test.sh`; #5174 added `check-lighthouse-report-paths.test.sh`
-      # and `lighthouse-comment.test.sh`, all named in the drift job above.)
+      # and `lighthouse-comment.test.sh`; #4738 added `check-railway-watch.test.sh`
+      # — all named in the drift job above.)
       # It builds throwaway trees and needs no Postgres; ~2 seconds.
       - name: Adversarial fixtures for the mutation-tables gate (#5077, #5097)
         run: bash scripts/__tests__/check-mutation-tables.test.sh

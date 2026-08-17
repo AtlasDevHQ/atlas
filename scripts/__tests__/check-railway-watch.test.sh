@@ -243,25 +243,198 @@ mutate deploy/svc/Dockerfile '/^COPY \. \.$/d'
 expect "no broad \`COPY . .\` means the closure arm does not apply" 0 \
   "the workspace-closure arm does not apply"
 
-# 11. A GATE THAT CANNOT LOOK MUST SAY SO. A broad-COPY Dockerfile whose runner
-# stage this cannot read verified nothing, and a silent clean line there is the
-# same false green the whole gate exists to refuse.
+# 11. A GATE THAT CANNOT LOOK MUST SAY SO — WITH A NON-ZERO EXIT.
+#
+# ⚠️ The first cut made this a `::warning::` on an exit-0 run, and that is a clean
+# line to every consumer that matters: `ci.yml`'s step status, `ci-local.sh`'s PASS
+# row, `gh pr checks`. This repo has already paid for the distinction, in a file
+# this same change touches — `lighthouse.yml` records that "#4899 survived three
+# months precisely because a polite annotation under a green check goes unread."
 new_tree
 mutate deploy/svc/Dockerfile '/^COPY --from=builder/d'
-expect "a broad-COPY service with no readable runner copies WARNS" 0 \
-  "the workspace-closure arm verified nothing for this service"
+expect "a broad-COPY service with no readable runner copies EXITS 2" 2 \
+  "CANNOT RUN for this service"
 
-# 12. …and a root package.json with no workspaces is an error, not an empty pass.
+# 11b. …and the verdict names the GATE as the thing to fix, not watchPatterns.
+# Counting a cannot-look as a coverage gap sent an operator to edit a config that
+# was fine — the misdirecting-diagnostic class `BaselineProblem.kind` was split to
+# prevent.
+new_tree
+mutate deploy/svc/Dockerfile '/^COPY --from=builder/d'
+expect "…and points at the gate, not at watchPatterns" 2 \
+  "NOT watchPatterns"
+
+# 12. A root package.json with no workspaces is a CANNOT-LOOK (exit 2), not a
+# coverage gap (exit 1) and certainly not an empty pass.
 new_tree
 mutate package.json 's#"workspaces": \["packages/\*"\]#"workspaces": []#'
-expect "a root package.json declaring no workspaces is an error" 1 \
+expect "a root package.json declaring no workspaces exits 2" 2 \
   "could not compute the workspace closure"
 
 # 13. NIXPACKS services are still skipped — the arm must not change that.
+#
+# ⚠️ Needs a SECOND, DOCKERFILE service in the tree, or the new zero-services
+# floor fires instead and this case measures that rather than the skip. That
+# collision is itself the finding: an all-NIXPACKS root must exit 2 (case 13c),
+# while a NIXPACKS service ALONGSIDE a checked one is a legitimate skip. The two
+# outcomes are different and both need pinning.
 new_tree
+mkdir -p "$TREE/deploy/other"
+sed 's#deploy/svc/#deploy/other/#g' "$TREE/deploy/svc/railway.json" >"$TREE/deploy/other/railway.json"
+cp "$TREE/deploy/svc/Dockerfile" "$TREE/deploy/other/Dockerfile"
 mutate deploy/svc/railway.json 's#"DOCKERFILE"#"NIXPACKS"#'
-expect "a NIXPACKS service is still skipped entirely" 0 \
-  "builder=NIXPACKS — skipping"
+expect "a NIXPACKS service is skipped while its DOCKERFILE sibling is still checked" 0 \
+  "builder=NIXPACKS — SKIPPED"
+
+# 13b. ⚠️ THE CRITICAL ONE: A RUN THAT EXAMINED ZERO SERVICES MUST NOT PRINT ITS
+# CLEAN NEGATIVE. `nullglob` is unset, so an empty `deploy/*/railway.json` glob
+# runs the loop once with the literal pattern, `[ -f ]` fails, `continue` fires,
+# and every counter stays 0 — falling straight through to "OK: … covered by their
+# watchPatterns", the sentence a reviewer greps for, on a run that read no file.
+# The `RAILWAY_WATCH_ROOT` seam this change introduces is what makes a wrong root
+# reachable; before it, `ROOT` was computed and could not be wrong.
+EMPTY_TREE="$TMPROOT/empty-root"
+mkdir -p "$EMPTY_TREE"
+rc_empty=0
+out_empty=$(RAILWAY_WATCH_ROOT="$EMPTY_TREE" bash "$GATE" 2>&1) || rc_empty=$?
+if [ "$rc_empty" = "2" ] && printf '%s' "$out_empty" | grep -qF "this gate verified NOTHING"; then
+  pass "a root with NO deploy services exits 2 rather than printing its clean negative (exit $rc_empty)"
+else
+  fail "empty root — expected exit 2 saying it verified nothing, got $rc_empty"
+  printf '%s\n' "$out_empty" | sed 's/^/       | /' >&2
+fi
+
+# 13c. …and the same for a root where every service is on a non-DOCKERFILE
+# builder, which reaches the identical end state by a different door.
+NIX_TREE="$TMPROOT/nixpacks-only"
+mkdir -p "$NIX_TREE/deploy/only"
+cat >"$NIX_TREE/deploy/only/railway.json" <<'JSON'
+{ "build": { "builder": "NIXPACKS", "watchPatterns": ["apps/only/**"] } }
+JSON
+rc_nix=0
+out_nix=$(RAILWAY_WATCH_ROOT="$NIX_TREE" bash "$GATE" 2>&1) || rc_nix=$?
+if [ "$rc_nix" = "2" ] && printf '%s' "$out_nix" | grep -qF "this gate verified NOTHING"; then
+  pass "a root where every service is NIXPACKS exits 2, not a clean sweep (exit $rc_nix)"
+else
+  fail "nixpacks-only root — expected exit 2, got $rc_nix"
+  printf '%s\n' "$out_nix" | sed 's/^/       | /' >&2
+fi
+
+# 13d. THE BROAD-COPY SPELLINGS MUST AGREE BETWEEN THE TWO ARMS. `extract_sources`
+# skips a source token of `.` OR `./`; `has_broad_copy` recognised only the bare
+# `COPY . .`. So `COPY ./ ./` was skipped by the COPY-source arm AND reported
+# "no broad COPY . . — the workspace-closure arm does not apply" — both arms
+# standing down while the broad copy bundled every package, with a STATED NEGATIVE
+# telling the reader not to look.
+for spelling in 'COPY .\/ .\/' 'COPY . .\/' 'COPY --link . .'; do
+  new_tree
+  mutate deploy/svc/Dockerfile "s#^COPY \. \.\$#${spelling}#"
+  expect "the closure arm still applies to \`$(printf '%s' "$spelling" | sed 's#\\##g')\`" 0 \
+    "All 4 bundled workspace/image path(s) covered"
+done
+
+# 13e. THE IMAGE-CONTENT EXTRACTOR HAS A COMPLETENESS FLOOR. It pins one spelling;
+# a reordered `--chown` before `--from`, a BuildKit `--link`, or a digest-pinned
+# stage name drops a line SILENTLY, taking a package and its whole transitive
+# closure out of `required` while the gate prints `All N … covered`. MEASURED on
+# the real Dockerfiles: the first pattern missed
+# `COPY --from=node:24-trixie-slim@sha256:… /usr/local/bin/node`.
+new_tree
+mutate deploy/svc/Dockerfile 's#^COPY --from=builder /app/packages/app ./packages/app$#COPY --chown=x:y --from=builder /app/packages/app ./packages/app#'
+expect "a reordered --chown/--from is still READ, not dropped" 0 \
+  "All 4 bundled workspace/image path(s) covered"
+
+# 13f. ⚠️ THE COMPLETENESS FLOOR FIRES WHEN THE EXTRACTOR UNDER-READS — and the
+# only way to test that is to BREAK THE EXTRACTOR, because the floor's whole job
+# is to catch a line shape the extractor cannot read, which by definition is one
+# nobody has thought of. So this case narrows the extractor in the fixture's OWN
+# COPY of the gate (never the tracked one) and requires the floor to notice.
+#
+# Measured without the floor: the reordered-`--chown` case below simply lost a
+# package, its whole transitive closure went unchecked, and the gate printed
+# `All N … covered`. Both premises are verified, because a silently-missed `sed`
+# would make this fixture pass for the wrong reason.
+# ⚠️ The patch goes through `bun`, not `sed`: the string being replaced IS a
+# regex full of `[`, `]`, `*`, `+` and `?`, and hand-escaping it for BRE is how a
+# fixture ends up silently matching nothing. A literal `replace` cannot misfire,
+# and it reports whether it landed.
+new_tree
+GATE_COPY="$TREE/gate-narrowed.sh"
+cp "$GATE" "$GATE_COPY"
+PATCHER="$TREE/narrow.ts"
+cat >"$PATCHER" <<'TS'
+// Narrow the extractor to "only ever read packages/app", so every other /app/
+// token in the fixture Dockerfile goes unread while the counter still sees them
+// all. A literal replace, so it cannot silently match a different thing.
+const p = Bun.env.GATE_COPY!;
+const src = await Bun.file(p).text();
+const FROM = "grep -oE '/app/[^[:space:]]+'";
+const TO = "grep -oE '/app/packages/app'";
+if (!src.includes(FROM)) {
+  process.stderr.write(`the extractor's token grep is not where this fixture expects it\n`);
+  process.exit(1);
+}
+await Bun.write(p, src.replace(FROM, TO));
+TS
+if GATE_COPY="$GATE_COPY" bun "$PATCHER" 2>/dev/null; then
+  rc_floor=0
+  out_floor=$(RAILWAY_WATCH_ROOT="$TREE" bash "$GATE_COPY" 2>&1) || rc_floor=$?
+  if [ "$rc_floor" = "2" ] && printf '%s' "$out_floor" | grep -qF "source token(s) from the runner copies"; then
+    pass "an under-reading extractor is caught by the completeness floor (exit $rc_floor)"
+  else
+    fail "narrowed extractor — expected exit 2 naming the token shortfall, got $rc_floor"
+    printf '%s\n' "$out_floor" | sed 's/^/       | /' >&2
+  fi
+else
+  fail "FIXTURE PREMISE BROKEN: could not narrow the extractor in the gate copy, so NOTHING was tested"
+fi
+
+# 13g. ⚠️ DUPLICATE CLOSURE ROOTS MUST NOT TRIP THE VACUITY FLOOR. `closure_roots`
+# accumulates one line per image path; the closure returns a SET. Four image paths
+# under ONE package give root_count 4 against a 1-element closure, so without the
+# dedup a perfectly healthy tree reports "the traversal is broken".
+#
+# This is LIVE-ADJACENT rather than hypothetical: `web`'s three image paths
+# (`.next/standalone`, `.next/static`, `public`) all resolve to `packages/web`, so
+# it already runs at root_count 3 against a 5-element closure and passes only
+# because 5 > 3. One more Dockerfile line and it inverts.
+DUP_TREE="$TMPROOT/dup-roots"
+mkdir -p "$DUP_TREE/deploy/svc" "$DUP_TREE/packages/solo/a" "$DUP_TREE/packages/solo/b" \
+         "$DUP_TREE/packages/solo/c" "$DUP_TREE/packages/solo/d"
+cat >"$DUP_TREE/package.json" <<'JSON'
+{ "name": "root", "private": true, "workspaces": ["packages/*"] }
+JSON
+cat >"$DUP_TREE/packages/solo/package.json" <<'JSON'
+{ "name": "@t/solo" }
+JSON
+cat >"$DUP_TREE/deploy/svc/Dockerfile" <<'DOCKER'
+FROM base AS builder
+COPY package.json ./
+COPY . .
+FROM base AS runner
+COPY --from=builder /app/packages/solo/a ./a
+COPY --from=builder /app/packages/solo/b ./b
+COPY --from=builder /app/packages/solo/c ./c
+COPY --from=builder /app/packages/solo/d ./d
+DOCKER
+cat >"$DUP_TREE/deploy/svc/railway.json" <<'JSON'
+{
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "deploy/svc/Dockerfile",
+    "dockerfileContext": "../..",
+    "watchPatterns": ["package.json", "packages/solo/**", "deploy/svc/**"]
+  }
+}
+JSON
+rc_dup=0
+out_dup=$(RAILWAY_WATCH_ROOT="$DUP_TREE" bash "$GATE" 2>&1) || rc_dup=$?
+if [ "$rc_dup" = "0" ] && ! printf '%s' "$out_dup" | grep -qF "the traversal is broken"; then
+  pass "four image paths under ONE package do not trip the vacuity floor (exit $rc_dup)"
+else
+  fail "duplicate closure roots — expected exit 0 with no traversal complaint, got $rc_dup"
+  printf '%s\n' "$out_dup" | sed 's/^/       | /' >&2
+fi
 
 # 14. THE REAL REPO IS THE FLOOR. Every case above runs against a synthetic tree,
 # so nothing so far proves the gate agrees with the tree we actually ship.
@@ -301,7 +474,7 @@ fi
 # ⚠️ AN ABSOLUTE LITERAL. A count derived from the cases cannot notice a deleted
 # case — measured on `check-docs-brain-snippets.test.sh`, which reported
 # `40 passed, 0 failed` with cases removed.
-EXPECTED_CASES=16
+EXPECTED_CASES=25
 TOTAL=$((PASS + FAIL))
 if [ "$TOTAL" -eq "$EXPECTED_CASES" ]; then
   pass "all $EXPECTED_CASES cases ran"

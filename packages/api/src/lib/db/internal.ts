@@ -3792,8 +3792,43 @@ export async function setWorkspaceTrialEndsAt(
 // GDPR hard-delete (purge) — removes ALL org-scoped data permanently
 // ---------------------------------------------------------------------------
 
-/** Why a GDPR purge refused to run or aborted. Each maps to a 4xx in the route. */
-export type PurgeAbortCode = "region_schema_behind" | "not_soft_deleted";
+/**
+ * Why a GDPR purge refused to run or aborted. Each maps to a 4xx in the route.
+ *
+ * `purge_rolled_back` is the CATCH-ALL, and it exists so the union has no hole
+ * (#5265): every other exit from `hardDeleteWorkspace`'s closing catch used to be
+ * a bare `throw err`, which `runEffect` classifies as a defect and answers
+ * `500 Service error (ref: …)`. On the erasure endpoint that discards the one
+ * fact the operator needs — and a fact that is ALWAYS true there, because the
+ * `ROLLBACK` above it is unconditional.
+ */
+export type PurgeAbortCode = "region_schema_behind" | "not_soft_deleted" | "purge_rolled_back";
+
+/**
+ * A Postgres SQLSTATE: exactly five alphanumerics.
+ *
+ * `err.code` reaches an operator-facing string on an erasure path, so its SHAPE
+ * is checked rather than assumed. A five-character class code carries no row
+ * content and is the whole diagnosis; anything else on a `code` property is an
+ * unreviewed channel out of a driver's error object, and `Object.assign(err,
+ * { code })` is not a contract anyone has audited.
+ */
+const SQLSTATE_SHAPE = /^[0-9A-Za-z]{5}$/;
+
+/**
+ * The SQLSTATE clause for the abort report, or the honest absence of one.
+ *
+ * Never the pg MESSAGE: a Postgres error can echo column values (`null value in
+ * column "email" …` on a check constraint, a unique-violation DETAIL naming the
+ * conflicting row), and this is the erasure path. The 42P01/42703 arm may still
+ * interpolate its message, because a relation or column name is not customer
+ * data — that asymmetry is deliberate, not an oversight.
+ */
+function purgeAbortOrigin(code: string | undefined): string {
+  return code !== undefined && SQLSTATE_SHAPE.test(code)
+    ? `an unexpected database error (SQLSTATE ${code})`
+    : "an unexpected error with no SQLSTATE";
+}
 
 /**
  * A purge that aborted for a reason the OPERATOR can act on (#5160).
@@ -3807,6 +3842,13 @@ export type PurgeAbortCode = "region_schema_behind" | "not_soft_deleted";
  * Only 4xx codes belong here. `classifyError` deliberately replaces the message
  * of a 5xx domain error with an opaque reference, so a code mapped to 500 would
  * reintroduce exactly the problem this class exists to solve.
+ *
+ * That constraint is why `purge_rolled_back` — an unexpected DATABASE error,
+ * which reads 5xx-shaped — maps to 409 (#5265). What the response describes is a
+ * STATE the operator resolves and then retries: the transaction rolled back
+ * atomically, so the organization row is still there and the endpoint is still
+ * reachable. A 500 would say "we failed, and here is a reference number", which
+ * on a compliance action is the whole defect.
  */
 export class PurgeAbortedError extends Error {
   readonly code: PurgeAbortCode;
@@ -4174,9 +4216,15 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
       // decide not to delete.
       const row = probe.rows[0] as { table_exists?: unknown } | undefined;
       if (probe.rows.length !== 1 || typeof row?.table_exists !== "boolean") {
-        throw new Error(
+        // A `PurgeAbortedError` rather than a plain one (#5265): this message is
+        // OURS — no pg prose, no row values — and it is strictly more useful to
+        // the operator than the generic arm's, so it is worth carrying to the
+        // wire. The catch below re-throws it unchanged for that reason.
+        throw new PurgeAbortedError(
+          "purge_rolled_back",
           `Existence probe for '${table}' returned an unexpected shape during hardDeleteWorkspace — ` +
-            `refusing to guess whether the relation exists. Nothing was deleted.`,
+            `refusing to guess whether the relation exists. Nothing was deleted, and the organization ` +
+            `row still exists, so this endpoint can be re-run.`,
         );
       }
       if (!row.table_exists) {
@@ -4753,6 +4801,13 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
         "ROLLBACK failed after purge transaction error — client will be destroyed",
       );
     });
+    // An abort raised INSIDE the transaction already carries its own code and
+    // remedy — `not_soft_deleted` (the racing-admin guard above) and the
+    // existence probe's shape guard are both thrown from the `try`, so they
+    // arrive here too. Re-classifying them would relabel a mapped 409 as a
+    // generic abort and replace a remedy that works ("soft-delete it again")
+    // with one that does not ("re-run the endpoint").
+    if (err instanceof PurgeAbortedError) throw err;
     // Region drift gets a message that names its own cause (#5160). Only two of
     // the ~95 relations are probed, so for every other one an absent table or
     // column aborts the whole transaction — the safe failure, but one that
@@ -4784,7 +4839,29 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
         { cause: err },
       );
     }
-    throw err;
+    // Everything else (#5265). The remedy is the same on every one of them and
+    // it is knowable without knowing the cause: the ROLLBACK above is
+    // unconditional, so the transaction is undone, the organization row still
+    // exists, and the endpoint can be run again. That is what the 500 this
+    // replaces threw away — an opaque reference on a DPA erasure action, where
+    // the operator's next question is "did it delete anything?".
+    //
+    // The pg MESSAGE stays out of the response and goes to the log instead; see
+    // `purgeAbortOrigin`. `cause` keeps the original error (and its SQLSTATE)
+    // reachable for anything downstream that wants more than this.
+    const detail = err instanceof Error ? err.message : String(err);
+    log.error(
+      { orgId, code, err: detail },
+      "hardDeleteWorkspace aborted on an unexpected error — the transaction rolled back, nothing was deleted",
+    );
+    throw new PurgeAbortedError(
+      "purge_rolled_back",
+      `Purge aborted on ${purgeAbortOrigin(code)}. The transaction rolled back, so nothing was ` +
+        `deleted and the organization row still exists — this endpoint can be re-run once the cause ` +
+        `is resolved. The underlying error is in the server logs for this requestId; it is withheld ` +
+        `here because a Postgres message can echo row values, and this is an erasure path.`,
+      { cause: err },
+    );
   } finally {
     client.release(rollbackErr ?? undefined);
   }

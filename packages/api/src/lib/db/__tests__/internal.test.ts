@@ -19,6 +19,7 @@ import {
   reconcileWorkspaceDatasources,
   cascadeWorkspaceDelete,
   hardDeleteWorkspace,
+  PurgeAbortedError,
   totalRowsDeleted,
   updateWorkspacePlanTier,
   isPlanOverrideActive,
@@ -1158,7 +1159,11 @@ describe("hardDeleteWorkspace()", () => {
     };
     _resetPool(failPool);
 
-    await expect(hardDeleteWorkspace("org-fail")).rejects.toThrow("relation does not exist");
+    // The rejection is the abort REPORT, not the raw driver error (#5265): the
+    // seeded failure carries no SQLSTATE, so it takes the generic arm. Asserting
+    // the raw message here — as this test did before #5265 — is what pinned the
+    // bare re-throw in place.
+    await expect(hardDeleteWorkspace("org-fail")).rejects.toThrow(PurgeAbortedError);
 
     expect(calls.releaseCount).toBe(1);
     expect(calls.lastReleaseArg).toBeInstanceOf(Error);
@@ -1483,6 +1488,153 @@ describe("hardDeleteWorkspace()", () => {
     // travel with it. Without this, the assertion above passes identically for
     // "skipped" and "nothing to delete".
     expect(result.skippedTables).toEqual(["scim_group_mappings"]);
+  });
+
+  // ── The abort report (#5265) ──────────────────────────────────────────
+  //
+  // Every exit from the closing catch block must reach the OPERATOR, not just
+  // the log. Before #5265 exactly two SQLSTATEs did (42P01/42703) and everything
+  // else was a bare re-throw, which `runEffect` classifies as a defect and
+  // answers `500 Service error (ref: …)` — on the GDPR erasure endpoint, with
+  // the one fact the operator needs (the transaction rolled back, so nothing was
+  // deleted and the endpoint can be re-run) omitted although it is ALWAYS true
+  // there, the ROLLBACK above being unconditional.
+
+  /**
+   * Drive one failure through the purge and return the rejection.
+   *
+   * `failWith` is thrown from the FIRST cascade DELETE, i.e. after the status
+   * check has passed and the transaction is open — the window where the abort
+   * report is the only thing the operator gets.
+   */
+  const purgeRejection = async (failWith: unknown): Promise<unknown> => {
+    const { pool: basePool } = createMockPool();
+    let queryNum = 0;
+    const client = {
+      async query(sql: string) {
+        queryNum++;
+        if (queryNum === 2) return { rows: [{ workspace_status: "deleted" }] };
+        if (queryNum === 3) throw failWith;
+        if (sql.includes("to_regclass")) return { rows: [{ table_exists: true }] };
+        if (sql.includes("FROM member m")) return { rows: [] };
+        if (sql.trim().toUpperCase().startsWith("DELETE")) return { rows: [{ ok: 1 }] };
+        return { rows: [] };
+      },
+      release() {},
+    };
+    _resetPool({ ...basePool, async connect() { return client; } });
+    try {
+      await hardDeleteWorkspace("org-1");
+    } catch (err) {
+      return err;
+    }
+    throw new Error("hardDeleteWorkspace resolved, but the seeded failure must abort it");
+  };
+
+  it("reports a 23502 abort as an actionable PurgeAbortedError, not a bare re-throw", async () => {
+    // The live prod path #5265 was filed on: `stripe_purged_subscriptions
+    // .stripe_subscription_id` is a PRIMARY KEY, so the #3468 tombstone
+    // `INSERT … SELECT` raises 23502 — which `ON CONFLICT` does not cover — when
+    // @better-auth/stripe has written a NULL `stripeSubscriptionId` at checkout
+    // initiation. Driven from the first DELETE rather than that INSERT because
+    // the claim under test is about the CATCH, and every statement in the
+    // transaction lands in the same one.
+    const pgErr = Object.assign(
+      new Error(
+        `null value in column "stripe_subscription_id" of relation ` +
+          `"stripe_purged_subscriptions" violates not-null constraint`,
+      ),
+      { code: "23502" },
+    );
+    const err = await purgeRejection(pgErr);
+
+    expect(err).toBeInstanceOf(PurgeAbortedError);
+    const abort = err as PurgeAbortedError;
+    expect(abort.code).toBe("purge_rolled_back");
+    // The three facts the operator acts on, asserted separately: "it rolled
+    // back", "nothing was deleted" and "you may re-run" can each be dropped
+    // from the message without touching the other two.
+    expect(abort.message).toContain("rolled back");
+    expect(abort.message).toContain("nothing was deleted");
+    expect(abort.message).toContain("re-run");
+    // The SQLSTATE IS safe to publish — a five-character class code carries no
+    // row content — and it is what turns "something failed" into a diagnosis.
+    expect(abort.message).toContain("SQLSTATE 23502");
+    // ⚠️ The raw pg message is NOT. A Postgres error can echo column VALUES, and
+    // this is an erasure path. (The 42P01/42703 arm may keep interpolating,
+    // because a relation or column name is not customer data.)
+    expect(abort.message).not.toContain("null value in column");
+    expect(abort.message).not.toContain("stripe_purged_subscriptions");
+    // `cause` keeps the pg error — and its SQLSTATE — available to the log and
+    // to anything downstream that wants more than the operator gets.
+    expect(abort.cause).toBe(pgErr);
+  });
+
+  it("reports an abort with NO SQLSTATE as the same actionable error", async () => {
+    // The class, not the instance: an abort with no `code` at all — this
+    // function's own existence-probe shape guard, a driver-level fault — reached
+    // the operator through the same bare re-throw, and is even more opaque than
+    // a SQLSTATE nobody printed. A rule keyed on "is it a pg error?" would leave
+    // this one behind.
+    const err = await purgeRejection(new Error("Connection terminated unexpectedly"));
+
+    expect(err).toBeInstanceOf(PurgeAbortedError);
+    const abort = err as PurgeAbortedError;
+    expect(abort.code).toBe("purge_rolled_back");
+    expect(abort.message).toContain("no SQLSTATE");
+    expect(abort.message).toContain("nothing was deleted");
+    expect(abort.message).not.toContain("Connection terminated");
+  });
+
+  it("does not interpolate a non-SQLSTATE `code` into the operator's message", async () => {
+    // `err.code` is only trustworthy as a five-character SQLSTATE. Anything else
+    // reaching that string is an unreviewed channel from a driver's error object
+    // into an erasure-path response, so the shape is checked rather than assumed.
+    const err = await purgeRejection(
+      Object.assign(new Error("nope"), { code: "customer-jane@example.com" }),
+    );
+
+    const abort = err as PurgeAbortedError;
+    expect(abort.message).not.toContain("jane@example.com");
+    expect(abort.message).toContain("no SQLSTATE");
+  });
+
+  it("preserves a PurgeAbortedError raised INSIDE the transaction", async () => {
+    // The trap in the fix: `not_soft_deleted` is thrown from inside the `try`
+    // (the racing-admin guard), so the closing catch sees it too. Re-wrapping it
+    // would relabel a 409 the route already maps as a generic abort and lose the
+    // remedy — "soft-delete it again" is not "re-run the endpoint".
+    const { pool: basePool } = createMockPool();
+    let queryNum = 0;
+    const client = {
+      async query() {
+        queryNum++;
+        if (queryNum === 2) return { rows: [{ workspace_status: "active" }] };
+        return { rows: [] };
+      },
+      release() {},
+    };
+    _resetPool({ ...basePool, async connect() { return client; } });
+
+    const err = await hardDeleteWorkspace("org-active").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PurgeAbortedError);
+    expect((err as PurgeAbortedError).code).toBe("not_soft_deleted");
+    expect((err as PurgeAbortedError).message).toContain("reactivated after the pre-check");
+  });
+
+  it("still reports region drift with its relation name, ahead of the generic arm", async () => {
+    // The 42P01 arm keeps its own message and code — the generic arm must not
+    // shadow it. Measured: with the two arms swapped, a missing relation reports
+    // `purge_rolled_back` and the operator is told to re-run rather than to
+    // migrate the region, which is the one remedy that would not work.
+    const err = await purgeRejection(
+      Object.assign(new Error(`relation "brain_facts" does not exist`), { code: "42P01" }),
+    );
+
+    const abort = err as PurgeAbortedError;
+    expect(abort.code).toBe("region_schema_behind");
+    expect(abort.message).toContain("brain_facts");
+    expect(abort.message).toContain("Run this region's migrations");
   });
 
 });

@@ -19,6 +19,10 @@
 import { describe, it, expect, beforeEach, afterAll, mock } from "bun:test";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 import type { StripeTeardownOutcome } from "@atlas/api/lib/billing/workspace-teardown";
+// The REAL class — `createApiTestMocks` re-exports it from the mocked `internal`
+// module for exactly this reason, so the route's `instanceof` check in
+// `classifyError` matches what a test throws (#5265).
+import { PurgeAbortedError } from "@atlas/api/lib/db/internal";
 
 // ── Mockable state ──────────────────────────────────────────────────
 
@@ -380,6 +384,55 @@ describe("POST /api/v1/platform/workspaces/:id/purge — Stripe teardown", () =>
       expect(body.message).not.toMatch(/stripe_purged_subscriptions[^.]*NOT deleted/);
     } finally {
       hardDeleteSkipped = [];
+    }
+  });
+
+  // ── #5265: an abort must reach the operator, not an opaque reference ──
+  //
+  // The half of #5265 no unit test can see: `PurgeAbortedError` only helps if the
+  // ROUTE maps its code, and an unmapped code defaults to 500 — where
+  // `classifyError` replaces the message with `Service error (ref: …)`, which is
+  // the exact body the error class exists to escape. The mapping is compile-time
+  // exhaustive over `PurgeAbortCode`, so what is left to check at runtime is that
+  // 409 is the status and the message survives the bridge.
+
+  it("answers 409 with the abort MESSAGE (not an opaque reference) and a requestId", async () => {
+    const abortMessage =
+      "Purge aborted on an unexpected database error (SQLSTATE 23502). The transaction rolled back, " +
+      "so nothing was deleted and the organization row still exists — this endpoint can be re-run.";
+    mockHardDelete.mockImplementationOnce(async () => {
+      throw new PurgeAbortedError("purge_rolled_back", abortMessage);
+    });
+
+    const res = await app.fetch(platformRequest("POST", "/api/v1/platform/workspaces/org-1/purge"));
+    const body = (await res.json()) as { error: string; message: string; requestId: string };
+
+    expect(res.status).toBe(409);
+    expect(body.error).toBe("purge_rolled_back");
+    // The whole message, verbatim. `toContain` on a fragment would still pass if
+    // the bridge swapped in the 5xx sanitizer's text around it.
+    expect(body.message).toBe(abortMessage);
+    expect(body.message).not.toContain("Service error (ref:");
+    // Required on every error body — it is the only handle the operator has on
+    // the pg error the message deliberately withholds.
+    expect(typeof body.requestId).toBe("string");
+    expect(body.requestId.length).toBeGreaterThan(0);
+  });
+
+  it("keeps the region-drift and racing-admin codes on 409 too", async () => {
+    // All three `PurgeAbortCode` members share the status, and each is checked
+    // rather than inferred from the map: a wrong entry for one is invisible from
+    // the others, and `region_schema_behind` is the one whose message names a
+    // relation the operator has to go and migrate.
+    for (const code of ["region_schema_behind", "not_soft_deleted"] as const) {
+      mockHardDelete.mockImplementationOnce(async () => {
+        throw new PurgeAbortedError(code, `abort:${code}`);
+      });
+      const res = await app.fetch(platformRequest("POST", "/api/v1/platform/workspaces/org-1/purge"));
+      const body = (await res.json()) as { error: string; message: string };
+      expect(res.status, `${code} must be a 409`).toBe(409);
+      expect(body.error).toBe(code);
+      expect(body.message).toBe(`abort:${code}`);
     }
   });
 });

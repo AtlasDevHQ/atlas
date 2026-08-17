@@ -972,14 +972,21 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
   }), {
     label: "purge workspace (GDPR)",
     // Without this the purge's operator-actionable aborts fall through to the
-    // generic 500 body and their messages are discarded (#5160). Both codes map
-    // to 409 — a conflict the operator resolves and retries, not a server fault
-    // — and 4xx is also what makes `classifyError` pass the message through
+    // generic 500 body and their messages are discarded (#5160). All three codes
+    // map to 409 — a conflict the operator resolves and retries, not a server
+    // fault — and 4xx is also what makes `classifyError` pass the message through
     // rather than replacing it with an opaque reference.
+    //
+    // `purge_rolled_back` is the catch-all added by #5265, and it is why this map
+    // can no longer go stale silently: `domainError` requires an entry for every
+    // member of `PurgeAbortCode`, so a fourth code is a compile error here rather
+    // than an unmapped code defaulting to 500 — i.e. defaulting back into exactly
+    // the opaque-reference body these mappings exist to escape.
     domainErrors: [
       domainError(PurgeAbortedError, {
         region_schema_behind: 409,
         not_soft_deleted: 409,
+        purge_rolled_back: 409,
       }),
     ],
   });

@@ -93,7 +93,7 @@ rm -rf packages/web/.next && bun run build
 
 > ⚠️ **A real type break can wear the #4891 crash costume.** CI surfaced that shiki type error as `SIGILL` / exit 132 rather than a type error, because the failing type-check path kills bun on the GitHub runner — indistinguishable at a glance from the known runner crash. **Never write off a SIGILL in an image build as that flake without reproducing the build locally first**, and note the reverse also holds: `docker build -f deploy/web/Dockerfile .` passing locally while `Built image (web)` fails is genuine evidence the deps are fine (#4891).
 
-For fast iteration before the final `/ci`, `cd packages/api && bun run scripts/test-isolated.ts --affected` (not the full suite) — **but note `--affected` returns an empty set for a sweep**, since every changed file is a manifest that no test imports. Run `bun run test:api` and `bun run test:others` in full instead; a sweep is precisely where `--affected` proves nothing. Then `/pr` to open the PR, wait for **CodeRabbit + Codex** (never merge before the bots), squash-merge, `/reset`.
+For fast iteration before the final `/ci`, `cd packages/api && bun run scripts/test-isolated.ts --affected` (not the full suite) — **but note `--affected` returns an empty set for a sweep**, since every changed file is a manifest that no test imports. Run `bun run test:api` and `bun run test:others` in full instead; a sweep is precisely where `--affected` proves nothing. Then open the PR as a draft, wait for **CodeRabbit + Codex** (never merge before the bots), squash-merge, and return to a clean `main`.
 
 ---
 

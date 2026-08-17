@@ -367,4 +367,4 @@ migrate any registry-only region to the env var at the next deploy.
 
 See the umbrella issue and its children in `AtlasDevHQ/atlas` (search label
 `area: deploy` + "SaaS-first env"). Each tier maps to one or more
-independently-grabbable issues for the `/next` flow.
+independently-grabbable issues for whoever picks up work next.

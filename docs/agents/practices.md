@@ -1,7 +1,8 @@
 # Agent practices
 
-Rebuilt 2026-08-17 by deleting the previous 7,893-line workflow layer. This file is
-short on purpose, and the reason it is short is the finding that caused the rebuild.
+Rebuilt 2026-08-17 by deleting ~6,250 lines of workflow layer — 7,893 removed, then 1,639
+restored as the eight operational runbooks (see "What survived", below). This file is short
+on purpose, and the reason it is short is the finding that caused the rebuild.
 
 ## Why the old layer was deleted
 

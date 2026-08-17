@@ -114,7 +114,7 @@ The public changelog at `docs.useatlas.dev/changelog` is a per-tag feed (ADR-000
      highlights: ["<bullet>", "<bullet>", "..."],  // optional, 3–8 curated items
    },
    ```
-   Curate from the milestone scope / the Step 4 tag message — customer-facing prose, not a commit dump. The component derives the GitHub Release link from `version`, so **do not** set `githubMilestone` on tag entries (that field belongs to the `developmentHistory` track only). Use `/changelog` to help draft the prose if useful.
+   Curate from the milestone scope / the Step 4 tag message — customer-facing prose, not a commit dump. The component derives the GitHub Release link from `version`, so **do not** set `githubMilestone` on tag entries (that field belongs to the `developmentHistory` track only). Draft the prose from the tag message and the milestone scope — customer-facing, Keep-a-Changelog shape (Added / Changed / Fixed) with PR links.
 
 2. Type-check the docs app so a broken entry can't reach the docs build (the docs service deploys from `main`), then commit + push:
    ```bash

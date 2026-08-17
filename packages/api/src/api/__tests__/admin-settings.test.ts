@@ -18,6 +18,8 @@ import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 // dereference resolves against the mock (a stub without that path would
 // TypeError inside the handler).
 import { ADMIN_ACTIONS as REAL_ADMIN_ACTIONS } from "@atlas/api/lib/audit/actions";
+import { z } from "@hono/zod-openapi";
+import { settingUpdateResponseSchema } from "../routes/admin";
 // ⚠️ TYPE-ONLY, so importing from a module this file MOCKS is safe — type imports
 // are erased and never reach the runtime registry. These are what let the mock
 // factory's `satisfies` check the stubs against the real exports.
@@ -313,6 +315,41 @@ void mock.module("@atlas/api/lib/settings", () => ({
   // from the cause. Four sibling suites shipped exactly that. This makes the next
   // signature change a compile error here instead.
 }) satisfies Partial<typeof import("@atlas/api/lib/settings")>);
+
+/**
+ * ⚠️ COMPILE-TIME TIE between the three representations of the settings `PUT` 200
+ * body: the TS type, the zod schema that generates the published spec, and this
+ * file's fake. Adding a field to one and not the others is now a type error here.
+ *
+ * The `value` divergence is the one DELIBERATE difference — branded `AuditedValue`
+ * in TS so only the redaction can mint one, plain `z.string()` in the schema
+ * because `z.custom` cannot be rendered by the OpenAPI extractor (measured: it
+ * fails with `UnknownZodTypeError`). Written as a type rather than a paragraph, so
+ * a fourth divergence cannot be introduced silently.
+ */
+// ⚠️ MUTUAL, not one-directional, and the first draft was the latter. Written as
+// `A extends B`, adding an OPTIONAL field to `SettingUpdateResponse` slipped
+// through — measured: 0 type errors — because an optional property never blocks
+// assignability. `Equal` is the standard invariant-position trick and it fails on
+// a difference in either direction.
+type Equal<X, Y> =
+  (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y ? 1 : 2 ? true : false;
+type Simplify<T> = { readonly [K in keyof T]: T[K] };
+type SchemaMatchesResponseType = Equal<
+  // Both sides normalised: `z.infer` yields mutable properties while
+  // `SettingUpdateResponse` is `readonly` throughout, and `Equal` is strict about
+  // that. `Simplify` also flattens the intersection so the comparison is between
+  // two plain property bags rather than an object and an `A & B`.
+  Simplify<z.infer<typeof settingUpdateResponseSchema>>,
+  Simplify<
+    Readonly<Omit<SettingUpdateResponse, "success" | "value">> & {
+      readonly success: boolean;
+      readonly value: string;
+    }
+  >
+>;
+const _schemaMatchesResponseType: SchemaMatchesResponseType = true;
+void _schemaMatchesResponseType;
 
 // --- Import the app AFTER mocks ---
 

@@ -2537,6 +2537,17 @@ export async function setSetting(key: string, value: string, userId?: string, or
   // side effect produces, so the ordering is free. No handler throws today —
   // the only one catches internally — which makes this cheap insurance rather
   // than a live fix.
+  //
+  // ⚠️ **THIS ORDERING ARGUMENT COVERS THE PINO LINE ONLY, and it was written when
+  // that was the only audit.** Since #5262 the DURABLE `admin_action_log` row is
+  // filed by the CALLER, after `setSetting` returns — so a throw from
+  // `applySettingSideEffect` below, or from the caller's own `log.info`, escapes
+  // the route's `SaasImmutableSettingError`-only catch, reaches `runHandler`, and
+  // returns the GENERIC 500. That 500 implies the write did not land while the
+  // setting is live and no row was filed, which is the opposite of what
+  // `settingsAuditFailureBody` was written to say. Insurance-only today for the
+  // same reason as above; the point is that the reasoning here no longer reaches
+  // the row that matters most.
   auditSecuritySensitiveChange(key, "set", value, userId, effectiveOrgId);
 
   // Apply runtime side effects for hot-reloadable settings
@@ -2885,11 +2896,9 @@ function isSaasImmutableKey(key: string): key is SaasImmutableKey {
  */
 /**
  * What a settings write did: persisted a value, or removed the override and
- * reverted to the next tier. One definition rather than a copy at every consumer
- * — the audit rule, the flag decision, the payload, the builder input, the
- * emitter and `settings-write.ts`'s verb mapping all have to agree, and a third
- * action would otherwise drift. (The count that stood here said "five"; #5262's
- * `AUDIT_ACTION` made it six, which is why it is no longer a number.)
+ * reverted to the next tier. One definition rather than a copy at every consumer,
+ * all of which have to agree — a count stood here and #5262 invalidated it, which
+ * is why there is no longer a count or a list.
  */
 export type SettingAuditAction = "set" | "clear";
 
@@ -3487,6 +3496,18 @@ export interface SecuritySensitiveAuditLine extends SecuritySensitiveAudit {
   readonly maskReason: AuditMaskReason | undefined;
   readonly actorId: string | undefined;
   readonly orgId: string | undefined;
+  /**
+   * Why the two rule flags cannot be read as an exoneration, when they cannot.
+   *
+   * ⚠️ **THE SAME CAVEAT THE DURABLE ROW CARRIES, for symmetry that is the whole
+   * point of #5262.** On a `clear` every rule short-circuits and returns
+   * `false`/`false` — accurate about what the rule answered, and read by an
+   * operator as "this write weakened nothing", which the rules explicitly decline
+   * to establish for a clear. The value is derivable from `action` here, so this
+   * is discoverability rather than new information; it exists so a reader of
+   * either channel does not have to know that.
+   */
+  readonly judgement?: "reverted_value_not_evaluated";
   readonly event: "security_setting.changed";
 }
 
@@ -3555,7 +3576,8 @@ export interface SecuritySensitiveAuditInput {
  * Neither closes it alone: removing the seam removes the type, and the test only
  * became possible once it stopped assuming the registry was fixed — flipping a
  * definition to `secret: true` for one test makes raw and redacted differ on a
- * fully reachable input.
+ * input that is reachable once a `secret: true` key joins
+ * {@link SECURITY_SENSITIVE_KEYS}, which this module explicitly permits.
  */
 export function securitySensitiveAuditLine(
   input: SecuritySensitiveAuditInput,
@@ -3582,6 +3604,9 @@ export function securitySensitiveAuditLine(
     value: redacted.value,
     valueMasked: redacted.masked,
     maskReason: redacted.maskReason,
+    // Mirrors `auditSettingsWrite`'s row: a clear cannot be exonerated by flags
+    // that only judge a written value.
+    ...(action === "clear" ? { judgement: "reverted_value_not_evaluated" as const } : {}),
     disablesControl: fields.disablesControl,
     widensAuthority: fields.widensAuthority,
     actorId,

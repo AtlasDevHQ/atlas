@@ -1761,9 +1761,15 @@ describe("settingUpdateResponseBody — the PUT echo (#5263)", () => {
   it("a definition whose key MATCHES is still used — the discard is not a blanket withhold", () => {
     // The discriminating half. A builder that discarded every definition would
     // pass the test above and withhold every value in the product.
-    expect(
-      settingUpdateResponseBody(PLAIN_DEF, "ATLAS_TRIAL_IP_RATE_LIMIT_RPM", "0").value,
-    ).toBe(audited("0"));
+    //
+    // ⚠️ A DIFFERENT key from the verbatim-arm test above, deliberately. Driving
+    // the same inputs would restate that assertion and add no falsifier.
+    const ALIAS_SOURCES = "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES";
+    const def = getSettingDefinition(ALIAS_SOURCES);
+    expect(def).toBeDefined();
+    expect(settingUpdateResponseBody(def, ALIAS_SOURCES, "warehouse_key").value).toBe(
+      audited("warehouse_key"),
+    );
   });
 
   it("echoes the key it was given, not the definition's", () => {
@@ -1829,6 +1835,9 @@ describe("securitySensitiveAuditLine (#5180)", () => {
         maskReason: undefined,
         disablesControl: false,
         widensAuthority: false,
+        // A clear carries the caveat: the flags judge a WRITTEN value and a clear
+        // has none, so `false`/`false` must not read as "nothing weakened".
+        judgement: "reverted_value_not_evaluated",
         actorId: undefined,
         orgId: undefined,
         event: "security_setting.changed",
@@ -1855,6 +1864,7 @@ describe("securitySensitiveAuditLine (#5180)", () => {
       maskReason: undefined,
       disablesControl: false,
       widensAuthority: false,
+      judgement: "reverted_value_not_evaluated",
       actorId: "user_1",
       orgId: "org_1",
       event: "security_setting.changed",

@@ -169,6 +169,18 @@ describe("auditSettingsWrite", () => {
     // passes-for-the-wrong-reason class this block exists to prevent.
     expect(PLAIN_DEF).toBeDefined();
     expect(PLAIN_DEF?.secret).toBeFalsy();
+    // ⚠️ The rule fixtures are guarded HERE, not inside the describe that uses
+    // them. `describe("3 — the await")` also drives `RPM_DEF`, and would have
+    // passed with it `undefined` (the flags derive from `entry.key`, not the
+    // definition) — so a guard living in describe 4 covered the file only by
+    // accident of ordering.
+    for (const [k, def] of [
+      [RPM_KEY, RPM_DEF],
+      [SOURCES_KEY, SOURCES_DEF],
+      [THRESHOLD_KEY, THRESHOLD_DEF],
+    ] as const) {
+      expect(def, `no registry definition for ${k}`).toBeDefined();
+    }
   });
 
   describe("1 — the value", () => {
@@ -520,9 +532,6 @@ describe("auditSettingsWrite", () => {
       for (const key of [RPM_KEY, SOURCES_KEY, THRESHOLD_KEY]) {
         expect(SECURITY_SENSITIVE_KEYS.has(key)).toBe(true);
       }
-      expect(RPM_DEF).toBeDefined();
-      expect(SOURCES_DEF).toBeDefined();
-      expect(THRESHOLD_DEF).toBeDefined();
       // And the control key must be OUTSIDE the set, or the absence tests below
       // would be asserting absence against a key that has a rule.
       expect(SECURITY_SENSITIVE_KEYS.has("ATLAS_MODEL")).toBe(false);
@@ -664,10 +673,9 @@ describe("auditSettingsWrite", () => {
 
     // ⚠️ THE ACTION MAPPING, DRIVEN FROM EACH FAMILY on the `update` side —
     // which is the only side where a swap is visible. Measured: with
-    // `value: undefined` on the reset path, both families return false/false
+    // `value: undefined` on the reset path, all three rules return false/false
     // whichever action they are handed, so a clear-path assertion cannot fail
-    // under `{ update: "clear", reset_to_default: "set" }`. #5262's body
-    // predicts the blind axis is the FAMILY; it is the VERB.
+    // under a swapped mapping. The blind axis is the VERB, not the family.
     it("⭐ maps `update` to the rule engine's `set`, on both families", async () => {
       await auditSettingsWrite({
         key: RPM_KEY,

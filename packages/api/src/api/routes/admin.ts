@@ -1519,6 +1519,30 @@ const getSettingsRoute = createRoute({
   },
 });
 
+/**
+ * The settings `PUT` 200 body, hoisted so `admin-settings.test.ts` can assert it
+ * against {@link SettingUpdateResponse} at compile time.
+ *
+ * ⚠️ **THREE REPRESENTATIONS OF ONE BODY, and nothing used to tie them.** The TS
+ * type in `lib/settings.ts`, this schema (which generates the published spec), and
+ * the test's fake. `c.json`'s argument is a function RETURN VALUE rather than a
+ * fresh object literal, so excess-property checking does not apply — a field added
+ * to the builder ships in the body and is absent from the spec. The type assertion
+ * in the test makes "added a field to one side, forgot the other" a compile error,
+ * with the one deliberate divergence (`value` is branded in TS, `z.string()` here)
+ * written down as a type rather than a paragraph.
+ */
+export const settingUpdateResponseSchema = z.object({
+  success: z.boolean(),
+  key: z.string(),
+  // #5263 — the value as the audit row records it, not as the request sent it.
+  // Identical for every key reachable today (a `secret: true` key is 403'd), so
+  // read `valueMasked` rather than comparing against what you sent.
+  value: z.string().openapi({ description: "The stored value, withheld for a `secret: true` definition — see `valueMasked` (#5263)." }),
+  valueMasked: z.boolean().openapi({ description: "True when `value` is a withheld-placeholder rather than the stored characters. Without it the placeholder is indistinguishable from a setting whose literal value is that string." }),
+  maskReason: z.enum(["secret", "unknown_definition", "definition_mismatch"]).optional().openapi({ description: "Why `value` was withheld, present exactly when `valueMasked` is true. `secret` is a credential; the other two are defects — `unknown_definition` means the key has no registry entry, `definition_mismatch` means the caller resolved another key's entry." }),
+});
+
 const updateSettingRoute = createRoute({
   method: "put",
   path: "/settings/{key}",
@@ -1538,17 +1562,7 @@ const updateSettingRoute = createRoute({
       description: "Setting saved",
       content: {
         "application/json": {
-          schema: z.object({
-            success: z.boolean(),
-            key: z.string(),
-            // #5263 — the value as the audit row records it, not as the request
-            // sent it. Identical for every key reachable today (a `secret: true`
-            // key is 403'd above), so read `valueMasked` rather than comparing
-            // against what you sent.
-            value: z.string().openapi({ description: "The stored value, withheld for a `secret: true` definition — see `valueMasked` (#5263)." }),
-            valueMasked: z.boolean().openapi({ description: "True when `value` is a withheld-placeholder rather than the stored characters. Without it the placeholder is indistinguishable from a setting whose literal value is that string." }),
-            maskReason: z.enum(["secret", "unknown_definition", "definition_mismatch"]).optional().openapi({ description: "Why `value` was withheld, present exactly when `valueMasked` is true. `secret` is a credential; the other two are defects — `unknown_definition` means the key has no registry entry, `definition_mismatch` means the caller resolved another key's entry." }),
-          }),
+          schema: settingUpdateResponseSchema,
         },
       },
     },
@@ -3823,11 +3837,30 @@ admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", asy
     return c.json({ error: "invalid_request", message: "Missing 'value' in request body." }, 400);
   }
 
-  // `String` accepts `unknown`, so the `as string | number | boolean` this
-  // replaced bought nothing and asserted something false — an object body
-  // reaches here and stringifies to "[object Object]". Narrowing the INPUT is
-  // the real fix and is a behaviour change (a new 400), so it is filed rather
-  // than smuggled in here; see the PR body.
+  // ⚠️ NARROW THE INPUT, don't coerce whatever arrived. This was
+  // `String(body.value as string | number | boolean)` — a cast that bought
+  // nothing (`String` accepts `unknown`) and asserted something false. An object
+  // body passed the null/undefined check above, stringified to
+  // `"[object Object]"`, and was PERSISTED: `def.type` validation catches it for
+  // `number`, `boolean` and `select`, but a `type: "string"` setting accepted it,
+  // wrote it, audited it and echoed it back as though it were the admin's value.
+  //
+  // Rejecting it here is also what makes the coercion below honest — every
+  // remaining input has a faithful string form.
+  if (
+    typeof body.value !== "string"
+    && typeof body.value !== "number"
+    && typeof body.value !== "boolean"
+  ) {
+    return c.json(
+      {
+        error: "invalid_request",
+        message: `"${key}" must be a string, number or boolean — received ${Array.isArray(body.value) ? "an array" : typeof body.value}.`,
+        requestId,
+      },
+      400,
+    );
+  }
   const value = String(body.value);
 
   // Type-specific validation

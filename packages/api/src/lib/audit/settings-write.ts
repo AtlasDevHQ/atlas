@@ -215,13 +215,35 @@ const VERBS: Record<
  *
  * The pair is all-or-nothing because `securitySensitiveAuditFields` returns both
  * or `null`; `judgement` is present on a clear of a SECURITY-SENSITIVE key. A
- * clear of any other key produces no `RuleFields` at all — asserted in
- * `settings-write.test.ts`, and the sibling declaration on
- * {@link SettingsAuditMetadataBase} says the same. Naming the shape
- * is what lets the builder write the field as a checked literal instead of an
- * unchecked spread — see the binding for the measured typo hole.
+ * clear of any other key produces no `RuleFields` at all. Naming the shape is what
+ * lets the builder write the field as a checked literal instead of an unchecked
+ * spread — see the binding for the measured typo hole.
  */
 type RuleFields = SecuritySensitiveAudit & {
+  /**
+   * Present only on a clear: the two rule flags describe what the RULE answered,
+   * and for a clear that is structurally `false`/`false` on every key — the rules
+   * judge the WRITTEN value, and a clear has none. What the setting reverts to
+   * (the env var, the default, or a platform override that may itself be wide) is
+   * not evaluated.
+   *
+   * ⚠️ **It exists because `false` would otherwise read as an exoneration.**
+   * Clearing a `"10"` override on `ATLAS_TRIAL_IP_RATE_LIMIT_RPM` when the env var
+   * holds `"0"` turns the per-IP limiter OFF, and the row said
+   * `disablesControl: false`. So the incident query is
+   *
+   * ```sql
+   * WHERE metadata->>'disablesControl' = 'true'
+   *    OR metadata->>'widensAuthority' = 'true'
+   *    OR metadata->>'judgement'       = 'reverted_value_not_evaluated'
+   * ```
+   *
+   * and the last disjunct is the difference between "no weakening" and "nobody
+   * checked". ⚠️ The `widensAuthority` disjunct is not optional: it is the ONLY
+   * flag the alias family ever sets — `disablesControl` is structurally `false` on
+   * both alias keys by design — so a query without it never surfaces an
+   * alias-family WIDENING. It still surfaces alias clears, via the last disjunct.
+   */
   readonly judgement?: "reverted_value_not_evaluated";
 };
 
@@ -238,31 +260,6 @@ type SettingsAuditMetadataBase = {
   readonly key: string;
   readonly tier: "workspace" | "platform";
   readonly action?: "reset_to_default";
-  /**
-   * Present only on a clear of a security-sensitive key: the two rule flags on
-   * {@link SettingsAuditMetadata} describe what the RULE answered, and for a clear that is structurally
-   * `false`/`false` on every key — the rules judge the WRITTEN value, and a
-   * clear has none. What the setting reverts to (the env var, the default, or a
-   * platform override that may itself be wide) is not evaluated.
-   *
-   * ⚠️ **It exists because `false` would otherwise read as an exoneration.**
-   * Clearing a `"10"` override on `ATLAS_TRIAL_IP_RATE_LIMIT_RPM` when the env
-   * var holds `"0"` turns the per-IP limiter OFF, and the row said
-   * `disablesControl: false`. So the incident query is
-   *
-   * ```sql
-   * WHERE metadata->>'disablesControl' = 'true'
-   *    OR metadata->>'widensAuthority' = 'true'
-   *    OR metadata->>'judgement'       = 'reverted_value_not_evaluated'
-   * ```
-   *
-   * and the last disjunct is the difference between "no weakening" and "nobody
-   * checked". ⚠️ The `widensAuthority` disjunct is not optional: it is the ONLY
-   * flag the alias family ever sets — `disablesControl` is structurally `false`
-   * on both alias keys by design — so a query without it never surfaces an
-   * alias-family WIDENING. It still surfaces alias clears, via the last disjunct.
-   */
-  readonly judgement?: "reverted_value_not_evaluated";
   readonly value?: AuditedValue;
   /** Present whenever a value is; `true` means the characters were withheld. */
   readonly valueMasked?: boolean;
@@ -291,12 +288,24 @@ type SettingsAuditMetadataBase = {
  * nesting would move every reader to `metadata->'security'->>'disablesControl'`
  * for no gain the spread does not already give.
  *
- * ⚠️ The flags are all-or-nothing in practice — `securitySensitiveAuditFields`
- * returns both or `null` — which `Partial` cannot express. The spread is what
- * keeps the pair atomic; a hand-built `{ disablesControl: true }` would type-check
- * and mean nothing, so do not build one.
+ * ⚠️ **`Partial<RuleFields>`, and what that does and does not forbid is worth
+ * being exact about.** It replaced `Partial<SecuritySensitiveAudit>` plus a
+ * `judgement` declared separately on the base — which meant `judgement` was
+ * representable with no flags at all, a row claiming "nobody checked" while
+ * claiming no rule applied. Deriving from {@link RuleFields} removes that: the
+ * caveat now exists only alongside the flags it qualifies, and a third flag added
+ * to {@link SecuritySensitiveAudit} flows in the day it is added.
+ *
+ * What it does NOT forbid is one flag without the other. A discriminated union
+ * (`RuleFields | all-absent`) would, and was tried: it does not check a
+ * spread-built literal — the conditional spreads widen every property to optional,
+ * so the compiler cannot prove which arm the object is, and the assignment fails
+ * outright. Building both arms as whole literals inside the branch would fix that
+ * and is not worth the churn, because the VALUE side is already atomic: the only
+ * producer is the `ruleFields` binding, typed `RuleFields | undefined` and spread
+ * whole, so no code path can emit a half pair. Do not hand-build one.
  */
-type SettingsAuditMetadata = SettingsAuditMetadataBase & Partial<SecuritySensitiveAudit>;
+type SettingsAuditMetadata = SettingsAuditMetadataBase & Partial<RuleFields>;
 
 interface SettingsAuditCommon {
   readonly key: string;

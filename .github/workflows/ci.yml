@@ -190,6 +190,30 @@ jobs:
       - name: Adversarial fixtures for the Caddyfile config gate (#5242)
         run: bash scripts/__tests__/check-caddyfile.test.sh
 
+      # The Lighthouse report path was duplicated EIGHT ways — `lighthouserc.js`'s
+      # `upload.outputDir`, the verify step's `dir=`, its diagnostic `find`, the
+      # artifact `path:` and `name:`, the renderer's `REPORT_ROOT`, `.gitignore`,
+      # and a customer-facing claim in `apps/docs`. #4899 was born of exactly that
+      # shape: a `mv` target that no longer agreed with what lhci wrote, silent for
+      # three months. The gate EXECUTES lighthouserc.js rather than grepping it, and
+      # derives the form-factor allowlist from that config's own validation error.
+      - name: Check Lighthouse report paths agree with lighthouserc.js (#5174)
+        run: bash scripts/check-lighthouse-report-paths.sh
+
+      - name: Adversarial fixtures for the lighthouse-report-paths gate (#5174)
+        run: bash scripts/__tests__/check-lighthouse-report-paths.test.sh
+
+      # The PR-comment renderer, plus the RETIRED-WORDING RATCHET that used to
+      # live only in an uncommitted out-of-tree harness. It renders a claim about
+      # a run, and #4899 was a false one that stood for 1200+ runs; its fix
+      # produced six false-or-overreaching message claims across two rounds, four
+      # of them introduced by the fix for a previous one. The ratchet runs over
+      # RENDERED BODIES, never the source — the renderer's comments name the
+      # retired wordings in order to explain them, so a source scan would flag its
+      # own documentation.
+      - name: Adversarial fixtures for the Lighthouse comment renderer (#5174)
+        run: bash scripts/__tests__/lighthouse-comment.test.sh
+
       - name: Check no publishable package version is merged-but-unpublished
         run: bun scripts/check-unpublished-versions.ts
 
@@ -292,9 +316,10 @@ jobs:
       # ⚠️ Enumerated here because this workflow lists each fixture suite BY NAME
       # while ci-local.sh globs the directory — so a new suite runs locally and
       # silently never runs in CI. This was the only one missing at the time, of
-      # thirteen suites then. There are 20 now, all covered: 19 named in this
-      # workflow plus `scan-image.test.sh` in image-scan.yml. (#5242 added the
-      # twentieth, `check-caddyfile.test.sh`, named in the drift job above.)
+      # thirteen suites then. There are 22 now, all covered: 21 named in this
+      # workflow plus `scan-image.test.sh` in image-scan.yml. (#5242 added
+      # `check-caddyfile.test.sh`; #5174 added `check-lighthouse-report-paths.test.sh`
+      # and `lighthouse-comment.test.sh`, all named in the drift job above.)
       # It builds throwaway trees and needs no Postgres; ~2 seconds.
       - name: Adversarial fixtures for the mutation-tables gate (#5077, #5097)
         run: bash scripts/__tests__/check-mutation-tables.test.sh

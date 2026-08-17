@@ -46,11 +46,16 @@ when re-vendoring — see "Updating from upstream" below.
 | `type-design-analyzer` | type invariants & safety | CLAUDE.md § Type Safety + § Effect.ts |
 | `pr-test-analyzer` | test coverage & discipline | CLAUDE.md § Testing |
 | `comment-analyzer` | comment accuracy & idiom | comment-density + `// intentionally ignored:` |
-| `fix-vs-finding` | does a fix reproduce its own defect? | **not vendored — Atlas-native** |
+| `fix-vs-finding` | does an artifact reproduce the defect it exists to prevent? | **not vendored — Atlas-native** |
 
-All are **advisory and read-only** — they report findings, they do not edit code. The four
-vendored ones carry `tools: Read, Grep, Glob, Bash`; `fix-vs-finding` drops `Bash`, because
-its job is one question about a diff it is handed rather than an investigation.
+All are **advisory and read-only** — they report findings, they do not edit code. All five
+carry exactly `tools: Read, Grep, Glob`. **No panel agent holds `Bash`**, and that is
+enforcement rather than convention: until 2026-08-15 four of them did, and on #5260 one
+mutated a file to measure a falsifier and its restore reverted the author's uncommitted
+in-flight edits along with its own mutant — `git` cannot tell those apart. The legitimate
+pressure behind that grant (you cannot prove a test can fail by reading it) is met by a
+split instead: **the panel names the mutation, the author runs it** (`/review-panel`
+Step 6, Step 6b).
 
 ⚠️ **`fix-vs-finding` has no upstream and must not be dropped in a re-vendor.** It exists
 because four times **inside #5077's review alone** a fix reproduced the defect it fixed one
@@ -60,11 +65,21 @@ fan-out, and it is deliberately given only two inputs: the finding's principle *
 universal**, and the fix diff. Handing it more context is the failure mode, not a courtesy —
 the author's own context is what hid the recurrence.
 
+⚠️ **It answers the same question about a second object: the falsifier** (Step 6b, added
+2026-08-17). Step 6 makes every fix carry a falsifier; nothing established that the
+falsifier could *fail*, and the two came apart every time they were measured — #5289 shipped
+four that could not, #5170 caught five inert assertions. Since #5267 no panel agent can run a
+mutation, so without 6b the author both builds and judges the measurement of their own fix,
+which is the exact structure this whole directory exists to break. Same agent because it is
+the same question: a check that cannot fail is *closed the instance, left the class* applied
+to the instrument.
+
 ## Usage
 
 - **In the loop:** the L2 loop fans the four vendored reviewers out in parallel against the
   implementer's diff, then hands findings back to address before `/ci` + `/pr`.
-  `fix-vs-finding` runs afterwards, once per must-fix, against that fix's own diff.
+  `fix-vs-finding` runs afterwards — once per must-fix against that fix's own diff (Step 5d),
+  then once per falsifier against the falsifier and the fix it guards (Step 6b).
 - **Ad hoc:** they auto-trigger by `description` match, or invoke one explicitly, e.g.
   "use silent-failure-hunter on this diff".
 
@@ -80,4 +95,6 @@ plus `fix-vs-finding` itself. The first two live in `/review-panel` Step 2 rathe
 agent files, so a clean re-vendor of the agents does not lose them — but a re-vendor that also
 "corrects" the command back to `review only this diff` restores the blind spot the widening
 exists to close. The third is a **file upstream does not have**, so a re-vendor that syncs the
-directory deletes it and Step 5d then silently dispatches nothing.
+directory deletes it and Steps 5d *and* 6b then silently dispatch nothing — the same
+fails-quiet-in-the-safe-direction shape that left six skill symlinks pointing at deleted
+targets until #5251.

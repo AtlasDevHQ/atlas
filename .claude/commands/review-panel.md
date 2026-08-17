@@ -291,7 +291,7 @@ What ended it was a lexical guard, and **the guard immediately caught two more i
 
 ⚠️ **`CANNOT TELL` is not a pass.** It means the principle could not be made universal or the diff was not the whole fix — either way the check measured nothing, and a round that counts it as "not REPRODUCED" has certified a fix nothing looked at. That is the byte-blessing shape #5077 exists to refuse, reproduced in the instrument built to catch it. Re-run with a repaired universal or the complete diff; if it still cannot tell, say so in the round report as an **open** item rather than resolving it silently. Likewise, a `CLEAN` that does not name the added surface it checked is indistinguishable from one that did not look — send it back.
 
-**Step 6: Every must-fix's FIX needs a falsifier — NAMED every round, BUILT in the last one**
+**Step 6: Every must-fix's FIX needs a falsifier — BUILT AND RUN in the round that writes the fix**
 
 A fix is not closed when it is written. It is closed when something can tell you
 it stopped working.
@@ -357,12 +357,15 @@ grep the sibling suites for the thing you are about to declare untestable.
 It is the expensive half for anything touching timing, concurrency or
 post-commit ordering — #5027 needed a delayed-settle fake and a `setTimeout`
 handle recorder to reach two of its arms. Pay it there especially; those are the
-arms nothing else can see. **That cost is exactly why building is the closing
-round's job** — a delayed-settle fake written for a round-2 fix that round 3
-rewrites is the purest form of the throwaway work the split removes.
+arms nothing else can see. **Pay it in the round that writes the fix.** The
+counter-argument used to be that a delayed-settle fake written for a round-2 fix
+which round 3 rewrites is throwaway work — but #5037 measured the other side of
+that trade and it is worse: a round only learns it was the closing round
+afterwards, so deferring is a bet on which round is last, and the loop usually
+exits on a yield stop or the cap.
 
-⚠️ **RUN the mutant — in the closing round, for every falsifier you named
-along the way. A falsifier you only reasoned about is not one**, and your
+⚠️ **RUN the mutant in the round that writes the falsifier. A falsifier you
+only reasoned about is not one**, and your
 own is the one most likely to be too weak — you write it knowing the fix, so you
 naturally aim it at the failure you already fixed. Two from #5088, both of which
 looked airtight and both of which passed against the broken code:
@@ -380,6 +383,40 @@ The second one is the general shape: **an assertion that cannot fail is not an
 assertion.** Ask what value would make it go red, and check that value is
 reachable.
 
+**Step 6b: Check each falsifier in fresh context — the claim Step 6 does not establish**
+
+For every falsifier you built in Step 6, launch `Agent(fix-vs-finding)` with the
+falsifier and the fix diff, telling it the object is a **falsifier**. It returns
+`CAN FAIL` / `CANNOT FAIL` / `CANNOT TELL`. Treat `CANNOT FAIL` as a must-fix of
+this round. Batch them one call per falsifier in a single message, as in 5d.
+
+⚠️ **Step 6 establishes that a falsifier EXISTS. It does not establish that the
+falsifier can FAIL, and those have come apart every time they were measured.**
+#5289 shipped **four** that could not — a ROLLBACK-count assertion whose fixture
+rolls back *successfully*, three absent cells, and a mock that failed both its
+COMMIT and its ROLLBACK so both indeterminacy conditions held at once and
+neither was independently falsifiable. #5170's mutation battery caught **five**
+of the author's own assertions being inert, including two that checked message
+text but not annotation level, so demoting `::warning::` to `::debug::` — the
+mutation that makes the step silent again — killed nothing.
+
+This is the same escalation the whole command keeps re-learning. Step 6 was
+added because fixes shipped with no falsifier (#5027: eleven probed, eleven
+zeros). The requirement was then **met nominally**, and the defect moved one
+level up into the falsifier itself. A check that cannot fail is a fix that
+closed the instance and left the class, applied to the instrument.
+
+⚠️ **Why it cannot be you.** You wrote the falsifier knowing the fix, so you
+aimed it at the failure you already understood — and since #5267 no panel agent
+can run a mutation, you are otherwise both the builder and the judge of your own
+measurement. That is the structure every entry in this file is about. 5d already
+gets this right for fixes; 6b is the same move for the artifact that certifies
+them.
+
+`fix-vs-finding` holds no `Bash` either, so it does not run the mutation — it
+**names** the one that should turn the falsifier red, and you run it. Same split
+as everywhere else: the panel names, the author measures.
+
 **Rules:**
 - Read-only, and now **enforced by the tool grant rather than by asking**. No panel agent holds `Bash`; none holds `Edit` or `Write`. The panel reports; it never edits code. The author is the single writer to the working tree.
   - ⚠️ **This was a request, not a fact, until 2026-08-15.** Four of the five agents held `Bash` — a full write primitive (`sed -i`, `>`, `git checkout`, `scripts/mutate.ts`) handed back immediately after `Edit`/`Write` were withheld. On #5260 a panel agent mutated a file to measure a falsifier and its restore reverted the **author's uncommitted in-flight edits** along with its own mutant; `git` cannot distinguish them, since both are just unstaged changes. Only the author knows what is uncommitted, so only the author may write.
@@ -388,7 +425,8 @@ reachable.
 - Scope is the changed lines **plus their enclosing declaration** (Step 2). The strict-diff reading has a blind spot for adjacent twins and it has cost real rounds.
 - Fresh context per agent — never let the implementer "review" its own diff in-context; that rubber-stamps. On round 2+, fresh context **plus** the previous round's fix commits named as the audit target.
 - Every fix is checked against its own finding in **fresh context, in the round that wrote it** (Step 5d). Step 5b sweeps the tree that exists; 5d is the only thing that looks at the surface the fix just added.
-- Falsifiers are **named every round and built in the closing one** (Step 6). A round that names none is not clean; a CLOSING round that has not built and run them is not clean either.
+- Falsifiers are **built and run in the round that writes the fix** (Step 6) — the name-now/build-later split was retired after #5037 measured what it costs. A round that ships a fix with no falsifier is not clean.
+- Each falsifier is then checked in **fresh context** by `Agent(fix-vs-finding)` (Step 6b), because "it has a falsifier" and "the falsifier can fail" are two claims and Step 6 only establishes the first.
 - A principle swept for **twice** gets a mechanical check, not a third comment (Step 5b). Prose does not scale to new surface, which is where it keeps failing.
 - On round 2+, a fix that adds **new machinery** defaults to a follow-up (Step 5a) — it would otherwise enter the diff with no round left to review it but the one it causes.
 - This is the specialist layer. The repo's `/code-review` and `/simplify` remain the canonical generic passes — don't duplicate them here.

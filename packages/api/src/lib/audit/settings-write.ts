@@ -70,6 +70,19 @@
  *    right instrument — for the reason its own docstring gives about the
  *    audit-retention surface, not for the reason #5262 gave.
  *
+ * ⚠️ **AND THE RULE FLAGS LAND HERE TOO (#5262, the surviving finding).** The
+ * row carries `disablesControl` / `widensAuthority` for a
+ * `SECURITY_SENSITIVE_KEYS` member, so the durable channel holds the JUDGEMENT
+ * and not only the fact. Before that the split was backwards — the pino
+ * `security_setting.changed` line had the analysis and `admin_action_log` had
+ * the value — which meant reading *"that disabled an abuse control"* out of the
+ * retained table required reimplementing the rules against it. Folded in at this
+ * seam precisely because it already holds `key`, `definition`, `value` and
+ * `action`: no new sink, and no second classification of "which writes are
+ * weakening" to drift from the first. The two callers of
+ * `securitySensitiveAuditFields` are both in `lib/` (the pino builder in
+ * `settings.ts` and this one); the route layer has none.
+ *
  * ⚠️ **WHY THE WHOLE ENTRY IS BUILT HERE rather than at the route.** The
  * redaction is not something a call site can be trusted to remember: #5180
  * measured that re-inlining `log.warn({ ...line, value })` passed the whole
@@ -103,8 +116,10 @@ import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { ADMIN_ACTIONS } from "@atlas/api/lib/audit/actions";
 import {
   redactAuditValue,
+  securitySensitiveAuditFields,
   type AuditedValue,
   type AuditMaskReason,
+  type SettingAuditAction,
   type SettingDefinition,
 } from "@atlas/api/lib/settings";
 
@@ -117,6 +132,39 @@ const log = createLogger("audit.settings-write");
  * exactly as secret as the override was.
  */
 export type SettingsWriteAction = "update" | "reset_to_default";
+
+/**
+ * The verb vocabularies of the two audit channels, joined here (#5262).
+ *
+ * ⚠️ **A TOTAL `Record`, NOT a ternary, and that is the only defence there is.**
+ * `SettingsWriteAction` is this module's HTTP-verb vocabulary;
+ * {@link SettingAuditAction} is the rule engine's. The mapping is one line and
+ * is exactly the adjacent pair that goes wrong silently — nothing about
+ * `update → clear` is ill-typed, and the rules answer confidently either way.
+ * A `Record` keyed by the closed union makes adding a third verb a compile
+ * error instead of a fall-through, the same device
+ * `SECURITY_SENSITIVE_RULES` uses in `settings.ts`.
+ *
+ * ⚠️ A SWAP IS ONLY VISIBLE FROM THE `update` SIDE, which is where the tests
+ * drive it. Measured against the shipped rules: on `reset_to_default` there is
+ * no value, and with `value: undefined` both families return
+ * `false`/`false` whichever action they are handed — the abuse rule short-
+ * circuits on `action !== "set"` *and* on the missing value, and the alias
+ * source rule's `(value ?? "")` splits to nothing. So a reset-path assertion
+ * cannot fail on a swapped mapping, and a suite pinning only the clear path
+ * would pass with the two exchanged.
+ *
+ * (#5262's body predicts the swap is "invisible on one of the two families".
+ * It is not: driven from `update`, `ATLAS_TRIAL_IP_RATE_LIMIT_RPM="0"` and
+ * `ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES="warehouse_key,extractor"` both go
+ * `true → false` under a swap. The axis that hides it is the verb, not the
+ * family — recorded because the wrong axis would send the next reader to add a
+ * second family instead of a second verb.)
+ */
+const AUDIT_ACTION: Record<SettingsWriteAction, SettingAuditAction> = {
+  update: "set",
+  reset_to_default: "clear",
+};
 
 /**
  * The metadata shape that reaches `admin_action_log.metadata`.
@@ -135,6 +183,19 @@ type SettingsAuditMetadata = {
   readonly valueMasked?: boolean;
   /** Present only when `valueMasked` is true. */
   readonly maskReason?: AuditMaskReason;
+  /**
+   * An abuse control was turned OFF by this write (#5262). Always absent for a
+   * key outside {@link SECURITY_SENSITIVE_KEYS}, and always `false` for the
+   * alias keys — whose disabled position queues everything for review, i.e. the
+   * SAFE end. See `securitySensitiveAuditFields` for why the rules are per-key.
+   */
+  readonly disablesControl?: boolean;
+  /**
+   * More proposals now auto-approve with nobody in front of them (#5262).
+   * Always absent for a non-sensitive key, always `false` for the abuse
+   * thresholds, which have no such notion.
+   */
+  readonly widensAuthority?: boolean;
 };
 
 interface SettingsAuditCommon {
@@ -241,10 +302,46 @@ export async function auditSettingsWrite(entry: SettingsAuditWrite): Promise<voi
     );
   }
 
+  // ⚠️ **THE JUDGEMENT, IN THE DURABLE CHANNEL (#5262).** Before this the split
+  // was backwards: the pino `security_setting.changed` line carried
+  // `disablesControl`/`widensAuthority` while `admin_action_log` carried the
+  // value — so the SUPPRESSIBLE channel held the analysis and the RETAINED one
+  // held only the fact. An incident query could see *"someone set
+  // ATLAS_TRIAL_IP_RATE_LIMIT_RPM to 0"* and not *"that disabled an abuse
+  // control"*, and the only way to learn the second was to reimplement
+  // `securitySensitiveAuditFields` against the row — a second classification of
+  // "which writes are weakening", which is a second thing that drifts from the
+  // first.
+  //
+  // ⚠️ Computed from `entry.key`, NOT from `entry.definition` — so the mismatch
+  // above does not touch it, and that is correct rather than an oversight. The
+  // rules key off the setting's NAME and the written value; a definition
+  // belonging to another key is evidence about neither. The value's characters
+  // may be withheld from the row while the judgement derived from them is
+  // recorded in full, which is the whole point: the analysis is the part worth
+  // retaining.
+  //
+  // ⚠️ `null` for a non-sensitive key, and the flags are then ABSENT rather than
+  // `false`. A row that always carries `disablesControl: false` cannot be
+  // filtered on — `WHERE metadata->>'disablesControl' = 'false'` would match
+  // every settings write in the table — so absence has to mean "no rule
+  // applies" and `false` has to mean "a rule ran and said no".
+  const ruleFlags = securitySensitiveAuditFields(
+    entry.key,
+    AUDIT_ACTION[entry.action],
+    entry.value,
+  );
+
   const metadata: SettingsAuditMetadata = {
     key: entry.key,
     tier,
     ...(entry.action === "reset_to_default" ? { action: "reset_to_default" as const } : {}),
+    ...(ruleFlags !== null
+      ? {
+          disablesControl: ruleFlags.disablesControl,
+          widensAuthority: ruleFlags.widensAuthority,
+        }
+      : {}),
     ...(redacted.value !== undefined
       ? {
           value: redacted.value,

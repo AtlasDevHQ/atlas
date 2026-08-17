@@ -99,6 +99,20 @@ const SECRET_DEF = getSettingDefinition("RESEND_API_KEY");
 /** A real non-secret entry, so the verbatim arm is exercised against the registry too. */
 const PLAIN_DEF = getSettingDefinition("ATLAS_MODEL");
 
+/**
+ * One key from EACH security-sensitive family (#5262). They weaken in opposite
+ * directions — a LOW abuse threshold disables a control, a WIDE alias source
+ * list grants authority, and each family's other flag is structurally always
+ * `false` — so a single fixture would leave one rule unexercised and could not
+ * tell a per-key rule table from one rule applied to everything.
+ */
+const RPM_KEY = "ATLAS_TRIAL_IP_RATE_LIMIT_RPM";
+const SOURCES_KEY = "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_SOURCES";
+const THRESHOLD_KEY = "ATLAS_BRAIN_ALIAS_AUTO_APPROVE_THRESHOLD";
+const RPM_DEF = getSettingDefinition(RPM_KEY);
+const SOURCES_DEF = getSettingDefinition(SOURCES_KEY);
+const THRESHOLD_DEF = getSettingDefinition(THRESHOLD_KEY);
+
 // ⚠️ Deliberately NOT a real provider prefix. `re_live_…` is Resend's live-key
 // shape and GitHub push protection scans for it — a fabricated value that trips
 // a secret scanner costs a CI round for nothing.
@@ -446,6 +460,193 @@ describe("auditSettingsWrite", () => {
           ipAddress: null,
         }),
       ).rejects.toThrow(/circuit breaker open/);
+    });
+  });
+
+  describe("4 — the judgement (#5262)", () => {
+    it("the family fixtures are real registry entries and are actually sensitive", async () => {
+      // Without this the whole block could be asserting that a MISSPELLED key
+      // records no flags — which is what "absence is meaningful" looks like
+      // from the outside, so every test below would pass for the wrong reason.
+      const { SECURITY_SENSITIVE_KEYS } = await import("@atlas/api/lib/settings");
+      for (const key of [RPM_KEY, SOURCES_KEY, THRESHOLD_KEY]) {
+        expect(SECURITY_SENSITIVE_KEYS.has(key)).toBe(true);
+      }
+      expect(RPM_DEF).toBeDefined();
+      expect(SOURCES_DEF).toBeDefined();
+      expect(THRESHOLD_DEF).toBeDefined();
+      // And the control key must be OUTSIDE the set, or the absence tests below
+      // would be asserting absence against a key that has a rule.
+      expect(SECURITY_SENSITIVE_KEYS.has("ATLAS_MODEL")).toBe(false);
+    });
+
+    it("⭐ records disablesControl on an abuse threshold written to its disabled sentinel", async () => {
+      // The durable row now carries the ANALYSIS, not just the fact. Before
+      // this, `admin_action_log` could say "someone set this to 0" and only the
+      // suppressible pino line said "that disabled an abuse control".
+      await auditSettingsWrite({
+        key: RPM_KEY,
+        definition: RPM_DEF,
+        value: "0",
+        action: "update",
+        platformTier: true,
+        ipAddress: null,
+      });
+      expect(meta().disablesControl).toBe(true);
+      // ⚠️ The OTHER flag asserted too, and asserted `false` rather than
+      // ignored: the abuse family has no notion of widening, so a rule table
+      // wired to one shared rule would light both here.
+      expect(meta().widensAuthority).toBe(false);
+    });
+
+    it("⭐ records widensAuthority on an alias source list naming a class beyond warehouse_key", async () => {
+      // The opposite direction, and the reason the rules are per-key: reusing
+      // the numeric rule here would flag the SAFEST possible alias write (an
+      // empty list — everything queues for review) as a disable.
+      await auditSettingsWrite({
+        key: SOURCES_KEY,
+        definition: SOURCES_DEF,
+        value: "warehouse_key,extractor",
+        action: "update",
+        platformTier: false,
+        ipAddress: null,
+      });
+      expect(meta().widensAuthority).toBe(true);
+      expect(meta().disablesControl).toBe(false);
+    });
+
+    it("records widensAuthority when the alias confidence bar drops below the shipped 1", async () => {
+      await auditSettingsWrite({
+        key: THRESHOLD_KEY,
+        definition: THRESHOLD_DEF,
+        value: "0.5",
+        action: "update",
+        platformTier: false,
+        ipAddress: null,
+      });
+      expect(meta().widensAuthority).toBe(true);
+      expect(meta().disablesControl).toBe(false);
+    });
+
+    // ⚠️ THE DISCRIMINATING HALF, per family. A seam that hardcoded either flag
+    // to `true` would pass all three tests above and make the field useless in
+    // the other direction — every settings write would read as a weakening.
+    it("records both flags FALSE on a harmless write to a sensitive key", async () => {
+      await auditSettingsWrite({
+        key: RPM_KEY,
+        definition: RPM_DEF,
+        value: "5",
+        action: "update",
+        platformTier: true,
+        ipAddress: null,
+      });
+      expect(meta().disablesControl).toBe(false);
+      expect(meta().widensAuthority).toBe(false);
+
+      await auditSettingsWrite({
+        key: SOURCES_KEY,
+        definition: SOURCES_DEF,
+        value: "warehouse_key",
+        action: "update",
+        platformTier: false,
+        ipAddress: null,
+      });
+      expect(meta().disablesControl).toBe(false);
+      expect(meta().widensAuthority).toBe(false);
+    });
+
+    // ⚠️ ABSENCE, NOT `false` — the control #5262 names explicitly. A row that
+    // always carried `disablesControl: false` cannot be filtered on:
+    // `WHERE metadata->>'disablesControl' = 'false'` would match every settings
+    // write in the table. Absence must mean "no rule applies"; `false` must
+    // mean "a rule ran and said no". `in`, not `toBeUndefined()` — a present
+    // key with an `undefined` value satisfies the latter and still serializes
+    // into the row.
+    it("⭐ records NEITHER flag for a key outside the sensitive set", async () => {
+      await auditSettingsWrite({
+        key: "ATLAS_MODEL",
+        definition: PLAIN_DEF,
+        value: "claude-opus-5",
+        action: "update",
+        platformTier: true,
+        ipAddress: null,
+      });
+      expect("disablesControl" in meta()).toBe(false);
+      expect("widensAuthority" in meta()).toBe(false);
+      // And nothing snuck in through the serialized row either.
+      expect(JSON.stringify(lastAwaited())).not.toContain("disablesControl");
+    });
+
+    // ⚠️ THE ACTION MAPPING, DRIVEN FROM EACH FAMILY on the `update` side —
+    // which is the only side where a swap is visible. Measured: with
+    // `value: undefined` on the reset path, both families return false/false
+    // whichever action they are handed, so a clear-path assertion cannot fail
+    // under `{ update: "clear", reset_to_default: "set" }`. #5262's body
+    // predicts the blind axis is the FAMILY; it is the VERB.
+    it("⭐ maps `update` to the rule engine's `set`, on both families", async () => {
+      await auditSettingsWrite({
+        key: RPM_KEY,
+        definition: RPM_DEF,
+        value: "0",
+        action: "update",
+        platformTier: true,
+        ipAddress: null,
+      });
+      // `"0"` only disables under `set`; under `clear` the abuse rule
+      // short-circuits and reports nothing weakened.
+      expect(meta().disablesControl).toBe(true);
+
+      await auditSettingsWrite({
+        key: SOURCES_KEY,
+        definition: SOURCES_DEF,
+        value: "warehouse_key,extractor",
+        action: "update",
+        platformTier: false,
+        ipAddress: null,
+      });
+      // Likewise: the source list only widens under `set`.
+      expect(meta().widensAuthority).toBe(true);
+    });
+
+    it("maps `reset_to_default` to `clear`, which flags nothing on either family", async () => {
+      // A clear reverts to a platform override that may itself be wide, so the
+      // written value does not determine the outcome — both flags are `false`,
+      // and PRESENT, because a rule did run.
+      for (const [key, definition] of [
+        [RPM_KEY, RPM_DEF],
+        [SOURCES_KEY, SOURCES_DEF],
+      ] as const) {
+        await auditSettingsWrite({
+          key,
+          definition,
+          action: "reset_to_default",
+          platformTier: false,
+          ipAddress: null,
+        });
+        expect(meta().disablesControl).toBe(false);
+        expect(meta().widensAuthority).toBe(false);
+        expect(meta().action).toBe("reset_to_default");
+      }
+    });
+
+    it("⭐ records the judgement even when the VALUE is withheld", async () => {
+      // The two decisions are independent, and this is the shape that proves
+      // the flags are computed from `key` rather than from `definition`: a
+      // definition belonging to another key withholds the characters, while the
+      // rule — which reads the key and the real written value — still reports
+      // what the write did. Withholding the analysis alongside the value would
+      // reintroduce #5262 through the back door.
+      await auditSettingsWrite({
+        key: RPM_KEY,
+        definition: PLAIN_DEF, // ATLAS_MODEL's entry — wrong key
+        value: "0",
+        action: "update",
+        platformTier: true,
+        ipAddress: null,
+      });
+      expect(meta().value).toBe(WITHHELD);
+      expect(meta().maskReason).toBe("definition_mismatch");
+      expect(meta().disablesControl).toBe(true);
     });
   });
 

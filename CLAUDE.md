@@ -123,7 +123,11 @@ bun run atlas -- diff    # Compare DB schema vs semantic layer
 
 Env vars: see `.env.example`. Key ones — `ATLAS_PROVIDER`, `ATLAS_MODEL`, `ATLAS_DATASOURCE_URL`, `DATABASE_URL`, `ATLAS_AUTH_MODE`, `BETTER_AUTH_SECRET`.
 
-## Agent practices
+## Agent skills
+
+> Heading kept as `## Agent skills` deliberately: `/setup-matt-pocock-skills` finds and
+> updates this block **by that exact heading**. Rename it and the next re-run appends a
+> second copy instead of updating this one.
 
 **The workflow layer was deleted on 2026-08-17** — 26 of 34 commands, all 5 review agents
 and `docs/agents/`, ~6,250 lines. It was not wrong; it was satisfied nominally, three
@@ -141,6 +145,27 @@ judge). Read it before adding any process.
   A fresh checkout carries none of them. `/setup-matt-pocock-skills` regenerates this repo's
   tracker, triage-label and domain-doc conventions from the maintained upstream — that is the
   path back, not a hand-written replacement, because a hand-written one rots unwatched
-- **Issue tracker** — GitHub issues at `AtlasDevHQ/atlas` via `gh` (always `-R AtlasDevHQ/atlas`). Atlas body format: `## Key files / ## Acceptance criteria / ## Dependencies`. Two label axes — kind+area, and triage state (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`, created lazily)
-- **Domain docs** — single-context `CONTEXT.md` + `docs/adr/` at repo root, produced lazily by `/grill-with-docs`
-- **The record** — `.claude/research/ROADMAP.md` is where measured findings live, and it survived the deletion deliberately. The commands were a lossy copy of it
+### Issue tracker
+
+GitHub issues in `AtlasDevHQ/atlas` via `gh`, always with an explicit `-R AtlasDevHQ/atlas`.
+Bodies follow the Atlas format (`## Key files / ## Acceptance criteria / ## Dependencies`),
+which tooling parses. See [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md).
+
+### Triage labels
+
+The five canonical roles, each label string equal to its name — verified present in the repo.
+They are one of **two** required axes; the other is kind+area. See
+[`docs/agents/triage-labels.md`](docs/agents/triage-labels.md).
+
+### Domain docs
+
+**Multi-context**: [`CONTEXT-MAP.md`](CONTEXT-MAP.md) names 18 bounded contexts and
+`docs/adr/` holds 41 system-wide decisions. ⚠️ The layout is adopted but the split is not
+done — the root `CONTEXT.md` still governs every context, and the map says so per row rather
+than pointing at files that do not exist (#5302). See
+[`docs/agents/domain.md`](docs/agents/domain.md).
+
+### The record
+
+`.claude/research/ROADMAP.md` is where measured findings live, and it survived the deletion
+deliberately. The commands were a lossy copy of it.

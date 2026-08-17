@@ -18,7 +18,7 @@ Three rounds of prose-rule escalation, and each one was obeyed. The 2026-08-17 a
 found the same shape in the instructions themselves: `/review-panel` Step 6 had retired a
 rule in its body while its own heading, cost paragraph, mutant rule and summary still
 stated the retired version; `/research`'s 49-row module map had three rows pointing into
-the wrong package; `.claude/agents/README.md` described a tool grant that had not existed
+the wrong package; the agents README (deleted in the same pass) described a tool grant that had not existed
 for two days.
 
 **Prose cannot hold a rule that an author is motivated to satisfy cheaply.** Adding more

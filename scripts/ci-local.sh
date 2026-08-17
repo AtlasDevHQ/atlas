@@ -235,6 +235,7 @@ launch railway-watch             bash scripts/check-railway-watch.sh
 launch template-drift            g_template_drift
 launch security-headers-drift    bash scripts/check-security-headers-drift.sh
 launch lighthouse-report-paths   bash scripts/check-lighthouse-report-paths.sh
+launch gate-fixtures-wired      bash scripts/check-gate-fixtures-wired.sh
 launch pricing-parity            bash scripts/check-pricing-parity.sh
 launch plugin-count              bash scripts/check-plugin-count.sh
 launch plugin-lockstep           bun scripts/check-plugin-lockstep.ts
@@ -322,7 +323,7 @@ fi
 # half-written. RESULT's existence = run finished; its contents = the report.
 #
 # ⚠️ The verdict logic itself lives in scripts/lib/ci-local-report.sh so it can
-# be tested WITHOUT running 37 gates. It cannot be tested by invoking this
+# be tested WITHOUT running 38 gates. It cannot be tested by invoking this
 # script: `g_gate_fixtures` above runs every scripts/__tests__/*.test.sh, so
 # such a test would recurse. See scripts/__tests__/ci-local-verdict.test.sh.
 # shellcheck source=lib/ci-local-report.sh

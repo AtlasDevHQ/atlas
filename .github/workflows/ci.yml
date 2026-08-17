@@ -161,6 +161,18 @@ jobs:
           if [ $ERRORS -gt 0 ]; then exit 1; fi
           echo "All Dockerfiles pin bun $EXPECTED"
 
+      # ⚠️ THE GUARD THAT REPLACED A HAND-MAINTAINED CENSUS. `ci-local.sh` GLOBS
+      # `scripts/__tests__/*.test.sh` while this workflow ENUMERATES them, so a new
+      # suite runs locally and never runs in CI — a guard measuring nothing on the
+      # gate that decides whether code ships. That was tracked by a comment
+      # counting the suites, which had to be rewritten three times in the change
+      # that removed it. It is now checked.
+      - name: Check every fixture suite is run by a workflow (#5296)
+        run: bash scripts/check-gate-fixtures-wired.sh
+
+      - name: Adversarial fixtures for the gate-fixtures-wired gate (#5296)
+        run: bash scripts/__tests__/check-gate-fixtures-wired.test.sh
+
       - name: Check Dockerfile workspace completeness
         run: bash scripts/check-dockerfile-workspace.sh
 
@@ -328,12 +340,14 @@ jobs:
 
       # ⚠️ Enumerated here because this workflow lists each fixture suite BY NAME
       # while ci-local.sh globs the directory — so a new suite runs locally and
-      # silently never runs in CI. This was the only one missing at the time, of
-      # thirteen suites then. There are 23 now, all covered: 22 named in this
-      # workflow plus `scan-image.test.sh` in image-scan.yml. (#5242 added
-      # `check-caddyfile.test.sh`; #5174 added `check-lighthouse-report-paths.test.sh`
-      # and `lighthouse-comment.test.sh`; #4738 added `check-railway-watch.test.sh`
-      # — all named in the drift job above.)
+      # silently never runs in CI.
+      #
+      # ⚠️ THE CENSUS THAT USED TO LIVE HERE IS GONE, replaced by
+      # `scripts/check-gate-fixtures-wired.sh`. It was a hand-maintained count
+      # ("there are N now, all covered") that nothing verified — and it had to be
+      # rewritten three times in the single change that removed it. A number
+      # nothing checks, sitting in the workflow that runs the mutation gate, is
+      # the exact shape that gate exists to refuse.
       # It builds throwaway trees and needs no Postgres; ~2 seconds.
       - name: Adversarial fixtures for the mutation-tables gate (#5077, #5097)
         run: bash scripts/__tests__/check-mutation-tables.test.sh

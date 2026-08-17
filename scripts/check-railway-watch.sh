@@ -89,6 +89,11 @@ SERVICES=0
 # watchPatterns array that is fine — the same reason `BaselineProblem.kind` exists
 # one directory over.
 CANNOT_LOOK=0
+# Non-DOCKERFILE services this run did not examine. Counted so the final verdict
+# cannot understate what it looked at: the skip printed an honest per-service
+# disclosure and touched no counter, so `OK: all $SERVICES service(s)` named a
+# number smaller than the services on disk with no hint that others existed.
+UNVERIFIED_SVCS=0
 
 # Match a source path against a glob-style watchPattern.
 # Supports:
@@ -157,40 +162,64 @@ extract_sources() {
   # Normalize: strip trailing whitespace/CR, drop blank lines, collapse to
   # lines starting with COPY (case-insensitive would be wrong — Dockerfile
   # keywords are uppercase by convention).
+  copy_source_tokens "$dockerfile" | while IFS= read -r src; do
+    # Skip the broad-context copy — via the SHARED predicate, so this arm and
+    # `has_broad_copy` cannot disagree about what "broad" means.
+    if is_broad_copy_token "$src"; then
+      continue
+    fi
+    # Normalize trailing glob (bun.lock* → bun.lock)
+    src="${src%\*}"
+    # Normalize trailing slash
+    src="${src%/}"
+    if [ -n "$src" ]; then
+      echo "$src"
+    fi
+  done
+}
+
+# Every SOURCE token of every non-`--from` COPY, one per line, broad ones
+# INCLUDED.
+#
+# ⚠️ **THE ACTUAL SHARED READING, and it exists because the previous attempt at
+# sharing was a comment rather than a mechanism.** `is_broad_copy_token` was
+# introduced to be "ONE PREDICATE, read by BOTH arms" — and was called from
+# `extract_sources` only, while `has_broad_copy` kept an independent grep. The two
+# then disagreed on the DESTINATION spelling: that regex accepted only `.`, `./`,
+# `/` or empty as a destination, so `COPY . /app` (with `WORKDIR /app` — the more
+# common Docker idiom, and semantically identical to `COPY . .`) was skipped by
+# this arm as broad AND reported by the other as "no broad `COPY . .`". Both arms
+# stood down, with a stated negative telling the next reader not to look: #4738
+# reopened by a one-token edit.
+#
+# Tokenising once and letting both arms consume the tokens makes the sharing
+# structural. Broadness is now a property of a SOURCE token, which is what it
+# always was — the destination never mattered.
+copy_source_tokens() {
+  local dockerfile="$1"
   grep -E '^COPY[[:space:]]' "$dockerfile" | while IFS= read -r line; do
-    # Skip --from= (intra-image copy)
+    # Skip --from= (intra-image copy); the image-content arm reads those.
     if [[ "$line" == *"--from="* ]]; then
       continue
     fi
-    # Drop the COPY keyword
     line="${line#COPY}"
     line="${line# }"
     # Drop --chown=...:... and any other flag — WITH OR WITHOUT a value.
     # ⚠️ The `=value` was mandatory here, so a VALUELESS flag survived and became
     # a "COPY source": `COPY --link . .` reported `'--link' is not covered by any
-    # watchPattern`, a false positive naming a flag as a file. Found by the
-    # broad-copy-spelling fixture below, which is the first thing to feed this
-    # function a `--link`. BuildKit flags are available today —
-    # `deploy/docs/Dockerfile` opts into `# syntax=docker/dockerfile:1.7`.
+    # watchPattern`, a false positive naming a flag as a file. BuildKit flags are
+    # available today — `deploy/docs/Dockerfile` opts into
+    # `# syntax=docker/dockerfile:1.7`.
     # shellcheck disable=SC2001
     line=$(echo "$line" | sed -E 's/--[a-zA-Z-]+(=[^[:space:]]+)?[[:space:]]+//g')
-    # Last whitespace-separated word is the destination; drop it
+    # Last whitespace-separated word is the destination; drop it.
     # shellcheck disable=SC2206
-    words=($line)
+    local words=($line)
+    [ "${#words[@]}" -ge 2 ] || continue
     unset "words[${#words[@]}-1]"
+    local src
     for src in "${words[@]}"; do
-      # Skip broad-context copy — ONE predicate, shared with `has_broad_copy`, so
-      # the two arms cannot disagree about what "broad" means.
-      if is_broad_copy_token "$src"; then
-        continue
-      fi
-      # Normalize trailing glob (bun.lock* → bun.lock)
-      src="${src%\*}"
-      # Normalize trailing slash
-      src="${src%/}"
-      if [ -n "$src" ]; then
-        echo "$src"
-      fi
+      [ -n "$src" ] && echo "$src"
     done
   done
 }
@@ -290,7 +319,11 @@ is_broad_copy_token() { # is_broad_copy_token TOKEN
 }
 
 has_broad_copy() {
-  grep -qE '^COPY[[:space:]]+(--[a-zA-Z-]+(=[^[:space:]]+)?[[:space:]]+)*\.?/?[[:space:]]+\.?/?[[:space:]]*$' "$1"
+  local src
+  while IFS= read -r src; do
+    if is_broad_copy_token "$src"; then return 0; fi
+  done < <(copy_source_tokens "$1")
+  return 1
 }
 
 # Repo paths the RUNTIME image contains, from the runner stage's
@@ -343,7 +376,18 @@ runner_copy_lines() {
 # `/app/b` and its whole transitive closure vanished. Comparing token counts makes
 # the two readings commensurable.
 count_declared_image_tokens() {
-  runner_copy_lines "$1" | grep -oE '[[:space:]]/app/[^[:space:]]+' | grep -c . || true
+  # ⚠️ NORMALISED AND DEDUPED, matching `extract_image_paths`' own `sed`+`sort -u`.
+  # Comparing a deduped set against a RAW count made a duplicated token — the same
+  # `/app/x` copied from two stages, or `/app/x` beside `/app/x/` — read as a
+  # shortfall, so a healthy Dockerfile got `exit 2` and "Fix the extractor, not
+  # the Dockerfile": a false red pointing at a working gate. Not live today (every
+  # `/app/…` token in the four deploy Dockerfiles is distinct), but the floor's
+  # value is that it fires only on a real under-read.
+  runner_copy_lines "$1" \
+    | grep -oE '[[:space:]]/app/[^[:space:]]+' \
+    | sed -E 's#^[[:space:]]*##; s#/+$##' \
+    | LC_ALL=C sort -u \
+    | grep -c . || true
 }
 
 # The transitive workspace closure of a set of package directories.
@@ -431,6 +475,7 @@ for railway_json in "$ROOT"/deploy/*/railway.json; do
     echo "$svc: builder=${builder:-unknown} — SKIPPED; only DOCKERFILE builds are checked, so its"
     echo "  watchPatterns are UNVERIFIED. A NIXPACKS buildCommand that installs the workspace has the"
     echo "  same #4738 exposure as a broad COPY."
+    UNVERIFIED_SVCS=$((UNVERIFIED_SVCS + 1))
     continue
   fi
 
@@ -632,11 +677,19 @@ for railway_json in "$ROOT"/deploy/*/railway.json; do
       continue
     fi
     if [ -s "$closure_err" ]; then
-      echo "::error file=$rel_json::workspace_closure wrote to stderr on success for $svc, so its parsed output may be polluted: $(cat "$closure_err")"
-      rm -f "$closure_err"
-      CANNOT_LOOK=$((CANNOT_LOOK + 1))
-      continue
+      # ⚠️ A WARNING, not a verdict, and the earlier `::error::` + exit 2 carried a
+      # FALSE claim with it — "its parsed output may be polluted". Round 1
+      # redirected stderr to a separate file precisely so it CANNOT reach
+      # `closure_out`, so pollution is impossible by construction. The sibling gate
+      # in this same change (`check-lighthouse-report-paths.sh`) already treats
+      # this shape as a warning and explains why; two gates landing in one PR with
+      # opposite readings of one shape is worth resolving now rather than leaving
+      # for a reader to reconcile. The per-entry directory check below is the
+      # residue guard, and it runs regardless.
+      echo "::warning file=$rel_json::workspace_closure wrote to stderr on success for $svc: $(cat "$closure_err")"
+      WARNINGS=$((WARNINGS + 1))
     fi
+    if false; then :; fi
     rm -f "$closure_err"
     # ⚠️ `grep .` strips the phantom empty element a here-string's trailing
     # newline would produce, which otherwise inflates the count the floor below
@@ -650,6 +703,17 @@ for railway_json in "$ROOT"/deploy/*/railway.json; do
     mapfile -t closure_dirs < <(printf '%s' "$closure_out" | grep . || true)
     # A closure smaller than its own (deduped) roots means the traversal produced
     # nothing and every check below would trivially agree.
+    #
+    # ⚠️ NO FIXTURE MAKES THIS ARM FIRE, and that is honest rather than an
+    # omission — the same disclosure `check-mutation-tables.sh` carries for its
+    # structurally identical `SHARD_OWNED -eq 0` arm. `workspace_closure` seeds its
+    # `seen` set with every root before traversing, so |closure| >= |roots| always;
+    # once the roots are deduped above, no input can invert that, and the stderr
+    # and is-a-directory checks intercept every pollution path. MEASURED: deleting
+    # this arm leaves all 28 fixtures green. It stays as a backstop against a future
+    # edit to that bun script, which is exactly the edit that would otherwise make
+    # every service agree with a reading of nothing. The fixture that DOES exist
+    # (four image paths under one package) pins the DEDUP, not this floor.
     root_count=$(printf '%s\n' "$closure_roots" | grep -c . || true)
     if [ "${#closure_dirs[@]}" -lt "$root_count" ]; then
       echo "::error file=$rel_json::the workspace closure for $svc returned ${#closure_dirs[@]} dir(s) for $root_count root(s) — the traversal is broken, so this arm would verify nothing"
@@ -737,8 +801,21 @@ fi
 # `BaselineProblem.kind` was split to prevent, one directory over.
 if [ "$CANNOT_LOOK" -gt 0 ]; then
   echo "FAIL: $CANNOT_LOOK service(s)/arm(s) could not be verified at all — see the errors above." >&2
-  echo "Fix: the GATE or the Dockerfile it reads, NOT watchPatterns. Nothing here says a path is unwatched;" >&2
-  echo "     it says the check did not run, which is the one outcome a drift gate must never render as clean." >&2
+  echo "Fix: the GATE or the Dockerfile it reads, NOT watchPatterns." >&2
+  # ⚠️ CONDITIONAL, because the unconditional version asserted "Nothing here says
+  # a path is unwatched" while `ERRORS` could be non-zero in the same run — and
+  # this arm exits BEFORE the ERRORS block, so that count was never printed at
+  # all. Two distinct faults, one of them a real silent-deploy gap, and the
+  # summary denied it existed. `ci-local.sh` quotes only the last 40 log lines, so
+  # across five services the per-path errors can be off-screen entirely, leaving
+  # "fix the GATE, NOT watchPatterns" as the only thing the reader sees.
+  if [ "$ERRORS" -gt 0 ]; then
+    echo "ALSO: $ERRORS path(s) ARE genuinely uncovered by watchPatterns (#4738) — fix those in" >&2
+    echo "      deploy/<service>/railway.json. TWO distinct faults in this run." >&2
+  else
+    echo "     Nothing here says a path is unwatched; it says the check did not run," >&2
+    echo "     which is the one outcome a drift gate must never render as clean." >&2
+  fi
   exit 2
 fi
 
@@ -749,8 +826,12 @@ if [ $ERRORS -gt 0 ]; then
   exit 1
 fi
 
+UNVERIFIED_NOTE=""
+if [ "$UNVERIFIED_SVCS" -gt 0 ]; then
+  UNVERIFIED_NOTE="; $UNVERIFIED_SVCS non-DOCKERFILE service(s) UNVERIFIED"
+fi
 if [ $WARNINGS -gt 0 ]; then
-  echo "OK (with $WARNINGS warning(s)): all $SERVICES service(s)' COPY sources and bundled workspace paths are covered where watchPatterns are defined"
+  echo "OK (with $WARNINGS warning(s)): all $SERVICES DOCKERFILE service(s)' COPY sources and bundled workspace paths covered where watchPatterns are defined$UNVERIFIED_NOTE"
 else
-  echo "OK: all $SERVICES service(s)' COPY sources and bundled workspace paths are covered by their watchPatterns"
+  echo "OK: all $SERVICES DOCKERFILE service(s)' COPY sources and bundled workspace paths covered$UNVERIFIED_NOTE"
 fi

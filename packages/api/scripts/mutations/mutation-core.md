@@ -22,11 +22,12 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | `parseBunSummary` stops anchoring the count to a line start | 1 |
 | `parseBunSummary` stops anchoring the PASS count to a line start | 1 |
 | `isWholeSuite` only fires on an exact total (`>=` ratio → `>= total`) | 2 |
+| ⚠️ `isWholeSuite` rounds the threshold DOWN (`Math.ceil` → `Math.floor`) | 1 |
 | `validateSpec` stops rejecting a no-op edit | 2 |
 | `validateSpec` stops rejecting an empty anchor | 2 |
 | `validateSpec` returns the FIRST problem instead of all of them | 1 |
 | `countOccurrences` loops forever on an empty needle (guard removed) | ⚠️ HANGS — timed out |
-| `renderCell` loses its `unmeasured` arm (a no-count cell renders as `undefined`) | 3 |
+| `renderCell` loses its `unmeasured` arm (a no-count cell throws instead of rendering its reason) | 3 |
 | ⚠️ the refusal narrows to the DEAD-ANCHOR member again (#5077's shape) | 3 |
 | `unmeasurableOutcome` stops refusing a SKIPPED or TODO'd run | 7 |
 | `unmeasurableOutcome` stops cross-checking the buckets against `Ran N` | 7 |
@@ -43,7 +44,7 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | `render` drops the DO-NOT-EDIT header | 1 |
 | `render` drops the suite-size line | 1 |
 
-Suite sizes: **mutate-core.test.ts** 82 tests (`src/__tests__/mutate-core.test.ts`).
+Suite sizes: **mutate-core.test.ts** 83 tests (`src/__tests__/mutate-core.test.ts`).
 
 ## Notes
 
@@ -54,8 +55,9 @@ Suite sizes: **mutate-core.test.ts** 82 tests (`src/__tests__/mutate-core.test.t
 - **`parseBunSummary` reports `0 fail` for a suite that never ran** — The single most misleading cell the table can contain: a compile error rendered as *the suite does not catch this mutation*.
 - **`parseBunSummary` stops anchoring the PASS count to a line start** — The pass count is the table's denominator and the input to `isWholeSuite`, so corrupting it silently rescales every flag decision.
 - **`isWholeSuite` only fires on an exact total (`>=` ratio → `>= total`)** — A setup break that spares one trivially-green test is the same defect, and this spelling lets it through unflagged.
+- **⚠️ `isWholeSuite` rounds the threshold DOWN (`Math.ceil` → `Math.floor`)** — Measured at 0 kills before this row existed: at 51 tests both roundings agree, at 58 both agree, and every `countCell` case uses a total of 10 where `10 * 0.9` is exactly 9 in IEEE-754. It is load-bearing anyway — `check-mutation-tables.test.sh`'s `GOOD_TARGET` is deliberately 2-of-3 so the cell renders `2` and not `2 ⚠️`, and under `floor` that suite aborts in its own setup for a reason no message explains.
 - **`countOccurrences` loops forever on an empty needle (guard removed)** — Left in the list deliberately: if this row ever reports a count rather than a timeout, the guard is genuinely gone and the empty-needle case hangs the runner.
-- **`renderCell` loses its `unmeasured` arm (a no-count cell renders as `undefined`)** — The successor to the deleted `fail`-leak row: the same defect one variant over. A cell that measured nothing must never render as anything a reader could take for a measurement.
+- **`renderCell` loses its `unmeasured` arm (a no-count cell throws instead of rendering its reason)** — The successor to the deleted `fail`-leak row: the same defect one variant over. A cell that measured nothing must never render as anything a reader could take for a measurement.
 - **⚠️ the refusal narrows to the DEAD-ANCHOR member again (#5077's shape)** — The single row this whole change exists for. It reinstates exactly what #5077 shipped — one member refused, the rest rendered as honest numbers — so a `0` here would mean nothing notices the class reopening.
 - **`unmeasurableOutcome` stops refusing a SKIPPED or TODO'd run** — Kills the baseline guard and the per-mutation refusal at once, which is the point of there being one copy.
 - **`unmeasurableOutcome` stops cross-checking the buckets against `Ran N`** — The general arm — the one that closes a bucket bun invents later without naming it.

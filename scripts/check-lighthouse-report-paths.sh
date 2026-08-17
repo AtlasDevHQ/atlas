@@ -222,12 +222,15 @@ wf_line() { # wf_line DESCRIPTION EXTENDED_REGEX
 
 # These two are substring-safe by construction (a closing quote / a following
 # flag terminates them), so a literal match is already exact.
-if grep -qF -- "dir=\"$REPORT_ROOT/\$ff\"" "$WORKFLOW"; then
+# ⚠️ ANCHORED like the two below. "Substring-safe by construction" covered an
+# EXTENDED root and not a DEAD LINE: a commented-out `# dir="…/$ff"`, or the same
+# text in a docstring, passed while the live verify step was gone.
+if grep -qE -- "^[[:space:]]*dir=\"${RE_ROOT}/\\\$ff\"" "$WORKFLOW"; then
   pass "lighthouse.yml the verify step's per-form-factor dir: dir=\"$REPORT_ROOT/\$ff\""
 else
   fail "lighthouse.yml the verify step's per-form-factor dir does not contain 'dir=\"$REPORT_ROOT/\$ff\"' — it no longer agrees with lighthouserc.js"
 fi
-if grep -qF -- "find $REPORT_ROOT -maxdepth 2" "$WORKFLOW"; then
+if grep -qE -- "^[[:space:]]*find ${RE_ROOT} -maxdepth 2" "$WORKFLOW"; then
   pass "lighthouse.yml the verify step's diagnostic listing: find $REPORT_ROOT -maxdepth 2"
 else
   fail "lighthouse.yml the verify step's diagnostic listing does not contain 'find $REPORT_ROOT -maxdepth 2' — it no longer agrees with lighthouserc.js"

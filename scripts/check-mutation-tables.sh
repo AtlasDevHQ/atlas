@@ -272,8 +272,31 @@ $UNTRACKED"
           break
         fi
         if [ -s "$DEP_ERR" ]; then
-          echo "check-mutation-tables: $spec's dependency list is INCOMPLETE —"
+          # ⚠️ WIDENS, and the first cut of this arm only ANNOUNCED. The comment
+          # above calls a quietly shorter dependency list this gate's one
+          # unacceptable failure — and then this arm echoed and fell through, so
+          # an unreadable corpus produced a short list, no spec was selected, and
+          # the gate exited 0 with "nothing to verify". A green PASS row for the
+          # exact edit shape the import hop was added to catch.
+          #
+          # ⚠️ It cannot tell a NARROWING warning (an unreadable seed) from a
+          # WIDENING one (`statCandidate`'s "I could not stat it, so I am
+          # including it"), because both land in this sink. A reader that cannot
+          # distinguish them must assume the worst — which is the same
+          # widen-never-narrow rule the three git arms above follow.
+          #
+          # ⚠️ Widening HERE while the empty-by-construction arm below DECLINES is
+          # not an inconsistency, and the difference is worth stating: declining
+          # there is right because the full sweep would re-verify a SHA remote CI
+          # already covers, buying no coverage for minutes of cost. Here the
+          # dependency GRAPH is unreadable, so we do not know which tables are at
+          # risk — the sweep buys real coverage.
+          echo "check-mutation-tables: $spec's dependency list is INCOMPLETE — falling back to --all."
           sed 's/^/  /' "$DEP_ERR"
+          rm -f "$DEP_ERR"
+          MODE="all"
+          SELECTED=()
+          break
         fi
         rm -f "$DEP_ERR"
         DEPS="$spec"$'\n'"$DEP_OUT"
@@ -284,7 +307,19 @@ $UNTRACKED"
           # prefixing produced `packages/api/../types/src/migration.ts`, which
           # git never emits, so that dependency could NEVER select its spec.
           # Silently, and only for the cross-package case.
-          rel=$(cd "$ROOT/packages/api" && realpath -m --relative-to="$ROOT" "$dep")
+          # ⚠️ THE FIFTH INSTANCE of the twin this file documents three times, and
+          # the one the round-1 sweep missed while its own comment called the
+          # `--files` capture "THE FOURTH INSTANCE … and the one that was missed".
+          # A `realpath` without GNU coreutils (BSD, busybox) has no
+          # `--relative-to`, exits non-zero, and `set -e` kills the script with 1 —
+          # this script's code for STALE. The operator then regenerates tables that
+          # never drifted while the real fault sits in a log tail.
+          if ! rel=$(cd "$ROOT/packages/api" && realpath -m --relative-to="$ROOT" "$dep" 2>&1); then
+            echo "check-mutation-tables: cannot normalise dependency '$dep' ($rel) — falling back to --all."
+            MODE="all"
+            SELECTED=()
+            break 2
+          fi
           if printf '%s\n' "$CHANGED" | grep -qxF "$rel"; then
             SELECTED+=("$spec"); break
           fi

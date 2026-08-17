@@ -397,7 +397,15 @@ fi
 # "no broad COPY . . — the workspace-closure arm does not apply" — both arms
 # standing down while the broad copy bundled every package, with a STATED NEGATIVE
 # telling the reader not to look.
-for spelling in 'COPY .\/ .\/' 'COPY . .\/' 'COPY --link . .'; do
+# ⚠️ `COPY . /app` IS THE ONE THE SUITE COULD NOT FAIL ON, and it is the more
+# common Docker idiom (with `WORKDIR /app`), semantically identical to `COPY . .`.
+# `is_broad_copy_token` was introduced as "ONE PREDICATE, read by BOTH arms" and
+# was called from `extract_sources` only, while `has_broad_copy` kept an
+# independent regex whose destination pattern accepted just `.`, `./`, `/` or
+# empty. So this spelling was skipped by one arm as broad AND reported by the
+# other as "no broad COPY . ." — both arms standing down, with a stated negative
+# telling the next reader not to look. #4738 reopened by one token.
+for spelling in 'COPY .\/ .\/' 'COPY . .\/' 'COPY --link . .' 'COPY . \/app'; do
   new_tree
   mutate deploy/svc/Dockerfile "s#^COPY \. \.\$#${spelling}#"
   expect "the closure arm still applies to \`$(printf '%s' "$spelling" | sed 's#\\##g')\`" 0 \
@@ -545,7 +553,7 @@ fi
 # ⚠️ AN ABSOLUTE LITERAL. A count derived from the cases cannot notice a deleted
 # case — measured on `check-docs-brain-snippets.test.sh`, which reported
 # `40 passed, 0 failed` with cases removed.
-EXPECTED_CASES=27
+EXPECTED_CASES=28
 TOTAL=$((PASS + FAIL))
 if [ "$TOTAL" -eq "$EXPECTED_CASES" ]; then
   pass "all $EXPECTED_CASES cases ran"

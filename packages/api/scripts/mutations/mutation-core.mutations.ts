@@ -118,6 +118,17 @@ it, and that header is exactly what stops a reviewer looking closer.
       note: "A setup break that spares one trivially-green test is the same defect, and this spelling lets it through unflagged.",
     },
     {
+      label: "⚠️ `isWholeSuite` rounds the threshold DOWN (`Math.ceil` → `Math.floor`)",
+      edits: [
+        {
+          file: SOURCE,
+          oldString: "  return total > 0 && fail >= Math.ceil(total * WHOLE_SUITE_WARN_RATIO);",
+          newString: "  return total > 0 && fail >= Math.floor(total * WHOLE_SUITE_WARN_RATIO);",
+        },
+      ],
+      note: "Measured at 0 kills before this row existed: at 51 tests both roundings agree, at 58 both agree, and every `countCell` case uses a total of 10 where `10 * 0.9` is exactly 9 in IEEE-754. It is load-bearing anyway — `check-mutation-tables.test.sh`'s `GOOD_TARGET` is deliberately 2-of-3 so the cell renders `2` and not `2 ⚠️`, and under `floor` that suite aborts in its own setup for a reason no message explains.",
+    },
+    {
       label: "`validateSpec` stops rejecting a no-op edit",
       edits: [
         {
@@ -173,7 +184,12 @@ it, and that header is exactly what stops a reviewer looking closer.
     // The rows below price the guards that made it unreachable instead — those
     // have tests, and therefore real numbers.
     {
-      label: "`renderCell` loses its `unmeasured` arm (a no-count cell renders as `undefined`)",
+      // ⚠️ The label said "renders as `undefined`", which is FALSE and was being
+      // published into the generated table: `renderCell` has no fall-off path, so
+      // deleting the arm drops through to `default:` and THROWS. On a change whose
+      // thesis is "a claim formatted like a measurement", a wrong label inside the
+      // mutation table is the defect itself. The measured count is 3 either way.
+      label: "`renderCell` loses its `unmeasured` arm (a no-count cell throws instead of rendering its reason)",
       edits: [
         {
           file: SOURCE,

@@ -288,6 +288,16 @@ render success success
 has "an EMPTY manifest array renders the success empty state, not a crash" \
   "No reports found."
 hasnt "…and still does not claim nothing was written" "wrote no manifest.json"
+# ⚠️ `[]` REACHES the counted warning, and the count is the whole point of that
+# arm — it is the "lhci wrote nothing" end of the discrimination
+# `readManifest`'s docstring describes, and the shape `lighthouse.yml` calls
+# "#4899's shape one layer in". Unasserted, `parsed.length === 1` could relax to
+# `<= 1` and render "has 0 entry" with nothing noticing.
+if printf '%s' "$WARNINGS" | grep -qF "has 0 entries but none with isRepresentativeRun: true"; then
+  pass "an EMPTY manifest array reaches the counted warning, and says zero"
+else
+  fail "empty-array manifest emitted no counted warning — warnings were: $WARNINGS"
+fi
 
 # ⚠️ THE FILTER-TO-ZERO ARM, which returned a bare `[]` with no warning while the
 # reader's own docstring claimed it had no silent path. The COUNT is the number
@@ -470,7 +480,7 @@ fi
 # ⚠️ AN ABSOLUTE LITERAL, for the reason `check-docs-brain-snippets.test.sh`
 # is the counter-example: a count derived from the cases cannot notice a deleted
 # case.
-EXPECTED_CASES=59
+EXPECTED_CASES=60
 TOTAL=$((PASS + FAIL))
 if [ "$TOTAL" -eq "$EXPECTED_CASES" ]; then
   pass "all $EXPECTED_CASES assertions ran"

@@ -51,7 +51,7 @@
  * not a triumph of the tests.
  */
 
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { runFileWithSignalRetry } from "./signal-retry";
 import {

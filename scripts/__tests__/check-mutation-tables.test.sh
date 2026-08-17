@@ -49,6 +49,14 @@
 # scheme, and one of those labels claimed the `.todo` bucket that the header then
 # said was removed.
 
+# ⚠️ `-e` here, unlike this file's three sibling suites, which drop it so a failing
+# case cannot abort the tally. Kept deliberately: `make_tree`'s premise checks
+# (the tombstone bypass, the corpus table) signal a BROKEN FIXTURE by exiting
+# non-zero from a command substitution, and aborting loudly is the right response
+# to "the tree I was about to test does not exist". The cost is real and worth
+# naming: an abort skips the `EXPECTED_CASES` guard at the bottom, so the device
+# that notices a DELETED case is unreachable on the failure mode most likely to
+# delete one. An abort is still a non-zero exit, so it cannot read as a pass.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -208,11 +216,12 @@ check 1 "marked TODO on 1 of 2 tests" \
 # that arm published a deflated count as an honest number and every suite in the
 # repo stayed green.
 #
-# Here the baseline is CLEAN (2 pass, 0 skip) and the MUTATION causes the skip:
-# `describe.skipIf(answer() !== 42)` is true only while `answer()` returns 42, so
-# `return 0` skips the gated test. The phrase comes only from
-# `UnmeasurableOutcome.cell` — the baseline's own prose reads "SKIPPED 1 of 2
-# tests", which does not contain "SKIPPED 1 —".
+# Here the baseline is CLEAN — 3 pass, 0 skip, since `describe.skipIf(42 !== 42)`
+# does NOT skip — and the MUTATION causes the skip: `return 0` makes the predicate
+# true and the gated test drops out. The phrase comes only from
+# `UnmeasurableOutcome.cell`; the baseline path prints `.message`, which for this
+# arm reads "SKIPPED 1 of 3 tests" and cannot contain "SKIPPED 1 —". The two
+# strings are textually disjoint, which is what makes the phrase discriminate.
 SKIPIF_TARGET='import { describe, expect, test } from "bun:test";
 import { answer } from "./subject";
 test("a", () => { expect(answer()).toBe(42); });
@@ -267,14 +276,21 @@ check 1 "dependency list is INCOMPLETE" \
 # phrase — not the exit code, which is 1 either way — is what discriminates.
 T=$(make_tree "$GOOD_TARGET" '"  return 42;"' \
    'bun run scripts/mutate.ts scripts/mutations/f.mutations.ts >/dev/null 2>&1; printf "this is not valid typescript (((\n" > scripts/mutations/f.mutations.ts && git add -A >/dev/null && git commit --quiet -m "break the spec"')
-check 1 "falling back to --all" \
+# ⚠️ The phrase is `cannot list dependencies for`, NOT `falling back to --all`.
+# FOUR gate sites emit that second string (the base diff, the working-tree diff,
+# the untracked list, and this one), so it cannot say WHICH widen fired — and this
+# suite's own header is an essay about exit 1 being shared by five states. The
+# narrower phrase sits on the same `echo`, so it still implies the widen.
+check 1 "cannot list dependencies for" \
   "an unloadable spec WIDENS the selector rather than aborting as STALE" "$T" --affected main
 
 # 3. The fail-safe. An unresolvable base must WIDEN to --all (and then catch the
 # hand-edit), never quietly select nothing and exit 0.
 T=$(make_tree "$GOOD_TARGET" '"  return 42;"' \
    'bun run scripts/mutate.ts scripts/mutations/f.mutations.ts >/dev/null 2>&1; grep -q "| 2 |" scripts/mutations/f.md && sed -i "s/| 2 |/| 99 |/" scripts/mutations/f.md')
-check 1 "falling back to --all" \
+# Likewise unique to the base-diff widen, so this fixture and 2f pin DIFFERENT
+# sites rather than both resting on one shared sentence.
+check 1 "cannot diff against" \
   "an unresolvable base WIDENS to --all rather than passing" "$T" --affected origin/nope
 
 # 4. Declining to verify is not passing.

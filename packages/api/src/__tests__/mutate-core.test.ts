@@ -821,6 +821,22 @@ describe("isWholeSuite — the `could not determine data type` trap", () => {
     expect(isWholeSuite(5, 0)).toBe(false);
   });
 
+  test("⚠️ the threshold ROUNDS UP — `floor` would flag the shell fixtures' 2-of-3", () => {
+    // Nothing discriminated `Math.ceil` from `Math.floor`: at 51 tests both give
+    // true, at 58 both give false, and `countCell`'s cases all use total 10 where
+    // `10 * 0.9` is exactly 9 in IEEE-754. This input is the one that separates
+    // them — ceil(2.7) = 3 so 2 of 3 is NOT a whole suite, while floor(2.7) = 2
+    // would flag it.
+    //
+    // It is load-bearing rather than academic: `check-mutation-tables.test.sh`'s
+    // `GOOD_TARGET` is deliberately 2-of-3 so the cell renders `2` and not `2 ⚠️`,
+    // and its hand-edit fixtures `grep -q "| 2 |"`. Under `floor` that grep fails,
+    // `make_tree`'s setup returns non-zero, and the whole suite aborts for a
+    // reason no message explains.
+    expect(isWholeSuite(2, 3)).toBe(false);
+    expect(Math.ceil(3 * WHOLE_SUITE_WARN_RATIO)).toBe(3);
+  });
+
   test("the ratio is below 1, or the near-total case above cannot fire", () => {
     expect(WHOLE_SUITE_WARN_RATIO).toBeLessThan(1);
   });

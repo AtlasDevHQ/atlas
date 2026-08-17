@@ -456,10 +456,23 @@ export function renderCell(cell: Cell): string {
       return cell.wholeSuite === true ? `${cell.fail} ⚠️` : String(cell.fail);
     default: {
       // ⚠️ The repo's `_exhaustive: never` idiom (metrics.ts, admin-publish.ts,
-      // dashboards.ts and five more). Here it is BELT AND BRACES: this
-      // function's return type already excludes `undefined`, so a fourth
-      // variant is a TS2366 on its own — measured. The two functions below have
-      // no such backstop, which is why the pin is not optional there.
+      // dashboards.ts and five more).
+      //
+      // ⚠️ MEASURED TWICE, because the first version of this comment said "a
+      // fourth variant is a TS2366 on its own — measured" and that was a
+      // counterfactual about a DIFFERENT function: with this `default` present
+      // the switch is exhaustive to control-flow analysis, so TS2366 cannot
+      // fire here at all. Both shapes were then compiled with a fourth variant
+      // added:
+      //
+      //   with this default:     TS2322 at all THREE pins (here, `cellFlag`,
+      //                          `uncommittableReason`)
+      //   with it DELETED:       TS2366 here — "lacks ending return statement"
+      //
+      // So the pin is what reports it today, and the return type is a second
+      // backstop only if the pin is ever removed. `cellFlag` and
+      // `uncommittableReason` have neither backstop, which is why the pin is not
+      // optional there.
       const _exhaustive: never = cell;
       throw new Error(`unhandled Cell kind: ${JSON.stringify(_exhaustive)}`);
     }

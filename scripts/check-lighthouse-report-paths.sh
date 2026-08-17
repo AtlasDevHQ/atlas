@@ -71,6 +71,27 @@ done
 
 command -v bun >/dev/null || die "bun is not on PATH; the config and renderer cannot be evaluated."
 
+# ⚠️ **STDERR IS CAPTURED SEPARATELY, NEVER MERGED INTO THE DATA.** Every `bun -e`
+# below has its stdout PARSED — a form-factor list, a path, a tab-separated
+# table — so a single line bun writes to stderr on the SUCCESS path (a
+# deprecation notice, a cold-start install log) becomes a data element. The worst
+# case is not a cosmetic one: `ALLOWED`'s vacuity floor compares the DERIVED
+# COUNT against 2, so stderr noise can carry a one-element derivation past the
+# floor that exists to catch it. On the failure path the diagnostic is exactly
+# what we want, and `die` prints it.
+BUN_ERR="$(mktemp)"
+trap 'rm -f "$BUN_ERR"' EXIT
+
+# noise_check LABEL — a non-empty stderr on a SUCCESSFUL run is a warning, not a
+# verdict, but it must not pass unremarked: it means the parsed stdout may have
+# been polluted.
+noise_check() {
+  [ -s "$BUN_ERR" ] || return 0
+  echo "::warning::[lighthouse-paths] $1 wrote to stderr on success — parsed output may be polluted:" >&2
+  sed 's/^/  /' "$BUN_ERR" >&2
+  : >"$BUN_ERR"
+}
+
 echo "check-lighthouse-report-paths.sh — lighthouserc.js is the SSOT for the report tree"
 
 # --- 1. The form-factor allowlist, derived from the config's own throw --------
@@ -89,8 +110,9 @@ ALLOWED_RAW=$(
     }
     process.stderr.write("lighthouserc.js accepted an invalid LH_FORM_FACTOR — the validation is gone\n");
     process.exit(1);
-  ' 2>&1
-) || die "could not derive the form-factor allowlist from lighthouserc.js: $ALLOWED_RAW"
+  ' 2>"$BUN_ERR"
+) || die "could not derive the form-factor allowlist from lighthouserc.js: $(cat "$BUN_ERR")"
+noise_check "the form-factor derivation"
 
 mapfile -t ALLOWED <<<"$ALLOWED_RAW"
 # ⚠️ A VACUITY FLOOR. An empty or one-element derivation would make every
@@ -113,8 +135,9 @@ for ff in "${ALLOWED[@]}"; do
         process.exit(1);
       }
       process.stdout.write(dir);
-    ' 2>&1
-  ) || die "could not read ci.upload.outputDir for '$ff': $OUT"
+    ' 2>"$BUN_ERR"
+  ) || die "could not read ci.upload.outputDir for '$ff': $(cat "$BUN_ERR")"
+  noise_check "the outputDir read for '$ff'"
   # The form factor must be the LAST segment, or "the root" is not well defined
   # and the workflow's `dir="<root>/$ff"` shape is wrong rather than merely
   # out of date.
@@ -144,8 +167,9 @@ RENDERER_OUT=$(
     process.stdout.write(
       [m.REPORT_ROOT, m.FORM_FACTORS.map((f) => `${f.key}\t${m.reportDir(f.key)}`).join("\n")].join("\n"),
     );
-  ' 2>&1
-) || die "could not evaluate the renderer's report paths: $RENDERER_OUT"
+  ' 2>"$BUN_ERR"
+) || die "could not evaluate the renderer's report paths: $(cat "$BUN_ERR")"
+noise_check "the renderer evaluation"
 
 RENDERER_ROOT=$(printf '%s\n' "$RENDERER_OUT" | head -1)
 if [ "$RENDERER_ROOT" = "$REPORT_ROOT" ]; then
@@ -172,21 +196,46 @@ while IFS=$'\t' read -r key dir; do
 done < <(printf '%s\n' "$RENDERER_OUT" | tail -n +2)
 
 # --- 4. The workflow's literals ---------------------------------------------
-# ⚠️ `grep -qF` on the exact literal, so a MOVED root fails rather than
-# prefix-matching its way to green. Each of these is a site that would go quiet
-# if the root changed under it.
-wf_literal() { # wf_literal DESCRIPTION LITERAL
-  if grep -qF -- "$2" "$WORKFLOW"; then
-    pass "lighthouse.yml $1: $2"
+# ⚠️ **ANCHORED ON THE WHOLE LINE, not a substring, and an earlier draft of this
+# block got that wrong in a way that mattered.** `grep -qF` is unanchored, so
+# with `REPORT_ROOT=lighthouse-reports` both `name: lighthouse-reports-desktop`
+# and `path: lighthouse-reports/desktop` MATCHED and PASSED while disagreeing
+# with the config — the second narrowing the artifact to one form factor, a real
+# regression this gate would have blessed. It caught a moved root and not an
+# EXTENDED one, so two of the eight sites were unpinned while the header claimed
+# eight. Two of the four literals are self-terminating (`dir="…/$ff"` closes on a
+# quote, `find … -maxdepth 2` on the flag); the other two are not, and a
+# whole-line anchor covers all four uniformly rather than by case analysis.
+#
+# `REPORT_ROOT` is derived from the config and contains no regex metacharacters
+# today; `escape_re` keeps that from being an assumption.
+escape_re() { printf '%s' "$1" | sed -e 's/[][\.*^$(){}?+|/]/\\&/g'; }
+RE_ROOT="$(escape_re "$REPORT_ROOT")"
+
+wf_line() { # wf_line DESCRIPTION EXTENDED_REGEX
+  if grep -qE -- "$2" "$WORKFLOW"; then
+    pass "lighthouse.yml $1"
   else
-    fail "lighthouse.yml $1 does not contain '$2' — it no longer agrees with lighthouserc.js"
+    fail "lighthouse.yml $1 — no line matching '$2'; it no longer agrees with lighthouserc.js"
   fi
 }
 
-wf_literal "the verify step's per-form-factor dir" "dir=\"$REPORT_ROOT/\$ff\""
-wf_literal "the verify step's diagnostic listing" "find $REPORT_ROOT -maxdepth 2"
-wf_literal "the artifact path" "path: $REPORT_ROOT/"
-wf_literal "the artifact name" "name: $REPORT_ROOT"
+# These two are substring-safe by construction (a closing quote / a following
+# flag terminates them), so a literal match is already exact.
+if grep -qF -- "dir=\"$REPORT_ROOT/\$ff\"" "$WORKFLOW"; then
+  pass "lighthouse.yml the verify step's per-form-factor dir: dir=\"$REPORT_ROOT/\$ff\""
+else
+  fail "lighthouse.yml the verify step's per-form-factor dir does not contain 'dir=\"$REPORT_ROOT/\$ff\"' — it no longer agrees with lighthouserc.js"
+fi
+if grep -qF -- "find $REPORT_ROOT -maxdepth 2" "$WORKFLOW"; then
+  pass "lighthouse.yml the verify step's diagnostic listing: find $REPORT_ROOT -maxdepth 2"
+else
+  fail "lighthouse.yml the verify step's diagnostic listing does not contain 'find $REPORT_ROOT -maxdepth 2' — it no longer agrees with lighthouserc.js"
+fi
+# …and these two are not: an extended root is a superset and would match a
+# substring test.
+wf_line "the artifact path is exactly $REPORT_ROOT/" "^[[:space:]]*path:[[:space:]]*${RE_ROOT}/[[:space:]]*$"
+wf_line "the artifact name is exactly $REPORT_ROOT" "^[[:space:]]*name:[[:space:]]*${RE_ROOT}[[:space:]]*$"
 
 # The verify step's own form-factor loop. Derived list, joined the way bash
 # writes it.

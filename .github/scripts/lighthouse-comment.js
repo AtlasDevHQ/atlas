@@ -42,11 +42,11 @@
  *
  * ⚠️ `lighthouserc.js`'s `upload.outputDir` is the source of truth, and
  * `scripts/check-lighthouse-report-paths.sh` asserts this agrees with it — by
- * EXECUTING that config rather than grepping it. The path was duplicated six
- * ways when this file was extracted (the rc config, the verify step's `dir=`,
- * the artifact `path:`, two literals in this renderer, and `.gitignore`), and
- * #4899 was born of exactly that shape: a `mv` target that no longer agreed
- * with what lhci wrote.
+ * EXECUTING that config rather than grepping it. The path was duplicated EIGHT
+ * ways when this file was extracted: the rc config, the verify step's `dir=`,
+ * its diagnostic `find`, the artifact `path:` and `name:`, this constant,
+ * `.gitignore`, and a customer-facing claim in `apps/docs`. #4899 was born of
+ * exactly that shape — a `mv` target that no longer agreed with what lhci wrote.
  */
 const REPORT_ROOT = "lighthouse-reports";
 
@@ -114,14 +114,16 @@ const EMPTY_STATE = {
  * has `{ url, isRepresentativeRun, summary: { performance, accessibility,
  * 'best-practices', seo } }`.
  *
- * Warns rather than returning a bare `[]`. This was the last silent reader in
- * the script, and it is the residual signal for the one drift class the report
- * path still allows: if this renderer's root ever disagrees with
- * `lighthouserc.js`'s `outputDir` while the "Verify reports landed" step's own
- * path does not, that step passes, the artifact uploads, and the comment
- * renders its empty state — with this line as the only trace anywhere that a
- * path was wrong. `check-lighthouse-report-paths.sh` is what makes that
- * unreachable rather than merely annotated.
+ * ⚠️ ALL FOUR arms warn — and the fourth was added in review, because an earlier
+ * version of this docstring claimed the reader had no silent path while the
+ * filter-to-zero arm returned a bare `[]`. The missing-manifest warning is the
+ * residual signal for the one drift class the report path still allows: if this
+ * renderer's root ever disagrees with `lighthouserc.js`'s `outputDir` while the
+ * "Verify reports landed" step's own path does not, that step passes, the
+ * artifact uploads, and the comment renders its empty state — with that line as
+ * the only trace anywhere that a path was wrong.
+ * `check-lighthouse-report-paths.sh` is what makes that unreachable rather than
+ * merely annotated.
  */
 function readManifest({ fs, path, core }, dir) {
   const manifestPath = path.join(dir, "manifest.json");
@@ -143,7 +145,21 @@ function readManifest({ fs, path, core }, dir) {
       );
       return [];
     }
-    return parsed.filter((r) => r && r.isRepresentativeRun);
+    const kept = parsed.filter((r) => r && r.isRepresentativeRun);
+    // ⚠️ THE LAST SILENT ARM, and the docstring above claimed there wasn't one.
+    // A manifest that is present, valid JSON, an array, and contains NO
+    // representative run returned a bare `[]` — so the comment rendered #4899's
+    // sentence with no trace of how many entries it actually saw. That count is
+    // the one number separating "lhci wrote nothing" from "lhci wrote nine and
+    // none was representative", which are different bugs with different fixes.
+    // `manifest.json` containing `[]` is the shape the workflow itself calls
+    // "#4899's shape one layer in".
+    if (kept.length === 0) {
+      core.warning(
+        `manifest at ${manifestPath} has ${parsed.length} entr${parsed.length === 1 ? "y" : "ies"} but none with isRepresentativeRun: true; the ${dir} table will render its empty state`,
+      );
+    }
+    return kept;
   } catch (err) {
     core.warning(
       `manifest read failed for ${dir}: ${err instanceof Error ? err.message : String(err)}`,
@@ -228,15 +244,27 @@ function readAuditNumbers({ fs, core }, jsonReportPath, auditIds) {
  * Strip the `http://localhost:NNNN` prefix so the comment shows a path the
  * reader recognizes (`/`, `/pricing`, `/demo`).
  */
-function pathOf(u) {
+function pathOf({ core }, u, dir) {
+  // ⚠️ A MISSING `url` IS REACHABLE WITHOUT LHCI MISBEHAVING, which is what the
+  // old "this arm is unreachable today" note got wrong. `readManifest`'s filter
+  // is deliberately only `r && r.isRepresentativeRun` — matched to the verify
+  // step's tolerance — so `{ "isRepresentativeRun": true }` with no `url`
+  // survives it. `new URL(undefined)` then threw, the catch returned `undefined`,
+  // and the row rendered `` `undefined` `` as a SURFACE NAME while `anyTables`
+  // went true and the footer asserted real reports existed. A comment naming a
+  // surface it cannot name, silently — the class this whole file is organised
+  // around.
+  if (typeof u !== "string" || u === "") {
+    core.warning(`manifest entry in ${dir} has no url; its row renders without a surface`);
+    return "(unnamed)";
+  }
   try {
     return new URL(u).pathname || "/";
   } catch {
-    // intentionally ignored: `r.url` is manifest-supplied and lhci always
-    // writes `lhr.requestedUrl` there, having itself parsed it with `new
-    // URL(...)` before writing the entry — so this arm is unreachable today. If
-    // a future writer ever puts something else in that field, rendering it raw
-    // beats throwing away the whole comment.
+    // intentionally ignored: a non-empty string that is not a URL. lhci writes
+    // `lhr.requestedUrl`, having itself parsed it with `new URL(...)`, so this
+    // needs a future writer to put something else there. Rendering it raw beats
+    // throwing away the whole comment, and the value is visible to the reader.
     return u;
   }
 }
@@ -298,7 +326,7 @@ function tableForFormFactor(deps, label, dir, outcome) {
   const rows = runs.map((r) => {
     const audits = readAuditNumbers(deps, resolveReportPath(deps, dir, r.jsonPath), [LCP, CLS]);
     const s = r.summary || {};
-    return `| \`${pathOf(r.url)}\` | ${fmtScore(s.performance)} | ${fmtScore(s.accessibility)} | ${fmtScore(s["best-practices"])} | ${fmtScore(s.seo)} | ${fmtMs(audits[LCP])} | ${fmtCls(audits[CLS])} |`;
+    return `| \`${pathOf(deps, r.url, dir)}\` | ${fmtScore(s.performance)} | ${fmtScore(s.accessibility)} | ${fmtScore(s["best-practices"])} | ${fmtScore(s.seo)} | ${fmtMs(audits[LCP])} | ${fmtCls(audits[CLS])} |`;
   });
   return {
     markdown: `### ${label}\n${note}\n${header}\n${rows.join("\n")}\n`,
@@ -311,7 +339,7 @@ function tableForFormFactor(deps, label, dir, outcome) {
  * DIRECTORY plus the two step outcomes in `env`.
  *
  * @param {{ fs: typeof import("node:fs"), path: typeof import("node:path"),
- *   core: { warning: (m: string) => void, info: (m: string) => void },
+ *   core: { warning: (m: string) => void },
  *   env: Record<string, string | undefined> }} deps
  * @returns {{ body: string, anyTables: boolean, rowCounts: Record<string, number> }}
  */

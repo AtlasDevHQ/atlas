@@ -240,6 +240,11 @@ new_tree
 render_unset
 has "an ABSENT outcome renders the same sentence, not an inherited prototype member" \
   "Lighthouse did not run — see the earlier steps in this job."
+# ⚠️ WEAKER THAN IT READS, and recorded rather than deleted. With the vars unset
+# the key is `""`, which IS an own property of EMPTY_STATE — so the
+# `EMPTY_STATE[key] ?? fallback` mutant this line targets renders no native
+# function here either. The assertion that actually discriminates is the
+# `constructor`/`toString` case below; this one is a cheap belt.
 hasnt "…and never renders a native function into the comment" "native code"
 
 new_tree
@@ -283,6 +288,91 @@ render success success
 has "an EMPTY manifest array renders the success empty state, not a crash" \
   "No reports found."
 hasnt "…and still does not claim nothing was written" "wrote no manifest.json"
+
+# ⚠️ THE FILTER-TO-ZERO ARM, which returned a bare `[]` with no warning while the
+# reader's own docstring claimed it had no silent path. The COUNT is the number
+# that separates "lhci wrote nothing" from "lhci wrote nine and none was
+# representative" — two different bugs with two different fixes.
+new_tree; mkdir -p "$TREE/lighthouse-reports/desktop"
+printf '%s' '[{ "url": "http://localhost:8080/", "isRepresentativeRun": false }, { "url": "http://localhost:8080/pricing", "isRepresentativeRun": false }]' \
+  >"$TREE/lighthouse-reports/desktop/manifest.json"
+render success success
+if printf '%s' "$WARNINGS" | grep -qF "has 2 entries but none with isRepresentativeRun: true"; then
+  pass "a manifest with entries but NO representative run warns, and says how many it saw"
+else
+  fail "filter-to-zero emitted no counted warning — warnings were: $WARNINGS"
+fi
+
+# …and the singular, because "1 entries" is the tell of a template nobody read.
+new_tree; mkdir -p "$TREE/lighthouse-reports/desktop"
+printf '%s' '[{ "url": "http://localhost:8080/", "isRepresentativeRun": false }]' \
+  >"$TREE/lighthouse-reports/desktop/manifest.json"
+render success success
+if printf '%s' "$WARNINGS" | grep -qF "has 1 entry but none with isRepresentativeRun: true"; then
+  pass "…and pluralises the count correctly"
+else
+  fail "singular entry count wrong — warnings were: $WARNINGS"
+fi
+
+# ⚠️ A REPRESENTATIVE ENTRY WITH NO `url`. `readManifest`'s filter is deliberately
+# only `r && r.isRepresentativeRun`, matched to the verify step's tolerance, so
+# this survives it. `new URL(undefined)` threw, the catch returned `undefined`, and
+# the row rendered `` `undefined` `` as a SURFACE NAME — while `anyTables` went
+# true and the footer asserted real reports existed.
+new_tree; mkdir -p "$TREE/lighthouse-reports/desktop"
+printf '%s' '[{ "isRepresentativeRun": true, "summary": { "performance": 0.5 } }]' \
+  >"$TREE/lighthouse-reports/desktop/manifest.json"
+render success success
+has "a manifest entry with no url renders a placeholder, not \`undefined\`" "| \`(unnamed)\` |"
+hasnt "…and never renders the word undefined as a surface" "| \`undefined\` |"
+if printf '%s' "$WARNINGS" | grep -qF "has no url"; then
+  pass "…and warns, so the placeholder is not the only trace"
+else
+  fail "a url-less entry emitted no warning — warnings were: $WARNINGS"
+fi
+
+# ⚠️ AN AUDIT PRESENT BUT NON-NUMERIC — `scoreDisplayMode: "error"` has no
+# `numericValue`, which the renderer's own docstring calls "the realistic case
+# rather than an exotic one". No case reached it, so deleting that warning killed
+# nothing. The CLS value stays numeric so the row proves the two cells are read
+# independently.
+new_tree; mkdir -p "$TREE/lighthouse-reports/desktop"
+cat >"$TREE/lighthouse-reports/desktop/lhr-1.json" <<'JS'
+{ "audits": { "largest-contentful-paint": { "scoreDisplayMode": "error" },
+              "cumulative-layout-shift": { "numericValue": 0.44 } } }
+JS
+printf '%s' '[{ "url": "http://localhost:8080/", "isRepresentativeRun": true, "jsonPath": "'"$TREE"'/lighthouse-reports/desktop/lhr-1.json", "summary": { "performance": 0.5 } }]' \
+  >"$TREE/lighthouse-reports/desktop/manifest.json"
+render success success
+has "a non-numeric audit renders a dash while its sibling still renders" "| – | 0.44 |"
+if printf '%s' "$WARNINGS" | grep -qF 'audit `largest-contentful-paint` has no numeric value'; then
+  pass "…and warns per audit, naming which one"
+else
+  fail "a non-numeric audit emitted no warning — warnings were: $WARNINGS"
+fi
+
+# An unparseable per-run report — the third untested warning arm.
+new_tree; mkdir -p "$TREE/lighthouse-reports/desktop"
+echo 'not json' >"$TREE/lighthouse-reports/desktop/lhr-1.json"
+printf '%s' '[{ "url": "http://localhost:8080/", "isRepresentativeRun": true, "jsonPath": "'"$TREE"'/lighthouse-reports/desktop/lhr-1.json", "summary": { "performance": 0.5 } }]' \
+  >"$TREE/lighthouse-reports/desktop/manifest.json"
+render success success
+if printf '%s' "$WARNINGS" | grep -qF "audit read failed for"; then
+  pass "an unparseable per-run report warns rather than dashing silently"
+else
+  fail "an unparseable per-run report emitted no warning — warnings were: $WARNINGS"
+fi
+
+# A manifest entry whose jsonPath is missing entirely — the fourth.
+new_tree; mkdir -p "$TREE/lighthouse-reports/desktop"
+printf '%s' '[{ "url": "http://localhost:8080/", "isRepresentativeRun": true, "summary": { "performance": 0.5 } }]' \
+  >"$TREE/lighthouse-reports/desktop/manifest.json"
+render success success
+if printf '%s' "$WARNINGS" | grep -qF "has no usable jsonPath"; then
+  pass "a manifest entry with no jsonPath warns before LCP/CLS render as dashes"
+else
+  fail "a jsonPath-less entry emitted no warning — warnings were: $WARNINGS"
+fi
 
 new_tree; mkdir -p "$TREE/lighthouse-reports/desktop"
 echo '{ "not": "an array" }' >"$TREE/lighthouse-reports/desktop/manifest.json"
@@ -357,7 +447,12 @@ fi
 # without this wiring would satisfy the letter of the refactor and leave the
 # acceptance criterion unmet.
 for key in lint lint:type-aware; do
-  value=$(SCRIPT_KEY="$key" bun -e 'const p = JSON.parse(await Bun.file("package.json").text()); console.log(p.scripts?.[Bun.env.SCRIPT_KEY] ?? "")') || {
+  # ⚠️ `$ROOT/package.json`, not a bare relative path. Both invocation sites run
+  # from the repo root today, so a CWD-relative read works — and would silently
+  # read a DIFFERENT package.json, or exit 2, the moment anyone ran this suite
+  # from elsewhere. A wiring assertion that depends on the caller's CWD is not
+  # one.
+  value=$(SCRIPT_KEY="$key" ROOT_DIR="$ROOT" bun -e 'const p = JSON.parse(await Bun.file(`${Bun.env.ROOT_DIR}/package.json`).text()); console.log(p.scripts?.[Bun.env.SCRIPT_KEY] ?? "")') || {
     echo "::error::could not read package.json scripts.$key" >&2; exit 2; }
   if grep -qE '(^| )\.github/scripts/( |$|")' <<<"$value"; then
     pass "package.json $key lints .github/scripts/ — the renderer is under a gate"
@@ -375,7 +470,7 @@ fi
 # ⚠️ AN ABSOLUTE LITERAL, for the reason `check-docs-brain-snippets.test.sh`
 # is the counter-example: a count derived from the cases cannot notice a deleted
 # case.
-EXPECTED_CASES=50
+EXPECTED_CASES=59
 TOTAL=$((PASS + FAIL))
 if [ "$TOTAL" -eq "$EXPECTED_CASES" ]; then
   pass "all $EXPECTED_CASES assertions ran"

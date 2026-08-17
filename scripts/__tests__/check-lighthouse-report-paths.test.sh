@@ -124,7 +124,7 @@ expect "the verify step's per-form-factor dir is pinned" 1 \
 
 fresh_tree
 mutate .github/workflows/lighthouse.yml 's#^          path: lighthouse-reports/#          path: lh-out/#'
-expect "the artifact path is pinned" 1 "the artifact path does not contain"
+expect "the artifact path is pinned" 1 "the artifact path is exactly lighthouse-reports/"
 
 fresh_tree
 mutate .github/workflows/lighthouse.yml 's#find lighthouse-reports -maxdepth 2#find lh-out -maxdepth 2#'
@@ -135,6 +135,23 @@ fresh_tree
 mutate .gitignore 's#^lighthouse-reports/$#lh-out/#'
 expect ".gitignore is pinned — generated reports must not be committable" 1 \
   ".gitignore has no 'lighthouse-reports/' line"
+
+# 7b. ⚠️ AN EXTENDED ROOT IS NOT AGREEMENT, and an unanchored `grep -qF` could
+# not tell the difference. `name: lighthouse-reports-desktop` and
+# `path: lighthouse-reports/desktop` both CONTAIN the derived root, so both
+# matched and both PASSED while disagreeing with the config — the second one
+# narrowing the artifact to a single form factor, a real regression this gate
+# would have blessed. The header claimed eight pinned sites; two of them were
+# pinned against a moved root only.
+fresh_tree
+mutate .github/workflows/lighthouse.yml 's#^          name: lighthouse-reports$#          name: lighthouse-reports-desktop#'
+expect "an EXTENDED artifact name is caught, not just a moved one" 1 \
+  "the artifact name is exactly lighthouse-reports"
+
+fresh_tree
+mutate .github/workflows/lighthouse.yml 's#^          path: lighthouse-reports/$#          path: lighthouse-reports/desktop/#'
+expect "an artifact path NARROWED to one form factor is caught" 1 \
+  "the artifact path is exactly lighthouse-reports/"
 
 # 8. The eighth copy: the claim apps/docs makes to CUSTOMERS. The issue's list
 # omitted it, and #5170 already had to fix a different false claim in this file.
@@ -188,7 +205,7 @@ expect "a missing renderer exits 2" 2 "this gate cannot verify the path closure"
 
 # ⚠️ AN ABSOLUTE LITERAL. Deleting a case above must red this suite; a count
 # derived from the cases themselves cannot notice.
-EXPECTED_CASES=14
+EXPECTED_CASES=16
 TOTAL=$((PASS + FAIL))
 if [ "$TOTAL" -eq "$EXPECTED_CASES" ]; then
   pass "all $EXPECTED_CASES cases ran"

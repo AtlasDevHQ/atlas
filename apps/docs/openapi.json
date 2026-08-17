@@ -78657,7 +78657,7 @@
             }
           },
           "409": {
-            "description": "Workspace must be soft-deleted first",
+            "description": "Purge refused or aborted — `error` is one of `not_soft_deleted` (soft-delete it again), `region_schema_behind` (run this region's migrations), `purge_rolled_back` (no workspace data was deleted; re-run once the cause is resolved), or `purge_outcome_unknown` (the commit was not confirmed — check whether the organization row still exists BEFORE recording the erasure). Remote Stripe teardown runs before the cascade and is not covered by a rollback in any of these cases. `message` states the remedy.",
             "content": {
               "application/json": {
                 "schema": {

@@ -212,6 +212,28 @@ const VIA_PARENT_TABLES = Object.entries(scopeFor)
   .map(([k]) => k);
 
 /**
+ * Tables the fixture deliberately seeds MORE than one row per workspace for, so
+ * the two "exactly 1" loops cannot speak for them — the `viaParent`
+ * exact-survivor check and the neighbour blast-radius check.
+ *
+ * Both entries exist to make a predicate falsifiable that a one-row-per-table
+ * fixture cannot reach:
+ *  - `stripe_webhook_events` — one ORPHAN row for the purged workspace and TWO
+ *    for the neighbour, so "purged the right tenant" and "purged the wrong one"
+ *    leave different totals (#5269).
+ *  - `stripe_teardown_pending` — a second `delete_customer` op per workspace with
+ *    a NULL `stripe_sub_id`, which is what makes the widened source's
+ *    `IS NOT NULL` load-bearing rather than defensive.
+ *
+ * Named and pinned rather than skipped inline, matching every other exemption in
+ * this file (`EXPRESSION_SCOPED`, `SEED_PRIORITY`, `FK_CASCADE_ONLY`,
+ * `NO_SINGLE_COLUMN_FK`): the tests that take over this coverage assert the set,
+ * so deleting one of them breaks the pin instead of silently removing a table
+ * from every per-tenant assertion in the file.
+ */
+const MULTI_ROW_SEEDED = ["stripe_webhook_events", "stripe_teardown_pending"] as const;
+
+/**
  * Values a CHECK constraint or a scoping expression demands. Anything absent
  * here gets a synthesized value from its type.
  *
@@ -860,6 +882,30 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
       }
     }
 
+    // ── The NULL `stripe_sub_id` row, which is what makes `IS NOT NULL` on the
+    // widened source load-bearing rather than defensive (#5269 review) ──
+    //
+    // `chk_stripe_teardown_pending_target` explicitly PERMITS a NULL
+    // `stripe_sub_id` for `op = 'delete_customer'`, and a GDPR purge is exactly
+    // the path that writes one: `purgeStripeBillingForWorkspace` enqueues a
+    // `delete_customer` op when the remote customer deletion fails, scoped to this
+    // workspace, in the same request — seconds before `hardDeleteWorkspace` reads
+    // the table. So the row that would break the purge is created BY the purge.
+    //
+    // Without `IS NOT NULL` the UNION yields a NULL, the tombstone INSERT hits its
+    // PRIMARY KEY's not-null constraint (`ON CONFLICT` does not cover 23502), and
+    // the whole transaction aborts — the very SQLSTATE the first commit exists to
+    // report. Until this row existed the predicate's only falsifiers were two
+    // string comparisons, which is the same "green 22/22 until a pin was added"
+    // history `parentKeyNullable` already has one field over.
+    for (const workspaceId of [ORG, NEIGHBOUR]) {
+      await pool.query(
+        `INSERT INTO stripe_teardown_pending (workspace_id, op, stripe_sub_id, stripe_customer_id)
+         VALUES ($1, 'delete_customer', NULL, 'cus_purge-seed-' || $1)`,
+        [workspaceId],
+      );
+    }
+
     result = await hardDeleteWorkspace(ORG);
   }, PG_TIMEOUT_MS);
 
@@ -944,6 +990,10 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     for (const table of seeded.keys()) {
       if (parentLinkFor(table)) continue; // counted table-wide; asserted below
       if (table === "admin_action_log") continue; // its scrub is asserted separately
+      // Seeded with more than one row per workspace on purpose, so "expected 1"
+      // is the wrong arithmetic — the neighbour's rows are asserted at their real
+      // counts by the RETAINED and #5269 tests, which pin this set.
+      if ((MULTI_ROW_SEEDED as readonly string[]).includes(table)) continue;
       const remaining = await countFor(table, NEIGHBOUR);
       if (remaining !== 1) damaged.push(`${table} (${remaining}, expected 1)`);
     }
@@ -1135,8 +1185,9 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
       if (!seeded.has(table)) continue;
       // stripe_webhook_events carries the extra ORPHAN rows this loop's "exactly
       // one" arithmetic cannot express, and its survivors are asserted by
-      // identity — not by count — in the #5269 test below.
-      if (table === "stripe_webhook_events") continue;
+      // identity — not by count — in the #5269 test below, which pins this set so
+      // the exemption cannot outlive the test that replaces it.
+      if ((MULTI_ROW_SEEDED as readonly string[]).includes(table)) continue;
       const link = parentLinkFor(table);
       const r = await pool.query<{ n: string }>(`SELECT count(*)::text AS n FROM "${table}"`);
       const n = Number(r.rows[0].n);
@@ -1230,7 +1281,13 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     }
     // stripe_teardown_pending was seeded for BOTH workspaces, so a purge that
     // deleted only the purged workspace's row would still leave the neighbour's
-    // and satisfy the loop above. Pin the count: both must survive.
+    // and satisfy the loop above. Pin the count: all must survive.
+    //
+    // FOUR since #5269's review, not two — each workspace also carries a
+    // `delete_customer` op with a NULL `stripe_sub_id`, the row that makes the
+    // widened source's `IS NOT NULL` load-bearing. Pinned rather than floored for
+    // the reason above, so a purge that started deleting from this `retained`
+    // table cannot hide behind a survivor.
     const teardown = await pool.query<{ n: string }>(
       `SELECT count(*)::text AS n FROM stripe_teardown_pending`,
     );
@@ -1238,7 +1295,23 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
       Number(teardown.rows[0].n),
       "both workspaces' pending teardown ops must survive — these ARE the retry " +
         "that still has to cancel a live subscription (#3679)",
-    ).toBe(2);
+    ).toBe(4);
+    // And PER WORKSPACE, because a total of 4 is also what "deleted both of the
+    // purged workspace's and duplicated the neighbour's" produces. This is the
+    // assertion the blast-radius loop above hands off to for this table, and it
+    // pins the multi-row set so the handoff cannot silently lapse.
+    for (const workspaceId of [ORG, NEIGHBOUR]) {
+      const perWorkspace = await pool.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM stripe_teardown_pending WHERE workspace_id = $1`,
+        [workspaceId],
+      );
+      expect(
+        Number(perWorkspace.rows[0].n),
+        `${workspaceId} must keep BOTH pending teardown ops (a cancel_subscription and a ` +
+          `delete_customer) — the purge must not delete from this retained outbox`,
+      ).toBe(2);
+    }
+    expect([...MULTI_ROW_SEEDED]).toEqual(["stripe_webhook_events", "stripe_teardown_pending"]);
     // And the tombstone the purge itself writes (#3468): its presence is what
     // stops post-commit cancellation webhooks regrowing stripe_webhook_events.
     const tombstone = await pool.query<{ n: string }>(
@@ -1316,15 +1389,31 @@ describeIfPg("hardDeleteWorkspace GDPR falsifier (real Postgres, #5160)", () => 
     // The neighbour's id is NOT tombstoned: a tombstone is terminal, and
     // stamping a live workspace's subscription would make `classifyStripeEvent`
     // silently drop its real billing events.
-    const neighbourTombstone = await pool.query<{ n: string }>(
-      `SELECT count(*)::text AS n FROM stripe_purged_subscriptions
-        WHERE stripe_subscription_id = 'sub_teardown-' || $1`,
-      [NEIGHBOUR],
-    );
-    expect(
-      Number(neighbourTombstone.rows[0].n),
-      "the purge tombstoned a LIVE workspace's subscription id",
-    ).toBe(0);
+    // BOTH of the neighbour's id classes, not just the widened one. The parent
+    // arm's blast radius is pinned by the unit test's exact-string comparison, but
+    // this suite is the one that observes the CONSEQUENCE, and it was observing
+    // only half of it.
+    for (const prefix of ["sub_teardown-", "sub_purge-seed-"]) {
+      const neighbourTombstone = await pool.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM stripe_purged_subscriptions
+          WHERE stripe_subscription_id = $2 || $1`,
+        [NEIGHBOUR, prefix],
+      );
+      expect(
+        Number(neighbourTombstone.rows[0].n),
+        `the purge tombstoned a LIVE workspace's ${prefix}* subscription id — ` +
+          `a tombstone is terminal, so classifyStripeEvent would silently drop that ` +
+          `tenant's real billing events for 30 days`,
+      ).toBe(0);
+    }
+
+    // Pins the exemption in the generic "exactly the neighbour's row" loop above
+    // to THIS test. The loop skips `stripe_webhook_events` because its arithmetic
+    // cannot express the extra orphan rows; if this test is ever deleted or
+    // renamed, that skip would silently strip the table of per-tenant coverage in
+    // this file with nothing failing. Every other exemption here is a named,
+    // pinned set — this one was a bare inline literal.
+    expect([...MULTI_ROW_SEEDED]).toEqual(["stripe_webhook_events", "stripe_teardown_pending"]);
   }, PG_TIMEOUT_MS);
 
   it("keeps the anti-abuse trial grant of a user who survives the purge", async () => {

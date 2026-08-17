@@ -1159,11 +1159,12 @@ describe("hardDeleteWorkspace()", () => {
     };
     _resetPool(failPool);
 
-    // The rejection is the abort REPORT, not the raw driver error (#5265): the
-    // seeded failure carries no SQLSTATE, so it takes the generic arm. Asserting
-    // the raw message here — as this test did before #5265 — is what pinned the
-    // bare re-throw in place.
-    await expect(hardDeleteWorkspace("org-fail")).rejects.toThrow(PurgeAbortedError);
+    // Still the RAW error, and deliberately so. The seeded failure carries no
+    // SQLSTATE, which makes it a program defect rather than a database condition,
+    // and #5265 is scoped to SQLSTATEs — those re-throw bare so `runEffect` logs
+    // them and answers a 500. An interim draft made this a `PurgeAbortedError`,
+    // i.e. a 409 telling the operator to resolve an Atlas bug and retry.
+    await expect(hardDeleteWorkspace("org-fail")).rejects.toThrow("relation does not exist");
 
     expect(calls.releaseCount).toBe(1);
     expect(calls.lastReleaseArg).toBeInstanceOf(Error);
@@ -1409,9 +1410,15 @@ describe("hardDeleteWorkspace()", () => {
     // template in the source, so an exact match would pin its INDENTATION and
     // break on a reformat that changed no SQL. Every identifier, predicate and
     // clause is still compared by value.
+    //
+    // `RETURNING stripe_subscription_id` is part of the pin, not noise: a
+    // tombstone permanently suppresses webhook processing for these ids and
+    // `stripe_purged_subscriptions` carries no org column, so the log line fed by
+    // this RETURNING is the ONLY attribution of which workspace stamped them that
+    // will ever exist.
     expect(queries[tombstoneIdx].replace(/\s+/g, " ").trim()).toBe(
       `INSERT INTO stripe_purged_subscriptions (stripe_subscription_id) ${KEY_SOURCES} ` +
-        `ON CONFLICT (stripe_subscription_id) DO NOTHING`,
+        `ON CONFLICT (stripe_subscription_id) DO NOTHING RETURNING stripe_subscription_id`,
     );
   });
 
@@ -1514,32 +1521,69 @@ describe("hardDeleteWorkspace()", () => {
 
   // ── The abort report (#5265) ──────────────────────────────────────────
   //
-  // Every exit from the closing catch block must reach the OPERATOR, not just
-  // the log. Before #5265 exactly two SQLSTATEs did (42P01/42703) and everything
-  // else was a bare re-throw, which `runEffect` classifies as a defect and
-  // answers `500 Service error (ref: …)` — on the GDPR erasure endpoint, with
-  // the one fact the operator needs (the transaction rolled back, so nothing was
-  // deleted and the endpoint can be re-run) omitted although it is ALWAYS true
-  // there, the ROLLBACK above being unconditional.
+  // A DATABASE abort whose outcome is KNOWN must reach the operator, not just the
+  // log. Before #5265 exactly two SQLSTATEs did (42P01/42703) and every other one
+  // was a bare re-throw, which `runEffect` classifies as a defect and answers
+  // `500 Service error (ref: …)` — on the GDPR erasure endpoint.
+  //
+  // ⚠️ "KNOWN" is load-bearing, and #5265's first draft did not have it. That
+  // draft claimed the rollback unconditionally, reasoning that the `ROLLBACK`
+  // STATEMENT is unconditional — but its SUCCESS is not, and `COMMIT` is inside
+  // the same `try`, so a connection death at commit time lands in the same catch
+  // with the transaction's fate unknown. The tests below pin the three-way split
+  // that replaced it: indeterminate → `purge_outcome_unknown`, a real SQLSTATE →
+  // `purge_rolled_back`, no SQLSTATE (a program defect) → a bare re-throw, i.e. a
+  // logged 500.
 
   /**
    * Drive one failure through the purge and return the rejection.
    *
-   * `failWith` is thrown from the FIRST cascade DELETE, i.e. after the status
-   * check has passed and the transaction is open — the window where the abort
-   * report is the only thing the operator gets.
+   * `failWith` is thrown from the first cascade DELETE — after the status check
+   * has passed and the transaction is open, and BEFORE `COMMIT`, so the outcome
+   * is determinate and the reports below are about classification rather than
+   * about the indeterminate arm.
+   *
+   * ⚠️ Gated on the SQL, not on an ordinal. `queryNum === 3` was accurate when
+   * written and would have silently moved the injection point the moment anything
+   * (an advisory lock, a `SET LOCAL`) was inserted between the status check and
+   * the first delete — the tests would keep passing while testing a different
+   * statement than this docstring claims. Matching `DELETE` makes the claim true
+   * by construction.
    */
-  const purgeRejection = async (failWith: unknown): Promise<unknown> => {
+  const purgeRejection = async (
+    failWith: unknown,
+    opts: { failOn?: "first-delete" | "commit" } = {},
+  ): Promise<unknown> => {
     const { pool: basePool } = createMockPool();
-    let queryNum = 0;
+    const failOn = opts.failOn ?? "first-delete";
+    let thrown = false;
     const client = {
       async query(sql: string) {
-        queryNum++;
-        if (queryNum === 2) return { rows: [{ workspace_status: "deleted" }] };
-        if (queryNum === 3) throw failWith;
+        const upper = sql.trim().toUpperCase();
+        if (upper.startsWith("SELECT WORKSPACE_STATUS")) {
+          return { rows: [{ workspace_status: "deleted" }] };
+        }
         if (sql.includes("to_regclass")) return { rows: [{ table_exists: true }] };
         if (sql.includes("FROM member m")) return { rows: [] };
-        if (sql.trim().toUpperCase().startsWith("DELETE")) return { rows: [{ ok: 1 }] };
+        if (failOn === "commit" && upper === "COMMIT") throw failWith;
+        // ⚠️ The ROLLBACK SUCCEEDS here, deliberately — including on the commit
+        // path. An earlier version of this mock failed it too, which made BOTH
+        // indeterminacy conditions (`commitAttempted` and `rollbackErr`) true at
+        // once: deleting either one from the implementation still left the other
+        // firing, so neither was independently falsified. That is the
+        // accidental-equality shape this repo keeps paying for — a fixture in
+        // which two states the test exists to tell apart are the same state.
+        //
+        // It is also the realistic case: Postgres usually accepts a ROLLBACK
+        // after a failed COMMIT, because the transaction is already closed. So
+        // `commitAttempted` is the ONLY thing that can report this indeterminate,
+        // which is precisely the claim worth pinning.
+        if (upper === "ROLLBACK") return { rows: [] };
+        if (!thrown && failOn === "first-delete" && upper.startsWith("DELETE")) {
+          thrown = true;
+          throw failWith;
+        }
+        if (upper.startsWith("DELETE")) return { rows: [{ ok: 1 }] };
         return { rows: [] };
       },
       release() {},
@@ -1577,8 +1621,14 @@ describe("hardDeleteWorkspace()", () => {
     // back", "nothing was deleted" and "you may re-run" can each be dropped
     // from the message without touching the other two.
     expect(abort.message).toContain("rolled back");
-    expect(abort.message).toContain("nothing was deleted");
+    expect(abort.message).toContain("no workspace data was deleted");
     expect(abort.message).toContain("re-run");
+    // ⚠️ "no WORKSPACE DATA was deleted", not "nothing was deleted". The route
+    // runs `purgeStripeBillingForWorkspace` BEFORE the cascade, so a remote
+    // Stripe customer may already be gone when this rolls back — the rollback is
+    // a fact about the database transaction and about nothing else. The message
+    // has to be true of the REQUEST, not just of the statement it describes.
+    expect(abort.message).toContain("REMOTE Stripe teardown");
     // The SQLSTATE IS safe to publish — a five-character class code carries no
     // row content — and it is what turns "something failed" into a diagnosis.
     expect(abort.message).toContain("SQLSTATE 23502");
@@ -1592,33 +1642,158 @@ describe("hardDeleteWorkspace()", () => {
     expect(abort.cause).toBe(pgErr);
   });
 
-  it("reports an abort with NO SQLSTATE as the same actionable error", async () => {
-    // The class, not the instance: an abort with no `code` at all — this
-    // function's own existence-probe shape guard, a driver-level fault — reached
-    // the operator through the same bare re-throw, and is even more opaque than
-    // a SQLSTATE nobody printed. A rule keyed on "is it a pg error?" would leave
-    // this one behind.
-    const err = await purgeRejection(new Error("Connection terminated unexpectedly"));
+  it("reports an INDETERMINATE outcome when the failure lands on COMMIT", async () => {
+    // ⚠️ THE defect #5265's first draft shipped. `COMMIT` is inside the same
+    // `try` as every DELETE, so a socket that dies between "COMMIT sent" and
+    // "COMMIT acknowledged" reaches this catch — and the backend may have
+    // committed. The draft answered "the transaction rolled back, so nothing was
+    // deleted … this endpoint can be re-run": four claims, all possibly false, on
+    // the artefact an operator attaches to a DPA erasure record, and a remedy
+    // that would send them to a 404.
+    //
+    // Strictly worse than the opaque 500 it replaced, which asserted nothing.
+    //
+    // The ROLLBACK in this fixture SUCCEEDS, so `commitAttempted` is the only
+    // thing that can report this indeterminate — see `purgeRejection`. That is
+    // both the realistic shape (pg accepts a rollback on an already-closed
+    // transaction) and what makes the two conditions independently falsifiable.
+    const err = await purgeRejection(new Error("Connection terminated unexpectedly"), {
+      failOn: "commit",
+    });
 
     expect(err).toBeInstanceOf(PurgeAbortedError);
     const abort = err as PurgeAbortedError;
-    expect(abort.code).toBe("purge_rolled_back");
-    expect(abort.message).toContain("no SQLSTATE");
-    expect(abort.message).toContain("nothing was deleted");
+    expect(abort.code).toBe("purge_outcome_unknown");
+    // It must NOT claim either outcome...
+    expect(abort.message).toContain("CANNOT be determined");
+    expect(abort.message).toContain("may be fully purged or entirely intact");
+    // ...and the negative is the SIBLING ARM'S EXACT SENTENCE, not a fragment.
+    // `not.toContain("no workspace data was deleted")` looked right and was wrong:
+    // this message legitimately contains that phrase inside a CONDITIONAL ("if it
+    // does, no workspace data was deleted"), so the assertion failed on correct
+    // code. What must never appear is the unconditional claim, which is
+    // `purge_rolled_back`'s own wording.
+    expect(abort.message).not.toContain(
+      "The database transaction rolled back, so no workspace data was deleted",
+    );
+    // ...must refuse the recording rather than invite it...
+    expect(abort.message).toContain("Do NOT record this erasure yet");
+    // ...and must name the one check that resolves it, plus BOTH branches, since
+    // an operator told only "check the org row" still does not know what either
+    // answer means.
+    expect(abort.message).toContain("whether the organization row still exists");
+    expect(abort.message).toContain("can be re-run");
+    expect(abort.message).toContain("residue sweep");
     expect(abort.message).not.toContain("Connection terminated");
+  });
+
+  it("a FAILED ROLLBACK before any COMMIT is still a determinate rollback", async () => {
+    // ⚠️ The defect inside the first draft of the fix above, caught by checking
+    // that fix against its own principle. That draft made a failed ROLLBACK a
+    // second indeterminacy condition — but if `COMMIT` was never ISSUED the
+    // transaction CANNOT have committed (Postgres aborts an open transaction when
+    // the connection drops), so `!commitAttempted` is positive evidence that
+    // nothing landed. A failed ROLLBACK is a dirty-socket fact, which is why the
+    // client is destroyed; it says nothing about a commit nobody sent.
+    //
+    // The draft also contradicted its own neighbour: the 42P01 arm reports
+    // "Nothing was deleted" for this identical state. Two arms of one catch
+    // disagreeing about one state means one of them is lying — on a DPA receipt.
+    //
+    // So this asserts the OPPOSITE of what the draft did, and it is the test that
+    // would have caught it.
+    const { pool: basePool } = createMockPool();
+    let thrown = false;
+    const client = {
+      async query(sql: string) {
+        const upper = sql.trim().toUpperCase();
+        if (upper.startsWith("SELECT WORKSPACE_STATUS")) {
+          return { rows: [{ workspace_status: "deleted" }] };
+        }
+        if (sql.includes("to_regclass")) return { rows: [{ table_exists: true }] };
+        if (sql.includes("FROM member m")) return { rows: [] };
+        if (upper === "ROLLBACK") throw new Error("ROLLBACK failed — socket dirty");
+        if (!thrown && upper.startsWith("DELETE")) {
+          thrown = true;
+          throw Object.assign(new Error("deadlock detected"), { code: "40P01" });
+        }
+        if (upper.startsWith("DELETE")) return { rows: [{ ok: 1 }] };
+        return { rows: [] };
+      },
+      release() {},
+    };
+    _resetPool({ ...basePool, async connect() { return client; } });
+
+    const err = await hardDeleteWorkspace("org-1").catch((e: unknown) => e);
+    const abort = err as PurgeAbortedError;
+    expect(abort.code).toBe("purge_rolled_back");
+    expect(abort.message).toContain("SQLSTATE 40P01");
+    expect(abort.message).toContain("no workspace data was deleted");
+    // And it must NOT hedge: hedging here would tell an operator to go and check
+    // an outcome the function already knows, on the endpoint whose whole subject
+    // is saying exactly what happened.
+    expect(abort.message).not.toContain("CANNOT be determined");
+  });
+
+  it("re-throws a PROGRAM defect bare, so it stays a logged 500", async () => {
+    // No SQLSTATE ⇒ not a database condition ⇒ an Atlas bug. #5265's first draft
+    // gave these a 409 saying "re-run once the cause is resolved", which is a
+    // claim the operator can resolve an Atlas defect, and which removes every
+    // such regression from 5xx alerting — a bug that broke every purge in a
+    // region would have paged nobody. #5265 is scoped to SQLSTATEs, and this
+    // pins that scope.
+    const bug = new TypeError("counts.brainFacts is not a function");
+    const err = await purgeRejection(bug);
+
+    expect(err).toBe(bug);
+    expect(err).not.toBeInstanceOf(PurgeAbortedError);
   });
 
   it("does not interpolate a non-SQLSTATE `code` into the operator's message", async () => {
     // `err.code` is only trustworthy as a five-character SQLSTATE. Anything else
     // reaching that string is an unreviewed channel from a driver's error object
     // into an erasure-path response, so the shape is checked rather than assumed.
+    // Driven through the indeterminate arm because that is the one arm a
+    // no-SQLSTATE error can still reach the WIRE through.
     const err = await purgeRejection(
       Object.assign(new Error("nope"), { code: "customer-jane@example.com" }),
+      { failOn: "commit" },
     );
 
     const abort = err as PurgeAbortedError;
     expect(abort.message).not.toContain("jane@example.com");
     expect(abort.message).toContain("no SQLSTATE");
+  });
+
+  it("rejects a SQLSTATE-shaped code with a trailing newline", async () => {
+    // ⚠️ JS `$` without the `m` flag matches at the position BEFORE a final
+    // newline, so `/^[0-9A-Z]{5}$/.test("42P01\n")` is TRUE and the regex alone
+    // would publish the newline. One character of payload is not the point — the
+    // point is that this guard exists precisely because `err.code` is unvalidated
+    // input, and a shape check with a hole is not a shape check.
+    const err = await purgeRejection(
+      Object.assign(new Error("nope"), { code: "42P01\n" }),
+      { failOn: "commit" },
+    );
+
+    const abort = err as PurgeAbortedError;
+    expect(abort.message).toContain("no SQLSTATE");
+    expect(abort.message).not.toContain("42P01");
+  });
+
+  it("treats a present-but-undefined `code` as absent, not as the string 'undefined'", async () => {
+    // `"code" in err` is true for `{ code: undefined }`, and the old
+    // `String(err.code)` turned that into the literal `"undefined"` — a string
+    // that reads like a value in the one log line an operator correlates by
+    // requestId.
+    const err = await purgeRejection(
+      Object.assign(new Error("nope"), { code: undefined }),
+      { failOn: "commit" },
+    );
+
+    const abort = err as PurgeAbortedError;
+    expect(abort.message).toContain("no SQLSTATE");
+    expect(abort.message).not.toContain("undefined");
   });
 
   it("preserves a PurgeAbortedError raised INSIDE the transaction", async () => {
@@ -1657,6 +1832,110 @@ describe("hardDeleteWorkspace()", () => {
     expect(abort.code).toBe("region_schema_behind");
     expect(abort.message).toContain("brain_facts");
     expect(abort.message).toContain("Run this region's migrations");
+  });
+
+  it("leaves BOTH existence-probe contract breaches as plain Errors, i.e. logged 500s", async () => {
+    // ⚠️ #5265's first draft made the `tableExists` shape guard a
+    // `PurgeAbortedError`, and all three consequences were wrong: it went
+    // completely UNLOGGED (`classifyError` logs a domain error only when the code
+    // is unmapped or the status is >= 500, and `app.onError` forwards an
+    // `HTTPException` before its own `log.error`), its remedy "re-run" was
+    // unfollowable for a pg-client contract breach that holds on every attempt,
+    // and a 4xx removed it from every 5xx alert permanently.
+    //
+    // A plain Error keeps `runEffect`'s logged 500. Measured: without this test
+    // that conversion could be reintroduced with ZERO failures.
+    //
+    // BOTH probes, because #5269 added a second one for the widening source and a
+    // guard fixed on one half of a pair is the sibling this repo keeps missing.
+    // Each is driven by shaping ONLY its own probe wrongly, so a fix applied to
+    // one and not the other cannot pass.
+    for (const target of ["subscription", "stripe_teardown_pending"] as const) {
+      const { pool: basePool } = createMockPool();
+      const client = {
+        async query(sql: string, params?: unknown[]) {
+          const upper = sql.trim().toUpperCase();
+          if (upper.startsWith("SELECT WORKSPACE_STATUS")) {
+            return { rows: [{ workspace_status: "deleted" }] };
+          }
+          if (sql.includes("to_regclass")) {
+            // A non-boolean where the contract promises a boolean — a driver or
+            // pool wrapper that does not honour `to_regclass(...) IS NOT NULL`.
+            return params?.[0] === target
+              ? { rows: [{ table_exists: "t" }] }
+              : { rows: [{ table_exists: true }] };
+          }
+          if (sql.includes("FROM member m")) return { rows: [] };
+          if (upper.startsWith("DELETE") || upper.startsWith("INSERT")) return { rows: [{ ok: 1 }] };
+          return { rows: [] };
+        },
+        release() {},
+      };
+      _resetPool({ ...basePool, async connect() { return client; } });
+
+      const err = await hardDeleteWorkspace("org-1").catch((e: unknown) => e);
+      expect(err, `${target}: the probe breach must abort the purge`).toBeInstanceOf(Error);
+      expect(
+        err,
+        `${target}: a contract breach must NOT become a PurgeAbortedError — a 4xx is unlogged ` +
+          `by classifyError AND by app.onError, so this would emit nothing at any level`,
+      ).not.toBeInstanceOf(PurgeAbortedError);
+      expect((err as Error).message).toContain("unexpected shape");
+      expect((err as Error).message).toContain(target);
+    }
+  });
+
+  it("DEGRADES to the narrow id set when stripe_teardown_pending is absent (#5269)", async () => {
+    // The counterfactual #5269's first draft asserted in a comment and never ran:
+    // "a region behind migration 0141 raises 42P01 and aborts the purge, which is
+    // the honest outcome." Running it is what showed the outcome is not honest —
+    // `stripe_teardown_pending` is `retained`, the purge deletes NOTHING from it,
+    // and it exists only to WIDEN the id set. Refusing to erase a customer's data
+    // because a billing outbox table is missing is the worse of the two failures
+    // on a GDPR endpoint, so the purge now degrades to its pre-#5269 reach and
+    // says so.
+    const { pool: basePool } = createMockPool();
+    const queries: string[] = [];
+    const client = {
+      async query(sql: string, params?: unknown[]) {
+        queries.push(sql);
+        const upper = sql.trim().toUpperCase();
+        if (upper.startsWith("SELECT WORKSPACE_STATUS")) {
+          return { rows: [{ workspace_status: "deleted" }] };
+        }
+        // Everything present EXCEPT the widening source. The probe passes the
+        // relation as a PARAMETER, so the name is not in the SQL text — read it
+        // from params or this mock reports every table present and the branch
+        // under test never runs.
+        if (sql.includes("to_regclass")) {
+          return { rows: [{ table_exists: params?.[0] !== "stripe_teardown_pending" }] };
+        }
+        if (sql.includes("FROM member m")) return { rows: [] };
+        if (upper.startsWith("DELETE") || upper.startsWith("INSERT")) return { rows: [{ ok: 1 }] };
+        return { rows: [] };
+      },
+      release() {},
+    };
+    _resetPool({ ...basePool, async connect() { return client; } });
+
+    // Resolves. The whole point: no abort, no 42P01, the erasure still happens.
+    const result = await hardDeleteWorkspace("org-1");
+
+    const ledgerDelete = queries.find((q) => /DELETE FROM "?stripe_webhook_events"?/.test(q));
+    const tombstone = queries.find((q) => q.includes("INSERT INTO stripe_purged_subscriptions"));
+    // BOTH statements narrow, and they narrow TOGETHER. One options value is
+    // handed to both builders precisely so they cannot disagree; asserting only
+    // the DELETE would miss a tombstone still reading the wide set, which is the
+    // divergence `KeySourceOptions` warns about.
+    expect(ledgerDelete).not.toContain("stripe_teardown_pending");
+    expect(tombstone).not.toContain("stripe_teardown_pending");
+    // The parent arm survives — degrading is not disabling.
+    expect(ledgerDelete).toContain(`FROM "subscription"`);
+    expect(tombstone).toContain(`FROM "subscription"`);
+    // And the reduced reach is REPORTED. A silent narrowing would tell the
+    // operator the purge was complete when orphan ledger rows may survive, which
+    // is the #5160 defect one field over.
+    expect(result.skippedTables).toContain("stripe_teardown_pending");
   });
 
 });

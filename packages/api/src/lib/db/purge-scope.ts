@@ -108,7 +108,7 @@ export interface PurgeParentLink {
   /** The parent column the child points at. */
   readonly parentKey: string;
   /** The PARENT's workspace scope column — this is what `$1` is matched against. */
-  readonly parentScope: string;
+  readonly parentScope: WorkspaceScopeColumn;
   /**
    * True when `parentKey` is NULLABLE, which makes the subquery add
    * `AND <parentKey> IS NOT NULL`.
@@ -154,12 +154,31 @@ export interface PurgeParentLink {
  * why that INSERT is the consumer that decides this.
  */
 export interface PurgeKeySource {
-  /** The table holding the ids. */
+  /**
+   * The table holding the ids.
+   *
+   * Deliberately `string`, unlike `scopeColumn`. A hand-written union of table
+   * names would be a FOURTH copy of the schema's table list — the exact
+   * duplication #5176 removed — and importing `schema.ts` here would invert the
+   * `internal.ts → purge-scope.ts` edge this file has no imports precisely to
+   * keep. Existence is checked instead by the schema enumeration in
+   * `purge-scope.test.ts`, which is derived and therefore stronger than a union
+   * anyone maintains by hand.
+   */
   readonly table: string;
   /** The column holding the child's key value. */
   readonly keyColumn: string;
-  /** That table's workspace scope column — this is what `$1` is matched against. */
-  readonly scopeColumn: string;
+  /**
+   * That table's workspace scope column — this is what `$1` is matched against.
+   *
+   * Typed, NOT `string`. This is the field whose failure mode is a cross-tenant
+   * DELETE plus a permanent tombstone on another tenant's live subscription ids,
+   * and the closed set of legal values is declared in this same file — so the
+   * compiler can refuse a wrong one outright rather than a test catching it.
+   * `parentScope` carries the same type for the same reason, though its failure
+   * mode is the gentler one (a subquery matching nothing, leaving residue).
+   */
+  readonly scopeColumn: WorkspaceScopeColumn;
 }
 
 interface PurgeTableScopeBase {
@@ -219,6 +238,16 @@ export const WORKSPACE_SCOPE_COLUMNS = [
   "reference_id",
   "referenceId",
 ] as const;
+
+/**
+ * A column name that makes a row workspace-scoped, as a type.
+ *
+ * Used by `PurgeParentLink.parentScope` and `PurgeKeySource.scopeColumn`, so
+ * "the value `$1` is compared against is a workspace scope column" is a compile
+ * error to get wrong rather than a runtime assertion. It reads the tuple above,
+ * so the two cannot disagree.
+ */
+export type WorkspaceScopeColumn = (typeof WORKSPACE_SCOPE_COLUMNS)[number];
 
 /** Column names that make a table user-scoped rather than workspace-scoped. */
 export const USER_SCOPE_COLUMNS = ["user_id", "userId"] as const;
@@ -383,6 +412,26 @@ export const PURGE_TABLE_DECISIONS = {
  * call naming a table with no declaration does not compile and cannot fall back
  * to an undefined link at runtime.
  */
+/**
+ * How much of a `viaParent` declaration the builders should honour.
+ *
+ * `omitSources` drops named `additionalKeySources` from the generated SQL, for
+ * the one case where a source's relation is ABSENT from a drifted region (#5269
+ * review). A source is an OPTIONAL widening, not a delete target: reading it
+ * cannot be a precondition for erasing a workspace's data, because its absence
+ * only returns the purge to its pre-widening — correct but incomplete — reach.
+ * Letting a missing billing outbox refuse a GDPR erasure outright is the worse
+ * of the two failures, so the caller probes and degrades instead.
+ *
+ * ⚠️ Pass the SAME options to both builders. The tombstone INSERT and the ledger
+ * DELETE must read one id set (see `parentKeySubquery`), and a flag supplied to
+ * one and not the other is precisely how that invariant would break. Build the
+ * value once into a local and hand it to both — do not compute it twice.
+ */
+export interface KeySourceOptions {
+  readonly omitSources?: readonly string[];
+}
+
 export type ViaParentTableName = {
   [K in keyof typeof PURGE_TABLE_DECISIONS]: (typeof PURGE_TABLE_DECISIONS)[K] extends {
     readonly viaParent: PurgeParentLink;
@@ -410,7 +459,7 @@ export type ViaParentTableName = {
  * tree (neutering it left every suite green), which makes it exactly the
  * "deletable with zero test failures" shape #5176 is about.
  */
-export function parentKeySubquery(table: ViaParentTableName): string {
+export function parentKeySubquery(table: ViaParentTableName, opts: KeySourceOptions = {}): string {
   const link: PurgeParentLink = PURGE_TABLE_DECISIONS[table].viaParent;
   const notNull = link.parentKeyNullable ? ` AND "${link.parentKey}" IS NOT NULL` : "";
   const fromParent = `SELECT "${link.parentKey}" FROM "${link.parent}" WHERE "${link.parentScope}" = $1${notNull}`;
@@ -423,11 +472,13 @@ export function parentKeySubquery(table: ViaParentTableName): string {
   // `UNION` (not `UNION ALL`) because the sources overlap by design: a
   // subscription that is both live locally and pending teardown appears in
   // both, and the tombstone's PRIMARY KEY has no interest in the duplicate.
-  const fromExtras = (link.additionalKeySources ?? []).map(
-    (source) =>
-      `SELECT "${source.keyColumn}" FROM "${source.table}" ` +
-      `WHERE "${source.scopeColumn}" = $1 AND "${source.keyColumn}" IS NOT NULL`,
-  );
+  const fromExtras = (link.additionalKeySources ?? [])
+    .filter((source) => !(opts.omitSources ?? []).includes(source.table))
+    .map(
+      (source) =>
+        `SELECT "${source.keyColumn}" FROM "${source.table}" ` +
+        `WHERE "${source.scopeColumn}" = $1 AND "${source.keyColumn}" IS NOT NULL`,
+    );
   return [fromParent, ...fromExtras].join(" UNION ");
 }
 
@@ -446,9 +497,9 @@ export function parentKeySubquery(table: ViaParentTableName): string {
  * expression scope: a purge must remove ALL of a workspace's rows in a table,
  * not the ones in one state.
  */
-export function viaParentDeleteSql(table: ViaParentTableName): string {
+export function viaParentDeleteSql(table: ViaParentTableName, opts: KeySourceOptions = {}): string {
   const link: PurgeParentLink = PURGE_TABLE_DECISIONS[table].viaParent;
-  return `DELETE FROM "${table}" WHERE "${link.column}" IN (${parentKeySubquery(table)}) RETURNING 1`;
+  return `DELETE FROM "${table}" WHERE "${link.column}" IN (${parentKeySubquery(table, opts)}) RETURNING 1`;
 }
 
 /** Tables the purge deletes with an explicit statement. */

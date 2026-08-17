@@ -419,12 +419,40 @@ describe("POST /api/v1/platform/workspaces/:id/purge — Stripe teardown", () =>
     expect(body.requestId.length).toBeGreaterThan(0);
   });
 
-  it("keeps the region-drift and racing-admin codes on 409 too", async () => {
-    // All three `PurgeAbortCode` members share the status, and each is checked
+  it("names the skipped WIDENING SOURCE as its own incompleteness reason (#5269)", async () => {
+    // THREE classes of skipped work now, and they are not interchangeable: a
+    // skipped DELETE means rows survive, a skipped TOMBSTONE means cleared rows
+    // can regrow, and a skipped SOURCE means the ledger delete ran over a
+    // narrower id set so orphan rows were never candidates. Reporting the third
+    // as "1 delete(s) did not run … so that data was NOT deleted" would be false
+    // twice over — the delete DID run, and this table is never deleted from.
+    hardDeleteSkipped = ["stripe_teardown_pending"];
+    try {
+      const res = await app.fetch(platformRequest("POST", "/api/v1/platform/workspaces/org-1/purge"));
+      const body = (await res.json()) as { message: string; complete: boolean };
+
+      expect(res.status).toBe(200);
+      // Incomplete, because orphan ledger rows may survive — the operator has to
+      // know that before recording the erasure.
+      expect(body.complete).toBe(false);
+      expect(body.message).toContain("ORPHAN ledger rows");
+      expect(body.message).toContain("stripe_teardown_pending");
+      // NOT counted as a delete that did not run.
+      expect(body.message).not.toContain("1 delete(s) did not run");
+      expect(body.message).not.toContain("that data was NOT deleted");
+    } finally {
+      hardDeleteSkipped = [];
+    }
+  });
+
+  it("keeps the region-drift, racing-admin and indeterminate codes on 409 too", async () => {
+    // All four `PurgeAbortCode` members share the status, and each is checked
     // rather than inferred from the map: a wrong entry for one is invisible from
-    // the others, and `region_schema_behind` is the one whose message names a
-    // relation the operator has to go and migrate.
-    for (const code of ["region_schema_behind", "not_soft_deleted"] as const) {
+    // the others. `purge_outcome_unknown` is the one that matters most here —
+    // mapped to 5xx, `classifyError` would replace its message with an opaque
+    // reference, and that message is the only place that says "do not record this
+    // erasure yet".
+    for (const code of ["region_schema_behind", "not_soft_deleted", "purge_outcome_unknown"] as const) {
       mockHardDelete.mockImplementationOnce(async () => {
         throw new PurgeAbortedError(code, `abort:${code}`);
       });

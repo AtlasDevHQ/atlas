@@ -39,6 +39,7 @@ import {
   totalRowsDeleted,
   PurgeAbortedError,
   PURGE_TOMBSTONE_RELATION,
+  PURGE_TEARDOWN_OUTBOX_RELATION,
   type WorkspaceRow,
   type PlanTier,
   type WorkspaceStatus,
@@ -281,7 +282,29 @@ const purgeWorkspaceRoute = createRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Workspace not found", content: { "application/json": { schema: ErrorSchema } } },
-    409: { description: "Workspace must be soft-deleted first", content: { "application/json": { schema: ErrorSchema } } },
+    // ⚠️ This described ONE cause while the status now carries four (#5265). It
+    // is a published contract statement on the erasure endpoint, and OpenAPI
+    // drift is a CI build gate, so a caller reads this rather than the code —
+    // which makes a stale single-cause description the same defect as a stale
+    // error message, one surface out. `error` is the discriminator; `message`
+    // carries the remedy, which differs per code and is why they are not merged.
+    409: {
+      // ⚠️ "no WORKSPACE DATA", not "nothing". An earlier draft of this line
+      // summarised `purge_rolled_back` as "nothing was deleted", flattening away
+      // the qualifier the code itself is careful to state: remote Stripe teardown
+      // runs BEFORE the cascade and no database rollback covers it. A published
+      // contract line that claims more than the implementation guarantees is the
+      // same defect as a wrong error message, one surface out — and this is the
+      // surface a caller actually reads.
+      description:
+        "Purge refused or aborted — `error` is one of `not_soft_deleted` (soft-delete it again), " +
+        "`region_schema_behind` (run this region's migrations), `purge_rolled_back` (no workspace " +
+        "data was deleted; re-run once the cause is resolved), or `purge_outcome_unknown` (the " +
+        "commit was not confirmed — check whether the organization row still exists BEFORE " +
+        "recording the erasure). Remote Stripe teardown runs before the cascade and is not covered " +
+        "by a rollback in any of these cases. `message` states the remedy.",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -871,7 +894,16 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
       // internal.ts's `alsoSkipped` array, and recovering it by string match
       // meant a rename there silently reverted this split to the inversion it
       // exists to remove.
-      const notDeleted = skippedTables.filter((t) => t !== PURGE_TOMBSTONE_RELATION);
+      // THREE consequences now, not two (#5269). The third is a skipped widening
+      // SOURCE: the ledger delete still ran, but over a narrower id set, so
+      // orphan rows were never candidates. Filtering both non-delete names out of
+      // `notDeleted` is what keeps its count honest — it is a count of deletes
+      // that did not run, and neither of these is one.
+      const nonDeleteSkips: readonly string[] = [
+        PURGE_TOMBSTONE_RELATION,
+        PURGE_TEARDOWN_OUTBOX_RELATION,
+      ];
+      const notDeleted = skippedTables.filter((t) => !nonDeleteSkips.includes(t));
       if (notDeleted.length > 0) {
         reasons.push(
           `${notDeleted.length} delete(s) did not run because a relation was absent from ` +
@@ -883,6 +915,13 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
           `the ${PURGE_TOMBSTONE_RELATION} tombstone was NOT written, so late Stripe ` +
             `cancellation webhooks ` +
             `may regrow stripe_webhook_events rows for this workspace (#3468)`,
+        );
+      }
+      if (skippedTables.includes(PURGE_TEARDOWN_OUTBOX_RELATION)) {
+        reasons.push(
+          `${PURGE_TEARDOWN_OUTBOX_RELATION} was absent, so the stripe_webhook_events delete ran ` +
+            `against the narrower subscription-only id set and ORPHAN ledger rows for this ` +
+            `workspace may survive (#5269)`,
         );
       }
     }
@@ -982,11 +1021,17 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
     // member of `PurgeAbortCode`, so a fourth code is a compile error here rather
     // than an unmapped code defaulting to 500 — i.e. defaulting back into exactly
     // the opaque-reference body these mappings exist to escape.
+    // `purge_outcome_unknown` is 409 rather than 500 for one specific reason:
+    // `classifyError` REPLACES the message of a 5xx domain error with an opaque
+    // reference, and this is the one abort whose message an operator must read
+    // before recording anything — it is the only place that says "do not record
+    // this erasure yet; check whether the organization row still exists".
     domainErrors: [
       domainError(PurgeAbortedError, {
         region_schema_behind: 409,
         not_soft_deleted: 409,
         purge_rolled_back: 409,
+        purge_outcome_unknown: 409,
       }),
     ],
   });

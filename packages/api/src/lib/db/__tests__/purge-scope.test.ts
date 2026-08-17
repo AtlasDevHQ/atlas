@@ -135,8 +135,17 @@ const purgeFnBody = rawPurgeFnBody
  * `delViaParent` is still one explicit call per table. What the registry now
  * guarantees is the RELATION, not the call: a `viaParent` entry with no call
  * site is still an entry outrunning the implementation, and still fails here.
+ *
+ * ⚠️ The table name is followed by `[,)]`, not `)`. `delViaParent` takes an
+ * optional second argument since #5269 (the omit-a-missing-key-source options),
+ * and a `\)`-anchored pattern silently stopped recognising the one call that
+ * passes it — reporting `stripe_webhook_events` as a `purged` table with NO
+ * delete at all. That is the guard behaving correctly on a changed call shape;
+ * what it must not do is keep matching only the argument-less spelling, because
+ * then adding an argument to any other call would quietly remove that table from
+ * three checks at once.
  */
-const viaParentCalls = [...purgeFnBody.matchAll(/delViaParent\("([a-z_][a-z0-9_]*)"\)/g)].map(
+const viaParentCalls = [...purgeFnBody.matchAll(/delViaParent\("([a-z_][a-z0-9_]*)"[,)]/g)].map(
   (m) => m[1],
 );
 const deleteMatches = [
@@ -150,7 +159,14 @@ const deleteTargets = new Set(deleteMatches);
  * The ORDER assertions below compare these positions.
  */
 const deleteIndexOf = (table: string): number => {
-  const viaIdx = purgeFnBody.indexOf(`delViaParent("${table}")`);
+  // Same `[,)]` tolerance as `viaParentCalls` above, and for the same reason —
+  // `delViaParent` takes optional options since #5269. A `")"`-terminated
+  // `indexOf` here returned -1 for the one call that passes them, which made the
+  // child-before-parent ORDER assertion report "no delete for
+  // stripe_webhook_events" rather than compare two positions.
+  const viaIdx = purgeFnBody.search(
+    new RegExp(`delViaParent\\("${table.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"[,)]`),
+  );
   if (viaIdx !== -1) return viaIdx;
   // Anchored on a word boundary, not a prefix: a bare
   // `indexOf("DELETE FROM " + table)` makes `dashboards` match a future

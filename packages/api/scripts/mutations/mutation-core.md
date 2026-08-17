@@ -32,7 +32,6 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | `unmeasurableOutcome` stops cross-checking the buckets against `Ran N` | 7 |
 | ⚠️ `unmeasurableOutcome` stops refusing a run that registered ZERO tests | 4 |
 | `unmeasurableOutcome`'s EMPTY arm swallows a whole-suite kill (`&& fail === 0` dropped) | 1 |
-| the `-pg` hint decision is re-derived instead of read off the problem | 1 |
 | `countCell` stops deriving `wholeSuite`, so a near-total publishes unflagged | 1 |
 | `cellFlag` stops naming WHY a row measured nothing | 1 |
 | the TIMEOUT cell carries a wall-clock number again (determinism lost) | 1 |
@@ -44,7 +43,7 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | `render` drops the DO-NOT-EDIT header | 1 |
 | `render` drops the suite-size line | 1 |
 
-Suite sizes: **mutate-core.test.ts** 81 tests (`src/__tests__/mutate-core.test.ts`).
+Suite sizes: **mutate-core.test.ts** 82 tests (`src/__tests__/mutate-core.test.ts`).
 
 ## Notes
 
@@ -62,7 +61,6 @@ Suite sizes: **mutate-core.test.ts** 81 tests (`src/__tests__/mutate-core.test.t
 - **`unmeasurableOutcome` stops cross-checking the buckets against `Ran N`** — The general arm — the one that closes a bucket bun invents later without naming it.
 - **⚠️ `unmeasurableOutcome` stops refusing a run that registered ZERO tests** — MEASURED live on bun 1.3.13: an emptied corpus prints `0 pass` / `0 fail` and no other arm fires, so before this guard `measure()` published a `0` — the byte the generated header defines as *the suite does not catch it* — from a run that measured nothing.
 - **`unmeasurableOutcome`'s EMPTY arm swallows a whole-suite kill (`&& fail === 0` dropped)** — The other direction, and the one that would refuse real results: a mutation that kills every test reports `0 pass` with a large `fail`, which is the strongest measurement the runner can make.
-- **the `-pg` hint decision is re-derived instead of read off the problem** — Flips the EMPTY arm's hint to true, which is what a hand-copied kind list or a structural `"cell" in problem` test both produce — sending an operator to start Postgres and hunt a `.skip` in a suite that registered no tests.
 - **`cellFlag` stops naming WHY a row measured nothing** — The flag IS the repair information a reader meets in the Flagged section — which mutation measured nothing, and why. A `toBeDefined()` assertion could not see this.
 - **the TIMEOUT cell carries a wall-clock number again (determinism lost)** — The one committable no-count cell. Its first spelling interpolated `round(timeoutMs / 1000)`, which derives from the baseline's MEASURED duration — so the byte was stable only while that suite stayed under 3s, and for a `-pg` target never. `--check` compares bytes and is a required gate.
 - **`importSpecifiers` sees only SINGLE-LINE import statements** — The spelling a reader reaches for, and the one that misses every multi-line import — which is how `__tests__/*-corpus.ts` stayed invisible to `--files` after #5077 claimed to have fixed the class.

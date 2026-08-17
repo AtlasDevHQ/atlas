@@ -420,8 +420,17 @@ export type Cell =
 export const TIMEOUT_CELL = "⚠️ HANGS — timed out";
 
 /**
- * The only way to build a `count` cell, so `wholeSuite` cannot disagree with
+ * The way `mutate.ts` builds a `count` cell, so `wholeSuite` cannot disagree with
  * {@link isWholeSuite}.
+ *
+ * ⚠️ "The way", not "the only way", and the difference is the point: `Cell`'s
+ * `count` variant keeps a public optional `wholeSuite?: true`, so a literal can
+ * still be written by hand and `{ fail: 0, wholeSuite: true }` still typechecks.
+ * What this closes is the PRODUCTION path — `measure()` cannot forget the flag or
+ * set it against the ratio. Closing the representable state as well would need
+ * `count` to carry an opaque marker, which is more machinery than a dev-script
+ * cell warrants; the honest statement is that this is a single writer, not an
+ * unrepresentable state.
  *
  * ⚠️ Two representable-but-wrong states motivated this, and both are the kind of
  * thing nothing would notice. FORGETTING the flag publishes an unflagged
@@ -582,31 +591,51 @@ function uncommittableReason(cell: Cell): string | null {
  * #5097's own class, and the emptied-corpus shape is reachable by exactly the
  * data-driven mutation this PR's `--files` hop was added to track.
  */
-export interface UnmeasurableOutcome {
-  readonly kind: "unaccounted" | "deflated" | "empty";
+interface UnmeasurableProse {
   /** Operator-facing prose, for the baseline's hard refusal. */
   readonly message: string;
   /**
    * Cell-sized prose, for an `unmeasured` {@link Cell}.
    *
-   * Produced HERE rather than by the caller so a cell and the message
-   * explaining it can never describe different arms.
+   * Produced by {@link unmeasurableOutcome} rather than by its callers, which is
+   * what keeps a cell and the message beside it describing the same arm. Note
+   * that is a property of there being ONE PRODUCER, not of these types: they are
+   * two independent strings, and an earlier draft of this comment claimed they
+   * "can never describe different arms", which the type does not deliver.
    */
   readonly cell: string;
-  /**
-   * Whether the `TEST_DATABASE_URL` hint applies.
-   *
-   * ⚠️ **CARRIED ON THE PROBLEM, not re-derived by the caller, and this field is
-   * the reason two individually-correct fixes compose.** `mutate.ts` used to ask
-   * `kind === "deflated" || kind === "unaccounted"` — a hand-copied list that
-   * happened to give the right answer until a kind was added. Adding `empty`
-   * here is exactly that event: an `empty` run told to "find the .skip/.todo in
-   * the target" sends an operator hunting a skip in a suite that registered no
-   * tests, which is the misdirecting-diagnostic defect `kind` exists to prevent.
-   * A structural `"cell" in problem` test would have made the same mistake.
-   */
-  readonly pgHint: boolean;
 }
+
+/**
+ * ⚠️ **`pgHint` IS PINNED TO A LITERAL PER ARM, and the first cut of this type
+ * got that wrong in exactly the way it was written to prevent.**
+ *
+ * `mutate.ts` used to ask `kind === "deflated" || kind === "unaccounted"` — a
+ * hand-copied list that happened to give the right answer until a kind was
+ * added, and adding `empty` was that event. So the decision moved onto the
+ * problem. But it moved as `pgHint: boolean`, which made
+ * `{ kind: "empty", pgHint: true }` a legal value: the freedom to pair the wrong
+ * hint with the wrong kind was RELOCATED from the caller onto the type rather
+ * than removed, and it gained two more homes on the way.
+ *
+ * That is the same mitigation-not-closure shape the `Cell` union was fixed for
+ * one type up, and the closing spelling was already four lines below in
+ * `BaselineProblem`'s other arm (`pgHint: false`). Split by hint value, an
+ * `empty` outcome cannot claim the `-pg` hint at all — and the hint is
+ * misdirecting precisely there, because a suite that registered no tests has no
+ * `.skip` to find and Postgres is not the cause.
+ */
+export type UnmeasurableOutcome =
+  | (UnmeasurableProse & {
+      /** Tests existed and did not run, so `TEST_DATABASE_URL` is worth naming. */
+      readonly kind: "unaccounted" | "deflated";
+      readonly pgHint: true;
+    })
+  | (UnmeasurableProse & {
+      /** No test was DISCOVERED. Nothing about Postgres explains that. */
+      readonly kind: "empty";
+      readonly pgHint: false;
+    });
 
 export function unmeasurableOutcome(outcome: SuiteOutcome): UnmeasurableOutcome | null {
   const accounted = outcome.pass + outcome.fail + outcome.skip + outcome.todo;

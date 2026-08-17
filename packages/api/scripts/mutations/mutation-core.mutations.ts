@@ -243,17 +243,17 @@ it, and that header is exactly what stops a reviewer looking closer.
       ],
       note: "The other direction, and the one that would refuse real results: a mutation that kills every test reports `0 pass` with a large `fail`, which is the strongest measurement the runner can make.",
     },
-    {
-      label: "the `-pg` hint decision is re-derived instead of read off the problem",
-      edits: [
-        {
-          file: SOURCE,
-          oldString: "      pgHint: false,\n    };\n  }\n  return null;\n}",
-          newString: "      pgHint: true,\n    };\n  }\n  return null;\n}",
-        },
-      ],
-      note: "Flips the EMPTY arm's hint to true, which is what a hand-copied kind list or a structural `\"cell\" in problem` test both produce — sending an operator to start Postgres and hunt a `.skip` in a suite that registered no tests.",
-    },
+    // ⚠️ DELETED, not re-anchored: *"the `-pg` hint decision is re-derived instead
+    // of read off the problem"*. It flipped the EMPTY arm's `pgHint: false` to
+    // `true` — a runtime change while `UnmeasurableOutcome` typed that field as
+    // `boolean`. It no longer is: the union is split by hint value, so
+    // `{ kind: "empty", pgHint: true }` does not compile, and a "mutation" that
+    // cannot compile measures the compiler rather than the suite.
+    //
+    // Its falsifier moved to where the guard now lives — a `@ts-expect-error` in
+    // `mutate-core.test.ts`, which FAILS TO COMPILE if the error stops occurring,
+    // so `bun run type` enforces it. Pointing a replacement row at an
+    // unrepresentable state would be the tombstone the dead-anchor arm refuses.
     {
       label: "`countCell` stops deriving `wholeSuite`, so a near-total publishes unflagged",
       edits: [

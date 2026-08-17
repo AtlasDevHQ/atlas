@@ -40,6 +40,7 @@ import {
   validateSpec,
   WHOLE_SUITE_WARN_RATIO,
   type Cell,
+  type UnmeasurableOutcome,
   type FileStore,
 } from "../../scripts/mutation-core";
 import type { Mutation, MutationSpec } from "../../scripts/mutation-spec";
@@ -477,6 +478,43 @@ describe("⚠️ unmeasurableOutcome — the ONE copy both the baseline and the 
     ).toBe(false);
   });
 
+  test("⚠️ an EMPTY outcome CANNOT claim the -pg hint — enforced by the compiler", () => {
+    // ⚠️ `@ts-expect-error` is the falsifier, and it is the right instrument
+    // because this guard is type-level: the directive itself FAILS TO COMPILE the
+    // moment the error stops occurring, so `bun run type` — a CI-blocking job —
+    // catches a regression here with no runtime assertion involved.
+    //
+    // A mutation row cannot cover it. The first cut typed `pgHint: boolean`, which
+    // made `{ kind: "empty", pgHint: true }` legal and a run-time flip
+    // expressible; splitting the union by hint value makes that state
+    // unrepresentable, so the spec row that used to flip it was DELETED rather
+    // than re-anchored — a successor pointing at an unreachable state is the
+    // tombstone this PR already refused once.
+    //
+    // MEASURED before writing this: a probe assigning that object reported
+    // `TS2322: Type '{ kind: "empty"; …; pgHint: true; }' is not assignable to
+    // type 'UnmeasurableOutcome'`, while the `pgHint: false` sibling compiled.
+    // ⚠️ The directive sits on the ASSIGNMENT, not on the offending property:
+    // TS reports the excess/mismatch against the whole object literal, so a
+    // `@ts-expect-error` above `pgHint` is an UNUSED directive (TS2578) — which
+    // fails the build for the wrong reason and would have read as this guard
+    // working. Learned by running it.
+    // @ts-expect-error - the empty arm pins pgHint to false; a -pg hint here
+    // would send an operator hunting a .skip in a suite that registered none.
+    const bad: UnmeasurableOutcome = {
+      kind: "empty",
+      message: "m",
+      cell: "c",
+      pgHint: true,
+    };
+    expect(bad.kind).toBe("empty");
+
+    // …and the converse, so this is not satisfied by a type nothing can build:
+    // the correct pairing must still compile.
+    const good: UnmeasurableOutcome = { kind: "empty", message: "m", cell: "c", pgHint: false };
+    expect(good.pgHint).toBe(false);
+  });
+
   test("the accounting arm fires in BOTH directions, not just when buckets are short", () => {
     // Every other unaccounted fixture has `accounted < ran`, so `!==` → `<`
     // survives them all. The arm's whole point is "a bucket bun invents
@@ -487,10 +525,14 @@ describe("⚠️ unmeasurableOutcome — the ONE copy both the baseline and the 
   });
 
   test("the message and the CELL describe the same arm", () => {
-    // Both strings come from here rather than being assembled by the two
-    // callers, so a cell can never name a different arm from the prose beside
-    // it. The two must be different TEXT — the cell is one table cell wide —
-    // while agreeing on the arm.
+    // Both strings come from ONE PRODUCER rather than being assembled by the two
+    // callers, which is what keeps them describing the same arm — a property of
+    // there being one producer, NOT of the types, which are two independent
+    // strings. (An earlier version of this comment claimed a cell "can never"
+    // name a different arm; that is exactly the certification-beyond-the-code
+    // shape this PR keeps finding, so it is stated as what it is.) The two must
+    // be different TEXT — the cell is one table cell wide — while agreeing on
+    // the arm.
     const skipped = unmeasurableOutcome({ pass: 1, fail: 0, skip: 2, todo: 0, ran: 3 });
     expect(skipped?.kind).toBe("deflated");
     expect(skipped?.message).toContain("SKIPPED 2 of 3 tests");

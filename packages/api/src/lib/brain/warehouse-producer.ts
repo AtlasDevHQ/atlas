@@ -92,6 +92,7 @@ import {
   type EntityStoreEntry,
   type StoredEntity,
 } from "@atlas/api/lib/brain/entity-store";
+import { recordEntityRunSuccess } from "@atlas/api/lib/brain/warehouse-run-record";
 import type {
   AliasProducerCounters,
   AliasProposalInput,
@@ -3448,6 +3449,34 @@ export async function runWarehouseProducer(
           workspaceId,
           entity: entityPlan.entity.name,
           entries: claims.entityEntries,
+          snapshotAt,
+        });
+
+        // The per-entity success record (#5317, migration 0206), in the SAME
+        // transaction and for `writeEntityEntries`' reason one step further on:
+        // the entries, the facts they describe, and the claim that this run
+        // succeeded for this entity all commit or roll back together.
+        //
+        // ⚠️ It is a PREFACTOR — nothing reads it in this slice. The consumer is
+        // #5233's entity-store reaper, whose reach rule needs "that entity's
+        // last N successful runs" and had no source for it: `coverage_cycle`'s
+        // marker is per SOURCE CLASS, which is the wrong grain, and
+        // `withWarehouseRunLock` keeps no history at all.
+        //
+        // Written HERE rather than after the loop, and that placement is the
+        // whole guarantee. Every way this entity can fail — an unreadable
+        // datasource, a refused pair, a rolled-back transaction — leaves no row,
+        // so a success marker can never advance past work that did not commit.
+        // The alternatives #5317 rejected both reap on a transient outage; this
+        // one cannot, because a run that did not happen leaves no evidence that
+        // it did.
+        //
+        // `snapshotAt`, never a wall clock: the reach rule compares this to
+        // `brain_entity.snapshot_at`, which the `writeEntityEntries` call above
+        // just wrote from this same value.
+        await recordEntityRunSuccess(tx, {
+          workspaceId,
+          entity: entityPlan.entity.name,
           snapshotAt,
         });
 

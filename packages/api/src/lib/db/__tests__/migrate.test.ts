@@ -397,7 +397,16 @@ describe("runMigrations", () => {
     //   column, resolves each existing row to its entity's group where the
     //   published layer names exactly one, and widens both the primary key and
     //   the naming unique index) = 206.
-    expect(count).toBe(206);
+    //   Plus 0206 (brain_warehouse_entity_success — #5317: one row per
+    //   (workspace, entity, successful producer run), which is the input
+    //   #5233's entity-store reaper needs and had no source for at any grain —
+    //   `brain_coverage_cycle.last_success_at` is per SOURCE CLASS and
+    //   `withWarehouseRunLock` keeps no history. A PREFACTOR: it adds a writer
+    //   and no reader, deliberately, so the reaper ticket is about the reach
+    //   rule rather than about a migration. Successes only, written inside the
+    //   entity's reconcile transaction, so a rollback takes the record with the
+    //   facts it would have described) = 207.
+    expect(count).toBe(207);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -632,6 +641,7 @@ describe("runMigrations", () => {
         "0203_brain_catalog_config_help_company_atlas.sql",
         "0204_region_migrations_vocabulary_refusals.sql",
         "0205_brain_enrollment_connection_group.sql",
+        "0206_brain_warehouse_entity_success.sql",
       ],
     });
 

@@ -626,6 +626,7 @@ describe("migrateAuthTables", () => {
             // its key (#5286) — an Atlas-owned brain table Better Auth has no
             // stake in, so the same grounds as 0196–0204.
             { name: "0205_brain_enrollment_connection_group.sql" },
+            { name: "0206_brain_warehouse_entity_success.sql" },
           ],
         };
       }

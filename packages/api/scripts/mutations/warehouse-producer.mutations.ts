@@ -85,6 +85,8 @@
 import type { MutationSpec } from "../mutation-spec";
 
 const PRODUCER = "src/lib/brain/warehouse-producer.ts";
+/** The per-entity success record's writer (#5317) — one call site, in `PRODUCER`. */
+const RECORD = "src/lib/brain/warehouse-run-record.ts";
 
 const spec: MutationSpec = {
   title: "Mutations the warehouse producer's suites catch",
@@ -95,13 +97,14 @@ const spec: MutationSpec = {
     { name: "bypass", file: "src/lib/brain/__tests__/warehouse-producer-bypass.test.ts" },
     { name: "mint", file: "src/lib/brain/__tests__/warehouse-producer-mint.test.ts" },
     { name: "pg", file: "src/lib/brain/__tests__/warehouse-producer-pg.test.ts" },
+    { name: "record", file: "src/lib/brain/__tests__/warehouse-run-record-pg.test.ts" },
   ],
   preamble: `
 Source: \`${PRODUCER}\`.
 Mutation list: \`scripts/mutations/warehouse-producer.mutations.ts\`.
 
-Read the columns against each other rather than the totals down. The five
-suites are five different instruments and the interesting fact is usually
+Read the columns against each other rather than the totals down. The six
+suites are six different instruments and the interesting fact is usually
 which one holds a row up:
 
 - **producer** — what the run DECIDES against injected seams. The widest column:
@@ -170,6 +173,14 @@ away from the fix that closed it.
 
 The opposite end deserves the same suspicion. The identity-check row carries the
 largest count here and was inspected rather than trusted; see its note.
+
+- **record** — the per-entity success record (#5317), and the ONLY column that can
+  fail on where that row is written. It drives the real producer through a
+  transaction that does its work and then ROLLS BACK, which is the one thing no
+  fake executor can express: every stub in the tree resolves whatever it is handed,
+  so a writer given the module pool instead of the entity's \`tx\` looks identical
+  to a correct one everywhere else. The record authorizes a DELETE in #5233, so
+  "it survived a rollback" is the failure with the consequence.
 `,
   mutations: [
     {
@@ -578,6 +589,61 @@ export type WarehouseBrandProbe = { readonly [validatedSnapshotSql]: true };`,
         },
       ],
       note: "⚠️ **The first cut of the #5284 fix, which reproduced the defect it was written to end — caught by a `fix-vs-finding` pass, not by any reviewer.** It asked *\"does this catalog scope anything by group?\"* and treated `false` as *\"this workspace is flat, the default is correct\"*. But the visibility clause in `listEntityRows` is exactly what REMOVES a group-scoped row from the catalog when its datasource is unpublished, while `getEntity` has no such clause. So a workspace whose only group just went invisible keeps its ungrouped `__global__` demo rows, the inference reads FALSE, and the enrolled entity — still found by the loader, still planned — is snapshotted against the demo database with nothing refused and nothing logged. The asymmetry is the tell: the SAME condition refuses `group-not-visible` when the row survives the clause and defaulted when the clause deleted it. An empty `.some()` establishes what the carried rows are and nothing about a name the catalog does not carry, which is a measured-nothing cell blessed as a determined answer.",
+    },
+    {
+      label: "the per-entity success record is never written",
+      edits: [
+        {
+          file: PRODUCER,
+          oldString:
+            "        await recordEntityRunSuccess(tx, {\n" +
+            "          workspaceId,\n" +
+            "          entity: entityPlan.entity.name,\n" +
+            "          snapshotAt,\n" +
+            "        });",
+          newString: "        void recordEntityRunSuccess;",
+        },
+      ],
+      note: "The floor for #5317, and the row that keeps the two below honest: they both assert something about WHERE the record is written, and a producer that writes none at all satisfies every negative arm in the `-pg` suite (the refusal arm, the rollback arm) perfectly. Killed in `producer` by the exact-statement dispatch on `ENTITY_RUN_SUCCESS_INSERT_SQL` — the fake executor throws on an unrecognized statement, so the assertion is on bytes rather than on a paraphrase — and in `record` by the success arm. No reader exists in this slice, so nothing else in the tree can notice.",
+    },
+    {
+      label: "the success record escapes the entity's transaction onto the pool",
+      edits: [
+        {
+          file: RECORD,
+          oldString: 'import type { ReconcileExecutor } from "@atlas/api/lib/brain/reconcile";',
+          newString:
+            'import type { ReconcileExecutor } from "@atlas/api/lib/brain/reconcile";\n' +
+            'import { internalQuery } from "@atlas/api/lib/db/internal";',
+        },
+        {
+          file: RECORD,
+          oldString: "  await tx.query(ENTITY_RUN_SUCCESS_INSERT_SQL, [",
+          newString: "  void tx;\n  await internalQuery(ENTITY_RUN_SUCCESS_INSERT_SQL, [",
+        },
+      ],
+      note: "⚠️ **THE row this record exists for, and the one only a database can hold up.** The whole value of the marker is that it cannot outlive the work it claims: #5233's reaper DELETES `brain_entity` rows on the strength of one. Handed the module pool instead of the entity's `tx`, the INSERT commits on its own connection and survives the rollback — so a run that failed leaves a durable claim that it succeeded, in exactly the case where the consequence is a deletion. `record`'s rolled-back-transaction arm is the only thing in the tree that fails FOR THE RIGHT REASON — it observes a committed row after a rollback. Read any other non-zero column here as an accident rather than as coverage: the unit suites reach `internalQuery` with no pool configured, so they die on a thrown connection error, which is a kill that says nothing about whether the row outlived the transaction and would vanish the moment a suite happened to have a pool. Measured by hand before this row existed, which is precisely the prose-instead-of-a-gate shape this file was filed to retire.",
+    },
+    {
+      label: "the success record is stamped with the wall clock instead of the snapshot instant",
+      edits: [
+        {
+          file: PRODUCER,
+          oldString:
+            "        await recordEntityRunSuccess(tx, {\n" +
+            "          workspaceId,\n" +
+            "          entity: entityPlan.entity.name,\n" +
+            "          snapshotAt,\n" +
+            "        });",
+          newString:
+            "        await recordEntityRunSuccess(tx, {\n" +
+            "          workspaceId,\n" +
+            "          entity: entityPlan.entity.name,\n" +
+            "          snapshotAt: new Date(),\n" +
+            "        });",
+        },
+      ],
+      note: "The reach rule compares this column to `brain_entity.snapshot_at`, which the `writeEntityEntries` call three lines up writes from the SAME value. A wall clock is later than the snapshot by however long the reconcile took, so every entry reads as older than its own run — and the reaper's comparison is a DELETE, so the drift falls in the direction that reaps live entries. A `now()` DEFAULT on the column would have the identical effect, which is why 0206 declares none. Survives every assertion that merely checks a row EXISTS, which is what both rows above check.",
     },
     {
       label: "the connection resolver is asked about no entities",

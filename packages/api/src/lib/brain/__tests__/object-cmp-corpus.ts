@@ -181,3 +181,217 @@ export const AGREEMENT_CORPUS: readonly AgreementCase[] = [
   },
 ];
 
+
+// ---------------------------------------------------------------------------
+// The disagreement census (#5318)
+// ---------------------------------------------------------------------------
+
+/**
+ * How a pair's two object surfaces came to share a slot key.
+ *
+ * Recorded because it is the half of the census that is NOT a property of
+ * `object_cmp`: the disagreement needs key equality AND a proof of difference,
+ * and the three routes to key equality reach different populations. Byte
+ * equality is the one every reader assumes; the fold is the one `-499` / `499`
+ * arrives by; the alias is the one a HUMAN opened, and it is the only route that
+ * can put two surfaces with nothing in common into one slot.
+ */
+export type KeyRoute = "byte-identical" | "lexical-fold" | "approved-alias";
+
+/**
+ * Why a pair sits in the disagreement region — the property that makes the two
+ * predicates read it differently.
+ *
+ * Two, and the census asserts there are no others (see
+ * `object-cmp-disagreement-census.test.ts`). They are the only two ways a pair
+ * can carry both key equality and a proof of difference, because they are the
+ * only two ways the comparable can know something the key does not:
+ *
+ *   - `id-behind-a-shared-name` — the comparable is an `entity:` id and the key
+ *     is the NAME. The store can distinguish two rows a name cannot.
+ *   - `sign-the-key-discards` — `lexicalNorm` collapses `[ \t\n\v\f\r_-]+`, so a
+ *     leading `-` is not in the key while the comparable parser keeps it.
+ *
+ * Measured rather than reasoned: the probe that produced this census also ran
+ * `_` runs, whitespace runs, the ASCII case fold, `-0` / `0`, interior and
+ * trailing `-`, and separator-substituted dates and instants. Every one of them
+ * is `same` or `unknown`, never `different` — a discarded character that is not
+ * a leading sign either leaves the comparable equal or stops it parsing at all.
+ */
+export type DisagreementMechanism = "id-behind-a-shared-name" | "sign-the-key-discards";
+
+export interface DisagreementCase {
+  readonly id: string;
+  readonly a: {
+    readonly surface: string;
+    readonly declared?: DeclaredObjectType;
+    readonly entityId?: string;
+  };
+  readonly b: {
+    readonly surface: string;
+    readonly declared?: DeclaredObjectType;
+    readonly entityId?: string;
+  };
+  /** How the two surfaces reached one slot key. */
+  readonly keyRoute: KeyRoute;
+  /** What makes the comparable able to prove a difference the key cannot see. */
+  readonly mechanism: DisagreementMechanism;
+  /**
+   * Whether SUPERSEDING is the outcome this pair should get.
+   *
+   * ⚠️ NOT "whether the disagreement is a bug". Every row here disagrees; the
+   * question the census answers is what the disagreement should COST. `true`
+   * means the publish gate stamping `valid_to` is right about this pair.
+   */
+  readonly intendedToSupersede: boolean;
+  readonly why: string;
+  /** Set on, and only on, the rows where {@link intendedToSupersede} is false. */
+  readonly remedy?: string;
+}
+
+/**
+ * Every pair shape where the sameness evidence and `comparableDifferentSql`
+ * disagree (#5318).
+ *
+ * ## What "disagree" means here, precisely
+ *
+ * NOT "both predicates return true" — `objectSameSql` cannot, because it carries
+ * the difference VETO and resolves to FALSE on every row below. The
+ * disagreement is one conjunct in: `objectSameSql`'s SAMENESS EVIDENCE
+ * (`object_key` equal **or** both comparables non-null and equal) fires, and
+ * `comparableDifferentSql` fires too. `supersessionCollisionJoin` consults only
+ * the second, so these pairs supersede.
+ *
+ * That distinction is why nobody had written this set down. The veto makes the
+ * overlap invisible to any test that asks the two shipped predicates whether
+ * they agree — `object-cmp-pg.test.ts`'s disjointness block asks exactly that,
+ * correctly, and is green on every row here.
+ *
+ * ⚠️ **The second disjunct of the sameness evidence can never contribute.** It
+ * is `a = b` and the difference arm opens with `a <> b`, so a pair satisfying
+ * both would need one comparison to be true and its negation with it. Every
+ * disagreement therefore enters through the `object_key` arm, which is what
+ * makes {@link KeyRoute} a field rather than a footnote — and the census test
+ * asserts it rather than assuming it, because a future arm added to
+ * `comparableSameSql` would silently reopen that door.
+ *
+ * ## Why this is a census and NOT a prohibition
+ *
+ * ⚠️ The test *"no pair is both same and different"* is FALSE BY DESIGN and must
+ * never be written here. `entity-homonym` below is two different companies both
+ * surfaced as `Acme Corp` and a person moving between them: the sameness
+ * evidence is right (it is the same name) and the difference proof is right (it
+ * is not the same company), and superseding is the CORRECT outcome. A
+ * prohibition would fail on that row immediately — and the repair someone would
+ * reach for is weakening the homonym handling, which trades a visible failure
+ * for the silent merge `objectSameSql`'s veto exists to prevent.
+ *
+ * So the assertion is a pin over the classified set. A new shape arriving here
+ * has to be given an {@link intendedToSupersede} verdict and a reason by a
+ * person, in the same commit — instead of being discovered by a prod incident,
+ * which is how `entity-remint` was found.
+ *
+ * ## What the census cannot do
+ *
+ * `entity-homonym` and `entity-remint` are the SAME SHAPE at the SQL level: two
+ * `entity:`-tagged comparables, same tag, unequal, over one key. Nothing in the
+ * two predicates can tell them apart, and no arm added to either could — the
+ * information that separates them (did the store re-mint an id for a row that
+ * did not change?) is not in the columns. That is the finding, not a gap in this
+ * file: the remedy has to live where the ids are minted, which is what #5233's
+ * remaining tickets are about.
+ */
+export const DISAGREEMENT_CENSUS: readonly DisagreementCase[] = [
+  {
+    id: "entity-homonym",
+    a: { surface: "Acme Corp", entityId: `wh_${"a".repeat(64)}` },
+    b: { surface: "Acme Corp", entityId: `wh_${"b".repeat(64)}` },
+    keyRoute: "byte-identical",
+    mechanism: "id-behind-a-shared-name",
+    intendedToSupersede: true,
+    why:
+      "⚠️ THE ROW THAT MAKES A PROHIBITION WRONG. Two different companies both surfaced as " +
+      "`Acme Corp`, and someone who moved between them. Both readings are correct — it IS the " +
+      "same name, and it is NOT the same company — and retiring the old employer is what the " +
+      "store's whole reason for existing buys: without an entity id this pair is `unknown` and " +
+      "a manager change is tension-only forever (`entity-surfaces` in the agreement corpus). " +
+      "Asserting that no pair is both would fail here, and the repair would be to blind the " +
+      "resolver, which is strictly worse than the disagreement.",
+  },
+  {
+    id: "entity-remint",
+    a: { surface: "Acme Corp", entityId: `wh_${"c".repeat(64)}` },
+    b: { surface: "Acme Corp", entityId: `wh_${"d".repeat(64)}` },
+    keyRoute: "byte-identical",
+    mechanism: "id-behind-a-shared-name",
+    intendedToSupersede: false,
+    why:
+      "⚠️ NOT INTENDED, and byte-for-byte indistinguishable from `entity-homonym` above — same " +
+      "surface, same tag, two ids. Here the two ids name ONE warehouse row whose id was " +
+      "re-minted between the two claims, so a fact is retired by a fact asserting the identical " +
+      "thing. PR 5315 measured the stamp at the join with the id as the only moving variable. " +
+      "`warehouseRowId` digests `(workspace, entity, primary key)`, so the entity component " +
+      "alone moving is enough: a region-migration bridge window, or a semantic-layer rename " +
+      "inside one region.",
+    remedy:
+      "#5233 — the fix is where ids are minted (retire the superseded comparable, or make a " +
+      "re-minted id recognisable), NOT in these two predicates: the columns do not carry what " +
+      "separates this row from the one above it.",
+  },
+  {
+    id: "entity-alias-merged-names",
+    a: { surface: "Acme", entityId: `wh_${"e".repeat(64)}` },
+    b: { surface: "Acme Corp", entityId: `wh_${"f".repeat(64)}` },
+    keyRoute: "approved-alias",
+    mechanism: "id-behind-a-shared-name",
+    intendedToSupersede: true,
+    why:
+      "The alias route, and the only one that can put two surfaces with nothing lexical in " +
+      "common into one slot. `Acme` and `Acme Corp` do not fold together — a human approved an " +
+      "edge saying they name one thing. Present because it reaches a population the fold cannot: " +
+      "every pair of names a reviewer has ever merged is now a candidate for this region. The " +
+      "verdict is `entity-homonym`'s and for the same reason — the reviewer asserted the names " +
+      "are one, the store proved the ROWS are two, and the second beats the first.",
+  },
+  {
+    id: "sign-flip",
+    a: { surface: "-499" },
+    b: { surface: "499" },
+    keyRoute: "lexical-fold",
+    mechanism: "sign-the-key-discards",
+    intendedToSupersede: true,
+    why:
+      "The case `objectSameSql`'s veto was written for. `lexicalNorm` collapses `-` as a " +
+      "separator, so both surfaces key `499` while the comparables prove they disagree. Without " +
+      "the veto the key arm fires `same`, corroboration merges a margin with its own negation, " +
+      "and the second claim never gets a row at all — T2's silent merge. Superseding is right: " +
+      "the two ARE different numbers, and a signed number is exactly what a warehouse producer " +
+      "emits for a margin or a delta.",
+  },
+  {
+    id: "sign-flip-money",
+    a: { surface: "-499 USD" },
+    b: { surface: "499 USD" },
+    keyRoute: "lexical-fold",
+    mechanism: "sign-the-key-discards",
+    intendedToSupersede: true,
+    why:
+      "`sign-flip` one tag over, and NOT a duplicate of it: the money parser carries the sign " +
+      "through a currency canonicalization the bare-number parser never runs, so a fix that " +
+      "dropped the sign in one would leave the other green. A refund and a charge.",
+  },
+  {
+    id: "sign-flip-declared",
+    a: { surface: "-499", declared: { kind: "money", currency: "USD" } },
+    b: { surface: "499", declared: { kind: "money", currency: "USD" } },
+    keyRoute: "lexical-fold",
+    mechanism: "sign-the-key-discards",
+    intendedToSupersede: true,
+    why:
+      "The DECLARED arm — a producer that knows its column is USD, over surfaces that carry no " +
+      "currency of their own. Present because the declaration is applied on a path of its own " +
+      "(`applyDeclaration`, not `parseSurface`), so it is the arm through which the feature " +
+      "designed to CREATE comparability puts new pairs into this region. Nothing about the " +
+      "verdict changes: they are still 499 dollars apart.",
+  },
+];

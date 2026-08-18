@@ -451,10 +451,20 @@ const NAME_ALLOWLIST: readonly {
     kind: "bypass",
     why: "the run-lock -pg harness (#5228), same whitelist reason as its `warehouse-producer-pg` sibling; its subject is whether two overlapping runs both write, and it drives the REAL producer to find out",
   },
+  {
+    file: "lib/brain/__tests__/rename-remint-pg.test.ts",
+    kind: "bypass",
+    why: "the rename -pg harness (#5316), same whitelist reason as its `warehouse-producer-pg` sibling; its subject is what a semantic-layer rename does to the entity store's ids, and it drives the REAL producer twice across a rename to find out",
+  },
+  {
+    file: "lib/brain/__tests__/warehouse-run-record-pg.test.ts",
+    kind: "bypass",
+    why: "the run-record -pg harness (#5317), same whitelist reason; its subject is whether a success row can outlive the transaction that wrote it, which needs the real producer on both a committing and a rolling-back run",
+  },
 ];
 
 /** Kinds are counted, not merely declared — see the test that pins this. */
-const EXPECTED_BY_KIND: Record<AllowlistKind, number> = { bypass: 5, annotation: 0 };
+const EXPECTED_BY_KIND: Record<AllowlistKind, number> = { bypass: 7, annotation: 0 };
 
 /**
  * The failure a reviewer actually reads when a new file names a guarded type.

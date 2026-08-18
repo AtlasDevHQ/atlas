@@ -156,11 +156,32 @@ export { MigrationStatusEnum };
  * together by nothing at all — it was coupled to the type by hand, and its own
  * docstring said so.
  *
- * ⚠️ `satisfies z.ZodType<VocabularyRefusalDetail>` HERE is strictly stronger
- * than that inference pin, because it cannot be defeated by an optional member:
- * a ninth field added to the type is a compile error on this line, whichever way
- * it is declared. That is the property the acceptance criterion asks for, and it
- * lives at the definition rather than at one of the consumers.
+ * ⚠️ THE `satisfies` ALONE IS NOT ENOUGH, and the first version of this docstring
+ * said it was — in precisely the way this whole consolidation exists to prevent.
+ * Measured with `tsgo`, not reasoned about:
+ *
+ *   - ninth field REQUIRED on the type, schema untouched  → RED (TS1360)
+ *   - ninth field OPTIONAL on the type, schema untouched  → **GREEN**
+ *   - ninth field on the SCHEMA only, either way          → **GREEN**
+ *
+ * `refusalKind?: string` is the normal, backward-compatible way to add a field
+ * here — older regions will not send it — and under the `satisfies` alone it
+ * compiles everywhere, after which the screen STRIPS it from every inbound
+ * payload. Once the source region's grace period closes, that stripped field is
+ * gone from the last surviving copy of a human review decision. A silent drop,
+ * with three docstrings telling the next maintainer the compiler had it covered.
+ *
+ * So the key-set pin below carries the property the acceptance criterion actually
+ * asks for. Re-measured with both pins in place — all four RED:
+ *
+ *   - ninth REQUIRED on the type    → 5 errors (satisfies, screen, route, key pin)
+ *   - ninth OPTIONAL on the type    → 1 error  — THE KEY PIN ALONE
+ *   - ninth REQUIRED on the schema  → 3 errors
+ *   - ninth OPTIONAL on the schema  → 1 error  — THE KEY PIN ALONE
+ *
+ * The `satisfies` stays, and is not redundant: key equality cannot see a field's
+ * TYPE changing or a dropped `.nullable()`, which is exactly what it does see.
+ * Two pins, two reaches, neither one sufficient.
  *
  * ⚠️ THIS PACKAGE IS THE ONLY LEGAL SHARED HOME for it. `lib/**` must not import
  * from `api/routes/**` (CLAUDE.md), so the screen cannot reach the route's
@@ -200,6 +221,32 @@ export const VocabularyRefusalDetailSchema = z.object({
   /** The refusal's human-readable reason, as the destination phrased it. */
   reason: z.string(),
 }) satisfies z.ZodType<VocabularyRefusalDetail>;
+
+/**
+ * Compile-time pin: the schema and the wire type declare the SAME KEYS.
+ *
+ * This is the half `satisfies` cannot do (see the measurements above). `keyof`
+ * enumerates optional members too, so `refusalKind?: string` added to either
+ * spelling alone lands in one of the two `Exclude`s and fails this line.
+ *
+ * ⚠️ The two directions are SEPARATE nested conditions, not a union. While the
+ * spellings agree both `Exclude`s are `never`, and a union of nevers trips
+ * `no-duplicate-type-constituents` + `no-redundant-type-constituents` in
+ * `lint:type-aware` — a CI-blocking gate. Nesting keeps the pin lint-clean and
+ * keeps each direction separately falsifiable. Same idiom, and same reason, as
+ * `_SchemaMatchesWireType` in `admin-migrate.ts`.
+ */
+type _RefusalDetailKeysMatch = [
+  Exclude<keyof z.infer<typeof VocabularyRefusalDetailSchema>, keyof VocabularyRefusalDetail>,
+] extends [never]
+  ? [
+      Exclude<keyof VocabularyRefusalDetail, keyof z.infer<typeof VocabularyRefusalDetailSchema>>,
+    ] extends [never]
+    ? true
+    : never
+  : never;
+const _refusalDetailKeysMatch: _RefusalDetailKeysMatch = true;
+void _refusalDetailKeysMatch;
 
 // ---------------------------------------------------------------------------
 // Composite response shapes

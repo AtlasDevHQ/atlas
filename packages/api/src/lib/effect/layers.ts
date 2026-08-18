@@ -1412,7 +1412,11 @@ export const ImplementationStatusOverrideLive: Layer.Layer<
         const result = await runImplementationStatusOverrideBoot();
         switch (result.kind) {
           case "skipped":
-            // Three skip reasons, two outcomes:
+            // Three skip reasons, THREE outcomes — and this line read "two
+            // outcomes" until #5305, while the switch below it has always
+            // fanned out to three. The Layer tests assert the three in as many
+            // words, so the stale count was the one thing a reader would trust
+            // over the code:
             //   - `no-internal-db` should be unreachable here (the Layer's
             //     `!db.available` gate above already caught it), but if a
             //     future refactor decouples the gate from the wrapper this

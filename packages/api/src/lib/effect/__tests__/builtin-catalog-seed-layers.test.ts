@@ -168,9 +168,12 @@ interface UpstreamGate {
 // `InternalDB` + `Migration` are rebuilt per call rather than shared. The reason
 // is legibility, NOT necessity — and the first version of this comment claimed
 // necessity, which is measurably false: hoisting the composed seed layer to module
-// scope and sharing it across every call leaves the suite at 29/29, because each
+// scope and sharing it across every call leaves the suite fully green, because each
 // `Effect.provide`/`runPromise` builds its own MemoMap and the `Layer.effect`
-// therefore re-runs anyway.
+// therefore re-runs anyway. (Measured at 29/29 when #5273 wrote this; the suite is
+// 41 tests since #5305 added the override driver. The pass COUNT is incidental to
+// the experiment, so it is no longer quoted here — a number that has to be revised
+// every time a test is added is a number that will eventually be wrong.)
 //
 // Per-call construction is kept because it makes each case's independence a
 // property of the code rather than of Effect's memo scoping — a reader should not

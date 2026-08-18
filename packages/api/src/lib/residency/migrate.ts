@@ -381,9 +381,14 @@ export interface ScreenedRefusalDetails {
  *     column.
  *
  * What it buys: a ninth field added to `VocabularyRefusalDetail` is a compile
- * error at the schema's `satisfies` (so it cannot be forgotten), and once added
- * there it is screened HERE with no edit at all — which is precisely the coupling
- * the two deleted predicate lists could not provide.
+ * error over in `@useatlas/schemas` (so it cannot be forgotten), and once added
+ * to the schema it is screened HERE with no edit at all — which is precisely the
+ * coupling the two deleted predicate lists could not provide.
+ *
+ * ⚠️ It is the KEY-SET pin that makes that true, not the `satisfies` — an earlier
+ * version of this sentence credited the `satisfies`, and measurement says an
+ * OPTIONAL ninth field passes it silently and is then stripped here. Both pins
+ * live beside the schema; the reasoning and the numbers are there.
  */
 export function screenRefusalDetails(raw: unknown): ScreenedRefusalDetails {
   if (raw === undefined || raw === null) return { details: [], malformed: 0 };

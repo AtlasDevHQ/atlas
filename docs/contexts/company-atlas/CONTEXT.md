@@ -3,7 +3,7 @@
 > **One of Atlas's bounded contexts.** The map is [CONTEXT-MAP.md](../../../CONTEXT-MAP.md);
 > system-wide decisions stay in [docs/adr/](../../adr/). Extracted from the root
 > [CONTEXT.md](../../../CONTEXT.md) on 2026-08-17 ([#5302](https://github.com/AtlasDevHQ/atlas/issues/5302)):
-> the prose below is that file's `## Company Atlas` section verbatim, and it is no longer there.
+> the prose below is that file's `## Company Atlas` section verbatim — only the relative links are repathed for the new depth — and it is no longer there.
 > Vocabulary rules for consumers: [docs/agents/domain.md](../../agents/domain.md).
 
 

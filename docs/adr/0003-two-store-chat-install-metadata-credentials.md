@@ -77,5 +77,5 @@ Rejected because:
 - `workspace_plugins` schema: `packages/api/src/lib/db/schema.ts`
 - `chat_cache` schema: `plugins/chat/src/state/pg-adapter.ts`
 - Credential consolidation onto `chat_cache`: PR #2634
-- Slack OAuth callback (current owner of install metadata writes): `packages/api/src/api/routes/slack.ts`
+- Slack OAuth callback (current owner of install metadata writes): packages/api/src/api/routes/slack.ts
 - See `CONTEXT.md` for canonical terminology (Workspace Connection, Adapter, Platform)

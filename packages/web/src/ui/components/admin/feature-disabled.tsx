@@ -246,7 +246,7 @@ export function FeatureGate({
     // Set DATABASE_URL" — on every 503, and it is the wrong place to say it.
     //
     // Not because no such 503 exists: `no_internal_db` from
-    // `ee/platform/residency.ts` and `ee/platform/domains.ts` maps to 503
+    // `ee/src/platform/residency.ts` and `ee/src/platform/domains.ts` maps to 503
     // (`shared-residency.ts`, `shared-domains.ts`), and `/platform/residency`
     // consumes one. But every one of those carries its own message
     // ("Internal database is required for data residency."), so `serverMessage`

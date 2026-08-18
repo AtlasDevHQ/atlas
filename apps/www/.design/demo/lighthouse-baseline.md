@@ -38,7 +38,7 @@ Closes the Lighthouse half of #1945. The `/demo` Bucket 6 design pass (#1942) sh
 
 ## CI Lighthouse budget — decision
 
-**Shipped in #2009.** The marketing-surface budget now lives at `lighthouserc.js` (repo root) and is enforced by `.github/workflows/lighthouse.yml`. The numbers in this doc seeded the day-1 thresholds for `/demo`. See `apps/docs/content/docs/contributing/ci.mdx` for the contributor-facing how-to (refreshing baselines, promoting `warn` to `error`).
+**Shipped in #2009.** The marketing-surface budget now lives at `lighthouserc.js` (repo root) and is enforced by `.github/workflows/lighthouse.yml`. The numbers in this doc seeded the day-1 thresholds for `/demo`. See `apps/docs/content/self-hosted/contributing/ci.mdx` for the contributor-facing how-to (refreshing baselines, promoting `warn` to `error`).
 
 The `/demo` active-state assertion is intentionally not yet covered — it requires the API + DB + LLM provider stack at audit time, which would expand the workflow well beyond what #2009 set out to build.
 

@@ -284,7 +284,7 @@ addition. Remaining action targets: **Jira, Linear, GitHub App, Salesforce** (se
 
 ## Docs-audit follow-up (2026-07-10)
 
-The 2026-07-10 `/docs-audit` (#4473, PR #4478) closed the Tier-4 `.env.example`
+The 2026-07-10 /docs-audit (#4473, PR #4478) closed the Tier-4 `.env.example`
 items and re-baselined the counts:
 
 - **`.env.example` now states its inclusion policy in its header**: every
@@ -328,7 +328,7 @@ items and re-baselined the counts:
 
 ## Guard-validated settings are immutable or re-guarded (#4462, 2026-07-22)
 
-The 2026-07-10 `/prod-audit` Part C found `RESEND_API_KEY` boot-validated by
+The 2026-07-10 /prod-audit Part C found `RESEND_API_KEY` boot-validated by
 `DpaGuardLive` (which resolves the *transport* through `resolveResendApiKey()` =
 registry override → env) yet freely mutable at runtime, so a platform admin
 could delete the override post-boot and silently flip the platform email

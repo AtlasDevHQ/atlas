@@ -5,7 +5,7 @@
  * mirror, which the host's registry-resolved profiler seam feeds into
  * `SemanticGenerator` without importing this package.
  *
- * Logic relocated from the CLI's former `packages/cli/lib/profilers/clickhouse.ts`
+ * Logic relocated from the CLI's former packages/cli/lib/profilers/clickhouse.ts
  * (now deleted, #3672) — this plugin package is the one home the registry
  * resolves and the CLI consumes directly via re-export.
  *

@@ -2,7 +2,7 @@
 --
 -- Defense-in-depth on multi-tenant attribution. The proactive listener's
 -- enabled-gate already short-circuits empty workspaceId at the application
--- layer (the #2620 follow-up — `packages/api/src/lib/proactive/enabled-gate.ts`
+-- layer (the #2620 follow-up — `ee/src/proactive/enabled-gate.ts`
 -- treats `""` as the registration probe and skips the SELECT entirely). A
 -- CHECK on the column locks the same invariant at the schema layer so a
 -- buggy upsert that drifts past the gate can never create a row that would

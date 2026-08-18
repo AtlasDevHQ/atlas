@@ -132,7 +132,7 @@ The maintainer's daily loop changes by exactly two steps: (1) wait ~5 min for st
 
 ### Configuration file
 
-- ~~New `deploy/api-staging/atlas.config.ts`, structurally identical to `deploy/api/atlas.config.ts`.~~ **Superseded ([#3958](https://github.com/AtlasDevHQ/atlas/issues/3958)):** the separate config was retired. `api-staging` builds from the **shared** `deploy/api/atlas.config.ts` (`RAILWAY_DOCKERFILE_PATH=deploy/api/Dockerfile`) and differs only by env vars — chiefly the `ATLAS_API_REGION=staging` + `ATLAS_DEPLOY_ENV=staging` discriminators and the staging OAuth/DB secrets. This maximizes soak fidelity (staging runs the byte-identical prod config) and makes config drift structurally impossible. The original drift concern (prod-only `/app/` assumptions) proved a non-issue: the prod config's `eu`/`apac` arms carry an **optional** `databaseUrl`, so they're harmlessly `undefined` on staging, and the login + signup funnels collapse to the lone `staging` home arm via `selectDeployRegionEntries` (`lib/residency/picker.ts`) so staging never advertises the prod arms.
+- ~~New deploy/api-staging/atlas.config.ts, structurally identical to `deploy/api/atlas.config.ts`.~~ **Superseded ([#3958](https://github.com/AtlasDevHQ/atlas/issues/3958)):** the separate config was retired. `api-staging` builds from the **shared** `deploy/api/atlas.config.ts` (`RAILWAY_DOCKERFILE_PATH=deploy/api/Dockerfile`) and differs only by env vars — chiefly the `ATLAS_API_REGION=staging` + `ATLAS_DEPLOY_ENV=staging` discriminators and the staging OAuth/DB secrets. This maximizes soak fidelity (staging runs the byte-identical prod config) and makes config drift structurally impossible. The original drift concern (prod-only `/app/` assumptions) proved a non-issue: the prod config's `eu`/`apac` arms carry an **optional** `databaseUrl`, so they're harmlessly `undefined` on staging, and the login + signup funnels collapse to the lone `staging` home arm via `selectDeployRegionEntries` (`lib/residency/picker.ts`) so staging never advertises the prod arms.
 
 ### Credentials hard wall
 
@@ -185,7 +185,7 @@ Module: `packages/api/src/lib/staging/__tests__/clamp.test.ts`. Cases:
 - `clampOutbound("staging", emailWithEmptyTo)` returns sink-targeted email (not crash)
 - `clampOutbound("staging", emailWithArrayTo)` rewrites an array `to` to a one-element `[sink]` array — one recipient (the sink), with the array shape preserved so `clampOutbound`'s `(T) => T` signature stays type-honest (collapsing to a bare string would make the runtime value diverge from the declared `string[]`)
 
-Prior art: `packages/api/src/lib/__tests__/cors-origin.test.ts` — pure-function allowlist tests.
+Prior art: `packages/api/src/api/__tests__/cors-origin.test.ts` — pure-function allowlist tests.
 
 ### `StagingSeed` — real-Postgres integration test
 
@@ -201,7 +201,7 @@ Prior art: `packages/api/src/lib/db/__tests__/migrate-pg.test.ts` — real-PG in
 
 ### `ResidencyResolver` staging arm — extend existing test
 
-Module: `packages/api/src/lib/db/__tests__/region-aware-connection.test.ts` (existing). Add case:
+Module: packages/api/src/lib/db/__tests__/region-aware-connection.test.ts (existing). Add case:
 
 - `resolveRegionDatabaseUrl("staging")` returns `null` (falls through to local DB)
 - A staging-keyed request is not mis-routed to a residency-mapped region
@@ -242,4 +242,4 @@ Prior art: the existing test file's pattern for asserting Tag behavior under var
 - **Solo-maintainer caveat.** The 5-min staging soak adds friction for the current "merge → prod in 5 min" cadence. The `/release` skill + muscle memory will absorb most of it within a week. Worst case, the maintainer treats staging soak as "background tab while I context-switch to the next PR."
 - **Customer trust posture.** Atlas is currently SaaS-launched in 3 regions but has no paying tenants at risk. Cutover does not require customer communication. Once paying tenants exist, future deploy-gate changes will need a comms plan; staging itself is invisible to customers.
 - **`feedback_no_staging_env.md` memory.** The user memory entry capturing "no staging env — infra runs against prod" gets updated post-implementation to "staging shipped (PR #XYZ), see docs/development/staging-environment.md." The lesson stays banked rather than being deleted.
-- **Provenance.** This design followed a 7-question `/grill-me` session on 2026-05-28. Decisions Q1–Q5 are captured here. Q6 (versioning) → ADR-0008 (pending). Q7 (roadmap restructure) → ADR-0009 (pending). Session handoff at `/tmp/handoff-ugF7Qr.md` covers all non-staging-PRD follow-up.
+- **Provenance.** This design followed a 7-question /grill-me session on 2026-05-28. Decisions Q1–Q5 are captured here. Q6 (versioning) → ADR-0008 (pending). Q7 (roadmap restructure) → ADR-0009 (pending). Session handoff at `/tmp/handoff-ugF7Qr.md` covers all non-staging-PRD follow-up.

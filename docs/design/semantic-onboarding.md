@@ -6,7 +6,7 @@
 
 Generating the semantic layer for a newly-added database is the main source of onboarding friction. Two distinct pains:
 
-1. **Generation is work, and the first artifact is shallow.** `atlas init` profiles the DB and writes a *mechanical* baseline (column names as descriptions, template query patterns). LLM enrichment exists but is an optional, CLI-only afterthought (`packages/cli/bin/enrich.ts`). The product literally tells you to drop to a terminal: `/admin/semantic`'s empty states say "Run `atlas init`", and the web wizard's generated output is mechanical. So "just works" doesn't — you get a blank-ish layer and a homework assignment.
+1. **Generation is work, and the first artifact is shallow.** `atlas init` profiles the DB and writes a *mechanical* baseline (column names as descriptions, template query patterns). LLM enrichment exists but is an optional, CLI-only afterthought (packages/cli/bin/enrich.ts). The product literally tells you to drop to a terminal: `/admin/semantic`'s empty states say "Run `atlas init`", and the web wizard's generated output is mechanical. So "just works" doesn't — you get a blank-ish layer and a homework assignment.
 
 2. **Once there's more than one database, you can't tell which is which.** The data model already scopes every entity to a **Connection group** (`semantic_entities` natural key `(org_id, entity_type, name, connection_group_id)`, #2340/#2412), but the **surface** doesn't make it legible: the file layout is flat, the YAML field is the misleadingly-named `connection:`, and the `/admin/semantic` view shows group only as a per-row *badge* on one flat list. "Good for one DB, hard to know which is for which."
 
@@ -18,7 +18,7 @@ A third, subtler pain ties them together: **there's no in-product road to genera
 |-----------|-------------|-----|
 | `atlas init` (CLI) | Profiles DB → mechanical YAML; optional `--enrich` LLM pass | Enrichment optional + CLI-only; mechanical by default |
 | `packages/api/src/api/routes/wizard.ts` | **Server-side** `profile → generate → preview → save`; wired to `/wizard` web UI | Mechanical only (no LLM); scopes by `connectionId`, **not group**; one-time onboarding gate |
-| `packages/cli/bin/enrich.ts` | LLM enrichment of descriptions / use_cases / query_patterns / glossary | CLI-only; not reachable from the API/web |
+| packages/cli/bin/enrich.ts | LLM enrichment of descriptions / use_cases / query_patterns / glossary | CLI-only; not reachable from the API/web |
 | `semantic/` file layout | Flat `entities/*.yml`; per-source subdir + `connection:` field both half-supported (`whitelist.ts`) | Flat = N DBs interleave indistinguishably on disk |
 | `/admin/semantic` view | File tree keyed on `(name, connectionGroupId)`, group shown as a **badge** | Badge on a flat list ≠ grouped; not legible at a glance |
 | `/admin/connections` | Add/manage SQL connections + connection groups | **No** path to generate a semantic layer for a new connection |
@@ -131,7 +131,7 @@ This is what makes the flow **DB-count-agnostic**: the 1st-DB-after-skip and the
 
 Today the generator runs in two places and enrichment in a third (CLI-only). Consolidate:
 
-- Move the mechanical generator + the enrichment logic out of `packages/cli/bin/enrich.ts` into shared **`packages/api/src/lib/semantic/…`** (respecting CLAUDE.md: `lib/` sits above `api/routes/`; `lib/` must not import from `api/routes/`).
+- Move the mechanical generator + the enrichment logic out of packages/cli/bin/enrich.ts into shared **`packages/api/src/lib/semantic/…`** (respecting CLAUDE.md: `lib/` sits above `api/routes/`; `lib/` must not import from `api/routes/`).
 - Both front-ends call the same engine: the `wizard.ts` routes (web) and `atlas init` / a new enrich surface (CLI). One behavior, two doors — no drift between "what the CLI produces" and "what the wizard produces."
 - *As implemented (#3234):* both front-ends write into the canonical group namespace via the shared `outputDirForGroup(group, orgId)` helper (`lib/profiler.ts`) — the default group flat at the root, a non-default group under `groups/<group>/`, exactly what the #3232 loader reads back. `atlas init --connection <c>` treats `<c>` as a group-of-one; the wizard `/generate` + `/save` routes resolve the connection's actual Connection group via `resolveGroupIdForConnection` (`lib/semantic/entities.ts`), so saved rows carry the right `connection_group_id` (DB-backed) and land in `groups/<group>/` (file-based) — replacing the old `connectionId` scoping. Adding a member to an already-populated group resolves to the same group and upserts the shared rows rather than duplicating them.
 

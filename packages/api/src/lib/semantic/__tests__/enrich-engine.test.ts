@@ -1,7 +1,7 @@
 /**
  * Shared LLM enrichment engine — direct coverage (issue #3233).
  *
- * Enrichment moved out of CLI-only `packages/cli/bin/enrich.ts` into the shared
+ * Enrichment moved out of CLI-only packages/cli/bin/enrich.ts into the shared
  * lib so it is callable from both the CLI and the API path. It had no tests
  * before the move; this file pins its behaviour with a mocked LLM and a real
  * temp-dir of seed YAML (the pass is file-based: read → merge → write).

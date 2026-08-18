@@ -1,5 +1,5 @@
 ---
-description: "Run the pre-PR gate — scripts/ci-local.sh, 38 gates, PASS/FAIL table. Mandatory before a PR. Iterate with test-isolated.ts --affected instead."
+description: "Run the pre-PR gate — scripts/ci-local.sh, 40 ci-local gates, PASS/FAIL table. Mandatory before a PR. Iterate with test-isolated.ts --affected instead."
 ---
 
 Run the same checks CI runs. This must pass before opening a PR.
@@ -97,7 +97,7 @@ pass); `CI_LOCAL_NO_NET=1` skips the two npm-registry gates for offline runs;
 It is a **superset of the historic /ci list** — it adds the drift gates real CI
 runs that the old /ci skipped (so you stop discovering them only after a push).
 The roster is `GATE_NAMES` in `scripts/ci-local.sh`, which is the authority; all
-38 of them, in run order:
+40 ci-local gates, in run order:
 `type`, `lint`, `lint-type-aware` (oxlint `--type-aware` via tsgolint — the
 promoted type-aware rules at `error`; permanent `warn` residuals don't fail it),
 `syncpack`, `dockerfile-bun-pins`, `dockerfile-workspace`,
@@ -108,13 +108,16 @@ promoted type-aware rules at `error`; permanent `warn` residuals don't fail it),
 `no-admin-plugin`, `streaming-cors`, `no-legacy-connections`,
 `brain-fact-promotion`, `test-discipline`, `settings-readers`, `saas-env-doc`,
 `brain-settings-doc`,
-`docs-links`, `docs-brain-snippets`, `auth-md-parity`, `apex-discovery-drift`,
+`docs-links`, `docs-brain-snippets`, `agent-doc-paths`, `web-brand-tokens`, `auth-md-parity`, `apex-discovery-drift`,
 `openapi-drift`, `published-symbols`, `unpublished-versions` (both net-gated),
 `gate-fixtures` (the adversarial `scripts/__tests__/*.test.sh` suites),
 `mutation-tables`, and the full `test` suite.
 
-38 is the **default-configuration** count: `CI_LOCAL_NO_NET=1` drops the two
-registry gates (36), `CI_LOCAL_NO_TEST=1` drops `test` (37), both drop to 35.
+40 is the **default-configuration** count: `CI_LOCAL_NO_NET=1` drops the two
+registry gates (38), `CI_LOCAL_NO_TEST=1` drops `test` (39), both drop to 37.
+The figure is no longer hand-maintained: `check-agent-doc-paths.sh` derives it from
+the `launch`/`run_fg` lines in `scripts/ci-local.sh` and fails on any doc that
+restates it wrongly.
 
 It does **not** run the GitHub-only required checks (Deploy Validation,
 `Image Scan`, `Analyze (javascript-typescript)` / CodeQL, `ee-stub-build`) or

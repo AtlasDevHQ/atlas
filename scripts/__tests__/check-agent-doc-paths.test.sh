@@ -1,0 +1,329 @@
+#!/usr/bin/env bash
+# Adversarial fixtures for scripts/check-agent-doc-paths.sh (#5299).
+#
+# ⚠️ "There is a test" is not the bar — *this mutant turns it red* is
+# (docs/agents/practices.md). Every mutation below was APPLIED and OBSERVED, then
+# reverted, on 2026-08-17:
+#
+#   mutation                                          →  observed
+#   ────────────────────────────────────────────────     ────────────────────────
+#   a real doc gains `packages/api/src/lib/semantic.ts`  gate exit 1, names
+#     (the audit's own finding, re-introduced)             practices.md:99
+#   report() pipes the matched line through cut -c1-140  case 6 FAIL (exit 1, but
+#     (exactly what the hand check did)                    the tail is gone)
+#   the route scan stops stripping comment lines         case 10 FAIL — exit 0, a
+#                                                          deleted command blessed
+#   the top-level-dir filter is dropped                  `lib/tools/sql.ts` and
+#                                                          `db/connection.ts` both
+#                                                          reported (case 4's class)
+#   the suffix resolver is removed                       case 5 FAIL (exit 1 on a
+#                                                          correct abbreviation)
+#
+# Case 1 pins the real repo. Everything else builds a throwaway git tree,
+# because the interesting answers are ones the real repo cannot produce.
+#
+# `set -uo pipefail`, no `-e`: a failing case must not abort the tally.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+GATE="$SCRIPT_DIR/check-agent-doc-paths.sh"
+
+[ -f "$GATE" ] || { echo "::error::gate under test not found at $GATE" >&2; exit 2; }
+
+TMPROOT="$(mktemp -d)"
+trap 'rm -rf "$TMPROOT"' EXIT
+trap 'rm -rf "$TMPROOT"; exit 130' INT
+trap 'rm -rf "$TMPROOT"; exit 143' TERM
+
+PASS=0
+FAIL=0
+pass() { echo "  ok   $1"; PASS=$((PASS + 1)); }
+fail() { echo "  FAIL $1" >&2; FAIL=$((FAIL + 1)); }
+
+CASE_N=0
+TREE=""
+
+# A minimal but REAL tree: the gate reads the tracked file set through git, and
+# its count derivations read four specific sets. Every case starts from this and
+# then adds the one thing it is about.
+new_tree() {
+  CASE_N=$((CASE_N + 1))
+  TREE="$TMPROOT/case$CASE_N"
+  mkdir -p "$TREE"/{docs/adr,docs/agents,packages/api/src/lib/plugins,plugins/chat/src/adapters,.claude/commands,.claude/research,scripts}
+  echo "# adr" > "$TREE/docs/adr/0001-first.md"
+  echo "# release runbook" > "$TREE/.claude/commands/release.md"
+  echo "export const secrets = 1;" > "$TREE/packages/api/src/lib/plugins/secrets.ts"
+  echo "export const slack = 1;" > "$TREE/plugins/chat/src/adapters/slack.ts"
+  echo 'app.get("/health", ok);' > "$TREE/scripts/server.ts"
+  {
+    echo "| Context | Governed by | Notes |"
+    echo "| --- | --- | --- |"
+    echo '| Only | `CONTEXT.md` § Only | one row |'
+  } > "$TREE/CONTEXT-MAP.md"
+  : > "$TREE/ALLOW.txt"
+  ( cd "$TREE" && git init -q . && git add -A ) >/dev/null 2>&1
+}
+
+# Re-stage after writing a doc, so `git ls-files` and `git grep` can see it.
+stage() { ( cd "$TREE" && git add -A ) >/dev/null 2>&1; }
+
+run_gate() { # -> sets RC and OUT
+  RC=0
+  OUT=$(AGENT_DOC_PATHS_ROOT="$TREE" AGENT_DOC_PATHS_ALLOWLIST="$TREE/ALLOW.txt" bash "$GATE" 2>&1) || RC=$?
+}
+
+echo "check-agent-doc-paths.test.sh — adversarial fixtures (#5299)"
+
+# 1. THE REAL REPO — the assertion that matters in practice. The acceptance
+# criterion is that main is clean, so a violation landing later fails here too.
+rc_real=0
+out_real=$(bash "$GATE" 2>&1) || rc_real=$?
+if [ "$rc_real" = "0" ]; then
+  pass "the real repo names no missing path, command or registered count"
+else
+  fail "the real repo — expected exit 0, got $rc_real"
+  printf '%s\n' "$out_real" | sed 's/^/       | /' >&2
+fi
+
+# 2. POSITIVE CONTROL on a synthetic tree, so case 3's red is not the only signal.
+new_tree
+echo 'See `plugins/chat/src/adapters/slack.ts` for the adapter.' > "$TREE/docs/agents/x.md"
+stage; run_gate
+if [ "$RC" = "0" ]; then
+  pass "a doc citing a path that EXISTS passes"
+else
+  fail "existing-path doc — expected exit 0, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 3. THE DEFECT this gate was filed for: a doc citing a path that is gone.
+# Mutation: delete the file the doc names → this case turns red.
+new_tree
+echo 'See `packages/api/src/lib/semantic.ts` for the module map.' > "$TREE/docs/agents/x.md"
+stage; run_gate
+if [ "$RC" = "1" ] && printf '%s' "$OUT" | grep -qF "docs/agents/x.md" \
+   && printf '%s' "$OUT" | grep -qF "packages/api/src/lib/semantic.ts"; then
+  pass "a doc citing a DELETED repo-rooted path is caught and named (exit $RC)"
+else
+  fail "deleted-path doc — expected exit 1 naming the file and the path, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 4. ⚠️ THE FALSE-POSITIVE CASE, and the whole reason the naive version was
+# unusable: docs abbreviate. `lib/tools/sql.ts` is NOT repo-rooted, so it is
+# never a candidate. A regression that drops the top-level-dir filter turns this
+# red — which is the point of asserting it rather than trusting it.
+new_tree
+echo 'The validator lives in `lib/tools/sql.ts`, called from `db/connection.ts`.' > "$TREE/docs/agents/x.md"
+stage; run_gate
+if [ "$RC" = "0" ]; then
+  pass "an ABBREVIATED (non-repo-rooted) reference produces no finding"
+else
+  fail "abbreviated reference — expected exit 0, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 5. …and the harder half of the same class, which the repo-rooted rule alone
+# gets WRONG: `plugins/` and `scripts/` are top-level directories AND common
+# sub-directory names, so `plugins/secrets.ts` is a repo-rooted-looking
+# abbreviation of packages/api/src/lib/plugins/secrets.ts. Measured on the real
+# repo: 77 of 230 findings were this shape.
+new_tree
+echo 'Credentials are sealed in `plugins/secrets.ts`.' > "$TREE/docs/agents/x.md"
+stage; run_gate
+if [ "$RC" = "0" ]; then
+  pass "a repo-rooted-LOOKING abbreviation that suffix-matches a real file passes"
+else
+  fail "suffix abbreviation — expected exit 0, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 6. ⚠️ NEVER TRUNCATE. The hand check that missed six live references piped
+# through `cut -c1-140`: it MATCHED the lines and then declared the visible
+# prefix a false positive. Mutation: pipe report()'s output through
+# `cut -c1-140` → this case turns red.
+new_tree
+{
+  printf 'A line whose interesting content sits a long way to the right. '
+  printf 'Padding. %.0s' $(seq 1 20)
+  printf 'The mover is `packages/api/src/lib/gone.ts`, deleted last week.\n'
+} > "$TREE/docs/agents/x.md"
+stage; run_gate
+col=$(awk '{print index($0, "gone.ts")}' "$TREE/docs/agents/x.md")
+if [ "$RC" = "1" ] && printf '%s' "$OUT" | grep -qF "deleted last week." && [ "$col" -gt 140 ]; then
+  pass "a finding past column $col prints the COMPLETE line (never truncated)"
+else
+  fail "long-line finding — expected exit 1 and the line's tail in the output (match at col $col), got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 7. A GITIGNORED path is absent BECAUSE THAT IS THE RULE BEING STATED —
+# CLAUDE.md's "never edit create-atlas/templates/nextjs-standalone/src/".
+new_tree
+echo "packages/api/generated/" > "$TREE/.gitignore"
+echo 'Never edit `packages/api/generated/` — it is regenerated at build time.' > "$TREE/docs/agents/x.md"
+stage; run_gate
+if [ "$RC" = "0" ]; then
+  pass "a gitignored path is not a finding (the rule that names it stays true)"
+else
+  fail "gitignored path — expected exit 0, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 8. THE SECOND CLASS: a reference to a DELETED COMMAND. Five of the six live
+# references the audit found were this, and a path-only check misses all five.
+new_tree
+echo 'Then `/pr` to open the PR, and `/reset` afterwards.' > "$TREE/docs/agents/x.md"
+stage; run_gate
+if [ "$RC" = "1" ] && printf '%s' "$OUT" | grep -qF '/pr' && printf '%s' "$OUT" | grep -qF '/reset'; then
+  pass "references to deleted COMMANDS are caught (exit $RC)"
+else
+  fail "deleted commands — expected exit 1 naming /pr and /reset, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 9. A LIVE command, and a route that exists in source, are both fine.
+new_tree
+echo 'Run `/release` when green; the API answers `/health`.' > "$TREE/docs/agents/x.md"
+stage; run_gate
+if [ "$RC" = "0" ]; then
+  pass "a live command and a real route both resolve"
+else
+  fail "live command + route — expected exit 0, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 10. ⚠️ A MARKDOWN BACKTICK IN A CODE COMMENT IS NOT A ROUTE. This is the gate's
+# own near-miss: the first cut resolved `/review-panel` — a deleted command —
+# because a TS comment in a test file mentioned it in backticks, and the route
+# scan read comments. Mutation: drop the comment-stripping grep → this goes green
+# and the deleted command is silently blessed.
+new_tree
+printf '// see the `/pr` flow for context\nexport const x = 1;\n' > "$TREE/packages/api/src/lib/note.ts"
+echo 'Then `/pr` to open the PR.' > "$TREE/docs/agents/x.md"
+stage; run_gate
+if [ "$RC" = "1" ] && printf '%s' "$OUT" | grep -qF '/pr'; then
+  pass "a backticked mention inside a CODE COMMENT does not resolve a command"
+else
+  fail "comment mention — expected exit 1 for /pr, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 11. THE CONVENTION the failure message teaches: a historical reference written
+# WITHOUT backticks is not a live claim, and is not flagged.
+new_tree
+echo 'The old packages/api/src/lib/semantic.ts module map is gone; /pr was deleted too.' > "$TREE/docs/agents/x.md"
+stage; run_gate
+if [ "$RC" = "0" ]; then
+  pass "a historical reference without backticks is not a finding"
+else
+  fail "un-backticked historical reference — expected exit 0, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 12. THE ARCHIVES are excluded by scan-set decision: `.claude/research/**` is
+# the record, where a reference to a since-deleted path is CORRECT.
+new_tree
+echo 'The audit found `packages/api/src/lib/semantic.ts` had moved.' > "$TREE/.claude/research/audit.md"
+stage; run_gate
+if [ "$RC" = "0" ]; then
+  pass "the .claude/research archive is not scanned"
+else
+  fail "archive exclusion — expected exit 0, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 13. COUNTS. "eight operational runbooks" against one command file on disk.
+new_tree
+echo 'There are eight operational runbooks in .claude/commands/.' > "$TREE/docs/agents/x.md"
+stage; run_gate
+if [ "$RC" = "1" ] && printf '%s' "$OUT" | grep -qF "eight operational runbooks"; then
+  pass "a registered COUNT phrase with the wrong number is caught (exit $RC)"
+else
+  fail "wrong count — expected exit 1, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 13b. …and the right number passes, so case 13 is not red for some other reason.
+new_tree
+echo 'There is one operational runbooks entry.' > "$TREE/docs/agents/x.md"
+stage; run_gate
+if [ "$RC" = "0" ]; then
+  pass "the same phrase with the DERIVED number passes"
+else
+  fail "correct count — expected exit 0, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 14. THE ALLOWLIST exempts, but only where it says and only with a reason.
+new_tree
+echo 'The fixture builds `packages/foo` and `packages/bar`.' > "$TREE/docs/agents/x.md"
+echo 'path docs/agents/x.md packages/foo   # synthetic fixture path' > "$TREE/ALLOW.txt"
+stage; run_gate
+if [ "$RC" = "1" ] && printf '%s' "$OUT" | grep -qF "packages/bar" \
+   && ! printf '%s' "$OUT" | grep -qF 'names `packages/foo`'; then
+  pass "an allowlisted path is exempt and its neighbour still fails"
+else
+  fail "allowlist exemption — expected exit 1 naming only packages/bar, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 14b. AN ENTRY WITH NO REASON IS A HARD ERROR, not a silent exemption — the
+# reason is the only thing keeping the allowlist from becoming a findings dump.
+new_tree
+echo 'The fixture builds `packages/foo`.' > "$TREE/docs/agents/x.md"
+echo 'path docs/agents/x.md packages/foo' > "$TREE/ALLOW.txt"
+stage; run_gate
+if [ "$RC" = "2" ] && printf '%s' "$OUT" | grep -qF "no reason"; then
+  pass "an allowlist entry with no reason fails the gate (exit 2)"
+else
+  fail "reasonless allowlist entry — expected exit 2, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 14c. …and the file-glob is scoped: the same token elsewhere is still a finding.
+new_tree
+echo 'The fixture builds `packages/foo`.' > "$TREE/docs/agents/other.md"
+echo 'path docs/agents/x.md packages/foo   # only x.md may say this' > "$TREE/ALLOW.txt"
+stage; run_gate
+if [ "$RC" = "1" ] && printf '%s' "$OUT" | grep -qF "docs/agents/other.md"; then
+  pass "an allowlist entry scoped to one file does not exempt another"
+else
+  fail "allowlist scoping — expected exit 1 naming other.md, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 15. ⚠️ VACUITY. A gate whose product is a NEGATIVE must not report it after
+# reading nothing. An empty tree exits 2, not 0.
+CASE_N=$((CASE_N + 1))
+TREE="$TMPROOT/case$CASE_N"
+mkdir -p "$TREE"
+( cd "$TREE" && git init -q . ) >/dev/null 2>&1
+: > "$TMPROOT/empty-allow.txt"
+RC=0
+OUT=$(AGENT_DOC_PATHS_ROOT="$TREE" AGENT_DOC_PATHS_ALLOWLIST="$TMPROOT/empty-allow.txt" bash "$GATE" 2>&1) || RC=$?
+if [ "$RC" = "2" ]; then
+  pass "an empty tree exits 2 (verified nothing), never 0"
+else
+  fail "vacuity floor — expected exit 2 on an empty tree, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 16. NOT A GIT WORK TREE — the gate reads the file set through git, so it must
+# say it cannot look rather than pass.
+CASE_N=$((CASE_N + 1))
+TREE="$TMPROOT/case$CASE_N"
+mkdir -p "$TREE"
+RC=0
+OUT=$(AGENT_DOC_PATHS_ROOT="$TREE" AGENT_DOC_PATHS_ALLOWLIST="$TMPROOT/empty-allow.txt" bash "$GATE" 2>&1) || RC=$?
+if [ "$RC" = "2" ]; then
+  pass "a non-git directory exits 2"
+else
+  fail "non-git root — expected exit 2, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+echo ""
+echo "check-agent-doc-paths.test.sh: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ] || exit 1

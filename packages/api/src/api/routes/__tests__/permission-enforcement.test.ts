@@ -21,7 +21,7 @@
  *    proceeds normally (positive path).
  *
  * The intent here is wire correctness, not the resolution logic in
- * `resolvePermissions` — that is exercised by `ee/__tests__/roles.test.ts`.
+ * `resolvePermissions` — that is exercised by `ee/src/auth/roles.test.ts`.
  */
 
 import { PERMISSIONS as REAL_PERMISSIONS, isValidPermission as realIsValidPermission } from "@atlas/api/lib/auth/permissions";

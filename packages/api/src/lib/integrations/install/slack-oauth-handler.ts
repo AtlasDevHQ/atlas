@@ -3,7 +3,7 @@
  *
  * Implements {@link OAuthPlatformInstallHandler} for Slack. The actual
  * `oauth.v2.access` exchange + per-tenant `chat_cache:slack:installation:<teamId>`
- * write are lifted from the legacy `packages/api/src/api/routes/slack.ts`
+ * write are lifted from the legacy packages/api/src/api/routes/slack.ts
  * handlers (deleted in the same PR). The CSRF state token now flows
  * through the slice 4 `mintOAuthStateToken` / `verifyOAuthStateToken`
  * pair instead of the legacy DB-backed `oauth_state` table.

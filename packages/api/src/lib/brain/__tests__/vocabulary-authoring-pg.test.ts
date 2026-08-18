@@ -25,9 +25,9 @@
  *
  * ## What #5027 cost, and what this suite does about it
  *
- * #5027 took four `/review-panel` rounds because rounds 1 and 2 shipped fixes
+ * #5027 took four /review-panel rounds because rounds 1 and 2 shipped fixes
  * with no falsifiers, so each round's defect survived into the next — recorded
- * as `/review-panel` Step 6 in #5065. Each assertion below therefore states the
+ * as /review-panel Step 6 in #5065. Each assertion below therefore states the
  * DEFECT it would catch, not merely the behaviour it observes.
  *
  * Opt in locally with the same scratch database as its sibling brain suites:

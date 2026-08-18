@@ -41,7 +41,7 @@
 --
 -- **Historical `@useatlas/slack` plugin notice.** That plugin (replaced
 -- by `@useatlas/chat`) used to read/write `slack_installations` directly
--- via `plugins/slack/src/store.ts`. It was retired from the monorepo in
+-- via plugins/slack/src/store.ts. It was retired from the monorepo in
 -- #2683; the npm-published `@useatlas/slack@0.0.5` remains in the
 -- registry but is unmaintained. The `@useatlas/chat` adapter is the
 -- single active path for Slack installs going forward.

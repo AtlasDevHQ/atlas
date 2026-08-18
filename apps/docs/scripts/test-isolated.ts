@@ -37,7 +37,7 @@ let filter: string | undefined;
 // `--affected` printed `Running 9 test files` and a green summary — a FULL run
 // reported as an affected run. That matters more here than the usual CLI nit:
 // this runner deliberately omits `--affected`/`--shard` (they are the api
-// runner's), while CLAUDE.md and `/ship-issue` — edited in this same PR — train
+// runner's), while CLAUDE.md and /ship-issue — edited in this same PR — train
 // every agent to type `bun run scripts/test-isolated.ts --affected`. Silence is
 // the one response that produces a wrong pre-flight with no signal.
 //

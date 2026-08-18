@@ -6,7 +6,7 @@
  * descriptions, query patterns, and derived metrics to the mechanical YAML
  * produced by the shared generator (../generate).
  *
- * Relocated from CLI-only `packages/cli/bin/enrich.ts` (issue #3233) so it lives
+ * Relocated from CLI-only packages/cli/bin/enrich.ts (issue #3233) so it lives
  * in the shared engine and is callable from BOTH the CLI (`atlas init --enrich`)
  * and the API path with the same signature. Behaviour is unchanged: this is a
  * file-based pass that reads/merges/writes the YAML under `semanticDir`.

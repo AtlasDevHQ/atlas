@@ -1155,7 +1155,7 @@ export default defineConfig({
       // (lib/effect/saas-guards.ts) fail-closes boot if the claimed region is
       // absent from this map — so deleting this entry crash-loops api-staging
       // ("Layer DAG could not initialize"). Staging has NO separate config: the
-      // once-half-built `deploy/api-staging/atlas.config.ts` was retired (#3958)
+      // once-half-built deploy/api-staging/atlas.config.ts was retired (#3958)
       // in favour of this shared-config-+-env-vars model (max soak fidelity), so
       // this arm is the ONLY declaration of staging's region identity. (Deleting
       // it already caused an outage once: #3948 → PR #3951 → the staging crash

@@ -10,7 +10,7 @@
  * returns an enumeration-safe synthetic 200 carrying a generated, never-persisted
  * `user.id` (shaped like a real signup) — that path is handled separately by the
  * provisioner's `userExists` check, NOT here. Before this recognizer, the MCP
- * `start_trial` provisioner (`ee/onboarding/provision-trial.ts`) caught the throw,
+ * `start_trial` provisioner (`ee/src/onboarding/provision-trial.ts`) caught the throw,
  * found it wasn't a business-email / plus-addressing deny, and rethrew it raw — so
  * a second `start_trial` on a registered email surfaced as the generic
  * `internal_error` ("Trial provisioning failed unexpectedly. Please retry.")

@@ -9,8 +9,11 @@ Production deployment configs for AtlasDevHQ's Railway project (`satisfied-creat
 | API | `api.useatlas.dev` | `deploy/api/` | Hono standalone server + nsjail sandbox |
 | Web | `app.useatlas.dev` | `deploy/web/` | Next.js query UI + admin console |
 | WWW | `useatlas.dev` | `deploy/www/` | Static landing page (Nixpacks, serves `apps/www/out/`) |
-| Sidecar | (internal) | `deploy/sidecar/` | Explore isolation container (no public domain) |
 | Postgres | (internal) | — | Railway-managed database |
+
+> The **Sidecar** service (Explore isolation container, formerly deploy/sidecar/) was
+> dropped in [#2387](https://github.com/AtlasDevHQ/atlas/issues/2387) — Vercel Sandbox is the
+> sole SaaS sandbox backend. The diagram below still shows it; it is not deployed.
 
 ## Architecture
 

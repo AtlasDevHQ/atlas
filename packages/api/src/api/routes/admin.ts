@@ -1045,7 +1045,7 @@ const getSemanticDiffRoute = createRoute({
 // are deprecated. The admin UI no longer calls them; the unified
 // `/semantic/entities[/{name}]` pair feeds both list and detail from the
 // same DB-overlay-aware source. Kept for backward compatibility with
-// external integrations documented in `docs/guides/multi-tenancy.mdx`.
+// external integrations documented in `apps/docs/content/shared/guides/multi-tenancy.mdx`.
 // The PUT / DELETE / import write paths below remain the canonical
 // mutation surface — they have no equivalent on the unified read routes.
 

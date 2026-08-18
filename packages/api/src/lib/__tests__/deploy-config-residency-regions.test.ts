@@ -34,7 +34,7 @@
  *       selectable).
  *
  * There is no separate staging config to pin: the half-built
- * `deploy/api-staging/atlas.config.ts` was retired in #3958 in favour of the
+ * deploy/api-staging/atlas.config.ts was retired in #3958 in favour of the
  * shared-config-+-env-vars model — api-staging builds from THIS file and claims
  * `ATLAS_API_REGION=staging`, so the one `staging` arm here is its sole region
  * declaration. The api-eu / api-apac Railway services likewise reuse

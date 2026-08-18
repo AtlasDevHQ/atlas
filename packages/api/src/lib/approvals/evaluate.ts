@@ -2,7 +2,7 @@
  * Origin-scoping match predicate for approval rules (#2072; "surface"
  * renamed to "origin" in ADR-0015).
  *
- * The DB-side filter in `ee/governance/approval.ts` uses
+ * The DB-side filter in `ee/src/governance/approval.ts` uses
  *   WHERE org_id = $1 AND enabled = true AND (origin = 'any' OR origin = $2)
  * with `$2` set to the request's origin (or NULL when unknown). This file
  * exists so the same matching contract lives in code we can unit-test

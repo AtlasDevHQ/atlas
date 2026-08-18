@@ -24,7 +24,7 @@ import {
 } from "./hosted.js";
 
 // Re-exported so downstream packages (the canonical MCP eval in
-// `packages/mcp/src/__tests__/canonical-mcp-auth.ts`) can drive the
+// packages/mcp/src/__tests__/canonical-mcp-auth.ts) can drive the
 // real OAuth 2.1 loopback flow against an in-process server. The flow's
 // implementation lives in `./hosted.ts` but we keep the import surface
 // flat so a single `import { runHostedAuthFlow, ... } from

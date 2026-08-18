@@ -71,7 +71,7 @@ plaintext-drop PR:
 2. **One last idempotent backfill per region** (only on regions that
    were created before F-41 shipped — newer regions will be 0-row).
    Pre-#1832 the integration-credential backfill script lived at
-   `packages/api/src/lib/db/backfill-integration-credentials.ts`; it
+   packages/api/src/lib/db/backfill-integration-credentials.ts; it
    was deleted alongside the plaintext columns.
 
 3. **Cross-check directly:** for each region, expect zero rows from

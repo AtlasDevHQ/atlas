@@ -1,0 +1,89 @@
+# Allowlist for scripts/check-agent-doc-paths.sh (#5299).
+#
+# Format — three whitespace-separated fields, then a REQUIRED `# reason`:
+#
+#   <kind>  <citing-file-glob|*>  <token>   # why this is not a defect
+#
+#   kind    `path` or `command`
+#   glob    the file allowed to say it, or `*` for anywhere. Prefer the narrow
+#           form: `packages/foo` is legitimate in the railway-watch fixtures and
+#           nowhere else, and a global entry would exempt a real one elsewhere.
+#
+# ⚠️ An entry with no reason is a hard failure, not a warning. The reason is the
+# only thing standing between this file and a place to put findings. What
+# belongs here is a reference that is CORRECT and unresolvable — a synthetic
+# example, an external system's path, a file the reader is told to create. A
+# reference that is simply STALE does not belong here; fix it. A reference to
+# something that was deleted does not belong here either; the convention is to
+# drop its backticks so it no longer reads as a live path.
+
+# ── synthetic trees: guards and fixtures that scaffold a fake repo ───────────
+path  scripts/check-railway-watch.sh            packages/foo          # illustrative path in this gate's own failure message
+path  scripts/__tests__/check-railway-watch.test.sh  packages/app     # scaffolded fixture tree, not this repo
+path  scripts/__tests__/check-railway-watch.test.sh  packages/lib     # scaffolded fixture tree, not this repo
+path  scripts/__tests__/check-railway-watch.test.sh  packages/lib/dist  # scaffolded fixture tree, not this repo
+path  scripts/__tests__/check-railway-watch.test.sh  packages/data    # scaffolded fixture tree, not this repo
+path  scripts/__tests__/check-railway-watch.test.sh  packages/data/data  # scaffolded fixture tree, not this repo
+path  scripts/__tests__/check-railway-watch.test.sh  packages/data/data/seed.sql  # scaffolded fixture tree, not this repo
+path  scripts/check-brain-fact-promotion.sh     plugins/anything/src/api/routes/admin-migrate.ts  # illustrative "any plugin could" path in this gate's docs
+path  packages/api/scripts/affected.ts          packages/types/src/foo.ts  # worked example in the affected-test derivation doc
+path  packages/api/scripts/affected.ts          packages/api/packages/api/src  # the double-prefix bug this code guards against, quoted deliberately
+path  packages/api/src/__tests__/test-isolated-affected.test.ts  packages/api/packages/api/src  # same double-prefix bug, asserted here
+path  packages/api/src/lib/brain/__tests__/warehouse-producer-bypass.test.ts  packages/x/y  # placeholder path in a test's own fixture data
+
+# ── generated at runtime: absent from a checkout by construction ─────────────
+path  packages/api/src/__tests__/semantic-root-sandbox.test.ts  packages/api/semantic  # the semantic root this test creates and tears down
+path  packages/api/src/__tests__/semantic-root-sandbox.test.ts  packages/api/semantic/.orgs  # ditto, created by the run
+path  packages/api/src/test-setup.ts            packages/api/semantic  # created by the test run, never committed
+
+# ── the reader's file, not ours ──────────────────────────────────────────────
+path  apps/docs/content/docs/guides/mcp.mdx     .vscode/mcp.json      # the file the READER creates in their own editor config
+path  apps/docs/content/shared/plugins/authoring-guide.mdx  plugins/my-datasource  # the plugin the reader is being walked through creating
+path  docs/guides/plugin-authoring-guide.md     plugins/my-datasource  # same walkthrough, internal copy
+path  create-atlas/index.ts                     docs/deploy.md        # emitted into the SCAFFOLDED project's README; a path in their tree
+path  packages/okf-bundle/src/types.ts          docs/ops/log-doc.md   # example value for a customer's own knowledge-source path
+path  packages/api/src/lib/knowledge/connectors.ts  docs/runbooks/oncall.md  # example value for a customer's own knowledge-source path
+path  packages/okf-bundle/README.md             plugins/index.mdx     # a docs-site virtual path in the OKF slug-folding rule, not a repo file
+path  packages/okf-bundle/src/paths.ts          plugins/index.mdx     # ditto — the fold rule is stated in docs-site URL terms
+
+# ── git branch names, which share a prefix with real directories ─────────────
+path  CONTRIBUTING.md                           docs/update-deploy-guide  # a BRANCH-NAME example (docs/…), not a path
+path  docs/adr/0008-versioning-and-release-tags.md  docs/www-off-release-pipeline  # the branch that carried the amendment
+path  docs/prd/staging-environment.md           docs/www-off-release-pipeline  # same branch name
+
+# ── vendored upstream skill: we do not author it and cannot fix it ───────────
+path  .claude/skills/impeccable/*               public/css            # upstream skill, describing a USER's project layout
+path  .claude/skills/impeccable/*               public/docs           # upstream skill, describing a USER's project layout
+path  .claude/skills/impeccable/*               public/foo/index.html  # upstream skill's own worked example
+path  .claude/skills/impeccable/*               scripts/build-sub-pages.js  # upstream skill's own worked example
+
+# ── commands that are real, but not Atlas commands ───────────────────────────
+# Upstream plugin skills (`claude plugin install mattpocock-skills`). A fresh
+# checkout carries none of them, so they cannot be resolved from this tree —
+# CLAUDE.md's "Agent skills" section is where they are documented.
+command  *  /to-spec                    # mattpocock-skills plugin skill
+command  *  /to-tickets                 # mattpocock-skills plugin skill
+command  *  /triage                     # mattpocock-skills plugin skill
+command  *  /tdd                        # mattpocock-skills plugin skill
+command  *  /wayfinder                  # mattpocock-skills plugin skill
+command  *  /grill-with-docs            # mattpocock-skills plugin skill
+command  *  /domain-modeling            # mattpocock-skills plugin skill
+command  *  /improve-codebase-architecture  # mattpocock-skills plugin skill
+command  *  /setup-matt-pocock-skills   # regenerates this repo's tracker/label/domain conventions from upstream
+command  *  /impeccable-asset-producer  # subagent of the installed impeccable skill
+command  *  /impeccable-finish-reviewer  # subagent of the installed impeccable skill
+# External platforms' own slash commands, typed into THEIR clients.
+command  apps/docs/content/*  /newbot          # Telegram BotFather command
+command  apps/docs/content/*  /setcommands     # Telegram BotFather command
+command  apps/docs/content/*  /setdescription  # Telegram BotFather command
+command  apps/docs/content/*  /setabouttext    # Telegram BotFather command
+command  apps/docs/content/*  /setprivacy      # Telegram BotFather command
+command  apps/docs/content/*  /setuserpic      # Telegram BotFather command
+command  apps/docs/content/*  /ask             # the bot command a Discord admin registers, named as an example
+command  apps/docs/content/*  /commands        # Slack's own app-config path (api.slack.com), not an Atlas route
+command  apps/docs/content/*  /interactions    # Slack's own app-config path (api.slack.com), not an Atlas route
+command  docs/prd/multi-adapter-saas-readiness.md  /interactions  # the retired Slack sub-route, named in the PRD that retired it
+command  packages/api/src/lib/integrations/install/linear-oauth-handler.ts  /viewer  # Linear's GraphQL viewer query, not an Atlas route
+command  CLAUDE.md  /command-name       # the placeholder in the "when the user types /<skill-name>" convention
+command  docs/agents/*  /command-name   # same placeholder
+command  .claude/skills/impeccable/*  /command-name  # upstream skill placeholder in its own worked examples

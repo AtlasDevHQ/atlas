@@ -61,7 +61,7 @@ RLS claim values escape `'` (`replace(/'/g, "''")`) but never `\`. On MySQL (def
 Policy relevance is computed from `parser.tableList`, but injection only filters tables found in the FROM/JOIN alias-map walk. If a matched table is referenced in a construct the walk models differently, `if (!alias) continue;` silently drops the filter — the query runs with no RLS condition for that table. There is no post-injection assertion that every matched filter was applied.
 **Fix:** After injection, assert every resolved filter group was applied; reject (fail-closed) if any was skipped.
 
-**M-4 — `validateProposal` test query bypasses the RLS + auto-LIMIT pipeline** — `packages/api/src/lib/tools/validate-proposal.ts:161-174`
+**M-4 — `validateProposal` test query bypasses the RLS + auto-LIMIT pipeline** — packages/api/src/lib/tools/validate-proposal.ts:161-174
 The LLM-authored `testQuery` is checked with `validateSQL` (SELECT-only + whitelist) but executed via raw `db.query(payload.testQuery, 30000)` against `connections.getForOrg(orgId)`, skipping `applyRLSEffect` and auto-LIMIT. `validateSQL` is also called with `connectionId: undefined`, so dialect/whitelist resolve against the default datasource while execution targets the org connection — a validation-vs-execution mismatch.
 **Fix:** Route the test query through `runUserQueryPipeline`, or apply RLS + LIMIT explicitly and pass the executing `connectionId` to `validateSQL`.
 

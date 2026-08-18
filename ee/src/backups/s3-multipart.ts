@@ -125,7 +125,7 @@ function amzDate(now: Date): string {
  * Build a SigV4-signed request. Body is always empty (both operations are
  * bodyless), so the payload hash is the constant empty-string digest.
  *
- * `path` is the **decoded** resource path (`/bucket` or `/bucket/<key>`) — it
+ * `path` is the **decoded** resource path (`/<bucket>` or `/<bucket>/<key>`) — it
  * is never round-tripped through `URL`, because an object key may legally
  * contain `%`, `?` or `#`, all of which `URL` parsing would mangle (and a
  * lone `%` makes `decodeURIComponent` throw outright). Each segment is

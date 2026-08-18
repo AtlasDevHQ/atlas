@@ -9,10 +9,12 @@
  *   - **`vendorPublic`** gates a DISCLOSURE. Flipping it open on `email` names
  *     mailboxes on an admin page — "naming a mailbox is naming a person" —
  *     and nothing about the page's shape changes when it does.
- *   - **`activityMetadata`** gates a WORD. Flipping it to `reports` on a class
- *     that cannot read vendor activity lets the surface say "stale" about a lag
- *     it did not measure, which is the guess ADR-0041 refuses in both
- *     directions.
+ *   - **`activityMetadata`** gates a WORD and, since #5214, the NUMBER that word
+ *     is measured against. Flipping it to `reports` on a class that cannot read
+ *     vendor activity lets the surface say "stale" about a lag it did not
+ *     measure, which is the guess ADR-0041 refuses in both directions; moving
+ *     `syncCadenceMs` moves the line between "stale" and "quiet but current"
+ *     with no other symptom anywhere.
  *   - **the denominator** gates a NUMBER. A class that gained a universe it
  *     cannot enumerate contributes a count with nothing behind it, and
  *     ADR-0041's fabrication discipline calls that a false statement rather than
@@ -50,7 +52,9 @@ import {
   type CoverageLabelDecision,
   type StalenessVerdict,
   type SurveyUnitDisclosureFacts,
+  type VendorActivityMetadata,
 } from "@atlas/api/lib/brain/class-contract";
+import { DEFAULT_KNOWLEDGE_SYNC_INTERVAL_MS } from "@atlas/api/lib/scheduler/knowledge-bundle-sync";
 import {
   CHAT_CLASS,
   EMAIL_CLASS,
@@ -113,6 +117,16 @@ const UNRESOLVABLE: readonly unknown[] = [
 function label(value: unknown): string {
   return `${typeof value}:${JSON.stringify(value) ?? "?"}`;
 }
+
+/**
+ * One day in ms — the cadence every connector class declares (#5214).
+ *
+ * Spelled here rather than read off the contract, for the same reason the answer
+ * table below is a literal: a test that read the number out of the map and
+ * compared it to itself would stay green for every possible cadence, and the
+ * cadence is the line between "stale" and "quiet but current".
+ */
+const DAY_MS = 24 * 60 * 60_000;
 
 /** Both per-unit inputs, every combination — the label policy's whole domain. */
 const UNIT_FACTS: readonly SurveyUnitDisclosureFacts[] = [
@@ -221,7 +235,7 @@ describe("the class contract Record (#5212)", () => {
       vendorPublic: false,
       // @ts-expect-error level 2 — the typo the disclosure gate would not notice
       vendorPublik: true,
-      activityMetadata: "absent",
+      activityMetadata: { kind: "absent" },
       denominator: { surveyable: false, reason: "non-surveyable-class" },
     };
     const lvl3: ClassDenominator = {
@@ -230,9 +244,21 @@ describe("the class contract Record (#5212)", () => {
       // @ts-expect-error level 3 — an invented weight is how a blended score starts
       weight: 3,
     };
+    // Level 3 on the OTHER branch, which #5214 created: `activityMetadata` used
+    // to be a string, so it had no interior to invent a field in. It has one
+    // now, and the field to invent is the dangerous one — a `graceMs` beside
+    // the cadence is a second threshold, and two thresholds is how "stale"
+    // stops meaning the one thing ADR-0041 defines it as.
+    const lvl3Activity: VendorActivityMetadata = {
+      kind: "reports",
+      syncCadenceMs: 1,
+      // @ts-expect-error level 3 — a second threshold is how the definition splits
+      graceMs: 60_000,
+    };
     void lvl1;
     void lvl2;
     void lvl3;
+    void lvl3Activity;
   });
 
   test("log meta is optional-or-COMPLETE — a partial one is refused", () => {
@@ -370,6 +396,57 @@ describe("the class contract Record (#5212)", () => {
         cls,
         denominator.surveyable ? ["enumeratedFrom", "surveyable"] : ["reason", "surveyable"],
       ]);
+      // …and level 3's OTHER branch, which #5214 gave an interior. The field to
+      // keep out is a second threshold (`graceMs`, `toleranceMs`): ADR-0041
+      // defines the lag against the class's sync cadence and nothing else, and a
+      // second number would be a knob wearing a constant's clothes.
+      const activity = CLASS_CONTRACTS[cls].coverage.activityMetadata;
+      expect([cls, Object.keys(activity).toSorted()]).toEqual([
+        cls,
+        activity.kind === "reports" ? ["kind", "syncCadenceMs"] : ["kind"],
+      ]);
+    }
+  });
+
+  test("a class that CAN measure lag names the threshold — structurally, not by convention", () => {
+    // The whole argument for nesting the cadence inside the `reports` arm. As a
+    // sibling `syncCadenceMs?: number` this assertion would be the only thing
+    // standing between a new class and a `measured-lag` verdict with no number
+    // behind it — and an assertion is what a new class's author edits.
+    //
+    // Asserted at RUNTIME as well as structurally because the `satisfies` is
+    // erased: a class declaring `{ kind: "reports", syncCadenceMs: 0 }` compiles,
+    // and 0 makes every probed unit stale the instant a source moves at all.
+    for (const cls of EPISODE_SOURCE_CLASSES) {
+      const activity = CLASS_CONTRACTS[cls].coverage.activityMetadata;
+      if (activity.kind !== "reports") continue;
+      expect([cls, Number.isFinite(activity.syncCadenceMs)]).toEqual([cls, true]);
+      expect([cls, activity.syncCadenceMs > 0]).toEqual([cls, true]);
+    }
+  });
+
+  test("the declared cadence IS the cadence evidence actually arrives on", () => {
+    // ⚠️ The pin `class-contract.ts` promises in place of an import it must not
+    // make. The three connector classes' evidence rides ONE fiber
+    // (`scheduler/knowledge-bundle-sync.ts` → `lib/knowledge/sync.ts` →
+    // `ingest/episode-sync.ts`, whose header says "There is no second
+    // scheduler"), so the threshold and that fiber's default cadence are the
+    // same quantity asked from two directions.
+    //
+    // Without this, moving the sync default is a silent change to what "stale"
+    // means: halve it and every unit that syncs normally starts reading stale;
+    // double it and a source that moved a day ago reads current. Neither has any
+    // other symptom, in any suite, anywhere.
+    //
+    // It is a PIN, not a derivation — the contract deliberately spells its own
+    // constant, because the sync interval is a settings knob at runtime and
+    // ADR-0041 refuses a tunable staleness threshold. What this asserts is that
+    // the two DEFAULTS agree, so a divergence is a decision somebody made here.
+    expect(DAY_MS).toBe(DEFAULT_KNOWLEDGE_SYNC_INTERVAL_MS);
+    for (const cls of EPISODE_SOURCE_CLASSES) {
+      const activity = CLASS_CONTRACTS[cls].coverage.activityMetadata;
+      if (activity.kind !== "reports") continue;
+      expect([cls, activity.syncCadenceMs]).toEqual([cls, DEFAULT_KNOWLEDGE_SYNC_INTERVAL_MS]);
     }
   });
 
@@ -431,18 +508,25 @@ describe("the three coverage answers, per class", () => {
             cls,
             [
               vendorPublic,
-              activityMetadata,
+              // The CADENCE is part of the pinned answer, not only the
+              // capability. A class flipped to `reports` has to name a number
+              // here, and a number moved has to be moved here — which is the
+              // whole reason #5214 nested the two rather than adding an
+              // optional sibling field.
+              activityMetadata.kind === "reports"
+                ? [activityMetadata.kind, activityMetadata.syncCadenceMs]
+                : [activityMetadata.kind],
               denominator.surveyable ? denominator.enumeratedFrom : null,
             ],
           ];
         }),
       ),
     ).toEqual({
-      chat: [true, "reports", "chat-channel-roster"],
-      transcript: [false, "reports", "granted-recording-scopes"],
-      email: [false, "reports", "mailbox-list"],
-      warehouse: [false, "absent", "semantic-layer-enrollment"],
-      human: [false, "absent", null],
+      chat: [true, ["reports", DAY_MS], "chat-channel-roster"],
+      transcript: [false, ["reports", DAY_MS], "granted-recording-scopes"],
+      email: [false, ["reports", DAY_MS], "mailbox-list"],
+      warehouse: [false, ["absent"], "semantic-layer-enrollment"],
+      human: [false, ["absent"], null],
     });
   });
 
@@ -723,10 +807,11 @@ describe("the staleness capability, per class", () => {
     // `sources.test.ts` guards against — and it would silently exclude the next
     // connector class to arrive.
     for (const cls of EPISODE_SOURCE_CLASSES) {
+      const activity = CLASS_CONTRACTS[cls].coverage.activityMetadata;
       expect([cls, stalenessVerdict(cls)]).toEqual([
         cls,
-        CLASS_CONTRACTS[cls].coverage.activityMetadata === "reports"
-          ? { kind: "measured-lag" }
+        activity.kind === "reports"
+          ? { kind: "measured-lag", syncCadenceMs: activity.syncCadenceMs }
           : { kind: "unverified-since", reason: "no-activity-metadata" },
       ]);
     }
@@ -742,7 +827,7 @@ describe("the staleness capability, per class", () => {
       kind: "unverified-since",
       reason: "no-activity-metadata",
     });
-    expect(stalenessVerdict(CHAT_CLASS)).toEqual({ kind: "measured-lag" });
+    expect(stalenessVerdict(CHAT_CLASS)).toEqual({ kind: "measured-lag", syncCadenceMs: DAY_MS });
   });
 
   test("a non-surveyable class still answers the staleness question", () => {

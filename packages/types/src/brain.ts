@@ -814,6 +814,421 @@ export interface BrainFactWillWiden {
   readonly incomplete: boolean;
 }
 
+
+// ---------------------------------------------------------------------------
+// The Coverage Surface — what Atlas can see, per class (#5214, ADR-0041)
+// ---------------------------------------------------------------------------
+
+/**
+ * The classes the Coverage Surface accounts for — `sources.ts`'s
+ * `EpisodeSourceClass`, mirrored onto the wire.
+ *
+ * ⚠️ **A MIRROR, and the pin that keeps it one lives in the API package.**
+ * `@useatlas/types` is published and depends on nothing, so it cannot import the
+ * class axis from `lib/brain/sources.ts`; `coverage.ts` carries a
+ * mutual-assignability check (`_COVERAGE_CLASS_AXIS_IN_SYNC`) that makes BOTH
+ * directions of drift a compile error — a class added there and not here, and a
+ * class here that does not exist there. Editing this union without editing that
+ * one does not compile, which is the property {@link BrainCoverage.availability}
+ * is keyed on.
+ */
+export type BrainCoverageSourceClass = "chat" | "transcript" | "email" | "warehouse" | "human";
+
+/**
+ * The unit a class's ratio is counted in — `SurveyUnitOrigin`, mirrored.
+ *
+ * **No two classes share a member, and that is ADR-0041's "No single number,
+ * permanently" made structural.** A channel is not a mailbox is not an
+ * (entity, dimension) pair, so adding two ratios means adding two quantities
+ * whose `unit` fields differ — visible in the shape rather than only in a
+ * comment. The mirror is pinned in `coverage.ts` beside the class axis.
+ *
+ * Every member is CREDENTIAL-RELATIVE by construction: `chat-channel-roster` is
+ * the roster the granted scopes can enumerate, not every channel a workspace
+ * has. No member of this vocabulary means "the company".
+ */
+export type BrainCoverageUnitOrigin =
+  | "chat-channel-roster"
+  | "granted-recording-scopes"
+  | "mailbox-list"
+  | "semantic-layer-enrollment";
+
+/**
+ * ADR-0041's third state — the map edge — enumerated as MARKS.
+ *
+ * Each member names an arm of an enumeration that could not be performed. Never
+ * a unit and, deliberately, **never a count**: "any denominator that includes it
+ * is fabricated". A client renders each as a sentence ("there are channels
+ * beyond what these credentials can see"); there is no number to render because
+ * the shape carries none.
+ *
+ * Mirrors `COVERAGE_DEGRADED_ARMS`, pinned in `coverage.ts` with the other two.
+ */
+export type BrainCoverageMapEdge =
+  | "chat-public-roster-unreadable"
+  | "chat-public-roster-truncated"
+  | "chat-activity-unreadable"
+  | "chat-unit-ids-unrecognised"
+  | "warehouse-entity-bound-reached"
+  | "warehouse-entity-unreadable";
+
+/** Which of ADR-0041's two clauses admitted a unit's name. */
+export type BrainCoverageLabelClause = "deliberate-act" | "vendor-public";
+
+/**
+ * Why a unit carries no measured lag.
+ *
+ * Four reasons, one sentence — *"unverified since \<date\>"* — because ADR-0041
+ * puts every one of them on that sentence rather than on "stale", which "would
+ * guess in both directions". They are kept apart because only two of them are
+ * ordinary: `no-activity-metadata` is a class that declared it cannot ask, and
+ * `not-probed` is the bounded probe rotation not having reached this unit yet.
+ * `enumeration-unavailable` is a sick pipe, `unreadable-reading` is a stored
+ * reading that would not parse and `unresolvable-class` is a class this deploy
+ * cannot resolve — an operator needs to tell those from the first two, and a page
+ * cannot read a log line.
+ */
+export type BrainCoverageUnverifiedReason =
+  /** The class contract declares no vendor activity metadata — `warehouse`, `human`. */
+  | "no-activity-metadata"
+  /** The rotation has not asked the vendor about this unit yet. Expected, not a fault. */
+  | "not-probed"
+  /** The last enumeration cycle failed, so nobody looked. */
+  | "enumeration-unavailable"
+  /**
+   * We asked, but longer ago than the class's cadence — so the answer no longer
+   * supports a present-tense verdict.
+   *
+   * Distinct from `not-probed`, which is "we have never asked": this unit has a
+   * real vendor reading and it has simply expired. Both are refusals of the word
+   * "current" rather than assertions of movement, and neither is "stale" — we do
+   * not know whether the source moved, which is exactly what ADR-0041 refuses to
+   * guess at in either direction.
+   *
+   * The `since` beside it is the READING's own date rather than the cycle's:
+   * "unverified since we last asked" is a stronger and more useful statement
+   * than the cycle date, and it is the one the rotation can act on.
+   */
+  | "reading-expired"
+  /**
+   * A reading Atlas holds and cannot read — a stored timestamp that would not
+   * parse.
+   *
+   * Its own member rather than folded into `enumeration-unavailable`, because
+   * the two ask for opposite things: a sick pipe resolves itself when the vendor
+   * comes back, and this one never does. The arm exists at all because the
+   * alternatives are both fabrications — "current" invents an all-clear and
+   * "stale" invents a lag.
+   */
+  | "unreadable-reading"
+  /** No class contract resolved — fail-closed, and a bug. */
+  | "unresolvable-class";
+
+/**
+ * How fresh ONE surveyed unit is — ADR-0041's "Stale is a measured lag" as three
+ * arms.
+ *
+ * **`stale` carries its own arithmetic**, which is the difference between a
+ * measurement and a badge: the two instants and the threshold they were compared
+ * against all travel, so a reader can check the verdict rather than trust it,
+ * and so a moved threshold is visible on the wire instead of only in a diff.
+ *
+ * **`current` is the QUIET arm as well as the fresh one.** ADR-0041: "a source
+ * that hasn't moved is current, however old its newest evidence". A unit whose
+ * vendor reports no activity at all is current, not stale and not unverified —
+ * we asked, and the answer was "nothing happened".
+ *
+ * **…and it carries WHEN we asked, for the same reason `stale` carries its
+ * arithmetic.** "Current" is a claim about the present resting on a reading
+ * taken in the past, and the probe rotation is bounded — `CHAT_ACTIVITY_PROBES_PER_CYCLE`
+ * is 20 per hourly cycle, so a large workspace's unit is re-probed every few
+ * days. A `current` with no date would let a reading of unbounded age assert a
+ * present-tense all-clear, which is the flattering arm being the only opaque
+ * one. When the reading is itself older than the class's cadence the verdict is
+ * not `current` at all — see `reading-expired`.
+ */
+export type BrainCoverageFreshness =
+  | {
+      readonly kind: "current";
+      /** When the vendor was asked. The verdict is only as present-tense as this. */
+      readonly checkedAt: string;
+    }
+  | {
+      readonly kind: "stale";
+      /** The vendor's reading: when the source last moved. */
+      readonly vendorActivityAt: string;
+      /** Our newest observed evidence for this unit. */
+      readonly newestEvidenceAt: string;
+      /** `vendorActivityAt - newestEvidenceAt`, in ms. Always greater than {@link cadenceMs}. */
+      readonly lagMs: number;
+      /** The class's declared sync cadence — the threshold the lag beat. */
+      readonly cadenceMs: number;
+    }
+  | {
+      readonly kind: "unverified-since";
+      /**
+       * The last successful enumeration cycle for this class, or `null` when
+       * there has never been one.
+       *
+       * `null` is not "recently": it is the class that has never established
+       * anything, and the sentence is "unverified" with no date to put after
+       * "since". A client must not substitute `now` or the attempt time.
+       */
+      readonly since: string | null;
+      readonly reason: BrainCoverageUnverifiedReason;
+    };
+
+/**
+ * The freshness tally over EVERY surveyed unit of a class — named and withheld
+ * alike.
+ *
+ * This is where a withheld unit's staleness is disclosed, and it is why
+ * withholding a mailbox's name costs the admin nothing they are entitled to:
+ * "3 of 12 surveyed mailboxes are stale" is a count, and counts are always
+ * disclosable. The sum of the three is exactly
+ * {@link BrainCoverageRatio.surveyed}; the composer asserts it and clears
+ * {@link BrainCoverage.countsConsistent} when it does not hold.
+ */
+export interface BrainCoverageFreshnessCounts {
+  readonly current: number;
+  readonly stale: number;
+  readonly unverified: number;
+}
+
+/**
+ * One class's ratio — ADR-0041's "Ratios exist only where numerator and
+ * denominator share one real unit".
+ *
+ * ## The `unit` field is the refusal, not a caption
+ *
+ * There is no company-wide percentage on this surface, permanently, and the
+ * shape is how that is enforced rather than asked for: a blend would have to add
+ * two ratios whose {@link unit} differs, and no two classes share a unit
+ * ({@link BrainCoverageUnitOrigin}). A client that wants one number has to write
+ * the invented weights itself, in the open.
+ *
+ * ## The denominator is credential-relative, always
+ *
+ * {@link enumerable} is what the GRANTED CREDENTIALS can see, never what the
+ * company has. Widening scopes grows it, so connecting more sources can make the
+ * ratio go DOWN — correct behaviour, and a client must not smooth it.
+ *
+ * {@link enumerable} is carried rather than left as `surveyed + enumerated`
+ * because a denominator a client computes is a denominator a client can compute
+ * across classes. The composer asserts the identity.
+ */
+export interface BrainCoverageRatio {
+  /** ADR-0041 state 1 — in the perimeter WITH evidence observed. Green is evidence. */
+  readonly surveyed: number;
+  /** ADR-0041 state 2 — the credentials can see it; nobody put it in the perimeter. */
+  readonly enumerated: number;
+  /** The denominator: states 1 and 2 together. Equals `surveyed + enumerated`. */
+  readonly enumerable: number;
+  /**
+   * A SUBSET of {@link enumerated}, never added to it: units inside the
+   * perimeter that have produced no evidence.
+   *
+   * The M1 sentence — invited, configured, reading nothing — which folding into
+   * `enumerated` would render identically to a channel nobody ever touched.
+   */
+  readonly inPerimeterWithoutEvidence: number;
+  /** The ONE unit both sides are counted in. */
+  readonly unit: BrainCoverageUnitOrigin;
+}
+
+/**
+ * One survey unit the Coverage Surface may NAME.
+ *
+ * ## Every unit in this list has a label, and that is the disclosure model
+ *
+ * ADR-0041 splits the rule: **counts are always disclosable; a label appears
+ * only under the deliberate-act clause or the vendor-public clause.** So the
+ * withheld units are not in this list wearing an opaque handle — they are not in
+ * it at all, counted by {@link BrainCoverageClassAvailable.unitsWithheld} and
+ * tallied by {@link BrainCoverageClassAvailable.freshness}. The wire therefore
+ * has **no field where a withheld unit's identity could live**, which is a
+ * stronger guarantee than the oversight buckets' (there, a withheld bucket still
+ * ships with an ordinal, because its per-audience counts are the product).
+ *
+ * That is deliberate: the most useful state-2 display names a channel no
+ * deliberate act ever touched, and the class where it goes wrong is `email`,
+ * where "naming a mailbox is naming a person".
+ *
+ * ## Freshness lives on the `surveyed` arm only
+ *
+ * A unit nobody has observed cannot have a measured lag, so the enumerated arm
+ * has no `freshness` field to fill in — rather than a `freshness: null` a
+ * producer could forget to null, or a "current" that would read as an all-clear
+ * about a source Atlas has never read.
+ */
+export type BrainCoverageNamedUnit =
+  | {
+      readonly state: "surveyed";
+      /** The vendor-side id. Disclosed only because the same clause disclosed the name. */
+      readonly unitId: string;
+      readonly label: string;
+      readonly clause: BrainCoverageLabelClause;
+      readonly newestEvidenceAt: string;
+      readonly freshness: BrainCoverageFreshness;
+    }
+  | {
+      readonly state: "enumerated";
+      readonly unitId: string;
+      readonly label: string;
+      readonly clause: BrainCoverageLabelClause;
+      /** In the perimeter but with no evidence yet — the M1 sentence, per unit. */
+      readonly inPerimeter: boolean;
+    };
+
+/** A class whose enumeration has produced at least one dated result. */
+export interface BrainCoverageClassAvailable {
+  readonly state: "enumerated";
+  /**
+   * The cycle that produced these counts — ADR-0041's "stamped 'as of \<date\>'".
+   *
+   * **NON-NULL by construction, and that is this arm's whole reason for
+   * existing.** `CoverageClassSnapshot` is a flat record whose `degraded: []` on
+   * a never-enumerated class reads as *"the map is complete"* — recoverable by a
+   * caller who remembers to check `asOf`, which is exactly the kind of
+   * obligation this page cannot hand a client. A class with no successful cycle
+   * cannot reach this arm, so an empty roster here is a MEASURED emptiness.
+   */
+  readonly asOf: string;
+  readonly ratio: BrainCoverageRatio;
+  readonly freshness: BrainCoverageFreshnessCounts;
+  /** The namable units only — see {@link BrainCoverageNamedUnit}. */
+  readonly units: readonly BrainCoverageNamedUnit[];
+  /**
+   * Units counted but not named. Never a hint at which ones: a count.
+   *
+   * `units.length + unitsWithheld` is the roster size unless
+   * {@link unitsTruncated} bit, for `distinctAudiences`' reason — a client must
+   * never infer a cardinality from a capped array.
+   */
+  readonly unitsWithheld: number;
+  /** True when more namable units exist than this response carries. */
+  readonly unitsTruncated: boolean;
+  /**
+   * ADR-0041 state 3 — marks, never numbers. Empty means the map of what these
+   * credentials can see is complete, which is only ever said on this arm.
+   */
+  readonly mapEdges: readonly BrainCoverageMapEdge[];
+  /**
+   * Set when the LATEST attempt failed after the success {@link asOf} names —
+   * the "enumeration unavailable since \<date\>" caption over dated counts that
+   * are still the best Atlas has.
+   *
+   * `null` on the ordinary path. When present, the counts above are NOT wrong;
+   * they are simply older than they look, and the reason is admin-facing text
+   * the enumerator wrote.
+   */
+  readonly unavailable: { readonly since: string; readonly reason: string } | null;
+}
+
+/**
+ * One class's answer on the availability arm — ADR-0041's three states, plus the
+ * two ways there is no answer to give.
+ *
+ * A discriminated union rather than a record with optional counts, because the
+ * arms that carry NO counts must be structurally incapable of carrying a zero:
+ * "a silent zero here is a false statement, not an error state". There is no arm
+ * on which `surveyed: 0` can mean "we could not look".
+ */
+export type BrainCoverageClass =
+  | BrainCoverageClassAvailable
+  /**
+   * The class declared it has no enumerable universe — `human`, whose units
+   * would be PEOPLE. Correctly absent from every ratio, forever; not a gap.
+   */
+  | { readonly state: "not-surveyable"; readonly reason: "non-surveyable-class" }
+  /**
+   * No class contract resolved for this class in this deploy. The "cannot
+   * establish" arm ADR-0041 asks the page to render, and a bug — distinct from
+   * the arm above because only one of them is a decision.
+   */
+  | { readonly state: "cannot-establish"; readonly reason: "unresolvable-class" }
+  /**
+   * Nothing has ever been established for this class in this workspace.
+   *
+   * Two reasons, and the page says different things for them:
+   * `no-cycle-recorded` is a class no cycle has ever run for (nothing is
+   * connected, or the enumerator has not shipped), while `no-successful-cycle`
+   * is a class that has been TRIED and has never once succeeded — the second
+   * carries an attempt date and the enumerator's reason.
+   *
+   * ⚠️ This arm exists so "never enumerated" cannot be spelled as an empty
+   * roster with a clean edge list. Both would render as *"the map is complete
+   * and there is nothing on it"*, which is the green-while-nothing-is-happening
+   * statement the Coverage Surface exists to end.
+   */
+  | {
+      readonly state: "never-enumerated";
+      readonly reason: "no-cycle-recorded" | "no-successful-cycle";
+      readonly lastAttemptAt: string | null;
+      /** The enumerator's admin-facing reason, when there was an attempt to fail. */
+      readonly unavailableReason: string | null;
+    };
+
+/**
+ * The Coverage Surface's wire shape (#5214, ADR-0041) — what Atlas knows, how
+ * much it covers, and what it does not know, as parts that are each true.
+ *
+ * ## There is no single number here, and there never will be
+ *
+ * No score, no percentage, no gauge — refused rather than deferred. The layers
+ * are incommensurable and any blend needs invented weights, and a headline
+ * number would reward blindness twice over: excluding units from the perimeter
+ * raises it, widening scopes lowers it. Every ratio on this shape carries the
+ * one unit it is counted in ({@link BrainCoverageRatio.unit}), and no two
+ * classes share one.
+ *
+ * ## Two arms, one page
+ *
+ * {@link availability} answers *is it surveyed at all* — ADR-0041's contribution.
+ * {@link authority} is `oversight.ts`'s existing disclosure, unchanged: observed,
+ * awaiting review, and the backlog federated to somebody else. The dependency is
+ * one-way and the modules stay separate; they meet here.
+ */
+export interface BrainCoverage {
+  /**
+   * Every class, always — keyed on the closed class axis rather than a list.
+   *
+   * ADR-0041's "Totality at compile time": a class added without a coverage
+   * answer is a compile error, not a silently missing row. A list would have
+   * made an absent class indistinguishable from a class with nothing to say,
+   * and those are opposite statements.
+   */
+  readonly availability: Record<BrainCoverageSourceClass, BrainCoverageClass>;
+  /** The authority arm — `GET /oversight`'s payload, composed rather than restated. */
+  readonly authority: BrainFactOversight;
+  /**
+   * False when some part of this response cannot be trusted to add up.
+   *
+   * `loadFactOversight`'s `countsConsistent`, applied one arm over and for the
+   * same reason: the reassuring direction of every degradation here is a smaller
+   * denominator, a fresher-looking date or a more complete-looking map, and
+   * clamping to it silently would render as an all-clear.
+   *
+   * Cleared by, exhaustively: the cycle aggregate and the roster rows disagreeing
+   * about a class's counts; two cycle rows for one class; a roster row stored as
+   * surveyed with no evidence behind it; a stored timestamp that will not parse;
+   * stored map-edge marks this deploy cannot render (so {@link
+   * BrainCoverageClassAvailable.mapEdges} is itself incomplete); and a degraded
+   * {@link authority}.
+   *
+   * ⚠️ NOT cleared by a cycle row naming a class this deploy cannot resolve.
+   * `readCoverageSnapshot` drops those with a `log.error`, and the drop is
+   * invisible here on purpose: such a class has no key in {@link availability}
+   * and nothing on this page could ever have rendered it, so there is no
+   * statement for the flag to qualify.
+   *
+   * ⚠️ It does NOT mean the page should refuse to render. Every arm above is
+   * still the best statement Atlas can make; this says the arithmetic between
+   * them disagreed, which is a banner, not a blank page.
+   */
+  readonly countsConsistent: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // `searchBrain` — the fused, trust-labeled read (#4773, ADR-0036 §Retrieval)
 // ---------------------------------------------------------------------------

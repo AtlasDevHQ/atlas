@@ -64,11 +64,12 @@ const log = createLogger("brain.coverage-snapshot");
  * budget an order of magnitude under the ingest cycle's.
  *
  * ⚠️ This is NOT the "class's sync cadence" ADR-0041 measures staleness against.
- * That constant has no declaration site yet (`class-contract.ts` says so on
- * `stalenessVerdict`, and says it belongs THERE rather than in a consumer), and
- * a consumer must not substitute this one for it: this is how often the ROSTER
- * is re-enumerated, which is a different question from how far a source may move
- * before it is called stale.
+ * That constant now has a declaration site — `class-contract.ts`'s
+ * `VendorActivityMetadata`, claimed by #5214 — and it is a DIFFERENT number for a
+ * different question: this is how often the ROSTER is re-enumerated, that is how
+ * far a source may move ahead of our evidence before it is called stale. They
+ * are an hour and a day respectively today, and a consumer must not substitute
+ * either for the other.
  */
 export const DEFAULT_COVERAGE_SNAPSHOT_INTERVAL_MS = 60 * 60_000;
 

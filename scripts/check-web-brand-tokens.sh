@@ -114,18 +114,53 @@ done
 BRAND_REAL="$(readlink -f "$BRAND_CSS" 2>/dev/null || true)"
 [ -n "$BRAND_REAL" ] || die "readlink -f cannot resolve $BRAND_CSS (is 'readlink -f' available here?). Every symlink comparison below would compare empty to empty and skip its subject, so this gate would pass having checked nothing."
 
+# ⚠️ ONE SANCTIONED MIRROR, AND IT IS CHECKED BY VALUE. `@useatlas/react` is a
+# PUBLISHED package that installs into somebody else's node_modules; it cannot
+# symlink a file from this repo, and its styles.css says so about --atlas-brand
+# already. So the code tokens exist there as a literal copy — and "identical on
+# every surface and mode" is then enforced the only way left: the values must
+# EQUAL brand.css's, checked below in A3. A symlink where a symlink is possible;
+# value-equality where it is not; never an unchecked second copy.
+MIRRORS=("packages/react/src/styles.css" "packages/api/src/api/routes/widget.ts")
+is_mirror() { local f="$1" m; for m in "${MIRRORS[@]}"; do [ "$f" = "$m" ] && return 0; done; return 1; }
+
 while IFS= read -r hit; do
   file="${hit%%:*}"
   [ "$file" = "$BRAND_CSS" ] && continue
   # brand.css is symlinked into each app; the symlink IS the one copy.
   file_real="$(readlink -f "$file" 2>/dev/null || true)"
   [ -n "$file_real" ] && [ "$file_real" = "$BRAND_REAL" ] && continue
+  is_mirror "$file" && continue
   fail "$file" "redefines a --code-* token. There is one code surface: define it in $BRAND_CSS and reference it here. Two correct-looking copies drifting apart is what \"identical on every surface and mode\" forbids — and is how packages/web ended up with no code tokens at all while apps/www had them."
 # -z/-0 and -H: a tracked path containing a space would otherwise be word-split
 # by xargs (the resulting grep error is swallowed by 2>/dev/null, so the file is
 # never scanned and the gate reports one definition), and without -H a batch that
 # narrows to a single file prints no filename, making `${hit%%:*}` a line number.
 done < <(git ls-files -z -- '*.css' 2>/dev/null | xargs -0 -r grep -HInE '(^|[;{[:space:]])--code-(bg|chrome|well|fg|muted|border)[[:space:]]*:' 2>/dev/null)
+
+# ── A3. the sanctioned mirrors carry IDENTICAL values ────────────────────────
+# The whole licence for a literal copy is that it is checked. Each mirror must
+# define every --code-* token with exactly brand.css's value; a drifting mirror
+# is the two-correct-looking-copies failure the symlink exists to prevent, and
+# the one in packages/api is a THIRD copy that styles.css's own comment already
+# warns about.
+brand_val() { grep -m1 -oE "^[[:space:]]*$1:[^;]*" "$BRAND_CSS" | sed -E "s/^[[:space:]]*$1:[[:space:]]*//" | tr -d ' '; }
+for m in "${MIRRORS[@]}"; do
+  if [ ! -f "$m" ]; then
+    fail "$m" "is a registered --code-* mirror but does not exist. Either restore it or drop it from MIRRORS in scripts/check-web-brand-tokens.sh — a mirror nothing checks is the thing this gate refuses."
+    continue
+  fi
+  for tok in "${CODE_TOKENS[@]}"; do
+    want="$(brand_val "$tok")"
+    [ -n "$want" ] || continue   # A already failed on a missing definition
+    got="$(grep -m1 -oE -e "${tok}:[^;}]*" "$m" | sed -E "s/^${tok}:[[:space:]]*//" | tr -d ' ')"
+    if [ -z "$got" ]; then
+      fail "$m" "does not define ${tok}. It is a sanctioned mirror of $BRAND_CSS (it cannot symlink the file — it is published to npm), so it must carry every code token, not some of them."
+    elif [ "$got" != "$want" ]; then
+      fail "$m" "has ${tok}: '$got' but $BRAND_CSS says '$want'. A mirror that drifts is exactly the pair of correct-looking copies \"identical on every surface and mode\" forbids — update both, or all three."
+    fi
+  done
+done
 
 # ── A2. …and packages/web actually REACHES them ──────────────────────────────
 # ⚠️ "Defined once" is only half the property. A checks that no app holds a
@@ -278,7 +313,12 @@ while IFS= read -r f; do
   if printf '%s\n' "$(sed -E -e 's@/\*.*@@' -e 's@(^|[^:])//.*@\1@' "$f" | grep -vE '^[[:space:]]*(//|\*|/\*)')" | grep -qE '\boneLight\b'; then
     fail "$f" "references oneLight. PRODUCT.md Design Principle 5 makes the code surface the one thing that does NOT follow the mode — \"always-dark terminal windows (--code-*), identical on every surface and mode\". A light theme variant is #5306 itself: in light mode the pane rendered as light grey on white."
   fi
-done < <(git ls-files -z -- "$WEB_SRC/*.tsx" 2>/dev/null | xargs -0 -r grep -lF 'react-syntax-highlighter' 2>/dev/null)
+# ⚠️ packages/react IS IN SCOPE, and was the hole. It renders the same SQL and
+# agent-reply panes, it is PUBLISHED, and until this landed it still shipped
+# `dark ? oneDark : oneLight` over bg-zinc-100 — the #5306 defect, byte for byte,
+# reaching customers rather than us. The code surface is defined by ELEMENT, not
+# by app (PRODUCT.md › Design Principle 5), so the scan follows the element.
+done < <(git ls-files -z -- "$WEB_SRC/*.tsx" 'packages/react/src/*.tsx' 2>/dev/null | xargs -0 -r grep -lF 'react-syntax-highlighter' 2>/dev/null)
 
 # ── E. the ratchet ───────────────────────────────────────────────────────────
 # ⚠️ THIS NUMBER MAY ONLY GO DOWN. It is not a target to keep meeting — it is a

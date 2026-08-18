@@ -16,7 +16,7 @@
 -- separate axis and is unchanged. This column is what feeds the slice-(a) reach
 -- resolver (#3893) so Focus actually bounds executeSQL. See ADR-0022 §5.
 --
--- Clean break (pre-customer posture, docs/contexts/deployment-posture/CONTEXT.md, STALE since 2026-08-17): a
+-- Clean break (pre-customer posture, docs/contexts/deployment-posture/CONTEXT.md — window CLOSED 2026-08-18): a
 -- conversation already bound to a single group (`connection_group_id`) was,
 -- pre-ADR-0022, reachable only within that group — which IS Focus → that group.
 -- Backfill it so the migration preserves behavior. New conversations default to

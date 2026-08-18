@@ -45,7 +45,7 @@ the Company Atlas context alone spans `packages/api/src/lib/brain/**`, `/admin/b
 | MCP & agent governance | `CONTEXT.md` § MCP & agent governance | ADR-0016, ADR-0018 |
 | Plugin lifecycle | `CONTEXT.md` § Plugin lifecycle | |
 | Install models | `CONTEXT.md` § Install models | |
-| Deployment posture | [`docs/contexts/deployment-posture/CONTEXT.md`](docs/contexts/deployment-posture/CONTEXT.md) | ⚠️ **marked STALE 2026-08-17** — do not authorize a clean break on it |
+| Deployment posture | [`docs/contexts/deployment-posture/CONTEXT.md`](docs/contexts/deployment-posture/CONTEXT.md) | 🔒 **window CLOSED 2026-08-18** — expand-contract is the default; no standing authorization to break anything |
 | Operator vs Customer | `CONTEXT.md` § Operator vs Customer | |
 | Lead source (CRM acquisition) | `CONTEXT.md` § Lead source | |
 | Notebooks | [`docs/contexts/notebooks/CONTEXT.md`](docs/contexts/notebooks/CONTEXT.md) | 🪦 **retired** — kept so the words don't dangle; read only for history |

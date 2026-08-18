@@ -7,7 +7,7 @@
 -- index are renamed.
 --
 -- One-shot breaking rename, NOT an expand/contract dance: we are in the
--- pre-customer clean-break window (docs/contexts/deployment-posture/CONTEXT.md, STALE since 2026-08-17;
+-- pre-customer clean-break window (docs/contexts/deployment-posture/CONTEXT.md — window CLOSED 2026-08-18;
 -- ADR-0015 explicitly authorizes this), so there is no N-1↔N deploy
 -- overlap to protect and no data to backfill — RENAME COLUMN is in-place
 -- and preserves every existing row's value.

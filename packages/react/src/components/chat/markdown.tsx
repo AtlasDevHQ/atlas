@@ -1,9 +1,8 @@
 "use client";
 
-import { memo, useContext, useState, useEffect, type ReactNode } from "react";
+import { memo, useState, useEffect, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { DarkModeContext } from "../../hooks/use-dark-mode";
 
 /* ------------------------------------------------------------------ */
 /*  Lazy-loaded syntax highlighter (~300KB)                            */
@@ -12,10 +11,14 @@ import { DarkModeContext } from "../../hooks/use-dark-mode";
 type SyntaxHighlighterModule = typeof import("react-syntax-highlighter");
 type StyleModule = typeof import("react-syntax-highlighter/dist/esm/styles/prism");
 
-let _highlighterCache: { Prism: SyntaxHighlighterModule["Prism"]; oneDark: StyleModule["oneDark"]; oneLight: StyleModule["oneLight"] } | null = null;
+// ⚠️ `oneDark` ONLY — see sql-block.tsx for the same decision and the same
+// reason. This is the agent-reply pane PRODUCT.md › Design Principle 5 names
+// alongside YAML and SQL: "always-dark terminal windows (--code-*), identical on
+// every surface and mode". The widget's dark seam drives chrome, not this.
+let _highlighterCache: { Prism: SyntaxHighlighterModule["Prism"]; oneDark: StyleModule["oneDark"] } | null = null;
 let _loadFailed = false;
 
-function LazyCodeBlock({ language, dark, children }: { language: string; dark: boolean; children: string }) {
+function LazyCodeBlock({ language, children }: { language: string; children: string }) {
   const [mod, setMod] = useState(_highlighterCache);
 
   useEffect(() => {
@@ -24,7 +27,7 @@ function LazyCodeBlock({ language, dark, children }: { language: string; dark: b
       import("react-syntax-highlighter"),
       import("react-syntax-highlighter/dist/esm/styles/prism"),
     ]).then(([sh, styles]) => {
-      _highlighterCache = { Prism: sh.Prism, oneDark: styles.oneDark, oneLight: styles.oneLight };
+      _highlighterCache = { Prism: sh.Prism, oneDark: styles.oneDark };
       setMod(_highlighterCache);
     }).catch((err) => {
       console.warn("Syntax highlighter failed to load — code blocks will use plain text:", err);
@@ -34,7 +37,9 @@ function LazyCodeBlock({ language, dark, children }: { language: string; dark: b
 
   if (!mod) {
     return (
-      <pre className="my-2 overflow-x-auto rounded-lg bg-zinc-100 p-3 text-xs dark:bg-zinc-800">
+      // Same dark pane as the highlighted result, so the block does not flash
+      // light-then-dark on first render.
+      <pre className="my-2 overflow-x-auto rounded-lg bg-code-bg p-3 font-mono text-xs text-code-fg">
         <code>{children}</code>
       </pre>
     );
@@ -43,18 +48,28 @@ function LazyCodeBlock({ language, dark, children }: { language: string; dark: b
   return (
     <mod.Prism
       language={language}
-      style={dark ? mod.oneDark : mod.oneLight}
+      style={mod.oneDark}
       customStyle={CODE_BLOCK_STYLE}
+      codeTagProps={CODE_TAG_PROPS}
     >
       {children}
     </mod.Prism>
   );
 }
 
+// `background` AND `fontFamily`: oneDark hardcodes both, on the <pre> AND the
+// inner <code>, so overriding one of them or only one selector leaves the pane
+// half-branded. --code-bg / --font-mono come from `.atlas-root` in styles.css.
 const CODE_BLOCK_STYLE = {
   margin: "0.5rem 0",
   borderRadius: "0.5rem",
   fontSize: "0.75rem",
+  background: "var(--code-bg)",
+  fontFamily: "var(--font-mono)",
+} as const;
+
+const CODE_TAG_PROPS = {
+  style: { background: "transparent", fontFamily: "var(--font-mono)" },
 } as const;
 
 /* ------------------------------------------------------------------ */
@@ -131,11 +146,17 @@ export const Markdown = memo(function Markdown({
    * Per-side dark-mode seam: hosts with their own theme store (e.g.
    * @atlas/web's `useDarkMode`) pass the resolved value; omitted, it falls
    * back to the package's `DarkModeContext` (what `AtlasChat` provides).
+   *
+   * ⚠️ **Accepted but no longer read by this component**, and kept in the type
+   * so existing callers keep type-checking. Its only consumer was the code
+   * block's light/dark theme choice, and the code surface does not follow the
+   * mode — PRODUCT.md › Design Principle 5. Everything else here is themed by
+   * Tailwind `dark:` variants off the host's own wrapper class, which the seam
+   * never drove. Removing it outright is a breaking change for a published
+   * package and is not worth taking on its own.
    */
   dark?: boolean;
 }) {
-  const ctxDark = useContext(DarkModeContext);
-  const isDark = dark ?? ctxDark;
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -147,7 +168,7 @@ export const Markdown = memo(function Markdown({
           const match = /language-(\w+)/.exec(className || "");
           if (match) {
             return (
-              <LazyCodeBlock language={match[1]} dark={isDark}>
+              <LazyCodeBlock language={match[1]}>
                 {String(children as string | number | boolean).replace(/\n$/, "")}
               </LazyCodeBlock>
             );

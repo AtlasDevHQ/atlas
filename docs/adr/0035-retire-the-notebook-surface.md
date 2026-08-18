@@ -4,7 +4,7 @@ Status: accepted (2026-07-10, notebook elevation grill — audit: `.claude/resea
 
 The notebook shipped as a cell-based curation layer painted over a chat transcript. Its elevation audit found that the curation was largely a display-only illusion — every CRITICAL (rerun truncation, fork-metadata erasure, share-ships-the-raw-transcript, deletes-that-don't-delete) was a variant of one root: the notebook projection and the persisted/shared truth had silently diverged. Fixing that class required committing to a real document/projection model. Meanwhile the two dashboard elevation cycles ([ADR-0029](./0029-dashboards-draft-first-editing.md), [ADR-0034](./0034-dashboard-draft-cache-single-edit-mechanism.md)) gave dashboards the notebook's headline job — agent-built, curated, shareable artifacts — on a sounder model (per-user draft, publish gate, data-only snapshot shared view, bound editor as a creation instrument).
 
-**We decided to kill the surface** rather than fix it, in the pre-customer clean-break window (docs/contexts/deployment-posture/CONTEXT.md — ⚠️ marked STALE 2026-08-17) — the cheapest moment we will ever have to delete a shipped surface.
+**We decided to kill the surface** rather than fix it, in the pre-customer clean-break window (docs/contexts/deployment-posture/CONTEXT.md — 🔒 window CLOSED 2026-08-18; this decision stands, the authority is spent) — the cheapest moment we will ever have to delete a shipped surface.
 
 ## Considered options
 

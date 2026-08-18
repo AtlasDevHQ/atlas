@@ -56,6 +56,10 @@ new_tree() {
   echo "export const secrets = 1;" > "$TREE/packages/api/src/lib/plugins/secrets.ts"
   echo "export const slack = 1;" > "$TREE/plugins/chat/src/adapters/slack.ts"
   echo 'app.get("/health", ok);' > "$TREE/scripts/server.ts"
+  # The gate derives its registered counts from the tree, and refuses to check a
+  # claim against a derivation of zero — so the tree must carry one of each set
+  # it counts, including a ci-local roster.
+  printf 'launch lint g_lint\n' > "$TREE/scripts/ci-local.sh"
   {
     echo "| Context | Governed by | Notes |"
     echo "| --- | --- | --- |"
@@ -291,6 +295,23 @@ if [ "$RC" = "1" ] && printf '%s' "$OUT" | grep -qF "docs/agents/other.md"; then
   pass "an allowlist entry scoped to one file does not exempt another"
 else
   fail "allowlist scoping — expected exit 1 naming other.md, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 14d. THE FILE-WIDE WILDCARD, which exists for fixture INPUT — a file whose
+# broken paths are test data, not claims. It must stay scoped to its file: this
+# gate went red on its own fixture suite the moment that suite was committed, and
+# the fix must not be a blanket exemption.
+new_tree
+echo 'A fixture writes `packages/api/src/lib/gone.ts` and `/pr` on purpose.' > "$TREE/docs/agents/fixture-input.md"
+echo 'A real doc names `packages/api/src/lib/gone.ts` too.' > "$TREE/docs/agents/real.md"
+echo '* docs/agents/fixture-input.md * # fixture input, not a claim' > "$TREE/ALLOW.txt"
+stage; run_gate
+if [ "$RC" = "1" ] && printf '%s' "$OUT" | grep -qF "docs/agents/real.md" \
+   && ! printf '%s' "$OUT" | grep -qF "fixture-input.md"; then
+  pass "a file-wide '*' exemption covers its file (paths AND commands) and no other"
+else
+  fail "wildcard scoping — expected exit 1 naming only real.md, got $RC"
   printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
 fi
 

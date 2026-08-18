@@ -166,10 +166,17 @@ grep -qE '^\s*--font-mono:.*--font-jetbrains' "$WEB_GLOBALS" ||
 # ⚠️ THIS NUMBER MAY ONLY GO DOWN. It is not a target to keep meeting — it is a
 # ceiling that drops every time a component is converted to tokens. Raising it
 # to make a build pass re-opens the exact hole this gate closes.
-HARDCODED_CEILING=1118
+HARDCODED_CEILING=1117
 
 NEUTRAL_RE='\b(bg|text|border|ring|fill|stroke|from|to|via|divide|placeholder|decoration|outline|caret|accent)-(white|black|zinc|slate|gray|neutral|stone)(-[0-9]{2,3})?\b'
-hardcoded="$(git ls-files -- "$WEB_SRC/*.tsx" "$WEB_SRC/*.ts" 2>/dev/null | xargs -r grep -InoE "$NEUTRAL_RE" 2>/dev/null | wc -l | tr -d ' ')"
+# TEST FILES ARE EXCLUDED, and the reason is not leniency: this ratchet is about
+# the RENDERED product surface, and a test asserting that `bg-zinc-100` is absent
+# has to name `bg-zinc-100`. The unit test added with this gate does exactly that
+# — it is the falsifier for the SQL pane — and counting it would make the gate
+# punish its own measurement.
+hardcoded="$(git ls-files -- "$WEB_SRC/*.tsx" "$WEB_SRC/*.ts" 2>/dev/null |
+  grep -vE '(^|/)__tests__/|\.test\.(ts|tsx)$' |
+  xargs -r grep -InoE "$NEUTRAL_RE" 2>/dev/null | wc -l | tr -d ' ')"
 
 # Vacuity floor: a pattern that matches nothing would report a triumphant zero.
 if [ "$hardcoded" -eq 0 ]; then

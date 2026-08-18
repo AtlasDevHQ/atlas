@@ -115,10 +115,18 @@ EXCLUDES=(':(exclude).claude/research' ':(exclude)docs/research')
 
 # ── the allowlist ────────────────────────────────────────────────────────────
 # Format, three whitespace-separated fields then a required `# reason`:
-#   <kind> <file-glob|*> <token>   # why this is not a defect
-# `kind` is `path` or `command`. An entry without a reason is a FAILURE, not a
-# warning: the reason is the only thing that keeps the list from becoming a
-# place to put findings.
+#   <kind> <file-glob|*> <token|*>   # why this is not a defect
+# `kind` is `path`, `command`, `count`, or `*` for all three. An entry without a
+# reason is a FAILURE, not a warning: the reason is the only thing that keeps the
+# list from becoming a place to put findings.
+#
+# ⚠️ A `*` in the TOKEN field exempts a whole file, and exists for exactly one
+# situation: a file whose content is deliberately-broken INPUT rather than a
+# claim — this gate's own fixture suite, and this gate's own allowlist (whose
+# token column is, necessarily, a list of paths that do not exist). Committing
+# the fixture suite is what first turned this gate red on itself, which is the
+# same shape check-gate-fixtures-wired.sh documents: the gate's fixtures are its
+# subject. Use a specific token everywhere else.
 ALLOW_KIND=(); ALLOW_FILE=(); ALLOW_TOKEN=()
 if [ -f "$ALLOWLIST" ]; then
   lineno=0
@@ -140,7 +148,7 @@ if [ -f "$ALLOWLIST" ]; then
     if [ -z "${reason//[#[:space:]]/}" ]; then
       die "$ALLOWLIST:$lineno: entry has no reason after '#'. An allowlist entry without a reason is a finding in hiding: $raw"
     fi
-    case "$1" in path|command) ;; *) die "$ALLOWLIST:$lineno: unknown kind '$1' (expected 'path' or 'command')." ;; esac
+    case "$1" in path|command|count|'*') ;; *) die "$ALLOWLIST:$lineno: unknown kind '$1' (expected 'path', 'command', 'count' or '*')." ;; esac
     ALLOW_KIND+=("$1"); ALLOW_FILE+=("$2"); ALLOW_TOKEN+=("$3")
   done < "$ALLOWLIST"
 fi
@@ -148,8 +156,8 @@ fi
 is_allowed() { # is_allowed KIND FILE TOKEN
   local kind="$1" file="$2" tok="$3" i
   for i in "${!ALLOW_KIND[@]}"; do
-    [ "${ALLOW_KIND[$i]}" = "$kind" ] || continue
-    [ "${ALLOW_TOKEN[$i]}" = "$tok" ] || continue
+    [ "${ALLOW_KIND[$i]}" = "$kind" ] || [ "${ALLOW_KIND[$i]}" = "*" ] || continue
+    [ "${ALLOW_TOKEN[$i]}" = "$tok" ] || [ "${ALLOW_TOKEN[$i]}" = "*" ] || continue
     # shellcheck disable=SC2053 # glob match on the left is the point
     [[ "${ALLOW_FILE[$i]}" = "*" || "$file" == ${ALLOW_FILE[$i]} ]] || continue
     return 0
@@ -367,6 +375,7 @@ for claim in "${COUNT_CLAIMS[@]}"; do
     file="${row%%:*}"; rest="${row#*:}"; line="${rest%%:*}"; hit="${rest#*:}"
     stated="$(word_to_num "$(printf '%s' "$hit" | awk '{print $1}')")"
     [ "$stated" = "$expected" ] && continue
+    is_allowed count "$file" "$phrase" && continue
     report "$file" "$line" "states \"$hit\" but the tree has $expected. ($fn)"
     echo "      → update the number, or the set it counts. Registered count phrases live in scripts/check-agent-doc-paths.sh." >&2
   done < <(git grep -I -n -o -iE "(${NUMWORDS}|[0-9]+)[[:space:]]+${phrase}" -- . "${EXCLUDES[@]}" 2>/dev/null | sed 's/^\([^:]*\):\([0-9]*\):/\1:\2:/' | sort -u)

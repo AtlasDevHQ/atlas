@@ -1487,10 +1487,17 @@ describe("ImplementationStatusOverrideLive", () => {
     expect(result.updatedCount).toBe(0);
   });
 
-  // Note: gates-pass paths (`skipped-empty` / `applied` / `error`) are
-  // covered by `runImplementationStatusOverrideBoot (discriminated
-  // outcomes)` in `lib/integrations/__tests__/implementation-status-override.test.ts`.
-  // The wrapper covers the boot-time side of the contract; this Layer
-  // test covers only the upstream-gate branch that can't be reached
-  // from the wrapper alone.
+  // Note: the gates-PASS paths (`skipped-empty` / `applied` / `error`, and
+  // all three `reason` values behind the wrapper's single `skipped` kind)
+  // are driven against the LIVE Layer in
+  // `lib/effect/__tests__/builtin-catalog-seed-layers.test.ts` (#5305).
+  //
+  // ⚠️ This note used to punt them to `runImplementationStatusOverrideBoot
+  // (discriminated outcomes)` in
+  // `lib/integrations/__tests__/implementation-status-override.test.ts`, which
+  // was not the same claim: those tests pin what the WRAPPER returns, and every
+  // gates-pass arm is the Layer's own TRANSLATION of that return into a Tag
+  // value. `no-config` → `outcome: "error"` is the clearest case — the wrapper
+  // calls it a skip and the Layer promotes it, so no wrapper test can see the
+  // promotion. Nothing built the Live Layer past its gate until #5305.
 });

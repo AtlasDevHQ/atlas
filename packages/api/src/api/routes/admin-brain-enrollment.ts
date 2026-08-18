@@ -1,7 +1,24 @@
 /**
  * The **enrollment surface** (#5196, ADR-0039) — where a human names the
- * `(entity, dimension)` pairs the tier-1 warehouse producer (#5042) may emit
- * claims about.
+ * `(entity, group, dimension)` triples the tier-1 warehouse producer (#5042)
+ * may emit claims about.
+ *
+ * ⚠️ The GROUP half arrived in #5286 and every verb here carries it. An entity
+ * NAME is unique only within a connection group, so the pair alone could not
+ * address one of two same-named entities: `/entities` collapsed them to one
+ * option, the write stored cleanly, and the producer refused it on every run.
+ * Both write bodies REQUIRE the field — see `BrainEnrollmentWriteRequestSchema`
+ * for why it is `.nullable()` rather than `.nullish()`.
+ *
+ * ⚠️ **The 409 that `/dimensions` and `/enroll` used to declare is GONE with it,
+ * and its removal is a claim worth checking rather than tidying.** That status
+ * came from `AmbiguousEntityError`, which `getEntity` raises on its
+ * `connectionGroupId === undefined` branch and on no other. Both handlers now
+ * pass an explicit group — a string, or `null` for the flat scope — so that
+ * branch is unreachable from here and the status could not be returned. A
+ * documented response a route cannot produce is a false statement in the public
+ * spec, which is why it is deleted rather than reworded. `POST /produce` keeps
+ * its own 409; that one is the run lock and is unrelated.
  *
  * Mounted under `/api/v1/admin/brain-enrollment`:
  *
@@ -312,18 +329,27 @@ const dimensionsRoute = createRoute({
   request: {
     query: z.object({
       entity: z.string().min(1).openapi({ param: { name: "entity", in: "query" }, example: "accounts" }),
+      /**
+       * Which of the name's connection groups to read (#5286). OMITTED is the
+       * flat scope — a query string cannot carry a `null`, so absence is how it
+       * is spelled here, unlike the write bodies where an explicit `null` is
+       * required.
+       *
+       * The asymmetry is deliberate: this route READS, so an omitted group costs
+       * a wrong list an admin can see is wrong. A write's omitted group costs a
+       * row in the wrong scope that looks exactly like a working one.
+       */
+      group: z
+        .string()
+        .min(1)
+        .optional()
+        .openapi({ param: { name: "group", in: "query" }, example: "grp_warehouse" }),
     }),
   },
   responses: {
     200: { description: "Enrollable dimensions", content: { "application/json": { schema: BrainEnrollmentDimensionsResponseSchema } } },
     400: { description: "No active organization", content: { "application/json": { schema: ErrorSchema } } },
-    404: { description: "No such entity in the published semantic layer", content: { "application/json": { schema: ErrorSchema } } },
-    409: {
-      description:
-        "The entity name resolves in more than one connection group (#2412), so which one to enroll from is ambiguous. " +
-        "Enrollment stores `(workspace, entity, dimension)` with no group column, so this surface cannot express the choice.",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
+    404: { description: "No such entity in the published semantic layer, or none under the given group", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -346,12 +372,6 @@ const enrollRoute = createRoute({
     400: { description: "Invalid pair or no active organization", content: { "application/json": { schema: ErrorSchema } } },
     403: { description: "Not entitled", content: { "application/json": { schema: ErrorSchema } } },
     404: { description: "No such (entity, dimension) in the published semantic layer", content: { "application/json": { schema: ErrorSchema } } },
-    409: {
-      description:
-        "The entity name resolves in more than one connection group (#2412). Declared on this WRITE route because the " +
-        "pre-write semantic-layer check runs the same lookup as `GET /dimensions`.",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -452,6 +472,13 @@ adminBrainEnrollment.openapi(listRoute, async (c) => {
       return c.json(
         checked(BrainEnrollmentListResponseSchema, {
           enrollments,
+          // ⚠️ Distinct NAMES, not distinct `(name, group)` pairs, and the
+          // difference is the number's whole job. It is the set the producer
+          // evaluates ADR-0037 §4's fail-closed ambiguity rule across, and that
+          // rule is evaluated over the keys the producer WRITES — which carry the
+          // entity name and no group (#5286). Counting the pairs would tell an
+          // admin two same-named enrollments are two entities to the producer;
+          // they are one key with two meanings, and it refuses both.
           entityCount: new Set(enrollments.map((e) => e.entity)).size,
         }),
         200,
@@ -487,7 +514,12 @@ adminBrainEnrollment.openapi(dimensionsRoute, async (c) => {
       const { requestId } = yield* RequestContext;
       const { orgId } = yield* AuthContext;
       if (!orgId) return c.json(noActiveOrgBody(requestId), 400);
-      const { entity } = c.req.valid("query");
+      const { entity, group: rawGroup } = c.req.valid("query");
+      // A query string cannot carry `null`, so an omitted `group` is the flat
+      // scope — the one place in this file where absence means it. Normalised
+      // here, once, so every use below reads the same value the enrollment
+      // verbs would store.
+      const group = rawGroup ?? null;
 
       const payload = yield* Effect.tryPromise({
         try: async () => {
@@ -495,11 +527,16 @@ adminBrainEnrollment.openapi(dimensionsRoute, async (c) => {
           // layer knows nothing about enrollment — so serializing them would
           // only cost latency.
           const [candidates, enrollments] = await Promise.all([
-            loadEnrollableDimensions(orgId, entity),
+            loadEnrollableDimensions(orgId, entity, group),
             listEnrollments(orgId),
           ]);
           if (candidates === null) return null;
-          const mine = enrollments.filter((e) => e.entity === entity);
+          // ⚠️ Filtered on the GROUP as well as the name (#5286). Without it, a
+          // workspace holding `plans` in two groups showed one group’s
+          // enrollments as `enrolled` while listing the OTHER group’s
+          // dimensions — an offer whose click is a silent no-op on one side and
+          // a badge on a pair that was never enrolled on the other.
+          const mine = enrollments.filter((e) => e.entity === entity && e.group === group);
           const enrolled = new Set(mine.map((e) => e.dimension));
           // Computed SERVER-SIDE beside `enrolled`, for that flag's reason: the
           // client would have to re-implement the pair's identity to join it,
@@ -508,6 +545,7 @@ adminBrainEnrollment.openapi(dimensionsRoute, async (c) => {
           const naming = new Set(mine.filter((e) => e.naming).map((e) => e.dimension));
           return {
             entity,
+            group,
             dimensions: candidates.map((candidate) => ({
               ...candidate,
               enrolled: enrolled.has(candidate.name),
@@ -522,8 +560,11 @@ adminBrainEnrollment.openapi(dimensionsRoute, async (c) => {
         return c.json(
           errorBody(
             "entity-not-found",
-            `"${entity.slice(0, 80)}" is not an entity in this workspace's published semantic layer. ` +
-              "A draft entity is deliberately not enrollable — the producer reads what is live, and a " +
+            `"${entity.slice(0, 80)}" is not an entity in this workspace's published semantic layer` +
+              (group === null
+                ? ", in the ungrouped scope. If it belongs to a connection group, ask for that group."
+                : ` under connection group "${group.slice(0, 80)}".`) +
+              " A draft entity is deliberately not enrollable — the producer reads what is live, and a " +
               "pair enrolled against a draft would disappear when the draft is discarded.",
             requestId,
           ),
@@ -572,7 +613,7 @@ adminBrainEnrollment.openapi(enrollRoute, async (c) => {
 
       const outcome = yield* Effect.tryPromise({
         try: async () => {
-          const pair = normalizeEnrollmentPair(body.entity, body.dimension);
+          const pair = normalizeEnrollmentPair(body.entity, body.dimension, body.group);
           // ⚠️ Verified against the semantic layer BEFORE the write, not after.
           // An enrollment for a dimension Atlas cannot see stores cleanly and
           // reaches nothing — it sits in the list looking live while the
@@ -581,7 +622,7 @@ adminBrainEnrollment.openapi(enrollRoute, async (c) => {
           // check is a point-in-time one, deliberately: an entity RENAMED after
           // enrolment leaves a stale pair, and that is the coverage surface's
           // question (ADR-0041) rather than a reason to re-validate on read.
-          const candidates = await loadEnrollableDimensions(orgId, pair.entity);
+          const candidates = await loadEnrollableDimensions(orgId, pair.entity, pair.group);
           if (candidates === null) return { kind: "missing", pair, entityResolved: false } as const;
           if (!candidates.some((cnd) => cnd.name === pair.dimension)) {
             return { kind: "missing", pair, entityResolved: true } as const;
@@ -589,6 +630,7 @@ adminBrainEnrollment.openapi(enrollRoute, async (c) => {
           const changed = await enrollPair({
             workspaceId: orgId,
             entity: pair.entity,
+            group: pair.group,
             dimension: pair.dimension,
             note: body.note ?? null,
             actor: author,
@@ -620,8 +662,11 @@ adminBrainEnrollment.openapi(enrollRoute, async (c) => {
           ? `"${outcome.pair.dimension}" is not a dimension or measure of "${outcome.pair.entity}" ` +
             "in this workspace's published semantic layer. Names are case-sensitive, because a " +
             "warehouse may hold two columns that differ only in case."
-          : `"${outcome.pair.entity}" is not an entity in this workspace's published semantic layer. ` +
-            "A draft entity is deliberately not enrollable — the producer reads what is live.";
+          : `"${outcome.pair.entity}" is not an entity in this workspace's published semantic layer` +
+            (outcome.pair.group === null
+              ? ", in the ungrouped scope."
+              : ` under connection group "${outcome.pair.group}".`) +
+            " A draft entity is deliberately not enrollable — the producer reads what is live.";
         return c.json(errorBody("pair-not-found", message, requestId), 404);
       }
 
@@ -636,6 +681,7 @@ adminBrainEnrollment.openapi(enrollRoute, async (c) => {
         {
           workspaceId: orgId,
           entity: outcome.pair.entity,
+          group: outcome.pair.group,
           dimension: outcome.pair.dimension,
           changed: outcome.changed,
           requestId,
@@ -645,6 +691,7 @@ adminBrainEnrollment.openapi(enrollRoute, async (c) => {
       return c.json(
         checked(BrainEnrollmentWriteResponseSchema, {
           entity: outcome.pair.entity,
+          group: outcome.pair.group,
           dimension: outcome.pair.dimension,
           changed: outcome.changed,
         }),
@@ -696,10 +743,11 @@ adminBrainEnrollment.openapi(unenrollRoute, async (c) => {
       // exactly the enrollments an admin came to clear.
       const outcome = yield* Effect.tryPromise({
         try: async () => {
-          const pair = normalizeEnrollmentPair(body.entity, body.dimension);
+          const pair = normalizeEnrollmentPair(body.entity, body.dimension, body.group);
           const changed = await unenrollPair({
             workspaceId: orgId,
             entity: pair.entity,
+            group: pair.group,
             dimension: pair.dimension,
           });
           return { kind: "written", pair, changed } as const;
@@ -723,6 +771,7 @@ adminBrainEnrollment.openapi(unenrollRoute, async (c) => {
         {
           workspaceId: orgId,
           entity: outcome.pair.entity,
+          group: outcome.pair.group,
           dimension: outcome.pair.dimension,
           changed: outcome.changed,
           requestId,
@@ -732,6 +781,7 @@ adminBrainEnrollment.openapi(unenrollRoute, async (c) => {
       return c.json(
         checked(BrainEnrollmentWriteResponseSchema, {
           entity: outcome.pair.entity,
+          group: outcome.pair.group,
           dimension: outcome.pair.dimension,
           changed: outcome.changed,
         }),
@@ -783,15 +833,21 @@ adminBrainEnrollment.openapi(namingRoute, async (c) => {
           const changed = await setNamingDimension({
             workspaceId: orgId,
             entity: body.entity,
+            group: body.group,
             dimension: body.dimension,
           });
           // Normalized through the same door the write took, so the response
           // echoes what was STORED rather than what was sent — a trailing space
           // in the request must not read back as an accepted spelling.
-          const pair = normalizeEnrollmentPair(body.entity, body.dimension ?? body.entity);
+          const pair = normalizeEnrollmentPair(
+            body.entity,
+            body.dimension ?? body.entity,
+            body.group,
+          );
           return {
             kind: "written",
             entity: pair.entity,
+            group: pair.group,
             dimension: body.dimension === null ? null : pair.dimension,
             changed,
           } as const;
@@ -814,6 +870,7 @@ adminBrainEnrollment.openapi(namingRoute, async (c) => {
         {
           workspaceId: orgId,
           entity: outcome.entity,
+          group: outcome.group,
           dimension: outcome.dimension,
           changed: outcome.changed,
           requestId,
@@ -825,6 +882,7 @@ adminBrainEnrollment.openapi(namingRoute, async (c) => {
       return c.json(
         checked(BrainEnrollmentNamingResponseSchema, {
           entity: outcome.entity,
+          group: outcome.group,
           dimension: outcome.dimension,
           changed: outcome.changed,
         }),

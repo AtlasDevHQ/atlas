@@ -79,7 +79,9 @@ let writeFails = false;
 /** The enrolled rows the list endpoint answers with. */
 let enrollments: unknown[] = [];
 /** The entities the picker endpoint answers with. */
-let entities: unknown[] = [{ name: "accounts", table: "public.accounts", description: null }];
+let entities: unknown[] = [
+  { name: "accounts", group: null, table: "public.accounts", description: null },
+];
 
 /**
  * THREE pairs across TWO entities, deliberately unequal.
@@ -93,6 +95,7 @@ let entities: unknown[] = [{ name: "accounts", table: "public.accounts", descrip
 const THREE_PAIRS_TWO_ENTITIES = [
   {
     entity: "accounts",
+    group: null,
     dimension: "arr_band",
     enrolledAt: "2026-08-14T00:00:00.000Z",
     enrolledBy: "user-1",
@@ -104,6 +107,7 @@ const THREE_PAIRS_TWO_ENTITIES = [
   },
   {
     entity: "accounts",
+    group: null,
     dimension: "tier",
     enrolledAt: "2026-08-14T00:00:00.000Z",
     enrolledBy: "user-1",
@@ -112,6 +116,7 @@ const THREE_PAIRS_TWO_ENTITIES = [
   },
   {
     entity: "subscriptions",
+    group: null,
     dimension: "plan",
     enrolledAt: "2026-08-14T00:00:00.000Z",
     enrolledBy: "user-2",
@@ -182,7 +187,14 @@ const ALL_REFUSED = completeReport({
 });
 
 /** What the page POSTed to `/naming`, in order. */
-type NamingBody = { entity: string; dimension: string | null };
+type NamingBody = { entity: string; group: string | null; dimension: string | null };
+type EnrollBody = {
+  entity: string;
+  group: string | null;
+  dimension: string;
+  note: string | null;
+};
+const enrollBodies: EnrollBody[] = [];
 let namingBodies: NamingBody[] = [];
 
 const originalFetch = globalThis.fetch;
@@ -221,6 +233,7 @@ function installFetchStub() {
       return Promise.resolve(
         jsonResponse({
           entity: "accounts",
+          group: null,
           dimensions: [
             {
               name: "arr_band",
@@ -235,13 +248,14 @@ function installFetchStub() {
       );
     }
     if (url.includes("/brain-enrollment/enroll")) {
+      enrollBodies.push(JSON.parse(String(init?.body)) as EnrollBody);
       return Promise.resolve(
         writeFails
           ? jsonResponse(
               { error: "not-entitled", message: "you may not enroll", requestId: "req-1" },
               403,
             )
-          : jsonResponse({ entity: "accounts", dimension: "arr_band", changed: writeChanged }),
+          : jsonResponse({ entity: "accounts", group: null, dimension: "arr_band", changed: writeChanged }),
       );
     }
     if (url.includes("/brain-enrollment/naming")) {
@@ -254,6 +268,7 @@ function installFetchStub() {
             )
           : jsonResponse({
               entity: "accounts",
+              group: null,
               // Echoed from the REQUEST, so a page that sent the wrong half is
               // visible in what comes back rather than masked by a constant.
               dimension: (JSON.parse(String(init?.body)) as { dimension: string | null })
@@ -269,7 +284,7 @@ function installFetchStub() {
               { error: "not-entitled", message: "you may not un-enroll", requestId: "req-1" },
               403,
             )
-          : jsonResponse({ entity: "accounts", dimension: "arr_band", changed: writeChanged }),
+          : jsonResponse({ entity: "accounts", group: null, dimension: "arr_band", changed: writeChanged }),
       );
     }
     // BEFORE the bare list arm, per the ordering note above — `/produce`
@@ -355,10 +370,11 @@ beforeEach(() => {
   writeChanged = true;
   writeFails = false;
   namingBodies = [];
+  enrollBodies.length = 0;
   runResponse = ALL_REFUSED;
   runStatus = 200;
   enrollments = [];
-  entities = [{ name: "accounts", table: "public.accounts", description: null }];
+  entities = [{ name: "accounts", group: null, table: "public.accounts", description: null }];
   installFetchStub();
 });
 
@@ -575,7 +591,7 @@ describe("naming the column an entity is known by (#5043)", () => {
     // own local boolean, so every assertion about prose passes whatever the page
     // actually sent — `dimension: target.dimension` on BOTH paths survived the
     // whole suite.
-    expect(namingBodies).toEqual([{ entity: "accounts", dimension: "arr_band" }]);
+    expect(namingBodies).toEqual([{ entity: "accounts", group: null, dimension: "arr_band" }]);
   });
 
   test("clearing it sends NULL — the destructive half of the verb", async () => {
@@ -591,7 +607,7 @@ describe("naming the column an entity is known by (#5043)", () => {
     // Sending the dimension here does not clear the name — it RE-NAMES, which
     // re-keys every fact about the entity workspace-wide. The copy is identical
     // either way, so prose can never catch it.
-    expect(namingBodies).toEqual([{ entity: "accounts", dimension: null }]);
+    expect(namingBodies).toEqual([{ entity: "accounts", group: null, dimension: null }]);
   });
 
   test("a failed naming change gets its OWN error slot and badge", async () => {
@@ -605,6 +621,123 @@ describe("naming the column an entity is known by (#5043)", () => {
     const text = container.textContent ?? "";
     expect(text).toContain("name not changed");
     expect(text).not.toContain("not removed");
+  });
+});
+
+describe("an entity in two connection groups is two choices (#5286)", () => {
+  /**
+   * The picker's two rows for one name, and the dimension list that answers for
+   * whichever group was asked about.
+   *
+   * ⚠️ **This is the shape the page rendered as ONE option until #5286**, because
+   * `loadEnrollableEntities` collapsed same-named rows server-side. Whichever the
+   * admin meant, the enrollment could not record it — the row stored cleanly and
+   * the producer refused it on every run afterwards.
+   */
+  function twoGroups() {
+    entities = [
+      { name: "test_orders", group: "g-clickhouse", table: "orders", description: null },
+      { name: "test_orders", group: "g-mysql", table: "orders", description: null },
+    ];
+  }
+
+  test("both groups are offered, and the group is what tells them apart", async () => {
+    twoGroups();
+    const { container } = renderPage();
+    await waitFor(() =>
+      expect(container.textContent ?? "").not.toContain("Loading your semantic layer…"),
+    );
+
+    fireEvent.click(screen.getByRole("combobox", { name: "Entity" }));
+    const options = await screen.findAllByRole("option");
+    expect(options).toHaveLength(2);
+    // The NAME alone would render two identical rows — the duplicate-React-key
+    // state the old server-side collapse existed to avoid, and which it avoided
+    // by making the pair unenrollable instead.
+    expect(options.map((o) => o.textContent)).toEqual([
+      "test_orders — g-clickhouse",
+      "test_orders — g-mysql",
+    ]);
+  });
+
+  test("the group is NOT shown where it cannot disambiguate", async () => {
+    // The control. A group printed on every row is noise an admin learns to
+    // ignore — and then ignores on the workspace where it decides which database
+    // a claim came from.
+    entities = [{ name: "accounts", group: "g-only", table: "accounts", description: null }];
+    const { container } = renderPage();
+    await waitFor(() =>
+      expect(container.textContent ?? "").not.toContain("Loading your semantic layer…"),
+    );
+
+    fireEvent.click(screen.getByRole("combobox", { name: "Entity" }));
+    const options = await screen.findAllByRole("option");
+    expect(options.map((o) => o.textContent)).toEqual(["accounts"]);
+  });
+
+  test("picking one group sends THAT group to the write, not the other", async () => {
+    // ⚠️ The assertion that matters. Every rendering test above passes on a page
+    // that renders two options and then posts the first one's group for both —
+    // which is the original defect wearing a picker.
+    twoGroups();
+    const { container } = renderPage();
+    await waitFor(() =>
+      expect(container.textContent ?? "").not.toContain("Loading your semantic layer…"),
+    );
+
+    fireEvent.click(screen.getByRole("combobox", { name: "Entity" }));
+    fireEvent.click(await screen.findByRole("option", { name: "test_orders — g-mysql" }));
+
+    // The dimension list is its own fetch, keyed on the picked entity AND its
+    // group — so it is DISABLED until that request answers. Waiting on the
+    // control rather than on a timer is what keeps this test about the payload.
+    await waitFor(() =>
+      expect(
+        screen.getByRole("combobox", { name: "Dimension or measure" }).hasAttribute("disabled"),
+      ).toBe(false),
+    );
+    fireEvent.click(screen.getByRole("combobox", { name: "Dimension or measure" }));
+    fireEvent.click(await screen.findByRole("option", { name: /arr_band/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Enroll this dimension/ }));
+
+    await waitFor(() => expect(enrollBodies).toHaveLength(1));
+    expect(enrollBodies[0]).toEqual({
+      entity: "test_orders",
+      group: "g-mysql",
+      dimension: "arr_band",
+      note: null,
+    });
+  });
+
+  test("a row in the reach names its group, and the flat scope names none", async () => {
+    enrollments = [
+      {
+        entity: "test_orders",
+        group: "g-mysql",
+        dimension: "status",
+        enrolledAt: "2026-08-14T00:00:00.000Z",
+        enrolledBy: "user-1",
+        note: null,
+        naming: false,
+      },
+      {
+        entity: "accounts",
+        group: null,
+        dimension: "arr_band",
+        enrolledAt: "2026-08-14T00:00:00.000Z",
+        enrolledBy: "user-1",
+        note: null,
+        naming: false,
+      },
+    ];
+    const text = await settledText();
+    // Named where there is one — it is what tells two same-named rows apart, and
+    // two same-named rows are the state the producer refuses.
+    expect(text).toContain("g-mysql · enrolled by user-1");
+    // ...and NOT invented where there is none. A `null` rendered as "null" or as
+    // an empty separator is a group whose name the admin cannot look up.
+    expect(text).toContain("accounts");
+    expect(text).not.toContain("null · enrolled by");
   });
 });
 

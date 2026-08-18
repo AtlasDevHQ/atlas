@@ -96,6 +96,7 @@ import {
   type ValidatedSnapshotRequest,
   type WarehouseConnectionId,
   type WarehouseConnectionPlacement,
+  type WarehousePlacementTarget,
   type WarehouseRowId,
   type WarehouseSnapshotRequest,
   type WarehouseSnapshotRunner,
@@ -288,11 +289,11 @@ describe("planWarehouseEmission — ADR-0037 §4's fail-closed ambiguity rule", 
       dimensions: ["id", "status", "region", "owner"],
     });
     const reach = makeProducerReach([
-      { entity: "Accounts", dimension: "status", naming: false },
-      { entity: "Accounts", dimension: "tier", naming: false },
-      { entity: "Contracts", dimension: "status", naming: false },
-      { entity: "Contracts", dimension: "region", naming: false },
-      { entity: "Contracts", dimension: "owner", naming: false },
+      { entity: "Accounts", group: null, dimension: "status", naming: false },
+      { entity: "Accounts", group: null, dimension: "tier", naming: false },
+      { entity: "Contracts", group: null, dimension: "status", naming: false },
+      { entity: "Contracts", group: null, dimension: "region", naming: false },
+      { entity: "Contracts", group: null, dimension: "owner", naming: false },
     ]);
 
     const plan = planWarehouseEmission(reach, found(accounts, contracts));
@@ -323,10 +324,10 @@ describe("planWarehouseEmission — ADR-0037 §4's fail-closed ambiguity rule", 
       dimensions: ["id", "status"],
     });
     const reach = makeProducerReach([
-      { entity: "Accounts", dimension: "status", naming: false },
+      { entity: "Accounts", group: null, dimension: "status", naming: false },
       // Enrolled, but the entity left the published semantic layer. The producer
       // is not producing from it, so `status` is not ambiguous.
-      { entity: "Contracts", dimension: "status", naming: false },
+      { entity: "Contracts", group: null, dimension: "status", naming: false },
     ]);
 
     const plan = planWarehouseEmission(
@@ -356,8 +357,8 @@ describe("planWarehouseEmission — ADR-0037 §4's fail-closed ambiguity rule", 
     });
     const plan = planWarehouseEmission(
       makeProducerReach([
-        { entity: "Accounts", dimension: "status", naming: false },
-        { entity: "Contracts", dimension: "Status", naming: false },
+        { entity: "Accounts", group: null, dimension: "status", naming: false },
+        { entity: "Contracts", group: null, dimension: "Status", naming: false },
       ]),
       found(accounts, contracts),
     );
@@ -372,7 +373,7 @@ describe("planWarehouseEmission — ADR-0037 §4's fail-closed ambiguity rule", 
       dimensions: ["id", "status", "tier", "arr"],
     });
     const plan = planWarehouseEmission(
-      makeProducerReach([{ entity: "Accounts", dimension: "tier", naming: false }]),
+      makeProducerReach([{ entity: "Accounts", group: null, dimension: "tier", naming: false }]),
       found(accounts),
     );
     expect(plan.emit[0]?.dimensions.map((d) => d.name)).toEqual(["tier"]);
@@ -426,8 +427,8 @@ describe("planWarehouseEmission — ADR-0037 §4's fail-closed ambiguity rule", 
     // key for it to fall back to.
     const plan = planWarehouseEmission(
       makeProducerReach([
-        { entity: "Plans", dimension: "price", naming: false },
-        { entity: "Products", dimension: "price", naming: false },
+        { entity: "Plans", group: null, dimension: "price", naming: false },
+        { entity: "Products", group: null, dimension: "price", naming: false },
       ]),
       found(analytics, billing),
     );
@@ -453,10 +454,10 @@ describe("planWarehouseEmission — ADR-0037 §4's fail-closed ambiguity rule", 
     });
     const plan = planWarehouseEmission(
       makeProducerReach([
-        { entity: "NoKey", dimension: "status", naming: false },
-        { entity: "Composite", dimension: "status", naming: false },
-        { entity: "Orders", dimension: "total_revenue", naming: false },
-        { entity: "Orders", dimension: "typo", naming: false },
+        { entity: "NoKey", group: null, dimension: "status", naming: false },
+        { entity: "Composite", group: null, dimension: "status", naming: false },
+        { entity: "Orders", group: null, dimension: "total_revenue", naming: false },
+        { entity: "Orders", group: null, dimension: "typo", naming: false },
       ]),
       found(noKey, composite, withMeasure),
     );
@@ -489,8 +490,8 @@ describe("planWarehouseEmission — ADR-0037 §4's fail-closed ambiguity rule", 
     });
     const plan = planWarehouseEmission(
       makeProducerReach([
-        { entity: "Broken", dimension: "status", naming: false },
-        { entity: "Accounts", dimension: "tier", naming: false },
+        { entity: "Broken", group: null, dimension: "status", naming: false },
+        { entity: "Accounts", group: null, dimension: "tier", naming: false },
       ]),
       new Map<string, WarehouseEntityLookup>([
         ["Broken", { kind: "unreadable", cause: "load-threw", why: "it resolves in two connection groups." }],
@@ -1051,7 +1052,7 @@ describe("mapEntitiesToConnectionIds (#5284)", () => {
         { name: "Accounts", connectionId: "g-eu" },
         { name: "Orders", connectionId: "g-us" },
       ],
-      new Set(["Accounts", "Orders"]),
+      [{ entity: "Accounts", group: null }, { entity: "Orders", group: null }],
       visible,
       true,
     );
@@ -1066,7 +1067,7 @@ describe("mapEntitiesToConnectionIds (#5284)", () => {
         { name: "Accounts", connectionId: "g-eu" },
         { name: "Secrets", connectionId: "g-us" },
       ],
-      new Set(["Accounts"]),
+      [{ entity: "Accounts", group: null }],
       visible,
       true,
     );
@@ -1078,7 +1079,7 @@ describe("mapEntitiesToConnectionIds (#5284)", () => {
   test("a FLAT entity is left unplaced rather than resolved to the literal \"default\"", () => {
     const out = mapEntitiesToConnectionIds(
       [{ name: "Accounts", connectionId: null }],
-      new Set(["Accounts"]),
+      [{ entity: "Accounts", group: null }],
       visible,
       true,
     );
@@ -1106,7 +1107,7 @@ describe("mapEntitiesToConnectionIds (#5284)", () => {
         { name: "Accounts", connectionId: null },
         { name: "Orders", connectionId: "g-us" },
       ],
-      new Set(["Accounts", "Orders"]),
+      [{ entity: "Accounts", group: null }, { entity: "Orders", group: null }],
       visible,
       true,
     );
@@ -1123,7 +1124,7 @@ describe("mapEntitiesToConnectionIds (#5284)", () => {
         { name: "Accounts", connectionId: "g-eu" },
         { name: "Accounts", connectionId: "g-eu" },
       ],
-      new Set(["Accounts"]),
+      [{ entity: "Accounts", group: null }],
       visible,
       true,
     );
@@ -1141,7 +1142,7 @@ describe("mapEntitiesToConnectionIds (#5284)", () => {
         { name: "Accounts", connectionId: "g-hidden" },
         { name: "Orders", connectionId: "g-us" },
       ],
-      new Set(["Accounts", "Orders"]),
+      [{ entity: "Accounts", group: null }, { entity: "Orders", group: null }],
       visible,
       true,
     );
@@ -1156,7 +1157,7 @@ describe("mapEntitiesToConnectionIds (#5284)", () => {
   test("an enrolled name absent from a GROUP-SCOPED catalog is unplaceable", () => {
     const out = mapEntitiesToConnectionIds(
       [{ name: "Orders", connectionId: "g-us" }],
-      new Set(["Accounts", "Orders"]),
+      [{ entity: "Accounts", group: null }, { entity: "Orders", group: null }],
       visible,
       true,
     );
@@ -1168,7 +1169,7 @@ describe("mapEntitiesToConnectionIds (#5284)", () => {
   test("an enrolled name absent from a NON-authoritative catalog is left to the default", () => {
     const out = mapEntitiesToConnectionIds(
       [{ name: "Orders", connectionId: null }],
-      new Set(["Accounts", "Orders"]),
+      [{ entity: "Accounts", group: null }, { entity: "Orders", group: null }],
       visible,
       false,
     );
@@ -1198,7 +1199,7 @@ describe("mapEntitiesToConnectionIds (#5284)", () => {
       // Only the ungrouped `__global__` demo rows are left. Nothing here is
       // group-scoped, which is precisely what made the old inference say "flat".
       [{ name: "DemoAccounts", connectionId: null }],
-      new Set(["Accounts"]),
+      [{ entity: "Accounts", group: null }],
       visible,
       true,
     );
@@ -1208,9 +1209,108 @@ describe("mapEntitiesToConnectionIds (#5284)", () => {
   });
 
   test("an EMPTY catalog places nothing and refuses nothing", () => {
-    const out = mapEntitiesToConnectionIds([], new Set(["Accounts"]), visible, false);
+    const out = mapEntitiesToConnectionIds([], [{ entity: "Accounts", group: null }], visible, false);
 
     expect(out.placed.size).toBe(0);
+    expect(out.unplaceable).toEqual([]);
+  });
+
+  // ---------------------------------------------------------------------------
+  // #5286 — the enrollment's OWN group, where one exists
+  // ---------------------------------------------------------------------------
+
+  test("a DECLARED group places a name the catalog holds under three of them", () => {
+    // ⚠️ **This is staging's exact shape, and before #5286 it was unplaceable.**
+    // `test_orders` is published under three connection groups, so the inference
+    // below refused it `ambiguous-group` on every run — including runs whose
+    // enrollment named one of the three, because the enrollment could not carry
+    // a group to name it with.
+    const catalog = [
+      { name: "test_orders", connectionId: "g-clickhouse" },
+      { name: "test_orders", connectionId: "g-mysql" },
+      { name: "test_orders", connectionId: "g-eu" },
+    ];
+    const out = mapEntitiesToConnectionIds(
+      catalog,
+      [{ entity: "test_orders", group: "g-eu" }],
+      visible,
+      true,
+    );
+
+    expect(placedOf(out)).toEqual({ test_orders: "eu-prod" });
+    expect(out.unplaceable).toEqual([]);
+  });
+
+  test("the SAME catalog still refuses the same name when the enrollment names no group", () => {
+    // ⚠️ The control that makes the test above mean something. Identical catalog,
+    // identical visible groups — only the enrollment's own group differs. Without
+    // this, "declared groups place" is equally satisfied by an implementation
+    // that stopped refusing ambiguity altogether, which would put a snapshot on
+    // whichever database sorted first.
+    //
+    // It is also the pre-0205 path, which a backfilled row still takes: the
+    // inference is kept for rows written before the column existed, and
+    // `ambiguous-group` remains the honest answer for the ones 0205's own
+    // backfill could not resolve.
+    const catalog = [
+      { name: "test_orders", connectionId: "g-clickhouse" },
+      { name: "test_orders", connectionId: "g-mysql" },
+      { name: "test_orders", connectionId: "g-eu" },
+    ];
+    const out = mapEntitiesToConnectionIds(
+      catalog,
+      [{ entity: "test_orders", group: null }],
+      visible,
+      true,
+    );
+
+    expect(out.placed.size).toBe(0);
+    expect(out.unplaceable).toEqual([{ entity: "test_orders", cause: "ambiguous-group" }]);
+  });
+
+  test("a declared group that is NOT visible is refused, never defaulted", () => {
+    const out = mapEntitiesToConnectionIds(
+      [{ name: "Accounts", connectionId: "g-gone" }],
+      [{ entity: "Accounts", group: "g-gone" }],
+      visible,
+      true,
+    );
+
+    expect(out.placed.size).toBe(0);
+    expect(out.unplaceable).toEqual([{ entity: "Accounts", cause: "group-not-visible" }]);
+  });
+
+  test("a declared group the catalog no longer publishes the name under is refused", () => {
+    // An enrollment outliving its entity's group is ordinary — nothing
+    // un-enrolls on a semantic-layer sync, by 0199's design. Placing it on the
+    // group's primary anyway would point a snapshot at a database that no longer
+    // answers for that name, and the refusal it earned would be a whitelist
+    // rejection blaming the SQL.
+    const out = mapEntitiesToConnectionIds(
+      [{ name: "Accounts", connectionId: "g-us" }],
+      [{ entity: "Accounts", group: "g-eu" }],
+      visible,
+      true,
+    );
+
+    expect(out.placed.size).toBe(0);
+    expect(out.unplaceable).toEqual([{ entity: "Accounts", cause: "absent-from-catalog" }]);
+  });
+
+  test("a NON-authoritative (disk) catalog does not refuse a declared group it lacks", () => {
+    // `catalogIsAuthoritative` is the same fact the `absent-from-catalog` arm
+    // above turns on, and it must gate this arm too: on the disk-fallback branch
+    // a name missing from the catalog establishes nothing, so refusing it would
+    // break pure-YAML self-hosted deploys that group their entities in
+    // directories.
+    const out = mapEntitiesToConnectionIds(
+      [],
+      [{ entity: "Accounts", group: "g-eu" }],
+      visible,
+      false,
+    );
+
+    expect(placedOf(out)).toEqual({ Accounts: "eu-prod" });
     expect(out.unplaceable).toEqual([]);
   });
 });
@@ -1218,7 +1318,7 @@ describe("mapEntitiesToConnectionIds (#5284)", () => {
 describe("runWarehouseProducer", () => {
   test("reads only enrolled dimensions, and emits only for enrolled pairs", async () => {
     const h = harness({
-      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
+      pairs: [{ entity: "Accounts", group: null, dimension: "tier", naming: false }],
       entities: {
         Accounts: entityYaml({
           table: "accounts",
@@ -1246,7 +1346,7 @@ describe("runWarehouseProducer", () => {
 
   test("snapshots run against the entity's CONNECTION GROUP, not the default connection", async () => {
     const h = harness({
-      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
+      pairs: [{ entity: "Accounts", group: null, dimension: "tier", naming: false }],
       entities: {
         // NO YAML `connection:` — which is every entity on a DB-backed semantic
         // layer, where the scope lives in the row's `connection_group_id` and
@@ -1264,7 +1364,7 @@ describe("runWarehouseProducer", () => {
     // `resolveConnectionIds("", reach.entities)`, which sends `listAdminEntities` an
     // empty org and falls to its DISK-ROOT branch — a SaaS workspace resolving its
     // connection groups from whatever YAML is on the box.
-    const calls: { ws: string; names: readonly string[] }[] = [];
+    const calls: { ws: string; names: readonly WarehousePlacementTarget[] }[] = [];
     const report = await runWarehouseProducer(
       { workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-1" },
       {
@@ -1276,7 +1376,9 @@ describe("runWarehouseProducer", () => {
       },
     );
 
-    expect(calls).toEqual([{ ws: WORKSPACE, names: ["Accounts"] }]);
+    // ⚠️ The TARGETS, not bare names (#5286): the seam is handed each entity's
+    // enrolled group, which is what lets a multi-group workspace resolve at all.
+    expect(calls).toEqual([{ ws: WORKSPACE, names: [{ entity: "Accounts", group: null }] }]);
 
     // Before #5284 this was `undefined`: the run read the YAML hint, found null,
     // and sent every snapshot to the deployment's `default` datasource. On a SaaS
@@ -1294,8 +1396,8 @@ describe("runWarehouseProducer", () => {
   test("the connection is resolved ONCE per run, not once per entity", async () => {
     const h = harness({
       pairs: [
-        { entity: "Accounts", dimension: "tier", naming: false },
-        { entity: "Orders", dimension: "status", naming: false },
+        { entity: "Accounts", group: null, dimension: "tier", naming: false },
+        { entity: "Orders", group: null, dimension: "status", naming: false },
       ],
       entities: {
         Accounts: entityYaml({ table: "accounts", primaryKey: "id", dimensions: ["id", "tier"] }),
@@ -1328,7 +1430,7 @@ describe("runWarehouseProducer", () => {
 
   test("a YAML `connection:` hint still overrides the resolved group", async () => {
     const h = harness({
-      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
+      pairs: [{ entity: "Accounts", group: null, dimension: "tier", naming: false }],
       entities: {
         Accounts: entityYaml({
           table: "accounts",
@@ -1353,7 +1455,7 @@ describe("runWarehouseProducer", () => {
 
   test("a YAML `connection: default` hint is the flat scope, not a connection named \"default\"", async () => {
     const h = harness({
-      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
+      pairs: [{ entity: "Accounts", group: null, dimension: "tier", naming: false }],
       entities: {
         // ⚠️ `connection: default` is this repo's OWN spelling of the flat root — the
         // implied group name in `whitelist.ts`, and a documented entity YAML value.
@@ -1386,8 +1488,8 @@ describe("runWarehouseProducer", () => {
   test("an UNPLACED entity reads the default connection; an UNPLACEABLE one reads nothing", async () => {
     const h = harness({
       pairs: [
-        { entity: "Accounts", dimension: "tier", naming: false },
-        { entity: "Orders", dimension: "status", naming: false },
+        { entity: "Accounts", group: null, dimension: "tier", naming: false },
+        { entity: "Orders", group: null, dimension: "status", naming: false },
       ],
       entities: {
         Accounts: entityYaml({ table: "accounts", primaryKey: "id", dimensions: ["id", "tier"] }),
@@ -1431,7 +1533,7 @@ describe("runWarehouseProducer", () => {
         entity: "Orders",
         dimension: "status",
         reason: "connection-unresolved",
-        message: expect.stringContaining("more than one connection group"),
+        message: expect.stringContaining("more than one database answers"),
       },
     ]);
   });
@@ -1445,7 +1547,7 @@ describe("runWarehouseProducer", () => {
 
     for (const cause of causes) {
       const h = harness({
-        pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
+        pairs: [{ entity: "Accounts", group: null, dimension: "tier", naming: false }],
         entities: {
           Accounts: entityYaml({ table: "accounts", primaryKey: "id", dimensions: ["id", "tier"] }),
         },
@@ -1463,7 +1565,12 @@ describe("runWarehouseProducer", () => {
     }
 
     expect(new Set(messages).size).toBe(causes.length);
-    expect(messages[0]).toContain("Rename one of them");
+    // ⚠️ The ACTIONABLE half of the ambiguous-group remedy, and it changed with
+    // #5286: re-enrolling through the picker now records which entity was meant,
+    // which the old "rename one of them" advice could not offer because there was
+    // nothing to record it in. Renaming still works and the sentence still says
+    // so; the assertion is on the remedy an admin reaches for first.
+    expect(messages[0]).toContain("enroll it again");
     expect(messages[1]).toContain("Check the datasource is published");
     expect(messages[2]).toContain("Republish the entity");
     // ⚠️ The `group-not-visible` remedy must admit the DEGRADED case as well as the
@@ -1475,7 +1582,7 @@ describe("runWarehouseProducer", () => {
 
   test("a failed connection resolution ABANDONS the run rather than defaulting it", async () => {
     const h = harness({
-      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
+      pairs: [{ entity: "Accounts", group: null, dimension: "tier", naming: false }],
       entities: {
         Accounts: entityYaml({ table: "accounts", primaryKey: "id", dimensions: ["id", "tier"] }),
       },
@@ -1506,8 +1613,8 @@ describe("runWarehouseProducer", () => {
   test("validates the built statement BEFORE the snapshot seam is reached", async () => {
     const h = harness({
       pairs: [
-        { entity: "Blocked", dimension: "status", naming: false },
-        { entity: "Small", dimension: "tier", naming: false },
+        { entity: "Blocked", group: null, dimension: "status", naming: false },
+        { entity: "Small", group: null, dimension: "tier", naming: false },
       ],
       entities: {
         Blocked: entityYaml({ table: "blocked", primaryKey: "id", dimensions: ["id", "status"] }),
@@ -1542,8 +1649,8 @@ describe("runWarehouseProducer", () => {
     // that is fine.
     const h = harness({
       pairs: [
-        { entity: "Throws", dimension: "status", naming: false },
-        { entity: "Small", dimension: "tier", naming: false },
+        { entity: "Throws", group: null, dimension: "status", naming: false },
+        { entity: "Small", group: null, dimension: "tier", naming: false },
       ],
       entities: {
         Throws: entityYaml({ table: "throws", primaryKey: "id", dimensions: ["id", "status"] }),
@@ -1590,8 +1697,8 @@ describe("runWarehouseProducer", () => {
     // IDENTITY against what it submitted.
     const h = harness({
       pairs: [
-        { entity: "First", dimension: "status", naming: false },
-        { entity: "Second", dimension: "tier", naming: false },
+        { entity: "First", group: null, dimension: "status", naming: false },
+        { entity: "Second", group: null, dimension: "tier", naming: false },
       ],
       entities: {
         First: entityYaml({ table: "first", primaryKey: "id", dimensions: ["id", "status"] }),
@@ -1657,7 +1764,7 @@ describe("runWarehouseProducer", () => {
     // weakened to a deep compare and the test above would stay green, since a
     // CACHED token differs in fields as well as in identity.
     const h = harness({
-      pairs: [{ entity: "Copied", dimension: "status", naming: false }],
+      pairs: [{ entity: "Copied", group: null, dimension: "status", naming: false }],
       entities: {
         Copied: entityYaml({ table: "copied", primaryKey: "id", dimensions: ["id", "status"] }),
       },
@@ -1695,7 +1802,7 @@ describe("runWarehouseProducer", () => {
     // compile error against the `readonly` field, and a test that cannot be written
     // is not evidence about runtime.
     const h = harness({
-      pairs: [{ entity: "Mutated", dimension: "status", naming: false }],
+      pairs: [{ entity: "Mutated", group: null, dimension: "status", naming: false }],
       entities: {
         Mutated: entityYaml({ table: "mutated", primaryKey: "id", dimensions: ["id", "status"] }),
       },
@@ -1732,7 +1839,7 @@ describe("runWarehouseProducer", () => {
     // own `workspaceId`/`connectionId`, and `defaultRunSnapshot` selects the
     // connection pool from those — a cross-tenant read, not merely a gate bypass.
     const h = harness({
-      pairs: [{ entity: "Aliased", dimension: "status", naming: false }],
+      pairs: [{ entity: "Aliased", group: null, dimension: "status", naming: false }],
       entities: {
         Aliased: entityYaml({ table: "aliased", primaryKey: "id", dimensions: ["id", "status"] }),
       },
@@ -1814,7 +1921,7 @@ describe("runWarehouseProducer", () => {
 
   test("a validator that REJECTS is caught on the same arm", async () => {
     const h = harness({
-      pairs: [{ entity: "Rejects", dimension: "status", naming: false }],
+      pairs: [{ entity: "Rejects", group: null, dimension: "status", naming: false }],
       entities: {
         Rejects: entityYaml({ table: "rejects", primaryKey: "id", dimensions: ["id", "status"] }),
       },
@@ -1831,7 +1938,7 @@ describe("runWarehouseProducer", () => {
     // opposite and interpolated the caught error, so a pg failure would put an
     // internal host or role into a refusal an operator reads.
     const h = harness({
-      pairs: [{ entity: "Ambiguous", dimension: "status", naming: false }],
+      pairs: [{ entity: "Ambiguous", group: null, dimension: "status", naming: false }],
       entities: {},
       lookupThrows: ["Ambiguous"],
     });
@@ -1846,7 +1953,7 @@ describe("runWarehouseProducer", () => {
 
   test("stamps the snapshot episode by REFERENCE — locator, never body", async () => {
     const h = harness({
-      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
+      pairs: [{ entity: "Accounts", group: null, dimension: "tier", naming: false }],
       entities: {
         Accounts: entityYaml({ table: "accounts", primaryKey: "id", dimensions: ["id", "tier"] }),
       },
@@ -1869,8 +1976,8 @@ describe("runWarehouseProducer", () => {
   test("proposes `warehouse_structural` cardinality, pending, one per enrolled predicate", async () => {
     const h = harness({
       pairs: [
-        { entity: "Accounts", dimension: "tier", naming: false },
-        { entity: "Accounts", dimension: "status", naming: false },
+        { entity: "Accounts", group: null, dimension: "tier", naming: false },
+        { entity: "Accounts", group: null, dimension: "status", naming: false },
       ],
       entities: {
         Accounts: entityYaml({
@@ -1905,7 +2012,7 @@ describe("runWarehouseProducer", () => {
     // survives — the silent no-op wearing a successful proposal's face that
     // `proposePredicateCardinalityForSurface`'s own docstring names.
     const h = harness({
-      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
+      pairs: [{ entity: "Accounts", group: null, dimension: "tier", naming: false }],
       entities: {
         Accounts: entityYaml({ table: "accounts", primaryKey: "id", dimensions: ["id", "tier"] }),
       },
@@ -1927,10 +2034,10 @@ describe("runWarehouseProducer", () => {
       rowCap: 2,
       pairs: [
         // TWO dimensions, so a refusal loop that only covered the first goes red.
-        { entity: "Big", dimension: "status", naming: false },
-        { entity: "Big", dimension: "region", naming: false },
-        { entity: "AtCap", dimension: "plan", naming: false },
-        { entity: "Small", dimension: "tier", naming: false },
+        { entity: "Big", group: null, dimension: "status", naming: false },
+        { entity: "Big", group: null, dimension: "region", naming: false },
+        { entity: "AtCap", group: null, dimension: "plan", naming: false },
+        { entity: "Small", group: null, dimension: "tier", naming: false },
       ],
       entities: {
         Big: entityYaml({ table: "big", primaryKey: "id", dimensions: ["id", "status", "region"] }),
@@ -1969,9 +2076,9 @@ describe("runWarehouseProducer", () => {
   test("a failed snapshot refuses ALL that entity's pairs and leaves the rest of the run alone", async () => {
     const h = harness({
       pairs: [
-        { entity: "Broken", dimension: "status", naming: false },
-        { entity: "Broken", dimension: "region", naming: false },
-        { entity: "Small", dimension: "tier", naming: false },
+        { entity: "Broken", group: null, dimension: "status", naming: false },
+        { entity: "Broken", group: null, dimension: "region", naming: false },
+        { entity: "Small", group: null, dimension: "tier", naming: false },
       ],
       entities: {
         Broken: entityYaml({
@@ -2014,8 +2121,8 @@ describe("runWarehouseProducer", () => {
     // nothing.
     const h = harness({
       pairs: [
-        { entity: "Ambiguous", dimension: "status", naming: false },
-        { entity: "Small", dimension: "tier", naming: false },
+        { entity: "Ambiguous", group: null, dimension: "status", naming: false },
+        { entity: "Small", group: null, dimension: "tier", naming: false },
       ],
       entities: {
         Small: entityYaml({ table: "small", primaryKey: "id", dimensions: ["id", "tier"] }),
@@ -2034,8 +2141,8 @@ describe("runWarehouseProducer", () => {
   test("a published entity with no `table:` is unreadable, not unpublished", async () => {
     const h = harness({
       pairs: [
-        { entity: "NoTable", dimension: "status", naming: false },
-        { entity: "Small", dimension: "tier", naming: false },
+        { entity: "NoTable", group: null, dimension: "status", naming: false },
+        { entity: "Small", group: null, dimension: "tier", naming: false },
       ],
       entities: {
         NoTable: { dimensions: [{ name: "status", sql: "status" }] },
@@ -2071,7 +2178,7 @@ describe("runWarehouseProducer", () => {
     // this fixture exists to pin, so a swap between exactly them survived. Count the
     // values before believing the sentence.
     const h = harness({
-      pairs: [{ entity: "Empty", dimension: "status", naming: false }],
+      pairs: [{ entity: "Empty", group: null, dimension: "status", naming: false }],
       entities: {
         Empty: entityYaml({ table: "empty", primaryKey: "id", dimensions: ["id", "status"] }),
       },
@@ -2123,7 +2230,7 @@ describe("runWarehouseProducer", () => {
     // Asymmetric values (1 unidentified, 2 colliding, 3 unsurfaceable) so a swap
     // between any two of the three fields goes red.
     const h = harness({
-      pairs: [{ entity: "Messy", dimension: "status", naming: false }],
+      pairs: [{ entity: "Messy", group: null, dimension: "status", naming: false }],
       entities: {
         Messy: entityYaml({ table: "messy", primaryKey: "id", dimensions: ["id", "status"] }),
       },
@@ -2151,7 +2258,7 @@ describe("runWarehouseProducer", () => {
 
   test("a re-run at the same instant reports the entity rather than dropping it", async () => {
     const h = harness({
-      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
+      pairs: [{ entity: "Accounts", group: null, dimension: "tier", naming: false }],
       entities: {
         Accounts: entityYaml({ table: "accounts", primaryKey: "id", dimensions: ["id", "tier"] }),
       },
@@ -2207,8 +2314,8 @@ describe("runWarehouseProducer", () => {
     // producer exists to keep reviewable.
     const h = harness({
       pairs: [
-        { entity: "Broken", dimension: "status", naming: false },
-        { entity: "Small", dimension: "tier", naming: false },
+        { entity: "Broken", group: null, dimension: "status", naming: false },
+        { entity: "Small", group: null, dimension: "tier", naming: false },
       ],
       entities: {
         Broken: entityYaml({ table: "broken", primaryKey: "id", dimensions: ["id", "status"] }),
@@ -2245,7 +2352,7 @@ describe("runWarehouseProducer", () => {
     // and turning it into a per-entity refusal would make every entity of every run
     // refuse quietly forever on a producer that merely looks unlucky.
     const h = harness({
-      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
+      pairs: [{ entity: "Accounts", group: null, dimension: "tier", naming: false }],
       entities: {
         Accounts: entityYaml({ table: "accounts", primaryKey: "id", dimensions: ["id", "tier"] }),
       },
@@ -2262,7 +2369,7 @@ describe("runWarehouseProducer", () => {
 
 describe("planWarehouseEmission — the naming dimension (#5043)", () => {
   const withName = (entity: string, dimension: string) =>
-    ({ entity, dimension, naming: true }) as const;
+    ({ entity, group: null, dimension, naming: true }) as const;
 
   test("resolves the naming dimension to a position in the plan's OWN dimension list", () => {
     const accounts = parsed("Accounts", {
@@ -2273,7 +2380,7 @@ describe("planWarehouseEmission — the naming dimension (#5043)", () => {
     const plan = planWarehouseEmission(
       makeProducerReach([
         withName("Accounts", "name"),
-        { entity: "Accounts", dimension: "tier", naming: false },
+        { entity: "Accounts", group: null, dimension: "tier", naming: false },
       ]),
       found(accounts),
     );
@@ -2298,7 +2405,7 @@ describe("planWarehouseEmission — the naming dimension (#5043)", () => {
     const plan = planWarehouseEmission(
       makeProducerReach([
         withName("Accounts", "name"),
-        { entity: "Accounts", dimension: "tier", naming: false },
+        { entity: "Accounts", group: null, dimension: "tier", naming: false },
         withName("Contracts", "name"),
       ]),
       found(accounts, contracts),
@@ -2319,7 +2426,7 @@ describe("planWarehouseEmission — the naming dimension (#5043)", () => {
     // planner that emitted `naming-dimension-refused` unconditionally would pass.
     const accounts = parsed("Accounts", { table: "accounts", primaryKey: "id", dimensions: ["id", "tier"] });
     const plan = planWarehouseEmission(
-      makeProducerReach([{ entity: "Accounts", dimension: "tier", naming: false }]),
+      makeProducerReach([{ entity: "Accounts", group: null, dimension: "tier", naming: false }]),
       found(accounts),
     );
     expect(plan.emit[0]?.namingDimensionIndex).toBeNull();
@@ -2339,8 +2446,8 @@ describe("the entity store", () => {
 
   /** The reach with `name` marked as the entity's canonical surface. */
   const namedPairs = [
-    { entity: "Accounts", dimension: "name", naming: true },
-    { entity: "Accounts", dimension: "tier", naming: false },
+    { entity: "Accounts", group: null, dimension: "name", naming: true },
+    { entity: "Accounts", group: null, dimension: "tier", naming: false },
   ] as const;
 
   test("materializes an entry per row and proposes its edge at both positions", async () => {
@@ -2398,8 +2505,8 @@ describe("the entity store", () => {
       // Same rows, same entity, `naming: false` everywhere. The ONLY difference
       // from the test above.
       pairs: [
-        { entity: "Accounts", dimension: "name", naming: false },
-        { entity: "Accounts", dimension: "tier", naming: false },
+        { entity: "Accounts", group: null, dimension: "name", naming: false },
+        { entity: "Accounts", group: null, dimension: "tier", naming: false },
       ],
       entities: { Accounts: ACCOUNTS },
       rows: {
@@ -2433,7 +2540,7 @@ describe("the entity store", () => {
 
   test("DELETEs the entity's entries even with nothing to write — un-naming clears the store", async () => {
     const h = harness({
-      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
+      pairs: [{ entity: "Accounts", group: null, dimension: "tier", naming: false }],
       entities: { Accounts: ACCOUNTS },
       rows: { Accounts: [snapshotRow("42", "gold")] },
     });
@@ -2592,7 +2699,7 @@ describe("the entity store", () => {
     // because a lock timeout read as "nobody has named anything" to the admin whose
     // next action was to go name something.
     const h = harness({
-      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
+      pairs: [{ entity: "Accounts", group: null, dimension: "tier", naming: false }],
       entities: { Accounts: ACCOUNTS },
       rows: { Accounts: [snapshotRow("ACC-42", "gold")] },
       entityStore: async () => [
@@ -2765,7 +2872,7 @@ describe("the entity store", () => {
     // submitted, and a shape that could not say so would have to fold it into a
     // neighbour and lie about one of the two.
     const h = harness({
-      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
+      pairs: [{ entity: "Accounts", group: null, dimension: "tier", naming: false }],
       entities: { Accounts: ACCOUNTS },
       rows: { Accounts: [snapshotRow("ACC-42", "gold")] },
       entityStore: async () =>
@@ -2901,7 +3008,7 @@ describe("the entity store", () => {
     const h = harness({
       // No naming dimension, so nothing is stored and the store stays empty —
       // the genuine "nothing to do" run.
-      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
+      pairs: [{ entity: "Accounts", group: null, dimension: "tier", naming: false }],
       entities: { Accounts: ACCOUNTS },
       rows: { Accounts: [snapshotRow("ACC-42", "gold")] },
     });
@@ -2930,7 +3037,7 @@ describe("the entity store", () => {
     // working, and it reported the then-flat `entityEdgesAmbiguous: 0` over a
     // store that may be entirely ambiguous.
     const h = harness({
-      pairs: [{ entity: "Ghost", dimension: "tier", naming: false }],
+      pairs: [{ entity: "Ghost", group: null, dimension: "tier", naming: false }],
       // Not in the published semantic layer → every pair refused → `emit` empty.
       entities: { Ghost: null },
       entityStore: async () => [
@@ -2976,7 +3083,7 @@ describe("the entity store", () => {
     // RE-RUN on which `rejected` (the counter that says a human's removal
     // stuck) is the number an operator reads.
     const h = harness({
-      pairs: [{ entity: "Accounts", dimension: "tier", naming: false }],
+      pairs: [{ entity: "Accounts", group: null, dimension: "tier", naming: false }],
       entities: { Accounts: ACCOUNTS },
       rows: { Accounts: [snapshotRow("ACC-42", "gold")] },
       // The persisted store is NOT empty, though this run wrote nothing.
@@ -3105,5 +3212,229 @@ describe("the entity store", () => {
     // The control: the store DID write an entry, so this is "the edge was refused
     // on ambiguity" rather than "nothing was named".
     expect(report.entities[0]?.entitiesStored).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #5286 — the enrollment's connection group, end to end
+// ---------------------------------------------------------------------------
+
+describe("an enrollment's connection group (#5286)", () => {
+  /**
+   * A placement that answers for whatever it is asked, so these tests are about
+   * the GROUP travelling rather than about the resolver's own rules — those have
+   * their own suite above, driven against hand-built catalogs.
+   */
+  const placeEverything = (connection: string) => async (
+    _ws: string,
+    targets: readonly WarehousePlacementTarget[],
+  ): Promise<WarehouseConnectionPlacement> => ({
+    placed: new Map(targets.map((t) => [t.entity, connection as WarehouseConnectionId])),
+    unplaceable: [],
+  });
+
+  test("the entity lookup is scoped to the group the pair was enrolled under", async () => {
+    // ⚠️ **The half of #5286 that no placement test can show.** Even correctly
+    // placed, the run has to READ the entity's YAML — and `getAdminEntity`
+    // refuses a stem-only lookup spanning two groups (`AmbiguousEntityError`).
+    // Without the group on this call the run caught that throw and refused the
+    // pair `entity-unreadable` on every run, which is what staging did.
+    const lookups: { entity: string; group: string | null }[] = [];
+    const h = harness({
+      pairs: [{ entity: "Accounts", group: "g-eu", dimension: "tier", naming: false }],
+      entities: {
+        Accounts: entityYaml({ table: "accounts", primaryKey: "id", dimensions: ["id", "tier"] }),
+      },
+      rows: { Accounts: [snapshotRow("Acme Corp", "gold")] },
+    });
+
+    const report = await runWarehouseProducer(
+      { workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-1" },
+      {
+        ...h.deps,
+        resolveConnectionIds: placeEverything("eu-prod"),
+        loadEntity: async (_ws, entity, group) => {
+          lookups.push({ entity, group });
+          return h.deps.loadEntity ? h.deps.loadEntity(_ws, entity, group) : null;
+        },
+      },
+    );
+
+    expect(lookups).toEqual([{ entity: "Accounts", group: "g-eu" }]);
+    // POSITIVE CONTROL: the pair actually produced. The assertion above is
+    // equally satisfied by a run that scoped the lookup correctly and then
+    // refused everything downstream.
+    expect(report.refusals).toEqual([]);
+    expect(report.entities[0]?.rows).toBe(1);
+  });
+
+  test("a name enrolled under TWO groups refuses BOTH pairs, and reads neither", async () => {
+    // ⚠️ The state 0205 makes reachable and the producer will not produce from.
+    // Two published `Accounts` are two entities over two databases — but
+    // `brain_entity.entity_id` hashes `(workspace, entity, primary key)`, the
+    // fact subject carries the entity NAME, and the coverage evidence join
+    // recovers it from `warehouse:<entity>@<instant>`. None of those carries a
+    // group, so producing both would file two subjects as one: a false `same` at
+    // the publish gate, which has no inverse.
+    const h = harness({
+      pairs: [
+        { entity: "Accounts", group: "g-eu", dimension: "tier", naming: false },
+        { entity: "Accounts", group: "g-us", dimension: "tier", naming: false },
+      ],
+      entities: {
+        Accounts: entityYaml({ table: "accounts", primaryKey: "id", dimensions: ["id", "tier"] }),
+      },
+      rows: { Accounts: [snapshotRow("Acme Corp", "gold")] },
+    });
+
+    const report = await runWarehouseProducer(
+      { workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-1" },
+      { ...h.deps, resolveConnectionIds: placeEverything("eu-prod") },
+    );
+
+    expect(report.refusals).toHaveLength(2);
+    expect(report.refusals.every((r) => r.reason === "enrolled-in-two-groups")).toBe(true);
+    // The refusal NAMES the collision, which is the one thing that makes it
+    // fixable by the person who caused it — `ambiguous-dimension`'s rule.
+    expect(report.refusals[0]?.message).toContain("g-eu");
+    expect(report.refusals[0]?.message).toContain("g-us");
+
+    // ⚠️ It read NOTHING. Refusing in the report while still snapshotting would
+    // put rows from one of the two databases into the workspace's episode table
+    // under a name that means both.
+    expect(h.snapshots).toEqual([]);
+    expect(report.created).toBe(0);
+    expect(report.entities).toEqual([]);
+  });
+
+  test("the SAME name enrolled under ONE group produces — the refusal is not about the name", async () => {
+    // The control that makes the test above a statement about the COLLISION
+    // rather than about multi-group workspaces in general. This is also the
+    // acceptance criterion #5286 was filed on: a staging workspace can enroll a
+    // pair that produces.
+    const h = harness({
+      pairs: [{ entity: "Accounts", group: "g-eu", dimension: "tier", naming: false }],
+      entities: {
+        Accounts: entityYaml({ table: "accounts", primaryKey: "id", dimensions: ["id", "tier"] }),
+      },
+      rows: { Accounts: [snapshotRow("Acme Corp", "gold")] },
+    });
+
+    const report = await runWarehouseProducer(
+      { workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-1" },
+      { ...h.deps, resolveConnectionIds: placeEverything("eu-prod") },
+    );
+
+    expect(report.refusals).toEqual([]);
+    expect(report.created).toBeGreaterThan(0);
+    expect(h.snapshots[0]?.connectionId).toBe("eu-prod");
+  });
+
+  test("an UNPLACEABLE entity is refused for its placement cause, not for being unreadable", async () => {
+    // ⚠️ **The commonest shape after 0205, and it used to report the wrong
+    // thing.** A pre-#5286 enrollment carries no group; the migration's backfill
+    // deliberately leaves it flat when its name is published under two groups,
+    // because it cannot know which was meant. Placement refuses that
+    // `ambiguous-group` — but the LOOKUP, scoped to the flat scope, finds
+    // nothing and answered `not-published` first, so the pair was refused
+    // *"Publish the entity, or un-enroll the pair"* for an entity published
+    // twice. Advice an admin can follow forever with nothing changing.
+    const h = harness({
+      pairs: [{ entity: "Accounts", group: null, dimension: "tier", naming: false }],
+      // Nothing published under the flat scope — the read the lookup would make.
+      entities: {},
+    });
+
+    const report = await runWarehouseProducer(
+      { workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-1" },
+      {
+        ...h.deps,
+        resolveConnectionIds: async () => ({
+          placed: new Map(),
+          unplaceable: [{ entity: "Accounts", cause: "ambiguous-group" as const }],
+        }),
+      },
+    );
+
+    expect(report.refusals).toHaveLength(1);
+    expect(report.refusals[0]?.reason).toBe("connection-unresolved");
+    // The remedy is the placement's, and it is the one that can be acted on.
+    expect(report.refusals[0]?.message).toContain("more than one database answers");
+    // ...and NOT the sentence the lookup would have produced.
+    expect(report.refusals[0]?.message).not.toContain("Publish the entity");
+    expect(h.snapshots).toEqual([]);
+  });
+
+  test("an unplaceable entity is not even LOOKED UP — the read is skipped", async () => {
+    // The other half of the same move. A read whose answer cannot change the
+    // outcome is work against the internal DB for an entity nothing is built
+    // from, and its only possible effect is to replace an honest refusal with a
+    // worse one.
+    const lookups: string[] = [];
+    const h = harness({
+      pairs: [
+        { entity: "Accounts", group: null, dimension: "tier", naming: false },
+        { entity: "Contracts", group: "g-eu", dimension: "region", naming: false },
+      ],
+      entities: {
+        Contracts: entityYaml({
+          table: "contracts",
+          primaryKey: "id",
+          dimensions: ["id", "region"],
+        }),
+      },
+      rows: { Contracts: [snapshotRow("Contract 7", "emea")] },
+    });
+
+    await runWarehouseProducer(
+      { workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-1" },
+      {
+        ...h.deps,
+        resolveConnectionIds: async () => ({
+          placed: new Map([["Contracts", "eu-prod" as WarehouseConnectionId]]),
+          unplaceable: [{ entity: "Accounts", cause: "group-not-visible" as const }],
+        }),
+        loadEntity: async (_ws, entity, group) => {
+          lookups.push(entity);
+          return h.deps.loadEntity ? h.deps.loadEntity(_ws, entity, group) : null;
+        },
+      },
+    );
+
+    // The placeable one was read; the unplaceable one was not. A positive
+    // control on the same call, so "nothing was read" cannot pass it.
+    expect(lookups).toEqual(["Contracts"]);
+  });
+
+  test("one colliding name does not take down the unrelated entities beside it", async () => {
+    // The run loop's standing contract — a refusal is per entity, never per run —
+    // applied to the arm this change added. A collision that emptied
+    // `placementTargets` for everything, or that threw, would refuse a workspace
+    // over one bad enrollment.
+    const h = harness({
+      pairs: [
+        { entity: "Accounts", group: "g-eu", dimension: "tier", naming: false },
+        { entity: "Accounts", group: "g-us", dimension: "tier", naming: false },
+        { entity: "Contracts", group: "g-eu", dimension: "region", naming: false },
+      ],
+      entities: {
+        Accounts: entityYaml({ table: "accounts", primaryKey: "id", dimensions: ["id", "tier"] }),
+        Contracts: entityYaml({
+          table: "contracts",
+          primaryKey: "id",
+          dimensions: ["id", "region"],
+        }),
+      },
+      rows: { Contracts: [snapshotRow("Contract 7", "emea")] },
+    });
+
+    const report = await runWarehouseProducer(
+      { workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-1" },
+      { ...h.deps, resolveConnectionIds: placeEverything("eu-prod") },
+    );
+
+    expect(report.refusals.map((r) => r.entity)).toEqual(["Accounts", "Accounts"]);
+    expect(h.snapshots.map((snap) => snap.entity)).toEqual(["Contracts"]);
+    expect(report.entities.map((e) => e.entity)).toEqual(["Contracts"]);
   });
 });

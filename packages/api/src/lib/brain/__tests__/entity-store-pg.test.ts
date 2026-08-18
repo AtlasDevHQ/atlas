@@ -413,6 +413,7 @@ describeIfPg("the entity store (#5043)", () => {
         await enrollPair({
           workspaceId: WORKSPACE,
           entity: "accounts",
+          group: null,
           dimension,
           note: null,
           actor: "user-1",
@@ -420,7 +421,7 @@ describeIfPg("the entity store (#5043)", () => {
       }
 
       expect(
-        await setNamingDimension({ workspaceId: WORKSPACE, entity: "accounts", dimension: "name" }),
+        await setNamingDimension({ workspaceId: WORKSPACE, entity: "accounts", group: null, dimension: "name" }),
       ).toBe(true);
       // Switching to another dimension in one call. The naive single-statement
       // form (`SET naming = (dimension = $3)`) raises 23505 here depending on the
@@ -429,6 +430,7 @@ describeIfPg("the entity store (#5043)", () => {
         await setNamingDimension({
           workspaceId: WORKSPACE,
           entity: "accounts",
+          group: null,
           dimension: "legal_name",
         }),
       ).toBe(true);
@@ -446,6 +448,7 @@ describeIfPg("the entity store (#5043)", () => {
         await setNamingDimension({
           workspaceId: WORKSPACE,
           entity: "accounts",
+          group: null,
           dimension: "legal_name",
         }),
       ).toBe(false);
@@ -453,7 +456,7 @@ describeIfPg("the entity store (#5043)", () => {
       // Clearing it. The reach then has no entry for the entity — ABSENT, which
       // is what makes the store write nothing for it rather than an empty name.
       expect(
-        await setNamingDimension({ workspaceId: WORKSPACE, entity: "accounts", dimension: null }),
+        await setNamingDimension({ workspaceId: WORKSPACE, entity: "accounts", group: null, dimension: null }),
       ).toBe(true);
       const cleared = await loadProducerReach(WORKSPACE);
       expect(cleared.namingDimension.has("accounts")).toBe(false);
@@ -469,6 +472,7 @@ describeIfPg("the entity store (#5043)", () => {
       await enrollPair({
         workspaceId: WORKSPACE,
         entity: "accounts",
+        group: null,
         dimension: "tier",
         note: null,
         actor: "user-1",
@@ -478,7 +482,7 @@ describeIfPg("the entity store (#5043)", () => {
       // unenrolled one would look set on the surface and reach nothing — the
       // silent failure ADR-0039 warns is indistinguishable from success.
       await expect(
-        setNamingDimension({ workspaceId: WORKSPACE, entity: "accounts", dimension: "name" }),
+        setNamingDimension({ workspaceId: WORKSPACE, entity: "accounts", group: null, dimension: "name" }),
       ).rejects.toBeInstanceOf(InvalidEnrollmentPairError);
 
       const named = await pool.query(
@@ -488,7 +492,7 @@ describeIfPg("the entity store (#5043)", () => {
       expect(named.rows).toEqual([]);
       // The control: the enrolled sibling CAN be named through the same call.
       expect(
-        await setNamingDimension({ workspaceId: WORKSPACE, entity: "accounts", dimension: "tier" }),
+        await setNamingDimension({ workspaceId: WORKSPACE, entity: "accounts", group: null, dimension: "tier" }),
       ).toBe(true);
     },
     PG_TEST_TIMEOUT_MS,

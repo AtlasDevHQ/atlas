@@ -31,7 +31,16 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
 
 let listResult: {
-  entities: { name: string; table: string; description: string }[];
+  // `connectionId` is `AdminEntitySummary`'s own spelling of the connection
+  // GROUP — the field's name says connection and its value is a group id, which
+  // is the confusion `WarehouseConnectionId` was branded to stop one module
+  // over. The picker reads it as the group, so the fixture carries it.
+  entities: {
+    name: string;
+    connectionId: string | null;
+    table: string;
+    description: string | null;
+  }[];
   warnings: string[];
 } = { entities: [], warnings: [] };
 let entityDetail: { entity: Record<string, unknown> } | null = null;
@@ -254,30 +263,136 @@ describe("errors propagate — an unreadable layer is never an empty one", () =>
 });
 
 describe("loadEnrollableEntities", () => {
-  it("collapses one name held in several connection groups into one option", async () => {
-    // A multi-group workspace (#2412) returns one row per group. Offered
-    // separately they carry the same label and the same value, so the picker
-    // would render duplicate React keys and ask the admin to choose between two
-    // identical entries — a distinction `(workspace_id, entity, dimension)`
-    // cannot record anyway.
+  it("offers one name held in several connection groups as SEVERAL options (#5286)", async () => {
+    // ⚠️ **The inverse of what this test asserted until #5286, and the reversal
+    // is the fix.** A multi-group workspace (#2412) returns one row per group,
+    // and this module used to collapse them "because the pair this surface
+    // stores is `(workspace_id, entity, dimension)` with no group column, so the
+    // duplicates are not a distinction the storage could record even if they
+    // picked one." Migration 0205 gave it that column.
+    //
+    // What the collapse actually did was hand the admin ONE option for TWO
+    // entities over two databases. Whichever they meant, the row could not
+    // record it, and the producer refused the pair on every run afterwards —
+    // measured on staging, where the only producible entity is published under
+    // three groups.
     listResult = {
       entities: [
-        { name: "accounts", table: "prod.accounts", description: "prod" },
-        { name: "accounts", table: "staging.accounts", description: "staging" },
-        { name: "subscriptions", table: "prod.subscriptions", description: "" },
+        { name: "accounts", connectionId: "g-prod", table: "prod.accounts", description: "prod" },
+        { name: "accounts", connectionId: "g-staging", table: "staging.accounts", description: "staging" },
+        { name: "subscriptions", connectionId: null, table: "prod.subscriptions", description: "" },
       ],
       warnings: [],
     };
     const options = await loadEnrollableEntities(ORG);
-    expect(options.map((o) => o.name)).toEqual(["accounts", "subscriptions"]);
-    // The FIRST wins, and the empty description becomes null rather than "".
-    expect(options[0]?.table).toBe("prod.accounts");
-    expect(options[1]?.description).toBeNull();
+
+    // THREE options, and the two `accounts` are distinguishable — same name,
+    // different group, different table.
+    expect(options).toEqual([
+      { name: "accounts", group: "g-prod", table: "prod.accounts", description: "prod" },
+      { name: "accounts", group: "g-staging", table: "staging.accounts", description: "staging" },
+      { name: "subscriptions", group: null, table: "prod.subscriptions", description: null },
+    ]);
+
+    // POSITIVE CONTROL on the distinction itself. `toEqual` above would pass on
+    // an implementation that returned three rows carrying the same group, which
+    // is the collapse wearing a different shape: the picker would render two
+    // identical options again and the write would name one scope for both.
+    expect(new Set(options.filter((o) => o.name === "accounts").map((o) => o.group)).size).toBe(2);
+  });
+
+  it("withholds a FLAT-SCOPED row whose name a grouped row also carries (#5286)", async () => {
+    // ⚠️ The one option this module still refuses to offer, and refusing is the
+    // honest answer rather than a leftover collapse.
+    //
+    // `null` is doing two jobs in the stored column — "the flat scope" and "this
+    // enrollment predates the group column" — and where a name has BOTH a flat
+    // row and a grouped one those two readings pick DIFFERENT databases. So
+    // `mapEntitiesToConnectionIds` refuses that pair `ambiguous-group` on every
+    // run, and it is right to: guessing means producing claims from the
+    // `__global__` demo database into a customer's brain.
+    //
+    // Offering an option whose every click stores cleanly and reaches nothing is
+    // exactly what this surface exists to prevent, so it is not offered.
+    listResult = {
+      entities: [
+        // The `__global__` demo row the workspace has shadowed…
+        { name: "plans", connectionId: null, table: "demo.plans", description: null },
+        // …and the workspace's own, which stays.
+        { name: "plans", connectionId: "g-eu", table: "prod.plans", description: null },
+        // A flat row with NO grouped sibling is untouched — a workspace that
+        // groups nothing loses nothing.
+        { name: "accounts", connectionId: null, table: "accounts", description: null },
+      ],
+      warnings: [],
+    };
+    const options = await loadEnrollableEntities(ORG);
+
+    expect(options.map((o) => [o.name, o.group])).toEqual([
+      ["plans", "g-eu"],
+      ["accounts", null],
+    ]);
+  });
+
+  it("keeps BOTH grouped rows when neither is flat — only the flat one is unaddressable", async () => {
+    // The control that stops the rule above from becoming a de-dup by name
+    // again. Two grouped rows are two addressable entities and both are offered;
+    // it is only the `null` that cannot be told apart from "no group recorded".
+    listResult = {
+      entities: [
+        { name: "test_orders", connectionId: "g-clickhouse", table: "o", description: null },
+        { name: "test_orders", connectionId: "g-mysql", table: "o", description: null },
+      ],
+      warnings: [],
+    };
+    const options = await loadEnrollableEntities(ORG);
+    expect(options.map((o) => o.group)).toEqual(["g-clickhouse", "g-mysql"]);
+  });
+
+  it("scopes the dimension read to the group it was asked for (#5286)", async () => {
+    // The other half. `getAdminEntity` throws `AmbiguousEntityError` for a
+    // stem-only lookup spanning two groups, which is why the route used to
+    // answer 409 — so passing the group through is what makes an option the
+    // picker offers actually enrollable.
+    const seen: unknown[] = [];
+    entityDetail = { entity: { table: "accounts", dimensions: [{ name: "tier" }] } };
+    void mock.module("@atlas/api/lib/semantic/admin-source", () => ({
+      AdminEntityYamlError: class extends Error {},
+      AdminEntityYamlParseError: class extends Error {},
+      AdminEntityYamlShapeError: class extends Error {},
+      parseRowToAdminSummary: () => null,
+      mergeAdminEntities: () => ({ entities: [], warnings: [] }),
+      listAdminEntities: async () => listResult,
+      getAdminEntity: async (opts: unknown) => {
+        seen.push(opts);
+        return entityDetail;
+      },
+    }));
+    const { loadEnrollableDimensions: scoped } = await import(
+      "@atlas/api/lib/brain/enrollment-candidates"
+    );
+
+    await scoped(ORG, "accounts", "g-staging");
+    expect(seen).toEqual([
+      { name: "accounts", orgId: ORG, mode: "published", connectionGroupId: "g-staging" },
+    ]);
+
+    // The flat scope travels as an explicit `null`, and the OMITTED case stays
+    // `undefined` — `getAdminEntity` reads those as two different lookups (the
+    // legacy null-group rows versus unique-or-throw), so collapsing them here
+    // would silently re-scope every caller that has no group to offer.
+    seen.length = 0;
+    await scoped(ORG, "accounts", null);
+    await scoped(ORG, "accounts");
+    expect(seen).toEqual([
+      { name: "accounts", orgId: ORG, mode: "published", connectionGroupId: null },
+      { name: "accounts", orgId: ORG, mode: "published", connectionGroupId: undefined },
+    ]);
   });
 
   it("logs skipped semantic-layer entries instead of dropping them silently", async () => {
     listResult = {
-      entities: [{ name: "accounts", table: "accounts", description: "" }],
+      entities: [{ name: "accounts", connectionId: null, table: "accounts", description: "" }],
       warnings: ["orders.yaml: unparseable"],
     };
     await loadEnrollableEntities(ORG);
@@ -287,7 +402,7 @@ describe("loadEnrollableEntities", () => {
     // would pass the assertion above and make the warning meaningless.
     warnCalls.length = 0;
     listResult = {
-      entities: [{ name: "accounts", table: "accounts", description: "" }],
+      entities: [{ name: "accounts", connectionId: null, table: "accounts", description: "" }],
       warnings: [],
     };
     await loadEnrollableEntities(ORG);

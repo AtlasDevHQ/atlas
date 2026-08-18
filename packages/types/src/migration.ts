@@ -632,6 +632,24 @@ export interface ExportedBrainSlackIngestScope {
  */
 export interface ExportedBrainEnrollment {
   entity: string;
+  /**
+   * The connection group the entity is published under, or `null`/absent for the
+   * flat scope (#5286).
+   *
+   * OPTIONAL on the wire, on `naming`'s precedent and for its reason: a bundle
+   * written before enrollment carried a group has none, and the flat scope is
+   * that bundle's truth rather than a guess about it. It travels because it is
+   * half the row's identity now — dropped, a multi-group source region's two
+   * enrollments would collide into one at the destination, and the survivor
+   * would be whichever the import reached first.
+   *
+   * ⚠️ It is NOT re-resolved at the destination. A group id is a
+   * `connection_group_id` in the SOURCE region's internal DB, and a region
+   * migration carries the datasource installs that mint them — so the id means
+   * the same thing on both sides, and inferring a "matching" group by name would
+   * be the machine picking which of two entities a human meant.
+   */
+  connectionGroupId?: string | null;
   /** The bare dimension/measure/metric name — ADR-0037 §4's emission contract. */
   dimension: string;
   enrolledAt: string;

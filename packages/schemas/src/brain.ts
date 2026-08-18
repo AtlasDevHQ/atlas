@@ -1502,6 +1502,7 @@ void _brainEnrollmentKindsCovered;
 
 export const BrainEnrollmentEntrySchema = z.strictObject({
   entity: z.string(),
+  group: z.string().nullable(),
   dimension: z.string(),
   enrolledAt: z.string(),
   enrolledBy: z.string(),
@@ -1516,6 +1517,7 @@ export const BrainEnrollmentListResponseSchema = z.strictObject({
 
 export const BrainEnrollmentEntityOptionSchema = z.strictObject({
   name: z.string(),
+  group: z.string().nullable(),
   table: z.string(),
   description: z.string().nullable(),
 }) satisfies z.ZodType<BrainEnrollmentEntityOption, unknown>;
@@ -1535,6 +1537,7 @@ export const BrainEnrollmentDimensionOptionSchema = z.strictObject({
 
 export const BrainEnrollmentDimensionsResponseSchema = z.strictObject({
   entity: z.string(),
+  group: z.string().nullable(),
   dimensions: z.array(BrainEnrollmentDimensionOptionSchema),
 }) satisfies z.ZodType<BrainEnrollmentDimensionsResponse, unknown>;
 
@@ -1549,6 +1552,18 @@ export const BrainEnrollmentDimensionsResponseSchema = z.strictObject({
  */
 export const BrainEnrollmentWriteRequestSchema = z.strictObject({
   entity: z.string().min(1).max(BRAIN_ENROLLMENT_NAME_MAX),
+  /**
+   * Which of the entity's connection groups this pair names — `null` for the
+   * flat scope (#5286).
+   *
+   * ⚠️ `.nullable()`, deliberately NOT `.nullish()`, and the difference is the
+   * whole fix. Optional, an omitted group would silently mean "flat scope" — so
+   * a client that had a group and forgot to send it would write a pair in the
+   * wrong scope, which stores cleanly and reaches nothing. That is exactly the
+   * failure this column was added to end, so the field is REQUIRED and the flat
+   * scope has to be stated as an explicit `null`.
+   */
+  group: z.string().max(BRAIN_ENROLLMENT_NAME_MAX).nullable(),
   dimension: z.string().min(1).max(BRAIN_ENROLLMENT_NAME_MAX),
   /** Why this pair is worth holding claims about. Absent on the un-enroll verb. */
   note: z.string().max(500).nullish(),
@@ -1566,11 +1581,19 @@ export const BrainEnrollmentWriteRequestSchema = z.strictObject({
  */
 export const BrainEnrollmentUnenrollRequestSchema = z.strictObject({
   entity: z.string().min(1).max(BRAIN_ENROLLMENT_NAME_MAX),
+  /**
+   * Required for the enroll verb's reason, and one sharper. A DELETE that
+   * defaulted to the flat scope on an omitted field would not merely miss — the
+   * pre-#5286 statement matched every group's copy of a pair, and reporting
+   * `changed: true` for "I removed all of them" is a narrowing nobody asked for.
+   */
+  group: z.string().max(BRAIN_ENROLLMENT_NAME_MAX).nullable(),
   dimension: z.string().min(1).max(BRAIN_ENROLLMENT_NAME_MAX),
 });
 
 export const BrainEnrollmentWriteResponseSchema = z.strictObject({
   entity: z.string(),
+  group: z.string().nullable(),
   dimension: z.string(),
   changed: z.boolean(),
 }) satisfies z.ZodType<BrainEnrollmentWriteResponse, unknown>;
@@ -1592,11 +1615,21 @@ export const BrainEnrollmentWriteResponseSchema = z.strictObject({
  */
 export const BrainEnrollmentNamingRequestSchema = z.strictObject({
   entity: z.string().min(1).max(BRAIN_ENROLLMENT_NAME_MAX),
+  /**
+   * Which group's copy of the entity is being named (#5286).
+   *
+   * `uq_brain_enrollment_naming` is scoped per group, so this is not a filter on
+   * the write — it IS the write's subject. Defaulted, naming one group's copy
+   * would un-name another's, and the un-naming half clears that entity's
+   * entity-store entries.
+   */
+  group: z.string().max(BRAIN_ENROLLMENT_NAME_MAX).nullable(),
   dimension: z.string().min(1).max(BRAIN_ENROLLMENT_NAME_MAX).nullable(),
 });
 
 export const BrainEnrollmentNamingResponseSchema = z.strictObject({
   entity: z.string(),
+  group: z.string().nullable(),
   dimension: z.string().nullable(),
   changed: z.boolean(),
 }) satisfies z.ZodType<BrainEnrollmentNamingResponse, unknown>;
@@ -1702,6 +1735,28 @@ export const BRAIN_WAREHOUSE_REFUSAL_REASONS = [
    * provenance.
    */
   "connection-unresolved",
+  /**
+   * One entity NAME is enrolled under MORE THAN ONE connection group (#5286), so
+   * every pair naming it is refused — both sides, on `ambiguous-dimension`'s
+   * rule and for its reason.
+   *
+   * Enrollment became group-scoped in 0205, so this is a state an admin can now
+   * reach deliberately: two published `test_orders`, two enrollments, two
+   * different databases. What it cannot survive is what the producer WRITES
+   * about them. `brain_entity.entity_id` hashes `(workspace, entity, primary
+   * key)`, the fact subject surface carries the entity name, the vocabulary edge
+   * is keyed on it, and the coverage evidence join recovers it from
+   * `warehouse:<entity>@<instant>` — not one of those carries the group. So two
+   * groups' rows would land in one identity space, and two rows that are merely
+   * same-numbered would read as the same subject.
+   *
+   * ⚠️ That is a FALSE `same` at the publish gate, which `brain_entity`'s own
+   * header calls the one direction with no inverse — strictly worse than the
+   * missing warehouse fact a refusal costs. So the producer refuses both and
+   * names the groups, exactly as ADR-0037 §4 refuses a dimension ambiguous
+   * across two entities. Enrolling the pair in ONE group produces normally.
+   */
+  "enrolled-in-two-groups",
 ] as const;
 
 export const BrainWarehouseRefusalSchema = z.strictObject({

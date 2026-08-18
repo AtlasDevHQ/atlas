@@ -866,8 +866,54 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
           return { ok: false, error: `brainEnrollments[${i}].${field}: must not have leading or trailing whitespace.` };
         }
       }
+      // ⚠️ **BEFORE the seam call below, and the order is load-bearing.** That
+      // call now hands this value to `normalizeEnrollmentPair`, which does
+      // `.trim()` on it — so a non-string arriving here would throw a raw
+      // TypeError out of the seam instead of returning the named 400 this
+      // function exists to produce, and the whole cutover would abort on a
+      // stack trace. The two halves above are type-checked before their own
+      // seam call for the same reason.
+      //
+      // OPTIONAL on the wire, exactly as `naming` is and for its reason: a
+      // bundle written before enrollments carried a group has none, and the flat
+      // scope is that bundle's truth rather than a guess about it. A
+      // present-but-wrong-typed value is refused rather than coerced, because
+      // this half is part of the PRIMARY KEY — a truthiness-coerced group would
+      // land the pair in a scope the source region does not have, which stores
+      // cleanly and reaches nothing.
+      if (
+        "connectionGroupId" in x &&
+        x.connectionGroupId !== undefined &&
+        x.connectionGroupId !== null &&
+        typeof x.connectionGroupId !== "string"
+      ) {
+        return { ok: false, error: `brainEnrollments[${i}].connectionGroupId: must be a string or null.` };
+      }
+      // The whitespace rule the two halves take, on the field that joined the
+      // key beside them. Untrimmed, it is a scope the source does not have —
+      // and it is refused rather than repaired, on the same axis the two halves
+      // above are stricter than the seam.
+      if (typeof x.connectionGroupId === "string" && x.connectionGroupId !== x.connectionGroupId.trim()) {
+        return { ok: false, error: `brainEnrollments[${i}].connectionGroupId: must not have leading or trailing whitespace.` };
+      }
       try {
-        normalizeEnrollmentPair(x.entity as string, x.dimension as string);
+        // ⚠️ **THE THIRD ARGUMENT IS THE POINT OF THIS CALL, and omitting it was
+        // this comment's own recorded failure repeating one field later.** The
+        // paragraph above says the rules are taken FROM THE SEAM so that "a rule
+        // added there is enforced here on the same commit" — and #5286 added the
+        // group to the seam's NUL and length checks while this call site still
+        // passed two arguments. A bundle carrying `connectionGroupId: "g\u0000x"`
+        // then passed validation, reached the INSERT, and Postgres raised 22021
+        // MID-TRANSACTION: a whole region cutover aborted as a generic 500, for
+        // input the API path answers with a named 400.
+        //
+        // `?? null` because the field is optional on the wire (a pre-#5286
+        // bundle carries none), and `null` is that bundle's flat scope.
+        normalizeEnrollmentPair(
+          x.entity as string,
+          x.dimension as string,
+          (x.connectionGroupId ?? null) as string | null,
+        );
       } catch (err) {
         // The seam's own sentence, verbatim — a second wording here would drift
         // from the rule it describes.
@@ -2367,33 +2413,52 @@ export async function importBundle(
   // `namedEntities` guards the partial unique index — see the `naming` param
   // below. Seeded from the DESTINATION, not from the bundle: the row that must
   // win is the one already here.
+  // ⚠️ Keyed on `(entity, group)` since #5286, matching
+  // `uq_brain_enrollment_naming`'s own scope. Keyed on the entity alone it would
+  // read one group's naming decision as the other group's and report an
+  // arriving row as `namingDropped` when the two never competed — the same class
+  // of false loss the dimension half of this key was added to fix, one column
+  // over.
+  const namingKey = (entity: string, group: string | null) => `${entity}\u0000${group ?? ""}`;
   const namedEntities = new Map<string, string>(
     (
       await client.query(
-        `SELECT entity, dimension FROM brain_enrollment WHERE workspace_id = $1 AND naming`,
+        `SELECT entity, connection_group_id, dimension FROM brain_enrollment WHERE workspace_id = $1 AND naming`,
         [orgId],
       )
-    ).rows.map((r) => [r.entity as string, r.dimension as string] as const),
+    ).rows.map(
+      (r) =>
+        [
+          namingKey(r.entity as string, (r.connection_group_id as string) || null),
+          r.dimension as string,
+        ] as const,
+    ),
   );
   for (const enrollment of bundle.brainEnrollments ?? []) {
     const wantsNaming = enrollment.naming === true;
+    // Absent (a pre-#5286 bundle) and explicit `null` are one state: the flat
+    // scope, stored as `''`. Normalised once here so the key, the INSERT and the
+    // naming UPDATE below cannot disagree about which row they mean.
+    const group = enrollment.connectionGroupId ?? null;
+    const storedGroup = group ?? "";
     // ⚠️ The map holds the DIMENSION, not just the entity, and that distinction
     // is the difference between a loss and a no-op. Keyed on the entity alone,
     // a destination that already names the SAME dimension the bundle names
     // counted as a drop — so an idempotent re-import reported a human decision
     // discarded when nothing at all had happened. Caught by the round-trip's own
     // second-import assertion.
-    const namedHere = namedEntities.get(enrollment.entity);
+    const namedHere = namedEntities.get(namingKey(enrollment.entity, group));
     const alreadyApplied = wantsNaming && namedHere === enrollment.dimension;
     const granted = wantsNaming && namedHere === undefined;
     const { rows } = await client.query(
-      `INSERT INTO brain_enrollment (workspace_id, entity, dimension, enrolled_at, enrolled_by, note, naming)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       ON CONFLICT (workspace_id, entity, dimension) DO NOTHING
+      `INSERT INTO brain_enrollment (workspace_id, entity, connection_group_id, dimension, enrolled_at, enrolled_by, note, naming)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (workspace_id, entity, connection_group_id, dimension) DO NOTHING
        RETURNING entity`,
       [
         orgId,
         enrollment.entity,
+        storedGroup,
         enrollment.dimension,
         enrollment.enrolledAt,
         enrollment.enrolledBy,
@@ -2413,7 +2478,7 @@ export async function importBundle(
         granted,
       ],
     );
-    if (granted) namedEntities.set(enrollment.entity, enrollment.dimension);
+    if (granted) namedEntities.set(namingKey(enrollment.entity, group), enrollment.dimension);
     // `DO NOTHING` returns no row for the conflict case, which is exactly the
     // "this region already holds it" split `skipped` reports.
     if (rows.length > 0) result.brainEnrollments.imported++;
@@ -2449,8 +2514,9 @@ export async function importBundle(
       // `enrolled_at` and `note` must stay the destination's.
       const applied = await client.query(
         `UPDATE brain_enrollment SET naming = true
-          WHERE workspace_id = $1 AND entity = $2 AND dimension = $3 AND NOT naming`,
-        [orgId, enrollment.entity, enrollment.dimension],
+          WHERE workspace_id = $1 AND entity = $2 AND connection_group_id = $3 AND dimension = $4
+            AND NOT naming`,
+        [orgId, enrollment.entity, storedGroup, enrollment.dimension],
       );
       // ⚠️ **COUNTED, because `skipped` says the opposite of what happened.**
       // Everywhere else `skipped` means "this region already holds it" — and it

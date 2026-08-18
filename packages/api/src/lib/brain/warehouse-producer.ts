@@ -304,7 +304,39 @@ export type WarehouseEntityLookup =
        */
       readonly cause: "load-threw" | "unreadable-shape" | "no-table";
       readonly why: string;
-    };
+    }
+  /**
+   * The NAME is enrolled under more than one connection group (#5286).
+   *
+   * Its own arm rather than an `unreadable` cause, because nothing about the
+   * entity is unreadable — each group's copy reads perfectly, and the sentence
+   * `planWarehouseEmission` builds for `unreadable` (*"is published but could
+   * not be read"*) would be false. What is ambiguous is the ENROLLMENT, and the
+   * remedy is on the enrollment surface rather than in the semantic layer.
+   *
+   * `groups` carries the collision's members so the refusal can name them; they
+   * are group ids the admin sees on the enrollment page beside each entity.
+   */
+  | { readonly kind: "enrolled-in-two-groups"; readonly groups: readonly (string | null)[] }
+  /**
+   * Atlas could not work out which datasource this entity reads (#5284), so its
+   * pairs are refused before anything is built.
+   *
+   * ⚠️ **It is a LOOKUP arm rather than a check inside the emit loop, and the
+   * move is a bug fix (#5286 review).** The emit loop's own `unplaceable` check
+   * is reached only by an entity that made it into `plan.emit` — published,
+   * readable, with exactly one primary key. An unplaceable entity that fails ANY
+   * of those is refused for that other reason instead, and the placement cause is
+   * never reported.
+   *
+   * That is not a cosmetic ordering. The commonest instance is an enrollment
+   * written before 0205 whose name is published under two groups: the lookup is
+   * scoped to the flat scope, finds nothing, and the pair is refused
+   * `entity-not-published` — *"Publish the entity"* — for an entity that is
+   * published twice. The admin can follow that advice forever. Carried here, the
+   * refusal names the real condition and its remedy.
+   */
+  | { readonly kind: "unplaceable"; readonly cause: WarehouseUnplaceableCause };
 
 /**
  * Narrow one entity's YAML to {@link WarehouseEntity}, or `null` when it carries
@@ -463,6 +495,23 @@ export function planWarehouseEmission(
 
   for (const pair of reach.pairs) {
     const lookup = entities.get(pair.entity) ?? { kind: "not-published" as const };
+    // ⚠️ FIRST, ahead of every structural arm. An entity Atlas cannot place has
+    // no datasource for any other question to be asked against, and the arms
+    // below would answer a DIFFERENT true thing about it — with a remedy that
+    // cannot work. See the arm's own note on {@link WarehouseEntityLookup}.
+    if (lookup.kind === "unplaceable") {
+      refused.push(
+        refusal(
+          pair.entity,
+          pair.dimension,
+          "connection-unresolved",
+          `Atlas could not work out which datasource "${pair.entity}" should be read from, so it ` +
+            `read none. ${UNPLACEABLE_REMEDY[lookup.cause]} **Re-running will not change this** — ` +
+            "the entity's connection group has to be settled first.",
+        ),
+      );
+      continue;
+    }
     if (lookup.kind === "not-published") {
       refused.push(
         refusal(
@@ -471,6 +520,34 @@ export function planWarehouseEmission(
           "entity-not-published",
           `"${pair.entity}" is enrolled but is not in this workspace's published semantic layer. ` +
             "Publish the entity, or un-enroll the pair — the producer reads what is live.",
+        ),
+      );
+      continue;
+    }
+    if (lookup.kind === "enrolled-in-two-groups") {
+      // ⚠️ BOTH sides refused, never one, on `ambiguous-dimension`'s rule five
+      // arms down and for the identical reason: picking a winner needs a tie-break
+      // (first enrolled? more rows? alphabetical?) and every such rule is a machine
+      // deciding which of two human enrollments meant what it says. Here the stakes
+      // are higher still — the loser's rows would be filed under the winner's
+      // entity id, which is a false `same` at the publish gate rather than a
+      // mislabelled one.
+      const named = lookup.groups
+        .map((g) => (g === null ? "the ungrouped scope" : `"${g}"`))
+        .toSorted()
+        .join(" and ");
+      refused.push(
+        refusal(
+          pair.entity,
+          pair.dimension,
+          "enrolled-in-two-groups",
+          `"${pair.entity}" is enrolled under ${lookup.groups.length} connection groups at once ` +
+            `(${named}), which are ${lookup.groups.length} different entities over ` +
+            "different databases. Everything Atlas would write about them is filed under the " +
+            "entity NAME and carries no group, so their rows would merge into one subject and two " +
+            "unrelated rows that happen to share a key would read as the same thing. Un-enroll it " +
+            "in all but one group — the producer refuses rather than choosing, because a wrong " +
+            "merge at the review gate has no inverse.",
         ),
       );
       continue;
@@ -1355,12 +1432,34 @@ export type WarehouseConnectionId = string & {
 
 /** Why one enrolled entity could not be placed in a connection group. */
 export type WarehouseUnplaceableCause =
-  /** The name resolves under more than one group in the published catalog. */
+  /**
+   * The name resolves under more than one group in the published catalog, and
+   * the enrollment named none of them.
+   *
+   * ⚠️ Reachable ONLY for an enrollment whose own group is `null` — a row
+   * written before 0205, or a genuinely flat workspace. A group-scoped
+   * enrollment states which entity it means, so this question is not asked of
+   * it. That is #5286's fix at this seam: the inference stays for the rows that
+   * predate the column and is bypassed by every row that carries one.
+   */
   | "ambiguous-group"
   /** Its single group did not resolve to a visible primary member. */
   | "group-not-visible"
   /** It is absent from the workspace's authoritative (DB-backed) published catalog. */
   | "absent-from-catalog";
+
+/**
+ * One enrolled entity to place, and the group its enrollment named (#5286).
+ *
+ * `group: null` means the enrollment named no group — a pre-0205 row or a flat
+ * workspace — and takes {@link mapEntitiesToConnectionIds}' inference path. A
+ * string takes the direct path, which is the whole point of the column: the
+ * catalog no longer has to be asked a question it cannot answer.
+ */
+export interface WarehousePlacementTarget {
+  readonly entity: string;
+  readonly group: string | null;
+}
 
 /**
  * The admin-facing remedy per cause — one sentence each, and they differ.
@@ -1375,9 +1474,11 @@ export type WarehouseUnplaceableCause =
  */
 const UNPLACEABLE_REMEDY: Record<WarehouseUnplaceableCause, string> = {
   "ambiguous-group":
-    "Its name is published under more than one connection group in this workspace — including " +
-    "a workspace entity that shadows a built-in one of the same name — so more than one database " +
-    "answers to it. Rename one of them, or un-enroll the pair.",
+    "This enrollment names no connection group, and more than one database answers to that entity " +
+    "name in this workspace — including a workspace entity that shadows a built-in one of the same " +
+    "name. Un-enroll the pair and enroll it again: the picker records which one you mean. " +
+    "(An enrollment made before Atlas stored the group has none, which is how a pair reaches this " +
+    "state; renaming one of the entities also resolves it.)",
   "group-not-visible":
     "Its connection group was not reachable from this workspace on this run: the datasource " +
     "is unpublished, content mode hides it, or Atlas could not read the workspace's " +
@@ -1428,14 +1529,22 @@ export interface WarehouseProducerDeps {
    * ⚠️ It may THROW, and the run treats a throw as `entity-unreadable` for that
    * entity's pairs rather than letting it escape. The shipped implementation throws
    * `AmbiguousEntityError` when a name resolves in more than one connection group
-   * (`semantic/entities.ts`), which is an ordinary multi-group workspace — and the
-   * lookups run inside a `Promise.all`, so an uncaught one takes down the whole run
-   * for every unrelated entity and returns a 500 instead of the report that exists
-   * to explain exactly this.
+   * (`semantic/entities.ts`) — and the lookups run inside a `Promise.all`, so an
+   * uncaught one takes down the whole run for every unrelated entity and returns a
+   * 500 instead of the report that exists to explain exactly this.
+   *
+   * ⚠️ **`group` is what stops the shipped implementation throwing that in the
+   * ordinary case (#5286).** It is the group the ENROLLMENT named, passed
+   * straight through to `getAdminEntity`'s `connectionGroupId`, so a multi-group
+   * workspace resolves the entity its admin actually picked. The guard above
+   * stays because the throw is still reachable — `null` (a pre-0205 row, or a
+   * flat workspace) takes the unique-or-throw path exactly as before, and the
+   * lookup can fail transiently regardless.
    */
   readonly loadEntity?: (
     workspaceId: string,
     entity: string,
+    group: string | null,
   ) => Promise<Record<string, unknown> | null>;
   /**
    * Which datasource each enrolled entity's snapshot reads.
@@ -1456,7 +1565,7 @@ export interface WarehouseProducerDeps {
    */
   readonly resolveConnectionIds?: (
     workspaceId: string,
-    entities: readonly string[],
+    entities: readonly WarehousePlacementTarget[],
   ) => Promise<WarehouseConnectionPlacement>;
   readonly validateSnapshotSql?: SnapshotSqlValidator;
   readonly runSnapshot?: WarehouseSnapshotRunner;
@@ -2067,6 +2176,39 @@ export async function runWarehouseProducer(
   const snapshotAt = now();
   const reach = await loadReach(workspaceId);
 
+  // ⚠️ **The group collision is settled BEFORE anything is placed or read, and
+  // the entities it names are excluded from both (#5286).**
+  //
+  // Enrollment is group-scoped since 0205, so an admin can enroll two published
+  // `test_orders` — two entities, two databases, one NAME. Every key this
+  // producer goes on to write carries that name and no group, so producing both
+  // would file two subjects as one. Refused rather than merged; the arm's own
+  // sentence in `planWarehouseEmission` carries the argument.
+  //
+  // Excluded from PLACEMENT as well as from the entity read, because a name with
+  // two groups has two right answers there too — and `placed` is a map keyed by
+  // name, so the second would silently overwrite the first.
+  const collidingGroups = new Map<string, readonly (string | null)[]>();
+  const placementTargets: WarehousePlacementTarget[] = [];
+  for (const name of reach.entities) {
+    const groups = [...(reach.groupsByEntity.get(name) ?? new Set<string | null>())];
+    if (groups.length > 1) {
+      collidingGroups.set(name, groups);
+      continue;
+    }
+    // `groups[0]` is the enrollment's own group; `undefined` cannot occur for a
+    // name that is in `entities` (it is derived from the same pairs) but is
+    // handled as the flat scope rather than asserted away, which keeps this
+    // file's non-null-assertion count at zero.
+    placementTargets.push({ entity: name, group: groups[0] ?? null });
+  }
+  if (collidingGroups.size > 0) {
+    log.warn(
+      { ...runLog, entities: Object.fromEntries(collidingGroups) },
+      "Warehouse producer: an entity name is enrolled under more than one connection group — every pair naming it is refused, because the keys this producer writes carry the name and not the group",
+    );
+  }
+
   // ONE resolution per run, not one per entity — and deliberately not inside the
   // `Promise.all` below: every enrolled entity of one group shares an answer, and
   // the lookup reads the workspace's visible groups each time it is called.
@@ -2077,7 +2219,7 @@ export async function runWarehouseProducer(
   // here was indistinguishable at the log from one raised anywhere else in the run.
   let placement: WarehouseConnectionPlacement;
   try {
-    placement = await resolveConnectionIds(workspaceId, reach.entities);
+    placement = await resolveConnectionIds(workspaceId, placementTargets);
   } catch (err) {
     log.error(
       { ...runLog, err: err instanceof Error ? err.message : String(err) },
@@ -2099,28 +2241,60 @@ export async function runWarehouseProducer(
     {
       ...runLog,
       placed: Object.fromEntries(connectionIds),
-      unplaced: reach.entities.filter(
-        (name) => !connectionIds.has(name) && !unplaceable.has(name),
-      ),
+      unplaced: placementTargets
+        .map((t) => t.entity)
+        .filter((name) => !connectionIds.has(name) && !unplaceable.has(name)),
       unplaceable: Object.fromEntries(unplaceable),
     },
     "Warehouse producer: resolved each enrolled entity's connection group",
   );
 
-  // One entity read per DISTINCT entity, not one per pair — `reach.entities` is
-  // that set, and it is the same set the fail-closed rule is evaluated across.
+  // One entity read per DISTINCT entity, not one per pair — `placementTargets`
+  // is that set minus the colliding names filed above, and it is the same set
+  // the fail-closed rule is evaluated across.
   const entityShapes = new Map<string, WarehouseEntityLookup>();
+  for (const [name, groups] of collidingGroups) {
+    entityShapes.set(name, { kind: "enrolled-in-two-groups", groups });
+  }
+  // ⚠️ **Seeded BEFORE the lookups, and the unplaceable names are skipped rather
+  // than read (#5286 review).** Two things this fixes, and the first is the one
+  // that matters.
+  //
+  // A lookup that answers `not-published` OVERWRITES nothing — it would simply
+  // be the entry that `planWarehouseEmission` reads, and the pair would be
+  // refused *"Publish the entity"* for one that is published under two groups
+  // and merely unaddressable. The placement already knows the honest cause; the
+  // read cannot improve on it and can only replace it with a worse sentence.
+  //
+  // The second is that the read is wasted work against the internal DB for an
+  // entity nothing will be built from.
+  for (const [name, cause] of unplaceable) {
+    entityShapes.set(name, { kind: "unplaceable", cause });
+    log.warn(
+      { ...runLog, entity: name, cause },
+      "Warehouse producer: no connection could be resolved for the entity — refused rather than read against the deployment default",
+    );
+  }
   await Promise.all(
-    reach.entities.map(async (name) => {
+    placementTargets
+      .filter(({ entity: name }) => !unplaceable.has(name))
+      .map(async ({ entity: name, group }) => {
       // ⚠️ CAUGHT, and the `Promise.all` is why. `getAdminEntity` throws
-      // `AmbiguousEntityError` for a name that resolves in more than one connection
-      // group — an ordinary multi-group workspace — and an uncaught throw here
-      // rejects the whole `Promise.all`, killing the run for every unrelated
-      // enrolled entity and returning a 500 in place of the report whose entire job
-      // is explaining why a pair produced nothing.
+      // `AmbiguousEntityError` for a name it is asked to resolve WITHOUT a group
+      // when more than one answers — and an uncaught throw here rejects the whole
+      // `Promise.all`, killing the run for every unrelated enrolled entity and
+      // returning a 500 in place of the report whose entire job is explaining why
+      // a pair produced nothing.
+      //
+      // ⚠️ Since #5286 that throw is no longer the ORDINARY multi-group case: the
+      // enrollment names its group and `group` above carries it, so a normal
+      // multi-group workspace resolves. What remains reachable is a pre-0205
+      // flat-scoped row in a workspace that has since grown a second group — a
+      // real state, and one whose remedy is to re-enroll the pair against the
+      // group it meant.
       let raw: Record<string, unknown> | null;
       try {
-        raw = await loadEntity(workspaceId, name);
+        raw = await loadEntity(workspaceId, name, group);
       } catch (err) {
         log.warn(
           { ...runLog, entity: name, err },
@@ -2137,9 +2311,10 @@ export async function runWarehouseProducer(
           kind: "unreadable",
           cause: "load-threw",
           why:
-            "looking it up failed. A name that resolves in more than one connection group is one " +
-            "cause — enrollment stores no group, so this surface cannot tell the two apart — but the " +
-            "lookup can also fail transiently. The server log for this run carries the reason.",
+            "looking it up failed. If the pair was enrolled before enrollments recorded a connection " +
+            "group, and this workspace now publishes that name under more than one, Atlas cannot tell " +
+            "which was meant — un-enroll it and enroll it again to pick one. The lookup can also fail " +
+            "transiently. The server log for this run carries the reason.",
         });
         return;
       }
@@ -2474,26 +2649,13 @@ export async function runWarehouseProducer(
   const vocabulary = await loadVocabulary(workspaceId);
 
   for (const entityPlan of plan.emit) {
-    // ⚠️ BEFORE the statement is built, and before the gate — an entity Atlas cannot
-    // place has no datasource to be validated against, and the whole point of the arm
-    // is that it reads nothing. Refusing here rather than omitting the entity keeps
-    // every enrolled pair accounted for in the report, which is the rule the rest of
-    // this loop follows.
-    const unplaceableCause = unplaceable.get(entityPlan.entity.name);
-    if (unplaceableCause !== undefined) {
-      log.warn(
-        { ...runLog, entity: entityPlan.entity.name, cause: unplaceableCause },
-        "Warehouse producer: no connection could be resolved for the entity — refused rather than read against the deployment default",
-      );
-      refuseEntity(
-        entityPlan,
-        "connection-unresolved",
-        `Atlas could not work out which datasource "${entityPlan.entity.table}" should be read ` +
-          `from, so it read none. ${UNPLACEABLE_REMEDY[unplaceableCause]} **Re-running will not ` +
-          "change this** — the entity's connection group has to be settled first.",
-      );
-      continue;
-    }
+    // ⚠️ **The `unplaceable` check that used to sit here has MOVED to the entity
+    // lookup (#5286 review), and the move is a fix rather than tidying.** This
+    // loop is reached only by an entity that made it into `plan.emit` — published,
+    // readable, exactly one primary key — so an unplaceable entity failing any of
+    // those was refused for that other reason and its placement cause never
+    // reached the report. It is now a {@link WarehouseEntityLookup} arm, which
+    // `planWarehouseEmission` refuses ahead of every structural check.
     const sql = buildSnapshotSql(entityPlan, rowCap);
     // ⚠️ FROZEN, one of three things the identity check below needs. Identity proves
     // the gate answered about THIS OBJECT; freezing stops the object changing under
@@ -3570,9 +3732,26 @@ async function defaultProposeAliasEdges(
 async function defaultLoadEntity(
   workspaceId: string,
   entity: string,
+  group: string | null,
 ): Promise<Record<string, unknown> | null> {
   const { getAdminEntity } = await import("@atlas/api/lib/semantic/admin-source");
-  const detail = await getAdminEntity({ name: entity, orgId: workspaceId, mode: "published" });
+  const detail = await getAdminEntity({
+    name: entity,
+    orgId: workspaceId,
+    mode: "published",
+    // ⚠️ **PASSED THROUGH, `null` included — this seam never takes
+    // `getAdminEntity`'s `undefined` unique-or-throw path.** `null` is the flat
+    // scope here exactly as it is on the enrollment surface, and one meaning for
+    // one value across the two is worth more than the case it gives up: a
+    // pre-0205 row in a workspace that only publishes group-scoped entities.
+    //
+    // Migration 0205 is what makes that case rare rather than universal — it
+    // resolves every backfilled row whose name has exactly one published group,
+    // so what is left under `null` either IS flat or was genuinely ambiguous.
+    // The second refuses at `mapEntitiesToConnectionIds`' `ambiguous-group` arm
+    // before reaching here, and that arm names the collision.
+    connectionGroupId: group,
+  });
   return detail === null ? null : (detail.entity as Record<string, unknown>);
 }
 
@@ -3601,7 +3780,7 @@ async function defaultLoadEntity(
  */
 export function mapEntitiesToConnectionIds(
   summaries: readonly { readonly name: string; readonly connectionId: string | null }[],
-  wanted: ReadonlySet<string>,
+  wanted: readonly WarehousePlacementTarget[],
   visiblePrimaries: ReadonlyMap<string, WarehouseConnectionId>,
   catalogIsAuthoritative: boolean,
 ): WarehouseConnectionPlacement {
@@ -3611,9 +3790,10 @@ export function mapEntitiesToConnectionIds(
    * group with both a published and a draft row is normal overlay state"). Counting
    * rows would refuse an entity for being ordinary.
    */
+  const wantedNames = new Set(wanted.map((t) => t.entity));
   const groupsByName = new Map<string, Set<string | null>>();
   for (const summary of summaries) {
-    if (!wanted.has(summary.name)) continue;
+    if (!wantedNames.has(summary.name)) continue;
     const groups = groupsByName.get(summary.name) ?? new Set<string | null>();
     groups.add(summary.connectionId);
     groupsByName.set(summary.name, groups);
@@ -3622,7 +3802,39 @@ export function mapEntitiesToConnectionIds(
   const placed = new Map<string, WarehouseConnectionId>();
   const unplaceable: { entity: string; cause: WarehouseUnplaceableCause }[] = [];
 
-  for (const name of wanted) {
+  for (const target of wanted) {
+    const name = target.entity;
+    // ⚠️ **THE DECLARED GROUP SHORT-CIRCUITS THE INFERENCE, and that is #5286's
+    // fix at this seam.** The block below exists to work out WHICH group a bare
+    // name meant, and its `ambiguous-group` arm is the honest answer when it
+    // cannot — but a group-scoped enrollment already answered it, so asking the
+    // catalog again could only produce a refusal for a question nobody asked.
+    // That is exactly what happened on staging: `test_orders` published under
+    // three groups refused every run, including runs whose enrollment named one
+    // of the three.
+    //
+    // The catalog is still CONSULTED, for one thing the enrollment cannot
+    // establish on its own: whether the workspace still publishes that name under
+    // that group. An enrollment outliving its entity is ordinary (nothing
+    // un-enrolls on a semantic-layer sync, by 0199's design), and placing it
+    // anyway would point a snapshot at a database that no longer answers for it.
+    if (target.group !== null) {
+      const publishedHere =
+        groupsByName.get(name)?.has(target.group) ??
+        false;
+      if (!publishedHere && catalogIsAuthoritative) {
+        unplaceable.push({ entity: name, cause: "absent-from-catalog" });
+        continue;
+      }
+      const primary = visiblePrimaries.get(target.group);
+      if (primary === undefined) {
+        unplaceable.push({ entity: name, cause: "group-not-visible" });
+        continue;
+      }
+      placed.set(name, primary);
+      continue;
+    }
+
     const groups = groupsByName.get(name);
     if (groups === undefined) {
       // ⚠️ **`catalogIsAuthoritative` is a FACT passed in, and the first cut of this
@@ -3721,7 +3933,7 @@ export function mapEntitiesToConnectionIds(
  */
 async function defaultResolveConnectionIds(
   workspaceId: string,
-  entities: readonly string[],
+  entities: readonly WarehousePlacementTarget[],
 ): Promise<WarehouseConnectionPlacement> {
   const [{ listAdminEntities }, { loadVisibleGroups }, { hasInternalDB }] = await Promise.all([
     import("@atlas/api/lib/semantic/admin-source"),
@@ -3755,12 +3967,7 @@ async function defaultResolveConnectionIds(
     visible.map((group) => [group.id, group.primary as WarehouseConnectionId]),
   );
 
-  return mapEntitiesToConnectionIds(
-    summaries,
-    new Set(entities),
-    visiblePrimaries,
-    catalogIsAuthoritative,
-  );
+  return mapEntitiesToConnectionIds(summaries, entities, visiblePrimaries, catalogIsAuthoritative);
 }
 
 /**

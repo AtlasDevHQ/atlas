@@ -99,6 +99,23 @@ export interface WarehouseCoverageDeps {
  * Exported with {@link parseWarehouseSurveyUnitId} so the build and the parse
  * cannot drift.
  */
+/**
+ * ⚠️ **NAME-keyed, and the connection group is deliberately NOT in it (#5286).**
+ *
+ * Enrollment became group-scoped, so it is fair to ask why this did not. The
+ * answer is the EVIDENCE side: the newest-evidence join recovers its entity from
+ * a snapshot episode's `source_id` (`warehouse:<entity>@<instant>`), which
+ * carries the entity name and no group — as does every other key the producer
+ * writes. A group-scoped unit id would therefore key a roster that nothing could
+ * ever join evidence to, and every enrolled pair would read as producing nothing
+ * on a page whose whole job is telling those two states apart.
+ *
+ * The cost is that two groups' same-named entities contribute ONE survey unit
+ * per dimension, and `inPerimeter` means "enrolled in at least one of them".
+ * That is the honest denominator for what the producer can actually write, and
+ * the producer refuses that entity outright anyway — see its
+ * `enrolled-in-two-groups` arm.
+ */
 export function warehouseSurveyUnitId(entity: string, dimension: string): WarehouseSurveyUnitId {
   return `${entity.length}:${entity}:${dimension}` as WarehouseSurveyUnitId;
 }
@@ -316,6 +333,12 @@ export async function enumerateWarehouseCoverage(params: {
   }
   const evidence: ReadonlyMap<WarehouseSurveyUnitId, Date> = byPair;
 
+  // ⚠️ The bound counts ROWS, and since #5286 a multi-group workspace's
+  // same-named entities are separate rows here — so a workspace publishing one
+  // name under three groups spends three of the 200 rather than one. That is the
+  // right shape (each row's dimensions are read from its own group's YAML and
+  // may differ) and the truncation MARK still fires, which is what stops a
+  // partial map reading as the whole one.
   const walked = entities.slice(0, WAREHOUSE_COVERAGE_MAX_ENTITIES);
   if (entities.length > walked.length) {
     degraded.push("warehouse-entity-bound-reached");
@@ -326,11 +349,26 @@ export async function enumerateWarehouseCoverage(params: {
   }
 
   const units: EnumeratedSurveyUnit[] = [];
+  /**
+   * Unit ids already pushed this cycle.
+   *
+   * ⚠️ Required since #5286, because {@link warehouseSurveyUnitId} is name-keyed
+   * while the entity roster is now `(name, group)`. Two groups publishing
+   * `plans.status` produce ONE survey unit, and pushing both would write two rows
+   * for one `(workspace, class, unit)` — a primary-key conflict that fails the
+   * whole cycle, or, worse if the write ever tolerated it, a denominator that
+   * double-counts and reports a ratio nobody can reproduce.
+   *
+   * A union rather than a first-wins truncation: the second group's dimension
+   * list may not be the first's, so every distinct dimension of every group's
+   * copy contributes, and each contributes once.
+   */
+  const emitted = new Set<WarehouseSurveyUnitId>();
   let vanishedEntities = 0;
   for (const entity of walked) {
     let dimensions: readonly { readonly name: string }[] | null;
     try {
-      dimensions = await loadDimensions(workspaceId, entity.name);
+      dimensions = await loadDimensions(workspaceId, entity.name, entity.group);
     } catch (err) {
       // ONE entity's read failed. Refusing the whole cycle for it would let a
       // single unreadable entity freeze the whole class's denominator, and
@@ -365,6 +403,10 @@ export async function enumerateWarehouseCoverage(params: {
     }
     for (const dimension of dimensions) {
       const unitId = warehouseSurveyUnitId(entity.name, dimension.name);
+      if (emitted.has(unitId)) continue;
+      emitted.add(unitId);
+      // `enrolled` is built from the same name-keyed id, so this is "enrolled in
+      // AT LEAST ONE of this name's groups" — see the id's own note.
       const inPerimeter = enrolled.has(unitId);
       units.push({
         unitId,

@@ -30104,6 +30104,12 @@
                           "entity": {
                             "type": "string"
                           },
+                          "group": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "dimension": {
                             "type": "string"
                           },
@@ -30125,6 +30131,7 @@
                         },
                         "required": [
                           "entity",
+                          "group",
                           "dimension",
                           "enrolledAt",
                           "enrolledBy",
@@ -30225,6 +30232,12 @@
                           "name": {
                             "type": "string"
                           },
+                          "group": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "table": {
                             "type": "string"
                           },
@@ -30237,6 +30250,7 @@
                         },
                         "required": [
                           "name",
+                          "group",
                           "table",
                           "description"
                         ],
@@ -30323,6 +30337,16 @@
             "required": true,
             "name": "entity",
             "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "example": "grp_warehouse"
+            },
+            "required": false,
+            "name": "group",
+            "in": "query"
           }
         ],
         "responses": {
@@ -30335,6 +30359,12 @@
                   "properties": {
                     "entity": {
                       "type": "string"
+                    },
+                    "group": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "dimensions": {
                       "type": "array",
@@ -30384,6 +30414,7 @@
                   },
                   "required": [
                     "entity",
+                    "group",
                     "dimensions"
                   ],
                   "additionalProperties": false
@@ -30417,32 +30448,7 @@
             }
           },
           "404": {
-            "description": "No such entity in the published semantic layer",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "The entity name resolves in more than one connection group (#2412), so which one to enroll from is ambiguous. Enrollment stores `(workspace, entity, dimension)` with no group column, so this surface cannot express the choice.",
+            "description": "No such entity in the published semantic layer, or none under the given group",
             "content": {
               "application/json": {
                 "schema": {
@@ -30513,6 +30519,13 @@
                     "minLength": 1,
                     "maxLength": 200
                   },
+                  "group": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "maxLength": 200
+                  },
                   "dimension": {
                     "type": "string",
                     "minLength": 1,
@@ -30528,6 +30541,7 @@
                 },
                 "required": [
                   "entity",
+                  "group",
                   "dimension"
                 ],
                 "additionalProperties": false
@@ -30546,6 +30560,12 @@
                     "entity": {
                       "type": "string"
                     },
+                    "group": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "dimension": {
                       "type": "string"
                     },
@@ -30555,6 +30575,7 @@
                   },
                   "required": [
                     "entity",
+                    "group",
                     "dimension",
                     "changed"
                   ],
@@ -30638,31 +30659,6 @@
               }
             }
           },
-          "409": {
-            "description": "The entity name resolves in more than one connection group (#2412). Declared on this WRITE route because the pre-write semantic-layer check runs the same lookup as `GET /dimensions`.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -30710,6 +30706,13 @@
                     "minLength": 1,
                     "maxLength": 200
                   },
+                  "group": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "maxLength": 200
+                  },
                   "dimension": {
                     "type": "string",
                     "minLength": 1,
@@ -30718,6 +30721,7 @@
                 },
                 "required": [
                   "entity",
+                  "group",
                   "dimension"
                 ],
                 "additionalProperties": false
@@ -30736,6 +30740,12 @@
                     "entity": {
                       "type": "string"
                     },
+                    "group": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "dimension": {
                       "type": "string"
                     },
@@ -30745,6 +30755,7 @@
                   },
                   "required": [
                     "entity",
+                    "group",
                     "dimension",
                     "changed"
                   ],
@@ -30850,6 +30861,13 @@
                     "minLength": 1,
                     "maxLength": 200
                   },
+                  "group": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "maxLength": 200
+                  },
                   "dimension": {
                     "type": [
                       "string",
@@ -30861,6 +30879,7 @@
                 },
                 "required": [
                   "entity",
+                  "group",
                   "dimension"
                 ],
                 "additionalProperties": false
@@ -30879,6 +30898,12 @@
                     "entity": {
                       "type": "string"
                     },
+                    "group": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "dimension": {
                       "type": [
                         "string",
@@ -30891,6 +30916,7 @@
                   },
                   "required": [
                     "entity",
+                    "group",
                     "dimension",
                     "changed"
                   ],
@@ -31113,7 +31139,8 @@
                                   "snapshot-failed",
                                   "snapshot-already-recorded",
                                   "naming-dimension-refused",
-                                  "connection-unresolved"
+                                  "connection-unresolved",
+                                  "enrolled-in-two-groups"
                                 ]
                               },
                               "message": {

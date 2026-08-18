@@ -113,9 +113,20 @@ type ValidatedSnapshotRequest =
 type WarehouseConnectionId =
   import("@atlas/api/lib/brain/warehouse-producer").WarehouseConnectionId;
 type ReconcileModule = typeof import("@atlas/api/lib/brain/reconcile");
+type EnrollmentModule = typeof import("@atlas/api/lib/brain/enrollment");
 
 let producer: ProducerModule;
 let reconcile: ReconcileModule;
+/**
+ * The REAL reach derivation, not a hand-built literal.
+ *
+ * Its own type states why: a hand-built `{ pairs, entities, has }` can disagree
+ * with itself about which pairs are in reach, and since #5286 it can also omit
+ * `groupsByEntity` — the map the producer reads to decide whether a name is
+ * enrolled under two groups at once. A fixture missing it would exercise a shape
+ * the loader can never produce.
+ */
+let makeProducerReach: EnrollmentModule["makeProducerReach"];
 
 beforeAll(async () => {
   // DYNAMIC, after the mock above is installed — a static import binds the real
@@ -123,6 +134,8 @@ beforeAll(async () => {
   // while the lines print to stdout.
   producer = await import("@atlas/api/lib/brain/warehouse-producer");
   reconcile = await import("@atlas/api/lib/brain/reconcile");
+  // Dynamic for the same reason as the two above — this module logs too.
+  ({ makeProducerReach } = await import("@atlas/api/lib/brain/enrollment"));
 });
 
 afterEach(() => {
@@ -166,12 +179,7 @@ function store(options: { cardinalityConflict?: boolean } = {}) {
 
 function deps(over: Partial<Parameters<ProducerModule["runWarehouseProducer"]>[1]> = {}) {
   return {
-    loadReach: async () => ({
-      pairs: [{ entity: "Accounts", dimension: "status", naming: false }],
-      entities: ["Accounts"],
-      namingDimension: new Map<string, string>(),
-      has: () => true,
-    }),
+    loadReach: async () => makeProducerReach([{ entity: "Accounts", group: null, dimension: "status", naming: false }]),
     loadEntity: async () => ACCOUNTS_YAML,
     // Cast because the passing verdict carries a branded request — see the unit
     // suite's note. It brands the request it was HANDED: a fresh object would trip
@@ -420,12 +428,7 @@ describe("warehouse producer logging", () => {
     // it means this predicate can never carry a `single` entry, so supersession
     // stays dormant for it. That is not "unexpected", and it is not routine either.
     await run({
-      loadReach: async () => ({
-        pairs: [{ entity: "Accounts", dimension: "__", naming: false }],
-        entities: ["Accounts"],
-        namingDimension: new Map(),
-        has: () => true,
-      }),
+      loadReach: async () => makeProducerReach([{ entity: "Accounts", group: null, dimension: "__", naming: false }]),
       loadEntity: async () => ({
         table: "accounts",
         dimensions: [
@@ -1679,15 +1682,10 @@ describe("warehouse producer seam reads past the validator (#5257)", () => {
       });
 
       const report = await run({
-        loadReach: async () => ({
-          pairs: [
-            { entity: "Accounts", dimension: "status", naming: false },
-            { entity: "Hostile", dimension: "status", naming: false },
-          ],
-          entities: ["Accounts", "Hostile"],
-          namingDimension: new Map<string, string>(),
-          has: () => true,
-        }),
+        loadReach: async () => makeProducerReach([
+            { entity: "Accounts", group: null, dimension: "status", naming: false },
+            { entity: "Hostile", group: null, dimension: "status", naming: false },
+          ]),
         loadEntity: async (_workspaceId: string, name: string) =>
           name === "Hostile" ? hostileYaml : ACCOUNTS_YAML,
       });
@@ -1790,15 +1788,10 @@ describe("warehouse producer seam reads past the validator (#5257)", () => {
       // record that earlier entities had already filed drafts.
       let calls = 0;
       const report = await run({
-        loadReach: async () => ({
-          pairs: [
-            { entity: "Accounts", dimension: "status", naming: false },
-            { entity: "Second", dimension: "tier", naming: false },
-          ],
-          entities: ["Accounts", "Second"],
-          namingDimension: new Map<string, string>(),
-          has: () => true,
-        }),
+        loadReach: async () => makeProducerReach([
+            { entity: "Accounts", group: null, dimension: "status", naming: false },
+            { entity: "Second", group: null, dimension: "tier", naming: false },
+          ]),
         // ⚠️ Distinct DIMENSION NAMES, not just distinct tables. One dimension name
         // owned by two entities is `ambiguous-dimension`, and the plan refuses both
         // before a transaction is ever opened — which would make this case green for
@@ -1945,16 +1938,11 @@ describe("warehouse producer seam reads past the validator (#5257)", () => {
       //     outcome, double-counting `created` in the operator report.
       let calls = 0;
       const report = await run({
-        loadReach: async () => ({
-          pairs: [
-            { entity: "A", dimension: "status", naming: false },
-            { entity: "B", dimension: "tier", naming: false },
-            { entity: "C", dimension: "band", naming: false },
-          ],
-          entities: ["A", "B", "C"],
-          namingDimension: new Map<string, string>(),
-          has: () => true,
-        }),
+        loadReach: async () => makeProducerReach([
+            { entity: "A", group: null, dimension: "status", naming: false },
+            { entity: "B", group: null, dimension: "tier", naming: false },
+            { entity: "C", group: null, dimension: "band", naming: false },
+          ]),
         loadEntity: async (_workspaceId: string, name: string) => ({
           table: `t_${name.toLowerCase()}`,
           dimensions: [
@@ -1986,15 +1974,10 @@ describe("warehouse producer seam reads past the validator (#5257)", () => {
       // outcome a second time under B's turn.
       let calls = 0;
       const report = await run({
-        loadReach: async () => ({
-          pairs: [
-            { entity: "A", dimension: "status", naming: false },
-            { entity: "B", dimension: "tier", naming: false },
-          ],
-          entities: ["A", "B"],
-          namingDimension: new Map<string, string>(),
-          has: () => true,
-        }),
+        loadReach: async () => makeProducerReach([
+            { entity: "A", group: null, dimension: "status", naming: false },
+            { entity: "B", group: null, dimension: "tier", naming: false },
+          ]),
         loadEntity: async (_workspaceId: string, name: string) => ({
           table: `t_${name.toLowerCase()}`,
           dimensions: [

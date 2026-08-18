@@ -487,9 +487,9 @@ export async function exportWorkspaceBundle(
     // enrollment, so every row here is a human act and every one of them is the
     // decision.
     pool.query(
-      `SELECT entity, dimension, enrolled_at, enrolled_by, note, naming
+      `SELECT entity, connection_group_id, dimension, enrolled_at, enrolled_by, note, naming
        FROM brain_enrollment WHERE ${scopeClause("workspace_id", orgScope)}
-       ORDER BY entity, dimension ASC`,
+       ORDER BY entity, connection_group_id, dimension ASC`,
       params,
     ),
     // The entity store's snapshot entries (#5043, ADR-0037 §5). The WHOLE row,
@@ -872,6 +872,19 @@ export async function exportWorkspaceBundle(
 
   const brainEnrollments: ExportedBrainEnrollment[] = enrollmentResult.rows.map((r) => ({
     entity: r.entity as string,
+    // #5286. `''` is the flat scope in storage and `null` on the wire — the same
+    // translation `lib/brain/enrollment.ts` owns, spelled here rather than
+    // imported because this module reads the table directly and must not take a
+    // `lib/brain` dependency for one ternary. NOT `?? null` like the four
+    // sections above: their columns are genuinely nullable, this one is
+    // `NOT NULL DEFAULT ''`, and `?? null` would ship the sentinel verbatim.
+    //
+    // It travels because it is half the row's IDENTITY now. Dropped, a
+    // multi-group source region's two enrollments arrive as one pair and the
+    // destination keeps whichever the import reached first — a human decision
+    // discarded silently, which is the direction this section's own
+    // `namingDropped` counter exists to stop being quiet about.
+    connectionGroupId: (r.connection_group_id as string) === "" ? null : (r.connection_group_id as string),
     dimension: r.dimension as string,
     enrolledAt: toISO(r.enrolled_at),
     // Not defaulted to `""`, on `excludedBy`'s reasoning exactly:

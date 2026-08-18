@@ -4189,6 +4189,19 @@ export const brainEnrollment = pgTable(
     // contract exactly. Entity qualification lives in `entity` beside it, where
     // it scopes the enrollment without entering the emitted surface.
     dimension: text("dimension").notNull(),
+    // The connection group the entity is published under —
+    // `semantic_entities.connection_group_id` (0205, #5286).
+    //
+    // ⚠️ `''` is the FLAT scope, not a missing value. The column is part of the
+    // primary key and a key column cannot be NULL, so the nullable group id the
+    // semantic layer stores arrives here as `''`. `lib/brain/enrollment.ts` is
+    // the one translator: `string | null` everywhere in TypeScript, `''` in SQL.
+    //
+    // It is in the key because an entity NAME is unique only WITHIN a group. Two
+    // groups publishing `test_orders` are two entities, and without this column
+    // an enrollment could not say which one it meant — it stored cleanly and the
+    // producer refused it on every run.
+    connectionGroupId: text("connection_group_id").notNull().default(""),
     enrolledAt: timestamp("enrolled_at", { withTimezone: true }).notNull().defaultNow(),
     enrolledBy: text("enrolled_by").notNull(),
     note: text("note"),
@@ -4203,24 +4216,30 @@ export const brainEnrollment = pgTable(
     naming: boolean("naming").notNull().default(false),
   },
   (t) => [
-    // The pair IS the identity, which is what makes the region import a plain
-    // union rather than a reconciliation.
-    primaryKey({ columns: [t.workspaceId, t.entity, t.dimension] }),
+    // The pair PLUS ITS SCOPE is the identity, which is what makes the region
+    // import a plain union rather than a reconciliation. `connectionGroupId`
+    // joined the key in 0205 (#5286) — see the column.
+    primaryKey({ columns: [t.workspaceId, t.entity, t.connectionGroupId, t.dimension] }),
     // `''` on either half is a pair the producer can never match, so it would
     // sit in the list looking enrolled and reach nothing.
     check("ck_brain_enrollment_names_present", sql`entity <> '' AND dimension <> ''`),
     // An enrollment with no author is not one — `brainPredicateCardinality`'s
     // rule. `NOT NULL` alone would admit `''`.
     check("ck_brain_enrollment_attributed", sql`enrolled_by <> ''`),
-    // AT MOST ONE naming dimension per entity. Two would mint two canonical
-    // surfaces for one row and the store would hold whichever the producer's
-    // loop reached last — a non-deterministic canonical surface, which is the
-    // one thing the id's determinism argument cannot survive.
+    // AT MOST ONE naming dimension per entity PER GROUP. Two would mint two
+    // canonical surfaces for one row and the store would hold whichever the
+    // producer's loop reached last — a non-deterministic canonical surface,
+    // which is the one thing the id's determinism argument cannot survive.
+    //
+    // Scoped by group since 0205 for the primary key's reason: left at
+    // `(workspace_id, entity)` it refuses to let a second group's copy of a name
+    // be named at all, as a 23505 with no sentence attached. The producer states
+    // that refusal properly instead — see its `enrolled-in-two-groups` arm.
     uniqueIndex("uq_brain_enrollment_naming")
-      .on(t.workspaceId, t.entity)
+      .on(t.workspaceId, t.entity, t.connectionGroupId)
       .where(sql`naming`),
-    // No other secondary index: the PK above IS `(workspace_id, entity,
-    // dimension)`, which is the producer's listing order. See the migration
+    // No other secondary index: the PK above leads with `(workspace_id,
+    // entity, …)`, which is the producer's listing order. See the migration
     // header.
   ],
 );

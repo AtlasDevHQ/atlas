@@ -20,6 +20,26 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.10",
+    title: "The Producer on a Clock",
+    date: "2026-08-18",
+    summary:
+      "v0.2.9 introduced warehouse-derived facts and the Enrollment page that authorizes them. This release makes that machinery actually reach your data. If two connection groups in your workspace publish a table of the same name, an enrollment could previously name the pair, store cleanly, and quietly produce nothing on every run — the enrollment now records which group it means, so that pair works. The producer also runs on its own schedule instead of waiting to be triggered, under a lock so two runs can never overlap, and the Enrollment page gained a Run control for when you do not want to wait for the next one. Separately, a data-erasure request that aborts now tells the operator what actually happened rather than returning an opaque server error.",
+    highlights: [
+      "An enrollment now names the connection group its entity belongs to — in a workspace where two groups publish a table of the same name, that pair is enrollable instead of storing cleanly and reaching nothing",
+      "The warehouse producer runs on its own cadence under a run lock, so a scheduled run and a manual one can never overlap",
+      "A Run control on the Enrollment page triggers a producer run without waiting for the next cadence",
+      "Each snapshot resolves its connection from the enrolled entity's own group, so the producer reads the table you actually named",
+      "Data erasure: a deletion that aborts now returns an actionable conflict telling the operator the transaction rolled back, nothing was deleted, and the request can be re-run — previously it surfaced as an opaque server error with only a reference code",
+      "Region moves: an alias edge refused on import is now recorded on the source region's own migration row, so the record outlives the cleanup that deletes the data it describes",
+      "Security: the settings endpoint no longer echoes a secret value back in its response body, closing the remaining exit behind the guard that already rejects such writes",
+      "The embeddable chat widget's code blocks now use the same code colours as the rest of the product, in both light and dark themes",
+      "Container base images baseline a util-linux advisory disclosed after the previous scan",
+      "Groundwork for the coverage page: a three-state wire shape that can say \"known\", \"known to be absent\" and \"not yet looked at\" as distinct answers",
+      "Self-hosted: migration 0204 adds two columns to migration bookkeeping. Migration 0205 adds a connection group to enrollments and widens their primary key — existing enrollments whose entity name resolves to exactly one published group are backfilled automatically; an ambiguous one stays on the flat scope and needs re-selecting on the Enrollment page",
+    ],
+  },
+  {
     version: "v0.2.9",
     title: "Warehouse Facts, Only Where You Enroll Them",
     date: "2026-08-16",

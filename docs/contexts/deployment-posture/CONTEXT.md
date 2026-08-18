@@ -21,7 +21,7 @@
 >
 > **Treat "pre-customer clean-break" as EXPIRED until the maintainer restates it**, and do
 > not authorize a hard-drop migration or an unversioned contract change on the strength of
-> this section. At least five ADRs lean on it (0007, 0015, 0022, 0024, 0039) — ADR-0022
+> this section. Six ADRs lean on it (0007, 0015, 0022, 0024, 0027, 0035) — ADR-0022
 > already says *"re-verify the posture still holds at build time"*, which is this check.
 > Restating it means editing this file with a new date and the basis for the claim.
 

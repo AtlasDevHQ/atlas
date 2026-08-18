@@ -331,7 +331,7 @@ How a dashboard is edited and made visible to a team. **Target-state vocabulary*
 
 - **Dashboard**:
   A persistent, shareable grid of **cards** with an optional top-level **parameter bar**. The unit that is created, shared, and published.
-  _Avoid_: "board" (informal only), "report" (a distinct point-in-time deliverable with no current home — see § Notebooks, retired).
+  _Avoid_: "board" (informal only), "report" (a distinct point-in-time deliverable with no current home — see docs/contexts/notebooks/CONTEXT.md).
 
 - **Card**:
   The unit on the grid. A **chart card** carries a SQL query + visualization; a **text card** carries markdown (section headers, explainers) and no data.

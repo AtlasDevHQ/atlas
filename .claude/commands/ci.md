@@ -108,7 +108,7 @@ promoted type-aware rules at `error`; permanent `warn` residuals don't fail it),
 `no-admin-plugin`, `streaming-cors`, `no-legacy-connections`,
 `brain-fact-promotion`, `test-discipline`, `settings-readers`, `saas-env-doc`,
 `brain-settings-doc`,
-`docs-links`, `docs-brain-snippets`, `agent-doc-paths`, `web-brand-tokens`, `auth-md-parity`, `apex-discovery-drift`,
+`docs-links`, `agent-doc-paths`, `web-brand-tokens`, `docs-brain-snippets`, `auth-md-parity`, `apex-discovery-drift`,
 `openapi-drift`, `published-symbols`, `unpublished-versions` (both net-gated),
 `gate-fixtures` (the adversarial `scripts/__tests__/*.test.sh` suites),
 `mutation-tables`, and the full `test` suite.

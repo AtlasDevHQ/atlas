@@ -13,7 +13,13 @@ Production deployment configs for AtlasDevHQ's Railway project (`satisfied-creat
 
 > The **Sidecar** service (Explore isolation container, formerly deploy/sidecar/) was
 > dropped in [#2387](https://github.com/AtlasDevHQ/atlas/issues/2387) — Vercel Sandbox is the
-> sole SaaS sandbox backend. The diagram below still shows it; it is not deployed.
+> sole SaaS sandbox backend. Three things in this file still describe it as live and are
+> kept only because they remain true for **self-hosted** deployments, where the sidecar is
+> a supported backend (`packages/sandbox-sidecar`, `SIDECAR_AUTH_TOKEN` in `.env.example`):
+> the architecture diagram below, the `ATLAS_SANDBOX_URL` line in the API service's env
+> list, and the `### Sidecar service (internal)` section. **None of them describes anything
+> Railway runs.** Read this file's env lists as "what a deployment may set", not as the
+> prod inventory.
 
 ## Architecture
 

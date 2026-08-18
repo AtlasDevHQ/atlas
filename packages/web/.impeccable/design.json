@@ -156,7 +156,7 @@
       "name": "SQL Pane (current, off-brand)",
       "kind": "custom",
       "refersTo": "sql-block",
-      "description": "The signature component, rendered as it actually is today: a light grey pane, not the dark terminal window the North Star and PRODUCT.md Principle 5 call for. Kept in the sidecar as evidence of the gap, not as a pattern to copy.",
+      "description": "The signature component, rendered as it actually is today: a light grey pane, not the dark terminal window the North Star and PRODUCT.md Design Principle 5 call for. Kept in the sidecar as evidence of the gap, not as a pattern to copy.",
       "html": "<pre class=\"ds-sql-block\">SELECT customer_id, SUM(amount)\nFROM orders\nGROUP BY 1</pre>",
       "css": ".ds-sql-block { overflow-x: auto; padding: 12px; border-radius: 10px; background: oklch(0.967 0.001 286.375); color: oklch(0.21 0.012 158); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.75rem; line-height: 1.5; margin: 0; }"
     }

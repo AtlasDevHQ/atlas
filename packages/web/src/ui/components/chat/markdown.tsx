@@ -12,7 +12,7 @@ type SyntaxHighlighterModule = typeof import("react-syntax-highlighter");
 type StyleModule = typeof import("react-syntax-highlighter/dist/esm/styles/prism");
 
 // ⚠️ `oneDark` ONLY — see sql-block.tsx for the same decision and the same
-// reason. This is the agent-reply pane PRODUCT.md › Principle 5 names
+// reason. This is the agent-reply pane PRODUCT.md › Design Principle 5 names
 // alongside YAML and SQL: "always-dark terminal windows (--code-*), identical
 // on every surface and mode". It carried the same light-mode inversion (#5306).
 let _highlighterCache: { Prism: SyntaxHighlighterModule["Prism"]; oneDark: StyleModule["oneDark"] } | null = null;

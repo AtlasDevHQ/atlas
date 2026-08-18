@@ -10,7 +10,7 @@ import { StagingBanner } from "@/ui/components/staging-banner";
 import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
 
-// The brand type pair, PRODUCT.md › Principle 4: "one font pair (Sora +
+// The brand type pair, PRODUCT.md › Design Principle 4: "one font pair (Sora +
 // JetBrains Mono)". Mirrors apps/www/src/app/layout.tsx exactly — same loader,
 // same variable names — so the product and the landing page render in the same
 // type. Before #5306 this app loaded NEITHER, so it rendered in whatever
@@ -88,7 +88,7 @@ export default async function RootLayout({
         exactly what happened until #5306: `bg-white dark:bg-zinc-950` made the
         light ground pure white instead of warm paper-lite (hue 83) and the dark
         ground pure neutral zinc instead of the faintly forest-tinted
-        oklch(0.165 0.012 158) that ADR-0023 §4 and PRODUCT.md Principle 5 both
+        oklch(0.165 0.012 158) that ADR-0023 §4 and PRODUCT.md Design Principle 5 both
         specify as "NOT pure gray". The skip-link on the next line always did it
         correctly; both conventions lived one line apart in the same element.
         scripts/check-web-brand-tokens.sh now fails if a color utility returns.

@@ -2,9 +2,13 @@
 #
 # Format — three whitespace-separated fields, then a REQUIRED `# reason`:
 #
-#   <kind>  <citing-file-glob|*>  <token>   # why this is not a defect
+#   <kind>  <citing-file-glob|*>  <token…>   # why this is not a defect
 #
-#   kind    `path` or `command`
+#   kind    `path`, `command`, `count`, or `*` for all three. (This line named
+#           only two of the four until 2026-08-18, while the gate had always
+#           accepted all four — and `count` was additionally unwritable, because
+#           the parser demanded exactly three fields and every registered count
+#           phrase is multi-word. The token now runs to the `#`.)
 #   glob    the file allowed to say it, or `*` for anywhere. Prefer the narrow
 #           form: `packages/foo` is legitimate in the railway-watch fixtures and
 #           nowhere else, and a global entry would exempt a real one elsewhere.
@@ -115,3 +119,25 @@ path  scripts/check-mutation-tables.sh  packages/api/../types/src/migration.ts  
 # carries a dated correction naming both paths — and the old one stays backticked
 # because the correction is about that exact path.
 path  docs/design/semantic-onboarding.md  packages/cli/bin/enrich.ts  # subject of the dated 2026-08-18 correction in that file; moved to lib/semantic/enrich/index.ts
+
+# ── `/name` tokens that are not slash-commands ───────────────────────────────
+# These surfaced when the route-literal resolver was tightened (see the COMMANDS
+# section of check-agent-doc-paths.sh). Each used to "resolve" off an import
+# specifier or a regex fragment — `"../src/authorize-url"` answered `/authorize`
+# — which is not evidence of anything. With that accident gone they have to be
+# declared, and every one of them is a real reference to something that is simply
+# not an Atlas command.
+command  packages/oauth-helper/src/pkce.ts  /authorize  # the OAuth provider's endpoint, on THEIR server, not a route of ours
+command  packages/api/src/lib/integrations/install/jira-oauth-handler.ts  /authorize  # same: Atlassian's authorize endpoint
+command  apps/docs/content/docs/guides/troubleshooting.mdx  /jwks  # a required URL SUFFIX for a customer's own IdP, not a route
+command  plugins/twenty/README.md  /metadata  # Twenty's GraphQL metadata endpoint, on the customer's Twenty instance
+command  ee/src/saas-crm/index.ts  /metadata  # same external Twenty endpoint
+command  docs/guides/bring-your-own-db.md  /database  # an optional path segment inside a connection URL
+command  plugins/snowflake/src/connection.ts  /database  # same: a segment of the Snowflake connection URL
+command  apps/docs/content/shared/getting-started/connect-your-data.mdx  /database  # same connection-URL segment
+command  docs/prd/staging-environment.md  /staging  # the name of a visual banner marker, not a route
+command  packages/cli/bin/__tests__/canonical-eval-exit-code.test.ts  /private  # macOS filesystem path that os.tmpdir() resolves behind
+command  apps/docs/src/lib/audience-taxonomy.ts  /index  # a trailing URL suffix in the docs path scheme
+command  apps/docs/src/lib/__tests__/source-partition.test.ts  /index  # same URL suffix
+command  scripts/check-docs-links.ts  /index  # same URL suffix
+command  scripts/check-agent-doc-paths.sh  /name  # the placeholder in this gate's own description of its `/name` syntax

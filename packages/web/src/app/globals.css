@@ -48,7 +48,7 @@
     --color-sidebar-ring: var(--sidebar-ring);
 
     /* Code surface — the ONE part of this app that does not follow the mode.
-     * PRODUCT.md › Principle 5: the YAML / SQL / agent-reply panes are
+     * PRODUCT.md › Design Principle 5: the YAML / SQL / agent-reply panes are
      * "always-dark terminal windows (--code-*), identical on every surface and
      * mode". The values come from the symlinked brand.css, the same file
      * apps/www reads, so the marketing site and the product cannot show two
@@ -60,7 +60,7 @@
     --color-code-muted: var(--code-muted);
     --color-code-border: var(--code-border);
 
-    /* Brand type pair (PRODUCT.md › Principle 4 + Design Tokens › Typography):
+    /* Brand type pair (PRODUCT.md › Design Principle 4 + Design Tokens › Typography):
      * Sora for UI, JetBrains Mono for code. Loaded by next/font in
      * src/app/layout.tsx, which stamps --font-sora / --font-jetbrains onto
      * <html>; the fallbacks keep the app rendering if a font ever fails to
@@ -74,7 +74,7 @@
  * family pulled toward white at very low chroma (warm hue 83 ≈ the --atlas-paper
  * ramp) so dense tables, charts, and long sessions stay calm and AA-legible —
  * NOT the saturated marketing cream. The primary accent is forest
- * (var(--atlas-brand)), never teal. See ADR-0023 §4 + PRODUCT.md › Principle 5. */
+ * (var(--atlas-brand)), never teal. See ADR-0023 §4 + PRODUCT.md › Design Principle 5. */
 :root {
     --radius: 0.625rem;
     --background: oklch(0.995 0.004 83);

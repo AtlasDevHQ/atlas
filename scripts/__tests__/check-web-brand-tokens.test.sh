@@ -302,12 +302,85 @@ else
   printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
 fi
 
+# 15. ⚠️ THE HIGHLIGHTED BRANCH, WHICH IS THE STATE USERS SEE. #5306's headline
+# defect lives here and nothing could see it: `oneLight` is a JS identifier the
+# ratchet cannot count, and the unit test asserts on the fallback <pre>, a
+# different element. Measured before this check existed: stripping the pane
+# background left all 5 sql-block tests green AND the gate at exit 0.
+new_tree
+perl -0pi -e 's/\n\s*background: "var\(--code-bg\)",//' \
+  "$TREE/packages/web/src/ui/components/chat/sql-block.tsx"
+prepare_gate; stage; run_gate
+if [ "$RC" = "1" ] && printf '%s' "$OUT" | grep -qF 'without background: "var(--code-bg)"'; then
+  pass "a highlighted pane that drops the brand ground is caught"
+else
+  fail "pane background — expected exit 1, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 16. …and the mode-following theme itself, reinstated in CODE.
+new_tree
+sed -i 's/style={mod.oneDark}/style={dark ? mod.oneDark : mod.oneLight}/' \
+  "$TREE/packages/web/src/ui/components/chat/sql-block.tsx"
+prepare_gate; stage; run_gate
+if [ "$RC" = "1" ] && printf '%s' "$OUT" | grep -qF 'references oneLight'; then
+  pass "reinstating oneLight in code is caught"
+else
+  fail "oneLight in code — expected exit 1, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 17. …while the header COMMENT that quotes the old `dark ? oneDark : oneLight`
+# as the defect it describes must stay legal. A gate that forced the removal of
+# an accurate historical note would be buying its red with a worse doc.
+new_tree; prepare_gate; stage; run_gate
+if [ "$RC" = "0" ] && grep -qF 'oneDark : oneLight' "$TREE/packages/web/src/ui/components/chat/sql-block.tsx"; then
+  pass "the same words in a comment describing the defect are not a finding"
+else
+  fail "oneLight in comment — expected exit 0 with the comment present, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 18. ⚠️ CHECK D WAS SATISFIABLE BY A COMMENT. `grep -q Sora layout.tsx` matched
+# the block above <html> that NAMES the pair, so the loader could be swapped for
+# a different font entirely and the gate still certified the brand pair.
+new_tree
+sed -i -e 's/import { Sora, JetBrains_Mono }/import { Inter, JetBrains_Mono }/' \
+       -e 's/^const sora = Sora({/const sora = Inter({/' \
+  "$TREE/packages/web/src/app/layout.tsx"
+prepare_gate; stage; run_gate
+if [ "$RC" = "1" ] && printf '%s' "$OUT" | grep -qF 'does not CALL Sora(...)'; then
+  pass "swapping the loader while keeping the comment is caught"
+else
+  fail "font loader swap — expected exit 1, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 19. ⚠️ readlink -f MISSING MUST BE exit 2, NEVER A PASS. Without it both
+# command substitutions returned "", `[ "" = "" ]` was true, every candidate was
+# skipped, and check A became a no-op while the success banner printed — on BSD
+# before macOS 12.3 and in busybox containers, i.e. wherever ci-local.sh is run
+# by hand.
+new_tree
+printf ':root { --code-bg: oklch(0.5 0 0); }\n' >> "$TREE/apps/www/src/app/globals.css"
+prepare_gate; stage
+mkdir -p "$TREE/stub"
+printf '#!/bin/sh\nexit 1\n' > "$TREE/stub/readlink"; chmod +x "$TREE/stub/readlink"
+RC=0
+OUT=$(PATH="$TREE/stub:$PATH" WEB_BRAND_TOKENS_ROOT="$TREE" bash "$GATE_COPY" 2>&1) || RC=$?
+if [ "$RC" = "2" ]; then
+  pass "a broken readlink -f exits 2, never a green no-op"
+else
+  fail "readlink stub — expected exit 2, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
 # ⚠️ AN ABSOLUTE LITERAL, for the reason its siblings carry one. PASS+FAIL is a
 # tally of the cases that RAN; nothing above notices a case that silently stopped
 # running — a `sed` whose anchor drifted, an `if` that can no longer be reached.
 # A suite reporting "15 passed" while three cases quietly vanished reads exactly
 # like success, which is the failure this whole directory exists to refuse.
-EXPECTED_CASES=15
+EXPECTED_CASES=20
 TOTAL=$((PASS + FAIL))
 if [ "$TOTAL" -eq "$EXPECTED_CASES" ]; then
   pass "all $EXPECTED_CASES cases ran"

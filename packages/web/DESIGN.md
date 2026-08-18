@@ -137,7 +137,7 @@ dark. `zinc`, `slate`, `gray` and `#fff` are all wrong answers here, however con
 through `--font-sans` (platform sans behind it as a fallback).
 **Code Font:** **JetBrains Mono**, same loader, reached through `--font-mono`.
 
-This is PRODUCT.md Principle 4's "one font pair", and until #5306 this surface loaded
+This is PRODUCT.md Design Principle 4's "one font pair", and until #5306 this surface loaded
 *neither* half of it — there was no `next/font` import anywhere in `packages/web/src`, so
 the app rendered in whatever `ui-sans-serif, system-ui` resolved to per-OS. The loader
 mirrors `apps/www/src/app/layout.tsx` exactly, same variable names, so the product and the
@@ -221,7 +221,7 @@ dark) — present to organise, not to draw.
 
 ### SQL / Code Pane (the signature component)
 - A dark terminal window floating on the paper ground, **identical in both modes** —
-  PRODUCT.md Principle 5's "code surface", and the hero asset of the light-page/dark-code
+  PRODUCT.md Design Principle 5's "code surface", and the hero asset of the light-page/dark-code
   inversion.
 - Ground `bg-code-bg`, text `text-code-fg`, `font-mono`, `rounded-lg`, `p-3`, `text-xs`.
   The highlighter is pinned to `oneDark` with `--code-bg` painted over the theme's own
@@ -237,6 +237,21 @@ dark) — present to organise, not to draw.
 agent/tool output on `bg-zinc-*`. They are the same class as the two above and the same
 fix; they were out of #5306's scope, and the ratchet in
 `scripts/check-web-brand-tokens.sh` stops the population growing while they wait.
+
+⚠️ **And one of them is SHIPPED TO CUSTOMERS.** `packages/react/src/components/chat/`'s
+`sql-block.tsx` and `markdown.tsx` — the published `@useatlas/react` embeddable widget —
+still carry `dark ? oneDark : oneLight` over `bg-zinc-100 dark:bg-zinc-800`, byte for byte
+the defect #5306 removed from the product. A customer embedding the widget on a light page
+gets the light-grey SQL pane. Neither guard reaches it: the ratchet and every check in
+`scripts/check-web-brand-tokens.sh` scan `packages/web/src` only, and the package has no
+`brand.css` to read `--code-*` from.
+
+It is listed here rather than fixed because it is **not the same decision**. The product
+surface is ours and Design Principle 5 governs it; the widget renders inside somebody
+else's page, so forcing an always-dark pane there is a product call about the embedding
+contract, and changing a published package's appearance is a customer-visible change. What
+it needs first is an answer to "does the widget follow the host page or the Atlas brand?",
+then either the `--code-*` values inlined into the package or shipped with it.
 
 ## Do's and Don'ts
 

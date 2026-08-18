@@ -13,15 +13,15 @@
 #      rule that sets `bg-background text-foreground`, so the page ground was
 #      PURE WHITE in light mode instead of oklch(0.995 0.004 83) warm paper-lite,
 #      and PURE NEUTRAL zinc in dark instead of the faintly forest-tinted
-#      oklch(0.165 0.012 158) that ADR-0023 §4 and PRODUCT.md Principle 5 both
+#      oklch(0.165 0.012 158) that ADR-0023 §4 and PRODUCT.md Design Principle 5 both
 #      specify as "NOT pure gray". The skip-link on the very next line did it
 #      correctly with `focus:bg-background`.
 #   2. The SQL pane rendered `dark ? oneDark : oneLight` over `bg-zinc-100`.
-#      PRODUCT.md Principle 5 makes the code surface fixed: "always-dark terminal
+#      PRODUCT.md Design Principle 5 makes the code surface fixed: "always-dark terminal
 #      windows (--code-*), identical on every surface and mode". It is the hero
 #      asset of the light-page/dark-code inversion, and in light mode it was a
 #      light grey box.
-#   3. Neither brand font was loaded. PRODUCT.md Principle 4 commits to "one font
+#   3. Neither brand font was loaded. PRODUCT.md Design Principle 4 commits to "one font
 #      pair (Sora + JetBrains Mono)"; there was no `next/font` import anywhere in
 #      `packages/web/src`, so the app rendered in whatever `ui-sans-serif`
 #      resolved to per-OS.
@@ -105,13 +105,27 @@ done
 # `--color-code-bg: var(--code-bg)` mapping (preceded by `-`), which is exactly
 # what an app is supposed to have. A one-line `:root { --code-bg: … }` does
 # match, which a `^\s*` anchor would have missed.
+# ⚠️ RESOLVED ONCE, AND NEVER COMPARED EMPTY-TO-EMPTY. `readlink -f` is absent
+# on BSD before macOS 12.3 and on busybox/minimal containers. Both substitutions
+# then return "", `[ "" = "" ]` is TRUE, every candidate is skipped, and check A
+# silently becomes a no-op while the gate prints its full success banner — a
+# green run whose success line is false, on exactly the machines ci-local.sh is
+# run from by hand. An unresolvable brand.css is now exit 2, not a pass.
+BRAND_REAL="$(readlink -f "$BRAND_CSS" 2>/dev/null || true)"
+[ -n "$BRAND_REAL" ] || die "readlink -f cannot resolve $BRAND_CSS (is 'readlink -f' available here?). Every symlink comparison below would compare empty to empty and skip its subject, so this gate would pass having checked nothing."
+
 while IFS= read -r hit; do
   file="${hit%%:*}"
   [ "$file" = "$BRAND_CSS" ] && continue
   # brand.css is symlinked into each app; the symlink IS the one copy.
-  [ "$(readlink -f "$file" 2>/dev/null)" = "$(readlink -f "$BRAND_CSS" 2>/dev/null)" ] && continue
+  file_real="$(readlink -f "$file" 2>/dev/null || true)"
+  [ -n "$file_real" ] && [ "$file_real" = "$BRAND_REAL" ] && continue
   fail "$file" "redefines a --code-* token. There is one code surface: define it in $BRAND_CSS and reference it here. Two correct-looking copies drifting apart is what \"identical on every surface and mode\" forbids — and is how packages/web ended up with no code tokens at all while apps/www had them."
-done < <(git ls-files -- '*.css' 2>/dev/null | xargs -r grep -InE '(^|[;{[:space:]])--code-(bg|chrome|well|fg|muted|border)[[:space:]]*:' 2>/dev/null)
+# -z/-0 and -H: a tracked path containing a space would otherwise be word-split
+# by xargs (the resulting grep error is swallowed by 2>/dev/null, so the file is
+# never scanned and the gate reports one definition), and without -H a batch that
+# narrows to a single file prints no filename, making `${hit%%:*}` a line number.
+done < <(git ls-files -z -- '*.css' 2>/dev/null | xargs -0 -r grep -HInE '(^|[;{[:space:]])--code-(bg|chrome|well|fg|muted|border)[[:space:]]*:' 2>/dev/null)
 
 # ── A2. …and packages/web actually REACHES them ──────────────────────────────
 # ⚠️ "Defined once" is only half the property. A checks that no app holds a
@@ -123,7 +137,8 @@ done < <(git ls-files -- '*.css' 2>/dev/null | xargs -r grep -InE '(^|[;{[:space
 # pane loses its ground. That is the #5306 defect class arriving through the
 # gate's blind side, so the link and the import are checked directly.
 WEB_BRAND_LINK="packages/web/brand.css"
-if [ "$(readlink -f "$WEB_BRAND_LINK" 2>/dev/null)" != "$(readlink -f "$BRAND_CSS" 2>/dev/null)" ]; then
+web_link_real="$(readlink -f "$WEB_BRAND_LINK" 2>/dev/null || true)"
+if [ -z "$web_link_real" ] || [ "$web_link_real" != "$BRAND_REAL" ]; then
   fail "$WEB_BRAND_LINK" "is not the shared $BRAND_CSS (it is missing, or it is a copy rather than the symlink). $WEB_GLOBALS imports it for the --code-* values; without it they are undefined and every code pane renders with no ground."
 fi
 grep -qE '^@import[[:space:]]+"[^"]*brand\.css"' "$WEB_GLOBALS" ||
@@ -191,12 +206,40 @@ if printf '%s' "$body_tag" | grep -qE '(^|[ "])(dark:)?(bg|text|from|to|via)-(wh
   fail "$WEB_LAYOUT:$body_n" "the root <body> carries a hardcoded color utility. It beats the tokenized @layer base rule, so the page ground stops following the brand: that is exactly how light mode became #fff and dark mode became neutral zinc (#5306). Remove it — the token rule already sets the ground."
 fi
 
+# ── C2. the SCAFFOLDED root layout owns no color either ──────────────────────
+# ⚠️ C reads packages/web's layout only, so `create-atlas/overrides/layout.tsx`
+# — the root layout every `create-atlas` nextjs-standalone project ships — kept
+# `bg-white … dark:bg-zinc-950` through all of #5306. prepare-templates.sh
+# copies packages/web's globals.css into that template verbatim, so the
+# scaffolded app inherits the tokenized ground and then overrides it, exactly as
+# the product did. It must also LOAD the fonts that CSS references: an undefined
+# `--font-sora` inside var() with no fallback invalidates the whole font-family
+# declaration, taking `ui-sans-serif, system-ui` down with it.
+SCAFFOLD_LAYOUT="create-atlas/overrides/layout.tsx"
+if [ -f "$SCAFFOLD_LAYOUT" ]; then
+  sc_n="$(grep -nE '^[[:space:]]*<body([[:space:]>]|$)' "$SCAFFOLD_LAYOUT" | head -1 | cut -d: -f1)"
+  if [ -n "$sc_n" ]; then
+    sc_tag="$(tail -n +"$sc_n" "$SCAFFOLD_LAYOUT" | tr '\n' ' ' | grep -oE '^[[:space:]]*<body[^>]*>' | head -1)"
+    if printf '%s' "$sc_tag" | grep -qE '(^|[ "])(dark:)?(bg|text|from|to|via)-(white|black|zinc|slate|gray|neutral|stone)(-[0-9]{2,3})?([ "]|$)|#[0-9a-fA-F]{3,8}'; then
+      fail "$SCAFFOLD_LAYOUT:$sc_n" "the scaffolded root <body> carries a hardcoded color utility. prepare-templates.sh ships this file as the root layout of every create-atlas project, over a copy of packages/web's tokenized globals.css — so the fix in packages/web does not reach a single scaffolded app."
+    fi
+  fi
+  for font in Sora JetBrains_Mono; do
+    grep -qE "(^|[^A-Za-z0-9_])${font}\(" "$SCAFFOLD_LAYOUT" ||
+      fail "$SCAFFOLD_LAYOUT" "does not CALL ${font}(...). It ships alongside a copy of packages/web's globals.css, which resolves --font-sans through var(--font-sora); undefined, that makes the whole font-family declaration invalid and the scaffolded app falls back to the browser default."
+  done
+fi
+
 # ── D. both brand fonts load, and the type tokens point at them ──────────────
 grep -q 'next/font/google' "$WEB_LAYOUT" ||
-  fail "$WEB_LAYOUT" "no next/font import. PRODUCT.md Principle 4 commits to one font pair (Sora + JetBrains Mono); without a loader the app renders in whatever ui-sans-serif resolves to per-OS."
+  fail "$WEB_LAYOUT" "no next/font import. PRODUCT.md Design Principle 4 commits to one font pair (Sora + JetBrains Mono); without a loader the app renders in whatever ui-sans-serif resolves to per-OS."
+# ⚠️ THE LOADER CALL, NOT THE WORD. `grep -q Sora layout.tsx` matches the comment
+# block above <html> that NAMES the pair, so swapping `Sora({…})` for `Inter({…})`
+# left this green while the product rendered in Inter — the gate certifying a
+# brand pair that is not loaded. Anchor on the call.
 for font in Sora JetBrains_Mono; do
-  grep -q "$font" "$WEB_LAYOUT" ||
-    fail "$WEB_LAYOUT" "does not load $font. PRODUCT.md Principle 4 names both halves of the pair; loading one is not the pair."
+  grep -qE "(^|[^A-Za-z0-9_])${font}\(" "$WEB_LAYOUT" ||
+    fail "$WEB_LAYOUT" "does not CALL ${font}(...) as a next/font loader (a comment naming it is not loading it). PRODUCT.md Design Principle 4 names both halves of the pair; loading one is not the pair."
 done
 grep -qE '^\s*--font-sans:.*--font-sora' "$WEB_GLOBALS" ||
   fail "$WEB_GLOBALS" "--font-sans does not reference --font-sora, so the loaded UI font is never used."
@@ -218,8 +261,24 @@ while IFS= read -r f; do
   # Two: the pane's own style and the code tag's. Overriding one leaves the other
   # on the theme's font, which is how the inner block ends up mismatched.
   [ "${hits:-0}" -ge 2 ] ||
-    fail "$f" "mounts a syntax highlighter but sets fontFamily: \"var(--font-mono)\" $hits time(s), not 2 (the pane style and the code-tag props). The Prism theme's own Fira Code stack wins wherever it is not overridden, so the pane stops using the brand mono font PRODUCT.md Principle 4 commits to."
-done < <(git ls-files -- "$WEB_SRC/*.tsx" 2>/dev/null | xargs -r grep -lF 'react-syntax-highlighter' 2>/dev/null)
+    fail "$f" "mounts a syntax highlighter but sets fontFamily: \"var(--font-mono)\" $hits time(s), not 2 (the pane style and the code-tag props). The Prism theme's own Fira Code stack wins wherever it is not overridden, so the pane stops using the brand mono font PRODUCT.md Design Principle 4 commits to."
+  # ⚠️ THE HIGHLIGHTED BRANCH IS THE ONE USERS SEE, and it was the least guarded
+  # thing in this PR. `#5306`'s headline defect — `dark ? oneDark : oneLight` over
+  # a mode-following ground — lives entirely inside it. `oneLight` is a JS
+  # identifier, so the ratchet cannot see it; the fallback <pre> is a different
+  # element, so the unit test cannot see it. Measured: stripping
+  # `background: "var(--code-bg)"` and reinstating oneLight left every test green
+  # and this gate at exit 0. Both halves are now named here.
+  grep -qF 'background: "var(--code-bg)"' "$f" ||
+    fail "$f" "mounts a syntax highlighter without background: \"var(--code-bg)\" on the pane style. The Prism theme paints its own near-black, so the pane stops being the brand's code surface — and nothing else can see it: oneLight is an identifier the ratchet cannot count, and the fallback <pre> is a different element from the one under test."
+  # ⚠️ CODE, NOT COMMENTS. sql-block.tsx's header legitimately quotes the old
+  # `dark ? oneDark : oneLight` as the defect it is describing, and a doc naming
+  # what was removed is not the thing being removed — the sibling gate strips
+  # comments for exactly this reason.
+  if printf '%s\n' "$(sed -E -e 's@/\*.*@@' -e 's@(^|[^:])//.*@\1@' "$f" | grep -vE '^[[:space:]]*(//|\*|/\*)')" | grep -qE '\boneLight\b'; then
+    fail "$f" "references oneLight. PRODUCT.md Design Principle 5 makes the code surface the one thing that does NOT follow the mode — \"always-dark terminal windows (--code-*), identical on every surface and mode\". A light theme variant is #5306 itself: in light mode the pane rendered as light grey on white."
+  fi
+done < <(git ls-files -z -- "$WEB_SRC/*.tsx" 2>/dev/null | xargs -0 -r grep -lF 'react-syntax-highlighter' 2>/dev/null)
 
 # ── E. the ratchet ───────────────────────────────────────────────────────────
 # ⚠️ THIS NUMBER MAY ONLY GO DOWN. It is not a target to keep meeting — it is a
@@ -233,9 +292,9 @@ NEUTRAL_RE='\b(bg|text|border|ring|fill|stroke|from|to|via|divide|placeholder|de
 # has to name `bg-zinc-100`. The unit test added with this gate does exactly that
 # — it is the falsifier for the SQL pane — and counting it would make the gate
 # punish its own measurement.
-hardcoded="$(git ls-files -- "$WEB_SRC/*.tsx" "$WEB_SRC/*.ts" 2>/dev/null |
-  grep -vE '(^|/)__tests__/|\.test\.(ts|tsx)$' |
-  xargs -r grep -InoE "$NEUTRAL_RE" 2>/dev/null | wc -l | tr -d ' ')"
+hardcoded="$(git ls-files -z -- "$WEB_SRC/*.tsx" "$WEB_SRC/*.ts" 2>/dev/null |
+  grep -zvE '(^|/)__tests__/|\.test\.(ts|tsx)$' |
+  xargs -0 -r grep -HInoE "$NEUTRAL_RE" 2>/dev/null | wc -l | tr -d ' ')"
 
 # Vacuity floor: a pattern that matches nothing would report a triumphant zero.
 if [ "$hardcoded" -eq 0 ]; then

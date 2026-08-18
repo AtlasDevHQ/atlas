@@ -77,7 +77,11 @@ new_tree() {
   echo "# release runbook" > "$TREE/.claude/commands/release.md"
   echo "export const secrets = 1;" > "$TREE/packages/api/src/lib/plugins/secrets.ts"
   echo "export const slack = 1;" > "$TREE/plugins/chat/src/adapters/slack.ts"
-  echo 'app.get("/health", ok);' > "$TREE/scripts/server.ts"
+  # Route source lives where routes live. NOT under scripts/ — the resolver
+  # excludes that tree, because this suite plants deleted commands there as test
+  # data and the gate must not read its own fixtures as evidence.
+  mkdir -p "$TREE/packages/api/src/api/routes"
+  echo 'app.get("/health", ok);' > "$TREE/packages/api/src/api/routes/server.ts"
   # The gate derives its registered counts from the tree, and refuses to check a
   # claim against a derivation of zero — so the tree must carry one of each set
   # it counts, including a ci-local roster.
@@ -389,7 +393,7 @@ fi
 # a start-of-string route on the same line as a URL must still resolve.
 new_tree
 printf 'const base = "https://api.example.com/health";\napp.get("/claim", ok);\n' \
-  > "$TREE/scripts/routes.ts"
+  > "$TREE/packages/api/src/api/routes/urls.ts"
 echo 'Hit `/claim` and `/health` to check.' > "$TREE/docs/agents/x.md"
 stage; run_gate
 if [ "$RC" = "0" ]; then
@@ -480,12 +484,62 @@ else
   printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
 fi
 
+# 23. ⚠️ THE RESOLVER MUST NOT ACCEPT A BARE WORD BEFORE THE SLASH. The first
+# cut's preceding-character class included `A-Za-z0-9_`, so every `word/name`
+# substring in tracked source became a "route": an import specifier
+# ("../src/authorize-url") answered /authorize, and SIX of the 26 deleted
+# commands resolved off nothing but incidental text. Measured on the real repo: a
+# doc naming /pr, /reset and /changelog — the exact three requirement 1 in the
+# gate's header is written about — exited 0. Mutation: put `A-Za-z0-9_` back in
+# the class → this goes green and the gate stops catching deleted commands.
+new_tree
+printf 'import { x } from "../src/authorize-url";\nexport const y = x;\n' \
+  > "$TREE/packages/api/src/lib/plugins/imports.ts"
+echo 'Run `/authorize` to start.' > "$TREE/docs/agents/x.md"
+stage; run_gate
+if [ "$RC" = "1" ] && printf '%s' "$OUT" | grep -qF '/authorize'; then
+  pass "an import specifier is not a route (a bare word before the slash)"
+else
+  fail "bare-word resolver — expected exit 1 for /authorize, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 24. …and the sub-segment route it must keep. A quoted path is split on `/`, so
+# a route that is not the first segment still resolves — the property a
+# start-anchored match would lose, and the reason the permissive class existed.
+new_tree
+printf 'app.get("/api/v1/tables", ok);\n' > "$TREE/packages/api/src/api/routes/deep.ts"
+echo 'Call `/tables` for the list.' > "$TREE/docs/agents/x.md"
+stage; run_gate
+if [ "$RC" = "0" ]; then
+  pass "a sub-segment of a quoted route path still resolves"
+else
+  fail "sub-segment route — expected exit 0, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 25. ⚠️ THE GATE'S OWN FIXTURES ARE NOT EVIDENCE. This suite plants deleted
+# commands as test data in tracked files under scripts/; before that tree was
+# excluded from the resolver, /pr and /reset resolved off THESE LINES and the
+# gate certified every reference to them repo-wide.
+new_tree
+mkdir -p "$TREE/scripts/__tests__"
+printf 'echo %s > "$T/x.md"\n' "'Then \`/pr\` to open it.'" > "$TREE/scripts/__tests__/probe.test.sh"
+echo 'Run `/pr` to open the PR.' > "$TREE/docs/agents/x.md"
+stage; run_gate
+if [ "$RC" = "1" ] && printf '%s' "$OUT" | grep -qF '/pr'; then
+  pass "a command planted in scripts/ as test data does not resolve itself"
+else
+  fail "scripts/ exclusion — expected exit 1 for /pr, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
 # ⚠️ AN ABSOLUTE LITERAL, for the reason its siblings carry one. PASS+FAIL is a
 # tally of the cases that RAN; nothing above notices a case that silently stopped
 # running — a `sed` whose anchor drifted, an `if` that can no longer be reached.
 # A suite reporting "26 passed" while three cases quietly vanished reads exactly
 # like success, which is the failure this whole directory exists to refuse.
-EXPECTED_CASES=26
+EXPECTED_CASES=29
 TOTAL=$((PASS + FAIL))
 if [ "$TOTAL" -eq "$EXPECTED_CASES" ]; then
   pass "all $EXPECTED_CASES cases ran"

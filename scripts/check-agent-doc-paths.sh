@@ -12,15 +12,21 @@
 #
 # The audit then found six more of the same class one level down: the burn
 # deleted 26 commands and left six live references to them, in
-# `.claude/commands/`, `docs/development/` and shipped TypeScript.
+# `.claude/commands/`, `docs/development/` and shipped TypeScript. (Five of the
+# six named a deleted command; the sixth was a stale path in the same sweep.
+# An earlier draft of this header said "five of those six were references to a
+# deleted COMMAND" two paragraphs down while implying all six here — both
+# readings cannot hold, and docs/agents/practices.md shipped the first.)
 #
 # ## Three requirements, each from a way the HAND CHECK failed
 #
 # 1. **Never truncate a finding.** The manual grep piped through `cut -c1-140`.
-#    It MATCHED `deps-update.md:96` and `release.md:117` — the `/pr`, `/reset`
-#    and `/changelog` references simply sat past column 140, so the visible
-#    prefix was declared a false positive. Every finding here prints the
-#    complete matched line.
+#    It MATCHED two command files — the /pr, /reset and /changelog references
+#    simply sat past column 140, so the visible prefix was declared a false
+#    positive. Every finding here prints the complete matched line.
+#    (Deliberately no line citation: #5298 removed those references before this
+#    gate landed, so any `file:line` here would name prose that is gone — which
+#    is the defect this gate exists to catch, in its own header.)
 # 2. **Scan the whole repo.** The manual scan covered `.claude/**` and
 #    `docs/agents/**`. Three of the six live references were in
 #    `docs/development/**` and one was in shipped TypeScript. A hand-listed set
@@ -53,7 +59,12 @@
 #     `packages/api/src/lib/plugins/secrets.ts` and `scripts/mutate.ts` for
 #     `packages/api/scripts/mutate.ts` — and `plugins/`, `scripts/`, `docs/` and
 #     `public/` are all ALSO top-level directory names, so the repo-rooted rule
-#     alone (measured: 230 findings) cannot tell an abbreviation from a claim.
+#     alone cannot tell an abbreviation from a claim. (Deliberately no number:
+#     the figure once quoted here, 230, reproduced under no configuration of the
+#     gate — re-measuring gives 150 rows / 67 unique on this branch, 188 / 94 on
+#     main, 333 / 201 without the archive excludes. A load-bearing justification
+#     carrying an unreproducible measurement is this gate's own subject, so the
+#     claim is stated qualitatively and the reader can re-derive it.)
 #     Suffix matching is self-tuning rather than lax: a 2-segment abbreviation
 #     matches easily, while `packages/api/src/lib/semantic.ts` — one of the three
 #     real audit findings — would need a tracked path ending in all five
@@ -70,11 +81,13 @@
 # live `.claude/commands/<name>.md`, a live `.claude/skills/<name>/`, a string
 # literal in tracked source (which is what an HTTP route looks like: `/health`,
 # `/sse`, `/claim`), a Next.js app-router segment directory, or an allowlist
-# entry. Measured on this repo: 194 DISTINCT `/name` tokens, 29 of them
-# unresolved, and the residue is genuinely external — Telegram BotFather
-# commands, upstream plugin skills. (The summary line counts OCCURRENCES, not
-# distinct tokens, so it prints a four-figure number for the same scan; the two
-# are different units and the labels say which.)
+# entry. The residue is genuinely external — Telegram BotFather commands,
+# upstream plugin skills, endpoints on somebody else's server — and it is
+# declared in the allowlist rather than counted here: the two figures this
+# paragraph used to quote (197 candidates, 29 unresolved) matched no tree, and
+# the summary line counts OCCURRENCES while they counted DISTINCT TOKENS, which
+# is a 5x difference in the same breath. The summary line says what it counted;
+# re-run the gate for today's numbers.
 #
 # ⚠️ A HISTORICAL reference is not a false positive to be exempted. A doc
 # describing what an audit found may legitimately name a deleted command; the
@@ -117,9 +130,11 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "'$ROOT' is not a git
 EXCLUDES=(':(exclude).claude/research' ':(exclude)docs/research')
 
 # ── the allowlist ────────────────────────────────────────────────────────────
-# Format, three whitespace-separated fields then a required `# reason`:
-#   <kind> <file-glob|*> <token|*>   # why this is not a defect
-# `kind` is `path`, `command`, `count`, or `*` for all three. An entry without a
+# Format: two fields, then the token (which may contain spaces), then a required `# reason`:
+#   <kind> <file-glob|*> <token…|*>  # why this is not a defect
+# The token runs to the `#`, so a multi-word `count` phrase is writable.
+# `kind` is `path`, `command`, `count`, or `*` for all three (the file header of
+# the allowlist itself says so too — it used to name only two of the four). An entry without a
 # reason is a FAILURE, not a warning: the reason is the only thing that keeps the
 # list from becoming a place to put findings.
 #
@@ -145,14 +160,23 @@ if [ -f "$ALLOWLIST" ]; then
     set -f
     set -- $body
     set +f
-    if [ "$#" -ne 3 ]; then
-      die "$ALLOWLIST:$lineno: expected '<kind> <file-glob> <token>  # reason', got: $raw"
+    # ⚠️ THE TOKEN IS THE REST OF THE LINE, not a third field. Every registered
+    # count phrase is multi-word ("bounded contexts"), and `is_allowed count`
+    # receives the PHRASE as its token — so under a strict 3-field rule the
+    # documented `count` kind could never be written: the first person to try
+    # `count docs/x.md bounded contexts # reason` got exit 2 and a dead gate,
+    # not an exemption. Quoting does not help, because `set -- $body` splits
+    # regardless. `path` and `command` tokens contain no spaces, so they are
+    # unaffected.
+    if [ "$#" -lt 3 ]; then
+      die "$ALLOWLIST:$lineno: expected '<kind> <file-glob> <token…>  # reason', got: $raw"
     fi
     if [ -z "${reason//[#[:space:]]/}" ]; then
       die "$ALLOWLIST:$lineno: entry has no reason after '#'. An allowlist entry without a reason is a finding in hiding: $raw"
     fi
     case "$1" in path|command|count|'*') ;; *) die "$ALLOWLIST:$lineno: unknown kind '$1' (expected 'path', 'command', 'count' or '*')." ;; esac
-    ALLOW_KIND+=("$1"); ALLOW_FILE+=("$2"); ALLOW_TOKEN+=("$3")
+    allow_kind="$1"; allow_file="$2"; shift 2
+    ALLOW_KIND+=("$allow_kind"); ALLOW_FILE+=("$allow_file"); ALLOW_TOKEN+=("$*")
   done < "$ALLOWLIST"
 fi
 
@@ -285,8 +309,25 @@ if [ "$TRACKED_N" -ge "$BIG_TREE" ] && [ "$PATH_CANDIDATES" -eq 0 ]; then
 fi
 
 # ── check 2: commands and skills ─────────────────────────────────────────────
-# Route literals: what an HTTP route looks like in source. `/health` appears as
-# "/health" somewhere in the code that serves it; `/pr` does not appear anywhere.
+# Route literals: what an HTTP route looks like in source — a QUOTED path string.
+# `/health` appears as "/health" in the code that serves it; a deleted command
+# like /pr appears in no quoted path anywhere.
+#
+# ⚠️ QUOTED PATH STRINGS, SPLIT INTO SEGMENTS — not "any slash followed by a
+# word". The first cut's preceding-character class included `A-Za-z0-9_`, so
+# every `word/name` substring in tracked source became a route: import
+# specifiers ("../src/authorize-url"), regex fragments, URLs. That produced 3291
+# pseudo-routes and resolved SIX of the 26 deleted commands, /pr /reset
+# /changelog /blog /next /research among them — three of which are the exact
+# references requirement 1 above is written about. Measured: a doc naming all
+# three exited 0. Splitting a quoted path on `/` keeps sub-segment routes
+# (`"/api/v1/tables"` still answers /tables, which a start-anchored match would
+# have missed) while refusing text that merely contains a slash.
+#
+# ⚠️ `scripts/` IS EXCLUDED from the scan. This gate's own fixture suite plants
+# deleted commands as test DATA, and this header discusses them as history; both
+# are tracked files, so the resolver was reading the gate's own subject as
+# evidence about the repo. Same shape as the allowlist's file-wide exemptions.
 ROUTE_LITERALS="$(mktemp)"; APP_SEGMENTS="$(mktemp)"
 trap 'rm -f "$TRACKED" "$UNIVERSE" "$ROUTE_LITERALS" "$APP_SEGMENTS"' EXIT
 # Two filters, and each one was measured against a way this check went wrong.
@@ -315,11 +356,12 @@ trap 'rm -f "$TRACKED" "$UNIVERSE" "$ROUTE_LITERALS" "$APP_SEGMENTS"' EXIT
 # missing commands; but accepting a bare `/name` anywhere in source is too much
 # the other way — `<InlineCode>/ship-issue</InlineCode>` in a blog page then
 # resolves a command that was deleted, which is the finding, not the exemption.
-git grep -I -h -E "/[a-z][a-z0-9-]*" -- '*.ts' '*.tsx' '*.js' '*.mjs' '*.json' '*.yml' '*.yaml' '*.sh' '*.sql' '*.css' 2>/dev/null |
+git grep -I -h -E "/[a-z][a-z0-9-]*" -- '*.ts' '*.tsx' '*.js' '*.mjs' '*.json' '*.yml' '*.yaml' '*.sh' '*.sql' '*.css' ':(exclude)scripts' 2>/dev/null |
   grep -vE '^[[:space:]]*(//|\*|/\*|#)' |
   sed -E -e 's@/\*.*@@' -e 's@(^|[^:])//.*@\1@' -e 's@[[:space:]]#.*@@' |
-  grep -o -E "[]\"'\`A-Za-z0-9_})*]/[a-z][a-z0-9-]*" |
-  sed -E 's/^.//' | sort -u > "$ROUTE_LITERALS"
+  grep -o -E "[\"'\`]/[A-Za-z0-9_{}:*.-]+(/[A-Za-z0-9_{}:*.-]+)*" |
+  sed -E 's/^.//' | tr '/' '\n' | sed 's|^|/|' |
+  grep -E '^/[a-z][a-z0-9-]*$' | sort -u > "$ROUTE_LITERALS"
 # Next.js app-router segments: `/create-org` is a directory, not a string.
 grep -oE '(^|/)app/(\([^/]*\)/)*[a-z][a-z0-9-]*/(page|route)\.(tsx?|jsx?)$' "$TRACKED" |
   sed -E 's:.*/([a-z][a-z0-9-]*)/(page|route)\..*:/\1:' | sort -u > "$APP_SEGMENTS"

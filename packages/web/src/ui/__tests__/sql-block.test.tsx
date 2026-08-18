@@ -26,7 +26,7 @@ describe("SQLBlock", () => {
     expect(container.textContent).toContain("ORDER BY");
   });
 
-  // ⚠️ THE CODE SURFACE DOES NOT FOLLOW THE MODE. PRODUCT.md Principle 5: the
+  // ⚠️ THE CODE SURFACE DOES NOT FOLLOW THE MODE. PRODUCT.md Design Principle 5: the
   // SQL pane is an "always-dark terminal window (--code-*), identical on every
   // surface and mode". This shipped as `bg-zinc-100 dark:bg-zinc-800` under
   // `dark ? oneDark : oneLight`, so in light mode the most brand-defining

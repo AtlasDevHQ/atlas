@@ -7,7 +7,7 @@ type SyntaxHighlighterModule = typeof import("react-syntax-highlighter");
 type StyleModule = typeof import("react-syntax-highlighter/dist/esm/styles/prism");
 
 // ⚠️ `oneDark` ONLY — no light variant is loaded, and that is the product
-// decision rather than an oversight. PRODUCT.md › Principle 5 makes the code
+// decision rather than an oversight. PRODUCT.md › Design Principle 5 makes the code
 // surface the one thing that does not follow the mode: the YAML / SQL /
 // agent-reply panes are "always-dark terminal windows (--code-*), identical on
 // every surface and mode". This pane is the hero asset of that light-page /
@@ -26,7 +26,7 @@ let _cache: { Prism: SyntaxHighlighterModule["Prism"]; oneDark: StyleModule["one
 // only the ground left the highlighted pane — the state a user actually sees —
 // rendering in Fira Code while apps/www renders its code in JetBrains Mono
 // (`font-family: var(--font-mono)`, globals.css). Same pane, two typefaces, on
-// the one component PRODUCT.md › Principle 5 calls "identical on every surface
+// the one component PRODUCT.md › Design Principle 5 calls "identical on every surface
 // and mode". The placeholder <pre> below carries `font-mono` too, so the block
 // no longer changes typeface on hydration either.
 const SQL_BLOCK_STYLE = {

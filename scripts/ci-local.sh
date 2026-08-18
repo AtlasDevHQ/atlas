@@ -254,6 +254,8 @@ launch settings-readers          bash scripts/check-settings-readers.sh
 launch saas-env-doc              bash scripts/check-saas-env-doc.sh
 launch brain-settings-doc        bun scripts/check-brain-settings-doc.ts
 launch docs-links                bun scripts/check-docs-links.ts
+launch agent-doc-paths           bash scripts/check-agent-doc-paths.sh
+launch web-brand-tokens          bash scripts/check-web-brand-tokens.sh
 launch docs-brain-snippets       bun scripts/check-docs-brain-snippets.ts
 launch auth-md-parity            g_auth_md_parity
 launch apex-discovery-drift      bash scripts/check-apex-discovery-drift.sh

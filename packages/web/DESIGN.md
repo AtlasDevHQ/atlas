@@ -238,20 +238,30 @@ agent/tool output on `bg-zinc-*`. They are the same class as the two above and t
 fix; they were out of #5306's scope, and the ratchet in
 `scripts/check-web-brand-tokens.sh` stops the population growing while they wait.
 
-⚠️ **And one of them is SHIPPED TO CUSTOMERS.** `packages/react/src/components/chat/`'s
-`sql-block.tsx` and `markdown.tsx` — the published `@useatlas/react` embeddable widget —
-still carry `dark ? oneDark : oneLight` over `bg-zinc-100 dark:bg-zinc-800`, byte for byte
-the defect #5306 removed from the product. A customer embedding the widget on a light page
-gets the light-grey SQL pane. Neither guard reaches it: the ratchet and every check in
-`scripts/check-web-brand-tokens.sh` scan `packages/web/src` only, and the package has no
-`brand.css` to read `--code-*` from.
+✅ **The embeddable widget is now converted too.** `packages/react/src/components/chat/`'s
+`sql-block.tsx` and `markdown.tsx` — the published `@useatlas/react` widget — carried
+`dark ? oneDark : oneLight` over `bg-zinc-100 dark:bg-zinc-800` until 2026-08-18: the
+#5306 defect byte for byte, shipped to customers rather than to us. The question that had
+to be answered first turned out to be already answered, in the package's own stylesheet,
+which opens *"the embedded chat is a product surface"* — so Design Principle 5 applies
+unchanged, and the code surface is defined by element, not by app.
 
-It is listed here rather than fixed because it is **not the same decision**. The product
-surface is ours and Design Principle 5 governs it; the widget renders inside somebody
-else's page, so forcing an always-dark pane there is a product call about the embedding
-contract, and changing a published package's appearance is a customer-visible change. What
-it needs first is an answer to "does the widget follow the host page or the Atlas brand?",
-then either the `--code-*` values inlined into the package or shipped with it.
+The widget's `dark` prop stays a **chrome** seam (the host page's theme drives the widget's
+chrome, which is right); it no longer reaches the code pane, because "identical on every
+surface **and mode**" is a statement about mode.
+
+⚠️ **`--code-*` now exists in three places, and that is sanctioned, not drift.**
+`@useatlas/react` installs into somebody else's `node_modules` and cannot symlink a file
+from this repo — the same constraint its `--atlas-brand` default already documents. So
+`brand.css` is the source, `packages/react/src/styles.css` is a literal mirror, and
+`packages/api/src/api/routes/widget.ts` inlines a third copy into the widget HTML.
+`scripts/check-web-brand-tokens.sh` requires all three to carry **identical values** — a
+symlink where a symlink is possible, value-equality where it is not, and never an unchecked
+second copy. Any other file defining `--code-*` is still refused outright.
+
+**This reaches customers only on the next `@useatlas/react` publish** (0.2.0 → 0.3.0). Per
+CLAUDE.md's sequencing, the version bump and the `^0.2.0` refs in the create-atlas templates
+move *after* the publish lands, not before.
 
 ## Do's and Don'ts
 

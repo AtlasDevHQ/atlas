@@ -43,6 +43,30 @@
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: var(--atlas-brand);
+
+  /* Code windows — FIXED ON EVERY SURFACE AND MODE, and deliberately NOT
+   * repeated in the `.dark` block below. PRODUCT.md › Design Principle 5 defines
+   * the code surface by ELEMENT, not by app: "the YAML / SQL / agent-reply
+   * panes: always-dark terminal windows (--code-*), identical on every surface
+   * and mode". This package renders exactly those panes, and the header above
+   * already calls the embedded chat a product surface — so the same rule applies
+   * here as in packages/web. The `dark` prop is a CHROME seam (the host page's
+   * theme drives the widget's chrome); the code pane is the one element that
+   * does not follow it.
+   *
+   * ⚠️ A MIRROR OF brand.css, WHICH THIS PACKAGE CANNOT IMPORT — the same
+   * situation, and the same lockstep, as --atlas-brand above. Three copies
+   * exist: brand.css (the source), this block, and the inline .atlas-root copy
+   * in packages/api/src/api/routes/widget.ts. scripts/check-web-brand-tokens.sh
+   * requires all three to carry IDENTICAL VALUES — the value-equality form of
+   * "identical on every surface" for the case where a symlink is impossible.
+   * Change one and the gate fails until you change all three. */
+  --code-bg: oklch(0.14 0.006 167);
+  --code-chrome: oklch(0.185 0.006 167);
+  --code-well: oklch(0.1 0.006 167);
+  --code-fg: oklch(0.86 0 0);
+  --code-muted: oklch(0.62 0 0);
+  --code-border: oklch(1 0 0 / 0.08);
 }
 
 .dark .atlas-root {

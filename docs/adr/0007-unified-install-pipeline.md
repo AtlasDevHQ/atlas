@@ -15,7 +15,7 @@ ADR-0006 established the three-pillar taxonomy (Datasource / Chat Platform / Act
 
 Salesforce is the canonical evidence the split is broken: its catalog row + OAuth handler live in the integrations pipeline (`integration_credentials` for the refresh token), but it also surfaces as a `dbType` on `/admin/connections` — a stub UI with no working install path because the Datasource pipeline doesn't know about OAuth. The user-facing pillar (Datasource) is severed from the install-handler infrastructure (integrations).
 
-The clean-break window declared in CONTEXT.md ("pre-customer clean-break" with two internal Workspaces and no external customers) makes this the right moment to unify, before contracts lock.
+The clean-break window declared in CONTEXT.md ("pre-customer clean-break" with two internal Workspaces and no external customers) makes this the right moment to unify, before contracts lock. (That window CLOSED on 2026-08-18 — docs/contexts/deployment-posture/CONTEXT.md. This decision shipped under it and stands; the authority is no longer available to new work.)
 
 ## Decision
 

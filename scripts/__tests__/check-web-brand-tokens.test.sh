@@ -80,6 +80,13 @@ new_tree() {
   cp "$REPO/packages/web/src/ui/components/chat/sql-block.tsx" \
      "$REPO/packages/web/src/ui/components/chat/markdown.tsx" \
      "$TREE/packages/web/src/ui/components/chat/"
+  # The two sanctioned mirrors of brand.css's --code-*. @useatlas/react is
+  # published to npm and cannot symlink a repo file, so its copy is literal and
+  # checked BY VALUE instead; packages/api inlines a third copy into the widget
+  # HTML. All three must agree, which is what A3 tests.
+  mkdir -p "$TREE/packages/react/src" "$TREE/packages/api/src/api/routes"
+  cp "$REPO/packages/react/src/styles.css" "$TREE/packages/react/src/styles.css"
+  cp "$REPO/packages/api/src/api/routes/widget.ts" "$TREE/packages/api/src/api/routes/widget.ts"
   # One representative component, so the ratchet has something to count.
   mkdir -p "$TREE/packages/web/src/ui"
   printf 'export const X = () => <div className="bg-zinc-100 text-zinc-500" />;\n' \
@@ -375,12 +382,52 @@ else
   printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
 fi
 
+# 21. ⚠️ A MIRROR THAT DRIFTS. `@useatlas/react` ships to npm and cannot symlink
+# brand.css, so its --code-* are a literal copy — licensed only because the
+# values are checked. Drift is precisely the two-correct-looking-copies failure
+# the symlink exists to prevent.
+new_tree
+sed -i 's/--code-bg: oklch(0.14 0.006 167);/--code-bg: oklch(0.18 0.006 167);/' \
+  "$TREE/packages/react/src/styles.css"
+prepare_gate; stage; run_gate
+if [ "$RC" = "1" ] && printf '%s' "$OUT" | grep -qF "but brand.css says"; then
+  pass "a sanctioned mirror whose --code-bg drifts from brand.css is caught"
+else
+  fail "mirror drift — expected exit 1, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 22. …and a mirror carrying only SOME of the tokens. The widget HTML in
+# packages/api is a third copy; styles.css's own comment warns about it.
+new_tree
+sed -i 's/--code-fg:oklch(0.86 0 0);//' "$TREE/packages/api/src/api/routes/widget.ts"
+prepare_gate; stage; run_gate
+if [ "$RC" = "1" ] && printf '%s' "$OUT" | grep -qF "does not define --code-fg"; then
+  pass "a mirror missing one code token is caught"
+else
+  fail "incomplete mirror — expected exit 1, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 23. …and an UNSANCTIONED second copy is still refused outright, so case 21's
+# licence does not generalise into "any file may define these".
+new_tree
+mkdir -p "$TREE/packages/other/src"
+printf ':root { --code-bg: oklch(0.14 0.006 167); }\n' > "$TREE/packages/other/src/rogue.css"
+prepare_gate; stage; run_gate
+if [ "$RC" = "1" ] && printf '%s' "$OUT" | grep -qF "redefines a --code-* token"; then
+  pass "an unregistered file defining --code-* is still refused"
+else
+  fail "rogue copy — expected exit 1, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
 # ⚠️ AN ABSOLUTE LITERAL, for the reason its siblings carry one. PASS+FAIL is a
 # tally of the cases that RAN; nothing above notices a case that silently stopped
 # running — a `sed` whose anchor drifted, an `if` that can no longer be reached.
 # A suite reporting "15 passed" while three cases quietly vanished reads exactly
 # like success, which is the failure this whole directory exists to refuse.
-EXPECTED_CASES=20
+EXPECTED_CASES=23
 TOTAL=$((PASS + FAIL))
 if [ "$TOTAL" -eq "$EXPECTED_CASES" ]; then
   pass "all $EXPECTED_CASES cases ran"

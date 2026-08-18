@@ -24,7 +24,7 @@
  * CLI-with-credentialed-url path reaches this profiler today. OAuth-token-resolved
  * registry profiling is tracked as a follow-up (ADR-0014, ADR-0017; #3663).
  *
- * Logic adapted from the CLI's `packages/cli/lib/profilers/salesforce.ts` —
+ * Logic adapted from the CLI's packages/cli/lib/profilers/salesforce.ts —
  * this plugin package becomes the home the registry resolves and the CLI
  * consumes directly. Never echoes credentials/tokens: caught errors are
  * type-narrowed to a message string and the connection's own logger/`close`

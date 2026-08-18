@@ -37,4 +37,24 @@
   --atlas-paper-sunken: oklch(0.892 0.021 83);
   --atlas-ink: oklch(0.245 0.026 158);
   --atlas-ink-muted: oklch(0.435 0.026 158);
+
+  /* Code windows — FIXED ON EVERY SURFACE AND MODE. PRODUCT.md › Design Principle 5
+   * calls the YAML / SQL / agent-reply panes "always-dark terminal windows,
+   * identical on every surface and mode", and PRODUCT.md › Design Tokens gives
+   * the numbers: bg 0.14 0.006 167, chrome 0.185, well 0.10.
+   *
+   * ⚠️ They live HERE, in the symlinked source of truth, and not in any app's
+   * globals.css — that is the point. Until 2026-08-17 they existed only in
+   * apps/www, so packages/web had nothing to reference and its SQL pane
+   * rendered as light grey on white in light mode (#5306): the hero asset of
+   * the light-page/dark-code inversion, inverted the wrong way. Two correct-
+   * looking copies drifting apart is exactly what "identical on every surface"
+   * forbids, so there is one copy. scripts/check-web-brand-tokens.sh fails if
+   * an app redefines them. */
+  --code-bg: oklch(0.14 0.006 167);
+  --code-chrome: oklch(0.185 0.006 167);
+  --code-well: oklch(0.1 0.006 167);
+  --code-fg: oklch(0.86 0 0);
+  --code-muted: oklch(0.62 0 0);
+  --code-border: oklch(1 0 0 / 0.08);
 }

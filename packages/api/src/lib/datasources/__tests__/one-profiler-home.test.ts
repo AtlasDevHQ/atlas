@@ -7,7 +7,7 @@
  * identically by MCP, the in-product wizard, and the CLI — the BUILT connection's
  * introspection (`createFromConfig(...).listObjects` / `.profile`), bound to the
  * creds that built it. A new datasource can't reintroduce a second home — a
- * `connection`-namespace profiler export, or a `packages/cli/lib/profilers/` copy
+ * `connection`-namespace profiler export, or a packages/cli/lib/profilers/ copy
  * — without going red here.
  *
  * Companion to `universal-profiling-enforcement.test.ts`, which asserts the

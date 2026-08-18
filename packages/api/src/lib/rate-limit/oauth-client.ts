@@ -17,7 +17,7 @@
  * step (refill rate vs burst capacity vs window) the operator-facing
  * envelope doesn't surface today. Out of scope for #2071. The
  * operator-facing tradeoff is summarized in
- * `apps/docs/content/docs/guides/mcp-hosted.mdx`.
+ * `apps/docs/content/docs/guides/mcp.mdx`.
  *
  * Per-tool weighting: every dispatch costs at least 1, with `executeSQL`
  * and `explore` charged 5× because their downstream cost (a DB query

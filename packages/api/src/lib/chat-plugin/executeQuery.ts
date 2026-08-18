@@ -26,7 +26,7 @@
  * disables (F-55 regression). Both branches MUST fail-closed on unknown
  * tenant or DB outage before the agent runs.
  *
- * Mirrors what `packages/api/src/api/routes/slack.ts` does today for the
+ * Mirrors what `plugins/chat/src/adapters/slack.ts` does today for the
  * `app_mention` and `message + threadTs` branches:
  *
  *   - `getBotToken(teamId)` / `getInstallation(teamId)` for tenancy (Slack)

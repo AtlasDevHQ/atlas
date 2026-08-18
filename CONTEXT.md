@@ -4,6 +4,19 @@ Canonical terminology for Atlas. This document is a glossary, not a spec — imp
 
 When you find yourself reaching for one of these words, use the canonical form. When you see a term used loosely in conversation or code, sharpen it back to one of these.
 
+> **This file is the UN-SPLIT REMAINDER, not the whole domain.** Atlas uses the
+> multi-context layout ([CONTEXT-MAP.md](CONTEXT-MAP.md)); three of its eighteen contexts
+> have been extracted and are **not** in this file (#5302):
+>
+> | Context | Now lives in |
+> | --- | --- |
+> | Company Atlas | [docs/contexts/company-atlas/CONTEXT.md](docs/contexts/company-atlas/CONTEXT.md) |
+> | Deployment posture | [docs/contexts/deployment-posture/CONTEXT.md](docs/contexts/deployment-posture/CONTEXT.md) — ⚠️ marked stale 2026-08-17 |
+> | Notebooks (retired) | [docs/contexts/notebooks/CONTEXT.md](docs/contexts/notebooks/CONTEXT.md) — history only |
+>
+> They were moved, not copied: no section below duplicates them. The remaining fifteen
+> sections are still governed here, and the map says so per row.
+
 ## Pillars
 
 Atlas reaches the outside world in four distinct ways. A given **catalog row** fits in exactly one pillar; the split matters because the install lifecycle, credential storage, and admin UX differ across them. Some third-party *systems* span pillars by carrying multiple catalog rows — see "Multi-pillar systems" below.
@@ -40,78 +53,6 @@ The install **handler** it uses (OAuth, Form, Static-bot per "Install models" be
   - *Reviewed-fact carve-out* — a **reviewed fact** is a third thing, neither descriptive nor a knowledge document. It is a row in the **Company Brain** substrate (below; [ADR-0036](./docs/adr/0036-atlas-as-company-brain.md) amends [ADR-0028](./docs/adr/0028-knowledge-base-fourth-pillar.md) rather than superseding it, and still holds the substrate vocabulary this glossary does not restate), authoritative *for its class* and yielding to the **warehouse** — tier 1, the analytics Datasource resolved through the semantic layer and answered by `executeSQL` — in any overlap (`TRUST_TIERS` in `packages/api/src/lib/brain/types.ts`). What holds a fact is a **review gate**, not descriptiveness, so it sits off the descriptive/authoritative axis entirely. Knowledge documents are unchanged: still descriptive-only, and deliberately left *outside* that tier ordering rather than ranked at its bottom.
 - "Notion/Confluence integration" is ambiguous and genuinely dual — the same system can be a **REST Datasource** (live `executeRestOperation` calls against the vendor API: always-current, but slow, rate-limited, and shaped by the vendor's API) or a **Knowledge Base** (content ingested as knowledge documents: indexed, searchable, review-gated — faster and more accurate for informing answers). Per the multi-pillar rule, that's one catalog row per (system, pillar); a customer can install both.
 - **"KB" / "knowledge base"** is overloaded in loose usage — it can mean the **Knowledge Base pillar** (above: a corpus Atlas *ingests* as knowledge documents, home `/admin/knowledge`, OKF) or the customer-facing **help center** (human support/how-to articles — e.g. Featurebase — that live outside the product and may deep-link the docs portal). Reserve **Knowledge Base** for the pillar; say **help center** for the support-article surface. The docs site (`docs.useatlas.dev`) is neither — it is the **documentation portal**.
-
-## Company Atlas
-
-- **Company Atlas** — what Atlas has learned about the customer's business, held as **reviewed facts** in the Atlas substrate (ADR-0036). Its admin surface is `/admin/brain`, its own sidebar group.
-
-  **Renamed from "Company Brain" by [ADR-0038](./docs/adr/0038-the-atlas-is-the-product-the-brain-is-the-category.md).** The CATEGORY claim — *"the data-grounded company brain"* — is unchanged and still correct; only the product noun moved, because *brain* is a breadth word and ADR-0036 §T2's guardrail is *claim trust, concede breadth*. The rename is **product copy only**: the route (`/admin/brain`), the tables (`brain_*`), `lib/brain/**` and `ATLAS_BRAIN_*` env vars all keep the old noun on purpose.
-
-  **Not a pillar, and not a fifth one.** The four pillars are the ways Atlas *reaches the outside world*; each is keyed on catalog rows, an install lifecycle, and credential storage. The Atlas owns no catalog row **of its own** — it is **derived**, its facts extracted from **episodes** rather than reached for directly. It is therefore *orthogonal* to the pillar axis, not another point on it, and the "one user-facing surface per pillar" rule above does not reach it.
-
-  **Episode** — the raw evidence a fact is extracted from. The stored `source` vocabulary is `EPISODE_SOURCE_SPECS` (`lib/brain/sources.ts`), each member naming a CLASS and a vendor: `slack` (chat), `zoom` (transcript), `outlook` (email), `warehouse`, and `human`. A second chat vendor is a new member, not a reuse of `slack`. `human` is the one members are never extracted FROM: it records a `correct_fact` correction, pre-stamped off the extraction queue so a person's own statement is not re-derived into a machine-produced claim.
-
-  **Ingest contract** — what connecting a source at its pillar automatically triggers for the Atlas, fixed **per class** (#5200/T1). A vendor declares its class and inherits the class's trigger whole; vendor variation is confined to mechanics (source-id grammar, scopes, API shape). A vendor that cannot fulfill its class's contract is refused or visibly degraded at install — never quietly narrowed. Neither vendor nor admin chooses *whether* the trigger runs: connecting is the one act. What the admin retains is the **perimeter** — which spaces the Atlas may read (e.g. the chat channel exclusion list, backfill depth) — a data-governance boundary, not a trigger choice.
-
-  Every class has two arms, and they never merge ([ADR-0040](./docs/adr/0040-the-class-major-ingest-contract.md)): the **availability arm** is automatic — fired by the pillar install; the episode stream, extraction, and grant derivation for episode classes, live tier-1 for the warehouse — and the **authority arm** is deliberate and human — the review gate for episode classes; enrollment plus the review gate for the warehouse (ADR-0039). **The contract automates availability and never automates authority.**
-  _Avoid_: "configurable ingestion" (a configurable trigger is an undecided class contract); restating a trigger per vendor; conflating "the Atlas can use this source" (availability) with "the Atlas has materialized claims from it" (authority).
-
-  Two of its **ingest sources** still install as Knowledge-Base-pillar catalog rows — `Company Atlas (Zoom transcripts)` and `(Outlook mail)` in `seed-builtin-knowledge-catalog.ts`, each consuming a collection slot and appearing on `/admin/knowledge`. They reuse the collection install spine but land **episodes, not knowledge documents**, which is why such a collection legitimately shows zero documents. Slack is no longer among them: since #5203 (migration 0198) chat episodes ride the **Chat Platform** install itself — one Slack install, channel scope derived from bot membership minus the admin exclusion list. The *sources* are installable; the *layer* is not. Where transcripts and mail belong in the pillar taxonomy is open (#5202).
-
-  **A knowledge document is never extracted into a fact.** The extraction cycle drains `brain_episodes` and nothing else (`DRAIN_EPISODES_SQL` in `lib/brain/extract.ts`), and the knowledge ingest seam writes `knowledge_documents` only. Knowledge documents reach an answer through `searchBrain`'s fusion at *retrieval* time, tier-labeled — never through the review gate. Saying the brain "learns from your knowledge base" inverts that.
-
-  **It yields to the warehouse.** A reviewed fact is authoritative for its class but loses to tier 1 — the analytics Datasource resolved through the semantic layer — in any overlap (`TRUST_TIERS`). "The Atlas knows things your database doesn't" is the correct pitch; "the Atlas overrides your database" is not.
-
-  _Avoid_: **"Brain Facts"** as a product label — `brain_facts` is the table, and until #5066 it was wearing a product name in the sidebar. Say **Company Atlas** for the surface and the concept; **reviewed fact** (or plainly, *fact*) for a single row. Also avoid **"Company Brain"** in any copy a customer reads (ADR-0038), while leaving every developer surface alone: the table name, the API path (`/api/v1/admin/brain-facts`, OpenAPI tag "Admin — Brain Facts"), the `/admin/brain` route, and the `searchBrain` tool name all stay as they are — the rule is about product copy. The two ingest catalog rows above (Zoom, Outlook) no longer read "Company Brain" in their **`name` and `description`** (#5082) — and the rename is migration `0201_brain_catalog_rows_company_atlas.sql`, not a constant edit, because the seeder is `ON CONFLICT … DO NOTHING` and editing `seed-builtin-knowledge-catalog.ts` alone renames nothing a region already holds. Those rows' **`config_schema` helper text** — customer-read on the install form, and the last **stored** string in the knowledge catalog saying "brain" — is migration `0203_brain_catalog_config_help_company_atlas.sql` (#5240), which rebuilds the JSONB array element-wise (`jsonb_agg … WITH ORDINALITY` + `jsonb_set`) rather than round-tripping it through text, so everything but the one string survives identical. **There is no config_schema exemption left**; a test pins each constant to what its migration writes. That is a claim about STORED catalog copy only — customer-read "brain" nouns still exist in code-generated strings elsewhere, e.g. `knowledge-collection-slug.ts`'s reserved-slug install error and `admin-brain-slack.ts`'s 403 bodies. The general rule: **changing a field on a built-in catalog row that regions already hold takes a migration**. `ON CONFLICT … DO NOTHING` freezes *every* column of an existing row, so enforcement is a chosen subset: for the **knowledge** catalog, a copy lock over all fourteen rows' `name`, `description`, `saasEligible` and `autoInstall`, plus the two `config_schema` pins. That seeder's conflict target is qualified — `ON CONFLICT (id) DO NOTHING` (#5239) — so a slug already held under a different id raises `23505` and is reported per row instead of being swallowed as success. The built-in **datasource** catalog (`seed-builtin-datasource-catalog.ts`) still seeds customer-read copy through the identical *unqualified* `ON CONFLICT DO NOTHING` and carries no copy lock at all, so **both defects remain OPEN on the datasource side** — only the knowledge side is closed. It is in fact one step worse there: that seeder derives `preservedSlugs` as *all minus inserted* and documents them as "rows that already existed", so a foreign-id slug collision is positively reported as present rather than merely omitted. Also avoid calling it a pillar, a knowledge base, or "the memory" (**Session Memory** is a different, per-conversation thing under Intelligence).
-
-### Surfaces
-
-- **Claim Vocabulary** — the workspace-curated set of decisions about **which spellings mean the same thing**, read by claim identity (ADR-0037 §6). Two relations, not one: **approved edges** are the human's decisions (at-most-one-parent, never rewritten by another approval), and the **effective target** is their transitive closure — what `alias` actually reads. Removal is therefore a *recomputation*, not a delete, which is what keeps a bad alias undoable. **Position-scoped**: a decision at the predicate position never re-keys subjects.
-
-  A single decision is an **alias** — a directed pair of norms at one position. The human who decides one is an **approver** (plain owner/admin entitlement — `acl.ts`'s only owner/admin gate; there is no standing curator role and Atlas should not invent one). Cardinality is a **second vocabulary property under the same authority**, not a separate system.
-
-  **Qualified deliberately.** Bare "vocabulary" is already taken in this glossary — the `source` vocabulary above (`EPISODE_SOURCE_SPECS`) is a fixed enum shipped in code that no customer touches. The Claim Vocabulary is its opposite in every property that matters: workspace-scoped, human-authored, mutable, and the thing an admin is editing. The code already agrees (`loadClaimVocabulary`, `ClaimVocabulary`).
-
-  It is **the one piece of brain state with no ACL, permanently** (ADR-0037 §6) — a derived invariant, since the identity consumers carry no grant arm and keys are materialized by a fiber that has no reader. Per-team terminology is *refused* by that decision, not merely unimplemented.
-
-  **Three levels, and they are not interchangeable** — `key = alias(lexicalNorm(surface))`:
-
-  | | What it is |
-  |---|---|
-  | **Surface** | the spelling as it was actually observed in a claim (`Ships On`, `ships on`, `499 a month`) |
-  | **Norm** | `lexicalNorm(surface)` — pure, total normalization. ASCII-only case fold plus a separator class. Composes under the vocabulary and must stay total to have a fixpoint |
-  | **Key** | the norm resolved through the Claim Vocabulary at ONE position. What the three identity consumers compare |
-
-  A **norm** is not a **key**: `identityKey` is deliberately the vocabulary-free half. The §6 prohibition *keys are never projected to the wire* is about keys — **norms necessarily appear on the vocabulary surface**, since an approver cannot approve a merge without seeing which two spellings merge (#5034's exemption, and `brain_vocabulary_edge` has stored norms since 0189).
-
-  _Avoid_: bare **"vocabulary"** in cross-subsystem prose (say Claim Vocabulary); **"curator"** for the actor (say approver — it implies a role that does not exist); **"synonym"** (an alias is directed and position-scoped, a synonym is neither); treating the approved edges and the effective target as one thing (that conflation is the forest invariant ADR-0037 §6 had to retire).
-
-
-- **Coverage Surface** — the one page where an admin states what Atlas knows, how much of what its credentials can see it covers, and what it does not know (PRD condition 6, [ADR-0041](./docs/adr/0041-the-coverage-surface-counts-what-it-can-see.md)). It is the **evolved `/admin/brain` overview**, not a new sibling page, structured by the ingest contract's two arms: the availability arm's half (what is surveyed at all) beside the authority arm's half (what is observed but awaiting review — the former backlog counts).
-
-  Its unit is the **survey unit** — the enumerable atom of evidence-side coverage: a chat channel, a mailbox, an enrolled (entity, dimension) pair. Survey units are **evidence-side**, never organization-side: "parts of the company" on this surface means parts of the company's record-producing surface. A department/team reading is refused unless a human authors the mapping — an org-chart denominator is a guess wearing a UI.
-
-  Every survey unit is in exactly one of **three states**:
-
-  | State | Meaning |
-  |---|---|
-  | **Surveyed** | inside the perimeter, with evidence actually observed (green-is-evidence) |
-  | **Enumerated** | the credentials can see it exists; nobody put it in the perimeter |
-  | **Unenumerable** | beyond granted scopes or unconnected sources — the map edge, shown as a **mark, never a number** ("terra incognita" is the product copy for this state) |
-
-  Denominators are always **credential-relative** ("of what Atlas's credentials can see"), so widening scopes legitimately makes a ratio *drop* — correct behavior the UI must not smooth over. **There is no single coverage number, permanently**: ratios exist only where numerator and denominator share a real unit; blending channels, mailboxes and entities needs invented weights, and a headline gauge rewards narrowing the denominator. The page's strongest statement is a composed paragraph, not a KPI.
-
-  **Stale** is a **measured lag** — the vendor's own activity metadata shows source movement newer than our newest evidence by more than the class's sync cadence. Where the vendor can't report activity, or the pipe is sick, the unit is **"unverified since \<date\>"**, never "stale". **Quiet ≠ stale**: a source that hasn't moved is current however old its evidence. **"Thin" has no computed badge** — counts are shown; the judgment is the reader's.
-
-  Labels follow the counts/labels split: **counts are always disclosable** (extending the unscoped-count sanction from facts to survey units); a **label** appears only by **deliberate act** (membership, exclusion, enrollment, install form) or **vendor-public existence** (a per-class contract property, default closed). Persons and mailboxes are counted, never listed.
-
-  _Avoid_: **"coverage score"** / any blended percentage (refused, not deferred); "region" for a survey unit (residency owns that word); a company-wide denominator in any phrasing ("of the company" — the honest phrase is "of what the credentials can see"); a staleness threshold knob (the only constant in staleness is the class cadence); calling an unmoved source stale.
-
-Every brain surface lives under `/admin/brain`, and none is a member of **Intelligence** — the sidebar group holding model configuration, prompt authoring and agent behaviour, which is a grab-bag the brain was wrongly filed into until #5066.
-
-- `/admin/brain` — overview: the **Coverage Surface** (above). Read-only; carries the backlog counts as its authority-arm half.
-- `/admin/brain/facts` — the review queue: reject what you don't trust, then publish, and what survived is promoted. **The only console surface carrying brain-fact review verbs.** Promotion itself is not exclusive to it: the shared publish modal hangs off `PendingChangesPill` in the admin top bar, so any admin can publish from any `/admin/*` route without ever opening this page — which is exactly why the publish preview discloses a workspace-wide supersession count. `brain_facts.status` is grep-guarded by `scripts/check-brain-fact-promotion.sh` to a named allowlist (today: the content-mode adapter, the region import, the correction verbs, the vocabulary re-key); the guard exempts a FILE, not a column, and records that cost itself. Was `/admin/brain-facts`, which now 308s here.
-- `/admin/brain/vocabulary` — the **Claim Vocabulary**, in two panes. **Pending**: one queue holding both alias proposals and cardinality decisions together (a person is deciding about a predicate, not visiting queue A vs queue B), each with the blast-radius preview it is decided against, plus direct human authoring. **In force**: the approved edges and curated cardinalities currently shaping identity, each removable. Removal belongs on this surface rather than in a follow-up because ADR-0037 §6 makes reversibility the sole thing that renders a bad alias undoable, and a pending queue structurally cannot show an edge already approved. Nav label is **Vocabulary**; the route keeps the `brain` noun per ADR-0038.
 
 ## Chat Platform mechanics
 
@@ -196,14 +137,6 @@ Rotation semantics differ per `install_model`:
 - **Static-bot** — operator rotates env vars; Atlas restart picks up new credentials; no per-Workspace impact
 
 Each install handler's interface docstring should call out its rotation semantics so consumers write the right error-handling shape.
-
-## Deployment posture (as of 2026-05-19)
-
-Atlas SaaS is deployed to two real Workspaces only: the maintainer's internal team and an internal demo team. **No external customers.** This is the "pre-customer clean-break" window — schema migrations can hard-drop, API contracts can change without versioning, no deprecation shims needed. The precedent is the #2620 / #2626 / #2634 / #2641 sequence, all clean breaks.
-
-The implication for upcoming work, including the Multi-Adapter SaaS Readiness milestone: prefer the architecturally correct shape over the migration-preserving one. The cost of a wrong-shaped contract that ships and then needs a v2 dwarfs the cost of breaking the two internal Workspaces today.
-
-This posture has a deadline: the first external customer onboards. Anything in flight by then has to lock its contracts. Until then, the door is open.
 
 ## Operator vs Customer
 
@@ -398,7 +331,7 @@ How a dashboard is edited and made visible to a team. **Target-state vocabulary*
 
 - **Dashboard**:
   A persistent, shareable grid of **cards** with an optional top-level **parameter bar**. The unit that is created, shared, and published.
-  _Avoid_: "board" (informal only), "report" (a distinct point-in-time deliverable with no current home — see § Notebooks, retired).
+  _Avoid_: "board" (informal only), "report" (a distinct point-in-time deliverable with no current home — see docs/contexts/notebooks/CONTEXT.md).
 
 - **Card**:
   The unit on the grid. A **chart card** carries a SQL query + visualization; a **text card** carries markdown (section headers, explainers) and no data.
@@ -455,18 +388,6 @@ How a dashboard is edited and made visible to a team. **Target-state vocabulary*
 - **Publish** is not **refresh**. Publish promotes *definitions* (SQL, layout, config); refresh re-executes a card's SQL to update its *cached data*. A publish that changes SQL must trigger a refresh or the **shared view** shows new definitions over stale data.
 - The **shared view** is data-only by construction, not by redaction-after-the-fact — the public projection is built from a minimal DTO, so a field can't leak by being forgotten. Raw SQL never reaches the wire on this surface.
 - The **shared view** has a single **as-of** instant (decided 2026-07-10): every piece of temporal framing a share viewer sees — parameter chips, "data as of" captions — derives from the shown data's capture instant, never from view time or dashboard creation time. When a refresh updates the rows, all framing moves with them; the page can never contradict itself about what window the numbers cover.
-
-## Notebooks (retired)
-
-The notebook surface was retired on 2026-07-10 ([ADR-0035](./docs/adr/0035-retire-the-notebook-surface.md)), killed in the pre-customer window after its elevation audit. These terms are pinned so the words don't dangle.
-
-- **Notebook**:
-  Retired surface — a cell-based analysis document painted over a chat transcript. Nothing new is built on it: exploration lives in chat; persistent, shareable, agent-built artifacts are **dashboards**.
-  _Avoid_: proposing notebook features; branching/forking a conversation died with the surface, deliberately — it has no successor.
-
-- **Report**:
-  The point-in-time narrated analysis deliverable — linear prose interleaved with evidence, all written about one as-of instant (the *memo*, where a dashboard is the *monitor*). Has **no home in Atlas today**: deferred to a future dashboard extension whose price of admission is a frozen (never-refreshed, as-of-pinned) presentation, because prose cites numbers and refresh moves them out from under it.
-  _Avoid_: "report" for a dashboard, a shared view, or a shared chat transcript (the retired "Share as Report" misnomer — it shipped a raw transcript).
 
 ## MCP & agent governance
 

@@ -37,7 +37,7 @@
  *    (server-side credential + server-side read-only enforcement). The bounded
  *    in-sandbox composition client is deferred to a later slice that mediates
  *    read-only at a method-aware host-side point. See
- *    `docs/architecture/sandbox.mdx`.
+ *    `apps/docs/content/shared/architecture/sandbox.mdx`.
  *
  * Self-hosted note: the sidecar backend has no `networkPolicy` equivalent (its
  * network is open). This module is only consulted on the Vercel-sandbox path.

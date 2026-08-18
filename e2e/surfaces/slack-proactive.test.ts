@@ -4,7 +4,7 @@
  * #2633 — closes the integration-test gap left by slice 3 of the
  * proactive-listener wiring trail (parent #2607). Slice 3 (PR #2626)
  * migrated Slack `app_mention` + thread-followup from
- * `packages/api/src/api/routes/slack.ts` to the `@useatlas/chat` plugin
+ * packages/api/src/api/routes/slack.ts to the `@useatlas/chat` plugin
  * webhook (`/api/plugins/chat-interaction/webhooks/slack`). Slack API
  * calls are stubbed at the `@slack/web-api` module boundary (see
  * `StubWebClient` below) — the legacy `slack.test.ts` pattern of

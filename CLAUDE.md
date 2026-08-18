@@ -33,7 +33,7 @@ These hold everywhere. The rest of this file is orientation, not rules.
 
 ### Tests
 - **`bun run test`, never bare `bun test`** — isolated per-file runner. Single file OK: `bun test path/to/file.test.ts`
-- **Remote CI on the PR is the gate, not a local `/ci`** — push, open the PR as a **draft**, and let `ci.yml` run (~4 min, parallel) while you review. The local pre-flight is the cheap subset: `cd packages/api && bun run scripts/test-isolated.ts --affected`, plus `bun run lint`, `bun run type` and `bun run lint:type-aware`. **`lint:type-aware` is on that list because it is its own CI-blocking job and costs ~11s** — leaving it off is what let a single type-aware diagnostic red-flag two CI jobs on #5083 *after* the pre-flight came back clean. Run the full `scripts/ci-local.sh` (38 gates, ~25 min, serial, rewrites source in place for the mutation gate) only when remote CI is broken, when you reshaped something `mutation-tables` anchors on, or before tagging a release
+- **Remote CI on the PR is the gate, not a local `/ci`** — push, open the PR as a **draft**, and let `ci.yml` run (~4 min, parallel) while you review. The local pre-flight is the cheap subset: `cd packages/api && bun run scripts/test-isolated.ts --affected`, plus `bun run lint`, `bun run type` and `bun run lint:type-aware`. **`lint:type-aware` is on that list because it is its own CI-blocking job and costs ~11s** — leaving it off is what let a single type-aware diagnostic red-flag two CI jobs on #5083 *after* the pre-flight came back clean. Run the full `scripts/ci-local.sh` (40 ci-local gates, ~25 min, serial, rewrites source in place for the mutation gate) only when remote CI is broken, when you reshaped something `mutation-tables` anchors on, or before tagging a release
 
 ### Merge discipline
 Rationale + override rules: [docs/development/branch-protection.md](docs/development/branch-protection.md). These are workflow rules — no file-read triggers them, so they stay here:
@@ -160,9 +160,10 @@ They are one of **two** required axes; the other is kind+area. See
 ### Domain docs
 
 **Multi-context**: [`CONTEXT-MAP.md`](CONTEXT-MAP.md) names 18 bounded contexts and
-`docs/adr/` holds 41 system-wide decisions. ⚠️ The layout is adopted but the split is not
-done — the root `CONTEXT.md` still governs every context, and the map says so per row rather
-than pointing at files that do not exist (#5302). See
+`docs/adr/` holds 41 system-wide decisions. ⚠️ The split is underway: three contexts
+(Company Atlas, Deployment posture, Notebooks) live under `docs/contexts/`, the root
+`CONTEXT.md` still governs the other fifteen, and the map says which is which per row — it
+never points at a file that does not exist (#5302). See
 [`docs/agents/domain.md`](docs/agents/domain.md).
 
 ### The record

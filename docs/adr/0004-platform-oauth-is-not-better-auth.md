@@ -11,7 +11,7 @@ Atlas's auth surface has three OAuth-shaped flows. They use the same OAuth 2.0/2
 
 1. **User OAuth** — sign-in via Google / GitHub / enterprise SSO. The token represents a user identity. Owner: Better Auth (`packages/api/src/lib/auth/*`). Stored in Better Auth's `account` table keyed by user.
 2. **Atlas-as-OAuth-server** — Atlas issues tokens to MCP clients via DCR + PKCE. Atlas is the OAuth provider, not the OAuth client. Owner: `@atlas/oauth-helper` (arch-win #51, extracted in #2203).
-3. **Platform integration OAuth** — Atlas connects a Workspace to a third-party Platform as a bot. The token represents a Workspace-scoped bot capability. Today: hand-rolled in `packages/api/src/api/routes/slack.ts` calling `oauth.v2.access` directly.
+3. **Platform integration OAuth** — Atlas connects a Workspace to a third-party Platform as a bot. The token represents a Workspace-scoped bot capability. Today: hand-rolled in packages/api/src/api/routes/slack.ts calling `oauth.v2.access` directly.
 
 When designing the Multi-Adapter SaaS Readiness milestone, the natural question arose: should Platform integration OAuth piggyback on Better Auth's existing infrastructure (`account` table, state management, social-provider plugin pattern)?
 
@@ -68,7 +68,7 @@ Add `provider_id = 'slack-workspace'` rows that hold the bot token. Rejected bec
 
 ## Consequences
 
-- `PlatformOAuthHandler` is a new subsystem under `packages/api/src/lib/integrations/oauth/` (or similar). Per-Platform implementations live there.
+- `PlatformOAuthHandler` is a new subsystem under packages/api/src/lib/integrations/oauth/ (or similar). Per-Platform implementations live there.
 - Existing Slack OAuth code in `slack.ts` is lifted out and becomes the first `PlatformOAuthHandler` implementation; the routes are renamed from `/api/v1/slack/{install,callback}` to `/api/v1/integrations/:platform/{install,callback}`.
 - `auth/server.ts` is **not touched** by this milestone.
 - If at some future point a Platform needs both user-identity OAuth (e.g. "sign in with Slack") AND workspace-bot OAuth, the user-identity side goes through Better Auth and the bot side goes through `PlatformOAuthHandler` — they are independent flows even if they target the same Platform vendor.
@@ -76,6 +76,6 @@ Add `provider_id = 'slack-workspace'` rows that hold the bot token. Rejected bec
 ## References
 
 - Better Auth user OAuth wiring: `packages/api/src/lib/auth/server.ts`, `oauth-claims.ts`
-- Existing Slack integration OAuth: `packages/api/src/api/routes/slack.ts` (becomes the first `PlatformOAuthHandler`)
+- Existing Slack integration OAuth: packages/api/src/api/routes/slack.ts (becomes the first `PlatformOAuthHandler`)
 - Shared OAuth 2.1 primitives: `@atlas/oauth-helper` (PR #2203, arch-win #51)
 - Storage separation: ADR-0003

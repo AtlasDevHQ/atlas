@@ -6,7 +6,7 @@
 
 Generating the semantic layer for a newly-added database is the main source of onboarding friction. Two distinct pains:
 
-1. **Generation is work, and the first artifact is shallow.** `atlas init` profiles the DB and writes a *mechanical* baseline (column names as descriptions, template query patterns). LLM enrichment exists but is an optional, CLI-only afterthought (`packages/cli/bin/enrich.ts`). The product literally tells you to drop to a terminal: `/admin/semantic`'s empty states say "Run `atlas init`", and the web wizard's generated output is mechanical. So "just works" doesn't — you get a blank-ish layer and a homework assignment.
+1. **Generation is work, and the first artifact is shallow.** `atlas init` profiles the DB and writes a *mechanical* baseline (column names as descriptions, template query patterns). LLM enrichment exists but is an optional, CLI-only afterthought (`packages/cli/bin/enrich.ts` at the time of writing — see the correction below). The product literally tells you to drop to a terminal: `/admin/semantic`'s empty states say "Run `atlas init`", and the web wizard's generated output is mechanical. So "just works" doesn't — you get a blank-ish layer and a homework assignment.
 
 2. **Once there's more than one database, you can't tell which is which.** The data model already scopes every entity to a **Connection group** (`semantic_entities` natural key `(org_id, entity_type, name, connection_group_id)`, #2340/#2412), but the **surface** doesn't make it legible: the file layout is flat, the YAML field is the misleadingly-named `connection:`, and the `/admin/semantic` view shows group only as a per-row *badge* on one flat list. "Good for one DB, hard to know which is for which."
 
@@ -14,11 +14,28 @@ A third, subtler pain ties them together: **there's no in-product road to genera
 
 ### What exists today (corrected map)
 
+> **⚠️ Corrected 2026-08-18 — the "CLI-only" premise below no longer holds.**
+> `packages/cli/bin/enrich.ts` does not exist any more: section F's *"move the
+> enrichment logic into shared `packages/api/src/lib/semantic/…`"* is the thing
+> that happened, and the engine now lives at
+> [`packages/api/src/lib/semantic/enrich/index.ts`](../../packages/api/src/lib/semantic/enrich/index.ts),
+> reachable from the web wizard (`postWizardEnrich`,
+> `packages/web/src/app/wizard/wizard-enrich.ts`) as well as from the CLI
+> (`bun run atlas -- init --enrich`). The row and the two mentions of that path
+> are kept because they are what this design was *arguing against*; read them as
+> the state in ~2026-05, not as today's map.
+>
+> They were de-backticked in #5309 to quiet `scripts/check-agent-doc-paths.sh`,
+> which is the wrong half of that gate's convention: dropping backticks marks a
+> reference as *historical*, and these sentences are in the present tense. A
+> dated correction is the honest form, so the backticks are back.
+
+
 | Component | What it does | Gap |
 |-----------|-------------|-----|
 | `atlas init` (CLI) | Profiles DB → mechanical YAML; optional `--enrich` LLM pass | Enrichment optional + CLI-only; mechanical by default |
 | `packages/api/src/api/routes/wizard.ts` | **Server-side** `profile → generate → preview → save`; wired to `/wizard` web UI | Mechanical only (no LLM); scopes by `connectionId`, **not group**; one-time onboarding gate |
-| `packages/cli/bin/enrich.ts` | LLM enrichment of descriptions / use_cases / query_patterns / glossary | CLI-only; not reachable from the API/web |
+| `packages/cli/bin/enrich.ts` *(gone — now `lib/semantic/enrich/index.ts`)* | LLM enrichment of descriptions / use_cases / query_patterns / glossary | CLI-only; not reachable from the API/web — **resolved**, see the correction above |
 | `semantic/` file layout | Flat `entities/*.yml`; per-source subdir + `connection:` field both half-supported (`whitelist.ts`) | Flat = N DBs interleave indistinguishably on disk |
 | `/admin/semantic` view | File tree keyed on `(name, connectionGroupId)`, group shown as a **badge** | Badge on a flat list ≠ grouped; not legible at a glance |
 | `/admin/connections` | Add/manage SQL connections + connection groups | **No** path to generate a semantic layer for a new connection |

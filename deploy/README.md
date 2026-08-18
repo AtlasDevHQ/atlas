@@ -9,8 +9,17 @@ Production deployment configs for AtlasDevHQ's Railway project (`satisfied-creat
 | API | `api.useatlas.dev` | `deploy/api/` | Hono standalone server + nsjail sandbox |
 | Web | `app.useatlas.dev` | `deploy/web/` | Next.js query UI + admin console |
 | WWW | `useatlas.dev` | `deploy/www/` | Static landing page (Nixpacks, serves `apps/www/out/`) |
-| Sidecar | (internal) | `deploy/sidecar/` | Explore isolation container (no public domain) |
 | Postgres | (internal) | — | Railway-managed database |
+
+> The **Sidecar** service (Explore isolation container, formerly deploy/sidecar/) was
+> dropped in [#2387](https://github.com/AtlasDevHQ/atlas/issues/2387) — Vercel Sandbox is the
+> sole SaaS sandbox backend. Three things in this file still describe it as live and are
+> kept only because they remain true for **self-hosted** deployments, where the sidecar is
+> a supported backend (`packages/sandbox-sidecar`, `SIDECAR_AUTH_TOKEN` in `.env.example`):
+> the architecture diagram below, the `ATLAS_SANDBOX_URL` line in the API service's env
+> list, and the `### Sidecar service (internal)` section. **None of them describes anything
+> Railway runs.** Read this file's env lists as "what a deployment may set", not as the
+> prod inventory.
 
 ## Architecture
 

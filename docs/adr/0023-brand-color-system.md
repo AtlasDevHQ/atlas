@@ -4,7 +4,7 @@
 **Date:** 2026-06-24
 **Milestone:** — (brand direction set in PRODUCT.md 2026-06-23; landing migration #3913/#3917 shipped; remaining surfaces #3915/#3916)
 **Issues:** [#3913](https://github.com/AtlasDevHQ/atlas/issues/3913), [#3917](https://github.com/AtlasDevHQ/atlas/pull/3917) (landing, shipped), [#3915](https://github.com/AtlasDevHQ/atlas/issues/3915) (docs), [#3916](https://github.com/AtlasDevHQ/atlas/issues/3916) (app + demo)
-**See also:** [PRODUCT.md](../../PRODUCT.md) › Aesthetic Direction, Principle 5, Design Tokens
+**See also:** [PRODUCT.md](../../PRODUCT.md) › Aesthetic Direction, Design Principle 5, Design Tokens
 
 ## Context
 
@@ -12,7 +12,7 @@ Atlas's brand surface moved off dark-teal-on-black to a **warm cream paper + dee
 
 That left the brand system half-stated, in two ways a future reader would trip over:
 
-1. **The token vocabulary contradicted the design doc.** The shared `brand.css` (one real file, symlinked into all three frontends) declared `--atlas-brand` = **teal** `#23CE9E` and called it *"Brand green / single source of truth."* But PRODUCT.md had already named **forest** `#1F5C45` the committed brand color and demoted teal to a "spark." Worse, the landing's *actual* forest accent was hardcoded **locally** in `apps/www/globals.css` as `--accent` and never went into the shared token — so `brand.css` was neither the source of truth nor green, while `docs` (`--fd-primary`) and the `app` (sidebar tokens) both literally consumed the teal `--atlas-brand`.
+1. **The token vocabulary contradicted the design doc.** The shared `brand.css` (one real file, symlinked into all three frontends) declared `--atlas-brand` = **teal** `#23CE9E` and called it *"Brand green / single source of truth."* But PRODUCT.md had already named **forest** `#1F5C45` the committed brand color and demoted teal to a "spark." Worse, the landing's *actual* forest accent was hardcoded **locally** in `apps/www/src/app/globals.css` as `--accent` and never went into the shared token — so `brand.css` was neither the source of truth nor green, while `docs` (`--fd-primary`) and the `app` (sidebar tokens) both literally consumed the teal `--atlas-brand`.
 2. **The reach of cream + forest across the other surfaces was undecided.** #3915 (docs) and #3916 (app + demo) were both blocked `ready-for-human` on a single missing decision: does each surface follow the brand, and how far? Flipping the landing while docs/app diverge is split-brain.
 
 Resolved in a brand-system grilling session (2026-06-24). The crux: the token rename is **load-bearing, not cosmetic** — making `--atlas-brand` mean forest auto-shifts every consumer, so what the token *means* had to be settled before, and together with, the surface migrations.
@@ -57,7 +57,7 @@ The shared `brand.css` carries the **brand color (forest), the spark (teal), and
 
 ## Alternatives considered
 
-- **One unified theme reaching every surface (no product/brand distinction).** Rejected: the app is dense (tables, charts, hours of use) and needs a real dark mode and calmer, lower-chroma grounds than a marketing page; forcing literal cream onto it muddies chart colors and fatigues. PRODUCT.md Principle 5's "the app is its own surface" intuition was right — we kept it as *its light mode follows the brand, its dark mode is its own on-brand dark* rather than collapsing the two.
+- **One unified theme reaching every surface (no product/brand distinction).** Rejected: the app is dense (tables, charts, hours of use) and needs a real dark mode and calmer, lower-chroma grounds than a marketing page; forcing literal cream onto it muddies chart colors and fatigues. PRODUCT.md Design Principle 5's "the app is its own surface" intuition was right — we kept it as *its light mode follows the brand, its dark mode is its own on-brand dark* rather than collapsing the two.
 - **Two walled-off palettes (brand vs product) with no shared color.** Rejected: loses the through-line. The forest accent present in every surface and mode is exactly what makes the dark app read as a sibling of the cream landing.
 - **Keep teal as the brand, or make teal the dark-mode primary.** Rejected: the entire point of the rebrand is to leave the saturated neon-teal-on-black dev-tool lane (Vercel / Linear / Supabase). Teal-forward dark surfaces land right back in it. Forest-as-primary-even-in-dark keeps the accent identity constant; teal stays a rare spark, as PRODUCT.md states.
 - **Literal marketing cream in the app.** Rejected: saturated warm cream behind dense data is warm-heavy and reads muddy; shadcn's neutrals were tuned for near-white. Paper-lite keeps the brand family while staying a comfortable working ground.

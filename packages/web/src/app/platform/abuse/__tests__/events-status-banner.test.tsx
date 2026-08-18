@@ -4,7 +4,7 @@
  * The banner is the final mile of the diagnostic channel — it turns the
  * wire signal (`AbuseDetail.eventsStatus`) into an operator-visible warning.
  * The backend half is covered by integration tests in
- * `packages/api/src/lib/security/__tests__/abuse.test.ts` and the route
+ * `ee/src/abuse-prevention/engine.test.ts` and the route
  * layer test in `packages/api/src/api/__tests__/admin-abuse.test.ts`, but
  * the UI branch is where a prop-name typo, an early-return refactor, or a
  * styling-severity regression would ship silently — the rest of the

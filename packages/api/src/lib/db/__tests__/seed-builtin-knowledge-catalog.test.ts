@@ -670,7 +670,7 @@ describe("Company Atlas config_schema help ↔ migration 0203 (#5240, ADR-0038)"
 });
 
 /**
- * ⚠️ THE RATCHET (`/review-panel` Step 5b): a principle swept for TWICE becomes
+ * ⚠️ THE RATCHET (/review-panel Step 5b): a principle swept for TWICE becomes
  * a check, not a third comment.
  *
  * `fix-vs-finding` returned REPRODUCED twice in one round, on the same

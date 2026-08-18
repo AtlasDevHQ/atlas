@@ -23,8 +23,10 @@ and it is authoritative. Do not infer a `packages/<name>/CONTEXT.md` from the la
 the map, because a path that looks like it should exist and doesn't is how a reader stops
 searching.
 
-Concretely, today: **`CONTEXT.md` at the root is the only context file that exists.** Every
-one of its 18 sections is still in it.
+Concretely, today: **three of the eighteen contexts have their own file** under
+`docs/contexts/` — Company Atlas, Deployment posture, Notebooks (#5302) — and the root
+`CONTEXT.md` still governs the other fifteen. The map's *Governed by* column is the
+per-context answer; this sentence is a summary and the map wins.
 
 ## File structure
 
@@ -45,8 +47,9 @@ Split along those seams, not along `packages/*`:
 │                                        context not yet extracted
 ├── docs/adr/                          ← system-wide decisions (41 today)
 └── docs/contexts/
-    ├── company-atlas/CONTEXT.md       ← once extracted
-    └── chat-platform/CONTEXT.md
+    ├── company-atlas/CONTEXT.md       ← extracted 2026-08-17
+    ├── deployment-posture/CONTEXT.md  ← extracted 2026-08-17 (marked stale)
+    └── notebooks/CONTEXT.md           ← extracted 2026-08-17 (history only)
 ```
 
 ## Use the glossary's vocabulary

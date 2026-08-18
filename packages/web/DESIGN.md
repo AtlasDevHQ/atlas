@@ -19,17 +19,21 @@ colors:
   card-dark: "oklch(0.205 0.014 158)"
   border-light: "oklch(0.91 0.006 83)"
   destructive: "oklch(0.577 0.245 27.325)"
+  code-bg: "oklch(0.14 0.006 167)"
+  code-chrome: "oklch(0.185 0.006 167)"
+  code-well: "oklch(0.1 0.006 167)"
+  code-fg: "oklch(0.86 0 0)"
 typography:
   body:
-    fontFamily: "ui-sans-serif, system-ui, sans-serif"
+    fontFamily: "Sora, ui-sans-serif, system-ui, sans-serif"
     fontSize: "0.875rem"
     fontWeight: 400
   label:
-    fontFamily: "ui-sans-serif, system-ui, sans-serif"
+    fontFamily: "Sora, ui-sans-serif, system-ui, sans-serif"
     fontSize: "0.875rem"
     fontWeight: 500
   code:
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace"
+    fontFamily: "JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace"
     fontSize: "0.75rem"
     fontWeight: 400
 rounded:
@@ -129,15 +133,16 @@ dark. `zinc`, `slate`, `gray` and `#fff` are all wrong answers here, however con
 
 ## Typography
 
-**Body Font:** the platform sans stack (`ui-sans-serif, system-ui`).
-**Code Font:** the platform monospace stack (`ui-monospace, SFMono-Regular, Menlo`).
+**Body Font:** **Sora**, loaded by `next/font/google` in `src/app/layout.tsx` and reached
+through `--font-sans` (platform sans behind it as a fallback).
+**Code Font:** **JetBrains Mono**, same loader, reached through `--font-mono`.
 
-⚠️ **This is a gap, recorded honestly rather than papered over.** PRODUCT.md Principle 4
-commits to one font pair — **Sora + JetBrains Mono** — and this application loads
-*neither*. There is no `next/font` import anywhere in `packages/web/src`, so the surface
-renders in whatever Tailwind's default stack resolves to on the visitor's OS. The pairing
-is a real brand commitment; it is simply not implemented on this surface yet, and a
-DESIGN.md that asserted Sora here would be describing the marketing site.
+This is PRODUCT.md Design Principle 4's "one font pair", and until #5306 this surface loaded
+*neither* half of it — there was no `next/font` import anywhere in `packages/web/src`, so
+the app rendered in whatever `ui-sans-serif, system-ui` resolved to per-OS. The loader
+mirrors `apps/www/src/app/layout.tsx` exactly, same variable names, so the product and the
+landing page render in the same type. `scripts/check-web-brand-tokens.sh` fails if either
+half stops loading, or if `--font-sans` / `--font-mono` stop pointing at them.
 
 ### Hierarchy
 
@@ -214,13 +219,39 @@ dark) — present to organise, not to draw.
   cream foreground. Scrolling is a Radix ScrollArea with a custom thumb — the native
   scrollbar gutter is suppressed on command lists only (`[data-slot="command-list"]`).
 
-### SQL / Code Pane (signature — currently off-brand)
-- **What it should be:** a dark terminal window floating on the paper ground, identical in
-  both modes. That is the North Star and PRODUCT.md Principle 5's "code surface".
-- **What it is:** `bg-zinc-100 dark:bg-zinc-800`, `rounded-lg`, `p-3`, `text-xs`
-  (`ui/components/chat/sql-block.tsx:46`) — a light *grey* pane in light mode, and neutral
-  gray in dark. The `--code-*` tokens exist only in `apps/www`; this package has none.
-- Documented as the gap it is. See "Don't" below.
+### SQL / Code Pane (the signature component)
+- A dark terminal window floating on the paper ground, **identical in both modes** —
+  PRODUCT.md Design Principle 5's "code surface", and the hero asset of the light-page/dark-code
+  inversion.
+- Ground `bg-code-bg`, text `text-code-fg`, `font-mono`, `rounded-lg`, `p-3`, `text-xs`.
+  The highlighter is pinned to `oneDark` with `--code-bg` painted over the theme's own
+  near-black, on both the `<pre>` and the inner `<code>`
+  (`ui/components/chat/sql-block.tsx`, `ui/components/chat/markdown.tsx`).
+- The `--code-*` tokens live in the symlinked **`brand.css`**, the same file `apps/www`
+  reads, so the marketing site and the product cannot render two different code panes.
+  Until #5306 they existed only in `apps/www` and this pane was `bg-zinc-100
+  dark:bg-zinc-800` under `dark ? oneDark : oneLight` — a light grey box in light mode.
+
+⚠️ **Other `<pre>` panes have not been converted yet.** `explore-card`,
+`python-result-card`, `action-approval-card` and `draft-edit-undo-card` still render
+agent/tool output on `bg-zinc-*`. They are the same class as the two above and the same
+fix; they were out of #5306's scope, and the ratchet in
+`scripts/check-web-brand-tokens.sh` stops the population growing while they wait.
+
+⚠️ **And one of them is SHIPPED TO CUSTOMERS.** `packages/react/src/components/chat/`'s
+`sql-block.tsx` and `markdown.tsx` — the published `@useatlas/react` embeddable widget —
+still carry `dark ? oneDark : oneLight` over `bg-zinc-100 dark:bg-zinc-800`, byte for byte
+the defect #5306 removed from the product. A customer embedding the widget on a light page
+gets the light-grey SQL pane. Neither guard reaches it: the ratchet and every check in
+`scripts/check-web-brand-tokens.sh` scan `packages/web/src` only, and the package has no
+`brand.css` to read `--code-*` from.
+
+It is listed here rather than fixed because it is **not the same decision**. The product
+surface is ours and Design Principle 5 governs it; the widget renders inside somebody
+else's page, so forcing an always-dark pane there is a product call about the embedding
+contract, and changing a published package's appearance is a customer-visible change. What
+it needs first is an answer to "does the widget follow the host page or the Atlas brand?",
+then either the `--code-*` values inlined into the package or shipped with it.
 
 ## Do's and Don'ts
 
@@ -238,14 +269,17 @@ dark) — present to organise, not to draw.
 ### Don't:
 - **Don't** hardcode a color utility on a themed surface. `bg-white`, `text-zinc-900`,
   `bg-zinc-950`, `bg-zinc-100` all bypass the token system and break the warm ground and
-  the forest-tinted dark. ⚠️ **The root `layout.tsx:61` currently does exactly this**
-  (`bg-white text-zinc-900 … dark:bg-zinc-950 dark:text-zinc-100`), overriding the
-  tokenized `body` rule in `globals.css` — while the skip-link on the *next line* uses
-  `focus:bg-background` correctly.
+  the forest-tinted dark. The root `<body>` did exactly this until #5306
+  (`bg-white text-zinc-900 … dark:bg-zinc-950 dark:text-zinc-100`), beating the tokenized
+  `body` rule in `globals.css` while the skip-link on the *next line* used
+  `focus:bg-background` correctly. It is now measured, two ways:
+  `scripts/check-web-brand-tokens.sh` fails outright if a color utility returns to
+  `<body>`, and holds a **ratchet** on the ~1,100 hardcoded neutrals elsewhere in
+  `packages/web/src` — the count may only go down.
 - **Don't** promote Terminal Spark to a primary, or place it on a paper ground.
 - **Don't** let dark mode drift to neutral gray. The dark ground carries hue 158 on
   purpose; `zinc-950` is not a substitute.
 - **Don't** add a resting shadow to a card. Flat at rest is the rule, and the tonal ramp
   exists to make it work.
-- **Don't** assume Sora or JetBrains Mono are available here. They are a brand commitment
-  this package does not yet load.
+- **Don't** re-introduce a light variant of the code pane. The code surface is the one
+  thing that does not follow the mode; `oneLight` has no home here.

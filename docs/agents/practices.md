@@ -16,9 +16,9 @@ was met at the level it was written, and the defect moved up one level:
 | #5289 | four falsifiers that **could not fail** — a ROLLBACK-count assertion whose fixture rolls back successfully; a mock failing both COMMIT and ROLLBACK so neither condition was independently falsifiable. |
 
 Three rounds of prose-rule escalation, and each one was obeyed. The 2026-08-17 audit
-found the same shape in the instructions themselves: `/review-panel` Step 6 had retired a
+found the same shape in the instructions themselves: /review-panel Step 6 had retired a
 rule in its body while its own heading, cost paragraph, mutant rule and summary still
-stated the retired version; `/research`'s 49-row module map had three rows pointing into
+stated the retired version; /research's 49-row module map had three rows pointing into
 the wrong package; the agents README (deleted in the same pass) described a tool grant that had not existed
 for two days.
 
@@ -85,13 +85,28 @@ previous layer had three copies of several rules and they disagreed.
 Evidence for every claim above is in `.claude/research/ROADMAP.md`, which is the record.
 This file is the practice. When they conflict, the record wins and this file is wrong.
 
-## This file does not yet meet its own bar
+## What enforces this file
 
-By the test above, everything here is currently a **note**: no gate enforces it. That is
-worth stating rather than hiding, because an unenforced rule that presents as enforced is
-the exact defect this file was written about.
+One gate, as of 2026-08-17: **`scripts/check-agent-doc-paths.sh`**, in the CI `drift` job
+and stage 1 of `scripts/ci-local.sh`. It fails when any tracked file names a repo path, a
+slash-command or a registered count that does not exist. That closes the class every false
+claim in the audit belonged to — three stale paths and six references to deleted commands,
+all nine found by hand.
 
-The first piece of enforcement is filed as
-[#5299](https://github.com/AtlasDevHQ/atlas/issues/5299) — a guard that fails when any doc
-here references a repo path that does not exist. All three false claims in the audit that
-produced this rebuild were of that shape, and all three were found by hand.
+What it does **not** cover is worth stating, because a gate presenting as broader than it is
+would be this page's own failure mode:
+
+- **Only registered count phrases are checked.** Five today (`operational runbooks`,
+  `bounded contexts`, `system-wide decisions`, `chat-platform adapters`, `ci-local gates`).
+  The audit's *"14 chat components"* against 42 on disk would still ship — that phrase is not
+  registered, and nothing derives it.
+- **It reads paths and names, not claims.** A doc can still say a subsystem works a way it
+  does not; every path in the sentence resolves.
+- **Everything else on this page is still a note.** The bar above is not itself enforced by
+  anything: no gate can tell a falsifier that can fail from one that cannot, which is the
+  finding the whole rebuild came from.
+
+The gate's own adversarial suite is `scripts/__tests__/check-agent-doc-paths.test.sh`, and
+its header records the five mutations that were applied and observed red — including
+truncating a finding at column 140, which is precisely how the hand check missed six live
+references while matching them.

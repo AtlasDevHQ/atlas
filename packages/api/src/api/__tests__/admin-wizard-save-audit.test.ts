@@ -14,7 +14,7 @@
  *      POST. Otherwise forensic queries over `connection.create` miss
  *      wizard-created rows.
  *
- *   2. The wizard `/connection-test` probe path (exposed only on
+ *   2. The wizard connection-test probe path (exposed only on
  *      `admin-connections`' `POST /test` in this codebase) is deliberately
  *      NOT audited from wizard — high-volume, low-forensic-signal —
  *      matching the prompt's "default to NOT auditing probes" guidance.

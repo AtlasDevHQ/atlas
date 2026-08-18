@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Sora, JetBrains_Mono } from "next/font/google";
 import { headers } from "next/headers";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
 import { buildThemeInitScript } from "@/ui/hooks/theme-init-script";
@@ -8,6 +9,24 @@ import { ModeBanner } from "@/ui/components/mode-banner";
 import { StagingBanner } from "@/ui/components/staging-banner";
 import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
+
+// The brand type pair, PRODUCT.md › Design Principle 4: "one font pair (Sora +
+// JetBrains Mono)". Mirrors apps/www/src/app/layout.tsx exactly — same loader,
+// same variable names — so the product and the landing page render in the same
+// type. Before #5306 this app loaded NEITHER, so it rendered in whatever
+// `ui-sans-serif, system-ui` resolved to per-OS, and every mono pane fell back
+// to the platform default.
+const sora = Sora({
+  subsets: ["latin"],
+  variable: "--font-sora",
+  display: "swap",
+});
+
+const jetbrainsMono = JetBrains_Mono({
+  subsets: ["latin"],
+  variable: "--font-jetbrains",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "Atlas",
@@ -39,7 +58,11 @@ export default async function RootLayout({
     );
   }
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html
+      lang="en"
+      suppressHydrationWarning
+      className={`${sora.variable} ${jetbrainsMono.variable}`}
+    >
       <head>
         {/*
           suppressHydrationWarning: under a nonce-based CSP the browser strips
@@ -58,7 +81,19 @@ export default async function RootLayout({
           dangerouslySetInnerHTML={{ __html: buildThemeInitScript() }}
         />
       </head>
-      <body className="flex h-dvh flex-col bg-white text-zinc-900 antialiased dark:bg-zinc-950 dark:text-zinc-100">
+      {/*
+        ⚠️ NO COLOR UTILITY ON THIS ELEMENT. The tokenized `@layer base` rule in
+        globals.css (`body { @apply bg-background text-foreground }`) owns the
+        page ground, and a Tailwind utility here would beat it — which is
+        exactly what happened until #5306: `bg-white dark:bg-zinc-950` made the
+        light ground pure white instead of warm paper-lite (hue 83) and the dark
+        ground pure neutral zinc instead of the faintly forest-tinted
+        oklch(0.165 0.012 158) that ADR-0023 §4 and PRODUCT.md Design Principle 5 both
+        specify as "NOT pure gray". The skip-link on the next line always did it
+        correctly; both conventions lived one line apart in the same element.
+        scripts/check-web-brand-tokens.sh now fails if a color utility returns.
+      */}
+      <body className="flex h-dvh flex-col font-sans antialiased">
         <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:p-4 focus:bg-background focus:text-foreground">Skip to content</a>
         <StagingBanner />
         <QueryProvider>

@@ -53,7 +53,7 @@ The existing `## Active`, `## Planned`, `## Parked`, `## Closed parallel tracks`
 - #2802 (slice 6 cutover, parked on bun 1.4.0 GA)
 - Stability Contract docs (new issue, per ADR-0008)
 - ROADMAP restructure (this ADR's implementation)
-- `/prod-audit` pre-launch pass (new issue)
+- /prod-audit pre-launch pass (new issue)
 - `/release` skill creation (new issue)
 
 ### Patches don't get milestones (restated)
@@ -62,7 +62,7 @@ Per ADR-0008, milestones exist for tags-that-scope-work — pre-launch `v0.0.x` 
 
 ### Two more decoupling moves
 
-**Staging env build is NOT a v0.0.1 tag-cut gate.** The grilling session also produced a staging-environment design (Q1–Q4), captured separately in a PRD at `docs/prd/staging-environment.md`. Staging is on its own work track with a late-June target. `v0.0.1` ships when its bundle is ready (Stability Contract docs + #2802 + ROADMAP restructure + `/prod-audit` pass + `/release` skill); staging may or may not be live by then. The tag-gated Railway trigger (push tag → prod) needs staging to be useful; until staging lands, the trigger is "tag → prod" with no soak environment. That's acceptable for the v0.0.1 ship because everything in the v0.0.1 scope is docs + tooling, not runtime code.
+**Staging env build is NOT a v0.0.1 tag-cut gate.** The grilling session also produced a staging-environment design (Q1–Q4), captured separately in a PRD at `docs/prd/staging-environment.md`. Staging is on its own work track with a late-June target. `v0.0.1` ships when its bundle is ready (Stability Contract docs + #2802 + ROADMAP restructure + /prod-audit pass + `/release` skill); staging may or may not be live by then. The tag-gated Railway trigger (push tag → prod) needs staging to be useful; until staging lands, the trigger is "tag → prod" with no soak environment. That's acceptable for the v0.0.1 ship because everything in the v0.0.1 scope is docs + tooling, not runtime code.
 
 **The `v0.0.x` train is decoupled from the public launch (`v0.1.0`).** `v0.0.1` cuts as soon as the bundle is ready. The public launch event (target: July 2026) is the `v0.1.0` tag — a separate moment that points at the banked changelog accumulated under the `v0.0.x` train: release-process plumbing, REST datasources (`v0.0.2`), staging live, etc. Cutting `v0.0.x` tags early gives weeks of staging-soak data and finds rough edges in the release-process plumbing before any customer is watching, while reserving `v0.1.0` to mean "publicly launched."
 

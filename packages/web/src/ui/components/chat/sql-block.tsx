@@ -1,23 +1,48 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useDarkMode } from "../../hooks/use-dark-mode";
 import { CopyButton } from "./copy-button";
 
 type SyntaxHighlighterModule = typeof import("react-syntax-highlighter");
 type StyleModule = typeof import("react-syntax-highlighter/dist/esm/styles/prism");
 
-let _cache: { Prism: SyntaxHighlighterModule["Prism"]; oneDark: StyleModule["oneDark"]; oneLight: StyleModule["oneLight"] } | null = null;
+// ⚠️ `oneDark` ONLY — no light variant is loaded, and that is the product
+// decision rather than an oversight. PRODUCT.md › Design Principle 5 makes the code
+// surface the one thing that does not follow the mode: the YAML / SQL /
+// agent-reply panes are "always-dark terminal windows (--code-*), identical on
+// every surface and mode". This pane is the hero asset of that light-page /
+// dark-code inversion, and until #5306 it shipped `dark ? oneDark : oneLight`
+// — so in light mode, the single most brand-defining component in the product
+// rendered as light grey on white.
+let _cache: { Prism: SyntaxHighlighterModule["Prism"]; oneDark: StyleModule["oneDark"] } | null = null;
 
+// The Prism theme carries its own near-black; `--code-bg` (brand.css, shared
+// with apps/www) is the brand's, so it wins on both the pre and the code tag —
+// oneDark paints both, and overriding only the pre leaves a mismatched inner
+// block.
+//
+// ⚠️ `fontFamily` for the same reason as `background`. oneDark hardcodes
+// `"Fira Code", "Fira Mono", Menlo, Consolas, …` on BOTH selectors, so fixing
+// only the ground left the highlighted pane — the state a user actually sees —
+// rendering in Fira Code while apps/www renders its code in JetBrains Mono
+// (`font-family: var(--font-mono)`, globals.css). Same pane, two typefaces, on
+// the one component PRODUCT.md › Design Principle 5 calls "identical on every surface
+// and mode". The placeholder <pre> below carries `font-mono` too, so the block
+// no longer changes typeface on hydration either.
 const SQL_BLOCK_STYLE = {
   margin: 0,
   borderRadius: "0.5rem",
   fontSize: "0.75rem",
   padding: "0.75rem 1rem",
+  background: "var(--code-bg)",
+  fontFamily: "var(--font-mono)",
+} as const;
+
+const SQL_CODE_TAG_PROPS = {
+  style: { background: "transparent", fontFamily: "var(--font-mono)" },
 } as const;
 
 export function SQLBlock({ sql }: { sql: string }) {
-  const dark = useDarkMode();
   const [mod, setMod] = useState(_cache);
 
   useEffect(() => {
@@ -27,7 +52,7 @@ export function SQLBlock({ sql }: { sql: string }) {
       import("react-syntax-highlighter"),
       import("react-syntax-highlighter/dist/esm/styles/prism"),
     ]).then(([sh, styles]) => {
-      _cache = { Prism: sh.Prism, oneDark: styles.oneDark, oneLight: styles.oneLight };
+      _cache = { Prism: sh.Prism, oneDark: styles.oneDark };
       setMod(_cache);
     });
   }, []);
@@ -37,13 +62,16 @@ export function SQLBlock({ sql }: { sql: string }) {
       {mod ? (
         <mod.Prism
           language="sql"
-          style={dark ? mod.oneDark : mod.oneLight}
+          style={mod.oneDark}
           customStyle={SQL_BLOCK_STYLE}
+          codeTagProps={SQL_CODE_TAG_PROPS}
         >
           {sql}
         </mod.Prism>
       ) : (
-        <pre className="overflow-x-auto rounded-lg bg-zinc-100 p-3 text-xs dark:bg-zinc-800">
+        // The pre-highlighter placeholder must be the SAME dark pane, or the
+        // block flashes light-then-dark on every first render.
+        <pre className="overflow-x-auto rounded-lg bg-code-bg p-3 font-mono text-xs text-code-fg">
           <code>{sql}</code>
         </pre>
       )}

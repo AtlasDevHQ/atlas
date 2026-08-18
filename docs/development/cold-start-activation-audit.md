@@ -216,7 +216,7 @@ escape hatch:
    monitoring. (`packages/api/src/api/routes/onboarding.ts`)
 
 Also corrected in passing: several stale "region is immutable once set" comments
-(`services.ts`, `ee/platform/residency.ts`, `db/internal.ts`, `admin-residency.ts`)
+(`services.ts`, `ee/src/platform/residency.ts`, `db/internal.ts`, `admin-residency.ts`)
 that predated the cross-region migration flow — they now say "one-way via the
 assign path; changeable via admin migration."
 

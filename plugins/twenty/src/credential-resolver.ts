@@ -20,12 +20,12 @@
  *      install path.
  *
  * Why the split: with a single resolver that mixed env + DB, a future
- * change in `ee/saas-crm` consulting `twenty_integrations` would
+ * change in `ee/src/saas-crm` consulting `twenty_integrations` would
  * silently route Atlas's lead capture to whichever workspace last
  * updated its Twenty row (Direction-2 leak). Symmetrically, a workspace
  * plugin action falling back to env would route a customer install at
  * Atlas's operator CRM (Direction-1 leak). The split makes both
- * unrepresentable — `ee/saas-crm` can't call the workspace function
+ * unrepresentable — `ee/src/saas-crm` can't call the workspace function
  * (grep gate in `scripts/check-twenty-resolver-imports.sh`), and the
  * workspace function can't read env at all.
  *

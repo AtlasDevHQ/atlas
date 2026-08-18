@@ -3,7 +3,6 @@
 import { memo, useState, useEffect, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { useDarkMode } from "../../hooks/use-dark-mode";
 
 /* ------------------------------------------------------------------ */
 /*  Lazy-loaded syntax highlighter (~300KB)                            */
@@ -12,9 +11,13 @@ import { useDarkMode } from "../../hooks/use-dark-mode";
 type SyntaxHighlighterModule = typeof import("react-syntax-highlighter");
 type StyleModule = typeof import("react-syntax-highlighter/dist/esm/styles/prism");
 
-let _highlighterCache: { Prism: SyntaxHighlighterModule["Prism"]; oneDark: StyleModule["oneDark"]; oneLight: StyleModule["oneLight"] } | null = null;
+// ⚠️ `oneDark` ONLY — see sql-block.tsx for the same decision and the same
+// reason. This is the agent-reply pane PRODUCT.md › Design Principle 5 names
+// alongside YAML and SQL: "always-dark terminal windows (--code-*), identical
+// on every surface and mode". It carried the same light-mode inversion (#5306).
+let _highlighterCache: { Prism: SyntaxHighlighterModule["Prism"]; oneDark: StyleModule["oneDark"] } | null = null;
 
-function LazyCodeBlock({ language, dark, children }: { language: string; dark: boolean; children: string }) {
+function LazyCodeBlock({ language, children }: { language: string; children: string }) {
   const [mod, setMod] = useState(_highlighterCache);
 
   useEffect(() => {
@@ -24,14 +27,16 @@ function LazyCodeBlock({ language, dark, children }: { language: string; dark: b
       import("react-syntax-highlighter"),
       import("react-syntax-highlighter/dist/esm/styles/prism"),
     ]).then(([sh, styles]) => {
-      _highlighterCache = { Prism: sh.Prism, oneDark: styles.oneDark, oneLight: styles.oneLight };
+      _highlighterCache = { Prism: sh.Prism, oneDark: styles.oneDark };
       setMod(_highlighterCache);
     });
   }, []);
 
   if (!mod) {
     return (
-      <pre className="my-2 overflow-x-auto rounded-lg bg-zinc-100 p-3 text-xs dark:bg-zinc-800">
+      // Same dark pane as the highlighted result, so the block does not flash
+      // light-then-dark on first render.
+      <pre className="my-2 overflow-x-auto rounded-lg bg-code-bg p-3 font-mono text-xs text-code-fg">
         <code>{children}</code>
       </pre>
     );
@@ -40,18 +45,28 @@ function LazyCodeBlock({ language, dark, children }: { language: string; dark: b
   return (
     <mod.Prism
       language={language}
-      style={dark ? mod.oneDark : mod.oneLight}
+      style={mod.oneDark}
       customStyle={CODE_BLOCK_STYLE}
+      codeTagProps={CODE_TAG_PROPS}
     >
       {children}
     </mod.Prism>
   );
 }
 
+// `background` AND `fontFamily` — see sql-block.tsx for the same decision and
+// the same reason: oneDark hardcodes both on the pre and on the inner code tag,
+// so overriding one of them, or only one selector, leaves the pane half-branded.
 const CODE_BLOCK_STYLE = {
   margin: "0.5rem 0",
   borderRadius: "0.5rem",
   fontSize: "0.75rem",
+  background: "var(--code-bg)",
+  fontFamily: "var(--font-mono)",
+} as const;
+
+const CODE_TAG_PROPS = {
+  style: { background: "transparent", fontFamily: "var(--font-mono)" },
 } as const;
 
 /* ------------------------------------------------------------------ */
@@ -124,7 +139,6 @@ export const Markdown = memo(function Markdown({
    */
   disallowImages?: boolean;
 }) {
-  const dark = useDarkMode();
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -136,7 +150,7 @@ export const Markdown = memo(function Markdown({
           const match = /language-(\w+)/.exec(className || "");
           if (match) {
             return (
-              <LazyCodeBlock language={match[1]} dark={dark}>
+              <LazyCodeBlock language={match[1]}>
                 {String(children as string).replace(/\n$/, "")}
               </LazyCodeBlock>
             );

@@ -5,7 +5,7 @@
  * mirror, which the host's registry-resolved profiler seam feeds into
  * `SemanticGenerator` without importing this package.
  *
- * Logic relocated from the CLI's former `packages/cli/lib/profilers/duckdb.ts`
+ * Logic relocated from the CLI's former packages/cli/lib/profilers/duckdb.ts
  * (now deleted, #3672) — this plugin package is the one home the registry
  * resolves and the CLI consumes directly. CSV/Parquet ingestion
  * (`ingestIntoDuckDB`) is a write path and stays in the CLI

@@ -1,0 +1,143 @@
+# Allowlist for scripts/check-agent-doc-paths.sh (#5299).
+#
+# Format — three whitespace-separated fields, then a REQUIRED `# reason`:
+#
+#   <kind>  <citing-file-glob|*>  <token…>   # why this is not a defect
+#
+#   kind    `path`, `command`, `count`, or `*` for all three. (This line named
+#           only two of the four until 2026-08-18, while the gate had always
+#           accepted all four — and `count` was additionally unwritable, because
+#           the parser demanded exactly three fields and every registered count
+#           phrase is multi-word. The token now runs to the `#`.)
+#   glob    the file allowed to say it, or `*` for anywhere. Prefer the narrow
+#           form: `packages/foo` is legitimate in the railway-watch fixtures and
+#           nowhere else, and a global entry would exempt a real one elsewhere.
+#
+# ⚠️ An entry with no reason is a hard failure, not a warning. The reason is the
+# only thing standing between this file and a place to put findings. What
+# belongs here is a reference that is CORRECT and unresolvable — a synthetic
+# example, an external system's path, a file the reader is told to create. A
+# reference that is simply STALE does not belong here; fix it. A reference to
+# something that was deleted does not belong here either; the convention is to
+# drop its backticks so it no longer reads as a live path.
+
+# ── synthetic trees: guards and fixtures that scaffold a fake repo ───────────
+path  scripts/check-railway-watch.sh            packages/foo          # illustrative path in this gate's own failure message
+path  scripts/__tests__/check-railway-watch.test.sh  packages/app     # scaffolded fixture tree, not this repo
+path  scripts/__tests__/check-railway-watch.test.sh  packages/lib     # scaffolded fixture tree, not this repo
+path  scripts/__tests__/check-railway-watch.test.sh  packages/lib/dist  # scaffolded fixture tree, not this repo
+path  scripts/__tests__/check-railway-watch.test.sh  packages/data    # scaffolded fixture tree, not this repo
+path  scripts/__tests__/check-railway-watch.test.sh  packages/data/data  # scaffolded fixture tree, not this repo
+path  scripts/__tests__/check-railway-watch.test.sh  packages/data/data/seed.sql  # scaffolded fixture tree, not this repo
+path  scripts/check-brain-fact-promotion.sh     plugins/anything/src/api/routes/admin-migrate.ts  # illustrative "any plugin could" path in this gate's docs
+path  packages/api/scripts/affected.ts          packages/types/src/foo.ts  # worked example in the affected-test derivation doc
+path  packages/api/scripts/affected.ts          packages/api/packages/api/src  # the double-prefix bug this code guards against, quoted deliberately
+path  packages/api/src/__tests__/test-isolated-affected.test.ts  packages/api/packages/api/src  # same double-prefix bug, asserted here
+path  packages/api/src/lib/brain/__tests__/warehouse-producer-bypass.test.ts  packages/x/y  # placeholder path in a test's own fixture data
+
+# ── generated at runtime: absent from a checkout by construction ─────────────
+path  packages/api/src/__tests__/semantic-root-sandbox.test.ts  packages/api/semantic  # the semantic root this test creates and tears down
+path  packages/api/src/__tests__/semantic-root-sandbox.test.ts  packages/api/semantic/.orgs  # ditto, created by the run
+path  packages/api/src/test-setup.ts            packages/api/semantic  # created by the test run, never committed
+
+# ── the reader's file, not ours ──────────────────────────────────────────────
+path  apps/docs/content/docs/guides/mcp.mdx     .vscode/mcp.json      # the file the READER creates in their own editor config
+path  apps/docs/content/shared/plugins/authoring-guide.mdx  plugins/my-datasource  # the plugin the reader is being walked through creating
+path  docs/guides/plugin-authoring-guide.md     plugins/my-datasource  # same walkthrough, internal copy
+path  create-atlas/index.ts                     docs/deploy.md        # emitted into the SCAFFOLDED project's README; a path in their tree
+path  packages/okf-bundle/src/types.ts          docs/ops/log-doc.md   # example value for a customer's own knowledge-source path
+path  packages/api/src/lib/knowledge/connectors.ts  docs/runbooks/oncall.md  # example value for a customer's own knowledge-source path
+path  packages/okf-bundle/README.md             plugins/index.mdx     # a docs-site virtual path in the OKF slug-folding rule, not a repo file
+path  packages/okf-bundle/src/paths.ts          plugins/index.mdx     # ditto — the fold rule is stated in docs-site URL terms
+
+# ── git branch names, which share a prefix with real directories ─────────────
+path  CONTRIBUTING.md                           docs/update-deploy-guide  # a BRANCH-NAME example (docs/…), not a path
+path  docs/adr/0008-versioning-and-release-tags.md  docs/www-off-release-pipeline  # the branch that carried the amendment
+path  docs/prd/staging-environment.md           docs/www-off-release-pipeline  # same branch name
+
+# ── vendored upstream skill: we do not author it and cannot fix it ───────────
+path  .claude/skills/impeccable/*               public/css            # upstream skill, describing a USER's project layout
+path  .claude/skills/impeccable/*               public/docs           # upstream skill, describing a USER's project layout
+path  .claude/skills/impeccable/*               public/foo/index.html  # upstream skill's own worked example
+path  .claude/skills/impeccable/*               scripts/build-sub-pages.js  # upstream skill's own worked example
+
+# ── commands that are real, but not Atlas commands ───────────────────────────
+# Upstream plugin skills (`claude plugin install mattpocock-skills`). A fresh
+# checkout carries none of them, so they cannot be resolved from this tree —
+# CLAUDE.md's "Agent skills" section is where they are documented.
+command  *  /to-spec                    # mattpocock-skills plugin skill
+command  *  /to-tickets                 # mattpocock-skills plugin skill
+command  *  /triage                     # mattpocock-skills plugin skill
+command  *  /tdd                        # mattpocock-skills plugin skill
+command  *  /wayfinder                  # mattpocock-skills plugin skill
+command  *  /grill-with-docs            # mattpocock-skills plugin skill
+command  *  /domain-modeling            # mattpocock-skills plugin skill
+command  *  /improve-codebase-architecture  # mattpocock-skills plugin skill
+command  *  /setup-matt-pocock-skills   # regenerates this repo's tracker/label/domain conventions from upstream
+command  *  /impeccable-asset-producer  # subagent of the installed impeccable skill
+command  *  /impeccable-finish-reviewer  # subagent of the installed impeccable skill
+# External platforms' own slash commands, typed into THEIR clients.
+command  apps/docs/content/*  /newbot          # Telegram BotFather command
+command  apps/docs/content/*  /setcommands     # Telegram BotFather command
+command  apps/docs/content/*  /setdescription  # Telegram BotFather command
+command  apps/docs/content/*  /setabouttext    # Telegram BotFather command
+command  apps/docs/content/*  /setprivacy      # Telegram BotFather command
+command  apps/docs/content/*  /setuserpic      # Telegram BotFather command
+command  apps/docs/content/*  /ask             # the bot command a Discord admin registers, named as an example
+command  apps/docs/content/*  /commands        # Slack's own app-config path (api.slack.com), not an Atlas route
+command  apps/docs/content/*  /interactions    # Slack's own app-config path (api.slack.com), not an Atlas route
+command  docs/prd/multi-adapter-saas-readiness.md  /interactions  # the retired Slack sub-route, named in the PRD that retired it
+command  packages/api/src/lib/integrations/install/linear-oauth-handler.ts  /viewer  # Linear's GraphQL viewer query, not an Atlas route
+command  CLAUDE.md  /command-name       # the placeholder in the "when the user types /<skill-name>" convention
+command  docs/agents/*  /command-name   # same placeholder
+command  .claude/skills/impeccable/*  /command-name  # upstream skill placeholder in its own worked examples
+
+# ── this gate's own inputs, which are not claims ─────────────────────────────
+# The fixture suite writes deliberately-broken docs; the allowlist's token column
+# is by definition a list of paths that do not exist. Both became visible to the
+# gate the moment they were committed — the gate's fixtures are its subject.
+*     scripts/__tests__/check-agent-doc-paths.test.sh  *   # fixture INPUT: every broken path, command and count here is the test data
+*     scripts/agent-doc-paths-allowlist.txt            *   # this file's token column is a list of non-existent paths, by construction
+path  scripts/check-agent-doc-paths.sh  packages/api/src/lib/semantic.ts  # the audit finding quoted in this gate's header, as the example it is
+
+# ── deliberately-malformed paths, quoted as the defect they illustrate ───────
+# Both comments name a path git NEVER emits (`packages/api/../types/src/…`) in
+# order to explain a prefixing bug that produced it. The path is the subject of
+# the sentence, so it cannot be corrected without deleting the explanation. These
+# resolved by accident until the on-disk `[ -e ]` branch was removed from
+# path_resolves — `..` traversal made them exist on disk while being untracked,
+# which is exactly the local/CI divergence that branch caused.
+path  packages/api/src/__tests__/mutate-core.test.ts  packages/api/../types/src  # illustrative malformed path: the bug being described
+path  scripts/check-mutation-tables.sh  packages/api/../types/src/migration.ts  # same malformed path, in the gate that fixed it
+
+# ── a deleted path that is the SUBJECT of a dated correction ─────────────────
+# #5309 de-backticked these three to quiet this gate. That is the wrong half of
+# the convention: dropping backticks marks a reference HISTORICAL, and these
+# sentences are present-tense claims in a design doc arguing about where
+# enrichment lived. The file is genuinely gone (it moved to
+# lib/semantic/enrich/index.ts, which is what section F proposed), so the doc now
+# carries a dated correction naming both paths — and the old one stays backticked
+# because the correction is about that exact path.
+path  docs/design/semantic-onboarding.md  packages/cli/bin/enrich.ts  # subject of the dated 2026-08-18 correction in that file; moved to lib/semantic/enrich/index.ts
+
+# ── `/name` tokens that are not slash-commands ───────────────────────────────
+# These surfaced when the route-literal resolver was tightened (see the COMMANDS
+# section of check-agent-doc-paths.sh). Each used to "resolve" off an import
+# specifier or a regex fragment — `"../src/authorize-url"` answered `/authorize`
+# — which is not evidence of anything. With that accident gone they have to be
+# declared, and every one of them is a real reference to something that is simply
+# not an Atlas command.
+command  packages/oauth-helper/src/pkce.ts  /authorize  # the OAuth provider's endpoint, on THEIR server, not a route of ours
+command  packages/api/src/lib/integrations/install/jira-oauth-handler.ts  /authorize  # same: Atlassian's authorize endpoint
+command  apps/docs/content/docs/guides/troubleshooting.mdx  /jwks  # a required URL SUFFIX for a customer's own IdP, not a route
+command  plugins/twenty/README.md  /metadata  # Twenty's GraphQL metadata endpoint, on the customer's Twenty instance
+command  ee/src/saas-crm/index.ts  /metadata  # same external Twenty endpoint
+command  docs/guides/bring-your-own-db.md  /database  # an optional path segment inside a connection URL
+command  plugins/snowflake/src/connection.ts  /database  # same: a segment of the Snowflake connection URL
+command  apps/docs/content/shared/getting-started/connect-your-data.mdx  /database  # same connection-URL segment
+command  docs/prd/staging-environment.md  /staging  # the name of a visual banner marker, not a route
+command  packages/cli/bin/__tests__/canonical-eval-exit-code.test.ts  /private  # macOS filesystem path that os.tmpdir() resolves behind
+command  apps/docs/src/lib/audience-taxonomy.ts  /index  # a trailing URL suffix in the docs path scheme
+command  apps/docs/src/lib/__tests__/source-partition.test.ts  /index  # same URL suffix
+command  scripts/check-docs-links.ts  /index  # same URL suffix
+command  scripts/check-agent-doc-paths.sh  /name  # the placeholder in this gate's own description of its `/name` syntax

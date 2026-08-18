@@ -5,7 +5,7 @@
  * `ProfilingResult` mirror, which the host's registry-resolved profiler seam
  * feeds into `SemanticGenerator` without importing this package.
  *
- * Logic relocated from the CLI's `packages/cli/lib/profilers/snowflake.ts` —
+ * Logic relocated from the CLI's packages/cli/lib/profilers/snowflake.ts —
  * this plugin package becomes the home the registry resolves and the CLI
  * consumes directly.
  *

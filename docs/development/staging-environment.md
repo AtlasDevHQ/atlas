@@ -18,7 +18,7 @@ this runbook is the **how**, the PRD is the **why**.
 > **All code-side slices are landed** (DeployRegion type, ResidencyResolver
 > staging arm, `StagingClamp` + email-delivery wiring, `StagingSeed` + boot
 > wiring, and the web staging banner). **api-staging builds from the shared
-> `deploy/api/atlas.config.ts`** (the once-planned `deploy/api-staging/atlas.config.ts`
+> `deploy/api/atlas.config.ts`** (the once-planned deploy/api-staging/atlas.config.ts
 > variant was **retired in [#3958](https://github.com/AtlasDevHQ/atlas/issues/3958)** —
 > shared-config-+-env-vars, max soak fidelity). The **human-in-the-loop (HITL)
 > infrastructure slices are still open** —
@@ -39,7 +39,7 @@ this runbook is the **how**, the PRD is the **why**.
 | 5 | [#2913](https://github.com/AtlasDevHQ/atlas/issues/2913) | wire `StagingClamp` into `email/delivery.ts` | ✅ landed |
 | 6 | [#2911](https://github.com/AtlasDevHQ/atlas/issues/2911) | `StagingSeed` deep module | ✅ landed |
 | 7 | [#2914](https://github.com/AtlasDevHQ/atlas/issues/2914) | wire `ensureStagingSeed` into `lib/startup.ts` | ✅ landed |
-| 8 | [#2912](https://github.com/AtlasDevHQ/atlas/issues/2912) | ~~`deploy/api-staging/atlas.config.ts` variant~~ — **retired [#3958](https://github.com/AtlasDevHQ/atlas/issues/3958)**; api-staging runs the shared `deploy/api/atlas.config.ts` | ✅ superseded |
+| 8 | [#2912](https://github.com/AtlasDevHQ/atlas/issues/2912) | ~~deploy/api-staging/atlas.config.ts variant~~ — **retired [#3958](https://github.com/AtlasDevHQ/atlas/issues/3958)**; api-staging runs the shared `deploy/api/atlas.config.ts` | ✅ superseded |
 | 9 | [#2915](https://github.com/AtlasDevHQ/atlas/issues/2915) | web staging banner | ✅ landed |
 | 10 | [#2898](https://github.com/AtlasDevHQ/atlas/issues/2898) | `.github/workflows/staging-smoke.yml` | ⏳ pending |
 | 11 | [#2899](https://github.com/AtlasDevHQ/atlas/issues/2899) | this runbook | ✅ in progress |
@@ -207,7 +207,7 @@ from `main` to prod (static `output: export`, like `docs`), so it has no staging
      prod config** `deploy/api/atlas.config.ts` (`RAILWAY_DOCKERFILE_PATH=deploy/api/Dockerfile`)
      and only differs by env vars — chiefly `ATLAS_API_REGION=staging` +
      `ATLAS_DEPLOY_ENV=staging` + the staging DB/OAuth secrets. The separate
-     `deploy/api-staging/atlas.config.ts` was **retired in
+     deploy/api-staging/atlas.config.ts was **retired in
      [#3958](https://github.com/AtlasDevHQ/atlas/issues/3958)** (shared-config
      model = max soak fidelity). Pointing `api-staging` at the shared config is
      safe even though it declares `eu`/`apac` arms: a region's `databaseUrl` is

@@ -44,13 +44,10 @@
   --drench-ink: oklch(0.22 0.05 160);
   --drench-glow: color-mix(in oklch, oklch(0.8 0.16 168) 20%, transparent);
 
-  /* Dark code "terminal windows" — shared; fixed dark on every surface. */
-  --code-bg: oklch(0.14 0.006 167);
-  --code-chrome: oklch(0.185 0.006 167);
-  --code-well: oklch(0.1 0.006 167);
-  --code-fg: oklch(0.86 0 0);
-  --code-muted: oklch(0.62 0 0);
-  --code-border: oklch(1 0 0 / 0.08);
+  /* Dark code "terminal windows" — fixed dark on every surface. The values
+   * moved to the symlinked brand.css in #5306 so packages/web renders the SAME
+   * pane; redefining them here would be the drift "identical on every surface
+   * and mode" forbids, and scripts/check-web-brand-tokens.sh now fails on it. */
 }
 
 /*

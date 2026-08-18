@@ -173,6 +173,25 @@ jobs:
       - name: Adversarial fixtures for the gate-fixtures-wired gate (#5296)
         run: bash scripts/__tests__/check-gate-fixtures-wired.test.sh
 
+      # The enforcement half of docs/agents/practices.md. Until this existed,
+      # that page's own claims were unenforced prose — the failure mode it
+      # describes. Three false paths and six dead command references were found
+      # BY HAND in the 2026-08-17 audit; nothing in CI could catch a fourth.
+      - name: Check no doc names a missing path, command or count (#5299)
+        run: bash scripts/check-agent-doc-paths.sh
+
+      - name: Adversarial fixtures for the agent-doc-paths gate (#5299)
+        run: bash scripts/__tests__/check-agent-doc-paths.test.sh
+
+      # Three brand invariants that prose asked for and nothing measured: the
+      # root <body> hardcoded white/zinc over the tokenized ground, the SQL pane
+      # rendered light-on-white in light mode, and neither brand font loaded.
+      - name: Check the product surface follows its brand tokens (#5306)
+        run: bash scripts/check-web-brand-tokens.sh
+
+      - name: Adversarial fixtures for the web-brand-tokens gate (#5306)
+        run: bash scripts/__tests__/check-web-brand-tokens.test.sh
+
       - name: Check Dockerfile workspace completeness
         run: bash scripts/check-dockerfile-workspace.sh
 

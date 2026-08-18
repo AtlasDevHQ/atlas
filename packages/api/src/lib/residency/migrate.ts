@@ -16,6 +16,21 @@
  * by the migration write-lock middleware (see readonly.ts).
  */
 
+// The one spelling of the refusal item's eight fields (#5303) — the same schema
+// `admin-migrate.ts` publishes in `ImportResultSchema`. `lib/**` must not import
+// from `api/routes/**`, so `@useatlas/schemas` is the only legal shared home.
+//
+// ⚠️ A VALUE import, and safe here for a reason that is NOT the one that would
+// make it safe from `@useatlas/types`. The hazard the cap constant's docstring
+// describes is resolution against a PUBLISHED package: this file is copied into
+// the `create-atlas` scaffold, which installs `@useatlas/types` from npm and
+// therefore cannot see a symbol added in the same commit. `@useatlas/schemas`
+// never publishes at all — instead `create-atlas/scripts/prepare-templates.sh`
+// (step 5e) copies its SOURCE into every template and aliases it through
+// `tsconfig` paths, so the scaffold gets this file and this schema from the same
+// commit. That copy is what makes the import safe, not the absence of a
+// registry entry — and `check-template-drift.sh` is what keeps it true.
+import { VocabularyRefusalDetailSchema } from "@useatlas/schemas";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { hasInternalDB, internalQuery, getInternalDB } from "@atlas/api/lib/db/internal";
@@ -318,26 +333,6 @@ export interface ScreenedRefusalDetails {
   readonly malformed: number;
 }
 
-/** `unknown` → `string`, as a predicate so the narrowing survives destructuring. */
-const isStr = (v: unknown): v is string => typeof v === "string";
-/**
- * `unknown` → `string | null`.
- *
- * `null` is a VALUE on both nullable fields — an auto-approved edge, and a refusal
- * arm with no conflicting edge — so `undefined` is malformed while `null` is not.
- *
- * Spelled `v === null || isStr(v)`. The strict `===` is what excludes `undefined`;
- * the LOOSE `v == null || isStr(v)` would admit it and invent "auto-approved" for an
- * entry that simply did not say.
- *
- * ⚠️ A bare `v != null` also kills a test, but for the OPPOSITE reason and an earlier
- * version of this comment had it backwards: `!=` is false for `undefined` too, so it
- * admits nothing extra — it goes red because it REJECTS `null`, which must pass
- * (`migrate.test.ts`'s "null included" case). Two different mistakes, two different
- * failures; naming the wrong one would send the next reader looking in the wrong place.
- */
-const isStrOrNull = (v: unknown): v is string | null => v === null || isStr(v);
-
 /**
  * Screen `refusalDetails` out of a target region's JSON (#5112).
  *
@@ -361,6 +356,39 @@ const isStrOrNull = (v: unknown): v is string | null => v === null || isStr(v);
  * can only carry as many refusals as the fixture exports edges, so the cap and the
  * "every arm of the screen" cases are unreachable from there — and a cap test whose
  * input cannot exceed the cap tests nothing.
+ *
+ * ⚠️ DERIVED FROM THE SCHEMA SINCE #5303, not from a hand-maintained field list.
+ * This function used to be the THIRD independent spelling of the eight fields — a
+ * destructure, two predicate lists, and a re-built literal — coupled to
+ * `VocabularyRefusalDetail` by nothing but care. It is now a per-entry
+ * `safeParse` against `VocabularyRefusalDetailSchema`, which is the same eight
+ * fields the route's `ImportResultSchema` publishes.
+ *
+ * Every clause of the old screen has an exact counterpart, and that is what makes
+ * the swap behaviour-preserving rather than merely shorter:
+ *
+ *   - `entry === null || typeof entry !== "object" || Array.isArray(entry)` →
+ *     Zod's object type check, which rejects `null`, primitives AND arrays;
+ *   - the six `isStr` checks → `z.string()`;
+ *   - the two `isStrOrNull` checks → `.nullable()`, which accepts `null` and
+ *     rejects `undefined`. This is the distinction the old comment was written
+ *     about, and it survives verbatim: a MISSING `approvedBy` is malformed
+ *     because reading it as `null` would invent "auto-approved" for an entry that
+ *     never said so;
+ *   - the field-by-field re-build → Zod object parsing, which STRIPS undeclared
+ *     keys by default. `safeParse().data` is a fresh object, so a foreign
+ *     region's arbitrary extra keys still never reach this region's `jsonb`
+ *     column.
+ *
+ * What it buys: a ninth field added to `VocabularyRefusalDetail` is a compile
+ * error over in `@useatlas/schemas` (so it cannot be forgotten), and once added
+ * to the schema it is screened HERE with no edit at all — which is precisely the
+ * coupling the two deleted predicate lists could not provide.
+ *
+ * ⚠️ It is the KEY-SET pin that makes that true, not the `satisfies` — an earlier
+ * version of this sentence credited the `satisfies`, and measurement says an
+ * OPTIONAL ninth field passes it silently and is then stripped here. Both pins
+ * live beside the schema; the reasoning and the numbers are there.
  */
 export function screenRefusalDetails(raw: unknown): ScreenedRefusalDetails {
   if (raw === undefined || raw === null) return { details: [], malformed: 0 };
@@ -368,70 +396,25 @@ export function screenRefusalDetails(raw: unknown): ScreenedRefusalDetails {
 
   const details: VocabularyRefusalDetail[] = [];
   let malformed = 0;
-  // Bounded HERE as well as at the producer. The producer's cap is a promise
-  // about a well-behaved region; this one is a property of what this region will
-  // store, and the two are different guarantees — a target that ignores the cap
-  // is exactly the target whose payload should not size a row in this database.
+  // Bounded HERE as well as at the producer, and BEFORE the loop. The producer's
+  // cap is a promise about a well-behaved region; this one is a property of what
+  // this region will store, and the two are different guarantees — a target that
+  // ignores the cap is exactly the target whose payload should not size a row in
+  // this database. Slicing first is also what keeps `malformed` a statement about
+  // what this region LOOKED AT: garbage past the cap is never examined, so it is
+  // never counted.
   for (const entry of raw.slice(0, VOCABULARY_REFUSAL_DETAIL_CAP)) {
-    // `Array.isArray` is BELT-AND-BRACES, and saying so is the point: removing it
-    // kills zero tests (measured), because an array has none of the required
-    // string fields and the destructured checks below reject it anyway. Kept
-    // because "an entry is an object, not an array" is a claim worth making
-    // structurally rather than relying on a downstream check to imply it — but a
-    // comment claiming this arm is separately falsifiable would be false.
-    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+    // ⚠️ PER ENTRY, never `z.array(...).safeParse(raw)`. A whole-array parse fails
+    // the entire array on one bad element, which would turn a single unreadable
+    // payload into zero recovered refusals — the opposite of this function's
+    // polarity. A bad entry is DROPPED and counted; the good ones beside it
+    // survive.
+    const parsed = VocabularyRefusalDetailSchema.safeParse(entry);
+    if (!parsed.success) {
       malformed++;
       continue;
     }
-    // ⚠️ DESTRUCTURED AND NARROWED BY PREDICATE, not key-listed and cast. The first
-    // version tested `["slotPosition", …].some(k => typeof e[k] !== "string")` and
-    // then built the result with eight `as string` casts — sound at the time, and
-    // structurally fragile: the key list and the constructed literal were coupled by
-    // hand, so a NINTH required field on `VocabularyRefusalDetail` would compile the
-    // moment someone added `newField: e.newField as string` and would admit an entry
-    // that never had it. Here the literal names bare locals, so a new field cannot
-    // reach it unnarrowed — the compiler asks for the check.
-    const {
-      slotPosition,
-      fromNorm,
-      toNorm,
-      approvedBy,
-      approvedAt,
-      refusal,
-      existingTarget,
-      reason,
-    } = entry as Record<string, unknown>;
-    if (
-      !isStr(slotPosition) ||
-      !isStr(fromNorm) ||
-      !isStr(toNorm) ||
-      !isStr(approvedAt) ||
-      !isStr(refusal) ||
-      !isStr(reason) ||
-      !isStrOrNull(approvedBy) ||
-      !isStrOrNull(existingTarget)
-    ) {
-      malformed++;
-      continue;
-    }
-    // ⚠️ FIELD BY FIELD, so undeclared keys are STRIPPED rather than persisted.
-    // `push(entry as VocabularyRefusalDetail)` would be shorter and would put a
-    // foreign region's arbitrary extra keys — unbounded size, unvalidated content —
-    // into this region's `jsonb` column under a name that claims a shape. That is
-    // the whole thesis of this function, and it is the one property every fixture
-    // in the tests used to agree with by construction (they all carried exactly
-    // these eight keys), so there is now a case that adds extras and asserts they
-    // are gone.
-    details.push({
-      slotPosition,
-      fromNorm,
-      toNorm,
-      approvedBy,
-      approvedAt,
-      refusal,
-      existingTarget,
-      reason,
-    });
+    details.push(parsed.data);
   }
   // Anything past the cap is not malformed — it is bounded. Counting it as
   // malformed would report a target bug for behaviour this build defines.

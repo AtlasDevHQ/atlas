@@ -1,11 +1,23 @@
 /**
- * The Live boot-seed Layers of `effect/layers.ts` (#5273).
+ * The Live boot Layers of `effect/layers.ts` that resolve their work through a
+ * dynamic import (#5273, #5305).
  *
  * `BuiltinDatasourceCatalogSeedLive`, `BuiltinKnowledgeCatalogSeedLive` — the two
  * #5273 names — plus `OpenApiDatasourceCatalogSeedLive`, which this PR's review
  * panel added after finding it had the very defect the other two were being pinned
  * against (see that describe block), and a lexical guard that makes a fourth
  * instance a test failure rather than a reviewer's lucky read.
+ *
+ * ⚠️ AND `ImplementationStatusOverrideLive` (#5305), which is why the file's own
+ * name now undersells it: that Layer is not a *seed*. It is here anyway because it
+ * is the same MECHANISM — an upstream `InternalDB` + `Migration` gate, a dynamic
+ * `await import(...)` inside `Effect.tryPromise`, a `catchAll` that scrubs — and
+ * the whole point of the harness below is that the mechanism is what is hard to
+ * test, not the individual Layer. It also has the richest outcome set of the four:
+ * its boot wrapper's `skipped` kind carries THREE `reason` values that fan out to
+ * THREE different outcomes, including `skipped-empty`, which none of the seed
+ * Layers has. `layers.test.ts:1490` used to punt those arms to "the wrapper's own
+ * tests"; they are driven here now, and that note says so.
  *
  * The first harness in the repo to drive a boot-seed Layer's DYNAMIC IMPORT — which
  * is items (2) and (3) below, not (1). `layers.test.ts` already builds Live boot
@@ -55,9 +67,11 @@ import { Effect, Layer } from "effect";
 import * as realDatasourceSeedModule from "@atlas/api/lib/db/seed-builtin-datasource-catalog";
 import * as realKnowledgeSeedModule from "@atlas/api/lib/db/seed-builtin-knowledge-catalog";
 import * as realOpenApiSeedModule from "@atlas/api/lib/openapi/catalog-seed";
+import * as realOverrideModule from "@atlas/api/lib/integrations/implementation-status-override";
 import type { BuiltinDatasourceCatalogSeedBootResult } from "@atlas/api/lib/db/seed-builtin-datasource-catalog";
 import type { BuiltinKnowledgeCatalogSeedBootResult } from "@atlas/api/lib/db/seed-builtin-knowledge-catalog";
 import type { OpenApiDatasourceCatalogSeedBootResult } from "@atlas/api/lib/openapi/catalog-seed";
+import type { ImplementationStatusOverrideBootResult } from "@atlas/api/lib/integrations/implementation-status-override";
 import { createInternalDBTestLayer } from "@atlas/api/lib/db/internal";
 import {
   BuiltinDatasourceCatalogSeed,
@@ -66,10 +80,14 @@ import {
   BuiltinKnowledgeCatalogSeedLive,
   OpenApiDatasourceCatalogSeed,
   OpenApiDatasourceCatalogSeedLive,
+  CatalogSeed,
+  ImplementationStatusOverride,
+  ImplementationStatusOverrideLive,
   Migration,
   type BuiltinDatasourceCatalogSeedShape,
   type BuiltinKnowledgeCatalogSeedShape,
   type OpenApiDatasourceCatalogSeedShape,
+  type ImplementationStatusOverrideShape,
 } from "../layers";
 
 // ── The dynamic-import interception ─────────────────────────────────
@@ -78,6 +96,7 @@ import {
 const realDatasourceExports = { ...realDatasourceSeedModule };
 const realKnowledgeExports = { ...realKnowledgeSeedModule };
 const realOpenApiExports = { ...realOpenApiSeedModule };
+const realOverrideExports = { ...realOverrideModule };
 
 const NOT_CONFIGURED =
   "boot stub not configured by this test — the Layer reached the dynamic import unexpectedly";
@@ -88,10 +107,13 @@ let knowledgeBoot: () => Promise<BuiltinKnowledgeCatalogSeedBootResult> = () =>
   Promise.reject(new Error(NOT_CONFIGURED));
 let openApiBoot: () => Promise<OpenApiDatasourceCatalogSeedBootResult> = () =>
   Promise.reject(new Error(NOT_CONFIGURED));
+let overrideBoot: () => Promise<ImplementationStatusOverrideBootResult> = () =>
+  Promise.reject(new Error(NOT_CONFIGURED));
 
 const datasourceBootCalls = mock(() => {});
 const knowledgeBootCalls = mock(() => {});
 const openApiBootCalls = mock(() => {});
+const overrideBootCalls = mock(() => {});
 
 void mock.module("@atlas/api/lib/db/seed-builtin-datasource-catalog", () => ({
   ...realDatasourceExports,
@@ -117,13 +139,23 @@ void mock.module("@atlas/api/lib/openapi/catalog-seed", () => ({
   },
 }));
 
+void mock.module("@atlas/api/lib/integrations/implementation-status-override", () => ({
+  ...realOverrideExports,
+  runImplementationStatusOverrideBoot: () => {
+    overrideBootCalls();
+    return overrideBoot();
+  },
+}));
+
 afterEach(() => {
   datasourceBootCalls.mockClear();
   knowledgeBootCalls.mockClear();
   openApiBootCalls.mockClear();
+  overrideBootCalls.mockClear();
   datasourceBoot = () => Promise.reject(new Error(NOT_CONFIGURED));
   knowledgeBoot = () => Promise.reject(new Error(NOT_CONFIGURED));
   openApiBoot = () => Promise.reject(new Error(NOT_CONFIGURED));
+  overrideBoot = () => Promise.reject(new Error(NOT_CONFIGURED));
 });
 
 // ── Layer drivers ───────────────────────────────────────────────────
@@ -136,9 +168,12 @@ interface UpstreamGate {
 // `InternalDB` + `Migration` are rebuilt per call rather than shared. The reason
 // is legibility, NOT necessity — and the first version of this comment claimed
 // necessity, which is measurably false: hoisting the composed seed layer to module
-// scope and sharing it across every call leaves the suite at 29/29, because each
+// scope and sharing it across every call leaves the suite fully green, because each
 // `Effect.provide`/`runPromise` builds its own MemoMap and the `Layer.effect`
-// therefore re-runs anyway.
+// therefore re-runs anyway. (Measured at 29/29 when #5273 wrote this; the suite is
+// 41 tests since #5305 added the override driver. The pass COUNT is incidental to
+// the experiment, so it is no longer quoted here — a number that has to be revised
+// every time a test is added is a number that will eventually be wrong.)
 //
 // Per-call construction is kept because it makes each case's independence a
 // property of the code rather than of Effect's memo scoping — a reader should not
@@ -200,6 +235,57 @@ function runOpenApiSeed(
             Layer.merge(
               createInternalDBTestLayer({ available: gate.available ?? true }),
               Layer.succeed(Migration, { migrated: gate.migrated ?? true }),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+/**
+ * `ImplementationStatusOverrideLive` needs two Tags the three seed Layers do not:
+ * `CatalogSeed` and `BuiltinDatasourceCatalogSeed`. Both are supplied as
+ * `Layer.succeed` stubs, exactly as `layers.test.ts` does — the Live impl yields
+ * them for ORDERING (the override must be the final word on
+ * `implementation_status`, after the catalog seeder's re-asserting `EXCLUDED`
+ * upsert) and never reads their values.
+ *
+ * ⚠️ `BuiltinDatasourceCatalogSeedLive` is deliberately NOT used here even though
+ * this file builds it three describes up. Providing the Live seed Layer would put
+ * the override's arms behind the seed's dynamic import — a failure in one would
+ * surface as a failure in the other, and `datasourceBoot` would have to be
+ * configured in every override test for reasons that have nothing to do with the
+ * override.
+ */
+const overrideSeedStubs = Layer.merge(
+  Layer.succeed(CatalogSeed, {
+    insertedCount: 0,
+    updatedCount: 0,
+    preservedCount: 0,
+    orphanSlugs: [],
+    outcome: "seeded" as const,
+  }),
+  Layer.succeed(BuiltinDatasourceCatalogSeed, {
+    insertedSlugs: [],
+    preservedSlugs: [],
+    blockedSlugs: [],
+    outcome: "seeded" as const,
+  }),
+);
+
+function runOverride(gate: UpstreamGate = {}): Promise<ImplementationStatusOverrideShape> {
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      return yield* ImplementationStatusOverride;
+    }).pipe(
+      Effect.provide(
+        ImplementationStatusOverrideLive.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              createInternalDBTestLayer({ available: gate.available ?? true }),
+              Layer.succeed(Migration, { migrated: gate.migrated ?? true }),
+              overrideSeedStubs,
             ),
           ),
         ),
@@ -576,6 +662,196 @@ describe("OpenApiDatasourceCatalogSeedLive", () => {
     expect(shape.outcome).toBe("error");
     expect(shape.error).toBe(CREDENTIAL_SCRUBBED);
     expect(shape.error).not.toContain("hunter2");
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// ImplementationStatusOverrideLive — not a seed, and the richest outcome
+// set of the four (#5305)
+// ══════════════════════════════════════════════════════════════════════
+
+describe("ImplementationStatusOverrideLive", () => {
+  // `layers.test.ts` covers the two upstream-gate arms and then says, in as many
+  // words, that the gates-PASS arms are "covered by the wrapper's own tests". They
+  // are not: the wrapper's tests pin what the WRAPPER returns, and every arm below
+  // is the Layer's own translation of that return into a Tag value. The two are
+  // different functions, and the mapping between them is where a `reason` can be
+  // silently re-pointed at the wrong `outcome`.
+  //
+  // The gate arms are re-driven here rather than left to `layers.test.ts` for one
+  // reason the seed describes share: `not.toHaveBeenCalled()` on the boot stub is
+  // the only thing that distinguishes "skipped before the import" from "skipped
+  // after it", and both land on the same `outcome`. `layers.test.ts` has no stub
+  // to assert against, so it cannot make that distinction at all.
+
+  test("skips on `!db.available` alone, without reaching the import", async () => {
+    const shape = await runOverride({ available: false, migrated: true });
+    expect(shape.outcome).toBe("skipped-gate");
+    expect(shape.updatedCount).toBe(0);
+    expect(shape.unmatchedSlugs).toEqual([]);
+    expect(shape.error).toBeUndefined();
+    expect(overrideBootCalls).not.toHaveBeenCalled();
+  });
+
+  test("skips on `!migration.migrated` alone, without reaching the import", async () => {
+    const shape = await runOverride({ available: true, migrated: false });
+    expect(shape.outcome).toBe("skipped-gate");
+    expect(shape.updatedCount).toBe(0);
+    expect(overrideBootCalls).not.toHaveBeenCalled();
+  });
+
+  test("skips when both upstream halves are unsatisfied", async () => {
+    const shape = await runOverride({ available: false, migrated: false });
+    expect(shape.outcome).toBe("skipped-gate");
+    expect(overrideBootCalls).not.toHaveBeenCalled();
+  });
+
+  // ── the three `reason` values, which fan out to THREE outcomes ─────
+  //
+  // ⚠️ THE ARM THIS ISSUE EXISTS FOR. One wrapper `kind` — `"skipped"` — maps to
+  // three different `outcome`s depending on `reason`, and the mapping is neither
+  // identity nor uniform: two reasons are skips and the middle one is an ERROR.
+  // Nothing outside this Layer performs that mapping, so nothing outside this
+  // describe can observe it being wrong. A `switch` whose three arms were
+  // permuted would leave every other test in the repo green.
+
+  test("⭐ `no-internal-db` lands on `skipped-gate` — but DID run", async () => {
+    // Unreachable in production (the `!db.available` gate above catches it first)
+    // and mapped anyway, so that a future refactor decoupling the gate from the
+    // wrapper degrades to the honest outcome instead of mislabelling.
+    overrideBoot = () => Promise.resolve({ kind: "skipped", reason: "no-internal-db" });
+    const shape = await runOverride();
+    expect(shape.outcome).toBe("skipped-gate");
+    expect(shape.updatedCount).toBe(0);
+    expect(shape.error).toBeUndefined();
+    // The call count is the ONLY thing separating this from the gate cases above.
+    expect(overrideBootCalls).toHaveBeenCalledTimes(1);
+  });
+
+  test("⭐ `no-config` lands on `error` — a SKIP the Layer promotes", async () => {
+    // The asymmetric arm. The Config Tag should have loaded long before the
+    // post-seed boot phase, so a `no-config` here is a real fault rather than a
+    // configuration choice — and reporting it as a skip would hide it from the
+    // health surface `outcome` exists to feed.
+    overrideBoot = () => Promise.resolve({ kind: "skipped", reason: "no-config" });
+    const shape = await runOverride();
+    expect(shape.outcome).toBe("error");
+    // The exact sentence, not just "some error": this is the one producing arm
+    // whose message is a LITERAL rather than a scrubbed wrapper string, so
+    // asserting only `toBeDefined()` would pass on a message copied from the arm
+    // next door.
+    expect(shape.error).toBe(
+      "Implementation-status override: no resolved config at post-seed boot phase",
+    );
+    expect(shape.updatedCount).toBe(0);
+    expect(shape.unmatchedSlugs).toEqual([]);
+  });
+
+  test("⭐ `empty-override` lands on `skipped-empty` — the third skip kind", async () => {
+    // The SaaS norm (`deploy/api/atlas.config.ts` declares every row's status
+    // directly and leaves the override empty) and the explicit "operator declared
+    // nothing" path on self-host. No seed Layer has an outcome like it, which is
+    // why the harness's other three describes cannot have covered it by accident.
+    //
+    // ⚠️ Asserted as its own value and NOT as "not skipped-gate": collapsing
+    // `skipped-empty` into `skipped-gate` is the plausible mutation here, and it
+    // would tell an operator the upstream DB gate was unsatisfied when in fact
+    // their config was read successfully and was empty.
+    overrideBoot = () => Promise.resolve({ kind: "skipped", reason: "empty-override" });
+    const shape = await runOverride();
+    expect(shape.outcome).toBe("skipped-empty");
+    expect(shape.updatedCount).toBe(0);
+    expect(shape.unmatchedSlugs).toEqual([]);
+    expect(shape.error).toBeUndefined();
+    expect(overrideBootCalls).toHaveBeenCalledTimes(1);
+  });
+
+  // ── the `applied` arm ─────────────────────────────────────────────
+
+  test("⭐ forwards `updatedCount` and `unmatchedSlugs` at distinct, non-zero sizes", async () => {
+    // The override's sibling of #5273's headline mutation: fill the `case
+    // "applied"` arm with `...zeroCounts` and the Layer reports a successful
+    // override that changed nothing. `updatedCount: 3` against a 2-element
+    // `unmatchedSlugs` means neither field can be sourced from the other, and
+    // both are non-empty so the zeroCounts spread cannot satisfy either.
+    //
+    // `noopSlugs` is on the wrapper result and deliberately NOT on the shape —
+    // it is supplied here so the fixture is a real `kind: "applied"` value rather
+    // than a partial one, and its absence downstream is the Layer's choice.
+    overrideBoot = () =>
+      Promise.resolve({
+        kind: "applied",
+        updatedCount: 3,
+        unmatchedSlugs: ["discord", "intercom"],
+        noopSlugs: ["slack"],
+      });
+
+    const shape = await runOverride();
+
+    expect(shape.outcome).toBe("applied");
+    expect(shape.updatedCount).toBe(3);
+    expect(shape.unmatchedSlugs).toEqual(["discord", "intercom"]);
+    expect(shape.error).toBeUndefined();
+  });
+
+  test("`applied` with nothing unmatched is still `applied`", async () => {
+    // The clean path, kept because the case above is satisfied by a Layer that
+    // hardcoded a non-empty list just as surely as the reverse.
+    overrideBoot = () =>
+      Promise.resolve({ kind: "applied", updatedCount: 1, unmatchedSlugs: [], noopSlugs: [] });
+
+    const shape = await runOverride();
+
+    expect(shape.outcome).toBe("applied");
+    expect(shape.updatedCount).toBe(1);
+    expect(shape.unmatchedSlugs).toEqual([]);
+  });
+
+  // ── the `error` arm and the `catchAll` ────────────────────────────
+
+  test("⭐ SCRUBS the boot wrapper's error message", async () => {
+    // Same pin as its three siblings, for the same reason: `error` is DOCUMENTED
+    // as scrubbed on the shape, and this Layer has FOUR producers of that one
+    // field (`no-config`, `error`, `catchAll`, and the literal above). #5239 is
+    // what one field with two guarantees costs.
+    overrideBoot = () => Promise.resolve({ kind: "error", message: CREDENTIAL_LEAK_MESSAGE });
+
+    const shape = await runOverride();
+
+    expect(shape.outcome).toBe("error");
+    expect(shape.error).toBe(CREDENTIAL_SCRUBBED);
+    expect(shape.error).not.toContain("hunter2");
+    // `0` / `[]` here mean UNKNOWN, not "none" — a throw mid-pass abandons
+    // whatever the override had already applied. Pinned so the meaning does not
+    // drift into a claim that nothing changed.
+    expect(shape.updatedCount).toBe(0);
+    expect(shape.unmatchedSlugs).toEqual([]);
+  });
+
+  test("⭐ catchAll SCRUBS a rejection from the dynamic-import seam", async () => {
+    overrideBoot = () => Promise.reject(new Error(CREDENTIAL_LEAK_MESSAGE));
+
+    const shape = await runOverride();
+
+    expect(shape.outcome).toBe("error");
+    expect(shape.error).toBe(CREDENTIAL_SCRUBBED);
+    expect(shape.error).not.toContain("hunter2");
+    expect(shape.updatedCount).toBe(0);
+  });
+
+  test("catchAll normalizes a non-Error rejection", async () => {
+    overrideBoot = () => Promise.reject("import map resolution failed");
+    const shape = await runOverride();
+    expect(shape.outcome).toBe("error");
+    expect(shape.error).toBe("import map resolution failed");
+  });
+
+  test("never fails the Layer — every arm succeeds", async () => {
+    // The Layer's error channel is `never`, and the stakes are higher here than
+    // on the seeds: this Layer runs LAST in the catalog chain, so an escaping
+    // error takes the boot down after the seeds have already written.
+    overrideBoot = () => Promise.reject(new Error("total failure"));
+    await expect(runOverride()).resolves.toMatchObject({ outcome: "error" });
   });
 });
 

@@ -890,6 +890,12 @@ export type BuiltinDatasourceCatalogSeedOutcome =
   | "seeded"
   | "error";
 
+/**
+ * ⚠️ Flat record, deliberately, not a union discriminated on `outcome` — so
+ * `{ outcome: "error", insertedSlugs: ["x"] }` is type-legal here. The decision
+ * and the measurement behind it live once, beside
+ * {@link ImplementationStatusOverrideShape} (#5305).
+ */
 export interface BuiltinDatasourceCatalogSeedShape {
   /** Slugs whose row was newly inserted this boot. */
   readonly insertedSlugs: ReadonlyArray<string>;
@@ -1287,13 +1293,60 @@ export type ImplementationStatusOverrideOutcome =
   | "applied"
   | "error";
 
+/**
+ * ⚠️ A FLAT RECORD, NOT A UNION DISCRIMINATED ON `outcome` — decided at #5305
+ * rather than drifted into, and recorded here because the decision is invisible
+ * from the type itself. Applies equally to the three seed shapes above, whose
+ * docstrings call them "discriminated outcome" and which are the same shape.
+ *
+ * The proposal was that making these unions would turn #5273's headline mutation
+ * — the `case "seeded"` / `case "applied"` arm filled with `...zeroCounts`
+ * instead of the forwarded fields — into a compile error, demoting the Layer
+ * tests from the only guard on the payload to a backstop.
+ *
+ * ⚠️ MEASURED, AND THAT PREMISE IS FALSE. Under a union whose `applied` variant
+ * declares `updatedCount: number` and `unmatchedSlugs: ReadonlyArray<string>`,
+ * `{ ...zeroCounts, outcome: "applied" }` still type-checks: `zeroCounts` carries
+ * BOTH fields at exactly those types, and `0` / `[]` are ordinary inhabitants of
+ * them. The mutation is a wrong VALUE, not a wrong shape, and no arrangement of
+ * variants makes a type system reject it. Pinning it needs a test, which is what
+ * `builtin-catalog-seed-layers.test.ts` now is (M3/M6 there, both measured red).
+ *
+ * What the union WOULD buy, measured in the same experiment, is narrower and
+ * real: `{ ...zeroCounts, outcome: "error" }` — an error outcome carrying no
+ * message at all — is a compile error under a union (`error` required on that
+ * variant) and legal today, because `error?: string` is optional on every arm.
+ *
+ * Not taken, on two grounds:
+ *
+ *   - the gain is bounded and already covered. Every producing arm of `error` is
+ *     now asserted to carry a SCRUBBED message, so an arm that produced none
+ *     fails those tests for the same reason it would fail the compiler;
+ *   - the cost lands on the readers rather than the producers. Nothing in
+ *     production reads these Tag payloads yet — they exist for a future `/health`
+ *     consumer — and that consumer's whole job is to report `updatedCount` and
+ *     the slug lists UNIFORMLY across outcomes. A union makes every such read a
+ *     narrow first, for fields whose value on the non-applied arms ("0 / [], and
+ *     on `error` that means UNKNOWN rather than none") is exactly what it wants
+ *     to print.
+ *
+ * Revisit if a real consumer appears that branches on `outcome` anyway — at that
+ * point the narrowing is being written regardless and the union is free.
+ */
 export interface ImplementationStatusOverrideShape {
   /** UPDATEs issued this boot. */
   readonly updatedCount: number;
   /** Slugs in the override that didn't match a catalog row. */
   readonly unmatchedSlugs: ReadonlyArray<string>;
   readonly outcome: ImplementationStatusOverrideOutcome;
-  /** Scrubbed error message when `outcome === "error"`. */
+  /**
+   * Scrubbed error message when `outcome === "error"`.
+   *
+   * FOUR producers on this Layer — the `no-config` literal, the wrapper's
+   * `error` kind, the `catchAll`, and nothing on the two skip arms. #5239 is
+   * what one field with two different guarantees costs, so every producing arm
+   * is pinned scrubbed in `builtin-catalog-seed-layers.test.ts`.
+   */
   readonly error?: string;
 }
 
@@ -1359,7 +1412,11 @@ export const ImplementationStatusOverrideLive: Layer.Layer<
         const result = await runImplementationStatusOverrideBoot();
         switch (result.kind) {
           case "skipped":
-            // Three skip reasons, two outcomes:
+            // Three skip reasons, THREE outcomes — and this line read "two
+            // outcomes" until #5305, while the switch below it has always
+            // fanned out to three. The Layer tests assert the three in as many
+            // words, so the stale count was the one thing a reader would trust
+            // over the code:
             //   - `no-internal-db` should be unreachable here (the Layer's
             //     `!db.available` gate above already caught it), but if a
             //     future refactor decouples the gate from the wrapper this

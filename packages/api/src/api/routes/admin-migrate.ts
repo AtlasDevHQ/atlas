@@ -8,6 +8,16 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
+// The one spelling of the refusal item's eight fields (#5303), shared with the
+// runtime screen in `lib/residency/migrate.ts`.
+//
+// ⚠️ A VALUE import, and NOT the hazard `VOCABULARY_REFUSAL_DETAIL_CAP` below is
+// about. That one is about resolution against a PUBLISHED package — this file is
+// copied into the `create-atlas` scaffold, which installs `@useatlas/types` from
+// npm. `@useatlas/schemas` never publishes; `prepare-templates.sh` (step 5e)
+// copies its SOURCE into every template behind a `tsconfig` path alias, so the
+// scaffold gets this file and this schema from the same commit.
+import { VocabularyRefusalDetailSchema } from "@useatlas/schemas";
 import { createLogger } from "@atlas/api/lib/logger";
 import { EPISODE_SOURCES, isEpisodeSource } from "@atlas/api/lib/brain/sources";
 import { getInternalDB, type InternalPoolClient } from "@atlas/api/lib/db/internal";
@@ -1019,20 +1029,21 @@ const ImportResultSchema = z.object({
     // member — extends to the array ITEM's fields too, which is a second level of
     // nesting it does not mention. `.nullable()` keeps a field present-and-null and
     // is therefore pinned; `.optional()` on either spelling is pinned by nothing.
-    // That is the whole reason all eight are required here.
+    // That is the whole reason all eight are required.
+    //
+    // ⚠️ REFERENCED, NOT RESTATED, since #5303. The eight fields used to be spelled
+    // out here, which made this the SECOND of three copies — and the third
+    // (`screenRefusalDetails` in `lib/residency/migrate.ts`, which decides what this
+    // region actually persists) was coupled to neither by anything but hand. They
+    // are now one definition in `@useatlas/schemas`.
+    //
+    // ⚠️ What closes the optional-member hole measured above is that definition's
+    // KEY-SET pin, not its `satisfies` — re-measured at review, an optional ninth
+    // field defeats the `satisfies` exactly as it defeats the pin below. Two
+    // different pins, two different reaches; the numbers are recorded beside the
+    // schema so this comment does not have to be trusted.
     refusalDetails: z
-      .array(
-        z.object({
-          slotPosition: z.string(),
-          fromNorm: z.string(),
-          toNorm: z.string(),
-          approvedBy: z.string().nullable(),
-          approvedAt: z.string(),
-          refusal: z.string(),
-          existingTarget: z.string().nullable(),
-          reason: z.string(),
-        }),
-      )
+      .array(VocabularyRefusalDetailSchema)
       // ⚠️ DOCUMENTATION, NOT ENFORCEMENT, and worth having for exactly that. Nothing
       // validates a RESPONSE against this schema at runtime, so the two `.slice()`
       // calls (here and in `residency/migrate.ts`) remain the enforcement. What

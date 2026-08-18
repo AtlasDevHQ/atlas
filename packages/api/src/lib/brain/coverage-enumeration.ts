@@ -54,7 +54,11 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { withBrainTransaction } from "@atlas/api/lib/brain/reconcile";
-import { coverageLabelPolicy, type ClassContractLogMeta } from "@atlas/api/lib/brain/class-contract";
+import {
+  coverageLabelPolicy,
+  type ClassContractLogMeta,
+  type SurveyUnitDisclosureFacts,
+} from "@atlas/api/lib/brain/class-contract";
 import type { EpisodeSourceClass } from "@atlas/api/lib/brain/sources";
 
 const log = createLogger("brain.coverage-enumeration");
@@ -751,6 +755,22 @@ export interface CoverageClassSnapshot {
   readonly unavailableReason: string | null;
   /** ADR-0041's map edges — marks, never numbers. */
   readonly degraded: readonly CoverageDegradedArm[];
+  /**
+   * True when the stored marks held arms this deploy cannot render, so
+   * {@link degraded} is itself incomplete (#5214).
+   *
+   * ⚠️ Carried rather than left to the `log.warn` in {@link readDegradedArms},
+   * because the direction of that loss is *"the map reads more complete than it
+   * is"* — and a page cannot read a log line. Reachable by a ROLLBACK: a deploy
+   * below the build that first wrote a new arm reads a value it has no sentence
+   * for, drops it, and would otherwise ship an empty edge list that renders as a
+   * complete map.
+   *
+   * The consumer treats it as a degradation of the whole statement rather than
+   * as a fourth kind of mark: what is unknown is which edges exist, not where
+   * one is.
+   */
+  readonly degradedIncomplete: boolean;
 }
 
 const READ_SNAPSHOT_SQL = `SELECT c.source_class,
@@ -828,7 +848,7 @@ export async function readCoverageSnapshot(
       lastAttemptAt: isoOrNull(row.last_attempt_at),
       unavailableReason:
         typeof row.last_error === "string" && row.last_error !== "" ? row.last_error : null,
-      degraded: readDegradedArms(row.degraded_arms, workspaceId, sourceClass),
+      ...readDegradedArms(row.degraded_arms, workspaceId, sourceClass),
     });
   }
   return out;
@@ -839,8 +859,28 @@ export interface CoverageUnitRow {
   readonly unitId: string;
   readonly state: SurveyUnitState;
   readonly inPerimeter: boolean;
-  /** `null` when no label clause admitted this unit — counted, never named. */
+  /**
+   * `null` when no label clause admitted this unit at WRITE time — counted,
+   * never named.
+   *
+   * ⚠️ Not the last word. The reader re-runs {@link coverageLabelPolicy} over
+   * {@link disclosure} and withholds this string whenever the policy says
+   * `count-only` NOW, which is what the module header means by "a reader can
+   * re-derive the decision rather than trust it". The two disagree exactly when
+   * the contract changed after the row was written — a class argued shut on
+   * `vendorPublic`, say — and the direction that matters is that a stored label
+   * cannot outlive the clause that admitted it.
+   */
   readonly label: string | null;
+  /**
+   * The facts the write-time decision was made from, carried so the read side
+   * can make it again (#5214).
+   *
+   * They are stored columns rather than a re-derivation, so this is what the
+   * enumerator asserted about the unit at snapshot time — the same two inputs
+   * {@link coverageLabelPolicy} takes, under the names it takes them under.
+   */
+  readonly disclosure: SurveyUnitDisclosureFacts;
   readonly newestEvidenceAt: string | null;
   /**
    * The vendor-side reading, as the same tri-state {@link EnumeratedSurveyUnit}
@@ -859,7 +899,8 @@ export interface CoverageUnitRow {
     | { readonly probed: true; readonly at: string | null; readonly checkedAt: string };
 }
 
-const READ_UNITS_SQL = `SELECT unit_id, state, in_perimeter, unit_label, newest_evidence_at,
+const READ_UNITS_SQL = `SELECT unit_id, state, in_perimeter, unit_label,
+          deliberate_act, vendor_reports_public, newest_evidence_at,
           vendor_activity_at, vendor_activity_checked_at
      FROM brain_coverage_snapshot
     WHERE workspace_id = $1 AND source_class = $2
@@ -893,6 +934,14 @@ export async function readCoverageUnits(
       state: r.state === "surveyed" ? "surveyed" : "enumerated",
       inPerimeter: r.in_perimeter === true,
       label: typeof r.unit_label === "string" && r.unit_label !== "" ? r.unit_label : null,
+      // Both narrowed `=== true`, so anything but a stored `true` is a stored
+      // `false`. The direction is the one that matters at a disclosure gate: an
+      // unreadable column must not become a clause the reader then names a unit
+      // under.
+      disclosure: {
+        deliberateAct: r.deliberate_act === true,
+        vendorReportsPublic: r.vendor_reports_public === true,
+      },
       newestEvidenceAt: isoOrNull(r.newest_evidence_at),
       activity:
         checkedAt === null
@@ -967,11 +1016,18 @@ function isCoverageDegradedArm(value: unknown): value is CoverageDegradedArm {
   return typeof value === "string" && DEGRADED_SET.has(value);
 }
 
+/**
+ * The stored marks this deploy can render, AND whether that set is all of them.
+ *
+ * Returns both halves rather than only the list, because both losses below are
+ * in the same direction — the map reads more complete than it is — and only one
+ * of them used to leave any trace a caller could act on.
+ */
 function readDegradedArms(
   raw: unknown,
   workspaceId: string,
   sourceClass: SurveyableSourceClass,
-): readonly CoverageDegradedArm[] {
+): { readonly degraded: readonly CoverageDegradedArm[]; readonly degradedIncomplete: boolean } {
   if (!Array.isArray(raw)) {
     // Not `return []` quietly. `degraded_arms` is `NOT NULL DEFAULT '{}'` so this
     // is unreachable through the driver — which is exactly why it must be loud
@@ -982,7 +1038,7 @@ function readDegradedArms(
       { workspaceId, sourceClass, rawType: typeof raw },
       "brain coverage: the stored map-edge marks are not an array — reporting no map edges for this class, which reads as a complete map",
     );
-    return [];
+    return { degraded: [], degradedIncomplete: true };
   }
   const out: CoverageDegradedArm[] = [];
   const unknown: string[] = [];
@@ -1004,7 +1060,7 @@ function readDegradedArms(
       "brain coverage: stored map-edge marks this deploy does not recognise — they are not rendered, so the map reads more complete than it is",
     );
   }
-  return out;
+  return { degraded: out, degradedIncomplete: unknown.length > 0 };
 }
 
 /**

@@ -88,8 +88,69 @@ const log = createLogger("brain-class-contract");
  * and which ADR-0041 rules out on the page anyway ("never live vendor calls on
  * page view"). Declaring `absent` is what makes those units read "unverified
  * since" rather than silently never appearing stale.
+ *
+ * ## Why the cadence lives INSIDE the `reports` arm (#5214)
+ *
+ * It was a bare `"reports" | "absent"` until the coverage module needed the
+ * threshold, and the two-line union was the shape this file warned about on
+ * {@link stalenessVerdict}: *"the cadence it is measured against is a fourth
+ * contract property that belongs HERE when the coverage module needs it — not a
+ * constant in that module"*. A sibling `syncCadenceMs?: number` beside a
+ * `"reports"` string would have satisfied that literally and left the hazard
+ * intact — a class could declare the CAPABILITY with no threshold, and the one
+ * consumer would then have to invent one or fall back to a default, which is the
+ * same "each new consumer is a new place the answer could be decided" failure
+ * arriving through an optional field.
+ *
+ * Nested, the two cannot be declared apart: `measured-lag` and the number it is
+ * measured against arrive together or not at all, and {@link stalenessVerdict}
+ * hands the consumer both in one value so there is nothing left to substitute.
  */
-export type VendorActivityMetadata = "reports" | "absent";
+export type VendorActivityMetadata =
+  | {
+      readonly kind: "reports";
+      /**
+       * How far a source may move ahead of our newest observed evidence before
+       * the lag is called stale — ADR-0041's *"more than the class's sync
+       * cadence"*.
+       *
+       * ⚠️ **A CONSTANT, deliberately not the runtime sync knob.** ADR-0041:
+       * *"No staleness knob — not env, not the settings registry. A tunable
+       * threshold lets an admin define staleness away."*
+       * `ATLAS_KNOWLEDGE_SYNC_INTERVAL_HOURS` is exactly such a tunable, and
+       * reading it here would let a workspace set the interval to a month and
+       * watch every unit turn "current" — the flattering direction, chosen by the
+       * person the page exists to inform.
+       *
+       * The consequence, accepted: a deploy whose knob is SLOWER than the value
+       * declared here reports lag the page calls stale. That reads correctly —
+       * our evidence really is behind the source by more than the class promises
+       * — and the fix is the knob, not the threshold.
+       */
+      readonly syncCadenceMs: number;
+    }
+  | { readonly kind: "absent" };
+
+/**
+ * The cadence the three connector classes actually sync on.
+ *
+ * All three ride ONE fiber: `scheduler/brain-coverage-snapshot.ts` enumerates
+ * rosters, but EVIDENCE arrives through `lib/knowledge/sync.ts` driven by
+ * `scheduler/knowledge-bundle-sync.ts` — `ingest/episode-sync.ts`'s header says
+ * so outright ("There is no second scheduler"). So the honest per-class answer
+ * is the same number three times today, and it is declared three times anyway:
+ * the day a class gets its own fiber it edits its own entry, which a shared
+ * constant read from one place would have made an invisible cross-class change.
+ *
+ * ⚠️ Spelled here rather than IMPORTED from the scheduler, and the difference is
+ * layering, not taste: this file declares contract policy and the scheduler
+ * declares mechanics, so the import would run the wrong way. What keeps the two
+ * from drifting is a check rather than this comment —
+ * `class-contract.test.ts` pins this constant against
+ * `DEFAULT_KNOWLEDGE_SYNC_INTERVAL_MS`, so moving the sync default reddens here
+ * and the threshold has to be re-decided rather than silently left behind.
+ */
+const CONNECTOR_SYNC_CADENCE_MS = 24 * 60 * 60_000;
 
 /**
  * Where a class's enumerable universe comes from — the DENOMINATOR side of every
@@ -176,13 +237,15 @@ export type StalenessVerdict =
    * A lag is COMPUTABLE for this class — not "this unit is stale", and not a
    * lag anyone has measured yet.
    *
-   * ⚠️ The threshold it would be measured against is NOT in this contract. See
-   * {@link stalenessVerdict} — the cadence ADR-0041 says the class contract owns
-   * has no declaration site yet, and a consumer must not substitute one. Stated
-   * on the member as well as on the function because a consumer that destructures
-   * the union never reads the function's docstring.
+   * The threshold it is measured against travels ON this arm as of #5214, and
+   * that is the whole point of carrying it: an earlier version said the cadence
+   * "is NOT in this contract … a consumer must not substitute one", which is a
+   * rule a consumer can only obey by having nothing to do. Now the capability
+   * and its constant arrive together, so there is nothing to substitute. Stated
+   * on the member as well as on the function because a consumer that
+   * destructures the union never reads the function's docstring.
    */
-  | { readonly kind: "measured-lag" }
+  | { readonly kind: "measured-lag"; readonly syncCadenceMs: number }
   | {
       readonly kind: "unverified-since";
       readonly reason: "no-activity-metadata" | "unresolvable-class";
@@ -304,7 +367,10 @@ export const CLASS_CONTRACTS = Object.freeze({
   chat: Object.freeze({
     coverage: Object.freeze({
       vendorPublic: true,
-      activityMetadata: "reports",
+      activityMetadata: Object.freeze({
+        kind: "reports",
+        syncCadenceMs: CONNECTOR_SYNC_CADENCE_MS,
+      } as const satisfies VendorActivityMetadata),
       denominator: Object.freeze({
         surveyable: true,
         enumeratedFrom: "chat-channel-roster",
@@ -322,7 +388,10 @@ export const CLASS_CONTRACTS = Object.freeze({
   transcript: Object.freeze({
     coverage: Object.freeze({
       vendorPublic: false,
-      activityMetadata: "reports",
+      activityMetadata: Object.freeze({
+        kind: "reports",
+        syncCadenceMs: CONNECTOR_SYNC_CADENCE_MS,
+      } as const satisfies VendorActivityMetadata),
       denominator: Object.freeze({
         surveyable: true,
         enumeratedFrom: "granted-recording-scopes",
@@ -340,7 +409,10 @@ export const CLASS_CONTRACTS = Object.freeze({
   email: Object.freeze({
     coverage: Object.freeze({
       vendorPublic: false,
-      activityMetadata: "reports",
+      activityMetadata: Object.freeze({
+        kind: "reports",
+        syncCadenceMs: CONNECTOR_SYNC_CADENCE_MS,
+      } as const satisfies VendorActivityMetadata),
       denominator: Object.freeze({
         surveyable: true,
         enumeratedFrom: "mailbox-list",
@@ -362,7 +434,7 @@ export const CLASS_CONTRACTS = Object.freeze({
   warehouse: Object.freeze({
     coverage: Object.freeze({
       vendorPublic: false,
-      activityMetadata: "absent",
+      activityMetadata: Object.freeze({ kind: "absent" } as const satisfies VendorActivityMetadata),
       denominator: Object.freeze({
         surveyable: true,
         enumeratedFrom: "semantic-layer-enrollment",
@@ -387,7 +459,7 @@ export const CLASS_CONTRACTS = Object.freeze({
   human: Object.freeze({
     coverage: Object.freeze({
       vendorPublic: false,
-      activityMetadata: "absent",
+      activityMetadata: Object.freeze({ kind: "absent" } as const satisfies VendorActivityMetadata),
       denominator: Object.freeze({
         surveyable: false,
         reason: "non-surveyable-class",
@@ -814,17 +886,20 @@ export function coverageLabelPolicy(
  * file can see it, so `measured-lag` here means "stale is computable for this
  * class", never "this unit is stale".
  *
- * ⚠️ **The THRESHOLD this licenses is not in the contract yet, and a consumer
- * must not invent one.** ADR-0041 defines the lag as exceeding "the class's sync
- * cadence — a divergence whose only constant is the cadence the class contract
- * already owns", and then forbids a knob for it: "No staleness knob — not env,
- * not the settings registry." That cadence has no declaration site today; this
- * contract carries the CAPABILITY and not the constant, which is #5212's stated
- * scope. So `measured-lag` means "a lag is computable for this class", and the
- * cadence it is measured against is a fourth contract property that belongs
- * HERE when the coverage module needs it — not a constant in that module, which
- * would be exactly the "each new consumer is a new place the answer could be
- * decided" failure this file exists to prevent.
+ * ⚠️ **The THRESHOLD this licenses TRAVELS ON the verdict, as of #5214.** The
+ * `measured-lag` arm carries `syncCadenceMs`, so the capability and the number
+ * it is measured against arrive in one value and a consumer has nothing left to
+ * invent. That is the fourth contract property #5212 said "belongs HERE when the
+ * coverage module needs it — not a constant in that module", claimed by the
+ * module that needed it; see {@link VendorActivityMetadata} for why it is nested
+ * inside the `reports` arm rather than added beside it.
+ *
+ * ADR-0041 defines the lag as exceeding "the class's sync cadence — a divergence
+ * whose only constant is the cadence the class contract already owns", and then
+ * forbids a knob for it: "No staleness knob — not env, not the settings
+ * registry." So the number here is a CONSTANT and is deliberately not read from
+ * `ATLAS_KNOWLEDGE_SYNC_INTERVAL_HOURS`, which is a tunable an admin could use
+ * to define staleness away.
  *
  * Unresolvable class → `unverified-since` / `unresolvable-class`. Fail-closed in
  * the honest direction: the alternative would let a class nobody has written a
@@ -839,8 +914,9 @@ export function stalenessVerdict(cls: unknown, meta?: ClassContractLogMeta): Sta
     warnUnresolvable(cls, "stalenessVerdict", meta);
     return { kind: "unverified-since", reason: "unresolvable-class" };
   }
-  return contract.coverage.activityMetadata === "reports"
-    ? { kind: "measured-lag" }
+  const activity = contract.coverage.activityMetadata;
+  return activity.kind === "reports"
+    ? { kind: "measured-lag", syncCadenceMs: activity.syncCadenceMs }
     : { kind: "unverified-since", reason: "no-activity-metadata" };
 }
 

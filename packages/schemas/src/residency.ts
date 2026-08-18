@@ -31,6 +31,7 @@ import {
   type RegionRoutingMap,
   type RegionRoutingMapEntry,
   type RegionStatus,
+  type VocabularyRefusalDetail,
   type WorkspaceRegion,
 } from "@useatlas/types";
 import { IsoTimestampSchema } from "./common";
@@ -132,6 +133,73 @@ export const RegionMigrationSchema = z.discriminatedUnion("status", [
 ]) satisfies z.ZodType<RegionMigration>;
 
 export { MigrationStatusEnum };
+
+// ---------------------------------------------------------------------------
+// Vocabulary refusal payloads (#5112, #5303)
+// ---------------------------------------------------------------------------
+
+/**
+ * One refused vocabulary edge, as the destination region reports it.
+ *
+ * ⚠️ THE ONE SPELLING OF THESE EIGHT FIELDS. Before #5303 there were three, and
+ * nothing tied them together:
+ *
+ *   1. the TypeScript type — `VocabularyRefusalDetail` in `@useatlas/types`;
+ *   2. a Zod object literal restated inline in `ImportResultSchema`
+ *      (`api/routes/admin-migrate.ts`);
+ *   3. a hand-written runtime screen — `screenRefusalDetails` in
+ *      `lib/residency/migrate.ts`, eight fields checked by two predicate lists.
+ *
+ * (1) and (2) were held together by `_SchemaMatchesWireType`, whose reach #5112
+ * MEASURED: a required item field or a dropped `.nullable()` on either side is
+ * red, but an OPTIONAL item field on one side only is silent. (3) was held
+ * together by nothing at all — it was coupled to the type by hand, and its own
+ * docstring said so.
+ *
+ * ⚠️ `satisfies z.ZodType<VocabularyRefusalDetail>` HERE is strictly stronger
+ * than that inference pin, because it cannot be defeated by an optional member:
+ * a ninth field added to the type is a compile error on this line, whichever way
+ * it is declared. That is the property the acceptance criterion asks for, and it
+ * lives at the definition rather than at one of the consumers.
+ *
+ * ⚠️ THIS PACKAGE IS THE ONLY LEGAL SHARED HOME for it. `lib/**` must not import
+ * from `api/routes/**` (CLAUDE.md), so the screen cannot reach the route's
+ * literal; and `@useatlas/types` cannot hold it either — a Zod schema is a
+ * RUNTIME value, and `packages/api/src` is copied into the `create-atlas`
+ * scaffold template, which installs the PUBLISHED `@useatlas/types` and so cannot
+ * see a symbol added in the same commit (`VOCABULARY_REFUSAL_DETAIL_CAP`'s
+ * docstring carries the CI failure that proved it).
+ *
+ * `@useatlas/schemas` escapes that trap by never publishing at all: the scaffold
+ * gets it from `prepare-templates.sh` step 5e, which copies this package's SOURCE
+ * into every template behind a `tsconfig` path alias. Same commit, same schema.
+ *
+ * The array-level cap is deliberately NOT here. It is a property of a particular
+ * transfer, applied by the two `.slice()` calls and documented on the route's
+ * `.max()`; baking it into the item schema would put a bound on a single edge.
+ */
+export const VocabularyRefusalDetailSchema = z.object({
+  /** The slot position the edge was approved at, verbatim from the source row. */
+  slotPosition: z.string(),
+  fromNorm: z.string(),
+  toNorm: z.string(),
+  /**
+   * `null` is an auto-approved edge, not an unknown one — so `.nullable()` and
+   * NOT `.optional()`. A missing key and a key whose value says "auto-approved"
+   * read identically in a log aggregator, and only one of them is true. The
+   * screen depends on this exact distinction: `null` passes, absent is malformed.
+   */
+  approvedBy: z.string().nullable(),
+  /** The SOURCE region's approval timestamp, carried verbatim (never re-stamped). */
+  approvedAt: z.string(),
+  /** Which of the four rules refused it — `already-aliased`, `would-cycle`, … */
+  refusal: z.string(),
+  /** What the DESTINATION holds for `fromNorm` instead, or `null` for the arms
+   * that have no conflicting edge. `.nullable()` for `approvedBy`'s reason. */
+  existingTarget: z.string().nullable(),
+  /** The refusal's human-readable reason, as the destination phrased it. */
+  reason: z.string(),
+}) satisfies z.ZodType<VocabularyRefusalDetail>;
 
 // ---------------------------------------------------------------------------
 // Composite response shapes

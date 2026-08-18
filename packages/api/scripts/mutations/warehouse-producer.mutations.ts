@@ -537,11 +537,11 @@ export type WarehouseBrandProbe = { readonly [validatedSnapshotSql]: true };`,
       edits: [
         {
           file: PRODUCER,
-          oldString: "    const unplaceableCause = unplaceable.get(entityPlan.entity.name);",
-          newString: "    const unplaceableCause = undefined as WarehouseUnplaceableCause | undefined;",
+          oldString: "    entityShapes.set(name, { kind: \"unplaceable\", cause });",
+          newString: "    void cause;",
         },
       ],
-      note: "The refusal arm removed, so an entity Atlas could not place falls through to `?? undefined` and reads the deployment's default datasource — #5284 restored through the door the fix left open. This is the arm that turns *\"we could not work out which database this is\"* from a silent default into a `connection-unresolved` refusal an admin can act on.",
+      note: "The refusal arm removed, so an entity Atlas could not place is looked up like any other and reads the deployment's default datasource — #5284 restored through the door the fix left open. This is the arm that turns *\"we could not work out which database this is\"* from a silent default into a `connection-unresolved` refusal an admin can act on. ⚠️ The anchor MOVED in #5286: the check used to sit in the emit loop, which only an entity that was published, readable and single-primary-keyed ever reached — so an unplaceable entity failing any of those was refused for that other reason and its placement cause never reached the report. It is a `WarehouseEntityLookup` arm now, ahead of every structural check, which is why the mutation targets the seeding rather than the loop.",
     },
     {
       label: "the flat scope resolves to the literal \"default\" instead of staying absent",
@@ -584,7 +584,7 @@ export type WarehouseBrandProbe = { readonly [validatedSnapshotSql]: true };`,
       edits: [
         {
           file: PRODUCER,
-          oldString: "    placement = await resolveConnectionIds(workspaceId, reach.entities);",
+          oldString: "    placement = await resolveConnectionIds(workspaceId, placementTargets);",
           newString: "    placement = await resolveConnectionIds(workspaceId, []);",
         },
       ],

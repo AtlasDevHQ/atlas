@@ -1,6 +1,12 @@
 /**
- * **Enrollment** — the `(entity, dimension)` pairs a human named as the tier-1
- * warehouse producer's reach (#5196, ADR-0039).
+ * **Enrollment** — the `(entity, group, dimension)` triples a human named as the
+ * tier-1 warehouse producer's reach (#5196, ADR-0039).
+ *
+ * ⚠️ The unit gained its GROUP half in #5286. An entity name is unique only
+ * within a connection group, so the original `(entity, dimension)` pair could not
+ * address one of two same-named entities — it stored cleanly and the producer
+ * refused it on every run, which is the "looks exactly like success" failure this
+ * whole surface exists to prevent. {@link EnrolledPair} carries the argument.
  *
  * The producer (#5042) emits claims for enrolled pairs and for nothing else. An
  * unenrolled dimension is not hidden, not filtered, and not pending — it is
@@ -97,10 +103,54 @@ export class UnattributedEnrollmentError extends Error {
   override readonly name = "UnattributedEnrollmentError";
 }
 
-/** One `(entity, dimension)` pair — the unit of the producer's reach. */
+/**
+ * One `(entity, group, dimension)` triple — the unit of the producer's reach.
+ *
+ * ⚠️ **The `group` is part of the IDENTITY, not a label on it (#5286).** An
+ * entity NAME is unique only within a connection group — `semantic_entities`'
+ * natural key is `(org_id, entity_type, name, connection_group_id)` — so a pair
+ * that names only `(entity, dimension)` in a multi-group workspace is a pair
+ * that cannot say which entity it means. It stored cleanly and the producer
+ * refused it on every run, because `getAdminEntity` refuses to choose between
+ * two published entities of the same name.
+ *
+ * `null` is the FLAT scope — a workspace that groups nothing, or the
+ * `__global__` demo rows. It is spelled `null` here and `''` in SQL, and
+ * {@link toStoredGroup}/{@link fromStoredGroup} below are the only translation.
+ */
 export interface EnrolledPair {
   readonly entity: string;
+  /**
+   * `semantic_entities.connection_group_id`, or `null` for the flat scope.
+   *
+   * The same spelling `AdminEntitySummary.connectionId` and `getAdminEntity`'s
+   * `connectionGroupId` use, deliberately: a group read off the semantic layer
+   * is handed to these verbs unconverted, so there is no place to forget one.
+   */
+  readonly group: string | null;
   readonly dimension: string;
+}
+
+/**
+ * `null` → `''`. The flat scope's storage spelling.
+ *
+ * A primary-key column cannot be NULL and this one is in the key, so the
+ * nullable group id the semantic layer stores has to arrive as something. `''`
+ * is the one value no real group id can take.
+ */
+function toStoredGroup(group: string | null): string {
+  return group ?? "";
+}
+
+/**
+ * `''` → `null`. {@link toStoredGroup}'s inverse.
+ *
+ * Written as a function rather than `row.connection_group_id || null` at each
+ * read, so the pair of translations sits in one place and a third read cannot
+ * quietly grow a different one.
+ */
+function fromStoredGroup(stored: string): string | null {
+  return stored === "" ? null : stored;
 }
 
 /**
@@ -109,7 +159,7 @@ export interface EnrolledPair {
  * A SEPARATE type from {@link EnrolledPair} rather than an optional field on it,
  * because the pair is an IDENTITY and this is a property of the row. Folded in,
  * `pairKey` and the membership index would have had to decide whether to include
- * it, and `has(entity, dimension)` answering differently for two spellings of
+ * it, and `has(entity, group, dimension)` answering differently for two spellings of
  * the same pair is the failure the type exists to forbid.
  */
 export interface EnrolledDimension extends EnrolledPair {
@@ -160,9 +210,21 @@ export type EnrollmentRow = BrainEnrollmentEntry;
  * route validates the pair against the semantic layer rather than accepting free
  * text, and why the surface picks from a list instead of offering an input box.
  */
-export function normalizeEnrollmentPair(entity: string, dimension: string): EnrolledPair {
+export function normalizeEnrollmentPair(
+  entity: string,
+  dimension: string,
+  group: string | null = null,
+): EnrolledPair {
   const trimmedEntity = entity.trim();
   const trimmedDimension = dimension.trim();
+  // ⚠️ **`''` and `null` are ONE state here, and collapsing them is the point.**
+  // The flat scope has two spellings on the way in — a caller that has no group
+  // passes `null`, and a wire body or a bundle can carry `""` — and they must not
+  // become two different rows under the same primary key. `""` collapses to
+  // `null` on entry, `null` becomes `''` at the SQL seam, and the round trip is
+  // total. A group of pure whitespace is a caller error rather than a scope, so
+  // it trims to `''` and collapses with the rest.
+  const trimmedGroup = group === null ? null : group.trim() === "" ? null : group.trim();
   if (trimmedEntity === "" || trimmedDimension === "") {
     throw new InvalidEnrollmentPairError(
       "An enrollment names an entity and a dimension; both are required.",
@@ -176,18 +238,34 @@ export function normalizeEnrollmentPair(entity: string, dimension: string): Enro
       `An entity or dimension name may be at most ${ENROLLMENT_NAME_MAX} characters.`,
     );
   }
+  // The group is bounded by the SAME constant rather than one of its own. It is
+  // a `semantic_entities.connection_group_id`, whose own bound is far below
+  // this — the slack is the same slack the two halves get, and a second number
+  // here would be a second thing to keep true.
+  if (trimmedGroup !== null && trimmedGroup.length > ENROLLMENT_NAME_MAX) {
+    throw new InvalidEnrollmentPairError(
+      `A connection group id may be at most ${ENROLLMENT_NAME_MAX} characters.`,
+    );
+  }
   // NUL is refused HERE rather than left to Postgres, and the reason is the
   // separator below: this module's pair key uses NUL precisely because a `text`
   // column cannot hold one. Postgres agrees — it answers 22021 — but only after
   // the statement is sent, which surfaces a caller's bad input as a generic 500.
   // The enroll verb never reaches it (the semantic-layer check refuses first);
   // the un-enroll verb deliberately has no such check, so this is the door.
-  if (trimmedEntity.includes("\u0000") || trimmedDimension.includes("\u0000")) {
+  if (
+    trimmedEntity.includes("\u0000") ||
+    trimmedDimension.includes("\u0000") ||
+    // The group joins this check for the pair key's reason rather than for
+    // symmetry: it is a THIRD segment of that NUL-separated key now, so a NUL
+    // inside it would make `has()` answer for a triple nobody enrolled.
+    (trimmedGroup !== null && trimmedGroup.includes("\u0000"))
+  ) {
     throw new InvalidEnrollmentPairError(
-      "An entity or dimension name may not contain a NUL byte — Postgres cannot store one.",
+      "An entity, dimension or connection group id may not contain a NUL byte — Postgres cannot store one.",
     );
   }
-  return { entity: trimmedEntity, dimension: trimmedDimension };
+  return { entity: trimmedEntity, group: trimmedGroup, dimension: trimmedDimension };
 }
 
 /**
@@ -213,7 +291,33 @@ export interface ProducerReach {
    * abstains everywhere, which is the failure ADR-0039 warns looks like success.
    */
   readonly pairs: readonly EnrolledDimension[];
+  /**
+   * The distinct entity NAMES, without their groups.
+   *
+   * ⚠️ **Names, deliberately, even though the pair is now group-scoped.** Every
+   * downstream key the producer writes carries the name and NOT the group —
+   * `brain_entity.entity`, the `entity_id` hash over `(workspace, entity,
+   * primary key)`, the fact subject surface, and the coverage evidence join that
+   * recovers an entity from `warehouse:<entity>@<instant>`. So this is the set
+   * those keys collide in, and it is the right denominator for ADR-0037 §4's
+   * fail-closed ambiguity rule.
+   *
+   * A name enrolled under TWO groups is therefore not two producible entities —
+   * it is one key with two meanings. {@link groupsByEntity} is what lets the
+   * producer see that and refuse it by name.
+   */
   readonly entities: readonly string[];
+  /**
+   * Entity name → every distinct group it is enrolled under.
+   *
+   * A map of SETS rather than one group per name, because the multi-group case
+   * is the one the producer has to be able to STATE. One group is the ordinary
+   * answer, and it tells the producer both which datasource to read and which
+   * scope to look the entity up in; more than one is a collision it refuses
+   * outright, naming the groups, because the keys it would write cannot tell the
+   * two apart.
+   */
+  readonly groupsByEntity: ReadonlyMap<string, ReadonlySet<string | null>>;
   /**
    * Entity → the dimension a human named as its canonical surface (#5043).
    *
@@ -232,7 +336,7 @@ export interface ProducerReach {
    * compiled — a caller could keep `pairs` and swap the membership test, which
    * is the exact split putting `has` on the object was meant to prevent.
    */
-  readonly has: (entity: string, dimension: string) => boolean;
+  readonly has: (entity: string, group: string | null, dimension: string) => boolean;
 }
 
 /**
@@ -248,8 +352,17 @@ export interface ProducerReach {
  */
 const PAIR_SEPARATOR = "\u0000";
 
-function pairKey(entity: string, dimension: string): string {
-  return `${entity}${PAIR_SEPARATOR}${dimension}`;
+/**
+ * THREE segments since #5286, and the group sits in the middle deliberately.
+ *
+ * The flat scope's `null` is written as the EMPTY segment, which is unambiguous
+ * for the separator's own reason: no stored group id can contain a NUL, so
+ * `("a", null, "b")` and `("a", "", "b")` are one key — and they are one row,
+ * because {@link normalizeEnrollmentPair} collapses `""` to `null` before
+ * anything reaches here.
+ */
+function pairKey(entity: string, group: string | null, dimension: string): string {
+  return `${entity}${PAIR_SEPARATOR}${group ?? ""}${PAIR_SEPARATOR}${dimension}`;
 }
 
 /**
@@ -265,6 +378,7 @@ function pairKey(entity: string, dimension: string): string {
  */
 type EnrollmentDbRow = {
   readonly entity: string;
+  readonly connection_group_id: string;
   readonly dimension: string;
   readonly enrolled_at: Date | string;
   readonly enrolled_by: string;
@@ -272,10 +386,10 @@ type EnrollmentDbRow = {
   readonly naming: boolean;
 };
 
-const LIST_SQL = `SELECT entity, dimension, enrolled_at, enrolled_by, note, naming
+const LIST_SQL = `SELECT entity, connection_group_id, dimension, enrolled_at, enrolled_by, note, naming
                     FROM brain_enrollment
                    WHERE workspace_id = $1
-                   ORDER BY entity, dimension`;
+                   ORDER BY entity, connection_group_id, dimension`;
 
 /**
  * Every enrollment in a workspace, for the admin surface.
@@ -289,6 +403,7 @@ export async function listEnrollments(workspaceId: string): Promise<readonly Enr
   const rows = await internalQuery<EnrollmentDbRow>(LIST_SQL, [workspaceId]);
   return rows.map((r) => ({
     entity: r.entity,
+    group: fromStoredGroup(r.connection_group_id),
     dimension: r.dimension,
     enrolledAt: r.enrolled_at instanceof Date ? r.enrolled_at.toISOString() : String(r.enrolled_at),
     enrolledBy: r.enrolled_by,
@@ -306,14 +421,24 @@ export async function listEnrollments(workspaceId: string): Promise<readonly Enr
  * with two WHERE clauses is how they start to.
  */
 export async function loadProducerReach(workspaceId: string): Promise<ProducerReach> {
-  const rows = await internalQuery<{ entity: string; dimension: string; naming: boolean }>(
-    `SELECT entity, dimension, naming FROM brain_enrollment
+  const rows = await internalQuery<{
+    entity: string;
+    connection_group_id: string;
+    dimension: string;
+    naming: boolean;
+  }>(
+    `SELECT entity, connection_group_id, dimension, naming FROM brain_enrollment
       WHERE workspace_id = $1
-      ORDER BY entity, dimension`,
+      ORDER BY entity, connection_group_id, dimension`,
     [workspaceId],
   );
   return makeProducerReach(
-    rows.map((r) => ({ entity: r.entity, dimension: r.dimension, naming: r.naming })),
+    rows.map((r) => ({
+      entity: r.entity,
+      group: fromStoredGroup(r.connection_group_id),
+      dimension: r.dimension,
+      naming: r.naming,
+    })),
   );
 }
 
@@ -333,13 +458,28 @@ export async function loadProducerReach(workspaceId: string): Promise<ProducerRe
  * by which anything can enroll.
  */
 export function makeProducerReach(pairs: readonly EnrolledDimension[]): ProducerReach {
-  const index = new Set(pairs.map((p) => pairKey(p.entity, p.dimension)));
+  const index = new Set(pairs.map((p) => pairKey(p.entity, p.group, p.dimension)));
   const entities = [...new Set(pairs.map((p) => p.entity))];
-  // FIRST wins, and the partial unique index is what makes that never matter:
-  // `uq_brain_enrollment_naming` admits at most one naming row per entity, so a
-  // second one here means the caller built a reach by hand. Taking the first
-  // (rather than the last) keeps the choice deterministic under the LIST order
-  // either way.
+  // Entity NAME → its groups. Built here rather than derived by each consumer,
+  // for the reason `has` is on the object: a caller computing it from `pairs`
+  // could compute it from a DIFFERENT read than the one the membership index
+  // came from, and disagree with itself about whether a name is ambiguous.
+  const groupsByEntity = new Map<string, Set<string | null>>();
+  for (const p of pairs) {
+    const groups = groupsByEntity.get(p.entity) ?? new Set<string | null>();
+    groups.add(p.group);
+    groupsByEntity.set(p.entity, groups);
+  }
+  // FIRST wins, keyed by entity NAME rather than by the triple — and the two
+  // reasons that made this safe are now three.
+  //
+  // `uq_brain_enrollment_naming` admits at most one naming row per entity PER
+  // GROUP (0205), so within one group a second one here means the caller built a
+  // reach by hand. ACROSS groups a second one is legal storage — and it never
+  // reaches a decision, because a name carrying more than one group is refused
+  // wholesale before the plan reads this map (`warehouse-producer.ts`'s
+  // `enrolled-in-two-groups` arm). Taking the first keeps the choice
+  // deterministic under the LIST order either way.
   const namingDimension = new Map<string, string>();
   for (const p of pairs) {
     if (p.naming && !namingDimension.has(p.entity)) namingDimension.set(p.entity, p.dimension);
@@ -347,8 +487,9 @@ export function makeProducerReach(pairs: readonly EnrolledDimension[]): Producer
   return {
     pairs,
     entities,
+    groupsByEntity,
     namingDimension,
-    has: (entity, dimension) => index.has(pairKey(entity, dimension)),
+    has: (entity, group, dimension) => index.has(pairKey(entity, group, dimension)),
   };
 }
 
@@ -372,11 +513,19 @@ export function makeProducerReach(pairs: readonly EnrolledDimension[]): Producer
 export async function enrollPair(params: {
   readonly workspaceId: string;
   readonly entity: string;
+  /**
+   * The connection group the entity is published under, or `null` for the flat
+   * scope. REQUIRED rather than optional (#5286): a default would let a caller
+   * that has a group forget to pass it, and the row it wrote would be a pair in
+   * the wrong scope — which stores cleanly and reaches nothing, the one failure
+   * shape this surface exists to make impossible.
+   */
+  readonly group: string | null;
   readonly dimension: string;
   readonly note: string | null;
   readonly actor: string;
 }): Promise<boolean> {
-  const pair = normalizeEnrollmentPair(params.entity, params.dimension);
+  const pair = normalizeEnrollmentPair(params.entity, params.dimension, params.group);
   const actor = params.actor.trim();
   if (actor === "") {
     throw new UnattributedEnrollmentError(
@@ -384,11 +533,18 @@ export async function enrollPair(params: {
     );
   }
   const rows = await internalQuery<{ entity: string }>(
-    `INSERT INTO brain_enrollment (workspace_id, entity, dimension, enrolled_by, note)
-     VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (workspace_id, entity, dimension) DO NOTHING
+    `INSERT INTO brain_enrollment (workspace_id, entity, connection_group_id, dimension, enrolled_by, note)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT (workspace_id, entity, connection_group_id, dimension) DO NOTHING
      RETURNING entity`,
-    [params.workspaceId, pair.entity, pair.dimension, actor, params.note],
+    [
+      params.workspaceId,
+      pair.entity,
+      toStoredGroup(pair.group),
+      pair.dimension,
+      actor,
+      params.note,
+    ],
   );
   // `DO NOTHING` returns no row for the conflict case, which is precisely the
   // no-op this boolean reports. No CTE is needed here (unlike the Slack
@@ -414,14 +570,23 @@ export async function enrollPair(params: {
 export async function unenrollPair(params: {
   readonly workspaceId: string;
   readonly entity: string;
+  /**
+   * ⚠️ **Scoping this verb is what stops it over-deleting (#5286).** Before the
+   * group joined the key, `(workspace, entity, dimension)` named at most one
+   * row; now it can name one per group, and a DELETE without this clause would
+   * remove every group's copy of the pair while reporting the ordinary
+   * `changed: true`. Narrowing is the less consequential direction, but silently
+   * narrowing MORE than the admin asked for is not.
+   */
+  readonly group: string | null;
   readonly dimension: string;
 }): Promise<boolean> {
-  const pair = normalizeEnrollmentPair(params.entity, params.dimension);
+  const pair = normalizeEnrollmentPair(params.entity, params.dimension, params.group);
   const rows = await internalQuery<{ entity: string }>(
     `DELETE FROM brain_enrollment
-      WHERE workspace_id = $1 AND entity = $2 AND dimension = $3
+      WHERE workspace_id = $1 AND entity = $2 AND connection_group_id = $3 AND dimension = $4
       RETURNING entity`,
-    [params.workspaceId, pair.entity, pair.dimension],
+    [params.workspaceId, pair.entity, toStoredGroup(pair.group), pair.dimension],
   );
   return rows.length > 0;
 }
@@ -487,6 +652,14 @@ export async function setNamingDimension(
   params: {
     readonly workspaceId: string;
     readonly entity: string;
+    /**
+     * Which of the entity's groups is being named. `uq_brain_enrollment_naming`
+     * is scoped `(workspace, entity, group)` since 0205, so the clear-then-set
+     * pair below has to be scoped the same way — otherwise naming one group's
+     * copy silently un-names another group's, and the un-naming is the half that
+     * clears entity-store entries.
+     */
+    readonly group: string | null;
     readonly dimension: string | null;
   },
   deps: NamingDimensionDeps = {},
@@ -497,17 +670,22 @@ export async function setNamingDimension(
   // copy of the trim/length/NUL checks for the clear verb, which is exactly the
   // divergence `normalizeEnrollmentPair`'s header records having already
   // happened once.
-  const { entity } = normalizeEnrollmentPair(params.entity, params.dimension ?? params.entity);
+  const { entity, group } = normalizeEnrollmentPair(
+    params.entity,
+    params.dimension ?? params.entity,
+    params.group,
+  );
   const dimension =
     params.dimension === null
       ? null
-      : normalizeEnrollmentPair(params.entity, params.dimension).dimension;
+      : normalizeEnrollmentPair(params.entity, params.dimension, params.group).dimension;
+  const storedGroup = toStoredGroup(group);
 
   if (dimension !== null) {
     const enrolled = await internalQuery<{ entity: string }>(
       `SELECT entity FROM brain_enrollment
-        WHERE workspace_id = $1 AND entity = $2 AND dimension = $3`,
-      [params.workspaceId, entity, dimension],
+        WHERE workspace_id = $1 AND entity = $2 AND connection_group_id = $3 AND dimension = $4`,
+      [params.workspaceId, entity, storedGroup, dimension],
     );
     if (enrolled.length === 0) {
       throw new InvalidEnrollmentPairError(
@@ -535,18 +713,19 @@ export async function setNamingDimension(
     const cleared = await tx.query(
       `UPDATE brain_enrollment
           SET naming = false
-        WHERE workspace_id = $1 AND entity = $2 AND naming
-          AND dimension IS DISTINCT FROM $3::text
+        WHERE workspace_id = $1 AND entity = $2 AND connection_group_id = $3 AND naming
+          AND dimension IS DISTINCT FROM $4::text
         RETURNING dimension`,
-      [params.workspaceId, entity, dimension],
+      [params.workspaceId, entity, storedGroup, dimension],
     );
     if (dimension === null) return cleared.rows.length > 0;
     const set = await tx.query(
       `UPDATE brain_enrollment
           SET naming = true
-        WHERE workspace_id = $1 AND entity = $2 AND dimension = $3 AND NOT naming
+        WHERE workspace_id = $1 AND entity = $2 AND connection_group_id = $3 AND dimension = $4
+          AND NOT naming
         RETURNING dimension`,
-      [params.workspaceId, entity, dimension],
+      [params.workspaceId, entity, storedGroup, dimension],
     );
     return cleared.rows.length > 0 || set.rows.length > 0;
   });

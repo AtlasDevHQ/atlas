@@ -316,10 +316,16 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       // exercised in their false state — hardcoding `naming: false` on either
       // side passed the whole suite. Two, not one, because the two arriving
       // flags take DIFFERENT paths at the destination (dropped vs applied).
-      `INSERT INTO brain_enrollment (workspace_id, entity, dimension, enrolled_at, enrolled_by, note, naming)
-       VALUES ($1, 'accounts', 'arr_band', '2026-03-01T00:00:00Z', 'user-1', 'revenue tiering', true),
-              ($1, 'accounts', 'status', '2026-03-02T00:00:00Z', 'user-1', NULL, false),
-              ($1, 'subscriptions', 'plan', '2026-03-03T00:00:00Z', 'user-2', NULL, true)`,
+      // ⚠️ `connection_group_id` seeded NON-EMPTY on two of the three (#5286),
+      // on the same reasoning the `naming` note above records: with every row
+      // flat-scoped, the exporter's read, the wire field and the importer's bind
+      // are only ever exercised in their `''`/`null` state, and hardcoding the
+      // flat scope on either side passes the whole suite. The third stays flat so
+      // both spellings travel on one bundle.
+      `INSERT INTO brain_enrollment (workspace_id, entity, connection_group_id, dimension, enrolled_at, enrolled_by, note, naming)
+       VALUES ($1, 'accounts', 'g-eu', 'arr_band', '2026-03-01T00:00:00Z', 'user-1', 'revenue tiering', true),
+              ($1, 'accounts', 'g-eu', 'status', '2026-03-02T00:00:00Z', 'user-1', NULL, false),
+              ($1, 'subscriptions', '', 'plan', '2026-03-03T00:00:00Z', 'user-2', NULL, true)`,
       [SOURCE_ORG],
     );
 
@@ -511,9 +517,14 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       //   would be lost with no local decision to protect — the case the
       //   local-wins comment does not cover.
       await pool.query(
-        `INSERT INTO brain_enrollment (workspace_id, entity, dimension, enrolled_at, enrolled_by, note, naming)
-         VALUES ($1, 'accounts', 'status', '2026-07-01T00:00:00Z', 'target-admin', 'decided here first', true),
-                ($1, 'subscriptions', 'plan', '2026-07-03T00:00:00Z', 'target-admin', NULL, false)`,
+        // The groups MATCH the arriving rows' (#5286) — that is what makes these
+        // the same pairs, so the conflict arm and the naming-policy arms below
+        // still fire. A destination row under a DIFFERENT group would be a
+        // different enrollment, and the whole section would silently become a
+        // test of the insert path instead.
+        `INSERT INTO brain_enrollment (workspace_id, entity, connection_group_id, dimension, enrolled_at, enrolled_by, note, naming)
+         VALUES ($1, 'accounts', 'g-eu', 'status', '2026-07-01T00:00:00Z', 'target-admin', 'decided here first', true),
+                ($1, 'subscriptions', '', 'plan', '2026-07-03T00:00:00Z', 'target-admin', NULL, false)`,
         [TARGET_ORG],
       );
 
@@ -639,13 +650,14 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       // what make the two arms distinguishable at all.
       const targetEnrollments = await pool.query<{
         entity: string;
+        connection_group_id: string;
         dimension: string;
         enrolled_at: Date;
         enrolled_by: string;
         note: string | null;
         naming: boolean;
       }>(
-        `SELECT entity, dimension, enrolled_at, enrolled_by, note, naming
+        `SELECT entity, connection_group_id, dimension, enrolled_at, enrolled_by, note, naming
            FROM brain_enrollment WHERE workspace_id = $1 ORDER BY entity, dimension`,
         [TARGET_ORG],
       );
@@ -697,6 +709,10 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
       ).toEqual([
         {
           entity: "accounts",
+          // The SOURCE's group, carried. Dropped on the wire, this row lands
+          // flat-scoped — a pair the destination's producer looks up in a scope
+          // that does not hold it, which stores cleanly and reaches nothing.
+          connection_group_id: "g-eu",
           dimension: "arr_band",
           // The SOURCE's timestamp, carried. A default-fired `now()` lands
           // today's date here, which is the silent audit rewrite.
@@ -711,6 +727,7 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         // own row in all three columns, untouched by the arriving one.
         {
           entity: "accounts",
+          connection_group_id: "g-eu",
           dimension: "status",
           enrolled_at: "2026-07-01T00:00:00.000Z",
           enrolled_by: "target-admin",
@@ -721,6 +738,9 @@ describeIfPg("region-migration bundle round-trip (real Postgres, #4460)", () => 
         },
         {
           entity: "subscriptions",
+          // The flat scope travels as `''` at both ends. Both spellings are on
+          // this one bundle, so an importer that hardcoded either fails here.
+          connection_group_id: "",
           dimension: "plan",
           // The DESTINATION's row — `DO NOTHING` kept its author and timestamp.
           enrolled_at: "2026-07-03T00:00:00.000Z",

@@ -1601,7 +1601,15 @@ describeIfPg("coverage denominator snapshots (#5213, ADR-0041)", () => {
     };
     const deps = {
       loadEnrollableEntities: async () =>
-        Object.keys(SEMANTIC_LAYER).map((name) => ({ name, table: name, description: null })),
+        Object.keys(SEMANTIC_LAYER).map((name) => ({
+          name,
+          // The flat scope. This suite's subject is the DENOMINATOR, not group
+          // routing — the group-scoped cases live in `coverage-enumeration`'s
+          // own suite beside the unit-id argument they exercise.
+          group: null,
+          table: name,
+          description: null,
+        })),
       loadEnrollableDimensions: async (_ws: string, entity: string) =>
         (SEMANTIC_LAYER[entity] ?? null)?.map((name) => ({
           name,
@@ -1611,11 +1619,11 @@ describeIfPg("coverage denominator snapshots (#5213, ADR-0041)", () => {
         })) ?? null,
     };
 
-    async function seedEnrollment(entity: string, dimension: string) {
+    async function seedEnrollment(entity: string, dimension: string, group = "") {
       await pool.query(
-        `INSERT INTO brain_enrollment (workspace_id, entity, dimension, enrolled_by)
-         VALUES ($1, $2, $3, 'user-1')`,
-        [WORKSPACE, entity, dimension],
+        `INSERT INTO brain_enrollment (workspace_id, entity, connection_group_id, dimension, enrolled_by)
+         VALUES ($1, $2, $3, $4, 'user-1')`,
+        [WORKSPACE, entity, group, dimension],
       );
     }
 
@@ -1654,6 +1662,62 @@ describeIfPg("coverage denominator snapshots (#5213, ADR-0041)", () => {
       expect(outcome.units.length).toBe(4);
       expect(outcome.units.filter((u) => u.inPerimeter).length).toBe(1);
       expect(outcome.units.filter((u) => u.newestEvidenceAt !== null).length).toBe(0);
+    });
+
+    it("one name in two connection groups is ONE survey unit per dimension (#5286)", async () => {
+      // ⚠️ The roster is NAME-keyed while the entity list is now `(name, group)`,
+      // and the asymmetry is deliberate: the evidence join recovers its entity
+      // from a snapshot episode's `source_id` (`warehouse:<entity>@<instant>`),
+      // which carries no group — as does every other key the producer writes. A
+      // group-scoped unit id would key a roster nothing could ever join evidence
+      // to, so every enrolled pair would read as producing nothing on the page
+      // whose whole job is telling those two states apart.
+      //
+      // What that costs is this: two groups' same-named entities share their
+      // units. Pushing both would write two rows for one `(workspace, class,
+      // unit)` — a primary-key conflict that fails the cycle, or a denominator
+      // that double-counts.
+      const twoGroups = {
+        ...deps,
+        loadEnrollableEntities: async () => [
+          { name: "plans", group: "g-eu", table: "plans", description: null },
+          { name: "plans", group: "g-us", table: "plans", description: null },
+        ],
+        loadEnrollableDimensions: async (_ws: string, _entity: string, group?: string | null) =>
+          // The two groups' copies declare DIFFERENT columns, which is the whole
+          // reason each is read from its own group's YAML. The union is what the
+          // producer could write about that name, and the union is the honest
+          // denominator.
+          (group === "g-eu"
+            ? ["status", "tier"]
+            : ["status", "region"]
+          ).map((name) => ({ name, kind: "dimension" as const, type: null, description: null })),
+      };
+
+      // Enrolled in ONE of the two groups. `inPerimeter` is "enrolled in at
+      // least one", because that is what makes the producer able to write about
+      // the name at all.
+      await seedEnrollment("plans", "status", "g-us");
+
+      const outcome = await enumerateWarehouseCoverage({ workspaceId: WORKSPACE, deps: twoGroups });
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+
+      // THREE units, not four: `status` appears in both groups and contributes
+      // once, while `tier` and `region` each contribute their own.
+      expect(outcome.units.map((u) => u.unitId).toSorted()).toEqual(
+        [
+          warehouseSurveyUnitId("plans", "region"),
+          warehouseSurveyUnitId("plans", "status"),
+          warehouseSurveyUnitId("plans", "tier"),
+        ].toSorted(),
+      );
+      // No duplicate ids at all — the assertion that would fail on a cycle that
+      // pushed one unit per (group, dimension).
+      expect(new Set(outcome.units.map((u) => u.unitId)).size).toBe(outcome.units.length);
+      expect(outcome.units.filter((u) => u.inPerimeter).map((u) => u.label)).toEqual([
+        "plans.status",
+      ]);
     });
 
     it("an ENROLLED pair with no fact yet is NOT surveyed — green is evidence", async () => {
@@ -1753,6 +1817,7 @@ describeIfPg("coverage denominator snapshots (#5213, ADR-0041)", () => {
     it("MUTATION — an entity list past the bound is TRUNCATED with a mark, not silently", async () => {
       const wide = Array.from({ length: WAREHOUSE_COVERAGE_MAX_ENTITIES + 3 }, (_v, i) => ({
         name: `entity_${String(i).padStart(4, "0")}`,
+        group: null,
         table: "t",
         description: null,
       }));

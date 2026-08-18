@@ -395,6 +395,143 @@ describeIfPg("migrate-pg (real Postgres)", () => {
   }, PG_TEST_TIMEOUT_MS);
 
   // ---------------------------------------------------------------------------
+  // 0205 — brain_enrollment.connection_group_id (#5286)
+  // ---------------------------------------------------------------------------
+
+  it("0205: an enrollment can name its connection group, and the pair alone is no longer the key", async () => {
+    const orgId = `org-5286-${Date.now()}`;
+    // ⚠️ TWO rows differing only in their group. Under the pre-0205 key
+    // `(workspace_id, entity, dimension)` the second raises 23505 — which is the
+    // defect stated as a constraint violation: the workspace holds two published
+    // `test_orders`, and its enrollment table could represent only one of them.
+    await pool.query(
+      `INSERT INTO brain_enrollment (workspace_id, entity, connection_group_id, dimension, enrolled_by)
+       VALUES ($1, 'test_orders', 'g-clickhouse', 'status', 'user-1'),
+              ($1, 'test_orders', 'g-mysql', 'status', 'user-1')`,
+      [orgId],
+    );
+
+    const rows = await pool.query<{ connection_group_id: string }>(
+      `SELECT connection_group_id FROM brain_enrollment
+        WHERE workspace_id = $1 ORDER BY connection_group_id`,
+      [orgId],
+    );
+    expect(rows.rows.map((r) => r.connection_group_id)).toEqual(["g-clickhouse", "g-mysql"]);
+
+    // The naming index is scoped by group too, so each copy may name its own
+    // canonical surface. At `(workspace_id, entity)` this second UPDATE is a
+    // 23505 — an index refusing an act with no sentence attached.
+    await pool.query(
+      `UPDATE brain_enrollment SET naming = true
+        WHERE workspace_id = $1 AND connection_group_id = 'g-clickhouse'`,
+      [orgId],
+    );
+    await pool.query(
+      `UPDATE brain_enrollment SET naming = true
+        WHERE workspace_id = $1 AND connection_group_id = 'g-mysql'`,
+      [orgId],
+    );
+    const named = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM brain_enrollment WHERE workspace_id = $1 AND naming`,
+      [orgId],
+    );
+    expect(named.rows[0]?.count).toBe("2");
+
+    // ...and it is still AT MOST ONE per (entity, group): two naming rows for
+    // one group is the non-deterministic canonical surface the index exists to
+    // forbid, and widening it must not have removed that.
+    await pool.query(
+      `INSERT INTO brain_enrollment (workspace_id, entity, connection_group_id, dimension, enrolled_by)
+       VALUES ($1, 'test_orders', 'g-mysql', 'customer_name', 'user-1')`,
+      [orgId],
+    );
+    await expect(
+      pool.query(
+        `UPDATE brain_enrollment SET naming = true
+          WHERE workspace_id = $1 AND connection_group_id = 'g-mysql' AND dimension = 'customer_name'`,
+        [orgId],
+      ),
+    ).rejects.toThrow(/uq_brain_enrollment_naming/);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0205: the backfill resolves a legacy row to its entity's group, and guesses at nothing else", async () => {
+    // A clean forward run has no pre-existing rows, so the exact backfill is
+    // exercised here against real Postgres — `0149`'s precedent above, with the
+    // same one divergence: a `workspace_id`/`org_id` filter is added so the
+    // statement cannot reach another test's rows.
+    //
+    // ⚠️ What this protects is not the column, it is the ADVICE. A legacy row
+    // left flat-scoped in a group-scoped workspace is looked up in the flat scope,
+    // found nowhere, and refused `entity-not-published` — telling an admin to
+    // publish an entity that is already published, forever.
+    const stamp = Date.now();
+    const orgId = `org-5286-backfill-${stamp}`;
+    const yaml = "table: t";
+    await pool.query(
+      `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
+       VALUES
+         -- Exactly one published group → resolvable.
+         ($1, 'entity', 'accounts', $2, 'g-eu', 'published'),
+         -- Two groups → ambiguous, and the migration must not pick one.
+         ($1, 'entity', 'test_orders', $2, 'g-clickhouse', 'published'),
+         ($1, 'entity', 'test_orders', $2, 'g-mysql', 'published'),
+         -- One group PLUS a flat-scoped row of the same name (the __global__
+         -- demo shape). Also ambiguous: the flat row is a real candidate.
+         ($1, 'entity', 'plans', $2, 'g-eu', 'published'),
+         ($1, 'entity', 'plans', $2, NULL, 'published'),
+         -- Published under one group, but the enrollment's own name is a DRAFT
+         -- there — drafts are not what the producer reads, so it stays flat.
+         ($1, 'entity', 'drafts_only', $2, 'g-eu', 'draft')`,
+      [orgId, yaml],
+    );
+    await pool.query(
+      `INSERT INTO brain_enrollment (workspace_id, entity, connection_group_id, dimension, enrolled_by)
+       VALUES ($1, 'accounts', '', 'arr_band', 'user-1'),
+              ($1, 'test_orders', '', 'status', 'user-1'),
+              ($1, 'plans', '', 'tier', 'user-1'),
+              ($1, 'drafts_only', '', 'x', 'user-1')`,
+      [orgId],
+    );
+
+    // The exact backfill from 0205.
+    await pool.query(
+      `UPDATE brain_enrollment e
+          SET connection_group_id = resolved.connection_group_id
+         FROM (
+           SELECT org_id, name, MIN(connection_group_id) AS connection_group_id
+             FROM semantic_entities
+            WHERE entity_type = 'entity' AND status = 'published'
+            GROUP BY org_id, name
+           HAVING COUNT(*) FILTER (WHERE connection_group_id IS NULL) = 0
+              AND COUNT(DISTINCT connection_group_id) = 1
+         ) resolved
+        WHERE e.workspace_id = resolved.org_id
+          AND e.entity = resolved.name
+          AND e.connection_group_id = ''
+          AND e.workspace_id = $1`,
+      [orgId],
+    );
+
+    const after = await pool.query<{ entity: string; connection_group_id: string }>(
+      `SELECT entity, connection_group_id FROM brain_enrollment
+        WHERE workspace_id = $1 ORDER BY entity`,
+      [orgId],
+    );
+    expect(after.rows).toEqual([
+      // Resolved — one published group, so what the row MEANT is knowable.
+      { entity: "accounts", connection_group_id: "g-eu" },
+      // A draft is not published, so nothing resolves it. Flat, and the producer
+      // will say the entity is not published — which is true.
+      { entity: "drafts_only", connection_group_id: "" },
+      // Ambiguous via a flat-scoped sibling. The migration does not guess.
+      { entity: "plans", connection_group_id: "" },
+      // Ambiguous across two groups — staging's own shape. Left flat, where the
+      // producer's `ambiguous-group` refusal names the collision.
+      { entity: "test_orders", connection_group_id: "" },
+    ]);
+  }, PG_TEST_TIMEOUT_MS);
+
+  // ---------------------------------------------------------------------------
   // proactive_pauses (#2295)
   // ---------------------------------------------------------------------------
 

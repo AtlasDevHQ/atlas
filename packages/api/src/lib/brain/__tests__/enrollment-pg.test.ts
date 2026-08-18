@@ -46,6 +46,7 @@ import {
   loadProducerReach,
   makeProducerReach,
   normalizeEnrollmentPair,
+  setNamingDimension,
   unenrollPair,
 } from "@atlas/api/lib/brain/enrollment";
 
@@ -101,12 +102,15 @@ describeIfPg("enrollment — the warehouse producer's reach (#5196)", () => {
     workspaceId: string,
     entity: string,
     dimension: string,
-    enrolledBy = "user-1",
+    // OPTIONS rather than two more positionals: `group` defaults to the flat
+    // scope, which is what every pre-#5286 case in this file means, and the
+    // group-scoped cases below say so by name instead of by position.
+    { group = null, enrolledBy = "user-1" }: { group?: string | null; enrolledBy?: string } = {},
   ) {
     await pool.query(
-      `INSERT INTO brain_enrollment (workspace_id, entity, dimension, enrolled_by)
-       VALUES ($1, $2, $3, $4)`,
-      [workspaceId, entity, dimension, enrolledBy],
+      `INSERT INTO brain_enrollment (workspace_id, entity, connection_group_id, dimension, enrolled_by)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [workspaceId, entity, group ?? "", dimension, enrolledBy],
     );
   }
 
@@ -169,11 +173,11 @@ describeIfPg("enrollment — the warehouse producer's reach (#5196)", () => {
       const reach = await loadProducerReach(WORKSPACE);
 
       // NEGATIVE — `accounts / status` was never enrolled.
-      expect(reach.has("accounts", "status")).toBe(false);
+      expect(reach.has("accounts", null, "status")).toBe(false);
       // POSITIVE CONTROL, from the same call. Without this the assertion above
       // is satisfied by a reach that is empty for everything.
-      expect(reach.has("accounts", "arr_band")).toBe(true);
-      expect(reach.has("subscriptions", "plan")).toBe(true);
+      expect(reach.has("accounts", null, "arr_band")).toBe(true);
+      expect(reach.has("subscriptions", null, "plan")).toBe(true);
 
       expect(reach.pairs).toHaveLength(3);
       expect(reach.entities).toEqual(["accounts", "subscriptions"]);
@@ -192,8 +196,8 @@ describeIfPg("enrollment — the warehouse producer's reach (#5196)", () => {
       // A reach keyed on the entity would hand the producer every column of
       // every enrolled table — the sweep ADR-0039 exists to prevent, rebuilt one
       // column of the primary key at a time.
-      expect(reach.has("accounts", "status")).toBe(false);
-      expect(reach.has("accounts", "arr_band")).toBe(true);
+      expect(reach.has("accounts", null, "status")).toBe(false);
+      expect(reach.has("accounts", null, "arr_band")).toBe(true);
       // And the entity list still names it once. `entities` exists so the
       // producer can evaluate ADR-0037 §4's ambiguity rule across the enrolled
       // set, so an entity dropping out of it because only one of its dimensions
@@ -211,10 +215,10 @@ describeIfPg("enrollment — the warehouse producer's reach (#5196)", () => {
 
       const reach = await loadProducerReach(WORKSPACE);
 
-      expect(reach.has("accounts", "arr_band")).toBe(false);
+      expect(reach.has("accounts", null, "arr_band")).toBe(false);
       // Positive control on the same call — otherwise a reach scoped to a
       // workspace that does not exist would pass.
-      expect(reach.has("subscriptions", "plan")).toBe(true);
+      expect(reach.has("subscriptions", null, "plan")).toBe(true);
     },
     PG_TEST_TIMEOUT_MS,
   );
@@ -231,8 +235,8 @@ describeIfPg("enrollment — the warehouse producer's reach (#5196)", () => {
 
       const reach = await loadProducerReach(WORKSPACE);
 
-      expect(reach.has("customer", "account tier")).toBe(false);
-      expect(reach.has("customer account", "tier")).toBe(true);
+      expect(reach.has("customer", null, "account tier")).toBe(false);
+      expect(reach.has("customer account", null, "tier")).toBe(true);
     },
     PG_TEST_TIMEOUT_MS,
   );
@@ -248,6 +252,7 @@ describeIfPg("enrollment — the warehouse producer's reach (#5196)", () => {
         await enrollPair({
           workspaceId: WORKSPACE,
           entity: "accounts",
+          group: null,
           dimension: "arr_band",
           note: "revenue tiering",
           actor: "user-1",
@@ -258,6 +263,7 @@ describeIfPg("enrollment — the warehouse producer's reach (#5196)", () => {
         await enrollPair({
           workspaceId: WORKSPACE,
           entity: "accounts",
+          group: null,
           dimension: "arr_band",
           note: "someone else's reason",
           actor: "user-2",
@@ -287,19 +293,19 @@ describeIfPg("enrollment — the warehouse producer's reach (#5196)", () => {
       await seedEnrollment(WORKSPACE, "accounts", "tier");
 
       expect(
-        await unenrollPair({ workspaceId: WORKSPACE, entity: "accounts", dimension: "arr_band" }),
+        await unenrollPair({ workspaceId: WORKSPACE, entity: "accounts", group: null, dimension: "arr_band" }),
       ).toBe(true);
       // Second call: nothing to remove, and that is a no-op rather than an
       // error — the caller's intent already holds.
       expect(
-        await unenrollPair({ workspaceId: WORKSPACE, entity: "accounts", dimension: "arr_band" }),
+        await unenrollPair({ workspaceId: WORKSPACE, entity: "accounts", group: null, dimension: "arr_band" }),
       ).toBe(false);
 
       const reach = await loadProducerReach(WORKSPACE);
-      expect(reach.has("accounts", "arr_band")).toBe(false);
+      expect(reach.has("accounts", null, "arr_band")).toBe(false);
       // The sibling survives. Without this, a `DELETE` missing its `dimension`
       // predicate — which would clear the whole entity — passes.
-      expect(reach.has("accounts", "tier")).toBe(true);
+      expect(reach.has("accounts", null, "tier")).toBe(true);
     },
     PG_TEST_TIMEOUT_MS,
   );
@@ -313,6 +319,7 @@ describeIfPg("enrollment — the warehouse producer's reach (#5196)", () => {
       await enrollPair({
         workspaceId: WORKSPACE,
         entity: "accounts",
+        group: null,
         dimension: "arr_band",
         note: null,
         actor: "user-1",
@@ -322,6 +329,7 @@ describeIfPg("enrollment — the warehouse producer's reach (#5196)", () => {
         enrollPair({
           workspaceId: WORKSPACE,
           entity: "accounts",
+          group: null,
           dimension: "   ",
           note: null,
           actor: "user-1",
@@ -340,6 +348,7 @@ describeIfPg("enrollment — the warehouse producer's reach (#5196)", () => {
         enrollPair({
           workspaceId: WORKSPACE,
           entity: "accounts",
+          group: null,
           dimension: "tier",
           note: null,
           actor: "  ",
@@ -363,6 +372,7 @@ describeIfPg("enrollment — the warehouse producer's reach (#5196)", () => {
         enrollPair({
           workspaceId: WORKSPACE,
           entity: "accounts",
+          group: null,
           dimension: "a".repeat(ENROLLMENT_NAME_MAX + 1),
           note: null,
           actor: "user-1",
@@ -380,11 +390,11 @@ describeIfPg("enrollment — the warehouse producer's reach (#5196)", () => {
       // only door between a caller's NUL and a 22021 surfacing as a generic 500.
       // It is also the assumption `PAIR_SEPARATOR` rests on.
       await expect(
-        unenrollPair({ workspaceId: WORKSPACE, entity: "acc\u0000ounts", dimension: "arr_band" }),
+        unenrollPair({ workspaceId: WORKSPACE, entity: "acc\u0000ounts", group: null, dimension: "arr_band" }),
       ).rejects.toBeInstanceOf(InvalidEnrollmentPairError);
       // Control: the same verb on a clean pair answers rather than throwing.
       expect(
-        await unenrollPair({ workspaceId: WORKSPACE, entity: "accounts", dimension: "arr_band" }),
+        await unenrollPair({ workspaceId: WORKSPACE, entity: "accounts", group: null, dimension: "arr_band" }),
       ).toBe(false);
     },
     PG_TEST_TIMEOUT_MS,
@@ -401,10 +411,10 @@ describeIfPg("enrollment — the warehouse producer's reach (#5196)", () => {
       const loaded = await loadProducerReach(WORKSPACE);
       const derived = makeProducerReach(loaded.pairs);
       expect(derived.entities).toEqual(loaded.entities);
-      expect(derived.has("accounts", "arr_band")).toBe(loaded.has("accounts", "arr_band"));
+      expect(derived.has("accounts", null, "arr_band")).toBe(loaded.has("accounts", null, "arr_band"));
       // Both arms, so a `has` hardcoded either way goes red on one of them.
-      expect(derived.has("accounts", "status")).toBe(false);
-      expect(derived.has("accounts", "arr_band")).toBe(true);
+      expect(derived.has("accounts", null, "status")).toBe(false);
+      expect(derived.has("accounts", null, "arr_band")).toBe(true);
     },
     PG_TEST_TIMEOUT_MS,
   );
@@ -434,6 +444,189 @@ describeIfPg("enrollment — the warehouse producer's reach (#5196)", () => {
   );
 
   // -------------------------------------------------------------------------
+  // (c) The connection group is part of the KEY (#5286)
+  //
+  // This section needs a real Postgres more than any other in the file, because
+  // what it asserts is a PRIMARY KEY. An in-memory double keyed by whatever its
+  // author had in mind agrees with itself by construction — the table is the
+  // only thing that can disagree, and before 0205 it did: the second INSERT
+  // below was an `ON CONFLICT DO NOTHING` no-op that reported `changed: false`,
+  // and the admin who wrote it was told their enrollment already existed.
+  // -------------------------------------------------------------------------
+
+  it(
+    "the same pair in two connection groups is TWO enrollments, not one",
+    async () => {
+      // The staging shape, minimally: one entity NAME published under two
+      // groups. They are two different tables in two different databases that
+      // happen to share a label.
+      expect(
+        await enrollPair({
+          workspaceId: WORKSPACE,
+          entity: "test_orders",
+          group: "g-clickhouse",
+          dimension: "status",
+          note: null,
+          actor: "user-1",
+        }),
+      ).toBe(true);
+
+      // ⚠️ The assertion this whole change exists for. Before 0205 this returned
+      // `false` — the row conflicted with the one above on `(workspace, entity,
+      // dimension)` and was silently dropped, so the admin was told the pair was
+      // "already enrolled" and the group they picked reached nothing.
+      expect(
+        await enrollPair({
+          workspaceId: WORKSPACE,
+          entity: "test_orders",
+          group: "g-mysql",
+          dimension: "status",
+          note: null,
+          actor: "user-1",
+        }),
+      ).toBe(true);
+
+      const rows = await listEnrollments(WORKSPACE);
+      expect(rows).toHaveLength(2);
+      expect(
+        rows.map((r) => r.group ?? "").toSorted((a, b) => a.localeCompare(b)),
+      ).toEqual(["g-clickhouse", "g-mysql"]);
+
+      // Re-enrolling ONE of them is still the idempotent no-op it always was —
+      // the control that keeps "two rows" from being satisfied by a key that
+      // stopped deduplicating at all.
+      expect(
+        await enrollPair({
+          workspaceId: WORKSPACE,
+          entity: "test_orders",
+          group: "g-mysql",
+          dimension: "status",
+          note: null,
+          actor: "user-2",
+        }),
+      ).toBe(false);
+      expect(await listEnrollments(WORKSPACE)).toHaveLength(2);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "un-enrolling one group's copy leaves the other group's standing",
+    async () => {
+      // ⚠️ The over-DELETE. `unenrollPair`'s statement used to match
+      // `(workspace, entity, dimension)`, which after 0205 names one row PER
+      // GROUP — so an un-scoped DELETE would remove both while reporting the
+      // ordinary `changed: true`. Narrowing the producer's reach is the less
+      // consequential direction; narrowing it further than the admin asked is
+      // not, and it is silent.
+      await seedEnrollment(WORKSPACE, "test_orders", "status", { group: "g-clickhouse" });
+      await seedEnrollment(WORKSPACE, "test_orders", "status", { group: "g-mysql" });
+
+      expect(
+        await unenrollPair({
+          workspaceId: WORKSPACE,
+          entity: "test_orders",
+          group: "g-mysql",
+          dimension: "status",
+        }),
+      ).toBe(true);
+
+      const left = await listEnrollments(WORKSPACE);
+      expect(left).toHaveLength(1);
+      expect(left[0]?.group).toBe("g-clickhouse");
+
+      // And the reach agrees, from the same read the producer takes: the
+      // surviving triple is in it and the removed one is not. `has` is keyed on
+      // all three parts, so a membership index that dropped the group would
+      // answer `true` for both.
+      const reach = await loadProducerReach(WORKSPACE);
+      expect(reach.has("test_orders", "g-clickhouse", "status")).toBe(true);
+      expect(reach.has("test_orders", "g-mysql", "status")).toBe(false);
+      // The NAME appears once in `entities` either way — that list is the set the
+      // producer's downstream keys collide in, and those keys carry no group.
+      expect(reach.entities).toEqual(["test_orders"]);
+      expect([...(reach.groupsByEntity.get("test_orders") ?? [])]).toEqual(["g-clickhouse"]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "each group's copy carries its OWN naming dimension",
+    async () => {
+      // `uq_brain_enrollment_naming` is scoped `(workspace, entity, group)` since
+      // 0205. Left at `(workspace, entity)` the second call here raises 23505 —
+      // an index refusing an act with no sentence attached, where the producer
+      // refuses the same collision and says why.
+      for (const group of ["g-clickhouse", "g-mysql"]) {
+        await enrollPair({
+          workspaceId: WORKSPACE,
+          entity: "test_orders",
+          group,
+          dimension: "customer_name",
+          note: null,
+          actor: "user-1",
+        });
+        expect(
+          await setNamingDimension({
+            workspaceId: WORKSPACE,
+            entity: "test_orders",
+            group,
+            dimension: "customer_name",
+          }),
+        ).toBe(true);
+      }
+
+      const rows = await listEnrollments(WORKSPACE);
+      expect(rows.filter((r) => r.naming)).toHaveLength(2);
+
+      // ⚠️ And CLEARING one leaves the other named. The clear-then-set pair
+      // inside `setNamingDimension` is scoped by group for exactly this: unscoped,
+      // naming one group's copy silently un-names the other's, and the un-naming
+      // half is what wipes that entity's entity-store entries on the next run.
+      expect(
+        await setNamingDimension({
+          workspaceId: WORKSPACE,
+          entity: "test_orders",
+          group: "g-mysql",
+          dimension: null,
+        }),
+      ).toBe(true);
+
+      const after = await listEnrollments(WORKSPACE);
+      expect(after.filter((r) => r.naming).map((r) => r.group)).toEqual(["g-clickhouse"]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "the flat scope has ONE spelling — `null` and `''` are the same row",
+    async () => {
+      // `''` is the storage sentinel and `null` is the TypeScript spelling, and
+      // the round trip has to be total: two spellings of the flat scope would be
+      // two rows under the new key, and the second would be an enrollment the
+      // admin never made against a scope that does not exist.
+      await seedEnrollment(WORKSPACE, "accounts", "arr_band");
+      expect(
+        await enrollPair({
+          workspaceId: WORKSPACE,
+          entity: "accounts",
+          group: null,
+          dimension: "arr_band",
+          note: null,
+          actor: "user-1",
+        }),
+      ).toBe(false);
+
+      const rows = await listEnrollments(WORKSPACE);
+      expect(rows).toHaveLength(1);
+      // Read back as `null`, never as `""` — a `""` on the wire would reach the
+      // admin page as a group whose name is blank.
+      expect(rows[0]?.group).toBeNull();
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  // -------------------------------------------------------------------------
   // (b) Un-enrolling is not an invalidation authority
   // -------------------------------------------------------------------------
 
@@ -456,6 +649,7 @@ describeIfPg("enrollment — the warehouse producer's reach (#5196)", () => {
       const removed = await unenrollPair({
         workspaceId: WORKSPACE,
         entity: "accounts",
+        group: null,
         dimension: "arr_band",
       });
 

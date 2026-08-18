@@ -858,7 +858,7 @@ describe("warehouse cadence — the whole-reach decision", () => {
     ["accounts", yaml("accounts")],
     ["contracts", yaml("contracts")],
   ]);
-  const pair = (entity: string) => ({ entity, dimension: "status", naming: false });
+  const pair = (entity: string) => ({ entity, group: null, dimension: "status", naming: false });
 
   it("the FULL reach refuses `status` on both entities", () => {
     const plan = planWarehouseEmission(

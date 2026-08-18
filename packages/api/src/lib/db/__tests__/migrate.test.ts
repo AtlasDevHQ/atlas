@@ -386,7 +386,18 @@ describe("runMigrations", () => {
     //   delete of the `brain_vocabulary_edge` rows they describe. NULL means
     //   UNKNOWN, not zero: a row written before this migration, or a source
     //   build that never asked the target) = 205.
-    expect(count).toBe(205);
+    //   Plus 0205 (brain_enrollment_connection_group — #5286: an enrollment
+    //   could not say WHICH entity it meant. `semantic_entities`' natural key
+    //   has carried `connection_group_id` since 0063, so an entity NAME is
+    //   unique only within a group — and `brain_enrollment`'s key was the bare
+    //   pair. In a multi-group workspace the picker collapsed the duplicates to
+    //   one option, the write stored cleanly, and the producer refused it on
+    //   every run: "stores cleanly, reaches nothing, looks exactly like
+    //   success", which is the failure that surface exists to prevent. Adds the
+    //   column, resolves each existing row to its entity's group where the
+    //   published layer names exactly one, and widens both the primary key and
+    //   the naming unique index) = 206.
+    expect(count).toBe(206);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -620,6 +631,7 @@ describe("runMigrations", () => {
         "0202_brain_coverage_snapshot.sql",
         "0203_brain_catalog_config_help_company_atlas.sql",
         "0204_region_migrations_vocabulary_refusals.sql",
+        "0205_brain_enrollment_connection_group.sql",
       ],
     });
 

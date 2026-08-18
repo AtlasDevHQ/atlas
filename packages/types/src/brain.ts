@@ -2350,7 +2350,7 @@ export interface BrainVocabularyCardinalityWriteResponse {
 // ---------------------------------------------------------------------------
 
 /**
- * One `(entity, dimension)` pair a human enrolled.
+ * One `(entity, group, dimension)` triple a human enrolled.
  *
  * An enrollment is a statement about what the tier-1 warehouse producer MAY emit
  * claims about. It is not itself a claim, carries no review status, and grants
@@ -2359,6 +2359,17 @@ export interface BrainVocabularyCardinalityWriteResponse {
  */
 export interface BrainEnrollmentEntry {
   readonly entity: string;
+  /**
+   * The connection group the entity is published under, or `null` for the flat
+   * scope (#5286).
+   *
+   * ⚠️ **Part of the identity, which is why it is on the wire.** An entity NAME
+   * is unique only within a group, so `(entity, dimension)` alone cannot address
+   * one of two same-named entities — the row stored cleanly and the producer
+   * refused it on every run. Every write verb takes it and every row carries it,
+   * so a client can key a list row without re-deriving what the pair means.
+   */
+  readonly group: string | null;
   /** The bare dimension/measure name — ADR-0037 §4's emission contract. */
   readonly dimension: string;
   readonly enrolledAt: string;
@@ -2412,6 +2423,14 @@ export type BrainEnrollmentCandidateKind = "dimension" | "measure";
 /** One entity a human could enroll a pair from. */
 export interface BrainEnrollmentEntityOption {
   readonly name: string;
+  /**
+   * Its connection group, or `null` for the flat scope (#5286).
+   *
+   * Two options may share a `name` and differ here — they are two entities over
+   * two databases. The picker must render both and key on the pair; presenting
+   * them as one choice is the defect this field exists to end.
+   */
+  readonly group: string | null;
   readonly table: string;
   readonly description: string | null;
 }
@@ -2443,6 +2462,8 @@ export interface BrainEnrollmentDimensionOption {
 /** `GET /api/v1/admin/brain-enrollment/dimensions` — one entity's candidates. */
 export interface BrainEnrollmentDimensionsResponse {
   readonly entity: string;
+  /** The group whose copy of `entity` these dimensions came from (#5286). */
+  readonly group: string | null;
   readonly dimensions: readonly BrainEnrollmentDimensionOption[];
 }
 
@@ -2456,6 +2477,8 @@ export interface BrainEnrollmentDimensionsResponse {
  */
 export interface BrainEnrollmentWriteResponse {
   readonly entity: string;
+  /** The group the written (or removed) pair names (#5286). */
+  readonly group: string | null;
   readonly dimension: string;
   readonly changed: boolean;
 }
@@ -2472,6 +2495,13 @@ export interface BrainEnrollmentWriteResponse {
  */
 export interface BrainEnrollmentNamingResponse {
   readonly entity: string;
+  /**
+   * Which of the entity's groups was named (#5286).
+   *
+   * At most one naming dimension per `(entity, group)`, so the answer is about
+   * that group's copy and no other.
+   */
+  readonly group: string | null;
   /** The dimension now naming this entity, or `null` if it has none. */
   readonly dimension: string | null;
   /** `false` when the requested state already held — a no-op, not a failure. */

@@ -142,7 +142,13 @@ void mock.module("@atlas/api/lib/brain/enrollment", () => ({
     namingDimension: new Map<string, string>(),
     has: () => false,
   }),
-  normalizeEnrollmentPair: (entity: string, dimension: string) => {
+  // ⚠️ The GROUP arm is here because the route ECHOES it (#5286). A double that
+  // dropped the third argument returned `group: undefined`, which the response
+  // `strictObject` rejects — a 500 on a write that succeeded. The real seam
+  // collapses `""` to `null` so the flat scope has one spelling; the double does
+  // the same, because a route test asserting the echo must not be asserting a
+  // rule the double invented.
+  normalizeEnrollmentPair: (entity: string, dimension: string, group: string | null = null) => {
     const e = entity.trim();
     const d = dimension.trim();
     if (e === "" || d === "") {
@@ -150,7 +156,8 @@ void mock.module("@atlas/api/lib/brain/enrollment", () => ({
         "An enrollment names an entity and a dimension; both are required.",
       );
     }
-    return { entity: e, dimension: d };
+    const g = group === null || group.trim() === "" ? null : group.trim();
+    return { entity: e, group: g, dimension: d };
   },
   listEnrollments: async () => enrollments,
   loadProducerReach: async () => ({
@@ -299,8 +306,12 @@ const row = (
   dimension: string,
   enrolledBy = "user-1",
   naming = false,
+  // The flat scope by default — every pre-#5286 case in this file means it, and
+  // the group-scoped cases pass it explicitly.
+  group: string | null = null,
 ): EnrollmentRow => ({
   entity,
+  group,
   dimension,
   enrolledAt: "2026-08-14T00:00:00.000Z",
   enrolledBy,
@@ -375,6 +386,7 @@ describe("GET / — what is enrolled", () => {
     // authorized this?" reads first.
     expect(body.enrollments[0]).toEqual({
       entity: "accounts",
+      group: null,
       dimension: "arr_band",
       enrolledAt: "2026-08-14T00:00:00.000Z",
       enrolledBy: "user-1",
@@ -432,7 +444,7 @@ describe("GET /dimensions — the picker", () => {
 
 describe("POST /enroll", () => {
   it("refuses a pair the published semantic layer does not contain, and writes nothing", async () => {
-    const res = await post("/enroll", { entity: "accounts", dimension: "not_a_column" });
+    const res = await post("/enroll", { entity: "accounts", group: null, dimension: "not_a_column" });
     expect(res.status).toBe(404);
     const body = (await res.json()) as { error: string; message: string };
     expect(body).toMatchObject({ error: "pair-not-found" });
@@ -450,7 +462,7 @@ describe("POST /enroll", () => {
     // does not exist, while the real causes — not published, or ambiguous
     // across connection groups — went unnamed.
     dimensionOptions = null;
-    const res = await post("/enroll", { entity: "ghosts", dimension: "arr_band" });
+    const res = await post("/enroll", { entity: "ghosts", group: null, dimension: "arr_band" });
     expect(res.status).toBe(404);
     const body = (await res.json()) as { message: string };
     expect(body.message).toContain("is not an entity");
@@ -461,13 +473,14 @@ describe("POST /enroll", () => {
   it("writes a pair the semantic layer does contain", async () => {
     // The positive control for the arm above: without it, a handler that
     // refused everything passes.
-    const res = await post("/enroll", { entity: "accounts", dimension: "arr_band", note: "why" });
+    const res = await post("/enroll", { entity: "accounts", group: null, dimension: "arr_band", note: "why" });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ entity: "accounts", dimension: "arr_band", changed: true });
+    expect(await res.json()).toEqual({ entity: "accounts", group: null, dimension: "arr_band", changed: true });
     expect(enrollCalls).toHaveLength(1);
     expect(enrollCalls[0]).toMatchObject({
       workspaceId: CURRENT_ORG,
       entity: "accounts",
+      group: null,
       dimension: "arr_band",
       note: "why",
       actor: "user-1",
@@ -482,14 +495,14 @@ describe("POST /enroll", () => {
 
   it("reports the no-op rather than flattening it into success", async () => {
     enrollChanged = false;
-    const res = await post("/enroll", { entity: "accounts", dimension: "arr_band" });
+    const res = await post("/enroll", { entity: "accounts", group: null, dimension: "arr_band" });
     expect(res.status).toBe(200);
     expect((await res.json()) as { changed: boolean }).toMatchObject({ changed: false });
   });
 
   it("403s a member, and does not write", async () => {
     READER_ROLE = "member";
-    const res = await post("/enroll", { entity: "accounts", dimension: "arr_band" });
+    const res = await post("/enroll", { entity: "accounts", group: null, dimension: "arr_band" });
     expect(res.status).toBe(403);
     expect((await res.json()) as { error: string }).toMatchObject({ error: "not-entitled" });
     expect(enrollCalls).toHaveLength(0);
@@ -497,7 +510,7 @@ describe("POST /enroll", () => {
 
   it("403s an unresolved principal rather than filing the decision under the local operator", async () => {
     READER_ORIGIN = "unresolved";
-    const res = await post("/enroll", { entity: "accounts", dimension: "arr_band" });
+    const res = await post("/enroll", { entity: "accounts", group: null, dimension: "arr_band" });
     expect(res.status).toBe(403);
     expect(enrollCalls).toHaveLength(0);
   });
@@ -506,23 +519,77 @@ describe("POST /enroll", () => {
     // The positive control for the two 403 arms. Without it, `recordedAuthor`
     // returning null for EVERY origin passes both of them.
     READER_ORIGIN = "unauthenticated-local";
-    const res = await post("/enroll", { entity: "accounts", dimension: "arr_band" });
+    const res = await post("/enroll", { entity: "accounts", group: null, dimension: "arr_band" });
     expect(res.status).toBe(200);
     expect(enrollCalls[0]).toMatchObject({ actor: "local-operator" });
   });
 
   it("422s an empty half before any handler logic runs", async () => {
-    const res = await post("/enroll", { entity: "accounts", dimension: "" });
+    const res = await post("/enroll", { entity: "accounts", group: null, dimension: "" });
     expect(res.status).toBe(422);
     expect(enrollCalls).toHaveLength(0);
   });
 });
 
+describe("the connection group is REQUIRED on both write verbs (#5286)", () => {
+  // ⚠️ The whole point of `.nullable()` over `.nullish()` on these bodies.
+  //
+  // An entity NAME is unique only within a connection group, so a body that
+  // omits the group names one of two entities and cannot say which. Optional,
+  // omission would silently mean "the flat scope" — and a client that HAD a
+  // group and forgot to send it would write a pair scoped to a database that
+  // does not hold that entity. That row stores cleanly, sits in the list looking
+  // live, and is refused by the producer on every run: the exact failure #5286
+  // was filed for, reintroduced through the one door that is supposed to prevent
+  // it.
+  //
+  // 422 rather than a repaired default is therefore the fix, not strictness for
+  // its own sake.
+  it("enroll refuses a body with no group", async () => {
+    const res = await post("/enroll", { entity: "accounts", dimension: "arr_band" });
+    expect(res.status).toBe(422);
+    expect(enrollCalls).toHaveLength(0);
+  });
+
+  it("unenroll refuses a body with no group", async () => {
+    // Sharper here than on enroll. Before the group joined the key, this verb's
+    // DELETE matched `(workspace, entity, dimension)` — which now names one row
+    // PER GROUP. A tolerated omission would delete every group's copy and report
+    // the ordinary `changed: true`, which is a narrowing nobody asked for.
+    const res = await post("/unenroll", { entity: "accounts", dimension: "arr_band" });
+    expect(res.status).toBe(422);
+    expect(unenrollCalls).toHaveLength(0);
+  });
+
+  it("carries the group through to the seam and echoes it back", async () => {
+    // POSITIVE CONTROL for the two refusals above: they are satisfied by a route
+    // that refuses every body. A named group must reach the write and come back.
+    const res = await post("/enroll", {
+      entity: "accounts",
+      group: "g-staging",
+      dimension: "arr_band",
+      note: null,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ entity: "accounts", group: "g-staging" });
+    expect(enrollCalls).toEqual([
+      {
+        workspaceId: CURRENT_ORG,
+        entity: "accounts",
+        group: "g-staging",
+        dimension: "arr_band",
+        note: null,
+        actor: "user-1",
+      },
+    ]);
+  });
+});
+
 describe("POST /unenroll", () => {
   it("removes the pair", async () => {
-    const res = await post("/unenroll", { entity: "accounts", dimension: "arr_band" });
+    const res = await post("/unenroll", { entity: "accounts", group: null, dimension: "arr_band" });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ entity: "accounts", dimension: "arr_band", changed: true });
+    expect(await res.json()).toEqual({ entity: "accounts", group: null, dimension: "arr_band", changed: true });
     expect(unenrollCalls).toHaveLength(1);
   });
 
@@ -532,7 +599,7 @@ describe("POST /unenroll", () => {
     // been deleted, so applying the enroll verb's check here would strand
     // exactly those.
     dimensionOptions = null;
-    const res = await post("/unenroll", { entity: "ghosts", dimension: "arr_band" });
+    const res = await post("/unenroll", { entity: "ghosts", group: null, dimension: "arr_band" });
     expect(res.status).toBe(200);
     expect(unenrollCalls).toHaveLength(1);
     // And it did not even ASK. A handler that looked and then ignored the
@@ -543,7 +610,7 @@ describe("POST /unenroll", () => {
 
   it("reports the no-op", async () => {
     unenrollChanged = false;
-    const res = await post("/unenroll", { entity: "accounts", dimension: "arr_band" });
+    const res = await post("/unenroll", { entity: "accounts", group: null, dimension: "arr_band" });
     expect((await res.json()) as { changed: boolean }).toMatchObject({ changed: false });
   });
 
@@ -553,6 +620,7 @@ describe("POST /unenroll", () => {
     // stopped this" — the one thing this table does not store.
     const res = await post("/unenroll", {
       entity: "accounts",
+      group: null,
       dimension: "arr_band",
       note: "because",
     });
@@ -564,7 +632,7 @@ describe("POST /unenroll", () => {
     // Gated on the same bar as enrolling. A lower bar here would let a
     // non-admin undo an admin's decision about what the Atlas may learn.
     READER_ROLE = "member";
-    const res = await post("/unenroll", { entity: "accounts", dimension: "arr_band" });
+    const res = await post("/unenroll", { entity: "accounts", group: null, dimension: "arr_band" });
     expect(res.status).toBe(403);
     expect(unenrollCalls).toHaveLength(0);
   });
@@ -601,27 +669,38 @@ describe("GET /dimensions — the naming flag (#5043)", () => {
 
 describe("POST /naming — which column names an entity (#5043)", () => {
   it("names a dimension, and says what that does rather than what it toggles", async () => {
-    const res = await post("/naming", { entity: "accounts", dimension: "arr_band" });
+    const res = await post("/naming", { entity: "accounts", group: null, dimension: "arr_band" });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       entity: "accounts",
+      group: null,
       dimension: "arr_band",
       changed: true,
     });
     expect(namingCalls).toEqual([
-      { workspaceId: CURRENT_ORG, entity: "accounts", dimension: "arr_band" },
+      { workspaceId: CURRENT_ORG, entity: "accounts", group: null, dimension: "arr_band" },
     ]);
   });
 
   it("clears it on an explicit null, and the null reaches the seam", async () => {
-    const res = await post("/naming", { entity: "accounts", dimension: null });
+    const res = await post("/naming", { entity: "accounts", group: null, dimension: null });
     expect(res.status).toBe(200);
     // `null` on the way OUT too. A handler echoing the entity name here would
     // tell an admin they had named the entity after itself.
-    expect(await res.json()).toEqual({ entity: "accounts", dimension: null, changed: true });
+    expect(await res.json()).toEqual({ entity: "accounts", group: null, dimension: null, changed: true });
     expect(namingCalls).toEqual([
-      { workspaceId: CURRENT_ORG, entity: "accounts", dimension: null },
+      { workspaceId: CURRENT_ORG, entity: "accounts", group: null, dimension: null },
     ]);
+  });
+
+  it("refuses an OMITTED group — naming is per (entity, group) (#5286)", async () => {
+    // `uq_brain_enrollment_naming` is scoped `(workspace, entity, group)` since
+    // 0205, so the group is not a filter on this write — it IS its subject.
+    // Defaulted, naming one group's copy would un-name another group's, and the
+    // un-naming half is what clears that entity's entity-store entries.
+    const res = await post("/naming", { entity: "accounts", dimension: "arr_band" });
+    expect(res.status).toBe(422);
+    expect(namingCalls).toHaveLength(0);
   });
 
   it("refuses an OMITTED dimension — clearing is too destructive to be a default", async () => {
@@ -635,7 +714,7 @@ describe("POST /naming — which column names an entity (#5043)", () => {
 
   it("reports the no-op", async () => {
     namingChanged = false;
-    const res = await post("/naming", { entity: "accounts", dimension: "arr_band" });
+    const res = await post("/naming", { entity: "accounts", group: null, dimension: "arr_band" });
     expect((await res.json()) as { changed: boolean }).toMatchObject({ changed: false });
   });
 
@@ -647,7 +726,7 @@ describe("POST /naming — which column names an entity (#5043)", () => {
     namingThrows = new TestInvalidEnrollmentPairError(
       '"name" is not enrolled for "accounts", so the producer never reads that column.',
     );
-    const res = await post("/naming", { entity: "accounts", dimension: "name" });
+    const res = await post("/naming", { entity: "accounts", group: null, dimension: "name" });
     expect(res.status).toBe(400);
     expect(((await res.json()) as { message: string }).message).toContain("is not enrolled");
   });
@@ -657,7 +736,7 @@ describe("POST /naming — which column names an entity (#5043)", () => {
     // what may be emitted, un-enrolling narrows it, and this one re-keys facts
     // that are already published.
     READER_ROLE = "member";
-    const res = await post("/naming", { entity: "accounts", dimension: "arr_band" });
+    const res = await post("/naming", { entity: "accounts", group: null, dimension: "arr_band" });
     expect(res.status).toBe(403);
     expect(namingCalls).toHaveLength(0);
   });
@@ -1141,8 +1220,8 @@ describe("no active organization", () => {
       adminBrainEnrollment.request("/"),
       adminBrainEnrollment.request("/entities"),
       adminBrainEnrollment.request("/dimensions?entity=accounts"),
-      post("/enroll", { entity: "accounts", dimension: "arr_band" }),
-      post("/unenroll", { entity: "accounts", dimension: "arr_band" }),
+      post("/enroll", { entity: "accounts", group: null, dimension: "arr_band" }),
+      post("/unenroll", { entity: "accounts", group: null, dimension: "arr_band" }),
       post("/produce", {}),
     ])) {
       expect(res.status).toBe(400);

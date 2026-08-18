@@ -622,6 +622,10 @@ describe("migrateAuthTables", () => {
             // an Atlas-owned table Better Auth has no stake in, so the same
             // grounds as 0196–0203.
             { name: "0204_region_migrations_vocabulary_refusals.sql" },
+            // 0205 adds `connection_group_id` to `brain_enrollment` and widens
+            // its key (#5286) — an Atlas-owned brain table Better Auth has no
+            // stake in, so the same grounds as 0196–0204.
+            { name: "0205_brain_enrollment_connection_group.sql" },
           ],
         };
       }

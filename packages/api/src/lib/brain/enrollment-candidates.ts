@@ -55,6 +55,18 @@ export interface EnrollmentCandidate {
 /** One enrollable entity, as the picker lists it. */
 export interface EnrollmentCandidateEntity {
   readonly name: string;
+  /**
+   * The connection group it is published under, or `null` for the flat scope
+   * (#5286).
+   *
+   * ⚠️ **Part of the OPTION's identity, not a decoration on it.** A
+   * multi-connection-group workspace holds one entity NAME in several groups and
+   * `listAdminEntities` returns a row per group — two DIFFERENT entities, over
+   * two different databases, that happen to share a label. Offered without this
+   * field they were one choice, and whichever the admin meant, the enrollment
+   * could not record it.
+   */
+  readonly group: string | null;
   readonly table: string;
   readonly description: string | null;
 }
@@ -123,24 +135,58 @@ export async function loadEnrollableEntities(
       "Enrollment candidates: semantic-layer entries were skipped, so the picker offers fewer entities than the workspace authored",
     );
   }
-  // ⚠️ De-duplicated ON NAME, and this is a correctness fix rather than tidying.
-  // A multi-connection-group workspace (#2412) holds one entity NAME in several
-  // groups and `listAdminEntities` returns a row per group. Offered as separate
-  // options they are indistinguishable — same label, same value — so the picker
-  // renders duplicate React keys and asks the admin to choose between two
-  // identical entries. The pair this surface stores is
-  // `(workspace_id, entity, dimension)` with NO group column, so the duplicates
-  // are not a distinction the storage could record even if they picked one.
+  // ⚠️ **NOT de-duplicated on name, and removing that collapse is the fix
+  // (#5286).**
   //
-  // Collapsing to one is the honest shape: `loadEnrollableDimensions` then
-  // surfaces the 409 that names the real problem. Dropping the name entirely
-  // would hide an enrollable entity; keeping both offers a choice that does not
-  // exist.
-  const seen = new Set<string>();
+  // This function used to collapse a multi-group workspace's same-named entities
+  // to one option, and the comment here argued the collapse was the honest shape
+  // *"because the pair this surface stores is `(workspace_id, entity, dimension)`
+  // with NO group column, so the duplicates are not a distinction the storage
+  // could record even if they picked one."* That premise was true and is now
+  // false: migration 0205 put the group in the key.
+  //
+  // What the collapse actually produced was the failure this whole surface
+  // exists to prevent. `test_orders` published under three groups was ONE
+  // option; enrolling it wrote a row that stored cleanly, named no group, and
+  // the producer refused it on every run afterwards — a live staging workspace
+  // whose only producible entity could not be produced.
+  //
+  // Each row is its own option now, carrying its group, and the pair a click
+  // writes names exactly one of them. Duplicate React keys go with it: the
+  // option's identity is `(name, group)`, which is `admin-source.ts`'s own dedup
+  // key for the same rows.
+  //
+  // ⚠️ **ONE row is still withheld, and it is the one the producer cannot
+  // address: a FLAT-SCOPED row whose name another row also carries.** Offering it
+  // would be offering a choice that refuses on every run, which is the shape this
+  // module exists to prevent — so the honest surface is not to offer it.
+  //
+  // The reason it cannot be addressed is that `null` is doing two jobs in the
+  // stored column, and only one of them is separable. It means *"the flat
+  // scope"* for a workspace that groups nothing, and it means *"this enrollment
+  // predates the group column"* for a row migration 0205 could not resolve. Where
+  // a name has BOTH a flat row and a grouped one, those two readings pick
+  // different databases — so `mapEntitiesToConnectionIds` refuses
+  // `ambiguous-group` rather than guess, and it is right to: the alternative is
+  // producing claims from the `__global__` demo database into a customer's brain,
+  // which is #5284 by another route.
+  //
+  // The flat row in that situation is essentially always a `__global__` demo
+  // entity the workspace has shadowed with its own — `listEntityRows` reads
+  // `org_id = $1 OR org_id = '__global__'` — so what is withheld is the demo
+  // copy, and the workspace's own grouped entity stays offered beside it. A
+  // workspace that genuinely groups nothing has no second row for the name and
+  // loses nothing.
+  const sharedNames = new Set(
+    entities
+      .filter((e) => entities.some((other) => other.name === e.name && other !== e))
+      .map((e) => e.name),
+  );
   return entities
-    .filter((e) => (seen.has(e.name) ? false : (seen.add(e.name), true)))
+    .filter((e) => e.connectionId !== null || !sharedNames.has(e.name))
     .map((e) => ({
       name: e.name,
+      group: e.connectionId,
       table: e.table,
       description: e.description === "" ? null : e.description,
     }));
@@ -159,8 +205,29 @@ export async function loadEnrollableEntities(
 export async function loadEnrollableDimensions(
   orgId: string,
   entityName: string,
+  /**
+   * Which of the name's groups to read, or `null` for the flat scope (#5286).
+   *
+   * ⚠️ **Passing it is what stops this throwing.** `getAdminEntity` refuses a
+   * stem-only lookup spanning more than one group — `AmbiguousEntityError`,
+   * which the route used to answer as a 409 saying the choice could not be
+   * expressed. It can be expressed now, so the caller states it and the lookup
+   * resolves.
+   *
+   * `undefined` is deliberately still reachable and still means the old
+   * unique-or-409 path. It is what a pre-0205 flat-scoped enrollment is re-read
+   * under: such a row carries no group, and scoping it to `null` would restrict
+   * to the legacy null-group rows rather than to whatever single group its
+   * workspace actually has.
+   */
+  connectionGroupId?: string | null,
 ): Promise<readonly EnrollmentCandidate[] | null> {
-  const detail = await getAdminEntity({ name: entityName, orgId, mode: "published" });
+  const detail = await getAdminEntity({
+    name: entityName,
+    orgId,
+    mode: "published",
+    connectionGroupId,
+  });
   if (detail === null) return null;
   const raw = detail.entity as Record<string, unknown>;
   const candidates = [

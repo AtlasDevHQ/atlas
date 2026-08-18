@@ -76,8 +76,62 @@ export default function BrainEnrollmentPage() {
   );
 }
 
+/**
+ * A `(name, group)` option encoded for a `<Select>`'s single string value, and
+ * its inverse (#5286).
+ *
+ * ⚠️ **JSON rather than a joined string, because every separator is ambiguous
+ * here.** With a `/`, an entity called `plans/v2` in the ungrouped scope and an
+ * entity called `plans` in a group called `v2` encode identically — and picking
+ * the wrong one enrolls a pair against the wrong database. `brain_enrollment`'s
+ * own in-memory pair key reaches for NUL for this reason and the coverage unit
+ * id length-prefixes; a select value is neither, so it takes the encoding that
+ * is unambiguous without a convention to remember.
+ */
+function optionValue(name: string, group: string | null): string {
+  return JSON.stringify([name, group]);
+}
+
+function parseOptionValue(value: string): { name: string; group: string | null } | null {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed) || parsed.length !== 2) return null;
+    const [name, group] = parsed;
+    if (typeof name !== "string") return null;
+    if (group !== null && typeof group !== "string") return null;
+    return { name, group };
+  } catch (err) {
+    // Unreachable — the only writer of these strings is `optionValue` above, on
+    // values this same component rendered. LOGGED rather than silent because if
+    // it ever fires, the visible symptom is a picker whose clicks do nothing,
+    // and an empty catch would leave no trace of why.
+    console.debug("enrollment: could not parse a picked entity option", err);
+    return null;
+  }
+}
+
+/**
+ * One enrolled row's identity, for React keys and per-row mutation slots.
+ *
+ * The GROUP is in it since #5286, because the row's identity is. Without it two
+ * groups' copies of one pair share a key: React renders duplicates, and
+ * `errorFor`/`isMutating` put one row's failure badge on the other's line.
+ */
+function rowKey(entry: BrainEnrollmentEntry): string {
+  return optionValue(`${entry.entity}/${entry.dimension}`, entry.group);
+}
+
 function BrainEnrollment() {
   const [entity, setEntity] = useState<string | null>(null);
+  /**
+   * The picked entity's connection group — `null` is the FLAT scope, and it is
+   * only meaningful while `entity` is non-null.
+   *
+   * Two state slots rather than one object because every write body spells the
+   * two separately, and a single `picked` object would have to be destructured
+   * at four call sites anyway.
+   */
+  const [entityGroup, setEntityGroup] = useState<string | null>(null);
   const [dimension, setDimension] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const [writeError, setWriteError] = useState<string | null>(null);
@@ -144,11 +198,20 @@ function BrainEnrollment() {
     error: dimensionsError,
     loading: dimensionsLoading,
   } = useAdminFetch<DimensionsResponse>(
-    entity === null ? "" : `/api/v1/admin/brain-enrollment/dimensions?entity=${encodeURIComponent(entity)}`,
+    entity === null
+      ? ""
+      : `/api/v1/admin/brain-enrollment/dimensions?entity=${encodeURIComponent(entity)}` +
+        // OMITTED for the flat scope, because a query string cannot carry a
+        // `null` and the route reads absence as exactly that. The write bodies
+        // below are the opposite — they send an explicit `null` — and the
+        // asymmetry is the route's, deliberately: a read's missing group costs a
+        // wrong list an admin can see, a write's costs a row in the wrong scope
+        // that looks like a working one.
+        (entityGroup === null ? "" : `&group=${encodeURIComponent(entityGroup)}`),
     {
       schema: BrainEnrollmentDimensionsResponseSchema,
       enabled: entity !== null,
-      deps: [entity, list],
+      deps: [entity, entityGroup, list],
     },
   );
 
@@ -192,7 +255,15 @@ function BrainEnrollment() {
     setWriteError(null);
     setNotice(null);
     const result = await enrollMutation.mutate({
-      body: { entity, dimension, note: note.trim() === "" ? null : note.trim() },
+      body: {
+        entity,
+        // Sent EXPLICITLY, `null` included. The request schema is `.nullable()`
+        // and not `.nullish()` precisely so a client that had a group and forgot
+        // it cannot write a flat-scoped row by omission (#5286).
+        group: entityGroup,
+        dimension,
+        note: note.trim() === "" ? null : note.trim(),
+      },
     });
     if (!result.ok) {
       // The SERVER's prose, verbatim. Every refusal on this surface names which
@@ -229,8 +300,12 @@ function BrainEnrollment() {
     setNamingError(null);
     setNotice(null);
     const result = await namingMutation.mutate({
-      itemId: `${target.entity}/${target.dimension}`,
-      body: { entity: target.entity, dimension: naming ? target.dimension : null },
+      itemId: rowKey(target),
+      body: {
+        entity: target.entity,
+        group: target.group,
+        dimension: naming ? target.dimension : null,
+      },
     });
     if (!result.ok) {
       setNamingError(friendlyError(result.error));
@@ -300,8 +375,8 @@ function BrainEnrollment() {
     setUnenrollError(null);
     setNotice(null);
     const result = await unenrollMutation.mutate({
-      itemId: `${target.entity}/${target.dimension}`,
-      body: { entity: target.entity, dimension: target.dimension },
+      itemId: rowKey(target),
+      body: { entity: target.entity, group: target.group, dimension: target.dimension },
     });
     if (!result.ok) {
       setUnenrollError(friendlyError(result.error));
@@ -366,9 +441,12 @@ function BrainEnrollment() {
                 </p>
               ) : (
                 <Select
-                  value={entity ?? undefined}
+                  value={entity === null ? undefined : optionValue(entity, entityGroup)}
                   onValueChange={(next) => {
-                    setEntity(next);
+                    const picked = parseOptionValue(next);
+                    if (picked === null) return;
+                    setEntity(picked.name);
+                    setEntityGroup(picked.group);
                     setDimension(null);
                     setWriteError(null);
                     // NOT `setUnenrollError(null)` — picking an entity to enrol
@@ -389,9 +467,29 @@ function BrainEnrollment() {
                     />
                   </SelectTrigger>
                   <SelectContent>
+                    {/* ⚠️ Keyed and valued on `(name, group)`, never on the name
+                        alone (#5286). A multi-connection-group workspace publishes
+                        one name under several groups — different entities over
+                        different databases — and this list used to collapse them
+                        to a single option server-side. Whichever the admin meant,
+                        the enrollment could not record it, so the pair stored
+                        cleanly and the producer refused it on every run. */}
                     {entityOptions.map((option) => (
-                      <SelectItem key={option.name} value={option.name}>
+                      <SelectItem
+                        key={optionValue(option.name, option.group)}
+                        value={optionValue(option.name, option.group)}
+                      >
                         {option.name}
+                        {/* Shown only where it DISAMBIGUATES. A flat workspace
+                            has one group and printing it on every row would be
+                            noise an admin has to learn to ignore — and then
+                            would ignore on the workspace where it matters. */}
+                        {option.group !== null &&
+                        entityOptions.some(
+                          (other) => other.name === option.name && other.group !== option.group,
+                        )
+                          ? ` — ${option.group}`
+                          : ""}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -572,7 +670,7 @@ function BrainEnrollment() {
             <ul className="border-border divide-border divide-y rounded-md border">
               {enrollments.map((entry) => (
                 <li
-                  key={`${entry.entity}/${entry.dimension}`}
+                  key={rowKey(entry)}
                   className="flex items-center justify-between gap-3 px-3 py-2"
                 >
                   <div className="min-w-0">
@@ -582,23 +680,27 @@ function BrainEnrollment() {
                       <span className="font-mono">{entry.dimension}</span>
                     </div>
                     <p className="text-muted-foreground mt-0.5 text-xs">
+                      {/* The group leads the line where there is one, because it
+                          is what tells two same-named rows apart — and those two
+                          rows are the state the producer refuses. */}
+                      {entry.group !== null ? `${entry.group} · ` : ""}
                       enrolled by {entry.enrolledBy}
                       {entry.note !== null ? ` · ${entry.note}` : ""}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
                     {entry.naming ? <Badge variant="secondary">names this entity</Badge> : null}
-                    {namingMutation.errorFor(`${entry.entity}/${entry.dimension}`) !== undefined ? (
+                    {namingMutation.errorFor(rowKey(entry)) !== undefined ? (
                       <Badge variant="destructive">name not changed</Badge>
                     ) : null}
-                    {unenrollMutation.errorFor(`${entry.entity}/${entry.dimension}`) !==
+                    {unenrollMutation.errorFor(rowKey(entry)) !==
                     undefined ? (
                       <Badge variant="destructive">not removed</Badge>
                     ) : null}
                     <Button
                       variant="ghost"
                       size="sm"
-                      disabled={namingMutation.isMutating(`${entry.entity}/${entry.dimension}`)}
+                      disabled={namingMutation.isMutating(rowKey(entry))}
                       onClick={() => onSetNaming(entry, !entry.naming)}
                     >
                       {entry.naming ? "Stop using as name" : "Use as name"}
@@ -606,7 +708,7 @@ function BrainEnrollment() {
                     <Button
                       variant="ghost"
                       size="sm"
-                      disabled={unenrollMutation.isMutating(`${entry.entity}/${entry.dimension}`)}
+                      disabled={unenrollMutation.isMutating(rowKey(entry))}
                       onClick={() => onUnenroll(entry)}
                     >
                       <Trash2 className="mr-1.5 size-3.5" aria-hidden />

@@ -54,14 +54,20 @@ function LazyCodeBlock({ language, children }: { language: string; children: str
   );
 }
 
+// `background` AND `fontFamily` — see sql-block.tsx for the same decision and
+// the same reason: oneDark hardcodes both on the pre and on the inner code tag,
+// so overriding one of them, or only one selector, leaves the pane half-branded.
 const CODE_BLOCK_STYLE = {
   margin: "0.5rem 0",
   borderRadius: "0.5rem",
   fontSize: "0.75rem",
   background: "var(--code-bg)",
+  fontFamily: "var(--font-mono)",
 } as const;
 
-const CODE_TAG_PROPS = { style: { background: "transparent" } } as const;
+const CODE_TAG_PROPS = {
+  style: { background: "transparent", fontFamily: "var(--font-mono)" },
+} as const;
 
 /* ------------------------------------------------------------------ */
 /*  Static markdown renderers — hoisted outside component              */

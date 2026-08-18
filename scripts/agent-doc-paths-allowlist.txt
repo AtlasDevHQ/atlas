@@ -95,3 +95,23 @@ command  .claude/skills/impeccable/*  /command-name  # upstream skill placeholde
 *     scripts/__tests__/check-agent-doc-paths.test.sh  *   # fixture INPUT: every broken path, command and count here is the test data
 *     scripts/agent-doc-paths-allowlist.txt            *   # this file's token column is a list of non-existent paths, by construction
 path  scripts/check-agent-doc-paths.sh  packages/api/src/lib/semantic.ts  # the audit finding quoted in this gate's header, as the example it is
+
+# ── deliberately-malformed paths, quoted as the defect they illustrate ───────
+# Both comments name a path git NEVER emits (`packages/api/../types/src/…`) in
+# order to explain a prefixing bug that produced it. The path is the subject of
+# the sentence, so it cannot be corrected without deleting the explanation. These
+# resolved by accident until the on-disk `[ -e ]` branch was removed from
+# path_resolves — `..` traversal made them exist on disk while being untracked,
+# which is exactly the local/CI divergence that branch caused.
+path  packages/api/src/__tests__/mutate-core.test.ts  packages/api/../types/src  # illustrative malformed path: the bug being described
+path  scripts/check-mutation-tables.sh  packages/api/../types/src/migration.ts  # same malformed path, in the gate that fixed it
+
+# ── a deleted path that is the SUBJECT of a dated correction ─────────────────
+# #5309 de-backticked these three to quiet this gate. That is the wrong half of
+# the convention: dropping backticks marks a reference HISTORICAL, and these
+# sentences are present-tense claims in a design doc arguing about where
+# enrichment lived. The file is genuinely gone (it moved to
+# lib/semantic/enrich/index.ts, which is what section F proposed), so the doc now
+# carries a dated correction naming both paths — and the old one stays backticked
+# because the correction is about that exact path.
+path  docs/design/semantic-onboarding.md  packages/cli/bin/enrich.ts  # subject of the dated 2026-08-18 correction in that file; moved to lib/semantic/enrich/index.ts

@@ -19,6 +19,28 @@
 #   the suffix resolver is removed                       case 5 FAIL (exit 1 on a
 #                                                          correct abbreviation)
 #
+# Cases 17-22 were added on 2026-08-18. Three of them cover states in which the
+# gate reported "clean" while the very thing it exists to catch was present:
+#
+#   the trailing-comment sed is dropped                  case 17 FAIL — exit 0, a
+#     from the route scan                                  deleted command blessed
+#                                                          by a comment hanging off
+#                                                          the END of a code line
+#                                                          (case 10 covered only
+#                                                          comment-ONLY lines)
+#   `[ -e "$tok" ]` returns to path_resolves             case 19 FAIL — an
+#                                                          UNTRACKED on-disk file
+#                                                          answers the question, so
+#                                                          local and CI disagree
+#   the counts vacuity floor is deleted                  case 21 FAIL — exit 0
+#                                                          while the summary claims
+#                                                          five phrases verified and
+#                                                          none was stated anywhere
+#
+# Cases 18, 20 and 22 are the matching positive controls — a URL beside a route,
+# a doc and its file committed together, every phrase stated correctly — so the
+# reds above cannot be bought with a filter that simply reports more.
+#
 # Case 1 pins the real repo. Everything else builds a throwaway git tree,
 # because the interesting answers are ones the real repo cannot produce.
 #
@@ -343,6 +365,132 @@ if [ "$RC" = "2" ]; then
 else
   fail "non-git root — expected exit 2, got $RC"
   printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 17. ⚠️ THE TRAILING HALF OF CASE 10. That case proves a comment-ONLY line does
+# not resolve a route. It left the identical hole one column over: a comment
+# hanging off the END of a code line is not a comment-only line, so a deleted
+# command named in backticks there still resolved — silently blessing every
+# reference to it in the repo. Mutation: drop the trailing-comment sed from the
+# route scan → this goes green.
+new_tree
+printf 'export const x = 1; // legacy alias for `/pr`, removed in the burn\n' \
+  > "$TREE/packages/api/src/lib/plugins/note.ts"
+echo 'Then `/pr` to open the PR.' > "$TREE/docs/agents/x.md"
+stage; run_gate
+if [ "$RC" = "1" ] && printf '%s' "$OUT" | grep -qF '/pr'; then
+  pass "a TRAILING code comment does not resolve a command either"
+else
+  fail "trailing comment — expected exit 1 for /pr, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 18. …and the filter must not eat real routes. `https://` is not a comment, and
+# a start-of-string route on the same line as a URL must still resolve.
+new_tree
+printf 'const base = "https://api.example.com/health";\napp.get("/claim", ok);\n' \
+  > "$TREE/scripts/routes.ts"
+echo 'Hit `/claim` and `/health` to check.' > "$TREE/docs/agents/x.md"
+stage; run_gate
+if [ "$RC" = "0" ]; then
+  pass "stripping trailing comments does not eat routes beside a URL"
+else
+  fail "URL false positive — expected exit 0, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 19. ⚠️ AN UNTRACKED FILE IS NOT AN ANSWER. path_resolves used to test the
+# working directory first, so a file present in one checkout and absent in
+# another gave two different verdicts for the same commit — green locally, red in
+# CI. The file below exists on disk and is deliberately NOT staged.
+new_tree
+mkdir -p "$TREE/packages/api/src/lib/ghost"
+echo "export const g = 1;" > "$TREE/packages/api/src/lib/ghost/only-on-disk.ts"
+echo 'See `packages/api/src/lib/ghost/only-on-disk.ts` for the detail.' > "$TREE/docs/agents/x.md"
+( cd "$TREE" && git add docs/agents/x.md ) >/dev/null 2>&1
+run_gate
+if [ "$RC" = "1" ] && printf '%s' "$OUT" | grep -qF 'only-on-disk.ts'; then
+  pass "an untracked on-disk file does not resolve a reference (local == CI)"
+else
+  fail "untracked resolution — expected exit 1, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 20. …and staging it — writing the doc and the file it names in ONE commit — is
+# the normal workflow and must pass.
+stage; run_gate
+if [ "$RC" = "0" ]; then
+  pass "staging that same file in the same commit resolves it"
+else
+  fail "staged resolution — expected exit 0, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 21. ⚠️ THE COUNTS VACUITY FLOOR. Checks 1 and 2 each refuse to report "clean"
+# after reading nothing; check 3 did not. A registered phrase that matched
+# NOWHERE produced no iterations, no finding and no warning — while the summary
+# line kept printing "5 registered phrases checked". Two of the five phrases
+# ("bounded contexts", "system-wide decisions") appear exactly ONCE in the real
+# repo, so rewording one sentence retired two checks silently.
+#
+# The floor only applies to a real-sized tree (a fixture legitimately cites
+# little), so this case has to build one. Mutation: delete the floor → exit 0,
+# and the gate reports five phrases verified having verified none.
+big_tree() { # a tree over the gate's BIG_TREE threshold, otherwise identical
+  new_tree
+  mkdir -p "$TREE/filler"
+  for i in $(seq 1 250); do echo "filler $i" > "$TREE/filler/f$i.md"; done
+  # A tree this size must cite SOMETHING, or the path and command floors fire
+  # first and case 21 would pass on the wrong error. Both references below
+  # resolve, so the only thing left unstated is the counts.
+  {
+    echo 'Secrets live in `packages/api/src/lib/plugins/secrets.ts`.'
+    echo 'Run `/release` to cut a tag.'
+  } > "$TREE/docs/agents/refs.md"
+  ( cd "$TREE" && git add -A ) >/dev/null 2>&1
+}
+
+big_tree
+run_gate
+if [ "$RC" = "2" ] && printf '%s' "$OUT" | grep -qF 'appears nowhere'; then
+  pass "a registered count phrase nothing states exits 2, never 0"
+else
+  fail "counts vacuity floor — expected exit 2, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 22. …and the positive control, so case 21's red means the floor and not some
+# other breakage: state every registered phrase, with the number DERIVED from
+# this tree rather than hardcoded here.
+big_tree
+n_cmd=$(ls -1 "$TREE"/.claude/commands/*.md 2>/dev/null | wc -l | tr -d ' ')
+n_adr=$(ls -1 "$TREE"/docs/adr/[0-9]*.md 2>/dev/null | wc -l | tr -d ' ')
+n_ada=$(ls -1 "$TREE"/plugins/chat/src/adapters/*.ts 2>/dev/null | grep -vcE '\.test\.ts$|/index\.ts$')
+n_gate=$(grep -cE '^[[:space:]]*(launch|run_fg) ' "$TREE/scripts/ci-local.sh")
+n_ctx=$(awk '/^\| Context \| Governed by/{t=1;next} t&&/^\| --- /{next} t&&/^\|/{n++} t&&!/^\|/{t=0} END{print n+0}' "$TREE/CONTEXT-MAP.md")
+{
+  echo "This tree has $n_cmd operational runbooks and $n_ctx bounded contexts."
+  echo "It holds $n_adr system-wide decisions, $n_ada chat-platform adapters and $n_gate ci-local gates."
+} > "$TREE/docs/agents/counts.md"
+stage; run_gate
+if [ "$RC" = "0" ]; then
+  pass "every registered phrase stated at its derived number passes"
+else
+  fail "counts positive control — expected exit 0, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# ⚠️ AN ABSOLUTE LITERAL, for the reason its siblings carry one. PASS+FAIL is a
+# tally of the cases that RAN; nothing above notices a case that silently stopped
+# running — a `sed` whose anchor drifted, an `if` that can no longer be reached.
+# A suite reporting "26 passed" while three cases quietly vanished reads exactly
+# like success, which is the failure this whole directory exists to refuse.
+EXPECTED_CASES=26
+TOTAL=$((PASS + FAIL))
+if [ "$TOTAL" -eq "$EXPECTED_CASES" ]; then
+  pass "all $EXPECTED_CASES cases ran"
+else
+  fail "case count — expected $EXPECTED_CASES cases, $TOTAL ran (a case stopped running)"
 fi
 
 echo ""

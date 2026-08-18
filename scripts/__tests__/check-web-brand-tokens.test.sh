@@ -15,6 +15,25 @@
 #   --font-mono stops referencing --font-jetbrains     case 7 red
 #   one hardcoded utility is added                     case 8 red (the ratchet)
 #
+# Cases 11-14 were added on 2026-08-18, each closing a hole the first eleven left
+# — three of them states in which the gate reported the product surface as
+# conformant while the #5306 defect was present:
+#
+#   the SAME <body> defect, split across lines       case 11 red (was GREEN: the
+#                                                      check read only the line
+#                                                      the tag opens on)
+#   packages/web's brand.css symlink is cut          case 12 red (was GREEN: one
+#                                                      correct copy still existed
+#                                                      — the app just could not
+#                                                      see it)
+#   the --color-code-bg theme mapping is dropped     case 13 red (was GREEN: the
+#                                                      utility silently stops
+#                                                      existing)
+#   a code pane stops overriding the theme's font    case 14 red (was GREEN: the
+#                                                      fonts load, the tokens
+#                                                      reference them, and the
+#                                                      pane renders Fira Code)
+#
 # `set -uo pipefail`, no `-e`: a failing case must not abort the tally.
 
 set -uo pipefail
@@ -50,6 +69,17 @@ new_tree() {
   cp "$REPO/packages/web/src/app/layout.tsx" "$TREE/packages/web/src/app/layout.tsx"
   cp "$REPO/packages/web/src/app/globals.css" "$TREE/packages/web/src/app/globals.css"
   cp "$REPO/apps/www/src/app/globals.css" "$TREE/apps/www/src/app/globals.css"
+  # The symlink packages/web reaches brand.css through. It is part of the subject,
+  # not scaffolding: cutting it is how the app can lose every --code-* value while
+  # brand.css still holds exactly one correct copy of them.
+  ln -s ../../brand.css "$TREE/packages/web/brand.css"
+  # The two panes that mount a syntax highlighter. The theme ships its own
+  # background AND font, so these are where "identical on every surface" is
+  # actually kept or lost.
+  mkdir -p "$TREE/packages/web/src/ui/components/chat"
+  cp "$REPO/packages/web/src/ui/components/chat/sql-block.tsx" \
+     "$REPO/packages/web/src/ui/components/chat/markdown.tsx" \
+     "$TREE/packages/web/src/ui/components/chat/"
   # One representative component, so the ratchet has something to count.
   mkdir -p "$TREE/packages/web/src/ui"
   printf 'export const X = () => <div className="bg-zinc-100 text-zinc-500" />;\n' \
@@ -211,6 +241,78 @@ if [ "$RC" = "2" ]; then
 else
   fail "empty tree — expected exit 2, got $RC"
   printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 11. ⚠️ THE DEFECT, WRITTEN ACROSS LINES. Case 3 restores the pre-#5306 <body>
+# on ONE line. The check used to read only the line the tag opens on, so the
+# identical className split across three lines passed GREEN — and `<html>` in
+# this same file is already multi-line, so one added attribute or any formatter
+# reflow gets you there. Mutation: make the gate read `head -1` of the tag again
+# → this goes green and #5306 is back.
+new_tree
+perl -0pi -e 's{<body className="flex h-dvh flex-col font-sans antialiased">}{<body\n        className="flex h-dvh flex-col bg-white text-zinc-900 antialiased dark:bg-zinc-950 dark:text-zinc-100"\n      >}s' \
+  "$TREE/packages/web/src/app/layout.tsx"
+prepare_gate; stage; run_gate
+if [ "$RC" = "1" ] && printf '%s' "$OUT" | grep -qF "root <body> carries a hardcoded color utility"; then
+  pass "the same <body> defect split across lines is still caught"
+else
+  fail "multi-line body — expected exit 1, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 12. REACHABILITY, not just uniqueness. Cut the symlink and brand.css still
+# holds exactly one correct copy of every --code-* value — while the app can see
+# none of them and every code pane loses its ground. Check A alone reports clean.
+new_tree
+rm -f "$TREE/packages/web/brand.css"
+prepare_gate; stage; run_gate
+if [ "$RC" = "1" ] && printf '%s' "$OUT" | grep -qF "is not the shared brand.css"; then
+  pass "severing packages/web's link to brand.css is caught"
+else
+  fail "severed brand.css link — expected exit 1, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 13. A token nothing maps into the theme is a utility that does not exist:
+# `bg-code-bg` then renders as nothing at all, silently.
+new_tree
+perl -0pi -e 's/^\s*--color-code-bg:.*\n//m' "$TREE/packages/web/src/app/globals.css"
+prepare_gate; stage; run_gate
+if [ "$RC" = "1" ] && printf '%s' "$OUT" | grep -qF "does not map --color-code-bg"; then
+  pass "dropping the --color-code-bg theme mapping is caught"
+else
+  fail "missing theme mapping — expected exit 1, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 14. ⚠️ THE FONT HALF OF THE SAME DEFECT. oneDark hardcodes its own Fira Code
+# stack on BOTH the pre and the inner code tag, so a pane that overrides only
+# `background` renders in the wrong typeface while checks A–D all pass: the
+# fonts load, the tokens reference them, and the panes ignore both. apps/www
+# renders its code in JetBrains Mono, so the result is two typefaces for one
+# "identical on every surface" pane.
+new_tree
+perl -0pi -e 's/, fontFamily: "var\(--font-mono\)" \}/ }/' \
+  "$TREE/packages/web/src/ui/components/chat/sql-block.tsx"
+prepare_gate; stage; run_gate
+if [ "$RC" = "1" ] && printf '%s' "$OUT" | grep -qF 'not 2 (the pane style and the code-tag props)'; then
+  pass "a code pane that lets the Prism theme keep its own font is caught"
+else
+  fail "code-pane fontFamily — expected exit 1, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# ⚠️ AN ABSOLUTE LITERAL, for the reason its siblings carry one. PASS+FAIL is a
+# tally of the cases that RAN; nothing above notices a case that silently stopped
+# running — a `sed` whose anchor drifted, an `if` that can no longer be reached.
+# A suite reporting "15 passed" while three cases quietly vanished reads exactly
+# like success, which is the failure this whole directory exists to refuse.
+EXPECTED_CASES=15
+TOTAL=$((PASS + FAIL))
+if [ "$TOTAL" -eq "$EXPECTED_CASES" ]; then
+  pass "all $EXPECTED_CASES cases ran"
+else
+  fail "case count — expected $EXPECTED_CASES cases, $TOTAL ran (a case stopped running)"
 fi
 
 echo ""

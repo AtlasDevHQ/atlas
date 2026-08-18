@@ -32,18 +32,29 @@
 #      and no app redefines it. "Identical on every surface and mode" is a
 #      statement about drift between two correct-looking copies, so the check is
 #      that there is one copy, not that two copies currently agree.
+#   A2. …and `packages/web` can actually REACH that one copy: its `brand.css` is
+#      still the symlink, `globals.css` still imports it, and each `--code-*` is
+#      still mapped into the theme as `--color-code-*`. Uniqueness alone was half
+#      the property — cut the symlink and A still passed while every code pane
+#      lost its ground, which is the #5306 defect arriving through the blind side.
 #   B. Those values match the numbers PRODUCT.md states in prose.
 #   C. The root <body> carries no color utility at all.
 #   D. Both brand fonts load via next/font, and the type tokens point at them.
+#   D2. Every file that mounts a syntax highlighter overrides the theme's
+#      `fontFamily` on BOTH the pane and the code tag. The Prism themes ship their
+#      own Fira Code stack, so D (the fonts load, the tokens reference them) can
+#      pass while the panes render in neither.
 #   E. ⚠️ A RATCHET, not an absolute rule, on hardcoded neutral utilities in
 #      `packages/web/src`. There are ~1100 of them. A zero-tolerance check would
 #      need an allowlist longer than the codebase it guards, and an allowlist
 #      that large is a findings dump, not a gate. So the count may only go DOWN:
 #      a fourth bypass cannot land, and every conversion lowers the ceiling.
-#      This is the honest form of the acceptance criterion, and its limit is
+#      This is the honest form of the acceptance criterion, and its limits are
 #      worth stating: it does not stop someone REPLACING a tokenized utility with
-#      a hardcoded one of the same count. A, C and D do, on the surfaces that
-#      matter most.
+#      a hardcoded one of the same count, it is one global number rather than
+#      per-file, and it reads only `.ts`/`.tsx` — a hardcoded neutral in a `.css`
+#      file is outside it. A, C, D and D2 do not have those gaps, on the surfaces
+#      that matter most.
 #
 # Exit codes: 0 clean · 1 one or more findings · 2 this gate could not look.
 #
@@ -102,6 +113,29 @@ while IFS= read -r hit; do
   fail "$file" "redefines a --code-* token. There is one code surface: define it in $BRAND_CSS and reference it here. Two correct-looking copies drifting apart is what \"identical on every surface and mode\" forbids — and is how packages/web ended up with no code tokens at all while apps/www had them."
 done < <(git ls-files -- '*.css' 2>/dev/null | xargs -r grep -InE '(^|[;{[:space:]])--code-(bg|chrome|well|fg|muted|border)[[:space:]]*:' 2>/dev/null)
 
+# ── A2. …and packages/web actually REACHES them ──────────────────────────────
+# ⚠️ "Defined once" is only half the property. A checks that no app holds a
+# SECOND copy; it says nothing about whether this app can see the FIRST one. Cut
+# the symlink — or let it decay into a stale plain-file copy that happens to
+# carry no `--code-*` line — and A still passes (one definition, in brand.css),
+# B passes, C and D pass, the ratchet passes, and the gate reports the product
+# surface as conformant while `bg-code-bg` resolves to nothing and every code
+# pane loses its ground. That is the #5306 defect class arriving through the
+# gate's blind side, so the link and the import are checked directly.
+WEB_BRAND_LINK="packages/web/brand.css"
+if [ "$(readlink -f "$WEB_BRAND_LINK" 2>/dev/null)" != "$(readlink -f "$BRAND_CSS" 2>/dev/null)" ]; then
+  fail "$WEB_BRAND_LINK" "is not the shared $BRAND_CSS (it is missing, or it is a copy rather than the symlink). $WEB_GLOBALS imports it for the --code-* values; without it they are undefined and every code pane renders with no ground."
+fi
+grep -qE '^@import[[:space:]]+"[^"]*brand\.css"' "$WEB_GLOBALS" ||
+  fail "$WEB_GLOBALS" "no @import of brand.css. The --code-* values live there; nothing else defines them for this app."
+# The @theme mapping is what turns a token into a utility: no --color-code-bg,
+# no `bg-code-bg`, and the class silently renders as nothing.
+for tok in "${CODE_TOKENS[@]}"; do
+  name="${tok#--code-}"
+  grep -qE "^[[:space:]]*--color-code-${name}:[[:space:]]*var\(--code-${name}\)" "$WEB_GLOBALS" ||
+    fail "$WEB_GLOBALS" "does not map --color-code-${name} to var(--code-${name}), so the bg-code-${name} / text-code-${name} utility does not exist and any component using it renders unstyled."
+done
+
 # ── B. the values match the ones PRODUCT.md states ───────────────────────────
 # PRODUCT.md › Design Tokens: "Code windows (fixed on every surface): bg oklch
 # `0.14 0.006 167`, chrome `0.185`, well `0.10`." The prose is the commitment;
@@ -142,11 +176,18 @@ done
 tr '\n' ' ' < "$WEB_GLOBALS" | grep -qE 'body[[:space:]]*\{[^}]*bg-background' ||
   fail "$WEB_GLOBALS" "the @layer base body rule no longer applies bg-background — with no color utility on <body>, nothing sets the page ground."
 
-body_line="$(grep -nE '^\s*<body' "$WEB_LAYOUT" | head -1)"
-[ -n "$body_line" ] || die "no <body> element found in $WEB_LAYOUT — this gate cannot check the page ground."
-body_n="${body_line%%:*}"
-body_class="${body_line#*:}"
-if printf '%s' "$body_class" | grep -qE '(^|[ "])(dark:)?(bg|text|from|to|via)-(white|black|zinc|slate|gray|neutral|stone)(-[0-9]{2,3})?([ "]|$)|#[0-9a-fA-F]{3,8}'; then
+body_n="$(grep -nE '^[[:space:]]*<body([[:space:]>]|$)' "$WEB_LAYOUT" | head -1 | cut -d: -f1)"
+[ -n "$body_n" ] || die "no <body> element found in $WEB_LAYOUT — this gate cannot check the page ground."
+# ⚠️ THE WHOLE TAG, NOT THE LINE THAT OPENS IT. `<body>` is one line today, but
+# `<html>` in this same file is already written across five — so one added
+# attribute, or any formatter reflow, puts the className on its own line. A
+# line-based match would then read the bare `<body`, find no color utility, and
+# pass `bg-white … dark:bg-zinc-950` green: the exact defect this check exists to
+# catch, defeated by a line break. The @layer base check above already flattens
+# newlines for the same reason; this one has to as well.
+body_tag="$(tail -n +"$body_n" "$WEB_LAYOUT" | tr '\n' ' ' | grep -oE '^[[:space:]]*<body[^>]*>' | head -1)"
+[ -n "$body_tag" ] || die "found <body> at $WEB_LAYOUT:$body_n but could not read the tag through its closing '>' — this gate cannot check the page ground."
+if printf '%s' "$body_tag" | grep -qE '(^|[ "])(dark:)?(bg|text|from|to|via)-(white|black|zinc|slate|gray|neutral|stone)(-[0-9]{2,3})?([ "]|$)|#[0-9a-fA-F]{3,8}'; then
   fail "$WEB_LAYOUT:$body_n" "the root <body> carries a hardcoded color utility. It beats the tokenized @layer base rule, so the page ground stops following the brand: that is exactly how light mode became #fff and dark mode became neutral zinc (#5306). Remove it — the token rule already sets the ground."
 fi
 
@@ -161,6 +202,24 @@ grep -qE '^\s*--font-sans:.*--font-sora' "$WEB_GLOBALS" ||
   fail "$WEB_GLOBALS" "--font-sans does not reference --font-sora, so the loaded UI font is never used."
 grep -qE '^\s*--font-mono:.*--font-jetbrains' "$WEB_GLOBALS" ||
   fail "$WEB_GLOBALS" "--font-mono does not reference --font-jetbrains, so the loaded code font is never used."
+
+# ⚠️ D2. A LOADED FONT THE CODE PANES DO NOT USE. The syntax-highlighter themes
+# ship their own `fontFamily` — oneDark hardcodes `"Fira Code", "Fira Mono",
+# Menlo, Consolas, …` on the <pre> AND on the inner <code> — so a pane that
+# overrides only `background` renders in Fira Code no matter what --font-mono
+# says. D above passes in that state: the fonts load and the tokens reference
+# them, and the panes still ignore both. apps/www sets `font-family:
+# var(--font-mono)` on its code, so the result was the product and the marketing
+# site showing the same pane in two typefaces — the drift "identical on every
+# surface and mode" forbids. Every file that mounts a highlighter must say so.
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  hits="$(grep -cF 'fontFamily: "var(--font-mono)"' "$f" 2>/dev/null || true)"
+  # Two: the pane's own style and the code tag's. Overriding one leaves the other
+  # on the theme's font, which is how the inner block ends up mismatched.
+  [ "${hits:-0}" -ge 2 ] ||
+    fail "$f" "mounts a syntax highlighter but sets fontFamily: \"var(--font-mono)\" $hits time(s), not 2 (the pane style and the code-tag props). The Prism theme's own Fira Code stack wins wherever it is not overridden, so the pane stops using the brand mono font PRODUCT.md Principle 4 commits to."
+done < <(git ls-files -- "$WEB_SRC/*.tsx" 2>/dev/null | xargs -r grep -lF 'react-syntax-highlighter' 2>/dev/null)
 
 # ── E. the ratchet ───────────────────────────────────────────────────────────
 # ⚠️ THIS NUMBER MAY ONLY GO DOWN. It is not a target to keep meeting — it is a

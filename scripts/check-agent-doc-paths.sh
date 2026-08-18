@@ -40,9 +40,9 @@
 # PATHS. A candidate is a backticked token whose first segment is a real
 # top-level directory (`packages/`, `docs/`, `.claude/`, …) — the separator the
 # audit validated: every real finding was repo-rooted and every false positive
-# was not. It resolves if ANY of these hold:
+# was not. It resolves if ANY of these hold — all of them read GIT, never the
+# working directory, so the verdict is the same on a dev's tree and in CI:
 #
-#   • it exists on disk;
 #   • it is gitignored (`git check-ignore`) — CLAUDE.md's *"never edit
 #     `create-atlas/templates/nextjs-standalone/src/`"* names a path that is
 #     absent in a fresh checkout BECAUSE THAT IS THE RULE BEING STATED. Flagging
@@ -70,8 +70,11 @@
 # live `.claude/commands/<name>.md`, a live `.claude/skills/<name>/`, a string
 # literal in tracked source (which is what an HTTP route looks like: `/health`,
 # `/sse`, `/claim`), a Next.js app-router segment directory, or an allowlist
-# entry. Measured on this repo: 197 candidates, 29 unresolved, and the residue is
-# genuinely external — Telegram BotFather commands, upstream plugin skills.
+# entry. Measured on this repo: 194 DISTINCT `/name` tokens, 29 of them
+# unresolved, and the residue is genuinely external — Telegram BotFather
+# commands, upstream plugin skills. (The summary line counts OCCURRENCES, not
+# distinct tokens, so it prints a four-figure number for the same scan; the two
+# are different units and the labels say which.)
 #
 # ⚠️ A HISTORICAL reference is not a false positive to be exempted. A doc
 # describing what an audit found may legitimately name a deleted command; the
@@ -215,7 +218,14 @@ resolves_as_suffix() { # resolves_as_suffix TOKEN
 
 path_resolves() { # path_resolves TOKEN
   local tok="$1" ext
-  [ -e "$tok" ] && return 0
+  # ⚠️ NO `[ -e "$tok" ]` HERE, DELIBERATELY. Testing the working directory made
+  # the verdict depend on whose checkout it ran in: an UNTRACKED, un-ignored file
+  # sitting in a dev's tree resolved a reference that CI — which has only the
+  # tracked set — would report. A gate that answers differently on two machines
+  # teaches people to distrust it. Every other branch below reads git, so the
+  # answer is now the same everywhere. Tracked files match by suffix; staged ones
+  # too (`git ls-files` reads the index), so writing a doc and the file it names
+  # in one commit still passes once both are `git add`ed.
   # Both forms: a `foo/` .gitignore rule matches the path only when git can see
   # it is a directory, and the path does not exist — so the trailing slash is
   # what makes `examples/nextjs-standalone/.next` resolve at all.
@@ -281,10 +291,21 @@ ROUTE_LITERALS="$(mktemp)"; APP_SEGMENTS="$(mktemp)"
 trap 'rm -f "$TRACKED" "$UNIVERSE" "$ROUTE_LITERALS" "$APP_SEGMENTS"' EXIT
 # Two filters, and each one was measured against a way this check went wrong.
 #
-# ⚠️ COMMENT LINES ARE STRIPPED. A markdown backtick inside a TS comment looks
-# exactly like a route in source — the comment `* as \`/review-panel\` Step 6` in
-# a test file made a DELETED COMMAND resolve, silently, which is this gate's own
-# failure mode.
+# ⚠️ COMMENTS ARE STRIPPED — WHOLE LINES *AND* TRAILING ONES. A markdown
+# backtick inside a TS comment looks exactly like a route in source: the comment
+# `* as \`/review-panel\` Step 6` in a test file made a DELETED COMMAND resolve,
+# silently, which is this gate's own failure mode.
+#
+# The first cut stripped only comment-ONLY lines, which left the identical hole
+# one column over: a trailing `// legacy alias for` naming a deleted command in
+# backticks still resolved it, because the backtick before the slash is in the
+# route-segment class below. Measured on the /review-panel reference the case
+# above is named for: with such a line present, a genuine doc reference to it
+# went unreported; delete the line and it was reported. So trailing `//`,
+# `/* … */` and ` #` are cut before the extractor runs. `(^|[^:])//` spares
+# `https://…` — a `:` before the slashes means a URL scheme, not a comment.
+# Over-stripping fails SAFE here: a route literal lost is a finding gained,
+# never a finding hidden.
 #
 # ⚠️ A ROUTE SEGMENT, NOT A WORD STARTING WITH A SLASH. The match must be
 # preceded by a quote (the start of a path string: `"/health"`) or by another
@@ -296,6 +317,7 @@ trap 'rm -f "$TRACKED" "$UNIVERSE" "$ROUTE_LITERALS" "$APP_SEGMENTS"' EXIT
 # resolves a command that was deleted, which is the finding, not the exemption.
 git grep -I -h -E "/[a-z][a-z0-9-]*" -- '*.ts' '*.tsx' '*.js' '*.mjs' '*.json' '*.yml' '*.yaml' '*.sh' '*.sql' '*.css' 2>/dev/null |
   grep -vE '^[[:space:]]*(//|\*|/\*|#)' |
+  sed -E -e 's@/\*.*@@' -e 's@(^|[^:])//.*@\1@' -e 's@[[:space:]]#.*@@' |
   grep -o -E "[]\"'\`A-Za-z0-9_})*]/[a-z][a-z0-9-]*" |
   sed -E 's/^.//' | sort -u > "$ROUTE_LITERALS"
 # Next.js app-router segments: `/create-org` is a directory, not a string.
@@ -364,14 +386,17 @@ word_to_num() {
 }
 
 NUMWORDS='one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty'
+COUNT_HITS=0
 for claim in "${COUNT_CLAIMS[@]}"; do
   phrase="${claim%%|*}"; fn="${claim##*|}"
   expected="$("$fn")"
   if ! [ "$expected" -gt 0 ] 2>/dev/null; then
     die "the derivation for \"$phrase\" ($fn) produced '$expected'. A count claim checked against zero would pass nothing and fail everything — fix the derivation."
   fi
+  phrase_hits=0
   while IFS= read -r row; do
     [ -n "$row" ] || continue
+    phrase_hits=$((phrase_hits + 1))
     file="${row%%:*}"; rest="${row#*:}"; line="${rest%%:*}"; hit="${rest#*:}"
     stated="$(word_to_num "$(printf '%s' "$hit" | awk '{print $1}')")"
     [ "$stated" = "$expected" ] && continue
@@ -379,13 +404,28 @@ for claim in "${COUNT_CLAIMS[@]}"; do
     report "$file" "$line" "states \"$hit\" but the tree has $expected. ($fn)"
     echo "      → update the number, or the set it counts. Registered count phrases live in scripts/check-agent-doc-paths.sh." >&2
   done < <(git grep -I -n -o -iE "(${NUMWORDS}|[0-9]+)[[:space:]]+${phrase}" -- . "${EXCLUDES[@]}" 2>/dev/null | sed 's/^\([^:]*\):\([0-9]*\):/\1:\2:/' | sort -u)
+  # ⚠️ THIRD VACUITY FLOOR, and the one this check was missing. Checks 1 and 2
+  # each refuse to report "clean" after reading nothing; check 3 did not, so a
+  # registered phrase that matched NOWHERE produced no iterations, no finding and
+  # no warning — while the summary line below kept printing "5 registered phrases
+  # checked". That is a gate asserting a measurement it did not take, which is the
+  # failure this whole family of guards exists to refuse.
+  #
+  # It is not hypothetical arithmetic: "bounded contexts" and "system-wide
+  # decisions" each appear EXACTLY ONCE in the tree (both in CLAUDE.md). Rewording
+  # one sentence silently retires two of the five checks. A phrase nothing states
+  # is a phrase to unregister deliberately, not to keep claiming.
+  if [ "$TRACKED_N" -ge "$BIG_TREE" ] && [ "$phrase_hits" -eq 0 ]; then
+    die "the registered count phrase \"$phrase\" appears nowhere in $TRACKED_N tracked files. This check would report clean having verified NOTHING — either the prose was reworded (restate the count, or reword the phrase here) or the claim is gone (drop it from COUNT_CLAIMS deliberately)."
+  fi
+  COUNT_HITS=$((COUNT_HITS + phrase_hits))
 done
 
 # ── verdict ──────────────────────────────────────────────────────────────────
 echo ""
 echo "  paths:    $PATH_CANDIDATES repo-rooted candidates checked"
 echo "  commands: $CMD_CANDIDATES \`/name\` candidates checked"
-echo "  counts:   ${#COUNT_CLAIMS[@]} registered phrases checked (an unregistered count is NOT checked)"
+echo "  counts:   ${#COUNT_CLAIMS[@]} registered phrases, $COUNT_HITS occurrence(s) checked (an unregistered count is NOT checked)"
 echo "  allowlist: ${#ALLOW_KIND[@]} entries"
 
 if [ "$FINDINGS" -gt 0 ]; then

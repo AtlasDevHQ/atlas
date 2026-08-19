@@ -77,6 +77,49 @@
  * measurement — which is `brain_warehouse_entity_success`'s own index argument,
  * one table over.
  *
+ * ## This file is on the promotion guard's allowlist, and why it had to be
+ *
+ * `object_cmp` is a gated identity column: `check-brain-fact-promotion.sh`
+ * refuses an UPDATE naming one outside the alias-approval seam, because a key
+ * decides what a claim COLLIDES with and a collision is what stamps `valid_to`.
+ * This module is allowlisted (#5321) rather than routed through that seam, on
+ * an argument that runs in the opposite direction to the seam's own.
+ *
+ * The decide transaction RE-KEYS — it moves a claim from one identity to
+ * another, so it can both create and destroy collisions, which is why it needs
+ * the advisory namespace and shows a reviewer a preview. This writer only ever
+ * NULLs. Per the section above, a NULL side makes both predicates fall to
+ * not-true, and at the object a proven difference is what DRIVES supersession —
+ * so the statement can only ever subtract a supersession trigger. The hazard
+ * the column is gated for, *a second writer stamping `valid_to` on a pair
+ * nobody arbitrated*, is unreachable from a write that cannot add a collision.
+ *
+ * The SELECT→UPDATE race is closed, and not here: #5024 made
+ * `SUPERSEDE_STAMP_SQL` re-check the collision join inside its own UPDATE, so a
+ * de-merge landing between the publish gate's unlocked SELECT and its stamp
+ * makes it stamp FEWER rows, never more, with `promoteBrainFacts` warning on
+ * the shortfall. ⚠️ What that does NOT close, recorded rather than glossed:
+ * the re-check is per TARGET, not per PAIR, so a retirement breaking one pair
+ * while another still collides leaves a `supersedes` edge whose attribution no
+ * longer holds. `supersedeStampSql`'s header already documents that class as
+ * accepted — it is a stamp with the wrong attribution, not a belief retired
+ * with no live collision. Closing it needs `promoteBrainFacts`' one-array
+ * `oldIds` shape to become per-pair, which is that caller's report contract.
+ *
+ * Taking `IDENTITY_MUTATION_LOCK_NAMESPACE` here was the other candidate and is
+ * worse: `pg_advisory_xact_lock` releases at COMMIT, and this runs inside the
+ * minting transaction by construction (see {@link retireEntityComparables}), so
+ * it would hold the publish namespace for the rest of a full producer run —
+ * the wedged-by-ingest outcome `reconcile.ts`'s namespace note says publish
+ * deliberately avoids — to buy serialization the stamp guard already makes
+ * unnecessary.
+ *
+ * An allowlist entry exempts a FILE, so this one also exempts the module for
+ * `status`, `visible_to`, `valid_to` and the other four identity columns. It
+ * writes none of them, and `__tests__/entity-comparable-retire.test.ts` is the
+ * column-scoped assertion that keeps it that way — the guard cannot, on a file
+ * it has been told to skip. A new gated write here needs its own argument.
+ *
  * ⚠️ **`object_cmp` ONLY, and `subject_cmp` is deliberately left alone.** The
  * polarity is inverted between the two positions (`schema.ts` states it at the
  * column): at the object a proven difference DRIVES supersession, and at the

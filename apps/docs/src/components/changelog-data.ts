@@ -20,6 +20,21 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.12",
+    title: "Every Member of a Connection Group",
+    date: "2026-08-19",
+    summary:
+      "If your connection group holds more than one datasource, Atlas was building the Company Atlas from only one of them \u2014 whichever sorted first alphabetically \u2014 and describing the result as though it covered them all. On our own three-region setup that meant facts derived from one region out of three, stated as facts about the company. Atlas now reads every datasource in the group and describes their union, and each fact records which datasource it came from. Where two datasources hold rows with the same primary key, Atlas refuses the entity and names them instead of merging two rows into one thing, because that merge cannot be undone.",
+    highlights: [
+      "The Company Atlas is now built from every datasource in an entity's connection group, not the alphabetically-first one \u2014 a multi-region or sharded group is described as a whole rather than as one of its parts",
+      "Each fact records which datasource it was read from, so an audit of a group-scoped fact can answer which database, not just which group",
+      "Two datasources holding a row with the same primary key now refuse the entity and name both, rather than filing two different rows as one \u2014 an identity merge with no undo",
+      "\u26a0\ufe0f Breaking, if a connection group holds copies of one database: those datasources hold the same primary keys, so enrolled entities in that group will now be refused rather than produced. Enroll the entity against a group containing one of them",
+      "\u26a0\ufe0f Worth checking, if a connection group mixes environments: production and staging are now read together and described as one population. Point enrollment at a group that holds only what you want described",
+      "The row limit that protects the review queue now applies across a group's datasources together, so a multi-datasource entity cannot file several times the limit in one run",
+    ],
+  },
+  {
     version: "v0.2.11",
     title: "Identity Activation",
     date: "2026-08-19",

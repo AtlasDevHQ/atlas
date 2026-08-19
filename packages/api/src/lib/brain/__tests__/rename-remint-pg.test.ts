@@ -59,16 +59,29 @@
  * `brain_entity`. Same subject, disjoint machinery. When 5315 lands, the two sit
  * beside each other as the join-side and producer-side halves of #5233.
  *
- * ## What ships skipped, and why
+ * ## What the remedy fixed, and what it deliberately did not (#5319/#5320/#5321)
  *
- * The four falsifiers assert what a REMEDY must deliver. They fail today, and
- * they are deliberately NOT inverted into characterization tests that pass —
- * that would pin the hazard as correct, the shape this tree refuses elsewhere.
- * The controls beside them are active and green, and they are what make the
- * skipped rows evidence rather than an opinion: without them a producer whose
- * store path was simply broken would satisfy every falsifier trivially.
+ * The four falsifiers assert what a REMEDY must deliver. Two of them now pass
+ * and two are still skipped, and the split is the finding rather than a
+ * to-do list:
  *
- * Un-skip when #5233's remedy lands.
+ *   the old name's entries orphan     FIXED    reconciled away in the minting
+ *                                              transaction, once the old name
+ *                                              leaves the producer's reach
+ *   resolvableIds poisons the norms   FIXED    the store resolves the entity again
+ *   ids re-mint on a rename           OPEN     by design — see below
+ *   …and one row wears two comparables OPEN    the same root, same reason
+ *
+ * The two that remain open both assert that the re-mint does not HAPPEN, and
+ * making that true means changing `warehouseRowId`'s digest so a rename does not
+ * move it. #5233 deprioritises that deliberately: the comparable vocabulary is
+ * parsed by three consumers and rides the region round-trip, so the blast radius
+ * dwarfs the poisoning it would fix. The remedy that landed instead removes the
+ * two COSTS of the re-mint — a blind store and a fact retired by its own twin —
+ * and leaves the re-mint itself measured, named and cheap to find.
+ *
+ * They stay un-inverted for the original reason: inverting them would pin the
+ * re-mint as correct, and it is not correct — merely not yet worth its cure.
  *
  *   bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas
  */
@@ -322,7 +335,25 @@ describeIfPg("#5316 semantic-layer rename (real Postgres)", () => {
 
   // -- prediction 1: re-mint -------------------------------------------------
 
-  // SKIPPED, and deliberately not inverted. Asserts what a remedy must deliver.
+  // ⚠️ **STILL SKIPPED after #5233's remedy landed, and this is the honest
+  // reason rather than an oversight.**
+  //
+  // #5319/#5320/#5321 do not make an id survive a rename, and they were never
+  // going to: the id is `wh_<sha256 of (workspace, entity, primary key)>`, so
+  // stability across a rename means changing the id scheme itself. #5233
+  // deprioritises exactly that — the comparable vocabulary is parsed by three
+  // consumers and carried across the region round-trip, which is a far larger
+  // blast radius than the poisoning it would fix.
+  //
+  // What DID land is the remedy for the two costs the re-mint imposes: the old
+  // name's entries are reconciled away so the store resolves again (#5320, the
+  // two falsifiers below now pass), and the comparables of the ids it replaced
+  // are retired so nothing supersedes its own twin (#5319). This test and the
+  // one after it assert a THIRD thing — that the re-mint does not happen at all
+  // — which remains true of the tree and unfixed by design.
+  //
+  // Left un-inverted for the original reason: inverting it would pin the re-mint
+  // as correct, and it is not correct, merely not worth the cure yet.
   it.skip(
     "a rename alone must not re-mint the ids of warehouse rows that did not change",
     async () => {
@@ -344,7 +375,8 @@ describeIfPg("#5316 semantic-layer rename (real Postgres)", () => {
     PG_TEST_TIMEOUT_MS,
   );
 
-  // SKIPPED for the same reason. The consequence of prediction 1 at the column
+  // SKIPPED for the reason above — the re-mint itself is unfixed. The
+  // consequence of prediction 1 at the column
   // that carries it: `subject_cmp` is where the id reaches `brain_facts`.
   //
   // ⚠️ It asserts ONE comparable per warehouse row, NOT the absence of a stamp —
@@ -375,8 +407,11 @@ describeIfPg("#5316 semantic-layer rename (real Postgres)", () => {
 
   // -- prediction 2: orphan --------------------------------------------------
 
-  // SKIPPED for the same reason.
-  it.skip(
+  // ⚠️ UN-SKIPPED by #5320, and NOT inverted — it always asserted what a remedy
+  // must deliver, and `writeEntityEntries` now delivers it: the old name is no
+  // longer in the producer's reach, so its entries are reconciled away inside
+  // the minting transaction.
+  it(
     "a rename must not leave the old name's entries behind with no path to deletion",
     async () => {
       await enroll(OLD_NAME, "name", true);
@@ -397,11 +432,13 @@ describeIfPg("#5316 semantic-layer rename (real Postgres)", () => {
 
   // -- prediction 3: the poisoning -------------------------------------------
 
-  // SKIPPED for the same reason. This is the arm #5316 asks about last and the
+  // ⚠️ UN-SKIPPED by #5320 for the reason above. This is the arm #5316 asks about last and the
   // one that costs the most: if both sets go live under the SAME canonical norm
   // with DIFFERENT ids, `resolvableIds` marks the norm ambiguous and the store
   // stops answering for that entity — permanently, and with no error anywhere.
-  it.skip(
+  // It is the assertion that says the remedy bought back the thing that mattered:
+  // the id still moved, and the store resolves anyway.
+  it(
     "…and the shared norms must still resolve after a rename",
     async () => {
       await enroll(OLD_NAME, "name", true);

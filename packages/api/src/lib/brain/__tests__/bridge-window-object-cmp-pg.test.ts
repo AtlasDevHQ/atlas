@@ -28,6 +28,12 @@ import { promoteBrainFacts } from "@atlas/api/lib/content-mode/adapters/brain-fa
 import { identityAlias, slotKey } from "@atlas/api/lib/brain/identity";
 import { declarePredicateCardinality } from "@atlas/api/lib/brain/cardinality";
 import { comparableValue } from "@atlas/api/lib/brain/object-cmp";
+import {
+  buildEntityEntry,
+  writeEntityEntries,
+  type EntityStoreEntry,
+} from "@atlas/api/lib/brain/entity-store";
+import { warehouseRowId } from "@atlas/api/lib/brain/warehouse-producer";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -129,12 +135,91 @@ describeIfPg("#5233 bridge-window object_cmp (real Postgres)", () => {
     return rows[0]!;
   }
 
-  // ⚠️ SKIPPED, and deliberately not inverted into a characterization test.
-  // This asserts the behaviour the remedy must DELIVER; it fails today, which is
-  // the answer to #5233's AC-4. Inverting it would pin the hazard as correct —
-  // the shape this codebase refuses elsewhere ("an unexercised guard reported as
-  // working"). Un-skip when the remedy lands. Run it now to see the stamp.
-  it.skip(
+  /**
+   * The entity the bridge-window facts are about, and the two ids it wears
+   * either side of the destination's first producer run.
+   *
+   * Both are REAL digests rather than the hand-written `wh_SOURCE_…` strings
+   * this file first used, and that matters now that the remedy is under test:
+   * `resolvableIds` and `entityEdgeProposals` both refuse an id no producer
+   * could have minted, so a fabricated one would exercise the unminted arm
+   * instead of the re-mint. The source id is a digest over the SOURCE
+   * workspace — which is exactly what makes it foreign here.
+   */
+  const ENTITY = "accounts";
+  const PRIMARY_KEY = "1";
+  const SOURCE_WORKSPACE = "ws-5233-source-region";
+  const sourceId = warehouseRowId(SOURCE_WORKSPACE, ENTITY, PRIMARY_KEY);
+
+  /** One store entry, built through the only mint there is. */
+  function storeEntry(workspaceId: string, entityId: string): EntityStoreEntry {
+    const built = buildEntityEntry({
+      entityId: entityId as ReturnType<typeof warehouseRowId>,
+      entity: ENTITY,
+      keySurface: PRIMARY_KEY,
+      canonicalSurface: "Acme Corp",
+    });
+    expect(built, "the fixture entry was refused — the test would prove nothing").not.toBeNull();
+    // Non-null asserted through the expect above rather than with `!`, which
+    // this tree minimises: a refused entry must fail loudly here and not read
+    // as an empty store two statements later.
+    return built as EntityStoreEntry;
+  }
+
+  /**
+   * THE MINTING TRANSACTION — the destination's first producer run, as the
+   * remedy sees it.
+   *
+   * Seeds the imported entry (source-workspace id, the bridge the window rides
+   * on), then replaces it with a freshly-minted local one through the SHIPPED
+   * `writeEntityEntries`. That call is the whole subject: #5319's remedy rides
+   * inside it, so driving it here measures the shipped path rather than a
+   * paraphrase of it. Returns the new id.
+   */
+  async function remintThroughFirstProducerRun(workspaceId: string): Promise<string> {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const exec = { query: (sql: string, params?: unknown[]) => client.query(sql, params) };
+      // The bridge: what the region import left behind.
+      await writeEntityEntries(exec, {
+        workspaceId,
+        entity: ENTITY,
+        entries: [storeEntry(workspaceId, sourceId)],
+        entityNamesInReach: [ENTITY],
+        snapshotAt: new Date("2026-08-18T09:00:00.000Z"),
+      });
+      // The first local run: same warehouse row, an id minted over THIS
+      // workspace. This is the write that retires the comparables above.
+      const localId = warehouseRowId(workspaceId, ENTITY, PRIMARY_KEY);
+      await writeEntityEntries(exec, {
+        workspaceId,
+        entity: ENTITY,
+        entries: [storeEntry(workspaceId, localId)],
+        entityNamesInReach: [ENTITY],
+        snapshotAt: new Date("2026-08-18T10:00:00.000Z"),
+      });
+      await client.query("COMMIT");
+      return localId;
+    } catch (err) {
+      await client.query("ROLLBACK").catch((rollbackErr: unknown) => {
+        // A failed ROLLBACK must not mask the error that caused it, but it also
+        // must not vanish — the connection is about to be released to the pool.
+        console.debug("bridge-window fixture: ROLLBACK failed", rollbackErr);
+      });
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  // ⚠️ UN-SKIPPED by #5319's remedy, and NOT inverted — it still asserts the
+  // behaviour a remedy must deliver, and now something delivers it. The scenario
+  // is unchanged; what changed is that the re-mint happens through the shipped
+  // `writeEntityEntries` instead of being hand-simulated by writing two ids into
+  // `brain_facts` and hoping. That is the point of the fix: the mint is what
+  // retires, so a test that never mints could never have gone green.
+  it(
     "an id re-mint alone must not retire a fact making the identical claim",
     async () => {
       const ws = "ws-5233-bridge";
@@ -147,30 +232,46 @@ describeIfPg("#5233 bridge-window object_cmp (real Postgres)", () => {
         episodeId: ep,
         subject: "alice",
         object: "Acme Corp",
-        entityId: "wh_SOURCE_workspace_minted_id",
+        entityId: sourceId,
         status: "published",
       });
 
-      // Written after the destination's first producer run re-minted the id.
-      // Same subject, same predicate, SAME OBJECT SURFACE — only the id moved.
+      // The destination's first producer run. It mints a fresh id for the same
+      // warehouse row and, in the same transaction, retires the comparables of
+      // the id it replaced (#5319).
+      const localId = await remintThroughFirstProducerRun(ws);
+      expect(localId, "the re-mint produced the same id — the scenario collapsed").not.toBe(sourceId);
+
+      // Written after that run. Same subject, same predicate, SAME OBJECT
+      // SURFACE — only the id moved.
       const afterRun = await seedFact({
         workspaceId: ws,
         episodeId: ep,
         subject: "alice",
         object: "Acme Corp",
-        entityId: "wh_DESTINATION_freshly_minted_id",
+        entityId: localId,
       });
 
-
-      const report = await publish(ws);
+      await publish(ws);
       const bridgeState = await factState(bridge);
-
 
       expect(
         bridgeState.valid_to,
         "a bridge-window fact was retired by a fact asserting the SAME object surface — the id re-mint alone drove the stamp",
       ).toBeNull();
       expect(afterRun).toBeTruthy();
+
+      // ⚠️ The remedy has to be the ABSTAIN and not some other reason the stamp
+      // did not fire. Without this line the test would pass just as well if
+      // supersession had been switched off wholesale.
+      const { rows } = await pool.query<{ object_cmp: string | null }>(
+        `SELECT object_cmp FROM brain_facts WHERE id = $1`,
+        [bridge],
+      );
+      expect(
+        rows[0]?.object_cmp,
+        "the bridge fact still carries the foreign id, so the stamp was avoided by something other than retirement",
+      ).toBeNull();
     },
     PG_TEST_TIMEOUT_MS,
   );
@@ -188,17 +289,17 @@ describeIfPg("#5233 bridge-window object_cmp (real Postgres)", () => {
         workspaceId: ws, episodeId: ep, subject: "alice", object: "Acme Corp",
         entityId: "wh_ONE_stable_id",
       });
-      const report = await publish(ws);
+      await publish(ws);
       const state = await factState(first);
       expect(state.valid_to).toBeNull();
     },
     PG_TEST_TIMEOUT_MS,
   );
 
-  // ⚠️ SKIPPED for the same reason — see above. Proves the hazard is NOT an
-  // artefact of the source-less tier carve-out: it fires on a real extraction
-  // provenance too.
-  it.skip(
+  // ⚠️ UN-SKIPPED for the same reason — see above. Proves the remedy is NOT an
+  // artefact of the source-less tier carve-out: it holds on a real extraction
+  // provenance too, which is where the hazard used to fire.
+  it(
     "FIDELITY — it still stamps with a real extraction provenance (source: slack), not only the no-source carve-out",
     async () => {
       const ws = "ws-5233-slack";
@@ -206,13 +307,14 @@ describeIfPg("#5233 bridge-window object_cmp (real Postgres)", () => {
       const prov = { actor: "slack:U1", source: "slack", producer: "extraction:v1" };
       const bridge = await seedFact({
         workspaceId: ws, episodeId: ep, subject: "alice", object: "Acme Corp",
-        entityId: "wh_SOURCE_id", status: "published", provenance: prov,
+        entityId: sourceId, status: "published", provenance: prov,
       });
+      const localId = await remintThroughFirstProducerRun(ws);
       await seedFact({
         workspaceId: ws, episodeId: ep, subject: "alice", object: "Acme Corp",
-        entityId: "wh_DEST_id", provenance: prov,
+        entityId: localId, provenance: prov,
       });
-      const report = await publish(ws);
+      await publish(ws);
       const state = await factState(bridge);
       expect(
         state.valid_to,

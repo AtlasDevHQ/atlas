@@ -52,6 +52,7 @@
 import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { lexicalNorm } from "@atlas/api/lib/brain/identity";
+import { retireEntityComparables } from "@atlas/api/lib/brain/entity-comparable-retire";
 import type { EntityResolver, ReconcileExecutor } from "@atlas/api/lib/brain/reconcile";
 import type { AliasProposalInput } from "@atlas/api/lib/brain/vocabulary-decide";
 // ⚠️ `warehouse-producer.ts` imports THIS module for values, so this edge closes
@@ -342,6 +343,84 @@ export function unmintedIdCount(entries: readonly StoredEntityNorms[]): number {
  */
 export const ENTITY_STORE_DELETE_SQL = `DELETE FROM brain_entity WHERE workspace_id = $1 AND entity = $2`;
 
+/**
+ * The ids this entity's entries carry RIGHT NOW, read before the DELETE
+ * replaces them (#5319).
+ *
+ * The whole input to comparable retirement, and the reason it is a read rather
+ * than a diff computed from the run's own candidates: the set that matters is
+ * what the STORE holds, not what the producer believes it wrote last time. A
+ * run that was refused, a hand-edited row, an imported entry from another
+ * region — none of them are in this run's memory, and every one of them can be
+ * carrying an id that facts still name.
+ *
+ * Exported for {@link ENTITY_STORE_DELETE_SQL}'s reason.
+ */
+export const ENTITY_STORE_LIVE_IDS_SQL = `SELECT entity_id, key_norm FROM brain_entity
+    WHERE workspace_id = $1 AND entity = $2`;
+
+/**
+ * The #5320 reconciliation — entries keyed under a name that has stopped being
+ * this entity's name.
+ *
+ * Exported for {@link ENTITY_STORE_DELETE_SQL}'s reason.
+ *
+ * ## What the three predicates do, and why none of them can go
+ *
+ * `entity <> $2` — never touch the entity being written; its own snapshot is
+ * {@link ENTITY_STORE_DELETE_SQL}'s job and doing it twice would delete rows the
+ * INSERT is about to restore.
+ *
+ * `NOT (entity = ANY($3))` — the row is keyed under a name the producer no
+ * longer reaches. This is the half that makes the statement a RENAME
+ * reconciliation rather than a homonym purge. Two entities that are both
+ * enrolled and both legitimately name a row `Acme Corp` are ordinary data — the
+ * store abstains for that norm and `entityEdgeProposals` counts it in
+ * `ambiguous` — and deleting one of them would be picking a winner the store
+ * spends {@link resolvableIds} refusing to pick.
+ *
+ * `key_norm = ANY($4) OR canonical_norm = ANY($4)` — the row shares a norm with
+ * what is being written, which is the POISONING itself rather than a proxy for
+ * it. An out-of-reach entry that collides with nothing is stale and recoverable
+ * (it resolves to an id no live fact carries; nothing over-matches) and it is
+ * #5321's reaper's business, on an age rule with its own argument. This
+ * statement deletes only where the collision is, so it does not need to know
+ * how long anything has been there and cannot be wrong about a transient
+ * outage.
+ *
+ * ⚠️ Together they are why this is not "delete everything out of reach". That
+ * statement would be simpler, would also clear renames, and would reap an
+ * un-enrolled entity's entries the instant its enrollment went — with no age
+ * gate, on an irreversible DELETE, which is the exact trade #5233's AC-1 spends
+ * its whole argument refusing.
+ *
+ * ## What "no longer in reach" actually includes, stated plainly
+ *
+ * `reach.entities` is derived from ENROLLED PAIRS (`enrollment.ts`), so an
+ * entity with zero enrolled dimensions is not in reach — and that covers a
+ * temporary state, not only a permanent one. An admin who un-enrolls every
+ * dimension of `contacts` while reconfiguring it has, for that window, made
+ * `contacts` indistinguishable from an entity that was renamed away. If
+ * `accounts` runs in that window and shares a norm, this statement deletes the
+ * `contacts` entries that collide with it.
+ *
+ * That is accepted rather than overlooked, on two grounds. The first is that the
+ * alternative is worse: #5320 is explicit that the poisoning must not wait on
+ * the reaper, because a poisoned store already resolves nothing and routing its
+ * repair through an age rule asks the broken thing to repair itself. The second
+ * is that what is deleted here is REGENERABLE — a store entry is a snapshot of a
+ * warehouse read, and re-enrolling `contacts` restores every row of it, with the
+ * identical ids, on that entity's next run. It is emphatically not the same
+ * class of loss as a retired comparable, which is why the retirement beside it
+ * is gated far more narrowly (on a re-mint, never on a mere disappearance).
+ */
+export const ENTITY_STORE_RENAME_RECONCILE_SQL = `DELETE FROM brain_entity
+    WHERE workspace_id = $1
+      AND entity <> $2
+      AND NOT (entity = ANY($3::text[]))
+      AND (key_norm = ANY($4::text[]) OR canonical_norm = ANY($4::text[]))
+RETURNING entity_id, key_norm`;
+
 /** Exported for {@link ENTITY_STORE_DELETE_SQL}'s reason. */
 export const ENTITY_STORE_INSERT_SQL = `INSERT INTO brain_entity
      (workspace_id, entity_id, entity, key_surface, key_norm, canonical_surface, canonical_norm, snapshot_at)
@@ -385,15 +464,46 @@ export const ENTITY_STORE_INSERT_SQL = `INSERT INTO brain_entity
  *
  * It is the recoverable direction (an entry resolves to an id no live fact
  * carries; nothing over-matches, because the ids are unique per row) and the
- * fix is a reaper over entities no longer in reach — deliberately NOT in this
- * slice, because deleting entries for an entity the producer did not read this
- * run needs its own argument about what "no longer in reach" means when a
- * datasource is merely down. Tracked in #5233.
+ * fix is {@link reapUnreachedEntityEntries}, on the age rule #5321 settled.
  *
  * The `ON CONFLICT` arm is not dead code the DELETE makes unreachable — it is
  * what keeps the statement correct if two entities ever legitimately claim one
  * id, and it is one line against a duplicate-key 500 in a transaction that also
  * holds the run's facts.
+ *
+ * ## It now does THREE things, and the composition is the point (#5319, #5320)
+ *
+ * A snapshot write that changes which ids are live has two consequences the
+ * store cannot leave to a caller, because a caller that forgets either one
+ * reintroduces a silent, permanent failure:
+ *
+ *   1. **Reconcile away a stale NAME** (#5320) — entries keyed under a name that
+ *      has stopped being this entity's name, sharing this snapshot's norms. See
+ *      {@link ENTITY_STORE_RENAME_RECONCILE_SQL}. Left behind, both sets go live
+ *      with the same canonical norms and different ids, {@link resolvableIds}
+ *      poisons every shared norm, and the store resolves NOTHING for that entity
+ *      — permanently, with no error. #5316 measured that arriving from an
+ *      ordinary semantic-layer rename inside one region, no migration involved.
+ *   2. **Retire the comparables of the ids it dropped** (#5319) — see
+ *      `entity-comparable-retire.ts`. Left behind, a fact carrying an old id and
+ *      a fact carrying the new one are *provably different* at `object_cmp`
+ *      while their `object_key` is byte-identical, and the second retires the
+ *      first at the publish gate. PR 5315 measured the `valid_to` stamp.
+ *
+ * ⚠️ **Both are done HERE rather than beside the call, deliberately.** #5319
+ * requires the retirement to ride in the minting transaction, and the only way
+ * to guarantee that for every future caller is for the mint itself to do it —
+ * this function already knows the ids going out and the ids coming in, and it is
+ * already inside the transaction. A second call the producer must remember is a
+ * call the next writer of a second mint path will not make, and the failure is
+ * invisible when they don't.
+ *
+ * The ORDER matters and is not the obvious one: reconcile first, so the orphan
+ * ids join the retirement set; read the live ids before the DELETE, because
+ * after it there is nothing to read. What gets retired is
+ * `(orphans ∪ previously live) − newly written` — an id that survives this write
+ * is still live and its comparables must NOT be touched, which is what keeps a
+ * plain re-run from retiring the corpus it just corroborated.
  */
 export async function writeEntityEntries(
   tx: ReconcileExecutor,
@@ -402,21 +512,297 @@ export async function writeEntityEntries(
     readonly entity: string;
     readonly entries: readonly EntityStoreEntry[];
     readonly snapshotAt: Date;
+    /**
+     * Every entity name the producer currently reaches — `reach.entities`.
+     *
+     * REQUIRED, and not optional with a safe default. An optional reach would
+     * make the #5320 reconciliation opt-in, and the caller most likely to omit
+     * it is a future second mint path, which is exactly the caller whose entries
+     * would poison the store. Pass `[entity]` if a caller genuinely has no
+     * wider reach — that spelling says "nothing else is enrolled" out loud
+     * rather than by omission.
+     */
+    readonly entityNamesInReach: readonly string[];
   },
-): Promise<void> {
-  const { workspaceId, entity, entries, snapshotAt } = params;
+): Promise<EntityStoreWriteOutcome> {
+  const { workspaceId, entity, entries, snapshotAt, entityNamesInReach } = params;
+
+  // (1) The rename reconciliation, BEFORE the snapshot's own DELETE. The norms
+  // it matches on are this snapshot's, so it has to run while they are still in
+  // hand, and its victims have to be known before the retirement set is built.
+  const norms = [...new Set(entries.flatMap((e) => [e.keyNorm, e.canonicalNorm]))];
+  let orphans: readonly DroppedEntityRow[] = [];
+  if (norms.length > 0) {
+    const { rows } = await tx.query(ENTITY_STORE_RENAME_RECONCILE_SQL, [
+      workspaceId,
+      entity,
+      [...entityNamesInReach],
+      norms,
+    ]);
+    orphans = readDroppedRows(rows);
+  }
+
+  // (2) The ids that are live for THIS entity right now. Read before the DELETE
+  // for the obvious reason, and read from the table rather than remembered from
+  // a previous run for the less obvious one — see `ENTITY_STORE_LIVE_IDS_SQL`.
+  const { rows: liveRows } = await tx.query(ENTITY_STORE_LIVE_IDS_SQL, [workspaceId, entity]);
+  const liveBefore = readDroppedRows(liveRows);
+
   await tx.query(ENTITY_STORE_DELETE_SQL, [workspaceId, entity]);
-  if (entries.length === 0) return;
-  await tx.query(ENTITY_STORE_INSERT_SQL, [
-    workspaceId,
-    entity,
-    snapshotAt.toISOString(),
-    entries.map((e) => e.entityId),
-    entries.map((e) => e.keySurface),
-    entries.map((e) => e.keyNorm),
-    entries.map((e) => e.canonicalSurface),
-    entries.map((e) => e.canonicalNorm),
-  ]);
+  if (entries.length > 0) {
+    await tx.query(ENTITY_STORE_INSERT_SQL, [
+      workspaceId,
+      entity,
+      snapshotAt.toISOString(),
+      entries.map((e) => e.entityId),
+      entries.map((e) => e.keySurface),
+      entries.map((e) => e.keyNorm),
+      entries.map((e) => e.canonicalSurface),
+      entries.map((e) => e.canonicalNorm),
+    ]);
+  }
+
+  // (3) Retire the comparables of ids that were RE-MINTED — and only those.
+  //
+  // ⚠️ **The gate is "some new entry claims this row's `key_norm` under a
+  // DIFFERENT id", not "this id is no longer in the store", and the difference
+  // is a defect this shipped with once.** `warehouseRowId` digests
+  // `(workspace, entity, primary key)` and NOT the canonical surface, so an id
+  // that leaves the store can absolutely come back identical:
+  //
+  //   - a human blanks an account's NAME in the CRM. The row lands in
+  //     `unnamedRows` (ordinary data on a nullable column), contributes no
+  //     entry, and its id drops out. Re-typing the name re-mints the SAME id and
+  //     restores the entry — but a retirement would already have blanked
+  //     `object_cmp` on every fact about it, with no inverse.
+  //   - a human un-names the DIMENSION. `entries` is empty, so every one of this
+  //     entity's ids drops out at once and the whole entity's corpus is blanked
+  //     in one transaction — for an action the refusal text describes as merely
+  //     clearing the store entries.
+  //
+  // Both are reversible admin actions, and both were producing an irreversible
+  // corpus write. `key_norm` is the primary key's norm, so "the same warehouse
+  // row now answers to a different id" is exactly the re-mint #5319 is about,
+  // and it is the only condition under which the old comparable is provably
+  // stale rather than merely absent.
+  //
+  // A genuinely DELETED warehouse row therefore retires nothing: no new entry
+  // claims its key, its id may return if the row does, and its facts keep a
+  // comparable that over-matches nothing.
+  const mintedByKeyNorm = new Map<string, string>();
+  for (const e of entries) mintedByKeyNorm.set(e.keyNorm, e.entityId);
+  const retiredIds = [
+    ...new Map([...orphans, ...liveBefore].map((row) => [row.entityId, row])).values(),
+  ]
+    .filter((row) => {
+      const minted = mintedByKeyNorm.get(row.keyNorm);
+      return minted !== undefined && minted !== row.entityId;
+    })
+    .map((row) => row.entityId);
+  const comparablesRetired = await retireEntityComparables(tx, { workspaceId, entityIds: retiredIds });
+
+  if (orphans.length > 0) {
+    log.warn(
+      { workspaceId, entity, orphans: orphans.length, orphanIds: sampleIds(orphans.map((o) => o.entityId)) },
+      "Entity store: deleted store entries keyed under a name that is no longer this entity's and no " +
+        "longer in reach, whose norms collided with this snapshot's — the store had gone blind to " +
+        "this entity while they were live. A semantic-layer rename is the usual cause (#5316)",
+    );
+  }
+  return { orphansDeleted: orphans.length, retiredIds, comparablesRetired };
+}
+
+/** What one snapshot write changed beyond its own rows — for the run report. */
+export interface EntityStoreWriteOutcome {
+  /** #5320 — entries removed because their key name had gone stale. */
+  readonly orphansDeleted: number;
+  /** Ids that were live before this write and are not live after it. */
+  readonly retiredIds: readonly string[];
+  /** #5319 — facts whose object comparable now abstains. */
+  readonly comparablesRetired: number;
+}
+
+/** One row that left `brain_entity`, with the handle the re-mint gate needs. */
+interface DroppedEntityRow {
+  readonly entityId: string;
+  /** The PRIMARY KEY's norm — what says two rows are the same warehouse row. */
+  readonly keyNorm: string;
+}
+
+/**
+ * `(entity_id, key_norm)` off rows this module's own statements returned.
+ *
+ * Narrowed rather than asserted: `ReconcileExecutor.query` answers
+ * `readonly unknown[]`, and a `as { entity_id: string }` here is the unchecked
+ * door {@link EntityStoreEntry.entityId} argues about one column over.
+ *
+ * A row missing either field is DROPPED rather than defaulted. Both directions
+ * of a default are wrong here and one of them is dangerous: an empty
+ * `entity_id` would be handed to a retirement set, and an empty `key_norm`
+ * would match nothing in `mintedByKeyNorm` and silently exempt a genuinely
+ * re-minted row from retirement. Neither is reachable through this module's own
+ * columns (0200 CHECKs both non-empty); the guard is for the second writer.
+ */
+function readDroppedRows(rows: readonly unknown[]): readonly DroppedEntityRow[] {
+  const out: DroppedEntityRow[] = [];
+  for (const row of rows) {
+    if (typeof row !== "object" || row === null) continue;
+    const record = row as Record<string, unknown>;
+    const entityId = record.entity_id;
+    const keyNorm = record.key_norm;
+    if (typeof entityId !== "string" || entityId === "") continue;
+    if (typeof keyNorm !== "string" || keyNorm === "") continue;
+    out.push({ entityId, keyNorm });
+  }
+  return out;
+}
+
+/**
+ * How many ids a log line carries when it reports an irreversible DELETE.
+ *
+ * Both {@link writeEntityEntries} and {@link reapUnreachedEntityEntries} return
+ * their ids so an operator can audit a deletion after the fact, and a count
+ * alone does not let anyone do that. Bounded because the caller is a per-entity
+ * loop and the row cap is 1000 — a run that reaped an entire large entity would
+ * otherwise put a thousand digests on one line. The COUNT beside it is always
+ * exact, so a truncated sample never reads as the whole story.
+ */
+const LOGGED_ID_SAMPLE = 20;
+
+function sampleIds(ids: readonly string[]): readonly string[] {
+  return ids.length <= LOGGED_ID_SAMPLE ? ids : ids.slice(0, LOGGED_ID_SAMPLE);
+}
+
+// ---------------------------------------------------------------------------
+// The reaper — entries for an entity no longer in reach (#5321)
+// ---------------------------------------------------------------------------
+
+/**
+ * How many of an entity's own successful runs must pass over an entry before it
+ * is reaped.
+ *
+ * **3**, and a named constant carrying its reason rather than a bare literal in
+ * the statement. At the producer's default 24-hour cadence that is roughly three
+ * days of an entity being read successfully and producing nothing about the row
+ * before its entry goes — long enough that a one-off empty read costs nothing,
+ * short enough that a truncated table does not answer for a week.
+ *
+ * It is load-bearing rather than decorative: the boundary at N-1 is tested, so
+ * changing this number changes measured behaviour rather than a comment.
+ */
+export const ENTITY_STORE_REAP_AFTER_SUCCESSFUL_RUNS = 3;
+
+/**
+ * Exported for {@link ENTITY_STORE_DELETE_SQL}'s reason.
+ *
+ * ## The reach rule, in one statement
+ *
+ * *Reap entries whose `snapshot_at` predates that entity's last N successful
+ * producer runs.* `recent` is those runs, newest first; `gate` collapses them to
+ * the oldest of the N and how many there were.
+ *
+ * `gate.n >= $3` is the half that makes the rule safe by default, and it is the
+ * whole of #5233's AC-1: with fewer than N recorded successes the join matches
+ * nothing and the statement is a no-op. An entity the producer has never run
+ * for, an entity whose datasource has been down since before the record
+ * existed, an entity in a freshly-migrated region whose success history
+ * deliberately did not travel (`bundle-scope.ts` says why) — every one of them
+ * reaps nothing, because absence of evidence reaps nothing.
+ *
+ * `e.snapshot_at < gate.oldest` is strict, and the strictness is what puts the
+ * N-1 boundary where the constant says it is. A run that commits through the
+ * reconcile transaction rewrites every entry at that run's own `snapshot_at`, so
+ * an entry is never older than the success recorded beside it — it takes N
+ * successes that wrote NO entries (the zero-candidate arm: a truncated table, a
+ * primary key that stopped being surfaceable) to push the oldest of the N past
+ * it.
+ *
+ * ⚠️ **This does NOT touch the name-mismatch poisoning, and must not.** That is
+ * #5320's, handled by {@link ENTITY_STORE_RENAME_RECONCILE_SQL} in the minting
+ * transaction. The two are different failures: the poisoning is a
+ * `(workspace_id, entity)` KEY MISMATCH, permanent and silent, whose repair
+ * cannot wait on this rule — a poisoned store already resolves nothing, and
+ * routing its repair through a reaper that only fires on that entity's own
+ * successful runs asks the broken thing to repair itself. This rule is for
+ * recoverable STALENESS. Stated here so a later reader does not assume the
+ * reaper covers both.
+ */
+export const ENTITY_STORE_REAP_SQL = `WITH recent AS (
+    SELECT succeeded_at
+      FROM brain_warehouse_entity_success
+     WHERE workspace_id = $1 AND entity = $2
+     ORDER BY succeeded_at DESC
+     LIMIT $3
+  ), gate AS (
+    SELECT min(succeeded_at) AS oldest, count(*) AS n FROM recent
+  )
+  DELETE FROM brain_entity e
+   USING gate
+   WHERE e.workspace_id = $1
+     AND e.entity = $2
+     AND gate.n >= $3::bigint
+     AND e.snapshot_at < gate.oldest
+RETURNING e.entity_id, e.key_norm`;
+
+/**
+ * Reap one entity's entries that are no longer in reach.
+ *
+ * ⚠️ **Per entity, and the scoping is an acceptance criterion rather than an
+ * implementation detail.** Both predicates carry `entity = $2` and the success
+ * window is read for that entity alone, so one entity's failures can never reap
+ * another's entries — which is the coupling that made *"gate on a run that
+ * refused nothing"* unusable: one misconfigured entity anywhere in the workspace
+ * would have frozen reaping for all of them, forever.
+ *
+ * ⚠️ **Must run in the entity's own transaction, AFTER its success record.**
+ * The run that is about to license a reap has to be inside the window the reap
+ * reads, or the rule lags a full cycle behind itself. And on the reconcile arm
+ * it is a no-op by construction — that arm just rewrote every entry at this
+ * run's `snapshot_at`, so nothing predates the window — which is deliberate:
+ * calling it on BOTH arms keeps one rule with one call site's meaning rather
+ * than an arm that is special because it is the only one that reaps.
+ *
+ * ⚠️ **The comparables of reaped ids are NOT retired**, unlike a re-mint's. A
+ * re-mint puts a second live id on the SAME claim, which is what lets one fact
+ * retire its own twin (#5319); a reap removes an entry and mints no replacement,
+ * so there is no twin and no supersession to prevent. The facts keep an id that
+ * resolves to nothing, which over-matches nothing and is the recoverable
+ * direction the store's docstring already names.
+ *
+ * Returns the ids it removed, for the caller's report — an irreversible DELETE
+ * that reports only a count is one an operator cannot audit after the fact.
+ */
+export async function reapUnreachedEntityEntries(
+  tx: ReconcileExecutor,
+  params: {
+    readonly workspaceId: string;
+    readonly entity: string;
+    readonly afterSuccessfulRuns?: number;
+  },
+): Promise<readonly string[]> {
+  const { workspaceId, entity } = params;
+  // Clamped for `runWarehouseProducer`'s `rowCap` reason: the seam is test-only,
+  // and `0` would make `gate.n >= 0` true with `oldest` NULL — harmless by luck
+  // rather than by design, since the comparison against NULL is what stops it.
+  // A rule this destructive does not get to be safe by luck.
+  const n = Math.max(1, Math.trunc(params.afterSuccessfulRuns ?? ENTITY_STORE_REAP_AFTER_SUCCESSFUL_RUNS));
+  const { rows } = await tx.query(ENTITY_STORE_REAP_SQL, [workspaceId, entity, n]);
+  const reaped = readDroppedRows(rows).map((row) => row.entityId);
+  if (reaped.length > 0) {
+    log.warn(
+      {
+        workspaceId,
+        entity,
+        reaped: reaped.length,
+        reapedIds: sampleIds(reaped),
+        afterSuccessfulRuns: n,
+      },
+      "Entity store: reaped entries that predate this entity's last N successful producer runs — " +
+        "the warehouse rows behind them have not been readable for N consecutive successful reads, " +
+        "so the store stops answering for them",
+    );
+  }
+  return reaped;
 }
 
 // ---------------------------------------------------------------------------

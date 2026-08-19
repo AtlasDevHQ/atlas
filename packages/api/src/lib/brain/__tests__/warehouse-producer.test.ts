@@ -1788,7 +1788,7 @@ describe("runWarehouseProducer", () => {
     // …and never the colliding KEY. It is a primary key read out of a customer's
     // warehouse — an email, an account name — and this module keeps row values off
     // the wire. The count is what the operator acts on.
-    expect(report.refusals[0]?.message).toContain("1 of");
+    expect(report.refusals[0]?.message).toContain("1 primary key(s)");
 
     // NOTHING was written. The non-colliding row (`2`, in `us-prod` alone) is not
     // emitted either: it would be an arbitrary subset of two populations, which at
@@ -2023,6 +2023,16 @@ describe("runWarehouseProducer", () => {
     expect(h.snapshots).toHaveLength(1);
     expect(report.created).toBe(1);
     expect(report.refusals).toEqual([]);
+
+    // ⚠️ **And the DURABLE RECORD carries one spelling of the flat scope, which the
+    // member field got wrong on its first cut (#5326 review).** `detail.connection`
+    // was built from the raw member rather than the normalised one, so this entity
+    // stored `"default"` while an ungrouped neighbour reading the same datasource
+    // stored `null` — the two-spellings divergence the arm above exists to end,
+    // moved from the request into the record, where nothing collapses it later.
+    const [factParams] = h.store.paramsFor(INSERT_FACT_SQL);
+    const provenance: unknown = JSON.parse(String(factParams?.[7]));
+    expect(provenance).toMatchObject({ connection: null });
   });
 
   test("an UNPLACED entity reads the default connection; an UNPLACEABLE one reads nothing", async () => {

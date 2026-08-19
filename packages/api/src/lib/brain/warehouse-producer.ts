@@ -3549,10 +3549,19 @@ export async function runWarehouseProducer(
                   // non-null assertions. The flat scope's own spelling is the
                   // `null` the placement target already carries.
                   connectionGroup: groupByEntity.get(entityPlan.entity.name) ?? null,
-                // WHICH member of that group these rows came from (#5326). `?? null`
-                // is the flat scope, whose only spelling here is `undefined` — the
-                // `"default"` literal was collapsed before the request was built.
-                connectionId: memberConnection ?? null,
+                  // WHICH member of that group these rows came from (#5326).
+                  //
+                  // ⚠️ **`submittedConnectionId`, NOT `memberConnection` — the
+                  // NORMALISED binding, and reading the raw one was this change's own
+                  // version of the defect one line up.** `"default"` is a documented
+                  // entity YAML value and the flat root's implied group name in
+                  // `whitelist.ts`, so a hinted entity carries the literal while its
+                  // ungrouped neighbour carries `undefined` — the same datasource under
+                  // two spellings. Collapsed at the request and not here, the DURABLE
+                  // record would have kept both, which is precisely what
+                  // `fromStoredGroup` exists to stop one field over. The record has one
+                  // spelling of the flat scope and it is `null`.
+                  connectionId: submittedConnectionId ?? null,
                   // The one assertion. The element shape is unchecked; what makes it
                   // survivable is that every read of it happens inside this `try`. What a
                   // non-record row COSTS is in the scope note above, measured.
@@ -3645,12 +3654,22 @@ export async function runWarehouseProducer(
           { ...memberLog, entity: entityPlan.entity.name, rowCap, rowCount: unionRowCount },
           "Warehouse producer: the entity's datasources together exceed the row cap — refused rather than emitting a truncated union",
         );
-        refuseForMember(
+        // ⚠️ `refuseEntity`, NOT `refuseForMember` — this refusal is about the GROUP
+        // and the member clause would misattribute it. The sum crosses the cap while
+        // reading whichever member happens to be next, and that member may hold three
+        // rows; ending the sentence with *"this one is `eu-prod`"* points an operator
+        // at a datasource that is not the problem. The count and the group size are
+        // the whole story, and the log line beside this one carries the member for
+        // anyone who needs the sequence.
+        refuseEntity(
+          entityPlan,
           "row-cap-exceeded",
           `The ${memberConnections.length} datasources in "${entityPlan.entity.name}"'s connection group ` +
             `hold more than ${rowCap} rows of "${entityPlan.entity.table}" between them, and every row ` +
             "becomes a draft a person has to review. The producer refuses rather than emitting an " +
-            "arbitrary subset, which would look at rest exactly like a complete reading of them.",
+            "arbitrary subset, which would look at rest exactly like a complete reading of them. " +
+            "No single datasource is at fault and narrowing one will not help — enroll this entity " +
+            "against a smaller group, or narrow the table.",
         );
         continue entities;
       }
@@ -3686,15 +3705,21 @@ export async function runWarehouseProducer(
       refuseEntity(
         entityPlan,
         "subject-collides-across-members",
-        `${merged.collidingSubjects} of "${entityPlan.entity.table}"'s rows have a primary key that ` +
-          `appears in more than one of this entity's datasources (${merged.members
+        // ⚠️ **"primary keys", not "rows", and the two are different numbers.**
+        // `collidingSubjects` counts distinct SURFACES held by more than one member, so
+        // one key present in three datasources is `1` here and three rows in the
+        // warehouse. An operator sizing the overlap before splitting a group would
+        // under-count it, and the word is the only thing that says which number this is.
+        `${merged.collidingSubjects} primary key(s) of "${entityPlan.entity.table}" appear in more ` +
+          `than one of this entity's datasources (${merged.members
             .map((m) => `"${m}"`)
             .join(", ")}). Atlas reads every datasource in a connection group and describes their ` +
           "union, and the keys it writes carry the entity name and not the datasource — so two such " +
-          "rows would be filed as ONE thing, which is a merge with no undo. **Nothing was emitted for " +
-          "this entity.** Either those datasources hold copies of each other rather than different " +
-          "rows, in which case they should not be one connection group, or the declared primary key " +
-          "is not unique across them.",
+          "rows would be filed as ONE thing, which is a merge with no undo. **Nothing was emitted " +
+          "for this entity.** If those datasources hold copies of one another, Atlas cannot tell " +
+          "which copy it is reading: enroll this entity against a group with one of them in it. If " +
+          "they hold different rows, the declared primary key is not unique across them and the " +
+          "entity needs a key that is.",
       );
       continue;
     }

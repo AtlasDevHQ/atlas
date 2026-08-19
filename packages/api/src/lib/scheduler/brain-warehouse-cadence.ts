@@ -51,6 +51,18 @@
  * human has to drain, which is the one resource ADR-0039 exists to protect, so a
  * workspace gets scheduled runs only after somebody said so.
  *
+ * ## What a scheduled run does with a MULTI-MEMBER connection group (#5326)
+ *
+ * It reads every member and describes their union — the same as the button, and
+ * worth stating here because this is the trigger that does it unattended. Until
+ * #5326 the producer snapshotted the group's alphabetically-first member, so a
+ * cadence over the Atlas team's own three-region `g_prod` would have asserted 1
+ * of 4 organizations as the company's, on a schedule, with `refusals: 0` and a
+ * clean-looking run log. The standing *"this should ship before the cadence
+ * does"* warning that came with the measurement is discharged by the fix, on
+ * #5233's precedent; what remains scheduled is a run that refuses an entity
+ * outright when two members hold one primary key, rather than merging them.
+ *
  * A workspace that has enrolled nothing is never considered at all
  * ({@link WAREHOUSE_CADENCE_WORKSPACES_SQL}): with an empty reach the producer's
  * only possible output is an empty report, and enumerating every tenant to

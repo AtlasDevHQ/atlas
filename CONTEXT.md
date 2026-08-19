@@ -161,9 +161,11 @@ A conversation can read from two kinds of **Datasource** (see Pillars): SQL conn
 - **Connection group**:
   A named set of interchangeable SQL connections (e.g. a multi-region `prod` group with `apac-prod` / `eu-prod` / `us-prod`). The unit SQL routing binds to.
 
-  ⚠️ **There is no operator-designated primary, and this line used to say there was** (#5326). Where a single member has to be chosen — `resolveGroupPrimaryConnectionId` for amendment evidence, and the warehouse producer's snapshot — the choice is `members.sort()[0]`, i.e. **alphabetical** (`lib/group-reach/lookup.ts`, `lib/env-routing/lookup.ts`). Renaming a datasource changes which member is chosen, silently. The old wording named a control an operator could set, sending a reader to look for a setting that does not exist.
+  ⚠️ **There is no operator-designated primary, and this line used to say there was** (#5326). Where a single member has to be chosen — `resolveGroupPrimaryConnectionId`, for an amendment's evidence — the choice is `members.sort()[0]`, i.e. **alphabetical** (`lib/group-reach/lookup.ts`, `lib/env-routing/lookup.ts`). Renaming a datasource changes which member is chosen, silently. The old wording named a control an operator could set, sending a reader to look for a setting that does not exist.
 
-  ⚠️ **"Interchangeable" is an ASSUMPTION the model makes, not a property Atlas enforces.** Members sharing a schema is checked nowhere; a group whose members are *shards* (different rows per member) is representable and is what the Atlas team's own `g_prod` is. Every consumer that reads one member and treats it as the group is correct for replicas and wrong for shards — see #5326, where the warehouse producer described 1 of 4 orgs and asserted them as the workspace's.
+  ⚠️ **"Interchangeable" is an ASSUMPTION the model makes, not a property Atlas enforces.** Members sharing a schema is checked nowhere; a group whose members are *shards* (different rows per member) is representable and is what the Atlas team's own `g_prod` is. Every consumer that reads one member and treats it as the group is correct for replicas and wrong for shards.
+
+  The **warehouse producer** is the one consumer that no longer does either (#5326, fixed): it snapshots **every** member and describes their union, and refuses the entity when two members hold a row with the same primary key — the keys it writes carry the entity name and no member, so merging those two rows would be a false `same` with no inverse. It was the alphabetical-primary reading until then, and on prod it described 1 of 4 organizations while asserting them as the workspace's.
   _Avoid_: "environment" (informal only), "cluster"; describing the primary as designated, chosen, or configurable.
 
 - **Member**:

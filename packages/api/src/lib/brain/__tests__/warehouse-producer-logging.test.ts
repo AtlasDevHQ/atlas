@@ -707,7 +707,10 @@ describe("warehouse producer logging", () => {
     // Measured before this test existed: reverting the hoist and letting the arm
     // recompute from the hint alone was GREEN across all four producer suites.
     const RESOLVED = {
-      placed: new Map([["Accounts", "eu-prod" as WarehouseConnectionId]]),
+      // A ONE-member group (#5326): this case is about the connection the mismatch
+      // arm compares, and a second member would add a second read whose verdict is
+      // a second payload — a different case, covered in `warehouse-producer.test.ts`.
+      placed: new Map([["Accounts", ["eu-prod" as WarehouseConnectionId]]]),
       unplaceable: [],
     };
 

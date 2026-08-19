@@ -178,7 +178,7 @@
 #     and the row is still screened through `classifyFactForPromotion` first),
 #     and it stamps `valid_to` by executing the publish adapter's own
 #     `SUPERSEDE_STAMP_EXPLICIT_SQL` — since #5024 the human-arbitration half
-#     of the adapter's own `supersedeStampSql` builder, so both warrants still
+#     of the adapter's own `stampUpdateSql` builder, so both warrants still
 #     share one SET clause — rather than spelling a second stamp. Every write
 #     is actor-attributed and recorded as an immutable human-authored
 #     correction episode in the same transaction; the TARGET read/write is

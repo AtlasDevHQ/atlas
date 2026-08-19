@@ -680,7 +680,7 @@ export function comparableValueWithReason(input: ComparableInput): ComparableOut
  * The declaration arms, one per declarable kind.
  *
  * An exhaustive switch with a throwing `default`, matching the house shape at
- * `supersedeStampSql`: a sixth declarable kind must be given a rule here rather
+ * `stampUpdateSql`: a sixth declarable kind must be given a rule here rather
  * than silently inheriting whichever arm happened to be last.
  */
 function applyDeclaration(

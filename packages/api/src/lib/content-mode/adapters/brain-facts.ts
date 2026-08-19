@@ -1395,6 +1395,11 @@ function toDraftFactRow(row: unknown): DraftFactRow | null {
  *     `SUPERSEDE_STAMP_SQL` stamps fewer rows than asked — NO complete record
  *     anywhere. The sample plus the count is all that exists, so the count is
  *     the number to act on, and these are the two that argue against lowering.
+ *   - the PAIR-level `missing` list (#5324), on the same terms and for the same
+ *     reason: a disclosed pair that no longer collided leaves no durable record
+ *     at all — its target was retired on another pair's arbitration, so neither
+ *     `superseded` nor the target-level shortfall names it. A third argument
+ *     against lowering, not a third convenience.
  */
 const LOGGED_ID_SAMPLE_CAP = 20;
 
@@ -2097,8 +2102,8 @@ export function promoteBrainFacts(
         });
         /** Targets the stamp actually closed — one entry per row, deduplicated. */
         const stamped = new Set<string>();
-        /** …and WHICH pair closed each, which is what the edges are built from. */
-        const stampedPairs: { readonly newId: string; readonly oldId: string }[] = [];
+        /** …and WHICH pair closed each, keyed for the order-preserving filter below. */
+        const attributed = new Set<string>();
         let unreadableStampRows = 0;
         let unattributedStampRows = 0;
         for (const raw of stampResult.rows) {
@@ -2116,9 +2121,37 @@ export function promoteBrainFacts(
             unattributedStampRows++;
             continue;
           }
-          stampedPairs.push({ newId: raw.new_id, oldId: raw.id });
+          attributed.add(pairLogKey({ newId: raw.new_id, oldId: raw.id }));
         }
-        if (unreadableStampRows > 0 || unattributedStampRows > 0) {
+        /**
+         * ⚠️ **FILTERED FROM `supersessionPairs` RATHER THAN BUILT FROM THE ROWS,
+         * and the difference is the report's ORDER.**
+         *
+         * `superseded` rides into `audit_log` and into the REST and MCP publish
+         * responses, so its order is part of a durable record. The pre-#5324
+         * shape got that order for free — it filtered this same array, which
+         * carries {@link SUPERSESSION_TARGETS_SQL}'s explicit `ORDER BY
+         * d.ingested_at, d.id, p.ingested_at, p.id`. Building it from the stamp's
+         * trailing `SELECT` instead would have taken whatever order the join
+         * happened to produce, so two identical publishes could write two
+         * different arrays.
+         *
+         * The alternative was an `ORDER BY` on the stamp, which is a SECOND
+         * ordering rule to keep in agreement with the first. This way there is
+         * still exactly one, declared on the statement whose job is to list the
+         * pairs — the stamp answers only WHICH of them survived.
+         */
+        const stampedPairs = supersessionPairs.filter((pair) =>
+          attributed.has(pairLogKey(pair)),
+        );
+        // …and every attributed pair came back OUT of that filter. A returned
+        // pair the transaction never offered is structurally impossible — the
+        // statement derives `live_pair` from `$3` — so a mismatch means the
+        // statement no longer answers about the list it was handed, and an edge
+        // built from it would attribute a retirement to a draft this publish
+        // never disclosed. Counted into the same fatal arm as its two siblings.
+        const unofferedStampPairs = attributed.size - stampedPairs.length;
+        if (unreadableStampRows > 0 || unattributedStampRows > 0 || unofferedStampPairs > 0) {
           // A FAILURE, not a skip, and the asymmetry with every other drift
           // path in this adapter is deliberate: an unreadable RETURNING row
           // means the stamp APPLIED to a fact this code can no longer name
@@ -2137,7 +2170,7 @@ export function promoteBrainFacts(
               table: BRAIN_FACTS_TABLE,
               phase: "promote",
               cause: new Error(
-                `promoteBrainFacts: SUPERSEDE_STAMP_SQL returned ${unreadableStampRows} row(s) with no usable id and ${unattributedStampRows} stamped row(s) with no colliding draft to attribute them to — the statement shape changed; rolling back rather than committing a supersession with no record`,
+                `promoteBrainFacts: SUPERSEDE_STAMP_SQL returned ${unreadableStampRows} row(s) with no usable id, ${unattributedStampRows} stamped row(s) with no colliding draft to attribute them to, and ${unofferedStampPairs} pair(s) this transaction never offered — the statement shape changed; rolling back rather than committing a supersession with no record`,
               ),
             }),
           );
@@ -2175,7 +2208,6 @@ export function promoteBrainFacts(
          * Restricted to pairs whose target WAS stamped, so a wholly unstamped
          * target is reported once, above, rather than twice under two headings.
          */
-        const attributed = new Set(stampedPairs.map((pair) => pairLogKey(pair)));
         const unattributedPairs = supersessionPairs.filter(
           (pair) => stamped.has(pair.oldId) && !attributed.has(pairLogKey(pair)),
         );

@@ -31140,7 +31140,8 @@
                                   "snapshot-already-recorded",
                                   "naming-dimension-refused",
                                   "connection-unresolved",
-                                  "enrolled-in-two-groups"
+                                  "enrolled-in-two-groups",
+                                  "subject-collides-across-members"
                                 ]
                               },
                               "message": {

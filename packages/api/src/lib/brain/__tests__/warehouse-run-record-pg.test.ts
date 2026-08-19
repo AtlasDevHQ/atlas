@@ -14,16 +14,34 @@
  * rollback in production, which is the one case the reaper is standing on.
  * Only a real transaction can tell the two apart.
  *
- * Three arms, and the third is the one that needed a database:
+ * Four arms, and two of them needed a database:
  *
  *   1. **Success** — a committing run leaves exactly one row per entity,
  *      stamped with the run's SNAPSHOT INSTANT (the value the reach rule
  *      compares against `brain_entity.snapshot_at`), not with a wall clock.
- *   2. **Refusal** — an entity whose datasource cannot be read is refused
+ *   2. **Zero candidates** — a run that READ the datasource successfully and
+ *      found nothing to claim is a success too, and this is the arm the record
+ *      exists for. See below.
+ *   3. **Refusal** — an entity whose datasource cannot be read is refused
  *      before any transaction opens, and advances nothing.
- *   3. **Rollback** — an entity whose transaction does its work and then rolls
+ *   4. **Rollback** — an entity whose transaction does its work and then rolls
  *      back leaves NO row, even though the INSERT was executed. This is the
- *      arm that would pass vacuously against arms 1 and 2 alone.
+ *      arm that would pass vacuously against the others alone.
+ *
+ * ## ⚠️ Why arm 2 is the one that matters
+ *
+ * The first draft recorded a success only inside the reconcile transaction, and
+ * a review caught what that costs. Every case migration 0206 names as the reason
+ * #5233 needs a reaper is a ZERO-CANDIDATE case — a truncated table, a primary
+ * key that stopped being surfaceable — because those are exactly the runs that
+ * never reach `writeEntityEntries` and therefore exactly the runs that strand
+ * entries. Meanwhile any run that DOES commit replaces every entry at the same
+ * `snapshot_at`, so nothing can predate it.
+ *
+ * So with arm 2 missing, the marker advanced only when there was nothing to reap
+ * and never when there was, and the reach rule was unfireable on its own target
+ * population. Measured before the fix: a zero-row snapshot reported
+ * `candidates: 0`, `refusals: []` and wrote no record.
  *
  * No reader is exercised because this slice adds none, deliberately (#5317).
  * The assertions read the table directly, which is the honest way to test a
@@ -218,7 +236,54 @@ describeIfPg("warehouse per-entity success record (real Postgres)", () => {
     PG_TEST_TIMEOUT_MS,
   );
 
-  // -- 2: the refusal arm ----------------------------------------------------
+  // -- 2: the zero-candidate arm ---------------------------------------------
+
+  it(
+    "a run that READ the datasource and found nothing still records a success",
+    async () => {
+      // THE arm the record exists for, and the one the first draft missed. A
+      // truncated warehouse table reads clean and yields no claims — and it is
+      // the state whose stale `brain_entity` entries the reaper is for. If this
+      // run advances nothing, those entries are unreapable forever.
+      await enroll("status");
+      const report = await run({ runSnapshot: async () => [] });
+
+      // The producer's own line between the two: read-but-empty is an OUTCOME,
+      // not a refusal. Asserted so this test cannot quietly become a test about
+      // the refusal arm if that classification ever moves.
+      expect(report.refusals, "a zero-row read is not a refusal").toEqual([]);
+      expect(report.entities.map((e) => [e.entity, e.candidates])).toEqual([[ENTITY, 0]]);
+
+      const rows = await successes();
+      expect(
+        rows.map((r) => [r.entity, r.succeeded_at.toISOString()]),
+        "a successful read that produced no claims recorded nothing, so #5233's reach rule can never fire on the population it exists for",
+      ).toEqual([[ENTITY, SNAPSHOT_AT.toISOString()]]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "…and it writes ONLY the record — no episode, no facts",
+    async () => {
+      // The control for the arm above. Recording a success must not be a licence
+      // to write a snapshot episode with nothing hanging off it, which is the
+      // behaviour the zero-candidate branch exists to prevent in the first place.
+      await enroll("status");
+      await run({ runSnapshot: async () => [] });
+
+      const { rows } = await pool.query<{ episodes: number; facts: number }>(
+        `SELECT (SELECT count(*) FROM brain_episodes WHERE workspace_id = $1)::int AS episodes,
+                (SELECT count(*) FROM brain_facts    WHERE workspace_id = $1)::int AS facts`,
+        [WORKSPACE],
+      );
+      expect(rows[0]).toEqual({ episodes: 0, facts: 0 });
+      expect(await successes()).toHaveLength(1);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  // -- 3: the refusal arm ----------------------------------------------------
 
   it(
     "an UNREADABLE DATASOURCE advances nothing — the refusal arm",
@@ -243,7 +308,7 @@ describeIfPg("warehouse per-entity success record (real Postgres)", () => {
     PG_TEST_TIMEOUT_MS,
   );
 
-  // -- 3: the rollback arm ---------------------------------------------------
+  // -- 4: the rollback arm ---------------------------------------------------
 
   it(
     "a ROLLED-BACK transaction leaves no record, though the INSERT ran",

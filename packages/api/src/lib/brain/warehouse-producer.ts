@@ -3333,6 +3333,54 @@ export async function runWarehouseProducer(
     }
 
     if (claims.candidates.length === 0) {
+      // ⚠️ **A zero-candidate run is a SUCCESSFUL READ, and it is the arm the
+      // success record exists for** (#5317 review). The datasource answered — the
+      // entity lands in `outcomes`, not `refusals` — and it answered "nothing".
+      //
+      // Recording it here is not symmetry with the arm below; it is the whole
+      // point. Every case migration 0206's header names as the reason #5233 needs
+      // a reaper is a ZERO-CANDIDATE case: a truncated table, a primary key that
+      // stopped being surfaceable. Those are exactly the runs that do not reach
+      // `writeEntityEntries`, so they are exactly the runs that leave stale
+      // entries behind.
+      //
+      // With the record written only in the transaction below, the marker
+      // advanced ONLY when there was nothing to reap and NEVER when there was:
+      // any run that commits also replaces every entry at the same `snapshotAt`,
+      // so no entry can predate it. The reach rule would have been unfireable on
+      // its own target population. Measured, not reasoned — a zero-row snapshot
+      // reported `candidates: 0, refusals: []` and wrote no record.
+      //
+      // Its own transaction, because there is no other work to join: no episode,
+      // no facts, no store write. That keeps ONE rule — the record is always
+      // written inside a transaction — rather than a second path with a weaker
+      // guarantee. The claim it commits is only "the producer read this entity
+      // successfully at this instant", which is true, and which nothing else in
+      // this arm could contradict.
+      //
+      // A failure to record leaves the marker where it was: no evidence of a
+      // successful run, so the reaper reaps nothing. The safe direction, and the
+      // reason this refuses nothing and merely warns.
+      try {
+        await withTransaction(async (tx) => {
+          await recordEntityRunSuccess(tx, {
+            workspaceId,
+            entity: entityPlan.entity.name,
+            snapshotAt,
+          });
+        });
+      } catch (err: unknown) {
+        log.warn(
+          {
+            ...runLog,
+            entity: entityPlan.entity.name,
+            rows: rowCount,
+            errKind: seamKind(err),
+            err,
+          },
+          "Warehouse producer: this entity was read successfully but produced no claims, and recording that success failed — its stale entity-store entries stay unreapable until a later run records one",
+        );
+      }
       // No episode is written for an entity with no claims, which is what stops a
       // snapshot episode existing with nothing hanging off it. The entity is still
       // REPORTED — an entity that produced nothing and an entity that was never

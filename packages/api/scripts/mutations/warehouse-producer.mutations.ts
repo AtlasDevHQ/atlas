@@ -625,6 +625,24 @@ export type WarehouseBrandProbe = { readonly [validatedSnapshotSql]: true };`,
       note: "⚠️ **THE row this record exists for, and the one only a database can hold up.** The whole value of the marker is that it cannot outlive the work it claims: #5233's reaper DELETES `brain_entity` rows on the strength of one. Handed the module pool instead of the entity's `tx`, the INSERT commits on its own connection and survives the rollback — so a run that failed leaves a durable claim that it succeeded, in exactly the case where the consequence is a deletion. `record`'s rolled-back-transaction arm is the only thing in the tree that fails FOR THE RIGHT REASON — it observes a committed row after a rollback. Read any other non-zero column here as an accident rather than as coverage: the unit suites reach `internalQuery` with no pool configured, so they die on a thrown connection error, which is a kill that says nothing about whether the row outlived the transaction and would vanish the moment a suite happened to have a pool. Measured by hand before this row existed, which is precisely the prose-instead-of-a-gate shape this file was filed to retire.",
     },
     {
+      label: "a zero-candidate run records no success",
+      edits: [
+        {
+          file: PRODUCER,
+          oldString:
+            "        await withTransaction(async (tx) => {\n" +
+            "          await recordEntityRunSuccess(tx, {\n" +
+            "            workspaceId,\n" +
+            "            entity: entityPlan.entity.name,\n" +
+            "            snapshotAt,\n" +
+            "          });\n" +
+            "        });",
+          newString: "        await Promise.resolve();",
+        },
+      ],
+      note: "⚠️ **The defect this arm was added to close, and it shipped in the first draft of #5317.** With the record written only inside the reconcile transaction, the marker advanced exactly when there was nothing to reap and never when there was: every case migration 0206 names as the reason a reaper is needed is a ZERO-CANDIDATE case (a truncated table, an unsurfaceable primary key) — those are the runs that never reach `writeEntityEntries` and so the only runs that strand entries — while every run that DOES commit replaces all of that entity's entries at the same `snapshot_at`, so none can predate it. #5233's reach rule was unfireable on its own target population, and nothing was red. Caught in review, not by a test, which is why it has a row.",
+    },
+    {
       label: "the success record is stamped with the wall clock instead of the snapshot instant",
       edits: [
         {

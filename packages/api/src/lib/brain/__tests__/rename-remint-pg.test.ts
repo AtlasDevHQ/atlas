@@ -61,7 +61,7 @@
  *
  * ## What ships skipped, and why
  *
- * The three falsifiers assert what a REMEDY must deliver. They fail today, and
+ * The four falsifiers assert what a REMEDY must deliver. They fail today, and
  * they are deliberately NOT inverted into characterization tests that pass —
  * that would pin the hazard as correct, the shape this tree refuses elsewhere.
  * The controls beside them are active and green, and they are what make the

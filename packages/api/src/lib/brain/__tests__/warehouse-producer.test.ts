@@ -2210,7 +2210,20 @@ describe("runWarehouseProducer", () => {
     const report = await run(h);
 
     expect(h.store.paramsFor(WAREHOUSE_EPISODE_INSERT_SQL)).toEqual([]);
-    expect(h.store.transactions).toBe(0);
+    // ⚠️ ONE transaction, and it holds exactly ONE statement — the success record
+    // (#5317). This assertion used to be `transactions).toBe(0)`, and relaxing it
+    // to `1` alone would have given up what it was protecting: that a
+    // zero-candidate entity does no RECONCILE work. So it is spelled as the
+    // statement set instead, which is strictly stronger than the count was — an
+    // episode, a fact or a store write appearing here now fails, and the count
+    // alone could not have said which.
+    //
+    // The record itself belongs here: a read that returned rows and produced no
+    // claims SUCCEEDED, and it is the arm #5233's reaper depends on — see
+    // migration 0206's header, and `warehouse-run-record-pg.test.ts`.
+    expect(h.store.transactions).toBe(1);
+    expect(h.store.calls.map((c) => c.sql)).toEqual([ENTITY_RUN_SUCCESS_INSERT_SQL]);
+    expect(h.store.runSuccesses()).toEqual([[WORKSPACE, "Empty", SNAPSHOT_AT.toISOString()]]);
     expect(report.entities).toEqual([
       {
         entity: "Empty",

@@ -48,9 +48,45 @@
 -- writes NOTHING, which is the same thing `coverage-enumeration.ts` achieves by
 -- leaving `last_success_at` out of its failure arm's SET list — here it is
 -- structural rather than a SET list to get wrong, because the row is written
--- INSIDE the entity's reconcile transaction and a rollback takes it with the
--- facts it describes. A record can therefore never claim a success that did not
+-- inside a TRANSACTION and a rollback takes it with whatever else that
+-- transaction held. A record can therefore never claim a success that did not
 -- commit.
+--
+-- ## What counts as a success — the two arms, and why the second is the point
+--
+-- A run that produced NO CANDIDATES is a success, and the producer writes a
+-- record for it in a transaction of its own. This is not symmetry for its own
+-- sake; omitting it made the whole record useless, and it took a review to see:
+--
+--   * Every case named above as the reason a reaper is needed — a truncated
+--     table, a primary key that stopped being surfaceable — is a ZERO-CANDIDATE
+--     case. Those are precisely the runs that never reach `writeEntityEntries`,
+--     which is precisely why they leave stale entries behind.
+--   * And any run that DOES commit through the reconcile transaction also
+--     replaces every one of that entity's entries at the same `snapshot_at`, so
+--     no entry can predate it.
+--
+-- Record only the second arm and the marker advances exactly when there is
+-- nothing to reap and never when there is: the reach rule would be unfireable on
+-- its own target population. Both halves are needed for the rule to mean anything.
+--
+-- What is NOT a success, and must never be: a refusal, an unreadable datasource,
+-- a rolled-back transaction. The producer had already drawn that line — a
+-- zero-candidate entity is reported in `outcomes`, a refused one in `refusals` —
+-- so this arm follows an existing distinction rather than inventing one.
+--
+-- ## Two populations this record still cannot speak for
+--
+-- Stated because the reaper must handle them and this table will not help:
+--
+--   * An entity UN-ENROLLED entirely is never processed, so it accrues no
+--     successes and its entries are never reaped.
+--   * An entity RENAMED accrues successes under the new name only; the old
+--     name's entries and its history are both stranded (#5316 measured this).
+--
+-- Both fail SAFE here — no recorded success means no reaping — and both need the
+-- reaper to sweep `brain_entity` for entity names with no live enrollment, which
+-- is a question about the store rather than about this record.
 --
 -- ⚠️ The table is deliberately NOT a general `_run` log with an `outcome`
 -- column. An `outcome` whose only written value is `'success'` is dead weight
@@ -121,16 +157,31 @@ CREATE TABLE IF NOT EXISTS brain_warehouse_entity_success (
   CONSTRAINT ck_brain_warehouse_entity_success_entity_present CHECK (entity <> '')
 );
 
--- The reaper's read, and the only one this table is shaped for: the Nth most
--- recent success for one entity.
+-- ⚠️ NO SECOND INDEX, and that is a MEASUREMENT rather than an omission.
 --
--- DESC so `ORDER BY succeeded_at DESC LIMIT $n` walks the index instead of
--- sorting the entity's whole history — which grows without bound (see the
--- header), so the sort this avoids gets more expensive every run.
+-- An earlier draft carried `(workspace_id, entity, succeeded_at DESC)` on the
+-- argument that the primary key's tree is ASC and "what this adds is the
+-- ordering". That argument is wrong for a single TRAILING column whose direction
+-- is simply reversed: with equality on the two leading columns, PostgreSQL walks
+-- the primary key backwards and there is no sort step to remove.
 --
--- Not redundant with the primary key. The PK's tree is ASC, and while
--- PostgreSQL can scan an ASC index backwards, the PK's leading columns already
--- serve equality on `(workspace_id, entity)` — what this adds is the ordering,
--- stated in the direction every read uses.
-CREATE INDEX IF NOT EXISTS idx_brain_warehouse_entity_success_recent
-  ON brain_warehouse_entity_success (workspace_id, entity, succeeded_at DESC);
+-- Measured on this repo's PG 16 over 400k rows (50 workspaces x 200 entities),
+-- `SELECT succeeded_at ... WHERE workspace_id = $1 AND entity = $2
+--  ORDER BY succeeded_at DESC LIMIT 3`, after VACUUM:
+--
+--   with the DESC index   Index Only Scan using idx_recent   4 buffers, 0 heap fetches
+--   primary key alone     Index Only Scan Backward on pkey   4 buffers, 0 heap fetches
+--
+-- Identical. So the index was pure cost, and on an append-only table this header
+-- itself estimates at ~438k rows per workspace per year that cost compounds: a
+-- second full index to store, and a second index insert on every entity of every
+-- run, buying no plan improvement at all.
+--
+-- (Before the VACUUM the primary key showed 3 heap fetches against the index's 0,
+-- which is an unset visibility map on freshly-inserted rows and not a property of
+-- either index — worth stating, because that is the reading that would justify
+-- adding it back.)
+--
+-- If the reaper ever needs a scan this key cannot serve — every entity's most
+-- recent success in one pass, say, with no workspace equality — that is a new
+-- access pattern with its own plan, and it should arrive with its own measurement.

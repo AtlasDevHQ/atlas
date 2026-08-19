@@ -4460,14 +4460,12 @@ export const brainWarehouseEntitySuccess = pgTable(
     succeededAt: timestamp("succeeded_at", { withTimezone: true }).notNull(),
   },
   (t) => [
+    // Serves the reaper's read on its own: with equality on the two leading
+    // columns, `ORDER BY succeeded_at DESC LIMIT n` is a backward scan of this
+    // tree with no sort. A `… DESC` index beside it measured identical (4
+    // buffers, 0 heap fetches, both) — the migration header carries the numbers
+    // and the reason an earlier draft got this wrong.
     primaryKey({ columns: [t.workspaceId, t.entity, t.succeededAt] }),
-    // The reaper's read, in the direction it walks. See the migration header for
-    // why this is not redundant with the primary key's tree.
-    index("idx_brain_warehouse_entity_success_recent").on(
-      t.workspaceId,
-      t.entity,
-      t.succeededAt.desc(),
-    ),
     // `''` is an entity nothing names — 0187's `DEFAULT ''` hazard in the column
     // a delete rule keys on.
     check("ck_brain_warehouse_entity_success_entity_present", sql`entity <> ''`),

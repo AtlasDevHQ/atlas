@@ -1523,6 +1523,69 @@ describe("runWarehouseProducer", () => {
     expect(provenance).toMatchObject({ connectionGroup: "grp-42", entity: "Accounts" });
   });
 
+  /**
+   * #5326 — a multi-member group is SNAPSHOT PER MEMBER, not once against the
+   * alphabetically-first one.
+   *
+   * ⚠️ **Driven at the RUN, not at `mapEntitiesToConnectionIds`, and the first
+   * cut of this test got that wrong.** The pure placement function stores
+   * whatever the resolver hands it, so a test that passes it an array and reads
+   * the array back passes today, against the unfixed code, by accident of
+   * untyped JS. The behaviour that is actually broken is *how many datasources a
+   * run reads*, and only the run loop can be wrong about that.
+   *
+   * Measured on prod: `g_prod` = `apac-prod` / `eu-prod` / `us-prod` holding
+   * 1 / 1 / 2 orgs. The run read `apac-prod` alone — "a" sorts first — and filed
+   * 1 of 4 orgs as the workspace's, unqualified, because the keys carry the
+   * entity name and no member.
+   */
+  test("every member of a multi-member group is snapshot, not just one (#5326)", async () => {
+    const h = harness({
+      pairs: [{ entity: "organization", group: "g-prod", dimension: "plan_tier", naming: false }],
+      entities: {
+        organization: entityYaml({
+          table: "organization",
+          primaryKey: "id",
+          dimensions: ["id", "plan_tier"],
+        }),
+      },
+      // Each member answers with its OWN row — shards, not replicas. Keyed by the
+      // connection the runner was asked for, so a run that reads one member
+      // cannot accidentally collect the others' rows.
+      snapshot: (request) =>
+        request.connectionId === "us-prod"
+          ? [snapshotRow("org-us-1", "pro"), snapshotRow("org-us-2", "free")]
+          : request.connectionId === "eu-prod"
+            ? [snapshotRow("org-eu-1", "trial")]
+            : [snapshotRow("org-apac-1", "trial")],
+    });
+
+    const report = await runWarehouseProducer(
+      { workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-1" },
+      {
+        ...h.deps,
+        resolveConnectionIds: async () => ({
+          placed: new Map([
+            [
+              "organization",
+              ["us-prod", "apac-prod", "eu-prod"] as unknown as WarehouseConnectionId,
+            ],
+          ]),
+          unplaceable: [],
+        }),
+      },
+    );
+
+    // THE assertion: one snapshot per member, against all three connections.
+    expect(
+      [...new Set(h.snapshots.map((s) => s.connectionId))].sort(),
+      "the run read one datasource of a three-member group — that describes a fraction of the rows and files them as the whole (#5326)",
+    ).toEqual(["apac-prod", "eu-prod", "us-prod"]);
+    // …and every member's rows reached the claims, so the union is described
+    // rather than one shard standing in for it.
+    expect(report.created).toBe(4);
+  });
+
   test("the connection is resolved ONCE per run, not once per entity", async () => {
     const h = harness({
       pairs: [

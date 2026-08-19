@@ -1210,6 +1210,18 @@ function supersedeStampSql(arbitration: "collision" | "explicit"): string {
  * per-pair, which is a change to `promoteBrainFacts`'s report contract rather
  * than to this statement.
  *
+ * ⚠️ **THAT ACCEPTANCE IS RE-OPENED AS #5324, on a changed premise rather than
+ * a changed opinion.** It was written when the only de-merger was
+ * `vocabulary-decide.ts` — human-paced, one workspace at a time, holding
+ * `IDENTITY_MUTATION_LOCK_NAMESPACE`. #5321 added a second:
+ * `lib/brain/entity-comparable-retire.ts` NULLs `object_cmp` from inside the
+ * MINTING transaction on a producer run, holding no identity lock — and it is
+ * allowlisted on `check-brain-fact-promotion.sh` on the strength of the
+ * per-target re-check above. So the guard that makes that writer safe is the
+ * same one whose attribution gap it raises the exposure to. Nothing above is
+ * wrong today, and the stamp still degrades to FEWER rows — but "accepted" was
+ * a judgement about frequency, and the frequency is what changed.
+ *
  * The outer `p.status` / `p.invalidated_at` / `p.valid_to` predicates are kept
  * even though {@link supersessionCollisionPredicate} repeats all three. They are
  * not duplication for its own sake: the shared builder has since grown arms that

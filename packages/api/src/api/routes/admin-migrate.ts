@@ -2560,6 +2560,29 @@ export async function importBundle(
   // radius arriving from a direction nobody is watching. Under-restoring is
   // recoverable by re-running the producer; a wrong re-key is not.
   //
+  // ⚠️ **NOTHING RECONCILES NAMES HERE, and that is the decision rather than the
+  // omission** (#5320). Two regions naming one entity differently leaves both
+  // sets live under two `(workspace_id, entity)` keys with the same canonical
+  // norms and different ids, which poisons every shared norm — #5316 measured
+  // the same shape arriving from an ordinary rename. The obvious place to fix it
+  // looks like this loop, and this loop is the one place it must not be fixed:
+  //
+  //   - The imported entries ARE the bridge. `bundle-scope.ts` exports them for
+  //     exactly one reason — they answer surfaces by name from the moment the
+  //     bundle lands until the destination has warehouse credentials again — so
+  //     deleting any of them here blinds the window they exist to cover. That is
+  //     the remedy #5233 rules out by name.
+  //   - And this importer has no standing to say which name is current. The
+  //     destination cannot read its warehouse yet, by construction; the first
+  //     moment anything knows the destination's own naming is its first producer
+  //     run, which is where `writeEntityEntries` does the reconciliation.
+  //
+  // So the poisoning is SELF-CLEARING rather than unreachable: it can exist
+  // between the import and that first run, `entityEdges.ambiguous` reports it
+  // while it does, and the run clears it in the minting transaction. The one
+  // shape that outlives that is two source regions merged into one destination
+  // whose producer never runs — reported, never silent.
+  //
   // Before the facts below, though nothing depends on it: `regionPortableComparable`
   // classifies the `entity:` tag `store-local`, so this importer NULLS an
   // entity-valued `_cmp` on every arriving fact and none of them references an

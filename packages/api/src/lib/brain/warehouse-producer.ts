@@ -87,6 +87,7 @@ import { loadProducerReach, type ProducerReach } from "@atlas/api/lib/brain/enro
 import {
   buildEntityEntry,
   entityEdgeProposals,
+  reapUnreachedEntityEntries,
   writeEntityEntries,
   ENTITY_EDGE_PRODUCER,
   type EntityStoreEntry,
@@ -2649,6 +2650,20 @@ export async function runWarehouseProducer(
 
   const vocabulary = await loadVocabulary(workspaceId);
 
+  /**
+   * What this run changed in the store BEYOND replacing one entity's snapshot —
+   * the three irreversible things #5233's tickets added, counted across every
+   * entity (#5319, #5320, #5321).
+   *
+   * Accumulated rather than reported per entity because all three are workspace
+   * properties an operator asks about workspace-wide ("did anything get deleted
+   * on this run?"), and because a per-entity zero is noise on the arm that is a
+   * no-op by construction. It rides the run's summary log rather than the report
+   * type: nothing on the wire consumes it, and `EntityEdgeOutcome`'s history
+   * (#5277) is what a field added ahead of its reader costs.
+   */
+  const entityStoreChanges = { orphansDeleted: 0, comparablesRetired: 0, reaped: 0 };
+
   for (const entityPlan of plan.emit) {
     // ⚠️ **The `unplaceable` check that used to sit here has MOVED to the entity
     // lookup (#5286 review), and the move is a fix rather than tidying.** This
@@ -3361,6 +3376,8 @@ export async function runWarehouseProducer(
       // A failure to record leaves the marker where it was: no evidence of a
       // successful run, so the reaper reaps nothing. The safe direction, and the
       // reason this refuses nothing and merely warns.
+      /** Reaped inside the transaction below; counted only once it commits. */
+      let reapedHere = 0;
       try {
         await withTransaction(async (tx) => {
           await recordEntityRunSuccess(tx, {
@@ -3368,7 +3385,31 @@ export async function runWarehouseProducer(
             entity: entityPlan.entity.name,
             snapshotAt,
           });
+          // ⚠️ **THIS is the reaper's target population** (#5321). Every case
+          // migration 0206's header names as the reason a reaper is needed is a
+          // zero-candidate case — a truncated table, a primary key that stopped
+          // being surfaceable — and they are exactly the runs that never reach
+          // `writeEntityEntries`, so they are exactly the runs that leave stale
+          // entries behind. The reconcile arm calls the same function and gets a
+          // no-op; this arm is where the rule does its work.
+          //
+          // AFTER the record, and in the same transaction as it: the success
+          // this run just wrote has to be inside the window the rule reads, and
+          // a rollback must take the reap with the evidence that licensed it.
+          reapedHere = (
+            await reapUnreachedEntityEntries(tx, {
+              workspaceId,
+              entity: entityPlan.entity.name,
+            })
+          ).length;
         });
+        // ⚠️ Folded in only AFTER the transaction resolves, never inside the
+        // callback. This counter is the audit trail for an irreversible DELETE,
+        // and a count incremented inside a transaction that then fails to commit
+        // reports a deletion that never happened — which sends an operator
+        // hunting for rows that are still there. The rollback un-reaps; the
+        // number has to say so.
+        entityStoreChanges.reaped += reapedHere;
       } catch (err: unknown) {
         log.warn(
           {
@@ -3378,7 +3419,7 @@ export async function runWarehouseProducer(
             errKind: seamKind(err),
             err,
           },
-          "Warehouse producer: this entity was read successfully but produced no claims, and recording that success failed — its stale entity-store entries stay unreapable until a later run records one",
+          "Warehouse producer: this entity was read successfully but produced no claims, and recording that success failed — the reap that rides the same transaction is undone with it, so its stale entity-store entries stay until a later run records a success",
         );
       }
       // No episode is written for an entity with no claims, which is what stops a
@@ -3431,6 +3472,8 @@ export async function runWarehouseProducer(
      */
     let producedOutcome: WarehouseEntityOutcome | null | undefined;
     let transactionAborted = false;
+    /** Store changes made inside the transaction below, counted once it commits. */
+    let pendingStoreChanges = { orphansDeleted: 0, comparablesRetired: 0, reaped: 0 };
     // ⚠️ **`try`/`catch`, NOT `.catch(…)` on the returned value, and the difference is
     // the last unguarded read on this seam** (#5257 review, round 2). `.catch` is
     // itself a property access on whatever `withTransaction` returned: a non-thenable
@@ -3493,10 +3536,17 @@ export async function runWarehouseProducer(
         // is what clears the store after a human un-names a dimension. Skipping it
         // on an empty list would leave every prior entry resolving under a name
         // nobody named any more.
-        await writeEntityEntries(tx, {
+        // ⚠️ It also reconciles away entries keyed under a name that has stopped
+        // being this entity's (#5320) and retires the comparables of every id it
+        // dropped (#5319), both inside this transaction. `reach.entities` is what
+        // tells it which names are still live — see `writeEntityEntries`, which
+        // takes it as a REQUIRED parameter precisely so this call site cannot
+        // quietly opt out of the reconciliation.
+        const storeWrite = await writeEntityEntries(tx, {
           workspaceId,
           entity: entityPlan.entity.name,
           entries: claims.entityEntries,
+          entityNamesInReach: reach.entities,
           snapshotAt,
         });
 
@@ -3505,11 +3555,11 @@ export async function runWarehouseProducer(
         // the entries, the facts they describe, and the claim that this run
         // succeeded for this entity all commit or roll back together.
         //
-        // ⚠️ It is a PREFACTOR — nothing reads it in this slice. The consumer is
-        // #5233's entity-store reaper, whose reach rule needs "that entity's
-        // last N successful runs" and had no source for it: `coverage_cycle`'s
-        // marker is per SOURCE CLASS, which is the wrong grain, and
-        // `withWarehouseRunLock` keeps no history at all.
+        // ⚠️ It HAS a reader now (#5321): `reapUnreachedEntityEntries`, below,
+        // whose reach rule needs "that entity's last N successful runs" and had
+        // no source for it before this record — `coverage_cycle`'s marker is per
+        // SOURCE CLASS, which is the wrong grain, and `withWarehouseRunLock`
+        // keeps no history at all.
         //
         // Written HERE rather than after the loop, and that placement is the
         // whole guarantee. Every way this entity can fail — an unreadable
@@ -3527,6 +3577,32 @@ export async function runWarehouseProducer(
           entity: entityPlan.entity.name,
           snapshotAt,
         });
+
+        // The reaper (#5321), AFTER the record it reads, so this run is inside
+        // the window rather than one cycle behind it.
+        //
+        // ⚠️ On THIS arm it is a no-op by construction, and that is why it is
+        // here. `writeEntityEntries` above just rewrote every one of this
+        // entity's entries at `snapshotAt`, so none of them can predate the
+        // success recorded beside them. The arm where it does work is the
+        // zero-candidate one, which never reaches this transaction at all.
+        // Calling it on both keeps ONE rule with one meaning, rather than a
+        // reaper that lives on the arm nobody looks at.
+        const reaped = await reapUnreachedEntityEntries(tx, {
+          workspaceId,
+          entity: entityPlan.entity.name,
+        });
+
+        // ⚠️ Staged, NOT folded into the run's counters here — see the
+        // zero-candidate arm above for the argument. Everything below this line
+        // can still abort the transaction (a cardinality proposal, the episode
+        // work), and a count of irreversible deletions must not survive the
+        // rollback that undid them.
+        pendingStoreChanges = {
+          orphansDeleted: storeWrite.orphansDeleted,
+          comparablesRetired: storeWrite.comparablesRetired,
+          reaped: reaped.length,
+        };
 
         // The authoritative half of `single` — `pending`, one entry per predicate,
         // and a refusal here is the ordinary case rather than an error: the first
@@ -3608,6 +3684,14 @@ export async function runWarehouseProducer(
           unnamedRows: claims.unnamedRows,
         } satisfies WarehouseEntityOutcome;
       });
+      // ⚠️ The transaction RESOLVED, so what it deleted is real and can be
+      // counted. Staged inside and folded here for the reason the zero-candidate
+      // arm states: these three numbers are the audit trail for DELETEs with no
+      // inverse, and counting them from inside a transaction that then aborts
+      // reports deletions that never happened.
+      entityStoreChanges.orphansDeleted += pendingStoreChanges.orphansDeleted;
+      entityStoreChanges.comparablesRetired += pendingStoreChanges.comparablesRetired;
+      entityStoreChanges.reaped += pendingStoreChanges.reaped;
     } catch (err: unknown) {
       // A defect in this module's own contract stays FATAL — see
       // `WarehouseProducerContractError`. Everything below is for OPERATIONAL
@@ -3749,6 +3833,11 @@ export async function runWarehouseProducer(
       created,
       corroborated,
       entitiesStored,
+      // The three irreversible store changes this run made (#5319, #5320,
+      // #5321). All three are DELETEs or blanked columns with no inverse, and a
+      // run that quietly performed one is the thing an operator has to be able
+      // to find afterwards.
+      entityStoreChanges,
       entityEdges,
       refusals: refusals.length,
     },

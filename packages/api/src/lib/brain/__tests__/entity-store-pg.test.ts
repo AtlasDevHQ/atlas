@@ -73,6 +73,18 @@ const PG_TEST_TIMEOUT_MS = 60_000;
 
 const WORKSPACE = "ws-entity-store";
 
+/**
+ * Both entity names this suite writes under, as `writeEntityEntries`' required
+ * reach (#5320).
+ *
+ * BOTH of them in every call, deliberately: with each name in reach the rename
+ * reconciliation never fires, so every assertion below goes on measuring exactly
+ * what it measured before that parameter existed. The reconciliation's own
+ * behaviour is `entity-store-reach-pg.test.ts`'s subject, where a name is left
+ * OUT of reach on purpose.
+ */
+const STORE_REACH = ["accounts", "contacts"] as const;
+
 describeIfPg("the entity store (#5043)", () => {
   let pool: Pool;
   let priorDatabaseUrl: string | undefined;
@@ -211,6 +223,7 @@ describeIfPg("the entity store (#5043)", () => {
       await writeEntityEntries(exec, {
         workspaceId: WORKSPACE,
         entity: "accounts",
+        entityNamesInReach: STORE_REACH,
         entries: [
           entry({ entity: "accounts", keySurface: "ACC-42", canonicalSurface: "Acme Corp" }),
           entry({ entity: "accounts", keySurface: "ACC-43", canonicalSurface: "Beta LLC" }),
@@ -243,12 +256,14 @@ describeIfPg("the entity store (#5043)", () => {
       await writeEntityEntries(exec, {
         workspaceId: "ws-other",
         entity: "accounts",
+        entityNamesInReach: STORE_REACH,
         entries: [entry({ entity: "accounts", keySurface: "ACC-42", canonicalSurface: "Acme Corp" })],
         snapshotAt: new Date("2026-08-14T10:00:00Z"),
       });
       await writeEntityEntries(exec, {
         workspaceId: WORKSPACE,
         entity: "accounts",
+        entityNamesInReach: STORE_REACH,
         entries: [entry({ entity: "accounts", keySurface: "99", canonicalSurface: "Local Only" })],
         snapshotAt: new Date("2026-08-14T10:00:00Z"),
       });
@@ -286,6 +301,7 @@ describeIfPg("the entity store (#5043)", () => {
       await writeEntityEntries(exec, {
         workspaceId: WORKSPACE,
         entity: "accounts",
+        entityNamesInReach: STORE_REACH,
         entries: first,
         snapshotAt: new Date("2026-08-14T10:00:00Z"),
       });
@@ -293,6 +309,7 @@ describeIfPg("the entity store (#5043)", () => {
       await writeEntityEntries(exec, {
         workspaceId: WORKSPACE,
         entity: "contacts",
+        entityNamesInReach: STORE_REACH,
         entries: [entry({ entity: "contacts", keySurface: "7", canonicalSurface: "Alice" })],
         snapshotAt: new Date("2026-08-14T10:00:00Z"),
       });
@@ -301,6 +318,7 @@ describeIfPg("the entity store (#5043)", () => {
       await writeEntityEntries(exec, {
         workspaceId: WORKSPACE,
         entity: "accounts",
+        entityNamesInReach: STORE_REACH,
         entries: [entry({ entity: "accounts", keySurface: "ACC-42", canonicalSurface: "Acme Holdings" })],
         snapshotAt: new Date("2026-08-15T10:00:00Z"),
       });
@@ -339,6 +357,7 @@ describeIfPg("the entity store (#5043)", () => {
       await writeEntityEntries(exec, {
         workspaceId: WORKSPACE,
         entity: "accounts",
+        entityNamesInReach: STORE_REACH,
         entries,
         snapshotAt: new Date("2026-08-14T10:00:00Z"),
       });
@@ -517,6 +536,7 @@ describeIfPg("the entity store (#5043)", () => {
       await writeEntityEntries(exec, {
         workspaceId: WORKSPACE,
         entity: "accounts",
+        entityNamesInReach: STORE_REACH,
         entries: [
           entry({ entity: "accounts", keySurface: "ACC-42", canonicalSurface: "Acme Corp" }),
           entry({ entity: "accounts", keySurface: "ACC-43", canonicalSurface: "Beta LLC" }),
@@ -594,6 +614,7 @@ describeIfPg("the entity store (#5043)", () => {
       await writeEntityEntries(exec, {
         workspaceId: WORKSPACE,
         entity: "accounts",
+        entityNamesInReach: STORE_REACH,
         entries: [entry({ entity: "accounts", keySurface: "ACC-42", canonicalSurface: "Acme Corp" })],
         snapshotAt: new Date("2026-08-14T10:00:00Z"),
       });
@@ -664,6 +685,7 @@ describeIfPg("the entity store (#5043)", () => {
       await writeEntityEntries(exec, {
         workspaceId: WORKSPACE,
         entity: "accounts",
+        entityNamesInReach: STORE_REACH,
         entries: [entry({ entity: "accounts", keySurface: "ACC-42", canonicalSurface: "Acme Corp" })],
         snapshotAt: new Date("2026-08-14T10:00:00Z"),
       });

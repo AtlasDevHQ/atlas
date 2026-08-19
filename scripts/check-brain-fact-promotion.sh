@@ -250,6 +250,57 @@
 #     retired deliberately rather than deleted quietly — the replacement is
 #     narrower but is the one that still bites.
 #
+#   packages/api/src/lib/brain/entity-comparable-retire.ts
+#     The comparable RETIREMENT (#5321, bounded by #5233). One statement,
+#     `ENTITY_COMPARABLE_RETIRE_SQL`, writing `object_cmp = NULL` on the facts
+#     whose object comparable names a warehouse entity id that the SAME
+#     transaction just re-minted. It is the only gated column the file names.
+#     WHY IT IS SAFE FOR THE GATE'S PURPOSE, and note the direction — this is
+#     NOT the vocabulary-decide argument. That seam RE-KEYS: it moves a claim
+#     from one identity to another, so it can both create and destroy
+#     collisions, which is why it needs the advisory namespace and the preview.
+#     This writer only ever NULLS. Both predicates in `object-cmp.ts` fall to
+#     not-true on a NULL side (`comparableDifferentSql` leads with `a <> b`,
+#     `comparableSameSql` is `a = b`), so a retired row asserts neither
+#     difference nor sameness and sameness falls back to `object_key`. At the
+#     OBJECT a proven difference is what DRIVES supersession, so removing one
+#     can only ever subtract a supersession trigger. The hazard this column is
+#     gated for — "a second writer could stamp `valid_to` on a pair nobody
+#     arbitrated" — is unreachable from a statement that cannot add a collision.
+#     THE SELECT→UPDATE RACE IS CLOSED, and not by this file. #5024 made
+#     `SUPERSEDE_STAMP_SQL` re-check the collision join inside its own UPDATE,
+#     precisely so a de-merge landing between the publish gate's unlocked SELECT
+#     and its stamp cannot stamp a pair that no longer collides. A concurrent
+#     retirement IS such a de-merge, and the guard's answer to it is to stamp
+#     FEWER rows — never more — with `promoteBrainFacts` already warning on the
+#     shortfall, because `RETURNING` is how it learns which pairs superseded.
+#     ⚠️ WHAT IS NOT CLOSED, recorded rather than glossed: that re-check is per
+#     TARGET, not per PAIR (`supersedeStampSql`'s header states this and accepts
+#     it). So a retirement that breaks one pair while another still collides
+#     leaves a `supersedes` edge whose attribution no longer holds. That is the
+#     WRONG-ATTRIBUTION class, which the stamp guard already documents as
+#     accepted; it is not the belief-retired-with-no-live-collision class this
+#     gate exists to prevent. Fixing the attribution half needs
+#     `promoteBrainFacts`' one-array `oldIds` shape to become per-pair — a
+#     change to that caller's report contract, not to this writer. TRACKED AS
+#     #5324: that acceptance predates this entry, having been written when the
+#     only de-merger was the human-paced decide transaction holding 5024, and
+#     this writer is a second one that is neither.
+#     WHY NOT TAKE 5024 INSTEAD, since that is the other obvious remedy: the
+#     retirement runs inside the MINTING transaction by construction (its own
+#     header says why a pool would be worse than either state), and
+#     `pg_advisory_xact_lock` releases at COMMIT. Taking 5024 there would hold
+#     the publish namespace for the remainder of a full producer run, which is
+#     the wedged-by-ingest outcome `reconcile.ts`'s namespace note says publish
+#     deliberately avoids. The lock would buy serialization the stamp guard
+#     already makes unnecessary, at the cost the guard was designed to remove.
+#     COST, stated because this list has no per-column granularity: the entry
+#     exempts a FILE, so it also exempts this module for `status`, `visible_to`,
+#     `valid_to` and the other four identity columns — none of which it writes.
+#     Held in place by the register in docs/development/content-mode.md plus a
+#     COLUMN-SCOPED assertion in `entity-comparable-retire.test.ts`, which pins
+#     `object_cmp` as the only gated column the module's SQL names.
+#
 # Comments are stripped before matching so an explanatory comment in a source
 # file cannot trip the gate. (Not this file — a `.sh` under `scripts/` is in
 # neither the search roots nor `--include`, so the gate can never scan itself.)
@@ -332,10 +383,12 @@ ALLOWLIST=(
   "packages/api/src/api/routes/admin-migrate.ts"
   "packages/api/src/lib/brain/correction.ts"
   "packages/api/src/lib/brain/vocabulary-decide.ts"
+  "packages/api/src/lib/brain/entity-comparable-retire.ts"
   "create-atlas/templates/*/src/lib/content-mode/adapters/brain-facts.ts"
   "create-atlas/templates/*/src/api/routes/admin-migrate.ts"
   "create-atlas/templates/*/src/lib/brain/correction.ts"
   "create-atlas/templates/*/src/lib/brain/vocabulary-decide.ts"
+  "create-atlas/templates/*/src/lib/brain/entity-comparable-retire.ts"
 )
 
 # `BRAIN_PROMOTION_ROOT` points the scan at a throwaway tree — used ONLY by the

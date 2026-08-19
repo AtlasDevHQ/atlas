@@ -53,11 +53,15 @@ import { identityKey, identityVocabulary, type ClaimVocabulary } from "@atlas/ap
 import {
   ENTITY_STORE_DELETE_SQL,
   ENTITY_STORE_INSERT_SQL,
+  ENTITY_STORE_LIVE_IDS_SQL,
+  ENTITY_STORE_RENAME_RECONCILE_SQL,
+  ENTITY_STORE_REAP_SQL,
   ENTITY_EDGE_PRODUCER,
   type EntityStoreEntry,
   type StoredEntity,
 } from "@atlas/api/lib/brain/entity-store";
 import { ENTITY_RUN_SUCCESS_INSERT_SQL } from "@atlas/api/lib/brain/warehouse-run-record";
+import { ENTITY_COMPARABLE_RETIRE_SQL } from "@atlas/api/lib/brain/entity-comparable-retire";
 import type {
   AliasProducerCounters,
   AliasProposalInput,
@@ -895,6 +899,15 @@ class RunStore {
     if (sql === ENTITY_STORE_DELETE_SQL) return { rows: [] };
     if (sql === ENTITY_STORE_INSERT_SQL) return { rows: [] };
     if (sql === ENTITY_RUN_SUCCESS_INSERT_SQL) return { rows: [] };
+    // The three statements #5319/#5320/#5321 added to the minting transaction.
+    // Each answers "nothing", which is the state a fresh store is in: no live
+    // ids to retire, no divergent name to reconcile, nothing old enough to reap.
+    // Dispatched on the EXACT bytes for this harness's whole reason — a
+    // paraphrase would stay green against an edited statement.
+    if (sql === ENTITY_STORE_LIVE_IDS_SQL) return { rows: [] };
+    if (sql === ENTITY_STORE_RENAME_RECONCILE_SQL) return { rows: [] };
+    if (sql === ENTITY_STORE_REAP_SQL) return { rows: [] };
+    if (sql === ENTITY_COMPARABLE_RETIRE_SQL) return { rows: [] };
     if (sql.includes("brain_predicate_cardinality")) return { rows: [{ inserted: 1 }] };
     throw new Error(`RunStore: unexpected statement\n${sql}`);
   }
@@ -2222,7 +2235,14 @@ describe("runWarehouseProducer", () => {
     // claims SUCCEEDED, and it is the arm #5233's reaper depends on — see
     // migration 0206's header, and `warehouse-run-record-pg.test.ts`.
     expect(h.store.transactions).toBe(1);
-    expect(h.store.calls.map((c) => c.sql)).toEqual([ENTITY_RUN_SUCCESS_INSERT_SQL]);
+    // The reap rides the same transaction as the record it reads (#5321), so
+    // the zero-candidate arm is two statements now and the ORDER is the claim:
+    // the success this run just wrote has to be inside the window the reap
+    // reads, or the rule lags a full cycle behind itself.
+    expect(h.store.calls.map((c) => c.sql)).toEqual([
+      ENTITY_RUN_SUCCESS_INSERT_SQL,
+      ENTITY_STORE_REAP_SQL,
+    ]);
     expect(h.store.runSuccesses()).toEqual([[WORKSPACE, "Empty", SNAPSHOT_AT.toISOString()]]);
     expect(report.entities).toEqual([
       {

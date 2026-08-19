@@ -985,19 +985,30 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
   async function targetsThenStamp(
     draftIds: readonly string[],
     demerge: null | { readonly proposalId: string },
-  ): Promise<readonly string[]> {
+    /**
+     * How many PAIRS the targets SELECT must produce before the de-merge — the
+     * premise every assertion downstream rests on. Without it a de-merge that
+     * happened to break the TARGETS query instead of the stamp would look
+     * exactly like a working re-check.
+     *
+     * A pair count rather than a target count since #5324: the case that slice
+     * exists for is two pairs sharing ONE target, which a target count cannot
+     * distinguish from one pair.
+     */
+    expectedPairs = 1,
+  ): Promise<readonly { readonly id: string; readonly newId: string | null }[]> {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      const targets = await client.query<{ superseded_id: string }>(SUPERSESSION_TARGETS_SQL, [
-        WS,
-        draftIds,
-      ]);
-      const oldIds = [...new Set(targets.rows.map((r) => r.superseded_id))];
-      // The premise every assertion downstream rests on. Without it a de-merge
-      // that happened to break the TARGETS query instead of the stamp would look
-      // exactly like a working re-check.
-      expect(oldIds, "the pair did not collide even before the de-merge").toHaveLength(1);
+      const targets = await client.query<{ draft_id: string; superseded_id: string }>(
+        SUPERSESSION_TARGETS_SQL,
+        [WS, draftIds],
+      );
+      const pairs = targets.rows.map((r) => ({ newId: r.draft_id, oldId: r.superseded_id }));
+      const oldIds = [...new Set(pairs.map((pair) => pair.oldId))];
+      expect(pairs, "the pairs did not collide even before the de-merge").toHaveLength(
+        expectedPairs,
+      );
 
       if (demerge) {
         // Committed by an INDEPENDENT transaction on its own connection while
@@ -1005,13 +1016,16 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
         await remove(demerge.proposalId);
       }
 
-      const stamped = await client.query<{ id: string }>(SUPERSEDE_STAMP_SQL, [
-        WS,
-        oldIds,
-        draftIds,
-      ]);
+      // ⚠️ The PAIR list as `$3` (#5324), which is what makes the re-check
+      // per-pair rather than per-target — and `RETURNING` now names the draft
+      // whose arbitration did the retiring, left-joined so a stamped row with no
+      // surviving pair would arrive with a NULL `new_id` rather than vanishing.
+      const stamped = await client.query<{ id: string; new_id: string | null }>(
+        SUPERSEDE_STAMP_SQL,
+        [WS, oldIds, JSON.stringify(pairs)],
+      );
       await client.query("COMMIT");
-      return stamped.rows.map((r) => r.id);
+      return stamped.rows.map((r) => ({ id: r.id, newId: r.new_id }));
     } catch (err) {
       await client.query("ROLLBACK").catch((cause: unknown) => {
         console.warn(
@@ -1082,7 +1096,9 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
   it("stamps the rival when the collision still holds (the positive control)", async () => {
     const { draftId, publishedId } = await seedCollidingPair();
     const stamped = await targetsThenStamp([draftId], null);
-    expect(stamped).toEqual([publishedId]);
+    // The pair, not just the target (#5324): the stamp names the draft whose
+    // arbitration retired the rival.
+    expect(stamped).toEqual([{ id: publishedId, newId: draftId }]);
     expect((await readFact(publishedId)).valid_to).not.toBeNull();
   });
 
@@ -1102,6 +1118,87 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
     // about the re-check rather than about a statement that matched nothing.
     expect((await readFact(publishedId)).predicate_key).toBe("ships on");
     expect((await readFact(draftId)).predicate_key).toBe("delivery date");
+  });
+
+  /**
+   * TWO same-slot `single` drafts, ONE rival, and a de-merge that breaks exactly
+   * one of the two pairs — the case #5324 closed.
+   *
+   * ⚠️ **The stamp is CORRECT in both the before and after pictures, and that is
+   * why this needed its own fixture.** The surviving pair is a live collision,
+   * so the rival is retired either way and no target-level assertion can tell
+   * the two implementations apart: `stamped.size === oldIds.length` before and
+   * after. What changed is the ATTRIBUTION — the per-target `EXISTS` answered
+   * *"does ANY offered draft still collide with this row?"*, so `promoteBrainFacts`
+   * could only filter on the target id and wrote a `supersedes` edge for the
+   * broken pair too, claiming an arbitration that no longer held.
+   *
+   * Driven against real Postgres rather than the tx double because the property
+   * under test is the STATEMENT's, and specifically that its pair list and its
+   * stamp decision share one snapshot: a double cannot be wrong about an
+   * interleaving it does not have.
+   */
+  it("attributes the stamp to the pair that survived, not to every pair sharing the rival (#5324)", async () => {
+    const publishedId = await land(WS, {
+      subject: "widget",
+      predicate: "ships on",
+      object: "2026-07-03",
+    });
+    const keptId = await land(WS, {
+      subject: "widget",
+      predicate: "delivery date",
+      object: "2026-07-06",
+    });
+    const demergedId = await land(WS, {
+      subject: "widget",
+      predicate: "arrives on",
+      object: "2026-07-09",
+    });
+    await pool.query("UPDATE brain_facts SET status = 'published' WHERE id = $1::uuid", [
+      publishedId,
+    ]);
+    // Two aliases into ONE slot: the rival and both drafts end up on
+    // `delivery date`, so both drafts collide with the rival and neither
+    // collides with a draft (the targets SELECT requires a PUBLISHED right-hand
+    // side, so the two drafts cannot supersede each other).
+    await approve("ships on", "delivery date");
+    const demergedProposal = await approve("arrives on", "delivery date");
+    for (const id of [publishedId, keptId, demergedId]) {
+      expect((await readFact(id)).predicate_key).toBe("delivery date");
+    }
+    const declared = await declarePredicateCardinality(pool, WS, {
+      predicateKey: slotKey("delivery date", identityAlias),
+      cardinality: "single",
+      authoredBy: "curator-1",
+    });
+    expect(declared.ok, "curation failed — the collision cannot fire at all").toBe(true);
+
+    // Rejecting the SECOND alias moves `arrives on` back out of the slot while
+    // `delivery date` stays in it. One pair breaks; one survives.
+    const stamped = await targetsThenStamp(
+      [keptId, demergedId],
+      { proposalId: demergedProposal },
+      2,
+    );
+
+    // The rival IS retired — on the surviving pair's arbitration.
+    expect(stamped).toEqual([{ id: publishedId, newId: keptId }]);
+    expect((await readFact(publishedId)).valid_to).not.toBeNull();
+    // …and it is NOT attributed to the broken pair. Before #5324 the statement
+    // returned the bare target id, `promoteBrainFacts` filtered
+    // `supersessionPairs` on it, and BOTH pairs earned a `supersedes` edge.
+    expect(
+      stamped.map((row) => row.newId),
+      "the stamp attributed the retirement to a draft whose collision had been de-merged — a `supersedes` edge for that pair records an arbitration that no longer holds, and a reader auditing why the rival was retired is shown the wrong reason (#5324)",
+    ).not.toContain(demergedId);
+    // …and every returned row IS attributable: the LEFT JOIN's NULL arm is what
+    // `promoteBrainFacts` rolls back on, so a green run here must not produce one.
+    expect(stamped.every((row) => row.newId !== null)).toBe(true);
+    // The de-merge really did un-merge the one slot and leave the other, so the
+    // assertions above are about the re-check rather than about a statement that
+    // matched nothing.
+    expect((await readFact(demergedId)).predicate_key).toBe("arrives on");
+    expect((await readFact(keptId)).predicate_key).toBe("delivery date");
   });
 
   // ── 4. the locks ────────────────────────────────────────────────────────

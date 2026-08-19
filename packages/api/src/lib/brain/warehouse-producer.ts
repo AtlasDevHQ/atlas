@@ -227,6 +227,12 @@ export interface WarehouseEntity {
    * `null` as "the default connection" pointed every SaaS snapshot at the wrong
    * database. {@link defaultResolveConnectionIds} answers the group question;
    * this field only ever overrides it.
+   *
+   * ⚠️ **It is NOT what provenance records either (#5314).** `detail.connectionGroup`
+   * read this field until then, which put `null` on every SaaS fact's audit trail —
+   * measured on prod `us`. {@link buildWarehouseClaims} takes the resolved group as
+   * its own parameter now, so the only remaining reader of this field is the
+   * connection override in {@link runWarehouseProducer}.
    */
   readonly connection: string | null;
   readonly dimensions: readonly WarehouseDimension[];
@@ -1135,8 +1141,28 @@ export function buildWarehouseClaims(params: {
   readonly plan: WarehouseEntityPlan;
   readonly rows: readonly Record<string, unknown>[];
   readonly snapshotAt: Date;
+  /**
+   * The connection group the ENROLLMENT named — `null` for the flat scope
+   * (#5314).
+   *
+   * ⚠️ **Not `plan.entity.connection`, and reading it off there was the bug.**
+   * That field is the YAML `connection:` HINT, which
+   * {@link WarehouseEntity.connection} records is `null` for every entity on a
+   * DB-backed semantic layer — so the recorded provenance said `null` for facts
+   * that came from a real group, and a human auditing them read "flat scope".
+   * #5286's whole lesson is that group-blindness stores cleanly and looks
+   * exactly like success; a null group in the audit trail is a small version of
+   * it that survives in the record.
+   *
+   * REQUIRED rather than optional, so no call site can reach the old silence by
+   * omitting it. `null` and a group id are the ONLY two spellings — the `''`
+   * storage spelling is translated at `brain_enrollment`'s one translator
+   * (`fromStoredGroup`, `lib/brain/enrollment.ts`) and never re-translated
+   * here, which is what keeps that rule a rule.
+   */
+  readonly connectionGroup: string | null;
 }): WarehouseClaims {
-  const { workspaceId, plan, rows, snapshotAt } = params;
+  const { workspaceId, plan, rows, snapshotAt, connectionGroup } = params;
   const candidates: FactCandidate[] = [];
   const subjectIds = new Map<string, WarehouseRowId>();
   const entityEntries: EntityStoreEntry[] = [];
@@ -1260,7 +1286,9 @@ export function buildWarehouseClaims(params: {
           // provenance keys, so none of it can restate where the claim came from.
           entity: plan.entity.name,
           table: plan.entity.table,
-          connectionGroup: plan.entity.connection,
+          // The RESOLVED group, not the YAML hint (#5314) — see the parameter's
+          // own note for why the two are not interchangeable.
+          connectionGroup,
           dimension: dim.name,
           primaryKeyDimension: plan.primaryKey.name,
           primaryKey: subject,
@@ -2204,6 +2232,17 @@ export async function runWarehouseProducer(
     // file's non-null-assertion count at zero.
     placementTargets.push({ entity: name, group: groups[0] ?? null });
   }
+  /**
+   * Enrolled name → the group its enrollment named (#5314).
+   *
+   * Built from {@link WarehousePlacementTarget} rather than re-derived from
+   * `reach.groupsByEntity`, because the collapse from a SET of groups to one
+   * answer — and the refusal when there is more than one — happens in the loop
+   * above, and a second collapse is a second place for the two to disagree.
+   * Every entity that reaches `plan.emit` is in this map: a colliding name is
+   * refused before it is planned.
+   */
+  const groupByEntity = new Map(placementTargets.map((t) => [t.entity, t.group]));
   if (collidingGroups.size > 0) {
     log.warn(
       { ...runLog, entities: Object.fromEntries(collidingGroups) },
@@ -3212,6 +3251,13 @@ export async function runWarehouseProducer(
               claims: buildWarehouseClaims({
                 workspaceId,
                 plan: entityPlan,
+                // ⚠️ `?? null` is the ABSENT case, not a second spelling of the
+                // flat scope reached by translation: every planned entity is in
+                // this map (see its note), so the fallback is unreachable and is
+                // written rather than asserted away — this file holds no
+                // non-null assertions. The flat scope's own spelling is the
+                // `null` the placement target already carries.
+                connectionGroup: groupByEntity.get(entityPlan.entity.name) ?? null,
                 // The one assertion. The element shape is unchecked; what makes it
                 // survivable is that every read of it happens inside this `try`. What a
                 // non-record row COSTS is in the scope note above, measured.

@@ -70,6 +70,14 @@ interface BoundCall {
  * seven statements and an index-keyed double would silently feed draft rows to
  * the evidence query the moment the plan changed again.
  */
+/**
+ * A supersession pair's log/fixture identity — the same `newId->oldId` spelling
+ * `promoteBrainFacts`' own `pairLogKey` uses, so a fixture's expectation and the
+ * adapter's warning name a pair the same way.
+ */
+const stampPairKey = (pair: { readonly newId: string; readonly oldId: string }) =>
+  `${pair.newId}->${pair.oldId}`;
+
 function txWithDrafts(
   drafts: readonly unknown[],
   opts: {
@@ -79,6 +87,23 @@ function txWithDrafts(
     readonly supersessions?: readonly unknown[];
     /** Overrides which old ids the stamp UPDATE confirms; defaults to all asked. */
     readonly stampConfirms?: readonly string[];
+    /**
+     * Overrides which PAIRS still collide at stamp time, as `newId->oldId` keys
+     * (#5324). Defaults to every pair offered.
+     *
+     * A separate knob from {@link stampConfirms} because they model different
+     * events with different visibility: a narrowed TARGET set is a retraction,
+     * which the shortfall warning sees, while a narrowed PAIR set on a target
+     * that stays stamped is a de-merge that the target-level count cannot
+     * detect — which is the whole of #5324.
+     */
+    readonly livePairs?: readonly string[];
+    /**
+     * Stamped target ids to return with a NULL `new_id` — the LEFT JOIN arm
+     * real Postgres cannot reach, injected so the adapter's fail-closed
+     * response to it is drivable.
+     */
+    readonly stampUnattributed?: readonly string[];
     /** Make the identity-mutation lock raise `55P03`, as the bound's expiry does. */
     readonly lockTimesOut?: boolean;
     /**
@@ -153,19 +178,46 @@ function txWithDrafts(
         return { rows: [] };
       }
       calls.push({ sql, params });
+      // ⚠️ Matched on statement IDENTITY, not on `/^UPDATE/` plus a substring,
+      // and #5324 is why: the stamp is a `WITH … stamped AS (UPDATE …)` now, so
+      // the regex below no longer sees it at all. The `held_back` discriminator
+      // makes the general form of this argument twenty lines down — a substring
+      // over a statement built from a shared builder is a claim about the whole
+      // builder tree and goes stale silently.
+      if (sql === SUPERSEDE_STAMP_SQL) {
+        if (opts.failOnUpdate) throw new Error("update exploded");
+        // The stamp RETURNs one row per (stamped target, still-colliding draft),
+        // left-joined — so a target with no surviving pair would arrive with a
+        // NULL `new_id`. Emulated faithfully rather than conveniently: a target
+        // is stamped IFF one of its offered pairs is still live, which is the
+        // property the statement's `EXISTS` has and a per-target double does not.
+        const pairs = JSON.parse(String(params[2])) as readonly {
+          readonly newId: string;
+          readonly oldId: string;
+        }[];
+        const asked = params[1] as readonly string[];
+        // Two knobs, because two different things can break between the targets
+        // SELECT and the stamp. `stampConfirms` narrows by TARGET (a concurrent
+        // retraction); `livePairs` narrows by PAIR (a de-merge that breaks one
+        // of two pairs sharing one rival — #5324's case, invisible to the first).
+        const confirmedTargets = opts.stampConfirms ?? asked;
+        const liveKeys = opts.livePairs ?? pairs.map(stampPairKey);
+        const live = pairs.filter(
+          (pair) =>
+            confirmedTargets.includes(pair.oldId) && liveKeys.includes(stampPairKey(pair)),
+        );
+        const rows: { id: string; new_id: string | null }[] = live.map((pair) => ({
+          id: pair.oldId,
+          new_id: pair.newId,
+        }));
+        // The LEFT JOIN's NULL arm, which real Postgres cannot produce here — a
+        // live pair is WHY a row is stamped. Injectable so the adapter's
+        // roll-back-rather-than-commit arm has something to be driven by.
+        for (const id of opts.stampUnattributed ?? []) rows.push({ id, new_id: null });
+        return { rows, rowCount: rows.length };
+      }
       if (/^\s*UPDATE/i.test(sql)) {
         if (opts.failOnUpdate) throw new Error("update exploded");
-        if (sql.includes("valid_to = now()")) {
-          // The supersession stamp RETURNs the ids it actually stamped;
-          // emulate pg by confirming every requested id unless a test narrows
-          // it to model a concurrent retraction.
-          const asked = params[1] as readonly string[];
-          const confirmed = opts.stampConfirms ?? asked;
-          return {
-            rows: asked.filter((id) => confirmed.includes(id)).map((id) => ({ id })),
-            rowCount: confirmed.length,
-          };
-        }
         // Emulate `pg`: a non-RETURNING UPDATE reports through `rowCount`. The
         // plain statement binds an id array; the widening one binds a jsonb
         // string of `{id, grant}` entries.
@@ -794,16 +846,29 @@ describe("promoteBrainFacts — supersession (#4912)", () => {
     expect(targets?.params).toEqual(["ws-1", ["new-1"]]);
     const stamp = calls.find((c) => c.sql.includes("valid_to = now()"));
     // THREE binds since #5024: the workspace, the ids to stamp, and — `$3` — the
-    // same promotable-`single` draft list the targets SELECT was given, so the
-    // stamp re-asks the question that produced `$2` instead of trusting it
-    // across the window an alias removal can land in. `$3` MUST equal the
-    // targets SELECT's `$2`; a stamp that re-checked against a different set
-    // would be a second spelling of "what collides".
-    expect(stamp?.params).toEqual(["ws-1", ["old-1"], ["new-1"]]);
-    expect(stamp?.params[2]).toEqual(targets?.params[1]);
+    // set the re-check re-asks the question against, so the stamp does not trust
+    // the targets SELECT's answer across the window a de-merger can land in.
+    //
+    // ⚠️ `$3` is the PAIR LIST since #5324, where it used to be the flat
+    // promotable-draft id list. The per-target form could not attribute a stamp
+    // to the draft that caused it; this one can, and the assertion below is what
+    // says the two statements are bound from ONE value — the stamp that decides
+    // an arbitration and the edge INSERT that records it get the same jsonb.
+    expect(stamp?.params).toEqual([
+      "ws-1",
+      ["old-1"],
+      JSON.stringify([{ newId: "new-1", oldId: "old-1" }]),
+    ]);
     const edge = calls.find((c) => /^\s*INSERT/i.test(c.sql));
     expect(edge?.sql).toContain("'supersedes'");
     expect(JSON.parse(String(edge?.params[1]))).toEqual([{ newId: "new-1", oldId: "old-1" }]);
+    // …and the pair the stamp was ASKED about is the pair the targets SELECT
+    // produced. A stamp that re-checked against a different set would be a
+    // second spelling of "what collides".
+    const offeredDraftIds = targets?.params?.[1] as readonly string[] | undefined;
+    expect(JSON.parse(String(stamp?.params?.[2]))).toEqual(
+      (offeredDraftIds ?? []).map((newId) => ({ newId, oldId: "old-1" })),
+    );
   });
 
   it("reads the collision targets BEFORE the promote UPDATEs — same-batch rivals must not see each other as published", async () => {
@@ -902,6 +967,70 @@ describe("promoteBrainFacts — supersession (#4912)", () => {
     expect(JSON.parse(String(edge?.params[1]))).toEqual([
       { newId: "new-1", oldId: "old-kept" },
     ]);
+  });
+
+  /**
+   * #5324 — the attribution half of the stamp guard.
+   *
+   * Two same-slot `single` drafts in one batch and ONE rival: a case
+   * `SUPERSESSION_TARGETS_SQL`'s header discusses as real. A de-merge breaks
+   * `new-2`'s pair while `new-1`'s still holds, so the rival IS retired — on
+   * `new-1`'s arbitration, correctly — and the question is what the arbitration
+   * RECORD says.
+   *
+   * ⚠️ **This is invisible to `stampConfirms`, and that is the point.** The
+   * target set is unchanged: `old-1` is asked for and `old-1` is stamped, so the
+   * shortfall warning stays silent and every pre-#5324 assertion in this file
+   * still passes. What the per-target stamp could not do was tell the caller
+   * WHICH pair did it, so `promoteBrainFacts` filtered on the target id and
+   * recorded an edge for both — `new-2 supersedes old-1`, an arbitration that no
+   * longer held.
+   */
+  it("records the supersedes edge only for the pair that still collided, not every pair sharing its target (#5324)", async () => {
+    const { tx, calls } = txWithDrafts([singleDraft("new-1"), singleDraft("new-2")], {
+      supersessions: [
+        { draft_id: "new-1", superseded_id: "old-1" },
+        { draft_id: "new-2", superseded_id: "old-1" },
+      ],
+      // `new-2`'s pair de-merged between the targets SELECT and the stamp — an
+      // alias removal, or `entity-comparable-retire.ts` NULLing `object_cmp` on
+      // a concurrent producer run (#5321). The TARGET set is untouched.
+      livePairs: ["new-1->old-1"],
+    });
+    const report = await run(promoteBrainFacts(tx, "ws-1"));
+
+    // The rival was retired — the stamp is not what changed.
+    expect(report.promoted).toBe(2);
+    // …and the record names only the arbitration that actually held.
+    expect(report.superseded).toEqual([{ rowId: "new-1", superseded: ["old-1"] }]);
+    const edge = calls.find((c) => /^\s*INSERT/i.test(c.sql));
+    expect(
+      JSON.parse(String(edge?.params[1])),
+      "an edge was written for a pair that no longer collided — that is an arbitration record of an arbitration that never happened, and a reader auditing why `old-1` was retired is shown the wrong reason (#5324)",
+    ).toEqual([{ newId: "new-1", oldId: "old-1" }]);
+  });
+
+  it("a stamped target this transaction cannot attribute rolls the whole publish back (#5324)", async () => {
+    // The LEFT JOIN's NULL arm. It cannot happen under one snapshot — a live
+    // pair is WHY a row is stamped — so what is under test is the RESPONSE: an
+    // inner join would have dropped the row silently and left a belief retired
+    // with no `supersedes` edge, which is the silent supersession #4912 forbids.
+    const { tx } = txWithDrafts([singleDraft("new-1")], {
+      supersessions: [{ draft_id: "new-1", superseded_id: "old-1" }],
+      stampUnattributed: ["old-orphan"],
+    });
+
+    const exit = await Effect.runPromise(Effect.either(promoteBrainFacts(tx, "ws-1")));
+    expect(exit._tag).toBe("Left");
+    if (exit._tag === "Left") {
+      expect(exit.left).toBeInstanceOf(PublishPhaseError);
+      expect(exit.left.phase).toBe("promote");
+      // The MESSAGE, because the two counters it reports are the whole
+      // diagnostic: an unreadable `id` is the projection having changed, an
+      // unattributed row is the CTE and the UPDATE disagreeing, and an operator
+      // reading "the statement shape changed" needs to know which.
+      expect(String(exit.left.cause)).toContain("no colliding draft to attribute them to");
+    }
   });
 
   it("the draft projection carries no cardinality at all — there is nothing left to misread (#5027)", async () => {
@@ -1390,7 +1519,15 @@ describe("promoteBrainFacts — supersession (#4912)", () => {
     // `invalidated_at` may appear only as a WHERE predicate; the SET list is
     // `valid_to` + `updated_at` and nothing else. A stamp that also tombstoned
     // would delete the fact from as-of reads, which supersession must not do.
-    const setList = SUPERSEDE_STAMP_SQL.slice(0, SUPERSEDE_STAMP_SQL.indexOf("WHERE"));
+    //
+    // Sliced from the UPDATE rather than from the start of the statement: since
+    // #5324 the collision stamp OPENS with the `live_pair` CTE, which names
+    // `invalidated_at` and `status` legitimately (it re-evaluates the whole
+    // collision). A `slice(0, indexOf("WHERE"))` over the whole string would
+    // therefore read the CTE as the SET list and fail on a correct statement —
+    // and, worse, would keep passing if the CTE were ever removed.
+    const update = SUPERSEDE_STAMP_SQL.slice(SUPERSEDE_STAMP_SQL.indexOf("  UPDATE brain_facts p"));
+    const setList = update.slice(0, update.indexOf("WHERE"));
     expect(setList).toContain("valid_to = now()");
     expect(setList).not.toContain("invalidated_at");
     expect(setList).not.toContain("status");
@@ -1400,43 +1537,74 @@ describe("promoteBrainFacts — supersession (#4912)", () => {
     expect(SUPERSEDE_STAMP_SQL).toContain("valid_to IS NULL");
   });
 
-  it("the collision stamp is the explicit stamp PLUS one predicate — one spelling of the valid_to write", () => {
+  it("the collision stamp CONTAINS the explicit stamp plus one predicate — one spelling of the valid_to write", () => {
     // #4912 requires ONE spelling of the `valid_to` write; #5024 needed publish
     // to re-check the collision and `correct_fact` not to, because a human
     // correction has no colliding draft and never did. Both come out of one
-    // builder, and this is what says so: the explicit statement is the collision
-    // statement with the `EXISTS` arm removed, character for character.
+    // builder (`stampUpdateSql`), and this is what says so: the collision
+    // statement contains the explicit statement CHARACTER FOR CHARACTER with the
+    // re-check spliced in ahead of `RETURNING`, and nothing else changed.
     //
     // Comparing the STRINGS rather than asserting each carries the same
     // predicates — a checklist would pass while the two SET clauses drifted, and
     // the SET clause is the write.
-    const exists = SUPERSEDE_STAMP_SQL.indexOf("     AND EXISTS (");
-    expect(exists).toBeGreaterThan(0);
-    const withoutRecheck =
-      SUPERSEDE_STAMP_SQL.slice(0, exists) +
-      SUPERSEDE_STAMP_SQL.slice(SUPERSEDE_STAMP_SQL.indexOf("   RETURNING"));
-    expect(withoutRecheck).toBe(SUPERSEDE_STAMP_EXPLICIT_SQL);
+    //
+    // ⚠️ `toContain` where this used to be `toBe`, because #5324 made the
+    // collision arm WRAP the shared UPDATE in a CTE rather than merely extend
+    // it. That is a real weakening of one assertion and it is paid for by the
+    // splice being exact: the only permitted difference is `RECHECK`, so a
+    // second SET clause or a changed target predicate still fails here.
+    const RECHECK = `
+     AND EXISTS (
+       SELECT 1
+         FROM live_pair lp
+        WHERE lp.old_id = p.id)`;
+    expect(SUPERSEDE_STAMP_EXPLICIT_SQL).toContain("\n   RETURNING");
+    expect(SUPERSEDE_STAMP_SQL).toContain(
+      SUPERSEDE_STAMP_EXPLICIT_SQL.replace("\n   RETURNING", `${RECHECK}\n   RETURNING`),
+    );
 
     // The explicit arm has no `$3`, so `correction.ts` binding two params is not
     // an under-supply that Postgres would reject.
     expect(SUPERSEDE_STAMP_EXPLICIT_SQL).not.toContain("$3");
-    expect(SUPERSEDE_STAMP_SQL).toContain("$3::uuid[]");
+    // …and the collision arm's `$3` is the PAIR LIST (#5324), which is what makes
+    // the re-check per-pair. A `$3::uuid[]` here is the per-target form restored.
+    expect(SUPERSEDE_STAMP_SQL).toContain("jsonb_array_elements($3::jsonb)");
+    expect(
+      SUPERSEDE_STAMP_SQL.includes("$3::uuid[]"),
+      "the stamp is back on a flat `$3::uuid[]` draft list — that is the per-TARGET re-check, which cannot attribute a stamp to the draft that caused it (#5324)",
+    ).toBe(false);
   });
 
   it("the collision re-check uses the SAME arms as the targets SELECT, and drops only the draft-side one", () => {
     // The re-check must not be a paraphrase — `supersessionCollisionPredicate`
     // is the one place the arms are written, and this proves the stamp got them
-    // from there rather than restating them.
-    const recheck = SUPERSEDE_STAMP_SQL.slice(SUPERSEDE_STAMP_SQL.indexOf("AND EXISTS ("));
-    expect(recheck).toContain(supersessionCollisionPredicate("d", "p"));
+    // from there rather than restating them. Since #5324 the arms live in the
+    // `live_pair` CTE rather than inline in the `EXISTS`; what must not change is
+    // that they are the SAME arms and that they are evaluated inside the one
+    // statement that writes.
+    const cte = SUPERSEDE_STAMP_SQL.slice(
+      SUPERSEDE_STAMP_SQL.indexOf("  live_pair AS ("),
+      SUPERSEDE_STAMP_SQL.indexOf("  stamped AS ("),
+    );
+    expect(cte).toContain(supersessionCollisionPredicate("d", "p"));
 
     // …and that it deliberately does NOT carry the draft-side predicate. The
-    // stamp runs AFTER the promote UPDATEs, so every id in `$3` is `published`
-    // by then and `d.status = 'draft'` would match zero rows — silently
-    // disabling the whole guard while looking stricter than the alternative.
-    // This is the assertion that would have caught it.
-    expect(recheck).not.toContain(supersedingDraftPredicate("d"));
-    expect(recheck).not.toContain("d.status = 'draft'");
+    // stamp runs AFTER the promote UPDATEs, so every superseding row is
+    // `published` by then and `d.status = 'draft'` would match zero rows —
+    // silently disabling the whole guard while looking stricter than the
+    // alternative. This is the assertion that would have caught it.
+    expect(cte).not.toContain(supersedingDraftPredicate("d"));
+    expect(cte).not.toContain("d.status = 'draft'");
+
+    // ⚠️ ONE statement, and that is the property #5324 rests on rather than a
+    // formatting note: Postgres gives every arm of a `WITH` the same snapshot,
+    // so the pair list and the stamp decision cannot disagree. Splitting this
+    // into a SELECT followed by an UPDATE re-opens the READ COMMITTED window
+    // #5024 closed — each statement takes a fresh snapshot — while looking like
+    // a readability fix.
+    expect(SUPERSEDE_STAMP_SQL.trim().startsWith("WITH offered_pair AS (")).toBe(true);
+    expect(SUPERSEDE_STAMP_SQL.split(";")).toHaveLength(1);
   });
 });
 

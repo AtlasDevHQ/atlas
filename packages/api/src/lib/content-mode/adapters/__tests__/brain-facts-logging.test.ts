@@ -65,8 +65,14 @@ void mock.module("@atlas/api/lib/logger", () => ({
 // The two held-back statements are imported as VALUES, not matched by
 // substring: the tx double below discriminates on identity, for the reason its
 // own ⚠️ records.
-const { promoteBrainFacts, TIER_HELD_BACK_COUNT_SQL, CARDINALITY_HELD_BACK_COUNT_SQL } =
-  await import("@atlas/api/lib/content-mode/adapters/brain-facts");
+const {
+  promoteBrainFacts,
+  TIER_HELD_BACK_COUNT_SQL,
+  CARDINALITY_HELD_BACK_COUNT_SQL,
+  // The stamp, on the same terms and for the same reason (#5324): it is a
+  // `WITH … stamped AS (UPDATE …)` now, so no statement-shape regex can find it.
+  SUPERSEDE_STAMP_SQL,
+} = await import("@atlas/api/lib/content-mode/adapters/brain-facts");
 // Imported the same way as the module under test rather than statically: a
 // static import is hoisted above the `mock.module` call above, and while
 // `identity.ts` happens not to pull the logger today, "happens not to" is the
@@ -137,6 +143,16 @@ function tx(
    * would fail every test in the file for a reason unrelated to what it asserts.
    */
   uncurated: number | string | null = 0,
+  /**
+   * Which of `targets`' pairs still collide at stamp time, as `newId->oldId`
+   * keys (#5324). `undefined` = all of them, which is what keeps every test in
+   * this file that drives a target free of an unrelated shortfall warn.
+   *
+   * The interesting value is a PROPER SUBSET whose targets are all still
+   * stamped: that is the de-merge the target-level count cannot see, and the
+   * pair-level warning is the only trace it leaves.
+   */
+  livePairs?: readonly string[],
 ): ModeTxClient {
   return {
     query: async (sql, params = []) => {
@@ -197,14 +213,29 @@ function tx(
       ) {
         return { rows: [] };
       }
+      // ⚠️ Matched on statement IDENTITY and placed ahead of the `/^UPDATE/`
+      // arm, because since #5324 the stamp is a `WITH … stamped AS (UPDATE …)`
+      // and that regex no longer sees it at all — it would fall through to the
+      // tripwire at the bottom and fail every test that drives a target, for a
+      // reason unrelated to what this file asserts.
+      if (sql === SUPERSEDE_STAMP_SQL) {
+        // The stamp RETURNs one row per (stamped target, still-colliding
+        // draft). Every offered pair is confirmed live unless a test narrows
+        // it, so a driven target does not additionally trip either shortfall
+        // warn and pollute the assertions in this file.
+        const pairs = JSON.parse(String(params[2])) as readonly {
+          readonly newId: string;
+          readonly oldId: string;
+        }[];
+        const live = livePairs === undefined
+          ? pairs
+          : pairs.filter((pair) => livePairs.includes(`${pair.newId}->${pair.oldId}`));
+        return {
+          rows: live.map((pair) => ({ id: pair.oldId, new_id: pair.newId })),
+          rowCount: live.length,
+        };
+      }
       if (/^\s*UPDATE/i.test(sql)) {
-        // The supersession stamp RETURNs the ids it actually stamped; confirm
-        // every one asked for, so a driven target does not additionally trip
-        // the shortfall warn and pollute the assertions in this file.
-        if (sql.includes("valid_to = now()")) {
-          const asked = params[1] as readonly string[];
-          return { rows: asked.map((id) => ({ id })), rowCount: asked.length };
-        }
         // The plain promote binds an id array; the widening one binds a jsonb
         // string of `{id, grant}` entries. Both report a row per target.
         const target = params[1];
@@ -445,6 +476,67 @@ describe("promoteBrainFacts — grant widening is stated out loud (#4823)", () =
       widenedExpected: 1,
       widenedActual: 0,
     });
+  });
+});
+
+describe("promoteBrainFacts — a de-merged PAIR leaves a trace (#5324)", () => {
+  const single = (id: string) => draft(id, { predicate_cardinality: "single" });
+
+  it("warns when a disclosed pair no longer collided but its target was retired anyway", async () => {
+    // ⭐ The only artifact of the event, and it is invisible to every count
+    // beside it. Two same-slot drafts, one rival: a de-merge breaks `new-2`'s
+    // pair while `new-1`'s holds, so `old-1` IS stamped and the TARGET-level
+    // shortfall (`stamped.size !== oldIds.length`) stays silent — one target
+    // asked for, one target stamped. Without this line the pre-publish
+    // disclosure over-lists a supersession and nothing anywhere says so.
+    await run(
+      promoteBrainFacts(
+        tx(
+          [single("new-1"), single("new-2")],
+          (ids) => ids.length,
+          [],
+          0,
+          [
+            { draft_id: "new-1", superseded_id: "old-1" },
+            { draft_id: "new-2", superseded_id: "old-1" },
+          ],
+          0,
+          ["new-1->old-1"],
+        ),
+        "ws-1",
+      ),
+    );
+
+    const pairLine = warns().find((c) => c.message.includes("disclosed supersession PAIRS"));
+    expect(pairLine?.payload).toMatchObject({
+      workspaceId: "ws-1",
+      disclosedPairs: 2,
+      stampedPairs: 1,
+      missing: ["new-2->old-1"],
+    });
+    // …and it does NOT also fire the target-level shortfall. Reporting one event
+    // under two headings sends an operator hunting for a retraction that never
+    // happened — the target was retired exactly as disclosed.
+    expect(
+      warns().some((c) => c.message.includes("supersession targets were not stamped")),
+    ).toBe(false);
+  });
+
+  it("is silent when every disclosed pair still collides", async () => {
+    await run(
+      promoteBrainFacts(
+        tx(
+          [single("new-1")],
+          (ids) => ids.length,
+          [],
+          0,
+          [{ draft_id: "new-1", superseded_id: "old-1" }],
+          0,
+        ),
+        "ws-1",
+      ),
+    );
+    expect(warns().some((c) => c.message.includes("disclosed supersession PAIRS"))).toBe(false);
   });
 });
 

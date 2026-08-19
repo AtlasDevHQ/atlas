@@ -159,19 +159,20 @@ const PINNED_SUPERSESSION_TARGETS_SQL =
 
 const PINNED_SUPERSEDE_STAMP_SQL =
   `
-  UPDATE brain_facts p
-     SET valid_to = now(), updated_at = now()
-   WHERE p.workspace_id = $1
-     AND p.id = ANY($2::uuid[])
-     AND p.status = 'published'
-     AND p.invalidated_at IS NULL
-     AND p.valid_to IS NULL
-     AND EXISTS (
-       SELECT 1
-         FROM brain_facts d
-        WHERE d.workspace_id = $1
-          AND d.id = ANY($3::uuid[])
-          AND p.workspace_id = d.workspace_id
+  WITH offered_pair AS (
+    SELECT (pair->>'newId')::uuid AS new_id,
+           (pair->>'oldId')::uuid AS old_id
+      FROM jsonb_array_elements($3::jsonb) AS pair
+  ),
+  live_pair AS (
+    SELECT o.new_id, o.old_id
+      FROM offered_pair o
+      JOIN brain_facts d
+        ON d.workspace_id = $1
+       AND d.id = o.new_id
+      JOIN brain_facts p
+        ON p.id = o.old_id
+       AND p.workspace_id = d.workspace_id
      AND p.subject_key = d.subject_key
      AND p.predicate_key = d.predicate_key
      AND (p.object_cmp <> d.object_cmp
@@ -196,8 +197,26 @@ const PINNED_SUPERSEDE_STAMP_SQL =
      AND (NOT jsonb_exists(p.provenance, 'source')
       OR p.provenance->>'source' = ANY (ARRAY['slack', 'zoom', 'outlook', 'human']::text[]))
      AND (NOT jsonb_exists(d.provenance, 'source')
-      OR d.provenance->>'source' = ANY (ARRAY['slack', 'zoom', 'outlook', 'human']::text[])))
+      OR d.provenance->>'source' = ANY (ARRAY['slack', 'zoom', 'outlook', 'human']::text[]))
+  ),
+  stamped AS (
+  UPDATE brain_facts p
+     SET valid_to = now(), updated_at = now()
+   WHERE p.workspace_id = $1
+     AND p.id = ANY($2::uuid[])
+     AND p.status = 'published'
+     AND p.invalidated_at IS NULL
+     AND p.valid_to IS NULL
+     AND EXISTS (
+       SELECT 1
+         FROM live_pair lp
+        WHERE lp.old_id = p.id)
    RETURNING p.id::text AS id
+  )
+  SELECT s.id AS id, lp.new_id::text AS new_id
+    FROM stamped s
+    LEFT JOIN live_pair lp
+      ON lp.old_id = s.id::uuid
 `;
 
 const PINNED_SUPERSEDE_STAMP_EXPLICIT_SQL =

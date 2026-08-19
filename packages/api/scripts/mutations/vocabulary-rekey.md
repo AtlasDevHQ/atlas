@@ -92,21 +92,22 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 
 | Mutation | rekey-pg | decide-pg | brain-facts | rekey-logging |
 |---|---|---|---|---|
-| `rekeyDriftedFacts` call deleted from `approveProposal` | 16 | 0 | 0 | 4 |
-| `rekeyDriftedFacts` call deleted from `rejectProposal` | 3 | 0 | 0 | 0 |
+| `rekeyDriftedFacts` call deleted from `approveProposal` | 17 | 0 | 0 | 4 |
+| `rekeyDriftedFacts` call deleted from `rejectProposal` | 4 | 0 | 0 | 0 |
 | re-key gains `AND f.invalidated_at IS NULL` | 2 | 0 | 0 | 0 |
 | re-key gains `AND f.valid_to IS NULL` | 1 | 0 | 0 | 0 |
 | re-key gains `, updated_at = now()` | 1 | 1 | 0 | 0 |
 | re-key's workspace scope weakened to `OR TRUE` | 1 | 0 | 0 | 0 |
-| every position uses the `subject` columns | 21 | 1 | 0 | 4 |
+| every position uses the `subject` columns | 22 | 1 | 0 | 4 |
 | outer `identityKeySql` dropped from the assignment | 2 | 0 | 0 | 1 |
 | closure subquery's position pinned to `'predicate'` | 8 | 0 | 0 | 3 |
 | closure subquery's position filter DELETED | 1 | 0 | 0 | 0 |
-| `COALESCE(closure, norm)` -> the closure alone | 3 | 0 | 0 | 0 |
+| `COALESCE(closure, norm)` -> the closure alone | 4 | 0 | 0 | 0 |
 | `row.slot_position` -> hardcoded `"predicate"` (both call sites) | 4 | 0 | 0 | 4 |
-| `EXISTS` arm removed from the collision stamp | 1 | 0 | 4 | 0 |
-| `EXISTS` arm's `$3` -> `$2` | 1 | 0 | 0 | 0 |
-| collision predicate -> `TRUE` inside the `EXISTS` | 1 | 0 | 3 | 0 |
+| `EXISTS` arm removed from the collision stamp | 1 | 0 | 1 | 0 |
+| the re-check reads the DISCLOSED pairs instead of the live ones | 1 | 0 | 1 | 0 |
+| collision predicate -> `TRUE` inside the `live_pair` CTE | 2 | 0 | 3 | 0 |
+| the re-check collapsed back to PER TARGET (#5324's own defect) | 1 | 0 | 0 | 0 |
 | publish's identity-lock call deleted | 0 | 0 | 6 | 0 |
 | publish's `SET LOCAL lock_timeout` deleted | 0 | 0 | 1 | 0 |
 | publish's lock_timeout RESET deleted (bound leaks to the txn) | 0 | 0 | 1 | 0 |
@@ -122,7 +123,7 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | the two skip causes MERGED into one count (#5109 round 1's own defect) | 0 | 0 | 0 | 4 |
 | the completion message stops being conditional on `skippedVocabularyTarget` | 0 | 0 | 0 | 1 |
 
-Suite sizes: **rekey-pg** 27 tests (`src/lib/brain/__tests__/vocabulary-rekey-pg.test.ts`) · **decide-pg** 85 tests (`src/lib/brain/__tests__/vocabulary-decide-pg.test.ts`) · **brain-facts** 60 tests (`src/lib/content-mode/adapters/__tests__/brain-facts.test.ts`) · **rekey-logging** 15 tests (`src/lib/brain/__tests__/vocabulary-rekey-logging.test.ts`).
+Suite sizes: **rekey-pg** 28 tests (`src/lib/brain/__tests__/vocabulary-rekey-pg.test.ts`) · **decide-pg** 85 tests (`src/lib/brain/__tests__/vocabulary-decide-pg.test.ts`) · **brain-facts** 62 tests (`src/lib/content-mode/adapters/__tests__/brain-facts.test.ts`) · **rekey-logging** 15 tests (`src/lib/brain/__tests__/vocabulary-rekey-logging.test.ts`).
 
 ## Notes
 
@@ -137,9 +138,10 @@ Suite sizes: **rekey-pg** 27 tests (`src/lib/brain/__tests__/vocabulary-rekey-pg
 - **closure subquery's position filter DELETED** — The three positions are independent vocabularies. A statement blind to position reads whichever entry happens to carry the norm, which is why a fixture aliasing one norm at two positions is what separates this from the row above.
 - **`COALESCE(closure, norm)` -> the closure alone** — REPLACED WHOLE rather than by deleting `COALESCE(` and its tail separately: the two ends are 4 lines apart and editing them independently is two mutations wearing one label. The row falsifies the control — a row the approval says NOTHING about has no closure entry, so without the fallback its recomputed key is NULL and it is silently declined instead of left alone.
 - **`row.slot_position` -> hardcoded `"predicate"` (both call sites)** — BOTH call sites in one mutation, stated because either alone is a different mutation with a different number — the ambiguity the docstring this replaces could not record. This is the round-2 bug itself: it passed every test in two suites, because every fixture approved at the `predicate` position, while subject and object approvals re-keyed nothing and logged success.
-- **`EXISTS` arm removed from the collision stamp** — `$3` is kept BOUND rather than removed. The caller passes three parameters; a statement that references only two makes Postgres refuse the bind, and every test in the file then dies on an arity error rather than on the missing re-check. What the arm buys: an alias REMOVAL landing between the targets SELECT and this UPDATE de-merges a pair, and stamping it retires a belief no arbitration supports — invisible to every as-of-now read, in both directions.
-- **`EXISTS` arm's `$3` -> `$2`** — The dangling `$3::uuid[] IS NOT NULL` is there to keep the arity, not as part of the defect: the re-check now asks whether a PUBLISHED target still collides with itself instead of whether a promotable draft still collides with it.
-- **collision predicate -> `TRUE` inside the `EXISTS`** — The arm still runs and still references `$3`, so the shape of the statement is untouched — what is lost is the only part that can notice a de-merge. This is the row that separates *the re-check exists* from *the re-check re-asks the right question*.
+- **`EXISTS` arm removed from the collision stamp** — The `live_pair` CTE is LEFT in place, unreferenced by the UPDATE — Postgres permits an unused CTE, and the trailing `LEFT JOIN` still attributes, so the statement runs and only the guard is gone. That is what makes this a mutation of the guard rather than of the shape. What the arm buys: a de-merge landing between the targets SELECT and this UPDATE breaks a pair, and stamping it retires a belief no arbitration supports — invisible to every as-of-now read, in both directions.
+- **the re-check reads the DISCLOSED pairs instead of the live ones** — Replaces the pre-#5324 `$3 -> $2` row, which addressed a flat draft-id bind that no longer exists. Same defect, same shape: the `EXISTS` still runs and still reads a CTE, but it asks *was this pair DISCLOSED* rather than *does it still collide* — so the answer is `true` by construction and the guard is decorative.
+- **collision predicate -> `TRUE` inside the `live_pair` CTE** — The CTE still runs, still pairs each draft with its target and still feeds both the `EXISTS` and the attribution join — what is lost is the only part that can notice a de-merge. This is the row that separates *the re-check exists* from *the re-check re-asks the right question*.
+- **the re-check collapsed back to PER TARGET (#5324's own defect)** — #5324 restored exactly. Every pair whose target is stamped is reported live, so the stamp is still correct — it degrades to fewer rows, never more — and the ONLY thing that changes is the attribution: `promoteBrainFacts` writes a `supersedes` edge for a pair a de-merge already broke, claiming an arbitration that no longer holds. Nothing at the TARGET level can see it, which is why the two-pairs-one-rival fixture had to exist.
 - **publish's identity-lock call deleted** — The QUERY is dropped, not the `Effect.tryPromise` wrapper and its `catch`. Deleting the whole block is the other spelling and would also delete the `55P03` classification, which is a separate row below; neutering the call alone keeps one label meaning one mutation. `DRAFT_FACTS_SQL`'s `FOR UPDATE` locks drafts only, so without this lock a concurrent alias REMOVAL can de-merge a pair between the targets SELECT and the stamp.
 - **publish's `SET LOCAL lock_timeout` deleted** — `pg_advisory_xact_lock` never errors on contention — it waits, forever — so an unbounded acquisition is a publish request that hangs with no log line and no `requestId`, which is the one outcome the 500 path cannot report because it is never reached.
 - **publish's lock_timeout RESET deleted (bound leaks to the txn)** — `SET LOCAL` reverts at COMMIT, not at the next statement, so leaving it set bounds every later lock wait in the transaction — the promote UPDATEs, the supersede stamp, and the phase-4 archive loop. A publish that used to block and commit instead rolls back everything already promoted, on a transient class, under a generic message. The suites pin the reset's POSITION and not merely its presence.

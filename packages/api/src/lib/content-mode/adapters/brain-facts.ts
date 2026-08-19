@@ -1064,7 +1064,10 @@ export const SUPERSESSION_TARGETS_SQL = `
  * once and the two callers cannot drift. #5024 split the constants rather than
  * the statement: until then `correction.ts` imported the publish gate's string
  * verbatim, which stopped being possible the moment publish grew a predicate
- * that is FALSE for every human correction.
+ * that is FALSE for every human correction. #5324 moved the collision arm OUT
+ * of the parameter and into a CTE the collision statement wraps this one in —
+ * so what the two arbitrations now share is this whole function's output,
+ * spliced verbatim, and `brain-facts.test.ts` compares the strings to say so.
  *
  * Every predicate is re-checked even though the targets SELECT just evaluated
  * them: the published rows are NOT covered by `DRAFT_FACTS_SQL`'s `FOR
@@ -1074,82 +1077,14 @@ export const SUPERSESSION_TARGETS_SQL = `
  * shortfall. `RETURNING id` is how the caller learns which pairs actually
  * superseded, so the `supersedes` edges and the report can never claim a
  * stamp that did not happen.
+ *
+ * @param collisionRecheck the collision arbitration's extra conjunct, or `""`
+ *   for the explicit one. A THIRD conjunct on top of the two the explicit arm
+ *   already carries, never a replacement for either — so *"the explicit
+ *   statement is the collision statement minus one predicate"* is true by
+ *   construction rather than by review.
  */
-function supersedeStampSql(arbitration: "collision" | "explicit"): string {
-  // The collision arm is a THIRD conjunct on top of the two the explicit arm
-  // already carries, never a replacement for either — so "the explicit statement
-  // is the collision statement minus one predicate" is true by construction, and
-  // `brain-facts.test.ts` pins it by comparing the two strings.
-  //
-  // NOTE what the EXISTS deliberately does NOT carry:
-  // `supersedingDraftPredicate("d")`. This statement runs AFTER the promote
-  // UPDATEs — `SUPERSESSION_TARGETS_SQL`'s header explains why the TARGETS read
-  // must precede them — so by stamp time every id in `$3` is `published` and the
-  // draft-side predicate would match zero rows, silently disabling the whole
-  // guard. Draft-ness is historical here and `$3` is what records it: the list
-  // IS `promotable`, so membership already means "was a promotable draft when
-  // this transaction began". (It used to be `promotable` filtered to `single`;
-  // since #5027 there is no per-row cardinality to filter on, which changes what
-  // the list contains and not what membership MEANS — the premise this note
-  // rests on is untouched.) What the re-check re-asks is the part an alias
-  // decision can still have changed underneath it — the SLOT, and now also the
-  // cardinality entry, which a `decideAmendment` can retract between the two
-  // statements.
-  //
-  // An exhaustive SWITCH, not `arbitration === "explicit" ? "" : recheck`. The
-  // ternary's open `else` means a third arm silently inherits the collision
-  // re-check instead of failing to compile. #5033 was named here as a coming
-  // third arm and turned out NOT to be one — see the `explicit` arm below,
-  // which is where that answer is recorded.
-  const collisionRecheck = ((): string => {
-    switch (arbitration) {
-      case "explicit":
-        // NO TIER GUARD HERE, and that is #5033's answer rather than an
-        // omission. The guard rides `supersessionCollisionPredicate`, so the
-        // collision arm inherits it and this one does not — correct, because
-        // `correctFact` refuses a warehouse-derived target for EVERY verb
-        // before it reaches the stamp (`CORRECTION_REFUSAL_REASONS.warehouseTarget`),
-        // and refuses an unresolvable source kind immediately after
-        // (`unrecognizedSourceKind()`, #4964, whose two reasons —
-        // `unrecognizedSourceKind` and `malformedSourceKind` — cover the string
-        // and non-string halves). Both refusals cover the same two populations
-        // `supersedableTierSql` excludes on the PUBLISHED side, evaluated one
-        // layer up and earlier in the SAME transaction, against a row-locked
-        // target — so there is no check-then-stamp window for a SQL re-check to
-        // close. There is no draft-side equivalent because there is no draft:
-        // the superseding row is the replacement `correctFact` installs, which
-        // enters through `reconcileFacts` carrying `HUMAN_SOURCE`.
-        //
-        // Restating them here would be strictly worse, not merely redundant: a
-        // SQL arm cannot say WHY it refused, so a target that reached the stamp
-        // would stamp zero rows and trip `correction.ts`'s own zero-rows throw,
-        // which reports statement DRIFT and surfaces to the agent as a
-        // transient-sounding retry suggestion (`lib/tools/correct-fact.ts`).
-        // That is advice that loops forever on a permanent tier-1 condition. A tier-1
-        // correction has to fail as an actionable refusal naming the warehouse,
-        // which is what it already does. The two arbitrations differ in their
-        // WARRANT, and the switch is what makes that a decision rather than an
-        // inheritance.
-        return "";
-      case "collision":
-        return `
-     AND EXISTS (
-       SELECT 1
-         FROM brain_facts d
-        WHERE d.workspace_id = $1
-          AND d.id = ANY($3::uuid[])
-          AND ${supersessionCollisionPredicate("d", "p")})`;
-      default: {
-        // THROWS rather than returning `exhaustive`. At runtime that spelling
-        // returns the argument itself and splices it into the statement text —
-        // of the two available forms the fix first picked the one whose failure
-        // mode is "unvalidated string into SQL". Every other exhaustive default
-        // in this codebase throws.
-        const exhaustive: never = arbitration;
-        throw new Error(`supersedeStampSql: unhandled arbitration ${JSON.stringify(exhaustive)}`);
-      }
-    }
-  })();
+function stampUpdateSql(collisionRecheck: string): string {
   return `
   UPDATE brain_facts p
      SET valid_to = now(), updated_at = now()
@@ -1163,14 +1098,43 @@ function supersedeStampSql(arbitration: "collision" | "explicit"): string {
 }
 
 /**
- * The publish gate's stamp — the collision arbitration, RE-CHECKED (#5024).
+ * The collision arbitration's extra conjunct — *"is at least one of the pairs
+ * this publish DISCLOSED for this row still live?"*.
  *
- * `$3` is the same promotable-draft id list `SUPERSESSION_TARGETS_SQL` was
- * given, so the statement re-asks the exact question that produced `$2` rather
- * than trusting the answer. (No longer filtered to `single` before it gets here
- * — #5027 moved cardinality off the row, so the re-check's own
- * {@link cardinalitySingleSql} arm is where that question is asked, on both
- * statements, from one spelling.)
+ * A lookup into {@link SUPERSEDE_STAMP_SQL}'s `live_pair` CTE rather than the
+ * inline `EXISTS` over `brain_facts` it was until #5324. What that buys is
+ * stated at the constant below; what it must not lose is that the question is
+ * still asked INSIDE the UPDATE, from the same snapshot, so no window opens
+ * between deciding a pair is live and stamping its target.
+ *
+ * ⚠️ NOTE what it deliberately does NOT carry: `supersedingDraftPredicate("d")`.
+ * This statement runs AFTER the promote UPDATEs — {@link SUPERSESSION_TARGETS_SQL}'s
+ * header explains why the TARGETS read must precede them — so by stamp time
+ * every superseding row is `published` and the draft-side predicate would match
+ * zero rows, silently disabling the whole guard. Draft-ness is historical here
+ * and the offered pair list is what records it: every pair in it was produced by
+ * the targets SELECT off `promotable`, so membership already means "was a
+ * promotable draft when this transaction began". What the re-check re-asks is
+ * the part an alias decision or a comparable retirement can still have changed
+ * underneath it — the SLOT, the object comparable, and the cardinality entry,
+ * which a `decideAmendment` can retract between the two statements.
+ */
+const LIVE_PAIR_RECHECK = `
+     AND EXISTS (
+       SELECT 1
+         FROM live_pair lp
+        WHERE lp.old_id = p.id)`;
+
+/**
+ * The publish gate's stamp — the collision arbitration, RE-CHECKED PER PAIR
+ * (#5024, made per-pair by #5324).
+ *
+ * `$3` is the `{newId, oldId}` pair list {@link SUPERSESSION_TARGETS_SQL}
+ * produced — the same jsonb shape {@link INSERT_SUPERSEDES_EDGES_SQL} takes, so
+ * the statement that decides an arbitration and the statement that records it
+ * are bound from one value. `$2` is the de-duplicated target side of that same
+ * list, and it stays because the stamp must be unable to touch a row outside the
+ * disclosed target set whatever the CTE does.
  *
  * ## Why re-checking is not redundant with the lock, and both are kept
  *
@@ -1183,44 +1147,64 @@ function supersedeStampSql(arbitration: "collision" | "explicit"): string {
  * cannot silently turn this into a stamp on a pair that no longer collides.
  *
  * The race it closes: alias ADDITION only creates collisions, so a pair that
- * starts colliding mid-publish is simply not stamped this round — safe. Alias
- * REMOVAL de-merges keys, and landing between the targets SELECT and this UPDATE
- * would stamp `valid_to` on a pair that no longer collides. That retires a
- * belief no arbitration supports, and every as-of-now read then hides the row it
- * touched, so the damage is invisible in both directions.
+ * starts colliding mid-publish is simply not stamped this round — safe, and
+ * still so: `live_pair` is built from the DISCLOSED pairs, so a collision minted
+ * after the targets SELECT is not in it and can neither stamp a row nor earn an
+ * edge. Alias REMOVAL de-merges keys, and landing between the targets SELECT and
+ * this UPDATE would stamp `valid_to` on a pair that no longer collides. That
+ * retires a belief no arbitration supports, and every as-of-now read then hides
+ * the row it touched, so the damage is invisible in both directions.
  *
  * Degrades to stamping FEWER rows, never more — and the caller already warns on
  * the shortfall, because `RETURNING` is how it learns which pairs actually
  * superseded. The `supersedes` edges and the report can never claim a stamp that
  * did not happen.
  *
- * ## It re-checks per TARGET, not per PAIR — recorded, not overlooked
+ * ## It re-checks PER PAIR, and until #5324 it did not
  *
- * The `EXISTS` asks *"does ANY draft in `$3` still collide with this published
- * row?"*. With two same-slot `single` drafts in one batch and one rival — a case
- * `SUPERSESSION_TARGETS_SQL`'s header discusses as real — a de-merge that breaks
- * one pair while leaving the other still stamps the rival, and the `supersedes`
- * edge recorded for the broken pair claims an arbitration that no longer holds.
+ * The `EXISTS` used to ask *"does ANY draft in the promotable list still collide
+ * with this published row?"*. With two same-slot `single` drafts in one batch
+ * and one rival — a case {@link SUPERSESSION_TARGETS_SQL}'s header discusses as
+ * real — a de-merge that broke one pair while leaving the other still stamped
+ * the rival, correctly, and the caller then recorded a `supersedes` edge for
+ * BOTH pairs because all it could filter on was the target id. The broken pair's
+ * edge claimed an arbitration that no longer held, and a reader auditing why a
+ * fact was retired was shown the wrong reason.
  *
- * Accepted, because the failure directions are not comparable: that is a stamp
- * that happened with the WRONG attribution, where what this guard exists to
- * prevent is a stamp that should not have happened at all — a belief retired
- * with no live collision, invisible to every as-of-now read. Closing the
- * attribution half needs the caller's one-array `oldIds` shape to become
- * per-pair, which is a change to `promoteBrainFacts`'s report contract rather
- * than to this statement.
+ * That was accepted while the only de-merger was `vocabulary-decide.ts` —
+ * human-paced, one workspace at a time, holding the identity namespace. #5321
+ * added a second that is neither: `lib/brain/entity-comparable-retire.ts` NULLs
+ * `object_cmp` from inside the MINTING transaction on a producer run, holding no
+ * identity lock, and it is allowlisted on the promotion guard on the strength of
+ * this very re-check. The failure mode never changed; the frequency assumption
+ * behind the word "accepted" did, so #5324 closed it rather than re-accepting it
+ * with a new number in the sentence.
  *
- * ⚠️ **THAT ACCEPTANCE IS RE-OPENED AS #5324, on a changed premise rather than
- * a changed opinion.** It was written when the only de-merger was
- * `vocabulary-decide.ts` — human-paced, one workspace at a time, holding
- * `IDENTITY_MUTATION_LOCK_NAMESPACE`. #5321 added a second:
- * `lib/brain/entity-comparable-retire.ts` NULLs `object_cmp` from inside the
- * MINTING transaction on a producer run, holding no identity lock — and it is
- * allowlisted on `check-brain-fact-promotion.sh` on the strength of the
- * per-target re-check above. So the guard that makes that writer safe is the
- * same one whose attribution gap it raises the exposure to. Nothing above is
- * wrong today, and the stamp still degrades to FEWER rows — but "accepted" was
- * a judgement about frequency, and the frequency is what changed.
+ * ## How the CTE closes it, and why it has to be one statement
+ *
+ * `live_pair` evaluates the collision PER DISCLOSED PAIR; the UPDATE stamps a
+ * row iff at least one of its pairs survived; the trailing SELECT joins the two
+ * back together, so a `RETURNING` row now names the draft whose arbitration
+ * actually did the retiring. All of it is ONE statement, which is the whole
+ * point: Postgres gives every arm of a `WITH` the same snapshot, so the pair
+ * list and the stamp decision cannot disagree. Asking the same question as a
+ * separate SELECT first would re-open exactly the READ COMMITTED window #5024
+ * closed — each statement takes a fresh snapshot — while looking like the fix.
+ *
+ * ⚠️ **The join is a LEFT JOIN and that is a guard, not a widening.** A stamped
+ * row with no surviving pair cannot happen — it is why the row was stamped — so
+ * an inner join would drop it silently and under-report a stamp, which is the
+ * one direction this whole slice exists to prevent. Left-joined it arrives with
+ * a NULL `new_id`, and `promoteBrainFacts` rolls the transaction back rather
+ * than committing a supersession it cannot attribute.
+ *
+ * ⚠️ **The row set is unchanged in the direction that matters, and narrowed in
+ * the other.** Anything `live_pair` admits was disclosed by the targets SELECT
+ * and re-passes the identical predicate, so nothing is stamped that the
+ * per-target form would not have stamped. The narrowing is real and deliberate:
+ * where the old form kept a row stamped because some UNDISCLOSED draft had begun
+ * colliding with it, this one does not stamp it at all — fewer rows, never more,
+ * which is the invariant the guard is measured against.
  *
  * The outer `p.status` / `p.invalidated_at` / `p.valid_to` predicates are kept
  * even though {@link supersessionCollisionPredicate} repeats all three. They are
@@ -1229,7 +1213,28 @@ function supersedeStampSql(arbitration: "collision" | "explicit"): string {
  * to stamp a tombstoned or already-superseded row on its own terms whatever
  * happens to the collision rule.
  */
-export const SUPERSEDE_STAMP_SQL = supersedeStampSql("collision");
+export const SUPERSEDE_STAMP_SQL = `
+  WITH offered_pair AS (
+    SELECT (pair->>'newId')::uuid AS new_id,
+           (pair->>'oldId')::uuid AS old_id
+      FROM jsonb_array_elements($3::jsonb) AS pair
+  ),
+  live_pair AS (
+    SELECT o.new_id, o.old_id
+      FROM offered_pair o
+      JOIN brain_facts d
+        ON d.workspace_id = $1
+       AND d.id = o.new_id
+      JOIN brain_facts p
+        ON p.id = o.old_id
+       AND ${supersessionCollisionPredicate("d", "p")}
+  ),
+  stamped AS (${stampUpdateSql(LIVE_PAIR_RECHECK)}  )
+  SELECT s.id AS id, lp.new_id::text AS new_id
+    FROM stamped s
+    LEFT JOIN live_pair lp
+      ON lp.old_id = s.id::uuid
+`;
 
 /**
  * `correct_fact`'s supersede verb (#4915) — the EXPLICIT arbitration.
@@ -1242,8 +1247,33 @@ export const SUPERSEDE_STAMP_SQL = supersedeStampSql("collision");
  * arbitration. Applying the publish gate's predicate here would stamp nothing
  * and trip `correction.ts`'s own zero-rows throw on every correction.
  *
+ * NO TIER GUARD either, and that is #5033's answer rather than an omission. The
+ * guard rides `supersessionCollisionPredicate`, so the collision arm inherits it
+ * and this one does not — correct, because `correctFact` refuses a
+ * warehouse-derived target for EVERY verb before it reaches the stamp
+ * (`CORRECTION_REFUSAL_REASONS.warehouseTarget`), and refuses an unresolvable
+ * source kind immediately after (`unrecognizedSourceKind()`, #4964, whose two
+ * reasons — `unrecognizedSourceKind` and `malformedSourceKind` — cover the
+ * string and non-string halves). Both refusals cover the same two populations
+ * `supersedableTierSql` excludes on the PUBLISHED side, evaluated one layer up
+ * and earlier in the SAME transaction, against a row-locked target — so there is
+ * no check-then-stamp window for a SQL re-check to close. There is no draft-side
+ * equivalent because there is no draft: the superseding row is the replacement
+ * `correctFact` installs, which enters through `reconcileFacts` carrying
+ * `HUMAN_SOURCE`.
+ *
+ * Restating them here would be strictly worse, not merely redundant: a SQL arm
+ * cannot say WHY it refused, so a target that reached the stamp would stamp zero
+ * rows and trip `correction.ts`'s own zero-rows throw, which reports statement
+ * DRIFT and surfaces to the agent as a transient-sounding retry suggestion
+ * (`lib/tools/correct-fact.ts`). That is advice that loops forever on a
+ * permanent tier-1 condition. A tier-1 correction has to fail as an actionable
+ * refusal naming the warehouse, which is what it already does. The two
+ * arbitrations differ in their WARRANT, and keeping them two constants is what
+ * makes that a decision rather than an inheritance.
+ *
  * ONE spelling of the `valid_to` write survives that split, which is #4912's
- * actual requirement: both constants come out of {@link supersedeStampSql}, so
+ * actual requirement: both constants are built from {@link stampUpdateSql}, so
  * the SET clause and the three target predicates cannot drift between the two
  * arbitrations. What differs is the WARRANT, and naming the two warrants is
  * strictly more honest than one statement whose guard a caller switches off with
@@ -1253,7 +1283,7 @@ export const SUPERSEDE_STAMP_SQL = supersedeStampSql("collision");
  * Still gated: `check-brain-fact-promotion.sh` refuses `valid_to` UPDATEs
  * outside its allowlist, and `correction.ts` is on it for this write.
  */
-export const SUPERSEDE_STAMP_EXPLICIT_SQL = supersedeStampSql("explicit");
+export const SUPERSEDE_STAMP_EXPLICIT_SQL = stampUpdateSql("");
 
 /**
  * The arbitration record, new → old (#4912): `supersedes` is the M2 edge the
@@ -1365,8 +1395,29 @@ function toDraftFactRow(row: unknown): DraftFactRow | null {
  *     `SUPERSEDE_STAMP_SQL` stamps fewer rows than asked — NO complete record
  *     anywhere. The sample plus the count is all that exists, so the count is
  *     the number to act on, and these are the two that argue against lowering.
+ *   - the PAIR-level `missing` list (#5324), on the same terms and for the same
+ *     reason: a disclosed pair that no longer collided leaves no durable record
+ *     at all — its target was retired on another pair's arbitration, so neither
+ *     `superseded` nor the target-level shortfall names it. A third argument
+ *     against lowering, not a third convenience.
  */
 const LOGGED_ID_SAMPLE_CAP = 20;
+
+/**
+ * One supersession pair, as a log line's identifier — `newId->oldId` (#5324).
+ *
+ * A function rather than a template literal at each of its three uses, because
+ * two of them build a `Set` and the third reads it: a second spelling would make
+ * the membership test answer `false` for a pair that is in the set, which is
+ * silently the WRONG direction — it would report a pair as unattributed while
+ * its edge was written.
+ *
+ * Ids only, never a surface. `oversight.ts`'s rule: a log line about a claim
+ * names the row, not what it says.
+ */
+function pairLogKey(pair: { readonly newId: string; readonly oldId: string }): string {
+  return `${pair.newId}->${pair.oldId}`;
+}
 
 /**
  * Run a statement whose ONLY product is telemetry, so that its failure costs
@@ -2031,36 +2082,95 @@ export function promoteBrainFacts(
       if (supersessionPairs.length > 0) {
         const oldIds = [...new Set(supersessionPairs.map((pair) => pair.oldId))];
         const stampResult = yield* Effect.tryPromise({
-          // `offeredIds` a SECOND time, and not a convenience: it is the same
-          // list `SUPERSESSION_TARGETS_SQL` was given, so the stamp re-asks the
-          // exact question that produced `oldIds` instead of trusting the answer
-          // across the window an alias removal can land in (#5024).
-          try: () => tx.query(SUPERSEDE_STAMP_SQL, [orgId, oldIds, offeredIds]),
+          // ⚠️ **THE PAIRS, not `offeredIds`, and #5324 is the whole reason.**
+          // Until then this bound the flat promotable-draft id list, and the
+          // statement's `EXISTS` asked *"does ANY of them still collide with
+          // this row?"* — so a de-merge that broke one pair while another
+          // survived stamped the row (correctly) and left this caller unable to
+          // tell which pair did it. Binding the pair list is what makes the
+          // re-check per-PAIR; the statement re-asks the exact question that
+          // produced each pair rather than trusting the answer across the
+          // window a de-merger can land in (#5024).
+          //
+          // The SAME jsonb shape `INSERT_SUPERSEDES_EDGES_SQL` takes below, from
+          // the same value: the statement that decides an arbitration and the
+          // statement that records it cannot be handed two different lists.
+          try: () =>
+            tx.query(SUPERSEDE_STAMP_SQL, [orgId, oldIds, JSON.stringify(supersessionPairs)]),
           catch: (cause) =>
             new PublishPhaseError({ table: BRAIN_FACTS_TABLE, phase: "promote", cause }),
         });
+        /** Targets the stamp actually closed — one entry per row, deduplicated. */
         const stamped = new Set<string>();
+        /** …and WHICH pair closed each, keyed for the order-preserving filter below. */
+        const attributed = new Set<string>();
         let unreadableStampRows = 0;
+        let unattributedStampRows = 0;
         for (const raw of stampResult.rows) {
-          if (isJsonObject(raw) && typeof raw.id === "string" && raw.id !== "") {
-            stamped.add(raw.id);
-          } else {
+          if (!isJsonObject(raw) || typeof raw.id !== "string" || raw.id === "") {
             unreadableStampRows++;
+            continue;
           }
+          stamped.add(raw.id);
+          if (typeof raw.new_id !== "string" || raw.new_id === "") {
+            // The LEFT JOIN's NULL arm — a row stamped with no surviving pair to
+            // attribute it to. It cannot happen (a surviving pair is WHY the row
+            // was stamped), and it is counted rather than assumed away because
+            // the inner join that would have hidden it is the failure this
+            // slice exists to prevent. Fatal below, with the sibling.
+            unattributedStampRows++;
+            continue;
+          }
+          attributed.add(pairLogKey({ newId: raw.new_id, oldId: raw.id }));
         }
-        if (unreadableStampRows > 0) {
+        /**
+         * ⚠️ **FILTERED FROM `supersessionPairs` RATHER THAN BUILT FROM THE ROWS,
+         * and the difference is the report's ORDER.**
+         *
+         * `superseded` rides into `audit_log` and into the REST and MCP publish
+         * responses, so its order is part of a durable record. The pre-#5324
+         * shape got that order for free — it filtered this same array, which
+         * carries {@link SUPERSESSION_TARGETS_SQL}'s explicit `ORDER BY
+         * d.ingested_at, d.id, p.ingested_at, p.id`. Building it from the stamp's
+         * trailing `SELECT` instead would have taken whatever order the join
+         * happened to produce, so two identical publishes could write two
+         * different arrays.
+         *
+         * The alternative was an `ORDER BY` on the stamp, which is a SECOND
+         * ordering rule to keep in agreement with the first. This way there is
+         * still exactly one, declared on the statement whose job is to list the
+         * pairs — the stamp answers only WHICH of them survived.
+         */
+        const stampedPairs = supersessionPairs.filter((pair) =>
+          attributed.has(pairLogKey(pair)),
+        );
+        // …and every attributed pair came back OUT of that filter. A returned
+        // pair the transaction never offered is structurally impossible — the
+        // statement derives `live_pair` from `$3` — so a mismatch means the
+        // statement no longer answers about the list it was handed, and an edge
+        // built from it would attribute a retirement to a draft this publish
+        // never disclosed. Counted into the same fatal arm as its two siblings.
+        const unofferedStampPairs = attributed.size - stampedPairs.length;
+        if (unreadableStampRows > 0 || unattributedStampRows > 0 || unofferedStampPairs > 0) {
           // A FAILURE, not a skip, and the asymmetry with every other drift
           // path in this adapter is deliberate: an unreadable RETURNING row
           // means the stamp APPLIED to a fact this code can no longer name
           // — proceeding would retire a belief with no `supersedes` edge and
           // no audit record, the exact silent supersession #4912 forbids.
           // Failing here rolls the whole transaction (and the stamp) back.
+          //
+          // The two counters are reported separately because they are different
+          // incidents with the same consequence: an unreadable `id` is the
+          // statement's projection having changed, while an unattributed row is
+          // the CTE and the UPDATE disagreeing about which pairs are live —
+          // which, being impossible under one snapshot, points at the statement
+          // having been rewritten into two.
           return yield* Effect.fail(
             new PublishPhaseError({
               table: BRAIN_FACTS_TABLE,
               phase: "promote",
               cause: new Error(
-                `promoteBrainFacts: ${unreadableStampRows} SUPERSEDE_STAMP_SQL RETURNING row(s) had no usable id — the statement shape changed; rolling back rather than committing a supersession with no record`,
+                `promoteBrainFacts: SUPERSEDE_STAMP_SQL returned ${unreadableStampRows} row(s) with no usable id, ${unattributedStampRows} stamped row(s) with no colliding draft to attribute them to, and ${unofferedStampPairs} pair(s) this transaction never offered — the statement shape changed; rolling back rather than committing a supersession with no record`,
               ),
             }),
           );
@@ -2081,12 +2191,37 @@ export function promoteBrainFacts(
             // THREE causes since #5024, and naming only the first two sends an
             // operator hunting for a retraction that never happened. The third
             // is the one this slice added on purpose: the stamp re-checks the
-            // collision, so an alias REMOVAL that de-merged the pair leaves it
-            // unstamped. That is the guard working, not a fault.
-            "brain publish: some supersession targets were not stamped — retracted, already superseded, or DE-MERGED by an alias removal since the collision check (the stamp re-checks the collision, #5024); the will-supersede disclosure may have over-listed, and no belief was retired without a live collision",
+            // collision, so a DE-MERGE that broke the pair leaves it unstamped.
+            // That is the guard working, not a fault.
+            "brain publish: some supersession targets were not stamped — retracted, already superseded, or DE-MERGED since the collision check (the stamp re-checks the collision per pair, #5024/#5324); the will-supersede disclosure may have over-listed, and no belief was retired without a live collision",
           );
         }
-        const stampedPairs = supersessionPairs.filter((pair) => stamped.has(pair.oldId));
+        /**
+         * ⚠️ The PAIR-level shortfall, and it is invisible to the target-level
+         * one above (#5324). A de-merge that breaks one of two pairs sharing a
+         * rival leaves the rival stamped on the surviving pair's arbitration —
+         * so `stamped.size === oldIds.length`, no warning, and the broken pair
+         * silently earns no edge. That is the correct outcome and the one the
+         * old code got wrong in the other direction, but it is still a
+         * disclosure that over-listed, and this is its operator-visible trace.
+         *
+         * Restricted to pairs whose target WAS stamped, so a wholly unstamped
+         * target is reported once, above, rather than twice under two headings.
+         */
+        const unattributedPairs = supersessionPairs.filter(
+          (pair) => stamped.has(pair.oldId) && !attributed.has(pairLogKey(pair)),
+        );
+        if (unattributedPairs.length > 0) {
+          log.warn(
+            {
+              workspaceId: orgId,
+              disclosedPairs: supersessionPairs.length,
+              stampedPairs: stampedPairs.length,
+              missing: unattributedPairs.map(pairLogKey).slice(0, LOGGED_ID_SAMPLE_CAP),
+            },
+            "brain publish: some disclosed supersession PAIRS no longer collided at stamp time, though their target was still retired by another pair — DE-MERGED since the collision check (an alias removal, or a comparable retirement on a concurrent producer run, #5321); no `supersedes` edge was recorded for them, which is the arbitration record staying honest rather than a fault",
+          );
+        }
         if (stampedPairs.length > 0) {
           // Edges only for pairs the stamp CONFIRMED: a `supersedes` edge whose
           // target is still current would be an arbitration record of an

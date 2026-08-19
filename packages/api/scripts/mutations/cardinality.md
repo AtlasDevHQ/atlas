@@ -36,7 +36,7 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | the supersede refusal gates on the failing POSITION instead of its CAUSE | 0 | 0 | 1 | 0 | 0 |
 | the proposer runs INSIDE the correction's transaction | 0 | 0 | 8 | 0 | 0 |
 
-Suite sizes: **cardinality-pg.test.ts** 27 tests (`src/lib/brain/__tests__/cardinality-pg.test.ts`) · **cardinality.test.ts** 41 tests (`src/lib/brain/__tests__/cardinality.test.ts`) · **correction.test.ts** 87 tests (`src/lib/brain/__tests__/correction.test.ts`) · **brain-facts.test.ts** 60 tests (`src/lib/content-mode/adapters/__tests__/brain-facts.test.ts`) · **reconcile.test.ts** 72 tests (`src/lib/brain/__tests__/reconcile.test.ts`).
+Suite sizes: **cardinality-pg.test.ts** 27 tests (`src/lib/brain/__tests__/cardinality-pg.test.ts`) · **cardinality.test.ts** 41 tests (`src/lib/brain/__tests__/cardinality.test.ts`) · **correction.test.ts** 87 tests (`src/lib/brain/__tests__/correction.test.ts`) · **brain-facts.test.ts** 62 tests (`src/lib/content-mode/adapters/__tests__/brain-facts.test.ts`) · **reconcile.test.ts** 72 tests (`src/lib/brain/__tests__/reconcile.test.ts`).
 
 ## Notes
 

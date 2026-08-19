@@ -98,17 +98,17 @@
  * `SUPERSEDE_STAMP_SQL` re-check the collision join inside its own UPDATE, so a
  * de-merge landing between the publish gate's unlocked SELECT and its stamp
  * makes it stamp FEWER rows, never more, with `promoteBrainFacts` warning on
- * the shortfall. ⚠️ What that does NOT close, recorded rather than glossed:
- * the re-check is per TARGET, not per PAIR, so a retirement breaking one pair
- * while another still collides leaves a `supersedes` edge whose attribution no
- * longer holds. `supersedeStampSql`'s header already documents that class as
- * accepted — it is a stamp with the wrong attribution, not a belief retired
- * with no live collision. Closing it needs `promoteBrainFacts`' one-array
- * `oldIds` shape to become per-pair, which is that caller's report contract.
- * **Tracked as #5324**, filed because that acceptance was written when the only
- * de-merger was the human-paced decide transaction holding namespace 5024, and
- * this module is a second one that is neither — the frequency assumption behind
- * the word "accepted" is what changed, not the failure mode.
+ * the shortfall. **#5324 closed the other half**: that re-check was per TARGET,
+ * so a retirement breaking one pair while another still collided left a
+ * `supersedes` edge whose attribution no longer held — a stamp with the wrong
+ * reason rather than a belief retired with none, but still a reader being shown
+ * the wrong answer to *"why was this fact retired?"*. The re-check is now
+ * per PAIR: `SUPERSEDE_STAMP_SQL` evaluates the collision per disclosed pair in
+ * a CTE, stamps a row iff one of its pairs survived, and RETURNs the draft whose
+ * arbitration did it, so `promoteBrainFacts` writes an edge only for pairs that
+ * actually superseded. A concurrent retirement from THIS module is one of the
+ * two de-mergers that fix exists for, and `vocabulary-rekey-pg.test.ts` drives
+ * the two-pairs-one-rival case against real Postgres.
  *
  * Taking `IDENTITY_MUTATION_LOCK_NAMESPACE` here was the other candidate and is
  * worse: `pg_advisory_xact_lock` releases at COMMIT, and this runs inside the

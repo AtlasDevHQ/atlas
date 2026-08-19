@@ -75,13 +75,17 @@ const REJECT_CALL = `    // {@link REKEY_DRIFTED_FACTS_SQL}.
     await rekeyDriftedFacts(tx, workspaceId, row.slot_position, row.id);`;
 
 /** The collision re-check `SUPERSEDE_STAMP_SQL` carries and the explicit arm does not. */
-const COLLISION_RECHECK = `        return \`
+const COLLISION_RECHECK = `const LIVE_PAIR_RECHECK = \`
      AND EXISTS (
        SELECT 1
-         FROM brain_facts d
-        WHERE d.workspace_id = $1
-          AND d.id = ANY($3::uuid[])
-          AND \${supersessionCollisionPredicate("d", "p")})\`;`;
+         FROM live_pair lp
+        WHERE lp.old_id = p.id)\`;`;
+
+/** The CTE arm that makes the re-check per PAIR rather than per target (#5324). */
+const PAIR_JOIN = "       AND d.id = o.new_id";
+
+/** The collision itself, inside the `live_pair` CTE. */
+const CTE_PREDICATE = '       AND ${supersessionCollisionPredicate("d", "p")}';
 
 const spec: MutationSpec = {
   title: "Mutations the drift-re-key suites catch",
@@ -334,33 +338,43 @@ fixes, one layer over?* — and the answer was yes.
         {
           file: FACTS,
           oldString: COLLISION_RECHECK,
-          newString: `        return \`
-     AND $3::uuid[] IS NOT NULL\`;`,
+          newString: "const LIVE_PAIR_RECHECK = ``;",
         },
       ],
-      note: "`$3` is kept BOUND rather than removed. The caller passes three parameters; a statement that references only two makes Postgres refuse the bind, and every test in the file then dies on an arity error rather than on the missing re-check. What the arm buys: an alias REMOVAL landing between the targets SELECT and this UPDATE de-merges a pair, and stamping it retires a belief no arbitration supports — invisible to every as-of-now read, in both directions.",
+      note: "The `live_pair` CTE is LEFT in place, unreferenced by the UPDATE — Postgres permits an unused CTE, and the trailing `LEFT JOIN` still attributes, so the statement runs and only the guard is gone. That is what makes this a mutation of the guard rather than of the shape. What the arm buys: a de-merge landing between the targets SELECT and this UPDATE breaks a pair, and stamping it retires a belief no arbitration supports — invisible to every as-of-now read, in both directions.",
     },
     {
-      label: "`EXISTS` arm's `$3` -> `$2`",
+      label: "the re-check reads the DISCLOSED pairs instead of the live ones",
       edits: [
         {
           file: FACTS,
-          oldString: "          AND d.id = ANY($3::uuid[])",
-          newString: "          AND d.id = ANY($2::uuid[]) AND $3::uuid[] IS NOT NULL",
+          oldString: "         FROM live_pair lp",
+          newString: "         FROM offered_pair lp",
         },
       ],
-      note: "The dangling `$3::uuid[] IS NOT NULL` is there to keep the arity, not as part of the defect: the re-check now asks whether a PUBLISHED target still collides with itself instead of whether a promotable draft still collides with it.",
+      note: "Replaces the pre-#5324 `$3 -> $2` row, which addressed a flat draft-id bind that no longer exists. Same defect, same shape: the `EXISTS` still runs and still reads a CTE, but it asks *was this pair DISCLOSED* rather than *does it still collide* — so the answer is `true` by construction and the guard is decorative.",
     },
     {
-      label: "collision predicate -> `TRUE` inside the `EXISTS`",
+      label: "collision predicate -> `TRUE` inside the `live_pair` CTE",
       edits: [
         {
           file: FACTS,
-          oldString: '          AND ${supersessionCollisionPredicate("d", "p")})`;',
-          newString: "          AND TRUE)`;",
+          oldString: CTE_PREDICATE,
+          newString: "       AND TRUE",
         },
       ],
-      note: "The arm still runs and still references `$3`, so the shape of the statement is untouched — what is lost is the only part that can notice a de-merge. This is the row that separates *the re-check exists* from *the re-check re-asks the right question*.",
+      note: "The CTE still runs, still pairs each draft with its target and still feeds both the `EXISTS` and the attribution join — what is lost is the only part that can notice a de-merge. This is the row that separates *the re-check exists* from *the re-check re-asks the right question*.",
+    },
+    {
+      label: "the re-check collapsed back to PER TARGET (#5324's own defect)",
+      edits: [
+        {
+          file: FACTS,
+          oldString: PAIR_JOIN,
+          newString: "       AND d.id IN (SELECT new_id FROM offered_pair)",
+        },
+      ],
+      note: "#5324 restored exactly. Every pair whose target is stamped is reported live, so the stamp is still correct — it degrades to fewer rows, never more — and the ONLY thing that changes is the attribution: `promoteBrainFacts` writes a `supersedes` edge for a pair a de-merge already broke, claiming an arbitration that no longer holds. Nothing at the TARGET level can see it, which is why the two-pairs-one-rival fixture had to exist.",
     },
     {
       label: "publish's identity-lock call deleted",

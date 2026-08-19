@@ -120,12 +120,12 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | a YAML `connection: default` hint reaches the gate as the literal "default" | 1 | 0 | 0 | 0 | 0 | 0 |
 | the catalog's authority is INFERRED from its contents instead of passed in | 1 | 0 | 0 | 0 | 0 | 0 |
 | the per-entity success record is never written | 2 | 0 | 0 | 0 | 0 | 3 |
-| the success record escapes the entity's transaction onto the pool | 33 | 7 | 0 | 0 | 0 | 1 |
+| the success record escapes the entity's transaction onto the pool | 34 | 7 | 0 | 0 | 0 | 1 |
 | a zero-candidate run records no success | 1 | 0 | 0 | 0 | 0 | 2 |
 | the success record is stamped with the wall clock instead of the snapshot instant | 2 | 0 | 0 | 0 | 0 | 2 |
 | the connection resolver is asked about no entities | 2 | 0 | 0 | 0 | 0 | 0 |
 
-Suite sizes: **producer** 101 tests (`src/lib/brain/__tests__/warehouse-producer.test.ts`) · **logging** 71 tests (`src/lib/brain/__tests__/warehouse-producer-logging.test.ts`) · **bypass** 13 tests (`src/lib/brain/__tests__/warehouse-producer-bypass.test.ts`) · **mint** 2 tests (`src/lib/brain/__tests__/warehouse-producer-mint.test.ts`) · **pg** 6 tests (`src/lib/brain/__tests__/warehouse-producer-pg.test.ts`) · **record** 7 tests (`src/lib/brain/__tests__/warehouse-run-record-pg.test.ts`).
+Suite sizes: **producer** 104 tests (`src/lib/brain/__tests__/warehouse-producer.test.ts`) · **logging** 71 tests (`src/lib/brain/__tests__/warehouse-producer-logging.test.ts`) · **bypass** 13 tests (`src/lib/brain/__tests__/warehouse-producer-bypass.test.ts`) · **mint** 2 tests (`src/lib/brain/__tests__/warehouse-producer-mint.test.ts`) · **pg** 6 tests (`src/lib/brain/__tests__/warehouse-producer-pg.test.ts`) · **record** 7 tests (`src/lib/brain/__tests__/warehouse-run-record-pg.test.ts`).
 
 ## Notes
 

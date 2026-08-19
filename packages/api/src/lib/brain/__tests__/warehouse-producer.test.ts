@@ -411,16 +411,17 @@ describe("planWarehouseEmission — ADR-0037 §4's fail-closed ambiguity rule", 
       dimensions: ["id", "price"],
     });
     const row = { [SUBJECT_ALIAS]: "row-1", [`${DIMENSION_ALIAS_PREFIX}0`]: "499" };
-    const claimsFrom = (entity: WarehouseEntity) =>
+    const claimsFrom = (entity: WarehouseEntity, connectionGroup: string | null) =>
       buildWarehouseClaims({
         workspaceId: WORKSPACE,
         plan: planFor(entity, ["price"]),
         rows: [row],
         snapshotAt: SNAPSHOT_AT,
+        connectionGroup,
       }).candidates;
 
-    const [fromAnalytics] = claimsFrom(analytics);
-    const [fromBilling] = claimsFrom(billing);
+    const [fromAnalytics] = claimsFrom(analytics, "analytics");
+    const [fromBilling] = claimsFrom(billing, "billing");
 
     // ONE predicate from two groups — the conflation AC-4 says is pre-existing.
     expect(fromAnalytics?.predicate).toBe("price");
@@ -684,7 +685,16 @@ describe("buildWarehouseClaims", () => {
   const plan = planFor(accounts, ["status", "tier"]);
 
   function claimsFor(rows: readonly Record<string, unknown>[]) {
-    return buildWarehouseClaims({ workspaceId: WORKSPACE, plan, rows, snapshotAt: SNAPSHOT_AT });
+    return buildWarehouseClaims({
+      workspaceId: WORKSPACE,
+      plan,
+      rows,
+      snapshotAt: SNAPSHOT_AT,
+      // The RESOLVED group (#5314), which is what `detail.connectionGroup`
+      // records. The fixture's YAML hint says `analytics` too, deliberately: the
+      // dedicated test below is the one that drives them APART.
+      connectionGroup: "analytics",
+    });
   }
 
   test("emits the BARE dimension name and keeps the column out of the predicate", () => {
@@ -708,6 +718,76 @@ describe("buildWarehouseClaims", () => {
       primaryKeyDimension: "id",
       primaryKey: "Acme Corp",
     });
+  });
+
+  /**
+   * #5314 — the recorded group is the RESOLVED one, and the YAML hint cannot
+   * substitute for it.
+   *
+   * ⚠️ **The fixture's hint is `null`, which is the PRODUCTION shape rather than
+   * a corner.** {@link WarehouseEntity.connection} records that a DB-backed
+   * semantic layer stores the scope in the row's `connection_group_id` and
+   * leaves the YAML `connection:` field empty for every entity — so the old
+   * `detail.connectionGroup: plan.entity.connection` wrote `null` on every SaaS
+   * fact, including ones that came from a real group. Measured on prod `us`
+   * (#5197's row-count read): two facts from an enrollment whose
+   * `connection_group_id` was non-empty recorded `"connectionGroup": null`.
+   *
+   * The pair of assertions is what makes this falsifiable rather than
+   * decorative: reverting the write to the hint fails the first, and reading
+   * BOTH (a `??` between them) fails the second.
+   */
+  test("records the RESOLVED connection group, not the YAML `connection:` hint", () => {
+    const dbBacked = parsed("Accounts", {
+      // No `connection:` at all — the shape every entity on a DB-backed
+      // semantic layer has.
+      table: "accounts",
+      primaryKey: "id",
+      dimensions: ["id", "status"],
+    });
+    expect(dbBacked.connection, "the fixture must carry no hint, or this proves nothing").toBeNull();
+
+    const { candidates } = buildWarehouseClaims({
+      workspaceId: WORKSPACE,
+      plan: planFor(dbBacked, ["status"]),
+      rows: [{ [SUBJECT_ALIAS]: "Acme Corp", [`${DIMENSION_ALIAS_PREFIX}0`]: "active" }],
+      snapshotAt: SNAPSHOT_AT,
+      connectionGroup: "grp-42",
+    });
+    expect(candidates[0]?.detail?.connectionGroup).toBe("grp-42");
+
+    // …and where the two DISAGREE the resolved group wins. An author's
+    // `connection:` hint overrides which datasource is READ
+    // (`runWarehouseProducer`'s `resolvedConnection`); it is not the group the
+    // claim came FROM, and provenance records the second.
+    const hinted = parsed("Accounts", {
+      table: "accounts",
+      connection: "analytics",
+      primaryKey: "id",
+      dimensions: ["id", "status"],
+    });
+    const { candidates: fromHinted } = buildWarehouseClaims({
+      workspaceId: WORKSPACE,
+      plan: planFor(hinted, ["status"]),
+      rows: [{ [SUBJECT_ALIAS]: "Acme Corp", [`${DIMENSION_ALIAS_PREFIX}0`]: "active" }],
+      snapshotAt: SNAPSHOT_AT,
+      connectionGroup: "grp-42",
+    });
+    expect(fromHinted[0]?.detail?.connectionGroup).toBe("grp-42");
+  });
+
+  test("the flat scope stays `null` — no second translator for `''`", () => {
+    // `brain_enrollment`'s `fromStoredGroup` is the ONE place `''` becomes
+    // `null`, and the producer must not grow a second one: a value that means
+    // the flat scope in two spellings is how the two ends stop agreeing.
+    const { candidates } = buildWarehouseClaims({
+      workspaceId: WORKSPACE,
+      plan,
+      rows: [{ [SUBJECT_ALIAS]: "Acme Corp", [`${DIMENSION_ALIAS_PREFIX}0`]: "active" }],
+      snapshotAt: SNAPSHOT_AT,
+      connectionGroup: null,
+    });
+    expect(candidates[0]?.detail?.connectionGroup).toBeNull();
   });
 
   test("declares `single` structurally and pins valid time to the snapshot instant", () => {
@@ -1413,6 +1493,34 @@ describe("runWarehouseProducer", () => {
     // property, not either one alone.
     expect(h.validations[0]?.connectionId).toBe("us-prod");
     expect(report.created).toBe(1);
+  });
+
+  test("a group-scoped enrollment's emitted provenance records its group (#5314)", async () => {
+    const h = harness({
+      // Enrolled UNDER A GROUP — the multi-group SaaS shape #5286 made storable.
+      pairs: [{ entity: "Accounts", group: "grp-42", dimension: "tier", naming: false }],
+      entities: {
+        // …and, as on every DB-backed semantic layer, the document names no
+        // connection at all. This is the exact pair of conditions that produced
+        // `"connectionGroup": null` on prod `us`.
+        Accounts: entityYaml({ table: "accounts", primaryKey: "id", dimensions: ["id", "tier"] }),
+      },
+      rows: { Accounts: [snapshotRow("Acme Corp", "gold")] },
+    });
+
+    const report = await runWarehouseProducer(
+      { workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-1" },
+      { ...h.deps, resolveConnectionIds: async () => placement({ Accounts: "us-prod" }) },
+    );
+    expect(report.created).toBe(1);
+
+    // Read off the INSERT the run actually issued rather than off
+    // `buildWarehouseClaims`' return value: the unit test above pins the builder,
+    // and what this one adds is that the resolved group survives the whole run
+    // loop into the row. `$8` is `INSERT_FACT_SQL`'s `provenance`.
+    const [factParams] = h.store.paramsFor(INSERT_FACT_SQL);
+    const provenance: unknown = JSON.parse(String(factParams?.[7]));
+    expect(provenance).toMatchObject({ connectionGroup: "grp-42", entity: "Accounts" });
   });
 
   test("the connection is resolved ONCE per run, not once per entity", async () => {

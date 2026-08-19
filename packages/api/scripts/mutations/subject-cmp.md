@@ -61,7 +61,7 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | the subject's comparable value built by BYPASSING the guarded seam | 20 | 5 | 0 | 0 |
 | the tension scan's trailing placeholders left un-renumbered | 66 | 1 | 0 | 0 |
 
-Suite sizes: **identity-consumers-pg.test.ts** 76 tests (`src/lib/brain/__tests__/identity-consumers-pg.test.ts`) · **reconcile.test.ts** 72 tests (`src/lib/brain/__tests__/reconcile.test.ts`) · **subject-cmp.test.ts** 9 tests (`src/lib/brain/__tests__/subject-cmp.test.ts`) · **brain-facts.test.ts** 60 tests (`src/lib/content-mode/adapters/__tests__/brain-facts.test.ts`).
+Suite sizes: **identity-consumers-pg.test.ts** 76 tests (`src/lib/brain/__tests__/identity-consumers-pg.test.ts`) · **reconcile.test.ts** 72 tests (`src/lib/brain/__tests__/reconcile.test.ts`) · **subject-cmp.test.ts** 9 tests (`src/lib/brain/__tests__/subject-cmp.test.ts`) · **brain-facts.test.ts** 62 tests (`src/lib/content-mode/adapters/__tests__/brain-facts.test.ts`).
 
 ## Notes
 

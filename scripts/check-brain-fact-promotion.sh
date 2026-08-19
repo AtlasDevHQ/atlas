@@ -178,7 +178,7 @@
 #     and the row is still screened through `classifyFactForPromotion` first),
 #     and it stamps `valid_to` by executing the publish adapter's own
 #     `SUPERSEDE_STAMP_EXPLICIT_SQL` — since #5024 the human-arbitration half
-#     of the adapter's own `supersedeStampSql` builder, so both warrants still
+#     of the adapter's own `stampUpdateSql` builder, so both warrants still
 #     share one SET clause — rather than spelling a second stamp. Every write
 #     is actor-attributed and recorded as an immutable human-authored
 #     correction episode in the same transaction; the TARGET read/write is
@@ -274,18 +274,19 @@
 #     retirement IS such a de-merge, and the guard's answer to it is to stamp
 #     FEWER rows — never more — with `promoteBrainFacts` already warning on the
 #     shortfall, because `RETURNING` is how it learns which pairs superseded.
-#     ⚠️ WHAT IS NOT CLOSED, recorded rather than glossed: that re-check is per
-#     TARGET, not per PAIR (`supersedeStampSql`'s header states this and accepts
-#     it). So a retirement that breaks one pair while another still collides
-#     leaves a `supersedes` edge whose attribution no longer holds. That is the
-#     WRONG-ATTRIBUTION class, which the stamp guard already documents as
-#     accepted; it is not the belief-retired-with-no-live-collision class this
-#     gate exists to prevent. Fixing the attribution half needs
-#     `promoteBrainFacts`' one-array `oldIds` shape to become per-pair — a
-#     change to that caller's report contract, not to this writer. TRACKED AS
-#     #5324: that acceptance predates this entry, having been written when the
-#     only de-merger was the human-paced decide transaction holding 5024, and
-#     this writer is a second one that is neither.
+#     THE ATTRIBUTION HALF IS CLOSED TOO, AS OF #5324. That re-check used to be
+#     per TARGET rather than per PAIR, so a retirement breaking one pair while
+#     another still collided left a `supersedes` edge whose attribution no longer
+#     held — the wrong-attribution class, never the
+#     belief-retired-with-no-live-collision class this gate exists to prevent,
+#     but still a reader shown the wrong reason a fact was retired.
+#     `SUPERSEDE_STAMP_SQL` now evaluates the collision PER DISCLOSED PAIR in a
+#     CTE, stamps a row iff one of its pairs survived, and RETURNs the draft whose
+#     arbitration did it; `promoteBrainFacts` binds the pair list and writes edges
+#     only for pairs that actually superseded. Same statement, same snapshot — a
+#     separate SELECT would have re-opened the READ COMMITTED window 5024 closed.
+#     The row set is unchanged in the direction that matters and narrower in the
+#     other: nothing is stamped that the per-target form would not have stamped.
 #     WHY NOT TAKE 5024 INSTEAD, since that is the other obvious remedy: the
 #     retirement runs inside the MINTING transaction by construction (its own
 #     header says why a pool would be worse than either state), and

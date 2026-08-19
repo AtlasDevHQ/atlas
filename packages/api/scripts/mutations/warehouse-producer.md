@@ -6,8 +6,8 @@
 Source: `src/lib/brain/warehouse-producer.ts`.
 Mutation list: `scripts/mutations/warehouse-producer.mutations.ts`.
 
-Read the columns against each other rather than the totals down. The five
-suites are five different instruments and the interesting fact is usually
+Read the columns against each other rather than the totals down. The six
+suites are six different instruments and the interesting fact is usually
 which one holds a row up:
 
 - **producer** — what the run DECIDES against injected seams. The widest column:
@@ -77,43 +77,55 @@ away from the fix that closed it.
 The opposite end deserves the same suspicion. The identity-check row carries the
 largest count here and was inspected rather than trusted; see its note.
 
+- **record** — the per-entity success record (#5317), and the ONLY column that can
+  fail on where that row is written. It drives the real producer through a
+  transaction that does its work and then ROLLS BACK, which is the one thing no
+  fake executor can express: every stub in the tree resolves whatever it is handed,
+  so a writer given the module pool instead of the entity's `tx` looks identical
+  to a correct one everywhere else. The record authorizes a DELETE in #5233, so
+  "it survived a rollback" is the failure with the consequence.
+
 Every number is the count of tests that FAIL in that suite under that mutation, measured one mutation at a time against an otherwise clean tree. A `0` means the suite does not catch it — see the notes for whether that is honest or a gap.
 
-| Mutation | producer | logging | bypass | mint | pg |
-|---|---|---|---|---|---|
-| `predicate: dim.name` -> `dim.sql` — the qualified column expression emitted as the predicate | 4 | 0 | 0 | 0 | 2 |
-| `buildSnapshotSql` selects the bare NAME instead of the dimension's `sql:` expression | 2 | 2 | 0 | 0 | 0 |
-| `buildSnapshotSql` selects the bare primary-key NAME as the subject column | 1 | 0 | 0 | 0 | 0 |
-| the cardinality proposal is keyed by the dimension's `sql:` rather than its name | 2 | 1 | 0 | 0 | 1 |
-| the subject-collision guard compares ids again, so a duplicate primary key emits twice | 4 | 0 | 0 | 0 | 0 |
-| the row cap becomes `>=`, refusing every entity of exactly `cap` rows | 1 | 0 | 0 | 0 | 0 |
-| the row cap never fires — an over-cap entity emits a truncated snapshot | 1 | 1 | 0 | 0 | 0 |
-| `buildSnapshotSql` emits `LIMIT cap` — the extra row that makes the cap observable | 2 | 0 | 0 | 0 | 0 |
-| the production SQL gate deleted — `defaultValidateSnapshotSql` passes everything | 2 | 0 | 0 | 2 ⚠️ | 0 |
-| the gate's refusing verdict carries no reason | 2 | 0 | 0 | 1 | 0 |
-| the anti-replay identity check deleted — a token minted for another statement is accepted | 2 | 21 | 0 | 0 | 0 |
-| a validator THROW reported as `snapshot-rejected` — the permanence inversion | 3 | 2 | 0 | 0 | 0 |
-| a transaction failure re-thrown instead of refusing its entity | 1 | 4 | 0 | 0 | 0 |
-| the transaction-failure `log.error` demoted to `log.warn` | 0 | 4 | 0 | 0 | 0 |
-| the colliding-subject row-drop warn deleted | 0 | 1 | 0 | 0 | 0 |
-| the unsurfaceable-key row-drop warn deleted | 0 | 1 | 0 | 0 | 0 |
-| `isAbsentCell` loses its blank-string arm | 2 | 0 | 0 | 0 | 0 |
-| `isAbsentCell` loses its non-finite / invalid-Date arms | 1 | 0 | 0 | 0 | 0 |
-| the episode reader accepts a row whose `id` it cannot parse | 1 | 0 | 0 | 0 | 0 |
-| the `@sql-gate-guarded` tag deleted from the producer's deps interface | 0 | 0 | 1 | 0 | 0 |
-| a sixth brand-carrying export added with no `@sql-gate-guarded` tag | 0 | 0 | 1 | 0 | 0 |
-| the entity-edge pass's failure log drops `err` | 0 | 3 | 0 | 0 | 0 |
-| the snapshot's connection falls back to the YAML hint alone, ignoring the group | 3 | 3 | 0 | 0 | 0 |
-| the mismatch arm recomputes the submitted connection from the YAML hint | 0 | 1 | 0 | 0 | 0 |
-| the placement rule answers an empty placement for every catalog | 12 | 0 | 0 | 0 | 0 |
-| a name published under two connection groups resolves instead of refusing | 2 | 0 | 0 | 0 | 0 |
-| an unplaceable entity is snapshotted anyway rather than refused | 3 | 0 | 0 | 0 | 0 |
-| the flat scope resolves to the literal "default" instead of staying absent | 2 | 0 | 0 | 0 | 0 |
-| a YAML `connection: default` hint reaches the gate as the literal "default" | 1 | 0 | 0 | 0 | 0 |
-| the catalog's authority is INFERRED from its contents instead of passed in | 1 | 0 | 0 | 0 | 0 |
-| the connection resolver is asked about no entities | 2 | 0 | 0 | 0 | 0 |
+| Mutation | producer | logging | bypass | mint | pg | record |
+|---|---|---|---|---|---|---|
+| `predicate: dim.name` -> `dim.sql` — the qualified column expression emitted as the predicate | 4 | 0 | 0 | 0 | 2 | 0 |
+| `buildSnapshotSql` selects the bare NAME instead of the dimension's `sql:` expression | 2 | 2 | 0 | 0 | 0 | 0 |
+| `buildSnapshotSql` selects the bare primary-key NAME as the subject column | 1 | 0 | 0 | 0 | 0 | 0 |
+| the cardinality proposal is keyed by the dimension's `sql:` rather than its name | 2 | 1 | 0 | 0 | 1 | 0 |
+| the subject-collision guard compares ids again, so a duplicate primary key emits twice | 4 | 0 | 0 | 0 | 0 | 0 |
+| the row cap becomes `>=`, refusing every entity of exactly `cap` rows | 1 | 0 | 0 | 0 | 0 | 0 |
+| the row cap never fires — an over-cap entity emits a truncated snapshot | 1 | 1 | 0 | 0 | 0 | 0 |
+| `buildSnapshotSql` emits `LIMIT cap` — the extra row that makes the cap observable | 2 | 0 | 0 | 0 | 0 | 0 |
+| the production SQL gate deleted — `defaultValidateSnapshotSql` passes everything | 2 | 0 | 0 | 2 ⚠️ | 0 | 0 |
+| the gate's refusing verdict carries no reason | 2 | 0 | 0 | 1 | 0 | 0 |
+| the anti-replay identity check deleted — a token minted for another statement is accepted | 2 | 21 | 0 | 0 | 0 | 0 |
+| a validator THROW reported as `snapshot-rejected` — the permanence inversion | 3 | 2 | 0 | 0 | 0 | 0 |
+| a transaction failure re-thrown instead of refusing its entity | 1 | 4 | 0 | 0 | 0 | 1 |
+| the transaction-failure `log.error` demoted to `log.warn` | 0 | 4 | 0 | 0 | 0 | 0 |
+| the colliding-subject row-drop warn deleted | 0 | 1 | 0 | 0 | 0 | 0 |
+| the unsurfaceable-key row-drop warn deleted | 0 | 1 | 0 | 0 | 0 | 0 |
+| `isAbsentCell` loses its blank-string arm | 2 | 0 | 0 | 0 | 0 | 0 |
+| `isAbsentCell` loses its non-finite / invalid-Date arms | 1 | 0 | 0 | 0 | 0 | 0 |
+| the episode reader accepts a row whose `id` it cannot parse | 1 | 0 | 0 | 0 | 0 | 0 |
+| the `@sql-gate-guarded` tag deleted from the producer's deps interface | 0 | 0 | 1 | 0 | 0 | 0 |
+| a sixth brand-carrying export added with no `@sql-gate-guarded` tag | 0 | 0 | 1 | 0 | 0 | 0 |
+| the entity-edge pass's failure log drops `err` | 0 | 3 | 0 | 0 | 0 | 0 |
+| the snapshot's connection falls back to the YAML hint alone, ignoring the group | 3 | 3 | 0 | 0 | 0 | 0 |
+| the mismatch arm recomputes the submitted connection from the YAML hint | 0 | 1 | 0 | 0 | 0 | 0 |
+| the placement rule answers an empty placement for every catalog | 12 | 0 | 0 | 0 | 0 | 0 |
+| a name published under two connection groups resolves instead of refusing | 2 | 0 | 0 | 0 | 0 | 0 |
+| an unplaceable entity is snapshotted anyway rather than refused | 3 | 0 | 0 | 0 | 0 | 0 |
+| the flat scope resolves to the literal "default" instead of staying absent | 2 | 0 | 0 | 0 | 0 | 0 |
+| a YAML `connection: default` hint reaches the gate as the literal "default" | 1 | 0 | 0 | 0 | 0 | 0 |
+| the catalog's authority is INFERRED from its contents instead of passed in | 1 | 0 | 0 | 0 | 0 | 0 |
+| the per-entity success record is never written | 2 | 0 | 0 | 0 | 0 | 3 |
+| the success record escapes the entity's transaction onto the pool | 33 | 7 | 0 | 0 | 0 | 1 |
+| a zero-candidate run records no success | 1 | 0 | 0 | 0 | 0 | 2 |
+| the success record is stamped with the wall clock instead of the snapshot instant | 2 | 0 | 0 | 0 | 0 | 2 |
+| the connection resolver is asked about no entities | 2 | 0 | 0 | 0 | 0 | 0 |
 
-Suite sizes: **producer** 99 tests (`src/lib/brain/__tests__/warehouse-producer.test.ts`) · **logging** 71 tests (`src/lib/brain/__tests__/warehouse-producer-logging.test.ts`) · **bypass** 13 tests (`src/lib/brain/__tests__/warehouse-producer-bypass.test.ts`) · **mint** 2 tests (`src/lib/brain/__tests__/warehouse-producer-mint.test.ts`) · **pg** 6 tests (`src/lib/brain/__tests__/warehouse-producer-pg.test.ts`).
+Suite sizes: **producer** 101 tests (`src/lib/brain/__tests__/warehouse-producer.test.ts`) · **logging** 71 tests (`src/lib/brain/__tests__/warehouse-producer-logging.test.ts`) · **bypass** 13 tests (`src/lib/brain/__tests__/warehouse-producer-bypass.test.ts`) · **mint** 2 tests (`src/lib/brain/__tests__/warehouse-producer-mint.test.ts`) · **pg** 6 tests (`src/lib/brain/__tests__/warehouse-producer-pg.test.ts`) · **record** 7 tests (`src/lib/brain/__tests__/warehouse-run-record-pg.test.ts`).
 
 ## Notes
 
@@ -147,6 +159,10 @@ Suite sizes: **producer** 99 tests (`src/lib/brain/__tests__/warehouse-producer.
 - **the flat scope resolves to the literal "default" instead of staying absent** — ⚠️ **The regression the fix for #5284 nearly shipped, in the opposite population.** `resolveGroupPrimaryConnectionId` answers `"default"` for a null group, and that string is NOT interchangeable with the `undefined` a flat workspace produced before this seam existed: `validateSQL` routes it to `getDBType("default")`, which does a bare `entries.get` and throws `ConnectionNotRegisteredError` until something has touched the default pool, where `undefined` takes the `detectDBType()` branch. So placing it would refuse every flat, self-hosted workspace — under the PERMANENT `snapshot-rejected` wording, *"re-running will not change this"* — to fix grouped ones.
 - **a YAML `connection: default` hint reaches the gate as the literal "default"** — ⚠️ **The #5284 fix's OWN second defect, caught by a `fix-vs-finding` pass.** The fix kept the literal `"default"` out of the GROUP arm and left the YAML-hint arm — the first operand of the same `??` chain — free to place it. `connection: default` is not exotic: it is what the flat root's implied group is called in `whitelist.ts`, and `semantic.test.ts` has a case named for it. The two spellings diverge downstream, and the module contains both halves of the divergence: `defaultRunSnapshot` collapses them (`request.connectionId ?? "default"`) while `defaultValidateSnapshotSql` does not — `validateSQL` takes `getDBType("default")`, which throws `ConnectionNotRegisteredError` until something has touched the default pool, where `undefined` takes `detectDBType()`. So the entity took a PERMANENT `snapshot-rejected` blaming the workspace whitelist, on precisely the flat self-hosted deployment the arm exists to protect. The lesson banked with it: singleness of a sentinel is a property of the FIELD, and guarding one arm does not establish it.
 - **the catalog's authority is INFERRED from its contents instead of passed in** — ⚠️ **The first cut of the #5284 fix, which reproduced the defect it was written to end — caught by a `fix-vs-finding` pass, not by any reviewer.** It asked *"does this catalog scope anything by group?"* and treated `false` as *"this workspace is flat, the default is correct"*. But the visibility clause in `listEntityRows` is exactly what REMOVES a group-scoped row from the catalog when its datasource is unpublished, while `getEntity` has no such clause. So a workspace whose only group just went invisible keeps its ungrouped `__global__` demo rows, the inference reads FALSE, and the enrolled entity — still found by the loader, still planned — is snapshotted against the demo database with nothing refused and nothing logged. The asymmetry is the tell: the SAME condition refuses `group-not-visible` when the row survives the clause and defaulted when the clause deleted it. An empty `.some()` establishes what the carried rows are and nothing about a name the catalog does not carry, which is a measured-nothing cell blessed as a determined answer.
+- **the per-entity success record is never written** — The floor for #5317, and the row that keeps the two below honest: they both assert something about WHERE the record is written, and a producer that writes none at all satisfies every negative arm in the `-pg` suite (the refusal arm, the rollback arm) perfectly. Killed in `producer` by the exact-statement dispatch on `ENTITY_RUN_SUCCESS_INSERT_SQL` — the fake executor throws on an unrecognized statement, so the assertion is on bytes rather than on a paraphrase — and in `record` by the success arm. No reader exists in this slice, so nothing else in the tree can notice.
+- **the success record escapes the entity's transaction onto the pool** — ⚠️ **THE row this record exists for, and the one only a database can hold up.** The whole value of the marker is that it cannot outlive the work it claims: #5233's reaper DELETES `brain_entity` rows on the strength of one. Handed the module pool instead of the entity's `tx`, the INSERT commits on its own connection and survives the rollback — so a run that failed leaves a durable claim that it succeeded, in exactly the case where the consequence is a deletion. `record`'s rolled-back-transaction arm is the only thing in the tree that fails FOR THE RIGHT REASON — it observes a committed row after a rollback. Read any other non-zero column here as an accident rather than as coverage: the unit suites reach `internalQuery` with no pool configured, so they die on a thrown connection error, which is a kill that says nothing about whether the row outlived the transaction and would vanish the moment a suite happened to have a pool. Measured by hand before this row existed, which is precisely the prose-instead-of-a-gate shape this file was filed to retire.
+- **a zero-candidate run records no success** — ⚠️ **The defect this arm was added to close, and it shipped in the first draft of #5317.** With the record written only inside the reconcile transaction, the marker advanced exactly when there was nothing to reap and never when there was: every case migration 0206 names as the reason a reaper is needed is a ZERO-CANDIDATE case (a truncated table, an unsurfaceable primary key) — those are the runs that never reach `writeEntityEntries` and so the only runs that strand entries — while every run that DOES commit replaces all of that entity's entries at the same `snapshot_at`, so none can predate it. #5233's reach rule was unfireable on its own target population, and nothing was red. Caught in review, not by a test, which is why it has a row.
+- **the success record is stamped with the wall clock instead of the snapshot instant** — The reach rule compares this column to `brain_entity.snapshot_at`, which the `writeEntityEntries` call three lines up writes from the SAME value. A wall clock is later than the snapshot by however long the reconcile took, so every entry reads as older than its own run — and the reaper's comparison is a DELETE, so the drift falls in the direction that reaps live entries. A `now()` DEFAULT on the column would have the identical effect, which is why 0206 declares none. Survives every assertion that merely checks a row EXISTS, which is what both rows above check.
 - **the connection resolver is asked about no entities** — Nothing is placed, so every entity falls back to the deployment default — #5284 verbatim, past a green tree. Green before its falsifier existed, because every stub in the suite ignored its arguments (`async () => new Map([...])`). The kill is the stub that RECORDS what it was passed. Its sibling — passing `""` as the workspace, which sends `listAdminEntities` to its disk-root branch and resolves a SaaS workspace's connection groups from whatever YAML is on the box — is caught by the same assertion.
 
 ## ⚠️ Flagged

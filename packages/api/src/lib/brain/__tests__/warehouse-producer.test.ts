@@ -57,6 +57,7 @@ import {
   type EntityStoreEntry,
   type StoredEntity,
 } from "@atlas/api/lib/brain/entity-store";
+import { ENTITY_RUN_SUCCESS_INSERT_SQL } from "@atlas/api/lib/brain/warehouse-run-record";
 import type {
   AliasProducerCounters,
   AliasProposalInput,
@@ -866,6 +867,13 @@ class RunStore {
     return this.calls.filter((c) => c.sql === ENTITY_STORE_DELETE_SQL).map((c) => c.params);
   }
 
+  /** The per-entity success records this run wrote (#5317). */
+  runSuccesses(): readonly (readonly unknown[])[] {
+    return this.calls
+      .filter((c) => c.sql === ENTITY_RUN_SUCCESS_INSERT_SQL)
+      .map((c) => c.params);
+  }
+
   cardinalityWrites(): readonly (readonly unknown[])[] {
     return this.calls
       .filter((c) => c.sql.includes("INSERT INTO brain_predicate_cardinality"))
@@ -886,6 +894,7 @@ class RunStore {
     if (sql === INSERT_PROVENANCE_EDGE_SQL) return { rows: [] };
     if (sql === ENTITY_STORE_DELETE_SQL) return { rows: [] };
     if (sql === ENTITY_STORE_INSERT_SQL) return { rows: [] };
+    if (sql === ENTITY_RUN_SUCCESS_INSERT_SQL) return { rows: [] };
     if (sql.includes("brain_predicate_cardinality")) return { rows: [{ inserted: 1 }] };
     throw new Error(`RunStore: unexpected statement\n${sql}`);
   }
@@ -2201,7 +2210,20 @@ describe("runWarehouseProducer", () => {
     const report = await run(h);
 
     expect(h.store.paramsFor(WAREHOUSE_EPISODE_INSERT_SQL)).toEqual([]);
-    expect(h.store.transactions).toBe(0);
+    // ⚠️ ONE transaction, and it holds exactly ONE statement — the success record
+    // (#5317). This assertion used to be `transactions).toBe(0)`, and relaxing it
+    // to `1` alone would have given up what it was protecting: that a
+    // zero-candidate entity does no RECONCILE work. So it is spelled as the
+    // statement set instead, which is strictly stronger than the count was — an
+    // episode, a fact or a store write appearing here now fails, and the count
+    // alone could not have said which.
+    //
+    // The record itself belongs here: a read that returned rows and produced no
+    // claims SUCCEEDED, and it is the arm #5233's reaper depends on — see
+    // migration 0206's header, and `warehouse-run-record-pg.test.ts`.
+    expect(h.store.transactions).toBe(1);
+    expect(h.store.calls.map((c) => c.sql)).toEqual([ENTITY_RUN_SUCCESS_INSERT_SQL]);
+    expect(h.store.runSuccesses()).toEqual([[WORKSPACE, "Empty", SNAPSHOT_AT.toISOString()]]);
     expect(report.entities).toEqual([
       {
         entity: "Empty",
@@ -2536,6 +2558,50 @@ describe("the entity store", () => {
     // The CONTROL: the claims still landed, so this is a store that abstained
     // rather than a producer that did nothing.
     expect(report.entities[0]?.created).toBeGreaterThan(0);
+  });
+
+  // ── the per-entity success record (#5317) ────────────────────────────────
+
+  test("records the entity's success on the SAME transaction, stamped with the snapshot instant", async () => {
+    const h = harness({
+      pairs: [{ entity: "Accounts", group: null, dimension: "tier", naming: false }],
+      entities: { Accounts: ACCOUNTS },
+      rows: { Accounts: [snapshotRow("42", "gold")] },
+    });
+
+    await run(h);
+
+    // ⚠️ Read off the EXACT exported statement, not a substring match: the
+    // fake executor throws on an unrecognized one, so a statement edited
+    // anywhere would fail loudly here rather than quietly stop matching.
+    // `snapshotAt` and not a wall clock — the reach rule compares this value to
+    // `brain_entity.snapshot_at`, which the same transaction writes.
+    expect(h.store.runSuccesses()).toEqual([[WORKSPACE, "Accounts", SNAPSHOT_AT.toISOString()]]);
+  });
+
+  test("a REFUSED entity records no success — the arm the reaper's safety rests on", async () => {
+    // The rule #5317 rejected is "reap on any completed run that omitted the
+    // entity", because it deletes a live entity's whole store on a transient
+    // outage. This is the assertion that keeps the replacement honest: an entity
+    // the producer could not read leaves no evidence that it succeeded, so a
+    // reaper reading this table has nothing to act on.
+    const h = harness({
+      pairs: [
+        { entity: "Accounts", group: null, dimension: "tier", naming: false },
+        { entity: "Missing", group: null, dimension: "tier", naming: false },
+      ],
+      // Not in the published semantic layer — refused before any transaction opens.
+      entities: { Accounts: ACCOUNTS, Missing: null },
+      rows: { Accounts: [snapshotRow("42", "gold")] },
+    });
+
+    const report = await run(h);
+
+    expect(report.refusals.some((r) => r.entity === "Missing")).toBe(true);
+    // The CONTROL rides in the same assertion: the entity that DID succeed is
+    // present, so this is a record that discriminates rather than one that is
+    // simply never written.
+    expect(h.store.runSuccesses()).toEqual([[WORKSPACE, "Accounts", SNAPSHOT_AT.toISOString()]]);
   });
 
   test("DELETEs the entity's entries even with nothing to write — un-naming clears the store", async () => {

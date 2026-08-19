@@ -42,10 +42,10 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | `comparableDifferentSql` loses its `strpos(…) > 0` separator arms | 0 | 1 |
 | `INSERT_FACT_SQL` binds the object SURFACE into `object_cmp` | 0 | 1 |
 | `agree` loses its `tagA !== null` arm (the oracle's half of the same rule) | 0 | 1 |
-| `objectSameSql` loses its difference VETO | 0 | 1 |
+| `objectSameSql` loses its difference VETO | 0 | 7 |
 | 0191 grows an `UPDATE brain_facts SET object_cmp = object` backfill | 0 | 1 |
 
-Suite sizes: **object-cmp.test.ts** 64 tests (`src/lib/brain/__tests__/object-cmp.test.ts`) · **object-cmp-pg.test.ts** 34 tests (`src/lib/brain/__tests__/object-cmp-pg.test.ts`).
+Suite sizes: **object-cmp.test.ts** 64 tests (`src/lib/brain/__tests__/object-cmp.test.ts`) · **object-cmp-pg.test.ts** 40 tests (`src/lib/brain/__tests__/object-cmp-pg.test.ts`).
 
 ## Notes
 

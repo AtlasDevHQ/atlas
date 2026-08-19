@@ -260,6 +260,7 @@ export const CLEANUP_TABLE_RULES = {
   // as "never enumerated here" rather than as a failed enumeration.
   brain_coverage_snapshot: { kind: "column", column: "workspace_id" },
   brain_coverage_cycle: { kind: "column", column: "workspace_id" },
+  brain_warehouse_entity_success: { kind: "column", column: "workspace_id" },
   // No org column: cache keys have no org dimension, but the Slack
   // installation store rides this table with the org id in the JSONB value
   // (see the bundle-scope rationale) — scope by that expression. Generic

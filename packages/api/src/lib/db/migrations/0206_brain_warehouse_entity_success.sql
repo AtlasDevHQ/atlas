@@ -1,0 +1,187 @@
+-- 0206 — when the warehouse producer last SUCCEEDED, per entity (#5317,
+-- ADR-0037 §5, bounded by #5233).
+--
+-- A PREFACTOR. This slice adds the record and one writer. It adds NO READER, on
+-- purpose: the consumer is #5233's entity-store reaper, and landing the input
+-- separately is what lets that ticket be about the reach rule instead of about
+-- a migration. "Make the change easy, then make the easy change" — this is the
+-- easy-making half.
+--
+-- ## The question it exists to answer
+--
+-- `writeEntityEntries` replaces one entity's store entries on every run, and its
+-- own docstring states the limit: the producer opens NO transaction for an
+-- entity that yielded no candidates — a truncated table, a primary key that
+-- stopped being surfaceable, an entity un-enrolled or renamed — so the DELETE is
+-- never reached and the prior entries SURVIVE, still resolving surfaces for rows
+-- that may no longer exist.
+--
+-- The reach rule that clears them is the age-based one: *entries whose
+-- `snapshot_at` predates that entity's last N successful runs*. Its left side
+-- already exists (`brain_entity.snapshot_at`). Its right side had no source at
+-- all:
+--
+--   * `brain_coverage_cycle.last_success_at` is per SOURCE CLASS (0202), which
+--     is the wrong grain — one failing entity would hold back every other
+--     entity's reaping, and one succeeding entity would license reaping the rest.
+--   * `withWarehouseRunLock` is a bare advisory lock. It has no history and
+--     survives nothing.
+--
+-- ## Why the alternatives were rejected before this table was proposed
+--
+-- Both of them avoid a new record by inferring the answer, and both infer it
+-- wrongly in the direction that DELETES:
+--
+--   1. *Delete on any completed run that omitted the entity.* A transient
+--      outage — a datasource down for one run — is indistinguishable from a
+--      warehouse row that is genuinely gone, so this reaps a live entity's whole
+--      store on a blip.
+--   2. *Gate on "the run refused nothing".* This couples every entity's reaping
+--      to unrelated entities' outcomes: one misconfigured entity anywhere in the
+--      workspace freezes the reaper for all of them, forever, silently.
+--
+-- A per-entity record is what makes the rule statable at the grain it is about.
+--
+-- ## Successes ONLY, and the name says so
+--
+-- One row per (workspace, entity, successful run). A failed or refused entity
+-- writes NOTHING, which is the same thing `coverage-enumeration.ts` achieves by
+-- leaving `last_success_at` out of its failure arm's SET list — here it is
+-- structural rather than a SET list to get wrong, because the row is written
+-- inside a TRANSACTION and a rollback takes it with whatever else that
+-- transaction held. A record can therefore never claim a success that did not
+-- commit.
+--
+-- ## What counts as a success — the two arms, and why the second is the point
+--
+-- A run that produced NO CANDIDATES is a success, and the producer writes a
+-- record for it in a transaction of its own. This is not symmetry for its own
+-- sake; omitting it made the whole record useless, and it took a review to see:
+--
+--   * Every case named above as the reason a reaper is needed — a truncated
+--     table, a primary key that stopped being surfaceable — is a ZERO-CANDIDATE
+--     case. Those are precisely the runs that never reach `writeEntityEntries`,
+--     which is precisely why they leave stale entries behind.
+--   * And any run that DOES commit through the reconcile transaction also
+--     replaces every one of that entity's entries at the same `snapshot_at`, so
+--     no entry can predate it.
+--
+-- Record only the second arm and the marker advances exactly when there is
+-- nothing to reap and never when there is: the reach rule would be unfireable on
+-- its own target population. Both halves are needed for the rule to mean anything.
+--
+-- What is NOT a success, and must never be: a refusal, an unreadable datasource,
+-- a rolled-back transaction. The producer had already drawn that line — a
+-- zero-candidate entity is reported in `outcomes`, a refused one in `refusals` —
+-- so this arm follows an existing distinction rather than inventing one.
+--
+-- ## Two populations this record still cannot speak for
+--
+-- Stated because the reaper must handle them and this table will not help:
+--
+--   * An entity UN-ENROLLED entirely is never processed, so it accrues no
+--     successes and its entries are never reaped.
+--   * An entity RENAMED accrues successes under the new name only; the old
+--     name's entries and its history are both stranded (#5316 measured this).
+--
+-- Both fail SAFE here — no recorded success means no reaping — and both need the
+-- reaper to sweep `brain_entity` for entity names with no live enrollment, which
+-- is a question about the store rather than about this record.
+--
+-- ⚠️ The table is deliberately NOT a general `_run` log with an `outcome`
+-- column. An `outcome` whose only written value is `'success'` is dead weight
+-- that reads as a promise, and the failure half has no reader to shape it: the
+-- producer's run report and its `log.error` lines already carry every refusal
+-- with its reason. Whoever needs failures durably should add them WITH the
+-- consumer that reads them, in the shape that consumer wants — and rename this
+-- table then, rather than shipping a half-filled one now.
+--
+-- ## APPEND-ONLY, and the cost of that
+--
+-- A history rather than a `last_success_at` column, because the rule says *the
+-- last N successful runs* and N is deliberately not fixed here — #5233 names it.
+-- A single timestamp answers only N = 1, and a bound chosen now would be this
+-- ticket choosing the thing it was told not to choose.
+--
+-- The cost is growth: entities x runs, unbounded. At an hourly schedule and 50
+-- enrolled entities that is ~438k rows per workspace per year, holding three
+-- small columns and no customer content. Left alone deliberately — pruning is
+-- the reaper's own business (it is the only thing that knows N, and it is
+-- already a sweep over this exact grain), and adding a retention job here would
+-- be a second uncoordinated deleter of the record the reaper depends on.
+
+CREATE TABLE IF NOT EXISTS brain_warehouse_entity_success (
+  -- Better-Auth organization id. Workspace-global, TEXT/no-FK like every other
+  -- org-scoped Atlas table.
+  workspace_id text NOT NULL,
+
+  -- The semantic-layer entity name — `semantic_entities.name`, matching
+  -- `brain_enrollment.entity` and `brain_entity.entity`.
+  --
+  -- ⚠️ The name, and NOT an id, which is a known limitation rather than an
+  -- oversight. #5316 measured a semantic-layer rename re-minting every
+  -- `brain_entity.entity_id` under an entity and orphaning the old name's rows
+  -- permanently; this column inherits exactly that. After a rename, an entity's
+  -- success history begins again under the new name and the old name's rows go
+  -- unreachable — which is the SAFE direction for a reaper (it has no evidence
+  -- of a successful run, so it reaps nothing) and is the wrong direction for
+  -- anything that reads this as a coverage claim. Keyed on the name anyway
+  -- because `brain_entity` is: a reach rule joining these two on different
+  -- keys could not express "this entity's entries" at all. #5233 owns the
+  -- rename, for both tables at once.
+  entity text NOT NULL,
+
+  -- The SNAPSHOT INSTANT of the run that succeeded — the same value the run
+  -- wrote to `brain_entity.snapshot_at` and to the episode, taken from the
+  -- producer's injected `now()` rather than from `DEFAULT now()`.
+  --
+  -- Load-bearing: the reach rule compares this to `brain_entity.snapshot_at`,
+  -- and a `DEFAULT now()` here would be the transaction's clock instead — later
+  -- than the snapshot by however long the reconcile took. The comparison would
+  -- then read every entry as older than its own run, which is the direction that
+  -- reaps live entries.
+  succeeded_at timestamptz NOT NULL,
+
+  -- One run produces at most one success per entity. The producer already
+  -- refuses a second snapshot at an identical instant
+  -- (`insertSnapshotEpisode`'s `snapshot-already-recorded` arm), so a conflict
+  -- here means a caller reached past that; DO NOTHING at the writer keeps it
+  -- from turning into a duplicate-key 500 inside a transaction that also holds
+  -- the run's facts.
+  PRIMARY KEY (workspace_id, entity, succeeded_at),
+
+  -- `''` is an entity nothing names. It would collect every degenerate row under
+  -- one key and license reaping the store entries of whatever real entity a
+  -- later reader mistook it for — migration 0187's `DEFAULT ''` hazard, in the
+  -- column a delete rule keys on.
+  CONSTRAINT ck_brain_warehouse_entity_success_entity_present CHECK (entity <> '')
+);
+
+-- ⚠️ NO SECOND INDEX, and that is a MEASUREMENT rather than an omission.
+--
+-- An earlier draft carried `(workspace_id, entity, succeeded_at DESC)` on the
+-- argument that the primary key's tree is ASC and "what this adds is the
+-- ordering". That argument is wrong for a single TRAILING column whose direction
+-- is simply reversed: with equality on the two leading columns, PostgreSQL walks
+-- the primary key backwards and there is no sort step to remove.
+--
+-- Measured on this repo's PG 16 over 400k rows (50 workspaces x 200 entities),
+-- `SELECT succeeded_at ... WHERE workspace_id = $1 AND entity = $2
+--  ORDER BY succeeded_at DESC LIMIT 3`, after VACUUM:
+--
+--   with the DESC index   Index Only Scan using idx_recent   4 buffers, 0 heap fetches
+--   primary key alone     Index Only Scan Backward on pkey   4 buffers, 0 heap fetches
+--
+-- Identical. So the index was pure cost, and on an append-only table this header
+-- itself estimates at ~438k rows per workspace per year that cost compounds: a
+-- second full index to store, and a second index insert on every entity of every
+-- run, buying no plan improvement at all.
+--
+-- (Before the VACUUM the primary key showed 3 heap fetches against the index's 0,
+-- which is an unset visibility map on freshly-inserted rows and not a property of
+-- either index — worth stating, because that is the reading that would justify
+-- adding it back.)
+--
+-- If the reaper ever needs a scan this key cannot serve — every entity's most
+-- recent success in one pass, say, with no workspace equality — that is a new
+-- access pattern with its own plan, and it should arrive with its own measurement.

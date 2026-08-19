@@ -88,7 +88,7 @@ import {
   comparableValue,
   objectSameSql,
 } from "@atlas/api/lib/brain/object-cmp";
-import { AGREEMENT_CORPUS, agree } from "./object-cmp-corpus";
+import { AGREEMENT_CORPUS, DISAGREEMENT_CENSUS, agree } from "./object-cmp-corpus";
 import { reconcileFacts, type ReconcileEpisodeRef } from "@atlas/api/lib/brain/reconcile";
 import { identityVocabulary } from "@atlas/api/lib/brain/identity";
 
@@ -586,4 +586,68 @@ describeIfPg("object_cmp against a real schema (#5030)", () => {
     },
     PG_TEST_TIMEOUT_MS,
   );
+
+  // ── the disagreement census, through real SQL (#5318) ────────────────────
+
+  // The census itself is pinned in the FAST LANE
+  // (`object-cmp-disagreement-census.test.ts`), because a pin that self-skips
+  // without `TEST_DATABASE_URL` is not a pin. What only Postgres can settle is
+  // whether the region the census describes is the region the SHIPPED
+  // PREDICATES actually produce — the fast lane reads the `agree` oracle and
+  // `identityKey`, and both of those agreeing with each other proves nothing
+  // about the `WHERE` clause that stamps `valid_to`.
+  //
+  // These rows also reach two populations `AGREEMENT_CORPUS` does not: an
+  // `entity:`-tagged comparable (the whole subject of #5233) and a key equality
+  // supplied by an approved alias rather than by the fold.
+  for (const c of DISAGREEMENT_CENSUS) {
+    it(
+      `census row is in the region for POSTGRES too: ${c.id}`,
+      async () => {
+        const a = comparableValue({
+          surface: c.a.surface,
+          declared: c.a.declared,
+          entityId: c.a.entityId,
+        });
+        const b = comparableValue({
+          surface: c.b.surface,
+          declared: c.b.declared,
+          entityId: c.b.entityId,
+        });
+        // The alias rows are handed the key their approved edge produces; the
+        // rest key under the empty vocabulary, exactly as the fast lane does.
+        const alias =
+          c.keyRoute === "approved-alias"
+            ? (norm: string) => (norm === "acme" ? "acme corp" : norm)
+            : identityAlias;
+        const { rows } = await pool.query<{
+          evidence: boolean | null;
+          different: boolean | null;
+          same: boolean | null;
+        }>(
+          `SELECT ($1::text = $2::text OR ${comparableSameSql("$3::text", "$4::text")}) AS evidence,
+                  (${comparableDifferentSql("$3::text", "$4::text")}) AS different,
+                  (${objectSameSql("$1::text", "$2::text", "$3::text", "$4::text")}) AS same`,
+          [slotKey(c.a.surface, alias), slotKey(c.b.surface, alias), a, b],
+        );
+        // The disagreement, in the only spelling that can show it: the sameness
+        // EVIDENCE and the difference proof both fire.
+        expect(
+          rows[0]!.evidence,
+          `${c.id}: Postgres no longer sees sameness evidence for this pair, so the census row describes a region the database is not in`,
+        ).toBe(true);
+        expect(
+          rows[0]!.different,
+          `${c.id}: Postgres no longer proves these different, so this row no longer supersedes and the census is stale`,
+        ).toBe(true);
+        // And the veto resolves it — which is WHY the disagreement is invisible
+        // to the disjointness block above, and why the census had to be written.
+        expect(
+          rows[0]!.same,
+          `${c.id}: \`objectSameSql\` returned something other than FALSE on a pair its own veto covers`,
+        ).toBe(false);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+  }
 });

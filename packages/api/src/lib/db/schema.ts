@@ -4431,3 +4431,43 @@ export const brainCoverageCycle = pgTable(
     check("ck_brain_coverage_cycle_arms_present", sql`array_position(degraded_arms, '') IS NULL`),
   ],
 );
+
+// brain_warehouse_entity_success (0206) — one row per (workspace, entity,
+// successful producer run) (#5317, bounded by #5233).
+//
+// A PREFACTOR with no reader. The consumer is #5233's entity-store reaper,
+// whose reach rule is "entries whose `snapshot_at` predates that entity's last N
+// successful runs" — the left side is `brain_entity.snapshot_at`, and this is
+// the right side, which had no source at any grain.
+//
+// Successes only, and structurally so: the row is written inside the entity's
+// reconcile transaction, so a failure or a refusal takes it with the facts it
+// would have described. That is `brain_coverage_cycle`'s rule — a failure never
+// advances `last_success_at` — reached by rollback rather than by a SET list.
+// The migration header carries why it is not a general `_run` log with an
+// `outcome` column, and why it is append-only rather than one timestamp.
+export const brainWarehouseEntitySuccess = pgTable(
+  "brain_warehouse_entity_success",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    // The semantic-layer entity NAME, matching `brainEntity.entity`. It follows
+    // a rename and the old name's history goes unreachable — see the migration
+    // header; #5233 owns that for this table and `brain_entity` together.
+    entity: text("entity").notNull(),
+    // The run's SNAPSHOT INSTANT, not the transaction's clock: the reach rule
+    // compares it to `brainEntity.snapshotAt`, which the same run wrote from the
+    // same value. No `defaultNow()` for exactly that reason.
+    succeededAt: timestamp("succeeded_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    // Serves the reaper's read on its own: with equality on the two leading
+    // columns, `ORDER BY succeeded_at DESC LIMIT n` is a backward scan of this
+    // tree with no sort. A `… DESC` index beside it measured identical (4
+    // buffers, 0 heap fetches, both) — the migration header carries the numbers
+    // and the reason an earlier draft got this wrong.
+    primaryKey({ columns: [t.workspaceId, t.entity, t.succeededAt] }),
+    // `''` is an entity nothing names — 0187's `DEFAULT ''` hazard in the column
+    // a delete rule keys on.
+    check("ck_brain_warehouse_entity_success_entity_present", sql`entity <> ''`),
+  ],
+);

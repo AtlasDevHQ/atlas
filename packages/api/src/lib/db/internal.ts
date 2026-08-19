@@ -4602,6 +4602,15 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     const brainCoverageCycle = await del(
       `DELETE FROM brain_coverage_cycle WHERE workspace_id = $1`,
     );
+    // One row per (workspace, entity, successful warehouse producer run)
+    // (#5317). `entity` is the workspace's own semantic-layer entity name
+    // verbatim — `brain_enrollment`'s asset class — and the rows are what
+    // #5233's reaper schedules `brain_entity` deletions against, so a
+    // re-created org must not inherit them. No FK in either direction; this
+    // slice adds no reader at all, so no ordering constraint.
+    const brainWarehouseEntitySuccess = await del(
+      `DELETE FROM brain_warehouse_entity_success WHERE workspace_id = $1`,
+    );
     // Resolved identities backing the `audience:` ACL arm — email joins and
     // SSO-domain narrowing, so squarely personal data.
     const factAudienceMember = await del(`DELETE FROM fact_audience_member WHERE workspace_id = $1`);
@@ -4999,6 +5008,7 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
         brainEntity,
         brainCoverageSnapshot,
         brainCoverageCycle,
+        brainWarehouseEntitySuccess,
         factAudienceMember,
         knowledgeDocuments,
         knowledgeLinks,

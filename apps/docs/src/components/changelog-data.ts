@@ -20,6 +20,21 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.11",
+    title: "Identity Activation",
+    date: "2026-08-19",
+    summary:
+      "v0.2.10 got the warehouse producer reading the right database on a schedule. This release is about what it leaves behind — the record of who each fact is about, and why a belief was retired. Atlas now recognises when a warehouse row has been renamed and re-points its existing claims at the new name instead of quietly splitting them across two identities, and it clears entries for rows that stopped being described. When two competing claims are settled at publish time, the arbitration record now names the specific claim that did the settling, so an audit of \u201cwhy was this retired?\u201d gets the right answer even when a rename lands mid-publish. Provenance also stops reading as unscoped for facts that came from a real connection group.",
+    highlights: [
+      "A renamed warehouse row keeps its identity: existing claims are re-pointed at the new name rather than splitting into two entities that no longer corroborate each other",
+      "Entries for rows that stopped being described are cleared on a bounded schedule, so the surface-to-identity map does not accumulate answers for rows that no longer exist",
+      "The publish gate's arbitration record now names the specific claim that retired a belief \u2014 previously, when several competing claims shared one rival, a claim invalidated mid-publish could still be recorded as the reason",
+      "Provenance records the connection group a fact actually came from; a group-scoped fact previously read as unscoped in the audit trail, which was misleading rather than wrong",
+      "Each producer run records per-entity success, and disagreements between what the warehouse says and what Atlas already believed are counted rather than left silent",
+      "Self-hosted: migration 0206 adds a per-entity record of when the warehouse producer last succeeded. Additive, with no backfill and no change to existing rows",
+    ],
+  },
+  {
     version: "v0.2.10",
     title: "The Producer on a Clock",
     date: "2026-08-18",

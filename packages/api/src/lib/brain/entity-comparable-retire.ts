@@ -105,6 +105,10 @@
  * accepted — it is a stamp with the wrong attribution, not a belief retired
  * with no live collision. Closing it needs `promoteBrainFacts`' one-array
  * `oldIds` shape to become per-pair, which is that caller's report contract.
+ * **Tracked as #5324**, filed because that acceptance was written when the only
+ * de-merger was the human-paced decide transaction holding namespace 5024, and
+ * this module is a second one that is neither — the frequency assumption behind
+ * the word "accepted" is what changed, not the failure mode.
  *
  * Taking `IDENTITY_MUTATION_LOCK_NAMESPACE` here was the other candidate and is
  * worse: `pg_advisory_xact_lock` releases at COMMIT, and this runs inside the

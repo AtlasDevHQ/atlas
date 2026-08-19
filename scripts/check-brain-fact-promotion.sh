@@ -282,7 +282,10 @@
 #     accepted; it is not the belief-retired-with-no-live-collision class this
 #     gate exists to prevent. Fixing the attribution half needs
 #     `promoteBrainFacts`' one-array `oldIds` shape to become per-pair — a
-#     change to that caller's report contract, not to this writer.
+#     change to that caller's report contract, not to this writer. TRACKED AS
+#     #5324: that acceptance predates this entry, having been written when the
+#     only de-merger was the human-paced decide transaction holding 5024, and
+#     this writer is a second one that is neither.
 #     WHY NOT TAKE 5024 INSTEAD, since that is the other obvious remedy: the
 #     retirement runs inside the MINTING transaction by construction (its own
 #     header says why a pool would be worse than either state), and

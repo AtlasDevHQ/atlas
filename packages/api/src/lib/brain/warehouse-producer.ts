@@ -1161,8 +1161,25 @@ export function buildWarehouseClaims(params: {
    * here, which is what keeps that rule a rule.
    */
   readonly connectionGroup: string | null;
+  /**
+   * The group MEMBER these rows were read from — `null` for the flat scope
+   * (#5326).
+   *
+   * ⚠️ **The group alone could not answer "which database is this?", and after
+   * #5326 it has to.** The producer now reads EVERY member of a group and
+   * merges the result, so a fact whose provenance names only `g_prod` leaves a
+   * human auditing it unable to tell an `apac-prod` row from a `us-prod` one —
+   * the exact question the measurement that opened #5326 had to answer by hand,
+   * against the databases, because the record could not.
+   *
+   * ⚠️ It goes in `detail` and NOWHERE else. The subject and the predicate stay
+   * unqualified — see this function's header on why a qualified predicate makes
+   * cross-tier collision with chat-extracted facts count exactly zero — so this
+   * records where a claim was read WITHOUT changing what it collides with.
+   */
+  readonly connectionId: string | null;
 }): WarehouseClaims {
-  const { workspaceId, plan, rows, snapshotAt, connectionGroup } = params;
+  const { workspaceId, plan, rows, snapshotAt, connectionGroup, connectionId } = params;
   const candidates: FactCandidate[] = [];
   const subjectIds = new Map<string, WarehouseRowId>();
   const entityEntries: EntityStoreEntry[] = [];
@@ -1289,6 +1306,11 @@ export function buildWarehouseClaims(params: {
           // The RESOLVED group, not the YAML hint (#5314) — see the parameter's
           // own note for why the two are not interchangeable.
           connectionGroup,
+          // WHICH member of that group the row was read from (#5326). `null` is the
+          // flat scope, and it is the only spelling of it here: the `"default"`
+          // literal is collapsed to `undefined` at the run loop before a request is
+          // ever built, so it cannot reach the record under a second name.
+          connection: connectionId,
           dimension: dim.name,
           primaryKeyDimension: plan.primaryKey.name,
           primaryKey: subject,
@@ -1309,6 +1331,158 @@ export function buildWarehouseClaims(params: {
     unsurfaceableCells,
     unsurfaceableKeyRows,
     unsurfaceableByDimension,
+  };
+}
+
+/**
+ * One member's claims, and which datasource they were read from (#5326).
+ *
+ * `connection` is a LABEL for the log and the refusal message — the flat scope
+ * arrives as `"default"` — where {@link buildWarehouseClaims}' own `connectionId`
+ * is the value that reaches the record. Two spellings of one thing, deliberately:
+ * a refusal naming `"default"` reads correctly to an operator, and a stored
+ * provenance of `"default"` would be a second spelling of the flat scope inside a
+ * record whose only spelling of it is `null`.
+ */
+export interface WarehouseMemberClaims {
+  readonly connection: string;
+  readonly claims: WarehouseClaims;
+}
+
+/** The union of a group's members, or the refusal that stops one being invented. */
+export type WarehouseClaimsMerge =
+  | { readonly kind: "merged"; readonly claims: WarehouseClaims }
+  | {
+      readonly kind: "subject-collision";
+      /**
+       * How many distinct subject surfaces more than one member holds.
+       *
+       * ⚠️ The COUNT, never the surfaces. They are primary keys read out of a
+       * customer's warehouse — an email, an account name — and this module keeps row
+       * values out of the log and off the wire alike.
+       */
+      readonly collidingSubjects: number;
+      /** The members holding at least one of them, sorted. The operator's two databases. */
+      readonly members: readonly string[];
+    };
+
+/**
+ * Merge one entity's per-member claims into the union its enrollment asks about,
+ * or refuse when two members hold one subject (#5326).
+ *
+ * ## Why the union is the question
+ *
+ * A connection group's members are its environments, and the producer used to
+ * snapshot the group's `primary` — which `loadVisibleGroups` computes as
+ * `members.sort()[0]`, alphabetical, with no designated-primary concept anywhere.
+ * Measured on prod: `g_prod` = `apac-prod` / `eu-prod` / `us-prod` holding 1 / 1 / 2
+ * organizations, and the run read `apac-prod` alone because "a" sorts first. The
+ * store then held facts derived from 1 of 4 organizations and asserted them
+ * unqualified as the company's. A workspace enrolled against those three databases
+ * is asking about their union; one of them is a different question.
+ *
+ * ## Why a collision REFUSES rather than dropping the row
+ *
+ * `brain_entity.entity_id` hashes `(workspace, entity, primary key)`, the fact
+ * subject surface carries the entity name, and the vocabulary edge is keyed on it —
+ * not one of those carries the MEMBER. So two members holding a row with the same
+ * primary key put two different things under one subject: a false `same` at the
+ * publish gate, the one direction with no inverse.
+ *
+ * {@link buildWarehouseClaims} enforces the same rule one scope in, where it drops
+ * the second row and counts it (`collidingSubjectRows`) rather than refusing — and
+ * the difference is what the collision MEANS at each scope. Within one member it is
+ * a data-quality note about a declared key that is not unique, and the rows that did
+ * not collide still describe that table. Across members it says the premise of the
+ * union is false, and the non-colliding rows are then an arbitrary subset of two
+ * populations, which at rest reads exactly like a complete reading of one. So the
+ * entity is refused whole, on the row cap's argument and for its reason.
+ *
+ * ⚠️ **Collisions are settled over every member BEFORE anything is merged.** Merging
+ * as it goes and checking afterwards would let the first colliding pair decide which
+ * of the two rows the union carries, which is first-writer-wins across shards under
+ * another name.
+ *
+ * ⚠️ **No connection qualifier enters a subject or a predicate here.** Qualifying
+ * them would make the collision unrepresentable — and make cross-tier collision with
+ * chat-extracted facts count exactly zero, which {@link buildWarehouseClaims}' header
+ * refuses. The member is recorded in `detail`, which is provenance and not identity.
+ *
+ * Pure. One member in answers with that member's claims, which is what makes the
+ * single-datasource case the same code path rather than a branch beside it.
+ */
+export function mergeWarehouseClaims(members: readonly WarehouseMemberClaims[]): WarehouseClaimsMerge {
+  /** Subject surface → the FIRST member that held it. */
+  const heldBy = new Map<string, string>();
+  const collidingSubjects = new Set<string>();
+  const collidingMembers = new Set<string>();
+  for (const member of members) {
+    for (const subject of member.claims.subjectIds.keys()) {
+      const first = heldBy.get(subject);
+      if (first === undefined) {
+        heldBy.set(subject, member.connection);
+        continue;
+      }
+      collidingSubjects.add(subject);
+      collidingMembers.add(first);
+      collidingMembers.add(member.connection);
+    }
+  }
+  if (collidingSubjects.size > 0) {
+    return {
+      kind: "subject-collision",
+      collidingSubjects: collidingSubjects.size,
+      members: [...collidingMembers].sort(),
+    };
+  }
+
+  const candidates: FactCandidate[] = [];
+  const subjectIds = new Map<string, WarehouseRowId>();
+  const entityEntries: EntityStoreEntry[] = [];
+  const unsurfaceableByDimension = new Map<string, number>();
+  let unnamedRows = 0;
+  let unidentifiedRows = 0;
+  let collidingSubjectRows = 0;
+  let unsurfaceableCells = 0;
+  let unsurfaceableKeyRows = 0;
+
+  for (const { claims } of members) {
+    // ⚠️ `for…of` rather than `push(...claims.candidates)`. One member can carry
+    // `rowCap` rows times its enrolled dimensions — thousands of elements — and a
+    // spread of that many arguments is a stack overflow at a size the row cap
+    // explicitly permits.
+    for (const candidate of claims.candidates) candidates.push(candidate);
+    for (const entry of claims.entityEntries) entityEntries.push(entry);
+    // No overwrite is possible: the collision pass above returned already if any
+    // surface appeared twice.
+    for (const [surface, rowId] of claims.subjectIds) subjectIds.set(surface, rowId);
+    for (const [dimension, count] of claims.unsurfaceableByDimension) {
+      unsurfaceableByDimension.set(dimension, (unsurfaceableByDimension.get(dimension) ?? 0) + count);
+    }
+    // Summed, because each is a count of ROWS and the run reports the union's rows.
+    // `collidingSubjectRows` included: a key that repeats WITHIN one member is that
+    // member's data-quality note either way, and folding it into the cross-member
+    // refusal would tell an operator their shards overlap when they do not.
+    unnamedRows += claims.unnamedRows;
+    unidentifiedRows += claims.unidentifiedRows;
+    collidingSubjectRows += claims.collidingSubjectRows;
+    unsurfaceableCells += claims.unsurfaceableCells;
+    unsurfaceableKeyRows += claims.unsurfaceableKeyRows;
+  }
+
+  return {
+    kind: "merged",
+    claims: {
+      candidates,
+      subjectIds,
+      entityEntries,
+      unnamedRows,
+      unidentifiedRows,
+      collidingSubjectRows,
+      unsurfaceableCells,
+      unsurfaceableKeyRows,
+      unsurfaceableByDimension,
+    },
   };
 }
 
@@ -1530,15 +1704,35 @@ const UNPLACEABLE_REMEDY: Record<WarehouseUnplaceableCause, string> = {
  */
 export interface WarehouseConnectionPlacement {
   /**
-   * Entity name → the connection its snapshot must read.
+   * Entity name → EVERY connection its snapshot must read, in a stable order.
+   *
+   * ⚠️ **A LIST since #5326, and the single value it replaced was the defect.** A
+   * connection group's members are its environments, and the producer read the
+   * group's `primary` — which `loadVisibleGroups` computes as `members.sort()[0]`,
+   * alphabetical, with no operator-designated-primary concept anywhere. Measured on
+   * prod: a three-member group (`apac-prod` / `eu-prod` / `us-prod`) holding 1 / 1 / 2
+   * organizations produced facts from `apac-prod` alone — 1 of 4 rows, asserted
+   * unqualified as the company's, because "a" sorts first. The workspace's question
+   * is the UNION, so the answer is every member; the run refuses when two members
+   * hold one primary key, since the keys this producer writes carry no member.
+   *
+   * ⚠️ **`loadVisibleGroups`' `primary` is deliberately unchanged.** Alphabetical is
+   * defensible for its other callers — an amendment's evidence needs any member with
+   * the right schema, and `executeSQL`'s group bound is a query-time target. It is
+   * wrong for the one caller that mints DURABLE facts, so the fix lives here.
    *
    * Group-derived answers ONLY. An entity of a flat, ungrouped workspace is
-   * deliberately ABSENT rather than mapped to `"default"`: the literal `"default"`
+   * deliberately ABSENT rather than mapped to `["default"]`: the literal `"default"`
    * takes a different branch in the SQL gate (`getDBType("default")`, which throws
    * `ConnectionNotRegisteredError` before anything has touched the default pool)
    * than the `undefined` that same workspace produced before this seam existed.
+   *
+   * Never EMPTY. A group with no visible member is `group-not-visible` in
+   * `unplaceable`, because an empty list would read at the run loop as "no member to
+   * read" and produce an entity that was silently never snapshot — the absence this
+   * type's two states exist to keep apart.
    */
-  readonly placed: ReadonlyMap<string, WarehouseConnectionId>;
+  readonly placed: ReadonlyMap<string, readonly WarehouseConnectionId[]>;
   /** Entities with no derivable connection. Refused, never defaulted. */
   readonly unplaceable: readonly {
     readonly entity: string;
@@ -2703,7 +2897,13 @@ export async function runWarehouseProducer(
    */
   const entityStoreChanges = { orphansDeleted: 0, comparablesRetired: 0, reaped: 0 };
 
-  for (const entityPlan of plan.emit) {
+  // ⚠️ LABELLED, and the label is load-bearing rather than decoration (#5326). The
+  // member loop nested inside this one reads one datasource of the entity's
+  // connection group, and every refusal it can raise ends the ENTITY — a union
+  // missing one of its members is a subset filed as the whole, which is the defect
+  // #5326 measured. A bare `continue` inside that loop would silently mean "skip
+  // this datasource and file the rest".
+  entities: for (const entityPlan of plan.emit) {
     // ⚠️ **The `unplaceable` check that used to sit here has MOVED to the entity
     // lookup (#5286 review), and the move is a fix rather than tidying.** This
     // loop is reached only by an entity that made it into `plan.emit` — published,
@@ -2712,637 +2912,825 @@ export async function runWarehouseProducer(
     // reached the report. It is now a {@link WarehouseEntityLookup} arm, which
     // `planWarehouseEmission` refuses ahead of every structural check.
     const sql = buildSnapshotSql(entityPlan, rowCap);
-    // ⚠️ FROZEN, one of three things the identity check below needs. Identity proves
-    // the gate answered about THIS OBJECT; freezing stops the object changing under
-    // it; capturing the returned request ONCE (below) stops a getter answering the
-    // guard and the runner differently. `readonly` is erased at runtime, so a
-    // substituted validator could validate, then `Object.assign(request, {sql})` and
-    // hand the same reference back — passing the check and reaching a customer's
-    // datasource with a statement the gate never saw.
-    //
-    // Frozen, that write fails CLOSED either way, and the two ways differ: an
-    // `Object.assign` throws whatever the caller's strictness and lands on the
-    // gate-threw arm below; a plain `request.sql = …` in a sloppy-mode caller
-    // silently no-ops, so the run proceeds with the statement the gate DID see.
-    // Shallow is total here: every field of {@link WarehouseSnapshotRequest} is a
-    // primitive, which is a property of that interface rather than of this line.
-    // The YAML hint WINS where an author set one: it names a connection directly,
-    // which is more specific than the row's group. Resolved once per entity and
-    // carried into the frozen `request`; the mismatch arm reads its submitted sides
-    // off `request`, never off this binding — see the note there.
-    const resolvedConnection =
-      entityPlan.entity.connection ?? connectionIds.get(entityPlan.entity.name);
-    // ⚠️ **NORMALISED HERE, at the one point both arms converge — and normalising only
-    // the group arm was this fix's own second defect.** `"default"` is a real second
-    // spelling of the flat default scope, not a hypothetical one: it is what the flat
-    // root's implied group is called in `whitelist.ts`, and `connection: default` is a
-    // documented entity YAML value. So an author writing it put the literal straight
-    // past a guard that had been placed on the resolver instead of on the field.
-    //
-    // The two spellings are NOT interchangeable downstream, which is the whole point:
-    // `defaultRunSnapshot` collapses them (`request.connectionId ?? "default"`) while
-    // the gate does not — `validateSQL` takes `getDBType("default")`, which throws
-    // `ConnectionNotRegisteredError` until something has touched the default pool,
-    // where `undefined` takes `detectDBType()`. That divergence surfaced as a
-    // PERMANENT `snapshot-rejected` ("re-running will not change this", blaming the
-    // whitelist) for exactly the flat self-hosted workspace this arm protects.
-    // Collapsing to `undefined` makes the gate agree with the runner, which is the
-    // invariant {@link WarehouseSnapshotRequest.connectionId} states.
-    const submittedConnectionId: string | undefined =
-      resolvedConnection === "default" ? undefined : resolvedConnection;
-    const request: WarehouseSnapshotRequest = Object.freeze({
-      workspaceId,
-      entity: entityPlan.entity.name,
-      connectionId: submittedConnectionId,
-      sql,
-    });
+    /**
+     * EVERY datasource this entity's snapshot must read, in a stable order (#5326).
+     *
+     * ⚠️ **A LIST, and reading only the first of it is the defect this replaced.**
+     * The placement answers with every MEMBER of the entity's connection group —
+     * a group's members are its environments, and a workspace enrolled against a
+     * sharded group is asking about their UNION. Measured on prod: a three-member
+     * group holding 1 / 1 / 2 organizations produced facts from one member, so the
+     * store described a quarter of the company and said nothing about the rest.
+     *
+     * Three sources, in the order the run has always resolved them:
+     *
+     *   - the YAML `connection:` HINT, which still WINS and is still exactly one
+     *     datasource. An author naming one is more specific than the row's group,
+     *     and #5326 does not widen a deliberate single-datasource answer into a
+     *     fan-out the author did not ask for.
+     *   - the group's members, from the placement.
+     *   - `[undefined]` — the flat, ungrouped scope, which is ONE read against the
+     *     deployment default and is spelled `undefined` rather than `"default"` for
+     *     the reason the normalisation below states.
+     */
+    const connectionHint = entityPlan.entity.connection;
+    const placedMembers = connectionIds.get(entityPlan.entity.name);
+    const memberConnections: readonly (string | undefined)[] =
+      connectionHint === null || connectionHint === undefined
+        ? (placedMembers ?? [undefined])
+        : [connectionHint];
 
-    // ⚠️ The gate runs HERE, before the seam — and since #5230 the TYPE says so
-    // rather than this statement order. While the check lived inside
-    // `defaultRunSnapshot`, any injected runner — a test harness today, a scheduler
-    // or self-hosted variant tomorrow — satisfied `WarehouseSnapshotRunner` while
-    // skipping the SELECT-only, single-statement, whitelist-scoped check entirely.
-    // Moving it out fixed that but left the sequence itself a convention; the runner
-    // now takes only a `ValidatedSnapshotRequest`, so a reorder does not compile. The
-    // statement is assembled from admin-authored `table:` and `sql:` expressions, so
-    // it is exactly the input that check exists for.
-    // `try`/`catch` rather than `.catch(…)`: a validator that throws SYNCHRONOUSLY
-    // does so before the promise exists, so `.catch` never sees it and the throw
-    // escaped the whole run as a 500 — contradicting this function's own "caught
-    // PER ENTITY" contract two paragraphs up.
-    // ⚠️ **THE SEAM'S RETURN VALUE IS TOUCHED IN EXACTLY ONE PLACE, AND IT IS INSIDE
-    // THIS `try`.** That is structural, and it is the ratchet this change owes: the
-    // same principle — *narrowing is an operation on the seam value, not a fact about
-    // it* — was violated three times here in three different spellings
-    // (`undefined.slice`, a getter on `.entity`, `Array.isArray` on a revoked Proxy),
-    // and a fourth comment would not have stopped a fourth. Reading `valid`,
-    // `error` and `request` HERE means the arms below handle only captured values,
-    // so no later edit to them can reach a seam accessor at all.
-    //
-    // The reads were previously `validation.valid` and `validation.request` at the
-    // arms themselves, outside every `try` — so a revoked-Proxy or throwing-getter
-    // verdict took down the whole run before this change, not only after it.
-    //
-    // A verdict that is not an object at all — `null`, a revoked Proxy — throws on
-    // the discriminant read below and lands on the gate-threw arm, which is the
-    // honest one: the gate did not ANSWER. `snapshot-rejected` would tell the admin
-    // "re-running will not change this" and to un-enroll a pair that is fine, which
-    // is the wrong advice for a broken gate implementation.
-    //
-    // ⚠️ Three properties, each read ONCE — the rule is per PROPERTY, which is what
-    // lets the discriminant be read in the `if` and keeps TypeScript's narrowing.
-    // The branded `request` therefore stays branded, and nothing here needs a cast.
-    // Keep it that way by discipline rather than by guard: since #5249 the bypass
-    // allowlist is a whole-FILE name scan, so a second cast inside this file would
-    // be invisible to it.
-    let verdictValid: boolean;
-    let verdictError: unknown;
-    let verdictRequest: ValidatedSnapshotRequest | undefined;
-    // ⚠️ **The payload reads are guarded SEPARATELY from the gate call, and the
-    // difference decides which arm reports the event.** Folding them into the outer
-    // `try` sent a throwing `.request` to the gate-threw arm — a `warn` reading *"the
-    // SQL gate threw rather than answering"*, with no digests, no match booleans, no
-    // `returned*` fields at all. Detectability is this change's entire deliverable,
-    // so a hostile validator would only have had to throw from `.request` to demote
-    // its own forgery to something that looks like a transient module-init blip.
-    // Guarded here, an unreadable request stays `undefined`, fails the identity check
-    // below, and reaches the mismatch arm with `returnedReadThrew: true` — which is
-    // the line that exists to report exactly this.
-    let verdictRequestThrew = false;
-    try {
-      const verdict = await validateSnapshotSql(request);
-      if (verdict.valid) {
-        verdictValid = true;
-        verdictError = undefined;
-        try {
-          // Captured by REFERENCE — the identity check below is about this object, so
-          // nothing here may copy, spread or re-wrap it.
-          verdictRequest = verdict.request;
-        } catch {
-          // Not silence: `verdictRequestThrew` reaches the mismatch line as
-          // `returnedReadThrew`, and `undefined` is what routes the entity there.
+    // ⚠️ **An EMPTY roster is refused rather than looped over zero times.**
+    // {@link WarehouseConnectionPlacement.placed} states that a placed list is never
+    // empty — a group with no visible member is `group-not-visible` in `unplaceable`
+    // — so this is unreachable today. It is written because of what it costs when it
+    // stops being: an entity whose loop body never runs merges to zero claims and
+    // reports as a SUCCESSFUL read of an empty table, which is byte-identical to the
+    // silence this module exists to remove.
+    if (memberConnections.length === 0) {
+      log.error(
+        { ...runLog, entity: entityPlan.entity.name },
+        "Warehouse producer: the entity was placed in a connection group with no members — refused rather than reported as an entity that read nothing",
+      );
+      refuseEntity(
+        entityPlan,
+        "connection-unresolved",
+        `Atlas could not establish which datasource "${entityPlan.entity.table}" should be read from: ` +
+          "its connection group resolved to no datasources at all. This is an Atlas wiring fault rather " +
+          `than a problem with the entity — if it repeats, report it with request id ${requestId ?? "unknown"}.`,
+      );
+      continue;
+    }
+
+    /**
+     * What each member's read produced, merged below into the entity's union.
+     *
+     * ⚠️ Claims are built PER MEMBER and merged afterwards, rather than the rows
+     * being concatenated and built once. {@link buildWarehouseClaims}' guarantee —
+     * at most one candidate per `(subject, predicate)` — is FIRST-WRITER-WINS, so a
+     * concatenated read would silently drop a second shard's row instead of
+     * refusing: the false `same` this fix is written to keep loud, arriving through
+     * the guard that exists to prevent it. Merging afterwards is what lets
+     * {@link mergeWarehouseClaims} see the two members' subjects as two things.
+     */
+    const readMembers: { readonly connection: string; readonly claims: WarehouseClaims }[] = [];
+    /** The UNION's row count — what the report and the row cap are both about. */
+    let unionRowCount = 0;
+
+    for (const memberConnection of memberConnections) {
+      /**
+       * The clause every per-member refusal below ends with, so an operator holding
+       * a refusal knows WHICH of their datasources it is about (#5326).
+       *
+       * Empty for a single-datasource read, where naming it adds nothing to a
+       * message that already names the entity and the table.
+       */
+      const memberClause =
+        memberConnections.length === 1
+          ? ""
+          : ` Atlas reads this entity from all ${memberConnections.length} datasources in its ` +
+            `connection group; this one is "${memberConnection ?? "default"}".`;
+      /**
+       * Refuse the WHOLE entity for something ONE member's read did.
+       *
+       * ⚠️ **The entity, and that is the point rather than a convenience.** Every
+       * arm below ends a read that was going to contribute part of the union, and
+       * the members that DID answer are then an arbitrary subset of the population
+       * the enrollment asks about — which at rest looks exactly like a complete
+       * reading of it. That is the same sentence the row-cap arm makes about a
+       * truncated table, one scope up, and #5326 is what happens when a subset is
+       * filed as the whole.
+       */
+      const refuseForMember = (reason: WarehouseRefusalReason, message: string): void =>
+        refuseEntity(entityPlan, reason, `${message}${memberClause}`);
+      /** Every line this member's read emits says which datasource it was. */
+      const memberLog = {
+        ...runLog,
+        connection: memberConnection ?? "default",
+        members: memberConnections.length,
+      };
+      // ⚠️ FROZEN, one of three things the identity check below needs. Identity proves
+      // the gate answered about THIS OBJECT; freezing stops the object changing under
+      // it; capturing the returned request ONCE (below) stops a getter answering the
+      // guard and the runner differently. `readonly` is erased at runtime, so a
+      // substituted validator could validate, then `Object.assign(request, {sql})` and
+      // hand the same reference back — passing the check and reaching a customer's
+      // datasource with a statement the gate never saw.
+      //
+      // Frozen, that write fails CLOSED either way, and the two ways differ: an
+      // `Object.assign` throws whatever the caller's strictness and lands on the
+      // gate-threw arm below; a plain `request.sql = …` in a sloppy-mode caller
+      // silently no-ops, so the run proceeds with the statement the gate DID see.
+      // Shallow is total here: every field of {@link WarehouseSnapshotRequest} is a
+      // primitive, which is a property of that interface rather than of this line.
+      // ⚠️ THIS MEMBER's connection, not the entity's — see `memberConnections` above.
+      // Carried into the frozen `request`; the mismatch arm reads its submitted sides
+      // off `request`, never off this binding — see the note there.
+      // ⚠️ **NORMALISED HERE, at the one point both arms converge — and normalising only
+      // the group arm was this fix's own second defect.** `"default"` is a real second
+      // spelling of the flat default scope, not a hypothetical one: it is what the flat
+      // root's implied group is called in `whitelist.ts`, and `connection: default` is a
+      // documented entity YAML value. So an author writing it put the literal straight
+      // past a guard that had been placed on the resolver instead of on the field.
+      //
+      // The two spellings are NOT interchangeable downstream, which is the whole point:
+      // `defaultRunSnapshot` collapses them (`request.connectionId ?? "default"`) while
+      // the gate does not — `validateSQL` takes `getDBType("default")`, which throws
+      // `ConnectionNotRegisteredError` until something has touched the default pool,
+      // where `undefined` takes `detectDBType()`. That divergence surfaced as a
+      // PERMANENT `snapshot-rejected` ("re-running will not change this", blaming the
+      // whitelist) for exactly the flat self-hosted workspace this arm protects.
+      // Collapsing to `undefined` makes the gate agree with the runner, which is the
+      // invariant {@link WarehouseSnapshotRequest.connectionId} states.
+      const submittedConnectionId: string | undefined =
+        memberConnection === "default" ? undefined : memberConnection;
+      const request: WarehouseSnapshotRequest = Object.freeze({
+        workspaceId,
+        entity: entityPlan.entity.name,
+        connectionId: submittedConnectionId,
+        sql,
+      });
+
+      // ⚠️ The gate runs HERE, before the seam — and since #5230 the TYPE says so
+      // rather than this statement order. While the check lived inside
+      // `defaultRunSnapshot`, any injected runner — a test harness today, a scheduler
+      // or self-hosted variant tomorrow — satisfied `WarehouseSnapshotRunner` while
+      // skipping the SELECT-only, single-statement, whitelist-scoped check entirely.
+      // Moving it out fixed that but left the sequence itself a convention; the runner
+      // now takes only a `ValidatedSnapshotRequest`, so a reorder does not compile. The
+      // statement is assembled from admin-authored `table:` and `sql:` expressions, so
+      // it is exactly the input that check exists for.
+      // `try`/`catch` rather than `.catch(…)`: a validator that throws SYNCHRONOUSLY
+      // does so before the promise exists, so `.catch` never sees it and the throw
+      // escaped the whole run as a 500 — contradicting this function's own "caught
+      // PER ENTITY" contract two paragraphs up.
+      // ⚠️ **THE SEAM'S RETURN VALUE IS TOUCHED IN EXACTLY ONE PLACE, AND IT IS INSIDE
+      // THIS `try`.** That is structural, and it is the ratchet this change owes: the
+      // same principle — *narrowing is an operation on the seam value, not a fact about
+      // it* — was violated three times here in three different spellings
+      // (`undefined.slice`, a getter on `.entity`, `Array.isArray` on a revoked Proxy),
+      // and a fourth comment would not have stopped a fourth. Reading `valid`,
+      // `error` and `request` HERE means the arms below handle only captured values,
+      // so no later edit to them can reach a seam accessor at all.
+      //
+      // The reads were previously `validation.valid` and `validation.request` at the
+      // arms themselves, outside every `try` — so a revoked-Proxy or throwing-getter
+      // verdict took down the whole run before this change, not only after it.
+      //
+      // A verdict that is not an object at all — `null`, a revoked Proxy — throws on
+      // the discriminant read below and lands on the gate-threw arm, which is the
+      // honest one: the gate did not ANSWER. `snapshot-rejected` would tell the admin
+      // "re-running will not change this" and to un-enroll a pair that is fine, which
+      // is the wrong advice for a broken gate implementation.
+      //
+      // ⚠️ Three properties, each read ONCE — the rule is per PROPERTY, which is what
+      // lets the discriminant be read in the `if` and keeps TypeScript's narrowing.
+      // The branded `request` therefore stays branded, and nothing here needs a cast.
+      // Keep it that way by discipline rather than by guard: since #5249 the bypass
+      // allowlist is a whole-FILE name scan, so a second cast inside this file would
+      // be invisible to it.
+      let verdictValid: boolean;
+      let verdictError: unknown;
+      let verdictRequest: ValidatedSnapshotRequest | undefined;
+      // ⚠️ **The payload reads are guarded SEPARATELY from the gate call, and the
+      // difference decides which arm reports the event.** Folding them into the outer
+      // `try` sent a throwing `.request` to the gate-threw arm — a `warn` reading *"the
+      // SQL gate threw rather than answering"*, with no digests, no match booleans, no
+      // `returned*` fields at all. Detectability is this change's entire deliverable,
+      // so a hostile validator would only have had to throw from `.request` to demote
+      // its own forgery to something that looks like a transient module-init blip.
+      // Guarded here, an unreadable request stays `undefined`, fails the identity check
+      // below, and reaches the mismatch arm with `returnedReadThrew: true` — which is
+      // the line that exists to report exactly this.
+      let verdictRequestThrew = false;
+      try {
+        const verdict = await validateSnapshotSql(request);
+        if (verdict.valid) {
+          verdictValid = true;
+          verdictError = undefined;
+          try {
+            // Captured by REFERENCE — the identity check below is about this object, so
+            // nothing here may copy, spread or re-wrap it.
+            verdictRequest = verdict.request;
+          } catch {
+            // Not silence: `verdictRequestThrew` reaches the mismatch line as
+            // `returnedReadThrew`, and `undefined` is what routes the entity there.
+            verdictRequest = undefined;
+            verdictRequestThrew = true;
+          }
+        } else {
+          verdictValid = false;
           verdictRequest = undefined;
-          verdictRequestThrew = true;
+          try {
+            verdictError = verdict.error;
+          } catch {
+            // Not silence: `seamString` renders this as `<threw>` in both the log and
+            // the operator-facing refusal. The gate DID answer invalid, so the entity
+            // keeps that verdict's permanence rather than being demoted to transient
+            // because its reason was unreadable.
+            verdictError = SEAM_THREW;
+          }
         }
-      } else {
-        verdictValid = false;
-        verdictRequest = undefined;
-        try {
-          verdictError = verdict.error;
-        } catch {
-          // Not silence: `seamString` renders this as `<threw>` in both the log and
-          // the operator-facing refusal. The gate DID answer invalid, so the entity
-          // keeps that verdict's permanence rather than being demoted to transient
-          // because its reason was unreadable.
-          verdictError = SEAM_THREW;
-        }
+      } catch (err) {
+        // ⚠️ A THROW IS NOT A VERDICT OF INVALID, and routing it to
+        // `snapshot-rejected` inverted this file's own permanence split. The gate's
+        // shipped implementation dynamically imports a module and reads settings, so
+        // a module-init failure or a briefly-unavailable internal DB throws here —
+        // TRANSIENT, and the rejected arm's message says "re-running will not change
+        // this" and tells the admin to un-enroll a pair that is fine.
+        log.warn(
+          { ...memberLog, entity: entityPlan.entity.name, err },
+          "Warehouse producer: the SQL gate threw rather than answering — the entity's pairs produced nothing and are retried",
+        );
+        refuseForMember(
+          "snapshot-failed",
+          `Atlas could not check the query it would run against "${entityPlan.entity.table}", so nothing ` +
+            "was emitted for it this run. Nothing was invalidated and no window was stamped; the next run " +
+            "tries again.",
+        );
+        continue entities;
       }
-    } catch (err) {
-      // ⚠️ A THROW IS NOT A VERDICT OF INVALID, and routing it to
-      // `snapshot-rejected` inverted this file's own permanence split. The gate's
-      // shipped implementation dynamically imports a module and reads settings, so
-      // a module-init failure or a briefly-unavailable internal DB throws here —
-      // TRANSIENT, and the rejected arm's message says "re-running will not change
-      // this" and tells the admin to un-enroll a pair that is fine.
-      log.warn(
-        { ...runLog, entity: entityPlan.entity.name, err },
-        "Warehouse producer: the SQL gate threw rather than answering — the entity's pairs produced nothing and are retried",
-      );
-      refuseEntity(
-        entityPlan,
-        "snapshot-failed",
-        `Atlas could not check the query it would run against "${entityPlan.entity.table}", so nothing ` +
-          "was emitted for it this run. Nothing was invalidated and no window was stamped; the next run " +
-          "tries again.",
-      );
-      continue;
-    }
-    if (!verdictValid) {
-      // ⚠️ **ONE rendering of a value captured ONCE — the mismatch arm's rule, applied
-      // to its twin.** `validation.error` was read TWICE here, once into the log and
-      // once into the operator-facing message, so a getter could make the two
-      // disagree about why the entity was refused. It is the same seam and the same
-      // argument: {@link SnapshotSqlVerdict} makes `error` required on the reasoning
-      // that the type closes it, and this arm's neighbour exists because a `{}` cast
-      // compiles — both cannot be true. Unguarded, `{ valid: false }` produced
-      // *"does not pass its SQL gate: undefined"*, the generic message CLAUDE.md
-      // forbids, on a refusal whose own text says re-running will not help; a throwing
-      // `toString` escaped the template literal as a 500 for the whole run.
+      if (!verdictValid) {
+        // ⚠️ **ONE rendering of a value captured ONCE — the mismatch arm's rule, applied
+        // to its twin.** `validation.error` was read TWICE here, once into the log and
+        // once into the operator-facing message, so a getter could make the two
+        // disagree about why the entity was refused. It is the same seam and the same
+        // argument: {@link SnapshotSqlVerdict} makes `error` required on the reasoning
+        // that the type closes it, and this arm's neighbour exists because a `{}` cast
+        // compiles — both cannot be true. Unguarded, `{ valid: false }` produced
+        // *"does not pass its SQL gate: undefined"*, the generic message CLAUDE.md
+        // forbids, on a refusal whose own text says re-running will not help; a throwing
+        // `toString` escaped the template literal as a 500 for the whole run.
+        //
+        // Bounded at 200, and the bound BITES: measured against the real parser, three
+        // of four realistic parse failures produced messages of 201–254 characters,
+        // because it lists every expected token. So the tail — the "but X found" clause
+        // and the remediation sentence — is cut on the commonest failure. The `…(n)`
+        // suffix is what stops that reading as a complete message. The messages carry
+        // the table name (already in the sentence) and blocked function names lifted
+        // from the submitted query, never row values.
+        const reason = seamString(verdictError);
+        log.warn(
+          { ...memberLog, entity: entityPlan.entity.name, reason },
+          "Warehouse producer: the snapshot query did not pass SQL validation — refused permanently, not retried",
+        );
+        refuseForMember(
+          "snapshot-rejected",
+          `The query Atlas would run against "${entityPlan.entity.table}" does not pass its SQL gate: ` +
+            `${reason}. The table is probably outside this workspace's ` +
+            "whitelist, or a dimension's `sql:` expression is malformed. **Re-running will not change " +
+            "this** — fix the entity or un-enroll the pair.",
+        );
+        continue entities;
+      }
+
+      // ⚠️ **IDENTITY, not equality, and it is the anti-replay check.** The verdict
+      // now carries the request it passed, but nothing stops a validator from handing
+      // back a genuine token minted for a DIFFERENT statement — `cached ??= await
+      // validate(BENIGN_REQUEST)` compiles, forges nothing, and would otherwise let
+      // one benign statement authorize every entity in the run. Comparing object
+      // identity against what this iteration submitted is the narrowest possible
+      // acceptance: a re-serialized or reconstructed request is refused too, which is
+      // correct, because the gate's answer is about the object it was given.
       //
-      // Bounded at 200, and the bound BITES: measured against the real parser, three
-      // of four realistic parse failures produced messages of 201–254 characters,
-      // because it lists every expected token. So the tail — the "but X found" clause
-      // and the remediation sentence — is cut on the commonest failure. The `…(n)`
-      // suffix is what stops that reading as a complete message. The messages carry
-      // the table name (already in the sentence) and blocked function names lifted
-      // from the submitted query, never row values.
-      const reason = seamString(verdictError);
-      log.warn(
-        { ...runLog, entity: entityPlan.entity.name, reason },
-        "Warehouse producer: the snapshot query did not pass SQL validation — refused permanently, not retried",
-      );
-      refuseEntity(
-        entityPlan,
-        "snapshot-rejected",
-        `The query Atlas would run against "${entityPlan.entity.table}" does not pass its SQL gate: ` +
-          `${reason}. The table is probably outside this workspace's ` +
-          "whitelist, or a dimension's `sql:` expression is malformed. **Re-running will not change " +
-          "this** — fix the entity or un-enroll the pair.",
-      );
-      continue;
+      // Transient (`snapshot-failed`), not `snapshot-rejected`: the statement was
+      // never judged, so "re-running will not change this" would be a claim about a
+      // check that did not happen. It shares the arm with the gate THROWING for the
+      // same reason — in both, the gate declined to answer about this entity.
+      // ⚠️ **READ ONCE, and this is the other half of freezing the request.** The
+      // verdict comes from the very seam this check defends against, so `.request` is
+      // an EXPRESSION the implementer controls: a getter or a Proxy answers the guard
+      // with the honest request and the runner with another object. Four read SITES
+      // across two paths — guard plus two log fields on the mismatch arm, guard plus
+      // the runner argument on the passing one — and a per-site read proves nothing
+      // about the next. The swapped object also carries its own
+      // `workspaceId`/`connectionId`, and `defaultRunSnapshot` selects the pool from
+      // those, so the residual was a cross-tenant read rather than only a gate bypass.
+      // Freezing closes mutation; capturing closes aliasing; neither closes the other.
+      // `reconcile.ts` states the same rule for the same reason.
+      //
+      // The single read now happens inside the `try` above — see the note there for why
+      // it MOVED rather than merely being captured here.
+      const validated = verdictRequest;
+      // Redundant — `request` is frozen and never `undefined`, so `undefined !== request`
+      // already routes here, and TypeScript narrows without the disjunct. Spelled out
+      // because a `.request` getter that threw lands here as `undefined`, and that is a
+      // state a reader will look for.
+      if (validated === undefined || validated !== request) {
+        // ⚠️ **FOUR FIELDS, EACH READ ONCE AND EACH GUARDED — the capture rule above,
+        // applied one level down.** `validated` is captured, but its PROPERTIES are
+        // still expressions the seam controls: a getter answers `.sql` honestly for the
+        // digest and dishonestly for the comparison, which is #5230's aliasing finding
+        // reproduced inside the line written to report it. And a getter may THROW rather
+        // than lie — see {@link seamRead}, where narrowing the container was measured
+        // insufficient. Reading each once, through the guard, is what makes every field
+        // below a statement about a value rather than about a property access.
+        // ⚠️ **RE-TYPED TO `unknown` FOR THIS ARM (#5257).** Reading every field through
+        // `seam` is what keeps this arm's growth going through the guard: the shape that
+        // recurred three times through #5256's rounds was a direct property read off the
+        // typed request.
+        //
+        // ⚠️ **What it does NOT do, stated because the first draft of this comment
+        // claimed otherwise:** the typed binding is still in scope, so a future edit can
+        // simply reach for `validated` and typecheck. This buys "a read written through
+        // `seam` cannot skip the guard", not "no unguarded read is possible" — review is
+        // still the backstop. Making it structural means lifting the arm into its own
+        // function so the typed binding is not in scope at all; that is real machinery
+        // and deliberately not in this slice.
+        const seam: unknown = validated;
+        const returnedEntity = seamRead(seam, "entity");
+        const returnedWorkspaceId = seamRead(seam, "workspaceId");
+        // ⚠️ `connectionId` is on this line because the capture note above names it as
+        // the residual: `defaultRunSnapshot` selects the POOL from the returned
+        // workspace and connection, so a verdict identical in workspace, entity and
+        // statement text but minted for another connection group is a same-workspace,
+        // wrong-datasource read — and it was previously indistinguishable here from a
+        // benign re-wrap. Two connection groups exposing identically-named tables is an
+        // ordinary workspace; it is why `AmbiguousEntityError` exists.
+        const returnedConnectionId = seamRead(seam, "connectionId");
+        const returnedSql = seamRead(seam, "sql");
+        // ⚠️ **Every submitted side below is read off `request`, and the history is why.**
+        // This arm used to recompute `entityPlan.entity.connection ?? undefined` locally,
+        // which silently stopped matching the request the moment the submitted side
+        // gained the connection-group arm — the compared-against value and the submitted
+        // value were two spellings, and two spellings drift. Replacing that one
+        // recomputation with a hoisted binding fixed the instance and left `entity`
+        // re-reading `entityPlan.entity.name` a third time, which is the same class one
+        // line over. Reading all four fields off the frozen object closes the class: a
+        // legitimately absent connection on both sides still reads as a match, because
+        // `request.connectionId` is the `undefined` that was actually submitted.
+        // ⚠️ Digests, never the statements — see {@link sqlDigest}. Read off `request`
+        // like every other submitted side in this arm, so all four come from one object
+        // rather than from four spellings that have to stay in agreement by hand; its
+        // `string` parameter type is what stops two absent statements matching.
+        const submittedSqlDigest = sqlDigest(request.sql);
+        const returnedSqlDigest = seamSqlDigest(returnedSql);
+        // ⚠️ **A MATCH CLAIM REQUIRES A READABLE CONTAINER, and leaving that out
+        // reproduced — one field over, in this same object literal — the defect the
+        // `sqlDigest(sql: string)` split had just closed.** `seamRead` answers
+        // `undefined` both for an absent field AND for a non-record, and
+        // `request.connectionId` is `undefined` for every default-connection
+        // workspace, which is the ordinary case. So `returnedConnectionIdMatch` read
+        // TRUE for a verdict that was `null`, `undefined`, a bare string, an array or a
+        // number — *"the gate returned no request at all"* reported as *"the connection
+        // matched"*, on the field this arm's own comment calls the alert key. (`{}`
+        // still reads true, and correctly so — both sides are genuinely absent; see
+        // `returnedRequestMatch` below for why that is safe.)
+        const returnedRequestType = seamKind(seam);
+        const returnedIsRecord = returnedRequestType === "<record>";
+        log.error(
+          {
+            ...memberLog,
+            entity: entityPlan.entity.name,
+            table: entityPlan.entity.table,
+            connectionId: seamString(request.connectionId),
+            // ⚠️ What CAME BACK, under its OWN keys so `runLog`'s workspaceId is not
+            // shadowed. Without these, the replay this branch exists for (a cached
+            // token for the first entity) and a token minted against ANOTHER
+            // WORKSPACE's statement log identically — and the second is the one that
+            // has to be greppable the day it happens.
+            //
+            // Bounded by `seamString`: every one comes from the seam rather than from
+            // the plan, and nothing else on this line is attacker-shaped.
+            returnedEntity: seamString(returnedEntity),
+            returnedWorkspaceId: seamString(returnedWorkspaceId),
+            returnedConnectionId: seamString(returnedConnectionId),
+            // Which malformation it was. Without it the non-record verdicts — null,
+            // undefined, a string, an array, a number — produce one identical payload of
+            // sentinels, the same collapse this arm exists to undo, one level up.
+            returnedRequestType,
+            returnedReadThrew:
+              verdictRequestThrew ||
+              returnedEntity === SEAM_THREW ||
+              returnedWorkspaceId === SEAM_THREW ||
+              returnedConnectionId === SEAM_THREW ||
+              returnedSql === SEAM_THREW,
+            sqlDigest: submittedSqlDigest,
+            returnedSqlDigest,
+            // ⚠️ **THREE MATCH BOOLEANS, and the third is not decoration.** Each is
+            // derivable from the pair of fields above it and logged anyway, because an
+            // alert rule is a FILTER, not a computation: `sqlDigestMatch: false` is one
+            // greppable predicate, while "these two hex fields differ" is a join most
+            // log pipelines cannot express.
+            //
+            // ⚠️ **`sqlDigestMatch: true` means THE SAME STATEMENT TEXT — it does NOT
+            // mean "benign".** {@link buildSnapshotSql} emits no workspace and no
+            // connection, so two workspaces enrolled on the same table with the same
+            // dimension names build BYTE-IDENTICAL statements — the normal case for
+            // tenants onboarded from one connector template. A token minted against
+            // another workspace's request therefore lands here with the digests EQUAL,
+            // and an operator alerting only on `sqlDigestMatch: false` would miss the
+            // worst forgery this arm can see. The other two booleans are what that alert
+            // actually keys on; the naming is deliberate for the same reason.
+            //
+            // `typeof` first, and it is the second of two independent guarantees: it is
+            // redundant while {@link seamSqlDigest} brackets every non-string, and it is
+            // what held when that bracketing was briefly absent — a verdict carrying
+            // `sql: new Error(<the submitted digest>)` otherwise reported a match.
+            sqlDigestMatch:
+              typeof returnedSql === "string" && submittedSqlDigest === returnedSqlDigest,
+            // ⚠️ **EVERY submitted side is read off `request` — the frozen object that
+            // was actually handed to the gate — rather than re-derived here.** Hoisting
+            // one binding per field would work and has already failed once: the
+            // connection pair drifted the moment the submitted side gained an arm,
+            // because "the same value, spelled twice" stops being the same value
+            // silently and the comparison goes on returning a boolean. `entity` was
+            // still re-reading `entityPlan.entity.name` a third time after that fix,
+            // which is the identical class one line up. One source removes the whole
+            // class instead of its instances: `request` IS the submitted request, so
+            // these cannot disagree with it by construction.
+            //
+            // Frozen and captured before the gate ran, so a substituted validator
+            // cannot move the target either.
+            returnedWorkspaceIdMatch: returnedIsRecord && returnedWorkspaceId === request.workspaceId,
+            returnedEntityMatch: returnedIsRecord && returnedEntity === request.entity,
+            returnedConnectionIdMatch:
+              returnedIsRecord && returnedConnectionId === request.connectionId,
+            // ⚠️ **THE PREDICATE AN ALERT KEYS ON — the three components above are
+            // DIAGNOSTIC and at least one of them cannot carry the alert alone.**
+            // `returnedConnectionIdMatch` is `true` for a verdict of `{}`, and that is
+            // literally correct rather than a bug: both sides are absent, because the
+            // submitted connection is `undefined` for every default-connection
+            // workspace. Requiring the field to be PRESENT instead would report every
+            // benign default-connection replay as a connection mismatch — noise on day
+            // one, which is the failure the whole field was added to avoid. The
+            // conjunction is what distinguishes the two: an empty record fails it on
+            // `entity` and `workspaceId`, whose submitted sides are non-empty strings.
+            //
+            // ⚠️ The `returnedIsRecord` conjunct here is REDUNDANT and recorded as such:
+            // removing it was measured green, because a non-record answers `undefined`
+            // for every field and the two string comparisons below already fail. It is
+            // kept for the same reason as `sqlDigestMatch`'s `typeof` arm — defence in
+            // depth against a future edit — and, like that one, it is documented rather
+            // than pinned by a test that could not fail.
+            returnedRequestMatch:
+              returnedIsRecord &&
+              returnedWorkspaceId === request.workspaceId &&
+              returnedEntity === request.entity &&
+              returnedConnectionId === request.connectionId,
+          },
+          "Warehouse producer: the SQL gate returned a verdict for a different request — refusing rather than reading",
+        );
+        refuseForMember(
+          "snapshot-failed",
+          `Atlas could not confirm its SQL gate checked the query it would run against ` +
+            `"${entityPlan.entity.table}", so nothing was emitted for it this run. Nothing was ` +
+            "invalidated and no window was stamped. This is an Atlas wiring fault rather than a problem " +
+            // ⚠️ INTERPOLATED, not "this run's request id". The report carries no
+            // requestId field and no middleware echoes one back, so an operator told
+            // to quote it had workspace plus wall-clock — exactly what
+            // `WarehouseRunContext.requestId`'s docstring exists to prevent. Same
+            // shape as the entity-edge failure message above.
+            // `"unknown"`, matching `vocabulary-preview.ts` and
+            // `vocabulary-object-radius.ts`. Two spellings of the same placeholder in
+            // one subsystem means an operator grepping support tickets for one misses
+            // the other.
+            `with the entity — if it repeats, report it with request id ${requestId ?? "unknown"}.`,
+        );
+        continue entities;
+      }
+
+      /**
+       * Everything derived from the snapshot runner's return value, decided INSIDE the
+       * `try` below (#5257).
+       *
+       * ⚠️ **The row-cap read and the claim build used to sit between the snapshot
+       * `catch` and the transaction `.catch`, where nothing encloses them.**
+       * {@link WarehouseSnapshotRunner} is one of the five names
+       * `warehouse-producer-bypass.test.ts` guards, so its return value is a
+       * seam value under exactly the threat model #5248 spent its rounds on for the
+       * validator — and `rows.length` is an operation on it, not a fact about it.
+       *
+       * Nine shapes were run against the unfixed producer, and they split three ways
+       * rather than the one way the first draft of this comment claimed:
+       *
+       * - **SEVEN escaped as a whole-run 500 with no log line at all** — `null`,
+       *   `undefined`, a throwing `length` getter, a `length` whose `valueOf` throws, a
+       *   hostile `Symbol.iterator`, a `null` row, and a row with a throwing
+       *   `atlas_brain_subject` getter.
+       * - **A bare STRING did not 500 — it produced a phantom entity outcome**, and this
+       *   correction is the point of writing the split out. `"rows".length` is 4, which
+       *   is under the cap, and the claim builder iterates a string's CHARACTERS without
+       *   throwing: measured `rows: 4, candidates: 0, unidentifiedRows: 4`, no refusal,
+       *   no 500. An entity reported as read-and-empty when nothing was read is the
+       *   silence this module exists to remove, so it is the worse outcome of the two,
+       *   and it is the one a 500-shaped description would have hidden.
+       * - **A revoked-Proxy array survived**, but only because `await` happened to trap
+       *   it inside the `try` that was already here.
+       *
+       * ⚠️ **What is in scope is a read that THROWS, and the boundary is measured.**
+       * {@link buildWarehouseClaims} reads `row[SUBJECT_ALIAS]` and each dimension alias,
+       * so a throwing cell getter throws inside this `try` and the entity is refused.
+       * Measured over row shapes: only `null` and `undefined` rows throw. An array, a
+       * `Date`, a function and a primitive all answer `undefined` for every alias and
+       * report `rows: 1, unidentifiedRows: 1` — unchanged by this fix, and left alone
+       * deliberately: what an unreadable ROW should cost is a different question from
+       * the one this guard answers.
+       *
+       * **Stated cost:** a genuine defect in this module's own pure claim-building now
+       * reports as a failed snapshot — logged at `warn` with the Error, never swallowed,
+       * but wearing the wrong label. That is the cheaper of the two mistakes, because
+       * the alternative is one hostile cell taking down a run in which earlier entities
+       * have committed. The `phase` field below is what keeps the operator-facing
+       * message honest about whose fault it was.
+       *
+       * ⚠️ **NOT in scope: an iterator that never ends.** A `Symbol.iterator` yielding
+       * forever hangs inside the `for…of` the claim builder runs, and no `try` catches a
+       * hang. The row cap cannot help: `length` is a separate property, so an array
+       * reporting `0` can still iterate forever. That is a liveness problem wanting a
+       * timeout, not a shape problem wanting a guard — and leaving it unsaid here is the
+       * "already handled" silence this comment exists to remove.
+       *
+       * Two arms rather than a bare `rows`, because the cap is a REFUSAL with its own
+       * reason (`row-cap-exceeded`, not `snapshot-failed`) and its own operator message,
+       * and folding it into the catch would relabel it.
+       */
+      let snapshot:
+        | {
+            readonly kind: "rows";
+            /**
+             * ⚠️ **THE COUNT, NOT THE ARRAY, and carrying the array was this fix
+             * reproducing its own defect one statement over** (#5257 review). The rows
+             * are needed only by {@link buildWarehouseClaims}, which now runs inside the
+             * `try`; letting them out meant `rows.length` was read again in the
+             * no-candidates arm, where nothing encloses it. Measured: a Proxy over an
+             * array — `Array.isArray` answers TRUE for one — whose `length` trap throws
+             * on a LATER read passed the cap check and then rejected the whole run with
+             * no log line, and a trap that merely LIES reported 999,999 rows for an
+             * entity the cap had just accepted. One read, inside the guard, is what makes
+             * the cap check and the reported count the same number by construction.
+             */
+            readonly rowCount: number;
+            readonly claims: WarehouseClaims;
+          }
+        /**
+         * ⚠️ It carries the count too. The cap arm used to log only `rowCap`, so an
+         * operator learned "more than 1000" and could not tell 1,001 from 1.4M — the
+         * difference between narrowing an enrollment and abandoning the table. The
+         * number was read and validated inside the guard already, so this is free.
+         *
+         * Honest bound: {@link buildSnapshotSql} emits `LIMIT rowCap + 1`, so against a
+         * well-behaved runner this is always exactly `rowCap + 1` and says only "at
+         * least". It is worth carrying anyway, because a substituted runner ignores the
+         * LIMIT and then the real number is the whole story.
+         */
+        | { readonly kind: "row-cap"; readonly rowCount: number };
+      /**
+       * WHICH of the three things inside the `try` failed (#5257 review).
+       *
+       * ⚠️ **The refusal below tells the admin to fix their entity YAML, and for two of
+       * these three that is the wrong person to send.** `run` is the datasource read —
+       * a dropped table or a renamed column, the admin's to fix. `shape` and `claims`
+       * are Atlas faults. Widening the `try` is what made them reachable here, so the
+       * message has to widen with it or the guard buys detectability at the cost of
+       * misdirection.
+       */
+      let phase: "run" | "shape" | "claims" = "run";
+      try {
+        // `validated`, the value the guard compared — NOT a fresh `validation.request`,
+        // which would be a second read of a property the seam controls. See the capture
+        // above.
+        const returned: unknown = await runSnapshot(validated);
+        phase = "shape";
+        // ⚠️ **`Array.isArray` FIRST, and it is inside the `try` for the revoked-Proxy
+        // reason {@link seamRead} states: it THROWS on one rather than answering.** That
+        // throw is wanted here — it lands on the refusal arm below instead of taking the
+        // run — but it is only safe because it is guarded, which is the property the
+        // three previous instances of this class all lacked. It also buys the diagnosis:
+        // `{ length: 5 }` would otherwise pass the cap check and die as *"not iterable"*
+        // deep inside the claim builder, and `seamKind` names what actually came back.
+        if (!Array.isArray(returned)) {
+          throw new TypeError(
+            `the snapshot runner answered ${seamKind(returned)} rather than an array of rows`,
+          );
+        }
+        // ⚠️ `readonly unknown[]`, not `readonly Record<string, unknown>[]`, and the
+        // difference is honesty rather than pedantry. After `Array.isArray` on an
+        // `unknown`, TypeScript infers `any[]` — verified against this repo's own
+        // checker, where `const t: string = returned[0]` then compiles — so annotating
+        // the element type here would launder an unchecked `any` into a claim about
+        // every row, at the one site whose entire premise is not trusting this seam. The
+        // element shape is asserted ONCE, visibly, where it is actually needed.
+        const rows: readonly unknown[] = returned;
+        // ⚠️ ONE read of `length`, and every later use is of THIS number. See the
+        // `rowCount` field above for the two measurements that forced it.
+        const rowCount = rows.length;
+        // ⚠️ **A SEAM-CONTROLLED NUMBER, VALIDATED — and the cap check is not the
+        // validation** (#5257 review, round 2). `length` on a Proxy over an array is
+        // whatever its trap returns: `NaN > rowCap` is FALSE, so `NaN` flows straight
+        // past the cap into the report, where `BrainWarehouseRunReportSchema` requires a
+        // non-negative int. One bad `length` therefore blanks the WHOLE run report —
+        // every entity's outcome and every refusal replaced by `reportComplete: false` —
+        // which is a much larger blast radius than the entity it came from.
+        if (!Number.isSafeInteger(rowCount) || rowCount < 0) {
+          // The VALUE when it is a number — `NaN`, `-1` and `1.5` are three different
+          // wiring faults and `<number>` collapses them. A number cannot carry customer
+          // data, so interpolating it is safe here in a way `sql` never is. TypeScript
+          // believes `length` is a `number`; the trap is why the arm exists anyway.
+          const shown = typeof rowCount === "number" ? String(rowCount) : seamKind(rowCount);
+          throw new TypeError(`the snapshot runner's array reported a length of ${shown}`);
+        }
+        // The cap comparison stays under `shape`.
+        const overCap = rowCount > rowCap;
+        phase = "claims";
+        snapshot =
+          overCap
+            ? { kind: "row-cap", rowCount }
+            : {
+                kind: "rows",
+                rowCount,
+                claims: buildWarehouseClaims({
+                  workspaceId,
+                  plan: entityPlan,
+                  // ⚠️ `?? null` is the ABSENT case, not a second spelling of the
+                  // flat scope reached by translation: every planned entity is in
+                  // this map (see its note), so the fallback is unreachable and is
+                  // written rather than asserted away — this file holds no
+                  // non-null assertions. The flat scope's own spelling is the
+                  // `null` the placement target already carries.
+                  connectionGroup: groupByEntity.get(entityPlan.entity.name) ?? null,
+                  // WHICH member of that group these rows came from (#5326).
+                  //
+                  // ⚠️ **`submittedConnectionId`, NOT `memberConnection` — the
+                  // NORMALISED binding, and reading the raw one was this change's own
+                  // version of the defect one line up.** `"default"` is a documented
+                  // entity YAML value and the flat root's implied group name in
+                  // `whitelist.ts`, so a hinted entity carries the literal while its
+                  // ungrouped neighbour carries `undefined` — the same datasource under
+                  // two spellings. Collapsed at the request and not here, the DURABLE
+                  // record would have kept both, which is precisely what
+                  // `fromStoredGroup` exists to stop one field over. The record has one
+                  // spelling of the flat scope and it is `null`.
+                  connectionId: submittedConnectionId ?? null,
+                  // The one assertion. The element shape is unchecked; what makes it
+                  // survivable is that every read of it happens inside this `try`. What a
+                  // non-record row COSTS is in the scope note above, measured.
+                  rows: rows as readonly Record<string, unknown>[],
+                  snapshotAt,
+                }),
+              };
+      } catch (err) {
+        // ⚠️ **No {@link WarehouseProducerContractError} re-throw here, unlike the
+        // transaction handler below, and the asymmetry is deliberate rather than an
+        // omission.** This module raises that error in exactly one place —
+        // {@link insertSnapshotEpisode}, which runs INSIDE the transaction — so a
+        // re-throw on this arm would be unreachable machinery that also converted a
+        // seam throwing one into a whole-run 500. Everything reachable here is a seam
+        // failure or a hostile row, and one refused entity is the proportionate answer.
+        //
+        // The Error itself, not `.message`. `scrubErrSerializer` emits type, message,
+        // stack AND pg's `code` with credentials already stripped — and `42P01` vs
+        // `ECONNREFUSED` is the difference between "fix your YAML" and "your warehouse
+        // is down". This log line is the only place that survives, because the
+        // refusal below deliberately keeps the driver's text off the wire.
+        log.warn(
+          { ...memberLog, entity: entityPlan.entity.name, table: entityPlan.entity.table, phase, err },
+          "Warehouse producer: snapshot failed — the entity's pairs produced nothing this run",
+        );
+        refuseForMember(
+          "snapshot-failed",
+          phase === "run"
+            ? `Reading "${entityPlan.entity.table}" failed, so nothing was emitted for it this run. ` +
+                "Nothing was invalidated and no window was stamped; the next run tries again. " +
+                // ⚠️ The message no longer PROMISES that retrying will work, and the
+                // difference is not cosmetic. The SQL gate checks SELECT-only,
+                // single-statement and the whitelist — it does NOT check that the table or
+                // column exists — so a dropped table or a renamed column throws HERE, on
+                // every run, forever. "The next run retries the pair" was true and useless;
+                // an operator seeing it repeat needs to know the cause may be permanent.
+                // ⚠️ It no longer ASSERTS the cause, and the reason is that `phase: "run"`
+                // covers more than the datasource read: `defaultRunSnapshot` dynamically
+                // imports the connection module and looks up a pool BEFORE any query
+                // runs, so a module-init failure or a missing pool lands here too. Those
+                // are Atlas faults, and "fix the entity YAML" is unfollowable for them —
+                // the same misattribution the gate-threw arm was split out to avoid.
+                "If it fails the same way on every run the cause is permanent — most often a table or a " +
+                "dimension's column that no longer exists. The server log for this run names what " +
+                "actually failed; if it is a connection or module failure, that is an Atlas fault rather " +
+                "than an entity one."
+            : // ⚠️ The ATLAS-fault register, taken from the gate-mismatch arm above —
+              // with `fault` where that one says `wiring fault`, since this arm does not
+              // know the cause is wiring. NOT "verbatim", which is what this line used to
+              // claim: the two strings differ by that word, so a case-sensitive grep for
+              // one does not find the other. The shared, greppable substring is
+              // "This is an Atlas". These two arms describe the same kind of event: Atlas
+              // read the entity fine and then could not process what came back. Sending
+              // this admin to "fix the entity YAML" is advice they can follow forever
+              // without anything changing.
+              `Atlas read "${entityPlan.entity.table}" but could not process the result, so nothing was ` +
+                "emitted for it this run. Nothing was invalidated and no window was stamped. This is an " +
+                "Atlas fault rather than a problem with the entity — if it repeats, report it with request " +
+                `id ${requestId ?? "unknown"}.`,
+        );
+        continue entities;
+      }
+
+      if (snapshot.kind === "row-cap") {
+        // ⚠️ REFUSED, not truncated — see WAREHOUSE_ROW_CAP.
+        log.warn(
+          { ...memberLog, entity: entityPlan.entity.name, rowCap, rowCount: snapshot.rowCount },
+          "Warehouse producer: entity exceeds the row cap — refused rather than emitting a truncated snapshot",
+        );
+        refuseForMember(
+          "row-cap-exceeded",
+          `"${entityPlan.entity.table}" holds more than ${rowCap} rows, and every row becomes a draft a ` +
+            "person has to review. The producer refuses rather than emitting an arbitrary subset, which " +
+            "would look at rest exactly like a complete reading of the table.",
+        );
+        continue entities;
+      }
+
+
+      // ⚠️ **The cap is about the UNION, and applying it only per member would let a
+      // three-member group emit three capfuls.** `WAREHOUSE_ROW_CAP`'s reason is that
+      // every row becomes a draft a person has to review, and a review queue does not
+      // get three times longer because the rows arrived from three datasources. The
+      // per-member check above stays as well: it is the one the `LIMIT rowCap + 1` in
+      // the statement can actually support, and it is what bounds a single hostile
+      // member before its rows are ever built into claims.
+      unionRowCount += snapshot.rowCount;
+      if (unionRowCount > rowCap) {
+        log.warn(
+          { ...memberLog, entity: entityPlan.entity.name, rowCap, rowCount: unionRowCount },
+          "Warehouse producer: the entity's datasources together exceed the row cap — refused rather than emitting a truncated union",
+        );
+        // ⚠️ `refuseEntity`, NOT `refuseForMember` — this refusal is about the GROUP
+        // and the member clause would misattribute it. The sum crosses the cap while
+        // reading whichever member happens to be next, and that member may hold three
+        // rows; ending the sentence with *"this one is `eu-prod`"* points an operator
+        // at a datasource that is not the problem. The count and the group size are
+        // the whole story, and the log line beside this one carries the member for
+        // anyone who needs the sequence.
+        refuseEntity(
+          entityPlan,
+          "row-cap-exceeded",
+          `The ${memberConnections.length} datasources in "${entityPlan.entity.name}"'s connection group ` +
+            `hold more than ${rowCap} rows of "${entityPlan.entity.table}" between them, and every row ` +
+            "becomes a draft a person has to review. The producer refuses rather than emitting an " +
+            "arbitrary subset, which would look at rest exactly like a complete reading of them. " +
+            "No single datasource is at fault and narrowing one will not help — enroll this entity " +
+            "against a smaller group, or narrow the table.",
+        );
+        continue entities;
+      }
+
+      readMembers.push({
+        connection: memberConnection ?? "default",
+        claims: snapshot.claims,
+      });
     }
 
-    // ⚠️ **IDENTITY, not equality, and it is the anti-replay check.** The verdict
-    // now carries the request it passed, but nothing stops a validator from handing
-    // back a genuine token minted for a DIFFERENT statement — `cached ??= await
-    // validate(BENIGN_REQUEST)` compiles, forges nothing, and would otherwise let
-    // one benign statement authorize every entity in the run. Comparing object
-    // identity against what this iteration submitted is the narrowest possible
-    // acceptance: a re-serialized or reconstructed request is refused too, which is
-    // correct, because the gate's answer is about the object it was given.
-    //
-    // Transient (`snapshot-failed`), not `snapshot-rejected`: the statement was
-    // never judged, so "re-running will not change this" would be a claim about a
-    // check that did not happen. It shares the arm with the gate THROWING for the
-    // same reason — in both, the gate declined to answer about this entity.
-    // ⚠️ **READ ONCE, and this is the other half of freezing the request.** The
-    // verdict comes from the very seam this check defends against, so `.request` is
-    // an EXPRESSION the implementer controls: a getter or a Proxy answers the guard
-    // with the honest request and the runner with another object. Four read SITES
-    // across two paths — guard plus two log fields on the mismatch arm, guard plus
-    // the runner argument on the passing one — and a per-site read proves nothing
-    // about the next. The swapped object also carries its own
-    // `workspaceId`/`connectionId`, and `defaultRunSnapshot` selects the pool from
-    // those, so the residual was a cross-tenant read rather than only a gate bypass.
-    // Freezing closes mutation; capturing closes aliasing; neither closes the other.
-    // `reconcile.ts` states the same rule for the same reason.
-    //
-    // The single read now happens inside the `try` above — see the note there for why
-    // it MOVED rather than merely being captured here.
-    const validated = verdictRequest;
-    // Redundant — `request` is frozen and never `undefined`, so `undefined !== request`
-    // already routes here, and TypeScript narrows without the disjunct. Spelled out
-    // because a `.request` getter that threw lands here as `undefined`, and that is a
-    // state a reader will look for.
-    if (validated === undefined || validated !== request) {
-      // ⚠️ **FOUR FIELDS, EACH READ ONCE AND EACH GUARDED — the capture rule above,
-      // applied one level down.** `validated` is captured, but its PROPERTIES are
-      // still expressions the seam controls: a getter answers `.sql` honestly for the
-      // digest and dishonestly for the comparison, which is #5230's aliasing finding
-      // reproduced inside the line written to report it. And a getter may THROW rather
-      // than lie — see {@link seamRead}, where narrowing the container was measured
-      // insufficient. Reading each once, through the guard, is what makes every field
-      // below a statement about a value rather than about a property access.
-      // ⚠️ **RE-TYPED TO `unknown` FOR THIS ARM (#5257).** Reading every field through
-      // `seam` is what keeps this arm's growth going through the guard: the shape that
-      // recurred three times through #5256's rounds was a direct property read off the
-      // typed request.
-      //
-      // ⚠️ **What it does NOT do, stated because the first draft of this comment
-      // claimed otherwise:** the typed binding is still in scope, so a future edit can
-      // simply reach for `validated` and typecheck. This buys "a read written through
-      // `seam` cannot skip the guard", not "no unguarded read is possible" — review is
-      // still the backstop. Making it structural means lifting the arm into its own
-      // function so the typed binding is not in scope at all; that is real machinery
-      // and deliberately not in this slice.
-      const seam: unknown = validated;
-      const returnedEntity = seamRead(seam, "entity");
-      const returnedWorkspaceId = seamRead(seam, "workspaceId");
-      // ⚠️ `connectionId` is on this line because the capture note above names it as
-      // the residual: `defaultRunSnapshot` selects the POOL from the returned
-      // workspace and connection, so a verdict identical in workspace, entity and
-      // statement text but minted for another connection group is a same-workspace,
-      // wrong-datasource read — and it was previously indistinguishable here from a
-      // benign re-wrap. Two connection groups exposing identically-named tables is an
-      // ordinary workspace; it is why `AmbiguousEntityError` exists.
-      const returnedConnectionId = seamRead(seam, "connectionId");
-      const returnedSql = seamRead(seam, "sql");
-      // ⚠️ **Every submitted side below is read off `request`, and the history is why.**
-      // This arm used to recompute `entityPlan.entity.connection ?? undefined` locally,
-      // which silently stopped matching the request the moment the submitted side
-      // gained the connection-group arm — the compared-against value and the submitted
-      // value were two spellings, and two spellings drift. Replacing that one
-      // recomputation with a hoisted binding fixed the instance and left `entity`
-      // re-reading `entityPlan.entity.name` a third time, which is the same class one
-      // line over. Reading all four fields off the frozen object closes the class: a
-      // legitimately absent connection on both sides still reads as a match, because
-      // `request.connectionId` is the `undefined` that was actually submitted.
-      // ⚠️ Digests, never the statements — see {@link sqlDigest}. Read off `request`
-      // like every other submitted side in this arm, so all four come from one object
-      // rather than from four spellings that have to stay in agreement by hand; its
-      // `string` parameter type is what stops two absent statements matching.
-      const submittedSqlDigest = sqlDigest(request.sql);
-      const returnedSqlDigest = seamSqlDigest(returnedSql);
-      // ⚠️ **A MATCH CLAIM REQUIRES A READABLE CONTAINER, and leaving that out
-      // reproduced — one field over, in this same object literal — the defect the
-      // `sqlDigest(sql: string)` split had just closed.** `seamRead` answers
-      // `undefined` both for an absent field AND for a non-record, and
-      // `request.connectionId` is `undefined` for every default-connection
-      // workspace, which is the ordinary case. So `returnedConnectionIdMatch` read
-      // TRUE for a verdict that was `null`, `undefined`, a bare string, an array or a
-      // number — *"the gate returned no request at all"* reported as *"the connection
-      // matched"*, on the field this arm's own comment calls the alert key. (`{}`
-      // still reads true, and correctly so — both sides are genuinely absent; see
-      // `returnedRequestMatch` below for why that is safe.)
-      const returnedRequestType = seamKind(seam);
-      const returnedIsRecord = returnedRequestType === "<record>";
+    /**
+     * The union — or a refusal, when two members hold one subject (#5326).
+     *
+     * The rule and its argument live in {@link mergeWarehouseClaims}; this arm is
+     * only what the run does with the answer.
+     */
+    const merged = mergeWarehouseClaims(readMembers);
+    if (merged.kind === "subject-collision") {
       log.error(
         {
           ...runLog,
           entity: entityPlan.entity.name,
           table: entityPlan.entity.table,
-          connectionId: seamString(request.connectionId),
-          // ⚠️ What CAME BACK, under its OWN keys so `runLog`'s workspaceId is not
-          // shadowed. Without these, the replay this branch exists for (a cached
-          // token for the first entity) and a token minted against ANOTHER
-          // WORKSPACE's statement log identically — and the second is the one that
-          // has to be greppable the day it happens.
-          //
-          // Bounded by `seamString`: every one comes from the seam rather than from
-          // the plan, and nothing else on this line is attacker-shaped.
-          returnedEntity: seamString(returnedEntity),
-          returnedWorkspaceId: seamString(returnedWorkspaceId),
-          returnedConnectionId: seamString(returnedConnectionId),
-          // Which malformation it was. Without it the non-record verdicts — null,
-          // undefined, a string, an array, a number — produce one identical payload of
-          // sentinels, the same collapse this arm exists to undo, one level up.
-          returnedRequestType,
-          returnedReadThrew:
-            verdictRequestThrew ||
-            returnedEntity === SEAM_THREW ||
-            returnedWorkspaceId === SEAM_THREW ||
-            returnedConnectionId === SEAM_THREW ||
-            returnedSql === SEAM_THREW,
-          sqlDigest: submittedSqlDigest,
-          returnedSqlDigest,
-          // ⚠️ **THREE MATCH BOOLEANS, and the third is not decoration.** Each is
-          // derivable from the pair of fields above it and logged anyway, because an
-          // alert rule is a FILTER, not a computation: `sqlDigestMatch: false` is one
-          // greppable predicate, while "these two hex fields differ" is a join most
-          // log pipelines cannot express.
-          //
-          // ⚠️ **`sqlDigestMatch: true` means THE SAME STATEMENT TEXT — it does NOT
-          // mean "benign".** {@link buildSnapshotSql} emits no workspace and no
-          // connection, so two workspaces enrolled on the same table with the same
-          // dimension names build BYTE-IDENTICAL statements — the normal case for
-          // tenants onboarded from one connector template. A token minted against
-          // another workspace's request therefore lands here with the digests EQUAL,
-          // and an operator alerting only on `sqlDigestMatch: false` would miss the
-          // worst forgery this arm can see. The other two booleans are what that alert
-          // actually keys on; the naming is deliberate for the same reason.
-          //
-          // `typeof` first, and it is the second of two independent guarantees: it is
-          // redundant while {@link seamSqlDigest} brackets every non-string, and it is
-          // what held when that bracketing was briefly absent — a verdict carrying
-          // `sql: new Error(<the submitted digest>)` otherwise reported a match.
-          sqlDigestMatch:
-            typeof returnedSql === "string" && submittedSqlDigest === returnedSqlDigest,
-          // ⚠️ **EVERY submitted side is read off `request` — the frozen object that
-          // was actually handed to the gate — rather than re-derived here.** Hoisting
-          // one binding per field would work and has already failed once: the
-          // connection pair drifted the moment the submitted side gained an arm,
-          // because "the same value, spelled twice" stops being the same value
-          // silently and the comparison goes on returning a boolean. `entity` was
-          // still re-reading `entityPlan.entity.name` a third time after that fix,
-          // which is the identical class one line up. One source removes the whole
-          // class instead of its instances: `request` IS the submitted request, so
-          // these cannot disagree with it by construction.
-          //
-          // Frozen and captured before the gate ran, so a substituted validator
-          // cannot move the target either.
-          returnedWorkspaceIdMatch: returnedIsRecord && returnedWorkspaceId === request.workspaceId,
-          returnedEntityMatch: returnedIsRecord && returnedEntity === request.entity,
-          returnedConnectionIdMatch:
-            returnedIsRecord && returnedConnectionId === request.connectionId,
-          // ⚠️ **THE PREDICATE AN ALERT KEYS ON — the three components above are
-          // DIAGNOSTIC and at least one of them cannot carry the alert alone.**
-          // `returnedConnectionIdMatch` is `true` for a verdict of `{}`, and that is
-          // literally correct rather than a bug: both sides are absent, because the
-          // submitted connection is `undefined` for every default-connection
-          // workspace. Requiring the field to be PRESENT instead would report every
-          // benign default-connection replay as a connection mismatch — noise on day
-          // one, which is the failure the whole field was added to avoid. The
-          // conjunction is what distinguishes the two: an empty record fails it on
-          // `entity` and `workspaceId`, whose submitted sides are non-empty strings.
-          //
-          // ⚠️ The `returnedIsRecord` conjunct here is REDUNDANT and recorded as such:
-          // removing it was measured green, because a non-record answers `undefined`
-          // for every field and the two string comparisons below already fail. It is
-          // kept for the same reason as `sqlDigestMatch`'s `typeof` arm — defence in
-          // depth against a future edit — and, like that one, it is documented rather
-          // than pinned by a test that could not fail.
-          returnedRequestMatch:
-            returnedIsRecord &&
-            returnedWorkspaceId === request.workspaceId &&
-            returnedEntity === request.entity &&
-            returnedConnectionId === request.connectionId,
+          collidingMembers: merged.members,
+          collidingSubjects: merged.collidingSubjects,
         },
-        "Warehouse producer: the SQL gate returned a verdict for a different request — refusing rather than reading",
+        // ⚠️ No subject SURFACE on this line, and none in the message either. They
+        // are primary keys read out of a customer's warehouse — an email, an account
+        // name — and this module keeps row values out of both the log and the wire.
+        // The count and the member ids are what the operator acts on.
+        "Warehouse producer: two datasources of one connection group hold rows with the same primary key — refused rather than filing two rows as one subject",
       );
       refuseEntity(
         entityPlan,
-        "snapshot-failed",
-        `Atlas could not confirm its SQL gate checked the query it would run against ` +
-          `"${entityPlan.entity.table}", so nothing was emitted for it this run. Nothing was ` +
-          "invalidated and no window was stamped. This is an Atlas wiring fault rather than a problem " +
-          // ⚠️ INTERPOLATED, not "this run's request id". The report carries no
-          // requestId field and no middleware echoes one back, so an operator told
-          // to quote it had workspace plus wall-clock — exactly what
-          // `WarehouseRunContext.requestId`'s docstring exists to prevent. Same
-          // shape as the entity-edge failure message above.
-          // `"unknown"`, matching `vocabulary-preview.ts` and
-          // `vocabulary-object-radius.ts`. Two spellings of the same placeholder in
-          // one subsystem means an operator grepping support tickets for one misses
-          // the other.
-          `with the entity — if it repeats, report it with request id ${requestId ?? "unknown"}.`,
+        "subject-collides-across-members",
+        // ⚠️ **"primary keys", not "rows", and the two are different numbers.**
+        // `collidingSubjects` counts distinct SURFACES held by more than one member, so
+        // one key present in three datasources is `1` here and three rows in the
+        // warehouse. An operator sizing the overlap before splitting a group would
+        // under-count it, and the word is the only thing that says which number this is.
+        `${merged.collidingSubjects} primary key(s) of "${entityPlan.entity.table}" appear in more ` +
+          `than one of this entity's datasources (${merged.members
+            .map((m) => `"${m}"`)
+            .join(", ")}). Atlas reads every datasource in a connection group and describes their ` +
+          "union, and the keys it writes carry the entity name and not the datasource — so two such " +
+          "rows would be filed as ONE thing, which is a merge with no undo. **Nothing was emitted " +
+          "for this entity.** If those datasources hold copies of one another, Atlas cannot tell " +
+          "which copy it is reading: enroll this entity against a group with one of them in it. If " +
+          "they hold different rows, the declared primary key is not unique across them and the " +
+          "entity needs a key that is.",
       );
       continue;
     }
+    const claims = merged.claims;
+    const rowCount = unionRowCount;
 
-    /**
-     * Everything derived from the snapshot runner's return value, decided INSIDE the
-     * `try` below (#5257).
-     *
-     * ⚠️ **The row-cap read and the claim build used to sit between the snapshot
-     * `catch` and the transaction `.catch`, where nothing encloses them.**
-     * {@link WarehouseSnapshotRunner} is one of the five names
-     * `warehouse-producer-bypass.test.ts` guards, so its return value is a
-     * seam value under exactly the threat model #5248 spent its rounds on for the
-     * validator — and `rows.length` is an operation on it, not a fact about it.
-     *
-     * Nine shapes were run against the unfixed producer, and they split three ways
-     * rather than the one way the first draft of this comment claimed:
-     *
-     * - **SEVEN escaped as a whole-run 500 with no log line at all** — `null`,
-     *   `undefined`, a throwing `length` getter, a `length` whose `valueOf` throws, a
-     *   hostile `Symbol.iterator`, a `null` row, and a row with a throwing
-     *   `atlas_brain_subject` getter.
-     * - **A bare STRING did not 500 — it produced a phantom entity outcome**, and this
-     *   correction is the point of writing the split out. `"rows".length` is 4, which
-     *   is under the cap, and the claim builder iterates a string's CHARACTERS without
-     *   throwing: measured `rows: 4, candidates: 0, unidentifiedRows: 4`, no refusal,
-     *   no 500. An entity reported as read-and-empty when nothing was read is the
-     *   silence this module exists to remove, so it is the worse outcome of the two,
-     *   and it is the one a 500-shaped description would have hidden.
-     * - **A revoked-Proxy array survived**, but only because `await` happened to trap
-     *   it inside the `try` that was already here.
-     *
-     * ⚠️ **What is in scope is a read that THROWS, and the boundary is measured.**
-     * {@link buildWarehouseClaims} reads `row[SUBJECT_ALIAS]` and each dimension alias,
-     * so a throwing cell getter throws inside this `try` and the entity is refused.
-     * Measured over row shapes: only `null` and `undefined` rows throw. An array, a
-     * `Date`, a function and a primitive all answer `undefined` for every alias and
-     * report `rows: 1, unidentifiedRows: 1` — unchanged by this fix, and left alone
-     * deliberately: what an unreadable ROW should cost is a different question from
-     * the one this guard answers.
-     *
-     * **Stated cost:** a genuine defect in this module's own pure claim-building now
-     * reports as a failed snapshot — logged at `warn` with the Error, never swallowed,
-     * but wearing the wrong label. That is the cheaper of the two mistakes, because
-     * the alternative is one hostile cell taking down a run in which earlier entities
-     * have committed. The `phase` field below is what keeps the operator-facing
-     * message honest about whose fault it was.
-     *
-     * ⚠️ **NOT in scope: an iterator that never ends.** A `Symbol.iterator` yielding
-     * forever hangs inside the `for…of` the claim builder runs, and no `try` catches a
-     * hang. The row cap cannot help: `length` is a separate property, so an array
-     * reporting `0` can still iterate forever. That is a liveness problem wanting a
-     * timeout, not a shape problem wanting a guard — and leaving it unsaid here is the
-     * "already handled" silence this comment exists to remove.
-     *
-     * Two arms rather than a bare `rows`, because the cap is a REFUSAL with its own
-     * reason (`row-cap-exceeded`, not `snapshot-failed`) and its own operator message,
-     * and folding it into the catch would relabel it.
-     */
-    let snapshot:
-      | {
-          readonly kind: "rows";
-          /**
-           * ⚠️ **THE COUNT, NOT THE ARRAY, and carrying the array was this fix
-           * reproducing its own defect one statement over** (#5257 review). The rows
-           * are needed only by {@link buildWarehouseClaims}, which now runs inside the
-           * `try`; letting them out meant `rows.length` was read again in the
-           * no-candidates arm, where nothing encloses it. Measured: a Proxy over an
-           * array — `Array.isArray` answers TRUE for one — whose `length` trap throws
-           * on a LATER read passed the cap check and then rejected the whole run with
-           * no log line, and a trap that merely LIES reported 999,999 rows for an
-           * entity the cap had just accepted. One read, inside the guard, is what makes
-           * the cap check and the reported count the same number by construction.
-           */
-          readonly rowCount: number;
-          readonly claims: WarehouseClaims;
-        }
-      /**
-       * ⚠️ It carries the count too. The cap arm used to log only `rowCap`, so an
-       * operator learned "more than 1000" and could not tell 1,001 from 1.4M — the
-       * difference between narrowing an enrollment and abandoning the table. The
-       * number was read and validated inside the guard already, so this is free.
-       *
-       * Honest bound: {@link buildSnapshotSql} emits `LIMIT rowCap + 1`, so against a
-       * well-behaved runner this is always exactly `rowCap + 1` and says only "at
-       * least". It is worth carrying anyway, because a substituted runner ignores the
-       * LIMIT and then the real number is the whole story.
-       */
-      | { readonly kind: "row-cap"; readonly rowCount: number };
-    /**
-     * WHICH of the three things inside the `try` failed (#5257 review).
-     *
-     * ⚠️ **The refusal below tells the admin to fix their entity YAML, and for two of
-     * these three that is the wrong person to send.** `run` is the datasource read —
-     * a dropped table or a renamed column, the admin's to fix. `shape` and `claims`
-     * are Atlas faults. Widening the `try` is what made them reachable here, so the
-     * message has to widen with it or the guard buys detectability at the cost of
-     * misdirection.
-     */
-    let phase: "run" | "shape" | "claims" = "run";
-    try {
-      // `validated`, the value the guard compared — NOT a fresh `validation.request`,
-      // which would be a second read of a property the seam controls. See the capture
-      // above.
-      const returned: unknown = await runSnapshot(validated);
-      phase = "shape";
-      // ⚠️ **`Array.isArray` FIRST, and it is inside the `try` for the revoked-Proxy
-      // reason {@link seamRead} states: it THROWS on one rather than answering.** That
-      // throw is wanted here — it lands on the refusal arm below instead of taking the
-      // run — but it is only safe because it is guarded, which is the property the
-      // three previous instances of this class all lacked. It also buys the diagnosis:
-      // `{ length: 5 }` would otherwise pass the cap check and die as *"not iterable"*
-      // deep inside the claim builder, and `seamKind` names what actually came back.
-      if (!Array.isArray(returned)) {
-        throw new TypeError(
-          `the snapshot runner answered ${seamKind(returned)} rather than an array of rows`,
-        );
-      }
-      // ⚠️ `readonly unknown[]`, not `readonly Record<string, unknown>[]`, and the
-      // difference is honesty rather than pedantry. After `Array.isArray` on an
-      // `unknown`, TypeScript infers `any[]` — verified against this repo's own
-      // checker, where `const t: string = returned[0]` then compiles — so annotating
-      // the element type here would launder an unchecked `any` into a claim about
-      // every row, at the one site whose entire premise is not trusting this seam. The
-      // element shape is asserted ONCE, visibly, where it is actually needed.
-      const rows: readonly unknown[] = returned;
-      // ⚠️ ONE read of `length`, and every later use is of THIS number. See the
-      // `rowCount` field above for the two measurements that forced it.
-      const rowCount = rows.length;
-      // ⚠️ **A SEAM-CONTROLLED NUMBER, VALIDATED — and the cap check is not the
-      // validation** (#5257 review, round 2). `length` on a Proxy over an array is
-      // whatever its trap returns: `NaN > rowCap` is FALSE, so `NaN` flows straight
-      // past the cap into the report, where `BrainWarehouseRunReportSchema` requires a
-      // non-negative int. One bad `length` therefore blanks the WHOLE run report —
-      // every entity's outcome and every refusal replaced by `reportComplete: false` —
-      // which is a much larger blast radius than the entity it came from.
-      if (!Number.isSafeInteger(rowCount) || rowCount < 0) {
-        // The VALUE when it is a number — `NaN`, `-1` and `1.5` are three different
-        // wiring faults and `<number>` collapses them. A number cannot carry customer
-        // data, so interpolating it is safe here in a way `sql` never is. TypeScript
-        // believes `length` is a `number`; the trap is why the arm exists anyway.
-        const shown = typeof rowCount === "number" ? String(rowCount) : seamKind(rowCount);
-        throw new TypeError(`the snapshot runner's array reported a length of ${shown}`);
-      }
-      // The cap comparison stays under `shape`.
-      const overCap = rowCount > rowCap;
-      phase = "claims";
-      snapshot =
-        overCap
-          ? { kind: "row-cap", rowCount }
-          : {
-              kind: "rows",
-              rowCount,
-              claims: buildWarehouseClaims({
-                workspaceId,
-                plan: entityPlan,
-                // ⚠️ `?? null` is the ABSENT case, not a second spelling of the
-                // flat scope reached by translation: every planned entity is in
-                // this map (see its note), so the fallback is unreachable and is
-                // written rather than asserted away — this file holds no
-                // non-null assertions. The flat scope's own spelling is the
-                // `null` the placement target already carries.
-                connectionGroup: groupByEntity.get(entityPlan.entity.name) ?? null,
-                // The one assertion. The element shape is unchecked; what makes it
-                // survivable is that every read of it happens inside this `try`. What a
-                // non-record row COSTS is in the scope note above, measured.
-                rows: rows as readonly Record<string, unknown>[],
-                snapshotAt,
-              }),
-            };
-    } catch (err) {
-      // ⚠️ **No {@link WarehouseProducerContractError} re-throw here, unlike the
-      // transaction handler below, and the asymmetry is deliberate rather than an
-      // omission.** This module raises that error in exactly one place —
-      // {@link insertSnapshotEpisode}, which runs INSIDE the transaction — so a
-      // re-throw on this arm would be unreachable machinery that also converted a
-      // seam throwing one into a whole-run 500. Everything reachable here is a seam
-      // failure or a hostile row, and one refused entity is the proportionate answer.
-      //
-      // The Error itself, not `.message`. `scrubErrSerializer` emits type, message,
-      // stack AND pg's `code` with credentials already stripped — and `42P01` vs
-      // `ECONNREFUSED` is the difference between "fix your YAML" and "your warehouse
-      // is down". This log line is the only place that survives, because the
-      // refusal below deliberately keeps the driver's text off the wire.
-      log.warn(
-        { ...runLog, entity: entityPlan.entity.name, table: entityPlan.entity.table, phase, err },
-        "Warehouse producer: snapshot failed — the entity's pairs produced nothing this run",
-      );
-      refuseEntity(
-        entityPlan,
-        "snapshot-failed",
-        phase === "run"
-          ? `Reading "${entityPlan.entity.table}" failed, so nothing was emitted for it this run. ` +
-              "Nothing was invalidated and no window was stamped; the next run tries again. " +
-              // ⚠️ The message no longer PROMISES that retrying will work, and the
-              // difference is not cosmetic. The SQL gate checks SELECT-only,
-              // single-statement and the whitelist — it does NOT check that the table or
-              // column exists — so a dropped table or a renamed column throws HERE, on
-              // every run, forever. "The next run retries the pair" was true and useless;
-              // an operator seeing it repeat needs to know the cause may be permanent.
-              // ⚠️ It no longer ASSERTS the cause, and the reason is that `phase: "run"`
-              // covers more than the datasource read: `defaultRunSnapshot` dynamically
-              // imports the connection module and looks up a pool BEFORE any query
-              // runs, so a module-init failure or a missing pool lands here too. Those
-              // are Atlas faults, and "fix the entity YAML" is unfollowable for them —
-              // the same misattribution the gate-threw arm was split out to avoid.
-              "If it fails the same way on every run the cause is permanent — most often a table or a " +
-              "dimension's column that no longer exists. The server log for this run names what " +
-              "actually failed; if it is a connection or module failure, that is an Atlas fault rather " +
-              "than an entity one."
-          : // ⚠️ The ATLAS-fault register, taken from the gate-mismatch arm above —
-            // with `fault` where that one says `wiring fault`, since this arm does not
-            // know the cause is wiring. NOT "verbatim", which is what this line used to
-            // claim: the two strings differ by that word, so a case-sensitive grep for
-            // one does not find the other. The shared, greppable substring is
-            // "This is an Atlas". These two arms describe the same kind of event: Atlas
-            // read the entity fine and then could not process what came back. Sending
-            // this admin to "fix the entity YAML" is advice they can follow forever
-            // without anything changing.
-            `Atlas read "${entityPlan.entity.table}" but could not process the result, so nothing was ` +
-              "emitted for it this run. Nothing was invalidated and no window was stamped. This is an " +
-              "Atlas fault rather than a problem with the entity — if it repeats, report it with request " +
-              `id ${requestId ?? "unknown"}.`,
-      );
-      continue;
-    }
-
-    if (snapshot.kind === "row-cap") {
-      // ⚠️ REFUSED, not truncated — see WAREHOUSE_ROW_CAP.
-      log.warn(
-        { ...runLog, entity: entityPlan.entity.name, rowCap, rowCount: snapshot.rowCount },
-        "Warehouse producer: entity exceeds the row cap — refused rather than emitting a truncated snapshot",
-      );
-      refuseEntity(
-        entityPlan,
-        "row-cap-exceeded",
-        `"${entityPlan.entity.table}" holds more than ${rowCap} rows, and every row becomes a draft a ` +
-          "person has to review. The producer refuses rather than emitting an arbitrary subset, which " +
-          "would look at rest exactly like a complete reading of the table.",
-      );
-      continue;
-    }
-
-    // ⚠️ No `rows` here, and its absence is the fix (#5257 review): the array the
-    // snapshot seam returned does not survive the `try`, so no later line can read a
-    // property off it. `rowCount` was read once, inside the guard, beside the cap
-    // comparison it has to agree with.
-    const { rowCount, claims } = snapshot;
+    // ⚠️ No `rows` anywhere above (#5257 review): the array the snapshot seam
+    // returned does not survive the `try` its member was read in, so no later line
+    // can read a property off it. Each member's `rowCount` was read once, inside
+    // that guard, beside the cap comparison it has to agree with — and `rowCount`
+    // here is their sum, which is what the report means by "rows".
 
     if (claims.unsurfaceableCells > 0) {
       // An enrollment mistake rather than an empty column — see `isAbsentCell`. It
@@ -3981,10 +4369,12 @@ async function defaultLoadEntity(
  * @param summaries every published entity the workspace can see, with the
  *   `connection_group_id` each one is scoped to (`null` = flat/ungrouped).
  * @param wanted the enrolled names being placed.
- * @param visiblePrimaries group id → its primary member's connection id, from
- *   `loadVisibleGroups`. A group ABSENT from this map is invisible to the
- *   workspace — content mode hid it, it belongs to another workspace, or the
- *   whitelist load degraded.
+ * @param visibleMembers group id → EVERY member connection of that group, from
+ *   `loadVisibleGroups`' `members` (#5326). A group ABSENT from this map is
+ *   invisible to the workspace — content mode hid it, it belongs to another
+ *   workspace, or the whitelist load degraded — and so is one whose roster is
+ *   EMPTY, which is why both take the `group-not-visible` arm below rather than
+ *   placing a list nothing can be read from.
  * @param catalogIsAuthoritative whether `summaries` is the workspace's real
  *   published list (the DB branch of `listAdminEntities`) rather than the disk
  *   fallback. See {@link WarehouseConnectionPlacement} for why an inference will
@@ -3993,7 +4383,7 @@ async function defaultLoadEntity(
 export function mapEntitiesToConnectionIds(
   summaries: readonly { readonly name: string; readonly connectionId: string | null }[],
   wanted: readonly WarehousePlacementTarget[],
-  visiblePrimaries: ReadonlyMap<string, WarehouseConnectionId>,
+  visibleMembers: ReadonlyMap<string, readonly WarehouseConnectionId[]>,
   catalogIsAuthoritative: boolean,
 ): WarehouseConnectionPlacement {
   /**
@@ -4011,8 +4401,24 @@ export function mapEntitiesToConnectionIds(
     groupsByName.set(summary.name, groups);
   }
 
-  const placed = new Map<string, WarehouseConnectionId>();
+  const placed = new Map<string, readonly WarehouseConnectionId[]>();
   const unplaceable: { entity: string; cause: WarehouseUnplaceableCause }[] = [];
+
+  /**
+   * The group's members, or `undefined` when there is nothing to read (#5326).
+   *
+   * ⚠️ An EMPTY roster answers `undefined` — the same answer as an absent group —
+   * so both reach `group-not-visible`. `loadVisibleGroups` builds `members` from
+   * `groupToMembers.get(id) ?? [id]` and cannot currently answer `[]`, which is
+   * exactly why this is written rather than assumed: the arm that costs nothing
+   * today is the one that silently places an unreadable entity the day that
+   * changes, and an empty list placed here reads at the run loop as a
+   * successfully-read entity with no rows.
+   */
+  const membersOf = (group: string): readonly WarehouseConnectionId[] | undefined => {
+    const members = visibleMembers.get(group);
+    return members === undefined || members.length === 0 ? undefined : members;
+  };
 
   for (const target of wanted) {
     const name = target.entity;
@@ -4038,12 +4444,12 @@ export function mapEntitiesToConnectionIds(
         unplaceable.push({ entity: name, cause: "absent-from-catalog" });
         continue;
       }
-      const primary = visiblePrimaries.get(target.group);
-      if (primary === undefined) {
+      const members = membersOf(target.group);
+      if (members === undefined) {
         unplaceable.push({ entity: name, cause: "group-not-visible" });
         continue;
       }
-      placed.set(name, primary);
+      placed.set(name, members);
       continue;
     }
 
@@ -4095,8 +4501,8 @@ export function mapEntitiesToConnectionIds(
     // something has touched the default pool, where `undefined` takes `detectDBType()`.
     // A fix for group-scoped workspaces must not refuse flat ones.
     if (group === null || group === undefined) continue;
-    const primary = visiblePrimaries.get(group);
-    if (primary === undefined) {
+    const members = membersOf(group);
+    if (members === undefined) {
       // The group is real but invisible. An earlier round of this fix called
       // `resolveGroupPrimaryConnectionId` per group, which degrades to returning the
       // GROUP ID — that id was then submitted as a connection id and
@@ -4106,7 +4512,7 @@ export function mapEntitiesToConnectionIds(
       unplaceable.push({ entity: name, cause: "group-not-visible" });
       continue;
     }
-    placed.set(name, primary);
+    placed.set(name, members);
   }
 
   return { placed, unplaceable };
@@ -4172,14 +4578,19 @@ async function defaultResolveConnectionIds(
     loadVisibleGroups(workspaceId, "published"),
   ]);
 
-  const visiblePrimaries = new Map<string, WarehouseConnectionId>(
-    // The ONE cast that turns a group's primary MEMBER into a connection id, sited
-    // where that is what the value means. {@link WarehouseConnectionId} exists so the
-    // group id two lines up cannot be written here by accident.
-    visible.map((group) => [group.id, group.primary as WarehouseConnectionId]),
+  const visibleMembers = new Map<string, readonly WarehouseConnectionId[]>(
+    // The ONE cast that turns a group's MEMBER connections into connection ids, sited
+    // where that is what the values mean. {@link WarehouseConnectionId} exists so the
+    // group id one line up cannot be written here by accident.
+    //
+    // ⚠️ `group.members`, NOT `group.primary` (#5326). The roster is already sorted
+    // by `loadVisibleGroups`, so the order this hands the run loop is stable across
+    // runs — which is what makes a run's snapshots comparable to the previous run's
+    // in the log, and what keeps the fact `detail` a reader can diff.
+    visible.map((group) => [group.id, group.members as readonly WarehouseConnectionId[]]),
   );
 
-  return mapEntitiesToConnectionIds(summaries, entities, visiblePrimaries, catalogIsAuthoritative);
+  return mapEntitiesToConnectionIds(summaries, entities, visibleMembers, catalogIsAuthoritative);
 }
 
 /**

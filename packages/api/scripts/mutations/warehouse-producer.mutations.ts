@@ -263,7 +263,7 @@ largest count here and was inspected rather than trusted; see its note.
           newString: "      const overCap = false;",
         },
       ],
-      note: "The row above moves the boundary in the SAFE direction; this one removes the guard entirely, which is the direction `WAREHOUSE_ROW_CAP` exists for. A truncated reading looks at rest exactly like a complete one, so a reviewer publishes three hundred account statuses believing they have seen the accounts. A guard is not falsified by a test that only ever exercises its conservative side.",
+      note: "The row above moves the boundary in the SAFE direction; this one removes the guard entirely, which is the direction `WAREHOUSE_ROW_CAP` exists for. ⚠️ **Since #5326 a UNION cap sits beside this one, and it fell to 0 in the producer column until the falsifier was sharpened** — the union of a single member is the same number, so removing the per-member arm still refuses the entity with the same REASON, and only the message distinguishes them. The row-cap case now asserts this arm's own wording; the pair is a worked example of a guard whose sibling silently stands in for it. A truncated reading looks at rest exactly like a complete one, so a reviewer publishes three hundred account statuses believing they have seen the accounts. A guard is not falsified by a test that only ever exercises its conservative side.",
     },
     {
       label: "`buildSnapshotSql` emits `LIMIT cap` — the extra row that makes the cap observable",
@@ -325,12 +325,10 @@ largest count here and was inspected rather than trusted; see its note.
       edits: [
         {
           file: PRODUCER,
-          oldString: `        entityPlan,
-        "snapshot-failed",
-        \`Atlas could not check the query it would run against`,
-          newString: `        entityPlan,
-        "snapshot-rejected",
-        \`Atlas could not check the query it would run against`,
+          oldString: `          "snapshot-failed",
+          \`Atlas could not check the query it would run against`,
+          newString: `          "snapshot-rejected",
+          \`Atlas could not check the query it would run against`,
         },
       ],
       note: "A throw is not a verdict of invalid. The shipped gate dynamically imports a module and reads settings, so a module-init failure or a briefly-unavailable internal DB lands here — transient — and the rejected arm tells the admin to un-enroll a pair that is fine. One message cannot carry both *“retry”* and *“retrying will never work”*, which is why the two reasons exist.",
@@ -504,12 +502,11 @@ export type WarehouseBrandProbe = { readonly [validatedSnapshotSql]: true };`,
       edits: [
         {
           file: PRODUCER,
-          oldString:
-            "    const resolvedConnection =\n      entityPlan.entity.connection ?? connectionIds.get(entityPlan.entity.name);",
-          newString: "    const resolvedConnection = entityPlan.entity.connection;",
+          oldString: "        ? (placedMembers ?? [undefined])\n        : [connectionHint];",
+          newString: "        ? [undefined]\n        : [connectionHint];",
         },
       ],
-      note: "**The #5284 defect, restored verbatim at the submitted side.** It is the shipped line as it stood through #5042, #5230 and #5228, and it reached prod: on a DB-backed semantic layer the YAML `connection:` hint is null for EVERY entity — the scope lives in the row's `connection_group_id` — so every group-scoped workspace sent every snapshot to the deployment's `default` datasource, and each entity refused with `relation \"…\" does not exist` while its pairs sat in the enrollment list looking live. ⚠️ The row exists because this class is **structurally invisible to a unit suite**: `defaultValidateSnapshotSql`'s own header notes that a test workspace has no whitelist, so the gate rejects on the table whatever the statement says, and a producer that refuses every entity in production reads from in here exactly like one that works. The single kill is the seam assertion that the request carries the RESOLVED id rather than `undefined` — thin by design, and thin is the point: nothing else in five suites notices, which is why it took a prod run on #5197 to find.",
+      note: "**The #5284 defect, restored verbatim at the submitted side.** It is the shipped line as it stood through #5042, #5230 and #5228, and it reached prod: on a DB-backed semantic layer the YAML `connection:` hint is null for EVERY entity — the scope lives in the row's `connection_group_id` — so every group-scoped workspace sent every snapshot to the deployment's `default` datasource, and each entity refused with `relation \"…\" does not exist` while its pairs sat in the enrollment list looking live. ⚠️ The row exists because this class is **structurally invisible to a unit suite**: `defaultValidateSnapshotSql`'s own header notes that a test workspace has no whitelist, so the gate rejects on the table whatever the statement says, and a producer that refuses every entity in production reads from in here exactly like one that works. The single kill is the seam assertion that the request carries the RESOLVED id rather than `undefined` — thin by design, and thin is the point: nothing else in five suites notices, which is why it took a prod run on #5197 to find. ⚠️ **RESPELLED for #5326** — the anchor moved from `resolvedConnection` to the member list — and the `logging` count fell 3 → 1 with it, which is the respelling being MORE faithful rather than coverage lost. The old edit read the hint alone (`entity.connection`), so an unhinted entity submitted the hint's **`null`** — a third spelling the shipped defect never produced, since the real line ended `?? undefined` — and two logging cases were failing on the `null`-vs-`undefined` artifact rather than on the wrong datasource. The producer count rose 3 → 7 over the same edit, from #5326's own cases.",
     },
     {
       label: "the mismatch arm recomputes the submitted connection from the YAML hint",
@@ -529,9 +526,9 @@ export type WarehouseBrandProbe = { readonly [validatedSnapshotSql]: true };`,
         {
           file: PRODUCER,
           oldString:
-            "  const placed = new Map<string, WarehouseConnectionId>();\n  const unplaceable: { entity: string; cause: WarehouseUnplaceableCause }[] = [];",
+            "  const placed = new Map<string, readonly WarehouseConnectionId[]>();\n  const unplaceable: { entity: string; cause: WarehouseUnplaceableCause }[] = [];",
           newString:
-            "  const placed = new Map<string, WarehouseConnectionId>();\n  const unplaceable: { entity: string; cause: WarehouseUnplaceableCause }[] = [];\n  if (true) return { placed, unplaceable };",
+            "  const placed = new Map<string, readonly WarehouseConnectionId[]>();\n  const unplaceable: { entity: string; cause: WarehouseUnplaceableCause }[] = [];\n  if (true) return { placed, unplaceable };",
         },
       ],
       note: "The whole placement rule, neutralised. ⚠️ This row exists because the rule was **uncoverable where it used to live**: inside `defaultResolveConnectionIds`, below two I/O calls that cannot run under the unit suite at all — `test-setup.ts` strips `DATABASE_URL` and points `ATLAS_SEMANTIC_ROOT` at an empty directory, so `listAdminEntities` takes its disk branch over an empty root and answers `[]`. Every run test therefore exercised a resolver that returned nothing, and passed *because* it did. Splitting the rule out as `mapEntitiesToConnectionIds` is what makes this row killable; before the split the equivalent mutation was green across the tree.",
@@ -571,11 +568,43 @@ export type WarehouseBrandProbe = { readonly [validatedSnapshotSql]: true };`,
       edits: [
         {
           file: PRODUCER,
-          oldString: "      resolvedConnection === \"default\" ? undefined : resolvedConnection;",
-          newString: "      resolvedConnection;",
+          oldString: "      memberConnection === \"default\" ? undefined : memberConnection;",
+          newString: "      memberConnection;",
         },
       ],
       note: "⚠️ **The #5284 fix's OWN second defect, caught by a `fix-vs-finding` pass.** The fix kept the literal `\"default\"` out of the GROUP arm and left the YAML-hint arm — the first operand of the same `??` chain — free to place it. `connection: default` is not exotic: it is what the flat root's implied group is called in `whitelist.ts`, and `semantic.test.ts` has a case named for it. The two spellings diverge downstream, and the module contains both halves of the divergence: `defaultRunSnapshot` collapses them (`request.connectionId ?? \"default\"`) while `defaultValidateSnapshotSql` does not — `validateSQL` takes `getDBType(\"default\")`, which throws `ConnectionNotRegisteredError` until something has touched the default pool, where `undefined` takes `detectDBType()`. So the entity took a PERMANENT `snapshot-rejected` blaming the workspace whitelist, on precisely the flat self-hosted deployment the arm exists to protect. The lesson banked with it: singleness of a sentinel is a property of the FIELD, and guarding one arm does not establish it.",
+    },
+    {
+      label: "only the FIRST member of a connection group is read",
+      edits: [
+        {
+          file: PRODUCER,
+          oldString: "    for (const memberConnection of memberConnections) {",
+          newString: "    for (const memberConnection of memberConnections.slice(0, 1)) {",
+        },
+      ],
+      note: "**#5326, restored exactly as it reached prod.** The producer snapshotted the group's `primary`, which `loadVisibleGroups` computes as `members.sort()[0]` — alphabetical, with no designated-primary concept anywhere in the product. Measured on prod `us`: `g_prod` = `apac-prod` / `eu-prod` / `us-prod` holding 1 / 1 / 2 organizations, and the run read `apac-prod` alone because \"a\" sorts first. The store then described 1 of 4 organizations and asserted it unqualified as the company's, with `refusals: 0` and a run log that looked clean. ⚠️ The mutation keeps the loop, so every per-member arm still runs and only the COUNT of datasources changes — which is what makes the surviving cells meaningful: a suite that merely reads one connection and asserts one snapshot cannot tell this from correct.",
+    },
+    {
+      label: "a subject held by TWO members merges instead of refusing",
+      edits: [
+        { file: PRODUCER, oldString: "  if (collidingSubjects.size > 0) {", newString: "  if (false) {" },
+      ],
+      note: "The safety half of #5326's remedy, deleted. Reading every member is only sound while the members' keys are disjoint: `brain_entity.entity_id` hashes `(workspace, entity, primary key)` and the fact subject surface carries the entity name — neither carries the MEMBER — so two shards keyed by per-shard sequential integers put two different customers under ONE subject. That is a false `same` at the publish gate, the one direction with no inverse, and it is `enrolled-in-two-groups`' argument one scope down. ⚠️ Without the guard the merge does not even drop the second row loudly: `subjectIds.set` overwrites, so one customer's id silently wins and the other's claims attach to it.",
+    },
+    {
+      label: "the row cap is measured per member instead of over the union",
+      edits: [
+        { file: PRODUCER, oldString: "      if (unionRowCount > rowCap) {", newString: "      if (false) {" },
+      ],
+      note: "`WAREHOUSE_ROW_CAP`'s reason is that every row becomes a draft a person has to review, and a review queue does not get three times longer because the rows arrived from three datasources. With the union check gone a three-member group emits three capfuls, each member individually under the cap — the cap satisfied nominally, on the one measurement it exists to bound. The per-member check survives this mutation and is what makes the row about the UNION rather than about the cap in general.",
+    },
+    {
+      label: "the fact's provenance forgets WHICH member it was read from",
+      edits: [
+        { file: PRODUCER, oldString: "          connection: connectionId,", newString: "          connection: null," },
+      ],
+      note: "⚠️ **The record that would have made #5326 answerable without a prod session.** `connectionGroup` (#5314) names `g_prod` and stops there, so a human auditing a fact about `organization` cannot tell an `apac-prod` row from a `us-prod` one — which is exactly the question the measurement behind #5326 had to answer by hand, against three databases, because the record could not. Now that the producer reads EVERY member the field is not decoration: it is the only thing in the stored fact that distinguishes them. It sits in `detail` and nowhere else, so the subject and predicate stay unqualified and cross-tier collision with chat-extracted facts is unaffected.",
     },
     {
       label: "the catalog's authority is INFERRED from its contents instead of passed in",

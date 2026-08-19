@@ -85,6 +85,7 @@ import {
   buildWarehouseClaims,
   defaultValidateSnapshotSql,
   mapEntitiesToConnectionIds,
+  mergeWarehouseClaims,
   parseWarehouseEntity,
   planWarehouseEmission,
   runWarehouseProducer,
@@ -95,6 +96,7 @@ import {
   type WarehouseEntity,
   type WarehouseEntityLookup,
   type WarehouseEntityPlan,
+  type WarehouseClaims,
   type WarehouseProducerDeps,
   type SnapshotSqlValidator,
   type SnapshotSqlVerdict,
@@ -119,11 +121,16 @@ const SNAPSHOT_AT = new Date("2026-08-14T10:00:00.000Z");
  * connection GROUP id flowing into the value position because both are `string`.
  */
 const placement = (
-  placed: Readonly<Record<string, string>>,
+  placed: Readonly<Record<string, string | readonly string[]>>,
   unplaceable: WarehouseConnectionPlacement["unplaceable"] = [],
 ): WarehouseConnectionPlacement => ({
   placed: new Map(
-    Object.entries(placed).map(([name, id]) => [name, id as WarehouseConnectionId]),
+    // A bare string is the ONE-member group, which is what nearly every case here
+    // means; a list is a group whose members the run must all read (#5326).
+    Object.entries(placed).map(([name, id]) => [
+      name,
+      (typeof id === "string" ? [id] : id) as readonly WarehouseConnectionId[],
+    ]),
   ),
   unplaceable,
 });
@@ -418,6 +425,7 @@ describe("planWarehouseEmission — ADR-0037 §4's fail-closed ambiguity rule", 
         rows: [row],
         snapshotAt: SNAPSHOT_AT,
         connectionGroup,
+        connectionId: null,
       }).candidates;
 
     const [fromAnalytics] = claimsFrom(analytics, "analytics");
@@ -690,6 +698,9 @@ describe("buildWarehouseClaims", () => {
       plan,
       rows,
       snapshotAt: SNAPSHOT_AT,
+      // The member read is a separate axis from the group (#5326) and has its own
+      // case below; these fixtures are about the group, so they read the flat scope.
+      connectionId: null,
       // The RESOLVED group (#5314), which is what `detail.connectionGroup`
       // records. The fixture's YAML hint says `analytics` too, deliberately: the
       // dedicated test below is the one that drives them APART.
@@ -753,6 +764,7 @@ describe("buildWarehouseClaims", () => {
       rows: [{ [SUBJECT_ALIAS]: "Acme Corp", [`${DIMENSION_ALIAS_PREFIX}0`]: "active" }],
       snapshotAt: SNAPSHOT_AT,
       connectionGroup: "grp-42",
+      connectionId: null,
     });
     expect(candidates[0]?.detail?.connectionGroup).toBe("grp-42");
 
@@ -772,6 +784,7 @@ describe("buildWarehouseClaims", () => {
       rows: [{ [SUBJECT_ALIAS]: "Acme Corp", [`${DIMENSION_ALIAS_PREFIX}0`]: "active" }],
       snapshotAt: SNAPSHOT_AT,
       connectionGroup: "grp-42",
+      connectionId: null,
     });
     expect(fromHinted[0]?.detail?.connectionGroup).toBe("grp-42");
   });
@@ -786,6 +799,7 @@ describe("buildWarehouseClaims", () => {
       rows: [{ [SUBJECT_ALIAS]: "Acme Corp", [`${DIMENSION_ALIAS_PREFIX}0`]: "active" }],
       snapshotAt: SNAPSHOT_AT,
       connectionGroup: null,
+      connectionId: null,
     });
     expect(candidates[0]?.detail?.connectionGroup).toBeNull();
   });
@@ -1139,14 +1153,22 @@ const snapshotRow = (subject: unknown, ...values: readonly unknown[]) =>
  * new Map(), unplaceable: []}` survived the entire tree.
  */
 describe("mapEntitiesToConnectionIds (#5284)", () => {
-  const visible = new Map<string, WarehouseConnectionId>([
-    ["g-eu", "eu-prod" as WarehouseConnectionId],
-    ["g-us", "us-prod" as WarehouseConnectionId],
+  const visible = new Map<string, readonly WarehouseConnectionId[]>([
+    ["g-eu", ["eu-prod" as WarehouseConnectionId]],
+    ["g-us", ["us-prod" as WarehouseConnectionId]],
+    // A group of THREE, for the cases about how many members a placement carries
+    // (#5326). The rosters above stay single-member so every other case here goes
+    // on being about the rule it was written for.
+    [
+      "g-prod",
+      ["apac-prod", "eu-prod", "us-prod"] as unknown as readonly WarehouseConnectionId[],
+    ],
   ]);
 
-  /** The placed map as plain strings — the brand is a producer-side guarantee, not
-   * something an assertion should have to restate. */
-  const placedOf = (out: WarehouseConnectionPlacement) => Object.fromEntries<string>(out.placed);
+  /** The placed map as plain string lists — the brand is a producer-side guarantee,
+   * not something an assertion should have to restate. */
+  const placedOf = (out: WarehouseConnectionPlacement) =>
+    Object.fromEntries<readonly string[]>(out.placed);
 
   test("a group-scoped entity resolves to its group's PRIMARY member", () => {
     const out = mapEntitiesToConnectionIds(
@@ -1159,7 +1181,7 @@ describe("mapEntitiesToConnectionIds (#5284)", () => {
       true,
     );
 
-    expect(placedOf(out)).toEqual({ Accounts: "eu-prod", Orders: "us-prod" });
+    expect(placedOf(out)).toEqual({ Accounts: ["eu-prod"], Orders: ["us-prod"] });
     expect(out.unplaceable).toEqual([]);
   });
 
@@ -1217,7 +1239,7 @@ describe("mapEntitiesToConnectionIds (#5284)", () => {
     expect(out.unplaceable).toEqual([{ entity: "Accounts", cause: "ambiguous-group" }]);
     // The positive control, at a different size: the sibling in the same call still
     // resolves, so this is not "the whole placement collapsed".
-    expect(placedOf(out)).toEqual({ Orders: "us-prod" });
+    expect(placedOf(out)).toEqual({ Orders: ["us-prod"] });
   });
 
   test("two rows of the SAME group are overlay state, not ambiguity", () => {
@@ -1235,7 +1257,7 @@ describe("mapEntitiesToConnectionIds (#5284)", () => {
     // definition. Counting rows (which the first cut did) refuses an entity for
     // being ordinary: one group holding a published and a draft row is normal.
     expect(out.unplaceable).toEqual([]);
-    expect(placedOf(out)).toEqual({ Accounts: "eu-prod" });
+    expect(placedOf(out)).toEqual({ Accounts: ["eu-prod"] });
   });
 
   test("a group missing from the visible set is unplaceable", () => {
@@ -1253,7 +1275,7 @@ describe("mapEntitiesToConnectionIds (#5284)", () => {
     // surfaced as `Connection "g-hidden" is not registered` under the TRANSIENT
     // "the next run tries again" wording — for a condition that repeats every run.
     expect(out.unplaceable).toEqual([{ entity: "Accounts", cause: "group-not-visible" }]);
-    expect(placedOf(out)).toEqual({ Orders: "us-prod" });
+    expect(placedOf(out)).toEqual({ Orders: ["us-prod"] });
   });
 
   test("an enrolled name absent from a GROUP-SCOPED catalog is unplaceable", () => {
@@ -1265,7 +1287,7 @@ describe("mapEntitiesToConnectionIds (#5284)", () => {
     );
 
     expect(out.unplaceable).toEqual([{ entity: "Accounts", cause: "absent-from-catalog" }]);
-    expect(placedOf(out)).toEqual({ Orders: "us-prod" });
+    expect(placedOf(out)).toEqual({ Orders: ["us-prod"] });
   });
 
   test("an enrolled name absent from a NON-authoritative catalog is left to the default", () => {
@@ -1339,7 +1361,7 @@ describe("mapEntitiesToConnectionIds (#5284)", () => {
       true,
     );
 
-    expect(placedOf(out)).toEqual({ test_orders: "eu-prod" });
+    expect(placedOf(out)).toEqual({ test_orders: ["eu-prod"] });
     expect(out.unplaceable).toEqual([]);
   });
 
@@ -1412,8 +1434,142 @@ describe("mapEntitiesToConnectionIds (#5284)", () => {
       false,
     );
 
-    expect(placedOf(out)).toEqual({ Accounts: "eu-prod" });
+    expect(placedOf(out)).toEqual({ Accounts: ["eu-prod"] });
     expect(out.unplaceable).toEqual([]);
+  });
+
+  test("a multi-member group places EVERY member, in the roster's order (#5326)", () => {
+    // The placement is where "which datasource" is answered, and answering it with
+    // one member of three is what made the store describe a quarter of the company.
+    // The order is the roster's, which `loadVisibleGroups` already sorts — stable
+    // across runs, so one run's snapshots are comparable to the last one's.
+    const out = mapEntitiesToConnectionIds(
+      [{ name: "organization", connectionId: "g-prod" }],
+      [{ entity: "organization", group: "g-prod" }],
+      visible,
+      true,
+    );
+
+    expect(placedOf(out)).toEqual({ organization: ["apac-prod", "eu-prod", "us-prod"] });
+    expect(out.unplaceable).toEqual([]);
+  });
+
+  test("a group whose roster is EMPTY is unplaceable, not placed with nothing to read (#5326)", () => {
+    // ⚠️ Unreachable through `loadVisibleGroups` today — it builds `members` from
+    // `groupToMembers.get(id) ?? [id]` and cannot answer `[]`. Pinned because of what
+    // it costs the day that changes: an empty list placed here loops zero times in the
+    // run, merges to zero claims, and reports as a SUCCESSFUL read of an empty table.
+    // That is byte-identical to "this entity has no rows", which is the silence the
+    // two-state placement type exists to remove.
+    const out = mapEntitiesToConnectionIds(
+      [{ name: "Accounts", connectionId: "g-empty" }],
+      [{ entity: "Accounts", group: "g-empty" }],
+      new Map([["g-empty", [] as readonly WarehouseConnectionId[]]]),
+      true,
+    );
+
+    expect(out.placed.size).toBe(0);
+    expect(out.unplaceable).toEqual([{ entity: "Accounts", cause: "group-not-visible" }]);
+  });
+});
+
+describe("mergeWarehouseClaims (#5326)", () => {
+  /** One member's claims, with only the fields a case actually asserts on. */
+  const memberClaims = (
+    connection: string,
+    subjects: Readonly<Record<string, string>>,
+    extra: Partial<WarehouseClaims> = {},
+  ) => ({
+    connection,
+    claims: {
+      candidates: Object.keys(subjects).map((subject) => ({
+        subject,
+        predicate: "tier",
+        object: "gold",
+        validFrom: SNAPSHOT_AT,
+      })),
+      subjectIds: new Map(
+        Object.entries(subjects).map(([surface, id]) => [surface, id as WarehouseRowId]),
+      ),
+      entityEntries: [],
+      unnamedRows: 0,
+      unidentifiedRows: 0,
+      collidingSubjectRows: 0,
+      unsurfaceableCells: 0,
+      unsurfaceableKeyRows: 0,
+      unsurfaceableByDimension: new Map<string, number>(),
+      ...extra,
+    } as WarehouseClaims,
+  });
+
+  test("disjoint members merge into the union, and every counter is summed", () => {
+    const out = mergeWarehouseClaims([
+      memberClaims("eu-prod", { "org-eu-1": "wh_eu1" }, {
+        unnamedRows: 1,
+        unidentifiedRows: 2,
+        collidingSubjectRows: 3,
+        unsurfaceableCells: 4,
+        unsurfaceableKeyRows: 5,
+        unsurfaceableByDimension: new Map([["tier", 4]]),
+      }),
+      memberClaims("us-prod", { "org-us-1": "wh_us1", "org-us-2": "wh_us2" }, {
+        unnamedRows: 10,
+        unidentifiedRows: 20,
+        collidingSubjectRows: 30,
+        unsurfaceableCells: 40,
+        unsurfaceableKeyRows: 50,
+        unsurfaceableByDimension: new Map([
+          ["tier", 40],
+          ["plan", 7],
+        ]),
+      }),
+    ]);
+
+    expect(out.kind).toBe("merged");
+    if (out.kind !== "merged") return;
+    expect(out.claims.candidates).toHaveLength(3);
+    expect([...out.claims.subjectIds.keys()].sort()).toEqual(["org-eu-1", "org-us-1", "org-us-2"]);
+    // Summed, not taken from the last member — a merge that overwrote would report
+    // the second member's numbers as the union's and look entirely plausible.
+    expect(out.claims.unnamedRows).toBe(11);
+    expect(out.claims.unidentifiedRows).toBe(22);
+    // ⚠️ The WITHIN-member drops still count, and they are a different fact from a
+    // cross-member collision: this entity's declared key repeats inside a member.
+    expect(out.claims.collidingSubjectRows).toBe(33);
+    expect(out.claims.unsurfaceableCells).toBe(44);
+    expect(out.claims.unsurfaceableKeyRows).toBe(55);
+    // Per DIMENSION, summed across members — the operator's action is to un-enroll
+    // ONE pair, so the number has to stay attached to the dimension it came from.
+    expect(Object.fromEntries(out.claims.unsurfaceableByDimension)).toEqual({ tier: 44, plan: 7 });
+  });
+
+  test("a subject in TWO members refuses, naming both — and every member is examined first", () => {
+    const out = mergeWarehouseClaims([
+      memberClaims("apac-prod", { "1": "wh_apac1" }),
+      memberClaims("eu-prod", { "2": "wh_eu2" }),
+      memberClaims("us-prod", { "1": "wh_us1", "2": "wh_us2" }),
+    ]);
+
+    expect(out.kind).toBe("subject-collision");
+    if (out.kind !== "subject-collision") return;
+    // TWO distinct surfaces collide, and all three members hold one of them. Settling
+    // at the first pair would name two members and count one — and would decide which
+    // member "wins", which is first-writer-wins across shards under another name.
+    expect(out.collidingSubjects).toBe(2);
+    expect(out.members).toEqual(["apac-prod", "eu-prod", "us-prod"]);
+  });
+
+  test("one member merges to itself — the single-datasource case is the same path", () => {
+    // No branch beside the loop for `members.length === 1`: a second path for the
+    // ordinary case is a second thing to keep true, and it is the one every other
+    // test in this file exercises.
+    const only = memberClaims("default", { "Acme Corp": "wh_acme" });
+    const out = mergeWarehouseClaims([only]);
+
+    expect(out.kind).toBe("merged");
+    if (out.kind !== "merged") return;
+    expect(out.claims.candidates).toEqual(only.claims.candidates);
+    expect([...out.claims.subjectIds]).toEqual([...only.claims.subjectIds]);
   });
 });
 
@@ -1523,6 +1679,260 @@ describe("runWarehouseProducer", () => {
     expect(provenance).toMatchObject({ connectionGroup: "grp-42", entity: "Accounts" });
   });
 
+  /**
+   * #5326 — a multi-member group is SNAPSHOT PER MEMBER, not once against the
+   * alphabetically-first one.
+   *
+   * ⚠️ **Driven at the RUN, not at `mapEntitiesToConnectionIds`, and the first
+   * cut of this test got that wrong.** The pure placement function stores
+   * whatever the resolver hands it, so a test that passed it an array and read
+   * the array back was green against the unfixed code — an assertion that could
+   * not fail. The behaviour that is actually broken is *how many datasources a
+   * run reads*, and only the run loop can be wrong about that. (The placement
+   * type now says `readonly WarehouseConnectionId[]`, so that first cut would no
+   * longer even compile; the case stays here because the type is not what makes
+   * the run read them.)
+   *
+   * Measured on prod: `g_prod` = `apac-prod` / `eu-prod` / `us-prod` holding
+   * 1 / 1 / 2 orgs. The run read `apac-prod` alone — "a" sorts first — and filed
+   * 1 of 4 orgs as the workspace's, unqualified, because the keys carry the
+   * entity name and no member.
+   */
+  test("every member of a multi-member group is snapshot, not just one (#5326)", async () => {
+    const h = harness({
+      pairs: [{ entity: "organization", group: "g-prod", dimension: "plan_tier", naming: false }],
+      entities: {
+        organization: entityYaml({
+          table: "organization",
+          primaryKey: "id",
+          dimensions: ["id", "plan_tier"],
+        }),
+      },
+      // Each member answers with its OWN row — shards, not replicas. Keyed by the
+      // connection the runner was asked for, so a run that reads one member
+      // cannot accidentally collect the others' rows.
+      snapshot: async (request) =>
+        request.connectionId === "us-prod"
+          ? [snapshotRow("org-us-1", "pro"), snapshotRow("org-us-2", "free")]
+          : request.connectionId === "eu-prod"
+            ? [snapshotRow("org-eu-1", "trial")]
+            : [snapshotRow("org-apac-1", "trial")],
+    });
+
+    const report = await runWarehouseProducer(
+      { workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-1" },
+      {
+        ...h.deps,
+        resolveConnectionIds: async () =>
+          placement({ organization: ["us-prod", "apac-prod", "eu-prod"] }),
+      },
+    );
+
+    // THE assertion: one snapshot per member, against all three connections.
+    expect(
+      // `?? "default"` is the flat scope's spelling in a request, and it keeps this a
+      // sort of STRINGS — `(string | undefined)[]).sort()` is a type-aware lint error
+      // here, and it is right to be: an implicit sort of `undefined` is not ordering.
+      [...new Set(h.snapshots.map((r) => r.connectionId ?? "default"))].sort(),
+      "the run read one datasource of a three-member group — that describes a fraction of the rows and files them as the whole (#5326)",
+    ).toEqual(["apac-prod", "eu-prod", "us-prod"]);
+    // …and every member's rows reached the claims, so the union is described
+    // rather than one shard standing in for it.
+    expect(report.created).toBe(4);
+  });
+
+  /**
+   * #5326's other half — the union is only sound while the members' keys are
+   * disjoint, and this is what happens when they are not.
+   *
+   * Two shards keyed by per-shard sequential integers is the realistic shape: both
+   * hold a row `1`, and every key the producer writes carries the entity name and
+   * NOT the member (`brain_entity.entity_id` hashes `(workspace, entity, primary
+   * key)`). Merging them files two customers as one subject — a false `same` at the
+   * publish gate, the direction with no inverse — so the entity is refused whole.
+   */
+  test("a subject held by TWO members refuses the entity rather than merging them (#5326)", async () => {
+    const h = harness({
+      pairs: [{ entity: "organization", group: "g-prod", dimension: "plan_tier", naming: false }],
+      entities: {
+        organization: entityYaml({
+          table: "organization",
+          primaryKey: "id",
+          dimensions: ["id", "plan_tier"],
+        }),
+      },
+      // ⚠️ `1` in BOTH shards, and different rows: `pro` here, `free` there. Sharing
+      // one row id across shards is exactly what a per-shard sequence produces.
+      snapshot: async (request) =>
+        request.connectionId === "us-prod"
+          ? [snapshotRow("1", "pro"), snapshotRow("2", "free")]
+          : [snapshotRow("1", "trial")],
+    });
+
+    const report = await runWarehouseProducer(
+      { workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-1" },
+      {
+        ...h.deps,
+        resolveConnectionIds: async () => placement({ organization: ["eu-prod", "us-prod"] }),
+      },
+    );
+
+    expect(report.refusals).toHaveLength(1);
+    expect(report.refusals[0]?.reason).toBe("subject-collides-across-members");
+    // ⚠️ It NAMES the members. A refusal saying only "two of your datasources
+    // overlap" is the difference between a gap and a bug report — #5326's own
+    // acceptance criterion, and the reason the merge returns them rather than a
+    // boolean.
+    expect(report.refusals[0]?.message).toContain('"eu-prod"');
+    expect(report.refusals[0]?.message).toContain('"us-prod"');
+    // …and never the colliding KEY. It is a primary key read out of a customer's
+    // warehouse — an email, an account name — and this module keeps row values off
+    // the wire. The count is what the operator acts on.
+    expect(report.refusals[0]?.message).toContain("1 primary key(s)");
+
+    // NOTHING was written. The non-colliding row (`2`, in `us-prod` alone) is not
+    // emitted either: it would be an arbitrary subset of two populations, which at
+    // rest reads exactly like a complete reading of one.
+    expect(h.store.paramsFor(INSERT_FACT_SQL)).toHaveLength(0);
+    expect(report.entities).toEqual([]);
+    // Both members WERE read — the collision is settled over the whole set, not at
+    // the first pair, so which member "wins" is never decided.
+    expect(h.snapshots).toHaveLength(2);
+  });
+
+  test("the same key in ONE member is still a counted drop, not a refusal (#5326)", async () => {
+    // The scope boundary the merge draws. Within one member a repeated key is a
+    // data-quality note about a declared key that is not unique — the surviving
+    // rows still describe that table — and folding it into the cross-member
+    // refusal would tell an operator their shards overlap when they do not.
+    const h = harness({
+      pairs: [{ entity: "organization", group: "g-prod", dimension: "plan_tier", naming: false }],
+      entities: {
+        organization: entityYaml({
+          table: "organization",
+          primaryKey: "id",
+          dimensions: ["id", "plan_tier"],
+        }),
+      },
+      snapshot: async (request) =>
+        request.connectionId === "us-prod"
+          ? [snapshotRow("1", "pro"), snapshotRow("1", "free")]
+          : [snapshotRow("2", "trial")],
+    });
+
+    const report = await runWarehouseProducer(
+      { workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-1" },
+      {
+        ...h.deps,
+        resolveConnectionIds: async () => placement({ organization: ["eu-prod", "us-prod"] }),
+      },
+    );
+
+    expect(report.refusals).toEqual([]);
+    expect(report.entities[0]?.collidingSubjectRows).toBe(1);
+    // The union's two surviving subjects, and the union's three rows.
+    expect(report.entities[0]?.rows).toBe(3);
+    expect(report.created).toBe(2);
+  });
+
+  test("provenance records WHICH member a claim was read from (#5326)", async () => {
+    // Before this, `connectionGroup` recorded `g_prod` and nothing recorded the
+    // member — so a human auditing a fact could not tell an `apac-prod` row from a
+    // `us-prod` one, which is the question the measurement behind #5326 had to
+    // answer by hand, against the databases, because the record could not.
+    const h = harness({
+      pairs: [{ entity: "organization", group: "g-prod", dimension: "plan_tier", naming: false }],
+      entities: {
+        organization: entityYaml({
+          table: "organization",
+          primaryKey: "id",
+          dimensions: ["id", "plan_tier"],
+        }),
+      },
+      snapshot: async (request) =>
+        request.connectionId === "us-prod" ? [snapshotRow("org-us-1", "pro")] : [],
+    });
+
+    await runWarehouseProducer(
+      { workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-1" },
+      {
+        ...h.deps,
+        resolveConnectionIds: async () => placement({ organization: ["eu-prod", "us-prod"] }),
+      },
+    );
+
+    const [factParams] = h.store.paramsFor(INSERT_FACT_SQL);
+    const provenance: unknown = JSON.parse(String(factParams?.[7]));
+    // The MEMBER beside the group — the group alone cannot answer "which database".
+    expect(provenance).toMatchObject({ connection: "us-prod", entity: "organization" });
+  });
+
+  test("the row cap is about the UNION, not one member at a time (#5326)", async () => {
+    // ⚠️ Two members of 3 rows each against a cap of 4. Per member both pass; the
+    // union does not. `WAREHOUSE_ROW_CAP`'s reason is that every row becomes a draft
+    // a person has to review, and a review queue does not get twice as long because
+    // the rows arrived from two datasources.
+    const h = harness({
+      pairs: [{ entity: "organization", group: "g-prod", dimension: "plan_tier", naming: false }],
+      entities: {
+        organization: entityYaml({
+          table: "organization",
+          primaryKey: "id",
+          dimensions: ["id", "plan_tier"],
+        }),
+      },
+      rowCap: 4,
+      snapshot: async (request) =>
+        request.connectionId === "us-prod"
+          ? [snapshotRow("us-1", "pro"), snapshotRow("us-2", "pro"), snapshotRow("us-3", "pro")]
+          : [snapshotRow("eu-1", "trial"), snapshotRow("eu-2", "trial"), snapshotRow("eu-3", "trial")],
+    });
+
+    const report = await runWarehouseProducer(
+      { workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-1" },
+      {
+        ...h.deps,
+        resolveConnectionIds: async () => placement({ organization: ["eu-prod", "us-prod"] }),
+      },
+    );
+
+    expect(report.refusals).toHaveLength(1);
+    expect(report.refusals[0]?.reason).toBe("row-cap-exceeded");
+    // It names the group's size and the member it was reading when the union
+    // crossed the cap, so the operator knows this is not one oversized table.
+    expect(report.refusals[0]?.message).toContain("2 datasources");
+    expect(h.store.paramsFor(INSERT_FACT_SQL)).toHaveLength(0);
+  });
+
+  test("a YAML `connection:` hint stays ONE read, even for a multi-member group (#5326)", async () => {
+    // An author naming a datasource outright is more specific than the row's group,
+    // and #5326 does not widen a deliberate single-datasource answer into a fan-out
+    // nobody asked for. The hint wins whole: one request, against `authored`.
+    const h = harness({
+      pairs: [{ entity: "Accounts", group: "g-prod", dimension: "tier", naming: false }],
+      entities: {
+        Accounts: entityYaml({
+          table: "accounts",
+          connection: "authored",
+          primaryKey: "id",
+          dimensions: ["id", "tier"],
+        }),
+      },
+      rows: { Accounts: [snapshotRow("Acme Corp", "gold")] },
+    });
+
+    await runWarehouseProducer(
+      { workspaceId: WORKSPACE, triggeredBy: "user-1", requestId: "req-1" },
+      {
+        ...h.deps,
+        resolveConnectionIds: async () =>
+          placement({ Accounts: ["eu-prod", "us-prod", "apac-prod"] }),
+      },
+    );
+
+    expect(h.snapshots.map((r) => r.connectionId)).toEqual(["authored"]);
+  });
+
   test("the connection is resolved ONCE per run, not once per entity", async () => {
     const h = harness({
       pairs: [
@@ -1613,6 +2023,16 @@ describe("runWarehouseProducer", () => {
     expect(h.snapshots).toHaveLength(1);
     expect(report.created).toBe(1);
     expect(report.refusals).toEqual([]);
+
+    // ⚠️ **And the DURABLE RECORD carries one spelling of the flat scope, which the
+    // member field got wrong on its first cut (#5326 review).** `detail.connection`
+    // was built from the raw member rather than the normalised one, so this entity
+    // stored `"default"` while an ungrouped neighbour reading the same datasource
+    // stored `null` — the two-spellings divergence the arm above exists to end,
+    // moved from the request into the record, where nothing collapses it later.
+    const [factParams] = h.store.paramsFor(INSERT_FACT_SQL);
+    const provenance: unknown = JSON.parse(String(factParams?.[7]));
+    expect(provenance).toMatchObject({ connection: null });
   });
 
   test("an UNPLACED entity reads the default connection; an UNPLACEABLE one reads nothing", async () => {
@@ -2194,6 +2614,13 @@ describe("runWarehouseProducer", () => {
       "Big.region:row-cap-exceeded",
       "Big.status:row-cap-exceeded",
     ]);
+    // ⚠️ The PER-MEMBER arm's own wording, and asserting it is what keeps that arm
+    // falsifiable now that a union check sits beside it (#5326). The union of ONE
+    // member is the same number, so deleting `rowCount > rowCap` still refuses this
+    // entity with the same REASON — the message is the only thing that can tell the
+    // two arms apart, and a row-cap test that reads only the reason went green
+    // against a producer whose per-member cap had been removed.
+    expect(report.refusals[0]?.message).toContain('"big" holds more than 2 rows');
     // NOT truncated: nothing at all from `Big`. The two controls carry DIFFERENT
     // counts (2 and 1) so they cannot be swapped for each other.
     expect(report.entities.map((e) => `${e.entity}:${e.created}`).toSorted()).toEqual([
@@ -3423,7 +3850,7 @@ describe("an enrollment's connection group (#5286)", () => {
     _ws: string,
     targets: readonly WarehousePlacementTarget[],
   ): Promise<WarehouseConnectionPlacement> => ({
-    placed: new Map(targets.map((t) => [t.entity, connection as WarehouseConnectionId])),
+    placed: new Map(targets.map((t) => [t.entity, [connection as WarehouseConnectionId]])),
     unplaceable: [],
   });
 
@@ -3585,7 +4012,7 @@ describe("an enrollment's connection group (#5286)", () => {
       {
         ...h.deps,
         resolveConnectionIds: async () => ({
-          placed: new Map([["Contracts", "eu-prod" as WarehouseConnectionId]]),
+          placed: new Map([["Contracts", ["eu-prod" as WarehouseConnectionId]]]),
           unplaceable: [{ entity: "Accounts", cause: "group-not-visible" as const }],
         }),
         loadEntity: async (_ws, entity, group) => {

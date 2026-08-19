@@ -1757,6 +1757,37 @@ export const BRAIN_WAREHOUSE_REFUSAL_REASONS = [
    * across two entities. Enrolling the pair in ONE group produces normally.
    */
   "enrolled-in-two-groups",
+  /**
+   * Two MEMBERS of one connection group hold a row with the same primary key
+   * for this entity, so the union Atlas reads has two rows with one identity
+   * (#5326).
+   *
+   * A group's members are its environments (`connection_groups`, whose UI copy
+   * says "environment"), and since #5326 the producer reads EVERY member rather
+   * than the alphabetically-first one — a sharded group's answer to *"how many
+   * organizations do we have"* is the union, and one shard's rows asserted as
+   * the company's is the defect that arm was written for.
+   *
+   * ⚠️ **The union is only sound while the members' keys are disjoint, and this
+   * is the arm for when they are not.** `brain_entity.entity_id` hashes
+   * `(workspace, entity, primary key)` and the fact subject surface carries the
+   * entity name — neither carries the MEMBER. So two shards keyed by per-shard
+   * sequential integers put two different customers' rows under one subject:
+   * a false `same` at the publish gate, the one direction with no inverse. It
+   * is `enrolled-in-two-groups`' argument one scope down, and
+   * `buildWarehouseClaims`' first-writer-wins arm is the same rule one scope
+   * further in.
+   *
+   * The whole entity is refused rather than the colliding rows dropped. Within
+   * one member a collision is a data-quality note about a declared key — the
+   * surviving rows still describe that table. Across members it says the
+   * premise of the union is false, and the rows that did NOT collide are then
+   * an arbitrary subset of two populations, which at rest reads exactly like a
+   * complete reading of one. The message names the MEMBERS and how many subjects
+   * collide — never a colliding key itself, which is a primary key read out of a
+   * customer's warehouse and stays off the wire like every other row value.
+   */
+  "subject-collides-across-members",
 ] as const;
 
 export const BrainWarehouseRefusalSchema = z.strictObject({

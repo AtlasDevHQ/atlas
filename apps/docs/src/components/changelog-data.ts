@@ -20,6 +20,23 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.13",
+    title: "The Coverage Surface",
+    date: "2026-08-20",
+    summary:
+      "Atlas could tell you what it had learned. It could not tell you how much of your company it had actually looked at \u2014 and a page that shows only what it found reads as complete no matter how little that is. Admin \u2192 Company Atlas now states the whole picture: which sources are surveyed, which ones Atlas can see but has never read, and where its map simply ends. There is no coverage percentage on it, and there will not be one. Chat channels, mailboxes and warehouse entities are not the same kind of thing, so a single number would need weights nobody measured \u2014 and it would go up when you narrowed what Atlas reads and down when you granted it more, which is exactly backwards.",
+    highlights: [
+      "The page states coverage in parts, each separately true \u2014 per source class, counted in that class's own unit (\"3 of 7 chat channels\"), so nothing is blended into a score that would hide which half is thin",
+      "Every count says what it is a count OF: what Atlas's own credentials can see, never your company. Granting a broader scope makes the denominator grow, so connecting more can make a ratio go down \u2014 that is the number getting more honest",
+      "What Atlas cannot enumerate is marked, never estimated \u2014 \"the channel roster came back clipped, so there are channels beyond the ones counted here\" carries no number, because any number there would be invented",
+      "\"Stale\" now means something measurable \u2014 the source moved and Atlas has not caught up \u2014 and is shown with the dates behind it. Where a source cannot report activity, or the pipe is sick, the unit reads \"unverified since <date>\" instead of guessing in either direction. A quiet source is current, however old its newest evidence",
+      "Nothing is labelled thin. Each surveyed unit shows its newest evidence date, ordered oldest first, and the judgment of what counts as too little is left to you",
+      "A failed enumeration reads as a failure: a class nothing has ever looked at, one that has been tried and never succeeded, and one this deployment cannot resolve are three different sentences \u2014 and none of them is a zero that would look like a clean result",
+      "The review-queue counts stay on the page and now show the whole workspace rather than just what you can see \u2014 publishing promotes every draft, so the number above the button is the number the button acts on",
+      "Available to workspace admins, on the same footing as the rest of Admin \u2192 Company Atlas; no new permission to grant",
+    ],
+  },
+  {
     version: "v0.2.12",
     title: "Every Member of a Connection Group",
     date: "2026-08-19",

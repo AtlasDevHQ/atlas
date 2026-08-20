@@ -50,5 +50,5 @@ the Company Atlas context alone spans `packages/api/src/lib/brain/**`, `/admin/b
 | Lead source (CRM acquisition) | `CONTEXT.md` § Lead source | |
 | Notebooks | [`docs/contexts/notebooks/CONTEXT.md`](docs/contexts/notebooks/CONTEXT.md) | 🪦 **retired** — kept so the words don't dangle; read only for history |
 
-System-wide decisions stay in [`docs/adr/`](docs/adr/) (41 ADRs). A context gets its own
+System-wide decisions stay in [`docs/adr/`](docs/adr/) (43 ADRs). A context gets its own
 `docs/adr/` only once it has a decision that is genuinely local to it.

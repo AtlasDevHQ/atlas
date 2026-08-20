@@ -160,7 +160,7 @@ They are one of **two** required axes; the other is kind+area. See
 ### Domain docs
 
 **Multi-context**: [`CONTEXT-MAP.md`](CONTEXT-MAP.md) names 18 bounded contexts and
-`docs/adr/` holds 41 system-wide decisions. ⚠️ The split is underway: three contexts
+`docs/adr/` holds 43 system-wide decisions. ⚠️ The split is underway: three contexts
 (Company Atlas, Deployment posture, Notebooks) live under `docs/contexts/`, the root
 `CONTEXT.md` still governs the other fifteen, and the map says which is which per row — it
 never points at a file that does not exist (#5302). See

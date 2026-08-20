@@ -166,6 +166,21 @@ CVE-2026-4878 exp:2026-11-01
 # predating the advisory — the gate working as designed, on debt no PR
 # introduced.
 CVE-2026-53615 exp:2026-11-01
+# HIGH     util-linux and the same eight siblings — three more from the SAME
+#          advisory batch and the SAME package update: 2.41-5 -> 2.41.5-0+deb13u1.
+#          53612 TOCTOU applying post-mount ownership/mode changes; 53613 TOCTOU
+#          via ancestor directory swap; 53614 SUID mount(8) nosuid/noexec bypass
+#          via LIBMOUNT_FORCE_MOUNT2.
+# Disclosed 2026-08-20 between main's 18:33 UTC scan (green) and the next PR's
+# 20:52 UTC scan (red) — the same shape as 53615 one entry up, four CVEs later.
+# ⚠️ Read that repetition as a signal, not a coincidence: this is the SECOND
+# time in eight days that one util-linux advisory batch has reddened every PR in
+# the repo, and the fixed version is identical to the one already listed above.
+# The baseline is doing its job, but a gate that goes red on the same package
+# twice is telling you the bare base is the wrong thing to hold the debt.
+CVE-2026-53612 exp:2026-11-01
+CVE-2026-53613 exp:2026-11-01
+CVE-2026-53614 exp:2026-11-01
 
 # ─────────────────────────────────────────────────────────────────────────────
 # caddy:2.11.4-alpine — runtime base for deploy/docs only. Cleared by the

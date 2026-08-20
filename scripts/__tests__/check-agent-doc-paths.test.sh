@@ -37,6 +37,24 @@
 #                                                          five phrases verified and
 #                                                          none was stated anywhere
 #
+# Cases 13c-13f were added on 2026-08-20, after TWO live claims in this repo's own
+# docs were found to have been unchecked all along — both by hand, both while the
+# gate reported clean:
+#
+#   the counts scan reverts to a raw            case 13c FAIL — exit 0 on a wrong
+#     `git grep` line match                       count, because `**` sat between
+#                                                 the number and the phrase
+#   the line-joining window is removed          case 13d FAIL — exit 0 on a wrong
+#                                                 count that wrapped across two
+#                                                 lines, which is the ONLY live
+#                                                 statement of it in practices.md
+#   the match cursor advances past the          case 13f FAIL — exit 1 on CORRECT
+#     match START instead of its END              prose, "43 …" also matching "3 …"
+#
+# Case 13e is their positive control. Both reds were confirmed against the OLD
+# gate on 2026-08-20: with both claims mutated to a wrong number, it printed
+# "no doc names a path, command or registered count that does not exist."
+#
 # Cases 18, 20 and 22 are the matching positive controls — a URL beside a route,
 # a doc and its file committed together, every phrase stated correctly — so the
 # reds above cannot be bought with a filter that simply reports more.
@@ -283,6 +301,67 @@ if [ "$RC" = "0" ]; then
   pass "the same phrase with the DERIVED number passes"
 else
   fail "correct count — expected exit 0, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 13c. COUNTS / MARKUP. The number and the phrase separated by bold markers.
+# ⚠️ THIS WAS GREEN ON A WRONG CLAIM. The scan was `git grep` on
+# `<number>[[:space:]]+<phrase>`, so CLAUDE.md's bolded copy went unchecked for
+# days while both unbolded copies were flagged correctly. Reverting the scan to a
+# raw line match turns this case red (verified 2026-08-20: exit 0, no finding).
+new_tree
+printf 'There are eight **operational** runbooks in .claude/commands/.\n' > "$TREE/docs/agents/x.md"
+stage; run_gate
+if [ "$RC" = "1" ] && printf '%s' "$OUT" | grep -qF "operational runbooks"; then
+  pass "a count claim interrupted by **emphasis** is still checked (exit $RC)"
+else
+  fail "bold-interrupted count — expected exit 1, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 13d. COUNTS / LINE BREAK. The number ends one line, the phrase opens the next.
+# ⚠️ ALSO GREEN ON A WRONG CLAIM, and on the ONLY live statement of that count in
+# docs/agents/practices.md. `git grep` is line-based; prose wraps. Removing the
+# line-joining window turns this case red (verified 2026-08-20: exit 0).
+new_tree
+printf '`.claude/commands/` now holds **eight\noperational runbooks**.\n' > "$TREE/docs/agents/x.md"
+stage; run_gate
+if [ "$RC" = "1" ] && printf '%s' "$OUT" | grep -qF "operational runbooks"; then
+  pass "a count claim wrapped across a line break is still checked (exit $RC)"
+else
+  fail "wrapped count — expected exit 1, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 13e. POSITIVE CONTROL for 13c/13d, so neither red is bought by a scan that
+# simply reports more: the same two shapes with the DERIVED number pass.
+new_tree
+printf 'There is one **operational** runbooks entry, and the tree now holds **one\noperational runbooks** entry.\n' > "$TREE/docs/agents/x.md"
+stage; run_gate
+if [ "$RC" = "0" ]; then
+  pass "bold and wrapped claims with the DERIVED number both pass"
+else
+  fail "positive control — expected exit 0, got $RC"
+  printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
+fi
+
+# 13f. NO SUB-MATCH FABRICATION. A correct two-digit count must not also match on
+# its own last digit. ⚠️ The first cut of the joining scan stepped one character
+# past the match START rather than its END, so a correct "43 system-wide
+# decisions" produced a second, fabricated finding reading "3 system-wide
+# decisions" — a gate inventing failures on prose that was right, on three
+# registered phrases at once. Restoring `off = st` turns this case red.
+new_tree
+# new_tree already plants release.md, so twelve more make thirteen — and 13 is
+# chosen because its trailing digit, 3, is what the broken cursor re-matched.
+mkdir -p "$TREE/.claude/commands"
+for i in $(seq 1 12); do echo "runbook $i" > "$TREE/.claude/commands/c$i.md"; done
+printf 'There are 13 operational runbooks.\n' > "$TREE/docs/agents/x.md"
+stage; run_gate
+if [ "$RC" = "0" ]; then
+  pass "a correct two-digit count does not also fail on its trailing digit"
+else
+  fail "sub-match fabrication — expected exit 0, got $RC"
   printf '%s\n' "$OUT" | sed 's/^/       | /' >&2
 fi
 
@@ -539,7 +618,7 @@ fi
 # running — a `sed` whose anchor drifted, an `if` that can no longer be reached.
 # A suite reporting "26 passed" while three cases quietly vanished reads exactly
 # like success, which is the failure this whole directory exists to refuse.
-EXPECTED_CASES=29
+EXPECTED_CASES=33
 TOTAL=$((PASS + FAIL))
 if [ "$TOTAL" -eq "$EXPECTED_CASES" ]; then
   pass "all $EXPECTED_CASES cases ran"

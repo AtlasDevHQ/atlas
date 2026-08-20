@@ -126,6 +126,17 @@ would be this page's own failure mode:
   `bounded contexts`, `system-wide decisions`, `chat-platform adapters`, `ci-local gates`).
   The audit's *"14 chat components"* against 42 on disk would still ship — that phrase is not
   registered, and nothing derives it.
+- **A registered phrase was not enough on its own, either.** Until 2026-08-20 the counts
+  check was a `git grep` for `<number> <phrase>` on a raw line, and two live claims in these
+  very files slipped through it: one where `**` sat between the number and the phrase, and
+  one where the number ended a line and the phrase opened the next. Both were found by hand,
+  both while the gate reported clean — the same failure mode this page exists to describe,
+  inside the gate this page points at. It now strips emphasis and joins each line to its
+  predecessor before matching, and `scripts/__tests__/check-agent-doc-paths.test.sh` carries
+  a mutant for each. **A historical count is worded, not allowlisted:** `count` exemptions
+  match by file, so exempting a true-when-written number would also retire the live claim
+  beside it. Write "eight runbooks that were purely operational" and leave the registered
+  phrase to the statement about today.
 - **It reads paths and names, not claims.** A doc can still say a subsystem works a way it
   does not; every path in the sentence resolves.
 - **Everything else on this page is still a note.** The bar above is not itself enforced by

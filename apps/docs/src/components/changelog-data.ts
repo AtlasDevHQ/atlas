@@ -20,6 +20,17 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.14",
+    title: "The Coverage Surface Says What It Counts",
+    date: "2026-08-20",
+    summary:
+      "A correctness fix on the page v0.2.13 shipped, found by reading it on a real workspace. The Warehouse card said \"4 of 281 enrolled entity\u2013dimension pairs\" while 277 of the rows underneath said they were not in scope \u2014 both cannot be true. The counts were right: the number Atlas measures against is every entity\u2013dimension pair your semantic layer describes, and enrollment is what picks the surveyed few out of it. The label named the denominator after the filter, so the headline read as though someone had enrolled all 281.",
+    highlights: [
+      "The Warehouse coverage ratio now reads \"of the entity\u2013dimension pairs your semantic layer defines\" \u2014 what the number is actually counted against, rather than a description of the four that were enrolled",
+      "No count changed and no data was wrong; this is the caption catching up with the measurement, which on this page is a correctness fix rather than a wording one",
+    ],
+  },
+  {
     version: "v0.2.13",
     title: "The Coverage Surface",
     date: "2026-08-20",

@@ -114,6 +114,45 @@ describe("composeStatement — one claim, two placements (ADR-0041)", () => {
 });
 
 describe("composeStatement — no invented dates, no invented denominators", () => {
+  test("the warehouse denominator is the semantic layer, not the enrolled subset", () => {
+    // Found by hand on prod at v0.2.13, which is what #5216's verification is
+    // for. `coverage-warehouse.ts` walks every (entity, dimension) pair the
+    // semantic layer defines and sets `inPerimeter` PER UNIT, so enrollment
+    // selects the numerator out of that universe — it does not describe the
+    // universe. Calling the denominator "enrolled" asserted that a human had
+    // enrolled all 281 while 277 rows underneath read "visible to Atlas, not in
+    // scope": the headline and the list contradicted each other, on a page whose
+    // whole premise is that every part is separately true.
+    const base = build();
+    const warehouse = {
+      state: "enumerated" as const,
+      asOf: "2026-08-20T02:00:00.000Z",
+      ratio: {
+        surveyed: 4,
+        enumerated: 277,
+        enumerable: 281,
+        inPerimeterWithoutEvidence: 0,
+        unit: "semantic-layer-enrollment" as const,
+      },
+      freshness: { current: 0, stale: 0, unverified: 4 },
+      units: [],
+      unitsWithheld: 281,
+      unitsTruncated: false,
+      mapEdges: [],
+      unavailable: null,
+    };
+    const statement = composeStatement(
+      build({ availability: { ...base.availability, warehouse } }),
+    );
+    const sentence = statement.availability[3];
+    expect(sentence).toContain("4 of 281 entity–dimension pairs");
+    expect(sentence).toContain("your semantic layer defines");
+    // The load-bearing negative: no phrasing may claim the DENOMINATOR was
+    // enrolled. `enrolled` describing a unit is fine; describing the 281 is not.
+    expect(sentence).not.toMatch(/of \d+ enrolled/);
+    expect(sentence).not.toContain("pairs a human enrolled");
+  });
+
   test("a class with no attempt on record gets no date at all", () => {
     const [, transcript] = composeStatement(build()).availability;
     expect(transcript).not.toMatch(/\d{4}/);

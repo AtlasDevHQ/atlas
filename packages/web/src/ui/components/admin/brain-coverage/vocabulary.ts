@@ -101,8 +101,15 @@ export const CLASS_COPY: Record<BrainCoverageSourceClass, ClassCopy> = {
   email: { title: "Mail", units: "mailboxes", unit: "mailbox" },
   warehouse: {
     title: "Warehouse",
-    units: "enrolled entity–dimension pairs",
-    unit: "enrolled entity–dimension pair",
+    // ⚠️ NOT "enrolled entity–dimension pairs". The denominator is every pair the
+    // SEMANTIC LAYER defines (`coverage-warehouse.ts` walks entities × dimensions
+    // and sets `inPerimeter = enrolled.has(unitId)` per unit), so enrollment is a
+    // property of individual units inside it, never a description of the whole.
+    // Measured on prod at v0.2.13: "4 of 281 enrolled entity–dimension pairs"
+    // over a list where 277 read "visible to Atlas, not in scope" — the headline
+    // asserted a human had enrolled all 281 while the rows below said otherwise.
+    units: "entity–dimension pairs",
+    unit: "entity–dimension pair",
   },
   human: { title: "People", units: "people", unit: "person" },
 };
@@ -119,7 +126,12 @@ export const UNIT_CAPTION: Record<BrainCoverageUnitOrigin, string> = {
   "chat-channel-roster": "of the channels Atlas's chat credentials can see",
   "granted-recording-scopes": "of the recordings Atlas's granted scopes can see",
   "mailbox-list": "of the mailboxes Atlas's mail credentials can see",
-  "semantic-layer-enrollment": "of the entity–dimension pairs a human enrolled",
+  // Named for its SOURCE, not for a filter applied to it: the universe is what
+  // the admin's own semantic layer describes, and enrollment (ADR-0039) is what
+  // selects the surveyed subset FROM it — the two are a numerator/denominator
+  // pair, so naming the denominator after the numerator's rule made the ratio
+  // read as "4 of 281, all of which were enrolled".
+  "semantic-layer-enrollment": "of the entity–dimension pairs your semantic layer defines",
 };
 
 /**

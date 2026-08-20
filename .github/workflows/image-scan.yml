@@ -19,6 +19,15 @@ name: Image Scan
 #   blocks    fixable HIGH/CRITICAL in OS packages, minus the dated
 #             .trivyignore baseline (which is NOT empty — read that file for
 #             what is in it and why each entry is legitimate)
+#
+#             ⚠️ WHERE it blocks is not symmetric, and #5361 is the reason.
+#             The BUILT-image tier is the gate of record on every trigger: it
+#             reads the finished artifact, which is the only thing a customer
+#             receives. The BASE-image tier is report-only except on a base
+#             reference the PR introduced or changed. Absolute base gating
+#             protected nothing that ships — all eight runtime stages upgrade
+#             their OS packages — while blocking PRs that touched no image at
+#             all. scripts/base-image-gate.sh holds that policy.
 #   reports   every FIXABLE finding at every severity and package type, from the
 #             BUILT images only, via SARIF to GitHub code scanning
 #   logs      everything else, unfixed included, as a census in the job log
@@ -103,7 +112,8 @@ name: Image Scan
 #                 the create-atlas templates, examples/docker, and the sidecar:
 #                 those Dockerfiles cannot be built standalone in CI (they need
 #                 a scaffolded project as build context), but their runtime base
-#                 layer is exactly where OS CVEs live.
+#                 layer is exactly where OS CVEs live. Report-only unless the PR
+#                 introduced or changed the reference (#5361).
 #
 #   built-images  Build deploy/api, deploy/web and deploy/docs and scan the
 #                 finished artifacts. Catches what Atlas adds on top of the
@@ -115,7 +125,14 @@ name: Image Scan
 # base images are pinned by digest, so their content never changes, but the
 # vulnerability database changes daily. A PR-triggered-only gate would never
 # notice that a pinned image acquired a CRITICAL last Tuesday. The cron is what
-# turns this from a change-detector into actual monitoring.
+# turns this from a change-detector into actual monitoring — and since #5361 it
+# is also the tier that OWNS that case outright, rather than sharing it with a
+# PR-time base gate that duplicated its job with merge-blocking power attached.
+#
+# One guard sits underneath all of this: scripts/check-runtime-stage-upgrades.sh.
+# "A base CVE does not reach a shipped artifact" is only true while every
+# runtime stage upgrades its packages, and that is the one property this
+# workflow's narrowing makes weaker rather than stronger.
 
 on:
   pull_request:
@@ -156,28 +173,50 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Emitted as a matrix so each base image gets its own job — and, more to
-      # the point, its own SARIF upload. GitHub code scanning rejects multiple
-      # SARIF runs sharing one category, so a single job uploading a directory
-      # of reports fails; one image per matrix leg gives each a distinct
-      # category for free.
-      # Each entry carries both the full ref (what gets scanned) and a short
-      # label (what names the check and the SARIF category). The label drops the
-      # digest: a digest-pinned ref makes an unreadable check name, and the
-      # category must stay stable across a digest bump or code scanning treats
-      # the same image as a brand-new analysis and never closes its old alerts.
+      # Emitted as a matrix so each base image gets its own job. Splitting them
+      # is parallelism now that this tier no longer uploads SARIF, but the
+      # `label` still matters: it names the check, and it drops the digest
+      # because a digest-pinned ref makes an unreadable check name.
+      #
+      # Each entry also carries `gated`, which is the whole of #5361. The base
+      # tier does not block on the absolute CVE state of a base image on ANY
+      # trigger — it blocks only on a base REFERENCE this PR introduced or
+      # changed. scripts/base-image-gate.sh owns that policy and the reasoning;
+      # read its header rather than a second copy here.
       - id: discover
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          IMAGES="$(bash scripts/list-runtime-base-images.sh)"
-          echo "Runtime base images discovered:"
-          echo "$IMAGES" | sed 's/^/  /'
-          MATRIX="$(printf '%s' "$IMAGES" | jq -R -s -c '
-            split("\n") | map(select(length > 0)) | map({
-              ref: .,
-              label: (. | split("@")[0] | gsub("[/:]"; "-"))
-            })')"
-          echo "Matrix: $MATRIX"
+
+          # Off a pull_request there is no "what did this change introduce" to
+          # ask, so nothing here gates. That is not a gap: `push: main`,
+          # `schedule` and `workflow_dispatch` all run the BUILT-image tier
+          # unconditionally, and that tier reads the artifact a customer
+          # actually receives.
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            MATRIX="$(bash scripts/base-image-gate.sh matrix --mode report-only)"
+            echo "images=$MATRIX" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # ⚠️ OUTSIDE the repo checkout on purpose. A merge-base worktree
+          # placed under $GITHUB_WORKSPACE would be walked by the head tree's
+          # own Dockerfile discovery, so every base ref would appear in both
+          # sets and NOTHING would ever read as new.
+          BASE_TREE="$(mktemp -d)"
+          if git worktree add --detach "$BASE_TREE" "$BASE_SHA" >/dev/null 2>&1; then
+            MATRIX="$(bash scripts/base-image-gate.sh matrix --mode diff --base-tree "$BASE_TREE")"
+            git worktree remove --force "$BASE_TREE" || true
+          else
+            # Fail safe, and the direction is deliberate: an unknown baseline
+            # means "we cannot tell what is new", whose only safe reading is
+            # "all of it is". Report-only here would turn a checkout failure
+            # into a silently ungated PR.
+            echo "::warning::could not check out the merge-base tree ($BASE_SHA) — gating every base ref"
+            MATRIX="$(bash scripts/base-image-gate.sh matrix --mode gate-all)"
+          fi
           echo "images=$MATRIX" >> "$GITHUB_OUTPUT"
 
       - id: filter
@@ -221,7 +260,20 @@ jobs:
           #   any package.json      a manifest anywhere in the workspace graph
           #   bun.lock              the resolved closure that ships
           #   deploy/               the three images that are actually built here
-          #   the scanner itself    scripts + baseline + this file
+          #   the scanner itself    scripts + baseline + this file — named one
+          #                         by one, because `^scripts/` would put a
+          #                         ~10-min three-image build on every edit to
+          #                         any of the dozens of unrelated files in that
+          #                         directory. ⚠️ That makes it a HAND-MAINTAINED
+          #                         list, and #5361 had to extend it with three
+          #                         names: scripts/base-image-gate.sh,
+          #                         scripts/check-runtime-stage-upgrades.sh and
+          #                         scripts/lib/dockerfile-stages.sh. A future
+          #                         scanner script not added here is not a hole,
+          #                         but it is a DELAY: the built images are then
+          #                         first scanned against it by the
+          #                         unconditional `push: main` run, one merge
+          #                         later, rather than on the PR
           #
           # ⚠️ `(^|/)` on the file-name patterns, not `^`: the old `package\.json$`
           # was anchored to the ROOT manifest alone, so a workspace package
@@ -235,7 +287,7 @@ jobs:
           # the Monday cron scans an unchanged tree, which is the only thing
           # that ever catches a CVE disclosed against a digest-pinned base.
           # PR-time scanning is early warning, not the gate of record.
-          if echo "$CHANGED" | grep -qE '^(deploy/|create-atlas/templates/docker/|examples/docker/|\.trivyignore$|scripts/(scan-image|list-runtime-base-images)\.sh$|\.github/workflows/image-scan\.yml$)|(^|/)Dockerfile|(^|/)package\.json$|(^|/)bun\.lock$'; then
+          if echo "$CHANGED" | grep -qE '^(deploy/|create-atlas/templates/docker/|examples/docker/|\.trivyignore$|scripts/(scan-image|list-runtime-base-images|base-image-gate|check-runtime-stage-upgrades)\.sh$|scripts/lib/dockerfile-stages\.sh$|\.github/workflows/image-scan\.yml$)|(^|/)Dockerfile|(^|/)package\.json$|(^|/)bun\.lock$'; then
             echo "built-images=true" >> "$GITHUB_OUTPUT"
             echo "Image-relevant paths changed — scanning built images"
           else
@@ -250,6 +302,12 @@ jobs:
   # vulnerable image and asserts scan-image.sh exits 1 on it, builds a
   # package-free image and asserts it exits 0, and checks that the .trivyignore
   # baseline suppresses the gate WITHOUT suppressing the SARIF report.
+  #
+  # Since #5361 it also breaks the TREE, not just the image: it bumps a base pin
+  # to a worse one, adds a Dockerfile on a base the tree never carried, and adds
+  # a runtime stage with no upgrade — then reads what the real decision code
+  # says. Those three are what stop "report-only for an unchanged ref" from
+  # quietly becoming "report-only".
   #
   # It runs before the real scans and gates them: if the scanner has silently
   # stopped detecting anything (a bad Trivy bump, a broken flag, an over-broad
@@ -267,15 +325,32 @@ jobs:
       - name: Adversarial fixtures for the image-scan gate (#4822)
         run: bash scripts/__tests__/scan-image.test.sh
 
+  # The premise the base tier's report-only mode stands on (#5361).
+  #
+  # Every runtime stage in the tree upgrades its OS packages, which is why a CVE
+  # in an unchanged base is not a fact about anything Atlas ships. A runtime
+  # stage that skips the upgrade falsifies that AND is invisible to both tiers:
+  # an unchanged base ref is not gated here, and only three of the eight
+  # Dockerfiles are in the built-images matrix.
+  #
+  # Cheap (pure bash, no docker, no trivy) and unconditional, because the thing
+  # it guards is the reason the expensive tiers are allowed to be quiet.
+  runtime-stage-upgrades:
+    name: Runtime stages upgrade OS packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - name: Every runtime stage runs apt-get upgrade / apk upgrade (#5361)
+        run: bash scripts/check-runtime-stage-upgrades.sh
+
   # Tier 1 — runtime base images, discovered from every Dockerfile in the tree.
   #
-  # One matrix leg per image. Splitting them is not just parallelism: code
-  # scanning refuses multiple SARIF runs under one category, so each image needs
-  # its own upload with its own category anyway.
-  # ⚠️ This tier GATES but deliberately does NOT report to code scanning
-  # (changed 2026-08-12). It is the one job here whose SARIF is not uploaded.
+  # ⚠️ This tier does NOT report to code scanning (changed 2026-08-12) and it
+  # does NOT gate on absolute CVE state (changed by #5361). It is report-only
+  # except on a base reference the PR introduced or changed. Two narrowings,
+  # different reasons, both measured — do not collapse them.
   #
-  # Why it still exists: discovery. scripts/list-runtime-base-images.sh resolves
+  # Why it still exists: DISCOVERY. scripts/list-runtime-base-images.sh resolves
   # the runtime stage of EVERY Dockerfile in the tree, so a new Dockerfile with
   # a base nobody remembered to scan enters this matrix automatically. The three
   # built images below are an enumerated list and cannot do that. Deleting this
@@ -284,21 +359,39 @@ jobs:
   #
   # Why the SARIF upload went away, measured rather than assumed:
   #
-  #   1. It was pure duplication. Of the 113 unique CVEs these legs reported,
-  #      ZERO were absent from the built-image scans — the base set IS, by
-  #      construction, the set of runtime bases those images are built FROM.
-  #      The cost was ~396 of the ~1,059 open alerts, because code scanning
-  #      needs a distinct category per upload and therefore counts the same
-  #      base-layer CVE once per image.
+  #   1. It was near-total duplication. Of the 113 unique CVEs these legs
+  #      reported, ZERO were absent from the built-image scans AT THE TIME —
+  #      measured before the 2026-08-12 runner-stage upgrades landed.
   #
-  #   2. Since 2026-08-12 it is also WRONG. deploy/api, deploy/web and
-  #      deploy/docs now run `apt-get upgrade` / `apk upgrade` in their runner
-  #      stages, so a scan of the bare base reports packages that do not ship —
-  #      it overstates the shipped surface. The built-image scan is the only one
-  #      that reads the artifact a customer actually receives.
+  #      ⚠️ That measurement is STALE as a subset claim and must not be cited as
+  #      a visibility guarantee (#5361). The upgrades in (2) mean the built
+  #      images now carry FEWER findings than their bases, so the base set is a
+  #      strict SUPERSET, not a subset: a bare-base CVE the upgrade clears is
+  #      reported by nothing. That is correct — the finding is not a fact about
+  #      Atlas's artifacts — but it is the opposite of what "ZERO were absent"
+  #      implies. What must stay visible is what SURVIVES the upgrade, and that
+  #      is the built-image tier's SARIF, which does upload.
   #
-  # The gate is unaffected: this job still fails on a fixable HIGH/CRITICAL OS
-  # package in a base, which is what catches a bad pin on the PR that makes it.
+  #      The cost the removal saved was real: ~396 of the ~1,059 open alerts,
+  #      because code scanning needs a distinct category per upload and
+  #      therefore counted the same base-layer CVE once per image.
+  #
+  #   2. Since 2026-08-12 it is also WRONG. All eight runtime stages in the tree
+  #      run `apt-get upgrade` / `apk upgrade`, so a scan of the bare base
+  #      reports packages that do not ship — it overstates the shipped surface.
+  #      The built-image scan is the only one that reads the artifact a customer
+  #      actually receives. scripts/check-runtime-stage-upgrades.sh is what keeps
+  #      that premise true.
+  #
+  # What the gate does now, replacing the sentence that used to sit here — "this
+  # job still fails on a fixable HIGH/CRITICAL OS package in a base, which is
+  # what catches a bad pin on the PR that makes it". The stated intent was
+  # regression; the implementation was absolute state, and the two are different
+  # checks. #5361 makes the behaviour match the sentence: it fails only on a base
+  # REFERENCE this PR introduced or changed, which is exactly "a bad pin on the
+  # PR that makes it" plus the new-Dockerfile-on-a-new-base case that is the same
+  # event seen through the ref set. Policy and reasoning:
+  # scripts/base-image-gate.sh.
   base-images:
     name: Base image (${{ matrix.image.label }})
     needs: [changes, gate-self-test]
@@ -323,7 +416,8 @@ jobs:
         env:
           IMAGE: ${{ matrix.image.ref }}
           CATEGORY: base-${{ matrix.image.label }}
-        run: bash scripts/scan-image.sh "$IMAGE" "$CATEGORY" trivy-results
+          GATED: ${{ matrix.image.gated }}
+        run: bash scripts/base-image-gate.sh scan "$IMAGE" "$CATEGORY" "$GATED" trivy-results
 
   # Tier 2 — the images Atlas builds and deploys, scanned as finished artifacts.
   built-images:
@@ -392,7 +486,7 @@ jobs:
   # skips — which is what branch protection needs to be able to require it.
   image-scan-required:
     name: Image Scan
-    needs: [changes, gate-self-test, base-images, built-images]
+    needs: [changes, gate-self-test, runtime-stage-upgrades, base-images, built-images]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -400,14 +494,15 @@ jobs:
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
           SELFTEST_RESULT: ${{ needs.gate-self-test.result }}
+          UPGRADES_RESULT: ${{ needs.runtime-stage-upgrades.result }}
           BASE_RESULT: ${{ needs.base-images.result }}
           BUILT_RESULT: ${{ needs.built-images.result }}
         run: |
           set -euo pipefail
           fail=0
-          # These three run unconditionally. A `skipped` among them means the
+          # These four run unconditionally. A `skipped` among them means the
           # gate was bypassed rather than satisfied, which must not read green.
-          for pair in "changes=$CHANGES_RESULT" "gate-self-test=$SELFTEST_RESULT" "base-images=$BASE_RESULT"; do
+          for pair in "changes=$CHANGES_RESULT" "gate-self-test=$SELFTEST_RESULT" "runtime-stage-upgrades=$UPGRADES_RESULT" "base-images=$BASE_RESULT"; do
             name=${pair%%=*}
             result=${pair#*=}
             if [ "$result" != "success" ]; then

@@ -59,9 +59,15 @@
 #            findings that cannot yet be cleared in a shipped image. It is
 #            applied to the GATE pass only — never to the report pass — so a
 #            merge-gate exemption can never become an invisibility cloak in code
-#            scanning. It is currently EMPTY: the 2026-08-12 runner-stage
-#            upgrades cleared all 11 original entries. Read .trivyignore itself
-#            before adding one.
+#            scanning.
+#
+#            ⚠️ It is NOT empty. This header claimed "currently EMPTY: the
+#            2026-08-12 runner-stage upgrades cleared all 11 original entries"
+#            for the whole window in which the file carried first 10 and then 14
+#            entries. No count is stated here now, deliberately — a number in
+#            prose is a second thing to keep true and this one was not. Read
+#            .trivyignore itself, which is where the entries and the rule for
+#            adding one live.
 #
 #            ⚠️ "Applied to the gate only" is a statement about the BASELINE,
 #            not a claim that the report pass shows everything — since
@@ -73,6 +79,20 @@
 # disclosed CVE, or one introduced by a dependency or base-image change, goes
 # red on the PR that introduces it. Debt inherited from upstream is visible in
 # code scanning and dated in .trivyignore instead of silently red forever.
+#
+# ⚠️ CALLERS. This script answers one question — "does THIS image carry a
+# fixable HIGH/CRITICAL OS package" — and its exit code is that answer, nothing
+# more. Whether the answer should BLOCK is a separate decision and does not
+# live here:
+#
+#   built images   the verdict is the gate, on every trigger. image-scan.yml
+#                  calls this script directly.
+#   base images    the verdict is report-only unless the PR introduced or
+#                  changed that base reference (#5361). image-scan.yml goes
+#                  through scripts/base-image-gate.sh, which owns that policy.
+#
+# Keep it that way. Folding the base tier's report-only mode in here would put
+# two different questions behind one exit code.
 #
 # Only the `vuln` scanner runs. Trivy's secret and misconfiguration scanners
 # overlap with tooling Atlas already has (GitHub secret scanning with push

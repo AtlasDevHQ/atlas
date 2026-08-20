@@ -23,25 +23,14 @@
 
 set -euo pipefail
 
-ROOT="${BASE_IMAGE_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="${BASE_IMAGE_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
-# Emit "image<TAB>alias" for every FROM, in file order.
-#
-# POSIX awk only (no gawk IGNORECASE, no [[:space:]]) — GitHub runners ship
-# mawk as /usr/bin/awk on some images and this must not depend on which.
-parse_froms() {
-  awk '
-    /^[ \t]*[Ff][Rr][Oo][Mm][ \t]/ {
-      img = ""; alias = "";
-      for (i = 2; i <= NF; i++) {
-        if (substr($i, 1, 2) == "--") continue;      # --platform=, --chmod=
-        if (tolower($i) == "as") { alias = $(i + 1); break }
-        if (img == "") img = $i;
-      }
-      print img "\t" alias
-    }
-  ' "$1"
-}
+# list_dockerfiles + parse_froms. Shared with check-runtime-stage-upgrades.sh so
+# the two gates can never enumerate different file sets — read that file's
+# header for why that would be silent.
+# shellcheck source=scripts/lib/dockerfile-stages.sh
+. "$SCRIPT_DIR/lib/dockerfile-stages.sh"
 
 runtime_base_of() {
   local df="$1"
@@ -90,14 +79,7 @@ runtime_base_of() {
 dockerfiles=()
 while IFS= read -r df; do
   dockerfiles+=("$df")
-done < <(
-  find "$ROOT" \
-    \( -path '*/node_modules' -o -path '*/.git' -o -path '*/.claude/worktrees' -o -path '*/.github/fixtures' \) -prune -o \
-    -type f \( -name 'Dockerfile' -o -name 'Dockerfile.*' \) -print | sort
-)
-# .github/fixtures is pruned on purpose: it holds the deliberately-vulnerable
-# negative-control image for scripts/__tests__/scan-image.test.sh. Scanning it
-# as if it were a shipped base would pin the gate red forever.
+done < <(list_dockerfiles "$ROOT")
 
 if [ ${#dockerfiles[@]} -eq 0 ]; then
   echo "::error::No Dockerfiles found under $ROOT — the discovery glob has rotted" >&2

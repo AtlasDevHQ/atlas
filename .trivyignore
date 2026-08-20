@@ -23,6 +23,26 @@
 # arrived with a third-party base image Atlas does not build stays visible in
 # code scanning without pinning every unrelated PR red.
 #
+# ── Which two surfaces this file still governs (post-#5361) ───────────────────
+#
+# It used to apply to every base-image scan on every PR, which is why it kept
+# needing hand-maintained entries for CVEs nobody introduced. Since #5361 the
+# base tier gates only on a base REFERENCE the PR introduced or changed, so this
+# file is consulted on exactly two surfaces:
+#
+#   1. a NEW or CHANGED base ref, on the PR that introduces it, and
+#   2. the BUILT images, which are the gate of record on every trigger.
+#
+# An unchanged base ref does not gate at all any more, so nothing needs
+# suppressing there. That is what makes the entries below a short list rather
+# than a standing one — they are not being kept green by hand.
+#
+# ⚠️ Read that correctly: the four util-linux entries left in the 2026-08-20 pass
+# because nothing on that surface is red any more, NOT because the debt was
+# cleared. The bare base still carries them; scripts/base-image-gate.sh just
+# stopped treating that as a merge-blocking fact. See "What the 2026-08-20 pass
+# changed", below.
+#
 # ── Why there is a baseline at all ────────────────────────────────────────────
 #
 # Because two different things get scanned, and only one of them ships.
@@ -37,7 +57,8 @@
 #   base-images tier for pin regressions and for DISCOVERY, which is the only
 #   thing that notices a new Dockerfile with a base nobody enumerated. Nothing
 #   has upgraded these yet at the moment they are scanned, so they still carry
-#   the findings below.
+#   the findings below — reported, and blocking only when the PR introduced or
+#   changed the reference (#5361).
 #
 # So the entries here are not a deferral of unfixed debt. They are the gap
 # between "what the base ships with" and "what our images ship with", and the
@@ -56,6 +77,12 @@
 # deploy/docs, packages/sandbox-sidecar, examples/docker, and all three
 # create-atlas/templates/docker Dockerfiles). If a future Dockerfile adds a
 # runtime stage WITHOUT an upgrade, these entries silently start lying.
+#
+# That sentence used to be the only thing standing between this file and being
+# wrong. It is now a gate: scripts/check-runtime-stage-upgrades.sh fails CI on a
+# runtime stage that does not upgrade, and #5361 is why it had to become one —
+# under a ref-diff base gate, a new Dockerfile on an EXISTING base with no
+# upgrade is invisible to both scan tiers.
 #
 # ── Scope note ────────────────────────────────────────────────────────────────
 #
@@ -129,19 +156,76 @@
 #     image, so there was never a security argument for moving that pin — which
 #     matters, because moving it would have broken the isolated test runner.
 #
+# ── What the 2026-08-20 pass changed (#5361) ─────────────────────────────────
+#
+# No pin moved and no upgrade changed. What moved was WHERE the gate blocks, so
+# the numbers below are a baseline for the next reader, not a delta to act on.
+# Both surfaces re-measured with the pinned Trivy 0.72.0, per "How to
+# re-measure" above:
+#
+#   BARE bases, gate policy, no baseline applied:
+#     caddy:2.11.4-alpine   5 findings   (HIGH 5, CRITICAL 0) — 3 unique CVEs
+#     oven/bun:1.3.13      49 findings   (HIGH 47, CRITICAL 2) — 11 unique CVEs
+#     14 unique CVEs across both, which is exactly the 14 entries this file held
+#     before this pass. The bare bases did NOT get cleaner.
+#
+#   BUILT images, same policy, no baseline applied:
+#     probe-api    0        probe-web    0        probe-docs   0
+#
+# So: 14 findings on a surface that ships nothing, 0 on the surface that ships.
+# That asymmetry is the whole argument, and it is why the four util-linux
+# entries could leave while the other 10 stay listed — the 10 still govern the
+# two surfaces named at the top of this file, the four governed neither.
+#
 # ── If a NEW entry is ever needed ─────────────────────────────────────────────
 #
-# Prefer fixing the image. A baseline entry is correct only when the distro has
-# published no fixed package (Trivy already filters those with --ignore-unfixed,
-# so this is rarer than it looks) or when the fix is unreachable from the pinned
-# repo snapshot. Always give it an `exp:` date — the expiry is the forcing
-# function; once passed, Trivy stops honouring it and the gate goes red until it
-# is fixed or consciously re-dated. Do not bulk-extend dates — re-scan first.
+# **Prefer fixing the image.** In order: pick a base without the finding, or a
+# newer tag/digest of the same one; failing that, clear it in the runtime stage
+# with `apt-get upgrade` / `apk upgrade`, which is what all eight Dockerfiles in
+# this tree already do. An entry here is the third option, not the first.
+#
+# ⚠️ The rule that used to sit here said an entry is correct "only when the
+# distro has published no fixed package … or when the fix is unreachable from
+# the pinned repo snapshot". Both conditions are FALSE for every entry that has
+# ever been in this file, so read literally it forbade all of them (#5362).
+# The first is not merely rare, it is UNREACHABLE: scripts/scan-image.sh runs the
+# gate pass with --ignore-unfixed, so anything that reaches the gate is fixable
+# by construction. A rule every instance violates is worse than no rule — it
+# gets worked around by pattern-matching the nearest existing entry, which is
+# what #5360 did.
+#
+# **The actual test**, which is the one the entries already meet and which is
+# stated under "Why there is a baseline at all" above:
+#
+#   Does a runtime stage's `apt-get upgrade` / `apk upgrade` clear this finding
+#   from the BUILT image, so that it exists only in the bare base?
+#
+# Yes → the entry is legitimate. It is the bare-base/built-image gap, not
+# deferred debt. No → do not write the entry; the finding ships, and suppressing
+# it would make this file lie about what customers receive.
+#
+# **Verify it, do not assert it.** Run the two-surface re-measure under "How to
+# re-measure" above — one copy, one place to keep true. A candidate entry must
+# appear in the bare-base scan AND be absent from all three built-image scans.
+# A built-image measurement alone is not enough: an earlier draft emptied this
+# file on exactly that and CI failed both base legs immediately.
+#
+# **The one case this is the documented path rather than a fallback** — the
+# escape hatch scripts/base-image-gate.sh names when it blocks a new base. A PR
+# introducing a NEW or CHANGED base ref gates absolutely on that ref (#5361). If
+# the new base's findings are cleared by its own runtime-stage upgrade, that is
+# provable on the built image and is precisely the gap above, so a dated entry
+# here is the right answer rather than a workaround. Keep this paragraph and
+# that failure message consistent — they are the two halves of one instruction.
+#
+# Always give an entry an `exp:` date — the expiry is the forcing function; once
+# passed, Trivy stops honouring it and the gate goes red until it is fixed or
+# consciously re-dated. Do not bulk-extend dates — re-scan first.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # oven/bun:1.3.13 (Debian trixie) — runtime base for deploy/api, deploy/web,
 # packages/sandbox-sidecar, examples/docker and the create-atlas docker
-# templates. All eight are cleared by the `apt-get upgrade` in every runtime
+# templates. All seven are cleared by the `apt-get upgrade` in every runtime
 # stage; they persist only in the bare base, which is what base-images scans.
 # ─────────────────────────────────────────────────────────────────────────────
 # HIGH     libssl3t64 / openssl-provider-legacy  3.5.5-1~deb13u1 -> u2
@@ -158,29 +242,23 @@ CVE-2026-31789 exp:2026-11-01
 CVE-2026-45447 exp:2026-11-01
 # HIGH     libcap2  1:2.75-10+b8 -> 1:2.75-10+deb13u1
 CVE-2026-4878 exp:2026-11-01
-# HIGH     util-linux and its eight siblings — bsdutils, libblkid1, libmount1,
-#          libsmartcols1, libuuid1, liblastlog2-2, mount, login
-#          2.41-5 -> 2.41.5-0+deb13u1
-# Disclosed after the 2026-08-12 pass, so it is the first entry added since. It
-# reddened the base-images leg of every PR while main stayed green on a run
-# predating the advisory — the gate working as designed, on debt no PR
-# introduced.
-CVE-2026-53615 exp:2026-11-01
-# HIGH     util-linux and the same eight siblings — three more from the SAME
-#          advisory batch and the SAME package update: 2.41-5 -> 2.41.5-0+deb13u1.
-#          53612 TOCTOU applying post-mount ownership/mode changes; 53613 TOCTOU
-#          via ancestor directory swap; 53614 SUID mount(8) nosuid/noexec bypass
-#          via LIBMOUNT_FORCE_MOUNT2.
-# Disclosed 2026-08-20 between main's 18:33 UTC scan (green) and the next PR's
-# 20:52 UTC scan (red) — the same shape as 53615 one entry up, four CVEs later.
-# ⚠️ Read that repetition as a signal, not a coincidence: this is the SECOND
-# time in eight days that one util-linux advisory batch has reddened every PR in
-# the repo, and the fixed version is identical to the one already listed above.
-# The baseline is doing its job, but a gate that goes red on the same package
-# twice is telling you the bare base is the wrong thing to hold the debt.
-CVE-2026-53612 exp:2026-11-01
-CVE-2026-53613 exp:2026-11-01
-CVE-2026-53614 exp:2026-11-01
+#
+# ⚠️ CVE-2026-53612, -53613, -53614 and -53615 were here and are GONE (#5361).
+# util-linux and its eight siblings (bsdutils, libblkid1, libmount1,
+# libsmartcols1, libuuid1, liblastlog2-2, mount, login), 2.41-5 ->
+# 2.41.5-0+deb13u1. The bare base STILL CARRIES ALL FOUR — measured 2026-08-20,
+# see "What the 2026-08-20 pass changed" above. They are not listed because
+# nothing gates on them any more: they live on an unchanged base ref, which
+# #5361 made report-only.
+#
+# The reason they are worth a paragraph rather than a silent deletion: that one
+# util-linux advisory batch reddened every PR in the repo TWICE in eight days
+# (53615 on 2026-08-12, then 53612/53613/53614 on 2026-08-20), with an identical
+# fixed version both times. A gate going red on the same package twice, for debt
+# no PR introduced, is what said the bare base was the wrong thing to hold the
+# debt. Re-adding them by hand on the next disclosure is the loop #5361 closed —
+# if a util-linux entry ever looks necessary again, check WHY the gate is red
+# before writing one.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # caddy:2.11.4-alpine — runtime base for deploy/docs only. Cleared by the

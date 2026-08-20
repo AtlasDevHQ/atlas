@@ -17,6 +17,19 @@
  * sentence renders as nothing, and *nothing* on the map-edge list is the page
  * saying the map is complete.
  *
+ * ## The ONE string this module does not own
+ *
+ * `unavailable.reason` and `never-enumerated`'s `unavailableReason` are free
+ * text from the enumerator, and they reach the DOM verbatim — the only reasons
+ * on this surface that are not a closed enum with copy here. That is ADR-0041,
+ * not an oversight: *"the reason is admin-facing text the enumerator wrote"*,
+ * and it is the sentence that names something an operator can go fix (*"Slack
+ * returned 429 for the channel listing"*). An enum would round every distinct
+ * vendor failure to the same shrug. The bound on it is the wire schema's
+ * `z.string()` and React's escaping; the rule it must keep is that it is always
+ * ADDITIVE — appended after a claim this module owns, never the whole sentence,
+ * so a producer that says nothing useful still leaves a true statement standing.
+ *
  * ## There is no percentage in this file, deliberately
  *
  * Not one string here formats a ratio as a percent, and none ever should. A
@@ -173,21 +186,121 @@ export function ratioPhrase(
 }
 
 /**
- * A date as an admin reads it, or `null` when there is no date.
+ * A stored timestamp, resolved into the three things it can actually be.
  *
- * `null` in, `null` out — never "recently", never today's date. On this surface
- * an absent date means *nobody has ever established this*, and substituting a
- * plausible one turns "we have never looked" into "we looked just now".
+ * ## Why this is a union and not `string | null`
+ *
+ * It was `asOfLabel(): string | null`, and that name lied by conflation: `null`
+ * meant BOTH *there is no date* and *the date would not parse*, which are
+ * opposite statements on a surface whose whole job is not to conflate them. No
+ * caller could tell them apart, so a corrupt stamp rendered as the absent case —
+ * a unit with an unreadable reading read as *"nothing has ever been established
+ * for it"*, and a frozen enumeration's caption simply lost its date.
+ *
+ * Three arms, and every caller must answer all three:
+ *
+ *   - `absent` — there is genuinely no date. Render NOTHING; never "recently"
+ *     and never today's, which would turn "we have never looked" into "we looked
+ *     just now".
+ *   - `unreadable` — Atlas holds a stamp it cannot read. Say so. This is the arm
+ *     that must not fall back to the absent case: a missing date reads as an
+ *     ordinary state, and this one is a fault.
+ *   - `date` — a real date, as an admin reads it.
  */
-export function asOfLabel(iso: string | null): string | null {
-  if (iso === null) return null;
+export type DateReading =
+  | { readonly kind: "absent" }
+  | { readonly kind: "unreadable"; readonly raw: string }
+  | { readonly kind: "date"; readonly label: string };
+
+export function readDate(iso: string | null): DateReading {
+  if (iso === null) return { kind: "absent" };
   const parsed = new Date(iso);
-  // A stored timestamp that will not parse is reported as unreadable rather
-  // than rendered as "Invalid Date" beside a confident count.
-  if (Number.isNaN(parsed.getTime())) return null;
-  return parsed.toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
+  if (Number.isNaN(parsed.getTime())) return { kind: "unreadable", raw: iso };
+  return {
+    kind: "date",
+    label: parsed.toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    }),
+  };
+}
+
+/**
+ * The date as a phrase, or `null` when there is genuinely none.
+ *
+ * The convenience the old `asOfLabel` was reaching for, WITHOUT the conflation:
+ * an unreadable stamp comes back as words rather than as silence, so no caller
+ * can drop a fault by writing `?? ""`.
+ */
+export function datePhrase(iso: string | null): string | null {
+  const reading = readDate(iso);
+  switch (reading.kind) {
+    case "absent":
+      return null;
+    case "unreadable":
+      return "an unreadable date";
+    case "date":
+      return reading.label;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The claims, stated ONCE
+// ---------------------------------------------------------------------------
+
+/**
+ * ## Why the no-count arms live here rather than at their two render sites
+ *
+ * Each of these sentences is made twice — once as prose in the composed
+ * statement, once beside an icon on the class card — and they were two
+ * WORDINGS of the same claim, drifting independently. `statement.ts` already
+ * makes this exact argument for the hidden-backlog line ("two WORDINGS would be
+ * the maintenance hazard, since a later edit would reach one and not the
+ * other") and simply had not applied it to the four class arms.
+ *
+ * So the CLAIM lives here and the PRESENTATION stays at each site: the card
+ * keeps its icon, its tone and its `role="alert"`, the paragraph keeps its
+ * `Title — ` prefix, and both say the same words.
+ */
+export function notSurveyableClaim(copy: ClassCopy): string {
+  // `human`'s declared refusal. An affirmative product statement, not a gap:
+  // the units would be people, and Atlas does not enumerate them.
+  return `Not a surveyable class. Atlas does not enumerate ${copy.units}, so this is correctly absent from every ratio rather than missing from one.`;
+}
+
+export function cannotEstablishClaim(copy: ClassCopy): string {
+  return `Atlas cannot establish anything about ${copy.units} in this deployment — the class has no contract here. No count is shown, because every number that could be shown would be made up.`;
+}
+
+export function neverEnumeratedClaim(copy: ClassCopy): string {
+  return `Never enumerated. Nothing has looked for ${copy.units} in this workspace yet, so there is no denominator to show — not a zero.`;
+}
+
+/**
+ * Tried and never once succeeded — a different sentence from "nobody has
+ * looked", and the one that names something to fix.
+ */
+export function enumerationNeverSucceededClaim(
+  lastAttemptAt: string | null,
+  reason: string | null,
+): string {
+  const attempted = datePhrase(lastAttemptAt);
+  const when = attempted === null ? "" : `, most recently on ${attempted}`;
+  return `Enumeration has been attempted and has never succeeded${when}. ${reason ?? "No reason was recorded."}`;
+}
+
+/**
+ * Dated counts whose enumerator has since stopped succeeding.
+ *
+ * ⚠️ Says "these counts", never "the counts above" — the same words have to
+ * work in a paragraph and beside a card.
+ */
+export function frozenEnumerationClaim(since: string | null, reason: string): string {
+  const when = datePhrase(since);
+  const head =
+    when === null
+      ? "Enumeration has been unavailable since the last successful cycle."
+      : `Enumeration has been unavailable since ${when}.`;
+  return `${head} These counts are the last that succeeded. ${reason}`;
 }

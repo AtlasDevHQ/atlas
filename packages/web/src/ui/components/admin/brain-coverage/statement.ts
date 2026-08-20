@@ -38,7 +38,12 @@ import {
   CLASS_ORDER,
   MAP_EDGE_COPY,
   UNIT_CAPTION,
-  asOfLabel,
+  cannotEstablishClaim,
+  datePhrase,
+  enumerationNeverSucceededClaim,
+  frozenEnumerationClaim,
+  neverEnumeratedClaim,
+  notSurveyableClaim,
   ratioPhrase,
 } from "./vocabulary";
 
@@ -64,31 +69,36 @@ export interface ComposedStatement {
   readonly caveat: string | null;
 }
 
-/** One class's sentence — every arm answers, including the three with no counts. */
+/**
+ * One class's sentence — every arm answers, including the three with no counts.
+ *
+ * The CLAIMS come from `vocabulary.ts` so the card and the paragraph cannot
+ * drift into two wordings; what belongs here is the `Title — ` prefix and the
+ * enumerated arm's ratio prose, which the card renders as structured elements
+ * instead of a sentence.
+ */
 function availabilitySentence(coverage: BrainCoverage, cls: BrainCoverageSourceClass): string {
   const copy = CLASS_COPY[cls];
   const arm = coverage.availability[cls];
+  const say = (claim: string) => `${copy.title} — ${claim}`;
 
   switch (arm.state) {
     case "not-surveyable":
-      // `human`'s declared refusal. An affirmative product statement, not a gap:
-      // the units would be people, and Atlas does not enumerate them.
-      return `${copy.title}: not a surveyable class — Atlas does not enumerate ${copy.units}.`;
+      return say(notSurveyableClaim(copy));
     case "cannot-establish":
-      return `${copy.title}: this deployment cannot establish anything about ${copy.units}.`;
-    case "never-enumerated": {
-      const attempted = asOfLabel(arm.lastAttemptAt);
-      if (arm.reason === "no-cycle-recorded") {
-        return `${copy.title}: never enumerated — nothing has looked for ${copy.units} in this workspace yet.`;
-      }
-      // Tried and never once succeeded. A different sentence from "nobody has
-      // looked", and the one that names something to fix.
-      const since = attempted === null ? "" : ` (last attempted ${attempted})`;
-      const why = arm.unavailableReason === null ? "" : ` ${arm.unavailableReason}`;
-      return `${copy.title}: enumeration has been attempted and has never succeeded${since}.${why}`;
-    }
+      return say(cannotEstablishClaim(copy));
+    case "never-enumerated":
+      return say(
+        arm.reason === "no-cycle-recorded"
+          ? neverEnumeratedClaim(copy)
+          : enumerationNeverSucceededClaim(arm.lastAttemptAt, arm.unavailableReason),
+      );
     case "enumerated": {
-      const asOf = asOfLabel(arm.asOf);
+      // ⚠️ An UNREADABLE `asOf` still prints, as words. Dropping it would make a
+      // corrupt stamp indistinguishable from a class that legitimately has no
+      // date — and this arm always has one, so silence here is a fault reading
+      // as an ordinary state.
+      const asOf = datePhrase(arm.asOf);
       const stamp = asOf === null ? "" : `, as of ${asOf}`;
       const caption = UNIT_CAPTION[arm.ratio.unit];
       // ⚠️ The FROZEN-counts clause belongs in the paragraph, not only on the
@@ -102,19 +112,19 @@ function availabilitySentence(coverage: BrainCoverage, cls: BrainCoverageSourceC
       const frozen =
         arm.unavailable === null
           ? ""
-          : ` Enumeration has been unavailable since then, so these counts are the last that succeeded. ${arm.unavailable.reason}`;
+          : ` ${frozenEnumerationClaim(arm.unavailable.since, arm.unavailable.reason)}`;
       if (arm.ratio.enumerable === 0) {
         // A MEASURED emptiness — a cycle ran and found nothing — which is a
         // different statement from "nobody has looked", and reachable only on
         // this arm.
-        return `${copy.title}: no ${copy.units} were found ${caption}${stamp}.${frozen}`;
+        return `${copy.title} — no ${copy.units} were found ${caption}${stamp}.${frozen}`;
       }
       const ratio = ratioPhrase(arm.ratio.surveyed, arm.ratio.enumerable, copy);
       const idle =
         arm.ratio.inPerimeterWithoutEvidence > 0
           ? ` ${arm.ratio.inPerimeterWithoutEvidence.toLocaleString()} of the rest are in scope but have produced nothing yet.`
           : "";
-      return `${copy.title}: Atlas surveys ${ratio} ${caption}${stamp}.${idle}${frozen}`;
+      return `${copy.title} — Atlas surveys ${ratio} ${caption}${stamp}.${idle}${frozen}`;
     }
   }
 }

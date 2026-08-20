@@ -57,7 +57,12 @@ import {
   MAP_EDGE_COPY,
   UNIT_CAPTION,
   UNVERIFIED_REASON_COPY,
-  asOfLabel,
+  cannotEstablishClaim,
+  datePhrase,
+  enumerationNeverSucceededClaim,
+  frozenEnumerationClaim,
+  neverEnumeratedClaim,
+  notSurveyableClaim,
   ratioPhrase,
 } from "./vocabulary";
 import { composeStatement } from "./statement";
@@ -183,12 +188,15 @@ function ClassBody({
 }) {
   const copy = CLASS_COPY[sourceClass];
 
+  // The CLAIMS come from `vocabulary.ts`; what this switch owns is the
+  // PRESENTATION — which icon, which tone, and whether it is an alert. The two
+  // were one thing until the paragraph and the card drifted into two wordings
+  // of the same four sentences.
   switch (arm.state) {
     case "not-surveyable":
       return (
         <NoCounts icon={<EyeOff className="mt-0.5 size-4 shrink-0" aria-hidden />}>
-          Not a surveyable class. Atlas does not enumerate {copy.units}, so this is correctly absent
-          from every ratio rather than missing from one.
+          {notSurveyableClaim(copy)}
         </NoCounts>
       );
     case "cannot-establish":
@@ -198,33 +206,23 @@ function ClassBody({
           role="alert"
           icon={<AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />}
         >
-          Atlas cannot establish anything about {copy.units} in this deployment — the class has no
-          contract here. No count is shown, because every number that could be shown would be made
-          up.
+          {cannotEstablishClaim(copy)}
         </NoCounts>
       );
-    case "never-enumerated": {
-      const attempted = asOfLabel(arm.lastAttemptAt);
-      if (arm.reason === "no-cycle-recorded") {
-        return (
-          <NoCounts icon={<HelpCircle className="mt-0.5 size-4 shrink-0" aria-hidden />}>
-            Never enumerated. Nothing has looked for {copy.units} in this workspace yet, so there is
-            no denominator to show — not a zero.
-          </NoCounts>
-        );
-      }
-      return (
+    case "never-enumerated":
+      return arm.reason === "no-cycle-recorded" ? (
+        <NoCounts icon={<HelpCircle className="mt-0.5 size-4 shrink-0" aria-hidden />}>
+          {neverEnumeratedClaim(copy)}
+        </NoCounts>
+      ) : (
         <NoCounts
           tone="destructive"
           role="alert"
           icon={<AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />}
         >
-          Enumeration has been attempted and has never succeeded
-          {attempted === null ? "" : `, most recently on ${attempted}`}.{" "}
-          {arm.unavailableReason ?? "No reason was recorded."}
+          {enumerationNeverSucceededClaim(arm.lastAttemptAt, arm.unavailableReason)}
         </NoCounts>
       );
-    }
     case "enumerated":
       return <AvailableBody sourceClass={sourceClass} arm={arm} />;
   }
@@ -238,7 +236,7 @@ function AvailableBody({
   arm: BrainCoverageClassAvailable;
 }) {
   const copy = CLASS_COPY[sourceClass];
-  const asOf = asOfLabel(arm.asOf);
+  const asOf = datePhrase(arm.asOf);
   return (
     <>
       <div>
@@ -267,10 +265,7 @@ function AvailableBody({
           data-testid="coverage-unavailable"
         >
           <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
-          <span>
-            Enumeration unavailable since {asOfLabel(arm.unavailable.since) ?? arm.unavailable.since}
-            . The counts above are the last ones that succeeded. {arm.unavailable.reason}
-          </span>
+          <span>{frozenEnumerationClaim(arm.unavailable.since, arm.unavailable.reason)}</span>
         </p>
       )}
 
@@ -356,7 +351,30 @@ function MapEdgeList({ edges }: { edges: readonly BrainCoverageMapEdge[] }) {
   );
 }
 
-/** The namable units. Sorted by name so counts are comparable; no thinness verdict. */
+/**
+ * The namable units — with their evidence age, ordered so it can be compared.
+ *
+ * ## Both halves of ADR-0041's "thin is not a verdict"
+ *
+ * *"'Thin' has no computed badge. Counts are shown honestly; a thinness
+ * threshold would be Atlas deciding how much evidence a channel ought to
+ * produce. The judgment is the reader's."* — which only works if the reader is
+ * given what to judge WITH. `newestEvidenceAt` used to be rendered in exactly
+ * one place, inside the `stale` sentence, so a `current` or `unverified` unit
+ * handed the reader a verdict and no evidence age at all. Every surveyed unit
+ * now carries its own, in one column, so the ages line up.
+ *
+ * And the ORDER is the other half — the issue asks for counts "sorted and
+ * comparable". Surveyed units sort by newest evidence, OLDEST FIRST, so the
+ * quietest sources rise to the top without anything labelling them thin;
+ * enumerated units follow alphabetically, since they have no evidence to sort
+ * by. Sorting alphabetically throughout (the first cut) made the list findable
+ * and the comparison the ADR asks for impossible.
+ *
+ * ⚠️ Ordering is NOT a verdict, and must not become one: no threshold, no
+ * highlight, no "needs attention" — the rows are the same weight, and being
+ * first means only that its newest evidence is older.
+ */
 function UnitList({
   units,
   truncated,
@@ -364,7 +382,17 @@ function UnitList({
   units: readonly BrainCoverageNamedUnit[];
   truncated: boolean;
 }) {
-  const sorted = units.toSorted((a, b) => a.label.localeCompare(b.label));
+  const sorted = units.toSorted((a, b) => {
+    if (a.state !== b.state) return a.state === "surveyed" ? -1 : 1;
+    if (a.state === "surveyed" && b.state === "surveyed") {
+      // Lexicographic on the ISO stamps: same order as by instant, and it does
+      // not invent a date for one that will not parse (`new Date(bad) - x` is
+      // NaN, and NaN in a comparator scrambles the whole list silently).
+      const byAge = a.newestEvidenceAt.localeCompare(b.newestEvidenceAt);
+      if (byAge !== 0) return byAge;
+    }
+    return a.label.localeCompare(b.label);
+  });
   return (
     <div className="space-y-1" data-testid="coverage-units">
       {sorted.map((unit) => (
@@ -377,7 +405,12 @@ function UnitList({
             {unit.label}
           </span>
           {unit.state === "surveyed" ? (
-            <FreshnessLine freshness={unit.freshness} />
+            <>
+              <span className="text-xs text-muted-foreground" data-testid="coverage-evidence-age">
+                newest evidence {datePhrase(unit.newestEvidenceAt) ?? "not recorded"}
+              </span>
+              <FreshnessLine freshness={unit.freshness} />
+            </>
           ) : (
             <span className="text-xs text-muted-foreground">
               {unit.inPerimeter
@@ -408,7 +441,7 @@ function UnitList({
 function FreshnessLine({ freshness }: { freshness: BrainCoverageFreshness }) {
   switch (freshness.kind) {
     case "current": {
-      const checked = asOfLabel(freshness.checkedAt);
+      const checked = datePhrase(freshness.checkedAt);
       return (
         <span className="text-xs text-muted-foreground" data-testid="coverage-freshness-current">
           current{checked === null ? "" : ` — the source was asked on ${checked} and had not moved`}
@@ -416,17 +449,22 @@ function FreshnessLine({ freshness }: { freshness: BrainCoverageFreshness }) {
       );
     }
     case "stale": {
-      const moved = asOfLabel(freshness.vendorActivityAt);
-      const read = asOfLabel(freshness.newestEvidenceAt);
+      // The arithmetic still travels — but the evidence half of it is the row's
+      // own column now, so this states the OTHER instant and the direction. A
+      // verdict a reader cannot check is a badge, which is what ADR-0041
+      // refuses; both numbers are still on screen, just not twice.
+      const moved = datePhrase(freshness.vendorActivityAt);
       return (
-        <span className="text-xs font-medium text-destructive" data-testid="coverage-freshness-stale">
-          stale — the source moved on {moved ?? freshness.vendorActivityAt} and Atlas&apos;s newest
-          evidence is from {read ?? freshness.newestEvidenceAt}
+        <span
+          className="text-xs font-medium text-destructive"
+          data-testid="coverage-freshness-stale"
+        >
+          stale — the source moved on {moved ?? "an unreadable date"}, after that
         </span>
       );
     }
     case "unverified-since": {
-      const since = asOfLabel(freshness.since);
+      const since = datePhrase(freshness.since);
       return (
         <span className="text-xs text-muted-foreground" data-testid="coverage-freshness-unverified">
           {since === null

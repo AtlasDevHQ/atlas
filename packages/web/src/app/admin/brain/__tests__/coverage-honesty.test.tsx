@@ -4,6 +4,10 @@ import { createElement, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
 import { AtlasProvider, type AtlasAuthClient } from "@/ui/context";
+// The fixtures are SHARED with `coverage-statement.test.ts` — one typed
+// builder, so a wire-shape change cannot leave one suite green against a shape
+// the other has already moved past.
+import { chatArm, coverage } from "@/ui/components/admin/brain-coverage/__tests__/_fixtures";
 
 /**
  * The Coverage Surface's RENDERING RULES (#5215, ADR-0041).
@@ -65,124 +69,6 @@ function Wrapper({ children }: { children: ReactNode }) {
       }),
     ),
   );
-}
-
-const AUTHORITY = {
-  buckets: [],
-  workspaceTotals: {
-    awaitingReview: 7,
-    published: 41,
-    retracted: 0,
-    provisional: 2,
-    inTension: 3,
-  },
-  reviewableAwaitingReview: 4,
-  countsConsistent: true,
-  distinctAudiences: 0,
-  bucketsTruncated: false,
-};
-
-/**
- * The three states in one class, plus every freshness arm.
- *
- * `#general` is current, `#launch` is stale with real arithmetic, `#archive` is
- * unverified since a real date. Two further units are WITHHELD — counted, never
- * named — and their staleness still shows in the tally, which is the disclosure
- * that makes withholding a name cost the admin nothing they are entitled to.
- */
-function chatArm() {
-  return {
-    state: "enumerated",
-    asOf: "2026-08-19T02:00:00.000Z",
-    ratio: {
-      surveyed: 3,
-      enumerated: 4,
-      enumerable: 7,
-      inPerimeterWithoutEvidence: 1,
-      unit: "chat-channel-roster",
-    },
-    freshness: { current: 1, stale: 1, unverified: 1 },
-    units: [
-      {
-        state: "surveyed",
-        unitId: "C0001",
-        label: "#general",
-        clause: "vendor-public",
-        newestEvidenceAt: "2026-08-18T09:00:00.000Z",
-        freshness: { kind: "current", checkedAt: "2026-08-19T01:00:00.000Z" },
-      },
-      {
-        state: "surveyed",
-        unitId: "C0002",
-        label: "#launch",
-        clause: "vendor-public",
-        newestEvidenceAt: "2026-07-02T09:00:00.000Z",
-        freshness: {
-          kind: "stale",
-          vendorActivityAt: "2026-08-17T12:00:00.000Z",
-          newestEvidenceAt: "2026-07-02T09:00:00.000Z",
-          lagMs: 4_071_600_000,
-          cadenceMs: 3_600_000,
-        },
-      },
-      {
-        state: "surveyed",
-        unitId: "C0003",
-        label: "#archive",
-        clause: "deliberate-act",
-        newestEvidenceAt: "2026-05-01T09:00:00.000Z",
-        freshness: {
-          kind: "unverified-since",
-          since: "2026-08-12T02:00:00.000Z",
-          reason: "not-probed",
-        },
-      },
-      {
-        state: "enumerated",
-        unitId: "C0004",
-        label: "#incidents",
-        clause: "vendor-public",
-        inPerimeter: false,
-      },
-    ],
-    unitsWithheld: 3,
-    unitsTruncated: false,
-    // State 3 — the map edge, and the only thing on this page that is a mark.
-    mapEdges: ["chat-public-roster-truncated"],
-    unavailable: null,
-  };
-}
-
-function coverage(overrides: Record<string, unknown> = {}) {
-  const availability = overrides.availability as Record<string, unknown> | undefined;
-  const { availability: _ignored, ...envelope } = overrides;
-  void _ignored;
-  return {
-    availability: {
-      chat: chatArm(),
-      transcript: {
-        state: "never-enumerated",
-        reason: "no-cycle-recorded",
-        lastAttemptAt: null,
-        unavailableReason: null,
-      },
-      email: {
-        state: "never-enumerated",
-        reason: "no-successful-cycle",
-        lastAttemptAt: "2026-08-19T02:00:00.000Z",
-        unavailableReason: "Microsoft Graph refused the mailbox listing.",
-      },
-      warehouse: {
-        state: "cannot-establish",
-        reason: "unresolvable-class",
-      },
-      human: { state: "not-surveyable", reason: "non-surveyable-class" },
-      ...availability,
-    },
-    authority: AUTHORITY,
-    countsConsistent: true,
-    ...envelope,
-  };
 }
 
 const SLACK_VITALS = { scopeMode: "membership", inScopeCount: 0, sync: null, channels: [] };
@@ -299,8 +185,12 @@ describe("Coverage Surface — three freshness renderings, never conflated (ADR-
     const text = stale.textContent ?? "";
     // Both instants travel. A badge that said only "stale" would be a judgment;
     // ADR-0041 admits stale only as a measured divergence.
+    // Both instants still travel, just not twice: the vendor movement sits on
+    // the verdict, the evidence age is the row's own column. A badge that said
+    // only "stale" would be a judgment; ADR-0041 admits it only as a measured
+    // divergence, so the reader must be able to check both halves.
     expect(text).toContain("the source moved on");
-    expect(text).toContain("Atlas's newest evidence is from");
+    expect(stale.closest("div")?.textContent ?? "").toContain("newest evidence");
   });
 
   test("unverified-since carries a real date and its reason, and is not called stale", async () => {
@@ -345,6 +235,39 @@ describe("Coverage Surface — three freshness renderings, never conflated (ADR-
     expect(tally).toContain("1 current");
     expect(tally).toContain("1 stale");
     expect(tally).toContain("1 unverified");
+  });
+});
+
+describe("Coverage Surface — thin is the reader's judgment, so give them what to judge with (ADR-0041)", () => {
+  test("every surveyed unit carries its own evidence age, not just the stale one", async () => {
+    // The half that was missing: `newestEvidenceAt` was rendered inside the
+    // `stale` sentence alone, so a `current` or `unverified` unit handed the
+    // reader a verdict and no age. "The judgment is the reader's" only works if
+    // the reader is given the counts to make it.
+    const view = await loaded();
+    const ages = Array.from(
+      view.container.querySelectorAll('[data-testid="coverage-evidence-age"]'),
+    );
+    // Three SURVEYED units in the fixture; the fourth is enumerated and has no
+    // evidence to date — an age on that one would be an all-clear about a source
+    // Atlas has never read.
+    expect(ages).toHaveLength(3);
+    for (const age of ages) expect(age.textContent ?? "").toContain("newest evidence");
+  });
+
+  test("orders surveyed units by oldest evidence, and hangs no verdict on the order", async () => {
+    // "Counts sorted and comparable, judgment left to the reader." Alphabetical
+    // made the list findable and the comparison impossible.
+    const view = await loaded();
+    const labels = Array.from(view.container.querySelectorAll('[data-testid="coverage-units"] > div'))
+      .map((row) => row.querySelector("span")?.textContent ?? "");
+    // #archive (May) → #launch (Jul) → #general (Aug), then the enumerated one.
+    expect(labels).toEqual(["#archive", "#launch", "#general", "#incidents"]);
+    // …and nothing labels the oldest one thin. No badge, no threshold copy.
+    const units = textOf(view.container, "coverage-units").toLowerCase();
+    for (const verdict of ["thin", "needs attention", "at risk", "unhealthy"]) {
+      expect(units).not.toContain(verdict);
+    }
   });
 });
 
@@ -414,7 +337,8 @@ describe("Coverage Surface — degradation renders an arm, never a zero (ADR-004
     const chat = textOf(view.container, "coverage-class-chat");
     // The counts survive — they are the last ones that succeeded, not wrong.
     expect(chat).toContain("3 of 7 chat channels");
-    expect(chat).toContain("Enumeration unavailable since");
+    expect(chat).toContain("Enumeration has been unavailable since");
+    expect(chat).toContain("These counts are the last that succeeded");
     expect(chat).toContain("Slack returned 429 for the channel listing.");
   });
 });

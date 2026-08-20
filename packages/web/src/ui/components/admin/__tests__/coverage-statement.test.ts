@@ -1,7 +1,21 @@
 import { describe, expect, test } from "bun:test";
 import { composeStatement } from "@/ui/components/admin/brain-coverage/statement";
-import { CLASS_COPY, CLASS_ORDER } from "@/ui/components/admin/brain-coverage/vocabulary";
+import {
+  CLASS_COPY,
+  CLASS_ORDER,
+  cannotEstablishClaim,
+  enumerationNeverSucceededClaim,
+  neverEnumeratedClaim,
+  notSurveyableClaim,
+} from "@/ui/components/admin/brain-coverage/vocabulary";
 import type { BrainCoverage } from "@/ui/lib/types";
+// Shared with `app/admin/brain/__tests__/coverage-honesty.test.tsx`. `build` is
+// the local alias this suite already used for the whole-surface builder.
+import {
+  AUTHORITY,
+  chatArm,
+  coverage as build,
+} from "@/ui/components/admin/brain-coverage/__tests__/_fixtures";
 
 /**
  * The composed statement (#5215, ADR-0041) — condition 6's top of page, tested
@@ -22,69 +36,13 @@ import type { BrainCoverage } from "@/ui/lib/types";
  *   - **The map edges are marks, de-duplicated but never counted.**
  */
 
-const AUTHORITY: BrainCoverage["authority"] = {
-  buckets: [],
-  workspaceTotals: {
-    awaitingReview: 7,
-    published: 41,
-    retracted: 0,
-    provisional: 2,
-    inTension: 3,
-  },
-  reviewableAwaitingReview: 4,
-  countsConsistent: true,
-  distinctAudiences: 0,
-  bucketsTruncated: false,
-};
-
-function build(overrides: Partial<BrainCoverage> = {}): BrainCoverage {
-  return {
-    availability: {
-      chat: {
-        state: "enumerated",
-        asOf: "2026-08-19T02:00:00.000Z",
-        ratio: {
-          surveyed: 3,
-          enumerated: 4,
-          enumerable: 7,
-          inPerimeterWithoutEvidence: 1,
-          unit: "chat-channel-roster",
-        },
-        freshness: { current: 3, stale: 0, unverified: 0 },
-        units: [],
-        unitsWithheld: 7,
-        unitsTruncated: false,
-        mapEdges: ["chat-public-roster-truncated"],
-        unavailable: null,
-      },
-      transcript: {
-        state: "never-enumerated",
-        reason: "no-cycle-recorded",
-        lastAttemptAt: null,
-        unavailableReason: null,
-      },
-      email: {
-        state: "never-enumerated",
-        reason: "no-successful-cycle",
-        lastAttemptAt: "2026-08-19T02:00:00.000Z",
-        unavailableReason: "Microsoft Graph refused the mailbox listing.",
-      },
-      warehouse: { state: "cannot-establish", reason: "unresolvable-class" },
-      human: { state: "not-surveyable", reason: "non-surveyable-class" },
-      ...overrides.availability,
-    },
-    authority: overrides.authority ?? AUTHORITY,
-    countsConsistent: overrides.countsConsistent ?? true,
-  };
-}
-
 describe("composeStatement — every class answers (ADR-0041)", () => {
   test("produces one sentence per class, in a fixed order, whatever the counts", () => {
     const statement = composeStatement(build());
     expect(statement.availability).toHaveLength(5);
     // The order is the declared one, not sorted by coverage — otherwise the
     // paragraph rearranges itself to lead with its best class.
-    expect(statement.availability.map((s) => s.split(":")[0])).toEqual(
+    expect(statement.availability.map((s) => s.split(" — ")[0])).toEqual(
       CLASS_ORDER.map((cls) => CLASS_COPY[cls].title),
     );
     // …and the order tuple itself covers the whole class axis, which is what
@@ -95,13 +53,13 @@ describe("composeStatement — every class answers (ADR-0041)", () => {
 
   test("the arms with no counts still speak, and say different things", () => {
     const [, transcript, email, warehouse, human] = composeStatement(build()).availability;
-    expect(transcript).toContain("never enumerated");
+    expect(transcript).toContain("Never enumerated");
     // Tried and failed is a different sentence from nobody has looked — the
     // second names something to fix and carries the enumerator's own reason.
     expect(email).toContain("has never succeeded");
     expect(email).toContain("Microsoft Graph refused the mailbox listing.");
-    expect(warehouse).toContain("cannot establish");
-    expect(human).toContain("not a surveyable class");
+    expect(warehouse).toContain("cannot establish anything about");
+    expect(human).toContain("Not a surveyable class");
   });
 
   test("carries the credential-relative caption and the as-of date on the ratio", () => {
@@ -121,6 +79,37 @@ describe("composeStatement — every class answers (ADR-0041)", () => {
     ].join(" ");
     expect(everything).not.toContain("%");
     expect(everything.toLowerCase()).not.toContain("percent");
+  });
+});
+
+describe("composeStatement — one claim, two placements (ADR-0041)", () => {
+  test("the paragraph states the no-count arms in the vocabulary's own words", () => {
+    // The drift hazard this file already argues for the backlog line, applied to
+    // the four class arms: the card and the paragraph render the SAME builder,
+    // so a later edit cannot reach one wording and miss the other.
+    const [, transcript, email, warehouse, human] = composeStatement(build()).availability;
+    expect(transcript).toContain(neverEnumeratedClaim(CLASS_COPY.transcript));
+    expect(warehouse).toContain(cannotEstablishClaim(CLASS_COPY.warehouse));
+    expect(human).toContain(notSurveyableClaim(CLASS_COPY.human));
+    expect(email).toContain(
+      enumerationNeverSucceededClaim(
+        "2026-08-19T02:00:00.000Z",
+        "Microsoft Graph refused the mailbox listing.",
+      ),
+    );
+  });
+
+  test("an unreadable stamp is stated as words, never dropped into silence", () => {
+    // The conflation `readDate` exists to end: a corrupt timestamp used to come
+    // back `null` exactly like an absent one, so the caption rendered with no
+    // date and a fault read as an ordinary state.
+    const base = build();
+    const chat = base.availability.chat;
+    if (chat.state !== "enumerated") throw new Error("fixture drift: chat must be enumerated");
+    const [sentence] = composeStatement(
+      build({ availability: { ...base.availability, chat: { ...chat, asOf: "not-a-date" } } }),
+    ).availability;
+    expect(sentence).toContain("as of an unreadable date");
   });
 });
 
@@ -202,7 +191,8 @@ describe("composeStatement — no invented dates, no invented denominators", () 
     const [sentence] = statement.availability;
     // The counts survive — they are the last that succeeded, not wrong.
     expect(sentence).toContain("3 of 7 chat channels");
-    expect(sentence).toContain("Enumeration has been unavailable since then");
+    expect(sentence).toContain("Enumeration has been unavailable since");
+    expect(sentence).toContain("These counts are the last that succeeded");
     expect(sentence).toContain("Slack returned 429 for the channel listing.");
   });
 });

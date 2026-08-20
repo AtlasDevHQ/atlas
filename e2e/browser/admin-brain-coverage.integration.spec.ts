@@ -207,6 +207,10 @@ test.describe("Coverage Surface — the three states (#5215)", () => {
     const chat = page.getByTestId("coverage-class-chat");
     // Stale carries its own arithmetic, so a reader can check the verdict.
     await expect(chat.getByTestId("coverage-freshness-stale")).toContainText("the source moved on");
+    // The other half of the arithmetic is the row's own column — every surveyed
+    // unit carries its evidence age, so "thin" stays the reader's judgment with
+    // the counts to make it.
+    await expect(chat.getByTestId("coverage-evidence-age")).toHaveCount(3);
     // Unverified carries a real date and its reason, and is never called stale.
     await expect(chat.getByTestId("coverage-freshness-unverified")).toContainText(
       "unverified since",
@@ -294,7 +298,10 @@ test.describe("Coverage Surface — the degraded arms (#5215)", () => {
     // they are not wrong, only older than they look.
     await expect(chat.getByTestId("coverage-ratio")).toHaveText("3 of 7 chat channels");
     await expect(chat.getByTestId("coverage-unavailable")).toContainText(
-      "Enumeration unavailable since",
+      "Enumeration has been unavailable since",
+    );
+    await expect(chat.getByTestId("coverage-unavailable")).toContainText(
+      "These counts are the last that succeeded",
     );
     await expect(chat.getByTestId("coverage-unavailable")).toContainText(
       "Slack returned 429 for the channel listing.",

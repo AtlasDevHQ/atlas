@@ -131,10 +131,12 @@ Env vars: see `.env.example`. Key ones — `ATLAS_PROVIDER`, `ATLAS_MODEL`, `ATL
 
 **The workflow layer was deleted on 2026-08-17** — 26 of 34 commands, all 5 review agents
 and `docs/agents/`, ~6,250 lines. It was not wrong; it was satisfied nominally, three
-escalations deep, while the defect moved up a level each time. What remains in
-`.claude/commands/` is eight **operational** runbooks (`release`, `publish`, `deploy`,
+escalations deep, while the defect moved up a level each time. What remained in
+`.claude/commands/` was eight **operational** runbooks (`release`, `publish`, `deploy`,
 `ci`, `verify-mcp-cli`, `verify-prod-signup`, `dev`, `deps-update`) — sequences against
-external systems that fail loudly, which no finding implicated.
+external systems that fail loudly, which no finding implicated. `/reset`, `/sitrep` and
+`/tidy` were restored on 2026-08-19 under the same test, bringing the directory to
+eleven operational runbooks; `docs/agents/practices.md` records the grounds.
 The replacement is one page: **[docs/agents/practices.md](docs/agents/practices.md)** — the
 bar a practice must clear (a gate, or a measurement that can fail, or it is a note in
 ROADMAP), and the one structural rule (the actor that builds a check may not be its only

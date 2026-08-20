@@ -1,7 +1,7 @@
 # Agent practices
 
 Rebuilt 2026-08-17 by deleting ~6,250 lines of workflow layer — 7,893 removed, then 1,639
-restored as the eight operational runbooks (see "What survived", below). This file is short
+restored as the runbooks listed under "What survived", below. This file is short
 on purpose, and the reason it is short is the finding that caused the rebuild.
 
 ## Why the old layer was deleted
@@ -59,7 +59,7 @@ Applied:
 
 ## What survived the deletion, and on what grounds
 
-**Eight operational runbooks** in `.claude/commands/`: `release`, `publish`, `deploy`,
+**The eight that survived**, in `.claude/commands/`: `release`, `publish`, `deploy`,
 `ci`, `verify-mcp-cli`, `verify-prod-signup`, `dev`, `deps-update`. They are step
 sequences against external systems — npm tags in groups of ≤3, the prod fast-forward, the
 staging soak — where the cost of re-deriving is real and the failure mode is a broken
@@ -74,6 +74,32 @@ workflow loop, where a rule's only enforcement was an author's willingness to fo
 That is the line, and it is worth stating as a general test: **delete the practice whose
 enforcement was your own diligence; keep the sequence whose enforcement is an external
 system that will fail loudly.**
+
+## What was restored on 2026-08-19
+
+`/reset`, `/sitrep` and `/tidy` came back. `.claude/commands/` now holds **eleven
+operational runbooks**.
+
+They were re-derived, not restored. Two of the three failed the test above as written.
+
+| | Verdict | What changed |
+|---|---|---|
+| `/reset` | Passed | It is git and bun, and a wrong step fails at once. It now refuses on uncommitted or unpushed work instead of carrying it onto `main`, and reports the end state it verified. |
+| `/sitrep` | Passed on inputs, failed on output | Every field is read from `gh`, `git` or `npm`. But it closed with strategy rendered in the same tables as the readings, and hard-coded four packages while five publish. It now derives every list and marks what it could not read UNKNOWN. |
+| `/tidy` | Failed | It closed issues on its own judgement, wrote the ROADMAP entry for work it had just done, and approved its own edits. That is the structural rule above, broken inside one command. |
+
+`/tidy` is restored in two lanes. **APPLY** acts only where a printable fact decides the
+action. **PROPOSE** prints the proposal with its evidence and stops. The test is *does a
+fact decide it*, not *is it risky*.
+
+Two limits, stated because this page's own failure mode is claiming more than it holds:
+
+- **The lanes are a note, not a gate.** Nothing stops a session from applying a PROPOSE
+  item. The bar predicts that, and it is still the honest place to put the split.
+- **One dead rule was dropped rather than carried across.** The old `/tidy` capped ROADMAP
+  bullets at *"≤ 2 sentences / ~240 chars"*. `ROADMAP.md` abandoned that long ago, so the
+  command and the file disagreed for months. A rule the artifact contradicts is worse than
+  no rule. *"Match the entries around it"* replaces it.
 
 ## What is deliberately not here
 

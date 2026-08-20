@@ -26,29 +26,29 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="${BASE_IMAGE_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
-# list_dockerfiles + parse_froms. Shared with check-runtime-stage-upgrades.sh so
-# the two gates can never enumerate different file sets — read that file's
-# header for why that would be silent.
+# list_dockerfiles + parse_stages + read_stage_record. Shared with
+# check-runtime-stage-upgrades.sh so the two gates can never enumerate different
+# file sets, or resolve the same Dockerfile to different runtime stages — read
+# that file's header for why either would be silent.
 # shellcheck source=scripts/lib/dockerfile-stages.sh
 . "$SCRIPT_DIR/lib/dockerfile-stages.sh"
 
 runtime_base_of() {
   local df="$1"
   local -A alias_map=()
-  local froms=() entry img alias runtime hops
+  local records=() entry runtime hops
 
-  mapfile -t froms < <(parse_froms "$df")
-  if [ ${#froms[@]} -eq 0 ]; then
+  mapfile -t records < <(parse_stages "$df")
+  if [ ${#records[@]} -eq 0 ]; then
     echo "::error file=$df::No FROM instruction found — cannot determine a runtime base image" >&2
     return 1
   fi
 
   runtime=""
-  for entry in "${froms[@]}"; do
-    img="${entry%%$'\t'*}"
-    alias="${entry#*$'\t'}"
-    runtime="$img" # the last FROM wins — that is the default build target
-    [ -n "$alias" ] && alias_map["$alias"]="$img"
+  for entry in "${records[@]}"; do
+    read_stage_record "$entry"
+    runtime="$STAGE_IMG" # the last FROM wins — that is the default build target
+    [ -n "$STAGE_ALIAS" ] && alias_map["$STAGE_ALIAS"]="$STAGE_IMG"
   done
 
   # Walk alias -> alias -> ... -> external image reference.

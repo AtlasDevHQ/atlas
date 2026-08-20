@@ -38,13 +38,19 @@
 #
 # ## What counts as an upgrade
 #
-#   apt-get upgrade · apt upgrade · apk upgrade
+#   apt-get upgrade · apt upgrade · apk upgrade · apt-get dist-upgrade
 #
-# with any flags in between (`apk -U upgrade`, `apt-get -y upgrade`). Matched
-# line-by-line with comments stripped, so a `# apt-get upgrade` in prose cannot
-# satisfy the guard. A continuation-split `apt-get \<newline> upgrade` would NOT
-# match — that error direction is loud (a false red on a real upgrade), never a
-# false pass.
+# with any flags in between (`apk -U upgrade`, `apt-get -y upgrade`), inside a
+# RUN instruction, with comments cut. The exact rule and the reason for each
+# restriction live with the parser in scripts/lib/dockerfile-stages.sh — one
+# copy, one place to keep true.
+#
+# ⚠️ This paragraph used to say a comment "cannot satisfy the guard" and that
+# the error direction is "never a false pass". Both were false as written: only
+# WHOLE-LINE comments were cut and any instruction matched, so
+# `LABEL x="apk upgrade"` and `RUN echo hi   # apt-get upgrade later` both
+# passed. On the guard the whole #5361 narrowing rests on, that is the one
+# direction that matters. Fixed, with fixtures for both forms.
 #
 # There is deliberately NO in-file suppression marker. A base with no package
 # manager (distroless, scratch-adjacent) genuinely cannot satisfy this, and the
@@ -55,11 +61,12 @@
 #
 # ## The second mode, and why it lives here
 #
-#   check-runtime-stage-upgrades.sh --assert-runtime-stage <dockerfile> <alias>
+#   check-runtime-stage-upgrades.sh --assert-cache-busted-stage <df> <alias>
 #
-# Asserts that <dockerfile>'s FINAL stage is named <alias>. image-scan.yml calls
-# it per built-image leg before building, because that name is load-bearing in a
-# way nothing else would notice if it changed:
+# Asserts two things about <dockerfile>: its FINAL stage is named <alias>, AND
+# that stage's OWN body runs the upgrade. image-scan.yml calls it per built-image
+# leg before building, because both are load-bearing in a way nothing else would
+# notice if either changed:
 #
 #   The built-image builds restore layers from a gha cache. `RUN apt-get update
 #   && apt-get upgrade -y` has a stable command string and a stable parent, so
@@ -73,13 +80,22 @@
 #   "ZERO gate-blocking findings in all three built images" measurement was true
 #   of a fresh build and not of the artifact CI actually scanned.
 #
-#   The fix is `no-cache-filters: runner` on those builds. That targets the
-#   stage BY NAME, so renaming the final stage would silently restore the
-#   staleness — a scan that reads an artifact nobody shipped, reporting green.
-#   This mode is what makes that rename fail loudly instead.
+#   The fix is `no-cache-filters: runner` on those builds. That busts exactly ONE
+#   named stage, which makes two edits silently restore the staleness:
 #
-# Exit codes: 0 every runtime stage upgrades (or the asserted name matches) ·
-#             1 one or more does not (or the name does not match) ·
+#     renaming the final stage        `runner` then matches nothing
+#     moving the upgrade UP a stage   e.g. into `base`. The main guard still
+#                                     passes — an ancestor's upgrade genuinely
+#                                     does reach the artifact — but the busted
+#                                     stage no longer contains it, so the
+#                                     upgrade layer cache-hits again.
+#
+#   Either one leaves the gate of record scanning an artifact nobody shipped and
+#   reporting it GREEN. This mode is what makes both fail loudly instead, which
+#   is why it asserts the upgrade's LOCATION and not just the name.
+#
+# Exit codes: 0 every runtime stage upgrades (or the assertion holds) ·
+#             1 one or more does not (or the assertion fails) ·
 #             2 this gate could not look (no Dockerfiles, unparseable file).
 #
 # Env: BASE_IMAGE_ROOT — tree to check (default: repo root). Same seam name and
@@ -92,64 +108,62 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="${BASE_IMAGE_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
-# list_dockerfiles — shared with list-runtime-base-images.sh on purpose, so the
-# set of files scanned and the set of files checked can never diverge.
+# list_dockerfiles, parse_stages, read_stage_record — shared with
+# list-runtime-base-images.sh on purpose, so the set of files scanned and the
+# set of files checked can never diverge, and so both resolve the same runtime
+# stage for the same Dockerfile.
 # shellcheck source=scripts/lib/dockerfile-stages.sh
 . "$SCRIPT_DIR/lib/dockerfile-stages.sh"
 
 die() { echo "::error::[runtime-stage-upgrades] $1" >&2; exit 2; }
 
-# Emit one "<idx>\t<image>\t<alias>\t<0|1 upgrades>" record per stage, in file
-# order. POSIX awk only — GitHub runners ship mawk as /usr/bin/awk on some
-# images and this must not depend on which.
-parse_stages() {
-  awk '
-    function flush() { if (idx >= 0) print idx "\t" img "\t" alias "\t" up }
-    BEGIN { idx = -1; img = ""; alias = ""; up = 0 }
-    /^[ \t]*#/ { next }                                  # a comment runs nothing
-    /^[ \t]*[Ff][Rr][Oo][Mm][ \t]/ {
-      flush()
-      idx++; img = ""; alias = ""; up = 0
-      for (i = 2; i <= NF; i++) {
-        if (substr($i, 1, 2) == "--") continue;          # --platform=, --chmod=
-        if (tolower($i) == "as") { alias = $(i + 1); break }
-        if (img == "") img = $i;
-      }
-      next
-    }
-    {
-      line = tolower($0)
-      if (idx >= 0 && line ~ /(apt-get|apt|apk)([ \t]+-[^ \t]+)*[ \t]+upgrade/) up = 1
-    }
-    END { flush() }
-  ' "$1"
-}
-
-if [ "${1:-}" = "--assert-runtime-stage" ]; then
+if [ "${1:-}" = "--assert-cache-busted-stage" ]; then
   df="${2:-}"; expected="${3:-}"
   [ -n "$df" ] && [ -n "$expected" ] \
-    || die "usage: check-runtime-stage-upgrades.sh --assert-runtime-stage <dockerfile> <alias>"
+    || die "usage: check-runtime-stage-upgrades.sh --assert-cache-busted-stage <dockerfile> <alias>"
   [ -f "$df" ] || die "no such Dockerfile: $df"
 
-  actual=""
-  while IFS=$'\t' read -r _idx _img alias _up; do actual="$alias"; done < <(parse_stages "$df")
+  found=0
+  while IFS= read -r record; do
+    read_stage_record "$record"
+    found=1
+  done < <(parse_stages "$df")
+  [ "$found" -eq 1 ] || die "no FROM instruction in $df — cannot identify its final stage."
+  # The loop leaves STAGE_* holding the LAST record, which is the final stage.
+  actual_alias="$STAGE_ALIAS"
+  actual_up="$STAGE_UP"
 
-  if [ "$actual" = "$expected" ]; then
-    echo "ok   $df final stage is '$expected'"
+  problems=()
+  [ "$actual_alias" = "$expected" ] \
+    || problems+=("final stage is named '${actual_alias:-<unnamed>}', not '$expected'")
+  [ "$actual_up" = "1" ] \
+    || problems+=("the '${actual_alias:-<unnamed>}' stage does not itself run apt-get upgrade / apk upgrade")
+
+  if [ "${#problems[@]}" -eq 0 ]; then
+    echo "ok   $df — final stage '$expected' runs the upgrade itself"
     exit 0
   fi
-  echo "::error file=$df::final stage is named '${actual:-<unnamed>}', not '$expected'." >&2
+
+  for problem in "${problems[@]}"; do
+    echo "::error file=$df::$problem" >&2
+  done
   cat >&2 <<EOF
 
 image-scan.yml passes '$expected' to the built-image build's \`no-cache-filters\`,
-which is what forces the runner stage — and therefore its apt-get upgrade / apk
-upgrade — to REBUILD rather than restore from the gha cache. A name that does not
-match matches no stage, the upgrade layer cache-hits again, and the built-image
-scan silently starts reading an artifact nobody ships. It reports GREEN while
-doing it, which is why this is an error and not a warning.
+which busts exactly that one stage so its apt-get upgrade / apk upgrade REBUILDS
+rather than restoring from the gha cache. Both halves matter:
 
-Fix: rename the final stage back to '$expected', or update the \`runtime-stage\`
-value for this image in .github/workflows/image-scan.yml's built-images matrix.
+  the NAME     a name matching no stage busts nothing.
+  the UPGRADE  an upgrade that has moved into an ancestor stage still reaches
+               the artifact — so the main guard stays green — but it is no
+               longer in the stage being busted, so its layer cache-hits again.
+
+Either way the built-image scan silently starts reading an artifact nobody
+ships, and reports GREEN while doing it. That is why this is an error.
+
+Fix: keep the upgrade in the final stage and keep that stage named '$expected',
+or update the \`runtime-stage\` value for this image in
+.github/workflows/image-scan.yml's built-images matrix.
 EOF
   exit 1
 fi
@@ -175,8 +189,9 @@ for df in "${dockerfiles[@]}"; do
   rel="${df#"$ROOT"/}"
 
   idxs=() imgs=() aliases=() ups=()
-  while IFS=$'\t' read -r idx img alias up; do
-    idxs+=("$idx"); imgs+=("$img"); aliases+=("$alias"); ups+=("$up")
+  while IFS= read -r record; do
+    read_stage_record "$record"
+    idxs+=("$STAGE_IDX"); imgs+=("$STAGE_IMG"); aliases+=("$STAGE_ALIAS"); ups+=("$STAGE_UP")
   done < <(parse_stages "$df")
 
   if [ ${#idxs[@]} -eq 0 ]; then

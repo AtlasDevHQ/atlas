@@ -45,7 +45,6 @@
 # ── Usage ─────────────────────────────────────────────────────────────────────
 #
 #   base-image-gate.sh matrix --mode report-only
-#   base-image-gate.sh matrix --mode gate-all
 #   base-image-gate.sh matrix --mode diff --base-tree <dir>
 #
 #     Prints a compact JSON matrix — [{ref, label, gated}] — for the workflow's
@@ -55,10 +54,22 @@
 #     and never closes the old alerts.
 #
 #     report-only  nothing gates. Every non-pull_request trigger.
-#     gate-all     everything gates. The FAIL-SAFE for a pull_request whose
-#                  merge-base tree could not be read — an unknown baseline must
-#                  read as "everything is new", never as "nothing changed".
 #     diff         gate refs absent from <dir>'s runtime-base set.
+#
+#     ⚠️ THERE IS NO `gate-all` FALL-BACK, and its absence is deliberate. The
+#     first cut of this had one: if the merge-base tree could not be read, every
+#     ref was gated, on the reasoning that an unknown baseline must read as
+#     "everything is new". It is the wrong failure. The bare bases still carry
+#     fixable HIGH/CRITICAL findings that no PR introduced — that is the whole
+#     premise of this change — so "gate everything" is not a stricter check, it
+#     is a GUARANTEED red, and a transient `git worktree` hiccup would have
+#     reproduced #5359 exactly: an unrelated PR blocked, with a message telling
+#     the author to fix a base reference they never touched.
+#
+#     An unreadable merge-base tree is an INFRASTRUCTURE failure, so it is
+#     reported as one: this command exits non-zero with a message naming the
+#     tree, and the job fails on a re-runnable error rather than on a
+#     vulnerability verdict it has no basis for.
 #
 #   base-image-gate.sh scan <image-ref> <category> <gated> [out-dir]
 #
@@ -91,9 +102,9 @@ cmd_matrix() {
   done
 
   case "$mode" in
-    report-only|gate-all) ;;
+    report-only) ;;
     diff) [ -n "$base_tree" ] || die "--mode diff requires --base-tree" ;;
-    *) die "--mode must be one of: report-only, gate-all, diff (got '${mode:-}')" ;;
+    *) die "--mode must be one of: report-only, diff (got '${mode:-}')" ;;
   esac
 
   local head_images
@@ -102,17 +113,21 @@ cmd_matrix() {
 
   local base_images=""
   if [ "$mode" = "diff" ]; then
-    # ⚠️ FAIL SAFE, and the direction matters. If the merge-base tree cannot be
-    # read — a missing checkout, a Dockerfile the current parser rejects — the
-    # honest answer is "we do not know what was there before", and the only safe
-    # reading of that is that every ref is new. Falling back to report-only
-    # would turn an infrastructure failure into a silently ungated PR.
-    if ! base_images="$(BASE_IMAGE_ROOT="$base_tree" bash "$SCRIPT_DIR/list-runtime-base-images.sh" 2>&1)"; then
-      echo "::warning::could not resolve runtime base images at the merge-base tree ($base_tree) — gating every ref instead of assuming nothing changed" >&2
-      printf '%s\n' "$base_images" | sed 's/^/  /' >&2
-      mode="gate-all"
-      base_images=""
+    # ⚠️ stderr goes to the LOG, not into the captured value. `2>&1` here folded
+    # `find` warnings and error lines into $base_images on the SUCCESS path too,
+    # where nothing discards them — a "find: …: Permission denied" would have
+    # become a member of the merge-base ref set and been printed as one.
+    local base_err
+    base_err="$(mktemp)"
+    if ! base_images="$(BASE_IMAGE_ROOT="$base_tree" bash "$SCRIPT_DIR/list-runtime-base-images.sh" 2>"$base_err")"; then
+      echo "::error::could not resolve runtime base images at the merge-base tree ($base_tree)" >&2
+      sed 's/^/  /' "$base_err" >&2
+      rm -f "$base_err"
+      # NOT a fall-back to gating everything — see the ⚠️ in this file's header.
+      die "the merge-base base-image set is unknown, so no reference can be called new or unchanged. This is an infrastructure failure, not a vulnerability verdict: re-run the job."
     fi
+    sed 's/^/  /' "$base_err" >&2 || true
+    rm -f "$base_err"
   fi
 
   {
@@ -134,8 +149,7 @@ cmd_matrix() {
           ref: .,
           label: (. | split("@")[0] | gsub("[/:]"; "-")),
           gated: (
-            if   $mode == "gate-all"    then true
-            elif $mode == "report-only" then false
+            if $mode == "report-only" then false
             else ([.] - $baseset) | length > 0
             end
           )
@@ -174,7 +188,7 @@ cmd_scan() {
   if [ "$gated" = "false" ]; then
     cat >&2 <<EOF
 ::notice::REPORT-ONLY: $image carries fixable HIGH/CRITICAL OS-package findings, but this PR did not introduce or change that reference, so it does not block (#5361).
-::notice::Nothing here reaches a shipped artifact: every runtime stage upgrades its OS packages (scripts/check-runtime-stage-upgrades.sh enforces that). The built-image tier is the gate of record, and the Monday cron owns CVEs disclosed against an unchanged, digest-pinned base.
+::notice::Nothing here reaches a shipped artifact: every runtime stage upgrades its OS packages (scripts/check-runtime-stage-upgrades.sh enforces that). The built-image tier is the gate of record — including on the Monday cron, which is what catches a CVE disclosed against an unchanged, digest-pinned base. Note the limit: that tier covers deploy/api, deploy/web and deploy/docs only, so for the other Dockerfiles this base finding has no red surface anywhere. That is deliberate and is recorded in .github/workflows/image-scan.yml.
 EOF
     return 0
   fi

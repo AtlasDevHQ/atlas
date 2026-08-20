@@ -125,9 +125,24 @@ name: Image Scan
 # base images are pinned by digest, so their content never changes, but the
 # vulnerability database changes daily. A PR-triggered-only gate would never
 # notice that a pinned image acquired a CRITICAL last Tuesday. The cron is what
-# turns this from a change-detector into actual monitoring — and since #5361 it
-# is also the tier that OWNS that case outright, rather than sharing it with a
-# PR-time base gate that duplicated its job with merge-blocking power attached.
+# turns this from a change-detector into actual monitoring.
+#
+# ⚠️ What the cron owns, stated precisely, because #5361 narrowed it and an
+# earlier draft of this paragraph overstated it. On `schedule` the BUILT-image
+# tier runs and gates; the base tier is report-only on every trigger. So the
+# cron catches a newly-disclosed CVE that SURVIVES the runner-stage upgrade in
+# deploy/api, deploy/web or deploy/docs — which is the set that ships.
+#
+# KNOWN LIMIT, named rather than fixed. The other five Dockerfiles
+# (packages/sandbox-sidecar, examples/docker, the three create-atlas templates)
+# are not in the built-images matrix and the base tier uploads no SARIF, so a
+# CVE disclosed against their base now has no surface that can go red and no
+# alert — it is a ::notice:: in a green job log. Before #5361 the cron's base
+# legs would have gone red on it. That is accepted on the same grounds as the
+# rest of this change (all eight runtime stages upgrade, so the finding does not
+# ship) and it is the same family as the hole #5361 records for those five: a
+# package added in their OWN runner stage is invisible too. If either matters,
+# the fix is to build and scan them, not to re-add absolute base gating.
 #
 # One guard sits underneath all of this: scripts/check-runtime-stage-upgrades.sh.
 # "A base CVE does not reach a shipped artifact" is only true while every
@@ -206,17 +221,19 @@ jobs:
           # own Dockerfile discovery, so every base ref would appear in both
           # sets and NOTHING would ever read as new.
           BASE_TREE="$(mktemp -d)"
-          if git worktree add --detach "$BASE_TREE" "$BASE_SHA" >/dev/null 2>&1; then
-            MATRIX="$(bash scripts/base-image-gate.sh matrix --mode diff --base-tree "$BASE_TREE")"
-            git worktree remove --force "$BASE_TREE" || true
-          else
-            # Fail safe, and the direction is deliberate: an unknown baseline
-            # means "we cannot tell what is new", whose only safe reading is
-            # "all of it is". Report-only here would turn a checkout failure
-            # into a silently ungated PR.
-            echo "::warning::could not check out the merge-base tree ($BASE_SHA) — gating every base ref"
-            MATRIX="$(bash scripts/base-image-gate.sh matrix --mode gate-all)"
+          if ! git worktree add --detach "$BASE_TREE" "$BASE_SHA"; then
+            # ⚠️ NOT a fall-back to gating every ref. That was the first cut, and
+            # it is the wrong failure: the bare bases carry fixable
+            # HIGH/CRITICAL findings no PR introduced — that is this change's
+            # whole premise — so "gate everything" is a guaranteed red, and a
+            # transient worktree hiccup would reproduce #5359 exactly. Not
+            # knowing the baseline is an INFRASTRUCTURE failure; report it as
+            # one, on a job that is re-runnable.
+            echo "::error::could not check out the merge-base tree ($BASE_SHA), so no base reference can be called new or unchanged. Re-run this job; if it persists, the checkout's history is incomplete (this job needs fetch-depth: 0)."
+            exit 1
           fi
+          MATRIX="$(bash scripts/base-image-gate.sh matrix --mode diff --base-tree "$BASE_TREE")"
+          git worktree remove --force "$BASE_TREE" || true
           echo "images=$MATRIX" >> "$GITHUB_OUTPUT"
 
       - id: filter
@@ -437,9 +454,11 @@ jobs:
   # and not about the artifact this job actually scanned.
   #
   # `no-cache-filters` below rebuilds the runner stage every run and leaves the
-  # expensive deps/builder stages cached. The stage NAME is load-bearing —
-  # a rename would match no stage and silently restore the staleness — so each
-  # leg asserts it before building.
+  # expensive deps/builder stages cached. It busts exactly ONE named stage, so
+  # two separate edits would silently restore the staleness — renaming the final
+  # stage, or moving the upgrade up into an ancestor stage, where it still
+  # reaches the artifact but is no longer in the stage being busted. Each leg
+  # asserts BOTH before building.
   built-images:
     name: Built image (${{ matrix.name }})
     needs: [changes, gate-self-test]
@@ -472,8 +491,8 @@ jobs:
 
       # Before the build, because a wrong name here does not fail the build —
       # it silently produces a stale artifact and a green scan of it.
-      - name: '${{ matrix.runtime-stage }} is the final stage of ${{ matrix.dockerfile }}'
-        run: bash scripts/check-runtime-stage-upgrades.sh --assert-runtime-stage "${{ matrix.dockerfile }}" "${{ matrix.runtime-stage }}"
+      - name: '${{ matrix.runtime-stage }} is the final stage of ${{ matrix.dockerfile }} and upgrades in it'
+        run: bash scripts/check-runtime-stage-upgrades.sh --assert-cache-busted-stage "${{ matrix.dockerfile }}" "${{ matrix.runtime-stage }}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@988b5a0280414f521da01fcc63a27aeeb4b104db # v3.6.1

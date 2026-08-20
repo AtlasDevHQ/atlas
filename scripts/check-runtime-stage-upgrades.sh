@@ -53,7 +53,33 @@
 # `scratch` itself is the one exception, and it is exempt by construction: it
 # contains no packages to upgrade.
 #
-# Exit codes: 0 every runtime stage upgrades · 1 one or more does not ·
+# ## The second mode, and why it lives here
+#
+#   check-runtime-stage-upgrades.sh --assert-runtime-stage <dockerfile> <alias>
+#
+# Asserts that <dockerfile>'s FINAL stage is named <alias>. image-scan.yml calls
+# it per built-image leg before building, because that name is load-bearing in a
+# way nothing else would notice if it changed:
+#
+#   The built-image builds restore layers from a gha cache. `RUN apt-get update
+#   && apt-get upgrade -y` has a stable command string and a stable parent, so
+#   it CACHE-HITS forever — the scan then reads a runner stage upgraded against
+#   whatever the security repo held the day that layer was first built.
+#
+#   Measured 2026-08-20 on this branch's first CI run: `#68 [runner 2/6] RUN
+#   apt-get update && apt-get upgrade -y … CACHED`, and the built web image
+#   carried CVE-2026-53612/-53613/-53614/-53615 that a fresh local build of the
+#   same commit did not. The `.trivyignore` entries had been masking it, so the
+#   "ZERO gate-blocking findings in all three built images" measurement was true
+#   of a fresh build and not of the artifact CI actually scanned.
+#
+#   The fix is `no-cache-filters: runner` on those builds. That targets the
+#   stage BY NAME, so renaming the final stage would silently restore the
+#   staleness — a scan that reads an artifact nobody shipped, reporting green.
+#   This mode is what makes that rename fail loudly instead.
+#
+# Exit codes: 0 every runtime stage upgrades (or the asserted name matches) ·
+#             1 one or more does not (or the name does not match) ·
 #             2 this gate could not look (no Dockerfiles, unparseable file).
 #
 # Env: BASE_IMAGE_ROOT — tree to check (default: repo root). Same seam name and
@@ -98,6 +124,35 @@ parse_stages() {
     END { flush() }
   ' "$1"
 }
+
+if [ "${1:-}" = "--assert-runtime-stage" ]; then
+  df="${2:-}"; expected="${3:-}"
+  [ -n "$df" ] && [ -n "$expected" ] \
+    || die "usage: check-runtime-stage-upgrades.sh --assert-runtime-stage <dockerfile> <alias>"
+  [ -f "$df" ] || die "no such Dockerfile: $df"
+
+  actual=""
+  while IFS=$'\t' read -r _idx _img alias _up; do actual="$alias"; done < <(parse_stages "$df")
+
+  if [ "$actual" = "$expected" ]; then
+    echo "ok   $df final stage is '$expected'"
+    exit 0
+  fi
+  echo "::error file=$df::final stage is named '${actual:-<unnamed>}', not '$expected'." >&2
+  cat >&2 <<EOF
+
+image-scan.yml passes '$expected' to the built-image build's \`no-cache-filters\`,
+which is what forces the runner stage — and therefore its apt-get upgrade / apk
+upgrade — to REBUILD rather than restore from the gha cache. A name that does not
+match matches no stage, the upgrade layer cache-hits again, and the built-image
+scan silently starts reading an artifact nobody ships. It reports GREEN while
+doing it, which is why this is an error and not a warning.
+
+Fix: rename the final stage back to '$expected', or update the \`runtime-stage\`
+value for this image in .github/workflows/image-scan.yml's built-images matrix.
+EOF
+  exit 1
+fi
 
 dockerfiles=()
 while IFS= read -r df; do

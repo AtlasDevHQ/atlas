@@ -153,8 +153,12 @@ cmd_scan() {
     *) die "<gated> must be 'true' or 'false' (got '$gated')" ;;
   esac
 
+  # TRIVY_ANNOTATE=none: this function owns the verdict annotation, because
+  # only it knows whether a finding blocks. scan-image.sh emitting ::error::
+  # first would leave a red annotation on a job that then passes — the shape
+  # that teaches people to stop reading annotations.
   local rc=0
-  bash "$SCRIPT_DIR/scan-image.sh" "$image" "$category" "$out_dir" || rc=$?
+  TRIVY_ANNOTATE=none bash "$SCRIPT_DIR/scan-image.sh" "$image" "$category" "$out_dir" || rc=$?
 
   if [ "$rc" -eq 0 ]; then
     return 0

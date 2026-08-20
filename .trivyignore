@@ -121,6 +121,17 @@
 # If the second command starts returning findings, do NOT add them here — the
 # upgrade has stopped working and that is the bug.
 #
+# ⚠️ The second command is a LOCAL, UNCACHED build, and that is load-bearing.
+# CI builds these images with `cache-from: type=gha`, and
+# `RUN apt-get update && apt-get upgrade -y` has a stable command string and a
+# stable parent, so it cache-hits forever. Measured 2026-08-20 on #5361's first
+# CI run — `#68 [runner 2/6] RUN apt-get update && apt-get upgrade -y … CACHED`,
+# and the built web image carried four util-linux CVEs a fresh build of the same
+# commit did not. So "0 from a local build" and "0 from CI" were two different
+# claims, and the entries in this file were masking the gap. image-scan.yml now
+# passes `no-cache-filters: runner` so the two agree; if they ever disagree
+# again, the cache is lying and no entry here is the right response.
+#
 # Entries are global rather than per-image on purpose: the two runtime bases
 # shared 7 of the original 11, so per-image files would duplicate and drift.
 #
@@ -169,8 +180,12 @@
 #     14 unique CVEs across both, which is exactly the 14 entries this file held
 #     before this pass. The bare bases did NOT get cleaner.
 #
-#   BUILT images, same policy, no baseline applied:
+#   BUILT images, same policy, no baseline applied — local, uncached builds:
 #     probe-api    0        probe-web    0        probe-docs   0
+#
+#   CI's cached builds of the same commit did NOT agree, and finding out why is
+#   the one thing this pass changed beyond where the gate blocks: see the ⚠️
+#   under "How to re-measure" above.
 #
 # So: 14 findings on a surface that ships nothing, 0 on the surface that ships.
 # That asymmetry is the whole argument, and it is why the four util-linux

@@ -114,6 +114,17 @@
 #                    (default: <repo-root>/.trivyignore). Set to /dev/null to
 #                    scan with no baseline at all — the adversarial fixtures do
 #                    this so a fixture CVE can never be masked by the baseline.
+#   TRIVY_ANNOTATE   `error` (default) or `none`. Whether the closing verdict is
+#                    emitted as a GitHub `::error::` annotation.
+#
+#                    `none` is for a caller that owns the verdict — currently
+#                    base-image-gate.sh, whose report-only mode turns this exit
+#                    1 into a passing job. An `::error::` annotation on a green
+#                    check is exactly the unactionable red this whole gate is
+#                    designed around not producing: people stop reading
+#                    annotations, and then miss the one that meant something.
+#                    It changes the ANNOTATION ONLY. The text is still printed
+#                    and the exit code is untouched.
 #
 # Exit: 0 clean (by the blocking policy above), 1 fixable HIGH/CRITICAL found.
 
@@ -132,6 +143,16 @@ if ! command -v trivy >/dev/null 2>&1; then
   echo "::error::trivy not found on PATH — the workflow must install it before calling this script" >&2
   exit 2
 fi
+
+ANNOTATE="${TRIVY_ANNOTATE:-error}"
+case "$ANNOTATE" in
+  error|none) ;;
+  *) echo "::error::TRIVY_ANNOTATE must be 'error' or 'none' (got '$ANNOTATE')" >&2; exit 2 ;;
+esac
+# Prefix for the closing verdict lines only. Everything else in this script —
+# scanner failures, usage errors — annotates unconditionally, because those are
+# never downgraded by any caller.
+if [ "$ANNOTATE" = "error" ]; then VERDICT_PREFIX="::error::"; else VERDICT_PREFIX=""; fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BASELINE="${TRIVY_BASELINE:-$REPO_ROOT/.trivyignore}"
@@ -227,6 +248,6 @@ if [ "$rc" -ne 1 ]; then
   exit "$rc"
 fi
 
-echo "::error::Fixable HIGH/CRITICAL OS-package vulnerabilities found in $IMAGE ($CATEGORY)"
-echo "::error::A fixed package version exists upstream. Bump the base-image pin, rebuild against a refreshed base, or upgrade the package in the runner stage."
+echo "${VERDICT_PREFIX}Fixable HIGH/CRITICAL OS-package vulnerabilities found in $IMAGE ($CATEGORY)" >&2
+echo "${VERDICT_PREFIX}A fixed package version exists upstream. Bump the base-image pin, rebuild against a refreshed base, or upgrade the package in the runner stage." >&2
 exit 1

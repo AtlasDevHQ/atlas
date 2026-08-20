@@ -420,6 +420,26 @@ jobs:
         run: bash scripts/base-image-gate.sh scan "$IMAGE" "$CATEGORY" "$GATED" trivy-results
 
   # Tier 2 — the images Atlas builds and deploys, scanned as finished artifacts.
+  # Since #5361 this is the GATE OF RECORD on every trigger, which raises the bar
+  # on one thing that used to be merely wasteful: the build cache.
+  #
+  # ⚠️ THE UPGRADE LAYER MUST NOT COME FROM CACHE. `RUN apt-get update &&
+  # apt-get upgrade -y` has a stable command string and a stable parent layer, so
+  # buildx cache-hits it forever — and the scan then reads a runner stage
+  # upgraded against whatever the security repo held the day that layer was first
+  # built. Measured on #5361's first CI run:
+  #
+  #   #68 [runner 2/6] RUN apt-get update && apt-get upgrade -y … CACHED
+  #
+  # and the resulting web image carried the four util-linux CVEs that a fresh
+  # local build of the same commit did not. `.trivyignore` had been masking it,
+  # so "ZERO gate-blocking findings in all three" was a fact about a fresh build
+  # and not about the artifact this job actually scanned.
+  #
+  # `no-cache-filters` below rebuilds the runner stage every run and leaves the
+  # expensive deps/builder stages cached. The stage NAME is load-bearing —
+  # a rename would match no stage and silently restore the staleness — so each
+  # leg asserts it before building.
   built-images:
     name: Built image (${{ matrix.name }})
     needs: [changes, gate-self-test]
@@ -438,14 +458,22 @@ jobs:
             # boot-smoke jobs populate, so on a PR where those run this build is
             # warm rather than a third full build of the same tree.
             cache-scope: boot-smoke
+            runtime-stage: runner
           - name: web
             dockerfile: deploy/web/Dockerfile
             cache-scope: image-scan-web
+            runtime-stage: runner
           - name: docs
             dockerfile: deploy/docs/Dockerfile
             cache-scope: image-scan-docs
+            runtime-stage: runner
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      # Before the build, because a wrong name here does not fail the build —
+      # it silently produces a stale artifact and a green scan of it.
+      - name: '${{ matrix.runtime-stage }} is the final stage of ${{ matrix.dockerfile }}'
+        run: bash scripts/check-runtime-stage-upgrades.sh --assert-runtime-stage "${{ matrix.dockerfile }}" "${{ matrix.runtime-stage }}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@988b5a0280414f521da01fcc63a27aeeb4b104db # v3.6.1
@@ -461,6 +489,10 @@ jobs:
           load: true
           tags: atlas-${{ matrix.name }}:image-scan
           cache-from: type=gha,scope=${{ matrix.cache-scope }}
+          # The runtime stage rebuilds every run so its OS-package upgrade is
+          # actually re-run — see the ⚠️ on this job. Everything below it stays
+          # cached, so this costs the runner stage, not the build.
+          no-cache-filters: ${{ matrix.runtime-stage }}
           # mode=min: only the final-stage layers. Writing intermediates here
           # would duplicate what boot-build already pushes to the shared scope
           # and cost several minutes per run (see deploy-validation.yml).

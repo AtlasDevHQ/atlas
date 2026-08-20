@@ -29,6 +29,11 @@
 #      sound because of this, and a runtime stage that skips the upgrade is
 #      invisible to BOTH scan tiers — unchanged base ref, and not one of the
 #      three images in the built-images matrix.
+#   8. The three built-image Dockerfiles still end in the stage image-scan.yml
+#      names in `no-cache-filters`. That flag is the only thing stopping the
+#      runner stage's upgrade from restoring out of the gha cache, which made
+#      the gate of record scan an artifact nobody ships — measured, not
+#      hypothetical (#5361).
 #
 # Expressed as tests rather than one-off manual checks so they keep holding
 # after a Trivy upgrade or a policy-flag edit — every one of these properties
@@ -294,7 +299,43 @@ else
 fi
 rm -rf "$tmp"
 
-# (14) The REAL tree passes. This is the measured premise itself, not a
+# (14) The --assert-runtime-stage mode, both directions. image-scan.yml passes
+#      the matched name to `no-cache-filters`, which is the ONLY thing forcing
+#      the runner stage's apt-get upgrade to re-run instead of restoring from
+#      the gha cache. A rename that silently matches no stage puts the
+#      built-image tier — the gate of record since #5361 — back to scanning an
+#      artifact nobody ships, and reporting it green.
+tmp="$(mktemp -d)"
+cat > "$tmp/Dockerfile" <<'EOF'
+FROM alpine:3.21 AS base
+FROM base AS runner
+RUN apk upgrade --no-cache
+EOF
+rc=0
+bash "$UPGRADES" --assert-runtime-stage "$tmp/Dockerfile" runner >/dev/null 2>&1 || rc=$?
+rc2=0
+bash "$UPGRADES" --assert-runtime-stage "$tmp/Dockerfile" builder >/dev/null 2>&1 || rc2=$?
+if [ "$rc" -eq 0 ] && [ "$rc2" -eq 1 ]; then
+  ok "--assert-runtime-stage accepts the real final stage and rejects a wrong name"
+else
+  bad "runtime-stage assertion — expected exit 0 for 'runner' and 1 for 'builder', got $rc and $rc2"
+fi
+
+# (15) …and the three built-image Dockerfiles really are named what
+#      image-scan.yml's matrix passes. This is the live coupling, not a
+#      hypothetical one: get it wrong and nothing in the build fails.
+rc=0
+for df in "$ROOT/deploy/api/Dockerfile" "$ROOT/deploy/web/Dockerfile" "$ROOT/deploy/docs/Dockerfile"; do
+  bash "$UPGRADES" --assert-runtime-stage "$df" runner >/dev/null 2>&1 || rc=1
+done
+if [ "$rc" -eq 0 ]; then
+  ok "all three built-image Dockerfiles end in a stage named 'runner'"
+else
+  bad "built-image final stages — one of deploy/{api,web,docs} is no longer 'runner'"
+fi
+rm -rf "$tmp"
+
+# (16) The REAL tree passes. This is the measured premise itself, not a
 #      property of the guard: every runtime stage Atlas ships upgrades its OS
 #      packages, which is why an unchanged base ref does not need to block.
 rc=0
@@ -318,7 +359,7 @@ fi
 SARIF_DIR="$(mktemp -d)"
 trap 'rm -rf "$SARIF_DIR"; docker rmi -f atlas-scan-fixture:vulnerable atlas-scan-fixture:clean atlas-scan-fixture:library >/dev/null 2>&1 || true' EXIT
 
-# (15) The gate must go RED on a deliberately vulnerable image.
+# (17) The gate must go RED on a deliberately vulnerable image.
 #
 #     Deliberately run with the REAL .trivyignore (no TRIVY_BASELINE override),
 #     because that is the shipped configuration. Proving the gate red against an
@@ -333,7 +374,7 @@ else
   bad "vulnerable fixture — expected exit 1, got exit $rc (gate cannot go red)"
 fi
 
-# (16) Findings must reach SARIF even on a failing scan — a gate that fails and
+# (18) Findings must reach SARIF even on a failing scan — a gate that fails and
 #     then discards its evidence is not triageable.
 if [ -s "$SARIF_DIR/fixture-vulnerable.sarif" ]; then
   ok "failing scan still emits a non-empty SARIF report"
@@ -341,7 +382,7 @@ else
   bad "failing scan produced no SARIF at $SARIF_DIR/fixture-vulnerable.sarif"
 fi
 
-# (17) The baseline must suppress the GATE and nothing else. This is the whole
+# (19) The baseline must suppress the GATE and nothing else. This is the whole
 #     premise of the two-pass split in scan-image.sh: if a baselined CVE also
 #     disappeared from SARIF, the exemption would be an invisibility cloak
 #     rather than a documented, dated deferral.
@@ -382,7 +423,7 @@ else
   fi
 fi
 
-# (18) A vulnerable LIBRARY must be REPORTED but must NOT block.
+# (20) A vulnerable LIBRARY must be REPORTED but must NOT block.
 #
 #     This pins the scope decision in scan-image.sh: OS packages gate, library
 #     findings go to code scanning and are remediated by hand (#4878 — bun has
@@ -404,7 +445,7 @@ else
   bad "library finding missing from SARIF — reported-but-not-gated is the whole point"
 fi
 
-# (19) The gate must go GREEN on an image with no packages.
+# (21) The gate must go GREEN on an image with no packages.
 docker build -q -f "$FIXTURES/Dockerfile.clean" -t atlas-scan-fixture:clean "$FIXTURES" >/dev/null
 rc=0
 bash "$SCAN" atlas-scan-fixture:clean fixture-clean "$SARIF_DIR" >/dev/null 2>&1 || rc=$?
@@ -414,13 +455,13 @@ else
   bad "clean fixture — expected exit 0, got exit $rc (gate is unconditionally red)"
 fi
 
-# (20) The census pass must run and print to the job log.
+# (22) The census pass must run and print to the job log.
 #
 #     This is the compensating control for --ignore-unfixed on the report pass
 #     (2026-08-12). That flag stops unfixed CVEs from becoming code-scanning
 #     alerts; the census is the ONLY place they remain visible. Delete the
 #     census and the flag silently becomes a suppression, which is precisely
-#     the "invisibility cloak" failure (17) exists to prevent one surface over.
+#     the "invisibility cloak" failure (19) exists to prevent one surface over.
 #
 #     ⚠️ Scope of what this can prove, stated because the gap is not obvious:
 #     it asserts the census RUNS, not that it surfaces a finding the SARIF
@@ -437,9 +478,9 @@ else
   bad "census pass missing — unfixed findings now have no visible surface at all"
 fi
 
-# (21) END TO END: a gated ref that is genuinely vulnerable goes RED through the
+# (23) END TO END: a gated ref that is genuinely vulnerable goes RED through the
 #      real decision path. Fixtures (5) and (6) prove the ref-diff marks a
-#      bumped or newly-introduced base `gated`; (15) proves scan-image.sh can
+#      bumped or newly-introduced base `gated`; (17) proves scan-image.sh can
 #      exit 1. Neither implies the two are wired together, and the wiring is one
 #      argument wide — `base-image-gate.sh scan` could drop the verdict on the
 #      floor and every other test here would still pass.
@@ -451,7 +492,7 @@ else
   bad "gated end-to-end — expected exit 1, got exit $rc (a bumped pin would merge)"
 fi
 
-# (22) …and the SAME image, ungated, does not block. Same scan, same findings,
+# (24) …and the SAME image, ungated, does not block. Same scan, same findings,
 #      opposite verdict — so a green result here can only come from the gating
 #      decision and never from the image happening to be clean. This is #5361's
 #      claim in its most falsifiable form.
@@ -461,6 +502,34 @@ if [ "$rc" -eq 0 ]; then
   ok "the identical vulnerable image is report-only when the ref is unchanged"
 else
   bad "report-only end-to-end — expected exit 0, got exit $rc (unrelated PRs still blocked)"
+fi
+
+# (25) A report-only outcome must not leave an ::error:: annotation behind. A red
+#      annotation on a job that then passes is the same unactionable-red failure
+#      the gate's whole policy is built to avoid: people stop reading
+#      annotations, and then miss the one that meant something. Measured on the
+#      first CI run of #5361 — scan-image.sh annotated ::error:: and the job went
+#      green anyway.
+out="$(bash "$GATE" scan atlas-scan-fixture:vulnerable fixture-annot-off false "$SARIF_DIR" 2>&1 || true)"
+if ! printf '%s' "$out" | grep -q '::error::' && printf '%s' "$out" | grep -q '::notice::REPORT-ONLY'; then
+  ok "report-only emits a notice and no error annotation"
+else
+  bad "annotation — report-only run should carry ::notice:: and no ::error::"
+fi
+
+# (26) …and both paths that SHOULD annotate still do, so (25) cannot be
+#      satisfied by having removed the annotation everywhere. Two of them,
+#      because they come from different scripts: the gated verdict is
+#      base-image-gate.sh's, and the default TRIVY_ANNOTATE=error is
+#      scan-image.sh's — the built-image tier calls that one directly and must
+#      not lose its annotation to this change.
+gated_out="$(bash "$GATE" scan atlas-scan-fixture:vulnerable fixture-annot-on true "$SARIF_DIR" 2>&1 || true)"
+direct_out="$(bash "$SCAN" atlas-scan-fixture:vulnerable fixture-annot-direct "$SARIF_DIR" 2>&1 || true)"
+if printf '%s' "$gated_out" | grep -q '::error::BLOCKED:' \
+   && printf '%s' "$direct_out" | grep -q '::error::Fixable HIGH/CRITICAL'; then
+  ok "gated verdict and a direct scan-image.sh call both still annotate as errors"
+else
+  bad "annotation — expected ::error:: from both the gated path and a bare scan-image.sh call"
 fi
 
 # ⚠️ Not asserted, and the omission is deliberate: that a SCANNER failure (exit

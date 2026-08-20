@@ -53,6 +53,7 @@ export {
   BrainFactCandidateSchema,
   BrainFactCandidateListResponseSchema,
   BrainFactCandidateSummarySchema,
+  BrainCoverageClientSchema,
   BrainFactOversightClientSchema,
   BrainFactRetractResponseSchema,
   BrainVocabularyAuthorResponseSchema,

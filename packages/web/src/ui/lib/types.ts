@@ -13,6 +13,15 @@ export {
   DB_TYPES,
 } from "@useatlas/types";
 export type {
+  BrainCoverage,
+  BrainCoverageClass,
+  BrainCoverageClassAvailable,
+  BrainCoverageFreshness,
+  BrainCoverageMapEdge,
+  BrainCoverageNamedUnit,
+  BrainCoverageSourceClass,
+  BrainCoverageUnitOrigin,
+  BrainCoverageUnverifiedReason,
   BrainFactCandidate,
   BrainFactDecayLevel,
   BrainFactDecayView,

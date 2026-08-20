@@ -35,6 +35,18 @@ import type {
   BrainFactCandidateSummary,
   BrainFactCorrectionResponse,
   BrainFactEpisodeView,
+  BrainCoverage,
+  BrainCoverageClass,
+  BrainCoverageClassAvailable,
+  BrainCoverageFreshness,
+  BrainCoverageFreshnessCounts,
+  BrainCoverageLabelClause,
+  BrainCoverageMapEdge,
+  BrainCoverageNamedUnit,
+  BrainCoverageRatio,
+  BrainCoverageSourceClass,
+  BrainCoverageUnitOrigin,
+  BrainCoverageUnverifiedReason,
   BrainFactOversight,
   BrainFactOversightBucket,
   BrainEnrollmentCandidateKind,
@@ -822,6 +834,426 @@ export const BrainFactOversightClientSchema = z.object({
   // `BrainFactWillWidenEnvelopeSchema`.
   willWiden: BrainFactWillWidenEnvelopeSchema.optional(),
 }) satisfies z.ZodType<BrainFactOversight, unknown>;
+
+
+// ---------------------------------------------------------------------------
+// The Coverage Surface — the availability arm (#5214/#5215, ADR-0041)
+// ---------------------------------------------------------------------------
+
+/**
+ * The class axis, as a parse-time enum.
+ *
+ * The tuple is the THIRD copy of this list — `sources.ts`'s
+ * `EPISODE_SOURCE_CLASSES` is the declaration, `BrainCoverageSourceClass` is the
+ * published mirror, and this is the runtime one. Two pins keep the three the
+ * same set: `coverage.ts`'s `_COVERAGE_CLASS_AXIS_IN_SYNC` binds the first two,
+ * and the `satisfies` plus `_BrainCoverageClassesCovered` below bind the second
+ * to this one in both directions.
+ *
+ * It matters more here than for the other enums in this file, because
+ * {@link BrainCoverageSchema}'s `availability` object is BUILT from this tuple:
+ * a class missing from it is a key the parse would not require, and an absent
+ * key would render as a class with nothing to say — the opposite statement from
+ * a class that has nothing to say.
+ */
+export const BRAIN_COVERAGE_SOURCE_CLASSES = [
+  "chat",
+  "transcript",
+  "email",
+  "warehouse",
+  "human",
+] as const satisfies readonly BrainCoverageSourceClass[];
+
+/** Compile error if a class joins the union without joining the tuple. */
+type _BrainCoverageClassesCovered = [
+  Exclude<BrainCoverageSourceClass, (typeof BRAIN_COVERAGE_SOURCE_CLASSES)[number]>,
+] extends [never]
+  ? true
+  : never;
+const _brainCoverageClassesCovered: _BrainCoverageClassesCovered = true;
+void _brainCoverageClassesCovered;
+
+/**
+ * The unit vocabulary — and the reason no client can spell a blended
+ * percentage.
+ *
+ * Closed at the parse rather than left as `z.string()`, unlike most unions in
+ * this file: the resilience argument (a new API value should not blank an old
+ * page) inverts here. A unit slug this bundle does not know is a ratio whose
+ * denominator caption it cannot write, and the caption — *"of what Atlas's
+ * credentials can see"*, per unit — is the honesty rule. Rendering the number
+ * with no caption is the failure ADR-0041 exists to prevent, so refusing is the
+ * correct direction.
+ */
+export const BRAIN_COVERAGE_UNIT_ORIGINS = [
+  "chat-channel-roster",
+  "granted-recording-scopes",
+  "mailbox-list",
+  "semantic-layer-enrollment",
+] as const satisfies readonly BrainCoverageUnitOrigin[];
+
+/** Compile error if a unit joins the union without joining the tuple. */
+type _BrainCoverageUnitsCovered = [
+  Exclude<BrainCoverageUnitOrigin, (typeof BRAIN_COVERAGE_UNIT_ORIGINS)[number]>,
+] extends [never]
+  ? true
+  : never;
+const _brainCoverageUnitsCovered: _BrainCoverageUnitsCovered = true;
+void _brainCoverageUnitsCovered;
+
+/**
+ * The map edges — state 3, as marks.
+ *
+ * ⚠️ The drift direction here is the FLATTERING one, which is why the enum is
+ * closed and pinned rather than tolerant: an arm the parser drops is a mark that
+ * vanishes, and an empty `mapEdges` is the one place this surface says *"the map
+ * of what these credentials can see is complete"*. A tolerant `z.string()` that
+ * let an unknown arm through would be rendered as a mark with no sentence, which
+ * is the same disclosure failing differently.
+ */
+export const BRAIN_COVERAGE_MAP_EDGES = [
+  "chat-public-roster-unreadable",
+  "chat-public-roster-truncated",
+  "chat-activity-unreadable",
+  "chat-unit-ids-unrecognised",
+  "warehouse-entity-bound-reached",
+  "warehouse-entity-unreadable",
+] as const satisfies readonly BrainCoverageMapEdge[];
+
+/** Compile error if a map edge joins the union without joining the tuple. */
+type _BrainCoverageMapEdgesCovered = [
+  Exclude<BrainCoverageMapEdge, (typeof BRAIN_COVERAGE_MAP_EDGES)[number]>,
+] extends [never]
+  ? true
+  : never;
+const _brainCoverageMapEdgesCovered: _BrainCoverageMapEdgesCovered = true;
+void _brainCoverageMapEdgesCovered;
+
+/** Which of ADR-0041's two clauses admitted a label. */
+export const BRAIN_COVERAGE_LABEL_CLAUSES = [
+  "deliberate-act",
+  "vendor-public",
+] as const satisfies readonly BrainCoverageLabelClause[];
+
+/** Compile error if a clause joins the union without joining the tuple. */
+type _BrainCoverageClausesCovered = [
+  Exclude<BrainCoverageLabelClause, (typeof BRAIN_COVERAGE_LABEL_CLAUSES)[number]>,
+] extends [never]
+  ? true
+  : never;
+const _brainCoverageClausesCovered: _BrainCoverageClausesCovered = true;
+void _brainCoverageClausesCovered;
+
+/** Why a unit carries no measured lag — six reasons, one sentence. */
+export const BRAIN_COVERAGE_UNVERIFIED_REASONS = [
+  "no-activity-metadata",
+  "not-probed",
+  "enumeration-unavailable",
+  "reading-expired",
+  "unreadable-reading",
+  "unresolvable-class",
+] as const satisfies readonly BrainCoverageUnverifiedReason[];
+
+/** Compile error if a reason joins the union without joining the tuple. */
+type _BrainCoverageReasonsCovered = [
+  Exclude<BrainCoverageUnverifiedReason, (typeof BRAIN_COVERAGE_UNVERIFIED_REASONS)[number]>,
+] extends [never]
+  ? true
+  : never;
+const _brainCoverageReasonsCovered: _BrainCoverageReasonsCovered = true;
+void _brainCoverageReasonsCovered;
+
+/**
+ * One surveyed unit's freshness. Every arm is `z.strictObject`, and that is what
+ * keeps *stale* a measurement rather than a badge: the `stale` arm cannot be
+ * spelled without both instants and the threshold, and no arm can carry a stray
+ * key a renderer might prefer to the arithmetic.
+ *
+ * The `unverified-since` arm's `since` is `.nullable()` and deliberately NOT
+ * defaulted: `null` is the class that has never established anything, and a
+ * client that substituted `now` would turn "we have never looked" into "we
+ * looked just now".
+ */
+export const BrainCoverageFreshnessSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("current"),
+    checkedAt: z.string(),
+  }),
+  z.strictObject({
+    kind: z.literal("stale"),
+    vendorActivityAt: z.string(),
+    newestEvidenceAt: z.string(),
+    lagMs: z.number().int().nonnegative(),
+    cadenceMs: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    kind: z.literal("unverified-since"),
+    since: z.string().nullable(),
+    reason: z.enum(BRAIN_COVERAGE_UNVERIFIED_REASONS),
+  }),
+]) satisfies z.ZodType<BrainCoverageFreshness, unknown>;
+
+export const BrainCoverageFreshnessCountsSchema = z.strictObject({
+  current: z.number().int().nonnegative(),
+  stale: z.number().int().nonnegative(),
+  unverified: z.number().int().nonnegative(),
+}) satisfies z.ZodType<BrainCoverageFreshnessCounts, unknown>;
+
+/**
+ * One class's ratio.
+ *
+ * `unit` is the field that makes a blend unspellable, so it is `z.enum` over the
+ * pinned tuple rather than a free string — see {@link BRAIN_COVERAGE_UNIT_ORIGINS}.
+ * The `enumerable === surveyed + enumerated` identity is checked at the envelope
+ * ({@link BrainCoverageSchema}), where a violation can carry the class name.
+ */
+export const BrainCoverageRatioSchema = z.strictObject({
+  surveyed: z.number().int().nonnegative(),
+  enumerated: z.number().int().nonnegative(),
+  enumerable: z.number().int().nonnegative(),
+  inPerimeterWithoutEvidence: z.number().int().nonnegative(),
+  unit: z.enum(BRAIN_COVERAGE_UNIT_ORIGINS),
+}) satisfies z.ZodType<BrainCoverageRatio, unknown>;
+
+/**
+ * A NAMABLE survey unit — the ACL boundary of this surface, and strict in both
+ * directions for `BrainFactOversightBucketSchema`'s reason.
+ *
+ * The withheld units are not here wearing an opaque handle; they are not here at
+ * all. So the enforcement this schema adds is the converse: the `enumerated` arm
+ * has NO `freshness` and NO `newestEvidenceAt` key, so a producer cannot attach a
+ * `current` verdict to a unit Atlas has never read, and `z.strictObject` makes
+ * that a parse failure rather than a stripped field in one direction and a
+ * rendered all-clear in the other.
+ */
+export const BrainCoverageNamedUnitSchema = z.discriminatedUnion("state", [
+  z.strictObject({
+    state: z.literal("surveyed"),
+    unitId: z.string(),
+    label: z.string(),
+    clause: z.enum(BRAIN_COVERAGE_LABEL_CLAUSES),
+    newestEvidenceAt: z.string(),
+    freshness: BrainCoverageFreshnessSchema,
+  }),
+  z.strictObject({
+    state: z.literal("enumerated"),
+    unitId: z.string(),
+    label: z.string(),
+    clause: z.enum(BRAIN_COVERAGE_LABEL_CLAUSES),
+    inPerimeter: z.boolean(),
+  }),
+]) satisfies z.ZodType<BrainCoverageNamedUnit, unknown>;
+
+export const BrainCoverageClassAvailableSchema = z.strictObject({
+  state: z.literal("enumerated"),
+  asOf: z.string(),
+  ratio: BrainCoverageRatioSchema,
+  freshness: BrainCoverageFreshnessCountsSchema,
+  units: z.array(BrainCoverageNamedUnitSchema),
+  unitsWithheld: z.number().int().nonnegative(),
+  unitsTruncated: z.boolean(),
+  mapEdges: z.array(z.enum(BRAIN_COVERAGE_MAP_EDGES)),
+  unavailable: z.strictObject({ since: z.string(), reason: z.string() }).nullable(),
+}) satisfies z.ZodType<BrainCoverageClassAvailable, unknown>;
+
+/**
+ * One class's answer — a discriminated union on `state`, because the arms that
+ * carry no counts must be structurally incapable of carrying a zero.
+ *
+ * Every arm is strict, which is what makes that true at the parse as well as in
+ * the type: `{ state: "never-enumerated", surveyed: 0 }` is refused here rather
+ * than stripped and rendered as an empty roster somebody measured.
+ */
+export const BrainCoverageClassSchema = z.discriminatedUnion("state", [
+  BrainCoverageClassAvailableSchema,
+  z.strictObject({
+    state: z.literal("not-surveyable"),
+    reason: z.literal("non-surveyable-class"),
+  }),
+  z.strictObject({
+    state: z.literal("cannot-establish"),
+    reason: z.literal("unresolvable-class"),
+  }),
+  z.strictObject({
+    state: z.literal("never-enumerated"),
+    reason: z.enum(["no-cycle-recorded", "no-successful-cycle"]),
+    lastAttemptAt: z.string().nullable(),
+    unavailableReason: z.string().nullable(),
+  }),
+]) satisfies z.ZodType<BrainCoverageClass, unknown>;
+
+/**
+ * `availability`, built FROM the pinned class tuple rather than hand-listed.
+ *
+ * `z.record` would have accepted an object missing a class, and the missing key
+ * is the failure mode the `Record<EpisodeSourceClass, …>` typing exists to
+ * prevent — so the totality that is a compile error on the producer is a parse
+ * error at the boundary, from the same list.
+ */
+const COVERAGE_AVAILABILITY_FIELDS = Object.fromEntries(
+  BRAIN_COVERAGE_SOURCE_CLASSES.map((cls) => [cls, BrainCoverageClassSchema]),
+) as Record<BrainCoverageSourceClass, typeof BrainCoverageClassSchema>;
+
+/**
+ * ## Why `authority` is the CLIENT oversight schema on both sides
+ *
+ * Not an oversight, and not the tolerant-by-accident choice it looks like.
+ * {@link BrainFactOversightSchema} REQUIRES `willSupersede` and `willWiden`, and
+ * `loadCoverage` composes `loadFactOversight` alone — the two previews are
+ * merged in by `GET /brain-facts/oversight`'s handler, one surface over, and
+ * this response has no publish button to disclose them for. Putting the strict
+ * schema here would 500 every coverage request on a field the loader is not
+ * supposed to produce.
+ *
+ * ⚠️ What that costs is the strict schema's two CROSS-CHECKS, which are about
+ * the counters this response very much does carry — and losing them silently is
+ * the failure {@link checkCoverageArithmetic} exists to close: it re-applies
+ * both against the authority arm, so the server refuses the same payloads
+ * `/oversight` refuses, without demanding the previews.
+ */
+const COVERAGE_ENVELOPE_FIELDS = {
+  authority: BrainFactOversightClientSchema,
+  countsConsistent: z.boolean(),
+} as const;
+
+/**
+ * The cross-checks, applied SERVER-SIDE ONLY —
+ * `BrainFactOversightSchema`'s split, one arm over and for its reason.
+ *
+ * Each of these is an identity whose operands are both on the wire, so each
+ * admits a state where the numbers contradict each other and a renderer picks
+ * the flattering one. On the server that is a producer bug and belongs in a 500
+ * with a requestId. On the client it is somebody else's already-shipped bug, and
+ * refusing to parse would take down the whole Coverage Surface — including the
+ * map edges and the "cannot establish" arms, which are the parts that exist to
+ * be seen when things are wrong.
+ */
+function checkCoverageArithmetic(value: BrainCoverage, ctx: z.RefinementCtx): void {
+  // ── The AUTHORITY arm's own cross-checks, re-applied ─────────────────────
+  //
+  // `BrainFactOversightSchema` carries these and cannot be used as the field
+  // above (see COVERAGE_ENVELOPE_FIELDS), so they are restated against the same
+  // operands. Without them this route would serve 200 for a payload
+  // `/brain-facts/oversight` 500s on — and the symptom is specific and silent:
+  // a reader total above the workspace total makes the hidden backlog compute
+  // NEGATIVE, which `hiddenBacklogSentence` then drops on its `<= 0` guard. The
+  // one disclosure this page was built to make would simply not be there, with
+  // no requestId anywhere.
+  const authority = value.authority;
+  if (
+    authority.countsConsistent &&
+    authority.reviewableAwaitingReview > authority.workspaceTotals.awaitingReview
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["authority", "countsConsistent"],
+      message:
+        "countsConsistent is true but the reader-scoped draft count exceeds the workspace count — the hidden backlog this page states would compute negative and be silently dropped",
+    });
+  }
+  if (authority.distinctAudiences < authority.buckets.length) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["authority", "distinctAudiences"],
+      message:
+        "distinctAudiences is below the number of buckets shipped — the buckets are a subset of the distinct tokens, so this understates a cardinality the client renders as exact",
+    });
+  }
+
+  for (const cls of BRAIN_COVERAGE_SOURCE_CLASSES) {
+    const arm = value.availability[cls];
+    if (arm.state !== "enumerated") continue;
+    const { ratio, freshness, units, unitsWithheld, unitsTruncated } = arm;
+
+    if (ratio.enumerable !== ratio.surveyed + ratio.enumerated) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["availability", cls, "ratio", "enumerable"],
+        message:
+          "the denominator is not its own two states — a page that printed it would show a ratio whose parts do not make up its whole",
+      });
+    }
+    if (ratio.inPerimeterWithoutEvidence > ratio.enumerated) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["availability", cls, "ratio", "inPerimeterWithoutEvidence"],
+        message:
+          "more units are in the perimeter without evidence than are unsurveyed — the M1 count is a subset of `enumerated`, never an addition to it",
+      });
+    }
+    // Gated on `countsConsistent` for the oversight refinement's reason: the
+    // composer's documented behaviour when this identity fails is to CLEAR the
+    // flag, so refusing unconditionally would turn a reported degradation into a
+    // 500 and hide the arms that reported it.
+    if (
+      value.countsConsistent &&
+      freshness.current + freshness.stale + freshness.unverified !== ratio.surveyed
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["availability", cls, "freshness"],
+        message:
+          "the freshness tally does not sum to the surveyed count — this is where a WITHHELD unit's staleness is disclosed, so a short tally under-reports how much of the class is stale",
+      });
+    }
+    if (!unitsTruncated && units.length + unitsWithheld !== ratio.enumerable) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["availability", cls, "unitsWithheld"],
+        message:
+          "the named units plus the withheld count do not make up the roster — an under-count here hides that units were withheld at all, which is the disclosure the counts-always rule turns on",
+      });
+    }
+    for (const [index, unit] of units.entries()) {
+      if (unit.state !== "surveyed" || unit.freshness.kind !== "stale") continue;
+      if (unit.freshness.lagMs <= unit.freshness.cadenceMs) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["availability", cls, "units", index, "freshness", "lagMs"],
+          message:
+            "a stale verdict whose lag does not beat the class cadence is a badge wearing a measurement's clothes — ADR-0041 admits stale only as a measured divergence",
+        });
+      }
+    }
+  }
+}
+
+/**
+ * The strict server-side contract. `admin-brain-coverage.ts` parses every
+ * response through this before it goes out, so a producer that broke one of the
+ * honesty identities gets a 500 with a requestId instead of shipping a page
+ * whose parts disagree.
+ */
+export const BrainCoverageSchema = z
+  .strictObject({
+    availability: z.strictObject(COVERAGE_AVAILABILITY_FIELDS),
+    ...COVERAGE_ENVELOPE_FIELDS,
+  })
+  .superRefine(checkCoverageArithmetic) satisfies z.ZodType<BrainCoverage, unknown>;
+
+/**
+ * The BROWSER's parser. Same fields, additive-tolerant at the envelope and
+ * WITHOUT the cross-checks — `BrainFactOversightClientSchema`'s split verbatim.
+ *
+ * The inner arms stay strict, including the named-unit arms: those are the ACL
+ * boundary, and a browser that passed an unexpected key through to the DOM is
+ * the leak this surface refuses. An admin losing the availability arm during a
+ * deploy window is not.
+ */
+export const BrainCoverageClientSchema = z.object({
+  // ⚠️ `z.object`, not `z.strictObject`, and ONLY here. Every known class stays
+  // REQUIRED — a class the client knows about and the response omitted is still
+  // a refusal, because that is the missing-row failure the whole shape is keyed
+  // against. What this tolerates is the opposite skew: an API that has learned a
+  // NEW class before this bundle has. Strict there would blank the entire
+  // Coverage Surface during a deploy window — taking the map edges and the
+  // "cannot establish" arms down with it, which are precisely the parts that
+  // exist to be seen when something is wrong. Rendering the five classes this
+  // bundle knows is a smaller failure than rendering none, and it resolves
+  // itself on the next web deploy.
+  availability: z.object(COVERAGE_AVAILABILITY_FIELDS),
+  ...COVERAGE_ENVELOPE_FIELDS,
+}) satisfies z.ZodType<BrainCoverage, unknown>;
 
 // ---------------------------------------------------------------------------
 // The Claim Vocabulary surface (#5087, ADR-0037 §6)

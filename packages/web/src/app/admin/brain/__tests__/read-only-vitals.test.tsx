@@ -6,9 +6,12 @@ import { NuqsAdapter } from "nuqs/adapters/next/app";
 import { AtlasProvider, type AtlasAuthClient } from "@/ui/context";
 
 /**
- * What the Company Atlas overview must SAY, and what it must never do
- * (#5066). The sibling `facts/__tests__/review-honesty.test.tsx` is the model:
- * every assertion here is a place where a quiet UI would mislead an admin.
+ * What the Company Atlas Coverage Surface must SAY, and what it must never do
+ * (#5066, evolved by #5215). The sibling `facts/__tests__/review-honesty.test.tsx`
+ * is the model: every assertion here is a place where a quiet UI would mislead
+ * an admin. The three-state rendering rules ADR-0041 decides are pinned next
+ * door in `coverage-honesty.test.tsx`; this file owns the two properties that
+ * survived the page's evolution unchanged.
  *
  * Two claims the page states in prose and nothing else was enforcing:
  *
@@ -20,14 +23,14 @@ import { AtlasProvider, type AtlasAuthClient } from "@/ui/context";
  *     loading. A hand-rolled `ErrorBanner` is the neighbouring hazard, caught
  *     by the 404 arm: it renders no count, but discards `FetchError.status` and
  *     so shows a red alert plus a dead Retry for the ordinary self-hosted
- *     no-database case. (`SummaryGrid`'s own `summary === null` branch
+ *     no-database case. (`CoverageSurface`'s own `coverage === null` branch
  *     is unreachable behind that wrapper by contract, so nothing here can
  *     falsify it; its `console.warn` is the measurement instead.)
  *   - **This page is not a second review queue.** `brain_facts.status` is
  *     grep-guarded to a named allowlist (`check-brain-fact-promotion.sh`), and
  *     no console surface may write it outside the shared publish modal. A label
  *     assertion is defeated by renaming a button, so the durable form is the
- *     endpoint set: the page may touch `GET /summary` and nothing else.
+ *     endpoint set: the page may touch the two read-only GETs and nothing else.
  */
 
 void mock.module("next/navigation", () => ({
@@ -43,7 +46,7 @@ const stubAuthClient: AtlasAuthClient = {
   useSession: () => ({ data: null, isPending: false }),
 };
 
-const CompanyBrainOverview = (await import("../page")).default;
+const CompanyAtlasCoverage = (await import("../page")).default;
 
 let testQueryClient: QueryClient;
 
@@ -72,15 +75,63 @@ const originalFetch = globalThis.fetch;
  * The only endpoints this page is allowed to reach — both read-only GETs.
  * `brain-slack/channels` joined in #5203: it is the console's only presenter
  * of the Slack history-sync verdict, the surface whose install card the
- * retirement removed.
+ * retirement removed. `brain-coverage` REPLACED `brain-facts/summary` in #5215:
+ * ADR-0041 makes this page one statement, so both arms come from one response —
+ * and the backlog counts moved from the reader-scoped `/summary` to the
+ * workspace-wide authority arm, which is the number the publish button acts on.
  */
-const ALLOWED = /\/api\/v1\/admin\/(brain-facts\/summary|brain-slack\/channels)$/;
+const ALLOWED = /\/api\/v1\/admin\/(brain-coverage|brain-slack\/channels)$/;
 
-const SUMMARY = {
-  draftTotal: 7,
-  provisionalTotal: 2,
-  inTensionTotal: 3,
-  publishedTotal: 41,
+/**
+ * A coverage response whose AUTHORITY arm carries the four backlog counts.
+ *
+ * The availability arm is deliberately minimal here — every class on an arm that
+ * carries no numbers — so the digit sweeps below stay about the backlog counts.
+ * The availability arm's own rendering is `coverage-honesty.test.tsx`'s subject.
+ */
+const COVERAGE = {
+  availability: {
+    chat: {
+      state: "never-enumerated",
+      reason: "no-cycle-recorded",
+      lastAttemptAt: null,
+      unavailableReason: null,
+    },
+    transcript: {
+      state: "never-enumerated",
+      reason: "no-cycle-recorded",
+      lastAttemptAt: null,
+      unavailableReason: null,
+    },
+    email: {
+      state: "never-enumerated",
+      reason: "no-cycle-recorded",
+      lastAttemptAt: null,
+      unavailableReason: null,
+    },
+    warehouse: {
+      state: "never-enumerated",
+      reason: "no-cycle-recorded",
+      lastAttemptAt: null,
+      unavailableReason: null,
+    },
+    human: { state: "not-surveyable", reason: "non-surveyable-class" },
+  },
+  authority: {
+    buckets: [],
+    workspaceTotals: {
+      awaitingReview: 7,
+      published: 41,
+      retracted: 0,
+      provisional: 2,
+      inTension: 3,
+    },
+    reviewableAwaitingReview: 7,
+    countsConsistent: true,
+    distinctAudiences: 0,
+    bucketsTruncated: false,
+  },
+  countsConsistent: true,
 };
 
 /** Healthy Slack vitals. `inScopeCount: 0` keeps the digit sweeps honest. */
@@ -115,7 +166,7 @@ const REQUEST_ID = "8f0c1e2a-4b6d-4f1a-9c3e-77d2b5a10e94";
  * The envelopes this endpoint actually emits, not invented ones. 404 is
  * `requireOrgContext()`'s no-internal-database refusal (`admin-router.ts`,
  * `NO_INTERNAL_DB_MESSAGE`); 500 is `runHandler`'s unmapped-error branch
- * (`lib/effect/hono.ts`) with the label from `admin-brain-facts.ts`.
+ * (`lib/effect/hono.ts`) with the label from `admin-brain-coverage.ts`.
  * A fixture with a shape the server never sends would keep this file green
  * through a routing change that only ever sees the real one.
  */
@@ -127,7 +178,7 @@ const NO_INTERNAL_DB = {
 
 const SERVER_ERROR = {
   error: "internal_error",
-  message: "Failed to load brain fact review vitals.",
+  message: "Failed to load company atlas coverage.",
   requestId: REQUEST_ID,
 };
 
@@ -174,11 +225,11 @@ function tileValue(container: HTMLElement, label: string): string {
 }
 
 let requested: { url: string; method: string }[] = [];
-/** Resolves the SUMMARY request. Overridden per test to fail or to hang. */
+/** Resolves the COVERAGE request. Overridden per test to fail or to hang. */
 let respond: (url: string) => Promise<Response> | Response;
 /** Resolves the SLACK vitals request, independently — the two sections fail
  * independently in production, and a uniform stub would hand the Slack fetch
- * a summary body and turn every error-arm assertion into a statement about a
+ * a coverage body and turn every error-arm assertion into a statement about a
  * parse failure nobody designed. Defaults healthy; the error arms hang it so
  * their single-banner/digit-sweep anatomy is untouched. */
 let respondSlack: (url: string) => Promise<Response> | Response;
@@ -192,7 +243,7 @@ function jsonResponse(body: unknown, status = 200) {
 
 beforeEach(() => {
   requested = [];
-  respond = () => jsonResponse(SUMMARY);
+  respond = () => jsonResponse(COVERAGE);
   respondSlack = () => jsonResponse(SLACK_VITALS);
   testQueryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0, staleTime: 0 } },
@@ -211,11 +262,11 @@ afterEach(() => {
 });
 
 function renderPage() {
-  return render(createElement(CompanyBrainOverview), { wrapper: Wrapper });
+  return render(createElement(CompanyAtlasCoverage), { wrapper: Wrapper });
 }
 
 describe("Company Atlas overview — counts are never fabricated (#5066)", () => {
-  test("renders the four backlog counts once the summary loads", async () => {
+  test("renders the four backlog counts once the coverage read lands", async () => {
     const view = renderPage();
     await waitFor(() => expect(view.container.textContent).toContain("41"));
 
@@ -227,7 +278,7 @@ describe("Company Atlas overview — counts are never fabricated (#5066)", () =>
     expect(tileValue(view.container, "Published")).toBe("41");
   });
 
-  test("a FAILED summary renders no number at all — least of all a zero", async () => {
+  test("a FAILED coverage read renders no number at all — least of all a zero", async () => {
     // The load-bearing arm. `?? 0` anywhere in the render path turns a broken
     // read into "your queue is clear", which is worse than an error because it
     // is actionable in the wrong direction.
@@ -239,7 +290,7 @@ describe("Company Atlas overview — counts are never fabricated (#5066)", () =>
     // state instead. That version of this test passed against a page that
     // rendered zeros on error.
     respond = () => jsonResponse(SERVER_ERROR, 500);
-    respondSlack = () => new Promise<Response>(() => {}); // hang: this arm is about the summary
+    respondSlack = () => new Promise<Response>(() => {}); // hang: this arm is about the coverage read
     const view = renderPage();
 
     // ⚠️ Anchored on the request id, NOT on `[role="alert"]`: `ErrorBoundary`'s
@@ -263,14 +314,14 @@ describe("Company Atlas overview — counts are never fabricated (#5066)", () =>
   });
 
   test("a 404 (no internal database) is routed to the feature gate, not a red error", async () => {
-    // `/summary` answers 404 when DATABASE_URL isn't configured — the ordinary
+    // `/brain-coverage` answers 404 when DATABASE_URL isn't configured — the ordinary
     // self-hosted state, not a fault. A destructive alert with a Retry button
     // that cannot help is the wrong disclosure, and it is what a hand-rolled
     // `<ErrorBanner message={friendlyError(err)}>` produces, because flattening
     // the error to a string discards `FetchError.status`. `FeatureGate`'s 404
     // copy is the positive marker that the routing survived.
     respond = () => jsonResponse(NO_INTERNAL_DB, 404);
-    respondSlack = () => new Promise<Response>(() => {}); // hang: this arm is about the summary
+    respondSlack = () => new Promise<Response>(() => {}); // hang: this arm is about the coverage read
     const view = renderPage();
 
     await waitFor(() =>
@@ -336,28 +387,28 @@ describe("Company Atlas overview — counts are never fabricated (#5066)", () =>
     ).toHaveLength(0);
   });
 
-  test("a PENDING summary renders no number either", async () => {
+  test("a PENDING coverage read renders no number either", async () => {
     // Same hazard as the failed read, different arm: a momentary "0" while the
     // request is in flight reads exactly like a cleared backlog. Waits for the
     // loading state's own copy so this asserts on a frame that definitely
     // rendered, not on whatever was on screen before the effect ran.
     respond = () => new Promise<Response>(() => {}); // never settles
-    respondSlack = () => new Promise<Response>(() => {}); // hang: this arm is about the summary
+    respondSlack = () => new Promise<Response>(() => {}); // hang: this arm is about the coverage read
     const view = renderPage();
 
     await waitFor(() =>
-      expect(view.container.textContent ?? "").toContain("Loading Company Atlas vitals"),
+      expect(view.container.textContent ?? "").toContain("Loading Company Atlas coverage"),
     );
     expectNoCounts(view.container);
     expect(view.container.textContent ?? "").not.toMatch(/\d/);
   });
 
-  test("keeps the route into the review queue even when the summary fails", async () => {
+  test("keeps the route into the review queue even when the coverage read fails", async () => {
     // The wrapper replaces its children wholesale on error, so the Facts card
     // sits outside it: a workspace whose counts won't load is precisely the one
     // whose admin needs to go look at the queue.
     respond = () => jsonResponse(SERVER_ERROR, 500);
-    respondSlack = () => new Promise<Response>(() => {}); // hang: this arm is about the summary
+    respondSlack = () => new Promise<Response>(() => {}); // hang: this arm is about the coverage read
     const view = renderPage();
 
     await waitFor(() => expect(view.container.textContent ?? "").toContain(REQUEST_ID));
@@ -369,7 +420,7 @@ describe("Company Atlas overview — counts are never fabricated (#5066)", () =>
 });
 
 describe("Company Atlas overview — read-only by construction (#5066)", () => {
-  test("touches no endpoint outside GET /summary", async () => {
+  test("touches no endpoint outside the two read-only GETs", async () => {
     // The durable half of "this is not a second review queue". A label regex is
     // defeated by a "Trust this claim" button; this is defeated only by not
     // calling a status-writing endpoint at all.

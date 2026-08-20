@@ -49,9 +49,15 @@ Run these three. Report the result of each.
 
 ```bash
 git rev-parse --abbrev-ref HEAD               # expect: main
-git rev-parse --short HEAD origin/main        # expect: two equal SHAs
 git status --porcelain                        # expect: no output
+[ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] \
+  && echo "in sync with origin/main" || echo "DIVERGED from origin/main"
 ```
+
+⚠️ `git rev-parse --short HEAD origin/main` does not work. `--short` takes one revision
+only, and two make it exit 128 with *"fatal: Needed a single revision"*. This runbook
+shipped that form and it failed on the first real run. Compare the two SHAs and report the
+verdict, as above — do not print two strings and leave the reader to match them by eye.
 
 Write **UNKNOWN** for any check you could not run. A skipped step is not a passed step.
 

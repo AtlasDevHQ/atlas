@@ -102,6 +102,37 @@
 # it exists to catch. What is NOT registered is not checked, and the summary line
 # says how many phrases are.
 #
+# ⚠️ A REGISTERED PHRASE IS MATCHED ON NORMALIZED PROSE, NOT ON A RAW LINE — and
+# both reasons were live defects found in this repo's own docs, by hand, after
+# this check had been green over them for days.
+#
+#   • MARKUP. The first cut matched `<number>[[:space:]]+<phrase>` with `git
+#     grep`. CLAUDE.md stated the runbook count with the word **operational**
+#     bolded INSIDE the phrase — the `**` sits between the number and the rest of
+#     it, so the regex read straight past while correctly flagging both unbolded
+#     copies elsewhere. A claim written in emphasis was therefore unchecked, and
+#     emphasis is exactly where a load-bearing count tends to be written.
+#   • LINE BREAKS. `git grep` is line-based and prose wraps. `practices.md`
+#     broke the same claim across a wrap: the number ended one line, and the
+#     phrase opened the next. No single line held both halves, so the claim was
+#     invisible — and it is the ONLY live statement of that count on that page.
+#
+# So the scan strips `*` and `_`, joins each line to its predecessor, and matches
+# across the join. A match is reported on the line the PHRASE ends on, which is
+# also what dedupes the sliding window: a match lying wholly inside the previous
+# line is skipped here and was already reported there.
+#
+# ⚠️ A HISTORICAL COUNT IS NOT A FALSE POSITIVE TO BE ALLOWLISTED. `count` entries
+# match by (kind, file, phrase), so exempting CLAUDE.md's pre-restore runbook count
+# — true on the day it was written — would ALSO exempt the LIVE claim two lines
+# below it. One exemption would retire the real check.
+#
+# The convention is the same shape as dropping backticks off a dead command: word
+# the historical sentence so the number is not adjacent to the registered phrase
+# ("eight runbooks that were purely operational"), and leave the phrase itself to
+# the claim about today. The failure message says so. This header follows its own
+# rule, which is why it describes its examples instead of quoting them.
+#
 # Exit codes: 0 clean · 1 one or more findings · 2 this gate could not look.
 #
 # Allowlist: scripts/agent-doc-paths-allowlist.txt (every entry needs a reason).
@@ -428,6 +459,51 @@ word_to_num() {
 }
 
 NUMWORDS='one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty'
+# count_scan PHRASE — emits <file>\t<line>\t<stated>\t<hit> for every occurrence
+# of "<number> <phrase>" in NORMALIZED prose. See the COUNTS header for why this
+# is not a `git grep`: emphasis markers and a wrapped line each hid a real claim.
+count_scan() {
+  local phrase="$1" lastword="${1##* }"
+  # Narrow to files containing the phrase's last word before the line-joining
+  # scan runs. `-w` keeps "gates" from dragging in every "delegates".
+  git grep -I -l -i -w -E -- "$lastword" -- . "${EXCLUDES[@]}" 2>/dev/null |
+  tr '\n' '\0' | xargs -0 -r awk -v PHRASE="$phrase" -v NUMWORDS="$NUMWORDS" '
+    # Emphasis is markup, not content. Dropping `*` and `_` is what lets a
+    # phrase with **bold** inside it read as the claim it plainly is.
+    function norm(s) { gsub(/[*_]/, "", s); return s }
+    BEGIN {
+      ph = PHRASE; gsub(/ /, "[[:space:]]+", ph);
+      rx = "(" NUMWORDS "|[0-9]+)[[:space:]]+" ph;
+    }
+    FNR == 1 { prev = "" }          # never join across a file boundary
+    {
+      cur = norm($0);
+      win = prev " " cur;           # the sliding two-line window
+      lo  = tolower(win);           # tolower preserves length, so offsets hold
+      boundary = length(prev) + 1;  # everything at or below this belongs to prev
+      off = 0;
+      while (match(substr(lo, off + 1), rx)) {
+        st = off + RSTART; en = st + RLENGTH - 1;
+        # ADVANCE PAST THE MATCH END, NOT THE START. Stepping one character
+        # past st re-scanned the tail of the match just taken, so
+        # "43 system-wide decisions" yielded a SECOND hit reading "3 system-wide
+        # decisions" - a fabricated finding on a line that was correct, and on
+        # three of the five registered phrases at once. An occurrence is
+        # consumed, exactly as grep -o consumes it. (No apostrophes in here: this
+        # awk program is single-quoted by the shell.)
+        off = en;                   # strictly increases, so this terminates
+        # Report on the line the phrase ENDS on. A match lying wholly inside prev
+        # was already reported when prev was current — that is the dedupe.
+        if (en > boundary) {
+          hit = substr(win, st, RLENGTH);
+          n = hit; sub(/[[:space:]].*/, "", n);
+          print FILENAME "\t" FNR "\t" n "\t" hit;
+        }
+      }
+      prev = cur;
+    }'
+}
+
 COUNT_HITS=0
 for claim in "${COUNT_CLAIMS[@]}"; do
   phrase="${claim%%|*}"; fn="${claim##*|}"
@@ -436,16 +512,16 @@ for claim in "${COUNT_CLAIMS[@]}"; do
     die "the derivation for \"$phrase\" ($fn) produced '$expected'. A count claim checked against zero would pass nothing and fail everything — fix the derivation."
   fi
   phrase_hits=0
-  while IFS= read -r row; do
-    [ -n "$row" ] || continue
+  while IFS=$'\t' read -r file line stated_raw hit; do
+    [ -n "$file" ] || continue
     phrase_hits=$((phrase_hits + 1))
-    file="${row%%:*}"; rest="${row#*:}"; line="${rest%%:*}"; hit="${rest#*:}"
-    stated="$(word_to_num "$(printf '%s' "$hit" | awk '{print $1}')")"
+    stated="$(word_to_num "$stated_raw")"
     [ "$stated" = "$expected" ] && continue
     is_allowed count "$file" "$phrase" && continue
     report "$file" "$line" "states \"$hit\" but the tree has $expected. ($fn)"
     echo "      → update the number, or the set it counts. Registered count phrases live in scripts/check-agent-doc-paths.sh." >&2
-  done < <(git grep -I -n -o -iE "(${NUMWORDS}|[0-9]+)[[:space:]]+${phrase}" -- . "${EXCLUDES[@]}" 2>/dev/null | sed 's/^\([^:]*\):\([0-9]*\):/\1:\2:/' | sort -u)
+    echo "      → if this is a HISTORICAL count that was true then, do NOT allowlist it: a count entry matches by file, so it would exempt the live claim in the same file too. Word it so the number is not adjacent to the phrase (\"eight runbooks that were purely operational\")." >&2
+  done < <(count_scan "$phrase" | sort -u)
   # ⚠️ THIRD VACUITY FLOOR, and the one this check was missing. Checks 1 and 2
   # each refuse to report "clean" after reading nothing; check 3 did not, so a
   # registered phrase that matched NOWHERE produced no iterations, no finding and

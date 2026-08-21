@@ -236,6 +236,10 @@ launch template-drift            g_template_drift
 launch security-headers-drift    bash scripts/check-security-headers-drift.sh
 launch lighthouse-report-paths   bash scripts/check-lighthouse-report-paths.sh
 launch gate-fixtures-wired       bash scripts/check-gate-fixtures-wired.sh
+# Pure bash, no docker/trivy, ~0.1s. It is the premise the image-scan base tier's
+# report-only mode stands on (#5361), so it is the cheapest guard in the repo and
+# the one most worth having locally.
+launch runtime-stage-upgrades    bash scripts/check-runtime-stage-upgrades.sh
 launch pricing-parity            bash scripts/check-pricing-parity.sh
 launch plugin-count              bash scripts/check-plugin-count.sh
 launch plugin-lockstep           bun scripts/check-plugin-lockstep.ts

@@ -59,9 +59,15 @@
 #            findings that cannot yet be cleared in a shipped image. It is
 #            applied to the GATE pass only — never to the report pass — so a
 #            merge-gate exemption can never become an invisibility cloak in code
-#            scanning. It is currently EMPTY: the 2026-08-12 runner-stage
-#            upgrades cleared all 11 original entries. Read .trivyignore itself
-#            before adding one.
+#            scanning.
+#
+#            ⚠️ It is NOT empty. This header claimed "currently EMPTY: the
+#            2026-08-12 runner-stage upgrades cleared all 11 original entries"
+#            for the whole window in which the file carried first 10 and then 14
+#            entries. No count is stated here now, deliberately — a number in
+#            prose is a second thing to keep true and this one was not. Read
+#            .trivyignore itself, which is where the entries and the rule for
+#            adding one live.
 #
 #            ⚠️ "Applied to the gate only" is a statement about the BASELINE,
 #            not a claim that the report pass shows everything — since
@@ -73,6 +79,20 @@
 # disclosed CVE, or one introduced by a dependency or base-image change, goes
 # red on the PR that introduces it. Debt inherited from upstream is visible in
 # code scanning and dated in .trivyignore instead of silently red forever.
+#
+# ⚠️ CALLERS. This script answers one question — "does THIS image carry a
+# fixable HIGH/CRITICAL OS package" — and its exit code is that answer, nothing
+# more. Whether the answer should BLOCK is a separate decision and does not
+# live here:
+#
+#   built images   the verdict is the gate, on every trigger. image-scan.yml
+#                  calls this script directly.
+#   base images    the verdict is report-only unless the PR introduced or
+#                  changed that base reference (#5361). image-scan.yml goes
+#                  through scripts/base-image-gate.sh, which owns that policy.
+#
+# Keep it that way. Folding the base tier's report-only mode in here would put
+# two different questions behind one exit code.
 #
 # Only the `vuln` scanner runs. Trivy's secret and misconfiguration scanners
 # overlap with tooling Atlas already has (GitHub secret scanning with push
@@ -94,6 +114,17 @@
 #                    (default: <repo-root>/.trivyignore). Set to /dev/null to
 #                    scan with no baseline at all — the adversarial fixtures do
 #                    this so a fixture CVE can never be masked by the baseline.
+#   TRIVY_ANNOTATE   `error` (default) or `none`. Whether the closing verdict is
+#                    emitted as a GitHub `::error::` annotation.
+#
+#                    `none` is for a caller that owns the verdict — currently
+#                    base-image-gate.sh, whose report-only mode turns this exit
+#                    1 into a passing job. An `::error::` annotation on a green
+#                    check is exactly the unactionable red this whole gate is
+#                    designed around not producing: people stop reading
+#                    annotations, and then miss the one that meant something.
+#                    It changes the ANNOTATION ONLY. The text is still printed
+#                    and the exit code is untouched.
 #
 # Exit: 0 clean (by the blocking policy above), 1 fixable HIGH/CRITICAL found.
 
@@ -112,6 +143,16 @@ if ! command -v trivy >/dev/null 2>&1; then
   echo "::error::trivy not found on PATH — the workflow must install it before calling this script" >&2
   exit 2
 fi
+
+ANNOTATE="${TRIVY_ANNOTATE:-error}"
+case "$ANNOTATE" in
+  error|none) ;;
+  *) echo "::error::TRIVY_ANNOTATE must be 'error' or 'none' (got '$ANNOTATE')" >&2; exit 2 ;;
+esac
+# Prefix for the closing verdict lines only. Everything else in this script —
+# scanner failures, usage errors — annotates unconditionally, because those are
+# never downgraded by any caller.
+if [ "$ANNOTATE" = "error" ]; then VERDICT_PREFIX="::error::"; else VERDICT_PREFIX=""; fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BASELINE="${TRIVY_BASELINE:-$REPO_ROOT/.trivyignore}"
@@ -207,6 +248,6 @@ if [ "$rc" -ne 1 ]; then
   exit "$rc"
 fi
 
-echo "::error::Fixable HIGH/CRITICAL OS-package vulnerabilities found in $IMAGE ($CATEGORY)"
-echo "::error::A fixed package version exists upstream. Bump the base-image pin, rebuild against a refreshed base, or upgrade the package in the runner stage."
+echo "${VERDICT_PREFIX}Fixable HIGH/CRITICAL OS-package vulnerabilities found in $IMAGE ($CATEGORY)" >&2
+echo "${VERDICT_PREFIX}A fixed package version exists upstream. Bump the base-image pin, rebuild against a refreshed base, or upgrade the package in the runner stage." >&2
 exit 1

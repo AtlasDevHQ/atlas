@@ -38,6 +38,41 @@ afterEach(() => {
   setVisibility("visible");
 });
 
+/**
+ * Wait for the CONDITION, not for the clock.
+ *
+ * These tests drive a real `setInterval`, and every wait below used to be a
+ * fixed `setTimeout` sized at ~2.6x the 50ms interval. That encodes an
+ * assumption about how much CPU the run gets, and under `bun test --parallel`
+ * on a loaded machine the assumption breaks — a single-core full-suite sweep
+ * produced:
+ *
+ *   (fail) useVisibilityGatedPoll > survives a synchronous throw from refetch
+ *     and keeps polling [135.15ms]
+ *     Expected: >= 2   Received: 1
+ *
+ * Polling for the condition keeps each assertion identical while removing the
+ * race: on an idle machine it returns in ~one interval, and under contention it
+ * simply waits longer instead of failing.
+ *
+ * The 2000ms cap is deliberately well under bun's 5000ms default per-test
+ * timeout, so a genuine hang surfaces THIS function's message rather than a
+ * bare "this test timed out after 5000ms" with no assertion attached.
+ *
+ * The two NEGATIVE assertions below ("no further tick happened") keep their
+ * fixed sleeps on purpose — there is no condition to wait for, and contention
+ * only makes them safer.
+ */
+async function waitUntil(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) {
+      throw new Error(`waitUntil: condition still false after ${timeoutMs}ms`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 describe("useVisibilityGatedPoll", () => {
   test("does NOT call refetch synchronously on mount", () => {
     // Load-bearing — the hook's docstring calls this out: a regression
@@ -54,7 +89,7 @@ describe("useVisibilityGatedPoll", () => {
 
     // Two ticks of the 50ms interval — a regression that never started
     // the interval would leave `refetch.mock.calls.length === 0`.
-    await new Promise((resolve) => setTimeout(resolve, 130));
+    await waitUntil(() => refetch.mock.calls.length >= 2);
     expect(refetch.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
@@ -63,7 +98,7 @@ describe("useVisibilityGatedPoll", () => {
     renderHook(() => useVisibilityGatedPoll(refetch, 50));
 
     // Let one tick land so we have a baseline.
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    await waitUntil(() => refetch.mock.calls.length >= 1);
     const callsAtForegroundEnd = refetch.mock.calls.length;
     expect(callsAtForegroundEnd).toBeGreaterThanOrEqual(1);
 
@@ -100,7 +135,7 @@ describe("useVisibilityGatedPoll", () => {
     expect(refetch.mock.calls.length).toBe(callsBeforeReturn + 1);
 
     // Confirm the interval resumed.
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    await waitUntil(() => refetch.mock.calls.length > callsBeforeReturn + 1);
     expect(refetch.mock.calls.length).toBeGreaterThan(callsBeforeReturn + 1);
   });
 
@@ -109,7 +144,7 @@ describe("useVisibilityGatedPoll", () => {
     const { unmount } = renderHook(() =>
       useVisibilityGatedPoll(refetch, 50),
     );
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    await waitUntil(() => refetch.mock.calls.length >= 1);
     const callsBeforeUnmount = refetch.mock.calls.length;
     expect(callsBeforeUnmount).toBeGreaterThanOrEqual(1);
 
@@ -143,7 +178,7 @@ describe("useVisibilityGatedPoll", () => {
     });
     renderHook(() => useVisibilityGatedPoll(refetch, 50));
 
-    await new Promise((resolve) => setTimeout(resolve, 130));
+    await waitUntil(() => calls >= 2);
     expect(calls).toBeGreaterThanOrEqual(2);
     expect(warn).toHaveBeenCalled();
 
@@ -162,7 +197,7 @@ describe("useVisibilityGatedPoll", () => {
     });
     renderHook(() => useVisibilityGatedPoll(refetch, 50));
 
-    await new Promise((resolve) => setTimeout(resolve, 130));
+    await waitUntil(() => calls >= 2);
     // The first tick throws synchronously inside `setInterval`'s
     // callback; without the try/catch in safeRefetch the throw would
     // propagate to the host and (under jsdom/happy-dom) tear down the

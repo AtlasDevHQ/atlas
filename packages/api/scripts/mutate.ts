@@ -426,7 +426,7 @@ if (problems.length > 0) fail(`invalid spec:\n  - ${problems.join("\n  - ")}`);
 if (options.files) {
   // ⚠️ AFTER `validateSpec`, not before. A spec with an empty `edits` array is
   // a validation problem AND emits a dependency list missing that source file —
-  // so `--affected` would not select it, `--check` would never run, and the log
+  // so `--changed` would not select it, `--check` would never run, and the log
   // would read "nothing to verify", which is indistinguishable from a clean run.
   // A broken spec must fail loudly here rather than quietly under-select.
   const deps = new Set<string>();

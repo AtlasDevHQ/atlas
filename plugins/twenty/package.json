@@ -29,7 +29,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "bun test __tests__/client.test.ts __tests__/credential-resolver.test.ts __tests__/lead-normalizer.test.ts __tests__/plugin.test.ts"
+    "test": "bun test --parallel"
   },
   "keywords": [
     "atlas",

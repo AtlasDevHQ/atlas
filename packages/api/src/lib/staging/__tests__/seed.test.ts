@@ -189,9 +189,25 @@ const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
 
 // Better Auth migrations + the full Atlas migration set + the seed itself
-// (which creates a user + org via Better Auth) — comfortably under a minute
-// on local hardware, with headroom for shared CI runners.
-const PG_TEST_TIMEOUT_MS = 60_000;
+// (which creates a user + org via Better Auth).
+//
+// ⚠️ 60s WAS NOT ENOUGH, and the old value's reasoning ("comfortably under a
+// minute on local hardware, with headroom for shared CI runners") stopped
+// holding when #2802 moved the suite to `bun test --parallel`. The bound is
+// wall-clock, and this suite's work is almost entirely round-trips to ONE
+// shared Postgres — so it gets SLOWER the more workers run beside it, while
+// `--parallel` defaults to the machine's core count. Measured on a 32-core
+// box: passes at `--parallel=8`, and times out at 60s on 3 of 3 full-suite
+// runs at the default 32. The whole file measures ~68s in
+// `scripts/test-timings.json`.
+//
+// 180s is chosen to be well clear of contention rather than marginally above
+// it — a marginal bump would just move the flake. It is still a real bound: a
+// genuine hang (a lock never acquired, a pool never drained) fails here rather
+// than running forever, which is the only thing this constant is for. CI is
+// milder than the box above, not harsher — its runners are 4 vCPU, so
+// `--parallel` spawns 4 workers, not 32.
+const PG_TEST_TIMEOUT_MS = 180_000;
 
 const STAGING_ADMIN_PASSWORD = "staging-admin-pw-901234";
 

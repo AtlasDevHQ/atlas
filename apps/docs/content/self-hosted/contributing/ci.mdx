@@ -24,20 +24,20 @@ description: GitHub Actions workflows that run on every Atlas pull request, plus
 - **Type-aware lint** — `bun run lint:type-aware` (tsgolint). A separate CI-blocking `lint-type-aware` job, kept out of the fast lint job because it builds full TypeScript programs.
 - **Test** — `@atlas/api` tests run in a parallel `api-tests` matrix sharded 4 ways. Other workspace test suites run serially in the main job.
 
-The local equivalent is the `/ci` slash-command, which runs `scripts/ci-local.sh` — the same ~27 gates in three stages: stage 0 type-check + SDK dist build (serial), stage 1 the read-only drift/lint gates in parallel (lint, type-aware lint, syncpack, Dockerfile pins, template/schema/security-headers/OpenAPI/auth-md drift, ee-imports, migration-rename discipline, published-symbols, and more), stage 2 the full isolated test suite. All must pass before opening a PR.
+The local equivalent is the `/ci` slash-command, which runs `scripts/ci-local.sh` — the same ~27 gates in three stages: stage 0 type-check + SDK dist build (serial), stage 1 the read-only drift/lint gates in parallel (lint, type-aware lint, syncpack, Dockerfile pins, template/schema/security-headers/OpenAPI/auth-md drift, ee-imports, migration-rename discipline, published-symbols, and more), stage 2 the full test suite (`bun test --parallel`). All must pass before opening a PR.
 
 ### Fast local feedback
 
-The full `bun run test` suite is slow because `@atlas/api` runs every test file in its own subprocess (this avoids the cross-test state leaks that bit us before the isolated runner). For the edit/test cycle, prefer:
+The full `bun run test` suite runs every package under `bun test --parallel`, which gives each test FILE a fresh global and module registry (`--parallel` implies `--isolate`) — the cross-file state isolation that a custom subprocess-per-file runner used to provide. For the edit/test cycle, prefer:
 
 ```bash
 cd packages/api
-bun run scripts/test-isolated.ts --affected     # only tests whose source graph your branch touched vs origin/main
-bun run scripts/test-isolated.ts --since HEAD~3 # last-3-commit window
+bun test --parallel --changed=origin/main   # only tests affected by what your branch touched
+bun test --parallel --changed=HEAD~3        # last-3-commit window
 bun test path/to/file.test.ts                   # single file
 ```
 
-Run the full `bun run test` once before opening a PR even if `--affected` has been clean — the `--affected` detector occasionally misses transitive imports.
+Run the full `bun run test` once before opening a PR even if `--changed` has been clean — a change-detector works from the import graph and can miss an edge (a path read at runtime rather than imported, for instance).
 
 ## Lighthouse budget (advisory)
 

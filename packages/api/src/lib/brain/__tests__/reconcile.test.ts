@@ -1053,8 +1053,8 @@ describe("flag: entity resolution", () => {
     //
     // ⚠️ The assertion is the YIELD COUNT, not merely that the run finished.
     // "It returned" is satisfied by a bound of `surfaces * 10_000`; and a test
-    // whose only falsifier is a HANG is unusable here — neither
-    // `scripts/test-isolated.ts` nor the `api-tests` CI job sets a timeout, so a
+    // whose only falsifier is a HANG is unusable here — neither the test command
+    // (`bun test --parallel`) nor the `api-tests` CI job sets a timeout, so a
     // regression is a multi-hour shard with no test named, not a red X. (bun's
     // per-test timeout cannot rescue it either: the copy loop is synchronous and
     // never yields, which is the property under test.) Counting is the shape

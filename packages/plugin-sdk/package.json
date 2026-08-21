@@ -6,7 +6,7 @@
   "scripts": {
     "build": "rm -rf dist && bun build src/index.ts src/types.ts src/helpers.ts src/ai.ts src/hono.ts src/testing.ts --outdir dist --target node --packages external && ./node_modules/.bin/tsgo -p tsconfig.build.json",
     "prepare": "bun run build",
-    "test": "bun test src/__tests__/types.test.ts && bun test src/__tests__/infer.test.ts && bun test src/__tests__/testing.test.ts && bun test src/__tests__/semantic-whitelist.test.ts && bun test src/__tests__/sandbox-helpers.test.ts && bun test src/__tests__/datasource-factory.test.ts"
+    "test": "bun test --parallel"
   },
   "exports": {
     ".": {

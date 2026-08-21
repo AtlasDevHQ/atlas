@@ -6,7 +6,7 @@
   "private": true,
   "license": "AGPL-3.0-or-later",
   "scripts": {
-    "test": "bun test src/__tests__"
+    "test": "bun test --parallel"
   },
   "exports": {
     ".": "./src/index.ts",

@@ -16,7 +16,7 @@
  * Deliberately NOT a `-pg` suite. The property is lexical — which columns one
  * constant names — so a database would add cost and prove nothing, and a
  * backstop that only ran where `TEST_DATABASE_URL` is set would be absent from
- * the local `--affected` loop, which is exactly where a new gated write first
+ * the local `--changed` loop, which is exactly where a new gated write first
  * appears.
  */
 

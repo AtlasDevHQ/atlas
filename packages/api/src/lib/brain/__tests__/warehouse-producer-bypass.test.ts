@@ -148,7 +148,7 @@
  * remain unscanned and on what argument. Read a green run as *"no unlisted file under
  * those eight roots names one"*, nothing more.
  *
- * ⚠️ **`--affected` will not select this file for the event it exists to catch.** Run
+ * ⚠️ **`--changed` will not select this file for the event it exists to catch.** Run
  * against the runner's own `collectAffectedTests` rather than reasoned about, because
  * #5255 took the sentinel count from three to eight and the previous version of this
  * paragraph was an argument about two of them:
@@ -163,7 +163,7 @@
  *   the edge that matters for the completeness assertions, which read that module.
  *
  * So the local pre-flight is blind to a NEW MINT and only full CI catches it. This is
- * the repo's known glob-scanning-guard-is-`--affected`-blind pattern; do not read a
+ * the repo's known glob-scanning-guard-is-`--changed`-blind pattern; do not read a
  * green pre-flight as covering it.
  *
  * It also does not pin the ANTI-REPLAY half. A mint listed below hands back a token

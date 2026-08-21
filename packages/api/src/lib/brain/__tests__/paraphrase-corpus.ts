@@ -139,7 +139,7 @@ const MISSING_REMEDY: Readonly<Record<string, string>> = {
     "Record a fresh one with `bun packages/cli/bin/brain-paraphrase-eval.ts --write`, which needs " +
     "AI_GATEWAY_API_KEY and spends real money. ⚠️ After a --write, run this suite EXPLICITLY " +
     "(`bun test src/lib/brain/__tests__/paraphrase-identity.test.ts`) — a regeneration touches only " +
-    "JSON, and `scripts/test-isolated.ts --affected` walks .ts files alone, so it selects nothing " +
+    "JSON, and `bun test --parallel --changed` walks .ts files alone, so it selects nothing " +
     "for the one change most likely to break this file.",
   "message corpus":
     "Restore it from git. It is HUMAN-AUTHORED — the eval reads it and never writes it, so `--write` " +

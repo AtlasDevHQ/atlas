@@ -166,7 +166,7 @@ describe("the alias proposal queue carries no ACL arm (#5023, ADR-0037 §6)", ()
  *
  * `check-brain-fact-promotion.sh` delegates this cost to "a COLUMN-SCOPED
  * assertion in `vocabulary-decide-pg.test.ts`", and a backstop that only runs
- * where `TEST_DATABASE_URL` is set is absent from the local `--affected` loop —
+ * where `TEST_DATABASE_URL` is set is absent from the local `--changed` loop —
  * exactly where a new gated write would first appear. It reads two files off
  * disk and needs no database.
  */

@@ -728,7 +728,7 @@ describeIfPg("brain M3 multi-source loop (real Postgres)", () => {
         await pool.end();
       }
       if (dropErr !== undefined) {
-        // Thrown, not logged: `scripts/test-isolated.ts` prints a file's captured
+        // Thrown, not logged: `bun test --parallel` prints a file's captured
         // output ONLY on a non-zero exit, so a `console.debug` here would be
         // discarded in precisely the case it exists to report — a green run that
         // leaked a schema into a shared test database.

@@ -21,7 +21,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "bun test src/"
+    "test": "bun test --parallel"
   },
   "keywords": [
     "atlas",

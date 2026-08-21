@@ -2,7 +2,7 @@
  * The alias-proposal producer's non-SQL half (#5034, ADR-0037 §4).
  *
  * The lane that runs WITHOUT `TEST_DATABASE_URL`, which is the default local and
- * `--affected` lane — so what lands here is deliberately chosen rather than
+ * `--changed` lane — so what lands here is deliberately chosen rather than
  * "whatever was easy to unit test":
  *
  *   - the RANKING rules, including the prohibition that an extractor hint can

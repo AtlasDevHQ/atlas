@@ -80,7 +80,7 @@ const PG_TEST_TIMEOUT_MS = 60_000;
 // blocks and reports success, so deleting the last firing case would silently
 // delete every positive control in the file. Inside `describeIfPg` this guard
 // would be skipped in exactly the lane where the rest of the coverage is also
-// skipped — the default local and `--affected` runs — which is where a silent
+// skipped — the default local and `--changed` runs — which is where a silent
 // deletion would land.
 
 const firing = (): readonly ProposalCase[] =>

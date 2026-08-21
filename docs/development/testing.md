@@ -2,11 +2,20 @@
 
 Long-form reference for the Testing rules summarized in [CLAUDE.md](../../CLAUDE.md) § *Testing* and the Effect test-layer rule in § *Effect.ts*. The terse rules there are the checklist; this doc holds the rationale and the gotchas.
 
-## `bun run test`, never bare `bun test`
+## `bun test --parallel`, never bare `bun test`
 
-The project uses an isolated test runner — each file runs in its own subprocess. Always use `bun run test` (or `test:api` / `test:others` / `test-isolated.ts --affected`). A single file is fine: `bun test path/to/file.test.ts`. **Never** run bare `bun test` against a directory.
+Every package's `test` script is `bun test --parallel`. `--parallel` implies `--isolate`: each FILE gets a fresh global and module registry, which is exactly what the old subprocess-per-file runner was buying. A single file is fine: `bun test path/to/file.test.ts`. **Never** run bare `bun test` against a directory — it shares one global across every file, so a suite can pass on state a sibling left behind.
 
-The custom `scripts/test-isolated.ts` subprocess-per-file runner is still in use until slice 6 (#2802) lands, because `bun test --parallel` reuses workers across files, so OS-level state (env, cwd, file handles, signal listeners) leaks between files.
+**Never pass `--no-isolate`.** It trades that isolation for speed by letting a worker keep one global across the files it runs. That is not hypothetical here: `agent-compaction.test.ts` leaks module state across same-process runs today — it false-fails under `--rerun-each` (one process, N iterations) while passing 12/12 under `--parallel`. `--no-isolate` would make that class of failure routine.
+
+### The seven custom runners are gone (#2802)
+
+`packages/{api,cli,mcp,react,web}/scripts/test-isolated.ts`, `ee/` and `apps/docs/` — ~1,480 lines — were deleted once bun 1.4 shipped a `--parallel` that behaves. They existed because bun 1.3.14's `--isolate` broke top-level-await module init (#2811), which is fixed on the 1.4 line.
+
+Two things the cutover measured that are worth keeping in mind:
+
+- **The blocker at the end was the logger, not `mock.module`.** `pino-pretty` runs its transport in a `thread-stream` WORKER THREAD; when bun tears down a `--parallel` worker the thread dies and takes the process with it. The failure mode was silent: 1,090 tests ran, 28 failed, and bun exited reporting `Ran 1090 tests across 183 files` when those 183 files hold **4,818** tests — 3,728 never ran. `logger.ts` now takes the plain-JSON branch when `NODE_ENV === "test"` (which is what `bun test` sets). Do not undo that without re-measuring.
+- **Shards are balanced by measured duration**, not round-robin file index — `--timings=scripts/test-timings.json`. On the committed data that is a 1.96x → 1.00x skew across four shards. The file is advisory: if it goes stale, sharding stays correct and just gets less balanced. Regenerate with `bun test --parallel --timings=scripts/test-timings.json --update-timings`.
 
 ## `test:others` is auto-discovered
 
@@ -17,20 +26,20 @@ The custom `scripts/test-isolated.ts` subprocess-per-file runner is still in use
 
 There is **no hand-maintained package list** — adding a new workspace package with a `test` script means it is picked up automatically and can no longer silently skip the full suite. (The old `test:others` was a `&&` chain of ~32 invocations; forgetting to append a new package was silent both locally and in CI — it bit `railway-sandbox` in #3369 and left `chat` + `email-digest` uncovered until #3372.)
 
-`bun run scripts/test-others.ts --list` prints the discovered set without running anything — use it to eyeball coverage. `@atlas/api` is the single intentional exclusion (it runs via `test:api`); everything else is auto-discovered. This is orthogonal to the per-package isolated runners, so it doesn't entangle with the #2802 `bun test --parallel` cutover.
+`bun run scripts/test-others.ts --list` prints the discovered set without running anything — use it to eyeball coverage. `@atlas/api` is the single intentional exclusion (it runs via `test:api`); everything else is auto-discovered. This is orthogonal to how each package runs its own tests, so it was unaffected by the #2802 `bun test --parallel` cutover — every discovered package simply became `bun test --parallel`.
 
 ## Fast local feedback loop
 
 ```bash
-cd packages/api && bun run scripts/test-isolated.ts --affected     # only tests whose source graph your branch touched vs origin/main
-cd packages/api && bun run scripts/test-isolated.ts --since HEAD~3  # last-3-commit window
+cd packages/api && bun test --parallel --changed=origin/main   # only tests affected by what your branch touched
+cd packages/api && bun test --parallel --changed=HEAD~3        # last-3-commit window
 ```
 
-Typical PRs drop from ~225s to 10–60s. Run the full `bun run test` before opening a PR. The runner throws loudly if the git detector can't resolve the base ref — don't ignore it.
+`--changed` is bun's native replacement for the deleted `--affected`/`--since` flags (and `scripts/affected.ts` went with them). Run the full `bun run test` before opening a PR — the full `packages/api` suite is ~3 min under `--parallel` (it was ~51 min through the old runner).
 
 ## Pre-PR gates via `/ci`
 
-`/ci` runs lint + type + test + syncpack + template drift + railway-watch. All five must pass before opening a PR. In CI the api suite is sharded 4-way; locally it runs serial.
+`/ci` runs lint + type + test + syncpack + template drift + railway-watch. All five must pass before opening a PR. In CI the api suite is sharded 4-way (`--shard=N/4`, duration-balanced via `--timings`); locally it runs unsharded.
 
 ## Mocking
 

@@ -32,8 +32,8 @@ These hold everywhere. The rest of this file is orientation, not rules.
 - **Readonly DB connections** — PostgreSQL via validation; MySQL via read-only session variable; ClickHouse via `readonly: 1`
 
 ### Tests
-- **`bun run test`, never bare `bun test`** — isolated per-file runner. Single file OK: `bun test path/to/file.test.ts`
-- **Remote CI on the PR is the gate, not a local `/ci`** — push, open the PR as a **draft**, and let `ci.yml` run (~4 min, parallel) while you review. The local pre-flight is the cheap subset: `cd packages/api && bun run scripts/test-isolated.ts --affected`, plus `bun run lint`, `bun run type` and `bun run lint:type-aware`. **`lint:type-aware` is on that list because it is its own CI-blocking job and costs ~11s** — leaving it off is what let a single type-aware diagnostic red-flag two CI jobs on #5083 *after* the pre-flight came back clean. Run the full `scripts/ci-local.sh` (41 ci-local gates, ~25 min, serial, rewrites source in place for the mutation gate) only when remote CI is broken, when you reshaped something `mutation-tables` anchors on, or before tagging a release
+- **`bun test --parallel`, never bare `bun test`** — `--parallel` implies `--isolate`: a fresh global + module registry per file. Bare `bun test` shares one global across every file and will pass on state a sibling left behind. Single file OK: `bun test path/to/file.test.ts`. ⚠️ **Never `--no-isolate`** — it trades that isolation for speed, and at least one suite (`agent-compaction.test.ts`) leaks module state across same-process runs today
+- **Remote CI on the PR is the gate, not a local `/ci`** — push, open the PR as a **draft**, and let `ci.yml` run (~4 min, parallel) while you review. The local pre-flight is the cheap subset: `cd packages/api && bun test --parallel --changed=origin/main`, plus `bun run lint`, `bun run type` and `bun run lint:type-aware`. **`lint:type-aware` is on that list because it is its own CI-blocking job and costs ~11s** — leaving it off is what let a single type-aware diagnostic red-flag two CI jobs on #5083 *after* the pre-flight came back clean. Run the full `scripts/ci-local.sh` (41 ci-local gates, ~25 min, serial, rewrites source in place for the mutation gate) only when remote CI is broken, when you reshaped something `mutation-tables` anchors on, or before tagging a release
 
 ### Merge discipline
 Rationale + override rules: [docs/development/branch-protection.md](docs/development/branch-protection.md). These are workflow rules — no file-read triggers them, so they stay here:
@@ -111,8 +111,8 @@ Run `bun run` for the script list — `dev`, `build`, `lint`, `type`, `test*`, `
 
 ```bash
 # Fast local feedback loop — only tests whose source graph your branch touched:
-cd packages/api && bun run scripts/test-isolated.ts --affected
-cd packages/api && bun run scripts/test-isolated.ts --since HEAD~3     # last 3 commits
+cd packages/api && bun test --parallel --changed=origin/main
+cd packages/api && bun test --parallel --changed=HEAD~3     # last 3 commits
 bun run atlas -- init    # Profile DB, generate semantic layer
 bun run atlas -- diff    # Compare DB schema vs semantic layer
 ```

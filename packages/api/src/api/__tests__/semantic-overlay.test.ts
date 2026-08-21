@@ -41,7 +41,7 @@ import type { AdminEntitySummary, AdminEntityListResult } from "@atlas/api/lib/s
 // IMPORTANT: do not move these to `it.concurrent` or otherwise run tests
 // in this file concurrently — the module-scoped mutables are reset in
 // `beforeEach` and would race under concurrent execution. The isolated
-// test runner (`bun run scripts/test-isolated.ts`) runs each file in its
+// test runner (`bun test --parallel`) runs each file in its
 // own subprocess, which is what makes the shared closure safe here.
 let listOpts: { orgId?: string; mode?: string } | null = null;
 let detailOpts: { name?: string; orgId?: string; mode?: string; connectionGroupId?: unknown } | null = null;

@@ -10,7 +10,7 @@
     "./wire": "./src/wire.ts"
   },
   "scripts": {
-    "test": "bun test __tests__/"
+    "test": "bun test --parallel"
   },
   "dependencies": {
     "fflate": "^0.8.2"

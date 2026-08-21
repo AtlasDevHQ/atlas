@@ -124,8 +124,8 @@ while [ $# -gt 0 ]; do
       if [ "$SHARD_INDEX" -gt "$SHARD_TOTAL" ]; then
         echo "check-mutation-tables: --shard $1 — index exceeds total." >&2; exit 1
       fi
-      # ⚠️ Normalise ONCE, here, the way packages/api/scripts/test-isolated.ts
-      # does. The 1-based CLI value and the 0-based residue used by the modulo
+      # ⚠️ Normalise ONCE, here. (This mirrored packages/api/scripts/test-isolated.ts
+      # until #2802 deleted it for native `bun test --shard`.) The 1-based CLI value and the 0-based residue used by the modulo
       # were previously converted at two separate sites — the predicate and the
       # operator-facing message — so the two could drift and the message would
       # misreport which residue class was empty. Below this line there is no

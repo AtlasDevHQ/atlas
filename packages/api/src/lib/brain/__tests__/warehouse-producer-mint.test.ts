@@ -81,9 +81,13 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  // ⚠️ `mock.module` is PROCESS-wide, not file-wide. `scripts/test-isolated.ts`
-  // spawns per file so CI is unaffected, but `bun test <a> <b>` — the invocation
-  // CLAUDE.md permits for single files — shares one process. Resetting cannot
+  // ⚠️ `mock.module` is PROCESS-wide, not file-wide. CI is unaffected, but for a
+  // DIFFERENT REASON since #2802: `bun test --parallel` used to spawn a
+  // subprocess per file; now `bun test --parallel` implies `--isolate`, which
+  // gives each file a fresh module registry and so resets module mocks between
+  // files sharing a worker (measured in #2801 slice 5a). Either way the hazard
+  // is the same one: `bun test <a> <b>` — the invocation CLAUDE.md permits for
+  // single files — shares one process with no isolation, and resetting cannot
   // uninstall the mock. Since #5230 `warehouse-producer.test.ts`'s real-gate block
   // carries a positive tripwire on the shipped gate's own wording, so a co-run REDS
   // there rather than passing against this stub — measured, and its docstring says

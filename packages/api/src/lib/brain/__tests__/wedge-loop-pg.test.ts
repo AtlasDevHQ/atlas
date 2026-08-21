@@ -418,7 +418,7 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
         await pool.end();
       }
       if (dropErr !== undefined) {
-        // Thrown, not logged. `scripts/test-isolated.ts` prints a file's
+        // Thrown, not logged. `bun test --parallel` prints a file's
         // captured output ONLY on a non-zero exit, so a `console.debug` here
         // would be discarded in precisely the case it exists to report: a green
         // run that leaked a schema. `schemaName` carries a timestamp and a

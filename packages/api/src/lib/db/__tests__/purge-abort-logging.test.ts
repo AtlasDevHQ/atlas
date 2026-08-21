@@ -9,7 +9,7 @@
  * without that blast radius.
  *
  * ⚠️ REQUIRES THE ISOLATED RUNNER, which is the repo's mandated invocation
- * (`bun run test` / `scripts/test-isolated.ts`, never a bare `bun test` across
+ * (`bun run test` / `bun test --parallel`, never a bare `bun test` across
  * files). `mock.module` only takes effect if it runs BEFORE the module is
  * evaluated, which is why `../internal` is imported dynamically below. A sibling
  * file that imports it statically wins the race when both share one process:

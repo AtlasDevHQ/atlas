@@ -64,7 +64,7 @@ for (const key of Object.keys(process.env)) {
  *
  * The sandbox is created with `mkdtempSync`, so it is unique per test process.
  * Cleanup only ever removes this process's own directory — concurrent runs
- * (sibling worktrees, the sharded CI lanes, `test-isolated.ts`'s per-file
+ * (sibling worktrees, the sharded CI lanes, `bun test --parallel`'s per-file
  * processes) can never delete each other's fixtures.
  *
  * The leaf is literally named `semantic` so the sandbox is shaped like a real

@@ -17,7 +17,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "bun test __tests__/webhook.test.ts"
+    "test": "bun test --parallel"
   },
   "keywords": [
     "atlas",

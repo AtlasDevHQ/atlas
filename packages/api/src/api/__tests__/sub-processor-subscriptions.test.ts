@@ -35,7 +35,7 @@ const mockCreateSubscription = mock(
 // import from this module get the mocked surface, so we must list
 // every export the publisher actually has — missing entries surface as
 // `undefined is not a function` in unrelated sibling tests. CLAUDE.md
-// "Mock all exports" rule. The CI runner (`scripts/test-isolated.ts`)
+// "Mock all exports" rule. The CI runner (`bun test --parallel`)
 // forks each file so the leak doesn't bite, but we keep the file
 // robust under both runners. If you add a new export to
 // sub-processor-publisher, add a stub here.

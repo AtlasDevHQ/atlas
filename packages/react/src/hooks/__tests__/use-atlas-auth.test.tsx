@@ -32,6 +32,17 @@ function wrapper({ children }: { children: ReactNode }) {
   );
 }
 
+/**
+ * The per-test budget must EXCEED the 10000ms waiter budget below.
+ *
+ * bun's default per-test timeout is 5000ms, so a waiter allowed 10000ms
+ * outlives the budget the whole test is given: under `--parallel`
+ * contention the harness kills the test before the waiter can report, and the
+ * failure carries no assertion — only "this test timed out after 5000ms".
+ * Same defect as passkey-tile.test.tsx, where it was reproduced.
+ */
+const TEST_TIMEOUT = 30000;
+
 describe("useAtlasAuth", () => {
   it("starts in loading state", () => {
     const { result } = renderHook(() => useAtlasAuth(), { wrapper });
@@ -137,7 +148,7 @@ describe("useAtlasAuth", () => {
 
     expect(result.current.error).not.toBeNull();
     expect(result.current.error!.message).toContain("500");
-  });
+  }, TEST_TIMEOUT);
 
   it("falls back to none and sets error on network failure", async () => {
     fetchMock.mockImplementation(() =>
@@ -155,7 +166,7 @@ describe("useAtlasAuth", () => {
 
     expect(result.current.error).not.toBeNull();
     expect(result.current.error!.message).toContain("Network unreachable");
-  });
+  }, TEST_TIMEOUT);
 
   it("login delegates to authClient and returns error", async () => {
     const mockSignIn = mock(() =>

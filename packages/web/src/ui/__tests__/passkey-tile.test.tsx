@@ -135,6 +135,23 @@ describe("deriveDeviceName", () => {
  * headroom and a real hang still fails the suite.
  */
 const SLOW_ENV_TIMEOUT = 5000;
+/**
+ * The per-test budget must EXCEED the waiter budget, or the waiters are dead code.
+ *
+ * bun's default per-test timeout is 5000ms — exactly `SLOW_ENV_TIMEOUT`. These tests
+ * chain waiters (a `findByRole` then a `waitFor`, each allowed SLOW_ENV_TIMEOUT), so
+ * the worst case is ~2x the budget the whole test is given. Under `--parallel` the
+ * harness kills the test before any waiter can report, and the failure carries no
+ * assertion — only "this test timed out after 5000ms". Reproduced on a full-suite
+ * single-core run (1 of 10):
+ *
+ *   (fail) PasskeyTile > user cancellation on the OS prompt does not surface an error
+ *     [5004.56ms]  ^ this test timed out after 5000ms.
+ *
+ * Lowering SLOW_ENV_TIMEOUT would be the wrong direction — it exists to tolerate a
+ * slow environment. Raising the per-test budget is what makes it mean something.
+ */
+const TEST_TIMEOUT = SLOW_ENV_TIMEOUT * 4;
 
 /**
  * Drive the tile from its idle state to an open re-auth dialog and hand back
@@ -177,7 +194,7 @@ describe("PasskeyTile", () => {
       expect(document.body.textContent).toContain("Passkey unavailable");
     }, { timeout: SLOW_ENV_TIMEOUT });
     expect(document.body.textContent).toContain("Your browser doesn't support passkeys");
-  });
+  }, TEST_TIMEOUT);
 
   test("button is disabled while WebAuthn capability is still unknown", () => {
     // Intentionally never resolve the platform-availability probe so the
@@ -203,7 +220,7 @@ describe("PasskeyTile", () => {
       expect(document.body.textContent).toContain("Recommended");
     }, { timeout: SLOW_ENV_TIMEOUT });
     expect(screen.getByRole("button", { name: /add a passkey/i })).toBeDefined();
-  });
+  }, TEST_TIMEOUT);
 
   test("shows downgraded copy and no recommended badge when only roaming auth is available", async () => {
     setPublicKeyCredential({
@@ -218,7 +235,7 @@ describe("PasskeyTile", () => {
     expect(document.body.textContent).not.toContain("Recommended");
     const addBtn = screen.getByRole("button", { name: /add a passkey/i }) as HTMLButtonElement;
     expect(addBtn.disabled).toBe(false);
-  });
+  }, TEST_TIMEOUT);
 
   test('"Add another passkey" replaces the primary CTA when one is already enrolled', async () => {
     setPublicKeyCredential({
@@ -231,7 +248,7 @@ describe("PasskeyTile", () => {
       expect(screen.getByRole("button", { name: /add another passkey/i })).toBeDefined();
     }, { timeout: SLOW_ENV_TIMEOUT });
     expect(document.body.textContent).not.toContain("Recommended");
-  });
+  }, TEST_TIMEOUT);
 
   test("user cancellation on the OS prompt does not surface an error", async () => {
     setPublicKeyCredential({
@@ -260,7 +277,7 @@ describe("PasskeyTile", () => {
 
     expect(document.body.textContent).not.toContain("Could not register that passkey");
     expect(document.body.textContent).not.toContain("Name this passkey");
-  });
+  }, TEST_TIMEOUT);
 
   test("real server error surfaces a banner with the message", async () => {
     setPublicKeyCredential({
@@ -287,7 +304,7 @@ describe("PasskeyTile", () => {
       expect(document.body.textContent).toContain("Origin mismatch");
     }, { timeout: SLOW_ENV_TIMEOUT });
     expect(document.body.textContent).not.toContain("Name this passkey");
-  });
+  }, TEST_TIMEOUT);
 
   test("addPasskey() success opens the rename modal with a derived default", async () => {
     setPublicKeyCredential({
@@ -313,7 +330,7 @@ describe("PasskeyTile", () => {
     await waitFor(() => {
       expect(document.body.textContent).toContain("Name this passkey");
     }, { timeout: SLOW_ENV_TIMEOUT });
-  });
+  }, TEST_TIMEOUT);
 
   test("SESSION_NOT_FRESH opens the re-auth dialog instead of surfacing a banner", async () => {
     setPublicKeyCredential({
@@ -341,7 +358,7 @@ describe("PasskeyTile", () => {
     // The freshness branch must NOT surface the generic enrollment-failure
     // banner — that would be a confusing double signal alongside the dialog.
     expect(document.body.textContent).not.toContain("Could not register that passkey");
-  });
+  }, TEST_TIMEOUT);
 
   test("re-auth with correct password retries addPasskey and proceeds to naming", async () => {
     setPublicKeyCredential({
@@ -387,7 +404,7 @@ describe("PasskeyTile", () => {
     await waitFor(() => expect(document.body.textContent).toContain("Name this passkey"), {
       timeout: SLOW_ENV_TIMEOUT,
     });
-  });
+  }, TEST_TIMEOUT);
 
   test("re-auth with wrong password shows OAuth-aware fallback hint", async () => {
     setPublicKeyCredential({
@@ -427,7 +444,7 @@ describe("PasskeyTile", () => {
     }, { timeout: SLOW_ENV_TIMEOUT });
     // Ensure addPasskey was NOT retried — re-auth failed.
     expect(addPasskeyMock).toHaveBeenCalledTimes(1);
-  });
+  }, TEST_TIMEOUT);
 
   test("rename failure after successful enrollment fires onChange and shows recovery hint", async () => {
     setPublicKeyCredential({
@@ -479,5 +496,5 @@ describe("PasskeyTile", () => {
     expect(document.body.textContent).toContain("Saved your passkey, but renaming failed");
     expect(document.body.textContent).toContain("DB write timeout");
     expect(document.body.textContent).toContain("rename it from the list below");
-  });
+  }, TEST_TIMEOUT);
 });

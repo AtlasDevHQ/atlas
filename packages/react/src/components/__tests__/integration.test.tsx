@@ -109,6 +109,17 @@ function sameOriginWrapper({ children }: { children: ReactNode }) {
 // AtlasProvider context integration
 // ---------------------------------------------------------------------------
 
+/**
+ * The per-test budget must EXCEED the 10000ms waiter budget below.
+ *
+ * bun's default per-test timeout is 5000ms, so a waiter allowed 10000ms
+ * outlives the budget the whole test is given: under `--parallel`
+ * contention the harness kills the test before the waiter can report, and the
+ * failure carries no assertion — only "this test timed out after 5000ms".
+ * Same defect as passkey-tile.test.tsx, where it was reproduced.
+ */
+const TEST_TIMEOUT = 30000;
+
 describe("AtlasProvider integration", () => {
   it("provides API key to hooks via context", async () => {
     const { result } = renderHook(() => useAtlasAuth(), { wrapper: apiKeyWrapper });
@@ -253,7 +264,7 @@ describe("error resilience", () => {
     // Falls back to "none" mode on failure
     expect(result.current.authMode).toBe("none");
     expect(result.current.error).not.toBeNull();
-  });
+  }, TEST_TIMEOUT);
 
   it("handles network failure gracefully", async () => {
     fetchMock.mockImplementation(() =>
@@ -268,5 +279,5 @@ describe("error resilience", () => {
 
     expect(result.current.authMode).toBe("none");
     expect(result.current.error).toBeInstanceOf(Error);
-  });
+  }, TEST_TIMEOUT);
 });

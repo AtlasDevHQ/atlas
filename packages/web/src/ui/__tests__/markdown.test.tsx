@@ -51,15 +51,9 @@ describe("Markdown", () => {
     expect(code!.textContent).toContain("SELECT * FROM table");
   });
 
-  test("renders code blocks with fallback pre (before syntax highlighter loads)", () => {
-    const { container } = render(
-      <Markdown content={'```sql\nSELECT 1;\n```'} />,
-    );
-    // Before lazy load, falls back to <pre><code>
-    const pre = container.querySelector("pre");
-    expect(pre).not.toBeNull();
-    expect(pre!.textContent).toContain("SELECT 1;");
-  });
+  // The fenced-code fallback assertion moved to `markdown-fallback.test.tsx`,
+  // alone in its own file — the form that lived here could not fail. See that
+  // file's header for the measurement.
 
   test("renders blockquotes", () => {
     const { container } = render(

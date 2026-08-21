@@ -32,7 +32,7 @@ the Company Atlas context alone spans `packages/api/src/lib/brain/**`, `/admin/b
 | Context | Governed by | Notes |
 | --- | --- | --- |
 | Pillars (the product's four-pillar frame) | `CONTEXT.md` § Pillars | the frame the rest hangs off |
-| Company Atlas | [`docs/contexts/company-atlas/CONTEXT.md`](docs/contexts/company-atlas/CONTEXT.md) | ADR-0038; stored as `brain_*`, see the two-vocabulary rule |
+| Company Atlas | [`docs/contexts/company-atlas/CONTEXT.md`](docs/contexts/company-atlas/CONTEXT.md) | ADR-0038; stored as `brain_*`, see the two-vocabulary rule. ADR-0044 bounds what may be done with the material: fact content never enters model weights, and customer data is never a training corpus |
 | Chat Platform mechanics | `CONTEXT.md` § Chat Platform mechanics | eight chat-platform adapters |
 | Chat turn presentation | `CONTEXT.md` § Chat turn presentation | |
 | Conversation scope | `CONTEXT.md` § Conversation scope | |

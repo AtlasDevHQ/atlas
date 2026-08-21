@@ -485,10 +485,13 @@ count_scan() {
       while (match(substr(lo, off + 1), rx)) {
         st = off + RSTART; en = st + RLENGTH - 1;
         # ADVANCE PAST THE MATCH END, NOT THE START. Stepping one character
-        # past st re-scanned the tail of the match just taken, so
-        # "43 system-wide decisions" yielded a SECOND hit reading "3 system-wide
-        # decisions" - a fabricated finding on a line that was correct, and on
-        # three of the five registered phrases at once. An occurrence is
+        # past st re-scanned the tail of the match just taken, so a two-digit
+        # count followed by a registered phrase yielded a SECOND hit reading the
+        # phrase with the leading digit dropped - a fabricated finding on a line
+        # that was correct, and on three of the five registered phrases at once.
+        # (Written without a literal example on purpose: an example spelled out
+        # here IS an occurrence of the phrase, so this file would fail its own
+        # check the next time the tree count moved.) An occurrence is
         # consumed, exactly as grep -o consumes it. (No apostrophes in here: this
         # awk program is single-quoted by the shell.)
         off = en;                   # strictly increases, so this terminates

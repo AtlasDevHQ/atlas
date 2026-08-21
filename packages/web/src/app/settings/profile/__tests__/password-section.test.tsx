@@ -208,6 +208,17 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
 });
 
+/**
+ * The per-test budget must EXCEED the 5000ms waiter budget below.
+ *
+ * bun's default per-test timeout is 5000ms, so a waiter allowed 5000ms
+ * equals the budget the whole test is given: under `--parallel`
+ * contention the harness kills the test before the waiter can report, and the
+ * failure carries no assertion — only "this test timed out after 5000ms".
+ * Same defect as passkey-tile.test.tsx, where it was reproduced.
+ */
+const TEST_TIMEOUT = 20000;
+
 describe("PasswordSection — auth-mode gating", () => {
   test("renders nothing while the password-status probe is pending (no flash)", () => {
     // A fetch that never resolves keeps the probe in flight forever.
@@ -257,7 +268,7 @@ describe("PasswordSection — auth-mode gating", () => {
     expect(
       (fetchMock as unknown as ReturnType<typeof mock>).mock.calls.length,
     ).toBeGreaterThan(0);
-  });
+  }, TEST_TIMEOUT);
 
   test("renders the form when allowed", async () => {
     globalThis.fetch = mockFetch({ statusKind: "allowed" }) as unknown as typeof fetch;

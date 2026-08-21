@@ -2,27 +2,44 @@
 # Verify that test files are self-contained — no OS-level state mutation
 # at module top level.
 #
-# ⚠️ THIS GATE GOT MORE LOAD-BEARING, NOT LESS, WHEN #2802 LANDED. It was
-# written as groundwork for replacing the custom subprocess-per-file runners
-# (`packages/*/scripts/test-isolated.ts`) with native `bun test --parallel`.
-# That cutover has now happened and the runners are deleted, so the hazard
-# below is live rather than anticipated.
+# ⚠️ WHAT THIS GATE PROTECTS IS THE NON-`--parallel` MODES. Measured — do not
+# re-derive it from first principles. An earlier version of this header
+# asserted the opposite, confidently and at length, and was wrong.
 #
-# Bun's `--parallel` runner reuses worker PROCESSES across multiple test
-# files. JS-global state is reset between files via `--isolate` (which
-# `--parallel` implies), but OS-level state — env, cwd, file handles, signal
-# handlers, listeners — is NOT: it persists for the worker's lifetime. The
-# deleted runners were silently providing process isolation by spawning a
-# fresh subprocess per file, so every implicit coupling they were hiding is
-# now a real failure mode.
+# The claim it used to make: bun reuses worker PROCESSES, so OS-level state
+# (env, cwd, file handles, signal handlers, listeners) persists across files in
+# a worker, and every allowlist entry is a file that can break a SIBLING.
 #
-# The allowlist is therefore DEBT, not a settled exemption. The 9 remaining
-# `env` entries were harmless under a subprocess-per-file runner and are not
-# harmless now — they simply happen not to collide with whatever file bun
-# schedules next in the same worker. The full suite passes today (22,070
-# tests, 0 fail), so nothing is broken; but an entry here is a file that can
-# break a SIBLING when the scheduling changes, which is the hardest kind of
-# failure to attribute. Clear them rather than growing them.
+# That is false under `bun test --parallel` on bun 1.4.0. 32 probe files x 3
+# reps, `taskset -c 0`, up to 17 files packed into ONE worker pid:
+#
+#   env leaks: 0   ATLAS_ leaks: 0   cwd leaks: 0
+#   exitListeners: [1,1,1,1,1,1]   fds: [26,26,26,26,26,26]   globalThis: none
+#
+# `cwd` is the load-bearing control — one per process via syscall, so no module
+# registry reset explains it away — and a sibling in the same pid still does not
+# observe it. Positive control: the writes DO land (`probe1` reads back its own
+# `env=probe1`, `cwd=/tmp`; `probe2`, same pid, sees a clean slate).
+#
+# But that isolation is a property of `--isolate`, NOT of bun. Same probe, same
+# files, three invocation modes:
+#
+#   --parallel      files=4  pids=3  envLeaks=0  seq=[None, None, None, None]
+#   (bare)          files=4  pids=1  envLeaks=3  seq=[None, probe1, probe2, probe3]
+#   --no-isolate    files=4  pids=1  envLeaks=3  seq=[None, probe1, probe2, probe3]
+#
+# So a top-level `process.env` write leaks exactly as the old header feared —
+# under bare `bun test` and `--no-isolate`, both of which CLAUDE.md forbids for
+# multi-file runs. This gate is what keeps that prohibition from being the only
+# thing between us and a silent cross-file coupling: it holds the tree in a
+# shape where the forbidden modes are merely slower, not wrong.
+#
+# The consequence for the allowlist: the 9 `env` entries are NOT the live hazard
+# the old header described, and they are not clearable by the fix it prescribed
+# either — every one is a file whose top-level IMPORT reads env at module-load
+# time, so `beforeAll` runs too late by construction. They are a settled
+# exemption with a real reason, not debt to burn down. #5368 carries the full
+# measurement and the open question of whether these rules should survive.
 #
 # Two rules, each independently allowlisted in
 # `scripts/test-discipline-allowlist.txt` so slices 1/2 can land in any

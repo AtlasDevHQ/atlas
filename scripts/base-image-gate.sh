@@ -71,12 +71,18 @@
 #     tree, and the job fails on a re-runnable error rather than on a
 #     vulnerability verdict it has no basis for.
 #
-#   base-image-gate.sh scan <image-ref> <category> <gated> [out-dir]
+#   base-image-gate.sh scan --gated       <image-ref> <category> [out-dir]
+#   base-image-gate.sh scan --report-only <image-ref> <category> [out-dir]
 #
 #     Runs scripts/scan-image.sh and applies the policy above to its verdict.
-#     A SCANNER failure (any exit other than 0 or 1) always fails, gated or not:
+#     A SCANNER failure (any exit other than 0 or 1) always fails, in both modes:
 #     report-only is a statement about vulnerability verdicts, not about the
 #     scanner having run.
+#
+#     The mode is a NAMED flag, not a positional `true`/`false`. It decides
+#     whether a security gate can block, and `scan "$IMAGE" "$CAT" false` reads
+#     as innocuous at every call site and in every log line — which is the wrong
+#     property for the one argument that turns the gate off.
 #
 # Env: BASE_IMAGE_ROOT — head tree to discover from (default: repo root).
 #      Honoured by list-runtime-base-images.sh; used by the fixtures.
@@ -158,14 +164,16 @@ cmd_matrix() {
 }
 
 cmd_scan() {
-  local image="${1:-}" category="${2:-}" gated="${3:-}" out_dir="${4:-./trivy-results}"
-
-  [ -n "$image" ] && [ -n "$category" ] && [ -n "$gated" ] \
-    || die "usage: base-image-gate.sh scan <image-ref> <category> <gated> [out-dir]"
-  case "$gated" in
-    true|false) ;;
-    *) die "<gated> must be 'true' or 'false' (got '$gated')" ;;
+  local gated=""
+  case "${1:-}" in
+    --gated)       gated="true";  shift ;;
+    --report-only) gated="false"; shift ;;
+    *) die "usage: base-image-gate.sh scan <--gated|--report-only> <image-ref> <category> [out-dir]" ;;
   esac
+
+  local image="${1:-}" category="${2:-}" out_dir="${3:-./trivy-results}"
+  [ -n "$image" ] && [ -n "$category" ] \
+    || die "usage: base-image-gate.sh scan <--gated|--report-only> <image-ref> <category> [out-dir]"
 
   # TRIVY_ANNOTATE=none: this function owns the verdict annotation, because
   # only it knows whether a finding blocks. scan-image.sh emitting ::error::

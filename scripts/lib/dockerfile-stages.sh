@@ -17,11 +17,21 @@
 # exactly like coverage — a Dockerfile scanned but never checked, or checked but
 # never scanned.
 #
-# ⚠️ This file shipped with the parser duplicated: `parse_stages` re-implemented
-# `parse_froms`'s `--platform`/`AS` loop while this header claimed the parser
-# lived here "once". They had already diverged on one rule. There is now ONE
-# parser, `parse_stages`, and `list-runtime-base-images.sh` reads its records
-# too. Do not add a second.
+# ⚠️ TWICE NOW this file has claimed to hold something "once" while a second
+# copy lived elsewhere, so read that as the failure mode rather than as history:
+#
+#   1. `parse_stages` re-implemented `parse_froms`'s `--platform`/`AS` loop while
+#      this header said the parser lived here once. They had already diverged.
+#   2. With the parser shared, the ALIAS-CHAIN WALK was still written twice —
+#      `list-runtime-base-images.sh` walking an `alias -> image` map and
+#      `check-runtime-stage-upgrades.sh` walking an `alias -> index` map, each
+#      with its own `hops > 32` cycle guard. Sharing the parser but not the
+#      traversal left the two gates free to resolve DIFFERENT runtime stages for
+#      the same Dockerfile, which is precisely the divergence this file exists to
+#      prevent.
+#
+# So the unit shared here is the ANSWER — `resolve_runtime_stage` — not just the
+# tokens. If you find yourself walking stages in a caller, that is the smell.
 #
 # Source it; do not execute it.
 
@@ -105,4 +115,73 @@ read_stage_record() {
   STAGE_IMG="${rest%%$'\t'*}"; rest="${rest#*$'\t'}"
   STAGE_ALIAS="${rest%%$'\t'*}"; rest="${rest#*$'\t'}"
   STAGE_UP="$rest"
+}
+
+# Resolve one Dockerfile's runtime stage — the single traversal both gates use.
+#
+# "Runtime stage" is the LAST stage in the file, which is Docker's default build
+# target. Its `FROM` may name an earlier stage alias (`FROM base AS runner`), so
+# aliases are walked transitively back to the external image reference.
+#
+# On success (exit 0) sets:
+#
+#   RUNTIME_BASE         external image ref the chain terminates at, or `scratch`
+#   RUNTIME_CHAIN        stage labels, runtime-stage first, back to that image
+#   RUNTIME_UPGRADES     1 if ANY stage on the chain upgrades. Inherited layers
+#                        ship, so an ancestor's upgrade genuinely counts.
+#   RUNTIME_FINAL_ALIAS  the last stage's `AS` name, empty if it has none
+#   RUNTIME_FINAL_UPGRADES  1 if the LAST STAGE ITSELF upgrades. Distinct from
+#                        RUNTIME_UPGRADES on purpose: `no-cache-filters` busts
+#                        one named stage, so an upgrade that has moved into an
+#                        ancestor still ships but is no longer being rebuilt.
+#
+# Exits 1 with a `::error file=…::` line on anything it cannot resolve — no FROM,
+# a cycle, or a build-arg-interpolated reference. Fail closed rather than
+# silently dropping it: a stage we cannot resolve is one neither gate can judge,
+# and skipping it quietly leaves a hole that looks exactly like coverage.
+resolve_runtime_stage() {
+  local df="$1"
+  local -A alias_idx=()
+  local records=() i cur hops parent
+
+  mapfile -t records < <(parse_stages "$df")
+  if [ ${#records[@]} -eq 0 ]; then
+    echo "::error file=$df::No FROM instruction found — cannot determine a runtime stage" >&2
+    return 1
+  fi
+
+  local imgs=() aliases=() ups=()
+  for i in "${!records[@]}"; do
+    read_stage_record "${records[$i]}"
+    imgs+=("$STAGE_IMG"); aliases+=("$STAGE_ALIAS"); ups+=("$STAGE_UP")
+    [ -n "$STAGE_ALIAS" ] && alias_idx["$STAGE_ALIAS"]="$i"
+  done
+
+  cur=$(( ${#records[@]} - 1 ))          # last FROM wins — the default target
+  RUNTIME_FINAL_ALIAS="${aliases[$cur]}"
+  RUNTIME_FINAL_UPGRADES="${ups[$cur]}"
+  RUNTIME_UPGRADES=0
+  RUNTIME_CHAIN=()
+
+  hops=0
+  while :; do
+    RUNTIME_CHAIN+=("${aliases[$cur]:-stage-$cur}")
+    [ "${ups[$cur]}" = "1" ] && RUNTIME_UPGRADES=1
+    parent="${imgs[$cur]}"
+    [ -n "${alias_idx[$parent]+set}" ] || break
+    cur="${alias_idx[$parent]}"
+    hops=$((hops + 1))
+    if [ "$hops" -gt 32 ]; then
+      echo "::error file=$df::Stage alias chain did not terminate (cycle?)" >&2
+      return 1
+    fi
+  done
+
+  RUNTIME_BASE="${imgs[$cur]}"
+
+  if [[ "$RUNTIME_BASE" == *'$'* ]]; then
+    echo "::error file=$df::Runtime base image '$RUNTIME_BASE' interpolates a build arg — resolve it or add an explicit exclusion" >&2
+    return 1
+  fi
+  return 0
 }

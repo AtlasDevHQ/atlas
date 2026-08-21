@@ -183,9 +183,13 @@
 #   BUILT images, same policy, no baseline applied — local, uncached builds:
 #     probe-api    0        probe-web    0        probe-docs   0
 #
-#   CI's cached builds of the same commit did NOT agree, and finding out why is
-#   the one thing this pass changed beyond where the gate blocks: see the ⚠️
-#   under "How to re-measure" above.
+#   BUILT images as CI builds them, after the no-cache-filters fix below:
+#     atlas-api    0        atlas-web    0        atlas-docs   0
+#
+#   Those two lines are the point. Before the fix they DISAGREED — CI's cached
+#   builds carried the four util-linux CVEs a fresh build did not — and finding
+#   out why is the one thing this pass changed beyond where the gate blocks. See
+#   the ⚠️ under "How to re-measure" above.
 #
 # So: 14 findings on a surface that ships nothing, 0 on the surface that ships.
 # That asymmetry is the whole argument, and it is why the four util-linux
@@ -196,8 +200,8 @@
 #
 # **Prefer fixing the image.** In order: pick a base without the finding, or a
 # newer tag/digest of the same one; failing that, clear it in the runtime stage
-# with `apt-get upgrade` / `apk upgrade`, which is what all eight Dockerfiles in
-# this tree already do. An entry here is the third option, not the first.
+# with `apt-get upgrade` / `apk upgrade`, which is what every Dockerfile in this
+# tree already does — enforced by scripts/check-runtime-stage-upgrades.sh. An entry here is the third option, not the first.
 #
 # ⚠️ The rule that used to sit here said an entry is correct "only when the
 # distro has published no fixed package … or when the fix is unreachable from
@@ -220,10 +224,9 @@
 # it would make this file lie about what customers receive.
 #
 # **Verify it, do not assert it.** Run the two-surface re-measure under "How to
-# re-measure" above — one copy, one place to keep true. A candidate entry must
-# appear in the bare-base scan AND be absent from all three built-image scans.
-# A built-image measurement alone is not enough: an earlier draft emptied this
-# file on exactly that and CI failed both base legs immediately.
+# re-measure" above, which says what each surface answers and what to do when
+# they disagree. One copy, one place to keep true — do not restate its criteria
+# here.
 #
 # **The one case this is the documented path rather than a fallback** — the
 # escape hatch scripts/base-image-gate.sh names when it blocks a new base. A PR

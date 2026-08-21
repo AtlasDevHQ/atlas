@@ -25,8 +25,9 @@ name: Image Scan
 #             reads the finished artifact, which is the only thing a customer
 #             receives. The BASE-image tier is report-only except on a base
 #             reference the PR introduced or changed. Absolute base gating
-#             protected nothing that ships — all eight runtime stages upgrade
-#             their OS packages — while blocking PRs that touched no image at
+#             protected nothing that ships — every runtime stage upgrades
+#             its OS packages (scripts/check-runtime-stage-upgrades.sh is what
+#             keeps that true; it is a gate, not a number in prose here) — while blocking PRs that touched no image at
 #             all. scripts/base-image-gate.sh holds that policy.
 #   reports   every FIXABLE finding at every severity and package type, from the
 #             BUILT images only, via SARIF to GitHub code scanning
@@ -139,7 +140,7 @@ name: Image Scan
 # CVE disclosed against their base now has no surface that can go red and no
 # alert — it is a ::notice:: in a green job log. Before #5361 the cron's base
 # legs would have gone red on it. That is accepted on the same grounds as the
-# rest of this change (all eight runtime stages upgrade, so the finding does not
+# rest of this change (every runtime stage upgrades, so the finding does not
 # ship) and it is the same family as the hole #5361 records for those five: a
 # package added in their OWN runner stage is invisible too. If either matters,
 # the fix is to build and scan them, not to re-add absolute base gating.
@@ -202,6 +203,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
 
@@ -216,12 +218,25 @@ jobs:
             exit 0
           fi
 
+          # ⚠️ The MERGE-BASE, computed — not `base.sha`, which is the base
+          # BRANCH TIP. They coincide on a freshly-opened PR and diverge as soon
+          # as main moves: a Dockerfile added to main after this branch forked
+          # would then appear in the "before" set, and a ref this PR genuinely
+          # introduces could read as pre-existing. `git diff A...B` in the
+          # filter step below already has merge-base semantics; this makes the
+          # two agree instead of nearly agreeing.
+          if ! MERGE_BASE="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"; then
+            echo "::error::could not compute the merge-base of $BASE_SHA and $HEAD_SHA, so no base reference can be called new or unchanged. Re-run this job; if it persists, the checkout's history is incomplete (this job needs fetch-depth: 0)."
+            exit 1
+          fi
+          echo "merge-base: $MERGE_BASE"
+
           # ⚠️ OUTSIDE the repo checkout on purpose. A merge-base worktree
           # placed under $GITHUB_WORKSPACE would be walked by the head tree's
           # own Dockerfile discovery, so every base ref would appear in both
           # sets and NOTHING would ever read as new.
           BASE_TREE="$(mktemp -d)"
-          if ! git worktree add --detach "$BASE_TREE" "$BASE_SHA"; then
+          if ! git worktree add --detach "$BASE_TREE" "$MERGE_BASE"; then
             # ⚠️ NOT a fall-back to gating every ref. That was the first cut, and
             # it is the wrong failure: the bare bases carry fixable
             # HIGH/CRITICAL findings no PR introduced — that is this change's
@@ -229,7 +244,7 @@ jobs:
             # transient worktree hiccup would reproduce #5359 exactly. Not
             # knowing the baseline is an INFRASTRUCTURE failure; report it as
             # one, on a job that is re-runnable.
-            echo "::error::could not check out the merge-base tree ($BASE_SHA), so no base reference can be called new or unchanged. Re-run this job; if it persists, the checkout's history is incomplete (this job needs fetch-depth: 0)."
+            echo "::error::could not check out the merge-base tree ($MERGE_BASE), so no base reference can be called new or unchanged. Re-run this job; if it persists, the checkout's history is incomplete (this job needs fetch-depth: 0)."
             exit 1
           fi
           MATRIX="$(bash scripts/base-image-gate.sh matrix --mode diff --base-tree "$BASE_TREE")"
@@ -347,8 +362,8 @@ jobs:
   # Every runtime stage in the tree upgrades its OS packages, which is why a CVE
   # in an unchanged base is not a fact about anything Atlas ships. A runtime
   # stage that skips the upgrade falsifies that AND is invisible to both tiers:
-  # an unchanged base ref is not gated here, and only three of the eight
-  # Dockerfiles are in the built-images matrix.
+  # an unchanged base ref is not gated here, and the built-images matrix is a
+  # hardcoded three while the tree holds more.
   #
   # Cheap (pure bash, no docker, no trivy) and unconditional, because the thing
   # it guards is the reason the expensive tiers are allowed to be quiet.
@@ -393,8 +408,8 @@ jobs:
   #      because code scanning needs a distinct category per upload and
   #      therefore counted the same base-layer CVE once per image.
   #
-  #   2. Since 2026-08-12 it is also WRONG. All eight runtime stages in the tree
-  #      run `apt-get upgrade` / `apk upgrade`, so a scan of the bare base
+  #   2. Since 2026-08-12 it is also WRONG. Every runtime stage in the tree
+  #      runs `apt-get upgrade` / `apk upgrade`, so a scan of the bare base
   #      reports packages that do not ship — it overstates the shipped surface.
   #      The built-image scan is the only one that reads the artifact a customer
   #      actually receives. scripts/check-runtime-stage-upgrades.sh is what keeps
@@ -433,8 +448,11 @@ jobs:
         env:
           IMAGE: ${{ matrix.image.ref }}
           CATEGORY: base-${{ matrix.image.label }}
-          GATED: ${{ matrix.image.gated }}
-        run: bash scripts/base-image-gate.sh scan "$IMAGE" "$CATEGORY" "$GATED" trivy-results
+          # `gated` is a JSON boolean in the matrix; the script takes a named
+          # flag rather than a positional true/false, because the argument that
+          # turns a security gate off should not read as innocuous.
+          MODE: ${{ matrix.image.gated && '--gated' || '--report-only' }}
+        run: bash scripts/base-image-gate.sh scan "$MODE" "$IMAGE" "$CATEGORY" trivy-results
 
   # Tier 2 — the images Atlas builds and deploys, scanned as finished artifacts.
   # Since #5361 this is the GATE OF RECORD on every trigger, which raises the bar
@@ -492,7 +510,7 @@ jobs:
       # Before the build, because a wrong name here does not fail the build —
       # it silently produces a stale artifact and a green scan of it.
       - name: '${{ matrix.runtime-stage }} is the final stage of ${{ matrix.dockerfile }} and upgrades in it'
-        run: bash scripts/check-runtime-stage-upgrades.sh --assert-cache-busted-stage "${{ matrix.dockerfile }}" "${{ matrix.runtime-stage }}"
+        run: bash scripts/check-runtime-stage-upgrades.sh --assert-final-stage-upgrades "${{ matrix.dockerfile }}" "${{ matrix.runtime-stage }}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@988b5a0280414f521da01fcc63a27aeeb4b104db # v3.6.1

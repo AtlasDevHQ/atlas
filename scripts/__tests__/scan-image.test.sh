@@ -251,7 +251,7 @@ else
 fi
 
 # (11) …and GREEN once the upgrade is added, to the SAME tree. Without this,
-#      a guard that was merely broken and unconditionally red would satisfy (9).
+#      a guard that was merely broken and unconditionally red would satisfy (10).
 cat > "$tmp/svc/Dockerfile" <<'EOF'
 FROM oven/bun:1.3.13 AS base
 FROM base AS runner
@@ -359,7 +359,7 @@ else
 fi
 rm -rf "$tmp"
 
-# (15) --assert-cache-busted-stage, all three directions. image-scan.yml passes
+# (15) --assert-final-stage-upgrades, all three directions. image-scan.yml passes
 #      the matched name to `no-cache-filters`, which is the ONLY thing forcing
 #      the runner stage's upgrade to re-run instead of restoring from the gha
 #      cache. It busts exactly one named stage, so TWO different edits put the
@@ -374,12 +374,12 @@ FROM base AS runner
 RUN apk upgrade --no-cache
 EOF
 rc_ok=0
-bash "$UPGRADES" --assert-cache-busted-stage "$tmp/Dockerfile" runner >/dev/null 2>&1 || rc_ok=$?
+bash "$UPGRADES" --assert-final-stage-upgrades "$tmp/Dockerfile" runner >/dev/null 2>&1 || rc_ok=$?
 
 #      (b) a RENAMED final stage: 'runner' now matches no stage, so
 #          no-cache-filters busts nothing.
 rc_name=0
-bash "$UPGRADES" --assert-cache-busted-stage "$tmp/Dockerfile" builder >/dev/null 2>&1 || rc_name=$?
+bash "$UPGRADES" --assert-final-stage-upgrades "$tmp/Dockerfile" builder >/dev/null 2>&1 || rc_name=$?
 
 #      (c) the upgrade MOVED UP into an ancestor stage. This is the subtle one
 #          and the reason the assertion is not just a name check: the upgrade
@@ -393,7 +393,7 @@ FROM base AS runner
 COPY . /app
 EOF
 rc_moved=0
-bash "$UPGRADES" --assert-cache-busted-stage "$tmp/Dockerfile" runner >/dev/null 2>&1 || rc_moved=$?
+bash "$UPGRADES" --assert-final-stage-upgrades "$tmp/Dockerfile" runner >/dev/null 2>&1 || rc_moved=$?
 mkdir -p "$tmp/tree"; cp "$tmp/Dockerfile" "$tmp/tree/Dockerfile"
 rc_guard=0
 BASE_IMAGE_ROOT="$tmp/tree" bash "$UPGRADES" >/dev/null 2>&1 || rc_guard=$?
@@ -404,17 +404,47 @@ else
   bad "cache-bust assertion — expected 0/1/1 and guard 0, got $rc_ok/$rc_name/$rc_moved and guard $rc_guard"
 fi
 
-# (16) …and the three built-image Dockerfiles satisfy it right now, against the
-#      name image-scan.yml's matrix actually passes. This is the live coupling,
-#      not a hypothetical one: get it wrong and nothing in the build fails.
-rc=0
-for df in "$ROOT/deploy/api/Dockerfile" "$ROOT/deploy/web/Dockerfile" "$ROOT/deploy/docs/Dockerfile"; do
-  bash "$UPGRADES" --assert-cache-busted-stage "$df" runner >/dev/null 2>&1 || rc=1
-done
-if [ "$rc" -eq 0 ]; then
-  ok "all three built-image Dockerfiles end in a 'runner' stage that upgrades in it"
+# (16) …and every built-image leg satisfies it RIGHT NOW, against the pairs
+#      READ OUT OF image-scan.yml rather than retyped here.
+#
+#      ⚠️ This fixture hardcoded `deploy/{api,web,docs}` and the literal
+#      `runner` while claiming to test "the live coupling". It did not: editing
+#      `runtime-stage:` in the matrix, or adding a fourth built image, failed no
+#      test — the only thing that would have noticed is the pre-build assertion
+#      itself, at build time, which is the thing this is supposed to be checking
+#      in advance. Deriving the pairs is what makes the claim true.
+#
+#      Parsed with awk rather than a YAML library: GitHub runners are not
+#      guaranteed to ship PyYAML, and the matrix entries are a flat, uniform
+#      `dockerfile:`/`runtime-stage:` block. A parse that finds nothing is a hard
+#      failure below, never a silent pass.
+matrix_pairs="$(awk '
+  /^ *- name: / { df=""; stage="" }
+  /^ *dockerfile: / { df=$2 }
+  /^ *runtime-stage: / { stage=$2; if (df != "") print df "\t" stage }
+' "$ROOT/.github/workflows/image-scan.yml")"
+
+if [ -z "$matrix_pairs" ]; then
+  bad "could not read any dockerfile/runtime-stage pair out of image-scan.yml — this fixture verified NOTHING"
 else
-  bad "built-image final stages — one of deploy/{api,web,docs} fails the cache-bust assertion"
+  n_pairs=0
+  pair_fail=""
+  while IFS=$'\t' read -r df stage; do
+    [ -n "$df" ] || continue
+    n_pairs=$((n_pairs + 1))
+    bash "$UPGRADES" --assert-final-stage-upgrades "$ROOT/$df" "$stage" >/dev/null 2>&1 \
+      || pair_fail="$pair_fail $df(expected '$stage')"
+  done <<< "$matrix_pairs"
+
+  # Floor: the matrix has three built images today. Fewer means the awk above
+  # matched a subset and the fixture is quietly testing less than it claims.
+  if [ "$n_pairs" -lt 3 ]; then
+    bad "read only $n_pairs dockerfile/runtime-stage pair(s) from image-scan.yml — expected at least 3"
+  elif [ -z "$pair_fail" ]; then
+    ok "all $n_pairs built-image legs match the runtime-stage image-scan.yml passes them"
+  else
+    bad "built-image final stages —$pair_fail"
+  fi
 fi
 rm -rf "$tmp"
 
@@ -568,7 +598,7 @@ fi
 #      argument wide — `base-image-gate.sh scan` could drop the verdict on the
 #      floor and every other test here would still pass.
 rc=0
-bash "$GATE" scan atlas-scan-fixture:vulnerable fixture-gated true "$SARIF_DIR" >/dev/null 2>&1 || rc=$?
+bash "$GATE" scan --gated atlas-scan-fixture:vulnerable fixture-gated "$SARIF_DIR" >/dev/null 2>&1 || rc=$?
 if [ "$rc" -eq 1 ]; then
   ok "gated ref with fixable HIGH/CRITICAL findings blocks (end to end)"
 else
@@ -580,7 +610,7 @@ fi
 #      decision and never from the image happening to be clean. This is #5361's
 #      claim in its most falsifiable form.
 rc=0
-bash "$GATE" scan atlas-scan-fixture:vulnerable fixture-ungated false "$SARIF_DIR" >/dev/null 2>&1 || rc=$?
+bash "$GATE" scan --report-only atlas-scan-fixture:vulnerable fixture-ungated "$SARIF_DIR" >/dev/null 2>&1 || rc=$?
 if [ "$rc" -eq 0 ]; then
   ok "the identical vulnerable image is report-only when the ref is unchanged"
 else
@@ -593,7 +623,7 @@ fi
 #      annotations, and then miss the one that meant something. Measured on the
 #      first CI run of #5361 — scan-image.sh annotated ::error:: and the job went
 #      green anyway.
-out="$(bash "$GATE" scan atlas-scan-fixture:vulnerable fixture-annot-off false "$SARIF_DIR" 2>&1 || true)"
+out="$(bash "$GATE" scan --report-only atlas-scan-fixture:vulnerable fixture-annot-off "$SARIF_DIR" 2>&1 || true)"
 if ! printf '%s' "$out" | grep -q '::error::' && printf '%s' "$out" | grep -q '::notice::REPORT-ONLY'; then
   ok "report-only emits a notice and no error annotation"
 else
@@ -606,7 +636,7 @@ fi
 #      base-image-gate.sh's, and the default TRIVY_ANNOTATE=error is
 #      scan-image.sh's — the built-image tier calls that one directly and must
 #      not lose its annotation to this change.
-gated_out="$(bash "$GATE" scan atlas-scan-fixture:vulnerable fixture-annot-on true "$SARIF_DIR" 2>&1 || true)"
+gated_out="$(bash "$GATE" scan --gated atlas-scan-fixture:vulnerable fixture-annot-on "$SARIF_DIR" 2>&1 || true)"
 direct_out="$(bash "$SCAN" atlas-scan-fixture:vulnerable fixture-annot-direct "$SARIF_DIR" 2>&1 || true)"
 if printf '%s' "$gated_out" | grep -q '::error::BLOCKED:' \
    && printf '%s' "$direct_out" | grep -q '::error::Fixable HIGH/CRITICAL'; then

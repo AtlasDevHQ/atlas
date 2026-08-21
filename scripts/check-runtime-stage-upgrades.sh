@@ -7,7 +7,7 @@
 # The image-scan gate stopped blocking on the absolute CVE state of an unchanged
 # base image (#5361). That is only safe because of one measured fact:
 #
-#   all 8 runtime stages run `apt-get upgrade` / `apk upgrade`
+#   every runtime stage runs `apt-get upgrade` / `apk upgrade`
 #
 # so no base-layer CVE reaches a shipped artifact, and the built-image tier —
 # which reads the finished artifact — is the gate of record. `.trivyignore` has
@@ -29,10 +29,14 @@
 #
 # ## What counts as a runtime stage
 #
-# The same thing scripts/list-runtime-base-images.sh means by it: the LAST stage
-# in the file, which is Docker's default build target. Its `FROM` may name an
-# earlier stage alias, so the chain is walked back to the external image — and
-# an upgrade ANYWHERE on that chain counts, because the runtime stage inherits
+# Not "the same thing scripts/list-runtime-base-images.sh means by it" — the
+# SAME CODE. `resolve_runtime_stage` in scripts/lib/dockerfile-stages.sh is the
+# one traversal both gates call, because a shared parser with two hand-written
+# chain walks was still free to give two different answers for one Dockerfile.
+#
+# It is the LAST stage in the file, which is Docker's default build target, with
+# `FROM base AS runner`-style aliases walked back to the external image. An
+# upgrade ANYWHERE on that chain counts, because the runtime stage inherits
 # those layers. A build-only stage that is not on the chain does not count and
 # does not need one: nothing it installs ships.
 #
@@ -59,14 +63,16 @@
 # `scratch` itself is the one exception, and it is exempt by construction: it
 # contains no packages to upgrade.
 #
-# ## The second mode, and why it lives here
+# ## The second mode
 #
-#   check-runtime-stage-upgrades.sh --assert-cache-busted-stage <df> <alias>
+#   check-runtime-stage-upgrades.sh --assert-final-stage-upgrades <df> <alias>
 #
-# Asserts two things about <dockerfile>: its FINAL stage is named <alias>, AND
-# that stage's OWN body runs the upgrade. image-scan.yml calls it per built-image
-# leg before building, because both are load-bearing in a way nothing else would
-# notice if either changed:
+# Same question as the sweep above — does the stage that ships upgrade? — asked
+# of one file and one stage instead of the whole tree, which is why it lives
+# here rather than in a script of its own. Asserts that <dockerfile>'s FINAL
+# stage is named <alias> AND that that stage's OWN body runs the upgrade.
+# image-scan.yml calls it per built-image leg before building, because both are
+# load-bearing in a way nothing else would notice if either changed:
 #
 #   The built-image builds restore layers from a gha cache. `RUN apt-get update
 #   && apt-get upgrade -y` has a stable command string and a stable parent, so
@@ -108,36 +114,30 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="${BASE_IMAGE_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
-# list_dockerfiles, parse_stages, read_stage_record — shared with
+# list_dockerfiles + resolve_runtime_stage — shared with
 # list-runtime-base-images.sh on purpose, so the set of files scanned and the
 # set of files checked can never diverge, and so both resolve the same runtime
 # stage for the same Dockerfile.
-# shellcheck source=scripts/lib/dockerfile-stages.sh
+# shellcheck source=lib/dockerfile-stages.sh
 . "$SCRIPT_DIR/lib/dockerfile-stages.sh"
 
 die() { echo "::error::[runtime-stage-upgrades] $1" >&2; exit 2; }
 
-if [ "${1:-}" = "--assert-cache-busted-stage" ]; then
+if [ "${1:-}" = "--assert-final-stage-upgrades" ]; then
   df="${2:-}"; expected="${3:-}"
   [ -n "$df" ] && [ -n "$expected" ] \
-    || die "usage: check-runtime-stage-upgrades.sh --assert-cache-busted-stage <dockerfile> <alias>"
+    || die "usage: check-runtime-stage-upgrades.sh --assert-final-stage-upgrades <dockerfile> <alias>"
   [ -f "$df" ] || die "no such Dockerfile: $df"
 
-  found=0
-  while IFS= read -r record; do
-    read_stage_record "$record"
-    found=1
-  done < <(parse_stages "$df")
-  [ "$found" -eq 1 ] || die "no FROM instruction in $df — cannot identify its final stage."
-  # The loop leaves STAGE_* holding the LAST record, which is the final stage.
-  actual_alias="$STAGE_ALIAS"
-  actual_up="$STAGE_UP"
+  resolve_runtime_stage "$df" || exit 1
 
   problems=()
-  [ "$actual_alias" = "$expected" ] \
-    || problems+=("final stage is named '${actual_alias:-<unnamed>}', not '$expected'")
-  [ "$actual_up" = "1" ] \
-    || problems+=("the '${actual_alias:-<unnamed>}' stage does not itself run apt-get upgrade / apk upgrade")
+  [ "$RUNTIME_FINAL_ALIAS" = "$expected" ] \
+    || problems+=("final stage is named '${RUNTIME_FINAL_ALIAS:-<unnamed>}', not '$expected'")
+  # RUNTIME_FINAL_UPGRADES, not RUNTIME_UPGRADES: an ancestor's upgrade ships,
+  # but it is not in the stage no-cache-filters rebuilds.
+  [ "$RUNTIME_FINAL_UPGRADES" = "1" ] \
+    || problems+=("the '${RUNTIME_FINAL_ALIAS:-<unnamed>}' stage does not itself run apt-get upgrade / apk upgrade")
 
   if [ "${#problems[@]}" -eq 0 ]; then
     echo "ok   $df — final stage '$expected' runs the upgrade itself"
@@ -155,7 +155,7 @@ rather than restoring from the gha cache. Both halves matter:
 
   the NAME     a name matching no stage busts nothing.
   the UPGRADE  an upgrade that has moved into an ancestor stage still reaches
-               the artifact — so the main guard stays green — but it is no
+               the artifact — so the sweep above stays green — but it is no
                longer in the stage being busted, so its layer cache-hits again.
 
 Either way the built-image scan silently starts reading an artifact nobody
@@ -188,54 +188,24 @@ CHECKED=0
 for df in "${dockerfiles[@]}"; do
   rel="${df#"$ROOT"/}"
 
-  idxs=() imgs=() aliases=() ups=()
-  while IFS= read -r record; do
-    read_stage_record "$record"
-    idxs+=("$STAGE_IDX"); imgs+=("$STAGE_IMG"); aliases+=("$STAGE_ALIAS"); ups+=("$STAGE_UP")
-  done < <(parse_stages "$df")
-
-  if [ ${#idxs[@]} -eq 0 ]; then
-    die "no FROM instruction in $rel — cannot identify its runtime stage."
-  fi
-
-  # alias -> stage index, so the runtime stage's ancestry can be walked.
-  declare -A alias_idx=()
-  for i in "${!idxs[@]}"; do
-    [ -n "${aliases[$i]}" ] && alias_idx["${aliases[$i]}"]="$i"
-  done
-
-  cur=$(( ${#idxs[@]} - 1 ))   # last stage = Docker's default build target
-  upgrades=0
-  chain=()
-  hops=0
-  while :; do
-    chain+=("${aliases[$cur]:-stage-$cur}")
-    [ "${ups[$cur]}" = "1" ] && upgrades=1
-    parent="${imgs[$cur]}"
-    [ -n "${alias_idx[$parent]+set}" ] || break
-    cur="${alias_idx[$parent]}"
-    hops=$((hops + 1))
-    if [ "$hops" -gt 32 ]; then
-      die "stage alias chain in $rel did not terminate (cycle?)."
-    fi
-  done
-  base="${imgs[$cur]}"
-
-  unset alias_idx
+  # One traversal, shared with list-runtime-base-images.sh, so the set of images
+  # scanned and the set of stages checked can never disagree about which stage
+  # is the runtime stage. Fails closed and has already said why.
+  resolve_runtime_stage "$df" || exit 1
 
   # `scratch` holds no packages, so there is nothing to upgrade and nothing a
   # CVE could live in. Exempt by construction rather than by exception.
-  if [ "$base" = "scratch" ]; then
+  if [ "$RUNTIME_BASE" = "scratch" ]; then
     printf '  --   %-52s %s\n' "$rel" "scratch — no packages to upgrade"
     continue
   fi
 
   CHECKED=$((CHECKED + 1))
-  if [ "$upgrades" = "1" ]; then
-    printf '  ok   %-52s %s\n' "$rel" "$base"
+  if [ "$RUNTIME_UPGRADES" = "1" ]; then
+    printf '  ok   %-52s %s\n' "$rel" "$RUNTIME_BASE"
   else
-    printf '  FAIL %-52s %s\n' "$rel" "$base"
-    echo "::error file=$rel::runtime stage (chain: ${chain[*]}) on '$base' never runs apt-get upgrade / apk upgrade — a base-layer CVE in it SHIPS." >&2
+    printf '  FAIL %-52s %s\n' "$rel" "$RUNTIME_BASE"
+    echo "::error file=$rel::runtime stage (chain: ${RUNTIME_CHAIN[*]}) on '$RUNTIME_BASE' never runs apt-get upgrade / apk upgrade — a base-layer CVE in it SHIPS." >&2
     MISSING+=("$rel")
   fi
 done

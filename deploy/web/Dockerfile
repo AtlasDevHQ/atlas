@@ -125,9 +125,13 @@ ENV ATLAS_SECURITY_TXT_URL=$ATLAS_SECURITY_TXT_URL
 # That path hits an open upstream crash in bun's N-API thread-safe-function
 # handling (`napi.ThreadSafeFunction.enqueue`, napi.zig:1654) the instant Next
 # spawns its page-data workers: bun segfaults at 0x13CB0, its panic handler
-# traps, and the build dies with SIGILL / exit 132. Both are upstream and
+# traps, and the build dies with SIGILL / exit 132. Both are upstream and were
 # unfixed as of 1.3.13 — oven-sh/bun#25864, oven-sh/bun#24829 — and running the
 # build on node is the workaround upstream recommends.
+#
+# ⚠️ NOT re-checked on the 1.4.0 base (#2802 moved it). Treat the COPY below as
+# load-bearing until someone reads those two issues and gets a red `Built image
+# (web)` job to prove otherwise — see the falsifiability note further down.
 #
 # Do NOT read a green local `docker build` as evidence this is fixed — or that
 # it was ever broken. Five pre-fix runs of this exact image passed locally,
@@ -152,17 +156,25 @@ RUN cd packages/web && bun run build
 FROM base AS runner
 WORKDIR /app
 ENV NODE_ENV=production
-# Patch the base image's Debian packages. oven/bun is digest-pinned (deliberate
-# — see engines.bun, held at 1.3.13 by the #2811 --isolate TLA regression), so
-# the OS layer only ever gets newer when this line runs. Without it the pin
-# means "frozen packages forever", which is the opposite of what pinning a
-# RUNTIME is for.
+# Patch the base image's Debian packages. oven/bun is digest-pinned so the build
+# is reproducible and so scripts/list-runtime-base-images.sh can enumerate an
+# exact ref for the image-scan matrix. A digest never moves, so the OS layer
+# only ever gets newer when this line runs. Without it the pin means "frozen
+# packages forever", which is the opposite of what pinning a RUNTIME is for.
 #
-# Measured 2026-08-12 against the pinned digest: 107 unique CVEs -> 75, 6
-# critical -> 4, and gate-blocking (fixable HIGH/CRITICAL OS packages) 7 -> 0.
-# Bumping to 1.3.14 instead produces the IDENTICAL 75/4/0 — the base image is
-# not where the fixes are, the security repo is — so there is no security
-# argument for moving the runtime pin.
+# Measured 2026-08-12 against the then-pinned oven/bun:1.3.13 digest: 107 unique
+# CVEs -> 75, 6 critical -> 4, and gate-blocking (fixable HIGH/CRITICAL OS
+# packages) 7 -> 0. That is the mechanism this line exists for, and it is a
+# 1.3.13-base measurement — the delta has NOT been re-measured since the base
+# moved to 1.4.0 (#2802). What IS measured on 1.4.0: the built image passes the
+# scan gate with zero gate-blocking findings while the bare base still carries
+# four util-linux CVEs, i.e. this upgrade is still the thing clearing them.
+#
+# ⚠️ Do not resurrect the old "there is no security argument for moving the
+# runtime pin" note that stood here. It rested on 1.3.13 -> 1.3.14 producing an
+# IDENTICAL 75/4/0, which was true of 1.3.14 only; 1.4.0 rebased onto newer
+# openssl and libcap and took the bare base from 11 unique CVEs / 2 CRITICAL to
+# 4 / 0. See the oven/bun:1.4.0 section of .trivyignore for the back-to-back.
 #
 # Runs before `USER atlas`, because apt needs root.
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*

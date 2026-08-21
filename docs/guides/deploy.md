@@ -205,7 +205,7 @@ The Dockerfile includes a built-in `HEALTHCHECK` that polls `/api/health` every 
 
 ### Notes
 
-- Images are based on `oven/bun:1.3`
+- Images are based on `oven/bun:1.4.0` (digest-pinned in the Dockerfiles)
 - The semantic layer (`semantic/`) must be generated before building — run `atlas init` locally first. It gets baked into the image at build time; rebuild if you update YAMLs
 
 ---

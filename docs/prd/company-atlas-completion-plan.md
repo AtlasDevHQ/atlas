@@ -43,22 +43,24 @@ First because it is the only lane with **known-wrong rows served on prod today**
 
 ## Lane B — Prove the trust claim
 
-**UNFILED — no milestone, no issues. Four conditions.**
+**Filed 2026-08-21 — four issues ([#5374](https://github.com/AtlasDevHQ/atlas/issues/5374), [#5375](https://github.com/AtlasDevHQ/atlas/issues/5375), [#5376](https://github.com/AtlasDevHQ/atlas/issues/5376), [#5377](https://github.com/AtlasDevHQ/atlas/issues/5377)). Still no milestone, deliberately.**
 
-This is the largest gap in the plan and the one with nothing pointing at it. ADR-0036's T1 finding is that **the adoption gap is trust, not benchmark score**. Conditions 1, 3, 7 and 8 are the trust demonstrations, and all four are *built but never demonstrated*.
+This was the largest gap in the plan and the one with nothing pointing at it. ADR-0036's T1 finding is that **the adoption gap is trust, not benchmark score**. Conditions 1, 3, 7 and 8 are the trust demonstrations, and all four are *built but never demonstrated*.
 
 | Condition | PRD status | What would close it | Tracked by |
 |---|---|---|---|
-| 1 — Cold start works | Not yet | A customer connects one source Monday; by Friday a colleague gets an approved-claim answer, **no engineer involved** | **UNFILED** |
-| 3 — Tiers unmistakable | Partly | Show an untrained person two answers; they distinguish data from approved-message without being taught the vocabulary | **UNFILED** |
-| 7 — Revocation is real | Yes, least-demonstrated | Someone loses source access; within one sync cycle their scoped claims stop being visible, no manual step | **UNFILED** |
-| 8 — Self-hoster has all of it | By construction | Conditions 1–7 re-run on a self-hosted install, no license key, no Atlas account | **UNFILED** |
+| 1 — Cold start works | Not yet | A customer connects one source Monday; by Friday a colleague gets an approved-claim answer, **no engineer involved** | [#5374](https://github.com/AtlasDevHQ/atlas/issues/5374) |
+| 3 — Tiers unmistakable | Partly | Show an untrained person two answers; they distinguish data from approved-message without being taught the vocabulary | [#5375](https://github.com/AtlasDevHQ/atlas/issues/5375) |
+| 7 — Revocation is real | Yes, least-demonstrated | Someone loses source access; within one sync cycle their scoped claims stop being visible, no manual step | [#5376](https://github.com/AtlasDevHQ/atlas/issues/5376) |
+| 8 — Self-hoster has all of it | By construction | Conditions 1–7 re-run on a self-hosted install, no license key, no Atlas account | [#5377](https://github.com/AtlasDevHQ/atlas/issues/5377) — blocked by the three above |
 
 The PRD calls **1 and 3 "cheap to test"** and says the milestone that held them ([#96](https://github.com/AtlasDevHQ/atlas/milestone/96)) did **not** close them — *"the next milestone that claims them has to say so explicitly rather than inherit them from this line."* No milestone has.
 
 **Why this lane runs early, not last.** Every other lane is mechanism. If a cold start fails for reasons no ticket predicted, that finding should arrive before M6 builds on top of it — and conditions 1 and 3 are cheap enough that deferring them buys nothing.
 
-⚠️ These are **demonstrations, not builds.** Each one either holds or produces a defect list. A lane that cannot fail is not worth running, so each must be run against a real workspace with the engineer's hands off.
+⚠️ These are **demonstrations, not builds.** Each one either holds or produces a defect list. A lane that cannot fail is not worth running, so each must be run against a real workspace with the engineer's hands off. Every issue carries the same closing rule: **a failed condition still closes the issue, on the record** — a held-open issue is not how a failed demonstration is tracked, and fixes are filed rather than folded in flight.
+
+**No milestone, and that is the correct default rather than a punt.** The ROADMAP's rule is that *"the next milestone that claims them has to say so explicitly rather than inherit them from this line."* Filing them unmilestoned leaves that claim available to be made deliberately. [#5376](https://github.com/AtlasDevHQ/atlas/issues/5376) is the one to run first if only one gets run: it is the only finish condition whose failure mode is a **disclosure** rather than a disappointment.
 
 ---
 
@@ -131,7 +133,7 @@ ADR-0036's governing test: **no brain capability may ever migrate to `/ee`.** On
 
 | Gap | Why it is not nothing |
 |---|---|
-| **The tier display names** | ADR-0038 proposes *Surveyed / Attested / On the record*. They exist only in `docs/` — **zero rendered labels in `packages/web/src`** (verified 2026-08-21). ADR-0036's consequence that *"every UI surface must carry the tier label, or the wedge is invisible"* is currently carried by wire values, not by those words. Bears directly on **condition 3** |
+| ~~**The tier display names**~~ | **Now carried by [#5375](https://github.com/AtlasDevHQ/atlas/issues/5375)** as a finding to take into the run, not a fix to ship ahead of it. ADR-0038 proposes *Surveyed / Attested / On the record*; they exist only in `docs/` — **zero rendered labels in `packages/web/src`** (verified 2026-08-21). Renaming before testing would turn condition 3 into a check of a guess |
 | **The coverage-surface design brief** | Deferred in near-identical words by both ADR-0038 and the PRD — *"the design is a separate brief."* Never written. [ADR-0041](../adr/0041-the-coverage-surface-counts-what-it-can-see.md) decided the page's *content* rules and permanently refused the single number, but not what it looks like. [#5357](https://github.com/AtlasDevHQ/atlas/issues/5357) is where that gap first drew blood |
 
 ---
@@ -139,9 +141,9 @@ ADR-0036's governing test: **no brain capability may ever migrate to `/ee`.** On
 ## Suggested order, and the argument for it
 
 1. **Lane A** — wrong data on prod outranks everything.
-2. **Lane B, conditions 1 and 3** — cheap, unproven, and they gate what the rest is worth. Run in parallel with A; they are demonstrations, not builds, so they contend for different hours.
+2. **Lane B, conditions 1, 3 and 7** — cheap, unproven, and they gate what the rest is worth. Run in parallel with A; they are demonstrations, not builds, so they contend for different hours. [#5376](https://github.com/AtlasDevHQ/atlas/issues/5376) (revocation) moves up from step 4 on its failure mode alone.
 3. **Lane C** — cost control before M3 breadth widens the intake.
-4. **Lane B, conditions 7 and 8** — heavier, and 8 wants Lane F's boundary to still be intact.
+4. **Lane B, condition 8** — [#5377](https://github.com/AtlasDevHQ/atlas/issues/5377) is natively blocked by the other three, since it re-runs them and needs their baselines to compare against. It also wants Lane F's boundary still intact.
 5. **Lane E grill** — sooner if #5332 recurs; M6 mechanism is already leaking into Lane A.
 6. **Lane D** — whenever a tool-touching milestone appears. If none has appeared by the time `v1.0.0` is being considered, that is the moment to decide it deliberately: carry the rename then, or amend ADR-0038 to say what replaced its timing argument. Cutting the tag without deciding is the one outcome to avoid.
 7. **Lane F** — last by construction.

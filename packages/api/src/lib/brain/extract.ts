@@ -132,20 +132,28 @@ import { entityStoreResolver } from "@atlas/api/lib/brain/entity-store";
 import { loadWorkspaceVocabulary } from "@atlas/api/lib/brain/vocabulary";
 import { proposeAliasesFromCorpus } from "@atlas/api/lib/brain/alias-proposal";
 import {
-  abandonBatch,
-  BATCH_EPISODES_SQL,
-  COLLECT_BATCHES_PER_TICK,
-  loadInFlightBatches,
-  readExtractionBatchResults,
-  recordBatchSubmission,
-  retrieveExtractionBatch,
-  settleBatchCollected,
-  submitExtractionBatch,
-  type BatchLedgerRow,
-  type BatchRequestItem,
-  type BatchResult,
-  type BatchStatus,
+  collectBatchPhase,
+  submitBatchPhase,
+  DEFAULT_BATCH_CLIENT,
+  DEFAULT_BATCH_LEDGER,
+  type BatchClient,
+  type BatchLedger,
+  type BatchPhaseDeps,
 } from "@atlas/api/lib/brain/extract-batch";
+import {
+  BRAIN_EXTRACTION_PRODUCER,
+  EXTRACTION_SYSTEM_PROMPT,
+  ExtractionSchema,
+  extractionExcerpt,
+  extractionPrompt,
+  toDate,
+  toEpisodeRef,
+  toFactCandidates,
+  type BrainExtractionBatchTally,
+  type EpisodeRow,
+  type PrecomputedExtraction,
+  type ResolvedExtractionModel,
+} from "@atlas/api/lib/brain/extract-contract";
 
 const log = createLogger("brain.extract");
 
@@ -155,9 +163,6 @@ const log = createLogger("brain.extract");
  * broken forensic queries.
  */
 export const BRAIN_EXTRACTION_ACTOR = "system:brain-extraction" as const;
-
-/** The producer label stamped into every fact this path reconciles. */
-export const BRAIN_EXTRACTION_PRODUCER = "extraction:v1" as const;
 
 /**
  * Tick cadence. Short relative to the connector cadence on purpose — the
@@ -181,12 +186,6 @@ const INTERVAL_MS = 5 * 60 * 1000;
  * kind worth spending an export on.
  */
 export const BATCH_SIZE = 25;
-
-/** Body characters sent to the model. Beyond this a chat message is a transcript. */
-const MAX_BODY_CHARS = 8_000;
-
-/** Claims accepted from one episode — a bound on a model that will not stop. */
-const MAX_CANDIDATES = 10;
 
 /** Per-episode model call budget. */
 const EXTRACTION_TIMEOUT_MS = 60_000;
@@ -432,81 +431,6 @@ export const STAMP_EXTRACTED_SQL = `UPDATE brain_episodes
 // ---------------------------------------------------------------------------
 
 /**
- * The row shape the drain returns.
- *
- * EXPORTED since #5352 because the batch collect phase loads the same shape
- * through `BATCH_EPISODES_SQL` — two SELECTs feeding one row type, which is why
- * that query's column list carries a comment saying it mirrors this one's.
- */
-export interface EpisodeRow {
-  readonly id: string;
-  readonly workspace_id: string;
-  readonly source: string;
-  readonly source_id: string;
-  readonly source_actor: string | null;
-  readonly body: string | null;
-  readonly locator: string | null;
-  readonly occurred_at: Date | string | null;
-  readonly visible_to: unknown;
-  [key: string]: unknown;
-}
-
-/**
- * What the model is asked for. Kept deliberately close to `brain_facts`'s own
- * columns: a schema with its own vocabulary would need a translation step, and
- * a translation step is where a claim quietly changes meaning.
- */
-export const ExtractionSchema = z.object({
-  facts: z
-    .array(
-      z.object({
-        subject: z.string().describe("The entity the claim is about, as named in the text."),
-        predicate: z
-          .string()
-          .describe("The relationship, as a short lowercase verb phrase, e.g. 'reports to'."),
-        object: z.string().describe("The value or entity the subject relates to."),
-        cardinality: z
-          // Derived from the SSOT tuple, never hand-listed — two spellings would
-          // drift the first time an arm is added.
-          //
-          // ⚠️ This answer is a NON-LOAD-BEARING HINT since #5027 (ADR-0037 §3).
-          // It used to be written straight into
-          // `brain_facts.predicate_cardinality`, which the publish gate then
-          // required to read `single` on BOTH sides of a collision — two
-          // independent model calls, on two different messages, against the
-          // "when unsure answer 'multi'" instruction below. Supersession
-          // therefore fired at roughly P(model says `single`)²: a stochastic
-          // gate on an operation with no inverse.
-          //
-          // It is still asked for, because it is worth recording what the
-          // extractor thought and it feeds the advisory tension edges. It must
-          // never again decide whether a belief is retired — cardinality belongs
-          // to the canonical predicate, and only a human or a warehouse
-          // structural declaration may set it.
-          .enum(PREDICATE_CARDINALITIES)
-          .describe(
-            "'single' when the subject can only have ONE such object at a time (a manager, an owner); 'multi' when several can coexist (a language, a skill). When unsure answer 'multi'.",
-          ),
-      }),
-    )
-    .describe("Durable claims. Empty when the text contains none."),
-});
-
-export const EXTRACTION_SYSTEM_PROMPT = [
-  "You extract durable, checkable facts about a company from a single message.",
-  "",
-  "Return a subject-predicate-object triple for each claim that would still be worth knowing next month.",
-  "Extract nothing for small talk, questions, opinions, jokes, greetings, or one-off status noise —",
-  "an empty list is the correct and common answer.",
-  "",
-  "Rules:",
-  "- Use the names exactly as the message writes them. Do not invent identifiers or expand abbreviations.",
-  "- Do not infer anything the message does not state.",
-  "- Keep each field short; the predicate is a verb phrase, not a sentence.",
-  "- Answer 'single' for cardinality only when the subject can have just one such object at a time.",
-].join("\n");
-
-/**
  * Produce candidates for one episode. The injectable seam: tests supply a fake
  * and never touch the AI SDK, and a later, better extractor replaces this one
  * function without the cycle knowing.
@@ -517,103 +441,6 @@ export type FactExtractor = (input: {
   readonly model: LanguageModel;
   readonly modelId: string;
 }) => Promise<readonly FactCandidate[]>;
-
-/**
- * The episode's body as the model sees it.
- *
- * Truncation is SIGNALLED, not silent, in both directions: the model is told the
- * text was cut (so it does not confidently extract from a clause that ends
- * mid-sentence) and the operator is told which episode lost a tail. The episode
- * is stamped after the pass, so whatever is dropped here is dropped for good —
- * which is precisely why it cannot be quiet.
- *
- * Shared with the batch path since #5352 rather than duplicated: the two paths
- * must send the model the SAME text, or a batched re-extraction of a
- * synchronously-extracted episode paraphrases itself into a second draft — the
- * cost the module header prices, arriving from a divergence nobody would see.
- */
-export function extractionExcerpt(episode: ReconcileEpisodeRef, body: string): string {
-  if (body.length <= MAX_BODY_CHARS) return body;
-  log.warn(
-    {
-      workspaceId: episode.workspaceId,
-      episodeId: episode.id,
-      bodyChars: body.length,
-      cap: MAX_BODY_CHARS,
-    },
-    "brain extraction: episode body exceeds the per-call cap — extracting from the leading portion only, the remainder is not revisited",
-  );
-  return `${body.slice(0, MAX_BODY_CHARS)}\n[truncated at ${MAX_BODY_CHARS} characters]`;
-}
-
-/** The user turn, shared with the batch path for {@link extractionExcerpt}'s reason. */
-export function extractionPrompt(episode: ReconcileEpisodeRef, excerpt: string): string {
-  return [
-    `Source: ${episode.source}`,
-    episode.occurredAt !== null ? `Said at: ${episode.occurredAt.toISOString()}` : null,
-    "",
-    "Message:",
-    excerpt,
-  ]
-    .filter((line): line is string => line !== null)
-    .join("\n");
-}
-
-/**
- * The model's answer → candidates, shared with the batch path.
- *
- * Everything about the SHAPE of a candidate lives here — the cap, the
- * provenance detail, the cardinality hint's demotion — so that a claim drawn by
- * batch is byte-identical to the same claim drawn synchronously. A second copy
- * would drift on exactly the field a reviewer reads.
- */
-export function toFactCandidates(
-  facts: z.infer<typeof ExtractionSchema>["facts"],
-  episode: ReconcileEpisodeRef,
-  modelId: string,
-): readonly FactCandidate[] {
-  if (facts.length > MAX_CANDIDATES) {
-    log.warn(
-      {
-        workspaceId: episode.workspaceId,
-        episodeId: episode.id,
-        returned: facts.length,
-        cap: MAX_CANDIDATES,
-      },
-      "brain extraction: model returned more claims than one message can support — keeping the first few",
-    );
-  }
-
-  return facts.slice(0, MAX_CANDIDATES).map((fact) => ({
-    subject: fact.subject,
-    predicate: fact.predicate,
-    object: fact.object,
-    // A HINT since #5027, and one that now reaches only the advisory
-    // `in-tension-with` edges (`reconcile.ts`). It no longer reaches
-    // `brain_facts.predicate_cardinality`, and therefore no longer reaches a
-    // `valid_to` stamp: cardinality is a property of the CANONICAL PREDICATE,
-    // curated in `brain_predicate_cardinality` and read live at the publish gate
-    // (ADR-0037 §3). What this line used to do was let two independent model
-    // calls on two different messages decide, between them, whether a belief was
-    // destroyed.
-    predicateCardinality: fact.cardinality,
-    // The model id belongs in provenance: a later pass with a better model has
-    // to be tellable from this one, and the reviewer is entitled to know what
-    // asserted the claim on the source's behalf.
-    //
-    // `cardinalityHint` rides here for the same reason and with no more
-    // authority than the model id: it records WHAT THE EXTRACTOR THOUGHT, which
-    // is worth keeping (a curator adjudicating `reports to` can see that the
-    // extractor called it `single` on forty messages) and is worth nothing more.
-    // Nothing reads it, and nothing may read it into a supersession decision —
-    // that is the defect #5027 removed.
-    detail: {
-      extractor: BRAIN_EXTRACTION_PRODUCER,
-      model: modelId,
-      cardinalityHint: fact.cardinality,
-    },
-  }));
-}
 
 /** The default extractor — one bounded, structured model call per episode. */
 export const llmFactExtractor: FactExtractor = async ({ episode, body, model, modelId }) => {
@@ -645,22 +472,6 @@ export const llmFactExtractor: FactExtractor = async ({ episode, body, model, mo
 // Model resolution — the agent's seam for provider and credentials, this
 // path's own seam for the TIER (#5353)
 // ---------------------------------------------------------------------------
-
-export interface ResolvedExtractionModel {
-  readonly model: LanguageModel;
-  readonly modelId: string;
-  /**
-   * The API key a batch submission for this workspace would use, or `null` when
-   * the resolved provider has no batch endpoint (#5352).
-   *
-   * Carried on the RESOLUTION rather than fetched separately so batch
-   * capability is derived from the same probe that already decided provider and
-   * credentials — a second resolution could disagree with this one, and the
-   * shape of that disagreement is "submit a batch on the platform key for a
-   * workspace whose BYO config we just refused to build".
-   */
-  readonly batchApiKey: string | null;
-}
 
 /**
  * Resolve the model for one workspace: its own BYO configuration if it has one,
@@ -875,22 +686,7 @@ export interface BrainExtractionCycleResult {
    * and `batchSubmitted: 0, batchInFlight: 0` with a non-zero `extracted` is
    * simply the immediate path.
    */
-  batch: {
-    /** Episodes sent out with a batch this tick. */
-    submitted: number;
-    /** Batches polled this tick, bounded by `COLLECT_BATCHES_PER_TICK`. */
-    polled: number;
-    /** Batches whose results landed and were reconciled this tick. */
-    collected: number;
-    /**
-     * Batches given up on — expired, or a poll that failed. Their episodes are
-     * re-queued and charged NO strikes; see `abandonBatch` on why a batch
-     * failure is evidence about the world rather than about the episodes.
-     */
-    abandoned: number;
-    /** Episodes put back on the queue by an abandon or an uncovered collect. */
-    requeued: number;
-  };
+  batch: BrainExtractionBatchTally;
   /** Present only on the scan-fault path, mirroring the other DB cycles. */
   error?: string;
 }
@@ -955,74 +751,6 @@ export interface BrainExtractionDeps {
   readonly now?: () => Date;
 }
 
-/**
- * The vendor half of the batch path, injectable so the two-phase cycle is
- * testable without a network — the seam `FactExtractor` already is for the
- * synchronous path, at the layer batching actually differs.
- */
-export interface BatchClient {
-  submit(opts: {
-    readonly apiKey: string;
-    readonly modelId: string;
-    readonly schema: Record<string, unknown>;
-    readonly items: readonly BatchRequestItem[];
-  }): Promise<{ providerBatchId: string; expiresAt: Date }>;
-  retrieve(opts: { readonly apiKey: string; readonly providerBatchId: string }): Promise<BatchStatus>;
-  results(opts: {
-    readonly apiKey: string;
-    readonly resultsUrl: string;
-  }): Promise<readonly BatchResult[]>;
-}
-
-/** The durable half — the in-flight ledger. Injectable for `reconcile`'s reason. */
-export interface BatchLedger {
-  loadInFlight(limit: number): Promise<readonly BatchLedgerRow[]>;
-  loadEpisodes(batchId: string): Promise<readonly EpisodeRow[]>;
-  record(opts: {
-    readonly workspaceId: string;
-    readonly providerBatchId: string;
-    readonly modelId: string;
-    readonly expiresAt: Date;
-    readonly episodeIds: readonly string[];
-  }): Promise<string>;
-  settleCollected(batchId: string): Promise<void>;
-  abandon(opts: { readonly batchId: string; readonly reason: string }): Promise<number>;
-}
-
-const DEFAULT_BATCH_CLIENT: BatchClient = {
-  submit: submitExtractionBatch,
-  retrieve: retrieveExtractionBatch,
-  results: readExtractionBatchResults,
-};
-
-const DEFAULT_BATCH_LEDGER: BatchLedger = {
-  loadInFlight: loadInFlightBatches,
-  loadEpisodes: (batchId) => internalQuery<EpisodeRow>(BATCH_EPISODES_SQL, [batchId]),
-  record: recordBatchSubmission,
-  settleCollected: settleBatchCollected,
-  abandon: abandonBatch,
-};
-
-/**
- * The extraction schema as JSON Schema, for the batch path's
- * `output_config.format`.
- *
- * Derived from {@link ExtractionSchema} rather than hand-written, so the two
- * paths cannot ask the model for different shapes — the drift that would produce
- * is a batched claim whose `cardinality` field is absent, which reconcile
- * accepts and the reviewer never sees. Computed ONCE at module load: it is a
- * pure function of a constant, and rebuilding it per submission would be pure
- * waste on the hot path of a 25-request body.
- *
- * `$schema` is stripped — the Messages API rejects unknown top-level keys in a
- * `json_schema` format block.
- */
-const EXTRACTION_JSON_SCHEMA: Record<string, unknown> = (() => {
-  const schema = z.toJSONSchema(ExtractionSchema) as Record<string, unknown>;
-  const { $schema: _ignored, ...rest } = schema;
-  return rest;
-})();
-
 function emptyResult(): BrainExtractionCycleResult {
   return {
     status: "success",
@@ -1048,364 +776,6 @@ function emptyResult(): BrainExtractionCycleResult {
     // would make every counter here cumulative across ticks.
     batch: { submitted: 0, polled: 0, collected: 0, abandoned: 0, requeued: 0 },
   };
-}
-
-// ---------------------------------------------------------------------------
-// The batch phases (#5352)
-//
-// Both are NON-THROWING by contract, and that is what keeps them additive: the
-// synchronous drain behind them must run whatever the vendor is doing, so every
-// failure here degrades to "no batch work happened this tick", logged, with the
-// episodes exactly where they were.
-// ---------------------------------------------------------------------------
-
-interface BatchPhaseDeps {
-  readonly client: BatchClient;
-  readonly ledger: BatchLedger;
-  readonly modelFor: (workspaceId: string) => Promise<ResolvedExtractionModel | null>;
-  readonly now: () => Date;
-}
-
-/**
- * Poll the in-flight batches, reconcile-ready.
- *
- * Returns the episode rows whose results are in hand, and populates
- * `precomputed` with what the model said about each — the drain's rows are
- * appended to these, and both go through the same per-episode path.
- */
-async function collectBatchPhase(
-  deps: BatchPhaseDeps,
-  tally: BrainExtractionCycleResult["batch"],
-  precomputed: Map<string, PrecomputedExtraction>,
-): Promise<EpisodeRow[]> {
-  let batches: readonly BatchLedgerRow[];
-  try {
-    batches = await deps.ledger.loadInFlight(COLLECT_BATCHES_PER_TICK);
-  } catch (err) {
-    log.error(
-      { err: errorMessage(err) },
-      "brain extraction: the in-flight batch ledger could not be read — no batch results are collected this tick; the drain still runs and the batches stay in flight",
-    );
-    return [];
-  }
-
-  const rows: EpisodeRow[] = [];
-  for (const batch of batches) {
-    try {
-      rows.push(...(await collectOneBatch(batch, deps, tally, precomputed)));
-    } catch (err) {
-      // A poll or a results read that FAILED is not by itself a reason to give
-      // up: a 429 or a 502 clears, and the batch's work is already paid for. So
-      // the batch stays in flight and is retried next tick — UNLESS it is past
-      // its expiry, at which point there is nothing left to wait for.
-      const reason = errorMessage(err);
-      // ⚠️ GUARDED, because this runs INSIDE the catch: `ledger.abandon` writes
-      // to the internal DB, and a DB blip concurrent with a vendor fault is not
-      // exotic. An unguarded rejection here escapes the loop, escapes
-      // `collectBatchPhase` — whose contract is that it never throws — and
-      // escapes `scan`, so the DRAIN never runs and the whole tick is audited
-      // as a scan fault. The batch simply stays in flight, which is where it
-      // already was.
-      const abandoned = await abandonIfExpired(batch, deps, tally, reason).catch((abandonErr) => {
-        log.error(
-          { workspaceId: batch.workspace_id, batchId: batch.id, err: errorMessage(abandonErr) },
-          "brain extraction: could not abandon an expired batch — it stays in flight and is retried next tick; the drain is unaffected",
-        );
-        return false;
-      });
-      log.warn(
-        {
-          workspaceId: batch.workspace_id,
-          batchId: batch.id,
-          providerBatchId: batch.provider_batch_id,
-          abandoned,
-          err: reason,
-        },
-        abandoned
-          ? "brain extraction: a batch failed to collect AND is past its expiry — abandoned, and its episodes are re-queued with no strike against them"
-          : "brain extraction: a batch failed to collect — it stays in flight and is retried next tick, since the work is already paid for and a transient vendor fault clears",
-      );
-    }
-  }
-  return rows;
-}
-
-/**
- * Give up on a batch whose expiry has passed. Returns whether it did.
- *
- * ⚠️ **No strikes, ever.** #5352's AC states it outright — *"a failed batch does
- * not quarantine every episode it contained"* — and the reasoning is the outage
- * refund's, one level up: an expired batch is evidence about the world, not
- * about any of the 25 episodes in it. See `abandonBatch`.
- */
-async function abandonIfExpired(
-  batch: BatchLedgerRow,
-  deps: BatchPhaseDeps,
-  tally: BrainExtractionCycleResult["batch"],
-  reason: string,
-): Promise<boolean> {
-  const expiresAt = toDate(batch.expires_at);
-  // An UNPARSEABLE expiry is treated as expired rather than as "wait forever".
-  // The column is `NOT NULL` so this is query drift if it ever fires, and the
-  // safe direction for drift is the one that re-queues the episodes: a batch we
-  // cannot date is a batch nothing would ever abandon.
-  if (expiresAt !== null && expiresAt.getTime() > deps.now().getTime()) return false;
-  const requeued = await deps.ledger.abandon({ batchId: batch.id, reason });
-  tally.abandoned++;
-  tally.requeued += requeued;
-  return true;
-}
-
-/** Collect one batch. Throws on a vendor fault; the caller decides what that means. */
-async function collectOneBatch(
-  batch: BatchLedgerRow,
-  deps: BatchPhaseDeps,
-  tally: BrainExtractionCycleResult["batch"],
-  precomputed: Map<string, PrecomputedExtraction>,
-): Promise<EpisodeRow[]> {
-  // The SAME resolution the submit used — so a workspace that moved off
-  // Anthropic, or whose key stopped decrypting, cannot be polled with somebody
-  // else's credentials.
-  const resolved = await deps.modelFor(batch.workspace_id);
-  const apiKey = resolved?.batchApiKey ?? null;
-  if (apiKey === null) {
-    const abandoned = await abandonIfExpired(
-      batch,
-      deps,
-      tally,
-      "the workspace no longer resolves a batch-capable provider, and the batch expired before it did again",
-    );
-    log.warn(
-      { workspaceId: batch.workspace_id, batchId: batch.id, abandoned },
-      abandoned
-        ? "brain extraction: a batch's workspace no longer resolves a batch-capable provider and the batch has expired — abandoned, episodes re-queued for the synchronous path"
-        : "brain extraction: a batch's workspace does not currently resolve a batch-capable provider — leaving the batch in flight until the configuration is repaired or it expires",
-    );
-    return [];
-  }
-
-  tally.polled++;
-  const status = await deps.client.retrieve({
-    apiKey,
-    providerBatchId: batch.provider_batch_id,
-  });
-  if (status.processingStatus !== "ended") {
-    // Still working. `canceling` lands here too and resolves to `ended` on a
-    // later tick, which is the vendor's own transition and not ours to shortcut.
-    await abandonIfExpired(
-      batch,
-      deps,
-      tally,
-      `the batch was still ${status.processingStatus} at its expiry`,
-    );
-    return [];
-  }
-  if (status.resultsUrl === null) {
-    // Ended with nowhere to read from. Terminal by definition — waiting cannot
-    // produce a url a finished batch does not have — so this abandons
-    // regardless of expiry, and the episodes go back on the queue.
-    const requeued = await deps.ledger.abandon({
-      batchId: batch.id,
-      reason: "the batch ended with no results url",
-    });
-    tally.abandoned++;
-    tally.requeued += requeued;
-    log.error(
-      { workspaceId: batch.workspace_id, batchId: batch.id, requeued },
-      "brain extraction: a batch ended with no results url — abandoned and its episodes re-queued; nothing is lost, but the spend on that batch is",
-    );
-    return [];
-  }
-
-  const results = await deps.client.results({ apiKey, resultsUrl: status.resultsUrl });
-  const episodes = await deps.ledger.loadEpisodes(batch.id);
-
-  // ⚠️ KEYED BY `custom_id`, NEVER BY POSITION — the vendor states results
-  // arrive in any order, and the ordering that would make positional matching
-  // appear to work is the common case. `extract-batch.test.ts` shuffles the
-  // result order to pin this.
-  const byCustomId = new Map(results.map((result) => [result.customId, result]));
-
-  const rows: EpisodeRow[] = [];
-  let unfulfilled = 0;
-  for (const episode of episodes) {
-    const result = byCustomId.get(episode.id);
-    // Not covered by the results, or covered by a line that is evidence about
-    // the VENDOR rather than about this episode (`expired`, `canceled`).
-    // Neither is a failure and neither charges a strike — the drain re-selects
-    // the episode the moment this batch stops being `in_flight`, because it
-    // excludes on the batch's STATUS rather than on the pointer. See
-    // `DRAIN_EPISODES_SQL` and `BatchResult`.
-    if (result === undefined) continue;
-    if (result.kind === "unfulfilled") {
-      unfulfilled++;
-      continue;
-    }
-    precomputed.set(
-      episode.id,
-      result.kind === "succeeded"
-        ? parseBatchCandidates(result.text, episode, batch.model_id)
-        : { kind: "failed", error: result.error },
-    );
-    rows.push(episode);
-  }
-
-  if (unfulfilled > 0) {
-    tally.requeued += unfulfilled;
-    log.warn(
-      {
-        workspaceId: batch.workspace_id,
-        batchId: batch.id,
-        unfulfilled,
-        carried: batch.request_count,
-      },
-      "brain extraction: the vendor expired or cancelled requests inside a batch that otherwise ended — those episodes are re-queued with NO strike against them, because an expiry is a fact about the vendor and not about the message. `unfulfilled` equal to the whole batch is a vendor capacity incident, not a corpus problem",
-    );
-  }
-
-  const accounted = rows.length + unfulfilled;
-  if (accounted !== batch.request_count) {
-    log.warn(
-      {
-        workspaceId: batch.workspace_id,
-        batchId: batch.id,
-        expected: batch.request_count,
-        matched: rows.length,
-        unfulfilled,
-        resultLines: results.length,
-      },
-      "brain extraction: a batch accounted for fewer episodes than it carried — the unmatched ones are re-queued automatically (the drain excludes on batch STATUS, not on the pointer), so nothing is lost; a persistent gap means custom_id drift and is worth investigating",
-    );
-  }
-
-  // BEFORE the episodes are reconciled and stamped, which is safe only because
-  // the drain reads the batch's status — see `settleBatchCollected`. Settling
-  // after would need the stamps to have happened, and they happen per-episode
-  // later in this tick, inside the cycle skeleton.
-  await deps.ledger.settleCollected(batch.id);
-  tally.collected++;
-  return rows;
-}
-
-/**
- * One batch result's text → candidates, or a per-episode failure.
- *
- * The model's answer is parsed through {@link ExtractionSchema} — the SAME
- * schema `generateObject` validates against on the synchronous path — so a
- * batched claim cannot reach reconcile in a shape the immediate path would have
- * rejected. A parse failure is the episode's own (it is that episode's response)
- * and therefore charges a strike, which is what makes a model that has stopped
- * following the schema back off instead of costing a batch per tick forever.
- */
-function parseBatchCandidates(
-  text: string,
-  row: EpisodeRow,
-  modelId: string,
-): PrecomputedExtraction {
-  const episode = toEpisodeRef(row, isUnknownArray(row.visible_to) ? row.visible_to : []);
-  try {
-    const parsed = ExtractionSchema.parse(JSON.parse(text));
-    return { kind: "candidates", candidates: toFactCandidates(parsed.facts, episode, modelId) };
-  } catch (err) {
-    return {
-      kind: "failed",
-      error: `batch result did not match the extraction schema: ${errorMessage(err)}`,
-    };
-  }
-}
-
-/**
- * Send this tick's drained episodes out as batches, one per workspace.
- *
- * Returns the ids that went out — the caller drops them from the synchronous
- * set. Anything NOT returned falls through to the immediate path this tick,
- * which is what makes a partial capability (one BYO workspace on Anthropic, one
- * on Azure) degrade per workspace rather than per deployment.
- *
- * Never throws.
- */
-async function submitBatchPhase(
-  rows: readonly EpisodeRow[],
-  deps: BatchPhaseDeps,
-  tally: BrainExtractionCycleResult["batch"],
-): Promise<ReadonlySet<string>> {
-  const submitted = new Set<string>();
-  // Grouped by workspace because a batch carries ONE model id and ONE key, and
-  // both are workspace-resolved. Order within a group is the drain's, so the
-  // oldest episodes still go out first.
-  const byWorkspace = new Map<string, EpisodeRow[]>();
-  for (const row of rows) {
-    // A body-less episode is stamped without a model call by the per-episode
-    // path (`no_body`); batching it would pay for a request whose answer is
-    // discarded. Same for one that is already excluded by the pre-flight gate —
-    // but that check needs a `ReconcileEpisodeRef`, so it stays where it is and
-    // this filter takes only the free half.
-    if (row.body === null || row.body.trim() === "") continue;
-    const group = byWorkspace.get(row.workspace_id);
-    if (group === undefined) byWorkspace.set(row.workspace_id, [row]);
-    else group.push(row);
-  }
-
-  for (const [workspaceId, group] of byWorkspace) {
-    try {
-      const resolved = await deps.modelFor(workspaceId);
-      // `null` from either arm means the synchronous path handles this
-      // workspace: an unresolvable model is already the `model_unavailable`
-      // skip, and a provider with no batch endpoint is the documented fallback.
-      if (resolved === null || resolved.batchApiKey === null) continue;
-
-      const { providerBatchId, expiresAt } = await deps.client.submit({
-        apiKey: resolved.batchApiKey,
-        modelId: resolved.modelId,
-        schema: EXTRACTION_JSON_SCHEMA,
-        items: group.map((row) => {
-          const episode = toEpisodeRef(row, isUnknownArray(row.visible_to) ? row.visible_to : []);
-          const excerpt = extractionExcerpt(episode, row.body ?? "");
-          return {
-            customId: row.id,
-            system: EXTRACTION_SYSTEM_PROMPT,
-            prompt: extractionPrompt(episode, excerpt),
-          };
-        }),
-      });
-
-      // ⚠️ The vendor call happens BEFORE the ledger write, so a crash in
-      // between costs one batch's spend and strands nothing — the episodes were
-      // never pointed, so they re-drain. `recordBatchSubmission`'s docstring
-      // carries why the reverse ordering is worse.
-      const batchId = await deps.ledger.record({
-        workspaceId,
-        providerBatchId,
-        modelId: resolved.modelId,
-        expiresAt,
-        episodeIds: group.map((row) => row.id),
-      });
-
-      for (const row of group) submitted.add(row.id);
-      tally.submitted += group.length;
-      log.info(
-        {
-          workspaceId,
-          batchId,
-          providerBatchId,
-          modelId: resolved.modelId,
-          episodes: group.length,
-          expiresAt: expiresAt.toISOString(),
-        },
-        "brain extraction: submitted a batch — these episodes stay queued and unstamped until its results are reconciled",
-      );
-    } catch (err) {
-      // Per WORKSPACE, so one tenant's broken key cannot stop another's batch,
-      // and the whole group simply takes the synchronous path this tick. `warn`
-      // rather than `error`: nothing is lost and the fallback is the behaviour
-      // this deployment had before batching was switched on.
-      log.warn(
-        { workspaceId, episodes: group.length, err: errorMessage(err) },
-        "brain extraction: batch submission failed for this workspace — its episodes fall through to the immediate path this tick",
-      );
-    }
-  }
-  return submitted;
 }
 
 /**
@@ -1502,7 +872,7 @@ export function runBrainExtractionCycle(
      * the mis-attribution the `custom_id` keying exists to prevent, and a
      * hoisted map would reintroduce it from inside.
      */
-    let batchTally: BrainExtractionCycleResult["batch"] = emptyResult().batch;
+    let batchTally: BrainExtractionBatchTally = emptyResult().batch;
     let precomputed = new Map<string, PrecomputedExtraction>();
 
     /**
@@ -1639,34 +1009,32 @@ export function runBrainExtractionCycle(
         // partial index.
         const collected = await collectBatchPhase(phaseDeps, batchTally, precomputed);
 
-        const excluded = backingOffIds(failures, now());
-        excludedThisTick = excluded.length;
-        const drained = await internalQuery<EpisodeRow>(DRAIN_EPISODES_SQL, [
-          BATCH_SIZE,
-          excluded,
-        ]);
+        const backingOff = backingOffIds(failures, now());
+        excludedThisTick = backingOff.length;
 
-        // ⚠️ SUBTRACT what the collect phase just handed back, and this is not
-        // belt-and-braces — the drain WILL re-select those rows. The collect
-        // phase settles a batch before its episodes are reconciled (it has to;
-        // the stamps happen per-episode later in this tick), so between the two
-        // they are unstamped AND their batch is no longer `in_flight` — which
-        // is precisely the state `DRAIN_EPISODES_SQL` re-admits, by design, and
-        // they are the OLDEST rows on the queue so they come back first.
+        // ⚠️ The collected ids are excluded IN THE QUERY, not filtered out of
+        // its result, and the difference is a throughput bug rather than a
+        // style choice.
         //
-        // Both arms of leaving them in are expensive and neither is visible in
-        // a counter:
-        //   - batch ON: `submitBatchPhase` re-submits answers we are already
-        //     holding. `recordBatchSubmission`'s `extraction_batch_id IS NULL`
-        //     guard then refuses to re-point them, so the second batch collects
-        //     nothing — a full extra batch's spend per collect tick, which
-        //     cancels the 50% this whole change exists for.
-        //   - batch OFF (or a workspace that is not batch-capable): the id
-        //     appears in BOTH halves of the returned array, so `applyRow` runs
-        //     twice on one episode with the same precomputed result — reconcile
-        //     twice, `extracted` double-counted, a second provenance write.
-        const collectedIds = new Set(collected.map((row) => row.id));
-        const fresh = drained.filter((row) => !collectedIds.has(row.id));
+        // They have to be excluded at all: the collect phase settles a batch
+        // before its episodes are reconciled (it has to — the stamps happen
+        // per-episode later in this tick), so between the two they are
+        // unstamped AND their batch is no longer `in_flight`, which is exactly
+        // the state `DRAIN_EPISODES_SQL` re-admits by design. They are also the
+        // OLDEST rows on the queue, so they come back FIRST. Leaving them in
+        // costs either a whole re-submitted batch (batch on — the second batch
+        // then collects nothing, because `recordBatchSubmission` refuses to
+        // re-point an episode) or a double reconcile (batch off — the id lands
+        // in both halves of what `scan` returns).
+        //
+        // Filtering AFTER the query would fix that and introduce a quieter
+        // problem: `LIMIT $1` would already have been spent on those same rows,
+        // so a tick that collected 25 episodes would drain 25 and keep none,
+        // and submit nothing at all. One idle submission tick per collect,
+        // invisible in every counter. Excluding them in the predicate puts the
+        // LIMIT back on rows we can actually use.
+        const excluded = [...backingOff, ...collected.map((row) => row.id)];
+        const fresh = await internalQuery<EpisodeRow>(DRAIN_EPISODES_SQL, [BATCH_SIZE, excluded]);
 
         const submitted = batchEnabled()
           ? await submitBatchPhase(fresh, phaseDeps, batchTally)
@@ -1696,14 +1064,6 @@ export function runBrainExtractionCycle(
     });
   });
 }
-
-/**
- * A batch result already in hand for one episode (#5352) — the model call has
- * been made and paid for, so the per-episode path must not make another.
- */
-export type PrecomputedExtraction =
-  | { readonly kind: "candidates"; readonly candidates: readonly FactCandidate[] }
-  | { readonly kind: "failed"; readonly error: string };
 
 interface ApplyDeps {
   readonly extract: FactExtractor;
@@ -2203,38 +1563,6 @@ async function stampExtracted(episode: ReconcileEpisodeRef): Promise<void> {
   await internalQuery(STAMP_EXTRACTED_SQL, [episode.id, episode.workspaceId]);
 }
 
-/**
- * Map a drained row onto the reconcile stage's episode reference.
- *
- * `occurred_at` arrives as a `Date` from `pg` but as a string through a JSON
- * round-trip (a region import, a test fixture), and an unparseable value must
- * degrade to "no event time" rather than reach `toISOString()` and throw
- * mid-transaction. `visible_to`'s ELEMENTS are passed through untouched —
- * `parseGrant` is built to read them straight off the driver, `null` entries and
- * all. Whether the column loaded as an ARRAY is settled before this call and
- * arrives as an argument, deliberately: read off `row` it needed a `?? []`
- * fallback here, and that fallback silently asserts "grants nobody", which
- * reconcile blocks as NO_GRANT and the caller then STAMPS. As a parameter, the
- * guard in `extractEpisode` is the only way to obtain one.
- */
-function toEpisodeRef(row: EpisodeRow, visibleTo: readonly unknown[]): ReconcileEpisodeRef {
-  return {
-    id: row.id,
-    workspaceId: row.workspace_id,
-    source: row.source,
-    sourceId: row.source_id,
-    sourceActor: row.source_actor,
-    occurredAt: toDate(row.occurred_at),
-    visibleTo,
-  };
-}
-
-function toDate(value: Date | string | null): Date | null {
-  if (value === null) return null;
-  const date = value instanceof Date ? value : new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
 function tallyEpisode(
   result: BrainExtractionCycleResult,
   row: EpisodeRow,
@@ -2401,3 +1729,29 @@ function emitCycleAudit(result: BrainExtractionCycleResult): void {
 export function getBrainExtractionIntervalMs(): number {
   return INTERVAL_MS;
 }
+
+// ---------------------------------------------------------------------------
+// Re-exports — the contract's surface, kept reachable from this module
+//
+// `extract.ts` was the single import site for the whole extraction path before
+// #5352 split it three ways, and several callers (the scheduler registration,
+// every `-pg` suite, `extract.test.ts`) name it. Re-exporting rather than
+// rewriting those call sites keeps the split a refactor of OWNERSHIP rather
+// than a breaking change to a module boundary nobody asked to move.
+// ---------------------------------------------------------------------------
+
+export {
+  BRAIN_EXTRACTION_PRODUCER,
+  EXTRACTION_SYSTEM_PROMPT,
+  ExtractionSchema,
+  extractionExcerpt,
+  extractionPrompt,
+  toFactCandidates,
+} from "@atlas/api/lib/brain/extract-contract";
+export type {
+  BrainExtractionBatchTally,
+  EpisodeRow,
+  PrecomputedExtraction,
+  ResolvedExtractionModel,
+} from "@atlas/api/lib/brain/extract-contract";
+export type { BatchClient, BatchLedger } from "@atlas/api/lib/brain/extract-batch";

@@ -191,29 +191,41 @@ BEGIN
     WHERE conname = 'fk_brain_episodes_extraction_batch'
       AND connamespace = current_schema()::regnamespace
   ) THEN
-    -- NOT VALID, then validated below. Migrations run at BOOT under the
-    -- migration advisory lock, and a plain `ADD CONSTRAINT … FOREIGN KEY` takes
-    -- SHARE ROW EXCLUSIVE on `brain_episodes` — blocking every connector's
-    -- inserts — while it scans the whole table. That table is the one this
-    -- file's own header describes holding a multi-million-row Slack backfill.
-    -- `NOT VALID` takes the lock only long enough to record the constraint;
-    -- `VALIDATE CONSTRAINT` then scans under SHARE UPDATE EXCLUSIVE, which does
-    -- not block writes. The end state is identical — a fully validated FK —
-    -- and every existing row has a NULL pointer, so the scan can find nothing
-    -- to complain about.
+    -- ⚠️ A PLAIN, VALIDATING `ADD CONSTRAINT` — and the `NOT VALID` +
+    -- `VALIDATE CONSTRAINT` split an earlier draft used here is recorded as
+    -- REJECTED, because it buys nothing under this repo's migration runner and
+    -- its rationale reads convincing enough to be re-added by the next person.
+    --
+    -- The concern behind it is real: this takes SHARE ROW EXCLUSIVE on
+    -- `brain_episodes` — blocking every connector's inserts — while it scans
+    -- the table, and that is the table this file's own header describes holding
+    -- a multi-million-row Slack backfill.
+    --
+    -- What makes the split useless is `lib/db/migrate.ts`, which wraps EACH
+    -- MIGRATION FILE in one `BEGIN`/`COMMIT` (its own comment: *"PostgreSQL DDL
+    -- is transactional"*). So:
+    --
+    --   * The lock the `ADD` takes is held until that COMMIT regardless. Doing
+    --     the scan under a lighter lock afterwards does not shorten the window
+    --     writers are blocked for; it is the same transaction.
+    --   * "A deploy that added the constraint but died before validating
+    --     converges on the next run" is unreachable for the same reason — a
+    --     death rolls both statements back together, so there is no half-state
+    --     to converge from.
+    --
+    -- The split only pays off across SEPARATE transactions, which would mean
+    -- teaching the runner to mark a migration as non-transactional. That is a
+    -- runner change, deliberately not smuggled in under a brain feature.
+    --
+    -- Affordable as it stands because the scan finds nothing to check: the
+    -- column was added moments ago in this same file, so every existing row has
+    -- a NULL pointer and the FK's validation scan is a straight pass.
     ALTER TABLE brain_episodes
       ADD CONSTRAINT fk_brain_episodes_extraction_batch
       FOREIGN KEY (workspace_id, extraction_batch_id)
-      REFERENCES brain_extraction_batch (workspace_id, id)
-      NOT VALID;
+      REFERENCES brain_extraction_batch (workspace_id, id);
   END IF;
 END $$;
-
--- Separate statement, and idempotent by construction: `VALIDATE CONSTRAINT` on
--- an already-validated constraint is a no-op, so a re-run costs nothing. Kept
--- OUT of the DO-block above so that a deploy which added the constraint but
--- died before validating still converges on the next run.
-ALTER TABLE brain_episodes VALIDATE CONSTRAINT fk_brain_episodes_extraction_batch;
 
 -- Serves the abandon path's `WHERE extraction_batch_id = $1` re-queue and the
 -- collect phase's per-batch episode load. PARTIAL, so it holds only the episodes

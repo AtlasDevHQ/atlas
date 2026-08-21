@@ -66,6 +66,21 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { withBrainTransaction } from "@atlas/api/lib/brain/reconcile";
+import { isUnknownArray } from "@atlas/api/lib/brain/acl";
+import {
+  EXTRACTION_JSON_SCHEMA,
+  EXTRACTION_SYSTEM_PROMPT,
+  ExtractionSchema,
+  extractionExcerpt,
+  extractionPrompt,
+  toDate,
+  toEpisodeRef,
+  toFactCandidates,
+  type BrainExtractionBatchTally,
+  type EpisodeRow,
+  type PrecomputedExtraction,
+  type ResolvedExtractionModel,
+} from "@atlas/api/lib/brain/extract-contract";
 
 const log = createLogger("brain.extract.batch");
 
@@ -103,12 +118,30 @@ const BATCH_HTTP_TIMEOUT_MS = 30_000;
 /**
  * Batches polled per tick.
  *
- * A bound on the COLLECT phase's fan-out, in the same spirit as `BATCH_SIZE`
- * bounds the drain's. Each ended batch turns into up to `BATCH_SIZE` reconcile
- * transactions in the same tick, so an unbounded collect after an outage —
- * twenty batches landing at once — would run 500 episodes through a
- * `concurrency: 1` loop and starve the drain behind it. Four is one tick's worth
- * of submissions at the current cadence plus slack.
+ * ⚠️ TWO separate properties live around this constant and an earlier draft's
+ * comment ran them together, which made the number look like the reason the
+ * loops are serial. It is not; they are independent decisions:
+ *
+ *   1. **The BOUND — this constant.** How much work one tick may take on. Each
+ *      ended batch becomes up to `BATCH_SIZE` reconcile transactions in the
+ *      same tick, so an unbounded collect after an outage (twenty batches
+ *      landing at once) would put 500 episodes ahead of the drain. Four is one
+ *      tick's worth of submissions at the current cadence plus slack.
+ *   2. **The SERIALIZATION — the `for await` in the phases below.** Why the
+ *      batches are polled one at a time rather than concurrently, which is a
+ *      different question and has a different answer: every one of them can
+ *      open a TRANSACTION on the internal pool (`abandon`, `settleCollected`)
+ *      plus a `loadEpisodes`, and that pool is bounded at **5**.
+ *      `withBrainTransaction`'s docstring names the failure — a nested or
+ *      concurrent checkout under a held connection is a starvation deadlock —
+ *      and `runPeriodicDbCycle` already runs the per-episode loop at
+ *      `concurrency: 1` for the same reason. Fanning these out would be four
+ *      concurrent transactions against five connections, sharing the pool with
+ *      auth, audit and the drain's own queries.
+ *
+ * Raising (1) is a throughput question and safe. Removing (2) is a pool
+ * question and is not — it needs a bounded concurrency that accounts for the
+ * pool, not a `Promise.all`.
  */
 export const COLLECT_BATCHES_PER_TICK = 4;
 
@@ -163,11 +196,63 @@ export type BatchResult =
   | { readonly customId: string; readonly kind: "unfulfilled"; readonly reason: string };
 
 /**
- * The vendor result types that are evidence about the WORLD rather than about
- * the request — see {@link BatchResult}. Everything else that is not
- * `succeeded` is the request's own.
+ * Result TYPES that are evidence about the world — the outer `result.type`.
+ *
+ * `expired` is the 24h ceiling, `canceled` is an operator at the vendor
+ * console. Neither says anything about the message.
  */
 const UNFULFILLED_RESULT_TYPES: ReadonlySet<string> = new Set(["expired", "canceled"]);
+
+/**
+ * ERROR types that are evidence about the world, read off `result.error.type`
+ * when the outer type is `errored`.
+ *
+ * ⚠️ The outer type is NOT enough, and assuming it was is the defect this set
+ * fixes. `errored` is the vendor's envelope for two completely different
+ * things: *"this request was bad"* and *"we were unable to serve it"*. An
+ * overload, a rate limit or a 5xx is delivered as a per-request `errored` line
+ * inside an `ended` batch — so classifying on the envelope alone charged a
+ * strike to every episode in a batch the vendor simply could not serve, which
+ * is #5352's AC (*"a failed batch does not quarantine every episode it
+ * contained"*) broken one layer below where the first fix put the guard.
+ *
+ * Deployment-level faults are here too, and deliberately: an
+ * `authentication_error` is a rotated key and a `billing_error` is an unpaid
+ * invoice. Both are facts about the install, both clear without touching the
+ * episode, and quarantining a backlog behind either would mean a repaired key
+ * drains nothing for up to sixteen hours.
+ */
+const UNFULFILLED_ERROR_TYPES: ReadonlySet<string> = new Set([
+  "overloaded_error",
+  "api_error",
+  "rate_limit_error",
+  "timeout_error",
+  "authentication_error",
+  "permission_error",
+  "billing_error",
+]);
+
+/**
+ * Is this `errored` line the EPISODE's own evidence, or the world's?
+ *
+ * ⚠️ An unrecognised error type charges a strike — the deliberately UNSAFE-ish
+ * default, chosen because the two failure directions are not symmetric. A
+ * wrongly-charged strike is bounded: quarantine is a widening backoff that
+ * re-probes, so a mis-sorted transient heals itself at one call per window. A
+ * wrongly-forgiven one is not: a permanently-poisoned body would be re-submitted
+ * at full price on every cycle, for ever, with nothing to stop it.
+ *
+ * So the set above is an ALLOWLIST of world-evidence, not a denylist of
+ * episode-evidence, and a new vendor error type fails toward the bounded side
+ * until someone reads it. `invalid_request_error` and `request_too_large` are
+ * the two that are genuinely this message's own, and they are the ones the
+ * default already handles correctly.
+ */
+function isWorldEvidenceError(detail: unknown): boolean {
+  if (typeof detail !== "object" || detail === null) return false;
+  const errorType = (detail as { type?: unknown }).type;
+  return typeof errorType === "string" && UNFULFILLED_ERROR_TYPES.has(errorType);
+}
 
 interface AnthropicCredentials {
   readonly apiKey: string;
@@ -396,14 +481,26 @@ export function parseBatchResultLine(line: string): BatchResult | null {
   const type = resultRecord.type;
   if (type !== "succeeded") {
     const label = typeof type === "string" ? type : "unknown";
-    // ⚠️ The split that keeps a vendor incident from quarantining a backlog —
-    // see {@link BatchResult}. `expired` and `canceled` arrive as per-request
-    // lines but are facts about the vendor, so they re-queue and charge
-    // nothing; `errored` is this request's own refusal and charges a strike.
+    // ⚠️ TWO levels, because the vendor's envelope does not carry the
+    // distinction on its own — see {@link UNFULFILLED_ERROR_TYPES}.
+    //
+    // Outer: `expired`/`canceled` are facts about the vendor.
     if (UNFULFILLED_RESULT_TYPES.has(label)) {
       return { customId, kind: "unfulfilled", reason: `the batch request ${label} at the vendor` };
     }
     const detail = resultRecord.error;
+    // Inner: an `errored` line can still be the world's — an overload, a rate
+    // limit, a 5xx, a rotated key. Those re-queue and charge nothing; only a
+    // refusal about THIS request (`invalid_request_error`, `request_too_large`)
+    // charges a strike.
+    if (isWorldEvidenceError(detail)) {
+      const errorType = (detail as { type: string }).type;
+      return {
+        customId,
+        kind: "unfulfilled",
+        reason: `the batch request failed with ${errorType}, which is a fact about the vendor rather than about this message`,
+      };
+    }
     return {
       customId,
       kind: "failed",
@@ -637,4 +734,437 @@ export async function abandonBatch(opts: {
 /** In-flight batches, oldest first, bounded by {@link COLLECT_BATCHES_PER_TICK}. */
 export async function loadInFlightBatches(limit: number): Promise<readonly BatchLedgerRow[]> {
   return internalQuery<BatchLedgerRow>(IN_FLIGHT_BATCHES_SQL, [limit]);
+}
+
+/**
+ * The vendor half of the batch path, injectable so the two-phase cycle is
+ * testable without a network — the seam `FactExtractor` already is for the
+ * synchronous path, at the layer batching actually differs.
+ */
+export interface BatchClient {
+  submit(opts: {
+    readonly apiKey: string;
+    readonly modelId: string;
+    readonly schema: Record<string, unknown>;
+    readonly items: readonly BatchRequestItem[];
+  }): Promise<{ providerBatchId: string; expiresAt: Date }>;
+  retrieve(opts: { readonly apiKey: string; readonly providerBatchId: string }): Promise<BatchStatus>;
+  results(opts: {
+    readonly apiKey: string;
+    readonly resultsUrl: string;
+  }): Promise<readonly BatchResult[]>;
+}
+
+/** The durable half — the in-flight ledger. Injectable for `reconcile`'s reason. */
+export interface BatchLedger {
+  loadInFlight(limit: number): Promise<readonly BatchLedgerRow[]>;
+  loadEpisodes(batchId: string): Promise<readonly EpisodeRow[]>;
+  record(opts: {
+    readonly workspaceId: string;
+    readonly providerBatchId: string;
+    readonly modelId: string;
+    readonly expiresAt: Date;
+    readonly episodeIds: readonly string[];
+  }): Promise<string>;
+  settleCollected(batchId: string): Promise<void>;
+  abandon(opts: { readonly batchId: string; readonly reason: string }): Promise<number>;
+}
+
+export const DEFAULT_BATCH_CLIENT: BatchClient = {
+  submit: submitExtractionBatch,
+  retrieve: retrieveExtractionBatch,
+  results: readExtractionBatchResults,
+};
+
+export const DEFAULT_BATCH_LEDGER: BatchLedger = {
+  loadInFlight: loadInFlightBatches,
+  loadEpisodes: (batchId) => internalQuery<EpisodeRow>(BATCH_EPISODES_SQL, [batchId]),
+  record: recordBatchSubmission,
+  settleCollected: settleBatchCollected,
+  abandon: abandonBatch,
+};
+
+// ---------------------------------------------------------------------------
+// The batch phases (#5352)
+//
+// Both are NON-THROWING by contract, and that is what keeps them additive: the
+// synchronous drain behind them must run whatever the vendor is doing, so every
+// failure here degrades to "no batch work happened this tick", logged, with the
+// episodes exactly where they were.
+// ---------------------------------------------------------------------------
+
+export interface BatchPhaseDeps {
+  readonly client: BatchClient;
+  readonly ledger: BatchLedger;
+  readonly modelFor: (workspaceId: string) => Promise<ResolvedExtractionModel | null>;
+  readonly now: () => Date;
+}
+
+/**
+ * Poll the in-flight batches, reconcile-ready.
+ *
+ * Returns the episode rows whose results are in hand, and populates
+ * `precomputed` with what the model said about each — the drain's rows are
+ * appended to these, and both go through the same per-episode path.
+ */
+export async function collectBatchPhase(
+  deps: BatchPhaseDeps,
+  tally: BrainExtractionBatchTally,
+  precomputed: Map<string, PrecomputedExtraction>,
+): Promise<EpisodeRow[]> {
+  let batches: readonly BatchLedgerRow[];
+  try {
+    batches = await deps.ledger.loadInFlight(COLLECT_BATCHES_PER_TICK);
+  } catch (err) {
+    log.error(
+      { err: errorMessage(err) },
+      "brain extraction: the in-flight batch ledger could not be read — no batch results are collected this tick; the drain still runs and the batches stay in flight",
+    );
+    return [];
+  }
+
+  const rows: EpisodeRow[] = [];
+  for (const batch of batches) {
+    try {
+      rows.push(...(await collectOneBatch(batch, deps, tally, precomputed)));
+    } catch (err) {
+      // A poll or a results read that FAILED is not by itself a reason to give
+      // up: a 429 or a 502 clears, and the batch's work is already paid for. So
+      // the batch stays in flight and is retried next tick — UNLESS it is past
+      // its expiry, at which point there is nothing left to wait for.
+      const reason = errorMessage(err);
+      // ⚠️ GUARDED, because this runs INSIDE the catch: `ledger.abandon` writes
+      // to the internal DB, and a DB blip concurrent with a vendor fault is not
+      // exotic. An unguarded rejection here escapes the loop, escapes
+      // `collectBatchPhase` — whose contract is that it never throws — and
+      // escapes `scan`, so the DRAIN never runs and the whole tick is audited
+      // as a scan fault. The batch simply stays in flight, which is where it
+      // already was.
+      const abandoned = await abandonIfExpired(batch, deps, tally, reason).catch((abandonErr) => {
+        log.error(
+          { workspaceId: batch.workspace_id, batchId: batch.id, err: errorMessage(abandonErr) },
+          "brain extraction: could not abandon an expired batch — it stays in flight and is retried next tick; the drain is unaffected",
+        );
+        return false;
+      });
+      log.warn(
+        {
+          workspaceId: batch.workspace_id,
+          batchId: batch.id,
+          providerBatchId: batch.provider_batch_id,
+          abandoned,
+          err: reason,
+        },
+        abandoned
+          ? "brain extraction: a batch failed to collect AND is past its expiry — abandoned, and its episodes are re-queued with no strike against them"
+          : "brain extraction: a batch failed to collect — it stays in flight and is retried next tick, since the work is already paid for and a transient vendor fault clears",
+      );
+    }
+  }
+  return rows;
+}
+
+/**
+ * Abandon a batch and record it — THE only writer of `abandoned`/`requeued`.
+ *
+ * A one-line wrapper on purpose. The two counters describe one event, and an
+ * earlier cut incremented them at two call sites, one of which reached
+ * `ledger.abandon` directly. That is the shape where a third abandon path
+ * updates one counter and not the other, and the result — `abandoned: 3,
+ * requeued: 0` — reads as "three batches gave up and stranded everything",
+ * which is the alarm an operator would act on.
+ *
+ * ⚠️ **No strikes, ever.** #5352's AC states it outright — *"a failed batch does
+ * not quarantine every episode it contained"* — and the reasoning is the outage
+ * refund's, one level up: an abandoned batch is evidence about the world, not
+ * about any of the 25 episodes in it. See {@link abandonBatch}.
+ */
+async function abandonAndTally(
+  batch: BatchLedgerRow,
+  deps: BatchPhaseDeps,
+  tally: BrainExtractionBatchTally,
+  reason: string,
+): Promise<number> {
+  const requeued = await deps.ledger.abandon({ batchId: batch.id, reason });
+  tally.abandoned++;
+  tally.requeued += requeued;
+  return requeued;
+}
+
+/**
+ * Give up on a batch whose expiry has passed. Returns whether it did.
+ *
+ * The expiry TEST is the whole of this function; the abandon itself belongs to
+ * {@link abandonAndTally}, which owns the counters.
+ */
+async function abandonIfExpired(
+  batch: BatchLedgerRow,
+  deps: BatchPhaseDeps,
+  tally: BrainExtractionBatchTally,
+  reason: string,
+): Promise<boolean> {
+  const expiresAt = toDate(batch.expires_at);
+  // An UNPARSEABLE expiry is treated as expired rather than as "wait forever".
+  // The column is `NOT NULL` so this is query drift if it ever fires, and the
+  // safe direction for drift is the one that re-queues the episodes: a batch we
+  // cannot date is a batch nothing would ever abandon.
+  if (expiresAt !== null && expiresAt.getTime() > deps.now().getTime()) return false;
+  await abandonAndTally(batch, deps, tally, reason);
+  return true;
+}
+
+/** Collect one batch. Throws on a vendor fault; the caller decides what that means. */
+async function collectOneBatch(
+  batch: BatchLedgerRow,
+  deps: BatchPhaseDeps,
+  tally: BrainExtractionBatchTally,
+  precomputed: Map<string, PrecomputedExtraction>,
+): Promise<EpisodeRow[]> {
+  // The SAME resolution the submit used — so a workspace that moved off
+  // Anthropic, or whose key stopped decrypting, cannot be polled with somebody
+  // else's credentials.
+  const resolved = await deps.modelFor(batch.workspace_id);
+  const apiKey = resolved?.batchApiKey ?? null;
+  if (apiKey === null) {
+    const abandoned = await abandonIfExpired(
+      batch,
+      deps,
+      tally,
+      "the workspace no longer resolves a batch-capable provider, and the batch expired before it did again",
+    );
+    log.warn(
+      { workspaceId: batch.workspace_id, batchId: batch.id, abandoned },
+      abandoned
+        ? "brain extraction: a batch's workspace no longer resolves a batch-capable provider and the batch has expired — abandoned, episodes re-queued for the synchronous path"
+        : "brain extraction: a batch's workspace does not currently resolve a batch-capable provider — leaving the batch in flight until the configuration is repaired or it expires",
+    );
+    return [];
+  }
+
+  tally.polled++;
+  const status = await deps.client.retrieve({
+    apiKey,
+    providerBatchId: batch.provider_batch_id,
+  });
+  if (status.processingStatus !== "ended") {
+    // Still working. `canceling` lands here too and resolves to `ended` on a
+    // later tick, which is the vendor's own transition and not ours to shortcut.
+    await abandonIfExpired(
+      batch,
+      deps,
+      tally,
+      `the batch was still ${status.processingStatus} at its expiry`,
+    );
+    return [];
+  }
+  if (status.resultsUrl === null) {
+    // Ended with nowhere to read from. Terminal by definition — waiting cannot
+    // produce a url a finished batch does not have — so this abandons
+    // regardless of expiry, and the episodes go back on the queue.
+    const requeued = await abandonAndTally(
+      batch,
+      deps,
+      tally,
+      "the batch ended with no results url",
+    );
+    log.error(
+      { workspaceId: batch.workspace_id, batchId: batch.id, requeued },
+      "brain extraction: a batch ended with no results url — abandoned and its episodes re-queued; nothing is lost, but the spend on that batch is",
+    );
+    return [];
+  }
+
+  const results = await deps.client.results({ apiKey, resultsUrl: status.resultsUrl });
+  const episodes = await deps.ledger.loadEpisodes(batch.id);
+
+  // ⚠️ KEYED BY `custom_id`, NEVER BY POSITION — the vendor states results
+  // arrive in any order, and the ordering that would make positional matching
+  // appear to work is the common case. `extract-batch.test.ts` shuffles the
+  // result order to pin this.
+  const byCustomId = new Map(results.map((result) => [result.customId, result]));
+
+  const rows: EpisodeRow[] = [];
+  let unfulfilled = 0;
+  for (const episode of episodes) {
+    const result = byCustomId.get(episode.id);
+    // Not covered by the results, or covered by a line that is evidence about
+    // the VENDOR rather than about this episode (`expired`, `canceled`).
+    // Neither is a failure and neither charges a strike — the drain re-selects
+    // the episode the moment this batch stops being `in_flight`, because it
+    // excludes on the batch's STATUS rather than on the pointer. See
+    // `DRAIN_EPISODES_SQL` and `BatchResult`.
+    if (result === undefined) continue;
+    if (result.kind === "unfulfilled") {
+      unfulfilled++;
+      continue;
+    }
+    precomputed.set(
+      episode.id,
+      result.kind === "succeeded"
+        ? parseBatchCandidates(result.text, episode, batch.model_id)
+        : { kind: "failed", error: result.error },
+    );
+    rows.push(episode);
+  }
+
+  if (unfulfilled > 0) {
+    // `requeued` WITHOUT `abandoned`, and that is correct rather than the
+    // half-update {@link abandonAndTally} exists to prevent: the batch itself
+    // collected fine, and some requests inside it did not. Nothing was
+    // abandoned, so nothing increments that counter.
+    tally.requeued += unfulfilled;
+    log.warn(
+      {
+        workspaceId: batch.workspace_id,
+        batchId: batch.id,
+        unfulfilled,
+        carried: batch.request_count,
+      },
+      "brain extraction: the vendor expired or cancelled requests inside a batch that otherwise ended — those episodes are re-queued with NO strike against them, because an expiry is a fact about the vendor and not about the message. `unfulfilled` equal to the whole batch is a vendor capacity incident, not a corpus problem",
+    );
+  }
+
+  const accounted = rows.length + unfulfilled;
+  if (accounted !== batch.request_count) {
+    log.warn(
+      {
+        workspaceId: batch.workspace_id,
+        batchId: batch.id,
+        expected: batch.request_count,
+        matched: rows.length,
+        unfulfilled,
+        resultLines: results.length,
+      },
+      "brain extraction: a batch accounted for fewer episodes than it carried — the unmatched ones are re-queued automatically (the drain excludes on batch STATUS, not on the pointer), so nothing is lost; a persistent gap means custom_id drift and is worth investigating",
+    );
+  }
+
+  // BEFORE the episodes are reconciled and stamped, which is safe only because
+  // the drain reads the batch's status — see `settleBatchCollected`. Settling
+  // after would need the stamps to have happened, and they happen per-episode
+  // later in this tick, inside the cycle skeleton.
+  await deps.ledger.settleCollected(batch.id);
+  tally.collected++;
+  return rows;
+}
+
+/**
+ * One batch result's text → candidates, or a per-episode failure.
+ *
+ * The model's answer is parsed through {@link ExtractionSchema} — the SAME
+ * schema `generateObject` validates against on the synchronous path — so a
+ * batched claim cannot reach reconcile in a shape the immediate path would have
+ * rejected. A parse failure is the episode's own (it is that episode's response)
+ * and therefore charges a strike, which is what makes a model that has stopped
+ * following the schema back off instead of costing a batch per tick forever.
+ */
+function parseBatchCandidates(
+  text: string,
+  row: EpisodeRow,
+  modelId: string,
+): PrecomputedExtraction {
+  const episode = toEpisodeRef(row, isUnknownArray(row.visible_to) ? row.visible_to : []);
+  try {
+    const parsed = ExtractionSchema.parse(JSON.parse(text));
+    return { kind: "candidates", candidates: toFactCandidates(parsed.facts, episode, modelId) };
+  } catch (err) {
+    return {
+      kind: "failed",
+      error: `batch result did not match the extraction schema: ${errorMessage(err)}`,
+    };
+  }
+}
+
+/**
+ * Send this tick's drained episodes out as batches, one per workspace.
+ *
+ * Returns the ids that went out — the caller drops them from the synchronous
+ * set. Anything NOT returned falls through to the immediate path this tick,
+ * which is what makes a partial capability (one BYO workspace on Anthropic, one
+ * on Azure) degrade per workspace rather than per deployment.
+ *
+ * Never throws.
+ */
+export async function submitBatchPhase(
+  rows: readonly EpisodeRow[],
+  deps: BatchPhaseDeps,
+  tally: BrainExtractionBatchTally,
+): Promise<ReadonlySet<string>> {
+  const submitted = new Set<string>();
+  // Grouped by workspace because a batch carries ONE model id and ONE key, and
+  // both are workspace-resolved. Order within a group is the drain's, so the
+  // oldest episodes still go out first.
+  const byWorkspace = new Map<string, EpisodeRow[]>();
+  for (const row of rows) {
+    // A body-less episode is stamped without a model call by the per-episode
+    // path (`no_body`); batching it would pay for a request whose answer is
+    // discarded. Same for one that is already excluded by the pre-flight gate —
+    // but that check needs a `ReconcileEpisodeRef`, so it stays where it is and
+    // this filter takes only the free half.
+    if (row.body === null || row.body.trim() === "") continue;
+    const group = byWorkspace.get(row.workspace_id);
+    if (group === undefined) byWorkspace.set(row.workspace_id, [row]);
+    else group.push(row);
+  }
+
+  for (const [workspaceId, group] of byWorkspace) {
+    try {
+      const resolved = await deps.modelFor(workspaceId);
+      // `null` from either arm means the synchronous path handles this
+      // workspace: an unresolvable model is already the `model_unavailable`
+      // skip, and a provider with no batch endpoint is the documented fallback.
+      if (resolved === null || resolved.batchApiKey === null) continue;
+
+      const { providerBatchId, expiresAt } = await deps.client.submit({
+        apiKey: resolved.batchApiKey,
+        modelId: resolved.modelId,
+        schema: EXTRACTION_JSON_SCHEMA,
+        items: group.map((row) => {
+          const episode = toEpisodeRef(row, isUnknownArray(row.visible_to) ? row.visible_to : []);
+          const excerpt = extractionExcerpt(episode, row.body ?? "");
+          return {
+            customId: row.id,
+            system: EXTRACTION_SYSTEM_PROMPT,
+            prompt: extractionPrompt(episode, excerpt),
+          };
+        }),
+      });
+
+      // ⚠️ The vendor call happens BEFORE the ledger write, so a crash in
+      // between costs one batch's spend and strands nothing — the episodes were
+      // never pointed, so they re-drain. `recordBatchSubmission`'s docstring
+      // carries why the reverse ordering is worse.
+      const batchId = await deps.ledger.record({
+        workspaceId,
+        providerBatchId,
+        modelId: resolved.modelId,
+        expiresAt,
+        episodeIds: group.map((row) => row.id),
+      });
+
+      for (const row of group) submitted.add(row.id);
+      tally.submitted += group.length;
+      log.info(
+        {
+          workspaceId,
+          batchId,
+          providerBatchId,
+          modelId: resolved.modelId,
+          episodes: group.length,
+          expiresAt: expiresAt.toISOString(),
+        },
+        "brain extraction: submitted a batch — these episodes stay queued and unstamped until its results are reconciled",
+      );
+    } catch (err) {
+      // Per WORKSPACE, so one tenant's broken key cannot stop another's batch,
+      // and the whole group simply takes the synchronous path this tick. `warn`
+      // rather than `error`: nothing is lost and the fallback is the behaviour
+      // this deployment had before batching was switched on.
+      log.warn(
+        { workspaceId, episodes: group.length, err: errorMessage(err) },
+        "brain extraction: batch submission failed for this workspace — its episodes fall through to the immediate path this tick",
+      );
+    }
+  }
+  return submitted;
 }

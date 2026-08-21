@@ -103,6 +103,21 @@ const PROVIDER_DEFAULTS: Record<ConfigProvider, string | undefined> = {
  *
  * Both fall back to whatever the turn resolves, which is the pre-#5353 behaviour
  * — a working default rather than an error, per that ticket's own AC.
+ *
+ * ## ⚠️ The gate-agreement number is NOT yet recorded, and that is a deferral
+ *
+ * #5353 asks that *"the default is a cheap tier, and the choice is recorded
+ * with the gate-agreement number that justified it"*. Half of that is done —
+ * the tier is cheap, and the RULE above says why a cheap tier is the right
+ * shape for this call. The number is not, because it does not exist yet:
+ * gate agreement is what #5338 measures (stage-1 recall and the reviewer's
+ * agreement rate on a held-out set), and #5338 has not run.
+ *
+ * Written down rather than left silent, because an unrecorded absence reads
+ * exactly like a satisfied requirement. What justifies Haiku 4.5 TODAY is the
+ * boundary rule, not evidence about extraction quality; when #5338 produces a
+ * number, it belongs here, and if it comes back below the bar then THIS
+ * constant is the thing that moves.
  */
 const PROVIDER_EXTRACTION_DEFAULTS: Record<ConfigProvider, string | undefined> = {
   anthropic: "claude-haiku-4-5",
@@ -590,17 +605,17 @@ export function getExtractionModel(opts: {
  * from, and a workspace with no batch-capable provider simply gets `null` and
  * stays on the synchronous path.
  *
- * ## Anthropic only, and that is a capability rather than a shortcut
+ * ## Anthropic only
  *
- * `ollama` and `openai-compatible` have no batch endpoint at all; `bedrock` and
- * `gateway` have their own, with different request and result shapes; OpenAI's
- * is a file-upload flow rather than an inline request array. Each is a separate
- * client, and shipping one is what makes the fallback path load-bearing instead
- * of decorative.
+ * WHY that is a capability rather than a shortcut — what each other provider's
+ * batch endpoint looks like, and why the fallback path is load-bearing instead
+ * of decorative — is argued once, in `lib/brain/extract-batch.ts`'s header.
+ * This function is where the argument is ENFORCED; keeping a second copy of it
+ * here is a second thing to keep true when a second batch provider lands.
  *
- * The host is fixed (`api.anthropic.com`), so there is no SSRF surface here and
- * no `createGuardedFetch` — unlike the `custom`/`azure-openai` arms of
- * {@link getModelFromWorkspaceConfig}, whose base URL is workspace-supplied.
+ * What belongs here is the consequence: everything that is not Anthropic-direct
+ * returns `null`, and `null` means the cycle stays synchronous for that
+ * workspace.
  */
 export function getBatchApiKey(workspaceConfig: WorkspaceModelConfig | null): string | null {
   if (workspaceConfig) {

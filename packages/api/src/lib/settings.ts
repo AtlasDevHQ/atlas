@@ -1993,6 +1993,10 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     // abandoning paid-for work on a config flip would be the expensive
     // direction), and no new ones are submitted. Read per tick, so it applies on
     // the next one rather than at restart.
+    //
+    // The `description` below states the Anthropic-only consequence for an
+    // operator without re-arguing it — a settings page has to stand alone, and
+    // the argument itself lives once in `lib/brain/extract-batch.ts`'s header.
     key: "ATLAS_BRAIN_EXTRACTION_BATCH_ENABLED",
     section: "Knowledge Base",
     label: "Company Atlas Batch Extraction",

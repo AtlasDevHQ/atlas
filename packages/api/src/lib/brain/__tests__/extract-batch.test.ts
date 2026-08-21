@@ -232,6 +232,56 @@ describe("parseBatchResultLine", () => {
     }
   });
 
+  test("⭐ an `errored` line can still be the WORLD's — the inner error type decides", () => {
+    // The outer envelope is not enough, and assuming it was is the defect this
+    // pins. `errored` is what the vendor sends for BOTH "this request was bad"
+    // and "we could not serve it" — an overload, a rate limit, a 5xx, a rotated
+    // key all arrive as per-request `errored` lines inside an `ended` batch.
+    // Classifying on the envelope alone charged a strike to every episode in a
+    // batch the vendor simply could not serve, which is #5352's AC broken one
+    // layer below where the first fix put the guard.
+    //
+    // MUTATION THIS CATCHES: emptying `UNFULFILLED_ERROR_TYPES`, or reverting
+    // to a bare `result.type === "errored" -> failed`.
+    for (const errorType of [
+      "overloaded_error",
+      "api_error",
+      "rate_limit_error",
+      "timeout_error",
+      "authentication_error",
+      "permission_error",
+      "billing_error",
+    ]) {
+      const parsed = parseBatchResultLine(
+        JSON.stringify({ custom_id: "ep-1", result: { type: "errored", error: { type: errorType } } }),
+      );
+      expect(parsed?.kind).toBe("unfulfilled");
+    }
+  });
+
+  test("the two errors that ARE this message's own still charge a strike", () => {
+    // The control for the test above. Without it, "world evidence" could be
+    // satisfied by a classifier that forgives every `errored` line — which
+    // would let a permanently-poisoned body cost a batched request per tick,
+    // for ever, with nothing bounding it.
+    for (const errorType of ["invalid_request_error", "request_too_large"]) {
+      const parsed = parseBatchResultLine(
+        JSON.stringify({ custom_id: "ep-1", result: { type: "errored", error: { type: errorType } } }),
+      );
+      expect(parsed?.kind).toBe("failed");
+    }
+  });
+
+  test("an unrecognised ERROR type charges a strike — the bounded direction", () => {
+    // The allowlist fails toward the side quarantine can absorb: a
+    // wrongly-charged strike heals itself at one call per widening window, a
+    // wrongly-forgiven one re-submits at full price for ever.
+    const parsed = parseBatchResultLine(
+      JSON.stringify({ custom_id: "ep-1", result: { type: "errored", error: { type: "brand_new_error" } } }),
+    );
+    expect(parsed?.kind).toBe("failed");
+  });
+
   test("an unrecognised result type is treated as the request's own failure", () => {
     // The safe default for a vocabulary that grows: a strike is bounded by the
     // quarantine backoff, while a silent re-queue on an unknown terminal state
@@ -661,7 +711,8 @@ describe("the batch collect phase", () => {
     // with batch OFF the id lands in both halves of `scan`'s return and
     // `applyRow` reconciles the same episode twice.
     //
-    // MUTATION THIS CATCHES: dropping the `collectedIds` filter in `scan`.
+    // MUTATION THIS CATCHES: dropping the collected ids from the drain's
+    // exclusion argument in `scan`.
     const collectedEpisode = episode("ep-a");
     const h = harness({
       inFlight: [inFlightRow({ request_count: 1 })],
@@ -670,11 +721,18 @@ describe("the batch collect phase", () => {
     });
     const seen: { episodeId: string; candidates: readonly FactCandidate[] }[] = [];
 
-    // The drain answers with the SAME episode — which is what a real drain does
-    // once the batch has been settled a few lines earlier in the same tick.
-    internalQueryMock.mockImplementation(async (sql: string) =>
-      sql.includes("FROM brain_episodes e") ? [collectedEpisode] : [],
-    );
+    // The drain HONOURS its `$2` exclusion, as real Postgres does. That is the
+    // level the fix lives at since it moved into the predicate: a stub that
+    // ignored `$2` would report this episode as drained no matter what `scan`
+    // passed, and would go on passing if the exclusion were dropped entirely.
+    // `extract-batch-pg.test.ts` covers the same ground against real SQL.
+    const excludedSeen: string[][] = [];
+    internalQueryMock.mockImplementation(async (sql: string, params?: unknown[]) => {
+      if (!sql.includes("FROM brain_episodes e")) return [];
+      const excluded = (params?.[1] as string[] | undefined) ?? [];
+      excludedSeen.push(excluded);
+      return excluded.includes(collectedEpisode.id) ? [] : [collectedEpisode];
+    });
 
     const result = await Effect.runPromise(
       runBrainExtractionCycle({
@@ -693,10 +751,17 @@ describe("the batch collect phase", () => {
       }),
     );
 
+    // The mechanism, asserted directly: the collected id reached the drain's
+    // exclusion list rather than being filtered out of its result. Excluding it
+    // in the PREDICATE is what keeps `LIMIT` spendable on rows we can use — a
+    // post-hoc filter would drain 25 and keep none on a full collect tick.
+    expect(excludedSeen).toHaveLength(1);
+    expect(excludedSeen[0]).toContain(collectedEpisode.id);
+
     expect(seen).toHaveLength(1);
     expect(result.inspected).toBe(1);
     expect(result.extracted).toBe(1);
-    // And it was not re-submitted either — the other arm of the same filter.
+    // And it was not re-submitted either — the other arm of the same exclusion.
     expect(h.submitted).toHaveLength(0);
     expect(result.batch.submitted).toBe(0);
   });

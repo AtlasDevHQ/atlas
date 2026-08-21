@@ -1,5 +1,5 @@
 import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
-import { render, cleanup, waitFor } from "@testing-library/react";
+import { render, cleanup, waitFor, fireEvent } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
@@ -7,7 +7,11 @@ import { AtlasProvider, type AtlasAuthClient } from "@/ui/context";
 // The fixtures are SHARED with `coverage-statement.test.ts` — one typed
 // builder, so a wire-shape change cannot leave one suite green against a shape
 // the other has already moved past.
-import { chatArm, coverage } from "@/ui/components/admin/brain-coverage/__tests__/_fixtures";
+import {
+  chatArm,
+  coverage,
+  warehouseArm,
+} from "@/ui/components/admin/brain-coverage/__tests__/_fixtures";
 
 /**
  * The Coverage Surface's RENDERING RULES (#5215, ADR-0041).
@@ -259,7 +263,10 @@ describe("Coverage Surface — thin is the reader's judgment, so give them what 
     // "Counts sorted and comparable, judgment left to the reader." Alphabetical
     // made the list findable and the comparison impossible.
     const view = await loaded();
-    const labels = Array.from(view.container.querySelectorAll('[data-testid="coverage-units"] > div'))
+    // Selected by ROW testid rather than by DOM nesting: the arms gained a
+    // wrapper each when the list was bounded (#5357), and a `> div` selector
+    // would have gone quietly green over the wrong elements.
+    const labels = Array.from(view.container.querySelectorAll('[data-testid="coverage-unit-row"]'))
       .map((row) => row.querySelector("span")?.textContent ?? "");
     // #archive (May) → #launch (Jul) → #general (Aug), then the enumerated one.
     expect(labels).toEqual(["#archive", "#launch", "#general", "#incidents"]);
@@ -268,6 +275,139 @@ describe("Coverage Surface — thin is the reader's judgment, so give them what 
     for (const verdict of ["thin", "needs attention", "at risk", "unhealthy"]) {
       expect(units).not.toContain(verdict);
     }
+  });
+});
+
+describe("Coverage Surface — a card states what it covers, it does not list it (#5357)", () => {
+  /** Renders the page with a warehouse arm at the given denominator. */
+  async function warehouseCard(opts: Parameters<typeof warehouseArm>[0]) {
+    respond = () => jsonResponse(coverage({ availability: { warehouse: warehouseArm(opts) } }));
+    const view = await loaded();
+    const card = view.container.querySelector('[data-testid="coverage-class-warehouse"]');
+    if (!(card instanceof HTMLElement)) throw new Error("no warehouse card");
+    return card;
+  }
+
+  const rows = (card: HTMLElement) =>
+    card.querySelectorAll('[data-testid="coverage-unit-row"]').length;
+
+  test("the default render is not proportional to the denominator", async () => {
+    // THE invariant, and deliberately stated without a number. The defect was a
+    // card that grew with the workspace: 281 pairs rendered 200 rows and buried
+    // the other four classes, and it would have rendered 200 again at 2,810
+    // while reading as though nothing were wrong.
+    //
+    // Asserting a fixed row count would go green against a render that DID track
+    // the denominator and merely happened to land on that number for one
+    // fixture — so the assertion is a comparison between two denominators.
+    const small = rows(await warehouseCard({ enumerable: 281 }));
+    cleanup();
+    const large = rows(await warehouseCard({ enumerable: 2810 }));
+    expect(large).toBe(small);
+    // The other half: both responses ship 200 units, and the card must not
+    // render them. Bounded against the rows the WIRE handed it, not only against
+    // the count it states.
+    expect(small).toBeLessThanOrEqual(10);
+  });
+
+  test("every count renders outside the disclosure, with the list collapsed", async () => {
+    // The characteristic failure of a disclosure is the counts collapsing along
+    // with the list it was added for.
+    const card = await warehouseCard({ enumerable: 281 });
+    const text = card.textContent ?? "";
+    expect(card.querySelector('[data-testid="coverage-ratio"]')?.textContent).toContain(
+      "4 of 281",
+    );
+    expect(text).toContain("277 are visible to Atlas and unsurveyed");
+    expect(card.querySelector('[data-testid="coverage-freshness"]')).not.toBeNull();
+    expect(card.querySelector('[data-testid="coverage-denominator-caption"]')).not.toBeNull();
+  });
+
+  test("the preview is the first units of the existing order, never a re-sort", async () => {
+    // A bound that re-sorted would be a verdict about which units deserve to be
+    // seen — the badge ADR-0041 refuses. Surveyed sorts oldest-evidence-first,
+    // and the fixture's ages DESCEND with the index, so the last-authored unit
+    // must lead. Alphabetical order would put `dim_000` first.
+    const card = await warehouseCard({ enumerable: 281, surveyed: 4 });
+    const labels = Array.from(
+      card.querySelectorAll(
+        '[data-testid="coverage-unit-arm-surveyed"] [data-testid="coverage-unit-row"]',
+      ),
+    ).map((row) => row.querySelector("span")?.textContent ?? "");
+    expect(labels[0]).toBe("organization.dim_003");
+  });
+
+  test("the control names the state, and carries no count and no definite article", async () => {
+    const card = await warehouseCard({ enumerable: 281 });
+    const trigger = card.querySelector('[data-testid="coverage-unit-more-enumerated"]');
+    const label = trigger?.textContent ?? "";
+    expect(label).toBe("Show more unsurveyed entity–dimension pairs");
+    // No count: this control reveals 196 of the 277 stated above it, so a number
+    // here is either false or reads as a defect. And no "the": a totality claim
+    // the control cannot keep.
+    expect(label).not.toMatch(/[0-9]/);
+    expect(label).not.toContain("the ");
+  });
+
+  test("expanding reveals the rest and every count is still on the card", async () => {
+    const card = await warehouseCard({ enumerable: 281 });
+    const before = rows(card);
+    const trigger = card.querySelector('[data-testid="coverage-unit-more-enumerated"]');
+    if (!(trigger instanceof HTMLElement)) throw new Error("no disclosure control");
+    fireEvent.click(trigger);
+    await waitFor(() => expect(rows(card)).toBeGreaterThan(before));
+    const text = card.textContent ?? "";
+    expect(card.querySelector('[data-testid="coverage-ratio"]')?.textContent).toContain(
+      "4 of 281",
+    );
+    expect(text).toContain("277 are visible to Atlas and unsurveyed");
+  });
+
+  test("the clipped-listing sentence names its rule, carries no number, and precedes its rows", async () => {
+    // It cannot carry a number: the cap is `COVERAGE_UNITS_MAX` in `@atlas/api`,
+    // which the frontend does not import and the wire does not carry. A restated
+    // "200" would be a second copy of a constant across an HTTP boundary with
+    // nothing keeping the two in step.
+    const card = await warehouseCard({ enumerable: 281 });
+    // Collapsed, there is no listing for a caption to be ABOUT — so there is no
+    // caption. That is the placement rule, asserted rather than assumed.
+    expect(card.querySelector('[data-testid="coverage-units-truncated"]')).toBeNull();
+
+    const trigger = card.querySelector('[data-testid="coverage-unit-more-enumerated"]');
+    if (!(trigger instanceof HTMLElement)) throw new Error("no disclosure control");
+    fireEvent.click(trigger);
+    await waitFor(() =>
+      expect(card.querySelector('[data-testid="coverage-units-truncated"]')).not.toBeNull(),
+    );
+    const note = card.querySelector('[data-testid="coverage-units-truncated"]');
+    const text = note?.textContent ?? "";
+    expect(text).toContain("sort earliest");
+    expect(text).toContain("later names are not listed");
+    expect(text).not.toMatch(/[0-9]/);
+
+    // BEFORE the rows it describes. At 196 revealed rows a note placed after the
+    // list is 196 rows from where the reader starts — the original defect in
+    // miniature.
+    const arm = card.querySelector('[data-testid="coverage-unit-arm-enumerated"]');
+    if (!arm) throw new Error("no enumerated arm");
+    const order = Array.from(
+      arm.querySelectorAll(
+        '[data-testid="coverage-units-truncated"], [data-testid="coverage-unit-row"]',
+      ),
+    ).map((el) => el.getAttribute("data-testid"));
+    expect(order.indexOf("coverage-units-truncated")).toBeLessThan(
+      order.lastIndexOf("coverage-unit-row"),
+    );
+    expect(order[order.length - 1]).toBe("coverage-unit-row");
+  });
+
+  test("the warehouse card has no withheld disclosure — clipping is its only absence", async () => {
+    // Two absences, opposite remedies (`CONTEXT.md` → "clipped listing"). The
+    // warehouse cannot withhold: the admin authored the semantic layer, so
+    // `deliberateAct` is unconditionally true and every unit is namable. A
+    // withheld sentence here would be a disclosure about nothing.
+    const card = await warehouseCard({ enumerable: 281 });
+    expect(card.querySelector('[data-testid="coverage-withheld"]')).toBeNull();
   });
 });
 
@@ -376,7 +516,7 @@ describe("Coverage Surface — labels only where the wire provides them (ADR-004
     expect(text).toContain("#incidents");
     // Four labelled units on the wire, four rendered — the client never mints a
     // fifth from an id, a count, or a placeholder.
-    expect(units.children.length).toBe(4);
+    expect(view.container.querySelectorAll('[data-testid="coverage-unit-row"]')).toHaveLength(4);
   });
 
   test("never falls back to a vendor id when a name is absent", async () => {

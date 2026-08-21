@@ -96,6 +96,49 @@ function chatArm(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/**
+ * The warehouse class at the shape that produced #5357 — 281 pairs, 4 surveyed,
+ * with the response cap engaged so the listing is a **clipped listing**.
+ */
+function warehouseArm(enumerable = 281, unitCount = 200) {
+  const surveyed = Array.from({ length: 4 }, (_, i) => ({
+    state: "surveyed",
+    unitId: `12:organization:dim_${String(i).padStart(3, "0")}`,
+    label: `organization.dim_${String(i).padStart(3, "0")}`,
+    clause: "deliberate-act",
+    newestEvidenceAt: `2026-08-${String(18 - i).padStart(2, "0")}T09:00:00.000Z`,
+    freshness: {
+      kind: "unverified-since",
+      since: "2026-08-12T02:00:00.000Z",
+      reason: "no-activity-metadata",
+    },
+  }));
+  const enumerated = Array.from({ length: unitCount - surveyed.length }, (_, i) => ({
+    state: "enumerated",
+    unitId: `9:audit_log:col_${String(i).padStart(3, "0")}`,
+    label: `audit_log.col_${String(i).padStart(3, "0")}`,
+    clause: "deliberate-act",
+    inPerimeter: false,
+  }));
+  return {
+    state: "enumerated",
+    asOf: "2026-08-19T02:00:00.000Z",
+    ratio: {
+      surveyed: 4,
+      enumerated: enumerable - 4,
+      enumerable,
+      inPerimeterWithoutEvidence: 0,
+      unit: "semantic-layer-enrollment",
+    },
+    freshness: { current: 0, stale: 0, unverified: 4 },
+    units: [...surveyed, ...enumerated],
+    unitsWithheld: 0,
+    unitsTruncated: unitCount < enumerable,
+    mapEdges: [],
+    unavailable: null,
+  };
+}
+
 function buildCoverage(overrides: Record<string, unknown> = {}) {
   const availability = overrides.availability as Record<string, unknown> | undefined;
   const envelope = { ...overrides };
@@ -306,5 +349,61 @@ test.describe("Coverage Surface — the degraded arms (#5215)", () => {
     await expect(chat.getByTestId("coverage-unavailable")).toContainText(
       "Slack returned 429 for the channel listing.",
     );
+  });
+});
+
+test.describe("Coverage Surface — the card is bounded, and its counts are not (#5357)", () => {
+  /**
+   * The half only a real browser can falsify.
+   *
+   * The component suite already pins the BOUND — same arm at two denominators,
+   * identical row count. What it cannot pin is the disclosure behaving like a
+   * disclosure once a person clicks it: this is the first interactive control
+   * this surface has ever had, and its characteristic failure is that the counts
+   * collapse along with the list that the control was added for.
+   */
+  test("expanding reveals the clipped listing and every count survives the click", async ({
+    page,
+  }) => {
+    await installMocks(page, buildCoverage({ availability: { warehouse: warehouseArm() } }));
+    await page.goto("/admin/brain");
+
+    const warehouse = page.getByTestId("coverage-class-warehouse");
+    await expect(warehouse).toBeVisible();
+
+    // 200 units on the wire, and the card must not have rendered them: this is
+    // the defect, in the one place a fold or a scroll container could hide it.
+    const rows = warehouse.getByTestId("coverage-unit-row");
+    await expect(rows).toHaveCount(9);
+    await expect(warehouse.getByTestId("coverage-ratio")).toHaveText(
+      "4 of 281 entity–dimension pairs",
+    );
+    await expect(warehouse).toContainText("277 are visible to Atlas and unsurveyed");
+
+    // Collapsed, there is no listing for a caption to be about — so there is no
+    // caption. The counts beside it are complete and correct regardless.
+    await expect(warehouse.getByTestId("coverage-units-truncated")).toHaveCount(0);
+
+    await warehouse.getByTestId("coverage-unit-more-enumerated").click();
+
+    // The rest arrive, the clipped-listing sentence explains what is NOT here,
+    // and it carries no number — the cap lives in `@atlas/api`, which the
+    // frontend does not import and the wire does not carry.
+    await expect(rows).toHaveCount(200);
+    const note = warehouse.getByTestId("coverage-units-truncated");
+    await expect(note).toContainText("later names are not listed");
+    await expect(note).not.toContainText(/[0-9]/);
+
+    // THE assertion of this file: every count is still on the card after the
+    // click. A disclosure that swallowed one would have made the page state
+    // something smaller than the truth, silently.
+    await expect(warehouse.getByTestId("coverage-ratio")).toHaveText(
+      "4 of 281 entity–dimension pairs",
+    );
+    await expect(warehouse).toContainText("277 are visible to Atlas and unsurveyed");
+    await expect(warehouse.getByTestId("coverage-freshness")).toBeVisible();
+
+    // And still no percentage — the bound moved rows, never claims.
+    expect(await warehouse.textContent()).not.toMatch(/\d\s*%/);
   });
 });

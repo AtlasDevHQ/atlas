@@ -198,6 +198,28 @@ export function ratioPhrase(
 }
 
 /**
+ * The noun on a "show more" control — *"Show more unsurveyed chat channels"*.
+ *
+ * ## Why the control names the STATE and carries no count
+ *
+ * Both arms of a unit list can overflow, so two controls can sit a row apart and
+ * "Show more" alone would render them indistinguishable. The state word is the
+ * page's own: it already says *"277 are visible to Atlas and unsurveyed"*, so
+ * **unsurveyed** is borrowed rather than minted, and the wire's `enumerated` —
+ * which means the opposite of what a reader hears in it — never reaches a screen.
+ *
+ * ⚠️ **No count, and no definite article**, both deliberate. A clipped listing
+ * reveals fewer units than the count stated above it (196 of 277 on the prod
+ * shape that produced #5357), so *"the unsurveyed pairs"* is a totality claim the
+ * control cannot keep, and *"Show 196"* under a sentence saying 277 reads as a
+ * defect even where both numbers are right. The count belongs to the sentence
+ * that owns it; a control is not a claim.
+ */
+export function moreArmNoun(kind: "surveyed" | "enumerated", copy: ClassCopy): string {
+  return `${kind === "surveyed" ? "surveyed" : "unsurveyed"} ${copy.units}`;
+}
+
+/**
  * A stored timestamp, resolved into the three things it can actually be.
  *
  * ## Why this is a union and not `string | null`

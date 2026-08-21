@@ -258,9 +258,10 @@
 # packages/sandbox-sidecar, examples/docker and the create-atlas docker
 # templates.
 #
-# ⚠️ THIS SECTION HAS NO ENTRIES, AND THAT IS THE MEASURED RESULT OF THE 1.4.0
-# BUMP — not an oversight, and not the "currently EMPTY" wrong-path claim the
-# ROADMAP records image-scan.yml making about this file before.
+# ⚠️ The seven openssl/libcap entries this section used to hold are GONE, and
+# that is the measured result of the 1.4.0 bump. The four util-linux entries
+# below are a SEPARATE matter — see the paragraph above them; they are back
+# only because the bump made this ref "changed" and therefore absolutely gated.
 #
 # Seven entries lived here until the bun 1.4.0 bump: CVE-2026-28387, -28388,
 # -28389, -28390, -31789 (the one CRITICAL), -45447 (all libssl3t64 /
@@ -290,7 +291,38 @@
 # bump improves the bare base; it does not make the upgrade removable.
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# ⚠️ CVE-2026-53612, -53613, -53614 and -53615 were here and are GONE (#5361).
+# ⚠️⚠️ CVE-2026-53612/-53613/-53614/-53615 ARE BACK, and the reason is NOT a new
+# disclosure. Read this before concluding #5361 was undone.
+#
+# #5361 removed them because nothing gated on them: they lived on an UNCHANGED
+# base ref, which the base tier treats as report-only. The bun 1.4.0 bump
+# CHANGED that ref, and `base-image-gate.sh` gates a new-or-changed ref
+# ABSOLUTELY (its line 18; the failure message's option 3 names this file). So
+# the gate went red on the bump, not on a disclosure — the entries below are
+# the documented escape hatch, not the hand-re-adding loop #5361 closed.
+#
+# The file's own legitimacy test is met, verified rather than asserted:
+#   bare base   oven/bun:1.4.0 carries all four (measured, Trivy 0.72.0)
+#   built image `Built image (api)` and `(web)` PASS on the bump PR — the
+#               runtime `apt-get upgrade` lands util-linux 2.41.5-0+deb13u1,
+#               exactly the version Trivy names as fixed.
+# Bare-base-only ⇒ the gap this file exists for ⇒ a dated entry is correct.
+#
+# ⚠️ THESE SHOULD BE DELETED AGAIN once the ref stops being "changed" — i.e. on
+# the first PR after this bump merges, they revert to report-only and become
+# dead weight. Do not let them ossify: that is how a baseline stops meaning
+# anything. The `exp:` date is the backstop, not the plan.
+# HIGH  util-linux + 8 siblings  2.41-5 -> 2.41.5-0+deb13u1
+CVE-2026-53612 exp:2026-11-01
+# HIGH  util-linux + 8 siblings
+CVE-2026-53613 exp:2026-11-01
+# HIGH  util-linux + 8 siblings
+CVE-2026-53614 exp:2026-11-01
+# HIGH  util-linux + 8 siblings
+CVE-2026-53615 exp:2026-11-01
+#
+# The history that made this worth a paragraph (from #5361):
+# CVE-2026-53612, -53613, -53614 and -53615 were here and are GONE (#5361).
 # util-linux and its eight siblings (bsdutils, libblkid1, libmount1,
 # libsmartcols1, libuuid1, liblastlog2-2, mount, login), 2.41-5 ->
 # 2.41.5-0+deb13u1. The bare base STILL CARRIES ALL FOUR — re-confirmed on

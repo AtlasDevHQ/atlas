@@ -15,7 +15,13 @@ minimumReleaseAge = 172800
 # catch third-party supply-chain attacks, not our own scoped packages.
 minimumReleaseAgeExcludes = [
   "@types/node",
+  # `@types/bun` is a thin re-export of `bun-types`; excluding the parent
+  # without the child only breaks when both publish the same day, which is
+  # what a bun minor bump is. Adds no trust surface the line above hasn't
+  # already granted. (Found bumping to 1.4.0 — install failed on the
+  # transitive, not on the dep we'd listed.)
   "@types/bun",
+  "bun-types",
   "typescript",
   "@useatlas/types",
   "@useatlas/sdk",

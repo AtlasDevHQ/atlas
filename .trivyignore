@@ -144,10 +144,15 @@
 #                  `apk upgrade`. 128 unique CVEs -> 10; 6 CRITICAL -> 0;
 #                  65 HIGH -> 6; gate-blocking 11 -> 0.
 #
-#   deploy/api     oven/bun:1.3.13 UNCHANGED (engines.bun holds it there — the
+#   deploy/api     oven/bun:1.3.13 UNCHANGED (engines.bun held it there — the
 #   deploy/web     #2811 --isolate TLA regression), plus an `apt-get upgrade`.
 #                  107 unique CVEs -> 75; 6 CRITICAL -> 4; 29 HIGH -> 18;
 #                  gate-blocking 7 -> 0.
+#                  ⚠️ SUPERSEDED 2026-08-20: that pin moved to oven/bun:1.4.0
+#                  once bun 1.4 GA lifted the #2811 constraint (#2802). The
+#                  numbers on this line are 1.3.13 measurements kept for the
+#                  audit trail; the current bare-base figures are in the
+#                  oven/bun:1.4.0 section below.
 #
 # The baseline went 11 -> 10 entries, and the 10 are NOT a subset of the 11 —
 # the caddy bump retired 4 Alpine findings and introduced 2 curl ones the older
@@ -166,6 +171,9 @@
 #     1.3.13 with the upgrade. The fixes are in the security repo, not the base
 #     image, so there was never a security argument for moving that pin — which
 #     matters, because moving it would have broken the isolated test runner.
+#     ⚠️ TRUE OF 1.3.14 ONLY — do not generalise. 1.4.0 rebased onto newer
+#     openssl/libcap and DID clear seven CVEs including the CRITICAL. See the
+#     oven/bun:1.4.0 section below for the back-to-back measurement.
 #
 # ── What the 2026-08-20 pass changed (#5361) ─────────────────────────────────
 #
@@ -179,6 +187,11 @@
 #     oven/bun:1.3.13      49 findings   (HIGH 47, CRITICAL 2) — 11 unique CVEs
 #     14 unique CVEs across both, which is exactly the 14 entries this file held
 #     before this pass. The bare bases did NOT get cleaner.
+#
+#     ⚠️ The bun half of that is now HISTORY, same day: the 1.4.0 bump later on
+#     2026-08-20 took that line to 36 findings / 4 unique / CRITICAL 0. "The
+#     bare bases did NOT get cleaner" was true of the pass that wrote it and is
+#     no longer true of bun. caddy:2.11.4-alpine is unchanged at 5/3.
 #
 #   BUILT images, same policy, no baseline applied — local, uncached builds:
 #     probe-api    0        probe-web    0        probe-docs   0
@@ -241,31 +254,48 @@
 # consciously re-dated. Do not bulk-extend dates — re-scan first.
 
 # ─────────────────────────────────────────────────────────────────────────────
-# oven/bun:1.3.13 (Debian trixie) — runtime base for deploy/api, deploy/web,
+# oven/bun:1.4.0 (Debian trixie) — runtime base for deploy/api, deploy/web,
 # packages/sandbox-sidecar, examples/docker and the create-atlas docker
-# templates. All seven are cleared by the `apt-get upgrade` in every runtime
-# stage; they persist only in the bare base, which is what base-images scans.
+# templates.
+#
+# ⚠️ THIS SECTION HAS NO ENTRIES, AND THAT IS THE MEASURED RESULT OF THE 1.4.0
+# BUMP — not an oversight, and not the "currently EMPTY" wrong-path claim the
+# ROADMAP records image-scan.yml making about this file before.
+#
+# Seven entries lived here until the bun 1.4.0 bump: CVE-2026-28387, -28388,
+# -28389, -28390, -31789 (the one CRITICAL), -45447 (all libssl3t64 /
+# openssl-provider-legacy) and -4878 (libcap2). All seven are GONE from the
+# bare base on 1.4.0. Measured 2026-08-20 with the pinned Trivy 0.72.0 under
+# this file's own gate policy (`--severity HIGH,CRITICAL --ignore-unfixed`),
+# both bases scanned back to back:
+#
+#   oven/bun:1.3.13   49 findings   11 unique CVEs   HIGH 47, CRITICAL 2
+#   oven/bun:1.4.0    36 findings    4 unique CVEs   HIGH 36, CRITICAL 0
+#
+#   cleared by the bump:     the seven above
+#   introduced by the bump:  NONE
+#   still present:           CVE-2026-53612/-53613/-53614/-53615 only
+#
+# ⭐ This is the FIRST TIME a bun pin bump bought anything here, and the file
+# said so in the other direction until today: the note above records that
+# 1.3.13 -> 1.3.14 produced an IDENTICAL 75/4/0, i.e. the fixes were in the
+# distro security repo rather than the base image, so there was no security
+# argument for moving the pin. That reasoning was correct for 1.3.14 and does
+# NOT generalise — 1.4.0 rebased onto newer openssl and libcap. Do not carry
+# the old conclusion forward to the next bump; re-measure, as this pass did.
+#
+# What did NOT change: the `apt-get upgrade` in every runtime stage is still
+# the load-bearing half. These seven were always cleared in the BUILT images
+# and persisted only in the bare base, which is what base-images scans. The
+# bump improves the bare base; it does not make the upgrade removable.
 # ─────────────────────────────────────────────────────────────────────────────
-# HIGH     libssl3t64 / openssl-provider-legacy  3.5.5-1~deb13u1 -> u2
-CVE-2026-28387 exp:2026-11-01
-# HIGH     libssl3t64 / openssl-provider-legacy
-CVE-2026-28388 exp:2026-11-01
-# HIGH     libssl3t64 / openssl-provider-legacy
-CVE-2026-28389 exp:2026-11-01
-# HIGH     libssl3t64 / openssl-provider-legacy
-CVE-2026-28390 exp:2026-11-01
-# CRITICAL libssl3t64 / openssl-provider-legacy
-CVE-2026-31789 exp:2026-11-01
-# HIGH     libssl3t64 / openssl-provider-legacy  -> 3.5.6-1~deb13u2
-CVE-2026-45447 exp:2026-11-01
-# HIGH     libcap2  1:2.75-10+b8 -> 1:2.75-10+deb13u1
-CVE-2026-4878 exp:2026-11-01
 #
 # ⚠️ CVE-2026-53612, -53613, -53614 and -53615 were here and are GONE (#5361).
 # util-linux and its eight siblings (bsdutils, libblkid1, libmount1,
 # libsmartcols1, libuuid1, liblastlog2-2, mount, login), 2.41-5 ->
-# 2.41.5-0+deb13u1. The bare base STILL CARRIES ALL FOUR — measured 2026-08-20,
-# see "What the 2026-08-20 pass changed" above. They are not listed because
+# 2.41.5-0+deb13u1. The bare base STILL CARRIES ALL FOUR — re-confirmed on
+# oven/bun:1.4.0, 2026-08-20; the 1.4 bump cleared the other seven and left
+# these four exactly as they were. They are not listed because
 # nothing gates on them any more: they live on an unchanged base ref, which
 # #5361 made report-only.
 #

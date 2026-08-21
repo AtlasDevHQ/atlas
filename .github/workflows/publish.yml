@@ -62,7 +62,7 @@ jobs:
 
       - uses: ./.github/actions/setup-bun-cached
         with:
-          bun-version: "1.3.13"
+          bun-version: "1.4.0"
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:

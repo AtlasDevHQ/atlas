@@ -1,8 +1,8 @@
 diff --git a/test.d.ts b/test.d.ts
-index 6c3dfe7760ced9444cf1dce7e7432da0c47b63b4..9a11eb39834e049aa2df04fba1511735c3c30e1e 100644
+index 714a2f71d6d10ccfc77559a7dcda572d96cc1bce..f26206dcdde529f97fa204926796b4a87c7ea5a0 100644
 --- a/test.d.ts
 +++ b/test.d.ts
-@@ -897,6 +897,24 @@ declare module "bun:test" {
+@@ -905,6 +905,28 @@ declare module "bun:test" {
      closeTo(num: number, numDigits?: number): AsymmetricMatcher;
    }
  
@@ -16,6 +16,9 @@ index 6c3dfe7760ced9444cf1dce7e7432da0c47b63b4..9a11eb39834e049aa2df04fba1511735
 +   * matcher path to return `Promise<void>` so `await` is honored; the synchronous matcher
 +   * path (`expect(x).toBe(y)`) is untouched, so `no-floating-promises` still (correctly)
 +   * fires on a missing `await` before a `.rejects` / `.resolves` assertion.
++   *
++   * Re-keyed 1.3.14 -> 1.4.0 during the bun 1.4 bump: verified still unfixed upstream
++   * (bun-types@1.4.0 test.d.ts:928 is `resolves: Matchers<Awaited<T>>`). Drop per #4441.
 +   */
 +  type AsyncMatchers<T = unknown> = {
 +    [K in keyof MatchersBuiltin<T>]: MatchersBuiltin<T>[K] extends (
@@ -24,10 +27,11 @@ index 6c3dfe7760ced9444cf1dce7e7432da0c47b63b4..9a11eb39834e049aa2df04fba1511735
 +      ? (...args: A) => Promise<void>
 +      : AsyncMatchers<T>;
 +  };
++
    export interface MatchersBuiltin<T = unknown> {
      /**
       * Negates the result of a subsequent assertion.
-@@ -918,7 +936,7 @@ declare module "bun:test" {
+@@ -925,7 +947,7 @@ declare module "bun:test" {
       * @example
       * expect(Promise.resolve(1)).resolves.toBe(1);
       */
@@ -36,7 +40,7 @@ index 6c3dfe7760ced9444cf1dce7e7432da0c47b63b4..9a11eb39834e049aa2df04fba1511735
  
      /**
       * Expects the value to be a promise that rejects.
-@@ -926,7 +944,7 @@ declare module "bun:test" {
+@@ -933,7 +955,7 @@ declare module "bun:test" {
       * @example
       * expect(Promise.reject("error")).rejects.toBe("error");
       */

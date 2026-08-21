@@ -46,7 +46,7 @@ permissions:
   contents: read
 
 env:
-  BUN_VERSION: "1.3.13"
+  BUN_VERSION: "1.4.0"
 
 # The historic `ci` job was a single linear pipeline (install → drift → build
 # → type → lint → test:others → test:e2e:integration) that took ~3m30s end-
@@ -146,11 +146,18 @@ jobs:
       - name: Check dependency versions (syncpack)
         run: bun x syncpack lint
 
+      # `-name 'Dockerfile*'`, not `-name Dockerfile`: the exact-name form missed
+      # `create-atlas/templates/docker/Dockerfile.sidecar`, which pins `oven/bun:`
+      # like the other seven and was simply never checked. Found during the bun
+      # 1.4.0 bump (#2802) — the file was bumped by hand and the gate stayed green
+      # either way, which is the failure mode worth closing: a scaffold shipping a
+      # stale runtime pin is exactly the #4891 class (the docker template carried
+      # the same exposure as deploy/web and nothing caught it).
       - name: Check Dockerfile bun version pins
         run: |
           EXPECTED="${{ env.BUN_VERSION }}"
           ERRORS=0
-          for f in $(find . -name Dockerfile -not -path './.git/*' -not -path './node_modules/*'); do
+          for f in $(find . -name 'Dockerfile*' -not -path './.git/*' -not -path './node_modules/*'); do
             if ! grep -q 'oven/bun:' "$f"; then continue; fi
             ACTUAL=$(grep -o 'oven/bun:[0-9.]*' "$f" | head -1 | cut -d: -f2)
             if [ "$ACTUAL" != "$EXPECTED" ]; then

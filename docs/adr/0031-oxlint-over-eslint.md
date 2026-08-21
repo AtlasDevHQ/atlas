@@ -85,7 +85,7 @@ does **not** implement `no-restricted-syntax` natively.
     `await <void>` and flags the `await` as redundant — even though at runtime those
     methods return a real thenable that MUST be awaited to enforce the assertion.
     Not a bun-1.4 bump (that is a runtime rewrite; the matcher return types on bun
-    `main` are still `void`). **Fix: a repo-side `bun` patch** (`patches/bun-types@1.3.14.patch`
+    `main` are still `void`). **Fix: a repo-side `bun` patch** (`patches/bun-types@1.4.0.patch`
     via `patchedDependencies`) that rewrites only the async matcher path — a mapped type
     repoints `resolves`/`rejects` so every matcher method returns `Promise<void>`, leaving
     the synchronous `expect(x).toBe(y)` path (`void`) untouched. We chose the patch over a
@@ -100,9 +100,16 @@ does **not** implement `no-restricted-syntax` natively.
     genuine residual redundant-awaits remained (previously masked by the 753 noise) and were
     removed: `await registry.registerDirect(...)` ×11 (`registerDirect` returns `void`) and
     `await validate!(...)` ×4 (synchronous mock returns). **Promoted `await-thenable`
-    `warn` → `error`** (0 repo-wide). *Caveat:* the patch is pinned to `bun-types@1.3.14`;
-    a version bump that changes `test.d.ts` will fail to apply at install time (a loud,
-    CI-caught failure) and the patch must be regenerated (`bun patch bun-types@<v>`).
+    `warn` → `error`** (0 repo-wide). *Caveat:* the patch is pinned to an exact `bun-types` version;
+    a version bump that changes `test.d.ts` must regenerate it (`bun patch bun-types@<v>`).
+    ⚠️ The "loud, CI-caught failure" this caveat used to promise is **half true and the
+    dangerous half is the quiet one** — see `docs/architecture/chat-plugin-atlas-contract.md`:
+    a `patchedDependencies` key naming a no-longer-installed version is **silently ignored**
+    and the package ships unpatched. Re-keyed `1.3.14` → `1.4.0` in the bun 1.4 bump;
+    upstream was re-checked at that point and is **still unfixed** (`bun-types@1.4.0`
+    `test.d.ts:928` is `resolves: Matchers<Awaited<T>>`), so #4441 stays open. The gate that
+    actually catches a silently-dropped patch here is `bun run lint:type-aware` returning to
+    753 `await-thenable` findings, not `bun install`.
   - **Wave 4 (config-artifact tail: `no-redundant-type-constituents` 42 → 17, #4433 + #4434).**
     Two independent fixes, each clearing findings that were *config artifacts* of the
     per-package type-aware program — not code smells the sanctioned `bun run type` (root

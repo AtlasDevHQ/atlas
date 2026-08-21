@@ -93,7 +93,18 @@ finishes, so test code runs against a partially-initialized SUT.
 | 1.3.11 | ✅ | ✅ | ✅ |
 | 1.3.13 | ✅ | ✅ | ✅ |
 | 1.3.14 | ✅ | ❌ | ❌ |
+| 1.4.0-canary.1 | ✅ | ✅ | ✅ |
+| 1.4.0 (GA) | ✅ | ✅ | ✅ |
 
-The single-version regression at 1.3.14 is what drives the engine pin to
-`>=1.3.13 <1.3.14` in the workspace root `package.json`. Unpin once the
-upstream fix lands.
+The single-version regression at 1.3.14 drove the engine pin to
+`>=1.3.13 <1.3.14`. **That pin is lifted** — bun 1.4.0 GA shipped 2026-08-20
+and the root `package.json` now pins `>=1.4.0 <1.5.0` (#2802).
+
+⚠️ Do not expect an upstream changelog entry for this. Per #2811, the upstream
+issue (oven-sh/bun#31410) was closed **not-planned**; the fix rode in via PR
+#30656 plus a WebKit PR, so there was never a "fixed in" note to watch for and
+no 1.3.15 backport. The GA row above is the evidence, not a release note.
+
+These fixtures are kept rather than deleted: they are the only executable
+description of the regression, and the next `--isolate` behaviour change will
+want the same 11 pairs re-run.

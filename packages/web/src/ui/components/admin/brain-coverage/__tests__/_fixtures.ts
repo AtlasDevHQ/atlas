@@ -128,6 +128,75 @@ export function chatArm(): Extract<
 }
 
 /**
+ * A warehouse arm at the shape that produced #5357 — a large enumerated tail
+ * over a handful of surveyed pairs, with the response cap engaged.
+ *
+ * `enumerable` is a PARAMETER because the invariant the suite pins is stated
+ * without a number: *no card's default render is proportional to
+ * `ratio.enumerable`*. The only way to assert that rather than a hard-coded row
+ * count is to render the same arm at two denominators and compare — a test that
+ * asserted `toHaveLength(10)` would go green against a render that tracked the
+ * denominator and simply happened to sit at ten for this fixture.
+ *
+ * ⚠️ `unitCount` is separate from `enumerable` on purpose: the server clips the
+ * listing at `COVERAGE_UNITS_MAX` and reports it, so a 281-pair workspace ships
+ * 200 units and a 2,810-pair one ships the same 200. The card must be bounded
+ * against BOTH — the count it states and the rows it was handed.
+ */
+export function warehouseArm({
+  enumerable = 281,
+  surveyed = 4,
+  unitCount = 200,
+}: { enumerable?: number; surveyed?: number; unitCount?: number } = {}): Extract<
+  BrainCoverage["availability"]["warehouse"],
+  { state: "enumerated" }
+> {
+  const surveyedUnits = Array.from({ length: Math.min(surveyed, unitCount) }, (_, i) => ({
+    state: "surveyed" as const,
+    unitId: `${"organization".length}:organization:dim_${String(i).padStart(3, "0")}`,
+    label: `organization.dim_${String(i).padStart(3, "0")}`,
+    clause: "deliberate-act" as const,
+    // Descending ages, so the oldest-evidence-first ordering is falsifiable here
+    // too — a preview that re-sorted would show a different first row.
+    newestEvidenceAt: `2026-08-${String(18 - i).padStart(2, "0")}T09:00:00.000Z`,
+    freshness: {
+      kind: "unverified-since" as const,
+      since: "2026-08-12T02:00:00.000Z",
+      reason: "no-activity-metadata" as const,
+    },
+  }));
+  const enumeratedUnits = Array.from(
+    { length: Math.max(0, unitCount - surveyedUnits.length) },
+    (_, i) => ({
+      state: "enumerated" as const,
+      unitId: `${"audit_log".length}:audit_log:col_${String(i).padStart(3, "0")}`,
+      label: `audit_log.col_${String(i).padStart(3, "0")}`,
+      clause: "deliberate-act" as const,
+      inPerimeter: false,
+    }),
+  );
+  return {
+    state: "enumerated",
+    asOf: "2026-08-19T02:00:00.000Z",
+    ratio: {
+      surveyed,
+      enumerated: enumerable - surveyed,
+      enumerable,
+      inPerimeterWithoutEvidence: 0,
+      unit: "semantic-layer-enrollment",
+    },
+    freshness: { current: 0, stale: 0, unverified: surveyed },
+    units: [...surveyedUnits, ...enumeratedUnits],
+    unitsWithheld: 0,
+    // The warehouse class cannot withhold — the admin authored the semantic
+    // layer, so every unit is namable and clipping is its only absence.
+    unitsTruncated: unitCount < enumerable,
+    mapEdges: [],
+    unavailable: null,
+  };
+}
+
+/**
  * The whole surface. Per-class overrides are MERGED into the record rather than
  * replacing it — a spread that replaced `availability` wholesale would leave
  * four classes missing, and every assertion would then pass or fail for the

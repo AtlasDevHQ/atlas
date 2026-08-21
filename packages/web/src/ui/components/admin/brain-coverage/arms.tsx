@@ -30,7 +30,7 @@
  *     is disclosed as a count.
  */
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import {
   AlertTriangle,
   Clock,
@@ -40,6 +40,11 @@ import {
   Radio,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import type {
   BrainCoverage,
@@ -51,6 +56,7 @@ import type {
   BrainCoverageSourceClass,
 } from "@/ui/lib/types";
 import {
+  type ClassCopy,
   CLASS_COPY,
   CLASS_ORDER,
   CLAUSE_COPY,
@@ -61,6 +67,7 @@ import {
   datePhrase,
   enumerationNeverSucceededClaim,
   frozenEnumerationClaim,
+  moreArmNoun,
   neverEnumeratedClaim,
   notSurveyableClaim,
   ratioPhrase,
@@ -293,7 +300,9 @@ function AvailableBody({
         </p>
       )}
 
-      {arm.units.length > 0 && <UnitList units={arm.units} truncated={arm.unitsTruncated} />}
+      {arm.units.length > 0 && (
+        <UnitList units={arm.units} truncated={arm.unitsTruncated} copy={copy} />
+      )}
     </>
   );
 }
@@ -352,35 +361,69 @@ function MapEdgeList({ edges }: { edges: readonly BrainCoverageMapEdge[] }) {
 }
 
 /**
- * The namable units — with their evidence age, ordered so it can be compared.
+ * How many units of ONE arm render before the rest go behind a disclosure.
  *
- * ## Both halves of ADR-0041's "thin is not a verdict"
+ * ⚠️ **A DISPLAY CHOICE, NOT A THRESHOLD.** The number is arbitrary: nothing
+ * derives it and nothing may key off it. On this surface a bare constant beside
+ * a coverage list is one refactor from becoming a verdict, which is the thing
+ * ADR-0041 refuses in *"thin has no computed badge"* — so no count is compared
+ * against this, no unit is styled by it, and it changes what is on SCREEN and
+ * never what is CLAIMED. Every count renders OUTSIDE the disclosure whatever it
+ * is set to; see {@link UnitList}.
+ */
+const UNIT_ARM_PREVIEW = 5;
+
+/**
+ * The namable units — with their evidence age, ordered so it can be compared,
+ * and BOUNDED so the card cannot grow with the workspace (#5357).
  *
- * *"'Thin' has no computed badge. Counts are shown honestly; a thinness
- * threshold would be Atlas deciding how much evidence a channel ought to
- * produce. The judgment is the reader's."* — which only works if the reader is
- * given what to judge WITH. `newestEvidenceAt` used to be rendered in exactly
- * one place, inside the `stale` sentence, so a `current` or `unverified` unit
- * handed the reader a verdict and no evidence age at all. Every surveyed unit
- * now carries its own, in one column, so the ages line up.
+ * ## The bound is on both arms, and that is the whole point
  *
- * And the ORDER is the other half — the issue asks for counts "sorted and
- * comparable". Surveyed units sort by newest evidence, OLDEST FIRST, so the
- * quietest sources rise to the top without anything labelling them thin;
- * enumerated units follow alphabetically, since they have no evidence to sort
- * by. Sorting alphabetically throughout (the first cut) made the list findable
- * and the comparison the ADR asks for impossible.
+ * The defect was a warehouse card rendering 200 rows of `table.column` under a
+ * ratio of 4 — 201 of the page's 205 unit rows in one card. The obvious fix is
+ * to collapse the ENUMERATED arm, since an enumerated unit carries exactly one
+ * bit ("it exists, nobody put it in the perimeter") that the count above already
+ * states. That fix is also wrong on its own: `enumerable = surveyed +
+ * enumerated`, so an admin who enrols 250 pairs rebuilds the same card out of
+ * SURVEYED rows, with the enumerated arm already collapsed and the regression
+ * therefore invisible as the thing that failed. Both arms are bounded by one
+ * constant, and the invariant the suite pins is stated without a number:
+ * **no card's default render is proportional to `ratio.enumerable`.**
  *
- * ⚠️ Ordering is NOT a verdict, and must not become one: no threshold, no
- * highlight, no "needs attention" — the rows are the same weight, and being
- * first means only that its newest evidence is older.
+ * On today's data this degrades to exactly the small fix — warehouse surveyed is
+ * 4, so the surveyed arm renders whole and only the enumerated arm collapses.
+ *
+ * ## Counts outside, statements about the LISTING inside
+ *
+ * The rule that decides where anything on this card goes, so it is not a
+ * judgment call per element. The ratio, the unsurveyed count, the freshness
+ * tally and the withheld sentence are counts: they render outside, always, and
+ * a disclosure can never hide one. The clipped-listing sentence is a caption ON
+ * the listing, so it renders inside — a reader who never expands has no listing
+ * for it to be about, and spending a caption on an empty state teaches readers
+ * to skip captions on a surface where the captions ARE the honesty rule.
+ *
+ * ⚠️ And it renders BEFORE the rows, not after. The old note sat after the
+ * list; at 196 revealed rows that is 196 rows from where the reader starts, and
+ * a disclosure about a long list placed at the end of that list is the original
+ * defect in miniature.
+ *
+ * ## Ordering is unchanged, and must stay unchanged
+ *
+ * Surveyed units sort by newest evidence OLDEST FIRST, so the quietest sources
+ * rise to the top; enumerated units follow alphabetically, having no evidence to
+ * sort by. The preview is the FIRST {@link UNIT_ARM_PREVIEW} of that existing
+ * order — never a re-sort. A bound that re-sorted would be a verdict about which
+ * units deserve to be seen, which is the badge ADR-0041 refuses.
  */
 function UnitList({
   units,
   truncated,
+  copy,
 }: {
   units: readonly BrainCoverageNamedUnit[];
   truncated: boolean;
+  copy: ClassCopy;
 }) {
   const sorted = units.toSorted((a, b) => {
     if (a.state !== b.state) return a.state === "surveyed" ? -1 : 1;
@@ -393,37 +436,153 @@ function UnitList({
     }
     return a.label.localeCompare(b.label);
   });
+  const surveyed = sorted.filter((unit) => unit.state === "surveyed");
+  const enumerated = sorted.filter((unit) => unit.state === "enumerated");
+  // Which arm the clip landed in — DERIVED, not guessed. The server clips a
+  // surveyed-first listing with `named.slice(0, COVERAGE_UNITS_MAX)`, so it
+  // always removes from the tail, and the tail is the last arm holding units.
+  const clippedArm = enumerated.length > 0 ? "enumerated" : "surveyed";
   return (
-    <div className="space-y-1" data-testid="coverage-units">
-      {sorted.map((unit) => (
-        <div key={unit.unitId} className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-          {/* The clause is on the label rather than in an `sr-only` note: why a
-              name is disclosable is exactly as useful to a sighted admin, and a
-              screen-reader-only version would have made this surface's own
-              disclosure rule the one thing only some readers could see. */}
-          <span className="font-medium" title={CLAUSE_COPY[unit.clause]}>
-            {unit.label}
-          </span>
-          {unit.state === "surveyed" ? (
-            <>
-              <span className="text-xs text-muted-foreground" data-testid="coverage-evidence-age">
-                newest evidence {datePhrase(unit.newestEvidenceAt) ?? "not recorded"}
-              </span>
-              <FreshnessLine freshness={unit.freshness} />
-            </>
-          ) : (
-            <span className="text-xs text-muted-foreground">
-              {unit.inPerimeter
-                ? "in scope, no evidence read yet"
-                : "visible to Atlas, not in scope"}
-            </span>
-          )}
-        </div>
+    <div className="space-y-3" data-testid="coverage-units">
+      <UnitArm
+        units={surveyed}
+        kind="surveyed"
+        copy={copy}
+        clipped={truncated && clippedArm === "surveyed"}
+      />
+      <UnitArm
+        units={enumerated}
+        kind="enumerated"
+        copy={copy}
+        clipped={truncated && clippedArm === "enumerated"}
+      />
+    </div>
+  );
+}
+
+/**
+ * One arm of the unit list: a bounded preview, and the rest behind a disclosure.
+ *
+ * ⚠️ The expanded state is COMPONENT-LOCAL, deliberately against this admin
+ * area's `nuqs` convention. A URL-persisted expansion is a deep link that
+ * renders every shipped row on arrival — it hands the defect this bound exists
+ * to fix to whoever receives the link, with nothing on the page explaining why
+ * it looks like that. An expanded unit list is not a view worth sharing; the
+ * shareable thing on this page is the statement, which always renders.
+ */
+function UnitArm({
+  units,
+  kind,
+  copy,
+  clipped,
+}: {
+  units: readonly BrainCoverageNamedUnit[];
+  kind: "surveyed" | "enumerated";
+  copy: ClassCopy;
+  clipped: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  if (units.length === 0) return null;
+  const preview = units.slice(0, UNIT_ARM_PREVIEW);
+  const rest = units.slice(UNIT_ARM_PREVIEW);
+  // The clipped-listing sentence has nowhere inside to go when this arm has no
+  // disclosure, and it is still true — so it renders after the rows rather than
+  // being dropped. An absent disclosure must never silence a statement.
+  const clippedNote = clipped ? <ClippedListingNote copy={copy} /> : null;
+  return (
+    <div className="space-y-1" data-testid={`coverage-unit-arm-${kind}`}>
+      {preview.map((unit) => (
+        <UnitRow key={unit.unitId} unit={unit} />
       ))}
-      {truncated && (
-        <p className="text-xs text-muted-foreground" data-testid="coverage-units-truncated">
-          The list above is clipped. The counts are not — they are tallied over every unit.
-        </p>
+      {rest.length === 0 ? (
+        clippedNote
+      ) : (
+        <Collapsible open={open} onOpenChange={setOpen}>
+          <CollapsibleTrigger
+            className="text-xs font-medium text-muted-foreground underline underline-offset-4 hover:text-foreground"
+            data-testid={`coverage-unit-more-${kind}`}
+          >
+            {/* No count, and no definite article. This control reveals what the
+                response happened to carry, which for a clipped listing is fewer
+                than the count stated above it — so "the unsurveyed pairs" would
+                be a totality claim the control cannot keep, and a second number
+                two lines under the first reads as a defect even when it is not. */}
+            {open ? "Show fewer" : `Show more ${moreArmNoun(kind, copy)}`}
+          </CollapsibleTrigger>
+          <CollapsibleContent className="space-y-1 pt-1">
+            {clippedNote}
+            {rest.map((unit) => (
+              <UnitRow key={unit.unitId} unit={unit} />
+            ))}
+          </CollapsibleContent>
+        </Collapsible>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The clipped listing's own caption — a **clipped listing** is response size,
+ * never policy, and the two are not the same absence (`CONTEXT.md`).
+ *
+ * ⚠️ It names no number, and cannot. The cap is `COVERAGE_UNITS_MAX` in
+ * `@atlas/api`, which the frontend does not import and the wire does not carry —
+ * `unitsTruncated` is a boolean. Restating "200" here would be a second copy of
+ * a constant across an HTTP boundary with nothing keeping the two in step, which
+ * is a worse failure than an unnumbered sentence: the number would go quietly
+ * wrong the day the cap moved. What the sentence must carry instead is the RULE
+ * and its consequence — the clip is alphabetical, so names that sort later are
+ * absent entirely, and a listing that says only "clipped" invites the reader to
+ * assume a representative sample.
+ */
+function ClippedListingNote({ copy }: { copy: ClassCopy }) {
+  return (
+    <p className="text-xs text-muted-foreground" data-testid="coverage-units-truncated">
+      This listing is clipped to the {copy.units} whose names sort earliest — later names are not
+      listed at all. The counts above cover every {copy.unit}.
+    </p>
+  );
+}
+
+/**
+ * One unit's row — unchanged by the bound: this decides WHAT is shown, the bound
+ * decides how many.
+ *
+ * ## Both halves of ADR-0041's "thin is not a verdict"
+ *
+ * *"'Thin' has no computed badge. Counts are shown honestly; a thinness
+ * threshold would be Atlas deciding how much evidence a channel ought to
+ * produce. The judgment is the reader's."* — which only works if the reader is
+ * given what to judge WITH. `newestEvidenceAt` used to be rendered in exactly
+ * one place, inside the `stale` sentence, so a `current` or `unverified` unit
+ * handed the reader a verdict and no evidence age at all. Every surveyed unit
+ * carries its own, in one column, so the ages line up. The other half is the
+ * ordering, which {@link UnitList} owns.
+ */
+function UnitRow({ unit }: { unit: BrainCoverageNamedUnit }) {
+  return (
+    <div
+      className="flex flex-wrap items-baseline gap-x-2 gap-y-1"
+      data-testid="coverage-unit-row"
+    >
+      {/* The clause is on the label rather than in an `sr-only` note: why a
+          name is disclosable is exactly as useful to a sighted admin, and a
+          screen-reader-only version would have made this surface's own
+          disclosure rule the one thing only some readers could see. */}
+      <span className="font-medium" title={CLAUSE_COPY[unit.clause]}>
+        {unit.label}
+      </span>
+      {unit.state === "surveyed" ? (
+        <>
+          <span className="text-xs text-muted-foreground" data-testid="coverage-evidence-age">
+            newest evidence {datePhrase(unit.newestEvidenceAt) ?? "not recorded"}
+          </span>
+          <FreshnessLine freshness={unit.freshness} />
+        </>
+      ) : (
+        <span className="text-xs text-muted-foreground">
+          {unit.inPerimeter ? "in scope, no evidence read yet" : "visible to Atlas, not in scope"}
+        </span>
       )}
     </div>
   );

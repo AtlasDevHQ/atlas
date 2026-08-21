@@ -1,10 +1,13 @@
 /**
  * Regression test for the signal-aware retry in scripts/signal-retry.ts.
  *
- * Bun 1.3.13 can segfault (native crash) mid-run — the subprocess exits via
- * a signal (non-null signalCode) rather than a clean non-zero exit code.
- * Before the fix, that looked identical to a real test failure and caused
- * spurious CI shard fails (#3490).
+ * (Renamed from test-isolated-retry.test.ts by #2802: the runner it was named
+ * after is deleted, but `scripts/mutate.ts` still uses the module under test.)
+ *
+ * Bun can segfault (native crash) mid-run — the subprocess exits via a signal
+ * (non-null signalCode) rather than a clean non-zero exit code. Before the fix,
+ * that looked identical to a real test failure and caused spurious CI shard
+ * fails (#3490, observed on 1.3.13).
  *
  * These tests call runFileWithSignalRetry() directly via the _spawn seam so
  * we can simulate signal-killed vs assertion-failed subprocesses without

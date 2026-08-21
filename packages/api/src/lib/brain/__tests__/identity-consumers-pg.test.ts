@@ -77,7 +77,7 @@
  *
  * **Accepted cost, recorded in the map's T7 §4:** the most load-bearing
  * assertions in the identity slice now live in the slower, WSL2-flakier lane,
- * and a `--affected` run over `lib/brain/` no longer covers them without
+ * and a `--changed` run over `lib/brain/` no longer covers them without
  * `TEST_DATABASE_URL`. The one-corpus design bounds that rather than removing
  * it — eighteen pairs, three consumers, not three suites.
  *
@@ -276,7 +276,7 @@ const PG_TEST_TIMEOUT_MS = 60_000;
 // entry of a relation silently deletes three tests across three consumers. If
 // this guard sat inside `describeIfPg` it would be skipped in exactly the lane
 // where the rest of the identity coverage is also skipped — the default local
-// and `--affected` runs — which is where a silent deletion would land.
+// and `--changed` runs — which is where a silent deletion would land.
 
 describe("the identity corpus itself (#5021)", () => {
   it("populates every row of the verdict table", () => {

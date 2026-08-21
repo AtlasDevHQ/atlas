@@ -850,7 +850,23 @@ jobs:
           # boot. Tests skip cleanly when this env var is unset, so
           # local-dev runs without `bun run db:up` are unaffected.
           TEST_DATABASE_URL: postgresql://atlas:atlas@localhost:5432/atlas
-        run: bun run scripts/test-isolated.ts --shard ${{ matrix.shard }}/4
+        # Native `bun test --parallel` (bun 1.4). `--parallel` implies `--isolate`:
+        # a fresh global + module registry per FILE, which is what the deleted
+        # custom runner was buying with a subprocess per file.
+        #
+        # ⚠️ Do NOT add `--no-isolate` for speed. It lets a worker keep one global
+        # across the files it runs, and `agent-compaction.test.ts` is known to
+        # leak module state across same-process runs (it false-fails under
+        # `--rerun-each`, which shares a process, while passing 12/12 under
+        # `--parallel`). `--no-isolate` would make that leak routine.
+        #
+        # `--timings` balances the four shards by measured duration instead of
+        # round-robin file index. On the committed data that is a 1.96x -> 1.00x
+        # skew (critical path 550s -> 373s of serial work). The file is advisory:
+        # if it goes stale, sharding degrades to unbalanced but stays CORRECT.
+        # Regenerate with:
+        #   bun test --parallel --timings=scripts/test-timings.json --update-timings
+        run: bun test --parallel --shard=${{ matrix.shard }}/4 --timings=scripts/test-timings.json
     services:
       # Postgres for the real-Postgres suites. Each matrix leg is its own
       # runner and gets its own service container — shards do NOT share this

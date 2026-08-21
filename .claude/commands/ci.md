@@ -1,11 +1,11 @@
 ---
-description: "Run the pre-PR gate — scripts/ci-local.sh, 41 ci-local gates, PASS/FAIL table. Mandatory before a PR. Iterate with test-isolated.ts --affected instead."
+description: "Run the pre-PR gate — scripts/ci-local.sh, 41 ci-local gates, PASS/FAIL table. Mandatory before a PR. Iterate with bun test --parallel --changed instead."
 ---
 
 Run the same checks CI runs. This must pass before opening a PR.
 
 `/ci` is the pre-PR gate, not an iteration loop. For iteration use
-`cd packages/api && bun run scripts/test-isolated.ts --affected` (only tests
+`cd packages/api && bun test --parallel --changed=origin/main` (only tests
 whose source graph your branch touched — typically 10–60s vs the full suite).
 
 ## How to run it (token-aware, hang-proof)
@@ -128,7 +128,7 @@ Schedule is deliberately race- and flake-safe, not max-parallel: Stage 0 runs
 the read-only gates; Stage 2 runs the **tree-writing** gates serially
 (`gate-fixtures` and `mutation-tables` both rewrite sources in place, so they
 must not run beside the scanners that read those files); Stage 3 runs the full
-test suite **isolated** (it flakes under CPU contention on WSL2).
+test suite under `bun test --parallel`, which isolates each file in a worker (it flakes under CPU contention on WSL2).
 
 **Real-Postgres tests (`*-pg.test.ts`) are SILENTLY SKIPPED without a database.**
 They run only when `TEST_DATABASE_URL` is set (the wrapper prints whether it is).
@@ -211,5 +211,5 @@ gh api repos/AtlasDevHQ/atlas/commits/main/statuses --jq '[.[] | {context, state
 - Never end a turn "waiting for the CI report". `.ci-local/RESULT` on disk is the completion signal — poll it on the watch loop above. A lost subagent reply or notification must cost you one poll interval, not a stalled session.
 - Never skip a gate or mark it "probably fine". The wrapper runs them all; don't second-guess a FAIL without reading the log.
 - If a gate fails on code you didn't write (pre-existing), still fix it — CI won't distinguish. The one exception is local-only cruft (see `plugin-count` above), which you remove, not fix.
-- If a test is flaky (passes on retry), note it but don't ignore it. The test suite runs isolated in Stage 2 specifically to reduce WSL2 flakiness — a failure there is more likely real.
+- If a test is flaky (passes on retry), note it but don't ignore it. The test suite runs under `bun test --parallel` in Stage 2, which isolates each file — a failure there is more likely real.
 - Railway deployments are as important as CI — green CI with a failed staging deploy means `main` is broken on staging, which blocks the next `/release` to prod.

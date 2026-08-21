@@ -17,7 +17,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "bun test __tests__/bigquery.test.ts __tests__/profiler.test.ts __tests__/cost-estimator.test.ts"
+    "test": "bun test --parallel"
   },
   "keywords": [
     "atlas",

@@ -22,7 +22,7 @@
   },
   "scripts": {
     "dev": "bun run --hot bin/serve.ts",
-    "test": "bun run scripts/test-isolated.ts"
+    "test": "bun test --parallel"
   },
   "dependencies": {
     "@atlas/api": "workspace:*",

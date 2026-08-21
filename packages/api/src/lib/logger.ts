@@ -166,7 +166,26 @@ export function getRequestContext(): RequestContext | undefined {
 
 // --- Logger ---
 
-const isDev = process.env.NODE_ENV !== "production";
+// `bun test` sets NODE_ENV="test". That is NOT production, so before #2802 it
+// took the `pino-pretty` branch below — and pino-pretty runs its transport in a
+// `thread-stream` WORKER THREAD.
+//
+// ⚠️ That worker is why `bun test --parallel` could not be adopted, and the
+// failure mode is worse than a red suite: when bun tears down a --parallel
+// worker process, the logger's thread dies with `error: the worker thread
+// exited`, which kills the process mid-run. MEASURED on `--parallel=8
+// src/api/`: 1090 tests ran, 28 failed, 169 errors — and bun still exited
+// reporting a tidy "Ran 1090 tests across 183 files" when 183 files actually
+// hold 4818 tests. 3728 tests SILENTLY DID NOT RUN. With the worker gone:
+// 4818 ran, 0 errors, ~10s.
+//
+// So test runs take the plain-JSON branch. This is not a behaviour change any
+// assertion can see — nothing asserts on pretty-printing — and it deliberately
+// does NOT reach for NODE_ENV="production", which would flip real app switches
+// (e.g. scheduled-tasks.ts requires a tick secret under production, which is
+// exactly the dev-path test that would then fail).
+const isTest = process.env.NODE_ENV === "test";
+const isDev = process.env.NODE_ENV !== "production" && !isTest;
 
 // Redaction covers top-level fields, one-level nested (*.field), array
 // element access ([*].field), and known deep structures. fast-redact does

@@ -6,7 +6,7 @@
     "./*": "./src/*.ts"
   },
   "scripts": {
-    "test": "bun run scripts/test-isolated.ts"
+    "test": "bun test --parallel"
   },
   "dependencies": {
     "@atlas/api": "workspace:*",

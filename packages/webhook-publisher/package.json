@@ -6,7 +6,7 @@
   "scripts": {
     "build": "rm -rf dist && bun build src/index.ts src/sign.ts src/deliver.ts --outdir dist --target node --packages external && ./node_modules/.bin/tsgo -p tsconfig.build.json",
     "prepare": "bun run build",
-    "test": "bun test src/__tests__/sign.test.ts && bun test src/__tests__/deliver.test.ts"
+    "test": "bun test --parallel"
   },
   "exports": {
     ".": {

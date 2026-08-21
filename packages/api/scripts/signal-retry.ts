@@ -1,12 +1,20 @@
 /**
- * Signal-aware subprocess runner used by test-isolated.ts.
+ * Signal-aware subprocess runner.
  *
- * Bun 1.3.13 can segfault (native crash) mid-run. The subprocess then exits
- * with a non-null signalCode (e.g. "SIGSEGV") rather than a clean non-zero
- * exit code. A clean non-zero code means a real test assertion failure.
+ * ⚠️ ITS ORIGINAL CALLER IS GONE, AND THIS FILE IS STILL LIVE. It was written
+ * for `test-isolated.ts`, which #2802 deleted in favour of native
+ * `bun test --parallel`. `scripts/mutate.ts` is now the only consumer — it
+ * spawns a test file per mutation, which is the same shape and the same
+ * hazard, so the module stays. Do not delete it as cutover residue.
+ *
+ * Bun can segfault (native crash) mid-run. The subprocess then exits with a
+ * non-null signalCode (e.g. "SIGSEGV") rather than a clean non-zero exit code.
+ * A clean non-zero code means a real test assertion failure. Observed on
+ * 1.3.13 (#3490); not re-measured on 1.4, and the retry is cheap insurance
+ * either way.
  *
  * This module exports the retry logic as a pure function so it can be
- * unit-tested without running the full test-isolated.ts script.
+ * unit-tested without spawning real Bun processes.
  */
 
 import { relative } from "node:path";

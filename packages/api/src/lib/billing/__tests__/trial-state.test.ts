@@ -344,8 +344,8 @@ describe("the stamped clock is the enforced clock (write side == read side, #435
  * fine — only multiplication into a millisecond span is the drift hazard.
  *
  * CAVEAT: this reads sources off disk rather than importing them, so it is
- * `--affected`-blind — editing some far-away file does not schedule it in the
- * local `test-isolated.ts --affected` loop. The full `bun run test` / CI
+ * `--changed`-blind — editing some far-away file does not schedule it in the
+ * local `bun test --parallel --changed` loop. The full `bun run test` / CI
  * `api-tests` shards are what actually catch a re-inlined stamper.
  */
 describe("structural: TRIAL_DAYS arithmetic lives only in trial-state.ts (#4354)", () => {

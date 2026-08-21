@@ -6,7 +6,7 @@
   "scripts": {
     "build": "rm -rf dist && bun build src/index.ts src/client.ts src/mcp.ts --outdir dist --target node --external '@useatlas/types' && ./node_modules/.bin/tsgo -p tsconfig.build.json",
     "prepublishOnly": "bun run build",
-    "test": "bun test src/__tests__/client.test.ts src/__tests__/stream.test.ts src/__tests__/integration.test.ts src/__tests__/stream-integration.test.ts src/__tests__/fetch-starter-prompts.test.ts src/__tests__/mcp.test.ts"
+    "test": "bun test --parallel"
   },
   "exports": {
     ".": {

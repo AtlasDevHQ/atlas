@@ -596,9 +596,9 @@ describe("migrateAuthTables", () => {
             // and belongs here on identical grounds: same table, same owner.
             //
             // ⚠️ This list is the SECOND hardcoded applied-migrations fixture in
-            // the tree, and it is `--affected`-blind: nothing in its source
+            // the tree, and it is `--changed`-blind: nothing in its source
             // graph changes when a migration file is ADDED, so a local
-            // `--affected` run stays green and remote CI is where it surfaces.
+            // `--changed` run stays green and remote CI is where it surfaces.
             // `db/__tests__/migrate.test.ts` carries the other one (a count).
             // Adding a migration means updating both.
             { name: "0197_builtin_roles_dashboards_share.sql" },

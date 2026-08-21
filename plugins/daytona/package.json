@@ -17,7 +17,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "bun test __tests__/daytona-sandbox.test.ts"
+    "test": "bun test --parallel"
   },
   "keywords": [
     "atlas",

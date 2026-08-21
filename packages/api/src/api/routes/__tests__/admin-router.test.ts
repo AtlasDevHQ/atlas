@@ -498,7 +498,7 @@ describe("workspace API key admin reach (#4110)", () => {
  * mount — not a cross-wired read inside a multi-router file.
  *
  * CAVEAT (same as `trial-state.test.ts`): this reads sources off disk rather
- * than importing them, so it is `--affected`-blind. The full `bun run test` /
+ * than importing them, so it is `--changed`-blind. The full `bun run test` /
  * CI `api-tests` shards are what actually catch a missing mount.
  */
 describe("structural: c.get(\"orgContext\") requires a requireOrgContext() mount (#4751)", () => {

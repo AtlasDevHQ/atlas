@@ -1,15 +1,28 @@
 #!/bin/bash
 # Verify that test files are self-contained — no OS-level state mutation
-# at module top level. Lays the groundwork for swapping the custom
-# subprocess-per-file runner (`packages/*/scripts/test-isolated.ts`) for
-# native `bun test --parallel` in 1.5.4 slice 6 (issue #2802).
+# at module top level.
 #
-# Bun's `--parallel` runner reuses worker processes across multiple test
-# files. JS-global state is reset between files via `--isolate`, but
-# OS-level state (env, cwd, file handles, signal handlers, listeners) is
-# NOT — that persists across the worker's lifetime. The custom runner
-# has been silently doing process isolation; once we cut over to native,
-# every implicit coupling becomes a real failure.
+# ⚠️ THIS GATE GOT MORE LOAD-BEARING, NOT LESS, WHEN #2802 LANDED. It was
+# written as groundwork for replacing the custom subprocess-per-file runners
+# (`packages/*/scripts/test-isolated.ts`) with native `bun test --parallel`.
+# That cutover has now happened and the runners are deleted, so the hazard
+# below is live rather than anticipated.
+#
+# Bun's `--parallel` runner reuses worker PROCESSES across multiple test
+# files. JS-global state is reset between files via `--isolate` (which
+# `--parallel` implies), but OS-level state — env, cwd, file handles, signal
+# handlers, listeners — is NOT: it persists for the worker's lifetime. The
+# deleted runners were silently providing process isolation by spawning a
+# fresh subprocess per file, so every implicit coupling they were hiding is
+# now a real failure mode.
+#
+# The allowlist is therefore DEBT, not a settled exemption. The 9 remaining
+# `env` entries were harmless under a subprocess-per-file runner and are not
+# harmless now — they simply happen not to collide with whatever file bun
+# schedules next in the same worker. The full suite passes today (22,070
+# tests, 0 fail), so nothing is broken; but an entry here is a file that can
+# break a SIBLING when the scheduling changes, which is the hardest kind of
+# failure to attribute. Clear them rather than growing them.
 #
 # Two rules, each independently allowlisted in
 # `scripts/test-discipline-allowlist.txt` so slices 1/2 can land in any

@@ -1406,7 +1406,7 @@ describeIfPg("the drift re-key and the identity-mutation lock (#5024)", () => {
     //
     // Needs no Postgres, and left inside the `-pg` gate deliberately — unlike
     // the allowlist assertion, which `check-brain-fact-promotion.sh` DELEGATES
-    // to and which therefore has to run in the local `--affected` loop, where a
+    // to and which therefore has to run in the local `--changed` loop, where a
     // new gated write first appears. This one guards a divergence reachable only
     // through a deliberate edit to `lexicalNormSql`, and CI sets
     // `TEST_DATABASE_URL`.

@@ -56,10 +56,11 @@ afterEach(async () => {
   // Kill first, and AWAIT the exit before removing the sandbox: `rmSync` on a
   // directory a live child is still writing to races it. Unreachable on the
   // happy path (every test awaits `proc.exited`), live only on a test-timeout —
-  // which is exactly when a clean diagnosis matters. `packages/cli/scripts/
-  // test-isolated.ts` awaits the child's streams and then `proc.exited`, with no
-  // per-file timer — so a child that outlives its test hangs the whole file
-  // rather than failing it, and it hangs on the pipe before it hangs on exit.
+  // which is exactly when a clean diagnosis matters. There is no per-file timer
+  // on the runner side — `packages/cli/scripts/test-isolated.ts` had none, and
+  // `bun test --parallel` (which replaced it in #2802) does not add one — so a
+  // child that outlives its test hangs the worker rather than failing it, and it
+  // hangs on the pipe before it hangs on exit.
   while (children.length > 0) {
     const child = children.pop();
     if (!child) continue;

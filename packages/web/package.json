@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "type": "tsgo --noEmit && tsgo -p tsconfig.test-check.json --noEmit && bash scripts/check-type-program-not-vacuous.sh",
-    "test": "bun scripts/test-isolated.ts"
+    "test": "bun test --parallel"
   },
   "exports": {
     "./ui/context": "./src/ui/context.tsx",

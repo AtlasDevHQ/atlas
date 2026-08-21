@@ -261,6 +261,10 @@ export const CLEANUP_TABLE_RULES = {
   brain_coverage_snapshot: { kind: "column", column: "workspace_id" },
   brain_coverage_cycle: { kind: "column", column: "workspace_id" },
   brain_warehouse_entity_success: { kind: "column", column: "workspace_id" },
+  // The in-flight batch ledger (#5352, migration 0207). `brain_episodes` points
+  // AT it under a composite FK, so the DELETE ORDER puts it after that table —
+  // the same constraint the purge scope records.
+  brain_extraction_batch: { kind: "column", column: "workspace_id" },
   // No org column: cache keys have no org dimension, but the Slack
   // installation store rides this table with the org id in the JSONB value
   // (see the bundle-scope rationale) — scope by that expression. Generic
@@ -380,8 +384,9 @@ export interface CleanupStatement {
  * `conversations.bound_dashboard_id`) — pinned against real Postgres by
  * `migrate-roundtrip-pg.test.ts`.
  *
- * That last clause holds only because the RESTRICT children are deliberately
- * pulled OUT of the column phase, and there are now TWO of them:
+ * That last clause holds only because the non-CASCADE children are deliberately
+ * ordered, and there are now THREE such FKs — two pulled OUT of the column
+ * phase, and one that cannot be:
  *
  *   - `brain_facts.source_episode_id` (#4767) — evidence must not vanish under a
  *     live claim. `brain_facts` carries a `parent` rule despite having its own
@@ -389,11 +394,22 @@ export interface CleanupStatement {
  *   - `fk_brain_vocabulary_target_edge` (#5022) — the derived closure must go
  *     before its approved edges. `brain_vocabulary_target` carries an
  *     `expression` rule for exactly that phase reason, not for simplicity.
+ *   - ⚠️ `fk_brain_episodes_extraction_batch` (#5352) — NO ACTION, and the ONE
+ *     case the early phase cannot express, because it points the other way: the
+ *     CHILD is `brain_episodes`, so `brain_extraction_batch` has to be deleted
+ *     LAST, not first, and the early phase runs first by construction. Both
+ *     therefore sit in the column phase and the ordering rests on DECLARATION
+ *     ORDER — `brain_episodes` is declared above `brain_extraction_batch`, and
+ *     `buildCleanupStatements` walks `Object.entries`. That is exactly the
+ *     "invisible, unasserted property of literal ordering" the `brain_facts`
+ *     tripwire calls out, so it has a tripwire of its own in `cleanup.test.ts`;
+ *     alphabetising this registry would otherwise break region cleanup for
+ *     every workspace with a brain, silently, at the first sweep.
  *
  * The two expression rules are therefore not equivalent: `brain_vocabulary_target`
- * NEEDS the early phase, `chat_cache` merely tolerates it. Any further RESTRICT
- * FK between in-scope tables needs the same treatment. Exported for the tripwire
- * + PG tests.
+ * NEEDS the early phase, `chat_cache` merely tolerates it. Any further
+ * non-CASCADE FK between in-scope tables needs one of these three treatments,
+ * chosen by which side of it is in scope. Exported for the tripwire + PG tests.
  */
 export function buildCleanupStatements(): readonly CleanupStatement[] {
   const first: CleanupStatement[] = [];

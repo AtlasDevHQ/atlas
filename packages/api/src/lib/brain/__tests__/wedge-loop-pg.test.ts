@@ -306,6 +306,8 @@ describeIfPg("brain M1 wedge loop (real Postgres)", () => {
   const EXTRACTION_MODEL = {
     model: mockModel,
     modelId: "mock-extractor",
+    // No batch path in this fixture — the cycle stays on the immediate route.
+    batchApiKey: null,
   } satisfies ResolvedExtractionModel;
 
   beforeAll(async () => {

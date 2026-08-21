@@ -105,6 +105,24 @@ describe("resolveExtractionModel", () => {
     // The model id is what lands in provenance — a reviewer has to be able to
     // tell which model asserted a claim.
     expect(resolved?.modelId).toBe("claude-test-model");
+    // The workspace's own key, not the platform's — the batch path needs the
+    // raw key, and this is the only place its provenance is observable.
+    expect(resolved?.batchApiKey).toBe("sk-ant-test");
+  });
+
+  test("a provider with no batch endpoint resolves no batch key", async () => {
+    // The fallback path's precondition, pinned where it is decided. `custom`
+    // has no batch endpoint, so the cycle must stay synchronous for this
+    // workspace however the platform setting is configured — otherwise the
+    // "batch is a capability of the resolved provider" claim is decorative.
+    routerConfig = anthropicConfig({
+      provider: "custom",
+      baseUrl: "https://llm.example.com/v1",
+      credentials: { provider: "custom", apiKey: "sk-custom" },
+    });
+    const resolved = await resolveExtractionModel(WORKSPACE);
+    expect(resolved).not.toBeNull();
+    expect(resolved?.batchApiKey).toBeNull();
   });
 
   test("refuses when model routing is unavailable on an enterprise deployment", async () => {

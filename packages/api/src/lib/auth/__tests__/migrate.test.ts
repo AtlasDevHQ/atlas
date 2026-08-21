@@ -627,6 +627,7 @@ describe("migrateAuthTables", () => {
             // stake in, so the same grounds as 0196–0204.
             { name: "0205_brain_enrollment_connection_group.sql" },
             { name: "0206_brain_warehouse_entity_success.sql" },
+            { name: "0207_brain_extraction_batch.sql" },
           ],
         };
       }

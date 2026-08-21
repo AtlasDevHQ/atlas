@@ -4561,6 +4561,16 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     const brainEdges = await del(`DELETE FROM brain_edges WHERE workspace_id = $1`);
     const brainFacts = await del(`DELETE FROM brain_facts WHERE workspace_id = $1`);
     const brainEpisodes = await del(`DELETE FROM brain_episodes WHERE workspace_id = $1`);
+    // The in-flight ledger for batched extraction (#5352, migration 0207).
+    // AFTER `brain_episodes` and for the same reason the two lines above are
+    // ordered: `brain_episodes.extraction_batch_id` references it under a
+    // composite FK with NO ACTION, so deleting it first aborts the transaction.
+    // Holds no customer content — a vendor batch handle, a model id, a count —
+    // but an inherited in-flight row would have a re-created org's collect phase
+    // polling a batch belonging to a workspace that no longer exists.
+    const brainExtractionBatch = await del(
+      `DELETE FROM brain_extraction_batch WHERE workspace_id = $1`,
+    );
     const brainVocabularyTarget = await del(`DELETE FROM brain_vocabulary_target WHERE workspace_id = $1`);
     const brainVocabularyEdge = await del(`DELETE FROM brain_vocabulary_edge WHERE workspace_id = $1`);
     const brainVocabularyProposal = await del(
@@ -4997,6 +5007,7 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
         brainFacts,
         brainEdges,
         brainEpisodes,
+        brainExtractionBatch,
         brainVocabularyEdge,
         brainVocabularyTarget,
         brainVocabularyProposal,

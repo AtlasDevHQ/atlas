@@ -1953,6 +1953,29 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     saasVisible: false,
   },
   {
+    // The Batch API path (#5352). PLATFORM-scoped and default OFF, matching the
+    // extraction switch above: this changes the fiber's CONTROL FLOW (submit
+    // now, collect later, an in-flight ledger in between), and its blast radius
+    // is the process, not a tenant's bill. Off until it has run a full cycle on
+    // staging, per #5352's own AC.
+    //
+    // Turning it off mid-run is safe and needs no drain: already-submitted
+    // batches keep being collected (the collect phase does not read this key —
+    // abandoning paid-for work on a config flip would be the expensive
+    // direction), and no new ones are submitted. Read per tick, so it applies on
+    // the next one rather than at restart.
+    key: "ATLAS_BRAIN_EXTRACTION_BATCH_ENABLED",
+    section: "Knowledge Base",
+    label: "Company Atlas Batch Extraction",
+    description:
+      "Submit fact extraction through the provider's batch endpoint — half the price, with an asynchronous turnaround measured in hours rather than seconds. Safe for this path by construction: extraction already runs on its own schedule and its drafts are not usable until a person reviews them. Only Anthropic-configured deployments have a batch endpoint today; every other provider keeps the immediate path automatically. Off by default. Turning it off does not discard work already submitted — those results are still collected — it only stops new submissions. Applies on the next cycle.",
+    type: "boolean",
+    default: "false",
+    envVar: "ATLAS_BRAIN_EXTRACTION_BATCH_ENABLED",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
     // Audience-membership sync (#4801, ADR-0036 §Access control). WORKSPACE-
     // scoped and default ON, unlike its extraction sibling above, because the
     // two knobs answer different questions. Extraction spends model budget, so

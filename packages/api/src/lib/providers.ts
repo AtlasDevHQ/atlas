@@ -443,6 +443,47 @@ export function getSummaryModel(opts: {
   return getModelForConfig(undefined, summaryModelId).model;
 }
 
+/**
+ * The API key a BATCH submission would use, or `null` when the resolved provider
+ * has no batch endpoint this deployment can reach (#5352).
+ *
+ * ## Why this exists at all, given the fiber "reads no key of its own"
+ *
+ * The AI SDK's `LanguageModel` is a per-request abstraction; it has no batch
+ * surface, and no `@ai-sdk/*` package exposes one. A batch submission is
+ * therefore a direct call to the vendor's own endpoint, which needs the key
+ * rather than a built client.
+ *
+ * That is a second READ of the key, not a second credential PATH, and the
+ * distinction is the one `extract.ts`'s header cares about: resolution order is
+ * unchanged (the workspace's own config first, the platform default second), the
+ * key comes from the same `WorkspaceCredentials` union the turn model is built
+ * from, and a workspace with no batch-capable provider simply gets `null` and
+ * stays on the synchronous path.
+ *
+ * ## Anthropic only, and that is a capability rather than a shortcut
+ *
+ * `ollama` and `openai-compatible` have no batch endpoint at all; `bedrock` and
+ * `gateway` have their own, with different request and result shapes; OpenAI's
+ * is a file-upload flow rather than an inline request array. Each is a separate
+ * client, and shipping one is what makes the fallback path load-bearing instead
+ * of decorative.
+ *
+ * The host is fixed (`api.anthropic.com`), so there is no SSRF surface here and
+ * no `createGuardedFetch` — unlike the `custom`/`azure-openai` arms of
+ * {@link getModelFromWorkspaceConfig}, whose base URL is workspace-supplied.
+ */
+export function getBatchApiKey(workspaceConfig: WorkspaceModelConfig | null): string | null {
+  if (workspaceConfig) {
+    const { credentials } = workspaceConfig;
+    if (credentials.provider !== "anthropic") return null;
+    return credentials.apiKey || null;
+  }
+  const provider = process.env.ATLAS_PROVIDER ?? getDefaultProvider();
+  if (provider !== "anthropic") return null;
+  return process.env.ANTHROPIC_API_KEY || null;
+}
+
 // ── Workspace-level model resolution ────────────────────────────────
 
 /**

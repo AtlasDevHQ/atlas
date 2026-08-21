@@ -26,21 +26,11 @@ describe("SQLBlock", () => {
     expect(container.textContent).toContain("ORDER BY");
   });
 
-  // ⚠️ THE CODE SURFACE DOES NOT FOLLOW THE MODE. PRODUCT.md Design Principle 5: the
-  // SQL pane is an "always-dark terminal window (--code-*), identical on every
-  // surface and mode". This shipped as `bg-zinc-100 dark:bg-zinc-800` under
-  // `dark ? oneDark : oneLight`, so in light mode the most brand-defining
-  // component in the product was a light grey box (#5306). Mutation: restore
-  // `bg-zinc-100` on the fallback pre → this test goes red.
-  test("the fallback pane is the dark code surface, not a mode-following grey", () => {
-    const { container } = render(<SQLBlock sql="SELECT 1" />);
-    const pre = container.querySelector("pre");
-    expect(pre).not.toBeNull();
-    const cls = pre!.className;
-    expect(cls).toContain("bg-code-bg");
-    expect(cls).toContain("text-code-fg");
-    expect(cls).not.toMatch(/bg-(white|zinc|slate|gray|neutral)/);
-  });
+  // The fallback-pane / code-surface assertion (#5306) lives in its own file,
+  // sql-block-fallback.test.tsx. It has to render SQLBlock before anything else
+  // in the module registry has, because the component caches its lazily-imported
+  // highlighter in module scope — the three renders above are exactly what used
+  // to break it. That file says why in full; do not move it back here.
 
   test("renders empty SQL without crashing", () => {
     const { container } = render(<SQLBlock sql="" />);

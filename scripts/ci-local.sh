@@ -256,6 +256,7 @@ launch streaming-cors            bash scripts/check-streaming-cors.sh
 launch no-legacy-connections     bash scripts/check-no-legacy-connections-sql.sh
 launch brain-fact-promotion      bash scripts/check-brain-fact-promotion.sh
 launch test-discipline           bash scripts/check-test-discipline.sh
+launch bun-isolation-contract    bash scripts/check-bun-isolation-contract.sh
 launch settings-readers          bash scripts/check-settings-readers.sh
 launch saas-env-doc              bash scripts/check-saas-env-doc.sh
 launch brain-settings-doc        bun scripts/check-brain-settings-doc.ts

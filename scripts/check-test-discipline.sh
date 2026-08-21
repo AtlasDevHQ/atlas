@@ -41,6 +41,11 @@
 # exemption with a real reason, not debt to burn down. #5368 carries the full
 # measurement and the open question of whether these rules should survive.
 #
+# ⚠️ The isolation this depends on is now CHECKED, not just measured once:
+# `scripts/check-bun-isolation-contract.sh` re-runs the probe on every CI run and
+# fails if a bun upgrade regresses `--parallel`, because the 9 entries below are
+# safe only while it holds. This gate reads the TREE; that one reads BUN.
+#
 # Two rules, each independently allowlisted in
 # `scripts/test-discipline-allowlist.txt` so slices 1/2 can land in any
 # order and each clears its own category by deleting its lines:

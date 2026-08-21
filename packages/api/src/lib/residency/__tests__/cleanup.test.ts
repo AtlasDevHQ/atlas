@@ -364,6 +364,29 @@ describe("cleanup scope tripwire (#4458 ↔ #4460 lockstep)", () => {
     expect(indexOf("brain_vocabulary_target")).toBeLessThan(indexOf("brain_vocabulary_edge"));
   });
 
+  it("⭐ brain_extraction_batch is deleted AFTER brain_episodes (#5352)", () => {
+    // `fk_brain_episodes_extraction_batch` is NO ACTION and points the opposite
+    // way to the other two non-CASCADE FKs here: the CHILD is `brain_episodes`,
+    // so the batch ledger must go LAST rather than first — which the early
+    // phase, running first by construction, cannot express. Both rules
+    // therefore sit in the column phase and the order is nothing but their
+    // declaration order in `CLEANUP_TABLE_RULES`.
+    //
+    // That is the same "invisible, unasserted property of literal ordering" the
+    // `brain_facts` pin above exists for, so it gets the same pin. Reversed —
+    // by an alphabetisation, by someone grouping the brain rules together — the
+    // sweep aborts on any workspace with an in-flight batch, and everything
+    // after the failing DELETE is left behind.
+    expect(CLEANUP_TABLE_RULES.brain_extraction_batch).toEqual({
+      kind: "column",
+      column: "workspace_id",
+    });
+    const statements = buildCleanupStatements();
+    const indexOf = (table: string) => statements.findIndex((s) => s.table === table);
+    expect(indexOf("brain_episodes")).toBeGreaterThanOrEqual(0);
+    expect(indexOf("brain_episodes")).toBeLessThan(indexOf("brain_extraction_batch"));
+  });
+
   it("every parent-scoped delete precedes its parent table's delete", () => {
     // The general form of the rule above: a parent rule's subquery needs the
     // parent rows to still exist, and (for RESTRICT FKs) the child rows must

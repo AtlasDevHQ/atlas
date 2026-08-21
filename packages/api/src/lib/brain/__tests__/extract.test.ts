@@ -102,8 +102,51 @@ describe("resolveExtractionModel", () => {
     const resolved = await resolveExtractionModel(WORKSPACE);
 
     expect(resolved).not.toBeNull();
-    // The model id is what lands in provenance — a reviewer has to be able to
-    // tell which model asserted a claim.
+    // ⚠️ NOT `claude-test-model`, and that is #5353 rather than a regression.
+    // The workspace's PROVIDER and CREDENTIALS are still its own — the model is
+    // built through `getModelFromWorkspaceConfig` on that config, which is what
+    // the `sk-ant-test` key reaching the batch arm below demonstrates — but the
+    // model ID is the ingest tier, because extraction has a latency budget of
+    // hours and its output reaches a review queue rather than a person.
+    //
+    // The model id is still what lands in provenance, so a reviewer can tell
+    // which model asserted a claim; this test now pins that it says the tier
+    // that actually ran.
+    expect(resolved?.modelId).toBe("claude-haiku-4-5");
+    // The workspace's own key, not the platform's — the batch path needs the
+    // raw key and this is the only place its provenance is observable.
+    expect(resolved?.batchApiKey).toBe("sk-ant-test");
+  });
+
+  test("the workspace's explicit extraction-model setting wins over the tier default", async () => {
+    routerConfig = anthropicConfig();
+    const prior = process.env.ATLAS_BRAIN_EXTRACTION_MODEL;
+    process.env.ATLAS_BRAIN_EXTRACTION_MODEL = "claude-sonnet-5";
+    try {
+      const resolved = await resolveExtractionModel(WORKSPACE);
+      expect(resolved?.modelId).toBe("claude-sonnet-5");
+    } finally {
+      if (prior === undefined) delete process.env.ATLAS_BRAIN_EXTRACTION_MODEL;
+      else process.env.ATLAS_BRAIN_EXTRACTION_MODEL = prior;
+    }
+  });
+
+  test("a provider with no batch endpoint resolves no batch key", async () => {
+    // The fallback path's precondition, pinned where it is decided. `custom`
+    // has no batch endpoint, so the cycle must stay synchronous for this
+    // workspace however the platform setting is configured — otherwise the
+    // "batch is a capability of the resolved provider" claim is decorative.
+    routerConfig = anthropicConfig({
+      provider: "custom",
+      baseUrl: "https://llm.example.com/v1",
+      credentials: { provider: "custom", apiKey: "sk-custom" },
+    });
+    const resolved = await resolveExtractionModel(WORKSPACE);
+    expect(resolved).not.toBeNull();
+    expect(resolved?.batchApiKey).toBeNull();
+    // And no tier substitution either: `custom` is somebody's own deployment
+    // name, so a public model id here would 404 every extraction call on a
+    // workspace whose chat works fine.
     expect(resolved?.modelId).toBe("claude-test-model");
   });
 

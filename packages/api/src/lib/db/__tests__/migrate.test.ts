@@ -406,7 +406,14 @@ describe("runMigrations", () => {
     //   rule rather than about a migration. Successes only, written inside the
     //   entity's reconcile transaction, so a rollback takes the record with the
     //   facts it would have described) = 207.
-    expect(count).toBe(207);
+    //   Plus 0207 (brain_extraction_batch — #5352: the in-flight ledger for
+    //   batched extraction, plus a `brain_episodes.extraction_batch_id` pointer
+    //   under a composite FK. The Batch API is 50% of standard pricing on a
+    //   fiber whose latency budget was already hours, and the one thing the
+    //   split needs that the synchronous path never did is a durable answer to
+    //   "which episodes are already out?" — which cannot be `extracted_at`,
+    //   because work-then-stamp requires those episodes to stay unstamped) = 208.
+    expect(count).toBe(208);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -642,6 +649,7 @@ describe("runMigrations", () => {
         "0204_region_migrations_vocabulary_refusals.sql",
         "0205_brain_enrollment_connection_group.sql",
         "0206_brain_warehouse_entity_success.sql",
+        "0207_brain_extraction_batch.sql",
       ],
     });
 

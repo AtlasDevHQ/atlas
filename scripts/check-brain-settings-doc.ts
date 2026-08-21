@@ -164,6 +164,16 @@ for (const def of registryBrainKeys) {
 const NUMBER_WORDS: Record<string, number> = {
   one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8,
   nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15,
+  // Extended past the table's size at the time of writing, and DELIBERATELY
+  // past it: the failure a short list produces is "Could not read 'seventeen'
+  // as a number word", which reads as a page defect and is really a gate that
+  // ran out of vocabulary. The registry only grows.
+  //
+  // Stops at twenty on purpose: both matchers capture `(\w+)`, which does not
+  // span a hyphen, so a "twenty-one" entry here would be unreachable and would
+  // read as coverage the gate does not have. Past twenty the page should use a
+  // numeral, which `toCount` already accepts.
+  sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20,
 };
 // Digits too: "3 are workspace-scoped" is a legitimate reword, and a matcher
 // that only knows number WORDS goes silently blind on it rather than failing.

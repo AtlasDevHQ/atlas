@@ -3181,6 +3181,88 @@ export const connectionGroupDescriptions = pgTable(
 //
 // Mirrors migration 0180.
 
+// brain_extraction_batch — the in-flight ledger for batched extraction (#5352,
+// migration 0207). One row per submitted batch; `brainEpisodes.extractionBatchId`
+// points at it while the episodes are out with it.
+//
+// ⚠️ DECLARED OUT OF CHRONOLOGICAL ORDER, which this file's header otherwise
+// asks for. `brainEpisodes` carries the composite FK INTO this table, and a
+// `foreignKey({ foreignColumns })` is evaluated when the referencing table is
+// DEFINED — so a chronological placement (after `brainWarehouseEntitySuccess`)
+// is a temporal dead zone at module load, not a style preference. Kept adjacent
+// to its only referrer so the pair reads together.
+export const brainExtractionBatch = pgTable(
+  "brain_extraction_batch",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: text("workspace_id").notNull(),
+    // The RESOLVED provider that minted the batch — `anthropic` today, and the
+    // only one. Recorded rather than re-derived at collect time: a batch
+    // submitted against one vendor must not be collected against another's API
+    // shape when a deploy changes `ATLAS_PROVIDER` underneath it.
+    provider: text("provider").notNull(),
+    // The vendor's own handle (`msgbatch_…`).
+    providerBatchId: text("provider_batch_id").notNull(),
+    // The model id the requests went out WITH — what reaches `provenance.model`
+    // when the results land, so a tier change between submit and collect cannot
+    // retroactively re-attribute the claims.
+    modelId: text("model_id").notNull(),
+    // Episodes submitted. Lets the collect phase say "expected 25, matched 24";
+    // without it a short result set is indistinguishable from a small batch.
+    requestCount: integer("request_count").notNull(),
+    // 'in_flight' | 'collected' | 'abandoned' — CHECK below.
+    status: text("status").notNull(),
+    submittedAt: timestamp("submitted_at", { withTimezone: true }).notNull().defaultNow(),
+    // The vendor's expiry, stored rather than computed from a constant that may
+    // change. Past it the batch is abandoned and its episodes re-queued.
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    // NULL exactly while in flight — the CHECK below makes that structural
+    // rather than conventional.
+    settledAt: timestamp("settled_at", { withTimezone: true }),
+    // Abandon arm only (CHECK below). Scrubbed through `errorMessage` at the
+    // writer, on `reconcile.ts`'s precedent — vendor error text can echo a URL.
+    //
+    // Named `abandon_reason` rather than `last_error`, which is what it was
+    // first: `brain_coverage_cycle` already owns a `last_error` and
+    // `coverage-error-text-writers.test.ts` guards it with a TEXT scan over all
+    // of `lib/brain` — a scan that cannot tell two tables apart, so the
+    // same-named column here tripped a gate about a different table. The name
+    // also happens to be the more honest one, since the CHECK below says this
+    // field exists only on the abandon arm.
+    abandonReason: text("abandon_reason"),
+  },
+  (t) => [
+    check(
+      "ck_brain_extraction_batch_status",
+      sql`status IN ('in_flight', 'collected', 'abandoned')`,
+    ),
+    // The two fields describing the same fact must agree. A settled row still
+    // matching the collect scan re-reads a batch forever; an in-flight row
+    // carrying `settled_at` is a batch nothing collects while its episodes stay
+    // pointed at it. Both failures are silent, so both are refused at rest.
+    check(
+      "ck_brain_extraction_batch_settled",
+      sql`(status = 'in_flight') = (settled_at IS NULL)`,
+    ),
+    check(
+      "ck_brain_extraction_batch_reason_only_when_abandoned",
+      sql`abandon_reason IS NULL OR status = 'abandoned'`,
+    ),
+    // Per workspace, not global: a BYO workspace and the platform key see
+    // different id spaces, and `uq_brain_episodes_source_id` scopes for exactly
+    // that reason.
+    uniqueIndex("uq_brain_extraction_batch_provider_id").on(t.workspaceId, t.providerBatchId),
+    // Referent for `brain_episodes`' composite pointer FK — adds no uniqueness
+    // (`id` is the PK); it exists so that FK can prove same-workspace.
+    uniqueIndex("uq_brain_extraction_batch_workspace_id").on(t.workspaceId, t.id),
+    // The collect scan. PARTIAL, so it holds only work outstanding — the same
+    // shape and the same reason as `idx_brain_episodes_extraction_queue`.
+    index("idx_brain_extraction_batch_in_flight")
+      .on(t.submittedAt)
+      .where(sql`status = 'in_flight'`),
+  ],
+);
+
 // brain_episodes — tier-3. Immutable, append-only, deduped by stable
 // source-id. Note the absence of `updatedAt`: an episode is evidence, and
 // evidence that can be edited cannot back a provenance claim. Re-ingesting the
@@ -3236,6 +3318,17 @@ export const brainEpisodes = pgTable(
     // `extracted_at IS NULL`. Nullable timestamp, not a boolean, so a stuck
     // backlog is visible rather than silent.
     extractedAt: timestamp("extracted_at", { withTimezone: true }),
+    // The batch this episode is currently out with (#5352, migration 0207).
+    // NULL for every episode on the synchronous path and every episode drained
+    // before that migration.
+    //
+    // A SECOND marker rather than a reuse of `extractedAt`, because an episode
+    // out with a batch is BOTH un-extracted and not-to-be-re-drafted, and one
+    // nullable timestamp cannot hold two states. Stamping early would be
+    // claim-then-work — the ordering the extraction module's header rejects
+    // outright, because a batch that never returns would then be a permanent
+    // silent drop instead of a re-queue.
+    extractionBatchId: uuid("extraction_batch_id"),
     // ACL grant (grammar documented on `brainFacts.visibleTo`). Tiers 2 AND 3
     // are gated — raw episodes are often *more* sensitive than their facts.
     visibleTo: text("visible_to").array().notNull(),
@@ -3266,6 +3359,23 @@ export const brainEpisodes = pgTable(
     index("idx_brain_episodes_extraction_queue")
       .on(t.workspaceId, t.ingestedAt)
       .where(sql`extracted_at IS NULL`),
+    // Serves the abandon path's `WHERE extraction_batch_id = $1` re-queue and
+    // the collect phase's per-batch episode load. PARTIAL, so on the
+    // synchronous path it holds nothing at all.
+    index("idx_brain_episodes_extraction_batch")
+      .on(t.extractionBatchId)
+      .where(sql`extraction_batch_id IS NOT NULL`),
+    // Composite, so the FK proves the episode and the batch it is out with
+    // share a workspace rather than merely that the batch exists. NO ACTION on
+    // delete (the default) rather than SET NULL: a column-list SET NULL cannot
+    // null one half of a composite whose other half is NOT NULL, and the
+    // abandon path clears the pointers itself — which is also the order the
+    // purge scope takes (`brain_episodes` before `brain_extraction_batch`).
+    foreignKey({
+      name: "fk_brain_episodes_extraction_batch",
+      columns: [t.workspaceId, t.extractionBatchId],
+      foreignColumns: [brainExtractionBatch.workspaceId, brainExtractionBatch.id],
+    }),
     index("idx_brain_episodes_source").on(t.workspaceId, t.source, t.occurredAt),
     // Array-overlap lookups for the fail-closed push-down predicate (#4768).
     index("idx_brain_episodes_visible_to").using("gin", t.visibleTo),

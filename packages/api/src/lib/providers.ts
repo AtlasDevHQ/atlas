@@ -65,6 +65,89 @@ const PROVIDER_DEFAULTS: Record<ConfigProvider, string | undefined> = {
 };
 
 /**
+ * The INGEST tier — what the brain-extraction fiber runs on when nothing names a
+ * model for it (#5353, ADR-0036 §Ingestion & connectors).
+ *
+ * ## The rule this encodes
+ *
+ * **Model tier follows the latency budget and the blast radius, not the
+ * subsystem.** The interactive turn and the ingest path differ on every axis
+ * that should decide a tier, and they differ in the same direction on all of
+ * them:
+ *
+ * |                      | Interactive (chat → SQL)  | Ingest (episodes → facts)   |
+ * |----------------------|---------------------------|-----------------------------|
+ * | Latency budget       | sub-second first token    | hours (a separate fiber)    |
+ * | Volume               | ~10k calls/month          | ~100k+/month                |
+ * | A wrong output reaches | a person, as an answer  | a review queue, as a draft  |
+ *
+ * There is already precedent in-tree for tiering by JOB rather than by
+ * subsystem — {@link getSummaryModel} and `ATLAS_COMPACTION_SUMMARY_MODEL`,
+ * described in the registry as *"typically a cheaper/faster model than the
+ * turn"*. This is the same reasoning applied to the ingest path, and named.
+ *
+ * ⚠️ **The interactive path must not read this map.** That is a deliberate
+ * decision rather than an oversight: chat is where quality is visible in real
+ * time, its volume is an order of magnitude lower, and `agent.ts` already
+ * recovers most of the cost through `cacheControl: ephemeral`. `resolveSelection`
+ * is untouched, and `providers-extraction-tier.test.ts` pins that.
+ *
+ * ## Two `undefined` entries, and they are not the same omission
+ *
+ * - `ollama` — local inference. There is no cheaper tier to trade down to, and
+ *   naming one would point the fiber at a model the operator may not have
+ *   pulled. The configured model is the right answer.
+ * - `openai-compatible` — no model vocabulary at all (it has no
+ *   {@link PROVIDER_DEFAULTS} entry either, for the same reason). Anything named
+ *   here would be a guess about somebody's vLLM deployment.
+ *
+ * Both fall back to whatever the turn resolves, which is the pre-#5353 behaviour
+ * — a working default rather than an error, per that ticket's own AC.
+ *
+ * ## ⚠️ The gate-agreement number is NOT yet recorded, and that is a deferral
+ *
+ * #5353 asks that *"the default is a cheap tier, and the choice is recorded
+ * with the gate-agreement number that justified it"*. Half of that is done —
+ * the tier is cheap, and the RULE above says why a cheap tier is the right
+ * shape for this call. The number is not, because it does not exist yet:
+ * gate agreement is what #5338 measures (stage-1 recall and the reviewer's
+ * agreement rate on a held-out set), and #5338 has not run.
+ *
+ * Written down rather than left silent, because an unrecorded absence reads
+ * exactly like a satisfied requirement. What justifies Haiku 4.5 TODAY is the
+ * boundary rule, not evidence about extraction quality; when #5338 produces a
+ * number, it belongs here, and if it comes back below the bar then THIS
+ * constant is the thing that moves.
+ */
+const PROVIDER_EXTRACTION_DEFAULTS: Record<ConfigProvider, string | undefined> = {
+  anthropic: "claude-haiku-4-5",
+  openai: "gpt-4o-mini",
+  bedrock: "anthropic.claude-haiku-4-5",
+  ollama: undefined,
+  "openai-compatible": undefined,
+  gateway: "anthropic/claude-haiku-4.5",
+};
+
+/**
+ * The same map for workspace-level (BYO) configs, keyed by
+ * `ModelConfigProvider` rather than `ConfigProvider` — the two vocabularies are
+ * not the same set, and `workspaceProviderType` already exists because of that.
+ *
+ * `azure-openai` and `custom` are `undefined` for `openai-compatible`'s reason
+ * exactly: a deployment name is the workspace's own, and substituting a public
+ * model id for one would 404 every extraction call on a workspace whose chat
+ * works fine.
+ */
+const WORKSPACE_EXTRACTION_DEFAULTS: Record<ModelConfigProvider, string | undefined> = {
+  anthropic: "claude-haiku-4-5",
+  openai: "gpt-4o-mini",
+  bedrock: "anthropic.claude-haiku-4-5",
+  gateway: "anthropic/claude-haiku-4.5",
+  "azure-openai": undefined,
+  custom: undefined,
+};
+
+/**
  * Returns the default provider string based on runtime environment.
  *
  * Hosted/SaaS deployments route through the Vercel AI Gateway (the operator's
@@ -441,6 +524,108 @@ export function getSummaryModel(opts: {
     return getModelFromWorkspaceConfig({ ...workspaceConfig, model: summaryModelId });
   }
   return getModelForConfig(undefined, summaryModelId).model;
+}
+
+/**
+ * Resolve the model id the INGEST path should run on (#5353).
+ *
+ * Precedence, and it is short on purpose: the workspace's explicit
+ * `ATLAS_BRAIN_EXTRACTION_MODEL` → the provider's ingest-tier default → `null`,
+ * meaning *"there is no distinct ingest tier for this provider; run whatever the
+ * turn would."* The last arm is what keeps a workspace that has set nothing
+ * working rather than erroring, and it is the only behaviour `ollama` and
+ * `openai-compatible` deployments ever see.
+ *
+ * Deliberately NOT a `resolveSelection` variant. `resolveSelection` reads
+ * `ATLAS_MODEL`, which is the TURN's model — routing the ingest path through it
+ * is exactly the inheritance #5353 exists to break, and doing so silently is how
+ * Slack small talk ended up on an Opus-tier model in the first place.
+ *
+ * @param override the workspace setting's value; `""`/`null` means unset.
+ */
+export function resolveExtractionModelId(opts: {
+  readonly override: string | null;
+  /** The workspace's BYO config when it has one; `null` on the platform path. */
+  readonly workspaceConfig: WorkspaceModelConfig | null;
+}): string | null {
+  const explicit = opts.override?.trim();
+  if (explicit) return explicit;
+  if (opts.workspaceConfig) {
+    return WORKSPACE_EXTRACTION_DEFAULTS[opts.workspaceConfig.credentials.provider] ?? null;
+  }
+  const provider = process.env.ATLAS_PROVIDER ?? getDefaultProvider();
+  if (!VALID_PROVIDERS.has(provider as ConfigProvider)) return null;
+  return PROVIDER_EXTRACTION_DEFAULTS[provider as ConfigProvider] ?? null;
+}
+
+/**
+ * Build the ingest-path model — {@link getSummaryModel}'s shape exactly, and for
+ * the same reason: **the provider and the credentials are the turn's; only the
+ * model id changes.** A BYO workspace's extraction runs on that workspace's own
+ * key, and the platform path runs on the platform's.
+ *
+ * A `null` from {@link resolveExtractionModelId} falls through to the turn's own
+ * resolution, so this never throws where `getModel()` would not have.
+ */
+export function getExtractionModel(opts: {
+  readonly override: string | null;
+  readonly workspaceConfig: WorkspaceModelConfig | null;
+}): { model: LanguageModel; modelId: string } {
+  const extractionModelId = resolveExtractionModelId(opts);
+  if (opts.workspaceConfig) {
+    const modelId = extractionModelId ?? opts.workspaceConfig.model;
+    return {
+      model: getModelFromWorkspaceConfig({ ...opts.workspaceConfig, model: modelId }),
+      modelId,
+    };
+  }
+  if (extractionModelId === null) {
+    const model = getModel();
+    return { model, modelId: typeof model === "string" ? model : model.modelId };
+  }
+  const resolved = getModelForConfig(undefined, extractionModelId);
+  return { model: resolved.model, modelId: resolved.modelId };
+}
+
+/**
+ * The API key a BATCH submission would use, or `null` when the resolved provider
+ * has no batch endpoint this deployment can reach (#5352).
+ *
+ * ## Why this exists at all, given the fiber "reads no key of its own"
+ *
+ * The AI SDK's `LanguageModel` is a per-request abstraction; it has no batch
+ * surface, and no `@ai-sdk/*` package exposes one. A batch submission is
+ * therefore a direct call to the vendor's own endpoint, which needs the key
+ * rather than a built client.
+ *
+ * That is a second READ of the key, not a second credential PATH, and the
+ * distinction is the one `extract.ts`'s header cares about: resolution order is
+ * unchanged (the workspace's own config first, the platform default second), the
+ * key comes from the same `WorkspaceCredentials` union the turn model is built
+ * from, and a workspace with no batch-capable provider simply gets `null` and
+ * stays on the synchronous path.
+ *
+ * ## Anthropic only
+ *
+ * WHY that is a capability rather than a shortcut — what each other provider's
+ * batch endpoint looks like, and why the fallback path is load-bearing instead
+ * of decorative — is argued once, in `lib/brain/extract-batch.ts`'s header.
+ * This function is where the argument is ENFORCED; keeping a second copy of it
+ * here is a second thing to keep true when a second batch provider lands.
+ *
+ * What belongs here is the consequence: everything that is not Anthropic-direct
+ * returns `null`, and `null` means the cycle stays synchronous for that
+ * workspace.
+ */
+export function getBatchApiKey(workspaceConfig: WorkspaceModelConfig | null): string | null {
+  if (workspaceConfig) {
+    const { credentials } = workspaceConfig;
+    if (credentials.provider !== "anthropic") return null;
+    return credentials.apiKey || null;
+  }
+  const provider = process.env.ATLAS_PROVIDER ?? getDefaultProvider();
+  if (provider !== "anthropic") return null;
+  return process.env.ANTHROPIC_API_KEY || null;
 }
 
 // ── Workspace-level model resolution ────────────────────────────────

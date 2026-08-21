@@ -7,7 +7,7 @@ the codebase. **This repo is multi-context** (chosen 2026-08-17).
 
 - **`CONTEXT-MAP.md`** at the repo root — it names every context and points at the
   `CONTEXT.md` that covers it. Read each one relevant to your topic.
-- **`docs/adr/`** at the repo root — system-wide decisions (43 ADRs today). Read the ones
+- **`docs/adr/`** at the repo root — system-wide decisions (44 ADRs today). Read the ones
   touching the area you're about to work in.
 - Context-scoped ADRs where a context has extracted its own (`docs/contexts/<name>/docs/adr/`).
 
@@ -45,7 +45,7 @@ Split along those seams, not along `packages/*`:
 ├── CONTEXT-MAP.md                     ← names every context, points at its CONTEXT.md
 ├── CONTEXT.md                         ← the un-split remainder; still covers every
 │                                        context not yet extracted
-├── docs/adr/                          ← system-wide decisions (41 today)
+├── docs/adr/                          ← system-wide decisions (44 today)
 └── docs/contexts/
     ├── company-atlas/CONTEXT.md       ← extracted 2026-08-17
     ├── deployment-posture/CONTEXT.md  ← extracted 2026-08-17 (marked stale)

@@ -65,6 +65,8 @@ const WORKSPACE = "ws-brain-4771";
 const FAKE_MODEL = {
   model: "fake-model" as unknown as ResolvedExtractionModel["model"],
   modelId: "fake-model",
+  // No batch path in this fixture — the cycle stays on the immediate route.
+  batchApiKey: null,
 } satisfies ResolvedExtractionModel;
 
 describeIfPg("brain extraction + reconcile (real Postgres)", () => {

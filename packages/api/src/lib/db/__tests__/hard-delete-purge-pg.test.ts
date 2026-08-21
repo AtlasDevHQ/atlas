@@ -298,6 +298,20 @@ const COLUMN_OVERRIDES: Readonly<Record<string, Readonly<Record<string, string>>
   proactive_pauses: { layer: `'workspace-kill'` },
   proactive_meter_events: { event_type: `'classify'` },
   proactive_classification_review: { verdict: `'correct'` },
+  // #5352: `status` is CHECKed to the three-state set, and `settled_at` is
+  // CHECK-derived from it — `(status = 'in_flight') = (settled_at IS NULL)` —
+  // so the two have to agree. Seeded IN FLIGHT, which is the state that matters
+  // for a purge: an inherited in-flight row would have a re-created org's
+  // collect phase polling a vendor batch belonging to a workspace that no
+  // longer exists.
+  brain_extraction_batch: {
+    status: `'in_flight'`,
+    settled_at: `NULL`,
+    abandon_reason: `NULL`,
+    provider: `'anthropic'`,
+    request_count: `1`,
+    expires_at: `now() + interval '1 hour'`,
+  },
   brain_predicate_cardinality: {
     source_class: `'human'`,
     cardinality: `'single'`,

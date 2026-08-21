@@ -57,7 +57,7 @@ afterEach(async () => {
   // directory a live child is still writing to races it. Unreachable on the
   // happy path (every test awaits `proc.exited`), live only on a test-timeout —
   // which is exactly when a clean diagnosis matters. There is no per-file timer
-  // on the runner side — `packages/cli/scripts/test-isolated.ts` had none, and
+  // on the runner side — packages/cli/scripts/test-isolated.ts had none, and
   // `bun test --parallel` (which replaced it in #2802) does not add one — so a
   // child that outlives its test hangs the worker rather than failing it, and it
   // hangs on the pipe before it hangs on exit.

@@ -30,9 +30,6 @@ path  scripts/__tests__/check-railway-watch.test.sh  packages/data    # scaffold
 path  scripts/__tests__/check-railway-watch.test.sh  packages/data/data  # scaffolded fixture tree, not this repo
 path  scripts/__tests__/check-railway-watch.test.sh  packages/data/data/seed.sql  # scaffolded fixture tree, not this repo
 path  scripts/check-brain-fact-promotion.sh     plugins/anything/src/api/routes/admin-migrate.ts  # illustrative "any plugin could" path in this gate's docs
-path  packages/api/scripts/affected.ts          packages/types/src/foo.ts  # worked example in the affected-test derivation doc
-path  packages/api/scripts/affected.ts          packages/api/packages/api/src  # the double-prefix bug this code guards against, quoted deliberately
-path  packages/api/src/__tests__/test-isolated-affected.test.ts  packages/api/packages/api/src  # same double-prefix bug, asserted here
 path  packages/api/src/lib/brain/__tests__/warehouse-producer-bypass.test.ts  packages/x/y  # placeholder path in a test's own fixture data
 
 # ── generated at runtime: absent from a checkout by construction ─────────────

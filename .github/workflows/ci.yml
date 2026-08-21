@@ -199,6 +199,19 @@ jobs:
       - name: Adversarial fixtures for the web-brand-tokens gate (#5306)
         run: bash scripts/__tests__/check-web-brand-tokens.test.sh
 
+      # ⚠️ THE SOURCE-SCAN SIBLING OF check-test-discipline.sh, AND THE REASON
+      # ITS ALLOWLIST IS SAFE. That gate reads the TREE; this one reads BUN.
+      #
+      # `scripts/test-discipline-allowlist.txt` lets 9 files write
+      # `process.env.X` at module top level. They are safe only because
+      # `bun test --parallel` gives each test FILE its own env and cwd even when
+      # bun packs many into one worker process — measured behaviour on 1.4.0,
+      # promised by no documentation. A bun upgrade that regressed it would make
+      # those 9 files start corrupting whatever file the scheduler placed next,
+      # and nothing else in CI would notice. This step notices (#5368).
+      - name: Check bun's --parallel isolation contract still holds (#5368)
+        run: bash scripts/check-bun-isolation-contract.sh
+
       - name: Check Dockerfile workspace completeness
         run: bash scripts/check-dockerfile-workspace.sh
 

@@ -37,11 +37,12 @@
 # suppressing there. That is what makes the entries below a short list rather
 # than a standing one — they are not being kept green by hand.
 #
-# ⚠️ Read that correctly: the four util-linux entries left in the 2026-08-20 pass
-# because nothing on that surface is red any more, NOT because the debt was
-# cleared. The bare base still carries them; scripts/base-image-gate.sh just
-# stopped treating that as a merge-blocking fact. See "What the 2026-08-20 pass
-# changed", below.
+# ⚠️ Read that correctly: the four util-linux entries left because nothing on
+# that surface is red any more, NOT because the debt was cleared. The bare base
+# still carries them; scripts/base-image-gate.sh just stopped treating that as a
+# merge-blocking fact. They briefly came back for the bun 1.4.0 bump, which made
+# that ref "changed", and left again on the first PR after it merged — read "The
+# four util-linux CVEs", below, before taking that round trip for churn.
 #
 # ── Why there is a baseline at all ────────────────────────────────────────────
 #
@@ -206,8 +207,13 @@
 #
 # So: 14 findings on a surface that ships nothing, 0 on the surface that ships.
 # That asymmetry is the whole argument, and it is why the four util-linux
-# entries could leave while the other 10 stay listed — the 10 still govern the
-# two surfaces named at the top of this file, the four governed neither.
+# entries could leave while the other 10 stayed listed — the 10 still governed
+# the two surfaces named at the top of this file, the four governed neither.
+#
+# ⚠️ That "10" is a count taken DURING this pass and is not the current one: the
+# bun 1.4.0 bump later the same day cleared seven of them, leaving the three
+# caddy entries the file holds today. No count in this section is a statement
+# about the present — the entries at the bottom of the file are.
 #
 # ── If a NEW entry is ever needed ─────────────────────────────────────────────
 #
@@ -258,10 +264,11 @@
 # packages/sandbox-sidecar, examples/docker and the create-atlas docker
 # templates.
 #
-# ⚠️ The seven openssl/libcap entries this section used to hold are GONE, and
-# that is the measured result of the 1.4.0 bump. The four util-linux entries
-# below are a SEPARATE matter — see the paragraph above them; they are back
-# only because the bump made this ref "changed" and therefore absolutely gated.
+# ⚠️ This section holds NO entries, and that is two separate facts rather than
+# one. The seven openssl/libcap entries it used to hold are GONE — the measured
+# result of the 1.4.0 bump, below. The four util-linux ones are absent for an
+# unrelated reason: the bare base still carries them, but nothing gates on them.
+# See "The four util-linux CVEs", after the measurements.
 #
 # Seven entries lived here until the bun 1.4.0 bump: CVE-2026-28387, -28388,
 # -28389, -28390, -31789 (the one CRITICAL), -45447 (all libssl3t64 /
@@ -291,54 +298,53 @@
 # bump improves the bare base; it does not make the upgrade removable.
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# ⚠️⚠️ CVE-2026-53612/-53613/-53614/-53615 ARE BACK, and the reason is NOT a new
-# disclosure. Read this before concluding #5361 was undone.
+# ── The four util-linux CVEs: still in the bare base, deliberately not listed ──
 #
-# #5361 removed them because nothing gated on them: they lived on an UNCHANGED
-# base ref, which the base tier treats as report-only. The bun 1.4.0 bump
-# CHANGED that ref, and `base-image-gate.sh` gates a new-or-changed ref
-# ABSOLUTELY (its line 18; the failure message's option 3 names this file). So
-# the gate went red on the bump, not on a disclosure — the entries below are
-# the documented escape hatch, not the hand-re-adding loop #5361 closed.
+# CVE-2026-53612/-53613/-53614/-53615 — util-linux and its eight siblings
+# (bsdutils, libblkid1, libmount1, libsmartcols1, libuuid1, liblastlog2-2,
+# mount, login), 2.41-5 -> 2.41.5-0+deb13u1. The bare base STILL CARRIES ALL
+# FOUR, re-confirmed on oven/bun:1.4.0 2026-08-20: the 1.4 bump cleared the
+# other seven and left these exactly as they were.
 #
-# The file's own legitimacy test is met, verified rather than asserted:
-#   bare base   oven/bun:1.4.0 carries all four (measured, Trivy 0.72.0)
-#   built image `Built image (api)` and `(web)` PASS on the bump PR — the
-#               runtime `apt-get upgrade` lands util-linux 2.41.5-0+deb13u1,
-#               exactly the version Trivy names as fixed.
-# Bare-base-only ⇒ the gap this file exists for ⇒ a dated entry is correct.
+# They are not listed because nothing gates on them. They live on an unchanged
+# base ref, which #5361 made report-only, and the runtime `apt-get upgrade`
+# lands 2.41.5-0+deb13u1 — exactly the version Trivy names as fixed — so no
+# built image has ever carried them.
 #
-# ⚠️ THESE SHOULD BE DELETED AGAIN once the ref stops being "changed" — i.e. on
-# the first PR after this bump merges, they revert to report-only and become
-# dead weight. Do not let them ossify: that is how a baseline stops meaning
-# anything. The `exp:` date is the backstop, not the plan.
-# HIGH  util-linux + 8 siblings  2.41-5 -> 2.41.5-0+deb13u1
-CVE-2026-53612 exp:2026-11-01
-# HIGH  util-linux + 8 siblings
-CVE-2026-53613 exp:2026-11-01
-# HIGH  util-linux + 8 siblings
-CVE-2026-53614 exp:2026-11-01
-# HIGH  util-linux + 8 siblings
-CVE-2026-53615 exp:2026-11-01
+# ⚠️ They have been deleted from this file TWICE, and the round trip is the
+# point rather than churn. Read this before `git log` makes it look otherwise:
 #
-# The history that made this worth a paragraph (from #5361):
-# CVE-2026-53612, -53613, -53614 and -53615 were here and are GONE (#5361).
-# util-linux and its eight siblings (bsdutils, libblkid1, libmount1,
-# libsmartcols1, libuuid1, liblastlog2-2, mount, login), 2.41-5 ->
-# 2.41.5-0+deb13u1. The bare base STILL CARRIES ALL FOUR — re-confirmed on
-# oven/bun:1.4.0, 2026-08-20; the 1.4 bump cleared the other seven and left
-# these four exactly as they were. They are not listed because
-# nothing gates on them any more: they live on an unchanged base ref, which
-# #5361 made report-only.
+#   #5361 (2026-08-20)  deleted. Unchanged ref => report-only => dead weight.
 #
-# The reason they are worth a paragraph rather than a silent deletion: that one
+#   #5366 (71bcc4aec)   re-added, dated — the bun 1.3.13 -> 1.4.0 bump. That
+#                       bump CHANGED the ref, and base-image-gate.sh gates a
+#                       new-or-changed ref ABSOLUTELY (its line 18; the failure
+#                       message's option 3 names this file). The gate went red
+#                       on the BUMP, not on a disclosure — this file's escape
+#                       hatch, used as documented, and its legitimacy test met
+#                       by measurement: the bare base carried all four, while
+#                       `Built image (api)` and `(web)` passed on the same PR.
+#
+#   #5372 (this pass)   deleted again, on the first PR after #5366 merged —
+#                       which is what its own standing note asked for.
+#                       oven/bun:1.4.0 now sits at the merge-base too, so the
+#                       ref is unchanged again and the entries suppressed
+#                       nothing. Doing the deletion is what stops an escape
+#                       hatch from ossifying into a standing baseline.
+#
+# So an entry here for these four is correct ONLY while a PR is moving the bun
+# ref, and is dead weight on every other PR. That is a property of the gate, not
+# of the CVEs — and it is why the `exp:` date was the backstop rather than the
+# plan.
+#
+# ⚠️ Why this is worth a section rather than a silent deletion: that one
 # util-linux advisory batch reddened every PR in the repo TWICE in eight days
 # (53615 on 2026-08-12, then 53612/53613/53614 on 2026-08-20), with an identical
 # fixed version both times. A gate going red on the same package twice, for debt
 # no PR introduced, is what said the bare base was the wrong thing to hold the
-# debt. Re-adding them by hand on the next disclosure is the loop #5361 closed —
-# if a util-linux entry ever looks necessary again, check WHY the gate is red
-# before writing one.
+# debt. Hand-re-adding them on the next disclosure is the loop #5361 closed — if
+# a util-linux entry ever looks necessary again, check WHY the gate is red
+# before writing one. "A PR moved the bun ref" is the one answer that earns it.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # caddy:2.11.4-alpine — runtime base for deploy/docs only. Cleared by the

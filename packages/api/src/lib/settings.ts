@@ -1953,11 +1953,40 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     saasVisible: false,
   },
   {
+    // The INGEST tier (#5353). WORKSPACE-scoped, unlike the enablement switch
+    // above, because it is a spend/quality trade a tenant can legitimately hold
+    // a different position on — and because a BYO workspace's extraction runs on
+    // that workspace's own key, so the bill is theirs.
+    //
+    // Blank rather than a hardcoded id, on `ATLAS_COMPACTION_SUMMARY_MODEL`'s
+    // shape exactly: the DEFAULT lives in `providers.ts`'s
+    // `PROVIDER_EXTRACTION_DEFAULTS`, keyed by the resolved provider, because
+    // "the cheap tier" is a different string for anthropic, bedrock, gateway and
+    // openai — and is nothing at all for `ollama` and `openai-compatible`, which
+    // fall through to whatever the turn resolves.
+    //
+    // ⚠️ This key is read by the extraction fiber ALONE. The interactive path
+    // resolves through `resolveSelection`, which does not read it, and
+    // `providers-extraction-tier.test.ts` pins that — #5353's whole point is that
+    // the ingest path stops inheriting the chat model, and a knob that quietly
+    // worked in both directions would be the same coupling wearing a new name.
+    key: "ATLAS_BRAIN_EXTRACTION_MODEL",
+    section: "Knowledge Base",
+    label: "Company Atlas Extraction Model",
+    description:
+      "Optional model id for the fact-extraction call, independent of the chat model. Leave blank for the cheap tier of whichever provider is configured (Haiku 4.5 on Anthropic, Bedrock and the gateway; gpt-4o-mini on OpenAI; the configured model on Ollama and OpenAI-compatible servers, which have no separate tier). Resolved on the same provider and credentials as chat — only the model id changes. Extraction is high-volume, has a latency budget of hours, and its output reaches a review queue as a draft rather than a person as an answer, which is why it does not follow the chat model. Workspace-scoped, hot-reloadable.",
+    type: "string",
+    default: "",
+    envVar: "ATLAS_BRAIN_EXTRACTION_MODEL",
+    scope: "workspace",
+    saasVisible: false,
+  },
+  {
     // The Batch API path (#5352). PLATFORM-scoped and default OFF, matching the
-    // extraction switch above: this changes the fiber's CONTROL FLOW (submit
-    // now, collect later, an in-flight ledger in between), and its blast radius
-    // is the process, not a tenant's bill. Off until it has run a full cycle on
-    // staging, per #5352's own AC.
+    // extraction switch two rows up rather than the model tier above it: this
+    // changes the fiber's CONTROL FLOW (submit now, collect later, an in-flight
+    // ledger in between), and its blast radius is the process, not a tenant's
+    // bill. Off until it has run a full cycle on staging, per #5352's own AC.
     //
     // Turning it off mid-run is safe and needs no drain: already-submitted
     // batches keep being collected (the collect phase does not read this key —

@@ -115,7 +115,7 @@ import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
 // The CORE mirror, never `@atlas/ee` — `check-ee-imports.sh` permits exactly one
 // importer in `packages/api/src` and this is not it.
 import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
-import { getBatchApiKey, getModel, getModelFromWorkspaceConfig } from "@atlas/api/lib/providers";
+import { getBatchApiKey, getExtractionModel } from "@atlas/api/lib/providers";
 import type { RawWorkspaceModelConfig } from "@atlas/api/lib/auth/credentials";
 import { PREDICATE_CARDINALITIES } from "@atlas/api/lib/brain/types";
 import {
@@ -673,6 +673,31 @@ export interface ResolvedExtractionModel {
  * episodes queued and counts the skip; repairing the key (or the deployment) is
  * enough to drain them, with no backfill.
  *
+ * ## The provider is the agent's; the TIER is not (#5353)
+ *
+ * Provider, credentials and base URL resolve through the seam described below
+ * and are unchanged. The MODEL ID does not: it comes from
+ * `ATLAS_BRAIN_EXTRACTION_MODEL`, or from `providers.ts`'s ingest-tier default
+ * for whichever provider that seam resolved.
+ *
+ * The rule, stated where it is applied rather than left as folklore: **model
+ * tier follows the latency budget and the blast radius, not the subsystem.**
+ * This call has a latency budget of hours (that is the whole reason this is a
+ * separate fiber), runs at roughly ten times chat's volume, and its output
+ * reaches a review queue as a draft rather than a person as an answer. Chat has
+ * none of those properties and keeps the frontier model — deliberately, and
+ * `agent.ts` is untouched by this ticket.
+ *
+ * It is a SETTING rather than a constant because extraction quality still bounds
+ * what reaches the reviewer, and a model too weak to follow `ExtractionSchema`
+ * costs human attention, which is the scarcest resource in this arc. The default
+ * is cheap; the escape hatch is one key.
+ *
+ * ⚠️ Prompt caching does NOT apply here and is not worth attempting: the fixed
+ * prefix is `EXTRACTION_SYSTEM_PROMPT` (~150 tokens) plus the serialized
+ * `ExtractionSchema` (~200), well under the ~1024-token minimum cacheable
+ * prefix. It would silently never cache.
+ *
  * ## Why the refusal is BROADER than `runAgent`'s
  *
  * The resolution ORDER is the agent's (`lib/agent.ts` — workspace config first,
@@ -752,9 +777,11 @@ export async function resolveExtractionModel(
   // No `?? null` — past the gate above the union guarantees the field.
   const config = resolved.config;
   try {
-    // The workspace's own config, reshaped once — both the model build and the
-    // batch-capability probe read it, and a second reshaping could disagree
-    // with this one about which credentials are in play.
+    // The workspace's own ingest-tier override, or "" when it has none. Read
+    // HERE rather than inside `providers.ts` so the settings registry stays out
+    // of the provider layer, which the agent path shares — #5353's rule is that
+    // the ingest tier is this fiber's business and nobody else's.
+    const override = getSettingAuto("ATLAS_BRAIN_EXTRACTION_MODEL", workspaceId) ?? null;
     const workspaceConfig = config
       ? {
           model: config.model,
@@ -763,20 +790,13 @@ export async function resolveExtractionModel(
           credentials: config.credentials,
         }
       : null;
-    const batchApiKey = getBatchApiKey(workspaceConfig);
-    if (workspaceConfig) {
-      return {
-        model: getModelFromWorkspaceConfig(workspaceConfig),
-        modelId: workspaceConfig.model,
-        batchApiKey,
-      };
-    }
-    const model = getModel();
-    return {
-      model,
-      modelId: typeof model === "string" ? model : model.modelId,
-      batchApiKey,
-    };
+    // ⚠️ `getExtractionModel` changes the MODEL ID and nothing else: provider,
+    // credentials and base URL are the turn's, resolved through exactly the
+    // seam above. A BYO workspace's extraction therefore runs on that
+    // workspace's own key at that workspace's own cheap tier, which is what
+    // makes the tier a workspace-scoped setting rather than an operator's.
+    const { model, modelId } = getExtractionModel({ override, workspaceConfig });
+    return { model, modelId, batchApiKey: getBatchApiKey(workspaceConfig) };
   } catch (err) {
     // ERROR, matching the routing-unavailable arm: a config that reads but
     // cannot be built is non-transient by definition, and every tick from here

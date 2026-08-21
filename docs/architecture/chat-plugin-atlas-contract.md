@@ -164,9 +164,12 @@ test fails if someone sets it.
 
 ⚠ row to watch: the **patch is a standing obligation on every
 `@chat-adapter/slack` version bump, and `bun install` only half-catches it.**
-Measured on bun 1.3.13 — the repo pins `"bun": ">=1.3.13 <1.3.14"` and CI sets
-`BUN_VERSION: "1.3.13"`, so this is authoritative everywhere today and must be
-re-measured on a bun bump — there are three failure modes and bun catches one:
+Measured on bun 1.3.13 — the repo now pins `"bun": ">=1.4.0 <1.5.0"` and CI sets
+`BUN_VERSION: "1.4.0"`. ⚠️ **The table below has NOT been re-measured on 1.4**, and the
+bun 1.4 bump did not re-measure it: the `bun-types` re-key exercised only the first row
+(a regenerated patch that applies), so rows 2 and 3 remain 1.3.13 observations carried
+forward. Treat them as unverified on the current runtime — there are three failure modes
+and bun catches one:
 
 | Bump failure mode | bun's behaviour |
 |---|---|

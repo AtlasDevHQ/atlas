@@ -7,18 +7,21 @@
 # what it measures + what verdict pass/fail means in the file header.
 #
 # Requires bun >= 1.3.13 (`--parallel` / `--isolate` added there). On older
-# bun (this repo's container is 1.3.11), the script exits 2 with a clear
-# message — the experiment cannot run on a version that doesn't have the
-# flags it's measuring.
+# bun, the script exits 2 with a clear message — the experiment cannot run on
+# a version that doesn't have the flags it's measuring.
 
 set -euo pipefail
 
 cd "$(dirname "$0")/../../.."  # → packages/api
 
-if ! bun --version | grep -qE '^1\.3\.(1[3-9]|[2-9][0-9])'; then
+# Version gate. The old form was a literal `^1\.3\.(1[3-9]|...)` match, which
+# refused to run on bun 1.4 — the exact version the experiment most needs to
+# cover, since 1.4 is where the regression it measures got fixed. Compare
+# numerically instead so this keeps working across minor bumps.
+BUN_VER="$(bun --version)"
+if ! printf '1.3.13\n%s\n' "$BUN_VER" | sort -V -C; then
   echo "::error::This experiment requires bun >= 1.3.13 (--parallel / --isolate were added there)." >&2
-  echo "       Current bun: $(bun --version)" >&2
-  echo "       Run on a host with 1.3.14 (matches .env pin) and re-execute." >&2
+  echo "       Current bun: $BUN_VER" >&2
   exit 2
 fi
 

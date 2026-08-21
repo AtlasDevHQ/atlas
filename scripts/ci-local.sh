@@ -151,7 +151,9 @@ g_dockerfile_pins() {
       echo "ERROR: $f pins bun $actual, expected $expected"
       errors=$((errors + 1))
     fi
-  done < <(find . -name Dockerfile -not -path './.git/*' -not -path './node_modules/*')
+    # `Dockerfile*`, not `Dockerfile` — must match ci.yml's copy of this gate.
+    # The exact-name form silently skipped Dockerfile.sidecar (bun 1.4.0, #2802).
+  done < <(find . -name 'Dockerfile*' -not -path './.git/*' -not -path './node_modules/*')
   [ "$errors" -eq 0 ] && echo "All Dockerfiles pin bun $expected"
   [ "$errors" -eq 0 ]
 }

@@ -93,6 +93,10 @@ import {
   type EntityStoreEntry,
   type StoredEntity,
 } from "@atlas/api/lib/brain/entity-store";
+import {
+  reapUnreachedObservations,
+  type ObservationReapResult,
+} from "@atlas/api/lib/brain/observation-reap";
 import { recordEntityRunSuccess } from "@atlas/api/lib/brain/warehouse-run-record";
 import type {
   AliasProducerCounters,
@@ -2971,6 +2975,29 @@ export async function runWarehouseProducer(
    */
   const entityStoreChanges = { orphansDeleted: 0, comparablesRetired: 0, reaped: 0 };
 
+  /**
+   * What this run removed from the CORPUS — observations whose rows have left
+   * the entity's filtered snapshot, and the edges that hung off them (#5344).
+   *
+   * Beside `entityStoreChanges` rather than folded into it, because they are
+   * deletions from different tables under different rules and an operator
+   * asking *"did anything get deleted on this run?"* needs to know which. It
+   * rides the run's summary log for the same reason that one does: nothing on
+   * the wire consumes it.
+   */
+  // ⚠️ `observationsReaped`, NOT `reaped`. `entityStoreChanges.reaped` is in the
+  // SAME log line and counts a different table under a different rule, and two
+  // keys spelled `reaped` in one payload is a question an operator cannot answer
+  // from the line they are reading.
+  const observationReaping = { observationsReaped: 0, edgesRemoved: 0, tensionEdgesRemoved: 0 };
+
+  /** Fold one entity's reap into the run's counters, once its transaction has committed. */
+  const countReaped = (result: ObservationReapResult): void => {
+    observationReaping.observationsReaped += result.factIds.length;
+    observationReaping.edgesRemoved += result.edgesRemoved;
+    observationReaping.tensionEdgesRemoved += result.tensionEdgesRemoved;
+  };
+
   // ⚠️ LABELLED, and the label is load-bearing rather than decoration (#5326). The
   // member loop nested inside this one reads one datasource of the entity's
   // connection group, and every refusal it can raise ends the ENTITY — a union
@@ -3886,6 +3913,8 @@ export async function runWarehouseProducer(
       // reason this refuses nothing and merely warns.
       /** Reaped inside the transaction below; counted only once it commits. */
       let reapedHere = 0;
+      /** The corpus half of the same deal (#5344), staged on the same terms. */
+      let observationsReapedHere: ObservationReapResult | null = null;
       try {
         await withTransaction(async (tx) => {
           await recordEntityRunSuccess(tx, {
@@ -3910,6 +3939,14 @@ export async function runWarehouseProducer(
               entity: entityPlan.entity.name,
             })
           ).length;
+          // The corpus reaper (#5344), on the store reaper's terms and in its
+          // transaction: same window, same success record, same rollback. This
+          // arm is where a table that stopped answering at all — truncated,
+          // wholly filtered out — takes its observations with it.
+          observationsReapedHere = await reapUnreachedObservations(tx, {
+            workspaceId,
+            entity: entityPlan.entity.name,
+          });
         });
         // ⚠️ Folded in only AFTER the transaction resolves, never inside the
         // callback. This counter is the audit trail for an irreversible DELETE,
@@ -3918,6 +3955,7 @@ export async function runWarehouseProducer(
         // hunting for rows that are still there. The rollback un-reaps; the
         // number has to say so.
         entityStoreChanges.reaped += reapedHere;
+        if (observationsReapedHere !== null) countReaped(observationsReapedHere);
       } catch (err: unknown) {
         log.warn(
           {
@@ -3982,6 +4020,8 @@ export async function runWarehouseProducer(
     let transactionAborted = false;
     /** Store changes made inside the transaction below, counted once it commits. */
     let pendingStoreChanges = { orphansDeleted: 0, comparablesRetired: 0, reaped: 0 };
+    /** The corpus reap made inside the transaction below, on the same terms (#5344). */
+    let pendingObservationReap: ObservationReapResult | null = null;
     // ⚠️ **`try`/`catch`, NOT `.catch(…)` on the returned value, and the difference is
     // the last unguarded read on this seam** (#5257 review, round 2). `.catch` is
     // itself a property access on whatever `withTransaction` returned: a non-thenable
@@ -4101,6 +4141,21 @@ export async function runWarehouseProducer(
           entity: entityPlan.entity.name,
         });
 
+        // The corpus reaper (#5344), directly after its sibling and reading the
+        // same window.
+        //
+        // ⚠️ **Unlike the store's, it is NOT a no-op on this arm — this is the
+        // arm it exists for.** `writeEntityEntries` rewrites every entry above,
+        // which is what makes the store's reap unfireable here; nothing rewrites
+        // a fact. `reconcileFacts` has just given every row still in the
+        // filtered snapshot a fresh evidence edge and given the rows the filter
+        // now excludes nothing at all, so an entity that is emitting normally is
+        // exactly where a churned customer's observation ages out.
+        pendingObservationReap = await reapUnreachedObservations(tx, {
+          workspaceId,
+          entity: entityPlan.entity.name,
+        });
+
         // ⚠️ Staged, NOT folded into the run's counters here — see the
         // zero-candidate arm above for the argument. Everything below this line
         // can still abort the transaction (a cardinality proposal, the episode
@@ -4194,12 +4249,13 @@ export async function runWarehouseProducer(
       });
       // ⚠️ The transaction RESOLVED, so what it deleted is real and can be
       // counted. Staged inside and folded here for the reason the zero-candidate
-      // arm states: these three numbers are the audit trail for DELETEs with no
+      // arm states: these numbers are the audit trail for DELETEs with no
       // inverse, and counting them from inside a transaction that then aborts
       // reports deletions that never happened.
       entityStoreChanges.orphansDeleted += pendingStoreChanges.orphansDeleted;
       entityStoreChanges.comparablesRetired += pendingStoreChanges.comparablesRetired;
       entityStoreChanges.reaped += pendingStoreChanges.reaped;
+      if (pendingObservationReap !== null) countReaped(pendingObservationReap);
     } catch (err: unknown) {
       // A defect in this module's own contract stays FATAL — see
       // `WarehouseProducerContractError`. Everything below is for OPERATIONAL
@@ -4346,10 +4402,21 @@ export async function runWarehouseProducer(
       // run that quietly performed one is the thing an operator has to be able
       // to find afterwards.
       entityStoreChanges,
+      // What this run removed from the corpus (#5344) — observations of rows
+      // that have left the entity's filtered snapshot, and the edges that hung
+      // off them. Reported beside the store's deletions and never folded into
+      // them: they are different tables under different rules, and both are
+      // irreversible.
+      observationReaping,
       entityEdges,
       refusals: refusals.length,
     },
-    "Warehouse producer run complete — every fact landed draft and waits for a human publish",
+    // ⚠️ NOT "waits for a human publish" any more, and the correction is
+    // substantive rather than editorial: under ADR-0042 an observation is never
+    // queued, never reviewed and never served, and #5342 made the publish gate
+    // refuse one outright. The old sentence described a review backlog that no
+    // longer exists.
+    "Warehouse producer run complete — every fact landed as an observation, compared against and never served",
   );
 
   return {

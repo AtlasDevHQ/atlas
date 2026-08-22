@@ -6,8 +6,8 @@
 Source: `src/lib/brain/warehouse-producer.ts`.
 Mutation list: `scripts/mutations/warehouse-producer.mutations.ts`.
 
-Read the columns against each other rather than the totals down. The six
-suites are six different instruments and the interesting fact is usually
+Read the columns against each other rather than the totals down. The seven
+suites are seven different instruments and the interesting fact is usually
 which one holds a row up:
 
 - **producer** — what the run DECIDES against injected seams. The widest column:
@@ -88,51 +88,61 @@ largest count here and was inspected rather than trusted; see its note.
   to a correct one everywhere else. The record authorizes a DELETE in #5233, so
   "it survived a rollback" is the failure with the consequence.
 
+- **reap** — the corpus reaper (#5344), and the only column that can fail on
+  whether the producer CALLS it on the arm where it does its work. It drives the
+  real producer across five runs, so the success records, the corroboration edges
+  and the reap are all the shipped ones; a fake executor can say the statement was
+  issued and nothing more. Its zeros elsewhere are the `record` column's zeros for
+  the same reason — this suite injects its own snapshot runner and captures no
+  logs, so the built statement is never executed and no log level is observable.
+
 Every number is the count of tests that FAIL in that suite under that mutation, measured one mutation at a time against an otherwise clean tree. A `0` means the suite does not catch it — see the notes for whether that is honest or a gap.
 
-| Mutation | producer | logging | bypass | mint | pg | record |
-|---|---|---|---|---|---|---|
-| `predicate: dim.name` -> `dim.sql` — the qualified column expression emitted as the predicate | 4 | 0 | 0 | 0 | 2 | 0 |
-| `buildSnapshotSql` selects the bare NAME instead of the dimension's `sql:` expression | 2 | 2 | 0 | 0 | 1 | 0 |
-| `buildSnapshotSql` selects the bare primary-key NAME as the subject column | 1 | 0 | 0 | 0 | 1 | 0 |
-| the cardinality proposal is keyed by the dimension's `sql:` rather than its name | 2 | 1 | 0 | 0 | 1 | 0 |
-| the subject-collision guard compares ids again, so a duplicate primary key emits twice | 5 | 0 | 0 | 0 | 0 | 0 |
-| the row cap becomes `>=`, refusing every entity of exactly `cap` rows | 1 | 0 | 0 | 0 | 0 | 0 |
-| the row cap never fires — an over-cap entity emits a truncated snapshot | 1 | 1 | 0 | 0 | 0 | 0 |
-| `buildSnapshotSql` emits `LIMIT cap` — the extra row that makes the cap observable | 2 | 0 | 0 | 0 | 0 | 0 |
-| the production SQL gate deleted — `defaultValidateSnapshotSql` passes everything | 4 | 0 | 0 | 2 ⚠️ | 0 | 0 |
-| the gate's refusing verdict carries no reason | 4 | 0 | 0 | 1 | 0 | 0 |
-| the anti-replay identity check deleted — a token minted for another statement is accepted | 2 | 21 | 0 | 0 | 0 | 0 |
-| a validator THROW reported as `snapshot-rejected` — the permanence inversion | 3 | 2 | 0 | 0 | 0 | 0 |
-| a transaction failure re-thrown instead of refusing its entity | 1 | 4 | 0 | 0 | 0 | 1 |
-| the transaction-failure `log.error` demoted to `log.warn` | 0 | 4 | 0 | 0 | 0 | 0 |
-| the colliding-subject row-drop warn deleted | 0 | 1 | 0 | 0 | 0 | 0 |
-| the unsurfaceable-key row-drop warn deleted | 0 | 1 | 0 | 0 | 0 | 0 |
-| `isAbsentCell` loses its blank-string arm | 2 | 0 | 0 | 0 | 0 | 0 |
-| `isAbsentCell` loses its non-finite / invalid-Date arms | 1 | 0 | 0 | 0 | 0 | 0 |
-| the episode reader accepts a row whose `id` it cannot parse | 1 | 0 | 0 | 0 | 0 | 0 |
-| the `@sql-gate-guarded` tag deleted from the producer's deps interface | 0 | 0 | 1 | 0 | 0 | 0 |
-| a sixth brand-carrying export added with no `@sql-gate-guarded` tag | 0 | 0 | 1 | 0 | 0 | 0 |
-| the entity-edge pass's failure log drops `err` | 0 | 3 | 0 | 0 | 0 | 0 |
-| the snapshot's connection falls back to the YAML hint alone, ignoring the group | 7 | 1 | 0 | 0 | 0 | 0 |
-| the mismatch arm recomputes the submitted connection from the YAML hint | 0 | 1 | 0 | 0 | 0 | 0 |
-| the placement rule answers an empty placement for every catalog | 14 | 0 | 0 | 0 | 0 | 0 |
-| a name published under two connection groups resolves instead of refusing | 2 | 0 | 0 | 0 | 0 | 0 |
-| an unplaceable entity is snapshotted anyway rather than refused | 3 | 0 | 0 | 0 | 0 | 0 |
-| the flat scope resolves to the literal "default" instead of staying absent | 2 | 0 | 0 | 0 | 0 | 0 |
-| a YAML `connection: default` hint reaches the gate as the literal "default" | 1 | 0 | 0 | 0 | 0 | 0 |
-| only the FIRST member of a connection group is read | 5 | 0 | 0 | 0 | 0 | 0 |
-| a subject held by TWO members merges instead of refusing | 2 | 0 | 0 | 0 | 0 | 0 |
-| the row cap is measured per member instead of over the union | 1 | 0 | 0 | 0 | 0 | 0 |
-| the fact's provenance forgets WHICH member it was read from | 1 | 0 | 0 | 0 | 0 | 0 |
-| the catalog's authority is INFERRED from its contents instead of passed in | 1 | 0 | 0 | 0 | 0 | 0 |
-| the per-entity success record is never written | 2 | 0 | 0 | 0 | 0 | 3 |
-| the success record escapes the entity's transaction onto the pool | 38 | 7 | 0 | 0 | 0 | 1 |
-| a zero-candidate run records no success | 1 | 0 | 0 | 0 | 0 | 2 |
-| the success record is stamped with the wall clock instead of the snapshot instant | 2 | 0 | 0 | 0 | 0 | 2 |
-| the connection resolver is asked about no entities | 2 | 0 | 0 | 0 | 0 | 0 |
+| Mutation | producer | logging | bypass | mint | pg | record | reap |
+|---|---|---|---|---|---|---|---|
+| `predicate: dim.name` -> `dim.sql` — the qualified column expression emitted as the predicate | 4 | 0 | 0 | 0 | 2 | 0 | 2 |
+| `buildSnapshotSql` selects the bare NAME instead of the dimension's `sql:` expression | 2 | 2 | 0 | 0 | 1 | 0 | 0 |
+| `buildSnapshotSql` selects the bare primary-key NAME as the subject column | 1 | 0 | 0 | 0 | 1 | 0 | 0 |
+| the cardinality proposal is keyed by the dimension's `sql:` rather than its name | 2 | 1 | 0 | 0 | 1 | 0 | 0 |
+| the subject-collision guard compares ids again, so a duplicate primary key emits twice | 5 | 0 | 0 | 0 | 0 | 0 | 0 |
+| the row cap becomes `>=`, refusing every entity of exactly `cap` rows | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
+| the row cap never fires — an over-cap entity emits a truncated snapshot | 1 | 1 | 0 | 0 | 0 | 0 | 0 |
+| `buildSnapshotSql` emits `LIMIT cap` — the extra row that makes the cap observable | 2 | 0 | 0 | 0 | 0 | 0 | 0 |
+| the production SQL gate deleted — `defaultValidateSnapshotSql` passes everything | 4 | 0 | 0 | 2 ⚠️ | 0 | 0 | 0 |
+| the gate's refusing verdict carries no reason | 4 | 0 | 0 | 1 | 0 | 0 | 0 |
+| the anti-replay identity check deleted — a token minted for another statement is accepted | 2 | 21 | 0 | 0 | 0 | 0 | 0 |
+| a validator THROW reported as `snapshot-rejected` — the permanence inversion | 3 | 2 | 0 | 0 | 0 | 0 | 0 |
+| a transaction failure re-thrown instead of refusing its entity | 1 | 4 | 0 | 0 | 0 | 1 | 0 |
+| the transaction-failure `log.error` demoted to `log.warn` | 0 | 4 | 0 | 0 | 0 | 0 | 0 |
+| the colliding-subject row-drop warn deleted | 0 | 1 | 0 | 0 | 0 | 0 | 0 |
+| the unsurfaceable-key row-drop warn deleted | 0 | 1 | 0 | 0 | 0 | 0 | 0 |
+| `isAbsentCell` loses its blank-string arm | 2 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `isAbsentCell` loses its non-finite / invalid-Date arms | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
+| the episode reader accepts a row whose `id` it cannot parse | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
+| the `@sql-gate-guarded` tag deleted from the producer's deps interface | 0 | 0 | 1 | 0 | 0 | 0 | 0 |
+| a sixth brand-carrying export added with no `@sql-gate-guarded` tag | 0 | 0 | 1 | 0 | 0 | 0 | 0 |
+| the entity-edge pass's failure log drops `err` | 0 | 3 | 0 | 0 | 0 | 0 | 0 |
+| the snapshot's connection falls back to the YAML hint alone, ignoring the group | 7 | 1 | 0 | 0 | 0 | 0 | 0 |
+| the mismatch arm recomputes the submitted connection from the YAML hint | 0 | 1 | 0 | 0 | 0 | 0 | 0 |
+| the placement rule answers an empty placement for every catalog | 14 | 0 | 0 | 0 | 0 | 0 | 0 |
+| a name published under two connection groups resolves instead of refusing | 2 | 0 | 0 | 0 | 0 | 0 | 0 |
+| an unplaceable entity is snapshotted anyway rather than refused | 3 | 0 | 0 | 0 | 0 | 0 | 0 |
+| the flat scope resolves to the literal "default" instead of staying absent | 2 | 0 | 0 | 0 | 0 | 0 | 0 |
+| a YAML `connection: default` hint reaches the gate as the literal "default" | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
+| only the FIRST member of a connection group is read | 5 | 0 | 0 | 0 | 0 | 0 | 0 |
+| a subject held by TWO members merges instead of refusing | 2 | 0 | 0 | 0 | 0 | 0 | 0 |
+| the row cap is measured per member instead of over the union | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
+| the fact's provenance forgets WHICH member it was read from | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
+| the catalog's authority is INFERRED from its contents instead of passed in | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
+| the per-entity success record is never written | 2 | 0 | 0 | 0 | 0 | 3 | 2 |
+| the success record escapes the entity's transaction onto the pool | 38 | 7 | 0 | 0 | 0 | 1 | 1 |
+| a zero-candidate run records no success | 1 | 0 | 0 | 0 | 0 | 2 | 0 |
+| the success record is stamped with the wall clock instead of the snapshot instant | 2 | 0 | 0 | 0 | 0 | 2 | 2 |
+| the corpus reaper is never called on the arm that emits | 0 | 0 | 0 | 0 | 0 | 0 | 1 |
+| the corpus reaper is never called on the zero-candidate arm | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
+| the connection resolver is asked about no entities | 2 | 0 | 0 | 0 | 0 | 0 | 0 |
 
-Suite sizes: **producer** 125 tests (`src/lib/brain/__tests__/warehouse-producer.test.ts`) · **logging** 71 tests (`src/lib/brain/__tests__/warehouse-producer-logging.test.ts`) · **bypass** 13 tests (`src/lib/brain/__tests__/warehouse-producer-bypass.test.ts`) · **mint** 2 tests (`src/lib/brain/__tests__/warehouse-producer-mint.test.ts`) · **pg** 7 tests (`src/lib/brain/__tests__/warehouse-producer-pg.test.ts`) · **record** 7 tests (`src/lib/brain/__tests__/warehouse-run-record-pg.test.ts`).
+Suite sizes: **producer** 125 tests (`src/lib/brain/__tests__/warehouse-producer.test.ts`) · **logging** 71 tests (`src/lib/brain/__tests__/warehouse-producer-logging.test.ts`) · **bypass** 13 tests (`src/lib/brain/__tests__/warehouse-producer-bypass.test.ts`) · **mint** 2 tests (`src/lib/brain/__tests__/warehouse-producer-mint.test.ts`) · **pg** 7 tests (`src/lib/brain/__tests__/warehouse-producer-pg.test.ts`) · **record** 7 tests (`src/lib/brain/__tests__/warehouse-run-record-pg.test.ts`) · **reap** 15 tests (`src/lib/brain/__tests__/observation-reap-pg.test.ts`).
 
 ## Notes
 
@@ -174,6 +184,8 @@ Suite sizes: **producer** 125 tests (`src/lib/brain/__tests__/warehouse-producer
 - **the success record escapes the entity's transaction onto the pool** — ⚠️ **THE row this record exists for, and the one only a database can hold up.** The whole value of the marker is that it cannot outlive the work it claims: #5233's reaper DELETES `brain_entity` rows on the strength of one. Handed the module pool instead of the entity's `tx`, the INSERT commits on its own connection and survives the rollback — so a run that failed leaves a durable claim that it succeeded, in exactly the case where the consequence is a deletion. `record`'s rolled-back-transaction arm is the only thing in the tree that fails FOR THE RIGHT REASON — it observes a committed row after a rollback. Read any other non-zero column here as an accident rather than as coverage: the unit suites reach `internalQuery` with no pool configured, so they die on a thrown connection error, which is a kill that says nothing about whether the row outlived the transaction and would vanish the moment a suite happened to have a pool. Measured by hand before this row existed, which is precisely the prose-instead-of-a-gate shape this file was filed to retire.
 - **a zero-candidate run records no success** — ⚠️ **The defect this arm was added to close, and it shipped in the first draft of #5317.** With the record written only inside the reconcile transaction, the marker advanced exactly when there was nothing to reap and never when there was: every case migration 0206 names as the reason a reaper is needed is a ZERO-CANDIDATE case (a truncated table, an unsurfaceable primary key) — those are the runs that never reach `writeEntityEntries` and so the only runs that strand entries — while every run that DOES commit replaces all of that entity's entries at the same `snapshot_at`, so none can predate it. #5233's reach rule was unfireable on its own target population, and nothing was red. Caught in review, not by a test, which is why it has a row.
 - **the success record is stamped with the wall clock instead of the snapshot instant** — The reach rule compares this column to `brain_entity.snapshot_at`, which the `writeEntityEntries` call three lines up writes from the SAME value. A wall clock is later than the snapshot by however long the reconcile took, so every entry reads as older than its own run — and the reaper's comparison is a DELETE, so the drift falls in the direction that reaps live entries. A `now()` DEFAULT on the column would have the identical effect, which is why 0206 declares none. Survives every assertion that merely checks a row EXISTS, which is what both rows above check.
+- **the corpus reaper is never called on the arm that emits** — ⚠️ **The arm the reaper exists for, and the one a reader arriving from #5321 would expect to be the no-op.** The store's reaper IS a no-op here by construction — `writeEntityEntries` has just rewritten every entry at this run's `snapshot_at`, so none can predate the window — and copying that reasoning across is how the corpus reaper ends up wired to the zero-candidate arm alone. Nothing rewrites a fact: `reconcileFacts` gives every row still in the filtered snapshot a fresh evidence edge and gives the excluded rows nothing, so an entity emitting NORMALLY is exactly where a churned customer's observation ages out. Deleting this call leaves the corpus reaper firing only when an entity produces no claims at all — which is the truncated-table case and not #5344's — and every assertion that the statement was ISSUED stays green, because the other arm still issues it.
+- **the corpus reaper is never called on the zero-candidate arm** — The complement, and the cheaper half to lose: an entity whose table is truncated or whose primary key stopped being surfaceable never reaches the reconcile transaction, so its observations are stranded by the one class of run that produces nothing to compare them against. Killed in `producer` by the zero-candidate arm's statement-ORDER assertion, which dispatches on `OBSERVATION_REAP_SQL`'s exact bytes and would stay green against a paraphrase.
 - **the connection resolver is asked about no entities** — Nothing is placed, so every entity falls back to the deployment default — #5284 verbatim, past a green tree. Green before its falsifier existed, because every stub in the suite ignored its arguments (`async () => new Map([...])`). The kill is the stub that RECORDS what it was passed. Its sibling — passing `""` as the workspace, which sends `listAdminEntities` to its disk-root branch and resolves a SaaS workspace's connection groups from whatever YAML is on the box — is caught by the same assertion.
 
 ## ⚠️ Flagged

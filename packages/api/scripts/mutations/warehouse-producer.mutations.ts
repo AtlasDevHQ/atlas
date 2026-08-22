@@ -98,13 +98,14 @@ const spec: MutationSpec = {
     { name: "mint", file: "src/lib/brain/__tests__/warehouse-producer-mint.test.ts" },
     { name: "pg", file: "src/lib/brain/__tests__/warehouse-producer-pg.test.ts" },
     { name: "record", file: "src/lib/brain/__tests__/warehouse-run-record-pg.test.ts" },
+    { name: "reap", file: "src/lib/brain/__tests__/observation-reap-pg.test.ts" },
   ],
   preamble: `
 Source: \`${PRODUCER}\`.
 Mutation list: \`scripts/mutations/warehouse-producer.mutations.ts\`.
 
-Read the columns against each other rather than the totals down. The six
-suites are six different instruments and the interesting fact is usually
+Read the columns against each other rather than the totals down. The seven
+suites are seven different instruments and the interesting fact is usually
 which one holds a row up:
 
 - **producer** — what the run DECIDES against injected seams. The widest column:
@@ -184,6 +185,14 @@ largest count here and was inspected rather than trusted; see its note.
   so a writer given the module pool instead of the entity's \`tx\` looks identical
   to a correct one everywhere else. The record authorizes a DELETE in #5233, so
   "it survived a rollback" is the failure with the consequence.
+
+- **reap** — the corpus reaper (#5344), and the only column that can fail on
+  whether the producer CALLS it on the arm where it does its work. It drives the
+  real producer across five runs, so the success records, the corroboration edges
+  and the reap are all the shipped ones; a fake executor can say the statement was
+  issued and nothing more. Its zeros elsewhere are the \`record\` column's zeros for
+  the same reason — this suite injects its own snapshot runner and captures no
+  logs, so the built statement is never executed and no log level is observable.
 `,
   mutations: [
     {
@@ -699,6 +708,39 @@ export type WarehouseBrandProbe = { readonly [validatedSnapshotSql]: true };`,
         },
       ],
       note: "The reach rule compares this column to `brain_entity.snapshot_at`, which the `writeEntityEntries` call three lines up writes from the SAME value. A wall clock is later than the snapshot by however long the reconcile took, so every entry reads as older than its own run — and the reaper's comparison is a DELETE, so the drift falls in the direction that reaps live entries. A `now()` DEFAULT on the column would have the identical effect, which is why 0206 declares none. Survives every assertion that merely checks a row EXISTS, which is what both rows above check.",
+    },
+    {
+      label: "the corpus reaper is never called on the arm that emits",
+      edits: [
+        {
+          file: PRODUCER,
+          // The RECONCILE arm's call, unique by its argument list sitting at the
+          // shallower indentation — the zero-candidate arm's identical call
+          // nests one level deeper, and the row below anchors on that one.
+          oldString:
+            "        pendingObservationReap = await reapUnreachedObservations(tx, {\n" +
+            "          workspaceId,\n" +
+            "          entity: entityPlan.entity.name,\n" +
+            "        });",
+          newString: "        void reapUnreachedObservations;",
+        },
+      ],
+      note: "⚠️ **The arm the reaper exists for, and the one a reader arriving from #5321 would expect to be the no-op.** The store's reaper IS a no-op here by construction — `writeEntityEntries` has just rewritten every entry at this run's `snapshot_at`, so none can predate the window — and copying that reasoning across is how the corpus reaper ends up wired to the zero-candidate arm alone. Nothing rewrites a fact: `reconcileFacts` gives every row still in the filtered snapshot a fresh evidence edge and gives the excluded rows nothing, so an entity emitting NORMALLY is exactly where a churned customer's observation ages out. Deleting this call leaves the corpus reaper firing only when an entity produces no claims at all — which is the truncated-table case and not #5344's — and every assertion that the statement was ISSUED stays green, because the other arm still issues it.",
+    },
+    {
+      label: "the corpus reaper is never called on the zero-candidate arm",
+      edits: [
+        {
+          file: PRODUCER,
+          oldString:
+            "          observationsReapedHere = await reapUnreachedObservations(tx, {\n" +
+            "            workspaceId,\n" +
+            "            entity: entityPlan.entity.name,\n" +
+            "          });",
+          newString: "          await Promise.resolve();",
+        },
+      ],
+      note: "The complement, and the cheaper half to lose: an entity whose table is truncated or whose primary key stopped being surfaceable never reaches the reconcile transaction, so its observations are stranded by the one class of run that produces nothing to compare them against. Killed in `producer` by the zero-candidate arm's statement-ORDER assertion, which dispatches on `OBSERVATION_REAP_SQL`'s exact bytes and would stay green against a paraphrase.",
     },
     {
       label: "the connection resolver is asked about no entities",

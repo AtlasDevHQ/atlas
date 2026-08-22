@@ -3525,7 +3525,26 @@ export const brainFacts = pgTable(
     // promotion — there is no autonomous supersession, and staleness decay
     // only surfaces a fact for review. `ingestedAt` is transaction time.
     // `invalidatedAt` is the tombstone: supersession is not deletion, so
-    // "what we believed on Monday" still answers correctly. Nothing DELETEs.
+    // "what we believed on Monday" still answers correctly.
+    //
+    // ⚠️ "Nothing DELETEs" stood here until #5344, and every word of the policy
+    // above is still true of a BELIEF — a claim somebody made, that a human
+    // blessed, that an `asOf` read has to keep answering. It is not true of the
+    // table. ADR-0042 put OBSERVATIONS in these same rows (warehouse readings,
+    // discriminated on `provenance.source`, never reviewed and never served) and
+    // `lib/brain/observation-reap.ts` deletes one outright when its warehouse row
+    // leaves the entity's filtered snapshot: nobody approved it, nothing serves
+    // it, and a `valid_to` stamp or a tombstone would assert a human decision
+    // that never happened. Its population is fenced three ways — the row's own
+    // provenance, its creating episode, and `status = 'draft'` — so it cannot
+    // reach a belief; see that module.
+    //
+    // It is the second `DELETE` writer, not the first. The workspace purge
+    // (#5160, `db/internal.ts`) has always deleted these rows, and the two are
+    // not the same kind of thing: the purge removes a whole tenant on an
+    // operator's instruction and takes every table with it, while this one runs
+    // unattended and removes SOME rows on a rule. A third writer of either kind
+    // is the thing to argue rather than merge.
     validFrom: timestamp("valid_from", { withTimezone: true }),
     validTo: timestamp("valid_to", { withTimezone: true }),
     ingestedAt: timestamp("ingested_at", { withTimezone: true }).notNull().defaultNow(),

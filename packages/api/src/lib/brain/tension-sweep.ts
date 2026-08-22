@@ -13,6 +13,14 @@
  * cardinality entry: both change what WOULD collide, for rows nothing will look
  * at again. This module is the thing that looks again.
  *
+ * ⚠️ #5332 opened ONE crack in that paragraph and it is not a way out. The
+ * lookup now excludes OBSERVATIONS, so a belief-class replay over a warehouse
+ * row does miss, insert, and reach the pass. That is a strictly worse
+ * "re-reconcile" than it sounds: it mints a duplicate DRAFT of the claim as the
+ * price of reaching the pass, which is a corpus edit, where this module's whole
+ * licence is that it writes advisory edges and nothing else. It also covers
+ * only pairs whose incumbent is an observation. Still not an option.
+ *
  * ## It replays `reconcile.ts`'s rule rather than inventing a second one
  *
  * Every arm of {@link TENSION_SWEEP_SQL}'s rival scan is

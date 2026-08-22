@@ -142,13 +142,28 @@ const EPISODE_ENTITY_SQL = `substring(se.source_id from '^warehouse:(.*)@[^@]*$'
  * survives. Fail-closed, and deliberately: the rule deletes on positive
  * evidence of absence, never on missing evidence.
  *
- * ⚠️ **`pe.source` is warehouse-class, and that arm is load-bearing.** Until
- * #5332 lands, an extractor claim that agrees with an observation corroborates
- * it and attaches a CHAT episode as evidence. A Slack message agreeing with a
- * reading does not put the row back in the warehouse, so it must not hold the
- * observation alive — the swallowed-testimony defect ADR-0042 names is #5332's
- * to fix, and inheriting it here as an unreapable observation would be a second
- * bug wearing the first one's clothes.
+ * ⚠️ **`pe.source` is warehouse-class, and that arm is still load-bearing —
+ * #5332 changed WHY, not whether.** It used to be the live case: an extractor
+ * claim agreeing with an observation corroborated it and attached a CHAT
+ * episode as evidence, so without this arm a Slack message would have held a
+ * reading alive that the warehouse had stopped returning.
+ *
+ * #5332 closed the mint — `CORROBORATION_LOOKUP_SQL` excludes observations
+ * unless the incoming claim is itself one, so a person agreeing with a reading
+ * now gets their own draft and edges nothing onto the observation. What it did
+ * NOT do is rewrite history: every such edge minted before that fix is still on
+ * the corpus, and #5332's recorded decision was to LEAVE them rather than
+ * re-mint the swallowed claims as drafts — the grounds, the enumeration query
+ * and the falsifiers are in `docs/development/brain-swallowed-testimony.md`
+ * (that doc is the decision record; ADR-0042 states the rule, not this
+ * disposition). This arm IS what that decision rests on. Drop it and those
+ * exact rows become permanently unreapable, which is the one thing the
+ * "self-clearing population" argument requires not to happen.
+ *
+ * So the reading to avoid is *"#5332 landed, this is dead code"*. It is the
+ * live handling of a bounded, closed population — and the argument holds
+ * unchanged for any future non-warehouse edge onto an observation, which is why
+ * it is expressed as a class arm rather than as a date.
  *
  * The evidence side is deliberately NOT scoped to `$2`: any warehouse read that
  * still saw this claim keeps it, whichever entity performed it. Two entities can

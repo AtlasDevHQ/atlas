@@ -291,6 +291,8 @@ import {
   type ResolvedEntityId,
   type SubjectComparable,
 } from "@atlas/api/lib/brain/subject-cmp";
+import { notAnObservationSql } from "@atlas/api/lib/brain/observation";
+import { isWarehouseDerivedSource } from "@atlas/api/lib/brain/sources";
 import type {
   BrainFactProvenance,
   EntityRole,
@@ -818,9 +820,60 @@ export const RECONCILE_LOCK_SQL = `SELECT pg_advisory_xact_lock($1, hashtext($2)
  * without the veto this statement merges two opposite-signed beliefs into one
  * row with no reviewer anywhere in the loop.
  *
+ * ## The class arm is a POPULATION restriction, not an identity arm (#5332)
+ *
+ * `(notAnObservationSql("brain_facts") OR $7)` — ADR-0042's *only a belief
+ * can be corroborated*, and it is the newest arm here. `$7` is TRUE when the
+ * INCOMING claim is itself an observation, which lifts the exclusion.
+ *
+ * The defect it closes: the lookup runs FIRST and `return`s on a hit, and it
+ * filtered neither `status` nor `provenance.source`. So the producer minted
+ * `Dharma / plan_tier / trial`, a person said the same thing in Slack, the
+ * extractor's claim keyed identically — and it corroborated the WAREHOUSE row
+ * and returned. No draft was minted, nothing reached the review queue, and the
+ * person's statement became a `provenance` edge on a machine-produced row that
+ * ADR-0042 never serves. Their testimony was swallowed. Part of why every
+ * warehouse candidate in the prod queue is derivable is exactly this: a human
+ * claim that agrees with a reading never became a candidate at all.
+ *
+ * ⚠️ **Read `$7` as a bind and not as a redundancy — an unconditional exclusion
+ * breaks two things silently, both irreversible.** The warehouse producer
+ * re-emits every enrolled row on EVERY run, and `warehouseRowId`'s stated
+ * purpose is that a re-emission *"corroborates its predecessor instead of
+ * contradicting it"*. Drop the `OR` and each run mints a duplicate observation
+ * per row; worse, `observation-reap.ts`'s staleness signal is *"the newest
+ * warehouse episode still hanging off this observation by a provenance edge"*,
+ * so with no edge ever written `last_seen` collapses to the creating episode
+ * and the reaper deletes the whole live comparison surface on the third run.
+ *
+ * So the four cells are not class-MATCHING, which is the reading to guard
+ * against — belief↔belief cross-class corroboration is mutation-tested in
+ * `multi-source-pg.test.ts` (*"the lookup scoped to one class … the exact
+ * cross-class regression"*), and observation→belief is the live shape
+ * `observation-reap.ts`'s `observationSql("f")` fence exists to protect. Only
+ * belief→observation changes. `corroboration-class-pg.test.ts` drives all four.
+ *
+ * The arm reuses {@link notAnObservationSql} and the bind reuses
+ * `isWarehouseDerivedSource`, rather than either spelling a `provenance.source`
+ * literal of its own. That is #4938's finding applied rather than re-learned:
+ * it found the tier-1 refusal *"one future naming decision away from silently
+ * never firing"* because the producer and the predicate each spelled their own
+ * literal. `IS NOT TRUE` inside the builder is load-bearing here for its usual
+ * reason — a `source`-less legacy fact keys NULL, and `NOT NULL` is NULL, which
+ * a WHERE reads as false, so the naive negation would stop every pre-provenance
+ * belief in the corpus from ever being corroborated again.
+ *
+ * Agreement is not LOST by this. It is recoverable as the complement of the
+ * tension scan — same subject key, same predicate key, same object key — which
+ * is where a comparison between an observation and a belief belongs anyway.
+ *
  * Deliberately NOT filtered by review state: a claim re-observed after it was
  * published must corroborate the published fact, not mint a fresh draft
- * duplicate of it. Deliberately not filtered by grant either — a re-observation
+ * duplicate of it. That is a STATUS arm, and it stays absent — the exclusion
+ * above is on the SOURCE, for ADR-0042's reason: developer mode serves
+ * `status IN ('published','draft')`, so a rule expressed as "never published"
+ * would leave the whole comparison surface reachable under the `/ee` overlay.
+ * Deliberately not filtered by grant either — a re-observation
  * at ANY grant, narrower or wider, is recorded as EVIDENCE and never rewrites
  * the existing fact's `visible_to` from here, because a grant is immutable per
  * fact version (0180) and ADR-0036 §T5 admits widening only at the review gate.
@@ -869,6 +922,7 @@ export const CORROBORATION_LOOKUP_SQL = `SELECT id
       AND predicate_key = $3
       AND ${objectSameSql("object_key", "$4", "object_cmp", "$5")}
       AND ${subjectNotDifferentSql("subject_cmp", "$6")}
+      AND (${notAnObservationSql("brain_facts")} OR $7)
       AND invalidated_at IS NULL
       AND valid_to IS NULL
     ORDER BY ingested_at
@@ -1765,12 +1819,24 @@ interface ResolvedSlotKeys {
  * pg would at least raise an arity error; **in the rival scan** it would not.
  * #5032 renumbered it to `$7`/`$8`; a sixth member means `$8`/`$9`.
  *
+ * ⚠️ **Since #5332 the CORROBORATION lookup has a trailing placeholder too**,
+ * so it is no longer the safe one of the three: its class arm binds `$7` after
+ * the spread, and a sixth member means `$8` there as well. The failure mode is
+ * milder than the rival scan's only by luck — `$7` is a boolean, so a
+ * comparable value sliding into it raises rather than silently answering — and
+ * "it raises" is not a reason to skip the renumbering. Both trailing statements
+ * now have to move together.
+ *
  * ⚠️ The arity buys no COMPILE-time protection, and an earlier version of this
  * docstring claimed it did. `ReconcileExecutor.query` takes `unknown[]`, so a
  * 4-tuple and a 5-tuple spread into an array literal identically — which is
  * exactly how #5032 could widen it without a single type error. What actually
  * enforces the renumbering is `reconcile.test.ts`: the lexical assertions on
- * `$6`/`$7`/`$8` and the positional `binds[0]![6]` self-exclusion check.
+ * `$6`/`$7`/`$8` and the positional `binds[0]![6]` self-exclusion check — plus,
+ * for the corroboration statement, the `OR $7` assertion #5332 added beside
+ * them, and `promotion-pg.test.ts`'s direct issue of the statement, whose own
+ * comment records that an arity mismatch is a bind ERROR and is why *"this call
+ * site had to move with the statement"*. It did, twice now.
  *
  * It does NOT catch subject/predicate/object ORDER drift, since those three
  * members share a type. A brand would, and is not obviously worth three more
@@ -2319,6 +2385,27 @@ async function writeCandidate(
 ): Promise<ReconcileOutcome> {
   const { item, episode } = ctx;
 
+  // `$7`, the last bind below, is "the INCOMING claim is itself an
+  // observation" — which lifts the statement's class exclusion. Full rationale
+  // on the statement (#5332); the two things true only at this call site:
+  //
+  //   The EPISODE's source, never a read-back of `provenance.source`. At this
+  //   point the row does not exist and this function is the writer that will
+  //   put the episode source there, so the episode is the earlier truth and the
+  //   only one available. "Warehouse-class episode" and "observation" name one
+  //   predicate here, because the stored discriminator is a copy of this value.
+  //
+  //   TRUE is the PERMISSIVE value, so an `episode.source` this region cannot
+  //   classify binds FALSE and gets the exclusion. That falls out of
+  //   `isWarehouseDerivedSource` unchanged — its doc already declines to claim a
+  //   class it cannot see — and the direction it lands in is the recoverable
+  //   one: an unclassifiable producer mints its own row instead of strengthening
+  //   an observation, i.e. a duplicate draft rather than a silent absorption.
+  //
+  // ⚠️ Kept out of the bind list itself so the two lines below stay ADJACENT
+  // CODE. `identity-corpus.mutations.ts` anchors on that pair; with prose
+  // between them its only unique anchor was a comment, and rewording one would
+  // have deadened the mutation silently instead of failing.
   const existing = await tx.query(CORROBORATION_LOOKUP_SQL, [
     episode.workspaceId,
     // The LOOKUP value, which an outage does not withhold — see
@@ -2326,13 +2413,24 @@ async function writeCandidate(
     // would disable this statement's difference veto and merge `-499` into a
     // live `499`. The subject's comparable is the same value at all three sites.
     ...agreementBinds(item.keys, item.comparableForLookups, item.subjectComparable),
+    isWarehouseDerivedSource(episode.source),
   ]);
   const existingId = firstId(existing.rows);
   if (existingId !== null) {
     // Strengthen: one more piece of evidence for a belief Atlas already holds.
     // Nothing about the fact itself changes — not its grant, not its review
-    // state, not its validity. Both grant directions land here, and they are
-    // safe for different reasons:
+    // state, not its validity.
+    //
+    // That sentence was the assumption #5332 falsified, and the lookup's class
+    // arm is what makes it true again. It is correct for two claims of the same
+    // kind, and it was WRONG when the incumbent was a machine reading of a
+    // warehouse row and the newcomer was a person speaking: their testimony
+    // became an edge on a row ADR-0042 never serves. The one remaining hit on
+    // an OBSERVATION is a warehouse re-read of the same row, where "one more
+    // piece of evidence" is exactly what the edge means — and is what
+    // `observation-reap.ts` measures freshness by.
+    //
+    // Both grant directions land here, and they are safe for different reasons:
     //
     //   NARROWER episode than the fact's grant — safe outright. `brain_episodes`
     //   is ACL-gated in its own right by the same predicate, so walking the edge

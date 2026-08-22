@@ -15,6 +15,30 @@
  * (#5342), the serving exclusion (#5341), and the corroboration lookup (#5332).
  * Without one home each would invent its own spelling of the same question.
  *
+ * **All three have landed, none spelled a literal, and the count is now stale
+ * in the useful direction** — SEVEN modules read the predicate, not three:
+ * `correction.ts` (the original, via {@link readStoredSource}), `promotion.ts`
+ * (#5342's publish refusal, via {@link isObservation}), `search.ts` and
+ * `candidates.ts` (#5341's serving exclusion and the review queue, via
+ * {@link notAnObservationSql}), `reconcile.ts` (#5332's corroboration arm),
+ * plus `observation-reap.ts` and `alias-proposal.ts`, which arrived without
+ * being on anyone's list. That is the prefactor working: consumers four through
+ * seven cost an import each.
+ *
+ * (`content-mode/adapters/brain-facts.ts` imports {@link isJsonObject} and
+ * nothing else. It is a shape guard that happens to live here, not an eighth
+ * reader of the question — worth saying so, because a `grep` for this module's
+ * importers returns eight and the number above is deliberately not that grep.)
+ *
+ * ⚠️ #5332 is the one to read before adding an eighth, because it is the only
+ * consumer that needed the question asked about **two different things at
+ * once** — the STORED row (is the incumbent an observation?) and the claim
+ * being WRITTEN, which has no stored provenance yet. It composes
+ * `(notAnObservationSql(…) OR $7)`, binding `isWarehouseDerivedSource` on the
+ * incoming episode's source for the second half. The rule it establishes: the
+ * write path reuses `sources.ts`' predicate on the EPISODE rather than growing
+ * a variant of this module that guesses at a row that does not exist yet.
+ *
  * **That is a documented failure mode in this exact area, not a hypothetical.**
  * #4938 found the tier-1 refusal "one future naming decision away from silently
  * never firing" precisely because the producer and the predicate each spelled

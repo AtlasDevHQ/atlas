@@ -128,14 +128,19 @@ else, so a row non-zero there is one a default local run still catches.
       edits: [
         {
           file: RECONCILE,
+          // Code-only anchor since #5332: the spread alone is not unique (the
+          // INSERT and the rival scan repeat it), and the `$7` bind line beneath
+          // it is what disambiguates. An earlier version reached into the
+          // adjacent COMMENT instead, so rewording prose would have silently
+          // deadened this mutation rather than failing loudly.
           oldString: `    ...agreementBinds(item.keys, item.comparableForLookups, item.subjectComparable),
-    // \`$7\` — "the INCOMING claim is itself an observation", which lifts the`,
+    isWarehouseDerivedSource(episode.source),`,
           newString: `    item.subject,
     item.predicate,
     item.object,
     item.comparableForLookups,
     item.subjectComparable,
-    // \`$7\` — "the INCOMING claim is itself an observation", which lifts the`,
+    isWarehouseDerivedSource(episode.source),`,
         },
       ],
       note: "The same pivot reverted at the BIND — the other half, and the one the unit lane can still see, because its fake records the binds it was given.",

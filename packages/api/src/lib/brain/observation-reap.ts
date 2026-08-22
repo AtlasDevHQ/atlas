@@ -152,11 +152,13 @@ const EPISODE_ENTITY_SQL = `substring(se.source_id from '^warehouse:(.*)@[^@]*$'
  * unless the incoming claim is itself one, so a person agreeing with a reading
  * now gets their own draft and edges nothing onto the observation. What it did
  * NOT do is rewrite history: every such edge minted before that fix is still on
- * the corpus, deliberately (ADR-0042's *"leave, and let the rule that stopped
- * minting them also stop them mattering"* — see the enumeration in
- * `docs/development/brain-swallowed-testimony.md`). This arm IS that second
- * half. Drop it now and those exact rows become permanently unreapable, which
- * is the shape the decision to leave them depends on not happening.
+ * the corpus, and #5332's recorded decision was to LEAVE them rather than
+ * re-mint the swallowed claims as drafts — the grounds, the enumeration query
+ * and the falsifiers are in `docs/development/brain-swallowed-testimony.md`
+ * (that doc is the decision record; ADR-0042 states the rule, not this
+ * disposition). This arm IS what that decision rests on. Drop it and those
+ * exact rows become permanently unreapable, which is the one thing the
+ * "self-clearing population" argument requires not to happen.
  *
  * So the reading to avoid is *"#5332 landed, this is dead code"*. It is the
  * live handling of a bounded, closed population — and the argument holds

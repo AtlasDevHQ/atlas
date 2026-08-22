@@ -2385,6 +2385,27 @@ async function writeCandidate(
 ): Promise<ReconcileOutcome> {
   const { item, episode } = ctx;
 
+  // `$7`, the last bind below, is "the INCOMING claim is itself an
+  // observation" — which lifts the statement's class exclusion. Full rationale
+  // on the statement (#5332); the two things true only at this call site:
+  //
+  //   The EPISODE's source, never a read-back of `provenance.source`. At this
+  //   point the row does not exist and this function is the writer that will
+  //   put the episode source there, so the episode is the earlier truth and the
+  //   only one available. "Warehouse-class episode" and "observation" name one
+  //   predicate here, because the stored discriminator is a copy of this value.
+  //
+  //   TRUE is the PERMISSIVE value, so an `episode.source` this region cannot
+  //   classify binds FALSE and gets the exclusion. That falls out of
+  //   `isWarehouseDerivedSource` unchanged — its doc already declines to claim a
+  //   class it cannot see — and the direction it lands in is the recoverable
+  //   one: an unclassifiable producer mints its own row instead of strengthening
+  //   an observation, i.e. a duplicate draft rather than a silent absorption.
+  //
+  // ⚠️ Kept out of the bind list itself so the two lines below stay ADJACENT
+  // CODE. `identity-corpus.mutations.ts` anchors on that pair; with prose
+  // between them its only unique anchor was a comment, and rewording one would
+  // have deadened the mutation silently instead of failing.
   const existing = await tx.query(CORROBORATION_LOOKUP_SQL, [
     episode.workspaceId,
     // The LOOKUP value, which an outage does not withhold — see
@@ -2392,20 +2413,6 @@ async function writeCandidate(
     // would disable this statement's difference veto and merge `-499` into a
     // live `499`. The subject's comparable is the same value at all three sites.
     ...agreementBinds(item.keys, item.comparableForLookups, item.subjectComparable),
-    // `$7` — "the INCOMING claim is itself an observation", which lifts the
-    // class exclusion (#5332). Read off the episode's source through the SAME
-    // predicate `observation.ts` resolves the stored row with, so a warehouse
-    // -shaped source kind added later is covered on both sides without an edit
-    // here. It is NOT read back off `provenance.source`: at this point the row
-    // does not exist, and `reconcile.ts` is the writer that will put the episode
-    // source there — so the episode is the earlier and only truth.
-    //
-    // ⚠️ TRUE is the PERMISSIVE value. An `episode.source` this region cannot
-    // classify therefore binds false and gets the exclusion, which is the
-    // fail-closed direction and deliberately not `isWarehouseDerivedSource`'s
-    // own reading of an unrecognised value (see its doc): an unclassifiable
-    // producer that would otherwise strengthen an observation instead mints its
-    // own row, and a duplicate draft is the recoverable error here.
     isWarehouseDerivedSource(episode.source),
   ]);
   const existingId = firstId(existing.rows);

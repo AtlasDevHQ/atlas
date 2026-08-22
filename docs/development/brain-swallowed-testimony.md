@@ -60,9 +60,16 @@ absorbed and enough of the claim to judge it.
 
 > ⚠️ **The authoritative copy is `SWALLOWED_TESTIMONY_AUDIT_SQL` in
 > `packages/api/src/lib/brain/__tests__/corroboration-class-pg.test.ts`**, where
-> it is pinned against seeded positives *and* negatives. The block below is a
-> reading copy. Nothing keeps the two in step automatically — edit the test,
-> then re-copy here.
+> it is pinned against seeded positives *and* negatives, and where the two
+> warehouse arms are **composed from `observationSql` and
+> `episodeSourceArraySql(WAREHOUSE_SOURCES)`** rather than spelled by hand.
+>
+> The block below is a rendering of that constant with the builders expanded, so
+> you can read it and paste it into `psql`. Nothing keeps the two in step
+> automatically — edit the test, run it, then re-copy here. **If a source kind
+> is ever added or renamed, this block is stale and the test is not** — and a
+> stale audit fails silently, by returning zero rows and reading as "nothing was
+> swallowed".
 
 ```sql
 SELECT g.id AS edge_id,
@@ -76,8 +83,8 @@ SELECT g.id AS edge_id,
   JOIN brain_episodes e
     ON e.workspace_id = g.workspace_id AND e.id = g.to_episode_id
  WHERE g.edge_type = 'provenance'
-   AND (f.provenance->>'source' = ANY (ARRAY['warehouse']::text[]))
-   AND (e.source = ANY (ARRAY['warehouse']::text[])) IS NOT TRUE
+   AND (f.provenance->>'source' = ANY (ARRAY['warehouse']::text[]))   -- observationSql('f')
+   AND (e.source = ANY (ARRAY['warehouse']::text[])) IS NOT TRUE       -- episodeSourceArraySql(WAREHOUSE_SOURCES)
  ORDER BY f.workspace_id, e.occurred_at, g.id;
 ```
 

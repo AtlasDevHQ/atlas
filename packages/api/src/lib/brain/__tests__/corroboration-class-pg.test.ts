@@ -60,8 +60,13 @@ import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS, _resetPool } from "@atlas/api/lib/db/internal";
 import { identityVocabulary } from "@atlas/api/lib/brain/identity";
 import { ORG_PRINCIPAL } from "@atlas/api/lib/brain/acl";
-import { SLACK_SOURCE, WAREHOUSE_SOURCE } from "@atlas/api/lib/brain/sources";
-import { isObservation } from "@atlas/api/lib/brain/observation";
+import {
+  SLACK_SOURCE,
+  WAREHOUSE_SOURCE,
+  WAREHOUSE_SOURCES,
+  episodeSourceArraySql,
+} from "@atlas/api/lib/brain/sources";
+import { isObservation, observationSql } from "@atlas/api/lib/brain/observation";
 import { widenGrantFromEvidence } from "@atlas/api/lib/brain/promotion";
 import { OBSERVATION_REAP_SQL } from "@atlas/api/lib/brain/observation-reap";
 import { loadFactCandidates } from "@atlas/api/lib/brain/candidates";
@@ -456,6 +461,15 @@ describeIfPg("corroboration's class matrix (#5332)", () => {
     // doc QUOTES this constant for reading; it is not a second source. Edit
     // here, then re-copy — the two cannot be kept in step by anything but that
     // habit, which is why the doc says so in as many words.
+    //
+    // ⚠️ COMPOSED from the same two builders production uses, never spelled as
+    // `ARRAY['warehouse']::text[]` by hand. Hand-spelling it here would be the
+    // exact shape #4938 caught — the producer and the predicate each owning a
+    // literal — reintroduced in the one place that would go on passing after a
+    // rename, since a stale audit silently returns ZERO rows and reads as
+    // "nothing was swallowed". The fact side is `observationSql`, the episode
+    // side is the warehouse vocabulary as an array, and both resolve from
+    // `sources.ts`' spec map at module load.
     const SWALLOWED_TESTIMONY_AUDIT_SQL = `SELECT g.id AS edge_id,
        f.id AS observation_id, f.workspace_id, f.status,
        f.subject, f.predicate, f.object,
@@ -467,8 +481,8 @@ describeIfPg("corroboration's class matrix (#5332)", () => {
   JOIN brain_episodes e
     ON e.workspace_id = g.workspace_id AND e.id = g.to_episode_id
  WHERE g.edge_type = 'provenance'
-   AND (f.provenance->>'source' = ANY (ARRAY['warehouse']::text[]))
-   AND (e.source = ANY (ARRAY['warehouse']::text[])) IS NOT TRUE
+   AND ${observationSql("f")}
+   AND (e.source = ANY (${episodeSourceArraySql(WAREHOUSE_SOURCES)})) IS NOT TRUE
  ORDER BY f.workspace_id, e.occurred_at, g.id`;
 
     it(

@@ -158,11 +158,17 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
     subject: string;
     visibleTo?: readonly (string | null)[];
     status?: "draft" | "published";
+    /**
+     * The stored `provenance` payload. Defaults to the source-less shape this
+     * suite has always used — which ADR-0042 reads as a BELIEF, so every
+     * pre-#5342 fixture keeps its meaning.
+     */
+    provenance?: Record<string, unknown>;
   }): Promise<string> {
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_facts
          (workspace_id, subject, predicate, object, subject_key, predicate_key, object_key, source_episode_id, provenance, status, visible_to)
-       VALUES ($1, $2, 'is', 'thing', $6, 'is', 'thing', $3, '{"actor":"test"}'::jsonb, $4, $5::text[])
+       VALUES ($1, $2, 'is', 'thing', $6, 'is', 'thing', $3, $7::jsonb, $4, $5::text[])
        RETURNING id`,
       [
         opts.workspaceId,
@@ -177,6 +183,7 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
         // whose key disagrees with what the ingest path would have written is a
         // corpus no production code could produce.
         slotKey(opts.subject, identityAlias),
+        JSON.stringify(opts.provenance ?? { actor: "test" }),
       ],
     );
     return rows[0]!.id;
@@ -2402,6 +2409,104 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
         expect(report.superseded).toEqual([]);
         expect(report.supersessionHeldBack).toBe(2);
         expect(await previewTotalFor(ws)).toBe(0);
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+  });
+  // ══════════════════════════════════════════════════════════════════
+  // The publish gate refuses an observation (#5342, ADR-0042)
+  // ══════════════════════════════════════════════════════════════════
+
+  describe("an observation never reaches published", () => {
+    it(
+      "publishes zero observations out of a mixed batch, and commits",
+      async () => {
+        // THE closure test. After this lands the set of published observations
+        // is closed: whatever is already there stays until #5331 retracts it,
+        // and nothing can top it up between deploys.
+        //
+        // A MIXED batch on purpose. A batch of observations alone would pass
+        // against a publish that refused everything, and the failure this
+        // guards is the opposite one — a gate that lets the whole batch
+        // through. So the beliefs must go live in the same transaction the
+        // observations are held back in.
+        const ws = `ws-observation-${Date.now()}`;
+        const ep = await seedEpisode(ws, "obs-mixed");
+
+        const observations: string[] = [];
+        for (const subject of ["kittiwake", "petrel"]) {
+          observations.push(
+            await seedDraftFact({
+              workspaceId: ws,
+              episodeId: ep,
+              subject,
+              provenance: { actor: "system:warehouse-producer", source: WAREHOUSE_SOURCE },
+            }),
+          );
+        }
+        const beliefs: string[] = [];
+        for (const subject of ["dharma", "acme"]) {
+          beliefs.push(await seedDraftFact({ workspaceId: ws, episodeId: ep, subject }));
+        }
+
+        const report = await publish(ws);
+
+        // The transaction still committed, and it promoted exactly the beliefs.
+        expect(report.promoted).toBe(beliefs.length);
+        for (const id of beliefs) expect(await statusOf(id)).toBe("published");
+
+        // Zero observations published — the acceptance criterion, stated as the
+        // count rather than as an absence, so a fixture that seeded none would
+        // fail the arithmetic above rather than passing this line vacuously.
+        let publishedObservations = 0;
+        for (const id of observations) {
+          if ((await statusOf(id)) === "published") publishedObservations += 1;
+        }
+        expect(publishedObservations).toBe(0);
+
+        // Left DRAFT, not archived, not tombstoned — the same per-row treatment
+        // every other refusal gets. They keep corroborating, keep earning
+        // conflict edges, and keep counting on the Coverage Surface.
+        for (const id of observations) expect(await statusOf(id)).toBe("draft");
+
+        // Reported, with the reason and the prose a reviewer reads.
+        expect(report.refused?.map((r) => r.rowId).sort()).toEqual([...observations].sort());
+        for (const refusal of report.refused ?? []) {
+          expect(refusal.reasons).toEqual([FACT_REFUSAL_REASONS.observationNotPublishable]);
+          expect(refusal.detail).toContain("warehouse observation");
+        }
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "keeps refusing on the next publish — the backlog is re-offered, not consumed",
+      async () => {
+        // A refused observation stays a draft, so it comes back round every
+        // time. That is deliberate and matches every other refusal (see "a
+        // refused fact stays in draftCounts" above) — but for THIS reason there
+        // is no repair that clears it, so the second publish must refuse it
+        // identically rather than, say, letting it through on a retry.
+        const ws = `ws-observation-retry-${Date.now()}`;
+        const ep = await seedEpisode(ws, "obs-retry");
+        const observation = await seedDraftFact({
+          workspaceId: ws,
+          episodeId: ep,
+          subject: "recurring",
+          provenance: { actor: "system:warehouse-producer", source: WAREHOUSE_SOURCE },
+        });
+
+        const first = await publish(ws);
+        const second = await publish(ws);
+
+        for (const report of [first, second]) {
+          expect(report.promoted).toBe(0);
+          expect(report.refused?.map((r) => r.rowId)).toEqual([observation]);
+          expect(report.refused?.[0]?.reasons).toEqual([
+            FACT_REFUSAL_REASONS.observationNotPublishable,
+          ]);
+        }
+        expect(await statusOf(observation)).toBe("draft");
       },
       PG_TEST_TIMEOUT_MS,
     );

@@ -682,7 +682,13 @@ async function runPublish(
       if (refusedTotal > refused.length) {
         io.err(`  … and ${refusedTotal - refused.length} more (see the server logs).`);
       }
-      io.err("  Fix or retract them and publish again — they are still drafts.");
+      // Deliberately does not name a REMEDY. Two different things reach here
+      // and only one has one: a missing grant or provenance is repairable, and
+      // a warehouse observation (ADR-0042, #5342) is never publishable at all.
+      // The per-row `detail` above is the only line that knows which — telling
+      // an operator to "fix" a row that cannot be fixed sends them looking for
+      // a defect that is not there.
+      io.err("  They are still drafts — see each line above for what to do about it.");
     }
     io.out("  This is atomic and workspace-wide — every pending draft just went live, not only");
     io.out(`  ${id ? `"${id}"` : "the datasource you may have had in mind"}.`);

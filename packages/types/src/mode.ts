@@ -103,8 +103,8 @@ export interface PublishPromotedCounts {
   readonly knowledgeDocuments: number;
   /**
    * Company-brain facts promoted (#4769, ADR-0036). Counts only facts that
-   * PASSED the structural refusals — a fact missing provenance or a usable
-   * grant is left a draft and reported under
+   * PASSED the gate's refusals — a fact missing provenance or a usable grant,
+   * or a warehouse OBSERVATION (ADR-0042), is left a draft and reported under
    * {@link PublishResult} consumers' warning surfaces instead.
    */
   readonly brainFacts: number;
@@ -113,12 +113,18 @@ export interface PublishPromotedCounts {
 /**
  * A draft the review gate REFUSED to promote (#4769, ADR-0036).
  *
- * Today the only refusing surface is `brain_facts`: a company-brain fact
- * missing provenance, or carrying a grant with no usable principal, is left
- * `draft` rather than stamped reviewed-and-trusted. The row is quarantined, not
- * the publish — the transaction still commits, and the row stays in
- * {@link ModeDraftCounts} and in the publish preview so it is re-offered next
- * time.
+ * Today the only refusing surface is `brain_facts`, and two different things
+ * reach it. A fact missing provenance, or carrying a grant with no usable
+ * principal, is a REPAIRABLE defect: fix it and publish again. A warehouse
+ * OBSERVATION (ADR-0042) is not a defect at all — it is a recorded reading of a
+ * warehouse value rather than a claim anyone believes, and it is never
+ * published, so there is nothing to repair. Consumers must not paraphrase the
+ * cause: {@link PublishRefusedDraft.detail} is the only field that knows which
+ * of the two this is, which is why it is rendered verbatim.
+ *
+ * Either way the row is quarantined, not the publish — the transaction still
+ * commits, and the row stays in {@link ModeDraftCounts} and in the publish
+ * preview so it is re-offered next time.
  *
  * Part of the SHARED core rather than a REST-only extra: a refusal is a thing
  * the caller must be told about on EVERY surface, and #4156 exists because

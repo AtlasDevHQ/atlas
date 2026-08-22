@@ -23,6 +23,11 @@ import {
   GRANT_GRAMMAR_HINT,
   type DraftFactRow,
 } from "@atlas/api/lib/brain/promotion";
+import {
+  NON_WAREHOUSE_SOURCES,
+  WAREHOUSE_SOURCE,
+  WAREHOUSE_SOURCES,
+} from "@atlas/api/lib/brain/sources";
 
 /** A fact that satisfies every rule — the baseline each case perturbs. */
 function validRow(over: Partial<DraftFactRow> = {}): DraftFactRow {
@@ -43,21 +48,34 @@ describe("classifyFactForPromotion — promotable", () => {
     expect(classifyFactForPromotion(validRow())).toBeNull();
   });
 
-  it("does NOT read provenance.source — the #4964 quarantine stops at correction", () => {
-    // A deliberate asymmetry, characterized here so it cannot drift silently
-    // in either direction. `correction.ts` refuses every correction verb on a
-    // fact whose `provenance.source` this deployment cannot classify; this
-    // function is the review queue's gate and reads no source vocabulary at
-    // all, so such a draft stays PROMOTABLE while being un-rejectable.
+  it("reads provenance.source ONLY for the warehouse class — the #4964 quarantine still stops at correction", () => {
+    // A deliberate asymmetry, characterized here so it cannot drift silently in
+    // either direction. Two rules over one column, and they cover different
+    // populations:
     //
-    // That is not the ADR-0036 §T4 invariant leaking. Tier-1 facts are computed
-    // live and have no table (`lib/brain/acl.ts`), so anything in `brain_facts`
-    // is tier-2/3 and publishing it is an ordinary review decision rather than
-    // an arbitration over the warehouse. Tightening this to match the
-    // correction gate would strand every imported draft in a queue no reviewer
-    // could clear — so if a later change makes these red, that is the decision
-    // being revisited, not a bug being fixed.
+    //   - #5342 refuses a WAREHOUSE-CLASS row here (its own describe block
+    //     below). That is ADR-0042: an observation is never published.
+    //   - #4964 quarantines a row whose kind this deployment CANNOT CLASSIFY,
+    //     and that rule lives in `correction.ts` alone. Such a draft stays
+    //     PROMOTABLE here while being un-rejectable there.
+    //
+    // The second half is not the ADR-0036 §T4 invariant leaking. Tier-1 facts
+    // are computed live and have no table (`lib/brain/acl.ts`), so anything in
+    // `brain_facts` is tier-2/3 and publishing it is an ordinary review
+    // decision rather than an arbitration over the warehouse. Tightening it to
+    // match the correction gate would strand every imported draft in a queue no
+    // reviewer could clear — so if a later change makes these red, that is the
+    // decision being revisited, not a bug being fixed.
     for (const source of ["snowflake", "warehouse:prod", "", null, 42]) {
+      expect([source, classifyFactForPromotion(validRow({ provenance: { source } }))]).toEqual([
+        source,
+        null,
+      ]);
+    }
+    // …and an in-vocabulary NON-warehouse kind is likewise nothing to this
+    // classifier, which is what keeps the rule below about the warehouse rather
+    // than about provenance carrying a source at all.
+    for (const source of NON_WAREHOUSE_SOURCES) {
       expect([source, classifyFactForPromotion(validRow({ provenance: { source } }))]).toEqual([
         source,
         null,
@@ -82,6 +100,79 @@ describe("classifyFactForPromotion — promotable", () => {
     expect(
       classifyFactForPromotion(validRow({ visible_to: ["everyone", "user:abc"] })),
     ).toBeNull();
+  });
+});
+
+describe("classifyFactForPromotion — OBSERVATION_NOT_PUBLISHABLE (ADR-0042)", () => {
+  it("refuses a warehouse-sourced row under its own reason", () => {
+    const refusal = classifyFactForPromotion(
+      validRow({ provenance: { source: WAREHOUSE_SOURCE, actor: "system:warehouse-producer" } }),
+    );
+    expect(refusal?.reasons).toEqual([FACT_REFUSAL_REASONS.observationNotPublishable]);
+    expect(refusal?.rowId).toBe(validRow().id);
+    // Distinct from the two repairable families, not a relabelling of either.
+    expect(FACT_REFUSAL_REASONS.observationNotPublishable).not.toBe(
+      FACT_REFUSAL_REASONS.provenanceMissing,
+    );
+    expect(FACT_REFUSAL_REASONS.observationNotPublishable).not.toBe(
+      FACT_REFUSAL_REASONS.grantUnusable,
+    );
+  });
+
+  it("covers the warehouse CLASS, not the one stored literal", () => {
+    // Driven off the vocabulary so a second warehouse-class member is refused
+    // the day its spec declares the class — the same reason #4938 moved tier-1
+    // refusal onto the class in the first place.
+    expect(WAREHOUSE_SOURCES.length).toBeGreaterThan(0);
+    for (const source of WAREHOUSE_SOURCES) {
+      expect([source, classifyFactForPromotion(validRow({ provenance: { source } }))?.reasons]).toEqual([
+        source,
+        [FACT_REFUSAL_REASONS.observationNotPublishable],
+      ]);
+    }
+  });
+
+  it("is TERMINAL — it never collects alongside a repairable complaint", () => {
+    // The row below is an observation AND has an unusable grant AND has no
+    // source episode. The other three refusals collect, on purpose: a fact that
+    // is both unprovenanced and ungranted needs both fixed. This one must not
+    // join them, because the shared tail ("Fix it (or retract it) and publish
+    // again") is a straight lie about a row that can never be published with
+    // any grant — and `retract` is refused on it too.
+    const refusal = classifyFactForPromotion(
+      validRow({
+        provenance: { source: WAREHOUSE_SOURCE },
+        visible_to: ["everyone"],
+        source_episode_id: null,
+      }),
+    );
+    expect(refusal?.reasons).toEqual([FACT_REFUSAL_REASONS.observationNotPublishable]);
+    expect(refusal?.detail).not.toContain("Fix it");
+    // …and the same row WITHOUT the warehouse source still collects both of the
+    // repairable complaints, so this is a statement about the arm and not about
+    // a classifier that stopped collecting.
+    const repairable = classifyFactForPromotion(
+      validRow({ visible_to: ["everyone"], source_episode_id: null }),
+    );
+    expect(repairable?.reasons).toEqual([
+      FACT_REFUSAL_REASONS.provenanceMissing,
+      FACT_REFUSAL_REASONS.grantUnusable,
+    ]);
+  });
+
+  it("tells the reviewer WHY, and where the answer actually lives", () => {
+    const refusal = classifyFactForPromotion(
+      validRow({ provenance: { source: WAREHOUSE_SOURCE } }),
+    );
+    // `detail` is rendered verbatim by the publish modal and the candidate
+    // sheet, so it is the whole of what a reviewer reads. "Something failed" is
+    // the outcome this asserts against.
+    expect(refusal?.detail).toContain("warehouse observation");
+    expect(refusal?.detail).toContain("executeSQL");
+    expect(refusal?.detail).toContain("There is nothing to fix");
+    // And it names what the row still DOES, so the refusal does not read as
+    // "this row is worthless".
+    expect(refusal?.detail).toContain("Coverage Surface");
   });
 });
 

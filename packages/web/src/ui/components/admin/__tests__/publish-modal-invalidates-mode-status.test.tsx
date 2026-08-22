@@ -170,4 +170,41 @@ describe("PublishModal invalidates the pending-pill count", () => {
     await clickPublish();
     await waitFor(() => expect(modeStatusInvalidated(qc)).toBe(true));
   });
+
+  test("renders each refusal's own reason verbatim, whatever the vocabulary says (#5342)", async () => {
+    // ADR-0042 adds a refusal that is NOT a repairable defect: a warehouse
+    // observation is never published, and there is nothing to fix. The API's
+    // `detail` is the only thing that says so, and this asserts it survives to
+    // the screen — a reviewer must learn WHY, not that something failed.
+    //
+    // Two refusals with different reasons on one publish, because the banner's
+    // own summary line cannot be true of both and must therefore say nothing
+    // specific. An earlier version of it asserted "each is missing the evidence
+    // or the audience it needs", which is simply false for an observation; this
+    // is the test that stops that sentence coming back.
+    const observationDetail =
+      '"Kittiwake plan_tier trial" (f2) was not published because it is a warehouse observation. ' +
+      "There is nothing to fix.";
+    stubFetch({
+      ok: true,
+      refusedDrafts: [
+        { id: "f1", surface: "brain_facts", detail: "no grant", reasons: ["GRANT_UNUSABLE"] },
+        {
+          id: "f2",
+          surface: "brain_facts",
+          detail: observationDetail,
+          reasons: ["OBSERVATION_NOT_PUBLISHABLE"],
+        },
+      ],
+      refusedDraftTotal: 2,
+    });
+    renderModal();
+    await clickPublish();
+
+    await waitFor(() => expect(screen.getByText(observationDetail)).toBeDefined());
+    expect(screen.getByText("no grant")).toBeDefined();
+    // The summary must not assert a cause it cannot know — the per-row detail
+    // is where the cause lives.
+    expect(screen.queryByText(/missing the evidence or the audience/i)).toBeNull();
+  });
 });

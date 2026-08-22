@@ -2311,7 +2311,13 @@ export function promoteBrainFacts(
           promotedCount: promoted,
           refused: refused.map((r) => ({ rowId: r.rowId, reasons: r.reasons })),
         },
-        "brain publish: refused to promote facts that break a structural rule — they remain drafts",
+        // Deliberately does not paraphrase the cause: `reasons` carries it, and
+        // since #5342 two different things land here. A missing grant or
+        // provenance is a structural DEFECT to repair; `OBSERVATION_NOT_PUBLISHABLE`
+        // is a warehouse observation, which is never publishable and has
+        // nothing to repair (ADR-0042). An operator greping this line for a
+        // backlog to fix must not be told the second kind is one.
+        "brain publish: refused to promote facts the review gate does not admit — see `reasons`; they remain drafts",
       );
     }
 

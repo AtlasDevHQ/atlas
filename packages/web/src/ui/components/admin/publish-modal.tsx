@@ -467,10 +467,21 @@ function WillSupersedeNotice({ count }: { count: number }) {
 
 /**
  * Warns that the review gate REFUSED to promote one or more drafts (#4769 /
- * ADR-0036). Today that means a brain fact missing provenance or a usable
- * grant: publishing it would either stamp a claim with no evidence as reviewed,
- * or publish one that is invisible to every reader. Each stays a draft and is
- * re-offered on the next publish, so this is a repairable backlog, not a loss.
+ * ADR-0036). Two shapes reach here and the summary line must cover both:
+ *
+ *   - A brain fact missing provenance or a usable grant. Publishing it would
+ *     either stamp a claim with no evidence as reviewed, or publish one that is
+ *     invisible to every reader. REPAIRABLE — fix it and publish again.
+ *   - A warehouse OBSERVATION (ADR-0042, #5342): a recorded reading of a
+ *     warehouse value, not a claim anyone believes. NOT repairable and not a
+ *     defect — it is never published, by design.
+ *
+ * Either way each stays a draft, so nothing is lost. The summary below is
+ * deliberately vague about WHICH of the two applies, because the per-row
+ * `detail` says exactly that and is rendered verbatim — the reason vocabulary
+ * can grow without a copy change here, and an earlier version of this text
+ * asserted "missing the evidence or the audience it needs", which is simply
+ * false for an observation.
  */
 function RefusedDraftsBanner({
   drafts,
@@ -491,8 +502,8 @@ function RefusedDraftsBanner({
           Published, but {total === 1 ? "1 draft was" : `${total} drafts were`} not published
         </p>
         <p className="opacity-90">
-          Each is missing the evidence or the audience it needs to be trusted, so the review gate
-          held it back. They are still drafts — fix or retract them and publish again.
+          The review gate held each one back — see the reason beside it. They are still drafts, so
+          nothing was lost.
         </p>
         <ul className="space-y-1">
           {drafts.map((draft) => (

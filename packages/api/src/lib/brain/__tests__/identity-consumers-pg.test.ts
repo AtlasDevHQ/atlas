@@ -863,7 +863,35 @@ describeIfPg("claim identity — three consumers, one corpus (#5021)", () => {
       await curateSingle(workspaceId, pair.a.predicate);
       await curateSingle(workspaceId, pair.b.predicate);
       await land(workspaceId, `${pair.id}-a`, pair.a);
-      expect((await publish(workspaceId)).promoted).toBe(1);
+      if (isWarehouseDerivedSource(pair.a.source)) {
+        // #5342 (ADR-0042) closed the publish gate on observations, so a
+        // warehouse-sourced incumbent can no longer be MADE by publishing one.
+        // That is the ticket working, not this suite breaking — and it does NOT
+        // retire #5033's tier guard, whose population is now closed rather than
+        // empty: rows blessed before the gate closed (two on prod today, which
+        // #5331 retracts), and rows a region import restores with `status`
+        // written verbatim (`admin-migrate.ts`, the guard's one allowlisted
+        // writer). Both are published warehouse rows a later draft can collide
+        // with, which is exactly what the tier guard has to keep refusing.
+        //
+        // So this arm MODELS that population rather than dropping the fixture,
+        // which would delete the tier guard's only killer. Asserting the
+        // refusal first is what keeps the two rules pinned against each other:
+        // if #5342's arm is ever weakened, this line fails here instead of the
+        // status write silently becoming a no-op.
+        expect((await publish(workspaceId)).promoted).toBe(0);
+        // Faithful to what the gate would have written: `PROMOTE_FACTS_SQL`
+        // sets `status` and `updated_at` and nothing else, and with one fact in
+        // the workspace there is no supersession phase to reproduce.
+        const stamped = await pool.query(
+          `UPDATE brain_facts SET status = 'published', updated_at = now()
+            WHERE workspace_id = $1 AND status = 'draft' AND invalidated_at IS NULL`,
+          [workspaceId],
+        );
+        expect(stamped.rowCount).toBe(1);
+      } else {
+        expect((await publish(workspaceId)).promoted).toBe(1);
+      }
       const [incumbent] = await factIds(workspaceId);
       await land(workspaceId, `${pair.id}-b`, pair.b);
       return { workspaceId, incumbent: incumbent! };

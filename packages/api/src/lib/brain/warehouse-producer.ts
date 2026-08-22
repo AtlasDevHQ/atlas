@@ -2985,11 +2985,15 @@ export async function runWarehouseProducer(
    * rides the run's summary log for the same reason that one does: nothing on
    * the wire consumes it.
    */
-  const observationReaping = { reaped: 0, edgesRemoved: 0, tensionEdgesRemoved: 0 };
+  // ⚠️ `observationsReaped`, NOT `reaped`. `entityStoreChanges.reaped` is in the
+  // SAME log line and counts a different table under a different rule, and two
+  // keys spelled `reaped` in one payload is a question an operator cannot answer
+  // from the line they are reading.
+  const observationReaping = { observationsReaped: 0, edgesRemoved: 0, tensionEdgesRemoved: 0 };
 
   /** Fold one entity's reap into the run's counters, once its transaction has committed. */
   const countReaped = (result: ObservationReapResult): void => {
-    observationReaping.reaped += result.factIds.length;
+    observationReaping.observationsReaped += result.factIds.length;
     observationReaping.edgesRemoved += result.edgesRemoved;
     observationReaping.tensionEdgesRemoved += result.tensionEdgesRemoved;
   };

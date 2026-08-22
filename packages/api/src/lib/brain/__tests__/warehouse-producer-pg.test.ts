@@ -148,6 +148,12 @@ describeIfPg("warehouse producer (real Postgres)", () => {
     await pool.query("DELETE FROM brain_episodes");
     await pool.query("DELETE FROM brain_enrollment");
     await pool.query("DELETE FROM brain_predicate_cardinality");
+    // #5317's success table, cleared with the rest. Left out when this
+    // fixture was written because nothing read it; both reapers do now
+    // (#5321, #5344), and a success leaking from one test licenses a
+    // reap in the next — measured, on the test in this file that uses
+    // the EARLIEST snapshot instant.
+    await pool.query("DELETE FROM brain_warehouse_entity_success");
   });
 
   // ── helpers ───────────────────────────────────────────────────────────────

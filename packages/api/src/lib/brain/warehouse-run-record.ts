@@ -152,6 +152,26 @@ export const WAREHOUSE_REAP_AFTER_SUCCESSFUL_RUNS = 3;
  *
  * Spliced rather than parameterised because it is STRUCTURE, not data: nothing
  * user-supplied reaches it, and every value it reads travels as a bind.
+ *
+ * ## ⚠️ It assumes an entity's snapshot instants are MONOTONIC
+ *
+ * The window is *the last N successes by `succeeded_at`*, and a consumer reaps
+ * whatever predates the oldest of them. Nothing says those successes postdate
+ * the run currently committing — and where they do not, a run reaps rows IT
+ * JUST WROTE, in both consumers alike.
+ *
+ * A deployment cannot reach that state: `succeeded_at` is the run's snapshot
+ * instant, `withWarehouseRunLock` serializes runs per workspace, and a region's
+ * clock is one clock, so an entity's instants only ever increase. A FIXTURE
+ * reaches it easily, and one did — `warehouse-run-lock-pg.test.ts` drives four
+ * runs at hand-picked instants and its `afterEach` did not clear this table, so
+ * successes at 13:05 from an earlier test licensed a reap of the facts a later
+ * test wrote at 11:00. Measured on CI, not reasoned about; the three fixtures
+ * that leaked now clear it.
+ *
+ * Stated rather than defended against. A guard would be machinery for a state
+ * the lock already prevents, and the honest record of an assumption is the
+ * assumption written where the next person meets it.
  */
 export const WAREHOUSE_SUCCESS_WINDOW_CTE = `recent AS (
     SELECT succeeded_at

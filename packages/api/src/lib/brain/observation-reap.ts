@@ -237,13 +237,28 @@ export interface ObservationReapResult {
   readonly tensionEdgesRemoved: number;
 }
 
-const EMPTY: ObservationReapResult = Object.freeze({
+/** The result of a reap that removed nothing — the ordinary outcome. */
+const NOTHING_REAPED: ObservationReapResult = Object.freeze({
   factIds: Object.freeze([]),
   edgesRemoved: 0,
   tensionEdgesRemoved: 0,
 });
 
-/** How many ids a log line carries — `entity-store.ts`'s constant, its reason. */
+/**
+ * How many ids a log line carries — `entity-store.ts`'s constant and its reason
+ * (an irreversible DELETE reporting only a count is one nobody can audit after
+ * the fact; the COUNT beside the sample is always exact, so a truncated sample
+ * never reads as the whole story).
+ *
+ * ⚠️ **Deliberately NOT hoisted the way `WAREHOUSE_REAP_AFTER_SUCCESSFUL_RUNS`
+ * was, and the distinction is the point rather than an inconsistency.** That
+ * constant is a RULE: the two reapers disagreeing about it means they disagree
+ * about which rows are gone, which is a behaviour difference with no inverse.
+ * This is a DISPLAY CAP on a log line. The two copies drifting costs a reader
+ * five more digests in one payload than in another, and hoisting it would put a
+ * logging detail in a module about the success table — or force an import edge
+ * between two reapers that deliberately share nothing but the window.
+ */
 const LOGGED_ID_SAMPLE = 20;
 
 /**
@@ -299,7 +314,7 @@ export async function reapUnreachedObservations(
     if (record.edge_type === "in-tension-with") tensionEdgesRemoved++;
   }
 
-  if (factIds.length === 0 && edgesRemoved === 0) return EMPTY;
+  if (factIds.length === 0 && edgesRemoved === 0) return NOTHING_REAPED;
 
   log.warn(
     {

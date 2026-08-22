@@ -98,12 +98,10 @@ const {
   RETRACT_FACT_SQL,
   correctFact,
   correctionTargetSql,
-  isWarehouseDerived,
 } = await import("@atlas/api/lib/brain/correction");
 import type { CorrectionRequest } from "@atlas/api/lib/brain/correction";
 import {
   EPISODE_SOURCES,
-  SLACK_SOURCE,
   WAREHOUSE_CLASS,
   WAREHOUSE_SOURCE,
   episodeSourceClassOf,
@@ -2789,16 +2787,9 @@ describe("shared gates", () => {
     expect(store.episodes[0]!.sourceActor).toBe("local-operator");
   });
 
-  test("isWarehouseDerived reads only the structural source key", () => {
-    // The predicate's SHAPE is what this arm owns. Which VALUES it recognises,
-    // and the agreement between the constant and the producers that stamp it,
-    // are `__tests__/sources.test.ts` — the literals here were the reason
-    // tier-1 refusal could have failed open unnoticed (#4938).
-    expect(isWarehouseDerived({ source: WAREHOUSE_SOURCE })).toBe(true);
-    expect(isWarehouseDerived({ source: SLACK_SOURCE })).toBe(false);
-    expect(isWarehouseDerived(null)).toBe(false);
-    expect(isWarehouseDerived([])).toBe(false);
-  });
+  // The predicate's own SHAPE moved to `__tests__/observation.test.ts` with the
+  // predicate (#5340). What stays here is what this file owns: the REFUSAL SET
+  // the reading drives, verb by verb, which is byte-identical across that move.
 });
 
 /**

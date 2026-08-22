@@ -239,8 +239,6 @@ void mock.module("@atlas/api/lib/brain/correction", () => ({
   PROMOTE_CORRECTION_FACT_SQL: "UPDATE",
   REPLACEMENT_ROW_SQL: "SELECT",
   correctionTargetSql: () => "SELECT",
-  isWarehouseDerived: () => false,
-  unrecognizedSourceKind: () => null,
   correctFact: async (request: Record<string, unknown>) => {
     correctCalls.push(request);
     return correctionOutcome;

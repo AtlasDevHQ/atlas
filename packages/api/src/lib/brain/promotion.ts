@@ -77,6 +77,7 @@
  */
 
 import { formatPrincipal, isUnknownArray, parseGrant } from "@atlas/api/lib/brain/acl";
+import { isJsonObject } from "@atlas/api/lib/brain/observation";
 import type { PromotionRefusal } from "@atlas/api/lib/content-mode/port";
 
 /**
@@ -154,12 +155,13 @@ export interface FactRefusal extends PromotionRefusal {
 /**
  * A non-null, non-array object — what `jsonb_typeof(...) = 'object'` means.
  *
- * Exported so the adapter narrows a driver row with the same guard rather than
- * an `as Record<string, unknown>` cast.
+ * Re-exported, not defined: the guard now lives in `lib/brain/observation.ts`
+ * because #5342 makes THIS module a consumer of that one, and a guard defined
+ * here and imported back would make the pair mutually dependent. The
+ * re-export stays because the content-mode adapter has imported it from this
+ * module since #4769 and the import path is not what changed.
  */
-export function isJsonObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+export { isJsonObject };
 
 /**
  * Decide whether one draft fact may be promoted, and if not, say why in terms

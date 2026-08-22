@@ -611,9 +611,8 @@ describe("buildSnapshotSql", () => {
     // before `LIMIT` is what makes the cap count rows that COUNT: a table of 900
     // live and 400 soft-deleted rows reads 900 and emits, where the unfiltered
     // statement read 1,300, tripped `WAREHOUSE_ROW_CAP` and refused the entity
-    // whole. Pinned by whole-string equality so a builder that appended the
-    // predicate after the LIMIT — valid-looking, and rejected by every dialect —
-    // cannot pass.
+    // whole.
+    //
     // ⚠️ **The CLAUSE BOUNDARY, not the whole statement.** A whole-string equality
     // would pin this test to the column expressions and the LIMIT literal too, so
     // it would die under the `dim.sql`, primary-key-name and `LIMIT cap` mutations

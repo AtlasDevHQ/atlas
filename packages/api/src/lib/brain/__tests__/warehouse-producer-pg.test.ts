@@ -5,12 +5,21 @@
  * ## MUTATIONS THIS CATCHES
  *
  * **Generated — see `packages/api/scripts/mutations/warehouse-producer.md`**, where
- * this file is the `pg` column (#5229). It is non-zero on exactly two rows, and both
- * are the `name`/`sql` decision — the emitted predicate, and the surface a
- * cardinality proposal is keyed by. Both are reachable only because the fixture
- * below gives every dimension a `sql:` that differs from its `name:`; with them
- * equal, as the profiler defaults them, neither row can fail. Its zeros are honest
- * and the spec's preamble says which of three reasons applies to each.
+ * this file is the `pg` column (#5229). Two classes of row are non-zero, and both
+ * exist only because the fixtures below give every dimension a `sql:` that differs
+ * from its `name:`; with them equal, as the profiler defaults them, neither can
+ * fail:
+ *
+ *   - the `name`/`sql` DECISION — the emitted predicate, and the surface a
+ *     cardinality proposal is keyed by;
+ *   - since #5329, the COLUMN-NAME rows, because claim 5 below executes generated
+ *     SQL against a real table: a builder that selects `status` instead of
+ *     `lifecycle_status` no longer merely looks wrong, it errors on a column that
+ *     does not exist.
+ *
+ * ⚠️ That second class is new, and it is why this file's mutation cells moved when
+ * claim 5 landed. Its remaining zeros are honest and the spec's preamble says which
+ * of three reasons applies to each.
  *
  *     cd packages/api && bun run scripts/mutate.ts scripts/mutations/warehouse-producer.mutations.ts
  *
@@ -36,6 +45,12 @@
  *      POSITIVE CONTROL for (3). Without it, a producer whose identity path was
  *      broken — every run keying into its own fresh slot — would satisfy "no
  *      `valid_to` was stamped" perfectly while never colliding with anything.
+ *   5. **Does an entity's `filter:` actually exclude a row?** (#5329) Every other
+ *      test of the filter asserts STATEMENT TEXT, because both unit harnesses stub
+ *      `runSnapshot` — so *"a soft-deleted row produces no new observation"* is an
+ *      inference from the SQL everywhere else in the tree. Only a live schema can
+ *      execute a `WHERE`, and only a live corpus can then show that the row minted
+ *      nothing.
  *
  * Opt in locally with:
  *   bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/brain_5042_scratch
@@ -416,18 +431,20 @@ describeIfPg("warehouse producer (real Postgres)", () => {
    * `buildSnapshotSql` emits the predicate, that the run submits it, that the gate
    * accepts it. None of them executes a `WHERE`, because both unit harnesses stub
    * `runSnapshot`, so *"a soft-deleted row produces no new observation"* is an
-   * inference from the SQL everywhere else in the tree. Only a live schema can turn
-   * it into an observation, and the ticket's acceptance criteria ask for exactly
-   * that: *"A test drives an entity whose filter excludes a row."*
+   * inference from the SQL everywhere else in the tree.
    *
-   * It drives the BUILDER against real rows rather than the whole producer,
-   * deliberately: what is under test is whether the statement this module emits
-   * excludes what it claims to, and routing it through the run would put the
-   * enrollment, the reach and the reconcile stage between the predicate and the
-   * assertion for no added evidence.
+   * ⚠️ **Two stages, and the second is the acceptance criterion.** The first
+   * executes the built statement against a real table and shows the churned row
+   * does not come back — AC 4, *"a test drives an entity whose filter excludes a
+   * row."* The second feeds exactly those rows to the SHIPPED producer and reads
+   * `brain_facts` back, which is AC 3: *"a soft-deleted row produces no new
+   * observation."* Stage one alone leaves that an inference about what the producer
+   * would have done; only the stored corpus can say it did nothing. An earlier cut
+   * of this test stopped after stage one and argued the run "would add no evidence",
+   * which was wrong — the absence of a row IS the evidence.
    */
   it(
-    "a soft-deleted row is EXCLUDED by the entity's filter — the statement, executed",
+    "a soft-deleted row is EXCLUDED, and mints NO observation — executed, end to end",
     async () => {
       await pool.query(
         `CREATE TABLE filtered_accounts (
@@ -476,6 +493,38 @@ describeIfPg("warehouse producer (real Postgres)", () => {
         // difference attributable to the predicate rather than to the data.
         const unfiltered = await pool.query(buildSnapshotSql(planOf(null), 10));
         expect(unfiltered.rows).toHaveLength(2);
+
+        // ── stage two: what the producer does with what the filter left ────────
+        await enroll("status");
+        const report = await runWarehouseProducer(
+          { workspaceId: WORKSPACE, triggeredBy: "user-1" },
+          {
+            ...deps(new Date("2026-08-14T10:00:00.000Z"), filtered.rows),
+            // The entity the producer reads is the FILTERED one, so the document
+            // and the rows it is handed tell the same story.
+            loadEntity: async () => ({
+              ...ACCOUNTS_YAML,
+              table: "filtered_accounts",
+              filter: "deleted_at IS NULL",
+            }),
+          },
+        );
+
+        // AC 3, observed rather than inferred: the stored corpus holds exactly one
+        // fact, and it is about the row that survived the filter.
+        //
+        // ⚠️ **The `Churned Inc` line is a GUARD, not a discriminator**, and saying
+        // so is the difference between this test and one that flatters itself. The
+        // producer is handed the FILTERED rows, so it could not mint that subject
+        // whatever it did. What stage two adds over stage one is that the filtered
+        // read survives the whole pipeline into `brain_facts` unchanged — one row
+        // in, one fact out — rather than being re-widened by the reach, the
+        // enrollment or the reconcile stage. The discriminating half is stage one's
+        // unfiltered control, where the same table yields two.
+        expect(report.created).toBe(1);
+        const stored = await facts();
+        expect(stored.map((f) => f.subject)).toEqual([SUBJECT]);
+        expect(stored.some((f) => f.subject === "Churned Inc")).toBe(false);
       } finally {
         await pool.query("DROP TABLE IF EXISTS filtered_accounts");
       }

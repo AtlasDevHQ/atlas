@@ -52,13 +52,58 @@
  * than an egress guard because the question is not "is this address internal"
  * but "is this Anthropic".
  *
- * ## Anthropic only — a capability, not an assumption
+ * ## Anthropic-DIRECT only — a capability, not an assumption
  *
- * `ollama` and `openai-compatible` have no batch endpoint at all, `bedrock` and
- * `gateway` have their own with different shapes, and OpenAI's is a file-upload
- * flow. `getBatchApiKey` (providers.ts) returns `null` for all of them and the
- * cycle stays synchronous, which is what makes the fallback path load-bearing
- * rather than decorative.
+ * `ollama` and `openai-compatible` have no batch endpoint at all, `bedrock` has
+ * its own with a different shape, and OpenAI's is a file-upload flow.
+ * `getBatchApiKey` (providers.ts) returns `null` for all of them and the cycle
+ * stays synchronous, which is what makes the fallback path load-bearing rather
+ * than decorative.
+ *
+ * ⚠️ **The AI GATEWAY is in that list, and that means this module does nothing
+ * on SaaS.** The gateway's Anthropic-compatible surface is exactly two
+ * endpoints — `POST /v1/messages` and `POST /v1/messages/count_tokens`. There
+ * is no `/v1/messages/batches`, so a gateway-resolved workspace cannot batch at
+ * all. `getDefaultProvider()` returns `gateway` whenever `VERCEL` or
+ * `ATLAS_DEPLOY_MODE=saas` is set, so on the hosted deployment every workspace
+ * takes the immediate path and none of this code runs.
+ *
+ * That is stated plainly because the alternative is a reader assuming the
+ * saving is live where it is not. Today the module earns its keep only on a
+ * self-hosted install configured `ATLAS_PROVIDER=anthropic`.
+ *
+ * ## Why that is not a gap to be closed
+ *
+ * Batch is a WAYPOINT in #5334's cascade, not its destination, and both roads
+ * out of here make it moot rather than urgent:
+ *
+ *   - **#5337, the distilled CPU-local extractor.** If extraction ends up
+ *     running continuously on our own hardware there is no per-token bill left
+ *     to halve, and an asynchronous submit/collect split buys nothing over a
+ *     local call.
+ *   - **Bedrock.** Its batch API is a different request and result shape
+ *     entirely, so that route is a new client here rather than a flag.
+ *
+ * So this is deliberately left switched off rather than worked around. The one
+ * thing NOT to do is reach for a second Anthropic credential to smuggle batch
+ * past the gateway: that gives the ingest path its own key, which is exactly
+ * the second credential path `extract.ts`'s header says this fiber does not
+ * have, and it would lose gateway spend tracking and failover for that traffic.
+ *
+ * ## The SDK claim this file used to make, and its expiry
+ *
+ * The paragraph above about raw HTTP says no `@ai-sdk/*` package exposes a
+ * batch surface. That was TRUE of the pinned `ai@6.0.235` — verified by
+ * inspecting its type definitions, which contain no occurrence of "batch" —
+ * and it is no longer true upstream: the AI SDK now ships
+ * `experimental_startTextBatch`, `experimental_getBatchStatus` and
+ * `experimental_getBatchResults` from `ai`, marked experimental and subject to
+ * change in patch releases.
+ *
+ * Recorded rather than acted on, because the rewrite is only worth doing if
+ * this path turns out to have a future — see the section above. If it does,
+ * those helpers replace most of this file and the dependency bump is the first
+ * step; if #5337 lands instead, this file goes away and the bump was avoided.
  */
 
 import { z } from "zod";

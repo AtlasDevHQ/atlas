@@ -1997,11 +1997,20 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     // The `description` below states the Anthropic-only consequence for an
     // operator without re-arguing it — a settings page has to stand alone, and
     // the argument itself lives once in `lib/brain/extract-batch.ts`'s header.
+    //
+    // ⚠️ INERT ON SAAS, and the description says so. The AI Gateway exposes only
+    // `POST /v1/messages` and `POST /v1/messages/count_tokens` — there is no
+    // batches endpoint — and `getDefaultProvider()` resolves `gateway` whenever
+    // `VERCEL` or `ATLAS_DEPLOY_MODE=saas` is set. So on Atlas Cloud this switch
+    // changes nothing at all, and an operator who flips it expecting a halved
+    // bill needs to be told that BEFORE they go looking for the saving.
+    // Deliberately not worked around: #5337's CPU-local extractor and a move to
+    // Bedrock both make batch moot rather than urgent.
     key: "ATLAS_BRAIN_EXTRACTION_BATCH_ENABLED",
     section: "Knowledge Base",
     label: "Company Atlas Batch Extraction",
     description:
-      "Submit fact extraction through the provider's batch endpoint — half the price, with an asynchronous turnaround measured in hours rather than seconds. Safe for this path by construction: extraction already runs on its own schedule and its drafts are not usable until a person reviews them. Only Anthropic-configured deployments have a batch endpoint today; every other provider keeps the immediate path automatically. Off by default. Turning it off does not discard work already submitted — those results are still collected — it only stops new submissions. Applies on the next cycle.",
+      "Submit fact extraction through the provider's batch endpoint — half the price, with an asynchronous turnaround measured in hours rather than seconds. Safe for this path by construction: extraction already runs on its own schedule and its drafts are not usable until a person reviews them. **Requires a deployment configured to talk to Anthropic directly (ATLAS_PROVIDER=anthropic).** It has no effect on Atlas Cloud or any deployment routed through the AI Gateway, which has no batch endpoint — those keep the immediate path whatever this is set to. Off by default. Turning it off does not discard work already submitted — those results are still collected — it only stops new submissions. Applies on the next cycle.",
     type: "boolean",
     default: "false",
     envVar: "ATLAS_BRAIN_EXTRACTION_BATCH_ENABLED",

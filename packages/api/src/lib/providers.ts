@@ -605,7 +605,7 @@ export function getExtractionModel(opts: {
  * from, and a workspace with no batch-capable provider simply gets `null` and
  * stays on the synchronous path.
  *
- * ## Anthropic only
+ * ## Anthropic-DIRECT only
  *
  * WHY that is a capability rather than a shortcut — what each other provider's
  * batch endpoint looks like, and why the fallback path is load-bearing instead
@@ -616,6 +616,13 @@ export function getExtractionModel(opts: {
  * What belongs here is the consequence: everything that is not Anthropic-direct
  * returns `null`, and `null` means the cycle stays synchronous for that
  * workspace.
+ *
+ * ⚠️ **`gateway` is in that "everything" and it is the SaaS default**, so this
+ * function returns `null` for every workspace on Atlas Cloud and the batch path
+ * is dead there. The gateway has no batches endpoint to route to. Deliberate,
+ * not an oversight — `extract-batch.ts`'s header carries why it is left that
+ * way, and why reaching for a separate Anthropic key to get around it is the
+ * wrong move.
  */
 export function getBatchApiKey(workspaceConfig: WorkspaceModelConfig | null): string | null {
   if (workspaceConfig) {

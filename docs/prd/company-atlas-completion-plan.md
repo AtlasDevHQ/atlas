@@ -73,13 +73,29 @@ Cost and volume control ahead of M3 source breadth widening. [#5334](https://git
 | Order | Issue | Note |
 |---|---|---|
 | 1 | [#5339](https://github.com/AtlasDevHQ/atlas/issues/5339) | The two training prohibitions. Docs only, cheapest item in the arc |
-| 1 | [#5352](https://github.com/AtlasDevHQ/atlas/issues/5352) + [#5353](https://github.com/AtlasDevHQ/atlas/issues/5353) | Same call site — do together. The issues claim ~99% of the cost saving for the smallest effort in the lane |
+| 1 | [#5352](https://github.com/AtlasDevHQ/atlas/issues/5352) + [#5353](https://github.com/AtlasDevHQ/atlas/issues/5353) | Same call site — do together. ⚠️ The issues' *"~99% of the cost saving"* claim did not survive contact — see below |
 | 1 | [#5335](https://github.com/AtlasDevHQ/atlas/issues/5335) | Gate-decision export. Unblocked, and supplies #5338's held-out set |
 | 1 | [#5354](https://github.com/AtlasDevHQ/atlas/issues/5354) | Quoted-reply stripping. Unblocked; payoff arrives with M3 email volume |
-| 2 | [#5336](https://github.com/AtlasDevHQ/atlas/issues/5336) | Stage 0 unblocked; stage 1 waits on #5335 |
+| 2 | [#5336](https://github.com/AtlasDevHQ/atlas/issues/5336) | Stage 0 unblocked; stage 1 waits on #5335. **The first item in this lane that is a GATE lever rather than a cost lever** |
 | 2 | [#5338](https://github.com/AtlasDevHQ/atlas/issues/5338) | The failing-capable measurement. Needs #5335 |
-| 3 | [#5337](https://github.com/AtlasDevHQ/atlas/issues/5337) | Distilled CPU-local extractor. Needs #5338's baseline first |
+| 3 | [#5337](https://github.com/AtlasDevHQ/atlas/issues/5337) | Distilled CPU-local extractor. Needs #5338's baseline first. **Committed — the question is timing, not whether**, which changes what the items above are for |
 | 4 | [#5334](https://github.com/AtlasDevHQ/atlas/issues/5334) | The anchor |
+
+### ⚠️ What the first order-1 batch actually taught, and what it changes below
+
+#5339, #5352 and #5353 shipped together (PR [#5379](https://github.com/AtlasDevHQ/atlas/pull/5379)). Three corrections to the argument above, none of them status:
+
+**The *"~99% of the cost saving"* claim was wrong, and wrong in the direction that matters.** The tier (#5353) is the ~5× step; batch (#5352) is a ~2× on top of it. And **batch does not run on the hosted deployment at all** — the AI Gateway's Anthropic-compatible surface is `POST /v1/messages` and `POST /v1/messages/count_tokens`, with no batches endpoint, and `getDefaultProvider()` resolves `gateway` on SaaS. So the delivered saving in that batch is the tier alone. *"Cheapest to build first"* selected the item that turned out to be inert; the ordering heuristic is what needs revisiting, not just the row.
+
+**Left off deliberately rather than worked around.** Batch is a waypoint, not a destination: #5337 removes the per-token bill it halves, and Bedrock's batch API is a different shape — a new client, not a flag. **Deletion is the expected end state.** If #5336 or #5337 lands and nothing has switched batch on by then, delete `extract-batch.ts`, migration 0207 and the ledger rather than carry them. (No date, per this document's rule — the trigger is the sequence.)
+
+**Run the numbers to steady state and cost stops being the interesting problem.** #5352's table is a 2M-message backfill; steady state at ~100k episodes/month is ~5% of it, single-digit dollars a month per workspace after the tier change. Cost matters for the **onboarding spike** — one-time, per customer, bounded. It is not what decides whether the eight conditions hold.
+
+**The recurring constraint is the gate, and nothing shipped so far touches it.** This lane is named *protect the gate before breadth*, and tier/batch/policy are all cost or governance. PRD condition 4 asks that reviewing stay *"a bounded, comprehensible task — not an inbox that grows faster than anyone can read it"*, and every cost lever makes it **cheaper to run more extraction**, which makes the queue **bigger**. #5336 is the first item here that reduces what reaches a human at all — which is why its order-2 position is the thing to question, not its content.
+
+**#5337 is committed; the open question is only when.** So #5335, #5338 and #5336 are not a go/no-go on it — they are what make it *buildable and judgeable*. #5338 supplies the baseline a distilled model has to beat (and there is no other source for one). #5336 cuts the volume the local model must carry, which is a sizing input rather than a veto. And [ADR-0044](../adr/0044-fact-content-never-enters-model-weights.md) makes corpus acquisition an explicit prerequisite rather than *"use our episodes"* — that is the long-pole item in #5337 and the one most worth starting early, because it is procurement rather than code.
+
+**The combination to avoid** is M3 source breadth ([#5354](https://github.com/AtlasDevHQ/atlas/issues/5354)'s payoff, and the rest of M3) landing before #5336. That is the one that fills a queue nobody can drain.
 
 ---
 
@@ -142,7 +158,7 @@ ADR-0036's governing test: **no brain capability may ever migrate to `/ee`.** On
 
 1. **Lane A** — wrong data on prod outranks everything.
 2. **Lane B, conditions 1, 3 and 7** — cheap, unproven, and they gate what the rest is worth. Run in parallel with A; they are demonstrations, not builds, so they contend for different hours. [#5376](https://github.com/AtlasDevHQ/atlas/issues/5376) (revocation) moves up from step 4 on its failure mode alone.
-3. **Lane C** — cost control before M3 breadth widens the intake.
+3. **Lane C** — cost control before M3 breadth widens the intake. ⚠️ **Within it, take [#5335](https://github.com/AtlasDevHQ/atlas/issues/5335) → [#5338](https://github.com/AtlasDevHQ/atlas/issues/5338) → [#5336](https://github.com/AtlasDevHQ/atlas/issues/5336) ahead of the rest of order-1.** #5335/#5338 first because every default in this lane is currently unjustified — #5353 shipped with *"the gate-agreement number is deferred"* written into `providers.ts` for want of a number to cite, and #5336's recall target and #5337's accept/reject bar will each want the same one. #5336 next because it is the only **gate** lever here, and because the volume it removes is a sizing input for #5337 rather than a verdict on it. See Lane C's own note on why the *"cheapest first"* heuristic mis-selected on the first pass.
 4. **Lane B, condition 8** — [#5377](https://github.com/AtlasDevHQ/atlas/issues/5377) is natively blocked by the other three, since it re-runs them and needs their baselines to compare against. It also wants Lane F's boundary still intact.
 5. **Lane E grill** — sooner if #5332 recurs; M6 mechanism is already leaking into Lane A.
 6. **Lane D** — whenever a tool-touching milestone appears. If none has appeared by the time `v1.0.0` is being considered, that is the moment to decide it deliberately: carry the rename then, or amend ADR-0038 to say what replaced its timing argument. Cutting the tag without deciding is the one outcome to avoid.

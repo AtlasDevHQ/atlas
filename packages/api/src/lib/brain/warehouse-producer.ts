@@ -4249,7 +4249,7 @@ export async function runWarehouseProducer(
       });
       // ⚠️ The transaction RESOLVED, so what it deleted is real and can be
       // counted. Staged inside and folded here for the reason the zero-candidate
-      // arm states: these three numbers are the audit trail for DELETEs with no
+      // arm states: these numbers are the audit trail for DELETEs with no
       // inverse, and counting them from inside a transaction that then aborts
       // reports deletions that never happened.
       entityStoreChanges.orphansDeleted += pendingStoreChanges.orphansDeleted;

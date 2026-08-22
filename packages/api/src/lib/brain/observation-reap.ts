@@ -27,6 +27,32 @@
  * them and the statement deletes a belief. The `draft` arm is the narrowest and
  * the least obvious — see {@link OBSERVATION_REAP_SQL}.
  *
+ * ## ⚠️ The rule is BROADER than "the filter excludes the row"
+ *
+ * The heading above this module says *filter*, and the ticket that asked for it
+ * is about churn — but the predicate below is **"not seen by the last N
+ * successful runs"**, and those are not the same set. A run can succeed and
+ * still produce no provenance edge for a row that is present and counted:
+ * `collidingSubjectRows`, `unsurfaceableKeyRows`, `unsurfaceableCells` and a
+ * `reconcile` block all warn rather than refuse, so the run records success with
+ * that row unrepresented.
+ *
+ * Worked example: someone alters a `status` column to `jsonb`, so every cell
+ * becomes unsurfaceable. Three successful runs later this statement deletes every
+ * `status` observation of that entity **and the tension edges they carried
+ * against live human beliefs**, though nothing churned and no filter changed.
+ *
+ * That is survivable and deliberately not refused here — the next good run
+ * re-mints the observations, beliefs are fenced out of the delete, and refusing
+ * to reap on any warning would leave churned rows in the comparison surface
+ * indefinitely, which is the defect #5344 exists to close. It is written down
+ * because the module's name and its ticket both suggest a narrower rule than the
+ * one it implements, and an operator reading an emptied comparison surface after
+ * a schema change deserves to find this paragraph rather than infer a bug.
+ *
+ * Whether to suppress the reap while `unsurfaceableCells > 0` is a real question
+ * and is deliberately NOT decided here.
+ *
  * ## The reach rule is the store's, not a second one
  *
  * *Reap what that entity's last N successful runs did not see.* The window is

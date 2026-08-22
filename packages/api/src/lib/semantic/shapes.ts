@@ -72,8 +72,16 @@ export const EntityShape = z
      */
     identifier_style: z.enum(["sql", "opaque"]).optional(),
     /**
-     * WHICH ROWS OF `table` COUNT AS THIS ENTITY — a raw SQL predicate, applied
-     * wherever a consumer reads the table as a whole (#5329).
+     * WHICH ROWS OF `table` COUNT AS THIS ENTITY — a raw SQL predicate (#5329).
+     *
+     * ⚠️ **ONE CONSUMER APPLIES IT TODAY: the warehouse producer**
+     * (`buildSnapshotSql`). Stated because the honest scope is narrower than the
+     * sentence a reader wants this to be. Agent-generated SQL over the same
+     * whitelisted table, `search.ts`'s sample values and the connection profiler
+     * all still read every row, so this key does not yet mean *"nothing in Atlas
+     * sees a filtered-out row"* — it means the producer does not mint durable
+     * identity from one. A second consumer has to opt in explicitly; none is
+     * carried along by declaring this here.
      *
      * `filter: "deleted_at IS NULL"` states that *an organization means a
      * non-deleted organization*. That is a claim about what the entity IS, which

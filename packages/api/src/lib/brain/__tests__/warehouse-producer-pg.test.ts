@@ -56,6 +56,8 @@ import {
   DIMENSION_ALIAS_PREFIX,
   SUBJECT_ALIAS,
   WAREHOUSE_PRODUCER,
+  buildSnapshotSql,
+  parseWarehouseEntity,
   runWarehouseProducer,
   warehouseRowId,
   type ValidatedSnapshotRequest,
@@ -403,6 +405,80 @@ describeIfPg("warehouse producer (real Postgres)", () => {
         [WORKSPACE],
       );
       expect(rows[0].n).toBe(0);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  /**
+   * ⚠️ **THE ONLY PLACE A ROW IS ACTUALLY EXCLUDED** (#5329, AC 3 and 4).
+   *
+   * Every other test of the entity filter asserts STATEMENT TEXT — that
+   * `buildSnapshotSql` emits the predicate, that the run submits it, that the gate
+   * accepts it. None of them executes a `WHERE`, because both unit harnesses stub
+   * `runSnapshot`, so *"a soft-deleted row produces no new observation"* is an
+   * inference from the SQL everywhere else in the tree. Only a live schema can turn
+   * it into an observation, and the ticket's acceptance criteria ask for exactly
+   * that: *"A test drives an entity whose filter excludes a row."*
+   *
+   * It drives the BUILDER against real rows rather than the whole producer,
+   * deliberately: what is under test is whether the statement this module emits
+   * excludes what it claims to, and routing it through the run would put the
+   * enrollment, the reach and the reconcile stage between the predicate and the
+   * assertion for no added evidence.
+   */
+  it(
+    "a soft-deleted row is EXCLUDED by the entity's filter — the statement, executed",
+    async () => {
+      await pool.query(
+        `CREATE TABLE filtered_accounts (
+           account_name text PRIMARY KEY,
+           lifecycle_status text,
+           deleted_at timestamptz
+         )`,
+      );
+      try {
+        await pool.query(
+          `INSERT INTO filtered_accounts (account_name, lifecycle_status, deleted_at)
+           VALUES ('Acme Corp', 'active', NULL), ('Churned Inc', 'active', now())`,
+        );
+
+        const entity = parseWarehouseEntity(ENTITY, {
+          table: "filtered_accounts",
+          filter: "deleted_at IS NULL",
+          dimensions: [
+            { name: "name", sql: "account_name", primary_key: true },
+            { name: "status", sql: "lifecycle_status" },
+          ],
+        });
+        if (entity === null) throw new Error("the filtered fixture did not parse");
+        const [primaryKey, status] = entity.dimensions;
+        if (primaryKey === undefined || status === undefined) {
+          throw new Error("the filtered fixture lost a dimension");
+        }
+        const planOf = (filter: string | null) => ({
+          entity: { ...entity, filter },
+          primaryKey,
+          dimensions: [status] as readonly [typeof status],
+          namingDimensionIndex: null,
+        });
+
+        const filtered = await pool.query(buildSnapshotSql(planOf("deleted_at IS NULL"), 10));
+
+        // Two rows exist; ONE comes back, and it is the live one.
+        expect(filtered.rows).toHaveLength(1);
+        expect(filtered.rows[0]?.[SUBJECT_ALIAS]).toBe("Acme Corp");
+
+        // ⚠️ **The POSITIVE CONTROL, and without it this test is nearly vacuous.**
+        // "One row" is also what an empty table plus a broken statement would give,
+        // and a predicate that excluded EVERYTHING would look like a working filter
+        // if the fixture happened to hold one live row. The same builder over the
+        // same table with no filter must see both — which is what makes the
+        // difference attributable to the predicate rather than to the data.
+        const unfiltered = await pool.query(buildSnapshotSql(planOf(null), 10));
+        expect(unfiltered.rows).toHaveLength(2);
+      } finally {
+        await pool.query("DROP TABLE IF EXISTS filtered_accounts");
+      }
     },
     PG_TEST_TIMEOUT_MS,
   );

@@ -614,25 +614,32 @@ describe("buildSnapshotSql", () => {
     // whole. Pinned by whole-string equality so a builder that appended the
     // predicate after the LIMIT — valid-looking, and rejected by every dialect —
     // cannot pass.
-    expect(buildSnapshotSql(planFor(filtered, ["status"]), 5)).toBe(
-      `SELECT account_id AS ${SUBJECT_ALIAS}, lifecycle_status AS ${DIMENSION_ALIAS_PREFIX}0 ` +
-        `FROM public.accounts WHERE (deleted_at IS NULL) LIMIT 6`,
+    // ⚠️ **The CLAUSE BOUNDARY, not the whole statement.** A whole-string equality
+    // would pin this test to the column expressions and the LIMIT literal too, so
+    // it would die under the `dim.sql`, primary-key-name and `LIMIT cap` mutations
+    // — three rows of `scripts/mutations/warehouse-producer.md` that have nothing
+    // to do with filtering, inflated by an off-subject kill. That table's own
+    // `LIMIT cap` note already calls out this fixture-anchor class and asks the
+    // reader to discount it. `FROM … WHERE … LIMIT` as one contiguous span pins
+    // both the predicate and its position, which is all this test is about.
+    expect(buildSnapshotSql(planFor(filtered, ["status"]), 5)).toContain(
+      "FROM public.accounts WHERE (deleted_at IS NULL) LIMIT",
     );
   });
 
   test("parenthesises the predicate, so a disjunctive filter cannot be split", () => {
-    // `WHERE a OR b LIMIT n` is today's whole clause and needs no parens. They are
-    // here for the statement this builder grows next: one more condition ANDed in
-    // turns an unparenthesised `a OR b` into `a OR (b AND c)`, which reads every
-    // row of `a` — a silently WIDER read, which is the direction that costs.
+    // Why parens at all: `buildSnapshotSql`'s docstring carries the argument. This
+    // is the case that would go wrong without them.
     const disjunctive = parsed("Accounts", {
       table: "public.accounts",
       primaryKey: "id",
       filter: "status = 'active' OR status = 'trial'",
       dimensions: [{ name: "id", sql: "account_id" }, { name: "status", sql: "lifecycle_status" }],
     });
+    // No LIMIT literal, for the reason the test above states: pinning it here
+    // would add an off-subject kill to the `LIMIT cap` mutation row.
     expect(buildSnapshotSql(planFor(disjunctive, ["status"]), 5)).toContain(
-      "WHERE (status = 'active' OR status = 'trial') LIMIT 6",
+      "WHERE (status = 'active' OR status = 'trial') LIMIT",
     );
   });
 
@@ -642,10 +649,9 @@ describe("buildSnapshotSql", () => {
     // refuse the entire installed base at the gate.
     const sql = buildSnapshotSql(planFor(accounts, ["status", "tier"]), 5);
     expect(sql).not.toContain("WHERE");
-    expect(sql).toBe(
-      `SELECT account_id AS ${SUBJECT_ALIAS}, lifecycle_status AS ${DIMENSION_ALIAS_PREFIX}0, ` +
-        `LOWER(plan_tier) AS ${DIMENSION_ALIAS_PREFIX}1 FROM public.accounts LIMIT 6`,
-    );
+    // Same clause-boundary form as the filtered case above, for the same reason:
+    // what must hold is that NOTHING sits between the table and the LIMIT.
+    expect(sql).toContain("FROM public.accounts LIMIT");
   });
 
   /**

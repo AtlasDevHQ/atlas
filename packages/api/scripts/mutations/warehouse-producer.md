@@ -32,11 +32,14 @@ which one holds a row up:
   because it needs `mock.module`, whose blast radius is the process. It never
   calls `runWarehouseProducer`, so it is 0 on every row except the two that edit
   `defaultValidateSnapshotSql` itself.
-- **pg** — a live schema. It is non-zero on exactly the two rows where a stored row
+- **pg** — a live schema. Two classes of row are non-zero, and both are the
+  `name`/`sql` decision seen from different sides. The first is where a stored row
   settles something a mock cannot: the emitted predicate, and the surface the
-  cardinality proposal is keyed by. Both are the `name`/`sql` decision, and both
-  are exercised only because this suite's fixtures give every dimension a `sql:`
-  that differs from its `name:`. Its zeros elsewhere are honest for THREE
+  cardinality proposal is keyed by. The second arrived with #5329, which added a
+  test that EXECUTES generated SQL against a real table — so the column-name
+  mutations stopped being merely wrong and started erroring on a column that does
+  not exist. Both classes are exercised only because this suite's fixtures give
+  every dimension a `sql:` that differs from its `name:`. Its zeros elsewhere are honest for THREE
   different reasons, and collapsing them is what two earlier drafts of this bullet
   did: most rows are decisions a mock can drive that a live schema adds nothing to;
   the transaction-failure and episode-reader rows are unreachable from a real
@@ -90,15 +93,15 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | Mutation | producer | logging | bypass | mint | pg | record |
 |---|---|---|---|---|---|---|
 | `predicate: dim.name` -> `dim.sql` — the qualified column expression emitted as the predicate | 4 | 0 | 0 | 0 | 2 | 0 |
-| `buildSnapshotSql` selects the bare NAME instead of the dimension's `sql:` expression | 2 | 2 | 0 | 0 | 0 | 0 |
-| `buildSnapshotSql` selects the bare primary-key NAME as the subject column | 1 | 0 | 0 | 0 | 0 | 0 |
+| `buildSnapshotSql` selects the bare NAME instead of the dimension's `sql:` expression | 2 | 2 | 0 | 0 | 1 | 0 |
+| `buildSnapshotSql` selects the bare primary-key NAME as the subject column | 1 | 0 | 0 | 0 | 1 | 0 |
 | the cardinality proposal is keyed by the dimension's `sql:` rather than its name | 2 | 1 | 0 | 0 | 1 | 0 |
 | the subject-collision guard compares ids again, so a duplicate primary key emits twice | 5 | 0 | 0 | 0 | 0 | 0 |
 | the row cap becomes `>=`, refusing every entity of exactly `cap` rows | 1 | 0 | 0 | 0 | 0 | 0 |
 | the row cap never fires — an over-cap entity emits a truncated snapshot | 1 | 1 | 0 | 0 | 0 | 0 |
 | `buildSnapshotSql` emits `LIMIT cap` — the extra row that makes the cap observable | 2 | 0 | 0 | 0 | 0 | 0 |
-| the production SQL gate deleted — `defaultValidateSnapshotSql` passes everything | 2 | 0 | 0 | 2 ⚠️ | 0 | 0 |
-| the gate's refusing verdict carries no reason | 2 | 0 | 0 | 1 | 0 | 0 |
+| the production SQL gate deleted — `defaultValidateSnapshotSql` passes everything | 4 | 0 | 0 | 2 ⚠️ | 0 | 0 |
+| the gate's refusing verdict carries no reason | 4 | 0 | 0 | 1 | 0 | 0 |
 | the anti-replay identity check deleted — a token minted for another statement is accepted | 2 | 21 | 0 | 0 | 0 | 0 |
 | a validator THROW reported as `snapshot-rejected` — the permanence inversion | 3 | 2 | 0 | 0 | 0 | 0 |
 | a transaction failure re-thrown instead of refusing its entity | 1 | 4 | 0 | 0 | 0 | 1 |
@@ -124,12 +127,12 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | the fact's provenance forgets WHICH member it was read from | 1 | 0 | 0 | 0 | 0 | 0 |
 | the catalog's authority is INFERRED from its contents instead of passed in | 1 | 0 | 0 | 0 | 0 | 0 |
 | the per-entity success record is never written | 2 | 0 | 0 | 0 | 0 | 3 |
-| the success record escapes the entity's transaction onto the pool | 36 | 7 | 0 | 0 | 0 | 1 |
+| the success record escapes the entity's transaction onto the pool | 38 | 7 | 0 | 0 | 0 | 1 |
 | a zero-candidate run records no success | 1 | 0 | 0 | 0 | 0 | 2 |
 | the success record is stamped with the wall clock instead of the snapshot instant | 2 | 0 | 0 | 0 | 0 | 2 |
 | the connection resolver is asked about no entities | 2 | 0 | 0 | 0 | 0 | 0 |
 
-Suite sizes: **producer** 115 tests (`src/lib/brain/__tests__/warehouse-producer.test.ts`) · **logging** 71 tests (`src/lib/brain/__tests__/warehouse-producer-logging.test.ts`) · **bypass** 13 tests (`src/lib/brain/__tests__/warehouse-producer-bypass.test.ts`) · **mint** 2 tests (`src/lib/brain/__tests__/warehouse-producer-mint.test.ts`) · **pg** 6 tests (`src/lib/brain/__tests__/warehouse-producer-pg.test.ts`) · **record** 7 tests (`src/lib/brain/__tests__/warehouse-run-record-pg.test.ts`).
+Suite sizes: **producer** 125 tests (`src/lib/brain/__tests__/warehouse-producer.test.ts`) · **logging** 71 tests (`src/lib/brain/__tests__/warehouse-producer-logging.test.ts`) · **bypass** 13 tests (`src/lib/brain/__tests__/warehouse-producer-bypass.test.ts`) · **mint** 2 tests (`src/lib/brain/__tests__/warehouse-producer-mint.test.ts`) · **pg** 7 tests (`src/lib/brain/__tests__/warehouse-producer-pg.test.ts`) · **record** 7 tests (`src/lib/brain/__tests__/warehouse-run-record-pg.test.ts`).
 
 ## Notes
 

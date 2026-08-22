@@ -190,6 +190,14 @@ jobs:
       - name: Adversarial fixtures for the agent-doc-paths gate (#5299)
         run: bash scripts/__tests__/check-agent-doc-paths.test.sh
 
+      # `/release`'s version inference used `git tag -l 'v*.*.*'`, which is
+      # matched against the whole tag name — so the ~20 package/sandbox tag
+      # trains in this repo all matched it, and `vercel-sandbox-v0.0.5`
+      # version-sorted above `v0.2.15`. An unvalidated inference feeding an
+      # irreversible action (tags are immutable) is the shape this closes.
+      - name: Adversarial fixtures for the release-version resolver (#5384)
+        run: bash scripts/__tests__/next-release-tag.test.sh
+
       # Three brand invariants that prose asked for and nothing measured: the
       # root <body> hardcoded white/zinc over the tokenized ground, the SQL pane
       # rendered light-on-white in light mode, and neither brand font loaded.

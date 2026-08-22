@@ -18,17 +18,22 @@ If not on `main`, refuse — tags are cut from `main`, not feature branches. If 
 
 **Step 2: Determine the target version**
 
-If an argument is passed, validate it:
-- Must match `^v[0-9]+\.[0-9]+\.[0-9]+$` (no pre-release, no metadata — per ADR-0008)
-- Must not already exist: `git tag -l <arg>` returns empty
+`scripts/next-release-tag.sh` resolves the version, both with and without an argument. Don't infer by hand — see the warning below for why.
 
-If no argument is passed, infer the next patch from the most recent tag:
 ```bash
-git tag -l 'v*.*.*' --sort=-v:refname | head -1
-# e.g. last=v0.0.1 → next=v0.0.2
+VERSION=$(scripts/next-release-tag.sh)          # infer the next patch
+VERSION=$(scripts/next-release-tag.sh v0.2.16)  # validate an explicit version
 ```
 
-If no tag exists yet (first release), default to `v0.0.1` — the start of the pre-launch `v0.0.x` development train (per ADR-0008; `v0.1.0` is reserved for the public launch). Confirm with the user before tagging.
+It prints the resolved version on stdout and nothing else. Both paths pass through the **same** validation before it prints:
+- Must match `^v[0-9]+\.[0-9]+\.[0-9]+$` (no pre-release, no metadata — per ADR-0008)
+- Must not already exist
+
+Exit codes: `0` resolved · `1` refused (wrong shape, or the tag already exists) · `2` cannot run · `3` no tag on the release train. On anything but `0`, stop — stdout is empty and the message on stderr says which.
+
+> ⚠️ **This repo runs ~20 tag trains, not one.** Every published `@useatlas/*` package plus the sandbox and connector trains tag in this same repository (`vercel-sandbox-v0.0.5`, `yaml-context-v0.0.5`, `chat-v1.2.3`, …). That is why the pattern is anchored (`'v[0-9]*.[0-9]*.[0-9]*'` **plus** a `^v[0-9]+\.[0-9]+\.[0-9]+$` filter on the result) rather than the looser `'v*.*.*'` this step used to carry — `git tag -l` matches the glob against the whole tag name, so `v*.*.*` matched `vercel-sandbox-v0.0.5`, which version-sorts **above** `v0.2.15`. Cutting `v0.2.15` on 2026-08-22, the old command named `vercel-sandbox-v0.0.5` as the most recent release tag; a bare `/release` would have inferred `vercel-sandbox-v0.0.6`, and nothing downstream would have objected — it is a plausible version, it doesn't exist, and the tag, `prod` fast-forward, Release and changelog all proceed normally onto a train that isn't prod's. Tags are immutable, so there is no taking it back (#5384). If you edit the pattern, `scripts/__tests__/next-release-tag.test.sh` is what holds it.
+
+Exit `3` means no tag on the release train — **not** "no tags". If this really is the first release, pass `v0.0.1` explicitly: the start of the pre-launch `v0.0.x` development train (per ADR-0008; `v0.1.0` is reserved for the public launch). Confirm with the user before tagging.
 
 **Step 3: Run `/ci` — refuse to tag if anything fails**
 

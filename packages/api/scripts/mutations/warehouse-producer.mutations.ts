@@ -129,11 +129,14 @@ which one holds a row up:
   because it needs \`mock.module\`, whose blast radius is the process. It never
   calls \`runWarehouseProducer\`, so it is 0 on every row except the two that edit
   \`defaultValidateSnapshotSql\` itself.
-- **pg** — a live schema. It is non-zero on exactly the two rows where a stored row
+- **pg** — a live schema. Two classes of row are non-zero, and both are the
+  \`name\`/\`sql\` decision seen from different sides. The first is where a stored row
   settles something a mock cannot: the emitted predicate, and the surface the
-  cardinality proposal is keyed by. Both are the \`name\`/\`sql\` decision, and both
-  are exercised only because this suite's fixtures give every dimension a \`sql:\`
-  that differs from its \`name:\`. Its zeros elsewhere are honest for THREE
+  cardinality proposal is keyed by. The second arrived with #5329, which added a
+  test that EXECUTES generated SQL against a real table — so the column-name
+  mutations stopped being merely wrong and started erroring on a column that does
+  not exist. Both classes are exercised only because this suite's fixtures give
+  every dimension a \`sql:\` that differs from its \`name:\`. Its zeros elsewhere are honest for THREE
   different reasons, and collapsing them is what two earlier drafts of this bullet
   did: most rows are decisions a mock can drive that a live schema adds nothing to;
   the transaction-failure and episode-reader rows are unreachable from a real

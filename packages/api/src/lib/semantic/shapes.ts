@@ -71,6 +71,44 @@ export const EntityShape = z
      *   the loader registers the full name only and never dot-splits it.
      */
     identifier_style: z.enum(["sql", "opaque"]).optional(),
+    /**
+     * WHICH ROWS OF `table` COUNT AS THIS ENTITY — a raw SQL predicate (#5329).
+     *
+     * ⚠️ **ONE CONSUMER APPLIES IT TODAY: the warehouse producer**
+     * (`buildSnapshotSql`). Stated because the honest scope is narrower than the
+     * sentence a reader wants this to be. Agent-generated SQL over the same
+     * whitelisted table, `search.ts`'s sample values and the connection profiler
+     * all still read every row, so this key does not yet mean *"nothing in Atlas
+     * sees a filtered-out row"* — it means the producer does not mint durable
+     * identity from one. A second consumer has to opt in explicitly; none is
+     * carried along by declaring this here.
+     *
+     * `filter: "deleted_at IS NULL"` states that *an organization means a
+     * non-deleted organization*. That is a claim about what the entity IS, which
+     * is why it lives in the layer beside `table` rather than on any one
+     * consumer's enrollment — the alternative splits the entity's meaning across
+     * two places and leaves the second invisible to everyone else.
+     *
+     * ⚠️ **A PREDICATE, interpolated — never a value.** No bind parameter can
+     * carry a `WHERE` fragment, so this sits on exactly the trust boundary a
+     * dimension's `sql:` already sits on: the semantic layer is admin-authored,
+     * and every statement built from it still passes the product's SELECT-only,
+     * single-statement, whitelist-scoped gate before it reaches a datasource.
+     * Declaring it here does not grant it any trust the gate does not.
+     *
+     * ⚠️ **DECLARED, never inferred.** Detecting a `deleted_at`-shaped column by
+     * name is the guess `buildWarehouseClaims` already refuses for the subject
+     * position, and for the same reason: a wrong guess is silent and reads as
+     * success.
+     *
+     * Optional, and its absence means the whole table — every entity written
+     * before this key existed reads exactly as it did.
+     *
+     * ⚠️ Distinct from the `filters` REQUEST parameter `metric-run.ts` refuses
+     * (`kind: "filters_unsupported"`). That one is a caller narrowing a metric at
+     * run time; this is the entity's own definition, fixed in the document.
+     */
+    filter: z.string().optional(),
   })
   .passthrough();
 

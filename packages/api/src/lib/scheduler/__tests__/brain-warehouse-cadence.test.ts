@@ -843,6 +843,9 @@ describe("warehouse cadence — the whole-reach decision", () => {
       name: table,
       table,
       connection: null,
+      // No `filter:` — this suite's subject is the cadence's reach decision, and
+      // an unfiltered entity is what every enrollment predating #5329 is.
+      filter: null,
       dimensions: [
         { name: "id", sql: "id", primaryKey: true },
         // ⚠️ `sql` differs from `name`, as every sibling suite's fixture does:

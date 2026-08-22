@@ -242,7 +242,10 @@ import { Effect } from "effect";
 import { Pool } from "pg";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS, _resetPool } from "@atlas/api/lib/db/internal";
-import { promoteBrainFacts } from "@atlas/api/lib/content-mode/adapters/brain-facts";
+import {
+  PROMOTE_FACTS_SQL,
+  promoteBrainFacts,
+} from "@atlas/api/lib/content-mode/adapters/brain-facts";
 import { resolvePrincipalContext } from "@atlas/api/lib/brain/acl";
 import { loadSupersessionPreview, loadWideningPreview } from "@atlas/api/lib/brain/oversight";
 import {
@@ -883,6 +886,18 @@ describeIfPg("claim identity — three consumers, one corpus (#5021)", () => {
         // Faithful to what the gate would have written: `PROMOTE_FACTS_SQL`
         // sets `status` and `updated_at` and nothing else, and with one fact in
         // the workspace there is no supersession phase to reproduce.
+        //
+        // Pinned against the real statement rather than asserted in prose. A
+        // column added to the gate's SET clause would otherwise leave this
+        // fixture quietly building an incumbent no publish could produce — the
+        // exact "the fixture agrees with itself" failure this arm is one step
+        // away from. The `\bSET\b … WHERE` slice is the write set; anything new
+        // in it reddens here, next to the hand-written copy that has to match.
+        const setClause = /SET([\s\S]*?)WHERE/.exec(PROMOTE_FACTS_SQL)?.[1];
+        expect(setClause).toBeDefined();
+        expect(setClause?.replace(/\s+/g, " ").trim()).toBe(
+          "status = 'published', updated_at = now()",
+        );
         const stamped = await pool.query(
           `UPDATE brain_facts SET status = 'published', updated_at = now()
             WHERE workspace_id = $1 AND status = 'draft' AND invalidated_at IS NULL`,

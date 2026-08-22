@@ -185,8 +185,8 @@ import {
   INSERT_SUPERSEDES_EDGES_SQL,
   SUPERSEDE_STAMP_EXPLICIT_SQL,
 } from "@atlas/api/lib/content-mode/adapters/brain-facts";
-import { classifyFactForPromotion, isJsonObject, type DraftFactRow } from "@atlas/api/lib/brain/promotion";
-import { readStoredSource } from "@atlas/api/lib/brain/observation";
+import { classifyFactForPromotion, type DraftFactRow } from "@atlas/api/lib/brain/promotion";
+import { isJsonObject, readStoredSource } from "@atlas/api/lib/brain/observation";
 import { EPISODE_SOURCES, HUMAN_SOURCE } from "@atlas/api/lib/brain/sources";
 import { BRAIN_CORRECTION_VERBS } from "@useatlas/schemas";
 import type { BrainCorrectionVerb, BrainFactCorrectionResponse } from "@useatlas/types";

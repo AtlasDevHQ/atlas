@@ -160,6 +160,32 @@ describe("classifyFactForPromotion — OBSERVATION_NOT_PUBLISHABLE (ADR-0042)", 
     ]);
   });
 
+  it("closes the set over CLASSIFIABLE rows only — the residual, stated", () => {
+    // #5342's acceptance criterion says "the set of published observations is
+    // closed". True, and bounded: the arm reads `isObservation`, which answers
+    // `false` for a source kind outside this deployment's vocabulary. So a
+    // region import restoring `{"source":"snowflake"}` — warehouse-shaped where
+    // it was exported, unclassifiable here — is still publishable, and still
+    // served.
+    //
+    // Deliberate, and #4964's standing decision rather than an oversight of this
+    // ticket: the region import is the one producer that is not
+    // vocabulary-gated, and refusing what it restores would strand every
+    // imported draft in a queue no reviewer could clear. It self-heals the day
+    // this region deploys a vocabulary that knows the kind.
+    //
+    // Pinned as a TEST because the alternative is a sentence in a docstring that
+    // no longer matches the code the day somebody "tightens" this to
+    // `readStoredSource`. If that is done on purpose, this is the test to
+    // change, and its comment is the argument to answer.
+    for (const source of ["snowflake", "bigquery", "warehouse:prod"]) {
+      expect([source, classifyFactForPromotion(validRow({ provenance: { source } }))]).toEqual([
+        source,
+        null,
+      ]);
+    }
+  });
+
   it("tells the reviewer WHY, and where the answer actually lives", () => {
     const refusal = classifyFactForPromotion(
       validRow({ provenance: { source: WAREHOUSE_SOURCE } }),

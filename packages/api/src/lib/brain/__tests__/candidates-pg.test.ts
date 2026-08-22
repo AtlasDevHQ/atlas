@@ -68,11 +68,17 @@ const PG_TEST_TIMEOUT_MS = 60_000;
 
 const WS = "ws-candidates-pg";
 
-/** A workspace admin: `org`, `role:admin`, `role:member`, `user:reviewer`. */
-function reviewer(): BrainPrincipalContext {
+/**
+ * A workspace admin: `org`, `role:admin`, `role:member`, `user:reviewer`.
+ *
+ * `workspaceId` is overridable so a test that needs EXACT counts can seed its
+ * own workspace. The shared {@link WS} accumulates fixtures across this file, so
+ * any assertion on a total rather than on a set has to opt out of it.
+ */
+function reviewer(workspaceId: string = WS): BrainPrincipalContext {
   return {
     origin: "authenticated",
-    workspaceId: WS,
+    workspaceId,
     userId: "reviewer",
     role: "admin",
     audienceIds: [],
@@ -121,12 +127,14 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
     sourceId: string;
     body?: string;
     visibleTo?: readonly string[];
+    /** Defaults to the shared {@link WS}; override to seed an isolated workspace. */
+    workspaceId?: string;
   }): Promise<string> {
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_episodes (workspace_id, source, source_id, source_actor, body, occurred_at, visible_to)
        VALUES ($1, 'slack', $2, 'U1', $3, now(), $4::text[])
        RETURNING id`,
-      [WS, opts.sourceId, opts.body ?? "evidence", opts.visibleTo ?? ["org"]],
+      [opts.workspaceId ?? WS, opts.sourceId, opts.body ?? "evidence", opts.visibleTo ?? ["org"]],
     );
     return rows[0]!.id;
   }
@@ -141,6 +149,8 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
     provenance?: Record<string, unknown>;
     /** The grant before publish-time widening; omit for a never-widened fact. */
     preWideningVisibleTo?: readonly (string | null)[];
+    /** Defaults to the shared {@link WS}; override to seed an isolated workspace. */
+    workspaceId?: string;
   }): Promise<string> {
     const predicate = opts.predicate ?? "uses";
     const object = opts.object ?? "Postgres";
@@ -153,7 +163,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
                $10, $11, $12)
        RETURNING id`,
       [
-        WS,
+        opts.workspaceId ?? WS,
         opts.subject,
         predicate,
         object,
@@ -1224,25 +1234,67 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
         expect([status, page.total]).toEqual([status, expected.length]);
       }
 
-      // The queue vitals are a THIRD statement over the same population. A
-      // stats bar reading "2 awaiting review" above an empty queue is the
-      // reading that sends a reviewer looking for a backlog they cannot see.
-      const summary = await loadFactCandidateSummary(pool, reviewer());
-      expect([draftObservation, publishedObservation]).toHaveLength(2);
-      const after = await loadFactCandidates(pool, {
-        ctx: reviewer(),
-        search: "ObsQueue",
+      // The observations are real rows — this is what stops every assertion
+      // above passing against a workspace where the seeds silently failed.
+      const seeded = await pool.query<{ n: string }>(
+        `SELECT COUNT(*)::text AS n FROM brain_facts
+          WHERE workspace_id = $1 AND id = ANY($2::uuid[])`,
+        [WS, [draftObservation, publishedObservation]],
+      );
+      expect(seeded.rows[0]?.n).toBe("2");
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "leaves no observation in the queue VITALS either — the third statement over the same rows",
+    async () => {
+      // `loadFactCandidateSummary` is a separate aggregate from the page and its
+      // count, so the exclusion has to be on all three. A stats bar reading "2
+      // awaiting review" above an empty queue is the reading that sends a
+      // reviewer looking for a backlog they cannot see.
+      //
+      // Its OWN workspace, because this is the one assertion in the file about
+      // TOTALS rather than about a set: the shared `WS` accumulates fixtures
+      // from every test above, so an exact count there would be unwritable and
+      // a `toBeGreaterThanOrEqual` would pass with the exclusion deleted —
+      // which is exactly what the first draft of this test did.
+      const ws = `${WS}-vitals-${Date.now()}`;
+      const ep = await seedEpisode({ sourceId: "obs-vitals", workspaceId: ws });
+      const observation = { source: WAREHOUSE_SOURCE, actor: "system:warehouse-producer" };
+      await seedFact({ workspaceId: ws, subject: "V-ObsDraft", episodeId: ep, provenance: observation });
+      await seedFact({
+        workspaceId: ws,
+        subject: "V-ObsPublished",
+        episodeId: ep,
+        status: "published",
+        provenance: observation,
+      });
+      await seedFact({ workspaceId: ws, subject: "V-BeliefDraft", episodeId: ep });
+      await seedFact({
+        workspaceId: ws,
+        subject: "V-BeliefPublished",
+        episodeId: ep,
+        status: "published",
+      });
+
+      const summary = await loadFactCandidateSummary(pool, reviewer(ws));
+      // EXACT, not a floor. One belief of each status, and neither observation.
+      // Delete `notAnObservationSql` from the summary aggregate and both of
+      // these read 2.
+      expect([summary.draftTotal, summary.publishedTotal]).toEqual([1, 1]);
+      // The page agrees with the vitals — the pair is what a reviewer sees.
+      const page = await loadFactCandidates(pool, {
+        ctx: reviewer(ws),
         status: "all",
         limit: 50,
         offset: 0,
       });
-      expect(after.candidates.map((c) => c.id)).not.toContain(draftObservation);
-      expect(after.candidates.map((c) => c.id)).not.toContain(publishedObservation);
-      // Summary counts are workspace-wide across this suite's fixtures, so
-      // assert the DELTA this test contributes rather than an absolute: the two
-      // beliefs above, and neither observation.
-      expect(summary.draftTotal).toBeGreaterThanOrEqual(1);
-      expect(summary.publishedTotal).toBeGreaterThanOrEqual(1);
+      expect(page.candidates.map((c) => c.subject).sort()).toEqual([
+        "V-BeliefDraft",
+        "V-BeliefPublished",
+      ]);
+      expect(page.total).toBe(2);
     },
     PG_TEST_TIMEOUT_MS,
   );

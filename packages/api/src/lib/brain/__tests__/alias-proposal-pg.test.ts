@@ -416,7 +416,7 @@ describeIfPg("the alias-proposal query (#5034, ADR-0037 §4)", () => {
   it(
     "a row with NO `source` key at all is not warehouse-derived",
     async () => {
-      // The third population `warehouseDerivedSql` enumerates, and the only one
+      // The third population `observationSql` enumerates, and the only one
       // no corpus case can reach: `reconcileFacts` always spreads
       // `source: episode.source` into provenance, so a `source`-less row is a
       // stored shape (rows predating that, and region imports) that this suite

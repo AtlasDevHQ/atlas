@@ -60,12 +60,13 @@ import {
 /**
  * A non-null, non-array object — what `jsonb_typeof(...) = 'object'` means.
  *
- * Lives HERE rather than in `promotion.ts`, which defined it from #4769 and
- * still re-exports it for the adapter that has imported it from there since.
- * The move is structural: #5342's publish refusal makes `promotion.ts` a
- * CONSUMER of this module, and a guard defined there and imported back would
- * make the two files mutually dependent — a cycle that `mock.module`-based
- * tests resolve differently depending on which side loads first.
+ * Lives HERE rather than in `promotion.ts`, which defined it from #4769. The
+ * move is structural: #5342's publish refusal makes `promotion.ts` a CONSUMER
+ * of this module, and a guard defined there and imported back would make the
+ * two files mutually dependent — a cycle that `mock.module`-based tests resolve
+ * differently depending on which side loads first. Its three consumers
+ * (`promotion.ts`, `correction.ts`, and the content-mode adapter) all import it
+ * from here; no re-export stands in between.
  */
 export function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

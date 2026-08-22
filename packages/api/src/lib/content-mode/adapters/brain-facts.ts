@@ -72,11 +72,11 @@ import { cardinalitySingleSql } from "@atlas/api/lib/brain/cardinality";
 import { episodeSourceArraySql, NON_WAREHOUSE_SOURCES } from "@atlas/api/lib/brain/sources";
 import {
   classifyFactForPromotion,
-  isJsonObject,
   widenGrantFromEvidence,
   type DraftFactRow,
   type StoredGrant,
 } from "@atlas/api/lib/brain/promotion";
+import { isJsonObject } from "@atlas/api/lib/brain/observation";
 import {
   PublishPhaseError,
   type FactSupersession,

@@ -17,14 +17,37 @@
  * ## Why the observation rule is HERE and not in the publish adapter
  *
  * This module is pure and already has three consumers, so one arm is inherited
- * by all three: the publish adapter's gate refuses the row, the review queue's
- * pre-flight (`candidates.ts`) reports it as refused with a reason rather than
- * as something a reviewer could bless, and the correction path's replacement
- * screen stays consistent with both. ADR-0042 is explicit that enforcement is a
- * TEST and not a grep guard: `scripts/check-brain-fact-promotion.sh` greps for
- * code shapes because a rogue status writer IS a shape, while this rule is a
- * runtime predicate over stored provenance with no shape to grep. Do not add
- * one.
+ * by all three. Be precise about what each inherits, because ADR-0042 and
+ * #5342's own body describe the middle one as it was BEFORE #5341 landed:
+ *
+ *   - the publish adapter's gate refuses the row — the only consumer an
+ *     observation actually reaches in production;
+ *   - the review queue's pre-flight (`candidates.ts`) would report it as
+ *     refused with a reason rather than as something a reviewer could bless.
+ *     It never gets the chance: #5341 excludes observations in the candidate
+ *     WHERE, which is strictly stronger. The inheritance still matters as a
+ *     backstop — relax that exclusion and the queue cannot silently start
+ *     advertising an observation as publishable;
+ *   - the correction path's replacement screen stays consistent with both, and
+ *     likewise cannot reach it: `reconcile.ts` stamps the replacement with the
+ *     correction episode's kind, which is always `HUMAN_SOURCE`.
+ *
+ * ADR-0042 is explicit that enforcement is a TEST and not a grep guard:
+ * `scripts/check-brain-fact-promotion.sh` greps for code shapes because a rogue
+ * status writer IS a shape, while this rule is a runtime predicate over stored
+ * provenance with no shape to grep. Do not add one.
+ *
+ * ## What "the set of published observations is closed" does and does not mean
+ *
+ * Closed over rows this deployment can CLASSIFY. The arm below reads
+ * `isObservation`, which answers `false` for a source kind outside the
+ * vocabulary — so an imported `{"source":"snowflake"}` row that is warehouse-
+ * shaped in the region that exported it is still publishable, and still served.
+ * That is deliberate and is #4964's standing decision, not an oversight of
+ * #5342: the region import is the one producer that is not vocabulary-gated,
+ * and refusing what it restores would strand every imported draft in a queue no
+ * reviewer could clear. The residual closes the day this region deploys a
+ * vocabulary that knows the kind, with no data migration.
  *
  * Pure decisions only — what the gate REFUSES ({@link classifyFactForPromotion})
  * and, for what it admits, what grant it publishes with
@@ -184,17 +207,6 @@ export interface FactRefusal extends PromotionRefusal {
 }
 
 /**
- * A non-null, non-array object — what `jsonb_typeof(...) = 'object'` means.
- *
- * Re-exported, not defined: the guard now lives in `lib/brain/observation.ts`
- * because #5342 makes THIS module a consumer of that one, and a guard defined
- * here and imported back would make the pair mutually dependent. The
- * re-export stays because the content-mode adapter has imported it from this
- * module since #4769 and the import path is not what changed.
- */
-export { isJsonObject };
-
-/**
  * Decide whether one draft fact may be promoted, and if not, say why in terms
  * an admin can act on.
  *
@@ -206,28 +218,18 @@ export { isJsonObject };
  * that must be cheap.
  */
 export function classifyFactForPromotion(row: DraftFactRow): FactRefusal | null {
-  // ADR-0042 (#5342): the producer's output never reaches `published`.
+  // ADR-0042 (#5342): the producer's output never reaches `published`. The
+  // module header carries the argument for why this arm lives in this file and
+  // what it is and is not closed over; what is local to the code is the
+  // ORDERING.
   //
   // FIRST and ALONE, because it is the one refusal here that is not a defect.
   // The other three say *this claim is broken, repair it*; this one says *this
   // is not a claim*. Collecting it alongside a grant complaint would tell a
   // reviewer to go fix the grant on a row that could never be published with
   // any grant at all, and the shared tail below ("Fix it (or retract it) and
-  // publish again") would be a straight lie — there is nothing to fix and
+  // publish again") would be a straight lie — there is nothing to fix, and
   // `retract` is refused on it too.
-  //
-  // HERE rather than in the publish adapter because this classifier is pure and
-  // already has three consumers, each of which inherits the rule for free: the
-  // adapter's gate refuses it, the review queue's pre-flight reports it as
-  // refused WITH A REASON rather than as something a reviewer could bless, and
-  // the correction path's replacement screen stays consistent with both.
-  //
-  // `isObservation` and not `readStoredSource`, deliberately: an unclassifiable
-  // source kind is still PUBLISHABLE. That is the pre-#5342 behaviour and #4964
-  // declined to change it on its own terms — widening a gate to the review
-  // queue would strand every imported draft in a queue no reviewer could clear,
-  // and a row in `brain_facts` is tier-2/3 by construction, so publishing it is
-  // an ordinary review decision rather than an arbitration over the warehouse.
   if (isObservation(row.provenance)) {
     return {
       rowId: row.id,

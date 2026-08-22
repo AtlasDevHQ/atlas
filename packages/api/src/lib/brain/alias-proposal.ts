@@ -264,13 +264,14 @@ export const ALIAS_HINT_RANK_BONUS = 0.05;
  * `alias` is interpolated; callers pass a plain identifier they control — the
  * same contract as `supersedableTierSql` and `comparableDifferentSql`.
  *
- * ⚠️ The SPELLING moved to `lib/brain/observation.ts` at #5341, where ADR-0042's
- * serving exclusion needed the identical predicate. It is one string with two
- * readings and they are the same reading: *this stored row is an observation*.
- * The prose above stays here because what it argues is this consumer's rule —
- * why the DIRECTION arm must be a positive allowlist — not what the SQL says.
+ * ⚠️ The SPELLING is `observationSql` (`lib/brain/observation.ts`), called
+ * directly at the two sites below. It moved there at #5341, where ADR-0042's
+ * serving exclusion needed the identical predicate — one string with two
+ * readings that are the same reading: *this stored row is an observation*. This
+ * block stays because what it argues is THIS consumer's rule — why the
+ * DIRECTION arm must be a positive allowlist — which is not what the SQL says
+ * and does not belong next to the SQL.
  */
-const warehouseDerivedSql = observationSql;
 
 /**
  * The proposal query. Exported so the real-Postgres suite runs this exact string
@@ -358,8 +359,8 @@ export const ALIAS_PROPOSAL_SQL = `
     SELECT a.predicate_key AS from_norm,
            b.predicate_key AS to_norm,
            a.subject_key   AS subject_key,
-           ${warehouseDerivedSql("a")} AS from_warehouse,
-           ${warehouseDerivedSql("b")} AS to_warehouse
+           ${observationSql("a")} AS from_warehouse,
+           ${observationSql("b")} AS to_warehouse
       FROM brain_facts a
       JOIN brain_facts b
         ON b.workspace_id = a.workspace_id

@@ -11,10 +11,12 @@ See [docs/development/release-process.md](../../docs/development/release-process
 ```bash
 git branch --show-current                    # must be `main`
 git status --short                           # must be empty
-git fetch origin && git rev-parse HEAD       # must equal origin/main
+git fetch origin --tags && git rev-parse HEAD # must equal origin/main
 ```
 
 If not on `main`, refuse — tags are cut from `main`, not feature branches. If dirty or behind, refuse — the tag would include unintended state.
+
+`--tags` is not decoration: Step 2 reads the **local** tag list, and no local check can prove it matches the remote's. A clone that has not fetched tags reports an empty release train, and the remedy for an empty train is to pass a version by hand — which would then be validated against that same blind list. Fetch first.
 
 **Step 2: Determine the target version**
 

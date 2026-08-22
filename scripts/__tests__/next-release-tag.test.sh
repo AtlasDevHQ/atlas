@@ -5,25 +5,10 @@
 # question `/release` Step 2 asks before doing something irreversible: *what
 # version am I about to tag?*
 #
-# ## Why this needed a script at all
-#
-# The runbook used to answer it inline:
-#
-#     git tag -l 'v*.*.*' --sort=-v:refname | head -1
-#
-# That glob is matched against the WHOLE tag name, and this repo carries ~20
-# other tag trains (`vercel-sandbox-v0.0.5`, `yaml-context-v0.0.5`, …). Every
-# one of them matches `v*.*.*`. On 2026-08-22, cutting `v0.2.15`, the runbook's
-# own command reported `vercel-sandbox-v0.0.5` as the most recent release tag —
-# a bare `/release` would have inferred `vercel-sandbox-v0.0.6`.
-#
-# The failure is quiet in the direction that gets it shipped: that string
-# *looks* like a version, does not already exist, and every later step —
-# annotated tag, `prod` fast-forward, GitHub Release, changelog — proceeds
-# normally. And the runbook's own rule ("tags are immutable; ship a forward
-# patch") makes it unrecoverable. An unvalidated inference feeding an
-# irreversible action is the wrong shape, so the inference is now code with
-# fixtures rather than prose.
+# The defect, why the pattern is anchored, and what each exit code means are
+# written once, in the gate's own header — read `scripts/next-release-tag.sh`
+# first. What follows is only what this suite adds: which properties are pinned,
+# and why each fixture is built the way it is.
 #
 # ## The fixture that proves the defect is real
 #
@@ -47,8 +32,12 @@ GATE="$SCRIPT_DIR/next-release-tag.sh"
 
 PASS=0
 FAIL=0
+SKIP=0
 pass() { echo "  ok   $1"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL $1" >&2; FAIL=$((FAIL + 1)); }
+# A skip still counts as a case that RAN, so the floor below stays a constant
+# whether or not this clone can support the real-tree case.
+skip() { echo "  skip $1"; SKIP=$((SKIP + 1)); }
 
 TMPROOT="$(mktemp -d)" || exit 2
 trap 'rm -rf "$TMPROOT"' EXIT
@@ -146,6 +135,10 @@ expect_version "version order, not lexical order" "$REPO_TEENS" v0.2.11
 REPO_MINOR="$(make_repo minor v0.9.1 v0.10.0)" || exit 2
 expect_version "a higher minor wins over a longer-lived one" "$REPO_MINOR" v0.10.1
 
+# Not a blessing of `v0.2.08` as a tag anyone should cut — it is on-train only
+# because the regex #5384 names (`[0-9]+`) admits it, and deviating from that
+# regex is exactly what the issue forbids. What this pins is the arithmetic:
+# `$((08 + 1))` is a base-8 error that would abort the resolver mid-inference.
 REPO_ZEROPAD="$(make_repo zeropad v0.2.08)" || exit 2
 expect_version "a zero-padded patch bumps in base 10, not octal" "$REPO_ZEROPAD" v0.2.9
 
@@ -207,15 +200,111 @@ expect_status "a root that is not a git repository is exit 2, not a version" "$T
 # with vercel-sandbox-v0.0.5 present, inference must land on the release train.
 # Skips when the clone has no release tags (a shallow/tagless CI checkout) —
 # absence of tags is not evidence of a defect.
-if [ -n "$(git -C "$ROOT" tag -l 'v[0-9]*.[0-9]*.[0-9]*')" ]; then
+if [ "$(git -C "$ROOT" rev-parse --is-shallow-repository 2>/dev/null)" = "true" ] \
+  || [ -z "$(git -C "$ROOT" tag -l 'v[0-9]*.[0-9]*.[0-9]*')" ]; then
+  skip "this clone cannot see the release train (shallow or tagless checkout)"
+else
   run_gate "$ROOT"
   if [ "$STATUS" -eq 0 ] && [[ "$OUT" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     pass "against the real tree, inference is on the release train ($OUT)"
   else
     fail "against the real tree, inference returned exit $STATUS / '$OUT'"
   fi
+fi
+
+# ── 9. a clone that cannot see the tags refuses ─────────────────────────────
+# The dangerous half is not exit 3 itself, it is that exit 3's own remedy would
+# then be accepted: `tag_exists` is blind in exactly the state that produced the
+# empty train, so `v0.0.1` would validate and be tagged over a tag that already
+# exists on the remote. Both paths must refuse, and refuse with 2 (cannot see)
+# rather than 3 (nothing there).
+
+CLONE_SRC="file://$REPO_REAL"
+
+# (a) Configured never to fetch tags. 6 tags upstream, 0 locally — so BOTH
+# paths must refuse, including the explicit one: `tag_exists` is blind here, so
+# an existing version would validate clean.
+if git clone -q --no-tags "$CLONE_SRC" "$TMPROOT/notags" 2>/dev/null; then
+  expect_status "a --no-tags clone refuses on the inference path" "$TMPROOT/notags" 2
+  expect_status "a --no-tags clone refuses on the explicit path too" "$TMPROOT/notags" 2 v0.2.15
 else
-  echo "  skip this clone has no release tags (shallow or tagless checkout)"
+  skip "could not build a --no-tags clone fixture"
+  skip "could not build a --no-tags clone fixture (explicit path)"
+fi
+
+# (b) Shallow AND showing an empty train — the one state where "no release yet"
+# and "never shown one" are the same output. Built by cloning --no-tags --depth
+# 1 and then UNSETTING tagOpt, so what is under test is shallowness alone and
+# not the config check above; the case would otherwise pass for the wrong
+# reason. Asserted by construction below.
+if git clone -q --no-tags --depth 1 "$CLONE_SRC" "$TMPROOT/shallow" 2>/dev/null \
+  && git -C "$TMPROOT/shallow" config --unset remote.origin.tagOpt \
+  && [ "$(git -C "$TMPROOT/shallow" rev-parse --is-shallow-repository)" = "true" ] \
+  && [ -z "$(git -C "$TMPROOT/shallow" config --get remote.origin.tagOpt)" ] \
+  && [ -z "$(git -C "$TMPROOT/shallow" tag -l)" ]; then
+  expect_status "a shallow clone reading an empty train refuses rather than reporting one" "$TMPROOT/shallow" 2
+else
+  skip "could not build a shallow, tagless, tagOpt-cleared clone fixture"
+fi
+
+# (c) The counter-case that keeps (b) from over-refusing: shallow, but the tags
+# ARE there. This repo's own CI and this session's checkout are both shallow —
+# a resolver that refused on shallowness alone would block every release from
+# them. It must answer.
+if git clone -q --depth 1 "$CLONE_SRC" "$TMPROOT/shallow-tagged" 2>/dev/null \
+  && [ "$(git -C "$TMPROOT/shallow-tagged" rev-parse --is-shallow-repository)" = "true" ] \
+  && [ -n "$(git -C "$TMPROOT/shallow-tagged" tag -l 'v[0-9]*.[0-9]*.[0-9]*')" ]; then
+  expect_version "a shallow clone that CAN see the train still answers" "$TMPROOT/shallow-tagged" v0.2.16
+else
+  skip "could not build a shallow clone that carries tags"
+fi
+
+# ── 10. the runbook cannot quietly go back to inferring inline ──────────────
+# The resolver is only the fix if `/release` actually calls it. Nothing stopped
+# a later edit from re-inlining a `git tag -l` — the runbook is prose, and prose
+# is what #5384 was. Both docs legitimately QUOTE the old glob while explaining
+# the defect, so the discriminator is position: inside a fenced block it is an
+# instruction to run, in prose it is a citation.
+
+RUNBOOK="$ROOT/.claude/commands/release.md"
+if [ -f "$RUNBOOK" ]; then
+  if grep -q 'scripts/next-release-tag\.sh' "$RUNBOOK"; then
+    pass "the runbook calls the resolver"
+  else
+    fail "$RUNBOOK no longer names scripts/next-release-tag.sh — Step 2 is inferring some other way"
+  fi
+
+  # Every line inside a ``` fence, i.e. everything the runbook presents as a
+  # command rather than as an explanation.
+  FENCED="$(awk '/^```/ { inblock = !inblock; next } inblock' "$RUNBOOK")"
+  if [ -z "$FENCED" ]; then
+    fail "found no fenced blocks in $RUNBOOK — this check would pass vacuously"
+  elif printf '%s\n' "$FENCED" | grep -q "git tag -l"; then
+    fail "a fenced block in $RUNBOOK runs 'git tag -l' — that is the inline inference #5384 replaced"
+    printf '%s\n' "$FENCED" | grep "git tag -l" | sed 's/^/       | /' >&2
+  else
+    pass "no fenced block in the runbook infers the version with git tag -l"
+  fi
+else
+  fail "missing $RUNBOOK — the resolver has no caller to check"
+fi
+
+# ── the case count must match ───────────────────────────────────────────────
+#
+# Without this, a vanished case is invisible: the summary prints whatever ran,
+# and "26 passed, 0 failed" reads exactly like success. `check-caddyfile.test.sh`
+# states the rule and names the counter-example — a floor derived from the run
+# moves with the deletion it is supposed to catch, so this is an ABSOLUTE
+# literal. SKIP is in the total for the same reason: a case that turns itself
+# off must not be able to shrink the denominator.
+#
+# 24 unconditional cases, plus 5 that skip on a clone that cannot host them
+# (one real-tree case, four clone-shape cases).
+# The tracked-tree check is deliberately NOT in the total — it runs after this
+# line so that it observes every case's writes, including this one's.
+EXPECTED_CASES=29
+if [ "$((PASS + FAIL + SKIP))" -ne "$EXPECTED_CASES" ]; then
+  fail "expected $EXPECTED_CASES cases, ran $((PASS + FAIL + SKIP)) — a case VANISHED (a setup fault returning early?), which is not a pass"
 fi
 
 # ── the suite must not have touched the tracked tree ────────────────────────
@@ -227,5 +316,5 @@ else
 fi
 
 echo
-echo "next-release-tag.test.sh: $PASS passed, $FAIL failed"
+echo "next-release-tag.test.sh: $PASS passed, $FAIL failed, $SKIP skipped"
 [ "$FAIL" -eq 0 ] || exit 1

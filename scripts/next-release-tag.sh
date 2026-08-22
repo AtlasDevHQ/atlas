@@ -31,11 +31,17 @@
 #
 # ## What "the release train" means here
 #
-# Exactly ADR-0008's shape: `^v[0-9]+\.[0-9]+\.[0-9]+$` — no pre-release, no
-# build metadata, no fourth part, no package prefix. The glob is anchored so a
+# ADR-0008's FORMAT rule: `^v[0-9]+\.[0-9]+\.[0-9]+$` — no pre-release, no build
+# metadata, no fourth part, no package prefix. The glob is anchored so a
 # prefixed train cannot enter, and the regex is applied to the survivors so the
 # glob's `*` (which matches dots and letters) cannot smuggle `v0.3.0-rc.1` in
 # either. Both are needed; neither alone is the rule.
+#
+# ⚠️ The FORMAT rule only. ADR-0008 also has a BUMP rule — new feature → minor,
+# bug fix → patch — and this script does not implement it and cannot: no tag
+# name says what the diff did. Inference always bumps the PATCH, which is the
+# safe direction (understating a release is recoverable; the version it would
+# otherwise consume is still free). A minor or major is passed explicitly.
 #
 # THE SAME REGEX GATES BOTH PATHS. An inferred version goes through `emit()`,
 # the identical validate-then-print used for an explicit argument, before the
@@ -46,8 +52,9 @@
 #   0  resolved — the version is on stdout
 #   1  refused  — a version was produced but is not taggable (wrong shape, or
 #                 already exists). Nothing on stdout.
-#   2  cannot run — no git, or the root is not a repository root. Nothing on
-#                 stdout.
+#   2  cannot run — no git, the root is not a repository root, or this clone
+#                 cannot be trusted to see the tags it would be answering from.
+#                 Nothing on stdout.
 #   3  no tag on the release train. NOT a silent `v0.0.1`: this repo carries
 #                 hundreds of tags, so "none of them are ours" is a fact worth
 #                 stating rather than a blank slate to guess from. The genuine
@@ -83,6 +90,21 @@ TOPLEVEL_ABS="$(cd "$TOPLEVEL" && pwd -P)" || die "cannot resolve $TOPLEVEL."
 [ "$TOPLEVEL_ABS" = "$ROOT_ABS" ] \
   || die "$ROOT_ABS is not a repository root (its repository is $TOPLEVEL_ABS) — refusing to read another tree's tags."
 
+# ⚠️ THE LOCAL TAG LIST IS THIS SCRIPT'S ONLY ORACLE, and no local check can
+# prove it matches the remote's — which is why `/release` Step 1 fetches tags
+# before this runs. What IS checkable is positive evidence that this clone was
+# configured never to fetch them: then "no release train" is not a fact about
+# the repo, it is this script being blind, and its own remedy ("pass v0.0.1
+# explicitly") sails through `tag_exists` — blind for the same reason — to tag
+# a version that ALREADY EXISTS on the remote. That is #5384's own class one
+# step over, so it is a refusal rather than a guess.
+#
+# A repo with no remote at all (every fixture, a detached tree) is trusted:
+# there is nothing it can be out of date with.
+TAGOPT="$(git -C "$ROOT_ABS" config --get remote.origin.tagOpt 2>/dev/null || true)"
+[ "$TAGOPT" != "--no-tags" ] \
+  || die "$ROOT_ABS was cloned with --no-tags, so it cannot see the release train. Run 'git fetch --tags origin' before releasing."
+
 tag_exists() { [ -n "$(git -C "$ROOT_ABS" tag -l "$1")" ]; }
 
 # The single validation site. Both the explicit argument and the inferred value
@@ -111,6 +133,16 @@ while IFS= read -r tag; do
 done < <(git -C "$ROOT_ABS" tag -l "$RELEASE_GLOB" --sort=-v:refname)
 
 if [ -z "$LATEST" ]; then
+  # ⚠️ An empty train is the ONE place shallowness matters. `--depth` truncates
+  # commits, not tags, so a shallow clone that fetched tags sees the whole train
+  # and answers correctly — refusing on shallowness alone would block a release
+  # from a perfectly-sighted checkout. But an empty train read out of a shallow
+  # clone is ambiguous exactly where it is expensive: "there is no release yet"
+  # and "this clone was never shown one" produce the same output, and only the
+  # first makes the v0.0.1 remedy safe.
+  if [ "$(git -C "$ROOT_ABS" rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
+    die "no tag on the release train, but $ROOT_ABS is a shallow clone — that is a blind spot, not a fact. Run 'git fetch --tags origin' (or --unshallow) and try again."
+  fi
   TOTAL="$(git -C "$ROOT_ABS" tag -l | grep -c . || true)"
   echo "::error::[next-release-tag] no tag on the release train (${RELEASE_RE}); $TOTAL tag(s) in this repo belong to other trains. If this really is the first release, pass v0.0.1 explicitly — per ADR-0008 that starts the pre-launch v0.0.x train, and the runbook asks you to confirm it with a human first." >&2
   exit 3
@@ -121,5 +153,5 @@ IFS='.' read -r MAJOR MINOR PATCH <<<"${LATEST#v}"
 # version by the regex above, and `$((08 + 1))` is an arithmetic error.
 NEXT="v${MAJOR}.${MINOR}.$((10#$PATCH + 1))"
 
-say "latest release tag $LATEST → next $NEXT (release train only; other trains ignored)"
+say "latest release tag $LATEST → next $NEXT (patch bump, release train only; pass a version explicitly for a minor)"
 emit "$NEXT" "inferred version"

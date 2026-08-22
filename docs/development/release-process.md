@@ -166,7 +166,7 @@ See [ADR-0008 § Semver discipline](../adr/0008-versioning-and-release-tags.md#s
 - **Minor** — new feature, customer-visible workflow change, new required env var, removed deprecated flag.
 - **Patch** — bug fix, perf, refactor, docs, dependency bump, hotfix.
 
-The `/release` skill infers the bump from the previous tag if you don't pass one explicitly (`/release` with no arg → it picks `v0.1.<prev+1>`). That inference is `scripts/next-release-tag.sh`, not an inline `git tag -l` — see below.
+**`/release` with no argument bumps the PATCH, always.** It is the safe default, not a reading of the table above — nothing infers "this release added a feature" from a tag name. A minor (or the eventual major) is passed explicitly: `/release v0.3.0`. The inference itself is `scripts/next-release-tag.sh`, not an inline `git tag -l` — see below for why that distinction is load-bearing.
 
 ## The release train is not the only tag train
 

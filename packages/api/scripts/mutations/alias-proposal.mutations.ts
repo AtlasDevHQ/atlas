@@ -63,6 +63,20 @@ import type { MutationSpec } from "../mutation-spec";
 import { episodeSourceArraySql, NON_WAREHOUSE_SOURCES } from "../../src/lib/brain/sources";
 
 const ALIAS = "src/lib/brain/alias-proposal.ts";
+// The SQL predicate the direction arm reads. It lived in `alias-proposal.ts` as
+// a private `warehouseDerivedSql` until #5341, when ADR-0042's serving exclusion
+// needed the identical string and `observation.ts` became its one home. The
+// mutation below FOLLOWS it there rather than being deleted: the rule it
+// falsifies is still this module's — a kind this region cannot classify must not
+// become the canonical target of a workspace-wide re-key — and the four suites
+// this spec measures still exercise only that consumer. `search.ts` and
+// `candidates.ts` share the predicate now but appear in none of them, so the
+// cell keeps meaning what its label says.
+//
+// ⚠️ That last sentence is the thing to re-check if a serving suite is ever
+// added to this spec's targets: the mutation would then be falsifying two rules
+// at once and the label would have to say so.
+const OBSERVATION = "src/lib/brain/observation.ts";
 const SOURCES = "src/lib/brain/sources.ts";
 const EXTRACT = "src/lib/brain/extract.ts";
 const RECONCILE = "src/lib/brain/reconcile.ts";
@@ -195,7 +209,7 @@ prohibits by name. None of them has a symptom at rest.
       label: "the direction arm is written as the NEGATED tier guard",
       edits: [
         {
-          file: ALIAS,
+          file: OBSERVATION,
           oldString:
             "  return `(${alias}.provenance->>'source' = ANY (${WAREHOUSE_SOURCE_ARRAY_SQL}))`;",
           // ⚠️ SPELLED WITH `NON_WAREHOUSE_SOURCES`, which is what

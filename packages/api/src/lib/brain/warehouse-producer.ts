@@ -154,24 +154,50 @@ export const WAREHOUSE_PRODUCER = "warehouse:v1";
 export const WAREHOUSE_PRODUCER_PRINCIPAL = "system:warehouse-producer";
 
 /**
- * The most rows one entity may contribute to one run.
+ * The most rows one entity may contribute to one run. **Re-argued at #5329 and
+ * re-affirmed at 1,000 — deliberately, in a unit that still applies.**
  *
  * ⚠️ **Exceeding it REFUSES the entity; it never truncates.** A truncated
  * snapshot is an arbitrary subset of a warehouse presented as a complete reading
- * of it, and nothing at rest distinguishes the two — a reviewer would publish
- * three hundred account statuses believing they had seen the accounts.
+ * of it, and nothing at rest distinguishes the two. That is unchanged by
+ * everything below: it is a property of what a partial reading MEANS, not of who
+ * reads it.
  *
- * The bound exists because enrollment bounds DIMENSIONS and not ROWS, which
- * ADR-0039's arithmetic quietly assumes away: *"ten thousand accounts across
- * eight enrolled dimensions is eighty thousand drafts"* is an argument against
- * the eight, and ten thousand drafts from the one remaining dimension is still a
- * queue no person drains. The review gate is the constraint, so the bound is
- * expressed in units of review rather than of database load.
+ * ⚠️ **The unit this was first argued in is GONE.** The original reasoning was
+ * *"the review gate is the constraint, so the bound is expressed in units of
+ * review rather than of database load"* — ten thousand drafts being a queue no
+ * person drains. Under [ADR-0042](../../../../../docs/adr/0042-warehouse-material-is-an-observation-never-a-published-belief.md)
+ * there is no review gate downstream of this producer at all: an observation is
+ * never queued, never published and never served. A number defended in units of
+ * human review is a number defended by an argument that no longer has a referent,
+ * and leaving it undisturbed would have been the same mistake in the other
+ * direction as raising it thoughtlessly.
  *
- * A constant rather than a setting on purpose. Raising it is a claim about how
- * much a human can review, which is the decision ADR-0039 exists to protect —
- * `feedback: env vars are a last resort` applies with extra force where the knob
- * would loosen the product's differentiating gate.
+ * **The two constraints that survive**, and what 1,000 is bounding now:
+ *
+ * 1. **Snapshot cost against the customer's warehouse.** One run reads
+ *    `rows × dimensions` cells per entity, on their infrastructure, on a schedule
+ *    they did not set. A cap keeps a single enrollment from turning into an
+ *    unbounded scan of a production table.
+ * 2. **Identity blast radius.** Every emitted row writes entity-store entries and
+ *    a `subject_cmp` — minted identity that alias proposals, tension edges and the
+ *    reaper all subsequently have to chase. This is the binding one: rows here are
+ *    not transient reads, they are durable identity, and the cost of getting the
+ *    population wrong scales with it.
+ *
+ * **Why 1,000 stays.** Both surviving constraints are about order of magnitude
+ * rather than a threshold anyone can derive, and neither argues for a different
+ * number today. What #5329 removes is the pressure that would have argued for a
+ * larger one: before the entity-level `filter:`, an entity whose LIVE rows fit
+ * under the cap but whose soft-deleted rows pushed it over produced nothing at
+ * all, and the only remedy was a predicate the enrollment could not express. The
+ * cap now counts rows that count. Raising it to paper over a filter that should
+ * have been declared is the move this note exists to refuse.
+ *
+ * A constant rather than a setting, still. The reason has changed with the unit:
+ * it is no longer a claim about how much a human can review, but about how much
+ * durable identity one enrollment may mint unattended, and
+ * `feedback: env vars are a last resort` applies to that with equal force.
  */
 export const WAREHOUSE_ROW_CAP = 1_000;
 
@@ -235,6 +261,28 @@ export interface WarehouseEntity {
    * connection override in {@link runWarehouseProducer}.
    */
   readonly connection: string | null;
+  /**
+   * The entity YAML's `filter:` — WHICH ROWS COUNT — or `null` for the whole
+   * table (#5329).
+   *
+   * ⚠️ **Its absence is the defect this field closes, and the defect was
+   * invisible.** Enrollment says which ENTITY and which DIMENSIONS; it has never
+   * had a way to say which ROWS. So the producer read `SELECT … FROM organization`
+   * with no `WHERE` and no way to add one, and a churned customer — soft-deleted,
+   * `workspace_status = 'deleted'` — kept being read as a current row of the
+   * business. Measured on prod 2026-08-19. The entity's own YAML already carried
+   * the predicate in every one of its query patterns; the one consumer that mints
+   * durable identity was the one that could not reach it.
+   *
+   * ⚠️ **`null` means the whole table, and must keep meaning that.** Every
+   * enrollment in existence predates this key. A parse that turned an absent
+   * filter into an empty or falsy predicate would refuse or empty the entire
+   * installed base at once.
+   *
+   * Read {@link buildSnapshotSql} for what it becomes, and `EntityShape` for why
+   * it is declared in the layer rather than on the enrollment.
+   */
+  readonly filter: string | null;
   readonly dimensions: readonly WarehouseDimension[];
   readonly measures: ReadonlySet<string>;
 }
@@ -374,6 +422,11 @@ export function parseWarehouseEntity(
     name,
     table,
     connection: nonEmptyString(raw.connection),
+    // `nonEmptyString` and not a cast: a YAML author writing `filter: true` or
+    // `filter: 0` must get NO predicate rather than one that reads `WHERE (true)`
+    // — which widens the read to every row — or `WHERE (0)`, which in MySQL
+    // excludes all of them. Both would look deliberate at rest.
+    filter: nonEmptyString(raw.filter),
     dimensions,
     measures: new Set(namedEntries(raw.measures).map((m) => m.name)),
   };
@@ -756,13 +809,34 @@ export const DIMENSION_ALIAS_PREFIX = "atlas_brain_d";
  * taken from the dimension names. A name is warehouse-controlled text that has to
  * survive quoting in three dialects, and reading a result back by its ordinal is
  * what makes the row parser independent of that.
+ *
+ * ⚠️ **The `WHERE` is the entity's own {@link WarehouseEntity.filter}, and its
+ * POSITION is load-bearing** (#5329). Ahead of the `LIMIT`, so the cap counts rows
+ * that count: a table of 900 live and 400 soft-deleted rows now reads 900 and
+ * emits, where before it read 1,300, tripped {@link WAREHOUSE_ROW_CAP} and refused
+ * the entity whole — with no predicate available to fix it.
+ *
+ * ⚠️ **Parenthesised, for the clause this grows into rather than the one it is.**
+ * A lone `WHERE a OR b LIMIT n` needs no parens. One more condition ANDed in later
+ * turns an unparenthesised `a OR b` into `a OR (b AND c)` — which reads every row
+ * satisfying `a`, a silently WIDER read, and widening is the direction that costs
+ * here. The parens make the declared predicate independent of whatever surrounds
+ * it.
+ *
+ * The filter is INTERPOLATED for the same reason the column expressions are, and
+ * carries no more trust than they do: the built statement goes through the same
+ * `validateSQL` gate before it reaches a datasource, so a malformed or hostile
+ * predicate is refused there rather than by anything new here.
  */
 export function buildSnapshotSql(plan: WarehouseEntityPlan, rowCap = WAREHOUSE_ROW_CAP): string {
   const columns = [
     `${plan.primaryKey.sql} AS ${SUBJECT_ALIAS}`,
     ...plan.dimensions.map((dim, index) => `${dim.sql} AS ${DIMENSION_ALIAS_PREFIX}${index}`),
   ];
-  return `SELECT ${columns.join(", ")} FROM ${plan.entity.table} LIMIT ${rowCap + 1}`;
+  // `null` is every enrollment written before the key existed — no clause at all,
+  // byte-identical to what this built before #5329.
+  const where = plan.entity.filter === null ? "" : ` WHERE (${plan.entity.filter})`;
+  return `SELECT ${columns.join(", ")} FROM ${plan.entity.table}${where} LIMIT ${rowCap + 1}`;
 }
 
 /**

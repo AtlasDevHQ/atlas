@@ -157,6 +157,7 @@ function entityYaml(spec: {
   primaryKey?: string | readonly string[];
   dimensions: readonly DimensionSpec[];
   measures?: readonly string[];
+  filter?: string;
 }): Record<string, unknown> {
   const keys = new Set(
     spec.primaryKey === undefined
@@ -168,6 +169,7 @@ function entityYaml(spec: {
   return {
     table: spec.table,
     ...(spec.connection === undefined ? {} : { connection: spec.connection }),
+    ...(spec.filter === undefined ? {} : { filter: spec.filter }),
     dimensions: spec.dimensions.map((dim) => {
       const { name, sql } = typeof dim === "string" ? { name: dim, sql: columnFor(dim) } : dim;
       return { name, sql, ...(keys.has(name) ? { primary_key: true } : {}) };
@@ -262,6 +264,44 @@ describe("parseWarehouseEntity", () => {
   test("refuses an entity with no table — nothing can be read FROM undefined", () => {
     expect(parseWarehouseEntity("Accounts", { dimensions: [] })).toBeNull();
     expect(parseWarehouseEntity("Accounts", { table: "   " })).toBeNull();
+  });
+
+  test("carries the entity-level `filter:` — which rows count is DECLARED (#5329)", () => {
+    const entity = parseWarehouseEntity("Accounts", {
+      table: "accounts",
+      filter: "deleted_at IS NULL",
+      dimensions: [{ name: "id", primary_key: true }],
+    });
+    expect(entity?.filter).toBe("deleted_at IS NULL");
+  });
+
+  test("trims the filter, so trailing YAML whitespace never reaches the statement", () => {
+    const entity = parseWarehouseEntity("Accounts", {
+      table: "accounts",
+      filter: "  deleted_at IS NULL  ",
+      dimensions: [{ name: "id" }],
+    });
+    expect(entity?.filter).toBe("deleted_at IS NULL");
+  });
+
+  test("an absent, blank or non-string filter is null — never a predicate", () => {
+    const filterOf = (raw: Record<string, unknown>) =>
+      parseWarehouseEntity("Accounts", {
+        table: "accounts",
+        dimensions: [{ name: "id" }],
+        ...raw,
+      })?.filter;
+    expect(filterOf({})).toBeNull();
+    expect(filterOf({ filter: "   " })).toBeNull();
+    // ⚠️ The non-string arms are the ones worth pinning. A YAML author writing
+    // `filter: true` gets NO predicate rather than `WHERE (true)`, and an author
+    // writing `filter: 0` gets no predicate rather than a clause that in MySQL
+    // excludes every row. Both would look deliberate at rest and neither is what
+    // was declared — `nonEmptyString` is what makes the wrong type unreachable
+    // rather than merely unlikely.
+    expect(filterOf({ filter: true })).toBeNull();
+    expect(filterOf({ filter: 0 })).toBeNull();
+    expect(filterOf({ filter: ["deleted_at IS NULL"] })).toBeNull();
   });
 
   test("measures are collected as names, distinctly from dimensions", () => {
@@ -556,6 +596,58 @@ describe("buildSnapshotSql", () => {
     expect(buildSnapshotSql(planFor(accounts, ["status"]), 250)).toContain("LIMIT 251");
   });
 
+  const filtered = parsed("Accounts", {
+    table: "public.accounts",
+    primaryKey: "id",
+    filter: "deleted_at IS NULL",
+    dimensions: [
+      { name: "id", sql: "account_id" },
+      { name: "status", sql: "lifecycle_status" },
+    ],
+  });
+
+  test("carries the entity's filter as a WHERE clause, ahead of the LIMIT (#5329)", () => {
+    // ⚠️ The CLAUSE ORDER is the point, not the presence of a WHERE. `WHERE`
+    // before `LIMIT` is what makes the cap count rows that COUNT: a table of 900
+    // live and 400 soft-deleted rows reads 900 and emits, where the unfiltered
+    // statement read 1,300, tripped `WAREHOUSE_ROW_CAP` and refused the entity
+    // whole. Pinned by whole-string equality so a builder that appended the
+    // predicate after the LIMIT — valid-looking, and rejected by every dialect —
+    // cannot pass.
+    expect(buildSnapshotSql(planFor(filtered, ["status"]), 5)).toBe(
+      `SELECT account_id AS ${SUBJECT_ALIAS}, lifecycle_status AS ${DIMENSION_ALIAS_PREFIX}0 ` +
+        `FROM public.accounts WHERE (deleted_at IS NULL) LIMIT 6`,
+    );
+  });
+
+  test("parenthesises the predicate, so a disjunctive filter cannot be split", () => {
+    // `WHERE a OR b LIMIT n` is today's whole clause and needs no parens. They are
+    // here for the statement this builder grows next: one more condition ANDed in
+    // turns an unparenthesised `a OR b` into `a OR (b AND c)`, which reads every
+    // row of `a` — a silently WIDER read, which is the direction that costs.
+    const disjunctive = parsed("Accounts", {
+      table: "public.accounts",
+      primaryKey: "id",
+      filter: "status = 'active' OR status = 'trial'",
+      dimensions: [{ name: "id", sql: "account_id" }, { name: "status", sql: "lifecycle_status" }],
+    });
+    expect(buildSnapshotSql(planFor(disjunctive, ["status"]), 5)).toContain(
+      "WHERE (status = 'active' OR status = 'trial') LIMIT 6",
+    );
+  });
+
+  test("an entity with NO filter builds exactly what it built before — no empty WHERE", () => {
+    // The compatibility half of #5329: every enrollment in existence predates the
+    // key, so a builder that emitted `WHERE ()` or `WHERE (null)` for them would
+    // refuse the entire installed base at the gate.
+    const sql = buildSnapshotSql(planFor(accounts, ["status", "tier"]), 5);
+    expect(sql).not.toContain("WHERE");
+    expect(sql).toBe(
+      `SELECT account_id AS ${SUBJECT_ALIAS}, lifecycle_status AS ${DIMENSION_ALIAS_PREFIX}0, ` +
+        `LOWER(plan_tier) AS ${DIMENSION_ALIAS_PREFIX}1 FROM public.accounts LIMIT 6`,
+    );
+  });
+
   /**
    * ⚠️ **The POSITIVE CONTROL for the whole SQL gate — and its first version could
    * never reach the gate at all.**
@@ -628,6 +720,68 @@ describe("buildSnapshotSql", () => {
       // mint could drop it and every production refusal read "no reason given" —
       // absorbed at both ends by a `??`, so nothing went red.
       expect(reason(result).length).toBeGreaterThan(0);
+    });
+
+    test("a FILTERED statement is not rejected for its form either (#5329)", async () => {
+      // The filter is interpolated admin-authored text, exactly like a dimension's
+      // `sql:`. This asserts the new clause does not cost the producer the gate —
+      // a WHERE that the parser rejected would refuse every filtered entity in
+      // every workspace, which is ADR-0039's dead producer reached by a new road.
+      const withFilter = parsed("Accounts", {
+        table: "public.accounts",
+        primaryKey: "id",
+        filter: "deleted_at IS NULL AND workspace_status = 'active'",
+        dimensions: [{ name: "id", sql: "account_id" }, { name: "status", sql: "lifecycle_status" }],
+      });
+      const result = await validate(buildSnapshotSql(planFor(withFilter, ["status"]), 10));
+      expect(reason(result)).not.toContain("No valid datasource");
+      expect(reason(result)).toMatch(/allowed list|catalog\.yml/);
+      expect(reason(result)).not.toMatch(/semicolon|multiple statement|parse|syntax/i);
+    });
+
+    test("a hostile filter is refused by the EXISTING gate, not by new machinery", async () => {
+      // ⚠️ The AC that says this grants no new trust. The predicate reaches the
+      // statement by interpolation, so the only thing between a malformed or
+      // hostile `filter:` and a datasource is the product's SQL gate — the same one
+      // every other query in the product passes.
+      const withFilter = (filter: string) =>
+        validate(
+          buildSnapshotSql(
+            planFor(
+              parsed("Accounts", {
+                table: "public.accounts",
+                primaryKey: "id",
+                filter,
+                dimensions: [
+                  { name: "id", sql: "account_id" },
+                  { name: "status", sql: "lifecycle_status" },
+                ],
+              }),
+              ["status"],
+            ),
+            10,
+          ),
+        );
+
+      // ⚠️ **The discriminating assertion is the NEGATIVE one.** `valid === false`
+      // is satisfied vacuously here: this workspace has no whitelist, so even a
+      // benign statement is rejected on its table. A builder that dropped the
+      // filter on the floor would pass a bare falsy check and every "is it
+      // refused?" test written around it. What proves the predicate actually
+      // reached the gate is that the refusal is NOT the table-scoped one.
+      const ddl = await withFilter("1=1) LIMIT 1; DROP TABLE accounts --");
+      expect(ddl.valid).toBe(false);
+      expect(reason(ddl)).not.toContain("No valid datasource");
+      expect(reason(ddl)).not.toMatch(/allowed list|catalog\.yml/);
+      expect(reason(ddl)).toMatch(/Forbidden SQL operation/i);
+
+      // The second arm, one gate layer deeper: no DDL keyword for the pattern
+      // check to catch, so this one has to reach the PARSER to be refused.
+      const chained = await withFilter("1=1) LIMIT 1; SELECT 1 --");
+      expect(chained.valid).toBe(false);
+      expect(reason(chained)).not.toContain("No valid datasource");
+      expect(reason(chained)).not.toMatch(/allowed list|catalog\.yml/);
+      expect(reason(chained)).toMatch(/multiple statement/i);
     });
   });
 });
@@ -1600,6 +1754,54 @@ describe("runWarehouseProducer", () => {
     // …and the positive control: it did emit.
     expect(report.created).toBe(1);
     expect(h.store.paramsFor(INSERT_FACT_SQL)).toHaveLength(1);
+  });
+
+  test("an entity's declared filter reaches the GATE and the DATASOURCE (#5329)", async () => {
+    const h = harness({
+      pairs: [{ entity: "Accounts", group: null, dimension: "tier", naming: false }],
+      entities: {
+        Accounts: entityYaml({
+          table: "accounts",
+          primaryKey: "id",
+          filter: "deleted_at IS NULL",
+          dimensions: ["id", "tier"],
+        }),
+      },
+      rows: { Accounts: [snapshotRow("Acme Corp", "gold")] },
+    });
+
+    const report = await run(h);
+
+    // ⚠️ **What this test can and cannot show.** The runner is a stub, so no WHERE
+    // is ever executed and no row is ever excluded here — asserting "the churned
+    // row produced no observation" against an in-memory harness would be asserting
+    // the fixture. What IS observable, and is the whole emission-side claim of
+    // #5329, is that the statement the producer asks a real datasource to run
+    // carries the predicate. The exclusion itself is the warehouse's to perform.
+    expect(h.snapshots[0]?.sql).toContain("WHERE (deleted_at IS NULL)");
+    // …and the GATE saw the same statement. Validating an unfiltered statement and
+    // running a filtered one would clear a read nobody checked; the two agreeing is
+    // the property, not either alone.
+    expect(h.validations[0]?.sql).toBe(h.snapshots[0]?.sql);
+    expect(report.created).toBe(1);
+  });
+
+  test("an entity with no filter still submits an unfiltered statement", async () => {
+    // The installed base. Every enrollment predates the key, so a producer that
+    // began emitting a WHERE for them would change what every existing workspace
+    // reads without anyone declaring anything.
+    const h = harness({
+      pairs: [{ entity: "Accounts", group: null, dimension: "tier", naming: false }],
+      entities: {
+        Accounts: entityYaml({ table: "accounts", primaryKey: "id", dimensions: ["id", "tier"] }),
+      },
+      rows: { Accounts: [snapshotRow("Acme Corp", "gold")] },
+    });
+
+    const report = await run(h);
+
+    expect(h.snapshots[0]?.sql).not.toContain("WHERE");
+    expect(report.created).toBe(1);
   });
 
   test("snapshots run against the entity's CONNECTION GROUP, not the default connection", async () => {

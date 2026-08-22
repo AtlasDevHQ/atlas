@@ -20,6 +20,21 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.15",
+    title: "The Producer Stops Publishing",
+    date: "2026-08-22",
+    summary:
+      "Atlas reads your warehouse to compare against what people tell it. Until now those readings were stored as beliefs \u2014 reviewed, published, and served back to you as though someone had vouched for them. They should not be. A warehouse value is true if the row says so right now, and asking the warehouse answers that better than a copy taken at some earlier instant. So a warehouse reading is an observation from here on: still stored, still compared against, never served as an answer.",
+    highlights: [
+      "`searchBrain` no longer returns warehouse-sourced rows \u2014 in either content mode, and at any point in time. Ask a quantitative question and the answer comes from your data, live, rather than from a snapshot",
+      "Disagreement detection is untouched, deliberately: when the warehouse contradicts something a colleague said, that conflict still surfaces on the reviewed claim, with its provenance. Comparison keeps working; serving stops",
+      "The review queue no longer lists warehouse rows. Reviewers could never truly action them \u2014 not rejectable, not correctable afterwards \u2014 so they were backlog that could only grow",
+      "Publishing one is now refused outright, with a reason that says why rather than that something failed. The refusal is not a defect to repair: there is nothing to fix, and the row keeps corroborating, earning conflict edges, and counting as coverage evidence",
+      "The extraction cascade gains its cheap levers \u2014 batch, tier, and the policy they run under",
+      "Under the hood: bun 1.4.0, and the test suite moved to bun's native parallel runner, retiring seven bespoke runners",
+    ],
+  },
+  {
     version: "v0.2.14",
     title: "The Coverage Surface Says What It Counts",
     date: "2026-08-20",

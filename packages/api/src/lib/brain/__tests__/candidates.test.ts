@@ -34,6 +34,7 @@ import {
 } from "@atlas/api/lib/brain/candidates";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 import { DECAY_STALE_AFTER_DAYS } from "@atlas/api/lib/brain/staleness";
+import { WAREHOUSE_SOURCE } from "@atlas/api/lib/brain/sources";
 import {
   BrainFactCandidateListResponseSchema,
   BrainFactDecayViewSchema,
@@ -878,6 +879,40 @@ describe("loadFactCandidates — promotion pre-flight", () => {
 
     expect(page.candidates[0]?.promotionBlock).toBeNull();
     expect(page.candidates[0]?.malformedGrantIndices).toEqual([1]);
+  });
+
+  it("inherits the observation refusal from the shared classifier (#5342)", async () => {
+    // The review queue's pre-flight is the SECOND of `classifyFactForPromotion`'s
+    // three consumers, and this asserts it at the consumer rather than only at
+    // the classifier — a test at the classifier is not a test at the consumer.
+    //
+    // ⚠️ Read the layering before "fixing" this as unreachable. In PRODUCTION
+    // no observation reaches this function at all: #5341 excludes them in the
+    // candidate WHERE, and `candidates-pg.test.ts` asserts that against a real
+    // database. This reader is a literal that ignores the WHERE, which is
+    // exactly what makes the pre-flight's own behaviour observable. Both
+    // statements are load-bearing: the SQL exclusion is what a reviewer
+    // experiences, and this is what stops the pre-flight silently reporting an
+    // observation as publishable if the exclusion is ever relaxed.
+    const db = reader([
+      {
+        match: "COUNT(*) OVER ()",
+        rows: [
+          factRow({
+            provenance: { source: WAREHOUSE_SOURCE, actor: "system:warehouse-producer" },
+          }),
+        ],
+      },
+      { match: "FROM brain_episodes e", rows: [] },
+    ]);
+    const page = await loadFactCandidates(db, { ctx: ctx(), limit: 50, offset: 0 });
+
+    const block = page.candidates[0]?.promotionBlock;
+    expect(block?.reasons).toEqual(["OBSERVATION_NOT_PUBLISHABLE"]);
+    // The reviewer learns WHY, not that something failed — and is pointed at
+    // where the answer actually lives.
+    expect(block?.detail).toContain("warehouse observation");
+    expect(block?.detail).toContain("executeSQL");
   });
 
   it("does not assume published implies promotable", async () => {

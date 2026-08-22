@@ -7,9 +7,13 @@
  * Tier-1 correction refusal is an ADR-0036-level invariant: a warehouse-derived
  * fact has NO correction path, because the fix belongs in the data or the
  * semantic layer rather than in an override the next sync overwrites. Its only
- * trigger is `isWarehouseDerived`, a `===` against one string, and the value it
- * compares arrives from a producer ADR-0036 commits to but that **no milestone
- * in the M1–M6 cut has scoped yet**.
+ * trigger was `isWarehouseDerived`, a `===` against one string, and the value it
+ * compared arrived from a producer ADR-0036 commits to but that **no milestone
+ * in the M1–M6 cut has scoped yet**. Since #5340 that trigger is
+ * `readStoredSource` (`lib/brain/observation.ts`) — one reading, shared by the
+ * correction refusal, the publish refusal and the serving exclusion (ADR-0042),
+ * which is the same "name it once" fix at the stored-ROW grain. The consumer
+ * moved; what this file defends did not.
  *
  * Before `sources.ts`, the two sides each spelled their own literal and every
  * test on the refusal hand-seeded `{ source: "warehouse" }` and asserted
@@ -51,11 +55,8 @@ import {
   type EpisodeSource,
   type EpisodeSourceSpec,
 } from "@atlas/api/lib/brain/sources";
-import {
-  CORRECTION_EPISODE_INSERT_SQL,
-  isWarehouseDerived,
-  unrecognizedSourceKind,
-} from "@atlas/api/lib/brain/correction";
+import { CORRECTION_EPISODE_INSERT_SQL } from "@atlas/api/lib/brain/correction";
+import { isObservation, readStoredSource } from "@atlas/api/lib/brain/observation";
 import { SLACK_HISTORY_SOURCE } from "@atlas/api/lib/brain/ingest/slack/config";
 import { ZOOM_TRANSCRIPT_SOURCE } from "@atlas/api/lib/brain/ingest/zoom/config";
 import { OUTLOOK_MAIL_SOURCE } from "@atlas/api/lib/brain/ingest/outlook/config";
@@ -330,7 +331,7 @@ describe("tier-1 refusal reads the same fact the producers write", () => {
     // rename of both cannot pass unnoticed.
     //
     // Deliberately NOT the universal sweep this used to be
-    // (`isWarehouseDerived({source}) === (source === WAREHOUSE_SOURCE)` over
+    // (`isObservation({source}) === (source === WAREHOUSE_SOURCE)` over
     // every member). That form asserted the PRE-#4963 semantics as a law, so
     // adding a second warehouse-class member — the exact future the split
     // exists to enable — would fail here, and the natural repair would be to
@@ -340,10 +341,10 @@ describe("tier-1 refusal reads the same fact the producers write", () => {
     // The literal on at least one line, or this whole test is an agreement
     // assertion wearing a value anchor's name: with `WAREHOUSE_SOURCE` on both
     // sides, renaming the map key AND the constant together passes here.
-    expect(isWarehouseDerived({ source: "warehouse" })).toBe(true);
-    expect(isWarehouseDerived({ source: WAREHOUSE_SOURCE })).toBe(true);
-    expect(isWarehouseDerived({ source: SLACK_SOURCE })).toBe(false);
-    expect(isWarehouseDerived({ source: HUMAN_SOURCE })).toBe(false);
+    expect(isObservation({ source: "warehouse" })).toBe(true);
+    expect(isObservation({ source: WAREHOUSE_SOURCE })).toBe(true);
+    expect(isObservation({ source: SLACK_SOURCE })).toBe(false);
+    expect(isObservation({ source: HUMAN_SOURCE })).toBe(false);
   });
 
   test("isWarehouseDerivedSource selects by CLASS — the property a future member inherits", () => {
@@ -508,62 +509,27 @@ describe("tier-1 refusal reads the same fact the producers write", () => {
     // see the source-text pin below for why this one cannot catch a
     // re-derivation.
     for (const source of [...EPISODE_SOURCES, "snowflake", "chat", "warehouse:prod", "human"]) {
-      expect([source, isWarehouseDerived({ source })]).toEqual([
+      expect([source, isObservation({ source })]).toEqual([
         source,
         isWarehouseDerivedSource(source),
       ]);
     }
   });
 
-  test("correction.ts DELEGATES rather than re-deriving — pinned in source text", () => {
-    // The one guard in this file that is not about values, because it CANNOT
-    // be. Reverting `isWarehouseDerived` to the pre-#4963 comparison —
-    //
-    //     isJsonObject(provenance) && provenance.source === WAREHOUSE_SOURCE
-    //
-    // — is behaviourally IDENTICAL today: `warehouse` is the warehouse class's
-    // only member, so every assertion above returns the same answer and the
-    // whole `correction.ts` half of #4963 reverts with the suite fully green.
-    // (Verified by mutation: it does.) The two only diverge on the future
-    // warehouse-class member the split exists to protect — which is exactly
-    // the "agreement is a coincidence" trap this file's header describes, one
-    // level up. A behavioural test cannot see it, so pin the code.
-    //
-    // Comments are stripped first, the same instrument and the same reason as
-    // `episode-sync-archive.test.ts`'s `codeOf`: the prose above `isWarehouseDerived`
-    // discusses `=== WAREHOUSE_SOURCE` at length, and a guard that tripped on
-    // the explanation would force the explanation to be deleted to stay green.
-    const code = readFileSync(join(import.meta.dir, "..", "correction.ts"), "utf8")
-      .replace(/\/\*[\s\S]*?\*\//g, "")
-      .replace(/(^|[^:])\/\/.*$/gm, "$1");
-    // Scoped to the FUNCTION BODY, not the file. A file-wide `toContain` is
-    // vacuous the moment a second call site exists: adding any helper that
-    // mentions `isWarehouseDerivedSource` satisfies it while
-    // `isWarehouseDerived` itself re-derives, and the whole revert goes green
-    // again. (Verified — that is exactly how this pin was first evaded.)
-    const body = /export function isWarehouseDerived\([^)]*\)[^{]*\{([\s\S]*?)\n\}/.exec(code)?.[1];
-    // Not vacuous: a rename or signature change must fail here rather than
-    // silently making every assertion below run against `undefined`.
-    expect(body).toBeDefined();
-    expect(body).toContain("isWarehouseDerivedSource(");
-    // Any `===` in this body is a re-derivation, whatever it compares against
-    // and however it is spelled — including the destructure-then-compare form
-    // that both of the old `\.source ===` regexes missed.
-    expect(body).not.toMatch(/===/);
-  });
-
-  test("unrecognizedSourceKind returns the offending kind, and only for a PRESENT key", () => {
-    // The quarantine predicate's own contract (#4964), direct rather than
-    // through `correctFact` — the shape the "make it a boolean like its
-    // sibling" tidy-up would silently change.
+  test("the stored-source reading returns the offending kind, and only for a PRESENT key", () => {
+    // The quarantine arm's own contract (#4964), direct rather than through
+    // `correctFact` — the shape the "make it a boolean like its sibling"
+    // tidy-up would silently change. #5340 merged that predicate and its
+    // warehouse sibling into one three-way reading; the contract below is the
+    // same one, expressed as the `unclassifiable` arm.
     for (const kind of ["snowflake", "bigquery", "warehouse:prod", "Warehouse", ""]) {
       // Returns the VALUE, not `true`. The refusal logs this, and a boolean
       // would send the caller back into an `unknown` payload with a cast.
       // `resolvable` because a string CAN join the vocabulary in a later
       // release — that is what the refusal's "wait for a deploy" copy rests on.
-      expect([kind, unrecognizedSourceKind({ source: kind })]).toEqual([
+      expect([kind, readStoredSource({ source: kind })]).toEqual([
         kind,
-        { kind, resolvable: true },
+        { kind: "unclassifiable", source: kind, resolvable: true },
       ]);
     }
 
@@ -573,10 +539,19 @@ describe("tier-1 refusal reads the same fact the producers write", () => {
     // gate that also blocks retract. The region import can produce them — its
     // fact validator requires only a non-empty `provenance` object and never
     // reads `.source`.
-    expect(unrecognizedSourceKind({ source: null })).toEqual({ kind: "null", resolvable: false });
-    expect(unrecognizedSourceKind({ source: 42 })).toEqual({ kind: "[number]", resolvable: false });
-    expect(unrecognizedSourceKind({ source: [] })).toEqual({
-      kind: "[object]",
+    expect(readStoredSource({ source: null })).toEqual({
+      kind: "unclassifiable",
+      source: "null",
+      resolvable: false,
+    });
+    expect(readStoredSource({ source: 42 })).toEqual({
+      kind: "unclassifiable",
+      source: "[number]",
+      resolvable: false,
+    });
+    expect(readStoredSource({ source: [] })).toEqual({
+      kind: "unclassifiable",
+      source: "[object]",
       resolvable: false,
     });
     // The value that made `String()` unusable: both own props shadow
@@ -586,75 +561,98 @@ describe("tier-1 refusal reads the same fact the producers write", () => {
     // problem. It survives `JSON.parse`, so a bundle really can carry it.
     const toPrimitiveTrap = JSON.parse(String.raw`{"source": {"toString": 1, "valueOf": 2}}`);
     expect(() => String(toPrimitiveTrap.source)).toThrow();
-    expect(unrecognizedSourceKind(toPrimitiveTrap)).toEqual({
-      kind: "[object]",
+    expect(readStoredSource(toPrimitiveTrap)).toEqual({
+      kind: "unclassifiable",
+      source: "[object]",
       resolvable: false,
     });
     // …and NOT the content: `String(["warehouse"])` is `"warehouse"`, which an
     // operator reads as an in-vocabulary member while the refusal beside it
     // says the kind is unrecognised. The type is what is actionable.
-    expect(unrecognizedSourceKind({ source: ["warehouse"] })).toEqual({
-      kind: "[object]",
+    expect(readStoredSource({ source: ["warehouse"] })).toEqual({
+      kind: "unclassifiable",
+      source: "[object]",
       resolvable: false,
     });
 
     // Every real member resolves, so none is quarantined — the delegation that
     // makes adding a member the release valve.
     for (const source of EPISODE_SOURCES) {
-      expect([source, unrecognizedSourceKind({ source })]).toEqual([source, null]);
+      expect([source, readStoredSource({ source }).kind]).toEqual([
+        source,
+        source === WAREHOUSE_SOURCE ? "observation" : "belief",
+      ]);
     }
 
     // The carve-out: ABSENT key only. Not "no usable source" — an inherited
-    // `source` is not this fact's provenance, which is why the predicate uses
+    // `source` is not this fact's provenance, which is why the reading uses
     // `Object.hasOwn` and not `in`.
-    expect(unrecognizedSourceKind({})).toBeNull();
-    expect(unrecognizedSourceKind({ producer: "x" })).toBeNull();
-    expect(unrecognizedSourceKind(Object.create({ source: "snowflake" }))).toBeNull();
-    // Not a JSON object at all — same answer as its sibling.
-    expect(unrecognizedSourceKind(null)).toBeNull();
-    expect(unrecognizedSourceKind("snowflake")).toBeNull();
-    expect(unrecognizedSourceKind([])).toBeNull();
+    expect(readStoredSource({})).toEqual({ kind: "belief" });
+    expect(readStoredSource({ producer: "x" })).toEqual({ kind: "belief" });
+    expect(readStoredSource(Object.create({ source: "snowflake" }))).toEqual({ kind: "belief" });
+    // Not a JSON object at all — same answer.
+    expect(readStoredSource(null)).toEqual({ kind: "belief" });
+    expect(readStoredSource("snowflake")).toEqual({ kind: "belief" });
+    expect(readStoredSource([])).toEqual({ kind: "belief" });
   });
 
-  test("unrecognizedSourceKind DELEGATES to the vocabulary — pinned in source text", () => {
-    // The same instrument as the `isWarehouseDerived` pin above, for the same
-    // reason and with a different target. Re-deriving this predicate as
+  test("the stored-source reading DELEGATES rather than re-deriving — pinned in source text", () => {
+    // The one guard in this file that is not about values, because it CANNOT
+    // be. Reverting the warehouse arm to the pre-#4963 comparison —
     //
-    //     !["slack", "zoom", "warehouse", "human"].includes(source)
+    //     isJsonObject(provenance) && provenance.source === WAREHOUSE_SOURCE
     //
-    // is behaviourally identical TODAY, so every assertion above stays green.
-    // A behavioural test does eventually catch it — the `EPISODE_SOURCES` loop
-    // in `correction.test.ts` fails the day a member lands — but it fails in
-    // the confusing direction (a KNOWN kind reports quarantined) and only
-    // while someone unrelated is adding a connector. `sources.ts`'s header now
-    // stakes the self-healing claim on this delegation ("adding a member here
-    // is now also what releases every imported fact of that kind from
-    // quarantine"), so pin it where breaking it is the visible act.
-    const code = readFileSync(join(import.meta.dir, "..", "correction.ts"), "utf8")
+    // — is behaviourally IDENTICAL today: `warehouse` is the warehouse class's
+    // only member, so every assertion above returns the same answer and the
+    // whole consumer half of #4963 reverts with the suite fully green.
+    // (Verified by mutation: it does.) The two only diverge on the future
+    // warehouse-class member the split exists to protect — which is exactly the
+    // "agreement is a coincidence" trap this file's header describes, one level
+    // up. A behavioural test cannot see it, so pin the code.
+    //
+    // #5340 merged the two predicates this used to pin separately into ONE
+    // reading, so this is one pin over both arms — the class question and the
+    // vocabulary question — and the target file moved with them.
+    //
+    // Comments are stripped first, the same instrument and the same reason as
+    // `episode-sync-archive.test.ts`'s `codeOf`: the prose around
+    // `readStoredSource` discusses `=== WAREHOUSE_SOURCE` at length, and a
+    // guard that tripped on the explanation would force the explanation to be
+    // deleted to stay green.
+    const code = readFileSync(join(import.meta.dir, "..", "observation.ts"), "utf8")
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/(^|[^:])\/\/.*$/gm, "$1");
-    const body = /export function unrecognizedSourceKind\([^)]*\)[^{]*\{([\s\S]*?)\n\}/.exec(
-      code,
-    )?.[1];
-    // Same posture as the sibling pin: a rename or a conversion to an arrow
-    // const fails here with "expected undefined to be defined" rather than
-    // silently running every assertion below against `undefined`. That is a
-    // false failure on a legitimate refactor, accepted deliberately — but it is
-    // inscrutable if you hit it cold, so: if you renamed or reshaped the
-    // declaration, update this regex; nothing is actually broken.
+    // Scoped to the FUNCTION BODY, not the file. A file-wide `toContain` is
+    // vacuous the moment a second call site exists: adding any helper that
+    // mentions `isWarehouseDerivedSource` satisfies it while `readStoredSource`
+    // itself re-derives, and the whole revert goes green again. (Verified —
+    // that is exactly how this pin was first evaded.)
+    const body = /export function readStoredSource\([^)]*\)[^{]*\{([\s\S]*?)\n\}/.exec(code)?.[1];
+    // Not vacuous: a rename or a conversion to an arrow const must fail here
+    // with "expected undefined to be defined" rather than silently making every
+    // assertion below run against `undefined`. That is a false failure on a
+    // legitimate refactor, accepted deliberately — but it is inscrutable if you
+    // hit it cold, so: if you renamed or reshaped the declaration, update this
+    // regex; nothing is actually broken.
     expect(body).toBeDefined();
-    // THE load-bearing assertion. Verified by mutation to catch every
-    // re-derivation tried against it — a literal array in single quotes,
-    // double quotes or backticks, `EPISODE_SOURCES.includes`, and a
+    // THE load-bearing assertions, one per arm. Verified by mutation to catch
+    // every re-derivation tried against them — a literal array in single
+    // quotes, double quotes or backticks, `EPISODE_SOURCES.includes`, and a
     // module-level `KNOWN` constant.
+    expect(body).toContain("isWarehouseDerivedSource(");
     expect(body).toContain("isEpisodeSource(");
-    // Strictly weaker than the line above, and kept for the one case that line
-    // misses: a per-member special case that KEEPS the delegate call
-    // (`if (source === "human") return null;` above it). Deliberately NOT the
-    // sibling pin's blanket `not.toMatch(/===/)` — this body has no `===` today
-    // but a legitimate refactor could, and the hazard here is naming a MEMBER.
-    // Driven off the vocabulary so the guard grows with it. Note it only sees
-    // double-quoted spellings, which is what the repo's formatter emits.
+    // The predecessor pin on the warehouse arm banned every `===` in the body.
+    // The merged body cannot honour that: `typeof source === "string"` is the
+    // `resolvable` split and is not a vocabulary question at all. So ban what a
+    // re-derivation actually has to NAME instead. `WAREHOUSE_SOURCE` covers
+    // `=== WAREHOUSE_SOURCE`, `EPISODE_SOURCES` covers
+    // `EPISODE_SOURCES.includes(...)`, and the member loop covers a per-member
+    // special case that KEEPS the delegate call (`if (source === "human")`
+    // above it). Driven off the vocabulary so the guard grows with it. Note it
+    // only sees double-quoted spellings, which is what the repo's formatter
+    // emits.
+    expect(body).not.toContain("WAREHOUSE_SOURCE");
+    expect(body).not.toContain("EPISODE_SOURCES");
     for (const member of EPISODE_SOURCES) {
       expect([member, body]).toEqual([member, expect.not.stringContaining(`"${member}"`)]);
     }
@@ -668,13 +666,13 @@ describe("tier-1 refusal reads the same fact the producers write", () => {
     // this arm pins what would happen if one ever reached the payload anyway,
     // via the region import, which restores a bundle's `source` verbatim.
     for (const vendor of ["snowflake", "bigquery", "warehouse:prod", "Warehouse", "WAREHOUSE"]) {
-      expect([vendor, isWarehouseDerived({ source: vendor })]).toEqual([vendor, false]);
+      expect([vendor, isObservation({ source: vendor })]).toEqual([vendor, false]);
     }
     // Not a JSON object, or no `source` key at all — a fact predating the
     // provenance shape must not be read as warehouse-derived either way.
-    expect(isWarehouseDerived(null)).toBe(false);
-    expect(isWarehouseDerived("warehouse")).toBe(false);
-    expect(isWarehouseDerived({})).toBe(false);
+    expect(isObservation(null)).toBe(false);
+    expect(isObservation("warehouse")).toBe(false);
+    expect(isObservation({})).toBe(false);
   });
 
   test("the Slack producer's source IS the vocabulary's chat vendor, not a parallel literal", () => {
@@ -734,7 +732,7 @@ describe("tier-1 refusal reads the same fact the producers write", () => {
     // with a tier-1 message about the semantic layer, which is nonsense for a
     // meeting.
     expect(isWarehouseDerivedSource(ZOOM_SOURCE)).toBe(false);
-    expect(isWarehouseDerived({ source: ZOOM_SOURCE })).toBe(false);
+    expect(isObservation({ source: ZOOM_SOURCE })).toBe(false);
   });
 
   test("the Outlook producer's source IS the vocabulary's email vendor, byte-identical", () => {
@@ -765,7 +763,7 @@ describe("tier-1 refusal reads the same fact the producers write", () => {
     // refuse every email-derived fact with a tier-1 message about fixing the
     // semantic layer, which is nonsense advice for something a colleague wrote.
     expect(isWarehouseDerivedSource(OUTLOOK_SOURCE)).toBe(false);
-    expect(isWarehouseDerived({ source: OUTLOOK_SOURCE })).toBe(false);
+    expect(isObservation({ source: OUTLOOK_SOURCE })).toBe(false);
   });
 
   test("the correction episode stamps the vocabulary's human class", () => {
@@ -785,6 +783,6 @@ describe("tier-1 refusal reads the same fact the producers write", () => {
     expect(isEpisodeSource(HUMAN_SOURCE)).toBe(true);
     // And it is NOT the warehouse class: a human's own words must stay
     // correctable, which is the opposite end of the same predicate.
-    expect(isWarehouseDerived({ source: HUMAN_SOURCE })).toBe(false);
+    expect(isObservation({ source: HUMAN_SOURCE })).toBe(false);
   });
 });

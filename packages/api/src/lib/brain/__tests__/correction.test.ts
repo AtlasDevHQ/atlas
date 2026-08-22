@@ -98,16 +98,20 @@ const {
   RETRACT_FACT_SQL,
   correctFact,
   correctionTargetSql,
-  isWarehouseDerived,
 } = await import("@atlas/api/lib/brain/correction");
 import type { CorrectionRequest } from "@atlas/api/lib/brain/correction";
 import {
   EPISODE_SOURCES,
-  SLACK_SOURCE,
+  HUMAN_SOURCE,
   WAREHOUSE_CLASS,
   WAREHOUSE_SOURCE,
   episodeSourceClassOf,
 } from "@atlas/api/lib/brain/sources";
+import { readStoredSource } from "@atlas/api/lib/brain/observation";
+import {
+  classifyFactForPromotion,
+  FACT_REFUSAL_REASONS,
+} from "@atlas/api/lib/brain/promotion";
 import {
   CORROBORATION_LOOKUP_SQL,
   INSERT_FACT_SQL,
@@ -1835,6 +1839,69 @@ describe("supersede", () => {
 // stubbing one here would be a fixture agreeing with itself (#5000's trap).
 // ---------------------------------------------------------------------------
 
+describe("the replacement screen inherits the observation refusal (#5342)", () => {
+  test("the replacement the correction path mints is a BELIEF, so the arm cannot fire on it", async () => {
+    // `correction.ts` is the THIRD consumer of `classifyFactForPromotion`, and
+    // this asserts its inheritance at the consumer rather than only at the
+    // classifier. What it inherits here is a refusal it can never trip, and
+    // that is the honest statement rather than a weaker one:
+    // `reconcile.ts` stamps the correction episode's kind on the replacement's
+    // provenance structurally, and the correction episode is always
+    // `HUMAN_SOURCE` (`CORRECTION_EPISODE_INSERT_SQL` inlines the literal).
+    // A human's own words are never an observation.
+    //
+    // So the guard this test actually is: the day someone changes what the
+    // correction episode is sourced as, this fails — and it fails HERE, next to
+    // the screen that would then start refusing every superseding replacement
+    // with a message about the warehouse.
+    const store = new FakeCorrectionStore();
+    store.seedFact({ id: "old", object: "Ana", status: "published" });
+
+    const outcome = await run(store, {
+      factId: "old",
+      verb: "supersede",
+      replacement: { object: "Bo" },
+      reason: "Ana left",
+    });
+    if (outcome.kind !== "corrected") throw new Error(`expected corrected, got ${outcome.kind}`);
+    const newId = outcome.result.supersededBy;
+    if (newId === null) throw new Error("expected a superseding fact id");
+
+    const replacement = store.fact(newId);
+    expect(replacement.provenance.source).toBe(HUMAN_SOURCE);
+    expect(readStoredSource(replacement.provenance)).toEqual({ kind: "belief" });
+    // Screened by the shared classifier and admitted, which is why it published
+    // rather than queuing — the inheritance, seen from the passing side.
+    expect(
+      classifyFactForPromotion({
+        id: newId,
+        subject: replacement.subject,
+        predicate: replacement.predicate,
+        object: replacement.object,
+        source_episode_id: replacement.sourceEpisodeId,
+        provenance: replacement.provenance,
+        visible_to: replacement.visibleTo,
+      }),
+    ).toBeNull();
+    expect(replacement.status).toBe("published");
+
+    // …and the same row with a warehouse source is refused under the new
+    // reason, which is what the screen would surface as
+    // `REPLACEMENT_UNPUBLISHABLE` if such a row could ever be built.
+    expect(
+      classifyFactForPromotion({
+        id: newId,
+        subject: replacement.subject,
+        predicate: replacement.predicate,
+        object: replacement.object,
+        source_episode_id: replacement.sourceEpisodeId,
+        provenance: { ...replacement.provenance, source: WAREHOUSE_SOURCE },
+        visible_to: replacement.visibleTo,
+      })?.reasons,
+    ).toEqual([FACT_REFUSAL_REASONS.observationNotPublishable]);
+  });
+});
+
 describe("cardinality proposer", () => {
   test("supersede does NOT write the row's cardinality — the column left INSERT_FACT_SQL", async () => {
     const store = new FakeCorrectionStore();
@@ -2789,16 +2856,9 @@ describe("shared gates", () => {
     expect(store.episodes[0]!.sourceActor).toBe("local-operator");
   });
 
-  test("isWarehouseDerived reads only the structural source key", () => {
-    // The predicate's SHAPE is what this arm owns. Which VALUES it recognises,
-    // and the agreement between the constant and the producers that stamp it,
-    // are `__tests__/sources.test.ts` — the literals here were the reason
-    // tier-1 refusal could have failed open unnoticed (#4938).
-    expect(isWarehouseDerived({ source: WAREHOUSE_SOURCE })).toBe(true);
-    expect(isWarehouseDerived({ source: SLACK_SOURCE })).toBe(false);
-    expect(isWarehouseDerived(null)).toBe(false);
-    expect(isWarehouseDerived([])).toBe(false);
-  });
+  // The predicate's own SHAPE moved to `__tests__/observation.test.ts` with the
+  // predicate (#5340). What stays here is what this file owns: the REFUSAL SET
+  // the reading drives, verb by verb, which is byte-identical across that move.
 });
 
 /**

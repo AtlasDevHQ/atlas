@@ -60,7 +60,7 @@ import {
 import { identityVocabulary, inheritSlotFromFactRow } from "@atlas/api/lib/brain/identity";
 import { COMPARABLE_TAGS } from "@atlas/api/lib/brain/object-cmp";
 import { WAREHOUSE_SOURCE } from "@atlas/api/lib/brain/sources";
-import { isWarehouseDerived } from "@atlas/api/lib/brain/correction";
+import { isObservation } from "@atlas/api/lib/brain/observation";
 
 // ---------------------------------------------------------------------------
 // A store that RECORDS the six statements the stage issues — and answers no
@@ -496,7 +496,7 @@ describe("block: unattributable claim", () => {
     // naming its class after the vendor would fail the ADR invariant open with
     // every test still green.
     expect(store.facts[0]?.provenance.source).toBe(WAREHOUSE_SOURCE);
-    expect(isWarehouseDerived(store.facts[0]?.provenance)).toBe(true);
+    expect(isObservation(store.facts[0]?.provenance)).toBe(true);
   });
 
   test("the episode's actor is namespaced by source", async () => {

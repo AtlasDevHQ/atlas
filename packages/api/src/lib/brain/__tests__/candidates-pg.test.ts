@@ -56,6 +56,7 @@ import {
 } from "@atlas/api/lib/brain/candidates";
 import { CORRECTION_REFUSAL_REASONS, correctFact } from "@atlas/api/lib/brain/correction";
 import { identityAlias, identityVocabulary, slotKey } from "@atlas/api/lib/brain/identity";
+import { WAREHOUSE_SOURCE } from "@atlas/api/lib/brain/sources";
 import type { ReconcileTransactionRunner } from "@atlas/api/lib/brain/reconcile";
 import { LAST_OBSERVED_AT_SELECT } from "@atlas/api/lib/brain/staleness";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
@@ -67,11 +68,17 @@ const PG_TEST_TIMEOUT_MS = 60_000;
 
 const WS = "ws-candidates-pg";
 
-/** A workspace admin: `org`, `role:admin`, `role:member`, `user:reviewer`. */
-function reviewer(): BrainPrincipalContext {
+/**
+ * A workspace admin: `org`, `role:admin`, `role:member`, `user:reviewer`.
+ *
+ * `workspaceId` is overridable so a test that needs EXACT counts can seed its
+ * own workspace. The shared {@link WS} accumulates fixtures across this file, so
+ * any assertion on a total rather than on a set has to opt out of it.
+ */
+function reviewer(workspaceId: string = WS): BrainPrincipalContext {
   return {
     origin: "authenticated",
-    workspaceId: WS,
+    workspaceId,
     userId: "reviewer",
     role: "admin",
     audienceIds: [],
@@ -120,12 +127,14 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
     sourceId: string;
     body?: string;
     visibleTo?: readonly string[];
+    /** Defaults to the shared {@link WS}; override to seed an isolated workspace. */
+    workspaceId?: string;
   }): Promise<string> {
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_episodes (workspace_id, source, source_id, source_actor, body, occurred_at, visible_to)
        VALUES ($1, 'slack', $2, 'U1', $3, now(), $4::text[])
        RETURNING id`,
-      [WS, opts.sourceId, opts.body ?? "evidence", opts.visibleTo ?? ["org"]],
+      [opts.workspaceId ?? WS, opts.sourceId, opts.body ?? "evidence", opts.visibleTo ?? ["org"]],
     );
     return rows[0]!.id;
   }
@@ -140,6 +149,8 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
     provenance?: Record<string, unknown>;
     /** The grant before publish-time widening; omit for a never-widened fact. */
     preWideningVisibleTo?: readonly (string | null)[];
+    /** Defaults to the shared {@link WS}; override to seed an isolated workspace. */
+    workspaceId?: string;
   }): Promise<string> {
     const predicate = opts.predicate ?? "uses";
     const object = opts.object ?? "Postgres";
@@ -152,7 +163,7 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
                $10, $11, $12)
        RETURNING id`,
       [
-        WS,
+        opts.workspaceId ?? WS,
         opts.subject,
         predicate,
         object,
@@ -1151,6 +1162,181 @@ describeIfPg("brain fact candidates (real Postgres)", () => {
       // before the read — status, tombstone, validity window, update clock.
       const after = await pool.query(`SELECT * FROM brain_facts WHERE id = $1`, [staleFact]);
       expect(after.rows[0]).toEqual(before.rows[0]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+  // ══════════════════════════════════════════════════════════════════
+  // 8. An observation is not a review candidate (#5341, ADR-0042)
+  // ══════════════════════════════════════════════════════════════════
+
+  it(
+    "lists no observation under ANY status filter the surface offers",
+    async () => {
+      // An observation is a recorded reading of a warehouse value, not a claim
+      // anyone believes, so there is no trust call to make on it — and there
+      // never was one a reviewer could actually make: they may not reject it
+      // (#5330) and may not correct it afterwards (`correction.ts`). Leaving it
+      // in the queue is compliance with PRD condition 2 on paper and not in
+      // substance.
+      //
+      // Every filter, not just `draft`, because the exclusion is on the SOURCE:
+      // a status-shaped rule would let `?status=published` list exactly the two
+      // stranded rows ADR-0042 exists to strand.
+      const warehouseEp = await seedEpisode({ sourceId: "obs-queue" });
+      const draftObservation = await seedFact({
+        subject: "ObsQueue",
+        object: "trial",
+        episodeId: warehouseEp,
+        status: "draft",
+        provenance: { source: WAREHOUSE_SOURCE, actor: "system:warehouse-producer" },
+      });
+      const publishedObservation = await seedFact({
+        subject: "ObsQueue",
+        object: "eu",
+        episodeId: warehouseEp,
+        status: "published",
+        provenance: { source: WAREHOUSE_SOURCE, actor: "system:warehouse-producer" },
+      });
+      // The controls, one per status, so a filter that returned NOTHING could
+      // not pass this test by accident.
+      const draftBelief = await seedFact({
+        subject: "ObsQueue",
+        object: "owned by team A",
+        episodeId: warehouseEp,
+        status: "draft",
+      });
+      const publishedBelief = await seedFact({
+        subject: "ObsQueue",
+        object: "owned by team B",
+        episodeId: warehouseEp,
+        status: "published",
+      });
+
+      for (const [status, expected] of [
+        ["draft", [draftBelief]],
+        ["published", [publishedBelief]],
+        ["all", [draftBelief, publishedBelief]],
+      ] as const) {
+        const page = await loadFactCandidates(pool, {
+          ctx: reviewer(),
+          search: "ObsQueue",
+          status,
+          limit: 50,
+          offset: 0,
+        });
+        expect([status, page.candidates.map((c) => c.id).sort()]).toEqual([
+          status,
+          [...expected].sort(),
+        ]);
+        // The count travels with the page — both are built from
+        // `candidateWhere`, and a total that still counted observations would
+        // page a reviewer into an empty second screen.
+        expect([status, page.total]).toEqual([status, expected.length]);
+      }
+
+      // The observations are real rows — this is what stops every assertion
+      // above passing against a workspace where the seeds silently failed.
+      const seeded = await pool.query<{ n: string }>(
+        `SELECT COUNT(*)::text AS n FROM brain_facts
+          WHERE workspace_id = $1 AND id = ANY($2::uuid[])`,
+        [WS, [draftObservation, publishedObservation]],
+      );
+      expect(seeded.rows[0]?.n).toBe("2");
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "leaves no observation in the queue VITALS either — the third statement over the same rows",
+    async () => {
+      // `loadFactCandidateSummary` is a separate aggregate from the page and its
+      // count, so the exclusion has to be on all three. A stats bar reading "2
+      // awaiting review" above an empty queue is the reading that sends a
+      // reviewer looking for a backlog they cannot see.
+      //
+      // Its OWN workspace, because this is the one assertion in the file about
+      // TOTALS rather than about a set: the shared `WS` accumulates fixtures
+      // from every test above, so an exact count there would be unwritable and
+      // a `toBeGreaterThanOrEqual` would pass with the exclusion deleted —
+      // which is exactly what the first draft of this test did.
+      const ws = `${WS}-vitals-${Date.now()}`;
+      const ep = await seedEpisode({ sourceId: "obs-vitals", workspaceId: ws });
+      const observation = { source: WAREHOUSE_SOURCE, actor: "system:warehouse-producer" };
+      await seedFact({ workspaceId: ws, subject: "V-ObsDraft", episodeId: ep, provenance: observation });
+      await seedFact({
+        workspaceId: ws,
+        subject: "V-ObsPublished",
+        episodeId: ep,
+        status: "published",
+        provenance: observation,
+      });
+      await seedFact({ workspaceId: ws, subject: "V-BeliefDraft", episodeId: ep });
+      await seedFact({
+        workspaceId: ws,
+        subject: "V-BeliefPublished",
+        episodeId: ep,
+        status: "published",
+      });
+
+      const summary = await loadFactCandidateSummary(pool, reviewer(ws));
+      // EXACT, not a floor. One belief of each status, and neither observation.
+      // Delete `notAnObservationSql` from the summary aggregate and both of
+      // these read 2.
+      expect([summary.draftTotal, summary.publishedTotal]).toEqual([1, 1]);
+      // The page agrees with the vitals — the pair is what a reviewer sees.
+      const page = await loadFactCandidates(pool, {
+        ctx: reviewer(ws),
+        status: "all",
+        limit: 50,
+        offset: 0,
+      });
+      expect(page.candidates.map((c) => c.subject).sort()).toEqual([
+        "V-BeliefDraft",
+        "V-BeliefPublished",
+      ]);
+      expect(page.total).toBe(2);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "still shows an observation as a TENSION COUNTERPART on a reviewable claim",
+    async () => {
+      // The line ADR-0042 draws, at the review surface: the reviewer must still
+      // see that the warehouse disagrees with the claim in front of them. That
+      // walk is `loadTensionClusters`, which is ACL-gated and takes no content
+      // mode — a change that let the queue's exclusion leak into it would
+      // silently render the conflict as "no contradictions", which is exactly
+      // the signal that should stop an approval.
+      const ep = await seedEpisode({ sourceId: "obs-tension-queue" });
+      const belief = await seedFact({
+        subject: "ObsTension",
+        object: "pro",
+        episodeId: ep,
+      });
+      const observation = await seedFact({
+        subject: "ObsTension",
+        object: "trial",
+        episodeId: ep,
+        provenance: { source: WAREHOUSE_SOURCE, actor: "system:warehouse-producer" },
+      });
+      await edge("in-tension-with", observation, belief);
+
+      const page = await loadFactCandidates(pool, {
+        ctx: reviewer(),
+        search: "ObsTension",
+        status: "all",
+        limit: 50,
+        offset: 0,
+      });
+      // Only the belief is a candidate…
+      expect(page.candidates.map((c) => c.id)).toEqual([belief]);
+      // …and the observation is its counterpart, visible, with its own row's
+      // provenance rather than the owner's.
+      const rival = page.candidates[0]!.tensions[0];
+      expect(rival).toMatchObject({ visible: true, factId: observation });
+      if (rival?.visible !== true) throw new Error("expected a visible counterpart");
+      expect(rival.provenance.source).toBe(WAREHOUSE_SOURCE);
     },
     PG_TEST_TIMEOUT_MS,
   );

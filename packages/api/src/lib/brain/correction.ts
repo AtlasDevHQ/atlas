@@ -76,6 +76,13 @@
  * while both sides spelled their own literal, this refusal was one future
  * naming decision away from silently never firing (#4938).
  *
+ * Since #5340 this file does not perform that read itself. `readStoredSource`
+ * (`lib/brain/observation.ts`) answers "what does the stored provenance say
+ * this row IS" for every gate that needs it — the tier-1 refusal here, the
+ * publish refusal, the serving exclusion — so the three cannot spell the
+ * question differently. ADR-0042 names the warehouse answer an OBSERVATION;
+ * that is the same population this refusal has always meant by tier-1.
+ *
  * ## Why this file is on `check-brain-fact-promotion.sh`'s ALLOWLIST
  *
  * `PROMOTE_CORRECTION_FACT_SQL` writes `status = 'published'` — the exact
@@ -178,13 +185,9 @@ import {
   INSERT_SUPERSEDES_EDGES_SQL,
   SUPERSEDE_STAMP_EXPLICIT_SQL,
 } from "@atlas/api/lib/content-mode/adapters/brain-facts";
-import { classifyFactForPromotion, isJsonObject, type DraftFactRow } from "@atlas/api/lib/brain/promotion";
-import {
-  EPISODE_SOURCES,
-  HUMAN_SOURCE,
-  isEpisodeSource,
-  isWarehouseDerivedSource,
-} from "@atlas/api/lib/brain/sources";
+import { classifyFactForPromotion, type DraftFactRow } from "@atlas/api/lib/brain/promotion";
+import { isJsonObject, readStoredSource } from "@atlas/api/lib/brain/observation";
+import { EPISODE_SOURCES, HUMAN_SOURCE } from "@atlas/api/lib/brain/sources";
 import { BRAIN_CORRECTION_VERBS } from "@useatlas/schemas";
 import type { BrainCorrectionVerb, BrainFactCorrectionResponse } from "@useatlas/types";
 
@@ -1037,8 +1040,16 @@ export async function correctFact(
       const target = readTargetRow(targetResult.rows[0], ctx.workspaceId);
       if (target === null) return null;
 
+      // What the stored provenance says this row IS — one read, three answers
+      // (`lib/brain/observation.ts`, #5340). The two refusals below were two
+      // predicates over the same payload until then; they are two ARMS of one
+      // reading now, which is what makes "a kind cannot be both in the
+      // vocabulary and outside it" a property of the type rather than of two
+      // functions agreeing.
+      const reading = readStoredSource(target.provenance);
+
       // Tier-1: refused for EVERY verb, before anything is written.
-      if (isWarehouseDerived(target.provenance)) {
+      if (reading.kind === "observation") {
         throw new CorrectionRefusedError(
           CORRECTION_REFUSAL_REASONS.warehouseTarget,
           "This fact is warehouse-derived (tier-1), and tier-1 has no correction path: the warehouse is " +
@@ -1048,11 +1059,37 @@ export async function correctFact(
       }
 
       // The undecidable case, refused for every verb too and for the same
-      // invariant (#4964). Mutually exclusive with the arm above — a kind
-      // cannot be both in the vocabulary and outside it — so the order is
-      // readability (the known answer first), not precedence.
-      const unknownKind = unrecognizedSourceKind(target.provenance);
-      if (unknownKind !== null) {
+      // invariant (#4964).
+      //
+      // ## What the quarantine does NOT cover, deliberately
+      //
+      // It gates every verb — including `retract`, which is the only tombstone
+      // path and the GDPR-erasure verb. So an imported unknown-kind fact cannot
+      // be ERASED either until the region learns the kind. That is the same
+      // posture tier-1 already has (it refuses retract too), and the
+      // alternative reopens the hole: if the unknown kind IS warehouse-shaped,
+      // allowing retract is exactly the §T4 arbitration being refused. The
+      // recovery is a deploy, which is worth knowing before this is relied on
+      // to meet an erasure deadline.
+      //
+      // ## Why the refusal is HERE and not at the import
+      //
+      // Refusing the BUNDLE was the other candidate and is worse. Migration
+      // 0180 leaves `brain_episodes.source` plain `text` with no CHECK, so
+      // Postgres legally stores any string; the rule `lib/brain/acl.ts`'s
+      // header states for GRANTS holds here for the same reason — Atlas code
+      // must not be stricter at import than the database is at rest — because
+      // the failure mode is a workspace that cannot migrate between regions and
+      // it surfaces at cutover. Bundle validation is all-or-nothing
+      // (`{ ok: false }` → 400), so one episode from a newer region would
+      // strand the whole workspace. Restoring the evidence is not a new
+      // arbitration; CORRECTING it is, and that is where a region may decline
+      // to act on a kind it cannot classify. So the fact imports, reads, and is
+      // searchable; only its correction path is quarantined — and it is
+      // SELF-HEALING: the day this region deploys the vocabulary that knows the
+      // kind, `readStoredSource` resolves a class and the correct gate takes
+      // over with no data migration.
+      if (reading.kind === "unclassifiable") {
         // The operator-facing half. The user gets the prose below; this is
         // where the two facts that actually locate the problem go — WHICH kind
         // was declined, and the vocabulary it was declined against. Deliberately
@@ -1080,21 +1117,21 @@ export async function correctFact(
             // silently-truncated kind reads as complete to whoever greps the
             // vocabulary for it.
             source:
-              unknownKind.kind.length > 200
-                ? `${unknownKind.kind.slice(0, 200)}… (${unknownKind.kind.length} chars)`
-                : unknownKind.kind,
-            resolvable: unknownKind.resolvable,
+              reading.source.length > 200
+                ? `${reading.source.slice(0, 200)}… (${reading.source.length} chars)`
+                : reading.source,
+            resolvable: reading.resolvable,
             vocabulary: EPISODE_SOURCES,
           },
-          unknownKind.resolvable
+          reading.resolvable
             ? "Refused a correction on a fact whose source kind is outside this deployment's vocabulary — its tier cannot be resolved here, so the correction path is quarantined until a release admits the kind (#4964)"
             : "Refused a correction on a fact whose provenance.source is not a string — no vocabulary can ever admit it, so this is a stored-data defect needing provenance repair, not an upgrade (#4964)",
         );
         throw new CorrectionRefusedError(
-          unknownKind.resolvable
+          reading.resolvable
             ? CORRECTION_REFUSAL_REASONS.unrecognizedSourceKind
             : CORRECTION_REFUSAL_REASONS.malformedSourceKind,
-          unknownKind.resolvable
+          reading.resolvable
             ? "This fact came from a source kind this deployment does not recognise, so whether it is " +
                 "warehouse-derived (tier-1, which has no correction path) cannot be determined here. That " +
                 "usually means the fact was imported from a region running a newer vocabulary and restored " +
@@ -2261,191 +2298,6 @@ async function applyVouch(
 // ---------------------------------------------------------------------------
 // Narrowing helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Tier-1 detection, off the stored payload: `reconcile.ts` writes
- * `provenance.source` structurally from the episode's stored source KIND, so
- * a warehouse-derived fact carries `WAREHOUSE_SOURCE` there. Tier-1 proper is
- * never stored in `brain_facts` at all — this guards the DERIVED class the ADR
- * likewise exempts from correction.
- *
- * The vocabulary, not the literal `"warehouse"`, and that is the whole strength
- * of this predicate: the kind comes from a producer ADR-0036 commits to but no
- * milestone has scoped, and while both sides spelled their own string their
- * agreement was a coincidence — a producer naming itself `"snowflake"` would
- * have silently stopped every tier-1 refusal without failing a test. See
- * `lib/brain/sources.ts`.
- *
- * It asks for the CLASS rather than `=== WAREHOUSE_SOURCE` (#4963). The two are
- * the same answer today, because `warehouse` is the warehouse class's only
- * member — but they differ in what a FUTURE member can do to this invariant. A
- * warehouse vendor that needed its own stored value (the same source-id-collision
- * argument that makes the chat class vendor-grained) would, under the old
- * comparison, have escaped tier-1 refusal the moment it was added, and the only
- * thing standing in the way was a paragraph in `sources.ts` asking it not to.
- * Reading the class moves that from prose to the spec map, where declaring the
- * class is how the member gets into the vocabulary at all.
- */
-export function isWarehouseDerived(provenance: unknown): boolean {
-  return isJsonObject(provenance) && isWarehouseDerivedSource(provenance.source);
-}
-
-/**
- * Does this fact's provenance name a source kind outside the vocabulary — one
- * whose CLASS, and therefore whose tier, this region cannot resolve (#4964)?
- *
- * ## The lane this closes
- *
- * `sources.ts`'s {@link isWarehouseDerivedSource} answers `false` for an
- * unrecognised kind. Until #4964 its docstring called that "the correctable
- * (safe) direction"; it now says the opposite, and this predicate is why. Safe
- * is right for a value a producer could only have stamped by passing the
- * vocabulary gate. But the region import is the ONE producer not gated: it
- * restores a bundle's `source` verbatim so a bundle written by a newer
- * vocabulary still imports (`api/routes/admin-migrate.ts`, and
- * `lib/brain/sources.ts`'s header for the argument). Through that lane an
- * imported `"warehouse:prod"`, `"snowflake"` or `"bigquery"` — the three drift
- * shapes `sources.ts` names — is not in the vocabulary, so it is not
- * warehouse-CLASS, so tier-1 refusal never fires and an ADR-0036 §T4 invariant
- * is downgraded with nothing logged at the moment it matters. Safe was the
- * wrong direction for exactly this input.
- *
- * ## Why the refusal is here and not at the import
- *
- * Refusing the BUNDLE was the other candidate and is worse. Migration 0180
- * leaves `brain_episodes.source` plain `text` with no CHECK, so Postgres
- * legally stores any string; the rule `lib/brain/acl.ts`'s header states for
- * GRANTS holds here for the same reason — Atlas code must not be stricter at
- * import than the database is at rest — because the failure mode is a workspace
- * that cannot migrate between regions and it surfaces at cutover. (That header
- * argues it against 0180's grant CHECK specifically; this column has no CHECK
- * at all.) Bundle validation is all-or-nothing (`{ ok: false }` → 400), so one
- * episode from a newer region would strand the whole workspace. Restoring the
- * evidence is not a new arbitration — the same line `RETRACT_FACT_SQL`'s
- * sole-writer scan draws. CORRECTING it is, and that is where a region may
- * decline to act on a kind it cannot classify.
- *
- * So the fact imports, reads, and is searchable; only its correction path is
- * quarantined. That is conservative in the direction §T4 cares about and it is
- * SELF-HEALING: the day this region deploys the vocabulary that knows the
- * kind, the predicate resolves a class and the correct gate — tier-1 refusal
- * or an ordinary correction — takes over with no data migration.
- *
- * ## What the quarantine does NOT cover, deliberately
- *
- * It gates {@link correctFact} and therefore all four verbs — including
- * `retract`, which is the only tombstone path and the GDPR-erasure verb. So an
- * imported unknown-kind fact cannot be ERASED either until the region learns
- * the kind. That is the same posture tier-1 already has (it refuses retract
- * too), and the alternative reopens the hole: if the unknown kind IS
- * warehouse-shaped, allowing retract is exactly the §T4 arbitration being
- * refused. The recovery is a deploy, which is worth knowing before this is
- * relied on to meet an erasure deadline.
- *
- * It does NOT gate PROMOTION. `classifyFactForPromotion` reads
- * `source_episode_id`, `provenance`'s non-emptiness and the grant — never
- * `provenance.source` —
- * so a draft derived from an unknown-kind episode can still be published while
- * being un-rejectable, which is the more permissive action of the two. That is
- * not the §T4 invariant leaking: tier-1 facts are computed live and have no
- * table at all (`lib/brain/acl.ts`), so anything sitting in `brain_facts` is
- * tier-2/3 and publishing it is an ordinary review decision, not an
- * arbitration over the warehouse. Stated rather than fixed because widening the
- * gate to the review queue is a different change from closing a fail-open, and
- * it would strand imported drafts in a queue no reviewer could clear.
- *
- * ## The line: key PRESENT but unresolvable
- *
- * A provenance carrying no `source` key at all stays correctable. That shape
- * predates this lane, nothing structurally guarantees the key (`promotion.ts`'s
- * refusals check `source_episode_id`, not `provenance.source`), and
- * quarantining it would retire the correction path for facts no import ever
- * touched — a regression dressed as a fix.
- *
- * But a key that is PRESENT and does not resolve is quarantined whatever its
- * type, which is deliberately wider than "present and a string". `null`, `42`
- * and `[]` are reachable on exactly the lane this exists to close and on no
- * other: `brain_facts` has two writers, and `reconcile.ts` always spreads
- * `source: episode.source` — a `string` by its own type — AFTER the producer's
- * detail, so it always wins and is always a string. The other writer is the
- * import, whose fact validator requires only that `provenance` be a non-empty
- * object and never inspects `.source` (`api/routes/admin-migrate.ts`). So a
- * bundle carrying `{ "source": null, "producer": "…" }` on a warehouse-derived
- * fact would otherwise defeat tier-1 refusal AND this quarantine both, which is
- * the whole hole restated one type away. Refusing it is not stricter than
- * 0180's `chk_brain_facts_provenance_nonempty` either: that CHECK has no
- * opinion about the interior shape of a `jsonb` column, so nothing legal at
- * rest becomes unimportable.
- *
- * Be honest about the residual, because the carve-out above is the same
- * evasion one key away: DELETING `source` from that bundle passes
- * `validateBundle`, returns `null` here, returns `false` from
- * {@link isWarehouseDerived}, and lands a fully correctable fact. It is
- * accepted anyway — facts predating this lane are the likelier population, and
- * the import route is operator-privileged, so the adversarial reading is weak.
- * The lane is narrowed, not sealed.
- *
- * ## Two conditions, and only one of them heals
- *
- * `resolvable` is the difference, and it is not cosmetic. A STRING outside the
- * vocabulary is version skew: a future release can add it to
- * `EPISODE_SOURCE_SPECS` and the quarantine lifts. A NON-STRING can never be
- * admitted — {@link isEpisodeSource} requires `typeof value === "string"` — so
- * no deploy will ever resolve it, and telling an operator to wait for one is a
- * false promise on a gate that also blocks `retract`, the GDPR-erasure verb.
- * That is the same defect as reporting this refusal as tier-1, so the two get
- * different refusal reasons and different prose. Repairing a malformed one is a
- * provenance fix, not an upgrade.
- *
- * @returns the offending kind and whether a future vocabulary could resolve it,
- * or `null` when there is none. Not a `boolean`, unlike its
- * {@link isWarehouseDerived} sibling: the refusal has to LOG which kind it
- * declined and BRANCH on whether it can heal, and returning both here is what
- * keeps the caller from re-reaching into an `unknown` payload with a cast.
- */
-export function unrecognizedSourceKind(
-  provenance: unknown,
-): { readonly kind: string; readonly resolvable: boolean } | null {
-  if (!isJsonObject(provenance)) return null;
-  // `hasOwn`, not `"source" in provenance` and not a truthiness check on the
-  // value: the absent-key carve-out above is the ONLY exemption, so it is the
-  // only thing that may be tested for. An inherited `source` is not this
-  // fact's provenance, and `{ source: "" }` is present-and-unresolvable like
-  // any other bad value.
-  if (!Object.hasOwn(provenance, "source")) return null;
-  const { source } = provenance;
-  if (isEpisodeSource(source)) return null;
-  return { kind: describeSourceValue(source), resolvable: typeof source === "string" };
-}
-
-/**
- * Render a rejected `source` for an operator log, without trusting it.
- *
- * A string is itself. Anything else is reported as its TYPE, and neither
- * `String()` nor `JSON.stringify` is used to do better:
- *
- *   * `String()` THROWS on `{"toString": 1, "valueOf": 2}` — `ToPrimitive`
- *     finds both own properties shadowing `Object.prototype` and neither
- *     callable. That object survives `JSON.parse`, and the import's fact
- *     validator only requires a non-empty `provenance` object, so it reaches
- *     here from a bundle. A throw at this point escapes the refusal path
- *     entirely: it unwinds through the rollback as a non-`CorrectionRefusedError`,
- *     the caller gets a generic 500 instead of the designed 409, and the one
- *     log line naming the offending value never emits. Turning a deliberate
- *     refusal into a 500 by formatting its own error message is the failure
- *     this function exists to prevent.
- *   * `JSON.stringify` is total over `JSON.parse` output but renders
- *     `["warehouse"]` as content an operator reads as an in-vocabulary member,
- *     which contradicts the very refusal being logged.
- *
- * The type is the actionable fact anyway: a non-string is not a kind at all,
- * and the log carries `factId`, so the row itself is one query away.
- */
-function describeSourceValue(source: unknown): string {
-  if (typeof source === "string") return source;
-  if (source === null) return "null";
-  return `[${typeof source}]`;
-}
 
 function normalizeReplacement(
   replacement: CorrectionReplacement | undefined,

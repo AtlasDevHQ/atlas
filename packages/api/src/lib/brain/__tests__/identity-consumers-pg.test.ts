@@ -242,7 +242,10 @@ import { Effect } from "effect";
 import { Pool } from "pg";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS, _resetPool } from "@atlas/api/lib/db/internal";
-import { promoteBrainFacts } from "@atlas/api/lib/content-mode/adapters/brain-facts";
+import {
+  PROMOTE_FACTS_SQL,
+  promoteBrainFacts,
+} from "@atlas/api/lib/content-mode/adapters/brain-facts";
 import { resolvePrincipalContext } from "@atlas/api/lib/brain/acl";
 import { loadSupersessionPreview, loadWideningPreview } from "@atlas/api/lib/brain/oversight";
 import {
@@ -863,7 +866,47 @@ describeIfPg("claim identity — three consumers, one corpus (#5021)", () => {
       await curateSingle(workspaceId, pair.a.predicate);
       await curateSingle(workspaceId, pair.b.predicate);
       await land(workspaceId, `${pair.id}-a`, pair.a);
-      expect((await publish(workspaceId)).promoted).toBe(1);
+      if (isWarehouseDerivedSource(pair.a.source)) {
+        // #5342 (ADR-0042) closed the publish gate on observations, so a
+        // warehouse-sourced incumbent can no longer be MADE by publishing one.
+        // That is the ticket working, not this suite breaking — and it does NOT
+        // retire #5033's tier guard, whose population is now closed rather than
+        // empty: rows blessed before the gate closed (two on prod today, which
+        // #5331 retracts), and rows a region import restores with `status`
+        // written verbatim (`admin-migrate.ts`, the guard's one allowlisted
+        // writer). Both are published warehouse rows a later draft can collide
+        // with, which is exactly what the tier guard has to keep refusing.
+        //
+        // So this arm MODELS that population rather than dropping the fixture,
+        // which would delete the tier guard's only killer. Asserting the
+        // refusal first is what keeps the two rules pinned against each other:
+        // if #5342's arm is ever weakened, this line fails here instead of the
+        // status write silently becoming a no-op.
+        expect((await publish(workspaceId)).promoted).toBe(0);
+        // Faithful to what the gate would have written: `PROMOTE_FACTS_SQL`
+        // sets `status` and `updated_at` and nothing else, and with one fact in
+        // the workspace there is no supersession phase to reproduce.
+        //
+        // Pinned against the real statement rather than asserted in prose. A
+        // column added to the gate's SET clause would otherwise leave this
+        // fixture quietly building an incumbent no publish could produce — the
+        // exact "the fixture agrees with itself" failure this arm is one step
+        // away from. The `\bSET\b … WHERE` slice is the write set; anything new
+        // in it reddens here, next to the hand-written copy that has to match.
+        const setClause = /SET([\s\S]*?)WHERE/.exec(PROMOTE_FACTS_SQL)?.[1];
+        expect(setClause).toBeDefined();
+        expect(setClause?.replace(/\s+/g, " ").trim()).toBe(
+          "status = 'published', updated_at = now()",
+        );
+        const stamped = await pool.query(
+          `UPDATE brain_facts SET status = 'published', updated_at = now()
+            WHERE workspace_id = $1 AND status = 'draft' AND invalidated_at IS NULL`,
+          [workspaceId],
+        );
+        expect(stamped.rowCount).toBe(1);
+      } else {
+        expect((await publish(workspaceId)).promoted).toBe(1);
+      }
       const [incumbent] = await factIds(workspaceId);
       await land(workspaceId, `${pair.id}-b`, pair.b);
       return { workspaceId, incumbent: incumbent! };

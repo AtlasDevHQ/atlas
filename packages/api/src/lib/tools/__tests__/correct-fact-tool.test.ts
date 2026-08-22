@@ -87,7 +87,10 @@ void mock.module("@atlas/api/lib/logger", () => ({
 // FUNCTION export has no such pin and `check-test-discipline.sh` only checks
 // mock/restore pairing — `unrecognizedSourceKind` was missed on exactly that
 // asymmetry and caught in review, not by a gate. Re-read the module's exports
-// when touching this list.
+// when touching this list. (That export, and `isWarehouseDerived` beside it,
+// left this module in #5340 — they became one reading in
+// `lib/brain/observation.ts`, which this file has no reason to stub because
+// the wrapper never calls it.)
 let correctCalls: Array<Record<string, unknown>> = [];
 let correctionResult: () => unknown = () => ({ kind: "not-found" });
 void mock.module("@atlas/api/lib/brain/correction", () => ({
@@ -118,8 +121,6 @@ void mock.module("@atlas/api/lib/brain/correction", () => ({
   PROMOTE_CORRECTION_FACT_SQL: "UPDATE",
   REPLACEMENT_ROW_SQL: "SELECT",
   correctionTargetSql: () => "SELECT",
-  isWarehouseDerived: () => false,
-  unrecognizedSourceKind: () => null,
   correctFact: async (request: Record<string, unknown>) => {
     correctCalls.push(request);
     return correctionResult();

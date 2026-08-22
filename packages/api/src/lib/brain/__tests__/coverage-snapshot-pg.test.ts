@@ -1627,7 +1627,12 @@ describeIfPg("coverage denominator snapshots (#5213, ADR-0041)", () => {
       );
     }
 
-    async function seedWarehouseFact(entity: string, dimension: string, at: Date) {
+    async function seedWarehouseFact(
+      entity: string,
+      dimension: string,
+      at: Date,
+      status: "draft" | "published" = "draft",
+    ) {
       const { rows } = await pool.query<{ id: string }>(
         `INSERT INTO brain_episodes
            (workspace_id, source, source_id, source_actor, body, occurred_at, visible_to)
@@ -1640,7 +1645,7 @@ describeIfPg("coverage denominator snapshots (#5213, ADR-0041)", () => {
            (workspace_id, subject, predicate, object, source_episode_id, provenance,
             visible_to, status, subject_key, predicate_key, object_key)
          VALUES ($1, 'Acme', $2, 'active', $3, '{"source":"warehouse","actor":"p"}'::jsonb,
-                 ARRAY['org'], 'draft', $4, $5, $6)`,
+                 ARRAY['org'], $7, $4, $5, $6)`,
         [
           WORKSPACE,
           dimension,
@@ -1648,6 +1653,7 @@ describeIfPg("coverage denominator snapshots (#5213, ADR-0041)", () => {
           slotKey("Acme", identityAlias),
           slotKey(dimension, identityAlias),
           slotKey("active", identityAlias),
+          status,
         ],
       );
     }
@@ -1758,6 +1764,33 @@ describeIfPg("coverage denominator snapshots (#5213, ADR-0041)", () => {
       // `accounts / status` is not in the semantic layer fixture, so it is not a
       // survey unit at all — the fact is orphaned, which is the honest result.
       expect(byId.has(warehouseSurveyUnitId("accounts", "status"))).toBe(false);
+    });
+
+    it("counts an observation as evidence irrespective of STATUS (#5341 must not leak here)", async () => {
+      // ADR-0041's deliberate choice, and #5341's fourth acceptance criterion.
+      // The serving exclusion added there is on the SOURCE and lands in
+      // `searchBrain` and the review queue; `WAREHOUSE_EVIDENCE_SQL` has no
+      // status arm AND no source arm, and must keep both — filtering to
+      // `published` would report a workspace's whole warehouse as unsurveyed
+      // until someone worked a review queue that, since #5341, never shows these
+      // rows at all. That is a backlog, not a coverage figure.
+      //
+      // Two pairs, one per status, in the SAME call. A single draft pair would
+      // pass against an implementation that filtered to `draft`, which is the
+      // inverse leak and just as wrong.
+      await seedEnrollment("plans", "status");
+      await seedEnrollment("plans", "tier");
+      await seedWarehouseFact("plans", "status", new Date("2026-07-27T00:00:00.000Z"), "draft");
+      await seedWarehouseFact("plans", "tier", new Date("2026-07-28T00:00:00.000Z"), "published");
+
+      const outcome = await enumerateWarehouseCoverage({ workspaceId: WORKSPACE, deps });
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+      const byId = new Map(outcome.units.map((u) => [u.unitId, u]));
+      expect([
+        byId.get(warehouseSurveyUnitId("plans", "status"))?.newestEvidenceAt?.toISOString(),
+        byId.get(warehouseSurveyUnitId("plans", "tier"))?.newestEvidenceAt?.toISOString(),
+      ]).toEqual(["2026-07-27T00:00:00.000Z", "2026-07-28T00:00:00.000Z"]);
     });
 
     it("every warehouse unit is NAMEABLE — the admin authored the semantic layer", async () => {

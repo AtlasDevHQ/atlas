@@ -77,6 +77,7 @@ import {
 import { classifyFactForPromotion, type DraftFactRow } from "@atlas/api/lib/brain/promotion";
 import { brainFactCurrentClause } from "@atlas/api/lib/content-mode/adapters/brain-facts";
 import { loadTensionClusters } from "@atlas/api/lib/brain/tensions";
+import { notAnObservationSql } from "@atlas/api/lib/brain/observation";
 import {
   computeDecaySignal,
   LAST_OBSERVED_AT_SELECT,
@@ -631,6 +632,18 @@ function candidateWhere(
     // tombstoned one does — there is no trust call left to make on it, and the
     // as-of reads M2 adds are where it stays readable.
     brainFactCurrentClause("f"),
+    // ADR-0042 (#5341): an observation is not a candidate for review. It is a
+    // recorded reading of a warehouse value, not a claim anyone believes, so
+    // there is no trust call to make on it and never was — the reviewer's only
+    // options were approve or leave it here forever (they may not reject it,
+    // #5330, and may not correct it afterwards, `correction.ts`), which is
+    // compliance with PRD condition 2 on paper and not in substance.
+    //
+    // HERE rather than in the status arm below, so it holds for every status
+    // filter the surface offers including `all` — the exclusion is on the
+    // SOURCE, and a status-shaped one would let `?status=published` list the
+    // two rows ADR-0042 exists to strand.
+    notAnObservationSql("f"),
   ];
 
   const status = options.status ?? "draft";
@@ -1032,7 +1045,8 @@ export async function loadFactCandidateSummary(
        FROM brain_facts f
       WHERE ${acl.sql}
         AND f.invalidated_at IS NULL
-        AND ${brainFactCurrentClause("f")}`,
+        AND ${brainFactCurrentClause("f")}
+        AND ${notAnObservationSql("f")}`,
     [...acl.params],
   );
 

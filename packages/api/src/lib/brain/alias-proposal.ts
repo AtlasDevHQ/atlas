@@ -82,7 +82,7 @@
 
 import { createLogger } from "@atlas/api/lib/logger";
 import { comparableSameSql } from "@atlas/api/lib/brain/object-cmp";
-import { episodeSourceArraySql, WAREHOUSE_SOURCES } from "@atlas/api/lib/brain/sources";
+import { observationSql } from "@atlas/api/lib/brain/observation";
 import {
   proposeAliasEdges,
   type AliasDecideDeps,
@@ -218,16 +218,6 @@ export const ALIAS_PROPOSAL_CANDIDATE_CAP = 25;
 export const ALIAS_HINT_RANK_BONUS = 0.05;
 
 /**
- * The tier vocabulary as a SQL array literal, built ONCE at module load — the
- * POSITIVE list, unlike #5033's tier guard, which splices the complement.
- *
- * Safe unquoted for the reason `sources.ts` owns: `EPISODE_SOURCE_SLUG` is
- * enforced over the whole vocabulary at that module's load, so the escaping rule
- * lives beside the values and not beside this consumer.
- */
-const WAREHOUSE_SOURCE_ARRAY_SQL = episodeSourceArraySql(WAREHOUSE_SOURCES);
-
-/**
  * *Positively warehouse-derived* — the direction arm (ADR-0037 §4).
  *
  * ⚠️ **NOT the negation of #5033's `supersedableTierSql`, and it must not be
@@ -273,10 +263,15 @@ const WAREHOUSE_SOURCE_ARRAY_SQL = episodeSourceArraySql(WAREHOUSE_SOURCES);
  *
  * `alias` is interpolated; callers pass a plain identifier they control — the
  * same contract as `supersedableTierSql` and `comparableDifferentSql`.
+ *
+ * ⚠️ The SPELLING is `observationSql` (`lib/brain/observation.ts`), called
+ * directly at the two sites below. It moved there at #5341, where ADR-0042's
+ * serving exclusion needed the identical predicate — one string with two
+ * readings that are the same reading: *this stored row is an observation*. This
+ * block stays because what it argues is THIS consumer's rule — why the
+ * DIRECTION arm must be a positive allowlist — which is not what the SQL says
+ * and does not belong next to the SQL.
  */
-function warehouseDerivedSql(alias: string): string {
-  return `(${alias}.provenance->>'source' = ANY (${WAREHOUSE_SOURCE_ARRAY_SQL}))`;
-}
 
 /**
  * The proposal query. Exported so the real-Postgres suite runs this exact string
@@ -364,8 +359,8 @@ export const ALIAS_PROPOSAL_SQL = `
     SELECT a.predicate_key AS from_norm,
            b.predicate_key AS to_norm,
            a.subject_key   AS subject_key,
-           ${warehouseDerivedSql("a")} AS from_warehouse,
-           ${warehouseDerivedSql("b")} AS to_warehouse
+           ${observationSql("a")} AS from_warehouse,
+           ${observationSql("b")} AS to_warehouse
       FROM brain_facts a
       JOIN brain_facts b
         ON b.workspace_id = a.workspace_id

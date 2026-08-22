@@ -1,7 +1,53 @@
 /**
  * The fact class's promotion refusals evaluated at the review gate (#4769):
  * "no-provenance-no-promotion" (T4, ADR-0036 §Temporal, conflict & provenance)
- * and "no-grant-no-promotion" (T5, ADR-0036 §Access control & residency).
+ * and "no-grant-no-promotion" (T5, ADR-0036 §Access control & residency) — and,
+ * since #5342, "an observation is never published" (ADR-0042).
+ *
+ * ## Two kinds of refusal, and the second one is not a defect
+ *
+ * The first three codes name something REPAIRABLE about a claim: fix the
+ * provenance, fix the grant, publish again. `OBSERVATION_NOT_PUBLISHABLE` names
+ * what the row IS — a recorded reading of a warehouse value, which `executeSQL`
+ * answers live and fresher — so it is terminal, short-circuits before the
+ * collected list, and carries prose with no "fix it" tail. Reading it as a
+ * fourth repairable defect is the misreading to avoid; it is why the two are
+ * structurally separated here rather than sharing the collection loop.
+ *
+ * ## Why the observation rule is HERE and not in the publish adapter
+ *
+ * This module is pure and already has three consumers, so one arm is inherited
+ * by all three. Be precise about what each inherits, because ADR-0042 and
+ * #5342's own body describe the middle one as it was BEFORE #5341 landed:
+ *
+ *   - the publish adapter's gate refuses the row — the only consumer an
+ *     observation actually reaches in production;
+ *   - the review queue's pre-flight (`candidates.ts`) would report it as
+ *     refused with a reason rather than as something a reviewer could bless.
+ *     It never gets the chance: #5341 excludes observations in the candidate
+ *     WHERE, which is strictly stronger. The inheritance still matters as a
+ *     backstop — relax that exclusion and the queue cannot silently start
+ *     advertising an observation as publishable;
+ *   - the correction path's replacement screen stays consistent with both, and
+ *     likewise cannot reach it: `reconcile.ts` stamps the replacement with the
+ *     correction episode's kind, which is always `HUMAN_SOURCE`.
+ *
+ * ADR-0042 is explicit that enforcement is a TEST and not a grep guard:
+ * `scripts/check-brain-fact-promotion.sh` greps for code shapes because a rogue
+ * status writer IS a shape, while this rule is a runtime predicate over stored
+ * provenance with no shape to grep. Do not add one.
+ *
+ * ## What "the set of published observations is closed" does and does not mean
+ *
+ * Closed over rows this deployment can CLASSIFY. The arm below reads
+ * `isObservation`, which answers `false` for a source kind outside the
+ * vocabulary — so an imported `{"source":"snowflake"}` row that is warehouse-
+ * shaped in the region that exported it is still publishable, and still served.
+ * That is deliberate and is #4964's standing decision, not an oversight of
+ * #5342: the region import is the one producer that is not vocabulary-gated,
+ * and refusing what it restores would strand every imported draft in a queue no
+ * reviewer could clear. The residual closes the day this region deploys a
+ * vocabulary that knows the kind, with no data migration.
  *
  * Pure decisions only — what the gate REFUSES ({@link classifyFactForPromotion})
  * and, for what it admits, what grant it publishes with
@@ -77,6 +123,7 @@
  */
 
 import { formatPrincipal, isUnknownArray, parseGrant } from "@atlas/api/lib/brain/acl";
+import { isJsonObject, isObservation } from "@atlas/api/lib/brain/observation";
 import type { PromotionRefusal } from "@atlas/api/lib/content-mode/port";
 
 /**
@@ -99,6 +146,14 @@ export const FACT_REFUSAL_REASONS = {
   provenanceEmpty: "PROVENANCE_EMPTY",
   /** Every `visible_to` token is outside the grant grammar — grants nobody. */
   grantUnusable: "GRANT_UNUSABLE",
+  /**
+   * The row is an OBSERVATION — a recorded reading of a warehouse value, not a
+   * claim anyone believes (ADR-0042, #5342). Terminal and unlike every other
+   * code here: the other three name something REPAIRABLE, and this one names
+   * what the row IS. Nothing about it can be fixed into publishability, which
+   * is why it short-circuits rather than joining the collected list.
+   */
+  observationNotPublishable: "OBSERVATION_NOT_PUBLISHABLE",
   /**
    * `visible_to` did not arrive as an array at all. `visible_to text[] NOT NULL`
    * (0180) makes that impossible from the database, so this is QUERY DRIFT — a
@@ -152,16 +207,6 @@ export interface FactRefusal extends PromotionRefusal {
 }
 
 /**
- * A non-null, non-array object — what `jsonb_typeof(...) = 'object'` means.
- *
- * Exported so the adapter narrows a driver row with the same guard rather than
- * an `as Record<string, unknown>` cast.
- */
-export function isJsonObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/**
  * Decide whether one draft fact may be promoted, and if not, say why in terms
  * an admin can act on.
  *
@@ -173,6 +218,32 @@ export function isJsonObject(value: unknown): value is Record<string, unknown> {
  * that must be cheap.
  */
 export function classifyFactForPromotion(row: DraftFactRow): FactRefusal | null {
+  // ADR-0042 (#5342): the producer's output never reaches `published`. The
+  // module header carries the argument for why this arm lives in this file and
+  // what it is and is not closed over; what is local to the code is the
+  // ORDERING.
+  //
+  // FIRST and ALONE, because it is the one refusal here that is not a defect.
+  // The other three say *this claim is broken, repair it*; this one says *this
+  // is not a claim*. Collecting it alongside a grant complaint would tell a
+  // reviewer to go fix the grant on a row that could never be published with
+  // any grant at all, and the shared tail below ("Fix it (or retract it) and
+  // publish again") would be a straight lie — there is nothing to fix, and
+  // `retract` is refused on it too.
+  if (isObservation(row.provenance)) {
+    return {
+      rowId: row.id,
+      reasons: [FACT_REFUSAL_REASONS.observationNotPublishable],
+      detail:
+        `"${row.subject} ${row.predicate} ${row.object}" (${row.id}) was not published because it is a ` +
+        "warehouse observation — a recorded reading of a warehouse value at an instant, not a claim " +
+        "anyone believes. Observations are never published: the warehouse answers this question live " +
+        "and fresher through `executeSQL`, and a published copy would go stale the moment the row " +
+        "changed. There is nothing to fix. It stays a draft, where it still corroborates, still earns " +
+        "conflict edges against reviewed facts, and still counts as evidence on the Coverage Surface.",
+    };
+  }
+
   const reasons: FactRefusalReason[] = [];
   const details: string[] = [];
 

@@ -129,15 +129,13 @@ else, so a row non-zero there is one a default local run still catches.
         {
           file: RECONCILE,
           oldString: `    ...agreementBinds(item.keys, item.comparableForLookups, item.subjectComparable),
-  ]);
-  const existingId = firstId(existing.rows);`,
+    // \`$7\` — "the INCOMING claim is itself an observation", which lifts the`,
           newString: `    item.subject,
     item.predicate,
     item.object,
     item.comparableForLookups,
     item.subjectComparable,
-  ]);
-  const existingId = firstId(existing.rows);`,
+    // \`$7\` — "the INCOMING claim is itself an observation", which lifts the`,
         },
       ],
       note: "The same pivot reverted at the BIND — the other half, and the one the unit lane can still see, because its fake records the binds it was given.",

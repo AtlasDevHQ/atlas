@@ -110,11 +110,13 @@ mutation cannot reach — and the notes say which.
         {
           file: RECONCILE,
           oldString: `      AND \${subjectNotDifferentSql("subject_cmp", "$6")}
+      AND (\${notAnObservationSql("brain_facts")} OR $7)
       AND invalidated_at IS NULL
       AND valid_to IS NULL
     ORDER BY ingested_at
     LIMIT 1\`;`,
           newString: `      AND ($6::text IS NULL OR TRUE)
+      AND (\${notAnObservationSql("brain_facts")} OR $7)
       AND invalidated_at IS NULL
       AND valid_to IS NULL
     ORDER BY ingested_at

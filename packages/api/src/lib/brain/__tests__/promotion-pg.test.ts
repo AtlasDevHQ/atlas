@@ -1737,6 +1737,12 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
         //
         // `null` at the subject, which is what a claim with no entity store
         // carries and therefore what the shipped default writes on every row.
+        //
+        // SIX since #5332, and the new one is not a slot value: `$7` is *"the
+        // INCOMING claim is itself an observation"*, which lifts the lookup's
+        // class exclusion. `false` here — this is an extractor claim about a
+        // person's manager, i.e. a belief, which is also the only binding under
+        // which the two assertions below mean what they say.
         const back = await pool.query(CORROBORATION_LOOKUP_SQL, [
           ws,
           slotKey("alice", identityAlias),
@@ -1744,6 +1750,7 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
           slotKey("bob", identityAlias),
           comparableValue({ surface: "bob", entityId: "ent:bob" }),
           null,
+          false,
         ]);
         expect(back.rows).toEqual([]);
         // The CURRENT claim still corroborates normally.
@@ -1754,6 +1761,7 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
           slotKey("carol", identityAlias),
           comparableValue({ surface: "carol", entityId: "ent:carol" }),
           null,
+          false,
         ]);
         expect(current.rows.map((r) => r.id)).toEqual([draft]);
       },

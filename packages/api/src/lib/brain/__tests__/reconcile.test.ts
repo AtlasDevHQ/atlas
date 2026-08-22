@@ -60,7 +60,7 @@ import {
 import { identityVocabulary, inheritSlotFromFactRow } from "@atlas/api/lib/brain/identity";
 import { COMPARABLE_TAGS } from "@atlas/api/lib/brain/object-cmp";
 import { WAREHOUSE_SOURCE } from "@atlas/api/lib/brain/sources";
-import { isObservation } from "@atlas/api/lib/brain/observation";
+import { isObservation, notAnObservationSql } from "@atlas/api/lib/brain/observation";
 
 // ---------------------------------------------------------------------------
 // A store that RECORDS the six statements the stage issues — and answers no
@@ -2199,5 +2199,50 @@ describe("no autonomous supersession (#4912)", () => {
     // has NO other writer at all. Migration 0191 deliberately does not backfill,
     // so a value omitted here is a row that abstains forever.
     expect(INSERT_FACT_SQL).toContain("subject_key, predicate_key, object_key, object_cmp");
+  });
+
+  test("corroboration excludes OBSERVATIONS, and lifts that only for another observation (#5332)", () => {
+    // ADR-0042's *only a belief can be corroborated*. The behavioural falsifier
+    // is `corroboration-class-pg.test.ts`, which SKIPS without
+    // `TEST_DATABASE_URL` — so on a default local run this block is the only
+    // thing standing between the arm and a silent revert, which is this whole
+    // section's reason to exist.
+
+    // ⚠️ THE WHOLE ARM, from the builder — the same rule as the `subject_cmp`
+    // loop above, and for its measured reason: `IS NOT TRUE` already appears
+    // twice in this statement, so a floating-substring check would be satisfied
+    // by the object veto and say nothing about the class.
+    expect(
+      CORROBORATION_LOOKUP_SQL,
+      "CORROBORATION_LOOKUP_SQL lost the observation exclusion, or spelled a `provenance.source` literal by hand instead of going through `notAnObservationSql` (#5332, #5340) — the drift #4938 already caught once",
+    ).toContain(`(${notAnObservationSql("brain_facts")} OR $7)`);
+
+    // ⚠️ `OR $7`, and it is NOT a redundancy to simplify away. `$7` is TRUE when
+    // the INCOMING claim is itself an observation, which is what lets the
+    // warehouse producer's re-read of an unchanged row strengthen its
+    // predecessor instead of forking a duplicate every run — and that edge IS
+    // `observation-reap.ts`'s freshness signal. MEASURED: replacing the arm with
+    // an unconditional `notAnObservationSql(…)` fails one cell of
+    // `corroboration-class-pg.test.ts` AND two of `observation-reap-pg.test.ts`,
+    // both of which skip locally. Nothing else catches it.
+    expect(CORROBORATION_LOOKUP_SQL).toContain("OR $7");
+
+    // The exclusion is on the SOURCE and never on the status. ADR-0042 is
+    // explicit: developer mode reads `status IN ('published','draft')`, so a
+    // rule spelled "never published" would leave the entire comparison surface
+    // served under the `/ee` overlay. It would also break the arm this file
+    // already pins two tests up — a re-observation must corroborate a PUBLISHED
+    // fact rather than mint a draft duplicate of it.
+    expect(CORROBORATION_LOOKUP_SQL).not.toContain("status");
+
+    // …and the tension scan does NOT take this arm. An observation is a thing to
+    // be compared against — that is the whole of what ADR-0042 leaves it — so a
+    // belief contradicting a reading must still earn its advisory edge. Copying
+    // the exclusion here "for symmetry" would delete the disagreement half of
+    // the comparison surface, which is the only half that reaches a reviewer.
+    expect(
+      TENSION_CANDIDATES_SQL,
+      "TENSION_CANDIDATES_SQL grew the corroboration lookup's class exclusion — an observation is compared against, never corroborated (ADR-0042)",
+    ).not.toContain("provenance");
   });
 });

@@ -533,10 +533,17 @@ describeIfPg("observation reaping (real Postgres)", () => {
   it(
     "a chat episode agreeing with an observation does not hold it alive",
     async () => {
-      // Until #5332 lands, an extractor claim matching an observation corroborates
-      // it and hangs a CHAT episode off it. A Slack message agreeing with a
-      // reading does not put the row back in the warehouse, so the evidence side
-      // of the rule is warehouse-class only.
+      // ⚠️ Since #5332 the STAGE no longer mints this edge — an extractor claim
+      // agreeing with an observation gets its own draft instead. The edge is
+      // seeded by hand here on purpose, and that is the point of the test
+      // rather than a shortcut: ADR-0042's decision was to LEAVE the pre-fix
+      // edges in place, so this shape is exactly the residue that decision left
+      // on the corpus, and it has to stay reapable. A Slack message agreeing
+      // with a reading does not put the row back in the warehouse.
+      //
+      // Rewriting this to drive the edge through `reconcileFacts` would make it
+      // vacuous — the stage would mint two rows and the observation would carry
+      // no chat evidence to test.
       const observation = await seedObservation({
         entity: ENTITY,
         subject: CHURNED,

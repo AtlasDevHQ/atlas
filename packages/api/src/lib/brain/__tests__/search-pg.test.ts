@@ -52,6 +52,7 @@ import { searchBrainCore } from "@atlas/api/lib/brain/search";
 import type { BrainPrincipalContext } from "@atlas/api/lib/brain/acl";
 import type { BrainFactResult, BrainSearchResult } from "@useatlas/types";
 import { identityAlias, slotKey } from "@atlas/api/lib/brain/identity";
+import { SLACK_SOURCE, WAREHOUSE_SOURCE } from "@atlas/api/lib/brain/sources";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -117,11 +118,13 @@ describeIfPg("searchBrain against the live schema", () => {
     body?: string;
     visibleTo?: readonly string[];
     extracted?: boolean;
+    /** The stored source KIND. Defaults to the chat vendor this suite is built on. */
+    source?: string;
   }): Promise<string> {
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_episodes
          (workspace_id, source, source_id, source_actor, body, occurred_at, visible_to, extracted_at)
-       VALUES ($1, 'slack', $2, 'U1', $3, now(), $4::text[], $5)
+       VALUES ($1, $6, $2, 'U1', $3, now(), $4::text[], $5)
        RETURNING id`,
       [
         WS,
@@ -129,6 +132,7 @@ describeIfPg("searchBrain against the live schema", () => {
         opts.body ?? "evidence",
         opts.visibleTo ?? ["org"],
         opts.extracted ? new Date() : null,
+        opts.source ?? SLACK_SOURCE,
       ],
     );
     return rows[0]!.id;
@@ -145,6 +149,12 @@ describeIfPg("searchBrain against the live schema", () => {
     /** Validity window (#4916) — `validTo` set simulates a supersession stamp. */
     validFrom?: Date;
     validTo?: Date;
+    /**
+     * The stored `provenance` payload. The exclusion under test reads
+     * `provenance.source` off THIS column, not off the episode — the fact is
+     * what is served, and `reconcile.ts` stamps the kind here structurally.
+     */
+    provenance?: Record<string, unknown>;
   }): Promise<string> {
     const { rows } = await pool.query<{ id: string }>(
       `INSERT INTO brain_facts
@@ -159,7 +169,7 @@ describeIfPg("searchBrain against the live schema", () => {
         opts.predicate ?? "owned_by",
         opts.object ?? "platform team",
         opts.episodeId,
-        JSON.stringify({ source: "slack", actor: "U1" }),
+        JSON.stringify(opts.provenance ?? { source: SLACK_SOURCE, actor: "U1" }),
         opts.status ?? "published",
         opts.visibleTo ?? ["org"],
         opts.invalidated ? new Date() : null,
@@ -467,6 +477,131 @@ describeIfPg("searchBrain against the live schema", () => {
       expect(rival.provenance.source).toBe("slack");
       expect(rival.provenance.attribution).toMatchObject({ visible: true, actor: "U1" });
       expect(rival.status).toBe("published");
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  // ══════════════════════════════════════════════════════════════════
+  // 8. An observation is never served (#5341, ADR-0042)
+  // ══════════════════════════════════════════════════════════════════
+
+  it(
+    "returns no warehouse-sourced fact in EITHER content-mode arm",
+    async () => {
+      // The developer arm is the half that is easy to get wrong and the reason
+      // the exclusion is on the SOURCE. `brainFactStatusClause("developer")` is
+      // `status IN ('published','draft')`, so a rule spelled "an observation is
+      // never PUBLISHED" would leave the entire comparison surface served to
+      // the agent under the `/ee` developer overlay — every draft the producer
+      // has ever emitted, at once.
+      //
+      // Both statuses are seeded for the same reason: the exclusion must not be
+      // reading status by accident.
+      const warehouseEp = await seedEpisode({
+        sourceId: "obs-1",
+        source: WAREHOUSE_SOURCE,
+        body: "snapshot",
+      });
+      const publishedObservation = await seedFact({
+        subject: "Kittiwake",
+        predicate: "plan_tier",
+        object: "trial",
+        episodeId: warehouseEp,
+        status: "published",
+        provenance: { source: WAREHOUSE_SOURCE, actor: "system:warehouse-producer" },
+      });
+      const draftObservation = await seedFact({
+        subject: "Kittiwake",
+        predicate: "region",
+        object: "eu",
+        episodeId: warehouseEp,
+        status: "draft",
+        provenance: { source: WAREHOUSE_SOURCE, actor: "system:warehouse-producer" },
+      });
+      // The control, and it is what stops this test passing vacuously: an
+      // ordinary belief about the same subject, matched by the same query.
+      const ep = await seedEpisode({ sourceId: "obs-control" });
+      const belief = await seedFact({
+        subject: "Kittiwake",
+        predicate: "owned_by",
+        object: "platform team",
+        episodeId: ep,
+        status: "published",
+      });
+
+      for (const mode of ["published", "developer"] as const) {
+        const res = await search(outsider(), {
+          mode,
+          query: "Kittiwake",
+          include: ["fact"],
+        });
+        expect([mode, ids(res.results)]).toEqual([mode, expect.arrayContaining([belief])]);
+        expect([mode, ids(res.results)]).toEqual([
+          mode,
+          expect.not.arrayContaining([publishedObservation]),
+        ]);
+        expect([mode, ids(res.results)]).toEqual([
+          mode,
+          expect.not.arrayContaining([draftObservation]),
+        ]);
+      }
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "still surfaces an observation as a TENSION COUNTERPART, with its provenance",
+    async () => {
+      // The line ADR-0042 draws: comparison keeps working, serving stops. An
+      // observation must still appear inside a live claim's conflict cluster —
+      // that read (`loadTensionClusters`) is ACL-gated and takes no content
+      // mode, and it is where disagreement detection actually lives. A change
+      // that let the serving exclusion leak into the cluster read would break
+      // the one thing the warehouse producer is for, and would do it silently:
+      // the owner row still returns, just with `tensions: []`.
+      const ep = await seedEpisode({ sourceId: "obs-tension-belief" });
+      const warehouseEp = await seedEpisode({
+        sourceId: "obs-tension-observation",
+        source: WAREHOUSE_SOURCE,
+        body: "snapshot",
+      });
+      const belief = await seedFact({
+        subject: "Dharma plan",
+        predicate: "is",
+        object: "pro",
+        episodeId: ep,
+        status: "published",
+      });
+      const observation = await seedFact({
+        subject: "Dharma plan",
+        predicate: "is",
+        object: "trial",
+        episodeId: warehouseEp,
+        status: "draft",
+        provenance: { source: WAREHOUSE_SOURCE, actor: "system:warehouse-producer" },
+      });
+      await pool.query(
+        `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_fact_id)
+         VALUES ($1, 'in-tension-with', $2, $3)`,
+        [WS, observation, belief],
+      );
+
+      const res = await search(outsider(), { query: "Dharma plan", include: ["fact"] });
+      // Not served in its own right…
+      expect(ids(res.results)).not.toContain(observation);
+      // …and still the counterpart on the belief that disagrees with it.
+      const owner = res.results.find(
+        (r): r is BrainFactResult => r.tier === "fact" && r.id === belief,
+      );
+      expect(owner).toBeDefined();
+      const rival = owner!.tensions[0];
+      expect(rival).toMatchObject({ visible: true, factId: observation });
+      if (rival?.visible !== true) throw new Error("expected a visible counterpart");
+      // With its own provenance, projected off the rival's row — which is how a
+      // reader can tell the disagreement is with the warehouse and not with
+      // another colleague.
+      expect(rival.provenance.source).toBe(WAREHOUSE_SOURCE);
+      expect(rival.status).toBe("draft");
     },
     PG_TEST_TIMEOUT_MS,
   );

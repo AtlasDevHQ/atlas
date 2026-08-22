@@ -82,7 +82,7 @@
 
 import { createLogger } from "@atlas/api/lib/logger";
 import { comparableSameSql } from "@atlas/api/lib/brain/object-cmp";
-import { episodeSourceArraySql, WAREHOUSE_SOURCES } from "@atlas/api/lib/brain/sources";
+import { observationSql } from "@atlas/api/lib/brain/observation";
 import {
   proposeAliasEdges,
   type AliasDecideDeps,
@@ -218,16 +218,6 @@ export const ALIAS_PROPOSAL_CANDIDATE_CAP = 25;
 export const ALIAS_HINT_RANK_BONUS = 0.05;
 
 /**
- * The tier vocabulary as a SQL array literal, built ONCE at module load — the
- * POSITIVE list, unlike #5033's tier guard, which splices the complement.
- *
- * Safe unquoted for the reason `sources.ts` owns: `EPISODE_SOURCE_SLUG` is
- * enforced over the whole vocabulary at that module's load, so the escaping rule
- * lives beside the values and not beside this consumer.
- */
-const WAREHOUSE_SOURCE_ARRAY_SQL = episodeSourceArraySql(WAREHOUSE_SOURCES);
-
-/**
  * *Positively warehouse-derived* — the direction arm (ADR-0037 §4).
  *
  * ⚠️ **NOT the negation of #5033's `supersedableTierSql`, and it must not be
@@ -273,10 +263,14 @@ const WAREHOUSE_SOURCE_ARRAY_SQL = episodeSourceArraySql(WAREHOUSE_SOURCES);
  *
  * `alias` is interpolated; callers pass a plain identifier they control — the
  * same contract as `supersedableTierSql` and `comparableDifferentSql`.
+ *
+ * ⚠️ The SPELLING moved to `lib/brain/observation.ts` at #5341, where ADR-0042's
+ * serving exclusion needed the identical predicate. It is one string with two
+ * readings and they are the same reading: *this stored row is an observation*.
+ * The prose above stays here because what it argues is this consumer's rule —
+ * why the DIRECTION arm must be a positive allowlist — not what the SQL says.
  */
-function warehouseDerivedSql(alias: string): string {
-  return `(${alias}.provenance->>'source' = ANY (${WAREHOUSE_SOURCE_ARRAY_SQL}))`;
-}
+const warehouseDerivedSql = observationSql;
 
 /**
  * The proposal query. Exported so the real-Postgres suite runs this exact string

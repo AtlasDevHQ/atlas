@@ -308,6 +308,12 @@ describe("asOf — the bi-temporal point read (#4916)", () => {
     // default arm fails byte-for-byte. If this fails because you CHANGED the
     // default fact read on purpose, re-capture the literal — that is the
     // deliberate act this pin exists to force.
+    //
+    // Re-captured once, at #5341, for ADR-0042's observation exclusion. That is
+    // the only clause added since the original capture, and it is INTENDED to
+    // appear in both temporal arms — the `asOf` test above asserts the same
+    // predicate under a point read, so a leak in either direction still fails
+    // something.
     const { sql, params } = buildFactQuery("published", {
       query: "billing",
       limit: 10,
@@ -350,6 +356,7 @@ describe("asOf — the bi-temporal point read (#4916)", () => {
    WHERE (f.workspace_id = $1 AND f.visible_to && $2::text[])
      AND f.status = 'published'
      AND f.invalidated_at IS NULL
+     AND ((f.provenance->>'source' = ANY (ARRAY['warehouse']::text[])) IS NOT TRUE)
      AND (f.valid_to IS NULL OR f.valid_to > now())
      AND f.fts @@ websearch_to_tsquery('english', $3)
    ORDER BY rank DESC NULLS LAST, f.ingested_at DESC, f.id DESC

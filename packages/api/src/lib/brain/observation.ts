@@ -51,8 +51,10 @@
  */
 
 import {
+  episodeSourceArraySql,
   isEpisodeSource,
   isWarehouseDerivedSource,
+  WAREHOUSE_SOURCES,
 } from "@atlas/api/lib/brain/sources";
 
 /**
@@ -200,4 +202,83 @@ function describeSourceValue(source: unknown): string {
   if (typeof source === "string") return source;
   if (source === null) return "null";
   return `[${typeof source}]`;
+}
+
+// ---------------------------------------------------------------------------
+// The SQL side of the same question
+// ---------------------------------------------------------------------------
+
+/**
+ * The warehouse vocabulary as a SQL `text[]` literal.
+ *
+ * Built once at module load from the same spec map {@link readStoredSource}
+ * consults, so the two sides of this file cannot disagree about which stored
+ * values are warehouse-class. `EPISODE_SOURCE_SLUG` is enforced over the whole
+ * vocabulary at `sources.ts`'s load, which is what makes the splice safe;
+ * nothing user-supplied reaches it.
+ */
+const WAREHOUSE_SOURCE_ARRAY_SQL = episodeSourceArraySql(WAREHOUSE_SOURCES);
+
+/**
+ * *This row IS an observation* — the SQL sibling of {@link isObservation}, for
+ * the gates that have to answer the question inside a WHERE rather than over a
+ * loaded row.
+ *
+ * It must be a WHERE-clause term and not a post-fetch filter wherever it gates
+ * what a reader sees: a predicate applied after ranking leaks existence through
+ * result counts and latency even when the rows never render (see
+ * `lib/brain/search.ts`'s header on push-down).
+ *
+ * ## Three populations, and only the first is TRUE
+ *
+ * The same three {@link readStoredSource} returns, and the mapping is
+ * deliberate rather than incidental:
+ *
+ * | stored `provenance` | this predicate | {@link readStoredSource} |
+ * |---|---|---|
+ * | no `source` key | NULL | `belief` |
+ * | `{"source":"slack"}` | false | `belief` |
+ * | `{"source":"snowflake"}` | false | `unclassifiable` |
+ * | `{"source":"warehouse"}` | true | `observation` |
+ *
+ * A positive allowlist, never the negation of a non-warehouse list, and the
+ * divergence is the `unclassifiable` row: a kind this region cannot classify is
+ * evidence of nothing, so it must not be treated as an observation on a guess.
+ * Under this predicate such a row stays SERVED — which is the permissive
+ * direction, chosen because the alternative silently hides facts a newer
+ * region legitimately exported, and because it keeps this predicate agreeing
+ * with {@link isObservation} rather than being a second, stricter rule wearing
+ * the same name. The gates that must not be permissive about an unclassifiable
+ * row are the ones that refuse it under its own reason (`correction.ts`), and
+ * they read the row rather than a WHERE.
+ *
+ * ⚠️ The NULL arm is why {@link notAnObservationSql} exists rather than callers
+ * writing `NOT (…)`. `NOT NULL` is NULL, which a WHERE treats as false — so the
+ * naive negation drops every `source`-less fact from the serving path, and
+ * those are exactly the facts that predate the provenance shape.
+ *
+ * `alias` is interpolated; callers pass a plain identifier they control — the
+ * same contract as `brainFactStatusClause` and `comparableDifferentSql`.
+ */
+export function observationSql(alias: string): string {
+  return `(${alias}.provenance->>'source' = ANY (${WAREHOUSE_SOURCE_ARRAY_SQL}))`;
+}
+
+/**
+ * *This row is NOT an observation* — ADR-0042's serving exclusion, in one
+ * spelling.
+ *
+ * `IS NOT TRUE` rather than `NOT`, and that is the whole reason this is a
+ * function rather than a call-site negation: it folds the NULL of a
+ * `source`-less row to TRUE, so such a fact is still served. See the ⚠️ on
+ * {@link observationSql}.
+ *
+ * This is the exclusion the serving path and the review queue compose, and it
+ * is on the SOURCE, not on the status — deliberately, because developer mode is
+ * `status IN ('published','draft')` and an exclusion expressed as "never
+ * published" would leave the entire comparison surface served under the `/ee`
+ * developer overlay (ADR-0042).
+ */
+export function notAnObservationSql(alias: string): string {
+  return `(${observationSql(alias)} IS NOT TRUE)`;
 }

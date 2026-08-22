@@ -159,6 +159,7 @@ import { BrainReaderUnresolvedError } from "@atlas/api/lib/brain/reader-context"
 import { projectProvenance } from "@atlas/api/lib/brain/candidates";
 import { attributionDecision } from "@atlas/api/lib/brain/attribution";
 import { loadTensionClusters } from "@atlas/api/lib/brain/tensions";
+import { notAnObservationSql } from "@atlas/api/lib/brain/observation";
 import { computeDecaySignal, LAST_OBSERVED_AT_SELECT } from "@atlas/api/lib/brain/staleness";
 import { fuseRankedLists, type RankedList } from "@atlas/api/lib/brain/fusion";
 import {
@@ -487,6 +488,29 @@ export function buildFactQuery(
     // BOTH temporal branches: a tombstone is hidden under any `asOf`, because
     // retraction is the one verb whose JOB is hiding history (#4916).
     "f.invalidated_at IS NULL",
+    // The FIFTH predicate (#5341, ADR-0042): an observation is never served.
+    //
+    // On the SOURCE, not on the status, and that is the whole point — developer
+    // mode is `status IN ('published','draft')`, so an exclusion expressed as
+    // "never published" would leave the entire comparison surface served under
+    // the `/ee` developer overlay. This clause covers both arms of
+    // `brainFactStatusClause` because it does not consult status at all.
+    //
+    // In BOTH temporal branches too, and for a stronger reason than the
+    // tombstone's: a warehouse value is true iff the row says so RIGHT NOW, and
+    // `executeSQL` answers that live and fresher. An `asOf` read of an
+    // observation is a snapshot of a snapshot — the one thing publication was
+    // ever thought to buy, served from the one store that cannot keep it
+    // current.
+    //
+    // What this does NOT touch, deliberately: `loadTensionClusters`
+    // (`lib/brain/tensions.ts`). An observation must still surface as a
+    // COUNTERPART inside a live claim's conflict cluster — that read is
+    // ACL-gated, takes no content mode, and is where disagreement detection
+    // actually lives. Comparison keeps working; serving stops. A change that
+    // hid observations from tension clusters would break the one thing the
+    // warehouse producer is for.
+    notAnObservationSql("f"),
   ];
   if (options.asOf !== undefined) {
     // The bi-temporal point read (#4916): the facts valid AT the instant —

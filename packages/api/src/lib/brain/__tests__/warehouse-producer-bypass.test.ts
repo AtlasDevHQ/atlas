@@ -461,10 +461,15 @@ const NAME_ALLOWLIST: readonly {
     kind: "bypass",
     why: "the run-record -pg harness (#5317), same whitelist reason; its subject is whether a success row can outlive the transaction that wrote it, which needs the real producer on both a committing and a rolling-back run",
   },
+  {
+    file: "lib/brain/__tests__/observation-reap-pg.test.ts",
+    kind: "bypass",
+    why: "the observation-reap -pg harness (#5344), same whitelist reason as its `warehouse-producer-pg` sibling; its subject is what five successive runs do to an observation whose row has left the filtered snapshot, and only the REAL producer writes the success records, the corroboration edges and the reap that the rule then reads",
+  },
 ];
 
 /** Kinds are counted, not merely declared — see the test that pins this. */
-const EXPECTED_BY_KIND: Record<AllowlistKind, number> = { bypass: 7, annotation: 0 };
+const EXPECTED_BY_KIND: Record<AllowlistKind, number> = { bypass: 8, annotation: 0 };
 
 /**
  * The failure a reviewer actually reads when a new file names a guarded type.

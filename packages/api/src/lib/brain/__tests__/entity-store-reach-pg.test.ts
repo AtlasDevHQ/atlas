@@ -43,10 +43,12 @@ import {
   reapUnreachedEntityEntries,
   resolvableIds,
   writeEntityEntries,
-  ENTITY_STORE_REAP_AFTER_SUCCESSFUL_RUNS,
   type EntityStoreEntry,
 } from "@atlas/api/lib/brain/entity-store";
-import { recordEntityRunSuccess } from "@atlas/api/lib/brain/warehouse-run-record";
+import {
+  recordEntityRunSuccess,
+  WAREHOUSE_REAP_AFTER_SUCCESSFUL_RUNS,
+} from "@atlas/api/lib/brain/warehouse-run-record";
 import { comparableValue } from "@atlas/api/lib/brain/object-cmp";
 import { warehouseRowId } from "@atlas/api/lib/brain/warehouse-producer";
 import type { ReconcileExecutor } from "@atlas/api/lib/brain/reconcile";
@@ -760,7 +762,7 @@ describeIfPg("entity store reach, reconciliation and retirement (real Postgres)"
     // green. Measured — that mutation survived. #5321 asks for a constant that
     // is load-bearing rather than decorative, and the only way to get that is
     // for the numbers here NOT to be a function of it.
-    expect(ENTITY_STORE_REAP_AFTER_SUCCESSFUL_RUNS).toBe(3);
+    expect(WAREHOUSE_REAP_AFTER_SUCCESSFUL_RUNS).toBe(3);
   });
 
   it(

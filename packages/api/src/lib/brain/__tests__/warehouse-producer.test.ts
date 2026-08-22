@@ -61,6 +61,7 @@ import {
   type StoredEntity,
 } from "@atlas/api/lib/brain/entity-store";
 import { ENTITY_RUN_SUCCESS_INSERT_SQL } from "@atlas/api/lib/brain/warehouse-run-record";
+import { OBSERVATION_REAP_SQL } from "@atlas/api/lib/brain/observation-reap";
 import { ENTITY_COMPARABLE_RETIRE_SQL } from "@atlas/api/lib/brain/entity-comparable-retire";
 import type {
   AliasProducerCounters,
@@ -1160,6 +1161,9 @@ class RunStore {
     if (sql === ENTITY_STORE_LIVE_IDS_SQL) return { rows: [] };
     if (sql === ENTITY_STORE_RENAME_RECONCILE_SQL) return { rows: [] };
     if (sql === ENTITY_STORE_REAP_SQL) return { rows: [] };
+    // #5344's corpus reaper, on the same terms: nothing is old enough to reap
+    // in a fresh corpus, and the empty result is what the counters then report.
+    if (sql === OBSERVATION_REAP_SQL) return { rows: [] };
     if (sql === ENTITY_COMPARABLE_RETIRE_SQL) return { rows: [] };
     if (sql.includes("brain_predicate_cardinality")) return { rows: [{ inserted: 1 }] };
     throw new Error(`RunStore: unexpected statement\n${sql}`);
@@ -2977,13 +2981,14 @@ describe("runWarehouseProducer", () => {
     // claims SUCCEEDED, and it is the arm #5233's reaper depends on — see
     // migration 0206's header, and `warehouse-run-record-pg.test.ts`.
     expect(h.store.transactions).toBe(1);
-    // The reap rides the same transaction as the record it reads (#5321), so
-    // the zero-candidate arm is two statements now and the ORDER is the claim:
-    // the success this run just wrote has to be inside the window the reap
-    // reads, or the rule lags a full cycle behind itself.
+    // Both reaps ride the same transaction as the record they read (#5321,
+    // #5344), so the zero-candidate arm is three statements now and the ORDER is
+    // the claim: the success this run just wrote has to be inside the window the
+    // reaps read, or the rules lag a full cycle behind themselves.
     expect(h.store.calls.map((c) => c.sql)).toEqual([
       ENTITY_RUN_SUCCESS_INSERT_SQL,
       ENTITY_STORE_REAP_SQL,
+      OBSERVATION_REAP_SQL,
     ]);
     expect(h.store.runSuccesses()).toEqual([[WORKSPACE, "Empty", SNAPSHOT_AT.toISOString()]]);
     expect(report.entities).toEqual([

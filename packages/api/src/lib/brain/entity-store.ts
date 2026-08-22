@@ -55,6 +55,10 @@ import { lexicalNorm } from "@atlas/api/lib/brain/identity";
 import { retireEntityComparables } from "@atlas/api/lib/brain/entity-comparable-retire";
 import type { EntityResolver, ReconcileExecutor } from "@atlas/api/lib/brain/reconcile";
 import type { AliasProposalInput } from "@atlas/api/lib/brain/vocabulary-decide";
+import {
+  reapWindowSize,
+  WAREHOUSE_SUCCESS_WINDOW_CTE,
+} from "@atlas/api/lib/brain/warehouse-run-record";
 // ⚠️ `warehouse-producer.ts` imports THIS module for values, so this edge closes
 // a runtime cycle — deliberately, and it is why `isWarehouseRowId` lives there
 // rather than here. ES modules handle the cycle (both sides only call across it
@@ -678,36 +682,20 @@ function sampleIds(ids: readonly string[]): readonly string[] {
 // ---------------------------------------------------------------------------
 
 /**
- * How many of an entity's own successful runs must pass over an entry before it
- * is reaped.
- *
- * **3**, and a named constant carrying its reason rather than a bare literal in
- * the statement. At the producer's default 24-hour cadence that is roughly three
- * days of an entity being read successfully and producing nothing about the row
- * before its entry goes — long enough that a one-off empty read costs nothing,
- * short enough that a truncated table does not answer for a week.
- *
- * It is load-bearing rather than decorative: the boundary at N-1 is tested, so
- * changing this number changes measured behaviour rather than a comment.
- */
-export const ENTITY_STORE_REAP_AFTER_SUCCESSFUL_RUNS = 3;
-
-/**
  * Exported for {@link ENTITY_STORE_DELETE_SQL}'s reason.
  *
  * ## The reach rule, in one statement
  *
  * *Reap entries whose `snapshot_at` predates that entity's last N successful
- * producer runs.* `recent` is those runs, newest first; `gate` collapses them to
- * the oldest of the N and how many there were.
+ * producer runs.* The window itself is {@link WAREHOUSE_SUCCESS_WINDOW_CTE},
+ * shared with the corpus reaper since #5344 — including its `$1`/`$2`/`$3` bind
+ * contract, which this statement's parameters honour in that order.
  *
  * `gate.n >= $3` is the half that makes the rule safe by default, and it is the
  * whole of #5233's AC-1: with fewer than N recorded successes the join matches
- * nothing and the statement is a no-op. An entity the producer has never run
- * for, an entity whose datasource has been down since before the record
- * existed, an entity in a freshly-migrated region whose success history
- * deliberately did not travel (`bundle-scope.ts` says why) — every one of them
- * reaps nothing, because absence of evidence reaps nothing.
+ * nothing and the statement is a no-op. It lives in THIS WHERE rather than in
+ * the shared CTE because a CTE cannot filter its own caller — see that
+ * constant's docstring for the population it protects.
  *
  * `e.snapshot_at < gate.oldest` is strict, and the strictness is what puts the
  * N-1 boundary where the constant says it is. A run that commits through the
@@ -727,15 +715,7 @@ export const ENTITY_STORE_REAP_AFTER_SUCCESSFUL_RUNS = 3;
  * recoverable STALENESS. Stated here so a later reader does not assume the
  * reaper covers both.
  */
-export const ENTITY_STORE_REAP_SQL = `WITH recent AS (
-    SELECT succeeded_at
-      FROM brain_warehouse_entity_success
-     WHERE workspace_id = $1 AND entity = $2
-     ORDER BY succeeded_at DESC
-     LIMIT $3
-  ), gate AS (
-    SELECT min(succeeded_at) AS oldest, count(*) AS n FROM recent
-  )
+export const ENTITY_STORE_REAP_SQL = `WITH ${WAREHOUSE_SUCCESS_WINDOW_CTE}
   DELETE FROM brain_entity e
    USING gate
    WHERE e.workspace_id = $1
@@ -781,11 +761,9 @@ export async function reapUnreachedEntityEntries(
   },
 ): Promise<readonly string[]> {
   const { workspaceId, entity } = params;
-  // Clamped for `runWarehouseProducer`'s `rowCap` reason: the seam is test-only,
-  // and `0` would make `gate.n >= 0` true with `oldest` NULL — harmless by luck
-  // rather than by design, since the comparison against NULL is what stops it.
-  // A rule this destructive does not get to be safe by luck.
-  const n = Math.max(1, Math.trunc(params.afterSuccessfulRuns ?? ENTITY_STORE_REAP_AFTER_SUCCESSFUL_RUNS));
+  // Clamped for `runWarehouseProducer`'s `rowCap` reason — `reapWindowSize`
+  // carries the argument, and carries it once for both reapers.
+  const n = reapWindowSize(params.afterSuccessfulRuns);
   const { rows } = await tx.query(ENTITY_STORE_REAP_SQL, [workspaceId, entity, n]);
   const reaped = readDroppedRows(rows).map((row) => row.entityId);
   if (reaped.length > 0) {

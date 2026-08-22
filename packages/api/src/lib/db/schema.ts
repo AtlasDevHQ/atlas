@@ -3525,7 +3525,19 @@ export const brainFacts = pgTable(
     // promotion — there is no autonomous supersession, and staleness decay
     // only surfaces a fact for review. `ingestedAt` is transaction time.
     // `invalidatedAt` is the tombstone: supersession is not deletion, so
-    // "what we believed on Monday" still answers correctly. Nothing DELETEs.
+    // "what we believed on Monday" still answers correctly.
+    //
+    // ⚠️ "Nothing DELETEs" stood here until #5344, and every word of the policy
+    // above is still true of a BELIEF — a claim somebody made, that a human
+    // blessed, that an `asOf` read has to keep answering. It is not true of the
+    // table. ADR-0042 put OBSERVATIONS in these same rows (warehouse readings,
+    // discriminated on `provenance.source`, never reviewed and never served) and
+    // `lib/brain/observation-reap.ts` deletes one outright when its warehouse row
+    // leaves the entity's filtered snapshot: nobody approved it, nothing serves
+    // it, and a `valid_to` stamp or a tombstone would assert a human decision
+    // that never happened. That is the ONLY writer of a `DELETE` here, and its
+    // population is fenced on the row's own provenance, its creating episode and
+    // `status = 'draft'` — see that module. A second one is a bug.
     validFrom: timestamp("valid_from", { withTimezone: true }),
     validTo: timestamp("valid_to", { withTimezone: true }),
     ingestedAt: timestamp("ingested_at", { withTimezone: true }).notNull().defaultNow(),

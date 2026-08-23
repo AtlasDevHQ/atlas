@@ -166,7 +166,22 @@ See [ADR-0008 § Semver discipline](../adr/0008-versioning-and-release-tags.md#s
 - **Minor** — new feature, customer-visible workflow change, new required env var, removed deprecated flag.
 - **Patch** — bug fix, perf, refactor, docs, dependency bump, hotfix.
 
-The `/release` skill infers the bump from the previous tag if you don't pass one explicitly (`/release` with no arg → it picks `v0.1.<prev+1>`).
+**`/release` with no argument bumps the PATCH, always.** It is the safe default, not a reading of the table above — nothing infers "this release added a feature" from a tag name. A minor (or the eventual major) is passed explicitly: `/release v0.3.0`. The inference itself is `scripts/next-release-tag.sh`, not an inline `git tag -l` — see below for why that distinction is load-bearing.
+
+## The release train is not the only tag train
+
+This repository tags ~20 trains, only one of which gates prod. Every published `@useatlas/*` package has its own (`plugin-sdk-v0.1.2`, `chat-v1.2.3`), as do the sandbox and connector trains (`vercel-sandbox-v0.0.5`, `yaml-context-v0.0.5`). They are legitimate and independent — [ADR-0008](../adr/0008-versioning-and-release-tags.md) is explicit that the three version trains never coordinate.
+
+The consequence for release tooling: **`git tag -l` matches its glob against the whole tag name**, so `'v*.*.*'` matches `vercel-sandbox-v0.0.5` — which version-sorts *above* `v0.2.15`. Cutting `v0.2.15` on 2026-08-22, that command reported `vercel-sandbox-v0.0.5` as the most recent release tag. A bare `/release` would have inferred `vercel-sandbox-v0.0.6` and tagged it: a plausible version, not already taken, carried without complaint through the annotated tag, the `prod` fast-forward, the GitHub Release and the changelog entry — onto a train that is not prod's. Tags are immutable, so the only remedy is a forward patch (#5384).
+
+So the release train is identified by an anchored pattern **and** a regex on the result, and both the inferred and the explicitly-passed version clear the same check before anything irreversible runs:
+
+```bash
+scripts/next-release-tag.sh            # → v0.2.16, the release train only
+scripts/next-release-tag.sh v0.2.16    # validate an explicit version
+```
+
+Exit `0` resolved (version on stdout) · `1` refused · `2` cannot run · `3` no tag on the release train — that last is distinct from "no tags at all" on purpose, because "hundreds of tags, none of them ours" is exactly the state the defect hid in. Anyone editing that pattern is held by `scripts/__tests__/next-release-tag.test.sh`, which asserts against a fixture repo carrying the real tag shape.
 
 ## What `/release` will NOT do
 

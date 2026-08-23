@@ -436,8 +436,11 @@ function refusalStatus(reason: CorrectionRefusalReason): 400 | 403 | 409 {
     // correct gate takes over (tier-1 refusal if the kind is warehouse-class,
     // an ordinary correction otherwise). The retry condition is a DEPLOY rather
     // than anything the client or the target can change, which is unusual
-    // though not unique here — `warehouseTarget` is not client-fixable either,
-    // and is permanent besides. `malformedSourceKind` is a stored-data defect:
+    // though not unique here. `warehouseTarget` is permanent for the verb it
+    // refused — but since #5331 it is no longer a dead end for the FACT: the
+    // same row admits `retract`, and the refusal message names it, so the 409
+    // carries a next step rather than only a no. `malformedSourceKind` is a
+    // stored-data defect:
     // still a target-state 409, but no deploy resolves it (#4964).
     case CORRECTION_REFUSAL_REASONS.unrecognizedSourceKind:
     case CORRECTION_REFUSAL_REASONS.malformedSourceKind:

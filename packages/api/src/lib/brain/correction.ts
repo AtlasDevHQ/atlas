@@ -62,13 +62,39 @@
  * is a live claim with a scheduled end and is admitted — the same clock
  * reading `brainFactCurrentClause` does.
  *
- * ## Tier-1 has no correction path
+ * ## Tier-1 has one correction path, and it is `retract`
  *
- * A warehouse-derived fact (`provenance.source = WAREHOUSE_SOURCE`) is refused
- * with an actionable error for EVERY verb: tier-1 is authoritative by
- * construction, so you fix the data or the semantic layer, not the brain. The
- * refusal is evaluated on the stored provenance because tier-1 proper is never
- * stored at all — an id that names no brain row is an ordinary not-found.
+ * A warehouse-derived fact (`provenance.source = WAREHOUSE_SOURCE`) refuses
+ * `supersede`, `re-authority` and `pin` with an actionable error: each asserts
+ * a belief ABOUT a warehouse value, so you fix the data or the semantic layer,
+ * not the brain. The refusal is evaluated on the stored provenance because
+ * tier-1 proper is never stored at all — an id that names no brain row is an
+ * ordinary not-found.
+ *
+ * ⚠️ **`retract` is ADMITTED, and until #5331 it was not.** The old blanket
+ * refusal rested on *"tier-1 is authoritative by construction"* while its own
+ * next sentence conceded *"tier-1 proper is never stored at all"* — and
+ * `TRUST_TIERS` says the same from the other side. ADR-0042 named the
+ * equivocation: **authoritative-by-construction is a property of the QUERY, not
+ * of the row the query produced.** A stored row is a snapshot, authoritative as
+ * of an instant, and an instant can pass.
+ *
+ * The consequence was two published facts on prod describing an organization
+ * deleted 2026-08-19, which no sanctioned path could remove: the producer
+ * cannot supersede them (supersession needs a fresh claim for that
+ * `(subject, predicate)`, and a deleted row never speaks again), and a human
+ * could not retract them. Immortal, wrong, and served.
+ *
+ * `retract` is the narrow answer because it asserts only *this row should not
+ * have been blessed* — not a competing belief about what the warehouse says.
+ * It keeps its ordinary semantics here: tombstone via `invalidated_at` and
+ * never `status`, `derives-from` dependents flagged for re-review rather than
+ * cascaded, episode and audit row emitted.
+ *
+ * ⚠️ **The population this reaches is CLOSED by construction.** Since #5342 the
+ * producer's output is refused at `classifyFactForPromotion`, so no warehouse
+ * fact reaches `published` again. What `retract` can touch is exactly the rows
+ * published before that landed — a set that only shrinks.
  *
  * The class comes from `lib/brain/sources.ts`, and that indirection is load
  * bearing rather than tidiness: ADR-0036 commits to warehouse-derived facts as
@@ -1048,13 +1074,17 @@ export async function correctFact(
       // functions agreeing.
       const reading = readStoredSource(target.provenance);
 
-      // Tier-1: refused for EVERY verb, before anything is written.
-      if (reading.kind === "observation") {
+      // Tier-1: refused for THREE of the four verbs, before anything is
+      // written. `retract` is admitted (#5331) — see the header section.
+      if (reading.kind === "observation" && verb !== "retract") {
         throw new CorrectionRefusedError(
           CORRECTION_REFUSAL_REASONS.warehouseTarget,
-          "This fact is warehouse-derived (tier-1), and tier-1 has no correction path: the warehouse is " +
-            "authoritative by construction. Fix the underlying data, or fix the semantic layer that derives it — " +
-            "the brain never overrides the warehouse.",
+          `This fact is warehouse-derived (tier-1), so "${verb}" has no path here: each of supersede, ` +
+            "re-authority and pin asserts a belief ABOUT a warehouse value, and the brain never overrides " +
+            "the warehouse. Fix the underlying data, or the semantic layer that derives it. " +
+            "If the row should never have been published — the warehouse row it read is gone, or was never " +
+            "one you count — retract it instead: that says only that this row should not have been blessed, " +
+            "and it is admitted on warehouse-derived facts.",
         );
       }
 

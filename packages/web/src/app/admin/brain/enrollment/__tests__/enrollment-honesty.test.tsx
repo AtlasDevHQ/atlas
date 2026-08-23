@@ -847,6 +847,10 @@ describe("a run that produced nothing says WHY it produced nothing", () => {
           collidingSubjectRows: 0,
           unsurfaceableCells: 0,
           unsurfaceableKeyRows: 0,
+          // #5349. Required by the wire schema, so a fixture without it parses
+          // as a report the panel could not read and renders the DEGRADED arm —
+          // which is how this test caught the field being added at all.
+          absentCells: 0,
           cardinalityProposed: [],
           entitiesStored: 900,
           unnamedRows: 0,

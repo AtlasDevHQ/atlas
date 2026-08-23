@@ -73,6 +73,13 @@
  * and it is caught only when it takes every row the run read. An unsurfaceable
  * KEY takes every row by construction and so always lands in the blind arm.
  *
+ * A `reconcile` block gets the dimension-shaped answer too, since #5396:
+ * `reconcile.ts` reports its refusals keyed by predicate as well as by reason,
+ * so a dimension whose every candidate was refused is held back on the same
+ * terms as one whose every cell was unsurfaceable. Before that, only a
+ * WHOLESALE block was caught — it lands in the blind arm — and a PARTIAL one
+ * reaped the unwritten candidates' dimensions.
+ *
  * ⚠️ **An absent cell is NOT a representation failure.** A row whose every cell
  * is NULL asserts nothing — the warehouse answered, and the answer was
  * "nothing". Those observations should age out, and a zero-row read is the
@@ -402,26 +409,34 @@ export interface ReapStandDown {
  * the warehouse answered and the answer was "nothing", and those observations
  * SHOULD age out. An absent cell is not a failure to represent.
  *
- * `predicates` — a dimension that had values and surfaced none of them. A
- * dimension that surfaced even one keeps reaping, which is the direct answer to
- * the "one bad cell protects everything" objection.
+ * `predicates` — a dimension that had values and surfaced none of them, by
+ * either route: every cell unsurfaceable, or every built candidate refused by
+ * `reconcile.ts`. A dimension that surfaced even one keeps reaping, which is
+ * the direct answer to the "one bad cell protects everything" objection.
  *
  * ## The fourth sibling: a `reconcile` block
  *
  * The other three warn-don't-refuse paths are counted per row or per dimension.
- * A `reconcile` block is neither: `report.blocked` is keyed by REASON, so a
- * partial block cannot say WHICH predicates went unwritten and there is no
- * dimension-shaped answer to give. What it can say is the wholesale case, and
- * that is the one that matters — when an episode is blocked entirely,
- * `reconcile.ts` sets `blocked[reason] = candidates.length`, every candidate
- * goes unwritten, and the run earns no evidence edge for any of them. From this
- * rule's side that is indistinguishable from an entity that returned nothing,
- * so it lands in `blind`.
+ * A `reconcile` block is BOTH, and each half lands in a different arm.
  *
- * ⚠️ A PARTIAL block therefore still reaps the unwritten candidates' dimensions,
- * and that is a KNOWN narrowing rather than an oversight. Closing it needs
- * `reconcile.ts` to report its refusals by predicate; until then the honest
- * statement is that this rule covers the wholesale case only.
+ * WHOLESALE — an episode refused entirely — lands in `blind`. `reconcile.ts`
+ * sets `blocked[reason] = candidates.length`, every candidate goes unwritten,
+ * and the run earns no evidence edge for any of them; from this rule's side
+ * that is indistinguishable from an entity that returned nothing.
+ *
+ * PARTIAL lands in `predicates`, since #5396. It used to have no
+ * dimension-shaped answer available — `report.blocked` is keyed by REASON, so
+ * it could not say WHICH predicates went unwritten — and the honest statement
+ * was that this rule covered the wholesale case only. `reconcile.ts` now
+ * reports the same refusals keyed by predicate as well, so a dimension whose
+ * every built candidate was refused is held back and one that had any candidate
+ * WRITTEN keeps reaping.
+ *
+ * ⚠️ That last clause is the same trade the `unsurfaceableByDimension` arm
+ * makes, for the same reason: a dimension that lost some of its candidates and
+ * kept others has suffered a ROW-shaped loss, not a dimension-shaped one, and a
+ * reaper that stands down whenever anything is imperfect never runs on the
+ * workspaces that need it most.
  *
  * ## What this deliberately does not do
  *
@@ -441,12 +456,28 @@ export interface RunRepresentation {
   /** One entry per CANDIDATE BUILT — before `reconcile.ts` decides to write it. */
   readonly candidatePredicates: readonly string[];
   /**
-   * Candidates `reconcile.ts` refused, summed over its reasons.
+   * Candidates `reconcile.ts` refused, summed over its reasons — the TOTAL,
+   * which is what the `blind` arm needs.
    *
-   * ⚠️ Keyed by REASON there, not by predicate, which is why this arm can only
-   * express the wholesale case — see {@link reapStandDown}.
+   * ⚠️ **Not the sum of {@link blockedByPredicate}, and the difference is
+   * load-bearing rather than an inconsistency.** A candidate refused with a
+   * blank predicate names no dimension, so it is counted here and nowhere else.
+   * Deriving this total from the map would undercount exactly those refusals,
+   * and undercounting is the unsafe direction: it is what decides whether EVERY
+   * candidate was blocked, and a run that misses that test reaps.
    */
   readonly blockedCandidates: number;
+  /**
+   * The same refusals keyed by predicate (#5396) — the breakdown, which is what
+   * the `predicates` arm needs.
+   *
+   * A dimension that built candidates and had every one of them refused
+   * surfaced nothing, on exactly the terms
+   * {@link unsurfaceableByDimension} means it: reconcile declined to write, so
+   * the run minted no evidence edge for that dimension and its observations age
+   * out for a reason that never happened.
+   */
+  readonly blockedByPredicate: ReadonlyMap<string, number>;
   /** Cells that existed and could not be made into a claim, per dimension. */
   readonly unsurfaceableByDimension: ReadonlyMap<string, number>;
   readonly unsurfaceableKeyRows: number;
@@ -455,11 +486,43 @@ export interface RunRepresentation {
 }
 
 export function reapStandDown(run: RunRepresentation): ReapStandDown {
-  const surfaced = new Set(run.candidatePredicates);
-  const predicates: string[] = [];
-  for (const [dimension, count] of run.unsurfaceableByDimension) {
-    if (count > 0 && !surfaced.has(dimension)) predicates.push(dimension);
+  // ⚠️ **Every predicate in this function is TRIMMED, and that is a
+  // correctness requirement rather than tidiness.** The names arrive from three
+  // sides that spell them differently — the producer's own dimension names, the
+  // candidates it built, and `reconcile.ts`'s refusal map, which trims because
+  // it trims before it writes — and the answer leaves through `$4`, where it is
+  // compared for EQUALITY against `brain_facts.predicate`, the stored and
+  // therefore trimmed spelling. Two spellings meeting at that comparison fail
+  // SILENTLY and in the unsafe direction: the fence simply matches no row, and
+  // the dimension it was built to protect reaps.
+  const norm = (predicate: string): string => predicate.trim();
+
+  // How many candidates each dimension BUILT — a count rather than a set,
+  // because the reconcile arm below has to ask whether every one of them was
+  // refused, and `candidatePredicates` carries one entry per candidate.
+  const built = new Map<string, number>();
+  for (const predicate of run.candidatePredicates) {
+    const name = norm(predicate);
+    built.set(name, (built.get(name) ?? 0) + 1);
   }
+
+  const heldBack = new Set<string>();
+  // Cells that existed and none of which could be made into a claim.
+  for (const [dimension, count] of run.unsurfaceableByDimension) {
+    const name = norm(dimension);
+    if (count > 0 && !built.has(name)) heldBack.add(name);
+  }
+  // Candidates that were built and every one of which reconcile refused
+  // (#5396). `>=` rather than `===` deliberately: the two counts come from
+  // different sides of the write — the producer counts what it built, reconcile
+  // counts what it refused — and a refusal count that somehow exceeds the built
+  // count still means nothing was written, which is the condition being tested.
+  for (const [dimension, refused] of run.blockedByPredicate) {
+    const name = norm(dimension);
+    const builtHere = built.get(name) ?? 0;
+    if (builtHere > 0 && refused >= builtHere) heldBack.add(name);
+  }
+  const predicates = [...heldBack];
 
   // Every candidate the run built was refused, so the episode carries no
   // evidence edge for any of them — indistinguishable, from the reap's side,
@@ -467,7 +530,7 @@ export function reapStandDown(run: RunRepresentation): ReapStandDown {
   const everyCandidateBlocked =
     run.candidatePredicates.length > 0 && run.blockedCandidates >= run.candidatePredicates.length;
 
-  const representedNothing = surfaced.size === 0 || everyCandidateBlocked;
+  const representedNothing = built.size === 0 || everyCandidateBlocked;
   const representationFailed =
     everyCandidateBlocked ||
     run.unsurfaceableKeyRows > 0 ||

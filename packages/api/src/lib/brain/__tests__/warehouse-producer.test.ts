@@ -3070,6 +3070,58 @@ describe("runWarehouseProducer", () => {
     expect(binds?.[3]).toEqual(["status"]);
   });
 
+  test("a dimension reconcile REFUSED wholly is fenced, though every cell surfaced (#5396)", async () => {
+    // The second route into the same fence, and the one #5388 left open. Here
+    // nothing is unsurfaceable — `unsurfaceableCells` is 0 and every `status`
+    // cell becomes a candidate. `reconcile.ts` then refuses each of them: the
+    // object normalizes away to nothing, so the claim has no identity at that
+    // slot and is blocked as `MALFORMED_CLAIM`.
+    //
+    // From the reap's side that is the SAME condition as an unsurfaceable
+    // column — no evidence edge was minted for `status` — but it used to be
+    // invisible, because `report.blocked` is keyed by REASON and could not say
+    // WHICH dimension went unwritten. The run is emphatically not blind: `tier`
+    // wrote both its claims. So before #5396 this reaped every `status`
+    // observation three runs later, for a reason that never happened.
+    const h = harness({
+      pairs: [
+        { entity: "Accounts", group: null, dimension: "status", naming: false },
+        { entity: "Accounts", group: null, dimension: "tier", naming: false },
+      ],
+      entities: {
+        Accounts: entityYaml({
+          table: "accounts",
+          primaryKey: "id",
+          dimensions: ["id", "status", "tier"],
+        }),
+      },
+      rows: {
+        Accounts: [
+          snapshotRow("acme", "---", "gold"),
+          snapshotRow("globex", "-----", "silver"),
+        ],
+      },
+    });
+
+    const report = await run(h);
+
+    // The premise, and every clause of it matters: the cells SURFACED (so this
+    // is not the sibling arm wearing a different hat), four candidates were
+    // built, the two `status` ones were blocked, and the two `tier` ones were
+    // written (so the run is not blind).
+    expect(report.entities[0]).toMatchObject({
+      rows: 2,
+      candidates: 4,
+      unsurfaceableCells: 0,
+      blocked: 2,
+    });
+    expect(report.created).toBe(2);
+
+    // The claim: the reap fired, and carried `status` alone.
+    const [binds] = h.store.paramsFor(OBSERVATION_REAP_SQL);
+    expect(binds?.[3]).toEqual(["status"]);
+  });
+
   test("one bad cell among good ones fences nothing (#5388)", async () => {
     // The direct answer to #5388's argument AGAINST suppressing on the counter: a
     // per-entity aggregate would let this single row pin every `status` reading

@@ -742,6 +742,30 @@ export interface ReconcileReport {
    */
   readonly comparable: number;
   readonly blocked: Readonly<Record<ReconcileBlockReason, number>>;
+  /**
+   * The same refusals keyed by PREDICATE rather than by reason (#5396).
+   *
+   * ⚠️ **A refinement of {@link blocked}, never a second spelling of it.** The
+   * two are not interchangeable and neither can be derived from the other: a
+   * candidate refused with a BLANK predicate names no dimension and appears in
+   * `blocked` alone, so summing this map is not a candidate total and must not
+   * be used as one.
+   *
+   * It exists for the observation reaper's per-dimension fence. `reapStandDown`
+   * holds back a dimension that had values and surfaced none of them; a
+   * `reconcile` refusal is the fourth way a dimension goes unrepresented on a
+   * run that records success, and until this map existed it was the one with no
+   * dimension-shaped answer — so a PARTIAL block reaped the unwritten
+   * candidates' dimensions while a wholesale one was caught. Keyed by the
+   * TRIMMED predicate, which is what the fact would have carried had it been
+   * written, and therefore what `brain_facts.predicate` is compared against.
+   *
+   * A `Map` rather than a `Record`, unlike `blocked`: these keys are dimension
+   * names drawn from the workspace's own semantic layer rather than a
+   * compile-time union, and an object keyed by customer-supplied strings
+   * collides with `Object.prototype`'s own.
+   */
+  readonly blockedByPredicate: ReadonlyMap<string, number>;
   /** Per-candidate, in input order. */
   readonly outcomes: readonly ReconcileOutcome[];
 }
@@ -1155,6 +1179,21 @@ export async function reconcileFacts(
   const now = deps.now ?? (() => new Date());
 
   const blocked: Record<ReconcileBlockReason, number> = { ...NO_BLOCKS };
+  // The same refusals, keyed by predicate (#5396). Every site that increments
+  // `blocked` also calls this, and the pairing is the invariant the reaper's
+  // fence rests on — a refusal counted on one and not the other is a dimension
+  // the reap stops holding back.
+  const blockedByPredicate = new Map<string, number>();
+  const noteBlockedPredicate = (predicate: string): void => {
+    // TRIMMED, matching what the fact would have carried: the reaper compares
+    // these against `brain_facts.predicate`, and reconcile trims before it
+    // writes. A blank one names no dimension — it is already counted on
+    // `blocked.MALFORMED_CLAIM`, and no fact can exist with an empty predicate
+    // for the fence to hold back.
+    const name = predicate.trim();
+    if (name === "") return;
+    blockedByPredicate.set(name, (blockedByPredicate.get(name) ?? 0) + 1);
+  };
 
   // ── Episode-level gate ────────────────────────────────────────────────
   // These are properties of the EVIDENCE, so one failure blocks every candidate
@@ -1187,6 +1226,7 @@ export async function reconcileFacts(
     if (candidates.length > 0) log.warn(detail, message);
     else log.debug(detail, message);
     blocked[reason] = candidates.length;
+    for (const candidate of candidates) noteBlockedPredicate(candidate.predicate);
     return {
       episodeBlocked: reason,
       created: 0,
@@ -1194,6 +1234,7 @@ export async function reconcileFacts(
       provisional: 0,
       comparable: 0,
       blocked,
+      blockedByPredicate,
       outcomes: candidates.map(() => ({ kind: "blocked" as const, reason })),
     };
   }
@@ -1222,7 +1263,15 @@ export async function reconcileFacts(
   const grantTokens = episode.visibleTo.filter((t): t is string => typeof t === "string");
 
   if (candidates.length === 0) {
-    return { created: 0, corroborated: 0, provisional: 0, comparable: 0, blocked, outcomes: [] };
+    return {
+      created: 0,
+      corroborated: 0,
+      provisional: 0,
+      comparable: 0,
+      blocked,
+      blockedByPredicate,
+      outcomes: [],
+    };
   }
 
   // ── Blank-trim pass (no database, no resolver) ────────────────────────
@@ -1249,6 +1298,9 @@ export async function reconcileFacts(
         "brain reconcile: blocked a candidate with a blank subject, predicate, or object — a claim with an empty column asserts nothing",
       );
       blocked.MALFORMED_CLAIM++;
+      // A blank SUBJECT or OBJECT still names its dimension; a blank predicate
+      // does not, and `noteBlockedPredicate` drops it.
+      noteBlockedPredicate(predicate);
       trimmed.push({ kind: "blocked", reason: RECONCILE_BLOCK_REASONS.malformedClaim });
       continue;
     }
@@ -1424,6 +1476,7 @@ export async function reconcileFacts(
         "brain reconcile: blocked a candidate with no identity for one or more slots — such a claim could never corroborate, earn a tension edge, or be superseded at publish, and the slot keys are NOT NULL since #5047. `cause` names the subsystem to fix, per position: `degenerate-surface` = the producer emitted separators only, and the offending text is in `degenerateSurfaces` (fix the producer); `vocabulary-target` = this workspace's vocabulary maps that slot to something that normalizes away, so the surface is fine and the ENTRY is the defect (no re-key repairs it); `inherited` = a row-copy path copied a null slot off the fact named by `inheritedFrom`, so this claim's own text is fine at that position and the TARGET row is what has no identity. The object is never inherited — it is always derived from this claim's own text",
       );
       blocked.MALFORMED_CLAIM++;
+      noteBlockedPredicate(predicate);
       // The POSITIONS travel with the block (#5047). `MALFORMED_CLAIM` covers a
       // blank surface, a degenerate one, a vocabulary target that norms away and
       // an inherited null, and one caller — `correction.ts`'s supersede — turns
@@ -1698,7 +1751,7 @@ export async function reconcileFacts(
     }
   }
 
-  return { created, corroborated, provisional, comparable, blocked, outcomes };
+  return { created, corroborated, provisional, comparable, blocked, blockedByPredicate, outcomes };
 }
 
 // ---------------------------------------------------------------------------

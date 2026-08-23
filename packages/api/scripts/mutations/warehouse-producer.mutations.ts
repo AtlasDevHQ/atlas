@@ -771,6 +771,17 @@ export type WarehouseBrandProbe = { readonly [validatedSnapshotSql]: true };`,
       note: "#5388's worked example, restored. An entity emitting normally is NOT blind, so the guard above does not fire and this bind is the only thing standing between a dimension the run could not read and the DELETE: alter a `status` column to `jsonb` while `tier` keeps emitting, and three runs later every `status` observation is gone though nothing churned and no filter changed. Survives any assertion that the reap was ISSUED or that its other binds are right — the fence is the fourth parameter and an empty array is the ordinary value, so only a fixture that makes a dimension WHOLLY unsurfaceable and reads `$4` can see it.",
     },
     {
+      label: "the fence never hears which dimensions reconcile REFUSED",
+      edits: [
+        {
+          file: PRODUCER,
+          oldString: "          blockedByPredicate: report.blockedByPredicate,",
+          newString: "          blockedByPredicate: new Map<string, number>(),",
+        },
+      ],
+      note: "#5396, and the half of the fourth warn-don't-refuse path that #5388 stated and left open. The WHOLESALE case survives this mutation untouched — `blockedCandidates` is a separate bind and still lands the run in `blind` — so every assertion about an episode refused entirely stays green. What dies is the PARTIAL case: a dimension whose every candidate reconcile refused surfaced its cells perfectly well, so the sibling `unsurfaceableByDimension` arm says nothing about it, and the run is not blind because the entity's OTHER dimensions wrote. Feed the fence an empty map and that dimension reaps three runs later, deleting observations because reconcile declined to WRITE rather than because a row left. The kill is the fixture that surfaces every cell and has reconcile block one dimension's claims for a degenerate object — an assertion that the reap merely FIRED, or that `$4` is right when the fence came from the unsurfaceable route, cannot see it.",
+    },
+    {
       label: "an episode blocked wholesale reaps anyway — the reconcile arm's stand-down is removed",
       edits: [
         {

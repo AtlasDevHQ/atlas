@@ -3845,9 +3845,10 @@ export async function runWarehouseProducer(
       rowsRead: rowCount,
       candidatePredicates: claims.candidates.map((candidate) => candidate.predicate),
       // No reconcile has run at this point. The reconcile arm re-decides below
-      // with the real number once `reconcileFacts` has answered — this value is
-      // only ever read by the zero-candidate arm, which reconciles nothing.
+      // with the real numbers once `reconcileFacts` has answered — these values
+      // are only ever read by the zero-candidate arm, which reconciles nothing.
       blockedCandidates: 0,
+      blockedByPredicate: new Map<string, number>(),
       unsurfaceableByDimension: claims.unsurfaceableByDimension,
       unsurfaceableKeyRows: claims.unsurfaceableKeyRows,
       collidingSubjectRows: claims.collidingSubjectRows,
@@ -4208,6 +4209,12 @@ export async function runWarehouseProducer(
           rowsRead: rowCount,
           candidatePredicates: claims.candidates.map((candidate) => candidate.predicate),
           blockedCandidates,
+          // The same refusals broken down by DIMENSION (#5396). The total above
+          // answers the wholesale case and lands it in `blind`; this answers the
+          // PARTIAL one, which used to have no dimension-shaped answer available
+          // and so reaped the unwritten candidates' dimensions. Both are read off
+          // the one report, so they cannot describe different runs.
+          blockedByPredicate: report.blockedByPredicate,
           unsurfaceableByDimension: claims.unsurfaceableByDimension,
           unsurfaceableKeyRows: claims.unsurfaceableKeyRows,
           collidingSubjectRows: claims.collidingSubjectRows,

@@ -16,6 +16,7 @@ const healthy = {
   rowsRead: 10,
   candidatePredicates: ["status", "plan"],
   blockedCandidates: 0,
+  blockedByPredicate: new Map<string, number>(),
   unsurfaceableByDimension: new Map<string, number>(),
   unsurfaceableKeyRows: 0,
   collidingSubjectRows: 0,
@@ -153,16 +154,77 @@ describe("reapStandDown — the per-dimension arm", () => {
     expect(decision.blind).toBe(true);
   });
 
-  test("a PARTIAL block still reaps — a known narrowing, not an oversight", () => {
-    // `report.blocked` is keyed by REASON, not by predicate, so a partial block
-    // cannot say which dimensions went unwritten and there is no dimension-shaped
-    // answer to give. Pinned so the narrowing is a decision on the record rather
-    // than something a later reader discovers. Closing it needs `reconcile.ts` to
-    // report refusals by predicate.
-    const decision = reapStandDown({ ...healthy, blockedCandidates: 1 });
+  test("a PARTIAL block is no longer blind, and its dimension is held back instead", () => {
+    // ⚠️ This case USED to assert the opposite, and the flip is #5396 rather
+    // than a relaxed test. `report.blocked` is keyed by REASON, so a partial
+    // block had no dimension-shaped answer to give and the unwritten
+    // candidates' dimensions reaped — the narrowing #5388 stated and left open.
+    // `reconcile.ts` now reports the same refusals keyed by predicate, so the
+    // partial case moves out of `blind`, which is still wrong for it (the run
+    // represented `plan` perfectly well), and into `predicates`, which is
+    // exactly right.
+    const decision = reapStandDown({
+      ...healthy,
+      blockedCandidates: 1,
+      blockedByPredicate: new Map([["status", 1]]),
+    });
+
+    expect(decision.blind, "one refused candidate is not a blind run — `plan` was written").toBe(
+      false,
+    );
+    expect(decision.predicates).toEqual(["status"]);
+  });
+
+  test("a dimension that had ANY candidate written keeps reaping", () => {
+    // The direct analogue of the `unsurfaceableByDimension` arm's rule, and the
+    // answer to "one refusal protects everything". Two `status` candidates were
+    // built and one was refused: the dimension surfaced, earned an evidence
+    // edge, and its loss is ROW-shaped rather than dimension-shaped. A reaper
+    // that stands down whenever anything is imperfect never runs on the
+    // workspaces that need it most.
+    const decision = reapStandDown({
+      ...healthy,
+      candidatePredicates: ["status", "status", "plan"],
+      blockedCandidates: 1,
+      blockedByPredicate: new Map([["status", 1]]),
+    });
 
     expect(decision.blind).toBe(false);
     expect(decision.predicates).toEqual([]);
+  });
+
+  test("a refusal for a dimension that built NOTHING holds nothing back", () => {
+    // Fail-safe on the join between the two sides. The producer counts what it
+    // built and reconcile counts what it refused; a predicate present only on
+    // the refusal side cannot have gone unrepresented BY THIS RUN, so holding it
+    // back would fence a dimension off the delete on no evidence at all.
+    const decision = reapStandDown({
+      ...healthy,
+      blockedCandidates: 1,
+      blockedByPredicate: new Map([["tier", 1]]),
+    });
+
+    expect(decision.blind).toBe(false);
+    expect(decision.predicates).toEqual([]);
+  });
+
+  test("a wholesale block stays BLIND rather than degrading to the per-dimension arm", () => {
+    // #5396 must not move the wholesale case out of `blind`. Every candidate is
+    // refused, so every dimension is also individually held back — but `blind`
+    // is the stronger statement and the one that stops the reap issuing at all,
+    // and a run that reaped "only the dimensions it built" would still delete
+    // every observation of a dimension this run never mentioned.
+    const decision = reapStandDown({
+      ...healthy,
+      blockedCandidates: 2,
+      blockedByPredicate: new Map([
+        ["status", 1],
+        ["plan", 1],
+      ]),
+    });
+
+    expect(decision.blind).toBe(true);
+    expect([...decision.predicates].sort()).toEqual(["plan", "status"]);
   });
 
   test("colliding subjects alone exclude no dimension", () => {

@@ -903,10 +903,19 @@ jobs:
         # then download the `test-timings-merged` artifact over
         # `packages/api/scripts/test-timings.json` and update the line below.
         #
-        # LAST REGENERATED: never — every number is a measurement of the suite as
-        # it stood at #2802, roughly two thousand commits ago. Re-trigger when a
-        # shard's wall time drifts past ~1.25x its siblings on a green `main`
-        # run, or after a PR adds several `-pg` suites (they are the heavy ones).
+        # LAST REGENERATED: 2026-08-23, from run 32650149461 on `main` at
+        # 7a1e804a (#5397). Before that: never — every number was a measurement
+        # of the suite as it stood at #2802, roughly two thousand commits ago.
+        # Re-trigger when a shard's wall time drifts past ~1.25x its siblings on
+        # a green `main` run, or after a PR adds several `-pg` suites (they are
+        # the heavy ones).
+        #
+        # ⚠️ Check the refresh MEASURED before trusting it, because the way it
+        # fails is silent. Two cheap reads on the merged artifact: every `-pg`
+        # suite should carry a duration in the seconds (88 of them did, median
+        # 4.7s), and NONE should appear among the hundred fastest files. A
+        # refresh that ran without a database produces a well-formed file in
+        # which the sixty heaviest suites are the lightest entries.
         #
         # ⚠️ A rebalance does NOT fix a PREEMPTED shard. `The runner has received
         # a shutdown signal` and `The operation was canceled` are runner loss;

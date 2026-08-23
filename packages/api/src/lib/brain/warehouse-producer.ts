@@ -94,6 +94,8 @@ import {
   type StoredEntity,
 } from "@atlas/api/lib/brain/entity-store";
 import {
+  NOTHING_REAPED,
+  reapStandDown,
   reapUnreachedObservations,
   type ObservationReapResult,
 } from "@atlas/api/lib/brain/observation-reap";
@@ -3833,6 +3835,25 @@ export async function runWarehouseProducer(
     // that guard, beside the cap comparison it has to agree with — and `rowCount`
     // here is their sum, which is what the report means by "rows".
 
+    // What this run may NOT reap, because it could not represent it (#5388).
+    // Computed ONCE here, above both arms, because the two must not answer
+    // differently — the same run reaching the zero-candidate arm and reaching
+    // reconcile is the same run, and two spellings of "what did this read fail to
+    // represent" is how they come to disagree. The rule itself lives beside the
+    // statement it fences; this is only where the claims are read off.
+    const standDown = reapStandDown({
+      rowsRead: rowCount,
+      candidatePredicates: claims.candidates.map((candidate) => candidate.predicate),
+      // No reconcile has run at this point. The reconcile arm re-decides below
+      // with the real number once `reconcileFacts` has answered — this value is
+      // only ever read by the zero-candidate arm, which reconciles nothing.
+      blockedCandidates: 0,
+      unsurfaceableByDimension: claims.unsurfaceableByDimension,
+      unsurfaceableKeyRows: claims.unsurfaceableKeyRows,
+      collidingSubjectRows: claims.collidingSubjectRows,
+      unidentifiedRows: claims.unidentifiedRows,
+    });
+
     if (claims.unsurfaceableCells > 0) {
       // An enrollment mistake rather than an empty column — see `isAbsentCell`. It
       // does not refuse the pair (some rows may still be surfaceable, and those
@@ -3914,7 +3935,7 @@ export async function runWarehouseProducer(
       /** Reaped inside the transaction below; counted only once it commits. */
       let reapedHere = 0;
       /** The corpus half of the same deal (#5344), staged on the same terms. */
-      let observationsReapedHere: ObservationReapResult | null = null;
+      let observationsReapedHere: ObservationReapResult = NOTHING_REAPED;
       try {
         await withTransaction(async (tx) => {
           await recordEntityRunSuccess(tx, {
@@ -3943,10 +3964,33 @@ export async function runWarehouseProducer(
           // transaction: same window, same success record, same rollback. This
           // arm is where a table that stopped answering at all — truncated,
           // wholly filtered out — takes its observations with it.
-          observationsReapedHere = await reapUnreachedObservations(tx, {
-            workspaceId,
-            entity: entityPlan.entity.name,
-          });
+          //
+          // ⚠️ **Unless the run was BLIND** (#5388). Zero candidates has two
+          // causes that look identical from here and mean opposite things: the
+          // table answered with no rows (or with rows that assert nothing), which
+          // is positive evidence of absence and the case this reaper exists for;
+          // or it answered with rows this run could not represent — a key column
+          // altered to an unsurfaceable type — which is no evidence of anything.
+          // Reaping on the second deletes the entity's whole comparison surface,
+          // and its tension edges against live human beliefs, for a reason that
+          // never happened.
+          if (!standDown.blind) {
+            // ⚠️ `predicates` is PROVABLY EMPTY on this arm, and the bind is
+            // uniformity rather than behaviour. Zero candidates means nothing
+            // surfaced, so a non-empty `predicates` needs an unsurfaceable cell,
+            // which needs a row, which makes the run blind — and the guard above
+            // means a blind run never reaches this line. Measured, not reasoned:
+            // a mutation replacing this with `[]` survived all 245 tests across
+            // seven targets, which is what an equivalent mutant looks like. It
+            // is passed anyway so the two arms cannot answer differently if the
+            // blind rule is ever narrowed; `reapStandDown`'s own suite pins the
+            // implication that makes the emptiness true.
+            observationsReapedHere = await reapUnreachedObservations(tx, {
+              workspaceId,
+              entity: entityPlan.entity.name,
+              exceptPredicates: standDown.predicates,
+            });
+          }
         });
         // ⚠️ Folded in only AFTER the transaction resolves, never inside the
         // callback. This counter is the audit trail for an irreversible DELETE,
@@ -3955,7 +3999,7 @@ export async function runWarehouseProducer(
         // hunting for rows that are still there. The rollback un-reaps; the
         // number has to say so.
         entityStoreChanges.reaped += reapedHere;
-        if (observationsReapedHere !== null) countReaped(observationsReapedHere);
+        countReaped(observationsReapedHere);
       } catch (err: unknown) {
         log.warn(
           {
@@ -4021,7 +4065,7 @@ export async function runWarehouseProducer(
     /** Store changes made inside the transaction below, counted once it commits. */
     let pendingStoreChanges = { orphansDeleted: 0, comparablesRetired: 0, reaped: 0 };
     /** The corpus reap made inside the transaction below, on the same terms (#5344). */
-    let pendingObservationReap: ObservationReapResult | null = null;
+    let pendingObservationReap: ObservationReapResult = NOTHING_REAPED;
     // ⚠️ **`try`/`catch`, NOT `.catch(…)` on the returned value, and the difference is
     // the last unguarded read on this seam** (#5257 review, round 2). `.catch` is
     // itself a property access on whatever `withTransaction` returned: a non-thenable
@@ -4151,10 +4195,36 @@ export async function runWarehouseProducer(
         // filtered snapshot a fresh evidence edge and given the rows the filter
         // now excludes nothing at all, so an entity that is emitting normally is
         // exactly where a churned customer's observation ages out.
-        pendingObservationReap = await reapUnreachedObservations(tx, {
-          workspaceId,
-          entity: entityPlan.entity.name,
+        // ⚠️ RE-DECIDED here rather than reusing the entity-level `standDown`,
+        // and the difference is the fourth warn-don't-refuse path (#5388). The
+        // decision above was taken before `reconcileFacts` answered, so it cannot
+        // know that every candidate was BLOCKED — and a wholesale block writes no
+        // evidence edge for any of them, which from the reaper's side is
+        // indistinguishable from an entity that returned nothing. Reaping on it
+        // would delete the comparison surface because reconcile refused to write,
+        // not because anything left.
+        const blockedCandidates = Object.values(report.blocked).reduce((sum, n) => sum + n, 0);
+        const reconcileStandDown = reapStandDown({
+          rowsRead: rowCount,
+          candidatePredicates: claims.candidates.map((candidate) => candidate.predicate),
+          blockedCandidates,
+          unsurfaceableByDimension: claims.unsurfaceableByDimension,
+          unsurfaceableKeyRows: claims.unsurfaceableKeyRows,
+          collidingSubjectRows: claims.collidingSubjectRows,
+          unidentifiedRows: claims.unidentifiedRows,
         });
+        // This is the arm the per-dimension fence exists for: an entity emitting
+        // normally is not blind, so the reap fires, and without the fence a
+        // `status` column altered to `jsonb` takes every `status` observation —
+        // and their tension edges against live human beliefs — with it three runs
+        // later.
+        if (!reconcileStandDown.blind) {
+          pendingObservationReap = await reapUnreachedObservations(tx, {
+            workspaceId,
+            entity: entityPlan.entity.name,
+            exceptPredicates: reconcileStandDown.predicates,
+          });
+        }
 
         // ⚠️ Staged, NOT folded into the run's counters here — see the
         // zero-candidate arm above for the argument. Everything below this line
@@ -4229,7 +4299,11 @@ export async function runWarehouseProducer(
         // A branch that looks like it compensates for a contract violation, but does
         // not, costs the next reader a trip into `reconcile.ts` to discover it is
         // dead.
-        const blocked = Object.values(report.blocked).reduce((sum, n) => sum + n, 0);
+        //
+        // Computed ONCE, above, because the reap's stand-down reads the same number
+        // (#5388) and two spellings of "how many did reconcile refuse" is how the
+        // audit line and the delete rule come to disagree.
+        const blocked = blockedCandidates;
         producedOutcome = {
           entity: entityPlan.entity.name,
           rows: rowCount,
@@ -4255,7 +4329,7 @@ export async function runWarehouseProducer(
       entityStoreChanges.orphansDeleted += pendingStoreChanges.orphansDeleted;
       entityStoreChanges.comparablesRetired += pendingStoreChanges.comparablesRetired;
       entityStoreChanges.reaped += pendingStoreChanges.reaped;
-      if (pendingObservationReap !== null) countReaped(pendingObservationReap);
+      countReaped(pendingObservationReap);
     } catch (err: unknown) {
       // A defect in this module's own contract stays FATAL — see
       // `WarehouseProducerContractError`. Everything below is for OPERATIONAL

@@ -2981,14 +2981,27 @@ describe("runWarehouseProducer", () => {
     // claims SUCCEEDED, and it is the arm #5233's reaper depends on — see
     // migration 0206's header, and `warehouse-run-record-pg.test.ts`.
     expect(h.store.transactions).toBe(1);
-    // Both reaps ride the same transaction as the record they read (#5321,
-    // #5344), so the zero-candidate arm is three statements now and the ORDER is
-    // the claim: the success this run just wrote has to be inside the window the
-    // reaps read, or the rules lag a full cycle behind themselves.
+    // The store reap rides the same transaction as the record it reads (#5321),
+    // so the ORDER is the claim: the success this run just wrote has to be inside
+    // the window the reap reads, or the rule lags a full cycle behind itself.
+    //
+    // ⚠️ **`OBSERVATION_REAP_SQL` is absent, and its absence is the assertion**
+    // (#5388). This fixture is the paradigm BLIND run — ten rows read, every one
+    // of them present and counted, and not a single claim surfaced from any of
+    // them: four unidentified, two colliding, one unsurfaceable key, three
+    // unsurfaceable cells. A run that saw the rows and could not represent them
+    // is no evidence that anything left, so the corpus reaper stands down and the
+    // entity keeps its comparison surface. It used to fire here, which would have
+    // emptied the surface — and taken the tension edges against live human
+    // beliefs with it — three runs after a key column changed type.
+    //
+    // The STORE reaper still fires, and the split is deliberate: an entity-store
+    // entry is a resolution surface this run genuinely failed to re-assert, and
+    // rewriting it costs one good run. A fact is a reading that was TRUE when
+    // minted, and deleting it is the half with no inverse.
     expect(h.store.calls.map((c) => c.sql)).toEqual([
       ENTITY_RUN_SUCCESS_INSERT_SQL,
       ENTITY_STORE_REAP_SQL,
-      OBSERVATION_REAP_SQL,
     ]);
     expect(h.store.runSuccesses()).toEqual([[WORKSPACE, "Empty", SNAPSHOT_AT.toISOString()]]);
     expect(report.entities).toEqual([
@@ -3015,6 +3028,146 @@ describe("runWarehouseProducer", () => {
     ]);
   });
 
+  test("a wholly unsurfaceable dimension is held back while its siblings reap (#5388)", async () => {
+    // ⚠️ **#5388's worked example, on the arm it actually happens on.** Someone
+    // alters `status` to `jsonb`. The rows keep surfaceable keys and `tier` keeps
+    // emitting, so the entity reconciles normally — which is exactly why the
+    // narrowing #5388 first proposed ("suppress when the run represented
+    // NOTHING") would not have saved it: this run represents plenty. Only a
+    // dimension-scoped fence can say "reap the churned rows, keep the readings we
+    // merely could not read this time".
+    const h = harness({
+      pairs: [
+        { entity: "Accounts", group: null, dimension: "status", naming: false },
+        { entity: "Accounts", group: null, dimension: "tier", naming: false },
+      ],
+      entities: {
+        Accounts: entityYaml({
+          table: "accounts",
+          primaryKey: "id",
+          dimensions: ["id", "status", "tier"],
+        }),
+      },
+      rows: {
+        Accounts: [
+          snapshotRow("acme", { was: "active" }, "gold"),
+          snapshotRow("globex", { was: "churned" }, "silver"),
+        ],
+      },
+    });
+
+    const report = await run(h);
+
+    // The premise: `status` surfaced nothing, `tier` surfaced everything.
+    expect(report.entities[0]).toMatchObject({ rows: 2, unsurfaceableCells: 2 });
+    expect(report.created).toBe(2);
+
+    // The claim: the reap fired (the entity is emitting, so it is NOT blind) and
+    // carried `status` in its fence, so no `status` observation can be deleted by
+    // a run that could not read a single `status` cell. `tier` is absent from the
+    // fence and reaps normally.
+    const [binds] = h.store.paramsFor(OBSERVATION_REAP_SQL);
+    expect(binds?.[3]).toEqual(["status"]);
+  });
+
+  test("one bad cell among good ones fences nothing (#5388)", async () => {
+    // The direct answer to #5388's argument AGAINST suppressing on the counter: a
+    // per-entity aggregate would let this single row pin every `status` reading
+    // of the entity open forever. `status` surfaced a value here, so it is not
+    // blind for this run and it reaps on the ordinary terms.
+    const h = harness({
+      pairs: [{ entity: "Accounts", group: null, dimension: "status", naming: false }],
+      entities: {
+        Accounts: entityYaml({
+          table: "accounts",
+          primaryKey: "id",
+          dimensions: ["id", "status"],
+        }),
+      },
+      rows: {
+        Accounts: [snapshotRow("acme", { was: "active" }), snapshotRow("globex", "churned")],
+      },
+    });
+
+    const report = await run(h);
+
+    expect(report.entities[0]).toMatchObject({ unsurfaceableCells: 1 });
+    const [binds] = h.store.paramsFor(OBSERVATION_REAP_SQL);
+    expect(binds?.[3]).toEqual([]);
+  });
+  test("a TRUNCATED table still reaps — zero rows is evidence, not blindness (#5388)", async () => {
+    // The complement of the blind-run fixture above, and the case migration
+    // 0206's header names as the reason a reaper is needed at all. Nothing was
+    // read because there is nothing there: that IS positive evidence of absence,
+    // so the corpus reaper must fire. A stand-down rule that caught this would
+    // have closed the defect #5344 exists to close.
+    const h = harness({
+      pairs: [{ entity: "Gone", group: null, dimension: "status", naming: false }],
+      entities: {
+        Gone: entityYaml({ table: "gone", primaryKey: "id", dimensions: ["id", "status"] }),
+      },
+      rows: { Gone: [] },
+    });
+
+    await run(h);
+
+    expect(h.store.calls.map((c) => c.sql)).toEqual([
+      ENTITY_RUN_SUCCESS_INSERT_SQL,
+      ENTITY_STORE_REAP_SQL,
+      OBSERVATION_REAP_SQL,
+    ]);
+    // Nothing stood down, so the fence admits the whole population.
+    expect(h.store.paramsFor(OBSERVATION_REAP_SQL)[0]?.[3]).toEqual([]);
+  });
+
+  test("rows whose cells are all NULL still reap — the answer was 'nothing' (#5388)", async () => {
+    // ⚠️ The distinction that keeps the stand-down from swallowing the ordinary
+    // case. These rows are present, identified and counted; every dimension cell
+    // is NULL. That is not a failure to represent — the warehouse answered, and
+    // the answer was that these rows assert nothing. The readings should age out
+    // exactly as a churned row's do, so `blind` must be false even though the run
+    // produced no candidates.
+    const h = harness({
+      pairs: [{ entity: "Blank", group: null, dimension: "status", naming: false }],
+      entities: {
+        Blank: entityYaml({ table: "blank", primaryKey: "id", dimensions: ["id", "status"] }),
+      },
+      rows: { Blank: [snapshotRow("a", null), snapshotRow("b", null)] },
+    });
+
+    const report = await run(h);
+
+    expect(report.entities[0]).toMatchObject({ rows: 2, candidates: 0, unsurfaceableCells: 0 });
+    expect(h.store.calls.map((c) => c.sql)).toContain(OBSERVATION_REAP_SQL);
+    expect(h.store.paramsFor(OBSERVATION_REAP_SQL)[0]?.[3]).toEqual([]);
+  });
+  test("an episode whose every candidate reconcile BLOCKS does not reap (#5388)", async () => {
+    // ⚠️ The fourth warn-don't-refuse path, and the one the entity-level
+    // stand-down structurally cannot see: it is decided before `reconcileFacts`
+    // has answered. Every subject here normalizes away to nothing, so every
+    // candidate is built and then blocked as `MALFORMED_CLAIM` — the run reaches
+    // the reconcile arm, writes an episode, and mints no evidence edge for
+    // anything. Reaping on that empties the comparison surface because reconcile
+    // refused to WRITE, not because a row left.
+    const h = harness({
+      pairs: [{ entity: "Degenerate", group: null, dimension: "status", naming: false }],
+      entities: {
+        Degenerate: entityYaml({
+          table: "degenerate",
+          primaryKey: "id",
+          dimensions: ["id", "status"],
+        }),
+      },
+      rows: { Degenerate: [snapshotRow("---", "active"), snapshotRow("-----", "churned")] },
+    });
+
+    const report = await run(h);
+
+    // The premise: candidates were BUILT (so the run is not zero-candidate) and
+    // every one of them was blocked (so nothing was written).
+    expect(report.entities[0]).toMatchObject({ rows: 2, candidates: 2, created: 0, blocked: 2 });
+    expect(h.store.calls.map((c) => c.sql)).not.toContain(OBSERVATION_REAP_SQL);
+  });
   test("the run-level outcome carries each counter from the claims it came from", async () => {
     // Asymmetric values (1 unidentified, 2 colliding, 3 unsurfaceable) so a swap
     // between any two of the three fields goes red.

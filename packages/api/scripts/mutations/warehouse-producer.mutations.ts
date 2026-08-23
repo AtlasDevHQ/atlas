@@ -718,11 +718,12 @@ export type WarehouseBrandProbe = { readonly [validatedSnapshotSql]: true };`,
           // shallower indentation — the zero-candidate arm's identical call
           // nests one level deeper, and the row below anchors on that one.
           oldString:
-            "        pendingObservationReap = await reapUnreachedObservations(tx, {\n" +
-            "          workspaceId,\n" +
-            "          entity: entityPlan.entity.name,\n" +
-            "        });",
-          newString: "        void reapUnreachedObservations;",
+            "          pendingObservationReap = await reapUnreachedObservations(tx, {\n" +
+            "            workspaceId,\n" +
+            "            entity: entityPlan.entity.name,\n" +
+            "            exceptPredicates: reconcileStandDown.predicates,\n" +
+            "          });",
+          newString: "          void reapUnreachedObservations;",
         },
       ],
       note: "⚠️ **The arm the reaper exists for, and the one a reader arriving from #5321 would expect to be the no-op.** The store's reaper IS a no-op here by construction — `writeEntityEntries` has just rewritten every entry at this run's `snapshot_at`, so none can predate the window — and copying that reasoning across is how the corpus reaper ends up wired to the zero-candidate arm alone. Nothing rewrites a fact: `reconcileFacts` gives every row still in the filtered snapshot a fresh evidence edge and gives the excluded rows nothing, so an entity emitting NORMALLY is exactly where a churned customer's observation ages out. Deleting this call leaves the corpus reaper firing only when an entity produces no claims at all — which is the truncated-table case and not #5344's — and every assertion that the statement was ISSUED stays green, because the other arm still issues it.",
@@ -733,14 +734,52 @@ export type WarehouseBrandProbe = { readonly [validatedSnapshotSql]: true };`,
         {
           file: PRODUCER,
           oldString:
-            "          observationsReapedHere = await reapUnreachedObservations(tx, {\n" +
-            "            workspaceId,\n" +
-            "            entity: entityPlan.entity.name,\n" +
-            "          });",
-          newString: "          await Promise.resolve();",
+            "            observationsReapedHere = await reapUnreachedObservations(tx, {\n" +
+            "              workspaceId,\n" +
+            "              entity: entityPlan.entity.name,\n" +
+            "              exceptPredicates: standDown.predicates,\n" +
+            "            });",
+          newString: "            await Promise.resolve();",
         },
       ],
-      note: "The complement, and the cheaper half to lose: an entity whose table is truncated or whose primary key stopped being surfaceable never reaches the reconcile transaction, so its observations are stranded by the one class of run that produces nothing to compare them against. Killed in `producer` by the zero-candidate arm's statement-ORDER assertion, which dispatches on `OBSERVATION_REAP_SQL`'s exact bytes and would stay green against a paraphrase.",
+      note: "The complement, and the cheaper half to lose: an entity whose table is TRUNCATED never reaches the reconcile transaction, so its observations are stranded by the one class of run that produces nothing to compare them against. ⚠️ The killing assertion MOVED at #5388 and the old note named the wrong one: the zero-candidate arm's original statement-ORDER fixture is a blind run (ten rows read, none represented) and now asserts the corpus reaper is ABSENT, so it stays green against this mutation. The truncated-table fixture added by #5388 is what kills it, and it dispatches on `OBSERVATION_REAP_SQL`'s exact bytes for the same reason. Its sibling — a primary key that stopped being surfaceable — is deliberately NO LONGER this reaper's case: the rows are present and unread, which is no evidence that anything left.",
+    },
+    {
+      label: "a blind run reaps anyway — the stand-down guard is removed",
+      edits: [
+        {
+          file: PRODUCER,
+          oldString: "          if (!standDown.blind) {",
+          newString: "          if (true) {",
+        },
+      ],
+      note: "⚠️ **The #5388 guard, and the delete it prevents has no inverse.** Zero candidates has two causes that look identical from inside this arm and mean opposite things: the table answered with no rows — the truncated case this reaper was BUILT for — or it answered with rows this run could not represent, a key column altered to a type no claim surface can be made of. Removing the guard reaps on the second, deleting the entity's whole comparison surface and its `in-tension-with` edges against live human beliefs, three successful runs after a schema change that churned nothing. Survives every assertion that the reaper fires SOMEWHERE, because the truncated fixture still fires it — the kill is the blind-run fixture asserting `OBSERVATION_REAP_SQL` is ABSENT.",
+    },
+    {
+      label: "the per-dimension fence is never sent on the arm that emits",
+      edits: [
+        {
+          file: PRODUCER,
+          // ⚠️ Anchored from the ASSIGNMENT TARGET down, not on the bind line
+          // alone. `countOccurrences` is a plain substring scan, so the
+          // ten-space spelling of this property is a substring of the
+          // zero-candidate arm's fourteen-space one and matched twice.
+          oldString: "            exceptPredicates: reconcileStandDown.predicates,",
+          newString: "            exceptPredicates: [],",
+        },
+      ],
+      note: "#5388's worked example, restored. An entity emitting normally is NOT blind, so the guard above does not fire and this bind is the only thing standing between a dimension the run could not read and the DELETE: alter a `status` column to `jsonb` while `tier` keeps emitting, and three runs later every `status` observation is gone though nothing churned and no filter changed. Survives any assertion that the reap was ISSUED or that its other binds are right — the fence is the fourth parameter and an empty array is the ordinary value, so only a fixture that makes a dimension WHOLLY unsurfaceable and reads `$4` can see it.",
+    },
+    {
+      label: "an episode blocked wholesale reaps anyway — the reconcile arm's stand-down is removed",
+      edits: [
+        {
+          file: PRODUCER,
+          oldString: "        if (!reconcileStandDown.blind) {",
+          newString: "        if (true) {",
+        },
+      ],
+      note: "The FOURTH warn-don't-refuse path (#5388), and the one the entity-level decision structurally cannot see: it is taken before `reconcileFacts` answers. When an episode is blocked wholesale `reconcile.ts` sets `blocked[reason] = candidates.length`, so every candidate goes unwritten and the run earns no evidence edge for any of them — reaping on it empties the comparison surface because reconcile refused to WRITE, not because anything left. Survives every assertion that the reap fires on a healthy reconcile, because a healthy one is not blind.",
     },
     {
       label: "the connection resolver is asked about no entities",

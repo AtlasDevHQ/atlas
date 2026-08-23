@@ -484,6 +484,51 @@ describeIfPg("observation reaping (real Postgres)", () => {
   );
 
   it(
+    "a fenced predicate survives a reap that would otherwise take it (#5388)",
+    async () => {
+      // The stand-down, end to end against real Postgres. This observation is
+      // stranded by every measure the rule uses — five successful runs since it
+      // was minted — so the ONLY thing standing between it and the DELETE is the
+      // `$4` fence. `seedObservation` mints under the `status` predicate, which
+      // is the dimension #5388's worked example takes out.
+      const stranded = await seedObservation({
+        entity: ENTITY,
+        subject: CHURNED,
+        object: "active",
+        at: "2026-08-14T10:00:00.000Z",
+      });
+      await successes(ENTITY, [10, 11, 12, 13, 14]);
+
+      expect(
+        (
+          await reapUnreachedObservations(exec, {
+            workspaceId: WORKSPACE,
+            entity: ENTITY,
+            exceptPredicates: ["status"],
+          })
+        ).factIds,
+        "a run that could not read a single `status` cell deleted the `status` readings anyway",
+      ).toEqual([]);
+      expect((await storedFacts()).map((f) => f.id)).toEqual([stranded]);
+
+      // The positive control, on the SAME row: fence a different predicate and
+      // the reap takes it. Without this the assertion above would stay green
+      // against a statement that reaps nothing at all.
+      expect(
+        (
+          await reapUnreachedObservations(exec, {
+            workspaceId: WORKSPACE,
+            entity: ENTITY,
+            exceptPredicates: ["tier"],
+          })
+        ).factIds,
+      ).toEqual([stranded]);
+      expect(await storedFacts()).toEqual([]);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
     "a human belief a warehouse episode once corroborated is NOT an observation, and is never reaped",
     async () => {
       // The live shape this fence exists for. Corroboration attaches the incoming
@@ -729,7 +774,9 @@ describeIfPg("observation reaping (real Postgres)", () => {
       // `reconcile.ts`' convention: the statement is exported so this suite runs
       // the SHIPPED text against the live schema rather than a paraphrase that
       // stays green against an edited one.
-      const { rows } = await pool.query(OBSERVATION_REAP_SQL, [WORKSPACE, ENTITY, 3]);
+      // `$4` is the stand-down fence (#5388). An EMPTY array is the ordinary
+      // case and is what the producer sends when nothing stood down.
+      const { rows } = await pool.query(OBSERVATION_REAP_SQL, [WORKSPACE, ENTITY, 3, []]);
       expect(rows).toEqual([]);
     },
     PG_TEST_TIMEOUT_MS,

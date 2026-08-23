@@ -38,20 +38,52 @@
  * that row unrepresented.
  *
  * Worked example: someone alters a `status` column to `jsonb`, so every cell
- * becomes unsurfaceable. Three successful runs later this statement deletes every
- * `status` observation of that entity **and the tension edges they carried
- * against live human beliefs**, though nothing churned and no filter changed.
+ * becomes unsurfaceable. The producer warns and keeps going, and each run
+ * records success — so on the rule as #5344 shipped it, three successful runs
+ * later every `status` observation of that entity was deleted **along with the
+ * tension edges they carried against live human beliefs**, though nothing
+ * churned and no filter changed.
  *
- * That is survivable and deliberately not refused here — the next good run
- * re-mints the observations, beliefs are fenced out of the delete, and refusing
- * to reap on any warning would leave churned rows in the comparison surface
- * indefinitely, which is the defect #5344 exists to close. It is written down
- * because the module's name and its ticket both suggest a narrower rule than the
- * one it implements, and an operator reading an emptied comparison surface after
- * a schema change deserves to find this paragraph rather than infer a bug.
+ * ## The stand-down, and why it is per-DIMENSION (#5388)
  *
- * Whether to suppress the reap while `unsurfaceableCells > 0` is a real question
- * and is deliberately NOT decided here.
+ * That gap is now closed by {@link reapStandDown}, which the callers consult
+ * before issuing this statement. The rule it encodes: *reap on evidence that a
+ * row LEFT, never because a run could not represent it.*
+ *
+ * ⚠️ **The narrowing that looks obvious does not work, and the worked example
+ * above is why.** #5388 proposed suppressing when a run represented NOTHING —
+ * but in that example the rows keep surfaceable keys and the entity's other
+ * dimensions keep emitting, so the run represents plenty, "represented nothing"
+ * is false, and every `status` observation dies exactly as before. A per-entity
+ * test cannot express the answer; only a single-dimension entity would have been
+ * saved by it. Suppressing on the raw `unsurfaceableCells > 0` counter fails from
+ * the other side — the counters are per-entity aggregates, so one bad cell would
+ * pin every row of the entity open, and a reaper that stands down whenever
+ * anything is imperfect never runs on the workspaces that need it most.
+ *
+ * So the fence is a dimension-scoped `$4`: a dimension that had values and
+ * surfaced NONE of them is held back, and one that surfaced even a single value
+ * reaps normally. `predicate` is already a column and
+ * `unsurfaceableByDimension` is already carried on the claims, so this costs one
+ * bind.
+ *
+ * The sibling counters get the same answer where a dimension-shaped answer
+ * exists and are handled by the blind arm where it does not: a colliding or
+ * unidentified subject drops the whole ROW, so there is no dimension to name,
+ * and it is caught only when it takes every row the run read. An unsurfaceable
+ * KEY takes every row by construction and so always lands in the blind arm.
+ *
+ * ⚠️ **An absent cell is NOT a representation failure.** A row whose every cell
+ * is NULL asserts nothing — the warehouse answered, and the answer was
+ * "nothing". Those observations should age out, and a zero-row read is the
+ * truncated table this reaper was built for. Both keep reaping; see
+ * {@link reapStandDown}.
+ *
+ * The accepted cost, stated rather than discovered: a chronically unsurfaceable
+ * dimension holds its own observations open indefinitely. Holding a stale
+ * reading is recoverable by fixing the column or un-enrolling the pair, and the
+ * operator is warned every run with the dimension named; the delete is
+ * recoverable only by a re-read the broken column is preventing.
  *
  * ## The reach rule is the store's, not a second one
  *
@@ -205,7 +237,11 @@ const EPISODE_ENTITY_SQL = `substring(se.source_id from '^warehouse:(.*)@[^@]*$'
  * ## Bind contract
  *
  * `$1` workspace, `$2` entity, `$3` N — {@link WAREHOUSE_SUCCESS_WINDOW_CTE}'s
- * order, which this statement inherits and must keep.
+ * order, which this statement inherits and must keep. `$4` is this module's own
+ * and therefore sits after them: the predicates {@link reapStandDown} held back
+ * (#5388). An EMPTY array is the ordinary case — `= ANY('{}')` is false for
+ * every row, so `NOT (…)` admits the whole population and the fence costs
+ * nothing when nothing stood down.
  *
  * Exported so a unit test dispatches on the EXACT bytes and the `-pg` suite runs
  * it against the live schema — `reconcile.ts`'s convention, for its reason: a
@@ -230,6 +266,7 @@ export const OBSERVATION_REAP_SQL = `WITH ${WAREHOUSE_SUCCESS_WINDOW_CTE}
        AND pe.source = ANY (${WAREHOUSE_EPISODE_SOURCES_SQL})
      WHERE f.workspace_id = $1
        AND gate.n >= $3::bigint
+       AND NOT (f.predicate = ANY ($4::text[]))
        AND f.status = 'draft'
        AND ${observationSql("f")}
        AND se.source = ANY (${WAREHOUSE_EPISODE_SOURCES_SQL})
@@ -278,8 +315,17 @@ export interface ObservationReapResult {
   readonly tensionEdgesRemoved: number;
 }
 
-/** The result of a reap that removed nothing — the ordinary outcome. */
-const NOTHING_REAPED: ObservationReapResult = Object.freeze({
+/**
+ * The result of a reap that removed nothing — the ordinary outcome.
+ *
+ * Exported so a caller staging a reap across a transaction boundary can
+ * initialise its local to this instead of `null` (#5389). A `let … | null`
+ * assigned only inside a `withTransaction` callback narrows to `never` at its
+ * own `!== null` guard — control-flow analysis does not see through the
+ * closure — and the resulting error blames a line three above the real one.
+ * Folding this contributes zero, so the guard is not needed in the first place.
+ */
+export const NOTHING_REAPED: ObservationReapResult = Object.freeze({
   factIds: Object.freeze([]),
   edgesRemoved: 0,
   tensionEdgesRemoved: 0,
@@ -301,6 +347,139 @@ const NOTHING_REAPED: ObservationReapResult = Object.freeze({
  * between two reapers that deliberately share nothing but the window.
  */
 const LOGGED_ID_SAMPLE = 20;
+
+/** What a run may not reap, because it could not represent it (#5388). */
+export interface ReapStandDown {
+  /**
+   * The run read rows and represented NONE of them — reap nothing for this
+   * entity. Distinct from a run that read no rows at all, which is the
+   * truncated table this reaper exists for.
+   */
+  readonly blind: boolean;
+  /**
+   * Dimensions this run surfaced no value for at all, though it had values to
+   * surface. Their observations are held back; every other predicate reaps
+   * normally.
+   */
+  readonly predicates: readonly string[];
+}
+
+/**
+ * Decide what one run's outcome licenses the reaper to delete (#5388).
+ *
+ * ## The rule
+ *
+ * *Reap on evidence that a row LEFT. Never reap because a run could not
+ * represent it.* The reaper's predicate is "not seen by the last N successful
+ * runs", and a run can record success with a present, counted row
+ * unrepresented — `collidingSubjectRows`, `unsurfaceableKeyRows`,
+ * `unsurfaceableCells` and a `reconcile` block all warn rather than refuse. This
+ * function is where those two populations are told apart.
+ *
+ * ## Why not the whole entity, and why not the raw counter
+ *
+ * #5388 weighed suppressing the reap whenever `unsurfaceableCells > 0`. That was
+ * rejected on its own terms: the counters are per-entity aggregates, so one bad
+ * cell would pin every row of the entity open forever, and a reaper that stands
+ * down whenever anything is imperfect never runs on the workspaces that need it
+ * most.
+ *
+ * ⚠️ **The issue's own third option — suppress when the run represented
+ * NOTHING — does not fix the case the module docstring is written around, and
+ * that is why the rule below has two arms rather than one.** In the worked
+ * example a `status` column becomes `jsonb`: the rows still have surfaceable
+ * keys and the entity's other dimensions still emit, so the run represents
+ * plenty, "represented nothing" is false, and every `status` observation dies
+ * anyway. Per-entity granularity cannot express the answer. `predicate` is a
+ * column on `brain_facts` and `unsurfaceableByDimension` is already carried on
+ * the claims, so the dimension-scoped arm costs one bind.
+ *
+ * ## The two arms
+ *
+ * `blind` — rows were read, nothing was represented, and at least one
+ * representation FAILURE was reported. The third clause is what keeps this from
+ * swallowing the ordinary case: a row whose every cell is NULL asserts nothing,
+ * the warehouse answered and the answer was "nothing", and those observations
+ * SHOULD age out. An absent cell is not a failure to represent.
+ *
+ * `predicates` — a dimension that had values and surfaced none of them. A
+ * dimension that surfaced even one keeps reaping, which is the direct answer to
+ * the "one bad cell protects everything" objection.
+ *
+ * ## The fourth sibling: a `reconcile` block
+ *
+ * The other three warn-don't-refuse paths are counted per row or per dimension.
+ * A `reconcile` block is neither: `report.blocked` is keyed by REASON, so a
+ * partial block cannot say WHICH predicates went unwritten and there is no
+ * dimension-shaped answer to give. What it can say is the wholesale case, and
+ * that is the one that matters — when an episode is blocked entirely,
+ * `reconcile.ts` sets `blocked[reason] = candidates.length`, every candidate
+ * goes unwritten, and the run earns no evidence edge for any of them. From this
+ * rule's side that is indistinguishable from an entity that returned nothing,
+ * so it lands in `blind`.
+ *
+ * ⚠️ A PARTIAL block therefore still reaps the unwritten candidates' dimensions,
+ * and that is a KNOWN narrowing rather than an oversight. Closing it needs
+ * `reconcile.ts` to report its refusals by predicate; until then the honest
+ * statement is that this rule covers the wholesale case only.
+ *
+ * ## What this deliberately does not do
+ *
+ * A chronically unsurfaceable dimension holds its own observations open
+ * indefinitely. That is accepted: the alternative is deleting readings that were
+ * true when minted, for a reason that never happened, and the operator is warned
+ * every run with the dimension named. Holding stale readings is recoverable by
+ * fixing the column or un-enrolling the pair; the delete is recoverable only by
+ * a re-read that the broken column is preventing.
+ *
+ * Pure, and separate from the statement, so the decision can be driven without a
+ * database — `observation-reap-stand-down.test.ts`.
+ */
+export interface RunRepresentation {
+  /** Rows the datasource actually returned, summed across the entity's members. */
+  readonly rowsRead: number;
+  /** One entry per CANDIDATE BUILT — before `reconcile.ts` decides to write it. */
+  readonly candidatePredicates: readonly string[];
+  /**
+   * Candidates `reconcile.ts` refused, summed over its reasons.
+   *
+   * ⚠️ Keyed by REASON there, not by predicate, which is why this arm can only
+   * express the wholesale case — see {@link reapStandDown}.
+   */
+  readonly blockedCandidates: number;
+  /** Cells that existed and could not be made into a claim, per dimension. */
+  readonly unsurfaceableByDimension: ReadonlyMap<string, number>;
+  readonly unsurfaceableKeyRows: number;
+  readonly collidingSubjectRows: number;
+  readonly unidentifiedRows: number;
+}
+
+export function reapStandDown(run: RunRepresentation): ReapStandDown {
+  const surfaced = new Set(run.candidatePredicates);
+  const predicates: string[] = [];
+  for (const [dimension, count] of run.unsurfaceableByDimension) {
+    if (count > 0 && !surfaced.has(dimension)) predicates.push(dimension);
+  }
+
+  // Every candidate the run built was refused, so the episode carries no
+  // evidence edge for any of them — indistinguishable, from the reap's side,
+  // from an entity that returned nothing at all.
+  const everyCandidateBlocked =
+    run.candidatePredicates.length > 0 && run.blockedCandidates >= run.candidatePredicates.length;
+
+  const representedNothing = surfaced.size === 0 || everyCandidateBlocked;
+  const representationFailed =
+    everyCandidateBlocked ||
+    run.unsurfaceableKeyRows > 0 ||
+    run.collidingSubjectRows > 0 ||
+    run.unidentifiedRows > 0 ||
+    run.unsurfaceableByDimension.size > 0;
+
+  return {
+    blind: run.rowsRead > 0 && representedNothing && representationFailed,
+    predicates,
+  };
+}
 
 /**
  * Reap one entity's observations whose rows have left the filtered snapshot.
@@ -327,13 +506,24 @@ export async function reapUnreachedObservations(
   params: {
     readonly workspaceId: string;
     readonly entity: string;
+    /**
+     * Predicates this run could not represent, from {@link reapStandDown} —
+     * held back rather than reaped (#5388). Omitted means "nothing stood down".
+     */
+    readonly exceptPredicates?: readonly string[];
     /** Test-only seam; clamped by {@link reapWindowSize}. */
     readonly afterSuccessfulRuns?: number;
   },
 ): Promise<ObservationReapResult> {
   const { workspaceId, entity } = params;
   const n = reapWindowSize(params.afterSuccessfulRuns);
-  const { rows } = await tx.query(OBSERVATION_REAP_SQL, [workspaceId, entity, n]);
+  const exceptPredicates = params.exceptPredicates ?? [];
+  const { rows } = await tx.query(OBSERVATION_REAP_SQL, [
+    workspaceId,
+    entity,
+    n,
+    exceptPredicates,
+  ]);
 
   const factIds: string[] = [];
   let edgesRemoved = 0;
@@ -366,6 +556,10 @@ export async function reapUnreachedObservations(
       edgesRemoved,
       tensionEdgesRemoved,
       afterSuccessfulRuns: n,
+      // Named on the audit line for the same reason the ids are: an operator
+      // reading a smaller-than-expected reap needs to see that a dimension was
+      // held back deliberately, not infer it (#5388).
+      heldBack: exceptPredicates,
     },
     "Warehouse producer: reaped observations whose rows have not been in this entity's filtered " +
       "snapshot for N consecutive successful reads, and every edge that hung off them — the " +

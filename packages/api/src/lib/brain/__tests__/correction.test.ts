@@ -103,9 +103,7 @@ import type { CorrectionRequest } from "@atlas/api/lib/brain/correction";
 import {
   EPISODE_SOURCES,
   HUMAN_SOURCE,
-  WAREHOUSE_CLASS,
   WAREHOUSE_SOURCE,
-  episodeSourceClassOf,
 } from "@atlas/api/lib/brain/sources";
 import { readStoredSource } from "@atlas/api/lib/brain/observation";
 import {
@@ -2662,7 +2660,20 @@ describe("re-authority and pin", () => {
 // ---------------------------------------------------------------------------
 
 describe("shared gates", () => {
-  test("tier-1 warehouse-derived targets are refused for EVERY verb, with nothing written", async () => {
+  test("tier-1 admits `retract` and REFUSES the other three verbs (#5331)", async () => {
+    // ⚠️ **The split is the point, and it is one verb wide.** Until #5331 this
+    // refused all four, on the premise that "tier-1 is authoritative by
+    // construction" — an equivocation ADR-0042 unpicked: that is a property of
+    // the QUERY, not of the row the query produced. A stored row is a snapshot,
+    // authoritative as of an instant, and an instant can pass.
+    //
+    // `supersede`, `re-authority` and `pin` stay refused because each asserts a
+    // belief ABOUT a warehouse value, which is still incoherent. `retract`
+    // asserts only *this row should not have been blessed* — which a human is
+    // entitled to say, and which is the only sanctioned path to the two rows
+    // stranded on prod. A loop over all four is what stops the fix widening:
+    // admitting the wrong verb here reds this test rather than shipping.
+    const admitted: Record<string, boolean> = {};
     for (const verb of CORRECTION_VERBS) {
       const store = new FakeCorrectionStore();
       // Seeded from the CONSTANT, not the literal: this suite hand-builds the
@@ -2680,14 +2691,39 @@ describe("shared gates", () => {
         verb,
         ...(verb === "supersede" ? { replacement: { object: "Bo" } } : {}),
       });
+      admitted[verb] = outcome.kind !== "refused";
+
+      if (verb === "retract") {
+        if (outcome.kind === "refused") {
+          throw new Error(`retract: expected admitted, got refused (${outcome.reason})`);
+        }
+        // Retract's own semantics are UNCHANGED on this path — the verb is
+        // admitted, not re-specified. The tombstone is `invalidated_at` and
+        // never `status`, which is what `check-brain-fact-promotion.sh` polices.
+        expect(store.fact("wh").invalidatedAt).toBe(NOW.toISOString());
+        continue;
+      }
+
       if (outcome.kind !== "refused") throw new Error(`${verb}: expected refused, got ${outcome.kind}`);
       expect(outcome.reason).toBe(CORRECTION_REFUSAL_REASONS.warehouseTarget);
-      // Actionable, per the issue: the fix is the data or the semantic layer.
-      expect(outcome.message).toContain("semantic layer");
+      // ⚠️ The copy must NAME the one verb that works. A refusal that only says
+      // "no" leaves an operator holding a wrong, served row with no next step —
+      // and the old copy's remedy, *fix the underlying data*, does not exist
+      // when the row it describes was deleted.
+      expect(outcome.message).toContain("retract");
       expect(store.episodes).toHaveLength(0);
       expect(store.edges).toHaveLength(0);
       expect(store.fact("wh").invalidatedAt).toBeNull();
     }
+
+    // The whole split asserted at once, so a future verb added to
+    // `CORRECTION_VERBS` cannot slip through by simply not being looped over.
+    expect(admitted).toEqual({
+      retract: true,
+      supersede: false,
+      "re-authority": false,
+      pin: false,
+    });
   });
 
   test("an IMPORTED out-of-vocabulary source kind is refused for EVERY verb (#4964)", async () => {
@@ -2790,17 +2826,22 @@ describe("shared gates", () => {
       const store = new FakeCorrectionStore();
       store.seedFact({ id: "known", provenance: { source, producer: "extraction:v1" } });
       const outcome = await run(store, { factId: "known", verb: "retract" });
-      // Keyed on the CLASS, never on `source === WAREHOUSE_SOURCE`. That
-      // value-vs-class conflation is the one `sources.ts` spends a section
-      // warning about, and here it would cost the one-line-PR property
-      // outright: a new member declaring `class: "warehouse"` inherits tier-1
-      // refusal by design, and a value-keyed expectation would fail a correct
-      // addition — pressuring the next author to special-case the test rather
-      // than trust the vocabulary.
-      const expected: [string, string, string | null] =
-        episodeSourceClassOf(source) === WAREHOUSE_CLASS
-          ? [source, "refused", CORRECTION_REFUSAL_REASONS.warehouseTarget]
-          : [source, "corrected", null];
+      // ⚠️ **Since #5331 every known source is `corrected` HERE, including
+      // warehouse-class, and the branch that used to split them is gone.** This
+      // loop drives `retract`, and retract is the one verb tier-1 now admits —
+      // so a warehouse-class member is no longer refused on this path. The
+      // class distinction did not disappear; it MOVED, and is pinned harder
+      // than it was: "tier-1 admits `retract` and REFUSES the other three
+      // verbs" drives all four against `toEqual` over the whole split, where
+      // this loop only ever exercised one verb.
+      //
+      // What this loop still proves, which is its actual job, is that a KNOWN
+      // source is never quarantined as `unrecognizedSourceKind` — the
+      // self-healing property. Adding a kind to `EPISODE_SOURCE_SPECS` remains
+      // the one-line PR that moves an imported fact out of quarantine, and
+      // driving it off `EPISODE_SOURCES` still covers a new member the day it
+      // lands.
+      const expected: [string, string, string | null] = [source, "corrected", null];
       // The full outcome KIND, not just "was it refused". A one-sided check
       // collapses `corrected`, `not-found` and any future kind into the same
       // pass, so a regression that made a known-source target unreadable would

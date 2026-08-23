@@ -885,8 +885,35 @@ jobs:
         # round-robin file index. On the committed data that is a 1.96x -> 1.00x
         # skew (critical path 550s -> 373s of serial work). The file is advisory:
         # if it goes stale, sharding degrades to unbalanced but stays CORRECT.
-        # Regenerate with:
-        #   bun test --parallel --timings=scripts/test-timings.json --update-timings
+        #
+        # ## Regenerating it (#5383)
+        #
+        # ⚠️ **NOT with the bare `--update-timings` command this comment used to
+        # name.** A developer box is the wrong instrument twice over: with
+        # `TEST_DATABASE_URL` set the local `-pg` sweep hangs on Postgres
+        # contention and still writes a half-measured file, and without it the
+        # `-pg` suites skip in milliseconds and record as the FASTEST files in
+        # the suite. Either input produces a balancer worse than a stale one.
+        #
+        # Run the workflow instead — it measures on RUNNERS, one file per shard,
+        # and merges the four disjoint maps:
+        #
+        #   gh workflow run test-timings-refresh.yml --ref <branch>
+        #
+        # then download the `test-timings-merged` artifact over
+        # `packages/api/scripts/test-timings.json` and update the line below.
+        #
+        # LAST REGENERATED: never — every number is a measurement of the suite as
+        # it stood at #2802, roughly two thousand commits ago. Re-trigger when a
+        # shard's wall time drifts past ~1.25x its siblings on a green `main`
+        # run, or after a PR adds several `-pg` suites (they are the heavy ones).
+        #
+        # ⚠️ A rebalance does NOT fix a PREEMPTED shard. `The runner has received
+        # a shutdown signal` and `The operation was canceled` are runner loss;
+        # the test step's conclusion is `cancelled` even though the job's is
+        # `failure`, and no distribution of file durations touches it. If shard
+        # 1/4 keeps failing after a refresh, read #5383's comment before
+        # concluding the refresh was insufficient.
         run: bun test --parallel --shard=${{ matrix.shard }}/4 --timings=scripts/test-timings.json
     services:
       # Postgres for the real-Postgres suites. Each matrix leg is its own

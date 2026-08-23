@@ -1,0 +1,170 @@
+name: Refresh test timings
+
+# Regenerate `packages/api/scripts/test-timings.json` from durations measured ON
+# CI RUNNERS (#5383).
+#
+# ## Why this is a workflow and not a script
+#
+# `test-timings.json` balances the four `api-tests` shards by measured per-file
+# duration. It was committed once, at #2802, and had never been regenerated —
+# every number in it described the suite as it stood two thousand commits
+# earlier. `ci.yml` always said the file was advisory and named a regeneration
+# command; what it did not do was give anyone a way to run that command on the
+# machine the balance has to be right FOR.
+#
+# A developer box is the wrong instrument, and #5383 recorded the two ways that
+# was learned rather than reasoned:
+#
+#   - `--update-timings` with `TEST_DATABASE_URL` set hangs against one local
+#     Postgres (60 `-pg` suites contending; each passes alone). It still wrote a
+#     file after the hang — finished files carrying local numbers, unfinished
+#     ones keeping #2802's. A half-measured balancer is worse than either input.
+#   - Running WITHOUT `TEST_DATABASE_URL` is not a workaround: the `-pg` suites
+#     skip in milliseconds and would record as the FASTEST files in the suite,
+#     which is precisely backwards.
+#
+# Runner CPU count and IO are what the balance has to fit, so the measurement
+# belongs here.
+#
+# ## How the merge works, and why it is sound
+#
+# `bun test --update-timings` writes to the FIRST `--timings` path, and under
+# `--shard` it writes ONLY the files that shard ran. So four legs produce four
+# DISJOINT maps whose union is the whole suite — no last-writer-wins ambiguity
+# and no stale entries carried through. Verified against bun 1.4.0 before this
+# workflow was written: a 6-file probe sharded 1/2 and 2/2 produced {a1,a3,a5}
+# and {a2,a4,a6}, merging to exactly the 6.
+#
+# The second `--timings` is the COMMITTED file, read for balance only. Measuring
+# under the shard composition production actually uses is the point: a file's
+# duration depends on what it contends with.
+#
+# ## Using it
+#
+#   gh workflow run test-timings-refresh.yml --ref <branch>
+#
+# Download the `test-timings-merged` artifact, drop it at
+# `packages/api/scripts/test-timings.json`, commit, and update the
+# "last regenerated" line in `ci.yml`'s `api-tests` job.
+#
+# ⚠️ This does NOT fix a preempted shard. A runner that receives a shutdown
+# signal was not slow, and rebalancing cannot touch it — see #5383's own comment
+# and the sibling issue it points at. Two different problems wearing one symptom.
+
+on:
+  workflow_dispatch:
+    inputs:
+      shards:
+        description: Shard count to measure under (must match ci.yml's api-tests matrix)
+        required: false
+        default: "4"
+
+permissions:
+  contents: read
+
+env:
+  BUN_VERSION: "1.4.0"
+
+jobs:
+  measure:
+    name: measure (${{ matrix.shard }}/4)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - uses: ./.github/actions/setup-bun-cached
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      # Same preamble as ci.yml's api-tests: both packages resolve to their
+      # `dist/` via "exports", so api tests cannot import them unbuilt.
+      - name: Build @useatlas/types + @useatlas/plugin-sdk
+        run: bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build
+
+      - name: Measure shard ${{ matrix.shard }}/${{ inputs.shards || '4' }}
+        working-directory: packages/api
+        env:
+          # ⚠️ REQUIRED here, unlike a local run. Without it the `-pg` suites
+          # skip in milliseconds and record as the fastest files in the suite,
+          # which would produce a balancer that is actively worse than the stale
+          # one it replaces.
+          TEST_DATABASE_URL: postgresql://atlas:atlas@localhost:5432/atlas
+        # ⚠️ No `timeout-minutes`, matching api-tests deliberately: a sweep
+        # killed halfway writes a partial map, and a partial map is the one input
+        # worse than a stale one. #5383's acceptance criteria say so explicitly.
+        #
+        # Output path FIRST — that is the file `--update-timings` writes. The
+        # committed file is second and is read for balance only.
+        run: |
+          bun test --parallel \
+            --shard=${{ matrix.shard }}/${{ inputs.shards || '4' }} \
+            --timings=/tmp/measured-${{ matrix.shard }}.json \
+            --timings=scripts/test-timings.json \
+            --update-timings
+
+      - name: Upload shard ${{ matrix.shard }} durations
+        # `always()` — a shard that ends red still measured every file that ran,
+        # and the merge below reports coverage rather than trusting it. Losing a
+        # whole refresh to one unrelated failure is the wrong trade.
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: test-timings-shard-${{ matrix.shard }}
+          path: /tmp/measured-${{ matrix.shard }}.json
+          if-no-files-found: error
+    services:
+      # ⚠️ Load-bearing, and its absence would be SILENT in the worst way: with
+      # no Postgres the `-pg` suites self-skip in milliseconds and get recorded
+      # as the fastest files in the suite. The refresh would "succeed" and ship a
+      # balancer that puts the sixty heaviest files wherever it likes. Mirrors
+      # ci.yml's api-tests service exactly, because the durations have to be
+      # measured under the conditions they will be used to balance.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: atlas
+          POSTGRES_PASSWORD: atlas
+          POSTGRES_DB: atlas
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U atlas"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+  merge:
+    name: merge
+    needs: measure
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: test-timings-shard-*
+          path: /tmp/shards
+          merge-multiple: false
+
+      - name: Merge shard durations
+        id: merge
+        run: |
+          python3 .github/scripts/merge-test-timings.py \
+            --out packages/api/scripts/test-timings.json \
+            --baseline packages/api/scripts/test-timings.json \
+            /tmp/shards/*/measured-*.json
+
+      - name: Upload merged timings
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: test-timings-merged
+          path: packages/api/scripts/test-timings.json
+          if-no-files-found: error
+
+      - name: Show the diff against the committed file
+        run: git --no-pager diff --stat -- packages/api/scripts/test-timings.json || true

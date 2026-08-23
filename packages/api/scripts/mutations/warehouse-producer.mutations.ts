@@ -448,6 +448,40 @@ largest count here and was inspected rather than trusted; see its note.
       note: "The blank-string argument, one member short: `NaN` out of a `double precision` column is that column's null and `0000-00-00` out of MySQL is an Invalid Date. The COLUMN is fine and one row is bad. Replaced with an arm that is live TypeScript and reachable by nothing in the fixtures, so what is measured is the loss of these two rather than a syntax change.",
     },
     {
+      label: "the absent-cell arm goes back to a bare `continue`",
+      edits: [
+        {
+          file: PRODUCER,
+          oldString: `        absentCells++;
+        absentByDimension.set(dim.name, (absentByDimension.get(dim.name) ?? 0) + 1);`,
+          newString: "        // counted nowhere",
+        },
+      ],
+      note: "What #5349 was filed for, restored exactly. An enrolled pair whose column is NULL on every row emits nothing and — before this arm counted — appeared nowhere in the report either: `enrolled=3 entities=1 created=0 refusals=0` on prod `us` with the pair simply gone. The operator cannot tell an empty column from a wrong enrollment without a number, and the run reports success either way.",
+    },
+    {
+      label: "the fully-absent warn deleted",
+      edits: [
+        {
+          file: PRODUCER,
+          oldString: "    if (fullyAbsentDimensions.length > 0) {",
+          newString: "    if (false) {",
+        },
+      ],
+      note: "The counter's other half (#5349). `absentByDimension` is computed per dimension so that ONE line can name the pair that produced nothing — without it the operator has a total in the report and no way to attribute it, which is the same position the unsurfaceable warn's first cut left them in.",
+    },
+    {
+      label: "the fully-absent warn fires on ANY absent cell",
+      edits: [
+        {
+          file: PRODUCER,
+          oldString: "            .filter(([, count]) => count === rowCount)",
+          newString: "            .filter(([, count]) => count > 0)",
+        },
+      ],
+      note: "The fence, mutated rather than deleted, because losing it is the failure mode that LOOKS like more diligence. A nullable column with values on most rows is a healthy warehouse; a warn on every such run is filtered out inside a week and takes the all-absent case — the one thing this line exists to say — with it.",
+    },
+    {
       label: "the episode reader accepts a row whose `id` it cannot parse",
       edits: [
         {

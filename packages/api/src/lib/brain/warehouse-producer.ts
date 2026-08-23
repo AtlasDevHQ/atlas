@@ -1177,6 +1177,35 @@ export interface WarehouseClaims {
   readonly unsurfaceableKeyRows: number;
   /** Which dimension each unsurfaceable cell belonged to — the log's actionable half. */
   readonly unsurfaceableByDimension: ReadonlyMap<string, number>;
+  /**
+   * Cells that were ABSENT — the arm above {@link unsurfaceableCells}, which until
+   * #5349 was a bare `continue` (#5314's fourth AC, measured on prod `us`).
+   *
+   * ⚠️ **Reported, never refused, and the distinction is the whole ticket.** Most
+   * cells are legitimately empty most of the time, across up to
+   * {@link WAREHOUSE_ROW_CAP} rows per entity — that ordinary case is exactly what
+   * the split exists to keep quiet, and a refusal per absent cell would be worse
+   * than the silence it replaced. What was missing is the TALLY.
+   *
+   * The case it closes: enrolling `(organization, region)` on prod produced
+   * `enrolled=3 entities=1 created=0 corroborated=2 refusals=0` — the pair simply
+   * vanished. No refusal, no counter, no log line, and `created=0` is
+   * indistinguishable from "nothing changed since the last run", which is the
+   * healthy steady state on a static workspace. With this number an operator can
+   * tell "0 of 900 cells had a value" from "the pair was never read".
+   *
+   * `isAbsentCell` is deliberately wide — NULL, `undefined`, a non-finite number,
+   * an Invalid Date, a blank or whitespace-only string — so this covers rather more
+   * than a literal SQL NULL.
+   */
+  readonly absentCells: number;
+  /**
+   * Which dimension each absent cell belonged to, PER DIMENSION for the reason its
+   * sibling states verbatim: the operator's action is to un-enroll ONE pair, and a
+   * count naming all eight enrolled dimensions stops one step short of telling them
+   * which.
+   */
+  readonly absentByDimension: ReadonlyMap<string, number>;
 }
 
 /**
@@ -1268,7 +1297,9 @@ export function buildWarehouseClaims(params: {
   let collidingSubjectRows = 0;
   let unsurfaceableCells = 0;
   let unsurfaceableKeyRows = 0;
+  let absentCells = 0;
   const unsurfaceableByDimension = new Map<string, number>();
+  const absentByDimension = new Map<string, number>();
 
   for (const row of rows) {
     const rawKey = row[SUBJECT_ALIAS];
@@ -1351,10 +1382,23 @@ export function buildWarehouseClaims(params: {
 
     for (const [index, dim] of plan.dimensions.entries()) {
       const cell = row[`${DIMENSION_ALIAS_PREFIX}${index}`];
-      // A NULL cell asserts nothing, and nobody should hear about it. Emitting it
-      // as an empty object would be blocked as a malformed claim anyway; emitting
-      // the string "null" would be a fact about the company that is not true.
-      if (isAbsentCell(cell)) continue;
+      // A NULL cell asserts nothing, and nobody should hear about it AS A REFUSAL.
+      // Emitting it as an empty object would be blocked as a malformed claim
+      // anyway; emitting the string "null" would be a fact about the company that
+      // is not true.
+      //
+      // ⚠️ **Counted since #5349, and it was a bare `continue` before.** Staying
+      // quiet per cell is right; leaving no trace at all is not. A freshly enrolled
+      // pair whose column is NULL on every row emitted nothing, filed no refusal
+      // and logged nothing — and "the column is empty" and "the enrollment is
+      // wrong" are the same observation to an operator who has no number to read.
+      // Tallied at the same granularity as the sibling arm below, which is what
+      // makes the report able to say WHICH pair contributed nothing.
+      if (isAbsentCell(cell)) {
+        absentCells++;
+        absentByDimension.set(dim.name, (absentByDimension.get(dim.name) ?? 0) + 1);
+        continue;
+      }
       const object = warehouseSurface(cell);
       if (object === null) {
         // A value that EXISTS and cannot be made into a claim — the enrollment
@@ -1411,6 +1455,8 @@ export function buildWarehouseClaims(params: {
     unsurfaceableCells,
     unsurfaceableKeyRows,
     unsurfaceableByDimension,
+    absentCells,
+    absentByDimension,
   };
 }
 
@@ -1520,11 +1566,13 @@ export function mergeWarehouseClaims(members: readonly WarehouseMemberClaims[]):
   const subjectIds = new Map<string, WarehouseRowId>();
   const entityEntries: EntityStoreEntry[] = [];
   const unsurfaceableByDimension = new Map<string, number>();
+  const absentByDimension = new Map<string, number>();
   let unnamedRows = 0;
   let unidentifiedRows = 0;
   let collidingSubjectRows = 0;
   let unsurfaceableCells = 0;
   let unsurfaceableKeyRows = 0;
+  let absentCells = 0;
 
   for (const { claims } of members) {
     // ⚠️ `for…of` rather than `push(...claims.candidates)`. One member can carry
@@ -1539,6 +1587,9 @@ export function mergeWarehouseClaims(members: readonly WarehouseMemberClaims[]):
     for (const [dimension, count] of claims.unsurfaceableByDimension) {
       unsurfaceableByDimension.set(dimension, (unsurfaceableByDimension.get(dimension) ?? 0) + count);
     }
+    for (const [dimension, count] of claims.absentByDimension) {
+      absentByDimension.set(dimension, (absentByDimension.get(dimension) ?? 0) + count);
+    }
     // Summed, because each is a count of ROWS and the run reports the union's rows.
     // `collidingSubjectRows` included: a key that repeats WITHIN one member is that
     // member's data-quality note either way, and folding it into the cross-member
@@ -1548,6 +1599,7 @@ export function mergeWarehouseClaims(members: readonly WarehouseMemberClaims[]):
     collidingSubjectRows += claims.collidingSubjectRows;
     unsurfaceableCells += claims.unsurfaceableCells;
     unsurfaceableKeyRows += claims.unsurfaceableKeyRows;
+    absentCells += claims.absentCells;
   }
 
   return {
@@ -1562,6 +1614,8 @@ export function mergeWarehouseClaims(members: readonly WarehouseMemberClaims[]):
       unsurfaceableCells,
       unsurfaceableKeyRows,
       unsurfaceableByDimension,
+      absentCells,
+      absentByDimension,
     },
   };
 }
@@ -1920,6 +1974,15 @@ export interface WarehouseEntityOutcome {
   readonly unsurfaceableCells: number;
   /** See {@link WarehouseClaims.unsurfaceableKeyRows}. */
   readonly unsurfaceableKeyRows: number;
+  /**
+   * See {@link WarehouseClaims.absentCells} (#5349).
+   *
+   * ⚠️ Read it beside {@link rows}: `absentCells: 900` on `rows: 900` with one
+   * enrolled dimension is a pair that contributed NOTHING, which is the case this
+   * number exists to make visible. The same value on a nullable column across eight
+   * dimensions is ordinary data.
+   */
+  readonly absentCells: number;
   /** Predicates whose `warehouse_structural` cardinality proposal was newly raised. */
   readonly cardinalityProposed: readonly string[];
   /**
@@ -3904,6 +3967,37 @@ export async function runWarehouseProducer(
       );
     }
 
+    // ⚠️ **Only the dimensions absent on EVERY row read** (#5349), and that is the
+    // whole difference between this arm and its three siblings above. A NULL cell
+    // is ORDINARY — an entity of 900 rows with 40 blank `industry` values is a
+    // healthy warehouse, and warning on `absentCells > 0` would fire on almost
+    // every run and be filtered out inside a week. A pair absent on all N rows is
+    // a different claim: the enrollment produced nothing at all, and "the column
+    // is empty" and "the enrollment is wrong" are indistinguishable to an operator
+    // with no number to read. `rows: 0` is excluded because zero of zero is not a
+    // fact about the enrollment — that run's silence is the empty table's, and the
+    // zero-candidate arm below already records it.
+    const fullyAbsentDimensions =
+      rowCount > 0
+        ? [...claims.absentByDimension]
+            .filter(([, count]) => count === rowCount)
+            .map(([dimension]) => dimension)
+        : [];
+    if (fullyAbsentDimensions.length > 0) {
+      log.warn(
+        {
+          ...runLog,
+          entity: entityPlan.entity.name,
+          rows: rowCount,
+          absentCells: claims.absentCells,
+          // The GUILTY dimensions, for the same reason the unsurfaceable warn lists
+          // its own: the operator's action is to un-enroll ONE pair.
+          fullyAbsentDimensions,
+        },
+        "Warehouse producer: enrolled dimensions were empty on every row read — either the column is unpopulated or the pair is enrolled against the wrong one, and this run emitted nothing for them",
+      );
+    }
+
     if (claims.candidates.length === 0) {
       // ⚠️ **A zero-candidate run is a SUCCESSFUL READ, and it is the arm the
       // success record exists for** (#5317 review). The datasource answered — the
@@ -4029,6 +4123,7 @@ export async function runWarehouseProducer(
         collidingSubjectRows: claims.collidingSubjectRows,
         unsurfaceableCells: claims.unsurfaceableCells,
         unsurfaceableKeyRows: claims.unsurfaceableKeyRows,
+        absentCells: claims.absentCells,
         cardinalityProposed: [],
         // Deliberately NOT `claims.entityEntries.length`. No episode is written
         // and no transaction opens, so nothing was STORED — reporting the
@@ -4323,6 +4418,7 @@ export async function runWarehouseProducer(
           collidingSubjectRows: claims.collidingSubjectRows,
           unsurfaceableCells: claims.unsurfaceableCells,
           unsurfaceableKeyRows: claims.unsurfaceableKeyRows,
+          absentCells: claims.absentCells,
           cardinalityProposed: proposed,
           entitiesStored: claims.entityEntries.length,
           unnamedRows: claims.unnamedRows,

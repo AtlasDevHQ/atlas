@@ -393,6 +393,48 @@ describe("warehouse producer logging", () => {
     expect(warns.filter((c) => c.message.includes("no claim surface can be made of"))).toEqual([]);
   });
 
+  it("warns for a dimension absent on EVERY row, and names it (#5349)", async () => {
+    // The silence #5349 was filed for. The absent arm was a bare `continue`, so a
+    // pair enrolled against a column that is NULL on every row emitted nothing,
+    // refused nothing and logged nothing — and `created: 0` is the ordinary healthy
+    // state on a static workspace, so nothing in the report told them apart.
+    //
+    // Three rows rather than one, so the arm cannot be satisfied by a counter that
+    // increments once: the fence is `count === rowCount`.
+    await run({
+      runSnapshot: async () => [
+        { [producer.SUBJECT_ALIAS]: "Acme Corp", [`${producer.DIMENSION_ALIAS_PREFIX}0`]: null },
+        { [producer.SUBJECT_ALIAS]: "Globex", [`${producer.DIMENSION_ALIAS_PREFIX}0`]: null },
+        { [producer.SUBJECT_ALIAS]: "Initech", [`${producer.DIMENSION_ALIAS_PREFIX}0`]: null },
+      ],
+    });
+
+    const absentWarn = payloadOf(warns, "empty on every row read");
+    expect(absentWarn.rows).toBe(3);
+    expect(absentWarn.absentCells).toBe(3);
+    // ⚠️ The GUILTY dimension by NAME, for the same reason its unsurfaceable sibling
+    // lists its own: the operator's action is to un-enroll ONE pair, and a count
+    // without a name stops one step short of telling them which.
+    expect(absentWarn.fullyAbsentDimensions).toEqual(["status"]);
+    // Not conflated with its sibling — these cells are ABSENT, not unsurfaceable.
+    expect(warns.filter((c) => c.message.includes("no claim surface can be made of"))).toEqual([]);
+  });
+
+  it("does NOT warn when a dimension is absent on SOME rows — that is ordinary data", async () => {
+    // The fence, and the reason this warn is not `absentCells > 0`. A nullable
+    // column with values on most rows is a healthy warehouse; a line that fired on
+    // every such run would be filtered out inside a week, taking the all-absent case
+    // with it. Two of three rows absent — a majority, and still not the claim.
+    await run({
+      runSnapshot: async () => [
+        { [producer.SUBJECT_ALIAS]: "Acme Corp", [`${producer.DIMENSION_ALIAS_PREFIX}0`]: null },
+        { [producer.SUBJECT_ALIAS]: "Globex", [`${producer.DIMENSION_ALIAS_PREFIX}0`]: null },
+        { [producer.SUBJECT_ALIAS]: "Initech", [`${producer.DIMENSION_ALIAS_PREFIX}0`]: "active" },
+      ],
+    });
+    expect(warns.filter((c) => c.message.includes("empty on every row read"))).toEqual([]);
+  });
+
   it("splits the cardinality refusal — `already-decided` at DEBUG, anything else at WARN", async () => {
     await run({ withTransaction: store({ cardinalityConflict: true }).runner });
 

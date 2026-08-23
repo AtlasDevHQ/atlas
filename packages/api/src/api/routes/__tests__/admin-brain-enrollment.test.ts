@@ -857,6 +857,7 @@ describe("POST /produce — running the producer", () => {
           collidingSubjectRows: 0,
           unsurfaceableCells: 3,
           unsurfaceableKeyRows: 2,
+          absentCells: 21,
           cardinalityProposed: ["arr_band"],
           // #5043, and every number distinct from its neighbours for this
           // block's stated reason.

@@ -2269,6 +2269,20 @@ export const BrainWarehouseEntityOutcomeSchema = z.strictObject({
    * entity can ever be emitted.
    */
   unsurfaceableKeyRows: z.number().int().nonnegative(),
+  /**
+   * Cells that were ABSENT — NULL, blank, or otherwise nothing a claim can be made
+   * of (#5349). Reported, never refused: most cells are legitimately empty most of
+   * the time, so a refusal per absent cell would be worse than the silence this
+   * replaced.
+   *
+   * ⚠️ **Read it beside `rows`.** The case this exists for is a freshly enrolled
+   * pair whose column is NULL on every row: it emitted nothing, filed no refusal
+   * and logged nothing, and `created: 0` is indistinguishable from "nothing changed
+   * since the last run" — the healthy steady state on a static workspace. With this
+   * number, "0 of 900 cells had a value" and "the pair was never read" stop being
+   * the same observation.
+   */
+  absentCells: z.number().int().nonnegative(),
   cardinalityProposed: z.array(z.string()).readonly(),
   /**
    * Entity-store entries written for this entity (#5043).

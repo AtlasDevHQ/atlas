@@ -1661,6 +1661,8 @@ describe("mergeWarehouseClaims (#5326)", () => {
       unsurfaceableCells: 0,
       unsurfaceableKeyRows: 0,
       unsurfaceableByDimension: new Map<string, number>(),
+      absentCells: 0,
+      absentByDimension: new Map<string, number>(),
       ...extra,
     } as WarehouseClaims,
   });
@@ -1674,6 +1676,8 @@ describe("mergeWarehouseClaims (#5326)", () => {
         unsurfaceableCells: 4,
         unsurfaceableKeyRows: 5,
         unsurfaceableByDimension: new Map([["tier", 4]]),
+        absentCells: 6,
+        absentByDimension: new Map([["tier", 6]]),
       }),
       memberClaims("us-prod", { "org-us-1": "wh_us1", "org-us-2": "wh_us2" }, {
         unnamedRows: 10,
@@ -1684,6 +1688,11 @@ describe("mergeWarehouseClaims (#5326)", () => {
         unsurfaceableByDimension: new Map([
           ["tier", 40],
           ["plan", 7],
+        ]),
+        absentCells: 60,
+        absentByDimension: new Map([
+          ["tier", 60],
+          ["plan", 9],
         ]),
       }),
     ]);
@@ -1704,6 +1713,11 @@ describe("mergeWarehouseClaims (#5326)", () => {
     // Per DIMENSION, summed across members — the operator's action is to un-enroll
     // ONE pair, so the number has to stay attached to the dimension it came from.
     expect(Object.fromEntries(out.claims.unsurfaceableByDimension)).toEqual({ tier: 44, plan: 7 });
+    // Absent cells sum the same way, and for the same reason (#5349): a pair that is
+    // all-NULL on one member and populated on another is NOT an all-absent pair, and
+    // only the union's number can say so.
+    expect(out.claims.absentCells).toBe(66);
+    expect(Object.fromEntries(out.claims.absentByDimension)).toEqual({ tier: 66, plan: 9 });
   });
 
   test("a subject in TWO members refuses, naming both — and every member is examined first", () => {
@@ -2926,6 +2940,58 @@ describe("runWarehouseProducer", () => {
     expect(report.created).toBe(1);
   });
 
+  test("a pair absent on EVERY row is tallied, not silently dropped (#5349)", async () => {
+    // ⚠️ **The falsifier for #5349, and before the fix there was nothing to assert
+    // against.** The absent arm was a bare `continue`: no counter, no tally, no log.
+    //
+    // Measured on prod `us` 2026-08-19, which is why this fixture is shaped the way
+    // it is. Enrolling `(organization, region)` produced
+    // `enrolled=3 entities=1 created=0 corroborated=2 refusals=0` — the pair simply
+    // vanished. The pair had been chosen off the entity's `sample_values:
+    // [us, eu, apac]`, which describe the COLUMN'S DOMAIN and not any row's value;
+    // every row's `region` was NULL.
+    //
+    // What makes the silence expensive is that `created: 0` is indistinguishable
+    // from "nothing changed since the last run" — the ordinary healthy state on a
+    // static workspace. So "the column is empty" and "the enrollment is wrong" were
+    // the same observation, and the operator had no number that told them apart.
+    const h = harness({
+      pairs: [{ entity: "Nulls", group: null, dimension: "region", naming: false }],
+      entities: {
+        Nulls: entityYaml({ table: "nulls", primaryKey: "id", dimensions: ["id", "region"] }),
+      },
+      rows: {
+        // Four readable subjects, every enrolled cell NULL — the prod shape.
+        Nulls: [
+          snapshotRow("acme", null),
+          snapshotRow("beta", null),
+          snapshotRow("gamma", null),
+          snapshotRow("delta", null),
+        ],
+      },
+    });
+
+    const report = await run(h);
+
+    // The pair still SUCCEEDS and emits nothing — no refusal arm was added, per the
+    // ticket's explicit scope. An entity whose column is legitimately empty must
+    // keep succeeding.
+    expect(report.refusals).toEqual([]);
+    expect(report.created).toBe(0);
+
+    // …and the tally now reaches the report, which is the entire fix.
+    const entity = report.entities[0];
+    expect(entity).toMatchObject({ entity: "Nulls", rows: 4, candidates: 0, absentCells: 4 });
+
+    // ⚠️ The DISCRIMINATING assertion. `absentCells: 4` beside `rows: 4` is what
+    // separates "0 of 4 cells had a value" from "the pair was never read" — the two
+    // states that were identical before. A test that only checked `absentCells > 0`
+    // would pass on a counter that incremented once and stopped.
+    expect(entity?.absentCells).toBe(entity?.rows);
+    // Not conflated with its sibling: these cells are ABSENT, not unsurfaceable.
+    expect(entity?.unsurfaceableCells).toBe(0);
+  });
+
   test("an entity that produces no candidates writes no episode and is still REPORTED", async () => {
     // Two distinct silences that must not merge: an entity nothing can be said
     // about still appears in `entities`, and no snapshot episode is written for it
@@ -3017,6 +3083,11 @@ describe("runWarehouseProducer", () => {
         collidingSubjectRows: 2,
         unsurfaceableCells: 3,
         unsurfaceableKeyRows: 1,
+        // 0, and it is the honest value rather than a filler: the three cells that
+        // reach the loop are `{j:…}` objects, which EXIST and cannot be surfaced.
+        // The absent arm is driven by its own test below, where the number is the
+        // whole point.
+        absentCells: 0,
         cardinalityProposed: [],
         // No episode, no transaction — so nothing was STORED, whatever this
         // snapshot would have implied. `Empty` has no naming dimension either,

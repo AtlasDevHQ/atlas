@@ -1,0 +1,152 @@
+import { describe, expect, test } from "bun:test";
+
+import { reapStandDown } from "@atlas/api/lib/brain/observation-reap";
+
+/**
+ * The stand-down rule (#5388): the reaper deletes on evidence that a row LEFT,
+ * never on a run that merely failed to represent it.
+ *
+ * These drive the pure decision only. That the decision is honoured — that the
+ * excluded predicates reach the statement and the blind run issues none — is
+ * `observation-reap-pg.test.ts`' and `warehouse-producer.test.ts`' half.
+ */
+
+/** A run that read rows and represented all of them. Overridden per case. */
+const healthy = {
+  rowsRead: 10,
+  candidatePredicates: ["status", "plan"],
+  unsurfaceableByDimension: new Map<string, number>(),
+  unsurfaceableKeyRows: 0,
+  collidingSubjectRows: 0,
+  unidentifiedRows: 0,
+} as const;
+
+describe("reapStandDown — the blind-run arm", () => {
+  test("a TRUNCATED table is not blind, and is the case the reaper exists for", () => {
+    // Zero rows read is positive evidence of absence: the rows are gone. This is
+    // migration 0206's motivating case and it must keep reaping.
+    const decision = reapStandDown({ ...healthy, rowsRead: 0, candidatePredicates: [] });
+
+    expect(decision.blind).toBe(false);
+    expect(decision.predicates).toEqual([]);
+  });
+
+  test("rows read but every primary key unsurfaceable IS blind", () => {
+    // The `status`-column-to-jsonb scenario applied to the KEY column. The rows
+    // are present and counted; the run simply could not name them. Reaping here
+    // deletes for a reason that never happened.
+    const decision = reapStandDown({
+      ...healthy,
+      candidatePredicates: [],
+      unsurfaceableKeyRows: 10,
+    });
+
+    expect(decision.blind).toBe(true);
+  });
+
+  test("rows whose cells are all NULL are NOT blind — they assert nothing now", () => {
+    // ⚠️ The distinction that keeps this rule from becoming "stand down whenever
+    // anything is imperfect". An absent cell is not a representation FAILURE: the
+    // warehouse answered, and the answer was "nothing". That is a real change in
+    // the world and the observations should age out.
+    const decision = reapStandDown({ ...healthy, candidatePredicates: [] });
+
+    expect(decision.blind).toBe(false);
+    expect(decision.predicates).toEqual([]);
+  });
+
+  test("a run that represented SOMETHING is never blind", () => {
+    const decision = reapStandDown({
+      ...healthy,
+      candidatePredicates: ["plan"],
+      unsurfaceableKeyRows: 4,
+    });
+
+    expect(decision.blind).toBe(false);
+  });
+});
+
+describe("reapStandDown — the per-dimension arm", () => {
+  test("a wholly unsurfaceable dimension is excluded, and its siblings are not", () => {
+    // #5388's worked example: someone alters `status` to jsonb. Every `status`
+    // cell is unsurfaceable while `plan` keeps emitting, so the run succeeds,
+    // represents plenty, and would otherwise reap every `status` observation and
+    // the tension edges they carried against live human beliefs.
+    const decision = reapStandDown({
+      ...healthy,
+      candidatePredicates: ["plan"],
+      unsurfaceableByDimension: new Map([["status", 10]]),
+    });
+
+    expect(decision.blind).toBe(false);
+    expect(decision.predicates).toEqual(["status"]);
+  });
+
+  test("ONE bad cell among good ones protects nothing", () => {
+    // The issue's own argument against suppressing on the raw counter: a
+    // per-entity aggregate lets a single bad cell pin the whole comparison
+    // surface open. Scoping to "surfaced NOTHING" is what answers it.
+    const decision = reapStandDown({
+      ...healthy,
+      candidatePredicates: ["status", "plan"],
+      unsurfaceableByDimension: new Map([["status", 1]]),
+    });
+
+    expect(decision.predicates).toEqual([]);
+  });
+
+  test("several blind dimensions are all excluded", () => {
+    const decision = reapStandDown({
+      ...healthy,
+      candidatePredicates: ["plan"],
+      unsurfaceableByDimension: new Map([
+        ["status", 10],
+        ["tier", 10],
+      ]),
+    });
+
+    expect([...decision.predicates].sort()).toEqual(["status", "tier"]);
+  });
+
+  test("a healthy run stands down for nothing", () => {
+    const decision = reapStandDown(healthy);
+
+    expect(decision.blind).toBe(false);
+    expect(decision.predicates).toEqual([]);
+  });
+
+  test("a run that surfaced NOTHING and fenced something is always blind", () => {
+    // ⚠️ The implication the zero-candidate producer arm rests on, pinned here
+    // rather than left as a comment. That arm passes `predicates` to a reap it
+    // only reaches when `blind` is false, and the bind is dead precisely because
+    // these two cannot both be "no candidates" and "something fenced" without
+    // `blind` being true. A mutation replacing that bind with `[]` survives every
+    // test in the tree, which is what an equivalent mutant looks like — so the
+    // thing worth testing is the implication, not the bind.
+    //
+    // Narrow `blind` and this goes red, which is the signal to re-examine that
+    // call site rather than discover it three schema changes later.
+    for (const count of [1, 5]) {
+      const decision = reapStandDown({
+        ...healthy,
+        rowsRead: 5,
+        candidatePredicates: [],
+        unsurfaceableByDimension: new Map([["status", count]]),
+      });
+
+      expect(decision.predicates).toEqual(["status"]);
+      expect(decision.blind, "something was fenced on a run that surfaced nothing, yet the reap would still fire").toBe(true);
+    }
+  });
+
+  test("colliding subjects alone exclude no dimension", () => {
+    // A collision drops the ROW, not a dimension, and the dropped row's other
+    // observations are equally unrepresented. It is caught by the blind arm when
+    // it takes every row and by nothing when it does not — deliberately, because
+    // there is no dimension-shaped answer to give.
+    const decision = reapStandDown({ ...healthy, collidingSubjectRows: 3 });
+
+    expect(decision.blind).toBe(false);
+    expect(decision.predicates).toEqual([]);
+  });
+});

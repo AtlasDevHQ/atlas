@@ -33451,6 +33451,10 @@
                                 "type": "integer",
                                 "minimum": 0
                               },
+                              "absentCells": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
                               "cardinalityProposed": {
                                 "type": "array",
                                 "items": {
@@ -33478,6 +33482,7 @@
                               "collidingSubjectRows",
                               "unsurfaceableCells",
                               "unsurfaceableKeyRows",
+                              "absentCells",
                               "cardinalityProposed",
                               "entitiesStored",
                               "unnamedRows"

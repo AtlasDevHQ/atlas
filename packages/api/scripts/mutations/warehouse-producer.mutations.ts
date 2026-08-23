@@ -718,12 +718,12 @@ export type WarehouseBrandProbe = { readonly [validatedSnapshotSql]: true };`,
           // shallower indentation — the zero-candidate arm's identical call
           // nests one level deeper, and the row below anchors on that one.
           oldString:
-            "        pendingObservationReap = await reapUnreachedObservations(tx, {\n" +
-            "          workspaceId,\n" +
-            "          entity: entityPlan.entity.name,\n" +
-            "          exceptPredicates: standDown.predicates,\n" +
-            "        });",
-          newString: "        void reapUnreachedObservations;",
+            "          pendingObservationReap = await reapUnreachedObservations(tx, {\n" +
+            "            workspaceId,\n" +
+            "            entity: entityPlan.entity.name,\n" +
+            "            exceptPredicates: reconcileStandDown.predicates,\n" +
+            "          });",
+          newString: "          void reapUnreachedObservations;",
         },
       ],
       note: "⚠️ **The arm the reaper exists for, and the one a reader arriving from #5321 would expect to be the no-op.** The store's reaper IS a no-op here by construction — `writeEntityEntries` has just rewritten every entry at this run's `snapshot_at`, so none can predate the window — and copying that reasoning across is how the corpus reaper ends up wired to the zero-candidate arm alone. Nothing rewrites a fact: `reconcileFacts` gives every row still in the filtered snapshot a fresh evidence edge and gives the excluded rows nothing, so an entity emitting NORMALLY is exactly where a churned customer's observation ages out. Deleting this call leaves the corpus reaper firing only when an entity produces no claims at all — which is the truncated-table case and not #5344's — and every assertion that the statement was ISSUED stays green, because the other arm still issues it.",
@@ -764,19 +764,22 @@ export type WarehouseBrandProbe = { readonly [validatedSnapshotSql]: true };`,
           // alone. `countOccurrences` is a plain substring scan, so the
           // ten-space spelling of this property is a substring of the
           // zero-candidate arm's fourteen-space one and matched twice.
-          oldString:
-            "        pendingObservationReap = await reapUnreachedObservations(tx, {\n" +
-            "          workspaceId,\n" +
-            "          entity: entityPlan.entity.name,\n" +
-            "          exceptPredicates: standDown.predicates,",
-          newString:
-            "        pendingObservationReap = await reapUnreachedObservations(tx, {\n" +
-            "          workspaceId,\n" +
-            "          entity: entityPlan.entity.name,\n" +
-            "          exceptPredicates: [],",
+          oldString: "            exceptPredicates: reconcileStandDown.predicates,",
+          newString: "            exceptPredicates: [],",
         },
       ],
       note: "#5388's worked example, restored. An entity emitting normally is NOT blind, so the guard above does not fire and this bind is the only thing standing between a dimension the run could not read and the DELETE: alter a `status` column to `jsonb` while `tier` keeps emitting, and three runs later every `status` observation is gone though nothing churned and no filter changed. Survives any assertion that the reap was ISSUED or that its other binds are right — the fence is the fourth parameter and an empty array is the ordinary value, so only a fixture that makes a dimension WHOLLY unsurfaceable and reads `$4` can see it.",
+    },
+    {
+      label: "an episode blocked wholesale reaps anyway — the reconcile arm's stand-down is removed",
+      edits: [
+        {
+          file: PRODUCER,
+          oldString: "        if (!reconcileStandDown.blind) {",
+          newString: "        if (true) {",
+        },
+      ],
+      note: "The FOURTH warn-don't-refuse path (#5388), and the one the entity-level decision structurally cannot see: it is taken before `reconcileFacts` answers. When an episode is blocked wholesale `reconcile.ts` sets `blocked[reason] = candidates.length`, so every candidate goes unwritten and the run earns no evidence edge for any of them — reaping on it empties the comparison surface because reconcile refused to WRITE, not because anything left. Survives every assertion that the reap fires on a healthy reconcile, because a healthy one is not blind.",
     },
     {
       label: "the connection resolver is asked about no entities",

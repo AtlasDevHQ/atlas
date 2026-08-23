@@ -3844,6 +3844,10 @@ export async function runWarehouseProducer(
     const standDown = reapStandDown({
       rowsRead: rowCount,
       candidatePredicates: claims.candidates.map((candidate) => candidate.predicate),
+      // No reconcile has run at this point. The reconcile arm re-decides below
+      // with the real number once `reconcileFacts` has answered — this value is
+      // only ever read by the zero-candidate arm, which reconciles nothing.
+      blockedCandidates: 0,
       unsurfaceableByDimension: claims.unsurfaceableByDimension,
       unsurfaceableKeyRows: claims.unsurfaceableKeyRows,
       collidingSubjectRows: claims.collidingSubjectRows,
@@ -4191,17 +4195,36 @@ export async function runWarehouseProducer(
         // filtered snapshot a fresh evidence edge and given the rows the filter
         // now excludes nothing at all, so an entity that is emitting normally is
         // exactly where a churned customer's observation ages out.
-        // ⚠️ The dimensions this run had values for and surfaced none of are
-        // FENCED (#5388). This is the arm the per-dimension fence exists for: the
-        // entity is emitting normally, so the run is not blind and the reap
-        // fires, and without the fence a `status` column altered to `jsonb` takes
-        // every `status` observation — and their tension edges against live human
-        // beliefs — with it three runs later.
-        pendingObservationReap = await reapUnreachedObservations(tx, {
-          workspaceId,
-          entity: entityPlan.entity.name,
-          exceptPredicates: standDown.predicates,
+        // ⚠️ RE-DECIDED here rather than reusing the entity-level `standDown`,
+        // and the difference is the fourth warn-don't-refuse path (#5388). The
+        // decision above was taken before `reconcileFacts` answered, so it cannot
+        // know that every candidate was BLOCKED — and a wholesale block writes no
+        // evidence edge for any of them, which from the reaper's side is
+        // indistinguishable from an entity that returned nothing. Reaping on it
+        // would delete the comparison surface because reconcile refused to write,
+        // not because anything left.
+        const blockedCandidates = Object.values(report.blocked).reduce((sum, n) => sum + n, 0);
+        const reconcileStandDown = reapStandDown({
+          rowsRead: rowCount,
+          candidatePredicates: claims.candidates.map((candidate) => candidate.predicate),
+          blockedCandidates,
+          unsurfaceableByDimension: claims.unsurfaceableByDimension,
+          unsurfaceableKeyRows: claims.unsurfaceableKeyRows,
+          collidingSubjectRows: claims.collidingSubjectRows,
+          unidentifiedRows: claims.unidentifiedRows,
         });
+        // This is the arm the per-dimension fence exists for: an entity emitting
+        // normally is not blind, so the reap fires, and without the fence a
+        // `status` column altered to `jsonb` takes every `status` observation —
+        // and their tension edges against live human beliefs — with it three runs
+        // later.
+        if (!reconcileStandDown.blind) {
+          pendingObservationReap = await reapUnreachedObservations(tx, {
+            workspaceId,
+            entity: entityPlan.entity.name,
+            exceptPredicates: reconcileStandDown.predicates,
+          });
+        }
 
         // ⚠️ Staged, NOT folded into the run's counters here — see the
         // zero-candidate arm above for the argument. Everything below this line
@@ -4276,7 +4299,11 @@ export async function runWarehouseProducer(
         // A branch that looks like it compensates for a contract violation, but does
         // not, costs the next reader a trip into `reconcile.ts` to discover it is
         // dead.
-        const blocked = Object.values(report.blocked).reduce((sum, n) => sum + n, 0);
+        //
+        // Computed ONCE, above, because the reap's stand-down reads the same number
+        // (#5388) and two spellings of "how many did reconcile refuse" is how the
+        // audit line and the delete rule come to disagree.
+        const blocked = blockedCandidates;
         producedOutcome = {
           entity: entityPlan.entity.name,
           rows: rowCount,

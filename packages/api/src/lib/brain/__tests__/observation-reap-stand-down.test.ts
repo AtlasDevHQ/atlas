@@ -15,6 +15,7 @@ import { reapStandDown } from "@atlas/api/lib/brain/observation-reap";
 const healthy = {
   rowsRead: 10,
   candidatePredicates: ["status", "plan"],
+  blockedCandidates: 0,
   unsurfaceableByDimension: new Map<string, number>(),
   unsurfaceableKeyRows: 0,
   collidingSubjectRows: 0,
@@ -137,6 +138,31 @@ describe("reapStandDown — the per-dimension arm", () => {
       expect(decision.predicates).toEqual(["status"]);
       expect(decision.blind, "something was fenced on a run that surfaced nothing, yet the reap would still fire").toBe(true);
     }
+  });
+
+  test("an episode blocked WHOLESALE is blind, though every candidate was built", () => {
+    // The fourth warn-don't-refuse path (#5388). `reconcile.ts` sets
+    // `blocked[reason] = candidates.length` when it refuses an episode entirely,
+    // so the candidates exist, nothing is written, and no evidence edge is
+    // minted for any of them. From the reap's side that is indistinguishable
+    // from an entity that returned nothing — and reaping on it would empty the
+    // comparison surface because reconcile refused to WRITE, not because
+    // anything left.
+    const decision = reapStandDown({ ...healthy, blockedCandidates: 2 });
+
+    expect(decision.blind).toBe(true);
+  });
+
+  test("a PARTIAL block still reaps — a known narrowing, not an oversight", () => {
+    // `report.blocked` is keyed by REASON, not by predicate, so a partial block
+    // cannot say which dimensions went unwritten and there is no dimension-shaped
+    // answer to give. Pinned so the narrowing is a decision on the record rather
+    // than something a later reader discovers. Closing it needs `reconcile.ts` to
+    // report refusals by predicate.
+    const decision = reapStandDown({ ...healthy, blockedCandidates: 1 });
+
+    expect(decision.blind).toBe(false);
+    expect(decision.predicates).toEqual([]);
   });
 
   test("colliding subjects alone exclude no dimension", () => {

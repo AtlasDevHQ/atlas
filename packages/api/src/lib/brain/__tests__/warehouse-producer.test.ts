@@ -3141,6 +3141,33 @@ describe("runWarehouseProducer", () => {
     expect(h.store.calls.map((c) => c.sql)).toContain(OBSERVATION_REAP_SQL);
     expect(h.store.paramsFor(OBSERVATION_REAP_SQL)[0]?.[3]).toEqual([]);
   });
+  test("an episode whose every candidate reconcile BLOCKS does not reap (#5388)", async () => {
+    // ⚠️ The fourth warn-don't-refuse path, and the one the entity-level
+    // stand-down structurally cannot see: it is decided before `reconcileFacts`
+    // has answered. Every subject here normalizes away to nothing, so every
+    // candidate is built and then blocked as `MALFORMED_CLAIM` — the run reaches
+    // the reconcile arm, writes an episode, and mints no evidence edge for
+    // anything. Reaping on that empties the comparison surface because reconcile
+    // refused to WRITE, not because a row left.
+    const h = harness({
+      pairs: [{ entity: "Degenerate", group: null, dimension: "status", naming: false }],
+      entities: {
+        Degenerate: entityYaml({
+          table: "degenerate",
+          primaryKey: "id",
+          dimensions: ["id", "status"],
+        }),
+      },
+      rows: { Degenerate: [snapshotRow("---", "active"), snapshotRow("-----", "churned")] },
+    });
+
+    const report = await run(h);
+
+    // The premise: candidates were BUILT (so the run is not zero-candidate) and
+    // every one of them was blocked (so nothing was written).
+    expect(report.entities[0]).toMatchObject({ rows: 2, candidates: 2, created: 0, blocked: 2 });
+    expect(h.store.calls.map((c) => c.sql)).not.toContain(OBSERVATION_REAP_SQL);
+  });
   test("the run-level outcome carries each counter from the claims it came from", async () => {
     // Asymmetric values (1 unidentified, 2 colliding, 3 unsurfaceable) so a swap
     // between any two of the three fields goes red.

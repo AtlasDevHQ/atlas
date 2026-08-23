@@ -406,6 +406,23 @@ export interface ReapStandDown {
  * dimension that surfaced even one keeps reaping, which is the direct answer to
  * the "one bad cell protects everything" objection.
  *
+ * ## The fourth sibling: a `reconcile` block
+ *
+ * The other three warn-don't-refuse paths are counted per row or per dimension.
+ * A `reconcile` block is neither: `report.blocked` is keyed by REASON, so a
+ * partial block cannot say WHICH predicates went unwritten and there is no
+ * dimension-shaped answer to give. What it can say is the wholesale case, and
+ * that is the one that matters — when an episode is blocked entirely,
+ * `reconcile.ts` sets `blocked[reason] = candidates.length`, every candidate
+ * goes unwritten, and the run earns no evidence edge for any of them. From this
+ * rule's side that is indistinguishable from an entity that returned nothing,
+ * so it lands in `blind`.
+ *
+ * ⚠️ A PARTIAL block therefore still reaps the unwritten candidates' dimensions,
+ * and that is a KNOWN narrowing rather than an oversight. Closing it needs
+ * `reconcile.ts` to report its refusals by predicate; until then the honest
+ * statement is that this rule covers the wholesale case only.
+ *
  * ## What this deliberately does not do
  *
  * A chronically unsurfaceable dimension holds its own observations open
@@ -418,28 +435,48 @@ export interface ReapStandDown {
  * Pure, and separate from the statement, so the decision can be driven without a
  * database — `observation-reap-stand-down.test.ts`.
  */
-export function reapStandDown(run: {
+export interface RunRepresentation {
+  /** Rows the datasource actually returned, summed across the entity's members. */
   readonly rowsRead: number;
+  /** One entry per CANDIDATE BUILT — before `reconcile.ts` decides to write it. */
   readonly candidatePredicates: readonly string[];
+  /**
+   * Candidates `reconcile.ts` refused, summed over its reasons.
+   *
+   * ⚠️ Keyed by REASON there, not by predicate, which is why this arm can only
+   * express the wholesale case — see {@link reapStandDown}.
+   */
+  readonly blockedCandidates: number;
+  /** Cells that existed and could not be made into a claim, per dimension. */
   readonly unsurfaceableByDimension: ReadonlyMap<string, number>;
   readonly unsurfaceableKeyRows: number;
   readonly collidingSubjectRows: number;
   readonly unidentifiedRows: number;
-}): ReapStandDown {
+}
+
+export function reapStandDown(run: RunRepresentation): ReapStandDown {
   const surfaced = new Set(run.candidatePredicates);
   const predicates: string[] = [];
   for (const [dimension, count] of run.unsurfaceableByDimension) {
     if (count > 0 && !surfaced.has(dimension)) predicates.push(dimension);
   }
 
+  // Every candidate the run built was refused, so the episode carries no
+  // evidence edge for any of them — indistinguishable, from the reap's side,
+  // from an entity that returned nothing at all.
+  const everyCandidateBlocked =
+    run.candidatePredicates.length > 0 && run.blockedCandidates >= run.candidatePredicates.length;
+
+  const representedNothing = surfaced.size === 0 || everyCandidateBlocked;
   const representationFailed =
+    everyCandidateBlocked ||
     run.unsurfaceableKeyRows > 0 ||
     run.collidingSubjectRows > 0 ||
     run.unidentifiedRows > 0 ||
     run.unsurfaceableByDimension.size > 0;
 
   return {
-    blind: run.rowsRead > 0 && surfaced.size === 0 && representationFailed,
+    blind: run.rowsRead > 0 && representedNothing && representationFailed,
     predicates,
   };
 }

@@ -52,12 +52,14 @@ name: Refresh test timings
 # and the sibling issue it points at. Two different problems wearing one symptom.
 
 on:
+  # No dispatch inputs, deliberately. An earlier cut had a `shards` knob
+  # defaulting to "4" that fed the divisor of the shard argument while the matrix
+  # below stayed hardcoded [1,2,3,4] — so dispatching it with 2 would have run
+  # legs numbered 3 and 4 out of 2. The shard count has to match ci.yml's
+  # api-tests matrix for the measurement to mean anything, so a knob that can
+  # only ever disagree with it is a footgun rather than a feature. To reshard,
+  # change BOTH matrices and the merge step's --expect-shards together.
   workflow_dispatch:
-    inputs:
-      shards:
-        description: Shard count to measure under (must match ci.yml's api-tests matrix)
-        required: false
-        default: "4"
 
 permissions:
   contents: read
@@ -85,7 +87,7 @@ jobs:
       - name: Build @useatlas/types + @useatlas/plugin-sdk
         run: bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build
 
-      - name: Measure shard ${{ matrix.shard }}/${{ inputs.shards || '4' }}
+      - name: Measure shard ${{ matrix.shard }}/4
         working-directory: packages/api
         env:
           # ⚠️ REQUIRED here, unlike a local run. Without it the `-pg` suites
@@ -101,7 +103,7 @@ jobs:
         # committed file is second and is read for balance only.
         run: |
           bun test --parallel \
-            --shard=${{ matrix.shard }}/${{ inputs.shards || '4' }} \
+            --shard=${{ matrix.shard }}/4 \
             --timings=/tmp/measured-${{ matrix.shard }}.json \
             --timings=scripts/test-timings.json \
             --update-timings
@@ -145,6 +147,13 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
+      # `install: "false"` — the merge script has no dependencies, so this only
+      # needs the bun BINARY and can skip the monorepo install entirely.
+      - uses: ./.github/actions/setup-bun-cached
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+          install: "false"
+
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: test-timings-shard-*
@@ -154,9 +163,10 @@ jobs:
       - name: Merge shard durations
         id: merge
         run: |
-          python3 .github/scripts/merge-test-timings.py \
+          bun .github/scripts/merge-test-timings.ts \
             --out packages/api/scripts/test-timings.json \
             --baseline packages/api/scripts/test-timings.json \
+            --expect-shards 4 \
             /tmp/shards/*/measured-*.json
 
       - name: Upload merged timings

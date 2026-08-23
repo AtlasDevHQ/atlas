@@ -596,7 +596,7 @@ describeIfPg("corroboration's class matrix (#5332)", () => {
     );
 
     it(
-      "row 4's surviving cross-class edge widens NOTHING, because the producer grants org",
+      "row 4's surviving cross-class edge DOES widen — `org` is added to a private grant",
       async () => {
         // The boundary crossing that my fix deliberately KEEPS (row 4): a
         // warehouse reading corroborating a private human belief. Here the

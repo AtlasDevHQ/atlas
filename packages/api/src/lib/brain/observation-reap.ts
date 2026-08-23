@@ -278,8 +278,17 @@ export interface ObservationReapResult {
   readonly tensionEdgesRemoved: number;
 }
 
-/** The result of a reap that removed nothing — the ordinary outcome. */
-const NOTHING_REAPED: ObservationReapResult = Object.freeze({
+/**
+ * The result of a reap that removed nothing — the ordinary outcome.
+ *
+ * Exported so a caller staging a reap across a transaction boundary can
+ * initialise its local to this instead of `null` (#5389). A `let … | null`
+ * assigned only inside a `withTransaction` callback narrows to `never` at its
+ * own `!== null` guard — control-flow analysis does not see through the
+ * closure — and the resulting error blames a line three above the real one.
+ * Folding this contributes zero, so the guard is not needed in the first place.
+ */
+export const NOTHING_REAPED: ObservationReapResult = Object.freeze({
   factIds: Object.freeze([]),
   edgesRemoved: 0,
   tensionEdgesRemoved: 0,

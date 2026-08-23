@@ -94,6 +94,7 @@ import {
   type StoredEntity,
 } from "@atlas/api/lib/brain/entity-store";
 import {
+  NOTHING_REAPED,
   reapUnreachedObservations,
   type ObservationReapResult,
 } from "@atlas/api/lib/brain/observation-reap";
@@ -3914,7 +3915,7 @@ export async function runWarehouseProducer(
       /** Reaped inside the transaction below; counted only once it commits. */
       let reapedHere = 0;
       /** The corpus half of the same deal (#5344), staged on the same terms. */
-      let observationsReapedHere: ObservationReapResult | null = null;
+      let observationsReapedHere: ObservationReapResult = NOTHING_REAPED;
       try {
         await withTransaction(async (tx) => {
           await recordEntityRunSuccess(tx, {
@@ -3955,7 +3956,7 @@ export async function runWarehouseProducer(
         // hunting for rows that are still there. The rollback un-reaps; the
         // number has to say so.
         entityStoreChanges.reaped += reapedHere;
-        if (observationsReapedHere !== null) countReaped(observationsReapedHere);
+        countReaped(observationsReapedHere);
       } catch (err: unknown) {
         log.warn(
           {
@@ -4021,7 +4022,7 @@ export async function runWarehouseProducer(
     /** Store changes made inside the transaction below, counted once it commits. */
     let pendingStoreChanges = { orphansDeleted: 0, comparablesRetired: 0, reaped: 0 };
     /** The corpus reap made inside the transaction below, on the same terms (#5344). */
-    let pendingObservationReap: ObservationReapResult | null = null;
+    let pendingObservationReap: ObservationReapResult = NOTHING_REAPED;
     // ⚠️ **`try`/`catch`, NOT `.catch(…)` on the returned value, and the difference is
     // the last unguarded read on this seam** (#5257 review, round 2). `.catch` is
     // itself a property access on whatever `withTransaction` returned: a non-thenable
@@ -4255,7 +4256,7 @@ export async function runWarehouseProducer(
       entityStoreChanges.orphansDeleted += pendingStoreChanges.orphansDeleted;
       entityStoreChanges.comparablesRetired += pendingStoreChanges.comparablesRetired;
       entityStoreChanges.reaped += pendingStoreChanges.reaped;
-      if (pendingObservationReap !== null) countReaped(pendingObservationReap);
+      countReaped(pendingObservationReap);
     } catch (err: unknown) {
       // A defect in this module's own contract stays FATAL — see
       // `WarehouseProducerContractError`. Everything below is for OPERATIONAL

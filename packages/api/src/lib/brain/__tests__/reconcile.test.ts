@@ -538,6 +538,106 @@ describe("block: malformed claim", () => {
 });
 
 // ---------------------------------------------------------------------------
+// The refusals, keyed by PREDICATE (#5396)
+// ---------------------------------------------------------------------------
+//
+// ⚠️ These exist because `blockedByPredicate` is a DELETE guard's input, not a
+// statistic. The observation reaper fences a dimension out of
+// `OBSERVATION_REAP_SQL`'s `$4` when reconcile refused every candidate for it;
+// a refusal counted on `blocked` and missed here is a dimension that stops
+// being fenced and starts being reaped. The pairing is stated as an invariant
+// in `reconcileFacts` and was, until these tests, pinned at ONE of its three
+// sites — by a producer fixture, on the unkeyed-slot guard alone.
+//
+// So there is one test per site that increments `blocked`, named for the site.
+
+describe("refusals keyed by predicate (#5396)", () => {
+  test("the EPISODE-level gate counts every candidate's predicate", async () => {
+    // The wholesale case. `blocked[reason] = candidates.length` with no
+    // per-candidate loop, so this is the site most likely to be missed by a
+    // later edit — it is the one that does not increment in a loop.
+    const store = new FakeBrainStore();
+    const report = await run(store, {
+      episode: episode({ visibleTo: ["everyone"] }),
+      candidates: [
+        candidate({ predicate: "status" }),
+        candidate({ predicate: "status" }),
+        candidate({ predicate: "tier" }),
+      ],
+    });
+
+    expect(report.blocked.NO_GRANT).toBe(3);
+    expect(
+      [...report.blockedByPredicate.entries()].toSorted(([a], [b]) => a.localeCompare(b)),
+    ).toEqual([
+      ["status", 2],
+      ["tier", 1],
+    ]);
+  });
+
+  test("the BLANK-TRIM pass counts a blank object under its own predicate", async () => {
+    const store = new FakeBrainStore();
+    const report = await run(store, {
+      candidates: [candidate({ predicate: "status", object: "   " })],
+    });
+
+    expect(report.blocked.MALFORMED_CLAIM).toBe(1);
+    expect(report.blockedByPredicate.get("status")).toBe(1);
+  });
+
+  test("the UNKEYED-SLOT guard counts a degenerate object under its predicate", async () => {
+    // The route the warehouse producer actually takes: the cell surfaces, so it
+    // is not an absent value, and then normalizes away to nothing.
+    const store = new FakeBrainStore();
+    const report = await run(store, {
+      candidates: [candidate({ predicate: "status", object: "---" })],
+    });
+
+    expect(report.blocked.MALFORMED_CLAIM).toBe(1);
+    expect(report.blockedByPredicate.get("status")).toBe(1);
+  });
+
+  test("a BLANK predicate names no dimension, so it is counted on the total alone", async () => {
+    // The asymmetry the reaper depends on, pinned from reconcile's side. A
+    // refusal with no predicate cannot be fenced — no fact can exist with an
+    // empty predicate for `$4` to match — so it belongs on `blocked` and
+    // nowhere else. `reapStandDown` reads the TOTAL for its blind arm and this
+    // MAP for its per-dimension arm precisely because the two differ here.
+    const store = new FakeBrainStore();
+    const report = await run(store, {
+      candidates: [candidate({ predicate: "   ", object: "Thursdays" })],
+    });
+
+    expect(report.blocked.MALFORMED_CLAIM).toBe(1);
+    expect(report.blockedByPredicate.size).toBe(0);
+  });
+
+  test("the keys are TRIMMED, matching what `brain_facts.predicate` would hold", async () => {
+    // The fence leaves through `$4` and is compared for EQUALITY against the
+    // stored predicate, which reconcile trims before writing. An untrimmed key
+    // matches no row and the dimension reaps — silently, in the unsafe
+    // direction.
+    const store = new FakeBrainStore();
+    const report = await run(store, {
+      candidates: [candidate({ predicate: "  status  ", object: "   " })],
+    });
+
+    expect(report.blockedByPredicate.get("status")).toBe(1);
+    expect(report.blockedByPredicate.has("  status  ")).toBe(false);
+  });
+
+  test("a clean run reports no refusals at all", async () => {
+    // The negative control. Without it every assertion above passes against a
+    // map that is populated unconditionally.
+    const store = new FakeBrainStore();
+    const report = await run(store, { candidates: [candidate({ predicate: "status" })] });
+
+    expect(report.created).toBe(1);
+    expect(report.blockedByPredicate.size).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // FLAG — quality failures
 // ---------------------------------------------------------------------------
 

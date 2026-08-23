@@ -25,7 +25,7 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | Mutation | identity-consumers-pg.test.ts | reconcile.test.ts |
 |---|---|---|
 | `lexicalNorm` loses its ASCII case fold | 20 | 7 |
-| `lexicalNorm` loses its edge trim | 3 | 2 |
+| `lexicalNorm` loses its edge trim | 3 | 3 |
 | `identityAlias` given a global rule (`/^is /` stripped) | 3 | 0 |
 | `CORROBORATION_LOOKUP_SQL` repointed at the surface columns | 12 | 1 |
 | the corroboration call site binds raw surfaces instead of the keys | 12 | 2 |
@@ -43,7 +43,7 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | `predicate_key =` dropped from the collision join | 1 | 0 |
 | `comparableDifferentSql` loses its `split_part` tag equality arm | 1 | 0 |
 
-Suite sizes: **identity-consumers-pg.test.ts** 76 tests (`src/lib/brain/__tests__/identity-consumers-pg.test.ts`) · **reconcile.test.ts** 73 tests (`src/lib/brain/__tests__/reconcile.test.ts`).
+Suite sizes: **identity-consumers-pg.test.ts** 76 tests (`src/lib/brain/__tests__/identity-consumers-pg.test.ts`) · **reconcile.test.ts** 79 tests (`src/lib/brain/__tests__/reconcile.test.ts`).
 
 ## Notes
 

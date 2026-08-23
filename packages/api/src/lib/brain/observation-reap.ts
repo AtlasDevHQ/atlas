@@ -486,18 +486,31 @@ export interface RunRepresentation {
 }
 
 export function reapStandDown(run: RunRepresentation): ReapStandDown {
+  // ⚠️ **Every predicate in this function is TRIMMED, and that is a
+  // correctness requirement rather than tidiness.** The names arrive from three
+  // sides that spell them differently — the producer's own dimension names, the
+  // candidates it built, and `reconcile.ts`'s refusal map, which trims because
+  // it trims before it writes — and the answer leaves through `$4`, where it is
+  // compared for EQUALITY against `brain_facts.predicate`, the stored and
+  // therefore trimmed spelling. Two spellings meeting at that comparison fail
+  // SILENTLY and in the unsafe direction: the fence simply matches no row, and
+  // the dimension it was built to protect reaps.
+  const norm = (predicate: string): string => predicate.trim();
+
   // How many candidates each dimension BUILT — a count rather than a set,
   // because the reconcile arm below has to ask whether every one of them was
   // refused, and `candidatePredicates` carries one entry per candidate.
   const built = new Map<string, number>();
   for (const predicate of run.candidatePredicates) {
-    built.set(predicate, (built.get(predicate) ?? 0) + 1);
+    const name = norm(predicate);
+    built.set(name, (built.get(name) ?? 0) + 1);
   }
 
   const heldBack = new Set<string>();
   // Cells that existed and none of which could be made into a claim.
   for (const [dimension, count] of run.unsurfaceableByDimension) {
-    if (count > 0 && !built.has(dimension)) heldBack.add(dimension);
+    const name = norm(dimension);
+    if (count > 0 && !built.has(name)) heldBack.add(name);
   }
   // Candidates that were built and every one of which reconcile refused
   // (#5396). `>=` rather than `===` deliberately: the two counts come from
@@ -505,8 +518,9 @@ export function reapStandDown(run: RunRepresentation): ReapStandDown {
   // counts what it refused — and a refusal count that somehow exceeds the built
   // count still means nothing was written, which is the condition being tested.
   for (const [dimension, refused] of run.blockedByPredicate) {
-    const builtHere = built.get(dimension) ?? 0;
-    if (builtHere > 0 && refused >= builtHere) heldBack.add(dimension);
+    const name = norm(dimension);
+    const builtHere = built.get(name) ?? 0;
+    if (builtHere > 0 && refused >= builtHere) heldBack.add(name);
   }
   const predicates = [...heldBack];
 

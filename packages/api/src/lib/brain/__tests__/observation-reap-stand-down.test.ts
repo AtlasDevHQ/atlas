@@ -224,7 +224,43 @@ describe("reapStandDown — the per-dimension arm", () => {
     });
 
     expect(decision.blind).toBe(true);
-    expect([...decision.predicates].sort()).toEqual(["plan", "status"]);
+    expect(decision.predicates.toSorted()).toEqual(["plan", "status"]);
+  });
+
+  test("the two sides join on the TRIMMED predicate, not the spelling each arrived with", () => {
+    // ⚠️ Regression test for a fail-open found in review, and the direction is
+    // what makes it worth a case of its own. The producer builds candidates
+    // from `dim.name` verbatim — the semantic-layer schema is a bare
+    // `z.string()` with no `.trim()` — while `reconcile.ts` keys its refusals by
+    // the TRIMMED predicate, because that is what it writes to
+    // `brain_facts.predicate`. Join those two raw and `built.get("status")` is
+    // `undefined` for a dimension named `"status "`, `builtHere > 0` is false,
+    // the dimension is NOT held back, and the DELETE fires on the population
+    // the fence exists to protect.
+    //
+    // Silent both ways: nothing throws, the reap simply carries a shorter `$4`.
+    const decision = reapStandDown({
+      ...healthy,
+      candidatePredicates: [" status ", "plan"],
+      blockedCandidates: 1,
+      blockedByPredicate: new Map([["status", 1]]),
+    });
+
+    expect(decision.predicates).toEqual(["status"]);
+  });
+
+  test("a fenced dimension is reported TRIMMED, because `$4` is compared for equality", () => {
+    // The same rule on the unsurfaceable route, and the other half of why the
+    // normalisation is central rather than per-arm: whatever leaves here is
+    // compared against the stored predicate, so an untrimmed name matches no
+    // row and fences nothing at all.
+    const decision = reapStandDown({
+      ...healthy,
+      candidatePredicates: ["plan"],
+      unsurfaceableByDimension: new Map([[" status ", 2]]),
+    });
+
+    expect(decision.predicates).toEqual(["status"]);
   });
 
   test("colliding subjects alone exclude no dimension", () => {

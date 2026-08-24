@@ -493,6 +493,34 @@ describe("runMigrations", () => {
     }
   });
 
+  // The companion to `migration-breadcrumb.test.ts`'s no-orphaned-watchdog
+  // fixture. `pool.connect()` is the one await outside `runMigrations`' own
+  // `finally`, so it needed its own catch to finish the breadcrumb — and that
+  // catch must RETHROW, or an exhausted pool would read as a successful
+  // migration, which is far worse than the leak it was added to fix.
+  //
+  // ⚠️ Scope, stated rather than implied: this pins the propagation and the
+  // armed code path. The absence of the orphaned interval itself is pinned at
+  // the module level (`finish()` clears the timer), because observing it here
+  // would mean waiting a real 10s for a tick.
+  it("propagates a failed pool.connect() with the breadcrumb armed, rather than reporting success", async () => {
+    const previous = process.env.ATLAS_MIGRATION_BREADCRUMB;
+    process.env.ATLAS_MIGRATION_BREADCRUMB = "1";
+    try {
+      const boom = new Error("timeout exceeded when trying to connect");
+      const pool = {
+        query: async () => ({ rows: [] }),
+        connect: async () => {
+          throw boom;
+        },
+      } as unknown as Parameters<typeof runMigrations>[0];
+      await expect(runMigrations(pool)).rejects.toThrow("timeout exceeded when trying to connect");
+    } finally {
+      if (previous === undefined) delete process.env.ATLAS_MIGRATION_BREADCRUMB;
+      else process.env.ATLAS_MIGRATION_BREADCRUMB = previous;
+    }
+  });
+
   it("skips already-applied migrations", async () => {
     const { pool, queries } = createMockPool({
       applied: [

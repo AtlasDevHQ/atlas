@@ -148,7 +148,25 @@ export async function runMigrations(pool: MigrationPool, options: RunMigrationsO
   // could dispatch queries to different connections, breaking lock and
   // transaction semantics.
   breadcrumb.enter("pool.connect");
-  const client = await pool.connect();
+  // ⚠️ THE ONE AWAIT OUTSIDE THE `finally` BELOW, so it needs its own (#5430).
+  //
+  // Everything after this point is covered by the try/finally that calls
+  // `breadcrumb.finish()`. `pool.connect()` is not — and a rejecting
+  // `pool.connect()` is precisely the exhausted-pool case this instrument was
+  // built to watch. Without this catch the watchdog interval is never cleared,
+  // so it goes on printing `STILL IN pool.connect` every 10s for the rest of the
+  // test process, once per failed call: an instrument that becomes a log flood
+  // exactly when it finally has something to report.
+  //
+  // `unref` keeps that from holding the process open, which is what makes the
+  // leak quiet rather than fatal — and quiet is why it needs a fixture.
+  let client: MigrationClient;
+  try {
+    client = await pool.connect();
+  } catch (err) {
+    breadcrumb.finish(null, err);
+    throw err;
+  }
 
   // ⚠️ WITHOUT THIS, EVERY `RAISE NOTICE` IN EVERY MIGRATION IS DISCARDED (#5047).
   //

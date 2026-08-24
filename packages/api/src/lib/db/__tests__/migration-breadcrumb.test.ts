@@ -202,6 +202,29 @@ describe("armBreadcrumb", () => {
     expect(h.lines).toHaveLength(after);
   });
 
+  // ⚠️ A LEAKED WATCHDOG IS SILENT UNTIL IT IS LOUD, which is why this is a
+  // fixture rather than a comment. `runMigrations` covers every phase after
+  // `pool.connect()` with a `finally` that calls `finish()`; the connect itself
+  // sits outside it, and a REJECTING connect is exactly the exhausted-pool case
+  // this instrument was built for. Unfinished, the interval is never cleared and
+  // prints `STILL IN pool.connect` every 10s for the rest of the process — once
+  // per failed call. `unref` keeps it from holding the process open, so the leak
+  // is quiet, and quiet is what lets it survive review.
+  test("finish() after a FAILED phase clears the timer — no orphaned watchdog", () => {
+    const h = harness();
+    const b = armBreadcrumb("schema=?", h.deps);
+    b.enter("pool.connect");
+    h.advanceTo(BREADCRUMB_TICK_MS);
+    h.tick();
+    b.finish(null, new Error("timeout exceeded when trying to connect"));
+    expect(h.cleared()).toBe(true);
+    const after = h.lines.length;
+    // The tick that would have fired ten seconds later must produce nothing.
+    h.advanceTo(2 * BREADCRUMB_TICK_MS);
+    h.tick();
+    expect(h.lines).toHaveLength(after);
+  });
+
   test("DISARMED_BREADCRUMB accepts the same calls and writes nothing", () => {
     expect(() => {
       DISARMED_BREADCRUMB.enter("apply");

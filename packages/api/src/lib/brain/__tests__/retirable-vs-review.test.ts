@@ -72,6 +72,8 @@ describeIfPg("retirement listing vs review queue (real Postgres)", () => {
   let warehouseDraftId: string;
   /** A published fact with NO `provenance.source` at all — the NULL fold. */
   let sourcelessId: string;
+  /** A published observation whose `valid_to` has already passed — inert, but still nameable. */
+  let supersededId: string;
 
   beforeAll(async () => {
     pool = new Pool({
@@ -122,6 +124,17 @@ describeIfPg("retirement listing vs review queue (real Postgres)", () => {
       // exactly the population the NULL fold exists for.
       provenance: { actor: "U1" },
     });
+    supersededId = await seedFact({
+      subject: "Atlas",
+      predicate: "headcount",
+      object: "40",
+      episodeId,
+      status: "published",
+      provenance: { source: WAREHOUSE_SOURCE, actor: "producer" },
+    });
+    await pool.query(`UPDATE brain_facts SET valid_to = now() - interval '1 day' WHERE id = $1`, [
+      supersededId,
+    ]);
   }, PG_TEST_TIMEOUT_MS);
 
   afterAll(async () => {
@@ -270,6 +283,30 @@ describeIfPg("retirement listing vs review queue (real Postgres)", () => {
 
     expect(review).toContain(sourcelessId);
     expect(retirable).not.toContain(sourcelessId);
+  });
+
+  it("a SUPERSEDED observation is still listed, and is visibly inert (no currency filter)", async () => {
+    // The one predicate where this surface parts company with every sibling
+    // reader, asserted rather than left to the header. Search excludes this row
+    // twice (source AND currency) and review excludes it on source, so the
+    // retirement listing is the ONLY path to its id — filtering on currency
+    // here would strand it exactly as #5403 found the others stranded.
+    const page = await loadRetirableObservations(pool, {
+      ctx: reviewer(),
+      limit: 100,
+      offset: 0,
+      requestId: REQUEST_ID,
+    });
+
+    const superseded = page.observations.find((o) => o.id === supersededId);
+    expect(superseded).toBeDefined();
+    // Visibly inert: the operator can tell this one apart without a second
+    // call, which is what makes reporting the state better than filtering on it.
+    expect(superseded?.validTo).not.toBeNull();
+
+    // And the review queue still does not carry it — the exclusion there is on
+    // the SOURCE, so currency changes nothing about that side.
+    expect(await reviewQueueIds()).not.toContain(supersededId);
   });
 
   it("a retracted row leaves the listing — this is how #5331 AC5 reads the clearing back", async () => {

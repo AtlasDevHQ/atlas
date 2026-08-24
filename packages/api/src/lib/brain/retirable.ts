@@ -174,6 +174,32 @@ function retirableWhere(aclSql: string, aclParams: readonly unknown[]): {
       // listing it here would invite retracting rows that were never blessed
       // and are already inert.
       "f.status = 'published'",
+      // ⚠️ `brainFactCurrentClause` is DELIBERATELY ABSENT, and this is the one
+      // predicate where this surface parts company with every sibling reader
+      // (`candidates.ts`, `search.ts`, the correction window). Saying so
+      // explicitly because that function's docstring warns that a caller who
+      // forgets it "serves superseded claims as current belief" — and the
+      // warning does not bite here, because this surface serves nothing as
+      // belief. It is a DISCOVERY listing whose entire purpose is to make a row
+      // nameable so it can be retracted.
+      //
+      // Filtering on it would reintroduce an invisibility on the one surface
+      // built to remove one. A published observation carrying a stamped
+      // `valid_to` is reachable by no other path — search excludes it twice
+      // over (source AND currency), review excludes it on source — so omitting
+      // it here would strand it exactly as #5403 found the others stranded,
+      // and `retract` is admitted on it (the verb is not gated on the
+      // supersession window; only `re-authority` and `pin` are).
+      //
+      // Nor is it the same case as the DRAFT above. A draft was never blessed;
+      // a superseded observation WAS, and `retract` says precisely that it
+      // should not have been. The row is still readable to an as-of query,
+      // which supersession does not change and only the tombstone does.
+      //
+      // The operator is not left guessing which they are looking at: `validTo`
+      // is in the projection, so an inert row is visibly inert. Reporting the
+      // state beats filtering on it when the filter's cost is a row nobody can
+      // find. `retirable-vs-review.test.ts` pins this.
     ],
   };
 }
@@ -237,7 +263,7 @@ export async function loadRetirableObservations(
     // answer this surface must never give wrongly, since "zero" is how an
     // operator concludes the retirement is COMPLETE. Pay for the second
     // statement only when the page could be past the end.
-    const total = offset > 0 ? await countRetirable(db, options, acl.sql, acl.params) : 0;
+    const total = offset > 0 ? await countRetirable(db, acl.sql, acl.params) : 0;
     return { observations: [], total };
   }
 
@@ -250,7 +276,6 @@ export async function loadRetirableObservations(
 /** The grand total alone — only reached for a page past the end. See the call site. */
 async function countRetirable(
   db: BrainCandidateReader,
-  _options: LoadRetirableOptions,
   aclSql: string,
   aclParams: readonly unknown[],
 ): Promise<number> {

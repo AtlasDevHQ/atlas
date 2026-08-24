@@ -38,6 +38,50 @@ const mail = (body: string): string => `${HEADER}\n\n${body}`;
 const strip = (body: string, source = "outlook"): string =>
   strippedForExtraction(source, body, CTX);
 
+describe("the gap this closes — red before #5354", () => {
+  // The defect was never subtle: `composeEmailBody` stores the header block plus
+  // Exchange's plain-text conversion of the WHOLE message, and `extractionExcerpt`
+  // passed that straight to the model. So "what the extractor received" and "what
+  // the episode stored" were the same string, and a depth-12 thread handed the
+  // model messages 1-11 twelve times over.
+  //
+  // Both halves are asserted together on ONE body so the comparison is real
+  // rather than two fixtures that could drift apart. The second half is what
+  // fails on `main`.
+  const episode = (source: string): ReconcileEpisodeRef => ({
+    id: "ep_1",
+    workspaceId: "ws_1",
+    source,
+    sourceId: "msg_1",
+    sourceActor: null,
+    occurredAt: null,
+    visibleTo: [],
+  });
+
+  it("used to hand the extractor every earlier message in the thread", () => {
+    const body = mail(`Reply number 3 says something new.
+
+On Mon, Aug 3, 2026 at 9:14 AM Dana <dana@x.com> wrote:
+> Reply number 2 says something new.
+>
+> On Mon, Aug 2, 2026 at 9:14 AM Dana <dana@x.com> wrote:
+> > Kicking this off: are we ready for Friday?`);
+
+    // The pre-#5354 path, still reachable and still exactly a passthrough: a
+    // source outside the email class takes the identical `return body` branch
+    // the mail class used to take. This is what the model was being sent.
+    expect(extractionExcerpt(episode("slack"), body)).toBe(body);
+    expect(extractionExcerpt(episode("slack"), body)).toContain("Kicking this off");
+    expect(extractionExcerpt(episode("slack"), body)).toContain("Reply number 2");
+
+    // And what it is sent now. RED on `main`, where this returned `body`.
+    const now = extractionExcerpt(episode("outlook"), body);
+    expect(now).toContain("Reply number 3 says something new.");
+    expect(now).not.toContain("Kicking this off");
+    expect(now).not.toContain("Reply number 2");
+  });
+});
+
 describe("strippedForExtraction — quoted history", () => {
   it("drops an `On … wrote:` chain and keeps the new message", () => {
     const out = strip(
@@ -198,6 +242,37 @@ addressee. If you have received this in error, please notify the sender.`),
     );
     // Accepted: linear per-message tail, not the quadratic cost this targets.
     expect(out).toContain("confidential and intended solely");
+  });
+
+  it("does NOT unwrap a NESTED forward — two layers survive, not just one", () => {
+    // Forward-of-a-forward. Neither layer is recognised; only the innermost
+    // `On … wrote:` quote at the bottom is stripped. Strictly worse than the
+    // single-forward case below and the reason that one is "worth revisiting
+    // first" rather than merely cosmetic — the surviving text carries two sets
+    // of `From:` lines the extractor must not read as the message's own author.
+    const out = strip(
+      mail(`Adding Priya for visibility.
+
+---------- Forwarded message ---------
+From: Dana <dana@x.com>
+Subject: Fwd: Launch
+
+Passing this along.
+
+---------- Forwarded message ---------
+From: Kim <kim@x.com>
+Subject: Launch
+
+The Q3 migration finished Tuesday.
+
+On Sat, Aug 22, Lee <lee@x.com> wrote:
+> when does the migration land?`),
+    );
+    expect(out).toContain("From: Dana <dana@x.com>");
+    expect(out).toContain("From: Kim <kim@x.com>");
+    expect(out).toContain("The Q3 migration finished Tuesday.");
+    // The innermost quote IS stripped, so the gap is the forward headers alone.
+    expect(out).not.toContain("when does the migration land?");
   });
 
   it("does NOT strip a `Forwarded message` header block", () => {

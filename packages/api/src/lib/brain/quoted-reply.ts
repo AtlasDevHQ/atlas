@@ -25,11 +25,19 @@
  * Quoted-reply detection is a solved problem with a long tail of known edge
  * cases (localised `On … wrote:` variants, Outlook's divider, mobile-client
  * footers, nested forwards). `email-reply-parser` is the maintained JS port of
- * GitHub's `EmailReplyParser`; it exposes per-fragment `isQuoted()` and
- * `isSignature()`, which is both halves of what this needs. Mailgun's Talon is
- * more thorough — it does ML-assisted signature detection — but it is Python,
- * and a sidecar is not worth it for a cost-reduction pass. Revisit if the
- * measured gaps below start to matter.
+ * GitHub's `EmailReplyParser`. Mailgun's Talon is more thorough — it does
+ * ML-assisted signature detection — but it is Python, and a sidecar is not
+ * worth it for a cost-reduction pass. Revisit if the measured gaps below start
+ * to matter.
+ *
+ * The one call this module makes is `read(body).getVisibleText()`, and the
+ * method matters more than the package: `getVisibleText` keeps the fragments
+ * where `isHidden()` is false, and the parser derives `isHidden` as `isQuoted
+ * || isSignature || isEmpty` (`parser/emailparser.js`, `addFragment`). So BOTH
+ * halves this needs — quoted history and signatures — come off one call, and
+ * neither flag is read directly here. Naming the derivation rather than the two
+ * predicates is deliberate: a version that split them would change what this
+ * module strips without changing a line of it.
  *
  * ## Measured limitations, deliberately not closed here
  *
@@ -41,9 +49,23 @@
  *      text. Accepted: a disclaimer is a fixed per-message tail — LINEAR, not
  *      quadratic — so it is not the cost this exists to remove, and closing it
  *      means hand-rolled regexes, which is what the library is here to avoid.
+ *      This is the one half of #5354's criteria left undone, so it is tracked in
+ *      #5420 rather than only here — first criterion there is to MEASURE the
+ *      token share before choosing a fix, since linear is not the same as free.
  *   2. A `---------- Forwarded message ---------` header block survives (the
  *      quoted body beneath it is still stripped). Small, per-forward, and mildly
  *      attribution-confusing — the one gap worth revisiting first.
+ *
+ * And one that is not a parse gap but a runtime property of the same choice:
+ * the package uses the RE2 engine for ReDoS protection WHEN AVAILABLE and falls
+ * back to native `RegExp` when it is not. `re2` is an OPTIONAL peer and this
+ * repo does not install it (it is a native addon, which is a real cost for the
+ * `create-atlas` templates), so every body here is matched by native `RegExp` —
+ * up to `MAX_EMAIL_BODY_BYTES` (1 MB, `ingest/outlook/client.ts`) of text whose
+ * shape a sender chooses. The `catch` below covers a THROW, not a hang, so this
+ * is a bounded-spend argument rather than a covered one: the extraction fiber is
+ * unattended, so a pathological body costs a stalled worker rather than a
+ * request. Installing `re2` is the fix if that ever shows up.
  *
  * ## Email class only
  *
@@ -72,6 +94,13 @@ const PARSER = new EmailReplyParser();
  * is real but deliberate and one-directional: this reads a shape that file
  * writes, and a new header field appearing there costs a false "no novel text"
  * (which falls back to the FULL body — the safe direction), not a silent drop.
+ *
+ * It matches MORE than `composeEmailBody` writes — `Bcc`, `Sent` and `Reply-To`
+ * are not in that header block. That is not dead breadth: `Sent:` heads the
+ * lines inside Outlook's `-----Original Message-----` divider, and the extra
+ * arms cost nothing in the only direction this is read (a line wrongly called a
+ * header can only make {@link hasNovelText} answer false, which keeps the full
+ * body). Do not read the list as a mirror of that function.
  */
 const HEADER_LINE = /^(?:Subject|From|To|Cc|Bcc|Date|Sent|Reply-To):/i;
 

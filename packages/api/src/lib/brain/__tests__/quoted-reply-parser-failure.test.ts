@@ -15,7 +15,9 @@
  * pre-#5354 behaviour — and never an empty or headers-only view.
  */
 
-import { describe, expect, it, mock } from "bun:test";
+import { beforeEach, describe, expect, it, mock } from "bun:test";
+
+const CTX = { workspaceId: "ws_1", episodeId: "ep_1" } as const;
 
 const BODY = `Subject: Re: Launch
 From: Sam <sam@acme.com>
@@ -25,41 +27,36 @@ Shipping Friday.
 On Mon, Aug 24, 2026 at 9:14 AM Dana <dana@x.com> wrote:
 > Are we ready?`;
 
-describe("strippedForExtraction — the parser throws", () => {
-  it("falls back to the full body rather than dropping the episode's text", async () => {
-    await mock.module("email-reply-parser", () => ({
-      default: class {
-        read(): never {
-          throw new Error("malformed fragment");
-        }
-      },
-    }));
+/** A parser that fails the way a third party walking untrusted text can. */
+const installThrowingParser = async (): Promise<void> => {
+  await mock.module("email-reply-parser", () => ({
+    default: class {
+      read(): never {
+        throw new Error("malformed fragment");
+      }
+    },
+  }));
+};
 
+describe("strippedForExtraction — the parser throws", () => {
+  beforeEach(async () => {
+    await installThrowingParser();
+  });
+
+  it("falls back to the full body rather than dropping the episode's text", async () => {
     const { strippedForExtraction } = await import("@atlas/api/lib/brain/quoted-reply");
 
     // Unstripped — quoted history included. Wasteful, and correct: the claim
     // reaches the extractor. A `""` or a headers-only return here would be a
     // silent, permanent loss the queue stamps as successfully extracted.
-    expect(strippedForExtraction("outlook", BODY, { workspaceId: "ws_1", episodeId: "ep_1" })).toBe(
-      BODY,
-    );
+    expect(strippedForExtraction("outlook", BODY, CTX)).toBe(BODY);
   });
 
   it("does not reach the parser at all for a non-mail source", async () => {
     // The class gate runs first, so a broken parser cannot take chat down with
-    // it. Same mocked throw as above; a `slack` body must pass straight through.
-    await mock.module("email-reply-parser", () => ({
-      default: class {
-        read(): never {
-          throw new Error("malformed fragment");
-        }
-      },
-    }));
-
+    // it: a `slack` body must pass straight through the same throwing mock.
     const { strippedForExtraction } = await import("@atlas/api/lib/brain/quoted-reply");
 
-    expect(strippedForExtraction("slack", BODY, { workspaceId: "ws_1", episodeId: "ep_1" })).toBe(
-      BODY,
-    );
+    expect(strippedForExtraction("slack", BODY, CTX)).toBe(BODY);
   });
 });

@@ -100,8 +100,16 @@ export const entityFormSchema = z.object({
    * load, re-emitted verbatim on save. The alternative — teaching this dialog to
    * edit relationship joins — is a real feature, not a bug fix, and dropping them
    * meanwhile is what #5402 is about.
+   *
+   * `at` is the join's index in the STORED array, and it is not decoration:
+   * re-emitting parked joins as a block would reorder `joins[]` on every save,
+   * so each write would produce a spurious diff in the version history and the
+   * generated change summary — noise that makes a real change harder to see.
    */
-  preserved_joins: z.array(z.unknown()).optional().default([]),
+  preserved_joins: z
+    .array(z.object({ at: z.number(), join: z.unknown() }))
+    .optional()
+    .default([]),
 });
 
 export type EntityFormValues = z.infer<typeof entityFormSchema>;
@@ -191,7 +199,9 @@ export function entityToFormValues(entity: EntityData): EntityFormValues {
   const joins = allJoins.filter(isEditableJoin);
   const patterns = normalizeList(entity.query_patterns, "name");
   return {
-    preserved_joins: allJoins.filter((j) => !isEditableJoin(j)),
+    preserved_joins: allJoins
+      .map((join, at) => ({ at, join }))
+      .filter(({ join }) => !isEditableJoin(join)),
     table: entity.table,
     description: entity.description ?? "",
     dimensions: dims.map((d) => ({
@@ -225,6 +235,29 @@ export function entityToFormValues(entity: EntityData): EntityFormValues {
 }
 
 /**
+ * Weave the parked joins back into the edited ones at their original positions.
+ *
+ * Parked joins are spliced at their stored index, so an entity whose joins were
+ * `[relationship, sql, relationship]` comes back in that order rather than with
+ * the two relationship joins bunched at one end. Indices are applied ascending
+ * against the array being built, so a stale or out-of-range `at` (an entity
+ * edited in two tabs, say) degrades to "appended near the end" rather than
+ * throwing or dropping the join.
+ */
+function reassembleJoins(values: EntityFormValues) {
+  const edited = (values.joins ?? []).map((j) => ({
+    name: j.name,
+    sql: j.sql,
+    description: j.description || "",
+  }));
+  const out: unknown[] = edited;
+  for (const { at, join } of [...(values.preserved_joins ?? [])].sort((a, b) => a.at - b.at)) {
+    out.splice(Math.min(Math.max(at, 0), out.length), 0, join);
+  }
+  return out;
+}
+
+/**
  * Convert form values to the structured JSON body expected by
  * PUT /api/v1/admin/semantic/entities/edit/:name
  *
@@ -253,14 +286,7 @@ export function formValuesToEntityBody(values: EntityFormValues) {
       type: m.type,
       description: m.description || "",
     })),
-    joins: [
-      ...(values.preserved_joins ?? []),
-      ...(values.joins ?? []).map((j) => ({
-        name: j.name,
-        sql: j.sql,
-        description: j.description || "",
-      })),
-    ],
+    joins: reassembleJoins(values),
     query_patterns: (values.query_patterns ?? []).map((p) => ({
       name: p.name,
       sql: p.sql,

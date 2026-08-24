@@ -45,30 +45,41 @@ const entity = (joins: unknown[]): EntityData =>
   }) as unknown as EntityData;
 
 describe("entity editor join round-trip (#5402)", () => {
+  const EDITED_SQL_JOIN = {
+    name: "to_orders",
+    sql: "organization.id = orders.organization_id",
+    description: "Organization orders",
+  };
+
   test("a relationship-shaped join is parked, not mapped into an unsaveable row", () => {
     const values = entityToFormValues(entity([RELATIONSHIP_JOIN]));
     // ⚠️ The empty-row assertion is the one that matters: `{ name: "", sql: "" }`
     // is what made the form unsaveable, and it looked like a rendered join.
     expect(values.joins).toEqual([]);
-    expect(values.preserved_joins).toEqual([RELATIONSHIP_JOIN]);
+    expect(values.preserved_joins).toEqual([{ at: 0, join: RELATIONSHIP_JOIN }]);
   });
 
   test("an editable join still reaches the form", () => {
     const values = entityToFormValues(entity([SQL_JOIN]));
-    expect(values.joins).toEqual([
-      { name: "to_orders", sql: "organization.id = orders.organization_id", description: "Organization orders" },
-    ]);
+    expect(values.joins).toEqual([EDITED_SQL_JOIN]);
     expect(values.preserved_joins).toEqual([]);
   });
 
   test("a save re-emits the parked join verbatim alongside the edited ones", () => {
     const values = entityToFormValues(entity([RELATIONSHIP_JOIN, SQL_JOIN]));
     const body = formValuesToEntityBody(values);
-    expect(body.joins).toEqual([RELATIONSHIP_JOIN, {
-      name: "to_orders",
-      sql: "organization.id = orders.organization_id",
-      description: "Organization orders",
-    }]);
+    expect(body.joins).toEqual([RELATIONSHIP_JOIN, EDITED_SQL_JOIN]);
+  });
+
+  test("parked joins go back at their ORIGINAL positions, not bunched at one end", () => {
+    // ⚠️ Re-emitting them as a block reorders `joins[]` on every save, so each
+    // write produces a spurious version-history diff and change summary — noise
+    // that makes a real change harder to see.
+    const second = { ...RELATIONSHIP_JOIN, target_entity: "Subscription" };
+    const body = formValuesToEntityBody(
+      entityToFormValues(entity([RELATIONSHIP_JOIN, SQL_JOIN, second])),
+    );
+    expect(body.joins).toEqual([RELATIONSHIP_JOIN, EDITED_SQL_JOIN, second]);
   });
 
   test("an entity with only unrenderable joins still sends them — never an empty array", () => {

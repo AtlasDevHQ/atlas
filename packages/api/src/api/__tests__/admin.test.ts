@@ -3741,6 +3741,36 @@ describe("PUT /api/v1/admin/semantic/entities/edit/:name — lossless round-trip
     });
   });
 
+  it("preserves `primary_key` and `foreign_key`, which the UI also never sends", async () => {
+    setOrgAdmin("org-1");
+    await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/organization", "PUT", uiShapedEdit),
+    );
+    const parsed = await parseWritten();
+    const id = (parsed.dimensions as Array<Record<string, unknown>>).find((d) => d.name === "id");
+    // ⚠️ Same class as `virtual`, and easy to miss because it looks handled: the
+    // serializer writes these only when truthy, and being "managed" excludes
+    // them from the preservation sweep. So a UI edit silently un-flagged the
+    // primary key of every entity it touched — a wrong statement about the
+    // table, not a thinner one.
+    expect(id?.primary_key).toBe(true);
+  });
+
+  it("a body that clears `primary_key` clears it", async () => {
+    setOrgAdmin("org-1");
+    await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/organization", "PUT", {
+        ...uiShapedEdit,
+        dimensions: uiShapedEdit.dimensions.map((d) =>
+          d.name === "id" ? { ...d, primary_key: false } : d,
+        ),
+      }),
+    );
+    const parsed = await parseWritten();
+    const id = (parsed.dimensions as Array<Record<string, unknown>>).find((d) => d.name === "id");
+    expect(id?.primary_key).toBeUndefined();
+  });
+
   it("preserves profiler-emitted dimension keys the editor never models", async () => {
     setOrgAdmin("org-1");
     await app.fetch(
@@ -3801,6 +3831,38 @@ describe("PUT /api/v1/admin/semantic/entities/edit/:name — lossless round-trip
     expect(joins[0].name).toBeUndefined();
   });
 
+  it("accepts a relationship join that declares no cardinality", async () => {
+    setOrgAdmin("org-1");
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/organization", "PUT", {
+        ...uiShapedEdit,
+        joins: [{ target_entity: "Subscription" }],
+      }),
+    );
+    // `relationship` is optional on purpose. A stored join that names a target
+    // but not its cardinality is thinner than ideal and still real — rejecting
+    // it would turn "stored in a shape I dislike" into "cannot be saved", which
+    // is worse than the loss being fixed.
+    expect(res.status).toBe(200);
+    const joins = (await parseWritten()).joins as Array<Record<string, unknown>>;
+    expect(joins[0]).toEqual({ target_entity: "Subscription" });
+  });
+
+  it("REFUSES a join in no vocabulary at all, rather than dropping it", async () => {
+    setOrgAdmin("org-1");
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/organization", "PUT", {
+        ...uiShapedEdit,
+        joins: [{ description: "a join with no name, no sql and no target" }],
+      }),
+    );
+    // The "refuse" half of the requirement — preserve, or refuse naming what
+    // cannot be represented. Silent loss is the one outcome ruled out, so a 422
+    // here is the correct answer and not an oversight.
+    expect(res.status).toBe(422);
+    expect(mockUpsertDraftEntityAdmin).not.toHaveBeenCalled();
+  });
+
   it("lets the body OVERRIDE a preserved key rather than only defaulting to it", async () => {
     setOrgAdmin("org-1");
     await app.fetch(
@@ -3815,6 +3877,22 @@ describe("PUT /api/v1/admin/semantic/entities/edit/:name — lossless round-trip
     // key is the authority on it.
     expect(parsed.filter).toBe("deleted_at IS NULL AND is_internal = false");
     expect(parsed.grain).toBe("one row per non-internal workspace");
+  });
+
+  it("an explicit empty string CLEARS a carried key, and never writes an empty predicate", async () => {
+    setOrgAdmin("org-1");
+    await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/organization", "PUT", {
+        ...uiShapedEdit,
+        filter: "",
+      }),
+    );
+    const parsed = await parseWritten();
+    // ⚠️ `filter: ""` must not land in the document. An empty predicate is not a
+    // narrower entity — it is a broken SQL fragment the warehouse producer would
+    // interpolate into a WHERE clause.
+    expect(parsed.filter).toBeUndefined();
+    expect(parsed.grain).toBe("one row per Atlas customer organization (workspace)");
   });
 
   it("a body that clears `virtual` on a dimension clears it", async () => {

@@ -48,9 +48,20 @@
 
 # Bun's own sentence. Matching the sentence rather than the bare signal name is
 # what keeps an ordinary test that PRINTS the word SIGABRT from being excused.
-CI_LOCAL_PANIC_RE='a test worker process crashed with SIG'
+#
+# Named MARKER, not RE: both are matched with `grep -F`, so they are fixed
+# strings and calling them regexes would invite someone to put a metacharacter
+# in one.
+CI_LOCAL_PANIC_MARKER='a test worker process crashed with SIG'
 # The marker bun stamps on each sibling file it took down.
-CI_LOCAL_ABORTED_RE='aborted: sibling worker panicked'
+CI_LOCAL_ABORTED_MARKER='aborted: sibling worker panicked'
+
+# One-entry memo. `ci_local_abort_phrase` and `ci_local_abort_block` are called
+# back-to-back for the same gate, and a full-log `sed` per call is wasted work on
+# a suite log that can run to tens of thousands of lines. Safe because every log
+# is complete before `ci_local_classify_gates` is ever called.
+_ci_local_abort_memo=""
+abort_memo_hit=0
 
 # ci_local_abort_stats <gate> — scan one gate's log for a native worker abort.
 #
@@ -64,24 +75,39 @@ CI_LOCAL_ABORTED_RE='aborted: sibling worker panicked'
 #   abort_residual       reported_fail - aborted, or "unknown"
 ci_local_abort_stats() {
   local logfile="$LOG_DIR/$1.log" plain
+  # `$LOG_DIR` is part of the key: the fixture suite drives many gates named
+  # `test` in different temp dirs, and a name-only key would serve one run's
+  # numbers for the next one's log.
+  local key="$LOG_DIR/$1"
+  if [ "$key" = "$_ci_local_abort_memo" ]; then
+    [ "$abort_memo_hit" = "1" ] && return 0
+    return 1
+  fi
+  _ci_local_abort_memo="$key"
+  abort_memo_hit=0
   abort_signals=""; abort_files=""; abort_count=0
   abort_reported_fail=""; abort_residual="unknown"
   [ -f "$logfile" ] || return 1
 
   # Strip ANSI first: bun keeps colour when it believes it has a TTY, and an
   # escape sequence between "with" and "SIGABRT" would hide the marker.
-  plain="$(sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' "$logfile")"
-  printf '%s\n' "$plain" | grep -qF "$CI_LOCAL_PANIC_RE" || return 1
+  #
+  # ⚠️ `$'\033'` (bash ANSI-C quoting), NOT `\x1b` inside the sed script. `\x1b`
+  # is a GNU-sed extension; BSD/macOS sed reads it as a literal `x1b`, so the
+  # strip would quietly no-op and every coloured abort would revert to FAIL —
+  # the one line whose whole purpose is this failure mode failing silently.
+  plain="$(sed -e "s/$(printf '\033')\\[[0-9;]*[A-Za-z]//g" "$logfile")"
+  printf '%s\n' "$plain" | grep -qF "$CI_LOCAL_PANIC_MARKER" || return 1
 
   abort_signals="$(printf '%s\n' "$plain" | grep -oE 'crashed with SIG[A-Z]+' \
     | grep -oE 'SIG[A-Z]+' | sort -u | tr '\n' ' ')"
   abort_signals="${abort_signals% }"
   # Bun WRAPS the sentence and puts the file on the NEXT line, so look at the
   # following line too — matching only the panic line finds no filename at all.
-  abort_files="$(printf '%s\n' "$plain" | grep -A1 -F "$CI_LOCAL_PANIC_RE" \
+  abort_files="$(printf '%s\n' "$plain" | grep -A1 -F "$CI_LOCAL_PANIC_MARKER" \
     | grep -oE '[A-Za-z0-9_./-]+\.test\.[cm]?[jt]sx?' | sort -u | tr '\n' ' ')"
   abort_files="${abort_files% }"
-  abort_count="$(printf '%s\n' "$plain" | grep -cF "$CI_LOCAL_ABORTED_RE")"
+  abort_count="$(printf '%s\n' "$plain" | grep -cF "$CI_LOCAL_ABORTED_MARKER")"
 
   # Bun's own summary line, e.g. " 285 fail". Last one wins — that is the run's
   # total rather than any per-file line above it.
@@ -91,6 +117,7 @@ ci_local_abort_stats() {
     abort_residual="$(( abort_reported_fail - abort_count ))"
     [ "$abort_residual" -lt 0 ] && abort_residual=0
   fi
+  abort_memo_hit=1
   return 0
 }
 
@@ -108,6 +135,24 @@ ci_local_gate_aborted() {
   ci_local_abort_stats "$1" || return 1
   [ "$abort_residual" = "unknown" ] && return 0
   [ "$abort_residual" -eq 0 ]
+}
+
+# ci_local_abort_phrase <gate> — the one-line split, for a RESULT line.
+#
+# ⚠️ THE TWO COUNTS SIDE BY SIDE ARE THE FIX (#5401), so this is shared by BOTH
+# verdicts rather than written twice. A run with a residual failure — the NORMAL
+# shape, since bun counts the crashed file itself in its `N fail` — renders FAIL,
+# and that FAIL line has to carry the split too. Without it the exact run that
+# filed the issue (285 reported, 284 collateral) still reads as a 285-test
+# regression on the one line `/ci`'s protocol quotes.
+ci_local_abort_phrase() {
+  local name="$1"
+  ci_local_abort_stats "$name" || return 0
+  if [ -n "$abort_reported_fail" ]; then
+    printf '%s: %s aborted (sibling worker panicked), %s failed' "$name" "$abort_count" "$abort_residual"
+  else
+    printf '%s: %s aborted (sibling worker panicked), ? failed (bun printed no totals)' "$name" "$abort_count"
+  fi
 }
 
 # ci_local_abort_block <gate> — the narrated evidence for one aborted gate.
@@ -214,11 +259,25 @@ render_report() {
   # `return` alone would fix this instance and leave the next fall-through free
   # to reintroduce the class.
   if [ "${#failed[@]}" -gt 0 ]; then
-    # A concurrent abort is named ON the FAIL line, not left to the body: the
-    # line is what gets quoted, and "3 of 42 gates failed" beside an unmentioned
-    # native crash is how a run reads as a bigger regression than it is (#5401).
-    local also=""
-    [ "${#aborted[@]}" -gt 0 ] && also=" (plus ${#aborted[@]} ABORTED: ${aborted[*]} — native worker crash, not a defect)"
+    # ⚠️ A panic is named ON the FAIL line, and it is scanned from the FAILED
+    # gates too — not only from `aborted`.
+    #
+    # This is where the first cut of this fix was wrong, and wrong in exactly
+    # the measured case. A gate with a RESIDUAL failure stays in `failed` (by
+    # design — a real red must outrank the abort), so reading only `aborted`
+    # here left the annotation off every run that had one. And a residual is the
+    # NORMAL shape: bun counts the crashed file itself in its `N fail`, so
+    # `reported = aborted + 1` is what the issue actually measured — 285 vs 284.
+    # The run that filed #5401 would still have rendered a bare
+    # "RESULT: FAIL — 1 of 42 gates failed: test", which is the whole defect.
+    local also="" name_
+    local panicked=()
+    for name_ in "${failed[@]}" ${aborted[@]+"${aborted[@]}"}; do
+      ci_local_abort_stats "$name_" && panicked+=("$(ci_local_abort_phrase "$name_")")
+    done
+    if [ "${#panicked[@]}" -gt 0 ]; then
+      also=" — ⚠️ a native worker crash is in this run (#5401), so the count above is NOT all defects: ${panicked[*]}"
+    fi
     echo "RESULT: FAIL — ${#failed[@]} of $total gates failed: ${failed[*]}$also"
     echo ""
     for name in "${failed[@]}"; do
@@ -245,11 +304,11 @@ render_report() {
     # The two counts side by side ARE the fix: "284 aborted (sibling worker
     # panicked), 0 failed" is the sentence that stops a crash reading as a
     # 284-test regression, and it belongs on the one line that gets quoted.
-    local counts="" residual
+    # Same phrase helper as the FAIL branch — one wording, so the two verdicts
+    # cannot drift on the sentence that carries the whole point.
+    local counts=""
     for name in "${aborted[@]}"; do
-      ci_local_abort_stats "$name"
-      residual="${abort_reported_fail:+$abort_residual}"
-      counts="$counts $name: $abort_count aborted (sibling worker panicked), ${residual:-?} failed;"
+      counts="$counts $(ci_local_abort_phrase "$name");"
     done
     echo "RESULT: ABORTED — ${#aborted[@]} of $total gates were killed by a native worker crash, NOT by a defect (#5401):$counts verified nothing — re-run before reading it as a regression."
     echo ""

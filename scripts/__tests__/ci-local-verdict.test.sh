@@ -175,12 +175,20 @@ write_bun_abort_log() {
   } >"$out"
 }
 
-# abort_case NAME EXPECTED_EXIT EXPECTED_SUBSTR — one failing `test` gate whose
-# log is written by the caller into $ABORT_LOG, plus a green `lint` gate.
+# abort_case NAME EXPECTED_EXIT EXPECTED_SUBSTR WRITER [SCOPE] — one failing
+# `test` gate whose log is written by the caller into $ABORT_LOG, plus a green
+# `lint` gate.
+#
+# ⚠️ SCOPE defaults to `result`, and that default is load-bearing. The first cut
+# of these fixtures grepped the WHOLE REPORT, so a case named "the FAIL line
+# names the concurrent abort" passed while asserting nothing about the FAIL line
+# — the string it found was in the ▼ body. `/ci`'s protocol quotes the RESULT
+# line, so a claim about that line has to be tested against that line. Pass
+# `report` only where the assertion is deliberately about the narrated body.
 ABORT_LOG=""
 abort_case() {
-  local name="$1" exp_exit="$2" exp_sub="$3" writer="$4"
-  local tmp out rc n_result problems=""
+  local name="$1" exp_exit="$2" exp_sub="$3" writer="$4" scope="${5:-result}"
+  local tmp out rc n_result haystack problems=""
   tmp="$(mktemp -d)"
   printf '0' >"$tmp/lint.exit"; printf '7' >"$tmp/lint.secs"; echo l >"$tmp/lint.log"
   printf '1' >"$tmp/test.exit"; printf '9' >"$tmp/test.secs"
@@ -192,10 +200,15 @@ abort_case() {
   out="$(render_report)"
   rc="$(ci_local_exit_code)"
   n_result="$(printf '%s\n' "$out" | grep -c '^RESULT:')"
+  if [ "$scope" = "result" ]; then
+    haystack="$(printf '%s\n' "$out" | grep '^RESULT:')"
+  else
+    haystack="$out"
+  fi
 
   [ "$n_result" = "1" ] || problems="$problems; expected exactly 1 RESULT line, got $n_result"
   [ "$rc" = "$exp_exit" ] || problems="$problems; expected exit $exp_exit, got $rc"
-  printf '%s\n' "$out" | grep -qF "$exp_sub" || problems="$problems; report missing '$exp_sub'"
+  printf '%s\n' "$haystack" | grep -qF "$exp_sub" || problems="$problems; $scope missing '$exp_sub'"
 
   if [ -z "$problems" ]; then
     echo "  ok    $name (exit $rc, 1 RESULT line)"; PASS=$((PASS + 1))
@@ -207,8 +220,7 @@ abort_case() {
   rm -rf "$tmp"
 }
 
-# 6. The measured case: 285 reported, 284 collateral, 1 residual would be a real
-# failure — so use the all-collateral shape here (285 reported, 285 aborted).
+# 6. The all-collateral shape: every reported failure is an aborted sibling.
 w_clean_abort() { write_bun_abort_log "$ABORT_LOG" 285 285; }
 abort_case "native abort with no residual — ABORTED, exit 3" \
   3 "RESULT: ABORTED" w_clean_abort
@@ -245,13 +257,45 @@ else
 fi
 rm -rf "$tmp"
 
-# 7. A residual failure OUTRANKS the abort. 285 reported vs 284 aborted means one
-# test really failed, and a crash must never launder that into "declined".
+# 7. ⚠️ THE MEASURED SHAPE, and the case the first cut of this fix got WRONG.
+#
+# #5401 recorded 285 reported `fail` against 284 `aborted:` markers — bun counts
+# the crashed file ITSELF in its total without stamping it aborted, so a residual
+# of 1 is the NORMAL shape of a real abort, not an edge case. That residual keeps
+# the gate in `failed` (correctly — a real red outranks the abort), and the first
+# implementation read the annotation only from `aborted`, so it rendered a bare
+#
+#   RESULT: FAIL — 1 of 2 gates failed: test
+#
+# for the very run that filed the issue. Both assertions below are scoped to the
+# RESULT LINE; asserting against the whole report is what hid this.
 w_residual() { write_bun_abort_log "$ABORT_LOG" 284 285; }
 abort_case "a residual failure alongside an abort still FAILS" \
   1 "RESULT: FAIL" w_residual
-abort_case "the FAIL line names the concurrent abort" \
+abort_case "the FAIL LINE itself carries the split (the measured 285/284 shape)" \
   1 "284 aborted (sibling worker panicked), 1 failed" w_residual
+
+# A gate genuinely red WHILE A DIFFERENT gate aborted — the FAIL line must name
+# both facts, since the failing gate's own log carries no panic at all.
+tmp="$(mktemp -d)"
+printf '0' >"$tmp/lint.exit";  printf '7' >"$tmp/lint.secs";  echo l >"$tmp/lint.log"
+printf '1' >"$tmp/type.exit";  printf '4' >"$tmp/type.secs";  echo "TS2307: boom" >"$tmp/type.log"
+printf '1' >"$tmp/test.exit";  printf '9' >"$tmp/test.secs"
+write_bun_abort_log "$tmp/test.log" 285 285
+GATE_NAMES=(lint type test); LOG_DIR="$tmp"; NO_TEST=0; FAIL_TAIL=5
+ci_local_classify_gates
+result_line="$(render_report | grep '^RESULT:')"
+problems=""
+printf '%s\n' "$result_line" | grep -qF "1 of 3 gates failed: type" || problems="names the real failure"
+printf '%s\n' "$result_line" | grep -qF "test: 285 aborted (sibling worker panicked), 0 failed" \
+  || problems="${problems:+$problems + }names the concurrent abort"
+if [ -z "$problems" ]; then
+  echo "  ok    a red gate beside an aborted gate — the RESULT line names both"; PASS=$((PASS + 1))
+else
+  echo "  FAIL  a red gate beside an aborted gate — RESULT line fails to: $problems"
+  printf '        %s\n' "$result_line"; FAIL=$((FAIL + 1))
+fi
+rm -rf "$tmp"
 
 # Bun can die before printing totals. That run verified nothing, so it is an
 # abort — never a green — but the report must not invent a residual count.
@@ -268,7 +312,33 @@ w_two_signals() {
   } >>"$ABORT_LOG"
 }
 abort_case "every signal seen in the run is named" \
-  3 "crashed with SIGABRT SIGSEGV" w_two_signals
+  3 "crashed with SIGABRT SIGSEGV" w_two_signals report
+
+# ⚠️ A COLOURED LOG. Bun keeps ANSI when it believes it has a TTY, and the strip
+# in `ci_local_abort_stats` exists for exactly that — but until this case, no
+# fixture wrote an escape sequence, so the one line whose purpose is "the marker
+# must not hide behind colour" was never falsified.
+#
+# ⚠️ It does NOT cover the portability half of that line, and saying so is the
+# point: `\x1b` inside a sed script is a GNU extension, and on GNU sed — every
+# machine that runs this suite today — both spellings work identically. So this
+# case would stay green if someone reverted to `\x1b`, and only a BSD/macOS run
+# would catch it. The strip uses `$(printf '\033')` for that reason; this fixture
+# is not the thing holding it there.
+w_coloured() {
+  local esc i
+  esc="$(printf '\033')"
+  {
+    echo "${esc}[31merror${esc}[0m: a test worker process crashed with ${esc}[1mSIGABRT${esc}[0m while running"
+    echo "  src/lib/db/__tests__/learned-pattern-injections-pg.test.ts."
+    for ((i = 0; i < 12; i++)); do
+      echo "${esc}[31m✗${esc}[0m src/api/__tests__/sib-$i.test.ts (aborted: sibling worker panicked)"
+    done
+    echo " ${esc}[31m12 fail${esc}[0m"
+  } >"$ABORT_LOG"
+}
+abort_case "a colour-escaped log is still detected as an abort" \
+  3 "test: 12 aborted (sibling worker panicked), 0 failed" w_coloured
 
 # 8. NEGATIVE CONTROL — without this the detector could excuse any red whose log
 # mentions a signal, which would be strictly worse than the bug being fixed.

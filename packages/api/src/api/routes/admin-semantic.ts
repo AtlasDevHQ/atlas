@@ -92,13 +92,24 @@ const SqlJoinSchema = z.object({
  * on the way in, and the six real joins on the dogfood `organization` entity
  * could not survive a structured edit at all.
  *
- * `relationship` is a free string, not an enum: the generator emits
- * `many_to_one` and the OKF importer accepts whatever the source declared. An
- * enum here would reject documents the rest of the layer already stores.
+ * `relationship` is a free string, not an enum, and OPTIONAL — `target_entity`
+ * alone identifies this member. Both choices are about not rejecting documents
+ * the layer already stores: the generator emits `many_to_one`, the OKF importer
+ * accepts whatever the source declared, and a join that names a target without
+ * declaring cardinality is thinner than ideal but real. An enum, or a required
+ * `relationship`, would turn "this entity is stored in a shape I dislike" into
+ * "this entity cannot be saved", which is worse than the loss being fixed.
+ *
+ * ⚠️ A join matching NEITHER member (no `name`+`sql`, no `target_entity`) is a
+ * 422 naming the field. That is the "refuse" half of the issue's requirement —
+ * *preserve them or refuse with a message naming what it cannot represent* —
+ * and it is a deliberate outcome, not an oversight: silent loss is the one
+ * result ruled out, and a join with no target in any vocabulary is not
+ * something this route can honestly store.
  */
 const RelationshipJoinSchema = z.object({
   target_entity: z.string().min(1),
-  relationship: z.string().min(1),
+  relationship: z.string().min(1).optional(),
   join_columns: z.record(z.string(), z.string()).optional(),
   description: z.string().optional().default(""),
 });
@@ -252,24 +263,61 @@ function parseConnectionGroupIdQuery(raw: string | undefined): string | null | u
  * PUT can change, and its complement is the (open-ended) set of what it must
  * never touch — `indexes`, `name`, and whatever the layer grows next.
  */
-export const EDITOR_MANAGED_ENTITY_KEYS = [
-  "table",
-  "description",
+/**
+ * The scalar/list entity keys the body may set directly: absent preserves the
+ * stored value, `""` clears, anything else wins.
+ *
+ * ⚠️ ONE list, spread into {@link EDITOR_MANAGED_ENTITY_KEYS} below and iterated
+ * by `entityToYaml`. Written out twice, a key could be *managed* (so excluded
+ * from preservation) without being *written* (so absent from the output) — which
+ * is silent deletion wearing the fix's own clothes. `entity-body-schema-parity`
+ * asserts this list against `EntityBodySchema` so a new body field cannot be
+ * accepted on the wire and then dropped on the floor.
+ */
+export const CARRIED_ENTITY_KEYS = [
   "type",
   "grain",
   "filter",
   "identifier_style",
   "use_cases",
+] as const;
+
+export const EDITOR_MANAGED_ENTITY_KEYS = [
+  "table",
+  "description",
+  ...CARRIED_ENTITY_KEYS,
   "dimensions",
   "measures",
   "joins",
   "query_patterns",
 ] as const;
 
-/** Dimension keys the editor writes; the rest are preserved by name. */
+/**
+ * Dimension keys the editor writes; every other key on a stored dimension is
+ * preserved by name.
+ *
+ * ⚠️ THREE OF THESE ARE BOOLEAN FLAGS THE FRONTEND NEVER SENDS — `primary_key`,
+ * `foreign_key` and `virtual`. Being "managed" would ordinarily mean the body is
+ * the authority, but a body that has never heard of a flag is not asserting it
+ * is false. Left as plain managed keys they were dropped by exactly the
+ * mechanism #5402 is about: the serializer writes them only when truthy, and
+ * being in this set excludes them from the preservation loop, so a UI edit
+ * silently un-flagged the primary key of every entity it touched.
+ *
+ * {@link DIMENSION_FLAG_KEYS} carries the `body ?? stored` fallback that makes
+ * absence mean "unchanged" and an explicit `false` mean "cleared".
+ */
 const EDITOR_MANAGED_DIMENSION_KEYS = new Set([
   "name", "sql", "type", "description", "sample_values", "primary_key", "foreign_key", "virtual",
 ]);
+
+/**
+ * The dimension booleans that preserve on absence. Derived as a list rather than
+ * written out at each use so the fallback cannot be given to two of the three
+ * and forgotten on the fourth — which is how `primary_key` and `foreign_key`
+ * were missed when `virtual` got it.
+ */
+const DIMENSION_FLAG_KEYS = ["primary_key", "foreign_key", "virtual"] as const;
 
 /**
  * Parse the entity's PREVIOUS YAML so the write can preserve what it does not
@@ -352,15 +400,16 @@ async function entityToYaml(
   if (description) {
     obj.description = description;
   }
-  // Entity-level keys the layer defines. `??` not `||`: an explicitly-sent
-  // empty string is still a value the caller chose, and only `undefined`
-  // (the key absent from the body) falls through to the stored document.
-  const carried: Array<"type" | "grain" | "filter" | "identifier_style" | "use_cases"> = [
-    "type", "grain", "filter", "identifier_style", "use_cases",
-  ];
-  for (const key of carried) {
+  // Entity-level keys the layer defines. `??` not `||`: only `undefined` (the
+  // key absent from the body) falls through to the stored document.
+  //
+  // An explicitly-sent `""` is a value the caller chose, and it means CLEAR —
+  // dropped rather than written. Writing it would put `filter: ""` into the
+  // document, and an empty predicate is not a narrower entity, it is a broken
+  // SQL fragment the warehouse producer would interpolate.
+  for (const key of CARRIED_ENTITY_KEYS) {
     const value = entity[key] ?? previous?.[key];
-    if (value !== undefined && value !== null) obj[key] = value;
+    if (value !== undefined && value !== null && value !== "") obj[key] = value;
   }
   if (entity.dimensions === undefined) {
     if (previous?.dimensions !== undefined) obj.dimensions = previous.dimensions;
@@ -386,16 +435,20 @@ async function entityToYaml(
       };
       if (d.description) dim.description = d.description;
       if (d.sample_values && d.sample_values.length > 0) dim.sample_values = d.sample_values;
-      if (d.primary_key) dim.primary_key = true;
-      if (d.foreign_key) dim.foreign_key = true;
       const prior = previousDims.get(d.name);
-      // `virtual` is MODELLED, so the body wins when it says anything at all —
-      // including `false`, which is how a dimension stops being virtual.
-      const virtual = d.virtual ?? prior?.virtual;
-      if (virtual === true) dim.virtual = true;
+      // Each flag is MODELLED, so the body wins when it says anything at all —
+      // including `false`, which is how a dimension stops being virtual or stops
+      // being the primary key. Absent falls through to the stored value.
+      for (const flag of DIMENSION_FLAG_KEYS) {
+        if ((d[flag] ?? prior?.[flag]) === true) dim[flag] = true;
+      }
       if (prior) {
         for (const [key, value] of Object.entries(prior)) {
-          if (!EDITOR_MANAGED_DIMENSION_KEYS.has(key) && !(key in dim)) dim[key] = value;
+          // `Object.hasOwn`, not `key in dim`: `in` walks the prototype chain, so
+          // a document with a `constructor:` or `toString:` key would be judged
+          // "already present" and silently dropped — the very class this loop
+          // exists to close.
+          if (!EDITOR_MANAGED_DIMENSION_KEYS.has(key) && !Object.hasOwn(dim, key)) dim[key] = value;
         }
       }
       return dim;
@@ -422,10 +475,14 @@ async function entityToYaml(
     // other. Rewriting a relationship join into `name`/`sql` would be exactly
     // the silent reinterpretation this whole change exists to stop.
     obj.joins = entity.joins.map((j) => {
-      const join: Record<string, unknown> =
-        "target_entity" in j
-          ? { target_entity: j.target_entity, relationship: j.relationship }
-          : { name: j.name, sql: j.sql };
+      const join: Record<string, unknown> = { };
+      if ("target_entity" in j) {
+        join.target_entity = j.target_entity;
+        if (j.relationship) join.relationship = j.relationship;
+      } else {
+        join.name = j.name;
+        join.sql = j.sql;
+      }
       if ("join_columns" in j && j.join_columns) join.join_columns = j.join_columns;
       if (j.description) join.description = j.description;
       return join;
@@ -449,10 +506,20 @@ async function entityToYaml(
   // its original relative order, after the managed block. A key the editor has
   // never heard of survives a structured edit by construction rather than by
   // someone remembering to add it here.
+  //
+  // ⚠️ THIS INCLUDES `group:` / `connection:`, which the BODY deliberately
+  // refuses — and the two are not in tension, because they answer different
+  // questions. *May a client assert this row's scope?* No: a body-supplied
+  // `group` can disagree with the row the write lands in, which is why #3854
+  // rejects that pair rather than guessing. *May a stored document keep the
+  // scope it already declares?* Yes — it is the scope of the row being read and
+  // rewritten, disk-based layers resolve entity scope from it (ADR-0012), and
+  // dropping it here would be a fresh instance of exactly this bug.
   if (previous) {
     const managed = new Set<string>(EDITOR_MANAGED_ENTITY_KEYS);
     for (const [key, value] of Object.entries(previous)) {
-      if (!managed.has(key) && !(key in obj)) obj[key] = value;
+      // `Object.hasOwn`, not `key in obj` — see the dimension loop above.
+      if (!managed.has(key) && !Object.hasOwn(obj, key)) obj[key] = value;
     }
   }
 

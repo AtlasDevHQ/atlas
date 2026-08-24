@@ -33,7 +33,15 @@
 
 import { describe, it, expect } from "bun:test";
 import { EntityShape } from "@atlas/api/lib/semantic/shapes";
-import { EntityBodySchema } from "@atlas/api/api/routes/admin-semantic";
+import {
+  ENTITY_YAML_KEYS,
+  ENTITY_YAML_DIMENSION_KEYS,
+} from "@useatlas/schemas/semantic-entity-yaml";
+import {
+  EntityBodySchema,
+  CARRIED_ENTITY_KEYS,
+  EDITOR_MANAGED_ENTITY_KEYS,
+} from "@atlas/api/api/routes/admin-semantic";
 
 /**
  * `EntityShape` keys the editor body deliberately does not carry, each with the
@@ -104,5 +112,87 @@ describe("EntityBodySchema ↔ EntityShape parity (#5402)", () => {
       filter: "deleted_at IS NULL",
     });
     expect(parsed.filter).toBe("deleted_at IS NULL");
+  });
+});
+
+/**
+ * ⚠️ `EntityShape` is `.passthrough()` and declares only five keys, so the axis
+ * above covers exactly one path — a key added to that `z.object`, as `filter`
+ * was. It says nothing about `type`, `grain`, `use_cases`, or any DIMENSION key.
+ *
+ * The shared entity-YAML vocabulary contract is the second enumerable anchor
+ * (`@useatlas/schemas/semantic-entity-yaml`, #3628). It is the list both YAML
+ * renderers must speak, so a key there that the editor cannot represent is the
+ * same divergence one level down.
+ *
+ * Honest limit, stated rather than papered over: `grain` and `use_cases` are
+ * declared only in `ParsedEntity`, a TypeScript interface in `search.ts`, which
+ * is not enumerable at runtime. Nothing here can guard them. They are held by
+ * the round-trip test in `admin.test.ts` and — structurally — by preservation,
+ * which carries any key regardless of whether a list knows its name.
+ */
+describe("EntityBodySchema ↔ shared entity-YAML vocabulary (#5402)", () => {
+  const bodyKeys = new Set(declaredKeys(EntityBodySchema));
+  const dimensionKeys = new Set(
+    declaredKeys(EntityBodySchema.shape.dimensions.unwrap().element),
+  );
+
+  it("enumerates a non-empty dimension key set", () => {
+    expect(dimensionKeys.size).toBeGreaterThan(4);
+    expect(dimensionKeys.has("name")).toBe(true);
+  });
+
+  it("every shared top-level key is representable in the editor body", () => {
+    // `name` is excluded: it is the row key in the URL path, not a body field.
+    const shared = Object.values(ENTITY_YAML_KEYS).filter((k) => k !== ENTITY_YAML_KEYS.name);
+    expect(shared.filter((k) => !bodyKeys.has(k))).toEqual([]);
+  });
+
+  it("every shared dimension key is representable in the editor's DimensionSchema", () => {
+    const shared = Object.values(ENTITY_YAML_DIMENSION_KEYS);
+    expect(shared.filter((k) => !dimensionKeys.has(k))).toEqual([]);
+  });
+
+  it("carries `virtual` — the dimension key whose loss is a false statement", () => {
+    // Not covered by either vocabulary above (it is not in the shared contract),
+    // so it is asserted by name. Losing it makes the layer claim a CASE
+    // expression is a real column.
+    expect(dimensionKeys.has("virtual")).toBe(true);
+  });
+});
+
+/**
+ * The editor's own internal lists must agree with the body it accepts.
+ *
+ * ⚠️ A key can be accepted on the wire and still dropped on the floor: being in
+ * `EDITOR_MANAGED_ENTITY_KEYS` excludes it from the preservation sweep, and
+ * only `CARRIED_ENTITY_KEYS` causes it to be WRITTEN. A field added to
+ * `EntityBodySchema` and to neither list would validate, be excluded from
+ * nothing, and quietly never appear — a fresh instance of #5402 that the
+ * `EntityShape` axis cannot see, because it is entirely inside this route.
+ */
+describe("EntityBodySchema ↔ the editor's own managed-key lists (#5402)", () => {
+  // Scope inputs, not document content — they never reach the YAML.
+  const SCOPE_FIELDS = new Set(["connectionId", "connectionGroupId"]);
+  const contentFields = declaredKeys(EntityBodySchema).filter((k) => !SCOPE_FIELDS.has(k));
+
+  it("every content field of the body is a managed key", () => {
+    const managed = new Set<string>(EDITOR_MANAGED_ENTITY_KEYS);
+    expect(contentFields.filter((k) => !managed.has(k))).toEqual([]);
+  });
+
+  it("every carried key is a field the body actually accepts", () => {
+    const bodyKeys = new Set(declaredKeys(EntityBodySchema));
+    expect(CARRIED_ENTITY_KEYS.filter((k) => !bodyKeys.has(k))).toEqual([]);
+  });
+
+  it("every managed key is either structural or carried", () => {
+    // The structural four are built by hand from the body's arrays/scalars;
+    // everything else must be carried, or it is managed-but-never-written.
+    const STRUCTURAL = new Set(["table", "description", "dimensions", "measures", "joins", "query_patterns"]);
+    const carried = new Set<string>(CARRIED_ENTITY_KEYS);
+    expect(
+      EDITOR_MANAGED_ENTITY_KEYS.filter((k) => !STRUCTURAL.has(k) && !carried.has(k)),
+    ).toEqual([]);
   });
 });

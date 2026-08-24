@@ -74307,8 +74307,7 @@
                             }
                           },
                           "required": [
-                            "target_entity",
-                            "relationship"
+                            "target_entity"
                           ]
                         }
                       ]

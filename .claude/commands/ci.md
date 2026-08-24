@@ -15,18 +15,41 @@ gate, redirects each one's output to `.ci-local/<gate>.log`, and prints only a
 compact PASS/FAIL table plus the tail of any *failed* gate — one small result
 instead of ~26 verbose ones.
 
-Exit code is **0** (all green), **3** (a gate DECLINED to verify — rendered
-`SKIP`), or **1** (a gate failed). 3 is the same code the individual gates use
-for "declined", so the meaning is consistent at both layers. `RESULT` carries
-exactly **one** `RESULT:` line and the exit code always agrees with it — before
-#5151 a declined run printed both a `PASS with N DECLINED` line and a
-self-contradictory `FAIL — 0 of 34 gates failed:` line, then exited 0.
+Exit code is **0** (all green), **3** (the run verified nothing — a gate
+DECLINED, rendered `SKIP`, or was ABORTED, rendered `ABORT`), or **1** (a gate
+failed). 3 is the same code the individual gates use for "declined", so the
+meaning is consistent at both layers. `RESULT` carries exactly **one** `RESULT:`
+line and the exit code always agrees with it — before #5151 a declined run
+printed both a `PASS with N DECLINED` line and a self-contradictory
+`FAIL — 0 of 34 gates failed:` line, then exited 0.
 
 ⚠️ Exit **3 is the normal outcome of a bare local run**: `TEST_DATABASE_URL` is
 unset by default, which declines `mutation-tables`. Bring up Postgres (below)
 for a clean 0. Running `/ci` from `main` with no local commits also declines
 that gate — the `--affected` set is then empty *by construction*, and remote
 CI's `--all` job on the push to `main` is what covers that SHA.
+
+### `RESULT: ABORTED` is not a regression (#5401)
+
+A bun test worker can die of a **native signal** (SIGABRT/SIGSEGV) partway
+through `bun test --parallel`. Bun takes the whole run down, stamps every
+still-running sibling `(aborted: sibling worker panicked)`, and rolls all of
+them into its `N fail` total — measured at ~50% of local runs on WSL2, and once
+producing **285 "failures" of which 284 were collateral, on a SHA remote CI was
+green on**. The report now separates the two counts on the RESULT line:
+
+```
+RESULT: ABORTED — 1 of 42 gates were killed by a native worker crash, NOT by a
+defect (#5401): test: 284 aborted (sibling worker panicked), 0 failed; verified
+nothing — re-run before reading it as a regression.
+```
+
+⚠️ **The file bun names is a victim, not a suspect.** It moves run to run and
+passes in isolation; bun disclaims the crash itself. Do not quarantine it. The
+correct response is to re-run and to cross-check remote CI on the same SHA.
+
+A residual failure (`… , 1 failed`) still makes the verdict `FAIL` and exit 1 —
+a crash never launders a genuine red into a decline.
 
 The wrapper also leaves machine-readable run state under `.ci-local/`, so
 completion is observable **from disk**, independent of any agent hand-off:

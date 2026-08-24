@@ -16,8 +16,122 @@
 #   NO_TEST      "1" when Stage 3 was skipped
 #   FAIL_TAIL    lines of a failed gate's log to quote
 #
-# Provides: ci_local_classify_gates (sets `failed`, `skipped`, `total`),
-#           render_report, ci_local_exit_code.
+# Provides: ci_local_classify_gates (sets `failed`, `aborted`, `skipped`,
+#           `total`), render_report, ci_local_exit_code.
+
+# ---------------------------------------------------------------------------
+# Native worker abort (#5401)
+# ---------------------------------------------------------------------------
+#
+# ⚠️ **AN ABORTED RUN AND A FAILING RUN ARE DIFFERENT FACTS.** A bun test worker
+# can die of a NATIVE SIGNAL (SIGABRT/SIGSEGV) partway through `bun test
+# --parallel`. Bun then takes the whole run down and stamps every still-running
+# sibling file:
+#
+#     ✗ src/api/__tests__/chat.test.ts (aborted: sibling worker panicked)
+#
+# rolling all of them into its `N fail` summary. Measured on a clean `main` at
+# 33f45fccd: 285 "failures", 284 of them collateral, on a SHA remote CI was green
+# on. Nothing in this report distinguished that from a 285-test regression — you
+# had to grep the log to learn the gate had DECLINED TO VERIFY rather than found
+# a defect, and it nearly cost the v0.2.16 release.
+#
+# ⚠️ **THE FILE BUN NAMES IS NOT THE FAULTY FILE.** It is whichever worker was
+# unlucky; it moves run to run and passes in isolation. Bun disclaims the crash
+# itself ("a bug in Bun or in a native addon, not in the test itself"), so this
+# code reports the crash and deliberately blames nothing — quarantining the named
+# file would only relocate the crash.
+#
+# Same shape as #5395 (a CANCELLED CI run whose conclusion renders as failure)
+# reached by a different mechanism, which is why it gets its own verdict here
+# rather than a louder FAIL.
+
+# Bun's own sentence. Matching the sentence rather than the bare signal name is
+# what keeps an ordinary test that PRINTS the word SIGABRT from being excused.
+CI_LOCAL_PANIC_RE='a test worker process crashed with SIG'
+# The marker bun stamps on each sibling file it took down.
+CI_LOCAL_ABORTED_RE='aborted: sibling worker panicked'
+
+# ci_local_abort_stats <gate> — scan one gate's log for a native worker abort.
+#
+# Returns 0 and sets the globals below when bun's panic sentence is present;
+# returns 1 and leaves them at their empty defaults otherwise.
+#
+#   abort_signals        signals seen, e.g. "SIGABRT SIGSEGV"
+#   abort_files          the file(s) bun named as the crash site (victims)
+#   abort_count          how many siblings were aborted
+#   abort_reported_fail  the `N fail` bun printed, or "" if unparseable
+#   abort_residual       reported_fail - aborted, or "unknown"
+ci_local_abort_stats() {
+  local logfile="$LOG_DIR/$1.log" plain
+  abort_signals=""; abort_files=""; abort_count=0
+  abort_reported_fail=""; abort_residual="unknown"
+  [ -f "$logfile" ] || return 1
+
+  # Strip ANSI first: bun keeps colour when it believes it has a TTY, and an
+  # escape sequence between "with" and "SIGABRT" would hide the marker.
+  plain="$(sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' "$logfile")"
+  printf '%s\n' "$plain" | grep -qF "$CI_LOCAL_PANIC_RE" || return 1
+
+  abort_signals="$(printf '%s\n' "$plain" | grep -oE 'crashed with SIG[A-Z]+' \
+    | grep -oE 'SIG[A-Z]+' | sort -u | tr '\n' ' ')"
+  abort_signals="${abort_signals% }"
+  # Bun WRAPS the sentence and puts the file on the NEXT line, so look at the
+  # following line too — matching only the panic line finds no filename at all.
+  abort_files="$(printf '%s\n' "$plain" | grep -A1 -F "$CI_LOCAL_PANIC_RE" \
+    | grep -oE '[A-Za-z0-9_./-]+\.test\.[cm]?[jt]sx?' | sort -u | tr '\n' ' ')"
+  abort_files="${abort_files% }"
+  abort_count="$(printf '%s\n' "$plain" | grep -cF "$CI_LOCAL_ABORTED_RE")"
+
+  # Bun's own summary line, e.g. " 285 fail". Last one wins — that is the run's
+  # total rather than any per-file line above it.
+  abort_reported_fail="$(printf '%s\n' "$plain" \
+    | grep -oE '^[[:space:]]*[0-9]+ fail' | tail -1 | grep -oE '[0-9]+')"
+  if [ -n "$abort_reported_fail" ]; then
+    abort_residual="$(( abort_reported_fail - abort_count ))"
+    [ "$abort_residual" -lt 0 ] && abort_residual=0
+  fi
+  return 0
+}
+
+# ci_local_gate_aborted <gate> — true when the gate died to a native worker
+# crash AND nothing in its log is attributable to a real test failure.
+#
+# ⚠️ A residual failure OUTRANKS the abort: `abort_residual > 0` keeps the gate
+# in `failed`, so a native crash can never become a way for a genuine red to read
+# as "declined". The abort is narrated either way.
+#
+# An UNPARSEABLE summary (the crash beat bun to its own totals) counts as
+# aborted: a run with no totals has verified nothing, and exit 3 says exactly
+# that without claiming green.
+ci_local_gate_aborted() {
+  ci_local_abort_stats "$1" || return 1
+  [ "$abort_residual" = "unknown" ] && return 0
+  [ "$abort_residual" -eq 0 ]
+}
+
+# ci_local_abort_block <gate> — the narrated evidence for one aborted gate.
+# Printed for an ABORTED gate and, unchanged, for a FAILED gate whose log also
+# carries a panic — the residual is real there, but the operator still needs to
+# know most of the count is collateral.
+ci_local_abort_block() {
+  local name="$1"
+  ci_local_abort_stats "$name" || return 0
+  echo "▼ $name  ABORTED — a native worker crash took the run down (#5401)"
+  echo "    bun: a test worker process crashed with ${abort_signals:-a native signal}"
+  [ -n "$abort_files" ] && echo "    crash site (VICTIM, not suspect): $abort_files"
+  if [ -n "$abort_reported_fail" ]; then
+    echo "    $abort_count aborted (sibling worker panicked), $abort_residual failed — of $abort_reported_fail bun reported as \`fail\`"
+  else
+    echo "    $abort_count aborted (sibling worker panicked), ? failed — bun printed no totals"
+  fi
+  echo "    ⚠️  ABORTED IS NOT FAILED. Bun disclaims the crash (\"a bug in Bun or in"
+  echo "       a native addon, not in the test itself\") and the file it names moves"
+  echo "       run to run — it passes in isolation. This gate DECLINED TO VERIFY."
+  echo "    Re-run \`bun run test\`; cross-check remote CI on the same SHA before"
+  echo "    reading it as a regression. Full log: .ci-local/$name.log"
+  echo ""
+}
 
 # Partition the gates by their recorded exit code.
 #
@@ -27,16 +141,34 @@
 # was nearly every local run. `/ci`'s protocol tells the agent that RESULT's
 # contents ARE the report, so a false green there is read as a clean pre-PR pass.
 # Same defect as the row, moved one screen down.
+#
+# ⚠️ `aborted` is tracked separately for the same reason one level down: a gate
+# killed by a native worker crash (#5401) did not fail, it declined — see the
+# block above.
 ci_local_classify_gates() {
   local name rc
   failed=()
+  aborted=()
   skipped=()
   for name in "${GATE_NAMES[@]}"; do
     rc="$(cat "$LOG_DIR/$name.exit" 2>/dev/null || echo 1)"
     if [ "$rc" = "3" ]; then skipped+=("$name")
-    elif [ "$rc" != "0" ]; then failed+=("$name"); fi
+    elif [ "$rc" != "0" ]; then
+      if ci_local_gate_aborted "$name"; then aborted+=("$name")
+      else failed+=("$name"); fi
+    fi
   done
   total="${#GATE_NAMES[@]}"
+}
+
+# ci_local_in_list <needle> <haystack...> — membership test for the classified
+# arrays. `[[ " ${arr[*]} " == *" $x "* ]]` is subtly wrong for names carrying
+# spaces; gate names never do, but a substring test that silently agrees on a
+# prefix is not worth the two lines it saves.
+ci_local_in_list() {
+  local needle="$1" item; shift
+  for item in "$@"; do [ "$item" = "$needle" ] && return 0; done
+  return 1
 }
 
 render_report() {
@@ -55,6 +187,11 @@ render_report() {
       printf '%-28s %-7s %4ss\n' "$name" "SKIP" "$secs"
     elif [ "$rc" = "0" ]; then
       printf '%-28s %-7s %4ss\n' "$name" "PASS" "$secs"
+    elif ci_local_in_list "$name" ${aborted[@]+"${aborted[@]}"}; then
+      # ⚠️ ABORT, not FAIL. The row is what the /ci agent protocol reads, and a
+      # native worker crash rendered FAIL is indistinguishable from a real
+      # regression of the same size (#5401).
+      printf '%-28s %-7s %4ss\n' "$name" "ABORT" "$secs"
     else
       printf '%-28s %-7s %4ss\n' "$name" "FAIL" "$secs"
     fi
@@ -77,15 +214,48 @@ render_report() {
   # `return` alone would fix this instance and leave the next fall-through free
   # to reintroduce the class.
   if [ "${#failed[@]}" -gt 0 ]; then
-    echo "RESULT: FAIL — ${#failed[@]} of $total gates failed: ${failed[*]}"
+    # A concurrent abort is named ON the FAIL line, not left to the body: the
+    # line is what gets quoted, and "3 of 42 gates failed" beside an unmentioned
+    # native crash is how a run reads as a bigger regression than it is (#5401).
+    local also=""
+    [ "${#aborted[@]}" -gt 0 ] && also=" (plus ${#aborted[@]} ABORTED: ${aborted[*]} — native worker crash, not a defect)"
+    echo "RESULT: FAIL — ${#failed[@]} of $total gates failed: ${failed[*]}$also"
     echo ""
     for name in "${failed[@]}"; do
+      # A FAILED gate can still carry a panic — that is the residual case, where
+      # the abort is real but so is at least one genuine failure. Narrate the
+      # split first so the tail below is read for the right number of lines.
+      ci_local_abort_block "$name"
       echo "▼ $name  (.ci-local/$name.log — last $FAIL_TAIL lines)"
       tail -n "$FAIL_TAIL" "$LOG_DIR/$name.log" 2>/dev/null | sed 's/^/    /'
       echo ""
     done
+    for name in ${aborted[@]+"${aborted[@]}"}; do
+      ci_local_abort_block "$name"
+    done
     echo "Full logs: .ci-local/<gate>.log   Re-run one gate, e.g.: bash scripts/check-schema-drift.sh"
     echo "Note: a 'type' failure can cascade into openapi-drift/test (incomplete SDK dist) — fix type first."
+    return
+  fi
+
+  # ⚠️ ABOVE `skipped` and below `failed`, deliberately. An abort is a decline,
+  # so it must never outrank a real red; but it carries evidence a bare SKIP
+  # does not, so it gets its own verdict line rather than being folded in.
+  if [ "${#aborted[@]}" -gt 0 ]; then
+    # The two counts side by side ARE the fix: "284 aborted (sibling worker
+    # panicked), 0 failed" is the sentence that stops a crash reading as a
+    # 284-test regression, and it belongs on the one line that gets quoted.
+    local counts="" residual
+    for name in "${aborted[@]}"; do
+      ci_local_abort_stats "$name"
+      residual="${abort_reported_fail:+$abort_residual}"
+      counts="$counts $name: $abort_count aborted (sibling worker panicked), ${residual:-?} failed;"
+    done
+    echo "RESULT: ABORTED — ${#aborted[@]} of $total gates were killed by a native worker crash, NOT by a defect (#5401):$counts verified nothing — re-run before reading it as a regression."
+    echo ""
+    for name in "${aborted[@]}"; do
+      ci_local_abort_block "$name"
+    done
     return
   fi
 
@@ -113,8 +283,15 @@ render_report() {
 # opting into a gates-only pass, not a gate failing to measure something it was
 # asked to. Its RESULT line already says "not a clean pre-PR pass"; the exit
 # stays 0 because the operator chose the narrower run.
+#
+# A NATIVE ABORT (#5401) shares code 3 with DECLINED rather than taking a fourth
+# of its own. Both mean the same thing to a caller — *this run verified nothing,
+# do not read it as a pass* — and the RESULT line already says which one
+# happened. A new code would only make every existing `-eq 3` check wrong about
+# a case it already handles correctly.
 ci_local_exit_code() {
   if [ "${#failed[@]}" -gt 0 ]; then echo 1
+  elif [ "${#aborted[@]}" -gt 0 ]; then echo 3
   elif [ "${#skipped[@]}" -gt 0 ]; then echo 3
   else echo 0; fi
 }

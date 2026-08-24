@@ -47,7 +47,8 @@
 #   TEST_DATABASE_URL=...  If set, the real-Postgres *-pg.test.ts run (else skip,
 #                          exactly as CI's behavior differs from a bare local run).
 #
-# Exit code: 0 if every run gate passed, 1 otherwise.
+# Exit code: 0 every gate passed · 1 a gate failed · 3 the run verified nothing
+# (a gate DECLINED, or was ABORTED by a native bun worker crash — #5401).
 
 set -uo pipefail
 

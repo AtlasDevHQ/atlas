@@ -237,6 +237,7 @@
         "domhandler": "^6.0.1",
         "drizzle-orm": "^0.45.2",
         "effect": "^3.22.0",
+        "email-reply-parser": "^2.3.9",
         "entities": "^8.0.0",
         "fflate": "^0.8.2",
         "hono": "^4.12.34",
@@ -2672,6 +2673,8 @@
     "effect": ["effect@3.22.0", "", { "dependencies": { "@standard-schema/spec": "^1.0.0", "fast-check": "^3.23.1" } }, "sha512-jhYFe0zTlIRqYFrKTS+6luhmS/Tm0f+JLo0K9KUxvtFab1SUGEszQi2ehOP6QzAZvy831lDmTwwzvVDZSPNz3g=="],
 
     "electron-to-chromium": ["electron-to-chromium@1.5.368", "", {}, "sha512-7RckJJK4uESJF9PxvfMWd3TGqIiieUTG4HxnKaKuIpGbcr+r2ZEB3g2gAhCP3Fqm42vJSzLfgab9eva/C4/XVw=="],
+
+    "email-reply-parser": ["email-reply-parser@2.3.9", "", { "peerDependencies": { "re2": "1.x" }, "optionalPeers": ["re2"] }, "sha512-k5w4cjqLSZABTyxkFHQLnMKJgrK2l6mPptmOnQHlwIosw86S05Xnupy4PPdw8XdXv/kXzn2PAnLfFMNFVUH4YQ=="],
 
     "emoji-regex": ["emoji-regex@8.0.0", "", {}, "sha512-MSjYzcWNOA0ewAHpz0MxpYFvwg6yjy1NG3xteoqz644VCo/RPgnr1/GGt+ic3iJTzQ8Eu3TdM14SawnVUmGE6A=="],
 

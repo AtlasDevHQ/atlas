@@ -439,12 +439,30 @@ count_adapters()  { ls -1 plugins/chat/src/adapters/*.ts 2>/dev/null | grep -vcE
 # a `launch` or `run_fg` line, so the roster derives.
 count_gates()     { grep -cE '^[[:space:]]*(launch|run_fg) ' scripts/ci-local.sh 2>/dev/null; }
 
+# The `*-pg.test.ts` files that self-skip without TEST_DATABASE_URL. Registered
+# because #5410 put this number in prose in five places at once (ci.md,
+# release.md, ROADMAP.md, ci-local.sh's banner, and this gate's own fixture) to
+# argue that a green run without a database is hollow — and the argument is only
+# as good as the number. `ci-local.sh` derives it at runtime; prose cannot, so
+# one new pg suite would silently falsify every copy.
+#
+# ⚠️ TWO SPELLING CONSTRAINTS ON ANY PHRASE ADDED HERE, both of which fail as a
+# SILENT NON-MATCH rather than an error — this one was registered wrong first and
+# the fail-closed check below is the only reason it was caught:
+#   • LOWERCASE ONLY. `count_scan` matches its regex against `tolower(win)`, so a
+#     phrase carrying a capital (`real-Postgres suites`) can never match anything,
+#     however plainly the prose states it. The prose may capitalise freely.
+#   • NO `*`. The scan strips `*` and `_` as markup before matching, so a phrase
+#     containing them would be matching text that no longer exists.
+count_pg_suites() { find packages/api/src -name '*-pg.test.ts' 2>/dev/null | wc -l | tr -d ' '; }
+
 COUNT_CLAIMS=(
   "operational runbooks|count_commands"
   "bounded contexts|count_contexts"
   "system-wide decisions|count_adrs"
   "chat-platform adapters|count_adapters"
   "ci-local gates|count_gates"
+  "real-postgres suites|count_pg_suites"
 )
 
 word_to_num() {

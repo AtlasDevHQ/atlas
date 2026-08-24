@@ -41,7 +41,7 @@ exit 0. Measured on `main` at f3f32a7c7, same tree, same command:
 | set | 22,266 pass · 10 skip | 147s |
 | unset | 20,834 pass · 10 skip | 27s |
 
-**1,432 assertions across 87 files silently not run**, and the faster, emptier
+**1,432 assertions across 87 real-Postgres suites silently not run**, and the faster, emptier
 run is what an operator gets by default. `test` now returns 3 in that case, so
 the row renders `SKIP` and `RESULT` says `DECLINED`. A real test failure still
 returns its own non-zero — a decline never masks a red. There is deliberately no

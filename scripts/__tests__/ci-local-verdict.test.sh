@@ -440,6 +440,18 @@ verdict_case() {
 
 echo ":: ci_local_test_verdict fixtures (#5410)"
 
+# ⚠️ The decline sentence is PER GATE, and both halves are asserted because the
+# regression here is silent: flattening them to one wording still emits a valid
+# RESULT line, still exits 3, and still passes every case_check above — it just
+# tells the operator something false about one of the two gates. `verified
+# nothing` must survive for `mutation-tables` (it is what stops exit 3 reading as
+# a near-pass) and must NOT be said of `test`, which by then has run ~20,800
+# assertions.
+case_check "a declined mutation-tables still says it verified NOTHING" \
+  3 "mutation-tables verified nothing" 0 lint:0 mutation-tables:3
+case_check "a declined test does NOT claim it verified nothing" \
+  3 "test ran but exercised none of the real-Postgres suites" 0 lint:0 test:3
+
 verdict_case "green + TEST_DATABASE_URL set → PASS" \
   0 "postgresql://atlas:atlas@localhost:5432/atlas" 0
 

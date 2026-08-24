@@ -3735,7 +3735,7 @@ describe("PUT /api/v1/admin/semantic/entities/edit/:name", () => {
     expect(body.groups).toEqual(["g_prod", "g_staging"]);
     expect(mockUpsertDraftEntityAdmin).not.toHaveBeenCalled();
     expect(mockUpsertDraftEntityForGroupAdmin).not.toHaveBeenCalled();
-    expect([...groups].toSorted()).toEqual(["g_prod", "g_staging"]);
+    expect([...groups].toSorted((a, b) => (a ?? "").localeCompare(b ?? ""))).toEqual(["g_prod", "g_staging"]);
   });
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -3847,7 +3847,7 @@ describe("PUT /api/v1/admin/semantic/entities/edit/:name", () => {
 
     expect(res.status).toBe(200);
     expect((mockUpsertDraftEntityForGroupAdmin.mock.calls as unknown[][])[0]?.[4]).toBe("g_prod");
-    expect([...groups].toSorted()).toEqual(["g_prod", "g_staging"]);
+    expect([...groups].toSorted((a, b) => (a ?? "").localeCompare(b ?? ""))).toEqual(["g_prod", "g_staging"]);
   });
 });
 

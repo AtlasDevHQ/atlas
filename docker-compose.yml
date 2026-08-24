@@ -11,6 +11,13 @@
 services:
   postgres:
     image: postgres:16-alpine
+    # `max_connections` default is 100; the repo has 87 `*-pg.test.ts` suites and
+    # `bun test --parallel` runs them concurrently, several opening `max: 4` pools.
+    # 300 is headroom, NOT a fix for anything: raising it was measured against the
+    # local suite on 2026-08-24 and moved nothing (27 failures at 100, 29 at 300),
+    # so whatever times those suites out at 60s is not the server's connection cap.
+    # Tracked at #5410.
+    command: postgres -c max_connections=300
     environment:
       POSTGRES_DB: atlas
       POSTGRES_USER: atlas

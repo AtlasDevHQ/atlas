@@ -20,6 +20,19 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.17",
+    title: "The Last Mile",
+    date: "2026-08-24",
+    summary:
+      "Three capabilities that had already shipped but could not actually be reached. v0.2.16 gave warehouse readings a way to be retracted \u2014 but nothing in the product could tell you which readings they were. It also let an entity declare which rows it covers \u2014 but saving that entity through the admin editor quietly threw the declaration away. And the CLI could not log in to any deployed environment at all. Each was a working feature with no path to it.",
+    highlights: [
+      "Warehouse readings published before the refusal can now be found, not just retracted. A new retirement listing enumerates them with the ids the retraction needs \u2014 previously the verb existed and its population was unreachable, so an operator holding a wrong, served row had no way to name it",
+      "The entity editor stops discarding what it does not recognise. Saving an entity through the admin UI rebuilt its definition from a fixed list of fields, silently dropping row filters, column types, grain, use cases and virtual dimensions \u2014 so declaring a filter and pressing save removed it again, with nothing said",
+      "`atlas login` works against deployed environments again. The device-flow endpoint returned a 404 on every production host and on staging, caused by a key collision in the auth plugin \u2014 the rest of the auth surface on the same origins was healthy, which is why it went unnoticed",
+      "Internal: a native test-worker crash no longer presents as a several-hundred-test regression. An aborted run and a failing run are different facts, and the local report now says which one happened",
+    ],
+  },
+  {
     version: "v0.2.16",
     title: "Only the Rows You Still Care About",
     date: "2026-08-23",

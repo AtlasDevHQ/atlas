@@ -16,7 +16,24 @@ services:
     # 300 is headroom, NOT a fix for anything: raising it was measured against the
     # local suite on 2026-08-24 and moved nothing (27 failures at 100, 29 at 300),
     # so whatever times those suites out at 60s is not the server's connection cap.
-    # Tracked at #5410.
+    #
+    # ⚠️ The connection-cap theory is now REFUTED WITH A NUMBER, not just with a
+    # null result. Sampling `pg_stat_activity` every 2s through a full 87-suite
+    # `-pg` sweep (#5410, 2026-08-24) peaked at **43 connections — 33 active, 9
+    # idle** against a cap of 300. The arithmetic that motivated this line
+    # (87 suites x `max: 4` = 348 > 100) never happens: `bun test --parallel`
+    # bounds concurrency at the CPU count, so at most ~32 suites hold pools at
+    # once and the rest have not started. 100 would have been ample.
+    #
+    # Kept anyway because it is free and the value is not what was wrong — the
+    # reasoning was. Do not read this line as a fix, and do not "fix" a slow
+    # local suite by raising it further. #5410 records three more refuted
+    # hypotheses, including `max_locks_per_transaction`, which a synthetic probe
+    # made look causal (`53200 out of shared memory` at 32-way concurrency) and
+    # which the real suite never reaches.
+    #
+    # 33 active backends is exactly `nproc` on the box that measured it — the
+    # suite is CPU-bound, not connection-bound. Tracked at #5410.
     command: postgres -c max_connections=300
     environment:
       POSTGRES_DB: atlas

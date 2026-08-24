@@ -175,7 +175,9 @@ The protection here is intentionally minimal — `prod` is not a code review sur
 
 ## Why no required checks
 
-The `/ci` gate has already passed on the SHA being released — `/release` refuses to tag if `/ci` fails. Layering a GitHub-side required-check on `prod` would duplicate that gate and slow tag-pushes for no risk reduction. If "Wait for CI" is enabled on the Railway side (the optional belt-and-braces in `release-process.md`), CI runs on `prod` get the same treatment as `main` runs.
+Remote CI has already passed on the SHA being released — `/release` refuses to tag unless it is green there. Layering a GitHub-side required-check on `prod` would duplicate that gate and slow tag-pushes for no risk reduction.
+
+> ⚠️ This sentence used to read *"`/release` refuses to tag if `/ci` fails"*, naming the **local** wrapper. It no longer does, and the reason matters here: `scripts/ci-local.sh` cannot go green on an unchanged tree, so a release gate defined that way blocked every release including ones already serving prod (#5410). The gate is remote CI on the tagged SHA; local `/ci` is advisory. This was the **third** copy of that rule in the tree — the other two are `.claude/commands/release.md` step 3 and `docs/development/release-process.md` — and nothing gates the three against each other, so change them together. If "Wait for CI" is enabled on the Railway side (the optional belt-and-braces in `release-process.md`), CI runs on `prod` get the same treatment as `main` runs.
 
 ## Why no required reviews
 

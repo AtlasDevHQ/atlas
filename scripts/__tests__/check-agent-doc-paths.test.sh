@@ -104,6 +104,12 @@ new_tree() {
   # claim against a derivation of zero — so the tree must carry one of each set
   # it counts, including a ci-local roster.
   printf 'launch lint g_lint\n' > "$TREE/scripts/ci-local.sh"
+  # …and one real-Postgres suite, for `count_pg_suites` (#5410). Registering a
+  # count phrase without planting its set here derives 0, and the gate's
+  # refuse-on-zero guard then fails EVERY case in this file rather than the one
+  # that added it — which is how a new registration announces itself.
+  mkdir -p "$TREE/packages/api/src/lib/__tests__"
+  echo 'test("pg", () => {});' > "$TREE/packages/api/src/lib/__tests__/thing-pg.test.ts"
   {
     echo "| Context | Governed by | Notes |"
     echo "| --- | --- | --- |"
@@ -551,9 +557,11 @@ n_adr=$(ls -1 "$TREE"/docs/adr/[0-9]*.md 2>/dev/null | wc -l | tr -d ' ')
 n_ada=$(ls -1 "$TREE"/plugins/chat/src/adapters/*.ts 2>/dev/null | grep -vcE '\.test\.ts$|/index\.ts$')
 n_gate=$(grep -cE '^[[:space:]]*(launch|run_fg) ' "$TREE/scripts/ci-local.sh")
 n_ctx=$(awk '/^\| Context \| Governed by/{t=1;next} t&&/^\| --- /{next} t&&/^\|/{n++} t&&!/^\|/{t=0} END{print n+0}' "$TREE/CONTEXT-MAP.md")
+n_pg=$(find "$TREE/packages/api/src" -name '*-pg.test.ts' 2>/dev/null | wc -l | tr -d ' ')
 {
   echo "This tree has $n_cmd operational runbooks and $n_ctx bounded contexts."
   echo "It holds $n_adr system-wide decisions, $n_ada chat-platform adapters and $n_gate ci-local gates."
+  echo "It also carries $n_pg real-Postgres suites."
 } > "$TREE/docs/agents/counts.md"
 stage; run_gate
 if [ "$RC" = "0" ]; then

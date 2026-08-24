@@ -17,7 +17,41 @@
 #   FAIL_TAIL    lines of a failed gate's log to quote
 #
 # Provides: ci_local_classify_gates (sets `failed`, `aborted`, `skipped`,
-#           `total`), render_report, ci_local_exit_code.
+#           `total`), render_report, ci_local_exit_code, ci_local_test_verdict.
+
+# ci_local_test_verdict <rc> <test_database_url> — the exit code the `test` gate
+# reports, given the raw `bun run test` status and the TEST_DATABASE_URL value.
+#
+# ⚠️ IT LIVES HERE, NOT IN `g_test`, FOR THE REASON AT THE TOP OF THIS FILE.
+# `g_gate_fixtures` runs every scripts/__tests__/*.test.sh, so a fixture that
+# invoked ci-local.sh to check this rule would recurse into itself. Sourcing the
+# real bytes lets the fixture drive all three cases without running a suite —
+# and this rule is a two-branch predicate guarding a RELEASE gate, which is
+# exactly the shape that ships wrong when nothing covers it (#5151, #5410).
+#
+# The order is the contract:
+#   rc != 0            → rc     a real failure outranks a decline, always
+#   rc == 0, url set   → 0      the pg suites actually ran; a true pass
+#   rc == 0, url unset → 3      passed having self-skipped every pg suite
+ci_local_test_verdict() {
+  local rc="$1" url="${2:-}"
+  if [ "$rc" -ne 0 ]; then echo "$rc"
+  elif [ -n "$url" ]; then echo 0
+  else echo 3; fi
+}
+
+# ci_local_decline_reason <gate> — what THAT gate's exit 3 actually means, for
+# the RESULT line. See the comment at the `skipped` branch of render_report:
+# "verified nothing" is true of `mutation-tables` and false of `test`, and a
+# verdict line that overstates one case teaches the reader to discount both.
+# The default is the conservative one, so a gate added later reads as the
+# stronger claim until someone deliberately narrows it.
+ci_local_decline_reason() {
+  case "$1" in
+    test) printf 'ran but exercised none of the real-Postgres suites (TEST_DATABASE_URL unset)' ;;
+    *)    printf 'verified nothing' ;;
+  esac
+}
 
 # ---------------------------------------------------------------------------
 # Native worker abort (#5401)
@@ -355,7 +389,22 @@ render_report() {
   fi
 
   if [ "${#skipped[@]}" -gt 0 ]; then
-    echo "RESULT: PASS with ${#skipped[@]} DECLINED — ${skipped[*]} verified nothing; not a clean pre-PR pass."
+    # ⚠️ THE PHRASE IS PER GATE, because the two declines are not the same fact
+    # and one wording cannot be true of both.
+    #
+    # `mutation-tables` declining really does mean it verified NOTHING, and that
+    # sentence is load-bearing — it is what stops an operator reading exit 3 as a
+    # near-pass. But since #5410 the `test` gate also declines (TEST_DATABASE_URL
+    # unset), and by then it has run ~20,800 assertions: it verified plenty, just
+    # not the real-Postgres suites it was asked to. A first cut flattened both to
+    # "declined to verify", which weakened a true statement for `mutation-tables`
+    # to accommodate the new case. Naming each gate's own reason costs one `case`
+    # and keeps both sentences true, which is the whole point of a verdict line.
+    local phrases="" name_
+    for name_ in "${skipped[@]}"; do
+      phrases="$phrases $name_ $(ci_local_decline_reason "$name_");"
+    done
+    echo "RESULT: PASS with ${#skipped[@]} DECLINED —${phrases} not a clean pre-PR pass."
     return
   fi
 

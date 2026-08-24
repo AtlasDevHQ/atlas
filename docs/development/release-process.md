@@ -59,7 +59,7 @@ There is no fixed soak time. Tag when you're confident; rollback (via the next t
 ```
 
 The skill runs:
-1. **`/ci`** — refuses to tag if any gate fails. Tags are immutable; don't tag broken code.
+1. **Remote CI green on the SHA being tagged** — this is the gate. Tags are immutable; don't tag broken code. `/ci` is an advisory pre-flight, *not* a blocker: `scripts/ci-local.sh` does not go green on an unchanged tree (measured 2026-08-24 — 2 of 42 gates fail for reasons unrelated to the tree, #5410), and the mandatory-local-gate rule it replaced blocked every release including ones already serving prod.
 2. **`git tag -a v0.0.1 -m "<auto-summary>"`** — annotated tag with author/timestamp/message. Never lightweight tags.
 3. **`git push origin <version>`** — pushes the single tag to GitHub. Don't use `--tags` — that pushes every local tag and can leak experimental ones.
 4. **`git push origin <version>^{}:prod --force-with-lease`** — fast-forwards the `prod` branch to the tagged commit. This is what Railway watches; the prod-side deploy fires from this push. `--force-with-lease` (never `--force`) refuses to rewind if someone else has advanced `prod` since the local fetch — a safety net against concurrent `/release` runs.
@@ -185,7 +185,7 @@ Exit `0` resolved (version on stdout) · `1` refused · `2` cannot run · `3` no
 
 ## What `/release` will NOT do
 
-- Will not tag if `/ci` fails. Fix the failure, then re-run.
+- Will not tag if **remote CI** is not green on the SHA being tagged. Fix the failure, then re-run. (A red *local* `/ci` is advice, not a refusal — see step 1 above and #5410.)
 - Will not deploy to prod outside the prod-branch push. The skill's only side-effects on remote state are: push the tag, fast-forward `prod` to the tag SHA with `--force-with-lease`, create the GitHub Release. Railway's autodeploy on `prod` does the rest.
 - Will not skip the annotated-tag rule. Lightweight tags don't carry author/timestamp; the skill always uses `git tag -a`.
 - Will not `--force` the `prod` branch push. Only `--force-with-lease` — refuses to rewind if someone else has advanced `prod` since the local fetch.

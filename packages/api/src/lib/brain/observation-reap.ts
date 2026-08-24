@@ -108,8 +108,7 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
-import { observationSql } from "@atlas/api/lib/brain/observation";
-import { episodeSourceArraySql, WAREHOUSE_SOURCES } from "@atlas/api/lib/brain/sources";
+import { observationSql, warehouseEpisodeSql } from "@atlas/api/lib/brain/observation";
 import {
   reapWindowSize,
   WAREHOUSE_SUCCESS_WINDOW_CTE,
@@ -117,17 +116,6 @@ import {
 import type { ReconcileExecutor } from "@atlas/api/lib/brain/reconcile";
 
 const log = createLogger("brain-observation-reap");
-
-/**
- * The warehouse vocabulary as a SQL `text[]` literal, for the EPISODE side.
- *
- * `observation.ts` builds the same array for the `provenance->>'source'` side
- * and keeps it private; both go through {@link episodeSourceArraySql}, which is
- * the single spelling of the splice and the reason neither needs to think about
- * escaping. Nothing user-supplied reaches it — every element is a compile-time
- * key of the source spec map.
- */
-const WAREHOUSE_EPISODE_SOURCES_SQL = episodeSourceArraySql(WAREHOUSE_SOURCES);
 
 /**
  * The entity a warehouse episode was minted for, recovered from its `source_id`
@@ -270,13 +258,13 @@ export const OBSERVATION_REAP_SQL = `WITH ${WAREHOUSE_SUCCESS_WINDOW_CTE}
       LEFT JOIN brain_episodes pe
         ON pe.workspace_id = g.workspace_id
        AND pe.id = g.to_episode_id
-       AND pe.source = ANY (${WAREHOUSE_EPISODE_SOURCES_SQL})
+       AND ${warehouseEpisodeSql("pe")}
      WHERE f.workspace_id = $1
        AND gate.n >= $3::bigint
        AND NOT (f.predicate = ANY ($4::text[]))
        AND f.status = 'draft'
        AND ${observationSql("f")}
-       AND se.source = ANY (${WAREHOUSE_EPISODE_SOURCES_SQL})
+       AND ${warehouseEpisodeSql("se")}
        AND ${EPISODE_ENTITY_SQL} = $2
      GROUP BY f.id, se.occurred_at, gate.oldest
     HAVING GREATEST(max(pe.occurred_at), se.occurred_at) < gate.oldest

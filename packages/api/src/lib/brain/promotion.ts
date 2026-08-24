@@ -420,9 +420,27 @@ export interface EvidenceWidenedGrant {
  *   the claim was stated in A and in B, and a reader of either already saw it
  *   said.
  *
- *   ⚠️ **That sentence is the safety argument, and SUBJECT HOMONYMY MAKES IT
- *   FALSE (#5032, ADR-0037 §5).** It was written here unqualified and should not
- *   have been. `CORROBORATION_LOOKUP_SQL` (`reconcile.ts`) matches on the SLOT
+ *   ⚠️ **That sentence is the safety argument, and TWO DIFFERENT THINGS FALSIFY
+ *   IT.** The first is #5391, and it is the one this function structurally
+ *   cannot see; subject homonymy is the second, below. Read the sentence
+ *   literally and it is about PEOPLE SPEAKING. A warehouse OBSERVATION is a
+ *   machine reading a column — nobody said anything in the producer's
+ *   `org`-wide room — so a warehouse episode corroborating a PRIVATE belief
+ *   (row 4 of #5332's class matrix, deliberately kept alive) would union `org`
+ *   into that belief's grant at publish and put a private claim's BODY in front
+ *   of the whole org. Unlike the homonym case the merge itself is CORRECT — it
+ *   really is the same claim — which is why no `subject_cmp`-shaped fix reaches
+ *   it and why the fix is not here: **this function takes bare grant arrays and
+ *   structurally cannot know what produced them.** ADR-0042 (amended
+ *   2026-08-24) rules that an observation is not widening evidence, and the
+ *   exclusion lives at the two places that CHOOSE the evidence —
+ *   `EVIDENCE_GRANTS_SQL` in the adapter (the act) and `willWidenRowsSql` in
+ *   `oversight.ts` (the notice), which carry the identical arm so they cannot
+ *   disagree. Anyone adding a THIRD evidence source inherits that obligation,
+ *   and nothing in this function's signature will remind them.
+ *
+ *   **SUBJECT HOMONYMY MAKES IT FALSE TOO (#5032, ADR-0037 §5).** It was
+ *   written here unqualified and should not have been. `CORROBORATION_LOOKUP_SQL` (`reconcile.ts`) matches on the SLOT
  *   KEYS, and a key is a function of the SURFACE — so two different entities
  *   sharing a name (`Acme Corp` the vendor, `Acme Corp` the account) land in one
  *   slot, and a public episode about one becomes EVIDENCE for a private fact

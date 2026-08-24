@@ -102,6 +102,10 @@ import {
 } from "@atlas/api/lib/brain/candidates";
 import { parseChatChannelAudienceId } from "@atlas/api/lib/brain/ingest/grant";
 import {
+  notAWarehouseEpisodeSql,
+  notAnObservationSql,
+} from "@atlas/api/lib/brain/observation";
+import {
   brainFactCurrentClause,
   supersedingDraftPredicate,
   supersessionCollisionJoin,
@@ -384,13 +388,60 @@ export function classifyToken(
  * drift, and `oversight.test.ts` pins the absence of the predicate. The
  * supersession story is disclosed on this same surface by `willSupersede`
  * instead of by shrinking a counter.
+ *
+ * ## ⭐ THREE arms exclude observations and TWO must not (#5416, ADR-0042)
+ *
+ * The asymmetry is the design decision this constant carries, and it is stated
+ * here so nobody has to re-derive it from five FILTER clauses — or, worse,
+ * "tidy" it into a uniform sweep, which is the edit this paragraph exists to
+ * stop.
+ *
+ * | arm | observations | why |
+ * |---|---|---|
+ * | `awaiting_review` | EXCLUDED | publish refuses every observation unconditionally (`FACT_REFUSAL_REASONS.observationNotPublishable`), so no reviewer will ever act on one; counting them reports work nobody can do |
+ * | `provisional` | EXCLUDED | a draft-scoped refinement of that same population |
+ * | `in_tension` | EXCLUDED | likewise |
+ * | `published` | **KEPT** | the ADR-0042 stragglers `GET /retirable` exists to enumerate (#5403) — hiding them strands the retirement flow |
+ * | `retracted` | **KEPT** | a retracted observation is a COMPLETED retirement, and this count is how an operator sees the flow worked |
+ *
+ * ⭐ The rule it is an instance of, and the reason a find-and-replace of the
+ * predicate would have been as wrong as applying it nowhere: **an exclusion is
+ * a property of a QUESTION, not of a table.** *"What is awaiting review"* and
+ * *"what does this workspace still hold"* are different questions over the same
+ * rows, and `notAnObservationSql` is right on one and wrong on the other.
+ *
+ * ## Why the three had to move WITH `reviewableAwaitingReview`, not after it
+ *
+ * The hidden-backlog delta this whole surface exists to show is
+ * `workspaceTotals.awaitingReview − reviewableAwaitingReview`. That reader-
+ * scoped half restates `/summary`'s `draftTotal`, which has composed
+ * `notAnObservationSql` since #5341 — so narrowing the SUBTRAHEND alone grows
+ * the delta by exactly the observation count and reports it as backlog
+ * *"federated to somebody else"*: false, and more actionable-looking than the
+ * over-count it replaced. Both halves move in one commit or neither does.
+ *
+ * The precedent that does NOT extend is one clause down in
+ * {@link loadFactOversight}: an already-superseded imported draft lands in the
+ * delta honestly, *"because publish still reaches it and no reader's queue
+ * shows it"*. Publish never reaches an observation, so nothing about that
+ * warrant carries.
+ *
+ * `willSupersede` and `willWiden` on the same response needed no matching edit
+ * and the check is recorded rather than repeated: `WILL_SUPERSEDE_TOTAL_SQL`
+ * composes `supersessionCollisionJoin`, which carries `supersedableTierSql` on
+ * BOTH aliases (#5033), so warehouse-derived rows are already absent from it;
+ * `willWiden`'s own exclusion is #5391's, on the EVIDENCE episode rather than
+ * on the fact, and is in `willWidenRowsSql`'s `ON` arm.
  */
-const STATE_COUNTERS = `COUNT(*) FILTER (WHERE f.status = 'draft' AND f.invalidated_at IS NULL)::int AS awaiting_review,
+const STATE_COUNTERS = `COUNT(*) FILTER (WHERE f.status = 'draft' AND f.invalidated_at IS NULL
+                            AND ${notAnObservationSql("f")})::int AS awaiting_review,
          COUNT(*) FILTER (WHERE f.status = 'published' AND f.invalidated_at IS NULL)::int AS published,
          COUNT(*) FILTER (WHERE f.invalidated_at IS NOT NULL)::int AS retracted,
          COUNT(*) FILTER (WHERE f.status = 'draft' AND f.invalidated_at IS NULL
+                            AND ${notAnObservationSql("f")}
                             AND ${PROVISIONAL_PREDICATE})::int AS provisional,
          COUNT(*) FILTER (WHERE f.status = 'draft' AND f.invalidated_at IS NULL
+                            AND ${notAnObservationSql("f")}
                             AND ${TENSION_EXISTS_SELECT})::int AS in_tension`;
 
 /**
@@ -607,54 +658,39 @@ export async function loadFactOversight(
     db.query(OVERSIGHT_BUCKETS_SQL, [workspaceId, OVERSIGHT_BUCKET_MAX + 1]),
     db.query(OVERSIGHT_TOTALS_SQL, [workspaceId]),
     db.query(
-      // The current-validity term keeps this the same quantity as `/summary`'s
-      // `draftTotal` OVER THE SUPERSESSION AXIS (#4912) — the panel restates
-      // that number, and the two diverging over an imported already-superseded
-      // draft would be exactly the flicker carrying them in one response exists
-      // to prevent. The WORKSPACE counters above deliberately do NOT carry the
-      // term (see STATE_COUNTERS), so such a draft lands in the hidden-backlog
-      // delta — honestly: publish still reaches it and no reader's queue shows
-      // it.
+      // ⭐ THE SAME QUANTITY as `/summary`'s `draftTotal`, on BOTH axes, and
+      // both terms are load-bearing (#5416).
       //
-      // ⚠️ IT IS NOT THE SAME QUANTITY OUTRIGHT, and this comment used to say it
-      // was. `/summary`'s aggregate has composed `notAnObservationSql` since
-      // #5341 (`candidates.ts`) and this restatement never did, so on a
-      // workspace holding draft observations the panel reads "N awaiting
-      // review" over a queue that shows none — ADR-0042's exclusion missing
-      // from a disclosure, which is #5411's shape on a fifth surface.
+      //   - The current-validity term holds it over the SUPERSESSION axis
+      //     (#4912). The panel restates that number, and the two diverging over
+      //     an imported already-superseded draft would be exactly the flicker
+      //     that carrying them in one response exists to prevent.
+      //   - `notAnObservationSql` holds it over ADR-0042's class axis.
+      //     `candidates.ts` has composed it since #5341 and this restatement did
+      //     not, so on a workspace holding draft observations — prod `us` held 12
+      //     when #5411 measured it — the panel read "12 awaiting review" over a
+      //     review queue showing none.
       //
-      // Deliberately NOT fixed here, because fixing this half ALONE makes the
-      // disclosure worse: the hidden-backlog delta is
-      // `workspaceTotals.awaitingReview − reviewableAwaitingReview`, so
+      // ⚠️ Fixing this half ALONE would have made the disclosure WORSE, which is
+      // why it did not ship with #5411's four surfaces: the hidden-backlog delta
+      // is `workspaceTotals.awaitingReview − reviewableAwaitingReview`, so
       // narrowing only the subtrahend reports the observations as backlog
-      // "federated to somebody else", which is false. STATE_COUNTERS has to
-      // move with it, and that is a decision about what this surface COUNTS —
-      // it is documented above as a deliberately unfiltered accounting of the
-      // table, and the precedent in this very comment does not carry: a
-      // superseded import lands in the delta honestly because "publish still
-      // reaches it", and publish never reaches an observation.
+      // "federated to somebody else". `STATE_COUNTERS` moved in the same commit,
+      // and NOT uniformly — see the ⭐ table on it for which two arms keep
+      // counting observations and why.
       //
-      // ⚠️ And STATE_COUNTERS must NOT move uniformly, which is the part that
-      // makes this a ticket rather than a line. Three of its five arms lose
-      // observations (`awaiting_review`, `provisional`, `in_tension` — nobody
-      // will ever review one); the other two must KEEP counting them
-      // (`published` and `retracted` are the ADR-0042 stragglers `GET
-      // /retirable` exists to enumerate, and hiding them strands the retirement
-      // flow).
-      //
-      // ⭐ The rule that falls out, and the reason a sweep would have been
-      // wrong: an exclusion is a property of a QUESTION, not of a table. "What
-      // is awaiting review" and "what does this workspace hold" are different
-      // questions over the same rows, and `notAnObservationSql` is right on one
-      // and wrong on the other.
-      //
-      // Tracked in #5416, off #5411's AC4 sweep. Until it lands, this comment
-      // is the disclosure.
+      // The WORKSPACE counters still deliberately do NOT carry the
+      // current-validity term, so an already-superseded imported draft still
+      // lands in the delta — honestly, because publish still reaches it and no
+      // reader's queue shows it. That warrant is why the two axes are separate
+      // paragraphs: it holds for supersession and it does NOT carry to
+      // observations, which publish never reaches at all.
       `SELECT COUNT(*)::int AS n
          FROM brain_facts f
         WHERE ${acl.sql}
           AND f.status = 'draft'
           AND f.invalidated_at IS NULL
+          AND ${notAnObservationSql("f")}
           AND ${brainFactCurrentClause("f")}`,
       [...acl.params],
     ),
@@ -1227,6 +1263,22 @@ export const WILL_WIDEN_DRAFT_SCAN_MAX = 5_000;
  * `null` in `evidence_grant` can only mean the join found nothing — which the
  * loader reads as "no evidence", NOT as drift.
  *
+ * ## ⚠️ The evidence set excludes WAREHOUSE episodes (#5391, ADR-0042)
+ *
+ * `notAWarehouseEpisodeSql` sits in the `ep` join's **ON** arm, not in a
+ * `WHERE`, and the position is the same design as the `LEFT` above: in the
+ * `ON` a warehouse-only draft still yields its one evidence-less row and stays
+ * counted by `drafts.size`, so the scan-cap detector keeps working. Moved to a
+ * `WHERE`, the same predicate would delete every such draft from the result and
+ * silently disable the detector — the failure the `LEFT` paragraph above
+ * describes, reintroduced one clause later.
+ *
+ * It is here because `EVIDENCE_GRANTS_SQL` carries the identical arm: the
+ * notice runs the transaction's own decision function so the two cannot
+ * disagree about what widens, and feeding that function a DIFFERENT evidence
+ * set than publish reads would defeat that at the input. The argument for the
+ * exclusion itself lives beside the statement that acts on it.
+ *
  * `factAclSql` is interpolated, so callers pass a clause they built — same
  * contract as {@link willSupersedePairsSql}.
  */
@@ -1251,6 +1303,7 @@ export function willWidenRowsSql(factAclSql: string, draftLimitParam: number): s
     LEFT JOIN brain_episodes ep
       ON ep.workspace_id = e.workspace_id
      AND ep.id = e.to_episode_id
+     AND ${notAWarehouseEpisodeSql("ep")}
    ORDER BY f.ingested_at, f.id, ep.ingested_at, ep.id`;
 }
 

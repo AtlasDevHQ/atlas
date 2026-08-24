@@ -111,6 +111,17 @@ const PublishPreviewSchema = z.object({
    * (and still a draft afterwards). The refusal itself is reported by the
    * publish response, which is where the verdict is actually reached.
    *
+   * ⚠️ OBSERVATIONS ARE THE ONE EXCEPTION, and it is a deliberate carve-out of
+   * the paragraph above rather than a contradiction of it (#5411, ADR-0042).
+   * "Refused" is a VERDICT reached per row per publish and can change — a grant
+   * is repaired, provenance arrives — so listing those rows is honest. A
+   * warehouse-derived draft is not in that population at all: no review, no
+   * repair, no future publish will ever take it (`promotion.ts`'s refusal is
+   * "the one refusal here that is not a defect"). Listing it invites an action
+   * that is refused every time, forever, which is the one case where showing an
+   * operator what publish will consider misinforms their plan. The exclusion
+   * rides `notAnObservationSql`, in `brainFactPreviewSql`.
+   *
    * SCOPED TO THIS READER'S GRANTS (#4825), unlike every other array here.
    * See the module header. `brainFacts.length` is therefore NOT what publish
    * will promote — that is `brainFacts.length + brainFactsWithheld`.

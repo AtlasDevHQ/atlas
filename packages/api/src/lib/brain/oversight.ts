@@ -607,13 +607,49 @@ export async function loadFactOversight(
     db.query(OVERSIGHT_BUCKETS_SQL, [workspaceId, OVERSIGHT_BUCKET_MAX + 1]),
     db.query(OVERSIGHT_TOTALS_SQL, [workspaceId]),
     db.query(
-      // The current-validity term keeps this the SAME quantity as `/summary`'s
-      // `draftTotal` (#4912) — the panel restates that number, and the two
-      // diverging over an imported already-superseded draft would be exactly
-      // the flicker carrying them in one response exists to prevent. The
-      // WORKSPACE counters above deliberately do NOT carry the term (see
-      // STATE_COUNTERS), so such a draft lands in the hidden-backlog delta —
-      // honestly: publish still reaches it and no reader's queue shows it.
+      // The current-validity term keeps this the same quantity as `/summary`'s
+      // `draftTotal` OVER THE SUPERSESSION AXIS (#4912) — the panel restates
+      // that number, and the two diverging over an imported already-superseded
+      // draft would be exactly the flicker carrying them in one response exists
+      // to prevent. The WORKSPACE counters above deliberately do NOT carry the
+      // term (see STATE_COUNTERS), so such a draft lands in the hidden-backlog
+      // delta — honestly: publish still reaches it and no reader's queue shows
+      // it.
+      //
+      // ⚠️ IT IS NOT THE SAME QUANTITY OUTRIGHT, and this comment used to say it
+      // was. `/summary`'s aggregate has composed `notAnObservationSql` since
+      // #5341 (`candidates.ts`) and this restatement never did, so on a
+      // workspace holding draft observations the panel reads "N awaiting
+      // review" over a queue that shows none — ADR-0042's exclusion missing
+      // from a disclosure, which is #5411's shape on a fifth surface.
+      //
+      // Deliberately NOT fixed here, because fixing this half ALONE makes the
+      // disclosure worse: the hidden-backlog delta is
+      // `workspaceTotals.awaitingReview − reviewableAwaitingReview`, so
+      // narrowing only the subtrahend reports the observations as backlog
+      // "federated to somebody else", which is false. STATE_COUNTERS has to
+      // move with it, and that is a decision about what this surface COUNTS —
+      // it is documented above as a deliberately unfiltered accounting of the
+      // table, and the precedent in this very comment does not carry: a
+      // superseded import lands in the delta honestly because "publish still
+      // reaches it", and publish never reaches an observation.
+      //
+      // ⚠️ And STATE_COUNTERS must NOT move uniformly, which is the part that
+      // makes this a ticket rather than a line. Three of its five arms lose
+      // observations (`awaiting_review`, `provisional`, `in_tension` — nobody
+      // will ever review one); the other two must KEEP counting them
+      // (`published` and `retracted` are the ADR-0042 stragglers `GET
+      // /retirable` exists to enumerate, and hiding them strands the retirement
+      // flow).
+      //
+      // ⭐ The rule that falls out, and the reason a sweep would have been
+      // wrong: an exclusion is a property of a QUESTION, not of a table. "What
+      // is awaiting review" and "what does this workspace hold" are different
+      // questions over the same rows, and `notAnObservationSql` is right on one
+      // and wrong on the other.
+      //
+      // Tracked in #5416, off #5411's AC4 sweep. Until it lands, this comment
+      // is the disclosure.
       `SELECT COUNT(*)::int AS n
          FROM brain_facts f
         WHERE ${acl.sql}

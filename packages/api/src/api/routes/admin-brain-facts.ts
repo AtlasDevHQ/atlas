@@ -301,7 +301,22 @@ const retirableRoute = createRoute({
     "Retracting a warehouse-derived fact is admitted and says only that the row should not have been blessed — it asserts no belief about the warehouse, which is why `supersede`, `re-authority` and `pin` remain refused on these rows. " +
     "Reader-scoped like every read on this router: `total` is what THIS reviewer can see, not what exists, and the audit override is deliberately not wired up. Retracted rows are excluded, so an empty page after a clearing is the confirmation that it worked. " +
     "Rows whose `validTo` has passed ARE listed, unlike on every serving surface: this is a discovery listing, not a belief, and a superseded observation is reachable by no other path, so filtering it out would strand it exactly as this endpoint exists to prevent. `validTo` is in the projection, so an already-inert row is visibly inert. " +
-    "⚠️ A workspace-admin session authenticates against exactly ONE region (ADR-0024). Facts stranded on `eu-prod` / `apac-prod` need a session PER REGION — a `200` here says nothing about the other two.",
+    // ⚠️ NAMES NO REGION, and that is the fix rather than an omission (#5409).
+    // This sentence used to read "Facts stranded on `eu-prod` / `apac-prod`
+    // need a session PER REGION". The RULE was right — ADR-0024 makes a session
+    // single-region — and the EXAMPLE was false about the world: measured
+    // 2026-08-24 against all three internal DBs, every ADR-0042 straggler was
+    // on `us-prod` and `eu` / `apac` held zero brain facts between them. So the
+    // copy sent an operator mid-retirement to look in the two places the rows
+    // were not, on the one surface that exists to find them — and an empty page
+    // in `eu` is also what SUCCESS looks like there, so nothing would have told
+    // them.
+    //
+    // ⭐ The general form: a description may state a RULE about regions, which
+    // stays true, but not an INSTANCE about where data sits, which no
+    // description can keep true and which reaches the published OpenAPI spec.
+    // Keep the warning, drop the falsifiable half.
+    "⚠️ A workspace-admin session authenticates against exactly ONE region (ADR-0024), so this listing covers the region you are authenticated against and no other. A workspace holding facts in more than one region needs a session PER REGION — a `200` here says nothing about the others, and an empty page is equally what a region with nothing to retire looks like.",
   request: {
     query: z.object({
       limit: z

@@ -25634,7 +25634,7 @@
           "Admin — Brain Facts"
         ],
         "summary": "List published warehouse-derived facts awaiting retirement",
-        "description": "Enumerates PUBLISHED, warehouse-derived facts — the population ADR-0042 stranded — with the fact `id` that `POST /{id}/retract` consumes. It exists because no other surface could produce that id (#5403): `searchBrain` excludes observations from both content-mode arms (#5341), `/admin/brain-coverage` emits predicates without ids, `executeSQL` is whitelist-scoped and `brain_facts` is not a whitelisted entity, and the review queue excludes them at every `?status=` including `all`. ⚠️ This is NOT the review queue with a filter, and it does not weaken one. An observation is not a candidate for REVIEW — a reviewer has no trust call to make on it — and `lib/brain/candidates.ts` still excludes these rows at every status. What this surface serves is a different question with a different verb: RETIREMENT, for a closed legacy population that can only shrink (the publish gate has refused warehouse-derived promotions since #5342). Retracting a warehouse-derived fact is admitted and says only that the row should not have been blessed — it asserts no belief about the warehouse, which is why `supersede`, `re-authority` and `pin` remain refused on these rows. Reader-scoped like every read on this router: `total` is what THIS reviewer can see, not what exists, and the audit override is deliberately not wired up. Retracted rows are excluded, so an empty page after a clearing is the confirmation that it worked. Rows whose `validTo` has passed ARE listed, unlike on every serving surface: this is a discovery listing, not a belief, and a superseded observation is reachable by no other path, so filtering it out would strand it exactly as this endpoint exists to prevent. `validTo` is in the projection, so an already-inert row is visibly inert. ⚠️ A workspace-admin session authenticates against exactly ONE region (ADR-0024). Facts stranded on `eu-prod` / `apac-prod` need a session PER REGION — a `200` here says nothing about the other two.",
+        "description": "Enumerates PUBLISHED, warehouse-derived facts — the population ADR-0042 stranded — with the fact `id` that `POST /{id}/retract` consumes. It exists because no other surface could produce that id (#5403): `searchBrain` excludes observations from both content-mode arms (#5341), `/admin/brain-coverage` emits predicates without ids, `executeSQL` is whitelist-scoped and `brain_facts` is not a whitelisted entity, and the review queue excludes them at every `?status=` including `all`. ⚠️ This is NOT the review queue with a filter, and it does not weaken one. An observation is not a candidate for REVIEW — a reviewer has no trust call to make on it — and `lib/brain/candidates.ts` still excludes these rows at every status. What this surface serves is a different question with a different verb: RETIREMENT, for a closed legacy population that can only shrink (the publish gate has refused warehouse-derived promotions since #5342). Retracting a warehouse-derived fact is admitted and says only that the row should not have been blessed — it asserts no belief about the warehouse, which is why `supersede`, `re-authority` and `pin` remain refused on these rows. Reader-scoped like every read on this router: `total` is what THIS reviewer can see, not what exists, and the audit override is deliberately not wired up. Retracted rows are excluded, so an empty page after a clearing is the confirmation that it worked. Rows whose `validTo` has passed ARE listed, unlike on every serving surface: this is a discovery listing, not a belief, and a superseded observation is reachable by no other path, so filtering it out would strand it exactly as this endpoint exists to prevent. `validTo` is in the projection, so an already-inert row is visibly inert. ⚠️ A workspace-admin session authenticates against exactly ONE region (ADR-0024), so this listing covers the region you are authenticated against and no other. A workspace holding facts in more than one region needs a session PER REGION — a `200` here says nothing about the others, and an empty page is equally what a region with nothing to retire looks like.",
         "parameters": [
           {
             "schema": {
@@ -74350,7 +74350,7 @@
           "Admin — Semantic"
         ],
         "summary": "Create or update a semantic entity (structured)",
-        "description": "Accepts structured entity JSON (table, dimensions, measures, joins, query_patterns), converts to YAML, and stores in the org-scoped semantic_entities table. Triggers semantic index rebuild for the workspace.",
+        "description": "Accepts structured entity JSON (table, dimensions, measures, joins, query_patterns), converts to YAML, and stores in the org-scoped semantic_entities table. Triggers semantic index rebuild for the workspace. Scope the write with `connectionGroupId` when the same entity name exists in multiple environments — accepted BOTH as `?connectionGroupId=<group>` and in the JSON body, so it matches the `DELETE` on this path (#5413); the body wins if both are sent. Without it the write targets the group the entity already lives in, and a name spanning two or more groups returns 409 `entity_ambiguous` with the candidates. ⚠️ `connectionGroupId` and `connectionId` remain mutually exclusive (#3854) and that now includes the query form: sending `?connectionGroupId=` alongside a body `connectionId` is a 400 `conflicting_scope`, where the query parameter was previously ignored.",
         "parameters": [
           {
             "schema": {
@@ -74362,6 +74362,15 @@
             "required": true,
             "name": "name",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "g_prod_us"
+            },
+            "required": false,
+            "name": "connectionGroupId",
+            "in": "query"
           }
         ],
         "requestBody": {
@@ -74666,6 +74675,78 @@
               }
             }
           },
+          "409": {
+            "description": "The entity name exists in more than one connection group and the request named none. Nothing was written (#5412) — the ambiguity is resolved before any persistence. `groups` carries the candidates and `disambiguateWith` says where to send the one you pick — for this verb, `?connectionGroupId=<group>` in the query string or `connectionGroupId` in the JSON body (#5413).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "entity_ambiguous"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "groups": {
+                      "type": "array",
+                      "items": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "entityName": {
+                      "type": "string"
+                    },
+                    "entityType": {
+                      "type": "string"
+                    },
+                    "disambiguateWith": {
+                      "type": "object",
+                      "properties": {
+                        "parameter": {
+                          "type": "string",
+                          "enum": [
+                            "connectionGroupId"
+                          ]
+                        },
+                        "in": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "query",
+                              "body"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "parameter",
+                        "in"
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message",
+                    "groups",
+                    "entityName",
+                    "entityType",
+                    "disambiguateWith"
+                  ]
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -74855,6 +74936,78 @@
                   "required": [
                     "error",
                     "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The entity name exists in more than one connection group and the request named none. Nothing was written (#5412) — the ambiguity is resolved before any persistence. `groups` carries the candidates and `disambiguateWith` says where to send the one you pick — for this verb, `?connectionGroupId=<group>` in the query string (#5413).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "entity_ambiguous"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "groups": {
+                      "type": "array",
+                      "items": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "entityName": {
+                      "type": "string"
+                    },
+                    "entityType": {
+                      "type": "string"
+                    },
+                    "disambiguateWith": {
+                      "type": "object",
+                      "properties": {
+                        "parameter": {
+                          "type": "string",
+                          "enum": [
+                            "connectionGroupId"
+                          ]
+                        },
+                        "in": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "query",
+                              "body"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "parameter",
+                        "in"
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message",
+                    "groups",
+                    "entityName",
+                    "entityType",
+                    "disambiguateWith"
                   ]
                 }
               }
@@ -75494,7 +75647,7 @@
           "Admin — Semantic"
         ],
         "summary": "Rollback an entity to a previous version",
-        "description": "Restores the entity's YAML content from the specified version. Creates a new version snapshot recording the rollback.",
+        "description": "Restores the entity's YAML content from the specified version. Creates a new version snapshot recording the rollback. The restored draft lands in the group the entity already lives in; pass `connectionGroupId` in the body to target a different one, or to disambiguate a name that exists in several (#5412).",
         "parameters": [
           {
             "schema": {
@@ -75612,6 +75765,78 @@
                   "required": [
                     "error",
                     "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The entity name exists in more than one connection group and the request named none. Nothing was written (#5412) — the ambiguity is resolved before any persistence. `groups` carries the candidates and `disambiguateWith` says where to send the one you pick — for this verb, `connectionGroupId` in the JSON body (#5413).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "entity_ambiguous"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "groups": {
+                      "type": "array",
+                      "items": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "entityName": {
+                      "type": "string"
+                    },
+                    "entityType": {
+                      "type": "string"
+                    },
+                    "disambiguateWith": {
+                      "type": "object",
+                      "properties": {
+                        "parameter": {
+                          "type": "string",
+                          "enum": [
+                            "connectionGroupId"
+                          ]
+                        },
+                        "in": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "query",
+                              "body"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "parameter",
+                        "in"
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message",
+                    "groups",
+                    "entityName",
+                    "entityType",
+                    "disambiguateWith"
                   ]
                 }
               }

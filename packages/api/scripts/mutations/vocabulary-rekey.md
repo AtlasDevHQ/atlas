@@ -123,7 +123,7 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | the two skip causes MERGED into one count (#5109 round 1's own defect) | 0 | 0 | 0 | 4 |
 | the completion message stops being conditional on `skippedVocabularyTarget` | 0 | 0 | 0 | 1 |
 
-Suite sizes: **rekey-pg** 28 tests (`src/lib/brain/__tests__/vocabulary-rekey-pg.test.ts`) · **decide-pg** 85 tests (`src/lib/brain/__tests__/vocabulary-decide-pg.test.ts`) · **brain-facts** 62 tests (`src/lib/content-mode/adapters/__tests__/brain-facts.test.ts`) · **rekey-logging** 15 tests (`src/lib/brain/__tests__/vocabulary-rekey-logging.test.ts`).
+Suite sizes: **rekey-pg** 28 tests (`src/lib/brain/__tests__/vocabulary-rekey-pg.test.ts`) · **decide-pg** 85 tests (`src/lib/brain/__tests__/vocabulary-decide-pg.test.ts`) · **brain-facts** 63 tests (`src/lib/content-mode/adapters/__tests__/brain-facts.test.ts`) · **rekey-logging** 15 tests (`src/lib/brain/__tests__/vocabulary-rekey-logging.test.ts`).
 
 ## Notes
 

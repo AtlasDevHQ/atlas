@@ -76,7 +76,7 @@ import {
   type DraftFactRow,
   type StoredGrant,
 } from "@atlas/api/lib/brain/promotion";
-import { isJsonObject } from "@atlas/api/lib/brain/observation";
+import { isJsonObject, notAnObservationSql } from "@atlas/api/lib/brain/observation";
 import {
   PublishPhaseError,
   type FactSupersession,
@@ -1306,9 +1306,30 @@ export const INSERT_SUPERSEDES_EDGES_SQL = `
    RETURNING id
 `;
 
-/** Draft count for the `brainFacts` segment of `/api/v1/mode` `draftCounts`. */
+/**
+ * Draft count for the `brainFacts` segment of `/api/v1/mode` `draftCounts`.
+ *
+ * ## It excludes OBSERVATIONS, and that is not an optimisation (#5411)
+ *
+ * This number is the pending-changes badge — the most visible statement Atlas
+ * makes about how much review work is outstanding. `classifyFactForPromotion`
+ * refuses every warehouse-derived draft under
+ * `FACT_REFUSAL_REASONS.observationNotPublishable` (ADR-0042, #5342), so a
+ * count that included them told an operator on prod `us` that twelve things
+ * were pending publish when the publishable answer was zero — and the refusal
+ * copy, good as it is, arrives only AFTER the click the badge invited.
+ *
+ * The exclusion is `notAnObservationSql`, the one spelling, rather than a
+ * literal here: the review queue (`candidates.ts`), the serving path
+ * (`search.ts`) and this count are the same rule at three altitudes, and #4938
+ * is what happens when each writes its own.
+ *
+ * ⚠️ Alias is the bare TABLE NAME, not `f`. There is no alias in this statement
+ * and adding one would break `mode.ts`'s `workspace_id = $1` pin; `reconcile.ts`
+ * composes the predicate the same way for the same reason.
+ */
 export function brainFactsCountSql(orgParam: string): string {
-  return `SELECT 'brainFacts' AS key, COUNT(*)::int AS n FROM brain_facts WHERE workspace_id = ${orgParam} AND status = 'draft' AND invalidated_at IS NULL`;
+  return `SELECT 'brainFacts' AS key, COUNT(*)::int AS n FROM brain_facts WHERE workspace_id = ${orgParam} AND status = 'draft' AND invalidated_at IS NULL AND ${notAnObservationSql("brain_facts")}`;
 }
 
 /**
@@ -1331,6 +1352,14 @@ export function brainFactsCountSql(orgParam: string): string {
  * the pending badge) true by construction rather than by two queries that
  * happen to agree.
  *
+ * ## It excludes OBSERVATIONS as well (#5411)
+ *
+ * Same rule and same reason as {@link brainFactsCountSql} — see the note there.
+ * Stated in BOTH statements rather than in one and inherited, because the
+ * preview's arithmetic is `shown + withheld = the badge`: a projection narrowed
+ * without the count would render every excluded observation as `withheld`, and
+ * "and 12 more you cannot see" is a worse lie than listing them was.
+ *
  * `aclSql` must alias the fact table `f` and is interpolated, so callers pass a
  * clause they built — same contract as `brainFactStatusClause`.
  *
@@ -1346,6 +1375,7 @@ export function brainFactPreviewSql(aclSql: string): string {
           WHERE ${aclSql}
             AND f.status = 'draft'
             AND f.invalidated_at IS NULL
+            AND ${notAnObservationSql("f")}
           ORDER BY f.updated_at DESC`;
 }
 

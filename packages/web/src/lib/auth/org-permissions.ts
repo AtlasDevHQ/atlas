@@ -10,6 +10,7 @@ import { createAccessControl } from "better-auth/plugins/access";
 const statement = {
   organization: ["update", "delete"],
   member: ["create", "read", "update", "delete"],
+  invitation: ["create", "cancel"],
   connection: ["create", "read", "update", "delete"],
   conversation: ["create", "read", "delete"],
   semantic: ["read", "update"],
@@ -27,6 +28,7 @@ export const member = ac.newRole({
 
 export const admin = ac.newRole({
   member: ["create", "read", "update", "delete"],
+  invitation: ["create", "cancel"],
   connection: ["create", "read", "update", "delete"],
   conversation: ["create", "read", "delete"],
   semantic: ["read", "update"],
@@ -36,6 +38,7 @@ export const admin = ac.newRole({
 export const owner = ac.newRole({
   organization: ["update", "delete"],
   member: ["create", "read", "update", "delete"],
+  invitation: ["create", "cancel"],
   connection: ["create", "read", "update", "delete"],
   conversation: ["create", "read", "delete"],
   semantic: ["read", "update"],

@@ -23,8 +23,8 @@ import { createAccessControl } from "better-auth/plugins/access";
 const statement = {
   organization: ["update", "delete"],
   member: ["create", "read", "update", "delete"],
-  // Gated by Better Auth's own invite routes (`routes/crud-invites.mjs` asks
-  // for `invitation: ["create"]` / `["cancel"]`). Because `server.ts` passes
+  // Better Auth's own invite routes ask for invitation create / cancel.
+  // Because `server.ts` passes
   // this statement AND these roles to `organization()`, they REPLACE the stock
   // `defaultStatements`/`defaultRoles` rather than extending them — and
   // `role.authorize()` denies a resource it has never heard of. Omitting this

@@ -33,6 +33,7 @@ import {
   queryEffect,
 } from "@atlas/api/lib/db/internal";
 import { matchScopeAcrossAliases } from "@atlas/api/lib/db/with-group-scope";
+import { notAnObservationSql } from "@atlas/api/lib/brain/observation";
 import { demoInstallActiveSql } from "@atlas/api/lib/integrations/installed-connection";
 import {
   ContentModeRegistry,
@@ -186,6 +187,7 @@ const DRAFT_ACTIVITY_SQL = `
   UNION ALL
   SELECT 'brainFacts' AS key, MAX(updated_at) AS at FROM brain_facts
    WHERE workspace_id = $1 AND status = 'draft' AND invalidated_at IS NULL
+     AND ${notAnObservationSql("brain_facts")}
 `;
 
 // `invalidated_at IS NULL` above is NOT optional polish: `brainFactsCountSql`,
@@ -194,6 +196,15 @@ const DRAFT_ACTIVITY_SQL = `
 // drafts are retracted report `brainFacts: 0` with a real `lastEditedAt` —
 // the two halves of one display surface (`content-surfaces.ts` folds them into
 // a single descriptor) disagreeing about whether anything is pending.
+//
+// `notAnObservationSql` is on this segment for EXACTLY that argument, one
+// exclusion later (#5411, ADR-0042). `brainFactsCountSql` now excludes
+// warehouse-derived drafts because the publish gate refuses them; a workspace
+// whose only drafts are observations would otherwise report `brainFacts: 0`
+// beside a live "last edited 5m ago", which is the same contradiction on the
+// same descriptor. Composed from `lib/brain/observation.ts` rather than spelled
+// here — a hand-written segment is precisely where a fourth spelling of the
+// rule would go unnoticed.
 
 /**
  * Coerce a pg `timestamptz` value to an ISO-8601 string. `pg` returns

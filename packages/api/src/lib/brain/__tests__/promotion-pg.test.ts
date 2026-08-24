@@ -41,6 +41,7 @@ import {
   aclVisibilityClause,
   resolvePrincipalContext,
 } from "@atlas/api/lib/brain/acl";
+import { loadFactCandidates } from "@atlas/api/lib/brain/candidates";
 import { identityAlias, slotKey } from "@atlas/api/lib/brain/identity";
 import { declarePredicateCardinality } from "@atlas/api/lib/brain/cardinality";
 import { comparableValue } from "@atlas/api/lib/brain/object-cmp";
@@ -2515,6 +2516,82 @@ describeIfPg("brain fact review gate (real Postgres)", () => {
           ]);
         }
         expect(await statusOf(observation)).toBe("draft");
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "⭐ is absent from the PREVIEW and the draft COUNT too — every disclosure agrees with the gate (#5411)",
+      async () => {
+        // The falsifier for #5411. The gate above refuses an observation and
+        // `candidates-pg.test.ts` proves the review queue never lists one. Two
+        // more surfaces read the same rows and skipped the exclusion:
+        // `brainFactsCountSql` (the `/api/v1/mode` draft badge) and
+        // `brainFactPreviewSql` (the Publish modal's list). On prod `us` that
+        // put twelve warehouse observations under "pending publish" above a
+        // button that then refused all twelve.
+        //
+        // ⚠️ An exclusion enforced at the GATE but not at the DISCLOSURE is only
+        // half-enforced: the data stays safe, and the operator's plan is wrong
+        // before it is executed. So all four surfaces are asserted HERE, over
+        // ONE corpus — the agreement across them is the claim, and four files
+        // each asserting its own surface is how they drifted apart.
+        const ws = `ws-observation-preview-${Date.now()}`;
+        const ep = await seedEpisode(ws, "obs-preview");
+
+        const belief = await seedDraftFact({ workspaceId: ws, episodeId: ep, subject: "dharma" });
+        const observations: string[] = [];
+        for (const subject of ["kittiwake", "petrel"]) {
+          observations.push(
+            await seedDraftFact({
+              workspaceId: ws,
+              episodeId: ep,
+              subject,
+              provenance: { actor: "system:warehouse-producer", source: WAREHOUSE_SOURCE },
+            }),
+          );
+        }
+
+        const reader = await resolvePrincipalContext(pool, {
+          workspaceId: ws,
+          mode: "managed",
+          userId: "u-preview",
+          resolvedRole: { role: "admin", orgId: ws },
+        });
+
+        // (1) draftCounts — the number the pending-changes badge renders. EXACT
+        // rather than a floor: `3` is the defect, and `1` is right only if both
+        // observations are excluded AND the belief is not.
+        const counted = await pool.query<{ n: number }>(brainFactsCountSql("$1"), [ws]);
+        expect(counted.rows[0]!.n).toBe(1);
+
+        // (2) the publish preview projection — the list the modal renders, run
+        // as the statement the route ships rather than a hand-copy of it.
+        const previewAcl = aclVisibilityClause(reader, {
+          table: "brain_facts",
+          alias: "f",
+          paramIndex: 1,
+        });
+        const previewed = await pool.query<{ id: string }>(
+          brainFactPreviewSql(previewAcl.sql),
+          [...previewAcl.params],
+        );
+        expect(previewed.rows.map((r) => r.id)).toEqual([belief]);
+
+        // (3) the review queue, which composed the exclusion all along — the
+        // control that keeps (1) and (2) honest. If this goes red the fixture
+        // stopped being warehouse-derived, and the two assertions above are
+        // passing vacuously.
+        const queue = await loadFactCandidates(pool, { ctx: reader, limit: 50, offset: 0 });
+        expect(queue.total).toBe(1);
+        expect(queue.candidates.map((c) => c.id)).toEqual([belief]);
+
+        // (4) the gate still refuses them — the DISCLOSURE was narrowed, the
+        // enforcement was not quietly relaxed to agree with it.
+        const report = await publish(ws);
+        expect(report.promoted).toBe(1);
+        expect(report.refused?.map((r) => r.rowId).toSorted()).toEqual([...observations].toSorted());
+        for (const id of observations) expect(await statusOf(id)).toBe("draft");
       },
       PG_TEST_TIMEOUT_MS,
     );

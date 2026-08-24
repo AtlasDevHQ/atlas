@@ -13,6 +13,7 @@
 
 import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
 import type { ModeDraftCounts } from "@useatlas/types/mode";
+import { notAnObservationSql } from "@atlas/api/lib/brain/observation";
 import { Context, Effect, Layer } from "effect";
 import {
   MockInternalDB,
@@ -493,6 +494,14 @@ describe("GET /api/v1/mode — draft counts", () => {
     expect(activityCall).toContain("FROM brain_facts");
     expect(activityCall).toContain("workspace_id = $1");
     expect(activityCall).toContain("invalidated_at IS NULL");
+    // (3) #5411 — the same argument, one exclusion later. `brainFactsCountSql`
+    // now excludes warehouse-derived drafts (ADR-0042: the publish gate refuses
+    // them unconditionally), so a workspace whose only drafts are observations
+    // would report `brainFacts: 0` beside a live "last edited 5m ago" — the
+    // exact contradiction hazard (2) exists for, on the same descriptor.
+    // Composed, not spelled: a fourth hand-written copy of the predicate is
+    // what `lib/brain/observation.ts` exists to prevent.
+    expect(activityCall).toContain(notAnObservationSql("brain_facts"));
   });
 
   it("scopes the knowledge_documents activity segment by workspace_id, not org_id (#4206)", async () => {

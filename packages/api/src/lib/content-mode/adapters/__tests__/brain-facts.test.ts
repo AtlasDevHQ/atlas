@@ -20,12 +20,14 @@ import {
   SUPERSEDE_STAMP_SQL,
   SUPERSESSION_TARGETS_SQL,
   TIER_HELD_BACK_COUNT_SQL,
+  brainFactPreviewSql,
   brainFactStatusClause,
   brainFactsCountSql,
   promoteBrainFacts,
   supersedingDraftPredicate,
   supersessionCollisionPredicate,
 } from "@atlas/api/lib/content-mode/adapters/brain-facts";
+import { notAnObservationSql } from "@atlas/api/lib/brain/observation";
 import { subjectNotDifferentSql } from "@atlas/api/lib/brain/subject-cmp";
 import {
   IDENTITY_MUTATION_LOCK_NAMESPACE,
@@ -602,6 +604,20 @@ describe("promoteBrainFacts", () => {
   it("keeps the draft count in lockstep with what promotion considers", () => {
     expect(brainFactsCountSql("$1")).toContain("invalidated_at IS NULL");
     expect(brainFactsCountSql("$1")).toContain("status = 'draft'");
+    // #5411 / ADR-0042 — the third exclusion on this statement, and the one
+    // whose absence was VISIBLE: the badge counted warehouse observations the
+    // publish gate refuses unconditionally. Asserted as the composed predicate
+    // rather than as a substring of it, so a hand-rolled fourth spelling of the
+    // rule fails here instead of quietly agreeing today and drifting later.
+    expect(brainFactsCountSql("$1")).toContain(notAnObservationSql("brain_facts"));
+  });
+
+  it("excludes observations from the publish preview projection too (#5411)", () => {
+    // The count and the projection are the two halves of one arithmetic —
+    // `shown + withheld` is the badge. Narrowing one without the other turns
+    // every excluded observation into "and N more you cannot see", which is a
+    // worse statement than listing them was.
+    expect(brainFactPreviewSql("f.workspace_id = $1")).toContain(notAnObservationSql("f"));
   });
 
   it("promotes a grant that is partly malformed but still enforceable", async () => {

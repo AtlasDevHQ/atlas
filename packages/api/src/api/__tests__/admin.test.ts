@@ -3589,6 +3589,357 @@ describe("PUT /api/v1/admin/semantic/entities/edit/:name", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Structured editor — lossless round-trip (#5402)
+// ---------------------------------------------------------------------------
+
+/**
+ * ⚠️ The document below is the REAL dogfood `organization` entity, reconstructed
+ * key-for-key from the measurement in #5402 (it lives in a workspace's DB row,
+ * not in this tree, so it is transcribed rather than imported). Every field here
+ * was measured as PRESENT before a structured PUT and ABSENT after it:
+ *
+ *   filter · type · grain · use_cases · dimension `virtual` · relationship joins
+ *
+ * The editor rebuilt the document from six keys and discarded the rest — no 400,
+ * no warning. `virtual` is the one with teeth beyond documentation loss: dropping
+ * it turns a CASE expression into something the layer asserts is a real column of
+ * the table, which is a wrong statement, not merely a thinner one.
+ */
+const DOGFOOD_ORGANIZATION_YAML = `table: organization
+type: fact_table
+grain: one row per Atlas customer organization (workspace)
+filter: deleted_at IS NULL
+description: Atlas customer organizations (workspaces).
+use_cases:
+  - Count paying vs trialing workspaces
+  - Signup cohort analysis by week
+  - Avoid for per-user analysis — use \`user\` instead
+dimensions:
+  - name: id
+    sql: id
+    type: string
+    primary_key: true
+  - name: plan_tier
+    sql: plan_tier
+    type: string
+    unique_count: 4
+    indexed: true
+    index_type: btree
+  - name: signup_week
+    sql: DATE_TRUNC('week', created_at)
+    type: date
+    virtual: true
+  - name: is_paying
+    sql: CASE WHEN plan_tier IN ('team', 'business') THEN true ELSE false END
+    type: boolean
+    virtual: true
+measures:
+  - name: org_count
+    sql: id
+    type: count_distinct
+joins:
+  - target_entity: User
+    relationship: one_to_many
+    join_columns:
+      from: id
+      to: organization_id
+    description: Each organization has many users
+indexes:
+  - name: organization_plan_tier_idx
+    columns:
+      - plan_tier
+    type: btree
+`;
+
+describe("PUT /api/v1/admin/semantic/entities/edit/:name — lossless round-trip (#5402)", () => {
+  const yamlOf = () =>
+    (mockUpsertDraftEntityAdmin.mock.calls as unknown[][])[0]?.[3] as string;
+
+  const parseWritten = async () => {
+    const yaml = await import("js-yaml");
+    return yaml.load(yamlOf()) as Record<string, unknown>;
+  };
+
+  beforeEach(() => {
+    mockHasInternalDB = true;
+    mockUpsertDraftEntityAdmin.mockReset();
+    mockUpsertDraftEntityAdmin.mockResolvedValue(undefined);
+    mockUpsertDraftEntityForGroupAdmin.mockReset();
+    mockUpsertDraftEntityForGroupAdmin.mockResolvedValue(undefined);
+    mockSyncEntityToDisk.mockReset();
+    mockSyncEntityToDisk.mockResolvedValue(undefined);
+    mockGetEntityAdmin.mockReset();
+    mockGetEntityAdmin.mockResolvedValue({
+      id: "e-org", org_id: "org-1", entity_type: "entity", name: "organization",
+      yaml_content: DOGFOOD_ORGANIZATION_YAML, connection_id: null,
+      connection_group_id: null, status: "published",
+    });
+  });
+
+  /**
+   * The read-modify-write the admin UI actually performs: the FE assembles the
+   * six fields it knows (`entity-editor-dialog.tsx`, `formValuesToEntityBody`)
+   * and PUTs them back. Before the fix, this exact body was what stripped the
+   * document.
+   */
+  const uiShapedEdit = {
+    table: "organization",
+    description: "Atlas customer organizations (workspaces). Edited.",
+    dimensions: [
+      { name: "id", sql: "id", type: "string", description: "", sample_values: [] },
+      { name: "plan_tier", sql: "plan_tier", type: "string", description: "", sample_values: [] },
+      { name: "signup_week", sql: "DATE_TRUNC('week', created_at)", type: "date", description: "", sample_values: [] },
+      {
+        name: "is_paying",
+        sql: "CASE WHEN plan_tier IN ('team', 'business') THEN true ELSE false END",
+        type: "boolean", description: "", sample_values: [],
+      },
+    ],
+    measures: [{ name: "org_count", sql: "id", type: "count_distinct", description: "" }],
+  };
+
+  it("preserves filter, type, grain and use_cases through a UI-shaped edit", async () => {
+    setOrgAdmin("org-1");
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/organization", "PUT", uiShapedEdit),
+    );
+    expect(res.status).toBe(200);
+    const parsed = await parseWritten();
+
+    // The edit the operator MADE lands.
+    expect(parsed.description).toBe("Atlas customer organizations (workspaces). Edited.");
+    // Everything they did not touch survives.
+    expect(parsed.filter).toBe("deleted_at IS NULL");
+    expect(parsed.type).toBe("fact_table");
+    expect(parsed.grain).toBe("one row per Atlas customer organization (workspace)");
+    expect(parsed.use_cases).toEqual([
+      "Count paying vs trialing workspaces",
+      "Signup cohort analysis by week",
+      "Avoid for per-user analysis — use `user` instead",
+    ]);
+  });
+
+  it("preserves `virtual: true` on the dimensions that carry it, and adds it to no others", async () => {
+    setOrgAdmin("org-1");
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/organization", "PUT", uiShapedEdit),
+    );
+    expect(res.status).toBe(200);
+    const parsed = await parseWritten();
+    const dims = parsed.dimensions as Array<Record<string, unknown>>;
+    const virtualByName = Object.fromEntries(dims.map((d) => [d.name, d.virtual === true]));
+
+    // ⚠️ The asymmetry IS the assertion. Losing the flag makes the layer claim a
+    // CASE expression is a column; adding it where it does not belong makes the
+    // layer hide a real column from the whitelist. Both directions are checked.
+    expect(virtualByName).toEqual({
+      id: false,
+      plan_tier: false,
+      signup_week: true,
+      is_paying: true,
+    });
+  });
+
+  it("preserves `primary_key` and `foreign_key`, which the UI also never sends", async () => {
+    setOrgAdmin("org-1");
+    await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/organization", "PUT", uiShapedEdit),
+    );
+    const parsed = await parseWritten();
+    const id = (parsed.dimensions as Array<Record<string, unknown>>).find((d) => d.name === "id");
+    // ⚠️ Same class as `virtual`, and easy to miss because it looks handled: the
+    // serializer writes these only when truthy, and being "managed" excludes
+    // them from the preservation sweep. So a UI edit silently un-flagged the
+    // primary key of every entity it touched — a wrong statement about the
+    // table, not a thinner one.
+    expect(id?.primary_key).toBe(true);
+  });
+
+  it("a body that clears `primary_key` clears it", async () => {
+    setOrgAdmin("org-1");
+    await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/organization", "PUT", {
+        ...uiShapedEdit,
+        dimensions: uiShapedEdit.dimensions.map((d) =>
+          d.name === "id" ? { ...d, primary_key: false } : d,
+        ),
+      }),
+    );
+    const parsed = await parseWritten();
+    const id = (parsed.dimensions as Array<Record<string, unknown>>).find((d) => d.name === "id");
+    expect(id?.primary_key).toBeUndefined();
+  });
+
+  it("preserves profiler-emitted dimension keys the editor never models", async () => {
+    setOrgAdmin("org-1");
+    await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/organization", "PUT", uiShapedEdit),
+    );
+    const parsed = await parseWritten();
+    const planTier = (parsed.dimensions as Array<Record<string, unknown>>)
+      .find((d) => d.name === "plan_tier");
+    expect(planTier?.unique_count).toBe(4);
+    expect(planTier?.indexed).toBe(true);
+    expect(planTier?.index_type).toBe("btree");
+  });
+
+  it("preserves relationship-shaped joins and entity-level keys the editor has never heard of", async () => {
+    setOrgAdmin("org-1");
+    await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/organization", "PUT", uiShapedEdit),
+    );
+    const parsed = await parseWritten();
+
+    // The FE sent no `joins`, so the stored ones stand — in their own shape,
+    // not rewritten into the editor's `name`/`sql` form.
+    const joins = parsed.joins as Array<Record<string, unknown>>;
+    expect(joins).toHaveLength(1);
+    expect(joins[0].target_entity).toBe("User");
+    expect(joins[0].relationship).toBe("one_to_many");
+    expect(joins[0].join_columns).toEqual({ from: "id", to: "organization_id" });
+
+    // `indexes` is in no schema anywhere in this route — it survives because
+    // preservation is the default, which is the property that makes the NEXT
+    // key safe too.
+    expect(Array.isArray(parsed.indexes)).toBe(true);
+    expect((parsed.indexes as Array<Record<string, unknown>>)[0].name)
+      .toBe("organization_plan_tier_idx");
+  });
+
+  it("accepts a relationship-shaped join on the wire instead of rejecting it", async () => {
+    setOrgAdmin("org-1");
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/organization", "PUT", {
+        ...uiShapedEdit,
+        joins: [
+          {
+            target_entity: "Subscription",
+            relationship: "one_to_one",
+            join_columns: { from: "id", to: "organization_id" },
+            description: "Each organization has one subscription",
+          },
+        ],
+      }),
+    );
+    // `JoinSchema` required `name` AND `sql`, both `.min(1)`, so this body was a
+    // 422 before #5402 — the six real joins on this entity could not be sent.
+    expect(res.status).toBe(200);
+    const joins = (await parseWritten()).joins as Array<Record<string, unknown>>;
+    expect(joins[0].target_entity).toBe("Subscription");
+    expect(joins[0].relationship).toBe("one_to_one");
+    expect(joins[0].name).toBeUndefined();
+  });
+
+  it("accepts a relationship join that declares no cardinality", async () => {
+    setOrgAdmin("org-1");
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/organization", "PUT", {
+        ...uiShapedEdit,
+        joins: [{ target_entity: "Subscription" }],
+      }),
+    );
+    // `relationship` is optional on purpose. A stored join that names a target
+    // but not its cardinality is thinner than ideal and still real — rejecting
+    // it would turn "stored in a shape I dislike" into "cannot be saved", which
+    // is worse than the loss being fixed.
+    expect(res.status).toBe(200);
+    const joins = (await parseWritten()).joins as Array<Record<string, unknown>>;
+    expect(joins[0]).toEqual({ target_entity: "Subscription" });
+  });
+
+  it("REFUSES a join in no vocabulary at all, rather than dropping it", async () => {
+    setOrgAdmin("org-1");
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/organization", "PUT", {
+        ...uiShapedEdit,
+        joins: [{ description: "a join with no name, no sql and no target" }],
+      }),
+    );
+    // The "refuse" half of the requirement — preserve, or refuse naming what
+    // cannot be represented. Silent loss is the one outcome ruled out, so a 422
+    // here is the correct answer and not an oversight.
+    expect(res.status).toBe(422);
+    expect(mockUpsertDraftEntityAdmin).not.toHaveBeenCalled();
+  });
+
+  it("lets the body OVERRIDE a preserved key rather than only defaulting to it", async () => {
+    setOrgAdmin("org-1");
+    await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/organization", "PUT", {
+        ...uiShapedEdit,
+        filter: "deleted_at IS NULL AND is_internal = false",
+        grain: "one row per non-internal workspace",
+      }),
+    );
+    const parsed = await parseWritten();
+    // Preservation must not become a write-blocker: a caller that DOES send the
+    // key is the authority on it.
+    expect(parsed.filter).toBe("deleted_at IS NULL AND is_internal = false");
+    expect(parsed.grain).toBe("one row per non-internal workspace");
+  });
+
+  it("an explicit empty string CLEARS a carried key, and never writes an empty predicate", async () => {
+    setOrgAdmin("org-1");
+    await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/organization", "PUT", {
+        ...uiShapedEdit,
+        filter: "",
+      }),
+    );
+    const parsed = await parseWritten();
+    // ⚠️ `filter: ""` must not land in the document. An empty predicate is not a
+    // narrower entity — it is a broken SQL fragment the warehouse producer would
+    // interpolate into a WHERE clause.
+    expect(parsed.filter).toBeUndefined();
+    expect(parsed.grain).toBe("one row per Atlas customer organization (workspace)");
+  });
+
+  it("a body that clears `virtual` on a dimension clears it", async () => {
+    setOrgAdmin("org-1");
+    await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/organization", "PUT", {
+        ...uiShapedEdit,
+        dimensions: uiShapedEdit.dimensions.map((d) =>
+          d.name === "signup_week" ? { ...d, virtual: false } : d,
+        ),
+      }),
+    );
+    const parsed = await parseWritten();
+    const signupWeek = (parsed.dimensions as Array<Record<string, unknown>>)
+      .find((d) => d.name === "signup_week");
+    // `virtual: false` is a decision, not an omission — preserve-on-absent must
+    // not swallow it, or a dimension could never stop being virtual.
+    expect(signupWeek?.virtual).toBeUndefined();
+  });
+
+  it("creating a NEW entity preserves nothing — there is no prior document to carry", async () => {
+    setOrgAdmin("org-1");
+    mockGetEntityAdmin.mockResolvedValue(null);
+    await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/brand_new", "PUT", { table: "brand_new" }),
+    );
+    const parsed = await parseWritten();
+    expect(parsed).toEqual({ table: "brand_new" });
+  });
+
+  it("an unparseable stored document does not block the edit", async () => {
+    setOrgAdmin("org-1");
+    mockGetEntityAdmin.mockResolvedValue({
+      id: "e-bad", org_id: "org-1", entity_type: "entity", name: "organization",
+      yaml_content: "table: organization\n  bad: [unclosed\n", connection_id: null,
+      connection_group_id: null, status: "published",
+    });
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/organization", "PUT", uiShapedEdit),
+    );
+    // Preserving nothing is the old behavior and is acceptable here; making the
+    // entity UNEDITABLE would not be. The parse failure is logged, never swallowed.
+    expect(res.status).toBe(200);
+    expect((await parseWritten()).table).toBe("organization");
+  });
+});
+
 describe("DELETE /api/v1/admin/semantic/entities/edit/:name", () => {
   beforeEach(() => {
     mockHasInternalDB = true;

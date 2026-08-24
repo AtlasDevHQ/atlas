@@ -85,6 +85,31 @@ export const entityFormSchema = z.object({
   measures: z.array(measureSchema).optional().default([]),
   joins: z.array(joinSchema).optional().default([]),
   query_patterns: z.array(queryPatternSchema).optional().default([]),
+  /**
+   * ⚠️ NOT AN EDITABLE FIELD — a carrier, and it has to live in the form values
+   * because that is the only thing `handleSubmit` hands to the serializer.
+   *
+   * This dialog can only render a join as `name` + `sql`. The semantic layer's
+   * own join shape is `target_entity` / `relationship` / `join_columns`
+   * (`@useatlas/schemas/semantic-entity-yaml`), which carries NEITHER — so
+   * mapping one into the form produced `{ name: "", sql: "" }`, both `.min(1)`,
+   * and the operator could not save the entity at all. Before #5402 the same
+   * joins were also stripped on the way out.
+   *
+   * So joins this form cannot represent bypass the form entirely: parked here on
+   * load, re-emitted verbatim on save. The alternative — teaching this dialog to
+   * edit relationship joins — is a real feature, not a bug fix, and dropping them
+   * meanwhile is what #5402 is about.
+   *
+   * `at` is the join's index in the STORED array, and it is not decoration:
+   * re-emitting parked joins as a block would reorder `joins[]` on every save,
+   * so each write would produce a spurious diff in the version history and the
+   * generated change summary — noise that makes a real change harder to see.
+   */
+  preserved_joins: z
+    .array(z.object({ at: z.number(), join: z.unknown() }))
+    .optional()
+    .default([]),
 });
 
 export type EntityFormValues = z.infer<typeof entityFormSchema>;
@@ -154,13 +179,29 @@ interface _EntityDataLegacy {
   }>;
 }
 
+/**
+ * A join this dialog can render: it has both a name (or legacy `to`) and an ON
+ * clause (or legacy `on`). Anything else — a `target_entity` / `relationship` /
+ * `join_columns` join, which is what the layer's own generator writes — is
+ * parked in `preserved_joins` and round-tripped untouched (#5402).
+ */
+function isEditableJoin(join: Record<string, unknown>): boolean {
+  const name = (join.name as string | undefined) ?? (join.to as string | undefined);
+  const sql = (join.sql as string | undefined) ?? (join.on as string | undefined);
+  return !!name && !!sql;
+}
+
 export function entityToFormValues(entity: EntityData): EntityFormValues {
   // normalizeList handles both Array and Record<string, T> shapes from @useatlas/types
   const dims = normalizeList(entity.dimensions, "name");
   const measures = normalizeList(entity.measures, "name");
-  const joins = normalizeList(entity.joins, "name");
+  const allJoins = normalizeList(entity.joins, "name") as Array<Record<string, unknown>>;
+  const joins = allJoins.filter(isEditableJoin);
   const patterns = normalizeList(entity.query_patterns, "name");
   return {
+    preserved_joins: allJoins
+      .map((join, at) => ({ at, join }))
+      .filter(({ join }) => !isEditableJoin(join)),
     table: entity.table,
     description: entity.description ?? "",
     dimensions: dims.map((d) => ({
@@ -183,7 +224,7 @@ export function entityToFormValues(entity: EntityData): EntityFormValues {
     joins: joins.map((j) => ({
       name: (j.name as string | undefined) ?? (j as { to?: string }).to ?? "",
       sql: (j.sql as string | undefined) ?? (j as { on?: string }).on ?? "",
-      description: j.description ?? "",
+      description: (j.description as string | undefined) ?? "",
     })),
     query_patterns: patterns.map((p) => ({
       name: p.name,
@@ -194,8 +235,37 @@ export function entityToFormValues(entity: EntityData): EntityFormValues {
 }
 
 /**
+ * Weave the parked joins back into the edited ones at their original positions.
+ *
+ * Parked joins are spliced at their stored index, so an entity whose joins were
+ * `[relationship, sql, relationship]` comes back in that order rather than with
+ * the two relationship joins bunched at one end. Indices are applied ascending
+ * against the array being built, so a stale or out-of-range `at` (an entity
+ * edited in two tabs, say) degrades to "appended near the end" rather than
+ * throwing or dropping the join.
+ */
+function reassembleJoins(values: EntityFormValues) {
+  const edited = (values.joins ?? []).map((j) => ({
+    name: j.name,
+    sql: j.sql,
+    description: j.description || "",
+  }));
+  const out: unknown[] = edited;
+  for (const { at, join } of [...(values.preserved_joins ?? [])].sort((a, b) => a.at - b.at)) {
+    out.splice(Math.min(Math.max(at, 0), out.length), 0, join);
+  }
+  return out;
+}
+
+/**
  * Convert form values to the structured JSON body expected by
  * PUT /api/v1/admin/semantic/entities/edit/:name
+ *
+ * ⚠️ The route PRESERVES any key this body omits (#5402), so omission here means
+ * "leave the stored value alone" — never "delete it". That is why `joins` is
+ * emitted as `[...preserved, ...edited]` rather than just the edited ones: an
+ * explicit `[]` IS a deletion, and sending one would re-open the bug from this
+ * side.
  */
 export function formValuesToEntityBody(values: EntityFormValues) {
   return {
@@ -216,11 +286,7 @@ export function formValuesToEntityBody(values: EntityFormValues) {
       type: m.type,
       description: m.description || "",
     })),
-    joins: (values.joins ?? []).map((j) => ({
-      name: j.name,
-      sql: j.sql,
-      description: j.description || "",
-    })),
+    joins: reassembleJoins(values),
     query_patterns: (values.query_patterns ?? []).map((p) => ({
       name: p.name,
       sql: p.sql,
@@ -792,7 +858,7 @@ export function EntityEditorDialog({
   const isEditing = entity !== null;
   const defaultValues: EntityFormValues = entity
     ? entityToFormValues(entity)
-    : { table: "", description: "", dimensions: [], measures: [], joins: [], query_patterns: [] };
+    : { table: "", description: "", dimensions: [], measures: [], joins: [], query_patterns: [], preserved_joins: [] };
 
   const form = useForm<EntityFormValues>({
     resolver: zodResolver(entityFormSchema as z.ZodType<EntityFormValues, EntityFormValues>),
@@ -803,7 +869,7 @@ export function EntityEditorDialog({
   useEffect(() => {
     if (open) {
       form.reset(entity ? entityToFormValues(entity) : {
-        table: "", description: "", dimensions: [], measures: [], joins: [], query_patterns: [],
+        table: "", description: "", dimensions: [], measures: [], joins: [], query_patterns: [], preserved_joins: [],
       });
     }
   }, [open]); // intentionally depends only on `open`

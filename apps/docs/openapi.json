@@ -74170,8 +74170,7 @@
                     "minLength": 1
                   },
                   "description": {
-                    "type": "string",
-                    "default": ""
+                    "type": "string"
                   },
                   "dimensions": {
                     "type": "array",
@@ -74212,6 +74211,9 @@
                         },
                         "foreign_key": {
                           "type": "boolean"
+                        },
+                        "virtual": {
+                          "type": "boolean"
                         }
                       },
                       "required": [
@@ -74219,8 +74221,7 @@
                         "sql",
                         "type"
                       ]
-                    },
-                    "default": []
+                    }
                   },
                   "measures": {
                     "type": "array",
@@ -74256,33 +74257,61 @@
                         "sql",
                         "type"
                       ]
-                    },
-                    "default": []
+                    }
                   },
                   "joins": {
                     "type": "array",
                     "items": {
-                      "type": "object",
-                      "properties": {
-                        "name": {
-                          "type": "string",
-                          "minLength": 1
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "name": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "sql": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "description": {
+                              "type": "string",
+                              "default": ""
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "sql"
+                          ]
                         },
-                        "sql": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "description": {
-                          "type": "string",
-                          "default": ""
+                        {
+                          "type": "object",
+                          "properties": {
+                            "target_entity": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "relationship": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "join_columns": {
+                              "type": "object",
+                              "additionalProperties": {
+                                "type": "string"
+                              }
+                            },
+                            "description": {
+                              "type": "string",
+                              "default": ""
+                            }
+                          },
+                          "required": [
+                            "target_entity"
+                          ]
                         }
-                      },
-                      "required": [
-                        "name",
-                        "sql"
                       ]
-                    },
-                    "default": []
+                    }
                   },
                   "query_patterns": {
                     "type": "array",
@@ -74306,8 +74335,29 @@
                         "name",
                         "sql"
                       ]
-                    },
-                    "default": []
+                    }
+                  },
+                  "filter": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  },
+                  "grain": {
+                    "type": "string"
+                  },
+                  "use_cases": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "identifier_style": {
+                    "type": "string",
+                    "enum": [
+                      "sql",
+                      "opaque"
+                    ]
                   },
                   "connectionId": {
                     "type": "string"

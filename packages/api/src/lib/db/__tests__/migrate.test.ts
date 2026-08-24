@@ -439,6 +439,60 @@ describe("runMigrations", () => {
     expect(unlockQuery).toBeDefined();
   });
 
+  // ⚠️ THE LOCK IS FIRST **WITH THE BREADCRUMB ARMED**, which is a different run
+  // than the fixture above (#5430, #5429).
+  //
+  // The `queries[0]` assertion in the previous test only exercises the ARMED
+  // path when `TEST_DATABASE_URL` happens to be set, because that is what arms
+  // the #5430 breadcrumb by default. CI sets it; a local `bun test` usually does
+  // not. So the first cut of the breadcrumb asked `current_schema()` BEFORE
+  // taking the advisory lock, passed every local run, and failed two CI shards —
+  // the assertion was there and correct, and the configuration that could see it
+  // was the one nobody ran locally.
+  //
+  // This pins the invariant in BOTH configurations by arming explicitly. The
+  // property is real and not merely a mock detail: `runMigrations` takes a
+  // dedicated connection precisely so the lock, the transactions and the unlock
+  // share one session, and any statement issued ahead of the lock is a statement
+  // running unserialized against a database another instance may be migrating.
+  it("acquires the advisory lock before ANY other statement, even when the breadcrumb is armed", async () => {
+    const previous = process.env.ATLAS_MIGRATION_BREADCRUMB;
+    process.env.ATLAS_MIGRATION_BREADCRUMB = "1";
+    try {
+      const { pool, queries } = createMockPool();
+      await runMigrations(pool);
+      expect(queries[0]).toContain("pg_advisory_lock");
+      // …and the instrument really was on, or this fixture asserts the
+      // disarmed path twice and cannot fail for the reason it exists.
+      // ⚠️ NOT `current_schema()` — that string is also inside
+      // ADVISORY_LOCK_SQL's hashtext key, so it matches whether the breadcrumb
+      // ran or not. Measured: the first cut of this assertion passed in BOTH
+      // directions and discriminated nothing. The literal below appears only in
+      // the breadcrumb's own label query.
+      expect(queries.some((q) => q.includes("(null search_path)"))).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.ATLAS_MIGRATION_BREADCRUMB;
+      else process.env.ATLAS_MIGRATION_BREADCRUMB = previous;
+    }
+  });
+
+  it("does not issue the breadcrumb's schema query when DISARMED", async () => {
+    const previous = process.env.ATLAS_MIGRATION_BREADCRUMB;
+    const previousDb = process.env.TEST_DATABASE_URL;
+    process.env.ATLAS_MIGRATION_BREADCRUMB = "0";
+    delete process.env.TEST_DATABASE_URL;
+    try {
+      const { pool, queries } = createMockPool();
+      await runMigrations(pool);
+      expect(queries[0]).toContain("pg_advisory_lock");
+      expect(queries.some((q) => q.includes("(null search_path)"))).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.ATLAS_MIGRATION_BREADCRUMB;
+      else process.env.ATLAS_MIGRATION_BREADCRUMB = previous;
+      if (previousDb !== undefined) process.env.TEST_DATABASE_URL = previousDb;
+    }
+  });
+
   it("skips already-applied migrations", async () => {
     const { pool, queries } = createMockPool({
       applied: [

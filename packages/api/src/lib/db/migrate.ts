@@ -149,22 +149,6 @@ export async function runMigrations(pool: MigrationPool, options: RunMigrationsO
   // transaction semantics.
   breadcrumb.enter("pool.connect");
   const client = await pool.connect();
-  // The scratch schema is both the thing that tells 87 concurrent runs apart and
-  // the advisory lock's key, so it is the one field a contention reading needs.
-  // Asked here rather than passed in by 87 callers — see `relabel`'s comment.
-  // Armed runs only, and best-effort: an instrument must never be the reason a
-  // migration fails.
-  if (breadcrumb !== DISARMED_BREADCRUMB) {
-    await client
-      .query("SELECT coalesce(current_schema(), '(null search_path)') AS s")
-      .then((r) => breadcrumb.relabel(`schema=${String(r.rows[0]?.s ?? "?")}`))
-      .catch((err: unknown) => {
-        log.debug(
-          { err: err instanceof Error ? err.message : String(err) },
-          "migration breadcrumb could not read current_schema — continuing unlabelled",
-        );
-      });
-  }
 
   // ⚠️ WITHOUT THIS, EVERY `RAISE NOTICE` IN EVERY MIGRATION IS DISCARDED (#5047).
   //
@@ -232,6 +216,33 @@ export async function runMigrations(pool: MigrationPool, options: RunMigrationsO
     // concurrently, the exact race this lock exists to prevent.
     breadcrumb.enter("advisory-lock");
     await client.query(ADVISORY_LOCK_SQL);
+
+    // ⚠️ AFTER THE LOCK, NEVER BEFORE IT (#5430). The scratch schema is what
+    // tells 87 concurrent breadcrumb lines apart and is also the advisory
+    // lock's own key, so it is the field a contention reading needs — but
+    // asking for it is still a statement on this session, and
+    // `migrate.test.ts` pins `queries[0]` as the lock because "the advisory
+    // lock is acquired before anything else" is a real invariant of this
+    // function. The first cut of this instrument asked before the lock and
+    // broke exactly that assertion, on two CI shards: an instrument that
+    // changes the shape of what it measures is not an instrument. Asking here
+    // costs the same round trip, reports the schema the lock was ACTUALLY
+    // taken under, and leaves the invariant intact. It is also well before the
+    // first tick at 10s, so no tick is ever unlabelled in practice.
+    //
+    // Armed runs only, and best-effort: this must never be why a migration
+    // fails.
+    if (breadcrumb !== DISARMED_BREADCRUMB) {
+      await client
+        .query("SELECT coalesce(current_schema(), '(null search_path)') AS s")
+        .then((r) => breadcrumb.relabel(`schema=${String(r.rows[0]?.s ?? "?")}`))
+        .catch((err: unknown) => {
+          log.debug(
+            { err: err instanceof Error ? err.message : String(err) },
+            "migration breadcrumb could not read current_schema — continuing unlabelled",
+          );
+        });
+    }
 
     try {
       breadcrumb.enter("apply");

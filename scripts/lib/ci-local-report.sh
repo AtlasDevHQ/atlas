@@ -53,8 +53,24 @@
 # strings and calling them regexes would invite someone to put a metacharacter
 # in one.
 CI_LOCAL_PANIC_MARKER='a test worker process crashed with SIG'
-# The marker bun stamps on each sibling file it took down.
-CI_LOCAL_ABORTED_MARKER='aborted: sibling worker panicked'
+
+# The markers bun stamps on the files the crash took down.
+#
+# ⚠️ THREE VARIANTS, and this list was WRONG until it was checked against a real
+# crash log. Measured in one run (bun 1.4.0, 24k lines): 243 × "aborted: worker
+# panicked", 31 × "aborted: sibling worker panicked", 1 × "worker crashed:
+# SIGABRT". Keyed on the "sibling" wording alone, the count came out 31 instead
+# of 275 — so the report would have claimed 244 genuine failures that did not
+# exist, which is the misread this whole change exists to remove, arriving from
+# inside the fix.
+#
+# ⚠️ THE CRASH-SITE FILE COUNTS AS ABORTED, not as a residual failure. It is the
+# `(worker crashed: SIG…)` line, and bun says of it in the very next sentence:
+# "This indicates a bug in Bun or in a native addon, **not in the test itself**."
+# Counting the victim as a defect would contradict bun on the one point it is
+# unambiguous about, and it is what makes `275 reported = 275 aborted + 0 failed`
+# come out right.
+CI_LOCAL_ABORTED_RE='\(aborted: (sibling )?worker panicked\)|\(worker crashed: SIG[A-Z]+\)'
 
 # One-entry memo. `ci_local_abort_phrase` and `ci_local_abort_block` are called
 # back-to-back for the same gate, and a full-log `sed` per call is wasted work on
@@ -89,30 +105,50 @@ ci_local_abort_stats() {
   abort_reported_fail=""; abort_residual="unknown"
   [ -f "$logfile" ] || return 1
 
-  # Strip ANSI first: bun keeps colour when it believes it has a TTY, and an
-  # escape sequence between "with" and "SIGABRT" would hide the marker.
+  # ⚠️ THE STRIPPED LOG GOES TO A FILE, NOT A SHELL VARIABLE, and that is a
+  # correctness fix rather than a style choice.
   #
-  # ⚠️ `$'\033'` (bash ANSI-C quoting), NOT `\x1b` inside the sed script. `\x1b`
-  # is a GNU-sed extension; BSD/macOS sed reads it as a literal `x1b`, so the
-  # strip would quietly no-op and every coloured abort would revert to FAIL —
-  # the one line whose whole purpose is this failure mode failing silently.
-  plain="$(sed -e "s/$(printf '\033')\\[[0-9;]*[A-Za-z]//g" "$logfile")"
-  printf '%s\n' "$plain" | grep -qF "$CI_LOCAL_PANIC_MARKER" || return 1
+  # It was `plain="$(sed …)"` followed by `printf '%s\n' "$plain" | grep -qF …`.
+  # `grep -q` exits at the FIRST match and closes the pipe; `printf` then takes
+  # SIGPIPE; and under `set -o pipefail` (set at the top of ci-local.sh) the
+  # pipeline's status becomes 141, so the `|| return 1` fired and the abort went
+  # UNDETECTED. It only happens when the log is big enough that printf is still
+  # writing when grep leaves — every fixture here is a few KB and passed; the
+  # real suite log is 4.8 MB and failed. A size-dependent detector that works on
+  # every test and fails on every real run is worse than no detector.
+  #
+  # Reading a file has no pipe, so it cannot SIGPIPE, and one `sed` now feeds
+  # five cheap greps instead of re-piping a multi-megabyte variable five times.
+  plain="$(mktemp)" || return 1
+  # Strip ANSI: bun keeps colour when it believes it has a TTY, and an escape
+  # sequence between "with" and "SIGABRT" would hide the marker.
+  #
+  # ⚠️ `$(printf '\033')`, NOT `\x1b` inside the sed script. `\x1b` is a GNU-sed
+  # extension; BSD/macOS sed reads it as a literal `x1b`, so the strip would
+  # quietly no-op and every coloured abort would revert to FAIL — the one line
+  # whose whole purpose is this failure mode failing silently.
+  sed -e "s/$(printf '\033')\\[[0-9;]*[A-Za-z]//g" "$logfile" >"$plain"
+  if ! grep -qF "$CI_LOCAL_PANIC_MARKER" "$plain"; then
+    rm -f "$plain"
+    return 1
+  fi
 
-  abort_signals="$(printf '%s\n' "$plain" | grep -oE 'crashed with SIG[A-Z]+' \
+  abort_signals="$(grep -oE 'crashed with SIG[A-Z]+' "$plain" \
     | grep -oE 'SIG[A-Z]+' | sort -u | tr '\n' ' ')"
   abort_signals="${abort_signals% }"
-  # Bun WRAPS the sentence and puts the file on the NEXT line, so look at the
-  # following line too — matching only the panic line finds no filename at all.
-  abort_files="$(printf '%s\n' "$plain" | grep -A1 -F "$CI_LOCAL_PANIC_MARKER" \
+  # Bun sometimes WRAPS the sentence, putting the file on the NEXT line, and
+  # sometimes keeps it on one — both shapes are real (the wrapped one is quoted
+  # in #5401, the one-line one was measured here). `-A1` covers both.
+  abort_files="$(grep -A1 -F "$CI_LOCAL_PANIC_MARKER" "$plain" \
     | grep -oE '[A-Za-z0-9_./-]+\.test\.[cm]?[jt]sx?' | sort -u | tr '\n' ' ')"
   abort_files="${abort_files% }"
-  abort_count="$(printf '%s\n' "$plain" | grep -cF "$CI_LOCAL_ABORTED_MARKER")"
+  abort_count="$(grep -cE "$CI_LOCAL_ABORTED_RE" "$plain")"
 
   # Bun's own summary line, e.g. " 285 fail". Last one wins — that is the run's
   # total rather than any per-file line above it.
-  abort_reported_fail="$(printf '%s\n' "$plain" \
-    | grep -oE '^[[:space:]]*[0-9]+ fail' | tail -1 | grep -oE '[0-9]+')"
+  abort_reported_fail="$(grep -oE '^[[:space:]]*[0-9]+ fail' "$plain" \
+    | tail -1 | grep -oE '[0-9]+')"
+  rm -f "$plain"
   if [ -n "$abort_reported_fail" ]; then
     abort_residual="$(( abort_reported_fail - abort_count ))"
     [ "$abort_residual" -lt 0 ] && abort_residual=0

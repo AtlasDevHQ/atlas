@@ -146,24 +146,49 @@ case_check "a gate with no .exit file counts as FAILED" \
 # rendered that identically to a 285-test regression, and it nearly cost the
 # v0.2.16 release.
 #
-# ⚠️ The logs below are SYNTHETIC but quote bun's real sentences verbatim,
-# including the line WRAP that puts the crashed file on the following line. A
-# fixture that wrote the sentence on one line would pass against a detector that
-# never finds a filename in the wild.
-
-# write_bun_abort_log <file> <aborted_siblings> <reported_fail|NONE> [signal]
+# ⚠️ The logs below are SYNTHETIC but every line is transcribed from a REAL
+# crash captured while measuring the rate for #5401 (bun 1.4.0, 24k lines,
+# 4.8 MB). That transcription is not decoration — it is what caught two detector
+# bugs the first cut of these fixtures could not see:
+#
+#   • bun stamps THREE marker wordings, not one — 243 × "aborted: worker
+#     panicked", 31 × "aborted: sibling worker panicked", 1 × "worker crashed:
+#     SIGABRT". Keyed on the "sibling" wording alone the count came out 31 of
+#     275, i.e. 244 invented failures.
+#   • bun WRAPS the panic sentence sometimes and not others. Both shapes appear
+#     below for that reason.
+#
+# write_bun_abort_log <file> <sibling_markers> <reported_fail|NONE> [signal] [wrap]
+#   wrap=wrapped  the sentence spans two lines (the shape quoted in #5401)
+#   wrap=oneline  the sentence is one line (the shape measured here)
+#
+# The crash-site file gets its own `(worker crashed: SIG…)` line, exactly as bun
+# emits, so the aborted total is <sibling_markers> + 1.
 write_bun_abort_log() {
-  local out="$1" siblings="$2" reported="$3" sig="${4:-SIGABRT}" i
+  local out="$1" siblings="$2" reported="$3" sig="${4:-SIGABRT}" wrap="${5:-oneline}" i
+  local site="src/lib/db/__tests__/learned-pattern-injections-pg.test.ts"
   {
     echo "bun test v1.4.0"
     echo ""
     echo "src/lib/billing/__tests__/agent-gate.test.ts:"
     echo "✓ agent gate > allows a paying workspace [3.10ms]"
-    echo "error: a test worker process crashed with $sig while running"
-    echo "  src/lib/db/__tests__/learned-pattern-injections-pg.test.ts."
+    echo "panic(main thread): abort() called"
+    echo "oh no: Bun has crashed. This indicates a bug in Bun, not your code."
+    echo "✗ $site (worker crashed: $sig)"
+    if [ "$wrap" = "wrapped" ]; then
+      echo "error: a test worker process crashed with $sig while running"
+      echo "  $site."
+    else
+      echo "error: a test worker process crashed with $sig while running $site."
+    fi
     echo "This indicates a bug in Bun or in a native addon, not in the test itself. Aborting."
+    # Both sibling wordings, interleaved — bun emits both in one run.
     for ((i = 0; i < siblings; i++)); do
-      echo "✗ src/api/__tests__/sibling-$i.test.ts (aborted: sibling worker panicked)"
+      if (( i % 8 == 0 )); then
+        echo "✗ src/api/__tests__/sibling-$i.test.ts (aborted: sibling worker panicked)"
+      else
+        echo "✗ src/api/__tests__/sibling-$i.test.ts (aborted: worker panicked)"
+      fi
     done
     if [ "$reported" != "NONE" ]; then
       echo ""
@@ -221,7 +246,7 @@ abort_case() {
 }
 
 # 6. The all-collateral shape: every reported failure is an aborted sibling.
-w_clean_abort() { write_bun_abort_log "$ABORT_LOG" 285 285; }
+w_clean_abort() { write_bun_abort_log "$ABORT_LOG" 284 285; }
 abort_case "native abort with no residual — ABORTED, exit 3" \
   3 "RESULT: ABORTED" w_clean_abort
 abort_case "the two counts are stated separately on the RESULT line" \
@@ -233,7 +258,7 @@ abort_case "the two counts are stated separately on the RESULT line" \
 tmp="$(mktemp -d)"
 printf '0' >"$tmp/lint.exit"; printf '7' >"$tmp/lint.secs"; echo l >"$tmp/lint.log"
 printf '1' >"$tmp/test.exit"; printf '9' >"$tmp/test.secs"
-write_bun_abort_log "$tmp/test.log" 285 285
+write_bun_abort_log "$tmp/test.log" 284 285
 GATE_NAMES=(lint test); LOG_DIR="$tmp"; NO_TEST=0; FAIL_TAIL=5
 ci_local_classify_gates
 report="$(render_report)"
@@ -269,7 +294,7 @@ rm -rf "$tmp"
 #
 # for the very run that filed the issue. Both assertions below are scoped to the
 # RESULT LINE; asserting against the whole report is what hid this.
-w_residual() { write_bun_abort_log "$ABORT_LOG" 284 285; }
+w_residual() { write_bun_abort_log "$ABORT_LOG" 283 285; }
 abort_case "a residual failure alongside an abort still FAILS" \
   1 "RESULT: FAIL" w_residual
 abort_case "the FAIL LINE itself carries the split (the measured 285/284 shape)" \
@@ -281,7 +306,7 @@ tmp="$(mktemp -d)"
 printf '0' >"$tmp/lint.exit";  printf '7' >"$tmp/lint.secs";  echo l >"$tmp/lint.log"
 printf '1' >"$tmp/type.exit";  printf '4' >"$tmp/type.secs";  echo "TS2307: boom" >"$tmp/type.log"
 printf '1' >"$tmp/test.exit";  printf '9' >"$tmp/test.secs"
-write_bun_abort_log "$tmp/test.log" 285 285
+write_bun_abort_log "$tmp/test.log" 284 285
 GATE_NAMES=(lint type test); LOG_DIR="$tmp"; NO_TEST=0; FAIL_TAIL=5
 ci_local_classify_gates
 result_line="$(render_report | grep '^RESULT:')"
@@ -299,13 +324,13 @@ rm -rf "$tmp"
 
 # Bun can die before printing totals. That run verified nothing, so it is an
 # abort — never a green — but the report must not invent a residual count.
-w_no_totals() { write_bun_abort_log "$ABORT_LOG" 40 NONE; }
+w_no_totals() { write_bun_abort_log "$ABORT_LOG" 39 NONE; }
 abort_case "an abort with no totals is ABORTED with an unknown residual" \
   3 "40 aborted (sibling worker panicked), ? failed" w_no_totals
 
 # Multiple signals in one run (measured: SIGSEGV ×3 + SIGABRT) are all named.
 w_two_signals() {
-  write_bun_abort_log "$ABORT_LOG" 100 100 SIGSEGV
+  write_bun_abort_log "$ABORT_LOG" 99 100 SIGSEGV wrapped
   {
     echo "error: a test worker process crashed with SIGABRT while running"
     echo "  src/lib/billing/__tests__/agent-gate.test.ts."
@@ -339,6 +364,43 @@ w_coloured() {
 }
 abort_case "a colour-escaped log is still detected as an abort" \
   3 "test: 12 aborted (sibling worker panicked), 0 failed" w_coloured
+
+# ⚠️ A MULTI-MEGABYTE LOG, and this is the most important case in the file
+# because it is the one every other case here is structurally blind to.
+#
+# The detector read the stripped log into a shell variable and tested it with
+# `printf '%s\n' "$plain" | grep -qF …`. `grep -q` exits at the FIRST match and
+# closes the pipe; `printf` then takes SIGPIPE; and `set -o pipefail` (set at the
+# top of ci-local.sh) turns that into status 141, so the `|| return 1` fired and
+# the abort went UNDETECTED.
+#
+# It only reproduces once the log is big enough that printf is still writing when
+# grep leaves. Every other fixture here is a few KB and passed happily. The REAL
+# suite log is 4.8 MB — so the detector worked on 100% of its tests and failed on
+# 100% of real runs, which is worse than having no detector, because the report
+# then says FAIL with full confidence.
+#
+# Found by running the thing for real (#5401 AC1), not by reading it.
+w_huge() {
+  local i
+  {
+    echo "bun test v1.4.0"
+    echo "✗ src/lib/db/__tests__/tenant-pool.test.ts (worker crashed: SIGABRT)"
+    echo "error: a test worker process crashed with SIGABRT while running src/lib/db/__tests__/tenant-pool.test.ts."
+    echo "This indicates a bug in Bun or in a native addon, not in the test itself. Aborting."
+    for ((i = 0; i < 24; i++)); do
+      echo "✗ src/api/__tests__/sib-$i.test.ts (aborted: worker panicked)"
+    done
+    # ~2 MB of trailing noise, exactly like the pino output a real suite emits
+    # after the panic. The marker sits ABOVE it, which is the worst case for the
+    # SIGPIPE bug and so the most reliable reproduction.
+    awk 'BEGIN { for (i = 0; i < 20000; i++)
+      print "{\"level\":30,\"msg\":\"padding line to make this log realistically large\",\"i\":" i "}" }'
+    echo " 25 fail"
+  } >"$ABORT_LOG"
+}
+abort_case "a MULTI-MEGABYTE log is still detected (no SIGPIPE under pipefail)" \
+  3 "test: 25 aborted (sibling worker panicked), 0 failed" w_huge
 
 # 8. NEGATIVE CONTROL — without this the detector could excuse any red whose log
 # mentions a signal, which would be strictly worse than the bug being fixed.

@@ -254,6 +254,48 @@ describe("parseBunSummary", () => {
     expect(parseBunSummary("").error).toBeDefined();
   });
 
+  // ⚠️ THE COLORIZED SUMMARY — the bytes bun 1.4.0 actually writes to a PIPE.
+  //
+  // Every other fixture in this describe feeds hand-typed, UNCOLORED text, and
+  // that is precisely why this suite stayed green through a total failure of
+  // the gate it stands behind. bun colorizes its summary even when stdout and
+  // stderr are pipes, so the real line is `\x1b[0m\x1b[32m 3 pass\x1b[0m` —
+  // and an ESC is not `\s`, so `^\s*(\d+)\s+pass` cannot reach the digit.
+  // `parseBunSummary` therefore returned "bun printed no pass/fail summary
+  // (compile or import error)" for EVERY suite it measured, and
+  // `check-mutation-tables.sh` called every table stale or unmeasurable.
+  //
+  // The strings below are transcribed from a `JSON.stringify` of a real
+  // `Bun.spawn(["bun","test",f],{stdout:"pipe",stderr:"pipe"})` capture, not
+  // invented — approximating an escape sequence by hand is the same mistake one
+  // level down.
+  test("reads a COLORIZED summary — bun 1.4.0 emits ANSI on a pipe", () => {
+    const colorized =
+      "\u001b[0m\u001b[32m 3 pass\u001b[0m\n\u001b[0m\u001b[2m 0 fail\u001b[0m\n" +
+      " 3 expect() calls\nRan 3 tests across 1 file. \u001b[0m\u001b[2m[\u001b[1m11.00ms\u001b[0m\u001b[2m]\u001b[0m\n";
+    expect(parseBunSummary(colorized)).toEqual({ pass: 3, fail: 0, skip: 0, todo: 0, ran: 3 });
+  });
+
+  // …and the colorized DEFLATED baseline, the arm whose loss is dangerous
+  // rather than merely noisy: a ` 72 skip` that fails to parse reads as
+  // `skip: 0`, which reads as a clean baseline, which publishes a deflated
+  // count as an honest measurement — the exact outcome guardrail 4 exists to
+  // refuse.
+  test("reads a COLORIZED skip/todo count", () => {
+    const colorized =
+      "\u001b[0m\u001b[32m 6 pass\u001b[0m\n\u001b[0m\u001b[33m 72 skip\u001b[0m\n" +
+      "\u001b[0m\u001b[2m 2 todo\u001b[0m\n\u001b[0m\u001b[2m 0 fail\u001b[0m\n";
+    expect(parseBunSummary(colorized)).toEqual({ pass: 6, fail: 0, skip: 72, todo: 2, ran: null });
+  });
+
+  // A colorized COMPILE ERROR must still surface its own `error:` line rather
+  // than the generic "no pass/fail summary" fallback, because bun colors the
+  // word `error` separately from the colon that follows it.
+  test("finds the `error:` line in colorized compile-error output", () => {
+    const outcome = parseBunSummary("\u001b[0m\u001b[31merror\u001b[0m: Expected ';' but found 'const'\n");
+    expect(outcome.error).toContain("Expected ';'");
+  });
+
   // ⚠️ The skip count is the signal behind `mutate.ts`'s guardrail 4 (#5077).
   // Without it the runner accepted a self-skipped `-pg` suite as a green
   // baseline and regenerated a whole column as zeros over real numbers.

@@ -171,15 +171,34 @@ export interface SuiteOutcome {
  * skipped, so treating its absence as a parse failure would make every healthy
  * run an error. `pass`/`fail` are always printed, so THEIR absence still means
  * no run happened.
+ *
+ * ⚠️ THE INPUT IS COLORIZED, so it is stripped before anything is matched
+ * (#5429). bun writes ANSI to its summary even when stdout and stderr are
+ * PIPES — `mutate.ts` captures ` 3 pass` as `\x1b[0m\x1b[32m 3 pass\x1b[0m`.
+ * An ESC is not `\s`, so the line-anchored patterns below cannot reach the
+ * digit, and this function returned "bun printed no pass/fail summary" for
+ * EVERY suite it measured: the mutation gate reported all tables stale, its
+ * positive control could not pass, and its five negative fixtures went on
+ * exiting 1 for the wrong reason. Stripping here rather than at the spawn (with
+ * `NO_COLOR`) keeps the fix at the one place the bytes are interpreted, so a
+ * test file that prints its own colour cannot reintroduce it either.
  */
+// Built rather than written as a literal: a literal ESC trips oxlint's
+// `no-control-regex`, and the Unicode-escape spelling it suggests trips it too.
+// `String.fromCharCode(27)` is the one form that carries no control character in
+// the source at all. `replace` with a `g` regex resets `lastIndex` itself, so
+// sharing one instance across calls is safe here.
+const ANSI_ESCAPE = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, "g");
+
 export function parseBunSummary(output: string): SuiteOutcome {
-  const pass = /^\s*(\d+)\s+pass\b/m.exec(output);
-  const fails = /^\s*(\d+)\s+fail\b/m.exec(output);
-  const skips = /^\s*(\d+)\s+skip\b/m.exec(output);
-  const todos = /^\s*(\d+)\s+todo\b/m.exec(output);
-  const ran = /^Ran (\d+) tests?\b/m.exec(output);
+  const plain = output.replace(ANSI_ESCAPE, "");
+  const pass = /^\s*(\d+)\s+pass\b/m.exec(plain);
+  const fails = /^\s*(\d+)\s+fail\b/m.exec(plain);
+  const skips = /^\s*(\d+)\s+skip\b/m.exec(plain);
+  const todos = /^\s*(\d+)\s+todo\b/m.exec(plain);
+  const ran = /^Ran (\d+) tests?\b/m.exec(plain);
   if (pass === null || fails === null) {
-    const firstError = output
+    const firstError = plain
       .split("\n")
       .map((line) => line.trim())
       .find((line) => line.startsWith("error:") || line.startsWith("SyntaxError"));

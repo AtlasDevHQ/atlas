@@ -17,7 +17,28 @@
 #   FAIL_TAIL    lines of a failed gate's log to quote
 #
 # Provides: ci_local_classify_gates (sets `failed`, `aborted`, `skipped`,
-#           `total`), render_report, ci_local_exit_code.
+#           `total`), render_report, ci_local_exit_code, ci_local_test_verdict.
+
+# ci_local_test_verdict <rc> <test_database_url> — the exit code the `test` gate
+# reports, given the raw `bun run test` status and the TEST_DATABASE_URL value.
+#
+# ⚠️ IT LIVES HERE, NOT IN `g_test`, FOR THE REASON AT THE TOP OF THIS FILE.
+# `g_gate_fixtures` runs every scripts/__tests__/*.test.sh, so a fixture that
+# invoked ci-local.sh to check this rule would recurse into itself. Sourcing the
+# real bytes lets the fixture drive all three cases without running a suite —
+# and this rule is a two-branch predicate guarding a RELEASE gate, which is
+# exactly the shape that ships wrong when nothing covers it (#5151, #5410).
+#
+# The order is the contract:
+#   rc != 0            → rc     a real failure outranks a decline, always
+#   rc == 0, url set   → 0      the pg suites actually ran; a true pass
+#   rc == 0, url unset → 3      passed having self-skipped every pg suite
+ci_local_test_verdict() {
+  local rc="$1" url="${2:-}"
+  if [ "$rc" -ne 0 ]; then echo "$rc"
+  elif [ -n "$url" ]; then echo 0
+  else echo 3; fi
+}
 
 # ---------------------------------------------------------------------------
 # Native worker abort (#5401)
@@ -355,7 +376,15 @@ render_report() {
   fi
 
   if [ "${#skipped[@]}" -gt 0 ]; then
-    echo "RESULT: PASS with ${#skipped[@]} DECLINED — ${skipped[*]} verified nothing; not a clean pre-PR pass."
+    # ⚠️ "declined to verify", NOT "verified nothing". Both are exit 3 and both
+    # are equally disqualifying, but they are not the same sentence: since #5410
+    # the `test` gate declines when TEST_DATABASE_URL is unset, and it has by
+    # then run ~20,800 assertions — it verified plenty, just not the 87 pg
+    # suites it was asked to. Telling an operator that a 20,000-assertion run
+    # "verified nothing" is the kind of overstatement that gets a true verdict
+    # dismissed as boilerplate, which is precisely how the false green survived.
+    # The per-gate log carries the specific reason.
+    echo "RESULT: PASS with ${#skipped[@]} DECLINED — ${skipped[*]} declined to verify (see .ci-local/<gate>.log); not a clean pre-PR pass."
     return
   fi
 

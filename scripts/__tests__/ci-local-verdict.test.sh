@@ -414,5 +414,161 @@ w_mentions_signal() {
 abort_case "NEGATIVE CONTROL — a test that merely prints SIGABRT is a FAIL" \
   1 "RESULT: FAIL — 1 of 2 gates failed: test" w_mentions_signal
 
+# ---------------------------------------------------------------------------
+# 9. `ci_local_test_verdict` — the TEST_DATABASE_URL decline (#5410)
+# ---------------------------------------------------------------------------
+#
+# ⚠️ The rule this covers is the one that used to be absent: a `test` gate that
+# passed WITHOUT TEST_DATABASE_URL had self-skipped all 87 *-pg.test.ts files and
+# still reported PASS, exit 0 — measured at 1,432 assertions that never ran. It
+# is a two-branch predicate guarding a release gate, so it gets a fixture rather
+# than a docstring.
+#
+# It is tested HERE, against the sourced library, because ci-local.sh cannot be
+# invoked from a fixture: `g_gate_fixtures` runs every scripts/__tests__/*.test.sh
+# and the call would recurse. That constraint is why the predicate lives in the
+# lib at all.
+verdict_case() {
+  local name="$1" rc_in="$2" url="$3" expected="$4" got
+  got="$(ci_local_test_verdict "$rc_in" "$url")"
+  if [ "$got" = "$expected" ]; then
+    echo "  ok    $name (→ $got)"; PASS=$((PASS + 1))
+  else
+    echo "  FAIL  $name — expected $expected, got $got"; FAIL=$((FAIL + 1))
+  fi
+}
+
+echo ":: ci_local_test_verdict fixtures (#5410)"
+
+verdict_case "green + TEST_DATABASE_URL set → PASS" \
+  0 "postgresql://atlas:atlas@localhost:5432/atlas" 0
+
+verdict_case "green + TEST_DATABASE_URL unset → DECLINED, not PASS" \
+  0 "" 3
+
+# ⚠️ NEGATIVE CONTROL, and the one that matters most. A decline must never mask
+# a red: without this, "downgrade a pass to 3" could be written as "return 3
+# whenever the URL is unset" and would swallow every genuine test failure on the
+# default local path — turning a fix for a false green into a false amber.
+verdict_case "NEGATIVE CONTROL — a real failure outranks the decline (url unset)" \
+  1 "" 1
+
+verdict_case "NEGATIVE CONTROL — a real failure is still a failure (url set)" \
+  1 "postgresql://atlas:atlas@localhost:5432/atlas" 1
+
+# A non-1 failure code must be passed through unchanged rather than normalised.
+verdict_case "an aborted run's exit 3 survives unchanged" \
+  3 "postgresql://atlas:atlas@localhost:5432/atlas" 3
+
+# ---------------------------------------------------------------------------
+# 10. `g_test` captures the SUITE's status, not a `local`'s — a STATIC guard
+# ---------------------------------------------------------------------------
+#
+# ⚠️ THE PREDICATE ABOVE WAS CORRECT AND THE GATE WAS STILL A FALSE GREEN, WHICH
+# IS WHY THIS CASE EXISTS SEPARATELY. The first cut of `g_test` read:
+#
+#     bun run test
+#     local rc verdict     # `local` SUCCEEDS, resetting $?
+#     rc=$?                # captures the `local`, not the suite
+#
+# so every genuinely failing suite was captured as rc=0 and — with
+# TEST_DATABASE_URL set — reported PASS. That is a worse false green than the one
+# #5410 set out to remove, introduced by the fix for it, and no amount of
+# testing `ci_local_test_verdict` can see it: the predicate was handed a 0 and
+# correctly returned 0. The defect is in the CAPTURE.
+#
+# It is checked STATICALLY, by reading the bytes, because `g_test` cannot be
+# sourced — ci-local.sh runs 42 gates at source time — and because the dynamic
+# alternative is a 2-minute suite run. `rc=$?` must be the FIRST statement after
+# the command whose status it reads; anything between them resets `$?`.
+CI_LOCAL="$SCRIPT_DIR/ci-local.sh"
+if [ ! -f "$CI_LOCAL" ]; then
+  echo "  FAIL  g_test status-capture guard — ci-local.sh not found at $CI_LOCAL"
+  FAIL=$((FAIL + 1))
+else
+  # The line immediately after `bun run test` inside g_test().
+  after_cmd="$(awk '/^g_test\(\) \{/,/^\}/' "$CI_LOCAL" \
+    | grep -A1 -x '  bun run test' | tail -1 | sed 's/^[[:space:]]*//')"
+  if [ "$after_cmd" = "rc=\$?" ]; then
+    echo "  ok    g_test captures the suite's exit status on the very next line"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL  g_test status-capture guard — expected 'rc=\$?' immediately after"
+    echo "        'bun run test'; got '$after_cmd'. Anything between them (a"
+    echo "        \`local\`, an \`echo\`) resets \$? and turns a failing suite green."
+    FAIL=$((FAIL + 1))
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 11. `g_test` end-to-end — the REAL body, a stubbed suite (#5410)
+# ---------------------------------------------------------------------------
+#
+# ⚠️ This is the case that would have caught the status-capture bug on its own,
+# and it is worth having ALONGSIDE the static guard above rather than instead of
+# it. The static guard names the offending line; this one proves the BEHAVIOUR,
+# including the one path that matters most — a RED suite must stay red. Under
+# the original bug, "suite RED + URL set" returned 0 instead of 1.
+#
+# `g_test` still cannot be sourced (ci-local.sh runs 42 gates at source time), so
+# the function body is extracted with awk and eval'd on its own, and `bun` is
+# shadowed by a shell function standing in for `bun run test`. That keeps the
+# assertion against the REAL bytes of g_test — a hand-copied duplicate here would
+# drift from the file it claims to test, which is the failure mode this whole
+# suite exists to refuse.
+echo ":: g_test end-to-end fixtures — real body, stubbed suite (#5410)"
+
+if [ ! -f "$CI_LOCAL" ]; then
+  echo "  FAIL  g_test end-to-end — ci-local.sh not found at $CI_LOCAL"
+  FAIL=$((FAIL + 1))
+else
+  # Subshell: `eval`ing g_test and shadowing `bun` must not leak into the cases
+  # above, and `unset TEST_DATABASE_URL` must not disturb the caller's env.
+  gtest_out="$(
+    # BOTH functions, not just g_test: the decline path calls `pg_suite_count`
+    # for the number it prints. Extracting only g_test leaves that undefined,
+    # and because ci-local.sh runs under `set -uo pipefail` (no `-e`) the missing
+    # command is a stderr line, not a failure — the exit code would still be 3
+    # and this fixture would pass while the operator-facing warning said
+    # "the  *-pg.test.ts files will SELF-SKIP" with an empty count.
+    eval "$(awk '/^pg_suite_count\(\) \{/,/^$/' "$CI_LOCAL")"
+    eval "$(awk '/^g_test\(\) \{/,/^\}/' "$CI_LOCAL")"
+    RC_TO_RETURN=0
+    bun() { return "$RC_TO_RETURN"; }
+    run_one() {
+      local rc_in="$2" url="$3" expect="$4" got
+      RC_TO_RETURN="$rc_in"
+      if [ -n "$url" ]; then export TEST_DATABASE_URL="$url"; else unset TEST_DATABASE_URL; fi
+      g_test >/dev/null 2>&1
+      got=$?
+      [ "$got" = "$expect" ] && echo "ok|$1|$got" || echo "no|$1|expected $expect, got $got"
+    }
+    run_one "suite green + URL set → PASS"                 0 "postgresql://x" 0
+    run_one "suite green + URL unset → DECLINED"           0 ""               3
+    run_one "suite RED + URL set → FAIL"                   1 "postgresql://x" 1
+    run_one "suite RED + URL unset → FAIL (no masked red)" 1 ""               1
+
+    # The decline's message must name a REAL count. An empty or zero one still
+    # exits 3, so the exit-code cases above cannot see it — and the number is the
+    # entire persuasive content of the warning.
+    RC_TO_RETURN=0
+    unset TEST_DATABASE_URL
+    msg="$(g_test 2>/dev/null)"
+    if printf '%s' "$msg" | grep -qE '^ +[1-9][0-9]* \*-pg\.test\.ts files self-skipped'; then
+      echo "ok|the decline names a non-zero pg-suite count|$(pg_suite_count)"
+    else
+      echo "no|the decline names a non-zero pg-suite count|got: $(printf '%s' "$msg" | grep -F 'self-skipped' | sed 's/^ *//')"
+    fi
+  )"
+  while IFS='|' read -r verdict label detail; do
+    [ -z "$verdict" ] && continue
+    if [ "$verdict" = "ok" ]; then
+      echo "  ok    $label (→ $detail)"; PASS=$((PASS + 1))
+    else
+      echo "  FAIL  $label — $detail"; FAIL=$((FAIL + 1))
+    fi
+  done <<< "$gtest_out"
+fi
+
 echo ":: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

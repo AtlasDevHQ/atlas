@@ -44,8 +44,12 @@
 #   CI_LOCAL_NO_NET=1      Skip the two npm-registry gates (published-symbols,
 #                          unpublished-versions) for offline runs.
 #   CI_LOCAL_FAIL_TAIL=N   Lines of each failed gate's log to print (default 40).
-#   TEST_DATABASE_URL=...  If set, the real-Postgres *-pg.test.ts run (else skip,
-#                          exactly as CI's behavior differs from a bare local run).
+#   TEST_DATABASE_URL=...  If set, the real-Postgres *-pg.test.ts run. If UNSET,
+#                          they self-skip AND the `test` gate is recorded
+#                          DECLINED (exit 3) rather than PASS — a run that
+#                          exercised none of the 87 pg suites is not a clean
+#                          pre-PR pass (#5410). There is no opt-out; use
+#                          CI_LOCAL_NO_TEST=1 for a deliberate gates-only run.
 #
 # Exit code: 0 every gate passed · 1 a gate failed · 3 the run verified nothing
 # (a gate DECLINED, or was ABORTED by a native bun worker crash — #5401).
@@ -104,6 +108,14 @@ LOG_DIR="$ROOT/.ci-local"
 rm -rf "$LOG_DIR"
 mkdir -p "$LOG_DIR"
 
+# Sourced HERE rather than just before the report, because `g_test` needs
+# `ci_local_test_verdict` while the gates are still running (#5410). The lib only
+# defines functions and constants — it reads no state at source time — so pulling
+# it up is safe, and the report half below re-uses the same already-sourced
+# definitions rather than sourcing twice.
+# shellcheck source=lib/ci-local-report.sh
+. "$ROOT/scripts/lib/ci-local-report.sh"
+
 # Machine-readable run state for the launch-and-watch protocol in
 # .claude/commands/ci.md — a watcher must never depend on an agent hand-off:
 #   PID     — this run's pid; liveness = `kill -0 "$(cat .ci-local/PID)"`
@@ -127,6 +139,12 @@ GATE_NAMES=()
 
 now() { date +%s; }
 
+# How many `*-pg.test.ts` files self-skip without TEST_DATABASE_URL. Counted at
+# runtime rather than hardcoded so the warning cannot drift as suites are added,
+# and defined ONCE because it is quoted in two places — the up-front banner and
+# the `g_test` decline — which must never disagree about the same number (#5410).
+pg_suite_count() { find packages/api/src -name '*-pg.test.ts' 2>/dev/null | wc -l | tr -d ' '; }
+
 # ---- gate bodies that need shell operators / env (plain scripts run inline) ----
 g_type()             { bun run type; }
 g_lint()             { bun run lint; }
@@ -137,7 +155,62 @@ g_openapi_drift()    { bash scripts/check-openapi-drift.sh; }
 g_auth_md_parity()   { ( cd packages/api && bun scripts/check-auth-md-discovery-parity.ts ); }
 g_published_symbols(){ bun run scripts/check-published-symbols.ts; }
 g_unpublished()      { bun scripts/check-unpublished-versions.ts; }
-g_test()             { bun run test; }
+
+# ⚠️ A GREEN `test` WITHOUT `TEST_DATABASE_URL` IS A DECLINE, NOT A PASS (#5410).
+#
+# Every `*-pg.test.ts` suite self-skips when the variable is unset — that is the
+# suites' own `describeIfPg = TEST_DB_URL ? describe : describe.skip` line, not
+# anything this script controls. Unset is also the DEFAULT local state, so the
+# default path ran the whole gate, exercised NONE of the real-Postgres suites,
+# and reported `RESULT: PASS — all 42 gates green` with exit 0. Measured on
+# `main` at f3f32a7c7 (2026-08-24), same tree, same command, only the variable
+# differing:
+#
+#     TEST_DATABASE_URL set    22266 pass, 10 skip   147s
+#     TEST_DATABASE_URL unset  20834 pass, 10 skip    27s
+#
+# 1,432 assertions across 87 files silently not run, and the faster, emptier run
+# is the one an operator gets by default — `/release` step 3 then reads that
+# green as a release gate. A gate that cannot tell "verified" from "did not run"
+# is the defect this whole file's SKIP/DECLINED vocabulary exists to refuse, so
+# `test` now joins `mutation-tables` in using it.
+#
+# The rc ORDER is load-bearing: a real test failure still returns its own
+# non-zero, because a decline must never mask a red. Only a would-be PASS is
+# downgraded to 3.
+#
+# Deliberately NO opt-out flag. `CI_LOCAL_NO_TEST=1` already exists for an
+# operator who wants a gates-only pass, and it already refuses to call itself a
+# clean pre-PR pass. A second flag whose only effect is to restore the false
+# green would hand back exactly what this removes.
+g_test() {
+  # ⚠️ EVERY `local` IS DECLARED BEFORE `bun run test`, AND THAT IS LOAD-BEARING.
+  # `local` is itself a command that succeeds, so it RESETS `$?`. Written as
+  #     bun run test
+  #     local rc verdict     # <- returns 0
+  #     rc=$?                # <- captures the `local`, not the suite
+  # a genuinely failing suite is captured as rc=0 and, with TEST_DATABASE_URL
+  # set, reports PASS. That is a false green on the gate this file exists to keep
+  # honest — strictly worse than the skipped-suites false green being fixed here,
+  # and it was live in the first cut of this function. `rc=$?` must be the FIRST
+  # statement after the command whose status it reads.
+  local rc verdict n
+  bun run test
+  rc=$?
+  verdict="$(ci_local_test_verdict "$rc" "${TEST_DATABASE_URL:-}")"
+  [ "$verdict" != "3" ] && return "$verdict"
+  n="$(pg_suite_count)"
+  echo ""
+  echo "⚠️  DECLINED — the suite passed, but TEST_DATABASE_URL was unset, so all"
+  echo "    ${n} *-pg.test.ts files self-skipped. Their real-Postgres SQL was never"
+  echo "    executed; this run cannot stand in for the api-tests CI shards."
+  echo ""
+  echo "    To verify them:"
+  echo "      bun run db:up"
+  echo "      export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas"
+  echo ""
+  return 3
+}
 
 g_dockerfile_pins() {
   local expected="$1" errors=0 f actual
@@ -201,8 +274,21 @@ echo "Atlas local CI — mirrors the required \`ci\` gate. Logs: .ci-local/<gate
 [ "$NO_NET" = "1" ]  && echo "  (CI_LOCAL_NO_NET=1 — npm-registry gates skipped)"
 if [ -n "${TEST_DATABASE_URL:-}" ]; then
   echo "  TEST_DATABASE_URL set — real-Postgres *-pg.test.ts WILL run."
+elif [ "$NO_TEST" = "1" ]; then
+  echo "  TEST_DATABASE_URL unset — moot, Stage 3 is skipped."
 else
-  echo "  TEST_DATABASE_URL unset — *-pg.test.ts SKIPPED (set it + db:up to exercise)."
+  # Loud and UP FRONT, not only in the verdict: the operator is about to wait
+  # several minutes, and learning at the end that the run declined is how the
+  # decline gets ignored. The gate itself still returns 3 — see `g_test` (#5410).
+  PG_SUITE_COUNT="$(pg_suite_count)"
+  echo ""
+  echo "  ⚠️  TEST_DATABASE_URL UNSET — the ${PG_SUITE_COUNT} *-pg.test.ts files will SELF-SKIP."
+  echo "      This run CANNOT report a clean pass: the \`test\` gate will be"
+  echo "      recorded as DECLINED (exit 3), because a skipped gate is not a"
+  echo "      passed gate. Measured: 1,432 assertions do not run without it."
+  echo ""
+  echo "      bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas"
+  echo ""
 fi
 
 # Match CI's `bun install --frozen-lockfile`: catches a stale lockfile and
@@ -336,8 +422,7 @@ fi
 # be tested WITHOUT running 38 gates. It cannot be tested by invoking this
 # script: `g_gate_fixtures` above runs every scripts/__tests__/*.test.sh, so
 # such a test would recurse. See scripts/__tests__/ci-local-verdict.test.sh.
-# shellcheck source=lib/ci-local-report.sh
-. "$ROOT/scripts/lib/ci-local-report.sh"
+# (Already sourced near the top — `g_test` needs it while gates are running.)
 
 ci_local_classify_gates
 

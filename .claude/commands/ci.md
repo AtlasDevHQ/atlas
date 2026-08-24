@@ -24,10 +24,28 @@ printed both a `PASS with N DECLINED` line and a self-contradictory
 `FAIL — 0 of 34 gates failed:` line, then exited 0.
 
 ⚠️ Exit **3 is the normal outcome of a bare local run**: `TEST_DATABASE_URL` is
-unset by default, which declines `mutation-tables`. Bring up Postgres (below)
-for a clean 0. Running `/ci` from `main` with no local commits also declines
-that gate — the `--affected` set is then empty *by construction*, and remote
-CI's `--all` job on the push to `main` is what covers that SHA.
+unset by default, which declines **both** `mutation-tables` and — since #5410 —
+`test`. Bring up Postgres (below) for a clean 0. Running `/ci` from `main` with
+no local commits also declines `mutation-tables` — the `--affected` set is then
+empty *by construction*, and remote CI's `--all` job on the push to `main` is
+what covers that SHA.
+
+⚠️ **A green `test` without `TEST_DATABASE_URL` is a DECLINE, not a pass
+(#5410).** Every `*-pg.test.ts` file self-skips when the variable is unset, and
+unset is the default — so the default path ran the gate, exercised none of the
+87 real-Postgres suites, and reported `RESULT: PASS — all 42 gates green`,
+exit 0. Measured on `main` at f3f32a7c7, same tree, same command:
+
+| `TEST_DATABASE_URL` | result | wall |
+|---|---|---|
+| set | 22,266 pass · 10 skip | 147s |
+| unset | 20,834 pass · 10 skip | 27s |
+
+**1,432 assertions across 87 files silently not run**, and the faster, emptier
+run is what an operator gets by default. `test` now returns 3 in that case, so
+the row renders `SKIP` and `RESULT` says `DECLINED`. A real test failure still
+returns its own non-zero — a decline never masks a red. There is deliberately no
+opt-out flag; `CI_LOCAL_NO_TEST=1` already covers a chosen gates-only run.
 
 ### `RESULT: ABORTED` is not a regression (#5401)
 
@@ -154,8 +172,9 @@ the read-only gates; Stage 2 runs the **tree-writing** gates serially
 must not run beside the scanners that read those files); Stage 3 runs the full
 test suite under `bun test --parallel`, which isolates each file in a worker (it flakes under CPU contention on WSL2).
 
-**Real-Postgres tests (`*-pg.test.ts`) are SILENTLY SKIPPED without a database.**
-They run only when `TEST_DATABASE_URL` is set (the wrapper prints whether it is).
+**Real-Postgres tests (`*-pg.test.ts`) are SILENTLY SKIPPED without a database** —
+silently by the *suites*, which self-skip; the wrapper no longer reports that as
+a pass (#5410). It prints a warning up front and records `test` as `DECLINED`.
 Locally unset, `bun run test` passes without exercising them; CI's
 `api-tests (1/4)`–`(4/4)` shards (under the `ci` umbrella) always run them
 against a real Postgres. Any

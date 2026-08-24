@@ -37,15 +37,21 @@ Exit codes: `0` resolved · `1` refused (wrong shape, or the tag already exists)
 
 Exit `3` means no tag on the release train — **not** "no tags". If this really is the first release, pass `v0.0.1` explicitly: the start of the pre-launch `v0.0.x` development train (per ADR-0008; `v0.1.0` is reserved for the public launch). Confirm with the user before tagging.
 
-**Step 3: Run `/ci` — refuse to tag if anything fails**
+**Step 3: REMOTE CI on the tagged SHA is the gate. `/ci` is advisory.**
 
+```bash
+gh pr checks <PR> --watch          # or, for a merged SHA:
+gh api repos/AtlasDevHQ/atlas/commits/$(git rev-parse HEAD)/check-runs \
+  --jq '.check_runs[] | select(.conclusion != "success") | "\(.name): \(.conclusion // "pending")"'
 ```
-/ci
-```
 
-All gates must pass: lint, type, test, syncpack, template drift, security headers drift, railway-watch, schema drift, OAuth helper drift, test discipline, twenty resolver imports, published symbols. Remote: CI, Sync Starters, Railway (api/web/docs) — all green on the SHA being tagged.
+Every remote check must be green **on the exact SHA being tagged**: CI (including the four `api-tests` shards), Sync Starters, Railway (api/web/docs). If a remote check is yellow or red on that SHA, stop — tags are immutable, don't tag broken code.
 
-If any local gate fails, fix it and re-run `/release`. If a remote check is yellow/red on the head SHA, stop — tags are immutable, don't tag broken code.
+> ⚠️ **This step used to read "run `/ci` — refuse to tag if anything fails", and that rule blocked every release including the ones already serving production.** `scripts/ci-local.sh` does not go green on an unchanged tree. Measured on `main` at f3f32a7c7 (2026-08-24), full run with `TEST_DATABASE_URL` set: **2 of 42 gates FAIL** — `gate-fixtures` (7 pre-existing fixture failures in `check-mutation-tables.test.sh` and `check-docs-brain-snippets.test.sh`, present with the DB URL set *or* unset) and `test` (1 failure of 22,276, `identity-consumers-pg.test.ts`, which passes 76/76 in isolation). Neither is a defect in the tree being tagged, and a mandatory gate that cannot pass is not a gate — it is a step everyone learns to override, which is worse than not having one.
+>
+> Remote CI is the better gate because it runs `api-tests` **sharded four ways against a dedicated Postgres service container**, so each shard drives ~22 of the 87 `*-pg.test.ts` suites instead of all 87 against one local server contended by 32 bun workers — a smaller worker pool per database, on a machine doing nothing else. That structural difference is the *likely* reason remote CI was green on all 37 checks for a SHA a local run was red on; it is **not** established as the cause, and #5410 deliberately stops short of claiming it. What is established is the negative: the local wrapper's red does not track defects in the tree. See #5410 for the measurements, including five hypotheses tested and refuted.
+
+Run `/ci` anyway if you like — it is a fast, useful pre-flight and it catches drift gates remote CI also runs. But read its output as **advice**, and do not tag on a local green either: without `TEST_DATABASE_URL` a local run self-skips all 87 pg suites (1,432 assertions), and since #5410 it reports `DECLINED`/exit 3 rather than a false PASS to say so.
 
 **Step 4: Draft the tag message**
 

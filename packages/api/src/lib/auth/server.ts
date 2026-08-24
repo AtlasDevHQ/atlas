@@ -2486,7 +2486,8 @@ export function buildPlugins() {
       // workspace-scoped table in `lib/db/purge-scope.ts` — brain claims, the
       // knowledge base, every encrypted credential store, dashboards, audit
       // logs — with no operator record that it happened. The `owner` role
-      // carries `organization: ["delete"]` (`org-permissions.ts:49`), so any
+      // carries `organization: ["delete"]` (the `owner` role in
+      // `org-permissions.ts`), so any
       // workspace owner could reach it.
       //
       // It also skips `hardDeleteWorkspace`'s soft-delete precondition and

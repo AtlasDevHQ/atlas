@@ -2507,3 +2507,48 @@ export interface BrainEnrollmentNamingResponse {
   /** `false` when the requested state already held — a no-op, not a failure. */
   readonly changed: boolean;
 }
+
+/**
+ * One published, warehouse-derived fact, as the RETIREMENT surface serves it
+ * (#5403).
+ *
+ * ⚠️ This is deliberately NOT a {@link BrainFactCandidate}. The review queue's
+ * shape carries corroboration counts, tension hints, promotion blocks and a
+ * decay signal — the furniture a reviewer needs to make a TRUST call. There is
+ * no trust call to make here: ADR-0042 says an observation was never a belief
+ * anyone held, so the only decision available is "retire it or leave it", and
+ * every one of those fields would invite the reviewer to weigh a claim the
+ * surface exists to say nobody ever weighed. The projection is the operator's
+ * question and nothing more: WHICH row is this, and WHAT does retracting it
+ * name?
+ */
+export interface BrainFactRetirableObservation {
+  /** The fact id — the whole reason this surface exists. `POST /{id}/retract` consumes it. */
+  readonly id: string;
+  readonly subject: string;
+  readonly predicate: string;
+  readonly object: string;
+  /**
+   * The stored `provenance.source` that classified this row as an observation.
+   * Echoed so the operator retiring a row can see WHICH warehouse-shaped kind
+   * put it here, rather than trusting that the listing's filter meant what they
+   * assumed.
+   */
+  readonly source: string | null;
+  readonly validFrom: string | null;
+  readonly validTo: string | null;
+  readonly ingestedAt: string | null;
+}
+
+/**
+ * The retirement listing's page (#5403).
+ *
+ * `total` is the grand total matching the reader's ACL, so an operator can tell
+ * "I have retired all of them" from "this page is empty". That distinction is
+ * the point of the surface: #5331 AC5 asks for the clearing to be verified by
+ * reading the rows back, and a listing that cannot count cannot answer it.
+ */
+export interface BrainFactRetirableListResponse {
+  readonly observations: readonly BrainFactRetirableObservation[];
+  readonly total: number;
+}

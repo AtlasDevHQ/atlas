@@ -97,7 +97,15 @@ export type BrainReadSurface =
    * not tell the publish preview from the counterfactual preview, which are two
    * different fixes. Diagnostics only, never branched on.
    */
-  | "vocabulary-preview";
+  | "vocabulary-preview"
+  /**
+   * The published-observation RETIREMENT listing (#5403). Its own member rather
+   * than reusing `"review"`, for the same reason `"vocabulary-preview"` is not
+   * `"oversight"`: the two surfaces are deliberately separate, ADR-0042 keeps
+   * them separate, and an operator who cannot reach the retirement listing must
+   * not be handed a message naming the review queue they were not using.
+   */
+  | "retirement";
 
 /**
  * The reader's identity could not be turned into a usable principal set, so

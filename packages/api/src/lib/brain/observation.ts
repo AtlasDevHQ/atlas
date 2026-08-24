@@ -47,9 +47,21 @@
  * fix applied one grain up — at the stored ROW rather than the stored VALUE —
  * before three more copies exist rather than after.
  *
+ * ## Two grains, one vocabulary
+ *
+ * Since #5391 this module also answers the question at the EPISODE grain —
+ * {@link warehouseEpisodeSql}, over `brain_episodes.source`. That is the same
+ * closed vocabulary read off a different column (`reconcile.ts` copies the
+ * episode's `source` verbatim into the fact's `provenance.source`), and it is
+ * here rather than at its callers for the reason the whole module exists: two
+ * columns whose warehouse lists could drift is #4938 one column over.
+ * `observation-reap.ts` had built a private copy of that array and said so in a
+ * comment; it now composes this one.
+ *
  * ## What it reads, and what it must never read
  *
- * The STORED `provenance.source`, and nothing else. This module never issues a
+ * The STORED `provenance.source` — or, at the episode grain, `source` — and
+ * nothing else. This module never issues a
  * warehouse query, and adding one would violate ADR-0037 §5 ("the brain never
  * reads tier-1 live, at any position, for any purpose"). `reconcile.ts` writes
  * `provenance.source` structurally from the episode's stored source kind, so
@@ -306,4 +318,82 @@ export function observationSql(alias: string): string {
  */
 export function notAnObservationSql(alias: string): string {
   return `(${observationSql(alias)} IS NOT TRUE)`;
+}
+
+// ---------------------------------------------------------------------------
+// The same question at the EPISODE grain
+// ---------------------------------------------------------------------------
+
+/**
+ * *This EPISODE is a warehouse reading* — the same question one grain down,
+ * asked of `brain_episodes.source` rather than of a stored fact's
+ * `provenance.source`.
+ *
+ * ## Why it belongs here and not at each caller
+ *
+ * `reconcile.ts` copies an episode's `source` verbatim into the fact's
+ * `provenance.source`, so these are the SAME vocabulary read off two columns —
+ * and a deployment where the two sides disagreed about which values are
+ * warehouse-class is exactly the #4938 failure this module exists to prevent,
+ * one column over. Both spellings now build from
+ * {@link WAREHOUSE_SOURCE_ARRAY_SQL}, so there is one list and one splice.
+ *
+ * It had TWO callers before it had a home: `observation-reap.ts` built its own
+ * private array for the episode side and said so in a comment, and #5391 needed
+ * a third and a fourth. Four spellings of one vocabulary is the shape the
+ * module header calls out; this is the same prefactor applied to the episode
+ * column.
+ *
+ * ## Its consumers, and the direction each of them fails in
+ *
+ * - `observation-reap.ts` uses it POSITIVELY, to find the warehouse evidence
+ *   whose recency is an observation's staleness signal.
+ * - #5391's two evidence sets use {@link notAWarehouseEpisodeSql} — publish's
+ *   `EVIDENCE_GRANTS_SQL` and the oversight panel's `willWidenRowsSql` — to
+ *   drop a warehouse reading from the grants a publish may widen a belief's
+ *   audience with. Those two must move together: the notice runs the
+ *   transaction's own decision function precisely so the disclosure and the act
+ *   cannot disagree, and narrowing only one of them would reintroduce that
+ *   disagreement at the input instead.
+ *
+ * ⚠️ **`alias.source` is `NOT NULL` (migration 0180), so unlike the fact-side
+ * predicate this one never evaluates to NULL for a row that exists.** It can
+ * still be NULL-valued in a LEFT JOIN's output, which is why
+ * `willWidenRowsSql` composes it in an `ON` arm rather than a `WHERE`: in the
+ * `ON` the join simply does not match and the draft keeps its
+ * evidence-less row, whereas in the `WHERE` the same predicate would delete
+ * every edge-less draft from the scan and take the scan-cap detector with it.
+ *
+ * `alias` is interpolated; callers pass a plain identifier they control — the
+ * same contract as {@link observationSql}.
+ */
+export function warehouseEpisodeSql(alias: string): string {
+  return `(${alias}.source = ANY (${WAREHOUSE_SOURCE_ARRAY_SQL}))`;
+}
+
+/**
+ * *This episode is NOT a warehouse reading* — the exclusion #5391 composes.
+ *
+ * `IS NOT TRUE` for the same reason {@link notAnObservationSql} carries it,
+ * even though the NULL arm is unreachable from a stored row here: a caller who
+ * later moves this out of an `ON` arm and into a `WHERE`, or joins it through
+ * an outer join, must not silently change which rows survive. The wrapper is
+ * the cheap way to make that impossible rather than merely unlikely.
+ *
+ * ## The residual, stated because it runs toward disclosure
+ *
+ * A POSITIVE allowlist, exactly like {@link observationSql} — so a stored kind
+ * this region cannot classify (`warehouse:prod`, `snowflake`, restored verbatim
+ * by a region import) reads as NOT-a-warehouse-episode and its grant is still
+ * evidence a publish may widen with. That is the permissive direction on a
+ * disclosure surface, and it is chosen deliberately over the stricter reading:
+ * a second, stricter rule wearing this module's name is what
+ * {@link notAnObservationSql}'s docstring forbids, and treating an
+ * unclassifiable kind as warehouse would silently disable #4823's widening for
+ * every workspace an older region exported. What still stands over the residual
+ * is `loadWideningPreview`'s review-gate notice, which fires on exactly the
+ * grant this predicate let through. The lane is narrowed, not sealed.
+ */
+export function notAWarehouseEpisodeSql(alias: string): string {
+  return `(${warehouseEpisodeSql(alias)} IS NOT TRUE)`;
 }

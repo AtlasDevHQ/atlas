@@ -23,7 +23,12 @@
  *      `awaiting_review` nor `published`, or the same fact is counted twice.
  *   4. **Do the borrowed `provisional` / `in-tension` predicates still bind to
  *      `f` inside a `FILTER`?** They were written for a WHERE clause.
- *   5. **Is the 26 / 32 split real?** The one end-to-end claim: the unscoped
+ *   5. **Does the observation asymmetry hold on live rows?** Three arms drop
+ *      warehouse observations and two keep them, and no string match can tell a
+ *      `FILTER` that counts a row from one that does not. The delta this panel
+ *      exists to show has to be UNCHANGED by observations while `published`
+ *      still counts one — a pair of claims a uniform sweep fails.
+ *   6. **Is the 26 / 32 split real?** The one end-to-end claim: the unscoped
  *      count sees a private fact, the reader-scoped one does not, and the
  *      preview's label projection withholds its claim text. This is the
  *      2026-07-26 staging soak's reading, as a test — see
@@ -45,7 +50,9 @@ import {
   OVERSIGHT_BUCKET_MAX,
   classifyToken,
   loadConfiguredChannels,
+  loadFactOversight,
 } from "@atlas/api/lib/brain/oversight";
+import { WAREHOUSE_SOURCE } from "@atlas/api/lib/brain/sources";
 import {
   brainFactPreviewSql,
   brainFactsCountSql,
@@ -384,6 +391,164 @@ describeIfPg("brain fact oversight aggregate (real Postgres)", () => {
       // its own table.
       expect(rows[0]!.n).toBe(3);
       expect((await buckets(ws)).length).toBe(3);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "excludes observations from the review arms, keeps them in published/retracted, and leaves the hidden-backlog delta unchanged",
+    async () => {
+      // ⭐ #5416's falsifier, and it is TWO claims in one test on purpose —
+      // either one alone is passed by a wrong fix.
+      //
+      //   1. The hidden-backlog delta (`workspaceTotals.awaitingReview −
+      //      reviewableAwaitingReview`) is IDENTICAL on a workspace holding
+      //      draft observations and on a control holding only the beliefs.
+      //      Before the fix the delta grew by the observation count and reported
+      //      them as backlog "federated to somebody else"; narrowing only the
+      //      reader-scoped half would grow it by the same amount in the same
+      //      direction, so the control is what makes this falsify BOTH.
+      //   2. `published` still counts a published observation and `retracted`
+      //      still counts a retracted one — the ADR-0042 stragglers `GET
+      //      /retirable` enumerates. A uniform sweep of `notAnObservationSql`
+      //      across all five arms passes claim 1 and FAILS here, which is the
+      //      whole reason the asymmetry needed its own measurement.
+      const OBSERVATION = `{"actor":"test","source":"${WAREHOUSE_SOURCE}"}`;
+      const ws = "ws-5416-observations";
+      const control = "ws-5416-control";
+      const ep = await seedEpisode(ws, "obs");
+      const controlEp = await seedEpisode(control, "obs-control");
+
+      // The BELIEFS, seeded identically into both workspaces: one the outsider
+      // can read, one they cannot. Their difference IS the honest delta.
+      for (const [workspaceId, episodeId] of [
+        [ws, ep],
+        [control, controlEp],
+      ] as const) {
+        await seedFact({ workspaceId, episodeId, subject: "belief-public" });
+        await seedFact({
+          workspaceId,
+          episodeId,
+          subject: "belief-private",
+          visibleTo: [PRIVATE_AUDIENCE],
+        });
+      }
+
+      // …and the observations, into ONE of them only. Both grants, so a fix
+      // that narrowed only the unscoped half would still move the delta.
+      await seedFact({
+        workspaceId: ws,
+        episodeId: ep,
+        subject: "obs-public",
+        provenance: OBSERVATION,
+      });
+      await seedFact({
+        workspaceId: ws,
+        episodeId: ep,
+        subject: "obs-private",
+        provenance: OBSERVATION,
+        visibleTo: [PRIVATE_AUDIENCE],
+      });
+      // A provisional observation and an in-tension pair of them, so the other
+      // two review arms are non-vacuous rather than asserted at zero against a
+      // population that was never seeded.
+      await seedFact({
+        workspaceId: ws,
+        episodeId: ep,
+        subject: "obs-provisional",
+        provenance: `{"actor":"test","source":"${WAREHOUSE_SOURCE}","unresolved":["subject"]}`,
+      });
+      const rivalA = await seedFact({
+        workspaceId: ws,
+        episodeId: ep,
+        subject: "obs-rival-a",
+        provenance: OBSERVATION,
+      });
+      const rivalB = await seedFact({
+        workspaceId: ws,
+        episodeId: ep,
+        subject: "obs-rival-b",
+        provenance: OBSERVATION,
+      });
+      await pool.query(
+        `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_fact_id)
+         VALUES ($1, 'in-tension-with', $2, $3)`,
+        [ws, rivalA, rivalB],
+      );
+      // The two arms that must KEEP counting them.
+      await seedFact({
+        workspaceId: ws,
+        episodeId: ep,
+        subject: "obs-published",
+        provenance: OBSERVATION,
+        status: "published",
+      });
+      await seedFact({
+        workspaceId: ws,
+        episodeId: ep,
+        subject: "obs-retracted",
+        provenance: OBSERVATION,
+        retracted: true,
+      });
+
+      const reader = { query: (sql: string, params?: unknown[]) => pool.query(sql, params) };
+      const withObservations = await loadFactOversight(reader, ctxFor(ws, []));
+      const withoutObservations = await loadFactOversight(reader, ctxFor(control, []));
+
+      const deltaOf = (o: Awaited<ReturnType<typeof loadFactOversight>>) =>
+        o.workspaceTotals.awaitingReview - o.reviewableAwaitingReview;
+
+      // Claim 1. The control's delta is 1 — the private belief — and it is
+      // asserted absolutely as well as by comparison, so a bug that zeroed BOTH
+      // sides could not pass by making the two agree at nothing.
+      expect(deltaOf(withoutObservations)).toBe(1);
+      expect(deltaOf(withObservations)).toBe(deltaOf(withoutObservations));
+      expect(withObservations.workspaceTotals.awaitingReview).toBe(2);
+      expect(withObservations.reviewableAwaitingReview).toBe(1);
+      // The other two review arms, same rule.
+      expect(withObservations.workspaceTotals.provisional).toBe(0);
+      expect(withObservations.workspaceTotals.inTension).toBe(0);
+
+      // Claim 2. The stragglers are still counted, workspace-wide and per token.
+      expect(withObservations.workspaceTotals.published).toBe(1);
+      expect(withObservations.workspaceTotals.retracted).toBe(1);
+      const orgBucket = (await buckets(ws)).find((r) => r.token === "org");
+      expect(orgBucket?.published).toBe(1);
+      expect(orgBucket?.retracted).toBe(1);
+      // …and the same bucket drops them from the review arm, so the two halves
+      // of the asymmetry are pinned on ONE row rather than on two aggregates
+      // that might disagree.
+      expect(orgBucket?.awaiting_review).toBe(1);
+
+      // Non-vacuity: the provisional and in-tension predicates DO fire on the
+      // same shapes when the fact is a belief. Without this the two zeros above
+      // would also be produced by a `FILTER` that matches nothing at all.
+      const beliefWs = "ws-5416-belief-quality";
+      const beliefEp = await seedEpisode(beliefWs, "belief-quality");
+      await seedFact({
+        workspaceId: beliefWs,
+        episodeId: beliefEp,
+        subject: "belief-provisional",
+        provenance: '{"actor":"test","unresolved":["subject"]}',
+      });
+      const beliefA = await seedFact({
+        workspaceId: beliefWs,
+        episodeId: beliefEp,
+        subject: "belief-rival-a",
+      });
+      const beliefB = await seedFact({
+        workspaceId: beliefWs,
+        episodeId: beliefEp,
+        subject: "belief-rival-b",
+      });
+      await pool.query(
+        `INSERT INTO brain_edges (workspace_id, edge_type, from_fact_id, to_fact_id)
+         VALUES ($1, 'in-tension-with', $2, $3)`,
+        [beliefWs, beliefA, beliefB],
+      );
+      const beliefs = await loadFactOversight(reader, ctxFor(beliefWs, []));
+      expect(beliefs.workspaceTotals.provisional).toBe(1);
+      expect(beliefs.workspaceTotals.inTension).toBe(2);
     },
     PG_TEST_TIMEOUT_MS,
   );

@@ -76,7 +76,11 @@ import {
   type DraftFactRow,
   type StoredGrant,
 } from "@atlas/api/lib/brain/promotion";
-import { isJsonObject, notAnObservationSql } from "@atlas/api/lib/brain/observation";
+import {
+  isJsonObject,
+  notAWarehouseEpisodeSql,
+  notAnObservationSql,
+} from "@atlas/api/lib/brain/observation";
 import {
   PublishPhaseError,
   type FactSupersession,
@@ -271,6 +275,46 @@ export const PROMOTE_FACTS_SQL = `
  * break by random uuid — and `occurred_at`, which would be the honest
  * chronology, is nullable. Determinism is all that is claimed, and all that is
  * needed.
+ *
+ * ## ⚠️ A WAREHOUSE episode is not evidence for widening (#5391, ADR-0042)
+ *
+ * `notAWarehouseEpisodeSql` drops the warehouse class from this set, and the
+ * argument is `widenGrantFromEvidence`'s own safety sentence read literally:
+ * *"the claim was stated in A and in B, and a reader of either already saw it
+ * said."* That is a sentence about PEOPLE SPEAKING. A warehouse reading is a
+ * machine reading a column — nobody said anything in the producer's `org`-wide
+ * room, so there is no reader of B who already saw the claim, and the union's
+ * warrant is simply absent.
+ *
+ * What it costs, measured rather than assumed: the sequence is a private Slack
+ * claim minting a draft granted `['audience:C1']`, a warehouse row later
+ * agreeing with it and attaching its `ORG_PRINCIPAL` episode as `provenance`
+ * evidence (row 4 of #5332's class matrix, which `observation-reap.ts`'s fence
+ * deliberately keeps alive), and this statement then handing publish an `org`
+ * token. `['audience:C1'] ∪ ['org']` is non-null, `WIDEN_AND_PROMOTE_FACTS_SQL`
+ * runs, and **the private claim's BODY becomes readable by the whole org**
+ * because a machine read a column that happened to agree. `attributionDecision`
+ * narrows the attribution triple at read time against
+ * `pre_widening_visible_to`; it does not narrow the body, which is why the
+ * read-time mitigation did not cover this.
+ *
+ * ⚠️ **Not the `subject_cmp` hazard.** There (#5032) the two rows are about
+ * DIFFERENT entities and the merge itself is wrong. Here the merge is CORRECT —
+ * it really is the same claim — and the disclosure follows from the widening
+ * rule being right about the claim and silent about who may read a private
+ * statement of it. A `subject_cmp`-shaped fix cannot reach it.
+ *
+ * ⚠️ **This arm must move in lockstep with `willWidenRowsSql`'s** (`oversight.ts`),
+ * which builds the same evidence set for the pre-publish notice. That notice
+ * runs THIS transaction's own decision function precisely so the disclosure and
+ * the act cannot disagree; narrowing only one of the two inputs would
+ * reintroduce that disagreement one level down, where no test of the decision
+ * function can see it.
+ *
+ * The exclusion is on the EPISODE class, not on the edge type and not on the
+ * fact's own provenance: this is where the widening EVIDENCE is chosen, and
+ * `widenGrantFromEvidence` takes bare grant arrays and structurally cannot know
+ * what produced them.
  */
 export const EVIDENCE_GRANTS_SQL = `
   SELECT e.from_fact_id::text AS fact_id,
@@ -283,6 +327,7 @@ export const EVIDENCE_GRANTS_SQL = `
    WHERE e.workspace_id = $1
      AND e.edge_type = 'provenance'
      AND e.from_fact_id = ANY($2::uuid[])
+     AND ${notAWarehouseEpisodeSql("ep")}
    ORDER BY ep.ingested_at, ep.id
 `;
 

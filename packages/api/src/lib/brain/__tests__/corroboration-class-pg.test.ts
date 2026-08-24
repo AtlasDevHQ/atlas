@@ -55,6 +55,7 @@
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { Effect } from "effect";
 import { Pool } from "pg";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS, _resetPool } from "@atlas/api/lib/db/internal";
@@ -68,6 +69,10 @@ import {
 } from "@atlas/api/lib/brain/sources";
 import { isObservation, observationSql } from "@atlas/api/lib/brain/observation";
 import { widenGrantFromEvidence } from "@atlas/api/lib/brain/promotion";
+import {
+  EVIDENCE_GRANTS_SQL,
+  promoteBrainFacts,
+} from "@atlas/api/lib/content-mode/adapters/brain-facts";
 import { OBSERVATION_REAP_SQL } from "@atlas/api/lib/brain/observation-reap";
 import { loadFactCandidates } from "@atlas/api/lib/brain/candidates";
 import {
@@ -260,6 +265,64 @@ describeIfPg("corroboration's class matrix (#5332)", () => {
       [workspaceId],
     );
     return rows.map((r) => ({ factId: r.fact_id, source: r.source }));
+  }
+
+  /**
+   * The review gate, in a transaction, as `/admin/publish` runs it (#5391).
+   *
+   * The evidence exclusion lives in `EVIDENCE_GRANTS_SQL`, which only this path
+   * executes — `widenGrantFromEvidence` is pure and takes whatever it is handed,
+   * so a test of the function alone cannot see the fix at all. That is exactly
+   * why the ticket asked for the sequence end to end.
+   *
+   * The client is DESTROYED rather than released on failure: one holding an open
+   * transaction still holds `DRAFT_FACTS_SQL`'s `FOR UPDATE` locks and would
+   * block `afterEach`'s cleanup into a timeout that names the wrong test.
+   */
+  async function publish(workspaceId: string) {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const report = await Effect.runPromise(promoteBrainFacts(client, workspaceId));
+      await client.query("COMMIT");
+      client.release();
+      return report;
+    } catch (err) {
+      await client.query("ROLLBACK").catch((rollbackErr: unknown) => {
+        console.debug(
+          "publish(): ROLLBACK failed after a promote error",
+          rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr),
+        );
+      });
+      client.release(err instanceof Error ? err : new Error(String(err)));
+      throw err;
+    }
+  }
+
+  /**
+   * `pre_widening_visible_to`, which is written ONLY by
+   * `WIDEN_AND_PROMOTE_FACTS_SQL`.
+   *
+   * So a NULL is positive evidence that the blanket promote ran and the widening
+   * statement did not — a claim the published grant alone cannot make, since a
+   * union that added nothing leaves the grant identical either way.
+   */
+  async function preWideningOf(workspaceId: string, factId: string): Promise<string[] | null> {
+    const { rows } = await pool.query<{ pre: string[] | null }>(
+      `SELECT pre_widening_visible_to AS pre FROM brain_facts
+        WHERE workspace_id = $1 AND id = $2::uuid`,
+      [workspaceId, factId],
+    );
+    return rows[0]?.pre ?? null;
+  }
+
+  /** The publish verdict itself, so "nothing widened" is not read off a fact that never promoted. */
+  async function statusOf(workspaceId: string, factId: string): Promise<string | undefined> {
+    const { rows } = await pool.query<{ status: string }>(
+      `SELECT status FROM brain_facts WHERE workspace_id = $1 AND id = $2::uuid`,
+      [workspaceId, factId],
+    );
+    return rows[0]?.status;
   }
 
   async function tensionEdges(workspaceId: string): Promise<{ from: string; to: string }[]> {
@@ -596,20 +659,27 @@ describeIfPg("corroboration's class matrix (#5332)", () => {
     );
 
     it(
-      "row 4's surviving cross-class edge DOES widen — `org` is added to a private grant",
+      "row 4's surviving cross-class edge NO LONGER widens — a warehouse reading is not widening evidence",
       async () => {
-        // The boundary crossing that my fix deliberately KEEPS (row 4): a
-        // warehouse reading corroborating a private human belief. Here the
-        // direction is reversed — the evidence is the `org`-granted warehouse
-        // episode and the fact is the private claim — so the union is
-        // `audience:C1 ∪ org`, which DOES widen, and at publish it would
-        // disclose a private claim's body to the whole org.
+        // ⭐ #5391's falsifier, and it is the INVERSION of what this block
+        // measured before: the assertion here used to be that the union DOES
+        // run, recorded as a number rather than an assumption because "the
+        // direction of any surprise here is disclosure". It was the surprise.
         //
-        // ⚠️ MEASURED, not fixed here: this is pre-existing and out of #5332's
-        // scope, which is the corroboration lookup. It is recorded so the next
-        // reader finds a number rather than an assumption. `loadWideningPreview`
-        // fires the review-gate notice on exactly this, which is the guard that
-        // makes it "a human is told" rather than "this cannot happen".
+        // The sequence, end to end and unchanged: a private Slack claim mints a
+        // draft granted `['audience:C1']`; a warehouse reading later agrees with
+        // it and attaches its `ORG_PRINCIPAL` episode as `provenance` evidence
+        // (row 4, which `observation-reap.ts`'s fence deliberately keeps alive);
+        // publish then unioned `org` into the belief's grant and put a PRIVATE
+        // CLAIM'S BODY in front of the whole org. `attributionDecision` narrows
+        // the attribution triple at read time and does not narrow the body,
+        // which is why no read-time rule covered it.
+        //
+        // ADR-0042's 2026-08-24 amendment rules that an observation is not
+        // widening evidence at all: the union's warrant is "the claim was stated
+        // in A and in B, and a reader of either already saw it said", which is a
+        // sentence about PEOPLE SPEAKING that a machine reading a column does
+        // not satisfy.
         const ws = "ws-5332-row4-widening";
         await land(ws, SLACK_SOURCE, { grant: [PRIVATE_GRANT] });
         await land(ws, WAREHOUSE_SOURCE);
@@ -618,16 +688,81 @@ describeIfPg("corroboration's class matrix (#5332)", () => {
         expect(rows).toHaveLength(1);
         const belief = rows[0]!;
         expect(belief.visibleTo).toEqual([PRIVATE_GRANT]);
-        // The warehouse episode IS evidence for it.
+        // The warehouse episode IS still evidence for it — the EDGE is
+        // untouched, and this is the precondition that keeps everything below
+        // from being vacuous. A fix that closed the corroboration instead would
+        // pass every visibility assertion here and break the reaper.
         expect((await evidenceOf(ws)).map((e) => e.source).sort()).toEqual([
           SLACK_SOURCE,
           WAREHOUSE_SOURCE,
         ]);
-        // And this is what publish would do with that evidence.
+
+        // The pure function is UNCHANGED and would still widen if handed that
+        // grant — asserted so the fix cannot be mistaken for a change in the
+        // grant grammar. It takes bare arrays and structurally cannot know what
+        // produced them, which is why the exclusion is at the evidence set.
         expect(widenGrantFromEvidence(belief.visibleTo, [[ORG_PRINCIPAL]])).toEqual({
           grant: [PRIVATE_GRANT, ORG_PRINCIPAL],
           added: [ORG_PRINCIPAL],
         });
+
+        // …and the evidence set publish actually reads no longer contains it.
+        // This is the line that inverts: before the fix it returned the
+        // warehouse episode's `['org']`.
+        const { rows: evidenceRows } = await pool.query<{ visible_to: string[] }>(
+          EVIDENCE_GRANTS_SQL,
+          [ws, [belief.id]],
+        );
+        expect(evidenceRows.map((r) => r.visible_to)).toEqual([[PRIVATE_GRANT]]);
+
+        // END TO END, through the real review gate rather than the function.
+        const report = await publish(ws);
+        expect(report.widened).toEqual([]);
+        const [published] = await factsOf(ws);
+        expect(published!.visibleTo).toEqual([PRIVATE_GRANT]);
+        // `pre_widening_visible_to` stays NULL: it is written ONLY by
+        // `WIDEN_AND_PROMOTE_FACTS_SQL`, so a null here proves the blanket
+        // promote ran and the widening statement never did — a stronger claim
+        // than the grant alone, which an inert union would also satisfy.
+        expect(await preWideningOf(ws, published!.id)).toBeNull();
+        expect(await statusOf(ws, published!.id)).toBe("published");
+      },
+      PG_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      "the negative control: a PERSON restating a claim in a wider room still widens",
+      async () => {
+        // #4823 must survive intact — the fix excludes the warehouse CLASS, not
+        // widening. Without this the test above is satisfied by a fix that
+        // disabled grant widening wholesale, which is a silent over-restriction
+        // in the one direction nobody can report: you cannot notice a fact you
+        // cannot read.
+        //
+        // Two Slack episodes, private then org-wide, the same claim byte for
+        // byte. The second corroborates the first (row 1 of the matrix), and at
+        // publish the union runs exactly as it always has.
+        const ws = "ws-5391-person-to-person";
+        await land(ws, SLACK_SOURCE, { grant: [PRIVATE_GRANT] });
+        await land(ws, SLACK_SOURCE, { grant: [ORG_PRINCIPAL] });
+
+        const rows = await factsOf(ws);
+        expect(rows).toHaveLength(1);
+        const belief = rows[0]!;
+        expect(belief.visibleTo).toEqual([PRIVATE_GRANT]);
+        expect((await evidenceOf(ws)).map((e) => e.source)).toEqual([
+          SLACK_SOURCE,
+          SLACK_SOURCE,
+        ]);
+
+        const report = await publish(ws);
+        expect(report.widened).toEqual([{ rowId: belief.id, added: [ORG_PRINCIPAL] }]);
+        const [widened] = await factsOf(ws);
+        expect(widened!.visibleTo).toEqual([PRIVATE_GRANT, ORG_PRINCIPAL]);
+        // The read-time attribution narrowing has the grant it needs — the
+        // widening statement ran, which is the half `report.widened` alone
+        // cannot distinguish from a report built off the decision function.
+        expect(await preWideningOf(ws, belief.id)).toEqual([PRIVATE_GRANT]);
       },
       PG_TEST_TIMEOUT_MS,
     );

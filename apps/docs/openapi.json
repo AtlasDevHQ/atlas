@@ -74350,7 +74350,7 @@
           "Admin — Semantic"
         ],
         "summary": "Create or update a semantic entity (structured)",
-        "description": "Accepts structured entity JSON (table, dimensions, measures, joins, query_patterns), converts to YAML, and stores in the org-scoped semantic_entities table. Triggers semantic index rebuild for the workspace. Scope the write with `connectionGroupId` when the same entity name exists in multiple environments — accepted BOTH as `?connectionGroupId=<group>` and in the JSON body, so it matches the `DELETE` on this path (#5413); the body wins if both are sent. Without it the write targets the group the entity already lives in, and a name spanning two or more groups returns 409 `entity_ambiguous` with the candidates.",
+        "description": "Accepts structured entity JSON (table, dimensions, measures, joins, query_patterns), converts to YAML, and stores in the org-scoped semantic_entities table. Triggers semantic index rebuild for the workspace. Scope the write with `connectionGroupId` when the same entity name exists in multiple environments — accepted BOTH as `?connectionGroupId=<group>` and in the JSON body, so it matches the `DELETE` on this path (#5413); the body wins if both are sent. Without it the write targets the group the entity already lives in, and a name spanning two or more groups returns 409 `entity_ambiguous` with the candidates. ⚠️ `connectionGroupId` and `connectionId` remain mutually exclusive (#3854) and that now includes the query form: sending `?connectionGroupId=` alongside a body `connectionId` is a 400 `conflicting_scope`, where the query parameter was previously ignored.",
         "parameters": [
           {
             "schema": {
@@ -75647,7 +75647,7 @@
           "Admin — Semantic"
         ],
         "summary": "Rollback an entity to a previous version",
-        "description": "Restores the entity's YAML content from the specified version. Creates a new version snapshot recording the rollback.",
+        "description": "Restores the entity's YAML content from the specified version. Creates a new version snapshot recording the rollback. The restored draft lands in the group the entity already lives in; pass `connectionGroupId` in the body to target a different one, or to disambiguate a name that exists in several (#5412).",
         "parameters": [
           {
             "schema": {
@@ -75765,6 +75765,78 @@
                   "required": [
                     "error",
                     "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The entity name exists in more than one connection group and the request named none. Nothing was written (#5412). `disambiguateWith` says where to send the group you pick — for this verb, the JSON body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "entity_ambiguous"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "groups": {
+                      "type": "array",
+                      "items": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "entityName": {
+                      "type": "string"
+                    },
+                    "entityType": {
+                      "type": "string"
+                    },
+                    "disambiguateWith": {
+                      "type": "object",
+                      "properties": {
+                        "parameter": {
+                          "type": "string",
+                          "enum": [
+                            "connectionGroupId"
+                          ]
+                        },
+                        "in": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "query",
+                              "body"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "parameter",
+                        "in"
+                      ]
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message",
+                    "groups",
+                    "entityName",
+                    "entityType",
+                    "disambiguateWith"
                   ]
                 }
               }

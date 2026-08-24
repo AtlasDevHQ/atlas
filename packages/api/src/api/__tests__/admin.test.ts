@@ -3716,10 +3716,23 @@ describe("PUT /api/v1/admin/semantic/entities/edit/:name", () => {
   it("a PUT refused as entity_ambiguous writes NOTHING (#5412)", async () => {
     setOrgAdmin("org-1");
     // Ambiguity that PREDATES the request — two groups already carry the name.
-    // The check is the pre-write read, so the refusal costs no row. Pinned
-    // because "validate, then write" and "write, then validate" are one
-    // statement apart here and only one of them is honest: a caller who reads
-    // 409 stops looking, so a row left behind is a row nobody goes back for.
+    //
+    // ⚠️ THIS TEST PASSES ON THE PRE-FIX CODE, and saying so is the point.
+    // #5412's AC2 asks for exactly this shape ("PUT an ambiguous entity name,
+    // assert 409, then assert the row count is unchanged"), and written
+    // literally it is VACUOUS: the pre-write `getEntity` has been there since
+    // #5402 and `hono.ts`'s tagged-error mapping already returned the 409, so a
+    // PRE-EXISTING ambiguity never wrote a row. The defect was never in this
+    // path.
+    //
+    // The falsifier is the ⭐ test above, where the request MANUFACTURES the
+    // ambiguity: one group before the write, two after, and the 409 comes from
+    // the post-write read. That one fails before the fix.
+    //
+    // Kept anyway as a REGRESSION PIN — "validate, then write" and "write, then
+    // validate" are one statement apart here, and a future refactor that moved
+    // the read below the write would break this while leaving the ⭐ test green
+    // (its entity resolves uniquely, so it would never reach the refusal).
     const groups = fakeEntityStore(["g_prod", "g_staging"]);
 
     const res = await app.fetch(
@@ -3804,6 +3817,33 @@ describe("PUT /api/v1/admin/semantic/entities/edit/:name", () => {
 
     expect(res.status).toBe(200);
     expect((mockUpsertDraftEntityForGroupAdmin.mock.calls as unknown[][])[0]?.[4]).toBeNull();
+  });
+
+  it("a query-string group alongside a body connectionId is the #3854 conflict, not a silent win (#5413)", async () => {
+    setOrgAdmin("org-1");
+    // ⚠️ THE ONE BEHAVIOUR CHANGE that falls out of reading the query string.
+    // This request used to 200 — the query parameter was ignored and the
+    // connection silently decided the scope. #3854 rejects the pair because the
+    // two can DISAGREE (a connection's resolved group need not be the named
+    // one), and that argument never depended on which envelope carried the
+    // group; ignoring it was a consequence of not reading it. Pinned because "a
+    // request that used to succeed now 400s" should be met in a changelog.
+    fakeEntityStore(["g_prod"]);
+
+    const res = await app.fetch(
+      adminRequest(
+        "/api/v1/admin/semantic/entities/edit/organization?connectionGroupId=g_prod",
+        "PUT",
+        { table: "organization", connectionId: "warehouse" },
+      ),
+    );
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("conflicting_scope");
+    // Neither write path runs — the request is rejected, not silently resolved.
+    expect(mockUpsertDraftEntityAdmin).not.toHaveBeenCalled();
+    expect(mockUpsertDraftEntityForGroupAdmin).not.toHaveBeenCalled();
   });
 
   it("the 409 says WHERE to put the parameter, in a field and not only in prose (#5413)", async () => {
@@ -4605,6 +4645,43 @@ describe("POST /api/v1/admin/semantic/entities/:name/rollback", () => {
     // The disk write already keyed on the entity's group; the DB write now
     // agrees with it rather than differing whenever a group is set.
     expect((mockSyncEntityToDisk.mock.calls as unknown[][])[0]?.[4]).toBe("g_prod");
+  });
+
+  it("its 409 names the body — the third verb, and the one with no query parameter (#5413)", async () => {
+    setOrgAdmin("org-1");
+    // `RollbackBodySchema` declares `connectionGroupId` and the route has no
+    // query parameter, so `disambiguateWith.in` is `["body"]` alone. The value
+    // is per-verb rather than a constant precisely so this route cannot inherit
+    // the PUT's copy and send a caller to a query string that does nothing —
+    // which is the shape of the bug on the other side of #5413.
+    const versionUuid = "550e8400-e29b-41d4-a716-446655440009";
+    mockGetVersion.mockResolvedValue({
+      id: versionUuid, entity_id: "e-1", org_id: "org-1", entity_type: "entity",
+      name: "users", yaml_content: "table: users\n", change_summary: "v1",
+      author_id: null, author_label: null, version_number: 1,
+      created_at: "2026-04-01T10:00:00Z",
+    });
+    mockGetEntityAdmin.mockImplementation(async (_orgId, _type, name, group) => {
+      if (group !== undefined) return null;
+      throw new RealAmbiguousEntityError({
+        message: `Entity "${name}" exists in 2 environments. Pass connectionGroupId to disambiguate.`,
+        entityName: name,
+        entityType: "entity",
+        groups: ["g_prod", "g_staging"],
+      });
+    });
+
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/users/rollback", "POST", {
+      versionId: versionUuid,
+    }));
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("entity_ambiguous");
+    expect(body.disambiguateWith).toEqual({ parameter: "connectionGroupId", in: ["body"] });
+    expect(body.message).not.toContain("query string");
+    // Refused before anything was staged — the #5412 property on this verb too.
+    expect(draftWriteCount()).toBe(0);
   });
 
   it("an explicit connectionGroupId wins over the entity's own group on rollback (#5412)", async () => {

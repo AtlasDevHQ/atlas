@@ -391,11 +391,48 @@ void mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
 // Org-scoped semantic entities mock
 const mockListEntitiesAdmin: Mock<(orgId: string, type?: string) => Promise<unknown[]>> = mock(() => Promise.resolve([]));
 const mockListEntitiesWithOverlay: Mock<(orgId: string, type?: string) => Promise<unknown[]>> = mock(() => Promise.resolve([]));
-const mockGetEntityAdmin: Mock<(orgId: string, type: string, name: string) => Promise<unknown>> = mock(() => Promise.resolve(null));
+// Declares all five parameters the real `getEntity` takes. The `connectionGroupId`
+// argument is not decoration here — `undefined` is the UNSCOPED lookup that 409s
+// on a multi-group name, and a scoped value is the lookup that cannot, so a test
+// for #5412 has to be able to answer differently per scope.
+const mockGetEntityAdmin: Mock<
+  (
+    orgId: string,
+    type: string,
+    name: string,
+    connectionGroupId?: string | null,
+    mode?: "developer" | "published",
+  ) => Promise<unknown>
+> = mock(() => Promise.resolve(null));
 const mockUpsertEntityAdmin: Mock<(...args: unknown[]) => Promise<void>> = mock(() => Promise.resolve());
 const mockDeleteEntityAdmin: Mock<(orgId: string, type: string, name: string) => Promise<boolean>> = mock(() => Promise.resolve(false));
 const mockUpsertDraftEntityAdmin: Mock<(...args: unknown[]) => Promise<void>> = mock(() => Promise.resolve());
 const mockUpsertDraftEntityForGroupAdmin: Mock<(...args: unknown[]) => Promise<void>> = mock(() => Promise.resolve());
+
+/**
+ * How many DRAFT writes ran, across BOTH draft helpers, and the YAML the first
+ * of them was handed.
+ *
+ * The editor has two write helpers and they differ only in how the group is
+ * decided: `upsertDraftEntity` resolves it from a connection id inside the
+ * INSERT, `upsertDraftEntityForGroup` sets it directly. Since #5412 an edit to
+ * an entity that ALREADY EXISTS takes the second one — it writes into the group
+ * the entity is already in, rather than into the `null` group it was never
+ * told about — so a test whose claim is "this staged a DRAFT rather than
+ * publishing", or "this is the document it wrote", must accept either.
+ *
+ * ⚠️ Use these only where the claim is draft-vs-published or about content. The
+ * #3854 and #5412 tests assert the SPECIFIC helper on purpose, because there
+ * the routing IS the behaviour under test — do not fold those into this.
+ */
+const draftWriteCount = (): number =>
+  mockUpsertDraftEntityAdmin.mock.calls.length + mockUpsertDraftEntityForGroupAdmin.mock.calls.length;
+
+const draftWriteYaml = (): string => {
+  const viaConnection = (mockUpsertDraftEntityAdmin.mock.calls as unknown[][])[0];
+  const viaGroup = (mockUpsertDraftEntityForGroupAdmin.mock.calls as unknown[][])[0];
+  return (viaConnection ?? viaGroup)?.[3] as string;
+};
 const mockUpsertTombstoneAdmin: Mock<(...args: unknown[]) => Promise<void>> = mock(() => Promise.resolve());
 const mockDeleteDraftEntityAdmin: Mock<(...args: unknown[]) => Promise<boolean>> = mock(() => Promise.resolve(true));
 const mockCreateVersion: Mock<(...args: unknown[]) => Promise<string>> = mock(() => Promise.resolve("version-1"));
@@ -3375,6 +3412,13 @@ describe("PUT /api/v1/admin/semantic/entities/edit/:name", () => {
     mockUpsertDraftEntityAdmin.mockResolvedValue(undefined);
     mockUpsertDraftEntityForGroupAdmin.mockReset();
     mockUpsertDraftEntityForGroupAdmin.mockResolvedValue(undefined);
+    // "The entity does not exist yet" — the baseline every CREATE case below
+    // assumes and none of them used to state, so the block inherited whatever
+    // row an earlier describe had left on the mock. That was inert while the
+    // write path ignored the previous row; since #5412 it decides which group
+    // the write targets, so the leak would decide it too.
+    mockGetEntityAdmin.mockReset();
+    mockGetEntityAdmin.mockResolvedValue(null);
     mockSyncEntityToDisk.mockReset();
     mockSyncEntityToDisk.mockResolvedValue(undefined);
   });
@@ -3587,6 +3631,224 @@ describe("PUT /api/v1/admin/semantic/entities/edit/:name", () => {
     }));
     expect(res.status).toBe(422);
   });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // A refusal that still persists (#5412)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * A one-name fake of `semantic_entities`, because the defect is not visible
+   * against a mock that answers the same thing every call.
+   *
+   * `getEntity` has TWO behaviours the handler depends on and a fixed
+   * `mockResolvedValue` collapses into one: the UNSCOPED lookup 409s once the
+   * name spans more than one `connection_group_id`, and a SCOPED lookup never
+   * can. On prod the 409 came from the read AFTER the write, about a group the
+   * write had just invented — so the fake has to let a write change what the
+   * next read says. `groups` is the whole state.
+   */
+  function fakeEntityStore(initial: ReadonlyArray<string | null>) {
+    const groups = new Set<string | null>(initial);
+    const rowFor = (group: string | null) => ({
+      id: `e-${group ?? "null"}`,
+      org_id: "org-1",
+      entity_type: "entity",
+      name: "organization",
+      yaml_content: "table: organization\n",
+      connection_id: null,
+      connection_group_id: group,
+      status: "published",
+    });
+    mockGetEntityAdmin.mockImplementation(async (_orgId, _type, name, group) => {
+      if (group !== undefined) return groups.has(group) ? rowFor(group) : null;
+      if (groups.size === 0) return null;
+      if (groups.size > 1) {
+        throw new RealAmbiguousEntityError({
+          message: `Entity "${name}" exists in ${groups.size} environments. Pass connectionGroupId to disambiguate.`,
+          entityName: name,
+          entityType: "entity",
+          groups: [...groups].toSorted((a, b) => (a ?? "").localeCompare(b ?? "")),
+        });
+      }
+      return rowFor([...groups][0]!);
+    });
+    mockUpsertDraftEntityAdmin.mockImplementation(async () => {
+      // `upsertDraftEntity` resolves the group from a connection id; with none
+      // given `inlineConnectionGroupSql` yields NULL — the legacy scope.
+      groups.add(null);
+    });
+    mockUpsertDraftEntityForGroupAdmin.mockImplementation(async (...args: unknown[]) => {
+      groups.add((args[4] as string | null | undefined) ?? null);
+    });
+    return groups;
+  }
+
+  it("⭐ an unscoped PUT lands in the group the entity already lives in — it does not CREATE the ambiguity it then reports (#5412)", async () => {
+    setOrgAdmin("org-1");
+    // The prod trace, exactly. `organization` was published in `g_prod` and
+    // NOWHERE else, so the unscoped lookup before the write resolved fine — one
+    // group, no ambiguity. The write then landed a draft in the `(null)` group
+    // because no scope was named, which made the name span two groups, and the
+    // post-write read raised `entity_ambiguous` about a state the request had
+    // just produced. The caller reads 409 and reasonably believes nothing
+    // happened; the row stays, and `POST /admin/publish` ("publish all drafts",
+    // no id selection) promotes it into a group nobody chose.
+    const groups = fakeEntityStore(["g_prod"]);
+
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/organization", "PUT", {
+        table: "organization",
+        filter: "deleted_at IS NULL",
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    // The write is SCOPED to the group the entity was already in — a write the
+    // caller did not scope must not silently pick a different one.
+    expect(mockUpsertDraftEntityForGroupAdmin).toHaveBeenCalledTimes(1);
+    expect((mockUpsertDraftEntityForGroupAdmin.mock.calls as unknown[][])[0]?.[4]).toBe("g_prod");
+    expect(mockUpsertDraftEntityAdmin).not.toHaveBeenCalled();
+    // …and the entity still lives in exactly one group. This is the assertion
+    // that fails loudest before the fix: the request invented `null`.
+    expect([...groups]).toEqual(["g_prod"]);
+  });
+
+  it("a PUT refused as entity_ambiguous writes NOTHING (#5412)", async () => {
+    setOrgAdmin("org-1");
+    // Ambiguity that PREDATES the request — two groups already carry the name.
+    // The check is the pre-write read, so the refusal costs no row. Pinned
+    // because "validate, then write" and "write, then validate" are one
+    // statement apart here and only one of them is honest: a caller who reads
+    // 409 stops looking, so a row left behind is a row nobody goes back for.
+    const groups = fakeEntityStore(["g_prod", "g_staging"]);
+
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/organization", "PUT", {
+        table: "organization",
+        filter: "deleted_at IS NULL",
+      }),
+    );
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("entity_ambiguous");
+    expect(body.groups).toEqual(["g_prod", "g_staging"]);
+    expect(mockUpsertDraftEntityAdmin).not.toHaveBeenCalled();
+    expect(mockUpsertDraftEntityForGroupAdmin).not.toHaveBeenCalled();
+    expect([...groups].toSorted()).toEqual(["g_prod", "g_staging"]);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // The 409's advice names a location, and the location works (#5413)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  it("⭐ accepts connectionGroupId in the QUERY STRING, like the sibling DELETE (#5413)", async () => {
+    setOrgAdmin("org-1");
+    // Measured on prod `us`: `?connectionGroupId=g_prod` returned the IDENTICAL
+    // 409 — the parameter was read only from the body — while the same value in
+    // the body returned 200. The query form is the obvious reading, because the
+    // DELETE on this exact path documents `?connectionGroupId=<group>`; so one
+    // verb took it in the query, the other in the body, and the one taking it
+    // in the body was the one whose error asked for it without saying where.
+    //
+    // ⚠️ The failure mode is a silent no-op, not an error: the caller gets the
+    // same refusal back and concludes the GROUP was wrong rather than the
+    // location. Before #5412 each of those retries also left a draft behind.
+    fakeEntityStore(["g_prod", "g_staging"]);
+
+    const res = await app.fetch(
+      adminRequest(
+        "/api/v1/admin/semantic/entities/edit/organization?connectionGroupId=g_prod",
+        "PUT",
+        { table: "organization", filter: "deleted_at IS NULL" },
+      ),
+    );
+
+    expect(res.status).toBe(200);
+    expect((mockUpsertDraftEntityForGroupAdmin.mock.calls as unknown[][])[0]?.[4]).toBe("g_prod");
+  });
+
+  it("the body wins when both locations carry a group (#5413)", async () => {
+    setOrgAdmin("org-1");
+    // Two different answers to one question is not something to arbitrate
+    // silently by position, so the more specific carrier wins — and the
+    // structured editor, which sends a body, keeps the meaning it had.
+    fakeEntityStore(["g_prod", "g_staging"]);
+
+    const res = await app.fetch(
+      adminRequest(
+        "/api/v1/admin/semantic/entities/edit/organization?connectionGroupId=g_staging",
+        "PUT",
+        { table: "organization", connectionGroupId: "g_prod" },
+      ),
+    );
+
+    expect(res.status).toBe(200);
+    expect((mockUpsertDraftEntityForGroupAdmin.mock.calls as unknown[][])[0]?.[4]).toBe("g_prod");
+  });
+
+  it("an empty-string body group still beats the query string — `` is a real value (#5413)", async () => {
+    setOrgAdmin("org-1");
+    // `??`, not `||`. `connectionGroupId: ""` means the legacy null group
+    // EXPLICITLY (see the body schema), so a `||` merge would silently discard
+    // the caller's choice in favour of the query string.
+    fakeEntityStore(["g_prod", null]);
+
+    const res = await app.fetch(
+      adminRequest(
+        "/api/v1/admin/semantic/entities/edit/organization?connectionGroupId=g_prod",
+        "PUT",
+        { table: "organization", connectionGroupId: "" },
+      ),
+    );
+
+    expect(res.status).toBe(200);
+    expect((mockUpsertDraftEntityForGroupAdmin.mock.calls as unknown[][])[0]?.[4]).toBeNull();
+  });
+
+  it("the 409 says WHERE to put the parameter, in a field and not only in prose (#5413)", async () => {
+    setOrgAdmin("org-1");
+    fakeEntityStore(["g_prod", "g_staging"]);
+
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/organization", "PUT", {
+        table: "organization",
+      }),
+    );
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as Record<string, unknown>;
+    // The machine-readable half — a client picks from `groups` and needs to
+    // know where to send it back without re-reading English.
+    expect(body.disambiguateWith).toEqual({
+      parameter: "connectionGroupId",
+      in: ["query", "body"],
+    });
+    // …and the prose agrees with it, so the two cannot drift into disagreement.
+    expect(body.message).toContain("?connectionGroupId=<group>");
+    expect(body.message).toContain("JSON body");
+    expect(body.groups).toEqual(["g_prod", "g_staging"]);
+  });
+
+  it("a scoped PUT is never refused for an ambiguity its own scope resolves (#5412)", async () => {
+    setOrgAdmin("org-1");
+    // The control. The same two-group workspace, and naming the group makes
+    // every read scoped — so the 409 is genuinely about a question the caller
+    // did not answer, not about the table's shape.
+    const groups = fakeEntityStore(["g_prod", "g_staging"]);
+
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/organization", "PUT", {
+        table: "organization",
+        filter: "deleted_at IS NULL",
+        connectionGroupId: "g_prod",
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect((mockUpsertDraftEntityForGroupAdmin.mock.calls as unknown[][])[0]?.[4]).toBe("g_prod");
+    expect([...groups].toSorted()).toEqual(["g_prod", "g_staging"]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -3653,8 +3915,10 @@ indexes:
 `;
 
 describe("PUT /api/v1/admin/semantic/entities/edit/:name — lossless round-trip (#5402)", () => {
-  const yamlOf = () =>
-    (mockUpsertDraftEntityAdmin.mock.calls as unknown[][])[0]?.[3] as string;
+  // Either draft helper — `organization` already exists in these fixtures, so
+  // since #5412 the write is group-direct. This block is about the DOCUMENT,
+  // not about which helper carried it.
+  const yamlOf = draftWriteYaml;
 
   const parseWritten = async () => {
     const yaml = await import("js-yaml");
@@ -4204,6 +4468,8 @@ describe("POST /api/v1/admin/semantic/entities/:name/rollback", () => {
     mockUpsertEntityAdmin.mockResolvedValue(undefined);
     mockUpsertDraftEntityAdmin.mockReset();
     mockUpsertDraftEntityAdmin.mockResolvedValue(undefined);
+    mockUpsertDraftEntityForGroupAdmin.mockReset();
+    mockUpsertDraftEntityForGroupAdmin.mockResolvedValue(undefined);
     mockCreateVersion.mockReset();
     mockCreateVersion.mockResolvedValue("new-version-id");
     mockGenerateChangeSummary.mockReset();
@@ -4296,13 +4562,76 @@ describe("POST /api/v1/admin/semantic/entities/:name/rollback", () => {
     // Verify rollback staged a draft of the target YAML (#2177: rollback
     // does not mutate the published row directly anymore — the admin
     // publishes via /api/v1/admin/publish to materialize it).
-    expect(mockUpsertDraftEntityAdmin).toHaveBeenCalledTimes(1);
+    expect(draftWriteCount()).toBe(1);
     expect(mockUpsertEntityAdmin).not.toHaveBeenCalled();
-    const upsertCall = (mockUpsertDraftEntityAdmin.mock.calls as unknown[][])[0];
-    expect(upsertCall?.[3]).toBe(targetYaml);
+    expect(draftWriteYaml()).toBe(targetYaml);
 
     // Verify a new version was created for the rollback
     expect(mockCreateVersion).toHaveBeenCalledTimes(1);
+  });
+
+  it("⭐ stages the rollback draft in the entity's OWN group, not the null one (#5412)", async () => {
+    setOrgAdmin("org-1");
+    // The same defect as the PUT, on the same router — found by #5412's AC4
+    // sweep. `upsertDraftEntity` was called with no connection id at all, so
+    // the row landed in the `null` group regardless of where the entity lives.
+    // For a group-scoped entity that is two failures at once: publish promotes
+    // the rollback into a group nobody chose, and the unscoped re-read that
+    // follows raises `entity_ambiguous` about the group this very request
+    // created — so a rollback that SUCCEEDED is reported to the caller as a
+    // 409, with the row left behind.
+    const targetYaml = "table: users\ndescription: Rolled back\n";
+    const versionUuid = "550e8400-e29b-41d4-a716-446655440007";
+    mockGetVersion.mockResolvedValue({
+      id: versionUuid, entity_id: "e-1", org_id: "org-1", entity_type: "entity",
+      name: "users", yaml_content: targetYaml, change_summary: "v1",
+      author_id: null, author_label: null, version_number: 1,
+      created_at: "2026-04-01T10:00:00Z",
+    });
+    mockGetEntityAdmin.mockResolvedValue({
+      id: "e-1", org_id: "org-1", entity_type: "entity", name: "users",
+      yaml_content: "table: users\n", connection_id: null,
+      connection_group_id: "g_prod", status: "published",
+      created_at: "2026-04-01T10:00:00Z", updated_at: "2026-04-01T12:00:00Z",
+    });
+
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/users/rollback", "POST", {
+      versionId: versionUuid,
+    }));
+    expect(res.status).toBe(200);
+    expect(mockUpsertDraftEntityForGroupAdmin).toHaveBeenCalledTimes(1);
+    expect((mockUpsertDraftEntityForGroupAdmin.mock.calls as unknown[][])[0]?.[4]).toBe("g_prod");
+    expect(mockUpsertDraftEntityAdmin).not.toHaveBeenCalled();
+    // The disk write already keyed on the entity's group; the DB write now
+    // agrees with it rather than differing whenever a group is set.
+    expect((mockSyncEntityToDisk.mock.calls as unknown[][])[0]?.[4]).toBe("g_prod");
+  });
+
+  it("an explicit connectionGroupId wins over the entity's own group on rollback (#5412)", async () => {
+    setOrgAdmin("org-1");
+    // The caller naming the environment is the caller naming the environment —
+    // the entity's own group is the FALLBACK, not an override of the request.
+    const targetYaml = "table: users\n";
+    const versionUuid = "550e8400-e29b-41d4-a716-446655440008";
+    mockGetVersion.mockResolvedValue({
+      id: versionUuid, entity_id: "e-1", org_id: "org-1", entity_type: "entity",
+      name: "users", yaml_content: targetYaml, change_summary: "v1",
+      author_id: null, author_label: null, version_number: 1,
+      created_at: "2026-04-01T10:00:00Z",
+    });
+    mockGetEntityAdmin.mockResolvedValue({
+      id: "e-1", org_id: "org-1", entity_type: "entity", name: "users",
+      yaml_content: "table: users\n", connection_id: null,
+      connection_group_id: "g_prod", status: "published",
+      created_at: "2026-04-01T10:00:00Z", updated_at: "2026-04-01T12:00:00Z",
+    });
+
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/users/rollback", "POST", {
+      versionId: versionUuid,
+      connectionGroupId: "g_staging",
+    }));
+    expect(res.status).toBe(200);
+    expect((mockUpsertDraftEntityForGroupAdmin.mock.calls as unknown[][])[0]?.[4]).toBe("g_staging");
   });
 
   it("succeeds even when version snapshot fails after rollback", async () => {
@@ -4332,7 +4661,7 @@ describe("POST /api/v1/admin/semantic/entities/:name/rollback", () => {
     }));
     // Rollback still succeeds — draft was staged for the entity (#2177)
     expect(res.status).toBe(200);
-    expect(mockUpsertDraftEntityAdmin).toHaveBeenCalledTimes(1);
+    expect(draftWriteCount()).toBe(1);
   });
 });
 
@@ -4416,6 +4745,8 @@ describe("PUT /api/v1/admin/semantic/entities/edit/:name — always stages as dr
     mockUpsertEntityAdmin.mockResolvedValue(undefined);
     mockUpsertDraftEntityAdmin.mockReset();
     mockUpsertDraftEntityAdmin.mockResolvedValue(undefined);
+    mockUpsertDraftEntityForGroupAdmin.mockReset();
+    mockUpsertDraftEntityForGroupAdmin.mockResolvedValue(undefined);
     mockGetEntityAdmin.mockReset();
     mockSyncEntityToDisk.mockReset();
     mockSyncEntityToDisk.mockResolvedValue(undefined);
@@ -4430,7 +4761,7 @@ describe("PUT /api/v1/admin/semantic/entities/edit/:name — always stages as dr
       }),
     );
     expect(res.status).toBe(200);
-    expect(mockUpsertDraftEntityAdmin).toHaveBeenCalledTimes(1);
+    expect(draftWriteCount()).toBe(1);
     expect(mockUpsertEntityAdmin).not.toHaveBeenCalled();
   });
 
@@ -4448,7 +4779,7 @@ describe("PUT /api/v1/admin/semantic/entities/edit/:name — always stages as dr
     });
     const res = await app.fetch(req);
     expect(res.status).toBe(200);
-    expect(mockUpsertDraftEntityAdmin).toHaveBeenCalledTimes(1);
+    expect(draftWriteCount()).toBe(1);
     expect(mockUpsertEntityAdmin).not.toHaveBeenCalled();
   });
 
@@ -4465,7 +4796,7 @@ describe("PUT /api/v1/admin/semantic/entities/edit/:name — always stages as dr
       }),
     );
     expect(res.status).toBe(200);
-    expect(mockUpsertDraftEntityAdmin).toHaveBeenCalledTimes(1);
+    expect(draftWriteCount()).toBe(1);
     expect(mockUpsertEntityAdmin).not.toHaveBeenCalled();
   });
 
@@ -4482,7 +4813,7 @@ describe("PUT /api/v1/admin/semantic/entities/edit/:name — always stages as dr
       }),
     );
     expect(res.status).toBe(200);
-    expect(mockUpsertDraftEntityAdmin).toHaveBeenCalledTimes(1);
+    expect(draftWriteCount()).toBe(1);
   });
 
   it("accepts demo-connection writes in published mode (no 403, drafts instead)", async () => {
@@ -4495,7 +4826,7 @@ describe("PUT /api/v1/admin/semantic/entities/edit/:name — always stages as dr
       }),
     );
     expect(res.status).toBe(200);
-    expect(mockUpsertDraftEntityAdmin).toHaveBeenCalledTimes(1);
+    expect(draftWriteCount()).toBe(1);
     expect(mockUpsertEntityAdmin).not.toHaveBeenCalled();
   });
 
@@ -4513,7 +4844,7 @@ describe("PUT /api/v1/admin/semantic/entities/edit/:name — always stages as dr
       }),
     );
     expect(res.status).toBe(200);
-    expect(mockUpsertDraftEntityAdmin).toHaveBeenCalledTimes(1);
+    expect(draftWriteCount()).toBe(1);
     expect(mockUpsertEntityAdmin).not.toHaveBeenCalled();
   });
 });
@@ -4537,6 +4868,39 @@ describe("DELETE /api/v1/admin/semantic/entities/edit/:name — always stages as
     );
     expect(res.status).toBe(404);
     expect(mockDeleteEntityAdmin).not.toHaveBeenCalled();
+    expect(mockUpsertTombstoneAdmin).not.toHaveBeenCalled();
+    expect(mockDeleteDraftEntityAdmin).not.toHaveBeenCalled();
+  });
+
+  it("its 409 names the SAME parameter as the PUT's, in the location this verb takes (#5413)", async () => {
+    setOrgAdmin("org-1");
+    // The two verbs on one path have to agree about the parameter, and they now
+    // do — `connectionGroupId`, accepted in the query string on both. Where they
+    // legitimately differ is the SET of locations: the DELETE has no body to put
+    // it in, and `disambiguateWith.in` says so rather than leaving a caller to
+    // infer it from the PUT's copy.
+    mockGetEntityAdmin.mockImplementation(async (_orgId, _type, name, group) => {
+      if (group !== undefined) return null;
+      throw new RealAmbiguousEntityError({
+        message: `Entity "${name}" exists in 2 environments. Pass connectionGroupId to disambiguate.`,
+        entityName: name,
+        entityType: "entity",
+        groups: ["g_prod", "g_staging"],
+      });
+    });
+
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/organization", "DELETE"),
+    );
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("entity_ambiguous");
+    expect(body.disambiguateWith).toEqual({ parameter: "connectionGroupId", in: ["query"] });
+    expect(body.message).toContain("?connectionGroupId=<group>");
+    expect(body.message).not.toContain("JSON body");
+    // Nothing was written on the way to the refusal — the same property #5412
+    // pins on the PUT, asserted here because this verb's writes are destructive.
     expect(mockUpsertTombstoneAdmin).not.toHaveBeenCalled();
     expect(mockDeleteDraftEntityAdmin).not.toHaveBeenCalled();
   });

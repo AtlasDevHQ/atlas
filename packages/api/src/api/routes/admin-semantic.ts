@@ -14,6 +14,13 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import type { OpenAPIHono } from "@hono/zod-openapi";
 import { runHandler } from "@atlas/api/lib/effect/hono";
+// Statically, from `lib/effect/errors` rather than through the dynamic
+// `lib/semantic/entities` import below — the same reason `api/routes/semantic.ts`
+// does it: the entity module is `mock.module`'d by a lot of suites, and reaching
+// the class through it would make every one of them add a stub to keep an
+// `instanceof` from silently evaluating false. `entities.ts` re-exports THIS
+// class, so the two spellings are the same identity.
+import { AmbiguousEntityError } from "@atlas/api/lib/effect/errors";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
@@ -253,6 +260,91 @@ function parseConnectionGroupIdQuery(raw: string | undefined): string | null | u
   if (raw === "") return null;
   return raw;
 }
+
+/**
+ * Where a caller may put `connectionGroupId` on a given verb — the 409's
+ * remediation advice, in a field a client can act on (#5413).
+ *
+ * ## Why this is not just prose
+ *
+ * `getEntity`'s message is `Entity "X" exists in N environments. Pass
+ * connectionGroupId to disambiguate.` It names the parameter and NOT its
+ * location, and the obvious reading was wrong: the `DELETE` on this same path
+ * documents `?connectionGroupId=<group>` as a query parameter, while the `PUT`
+ * read it only from the JSON body — so a caller who followed the sibling
+ * verb's convention got the IDENTICAL 409 back and reasonably concluded the
+ * group name was wrong rather than the location. Measured on prod `us`,
+ * 2026-08-24: `?connectionGroupId=g_prod` → 409, the same body → 200.
+ *
+ * ⭐ Remediation copy that names a parameter but not its location is only
+ * useful where the API is already consistent about location, and here one path
+ * was not consistent with itself. Both halves of the fix are needed: the `PUT`
+ * now accepts the query string too, so the two verbs agree, and the refusal
+ * says so in a field rather than leaving a client to guess from prose.
+ *
+ * The message is rebuilt here rather than in `entities.ts` because the LOCATION
+ * is a property of the route, not of the lookup — `entities.ts` is called by
+ * six surfaces with different request shapes, and a message naming a body there
+ * would be wrong on most of them.
+ */
+const DISAMBIGUATION_PARAM = "connectionGroupId" as const;
+
+function ambiguousEntityBody(
+  err: AmbiguousEntityError,
+  requestId: string | undefined,
+  accepts: readonly ("query" | "body")[],
+): EntityAmbiguousBody {
+  const where = accepts
+    .map((loc) => (loc === "query" ? `\`?${DISAMBIGUATION_PARAM}=<group>\` in the query string` : "`connectionGroupId` in the JSON body"))
+    .join(" or ");
+  return {
+    error: "entity_ambiguous",
+    message:
+      `Entity "${err.entityName}" exists in ${err.groups.length} environments. ` +
+      `Pass ${where} to disambiguate — one of: ${err.groups.map((g) => g ?? "(none)").join(", ")}.`,
+    groups: [...err.groups],
+    entityName: err.entityName,
+    entityType: err.entityType,
+    // The machine-readable half. A client picks a group from `groups` and needs
+    // to know where to send it back; without this it can only re-read the prose.
+    disambiguateWith: { parameter: DISAMBIGUATION_PARAM, in: [...accepts] },
+    requestId,
+  };
+}
+
+/**
+ * The 409 wire shape, shared by both verbs on `/entities/edit/{name}`.
+ *
+ * Declared as a response on BOTH routes deliberately: the status was reachable
+ * on each of them long before #5413 — through `runHandler`'s tagged-error
+ * mapping, which Hono does not validate against `responses` — so the published
+ * spec documented a 409 on neither. A status a caller must handle and cannot
+ * find in the spec is how #5413's caller ended up guessing.
+ */
+const EntityAmbiguousSchema = z.object({
+  error: z.literal("entity_ambiguous"),
+  message: z.string(),
+  /** The candidate `connection_group_id`s; `null` is the legacy unscoped group. */
+  groups: z.array(z.string().nullable()),
+  entityName: z.string(),
+  entityType: z.string(),
+  /** Where to send the chosen group back — the advice, machine-readable (#5413). */
+  disambiguateWith: z.object({
+    parameter: z.literal(DISAMBIGUATION_PARAM),
+    in: z.array(z.enum(["query", "body"])),
+  }),
+  requestId: z.string().optional(),
+});
+
+/**
+ * The 409's TS shape, inferred from the schema rather than written twice.
+ *
+ * Hono does not validate responses, so `ambiguousEntityBody` returning
+ * `Record<string, unknown>` would let a field be renamed or dropped and still
+ * compile — with the published spec still promising it. Typing the builder's
+ * return against the schema is the only thing that makes the two agree.
+ */
+type EntityAmbiguousBody = z.infer<typeof EntityAmbiguousSchema>;
 
 /**
  * Entity-level keys `entityToYaml` OWNS — it writes each of these from the
@@ -538,9 +630,24 @@ export const putStructuredEntityRoute = createRoute({
   description:
     "Accepts structured entity JSON (table, dimensions, measures, joins, query_patterns), " +
     "converts to YAML, and stores in the org-scoped semantic_entities table. " +
-    "Triggers semantic index rebuild for the workspace.",
+    "Triggers semantic index rebuild for the workspace. " +
+    "Scope the write with `connectionGroupId` when the same entity name exists in multiple " +
+    "environments — accepted BOTH as `?connectionGroupId=<group>` and in the JSON body, so it " +
+    "matches the `DELETE` on this path (#5413); the body wins if both are sent. Without it the " +
+    "write targets the group the entity already lives in, and a name spanning two or more " +
+    "groups returns 409 `entity_ambiguous` with the candidates.",
   request: {
     params: createParamSchema("name", "users"),
+    // #5413 — the query form, matching the sibling DELETE. It was the obvious
+    // reading of the 409's advice and was silently ignored: the same 409 came
+    // back, so a caller concluded the group name was wrong rather than its
+    // location. Documented here so the spec answers the question the error asks.
+    query: z.object({
+      connectionGroupId: z.string().optional().openapi({
+        param: { name: "connectionGroupId", in: "query" },
+        example: "g_prod_us",
+      }),
+    }),
     body: {
       content: {
         "application/json": { schema: EntityBodySchema },
@@ -555,6 +662,13 @@ export const putStructuredEntityRoute = createRoute({
     400: {
       description: "Invalid request body or entity name",
       content: { "application/json": { schema: ErrorSchema } },
+    },
+    409: {
+      description:
+        "The entity name exists in more than one connection group and the request named none. " +
+        "Nothing was written (#5412). `groups` carries the candidates and `disambiguateWith` " +
+        "says where to send the one you pick — retry with it in the query string or the body.",
+      content: { "application/json": { schema: EntityAmbiguousSchema } },
     },
     401: {
       description: "Authentication required",
@@ -613,6 +727,13 @@ export const deleteStructuredEntityRoute = createRoute({
     404: {
       description: "Entity not found",
       content: { "application/json": { schema: ErrorSchema } },
+    },
+    409: {
+      description:
+        "The entity name exists in more than one connection group and the request named none. " +
+        "`groups` carries the candidates and `disambiguateWith` says where to send the one you " +
+        "pick — for this verb, the query string (#5413).",
+      content: { "application/json": { schema: EntityAmbiguousSchema } },
     },
     501: {
       description: "Internal database not available",
@@ -903,9 +1024,20 @@ export function registerSemanticEditorRoutes(
       //
       // Checked BEFORE `entityToYaml` so a conflicting request fails fast
       // without doing the YAML serialization work (Greptile, #3854).
+      // #5413 — `connectionGroupId` is read from the QUERY STRING as well as
+      // the body, so this verb and the DELETE on the same path agree about
+      // where it goes. Body wins when both are sent: the structured editor
+      // sends a body and that stays the single source of truth for it, and a
+      // request carrying two different answers to one question is not one this
+      // handler should arbitrate silently — it takes the more specific one.
+      //
+      // `??`, not `||`: `connectionGroupId: ""` in the body is a REAL value
+      // (the legacy null group, see the schema note), and `||` would discard it
+      // in favour of the query string.
+      const rawConnectionGroupId = body.connectionGroupId ?? c.req.query("connectionGroupId");
       const hasConnectionId =
         body.connectionId !== undefined && body.connectionId !== "";
-      const hasConnectionGroupId = body.connectionGroupId !== undefined;
+      const hasConnectionGroupId = rawConnectionGroupId !== undefined;
       if (hasConnectionId && hasConnectionGroupId) {
         return c.json(
           {
@@ -923,23 +1055,45 @@ export function registerSemanticEditorRoutes(
         upsertDraftEntity,
         upsertDraftEntityForGroup,
         getEntity,
+        resolveGroupIdForConnection,
         createVersion,
         generateChangeSummary,
         AmbiguousEntityError,
       } = await import("@atlas/api/lib/semantic/entities");
 
-      // Group scope. Body field over query param so the structured
-      // editor's POST body is the single source of truth. Empty string
-      // → null (explicit legacy/unscoped). Undefined → backend
-      // disambiguates (or 409s with candidate groups).
-      const scope = parseConnectionGroupIdQuery(body.connectionGroupId);
+      // Group scope, from whichever location carried it (#5413). Empty string
+      // → null (explicit legacy/unscoped). Undefined → backend disambiguates
+      // (or 409s with candidate groups).
+      const scope = parseConnectionGroupIdQuery(rawConnectionGroupId);
 
-      // Fetch previous version BEFORE the upsert overwrites it. It feeds two
-      // things: the change summary, and — since #5402 — the preservation of
-      // every document key the structured editor does not manage. That second
-      // use is why this read now happens BEFORE `entityToYaml` rather than
-      // after: serializing first is what made the write lossy.
-      const previousEntity = await getEntity(orgId, "entity", name, scope);
+      // Fetch previous version BEFORE the upsert overwrites it. It feeds THREE
+      // things: the change summary, — since #5402 — the preservation of every
+      // document key the structured editor does not manage, and — since #5412 —
+      // the AMBIGUITY CHECK itself. That second use is why this read happens
+      // BEFORE `entityToYaml` rather than after: serializing first is what made
+      // the write lossy.
+      //
+      // ⚠️ The third use is why nothing may move above this line. An
+      // `AmbiguousEntityError` here propagates as the 409 with its candidate
+      // groups, and it propagates BEFORE any write — which is the whole of
+      // #5412's first acceptance criterion. A refusal that persists is worse
+      // than either outcome alone: the caller reads 409 and reasonably believes
+      // nothing happened, so nobody goes back for the row, and
+      // `POST /admin/publish` is "publish all drafts" with no id selection.
+      //
+      // Caught HERE rather than left to `runHandler`'s tagged-error mapping so
+      // the refusal can carry `disambiguateWith` (#5413) — the mapping is
+      // shared by six surfaces with different request shapes and cannot know
+      // this verb takes the parameter in two places.
+      let previousEntity: Awaited<ReturnType<typeof getEntity>>;
+      try {
+        previousEntity = await getEntity(orgId, "entity", name, scope);
+      } catch (err) {
+        if (err instanceof AmbiguousEntityError) {
+          return c.json(ambiguousEntityBody(err, requestId, ["query", "body"]), 409);
+        }
+        throw err;
+      }
       const oldYaml = previousEntity?.yaml_content ?? null;
 
       // Convert structured data to YAML, carrying the stored document's
@@ -952,24 +1106,60 @@ export function registerSemanticEditorRoutes(
       // `/api/v1/admin/publish`. The pending-changes pill in the top bar
       // surfaces the draft count.
       //
-      // When `connectionGroupId` is provided, write the group DIRECTLY (the
-      // `scope` resolved above) so the row lands in the requested environment
-      // instead of the default null scope (#3854). Otherwise resolve the
-      // group from `connectionId` (or null when neither is given).
+      // ## Which group the row lands in, and why an unscoped PUT is not "null"
+      //
+      // Three inputs, in precedence order — and `writtenGroup` records the
+      // answer, because every read AFTER the write has to use it (#5412):
+      //
+      //   1. `connectionGroupId` → that group, DIRECTLY (#3854).
+      //   2. `connectionId` → the group that connection resolves to, computed
+      //      inside the INSERT by `inlineConnectionGroupSql` so a concurrent
+      //      connection delete cannot race a SELECT-then-INSERT.
+      //   3. NEITHER, and the entity already exists → THE GROUP IT ALREADY
+      //      LIVES IN. This is the #5412 fix. It used to fall through to (4),
+      //      which put the draft in the `null` group — a group the caller never
+      //      named and not the one the entity was in. That made a
+      //      single-group name span two groups, so the very next read raised
+      //      `entity_ambiguous`: the request MANUFACTURED the condition it then
+      //      reported, and left the row behind while reporting a refusal.
+      //   4. NEITHER, and the entity is new → the legacy null scope, which is
+      //      what an unscoped create has always meant.
+      //
+      // (3) reaches here only when `getEntity` resolved the name to exactly one
+      // group — two or more already threw above. So "the group it lives in" is
+      // never a guess between candidates.
+      let writtenGroup: string | null;
       if (hasConnectionGroupId) {
-        await upsertDraftEntityForGroup(orgId, "entity", name, yamlContent, scope);
-      } else {
+        writtenGroup = scope ?? null;
+        await upsertDraftEntityForGroup(orgId, "entity", name, yamlContent, writtenGroup);
+      } else if (hasConnectionId) {
         // `hasConnectionId` already collapsed `""` → absent, so pass the
-        // normalized id (undefined when empty) — never the raw `""`, which
-        // would resolve to no group via `inlineConnectionGroupSql`.
-        await upsertDraftEntity(orgId, "entity", name, yamlContent, hasConnectionId ? body.connectionId : undefined);
+        // normalized id — never the raw `""`, which would resolve to no group
+        // via `inlineConnectionGroupSql`.
+        await upsertDraftEntity(orgId, "entity", name, yamlContent, body.connectionId);
+        // Resolved AFTER the write and only to ADDRESS the row: the write's own
+        // group came from the inline subquery, so this read cannot disagree with
+        // it in a way that changes what was stored — it only decides which scope
+        // the reads below ask for, instead of asking unscoped and 409ing on the
+        // group this request just added.
+        writtenGroup = await resolveGroupIdForConnection(orgId, body.connectionId);
+      } else if (previousEntity) {
+        writtenGroup = previousEntity.connection_group_id ?? null;
+        await upsertDraftEntityForGroup(orgId, "entity", name, yamlContent, writtenGroup);
+      } else {
+        writtenGroup = null;
+        await upsertDraftEntity(orgId, "entity", name, yamlContent, undefined);
       }
 
       // Create version snapshot — non-fatal. Narrow the catch so tagged
       // errors (e.g. AmbiguousEntityError) re-throw and surface their
       // proper HTTP status instead of getting buried in a warn-log.
+      //
+      // Scoped to `writtenGroup`, never unscoped (#5412): a post-write read is
+      // asking "where did MY row go", which has exactly one answer, and asking
+      // it unscoped is what turned a completed write into a 409.
       try {
-        const entity = await getEntity(orgId, "entity", name, scope);
+        const entity = await getEntity(orgId, "entity", name, writtenGroup);
         if (entity) {
           const changeSummary = await generateChangeSummary(oldYaml, yamlContent);
           await createVersion(
@@ -996,7 +1186,7 @@ export function registerSemanticEditorRoutes(
       // resolved group key (CodeRabbit, #3275).
       try {
         const { syncEntityToDisk } = await import("@atlas/api/lib/semantic/sync");
-        const persisted = await getEntity(orgId, "entity", name, scope);
+        const persisted = await getEntity(orgId, "entity", name, writtenGroup);
         await syncEntityToDisk(orgId, name, "entity", yamlContent, persisted?.connection_group_id ?? null);
       } catch (syncErr) {
         log.warn(
@@ -1049,7 +1239,19 @@ export function registerSemanticEditorRoutes(
       // All deletes stage as drafts regardless of `atlasMode` (#2177).
       // Resolve the existing row so we know whether to discard a draft
       // outright or stamp a tombstone over a published row.
-      const existing = await getEntity(orgId, "entity", name, scope);
+      //
+      // The 409 is caught rather than mapped for the same reason as the PUT
+      // (#5413) — so it names where the parameter goes. For THIS verb that is
+      // the query string only; there is no body to put it in.
+      let existing: Awaited<ReturnType<typeof getEntity>>;
+      try {
+        existing = await getEntity(orgId, "entity", name, scope);
+      } catch (err) {
+        if (err instanceof AmbiguousEntityError) {
+          return c.json(ambiguousEntityBody(err, requestId, ["query"]), 409);
+        }
+        throw err;
+      }
       if (!existing) {
         return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);
       }
@@ -1279,7 +1481,7 @@ export function registerSemanticEditorRoutes(
       const {
         getVersion,
         getEntity,
-        upsertDraftEntity,
+        upsertDraftEntityForGroup,
         createVersion,
         generateChangeSummary,
         AmbiguousEntityError,
@@ -1294,21 +1496,40 @@ export function registerSemanticEditorRoutes(
         return c.json({ error: "not_found", message: `Version "${versionId}" not found for entity "${name}".` }, 404);
       }
 
-      // Get current entity for change summary
+      // Get current entity for change summary — and, as on the PUT above, this
+      // is ALSO the ambiguity check: an `AmbiguousEntityError` here is the 409,
+      // raised before anything is written (#5412).
       const currentEntity = await getEntity(orgId, "entity", name, scope);
       const currentYaml = currentEntity?.yaml_content ?? null;
+
+      // The group the rollback draft lands in — the SAME rule as the PUT
+      // (#5412), and this route had the same defect. It used to call
+      // `upsertDraftEntity` with no connection id at all, which puts the row in
+      // the `null` group whatever group the entity is actually in: for a
+      // group-scoped entity that both stranded the rollback where publish would
+      // promote it into a group nobody chose, AND made the unscoped re-read
+      // below raise `entity_ambiguous` about the group this request had just
+      // created — a completed rollback reported as a refusal.
+      //
+      // An explicit `connectionGroupId` in the body wins, because that is the
+      // caller naming the environment; otherwise the entity's own group, which
+      // is unique here (two or more already threw above); otherwise null, which
+      // is what an unscoped rollback of an entity with no group has always
+      // meant. The disk sync below already keyed on this value, so it and the
+      // DB write now agree rather than differing whenever the group is set.
+      const targetGroup = scope !== undefined ? scope : (currentEntity?.connection_group_id ?? null);
 
       // Rollback stages the target YAML as a draft (#2177). The admin
       // publishes via `/api/v1/admin/publish` to materialize it as the
       // new published row, preserving the existing publish gate.
-      await upsertDraftEntity(orgId, "entity", name, targetVersion.yaml_content);
+      await upsertDraftEntityForGroup(orgId, "entity", name, targetVersion.yaml_content, targetGroup);
 
       // Create a new version snapshot for the rollback. Re-throw tagged
       // errors so AmbiguousEntityError surfaces as 409 with `groups`
       // instead of getting buried in a "version snapshot failed" warn.
       let newVersionNumber = 0;
       try {
-        const entity = await getEntity(orgId, "entity", name, scope);
+        const entity = await getEntity(orgId, "entity", name, targetGroup);
         if (entity) {
           const changeSummary = await generateChangeSummary(currentYaml, targetVersion.yaml_content);
           const rollbackSummary = `Rolled back to v${targetVersion.version_number}${changeSummary ? ` (${changeSummary})` : ""}`;
@@ -1335,7 +1556,7 @@ export function registerSemanticEditorRoutes(
       // Sync to disk — non-fatal
       try {
         const { syncEntityToDisk } = await import("@atlas/api/lib/semantic/sync");
-        await syncEntityToDisk(orgId, name, "entity", targetVersion.yaml_content, currentEntity?.connection_group_id ?? null);
+        await syncEntityToDisk(orgId, name, "entity", targetVersion.yaml_content, targetGroup);
       } catch (syncErr) {
         log.warn(
           { err: syncErr instanceof Error ? syncErr.message : String(syncErr), requestId, orgId, name },

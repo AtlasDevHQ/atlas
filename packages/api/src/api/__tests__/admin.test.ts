@@ -406,7 +406,11 @@ const mockGetEntityAdmin: Mock<
 > = mock(() => Promise.resolve(null));
 const mockUpsertEntityAdmin: Mock<(...args: unknown[]) => Promise<void>> = mock(() => Promise.resolve());
 const mockDeleteEntityAdmin: Mock<(orgId: string, type: string, name: string) => Promise<boolean>> = mock(() => Promise.resolve(false));
-const mockUpsertDraftEntityAdmin: Mock<(...args: unknown[]) => Promise<void>> = mock(() => Promise.resolve());
+// Returns the group the row landed in (#5412) — the real helper resolves it
+// inside the INSERT and hands it back via RETURNING, so the editor never
+// re-resolves it. `null` is the honest default: an unresolvable connection id
+// really does write the legacy null scope.
+const mockUpsertDraftEntityAdmin: Mock<(...args: unknown[]) => Promise<string | null>> = mock(() => Promise.resolve(null));
 const mockUpsertDraftEntityForGroupAdmin: Mock<(...args: unknown[]) => Promise<void>> = mock(() => Promise.resolve());
 
 /**
@@ -428,10 +432,16 @@ const mockUpsertDraftEntityForGroupAdmin: Mock<(...args: unknown[]) => Promise<v
 const draftWriteCount = (): number =>
   mockUpsertDraftEntityAdmin.mock.calls.length + mockUpsertDraftEntityForGroupAdmin.mock.calls.length;
 
-const draftWriteYaml = (): string => {
+// `string | undefined`, not `string`: with no draft write at all there is no
+// YAML to return, and a `as string` cast would hand `undefined` to a caller
+// whose type says otherwise — so `expect(draftWriteYaml()).toBe(x)` would fail
+// on the value rather than on the missing call, which is the less useful
+// failure. Callers assert against a concrete string, so the union costs them
+// nothing.
+const draftWriteYaml = (): string | undefined => {
   const viaConnection = (mockUpsertDraftEntityAdmin.mock.calls as unknown[][])[0];
   const viaGroup = (mockUpsertDraftEntityForGroupAdmin.mock.calls as unknown[][])[0];
-  return (viaConnection ?? viaGroup)?.[3] as string;
+  return (viaConnection ?? viaGroup)?.[3] as string | undefined;
 };
 const mockUpsertTombstoneAdmin: Mock<(...args: unknown[]) => Promise<void>> = mock(() => Promise.resolve());
 const mockDeleteDraftEntityAdmin: Mock<(...args: unknown[]) => Promise<boolean>> = mock(() => Promise.resolve(true));
@@ -3343,7 +3353,7 @@ describe("PUT /api/v1/admin/semantic/org/entities/:name", () => {
   it("accepts yamlContent at exactly the max length bound (#4780 — cap is inclusive)", async () => {
     setOrgAdmin("org-1");
     mockUpsertDraftEntityAdmin.mockReset();
-    mockUpsertDraftEntityAdmin.mockResolvedValue(undefined);
+    mockUpsertDraftEntityAdmin.mockResolvedValue(null);
     // Boundary guard: valid entity YAML sized to EXACTLY the ceiling must pass
     // the schema and reach the handler (catches an off-by-one that made the
     // bound stricter than intended). Pad with a YAML comment js-yaml ignores.
@@ -3409,7 +3419,7 @@ describe("PUT /api/v1/admin/semantic/entities/edit/:name", () => {
     mockUpsertEntityAdmin.mockReset();
     mockUpsertEntityAdmin.mockResolvedValue(undefined);
     mockUpsertDraftEntityAdmin.mockReset();
-    mockUpsertDraftEntityAdmin.mockResolvedValue(undefined);
+    mockUpsertDraftEntityAdmin.mockResolvedValue(null);
     mockUpsertDraftEntityForGroupAdmin.mockReset();
     mockUpsertDraftEntityForGroupAdmin.mockResolvedValue(undefined);
     // "The entity does not exist yet" — the baseline every CREATE case below
@@ -3521,6 +3531,42 @@ describe("PUT /api/v1/admin/semantic/entities/edit/:name", () => {
     expect(call?.[4]).toBe("warehouse");
     // connectionGroupId path must NOT be taken when only connectionId is given.
     expect(mockUpsertDraftEntityForGroupAdmin).not.toHaveBeenCalled();
+  });
+
+  it("⭐ reads its own row back at the group the WRITE returned, not at a second resolution of the connection (#5412)", async () => {
+    setOrgAdmin("org-1");
+    // The connection-id path resolves the group INSIDE the INSERT precisely so
+    // a concurrent connection delete cannot race it. Resolving it a second time
+    // afterwards — which is what this route used to do — reintroduces exactly
+    // that race one statement later: delete the connection between the write
+    // and the follow-up lookup and the second answer is `null` while the row
+    // carries a real group. The scoped read then finds nothing, so the version
+    // snapshot is silently skipped and the disk sync writes the wrong group.
+    //
+    // Simulated by making the two answers DISAGREE: the write reports the group
+    // it stored, a standalone resolution reports nothing. Only the write's
+    // answer may address the row.
+    mockUpsertDraftEntityAdmin.mockResolvedValue("g_warehouse");
+    mockGetEntityAdmin.mockReset();
+    mockGetEntityAdmin.mockResolvedValue({
+      id: "e-1", org_id: "org-1", entity_type: "entity", name: "orders",
+      yaml_content: "name: orders\ntable: orders\n",
+      connection_group_id: "g_warehouse", status: "draft",
+    });
+
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/edit/orders", "PUT", {
+      table: "orders",
+      connectionId: "warehouse",
+    }));
+    expect(res.status).toBe(200);
+
+    // Every read AFTER the write is scoped to what the write returned. The
+    // pre-write ambiguity check is the one unscoped read, and it runs first.
+    const scopesAfterWrite = (mockGetEntityAdmin.mock.calls as unknown[][])
+      .slice(1)
+      .map((c) => c[3]);
+    expect(scopesAfterWrite.length).toBeGreaterThan(0);
+    expect(scopesAfterWrite.every((s) => s === "g_warehouse")).toBe(true);
   });
 
   it("writes via upsertDraftEntityForGroup when connectionGroupId is provided (#3854)", async () => {
@@ -3674,8 +3720,10 @@ describe("PUT /api/v1/admin/semantic/entities/edit/:name", () => {
     });
     mockUpsertDraftEntityAdmin.mockImplementation(async () => {
       // `upsertDraftEntity` resolves the group from a connection id; with none
-      // given `inlineConnectionGroupSql` yields NULL — the legacy scope.
+      // given `inlineConnectionGroupSql` yields NULL — the legacy scope. It
+      // RETURNS that group, which is what the route reads back (#5412).
       groups.add(null);
+      return null;
     });
     mockUpsertDraftEntityForGroupAdmin.mockImplementation(async (...args: unknown[]) => {
       groups.add((args[4] as string | null | undefined) ?? null);
@@ -3962,13 +4010,18 @@ describe("PUT /api/v1/admin/semantic/entities/edit/:name — lossless round-trip
 
   const parseWritten = async () => {
     const yaml = await import("js-yaml");
-    return yaml.load(yamlOf()) as Record<string, unknown>;
+    const written = yamlOf();
+    // Assert the write happened before parsing it. `yaml.load(undefined)` would
+    // fail as a type error on the document instead of saying the plainer thing:
+    // no draft write ran at all.
+    expect(written).toBeDefined();
+    return yaml.load(written as string) as Record<string, unknown>;
   };
 
   beforeEach(() => {
     mockHasInternalDB = true;
     mockUpsertDraftEntityAdmin.mockReset();
-    mockUpsertDraftEntityAdmin.mockResolvedValue(undefined);
+    mockUpsertDraftEntityAdmin.mockResolvedValue(null);
     mockUpsertDraftEntityForGroupAdmin.mockReset();
     mockUpsertDraftEntityForGroupAdmin.mockResolvedValue(undefined);
     mockSyncEntityToDisk.mockReset();
@@ -4507,7 +4560,7 @@ describe("POST /api/v1/admin/semantic/entities/:name/rollback", () => {
     mockUpsertEntityAdmin.mockReset();
     mockUpsertEntityAdmin.mockResolvedValue(undefined);
     mockUpsertDraftEntityAdmin.mockReset();
-    mockUpsertDraftEntityAdmin.mockResolvedValue(undefined);
+    mockUpsertDraftEntityAdmin.mockResolvedValue(null);
     mockUpsertDraftEntityForGroupAdmin.mockReset();
     mockUpsertDraftEntityForGroupAdmin.mockResolvedValue(undefined);
     mockCreateVersion.mockReset();
@@ -4748,7 +4801,7 @@ describe("PUT /api/v1/admin/semantic/entities/edit/:name — version creation", 
     mockUpsertEntityAdmin.mockReset();
     mockUpsertEntityAdmin.mockResolvedValue(undefined);
     mockUpsertDraftEntityAdmin.mockReset();
-    mockUpsertDraftEntityAdmin.mockResolvedValue(undefined);
+    mockUpsertDraftEntityAdmin.mockResolvedValue(null);
     mockGetEntityAdmin.mockReset();
     mockCreateVersion.mockReset();
     mockCreateVersion.mockResolvedValue("version-1");
@@ -4821,7 +4874,7 @@ describe("PUT /api/v1/admin/semantic/entities/edit/:name — always stages as dr
     mockUpsertEntityAdmin.mockReset();
     mockUpsertEntityAdmin.mockResolvedValue(undefined);
     mockUpsertDraftEntityAdmin.mockReset();
-    mockUpsertDraftEntityAdmin.mockResolvedValue(undefined);
+    mockUpsertDraftEntityAdmin.mockResolvedValue(null);
     mockUpsertDraftEntityForGroupAdmin.mockReset();
     mockUpsertDraftEntityForGroupAdmin.mockResolvedValue(undefined);
     mockGetEntityAdmin.mockReset();
@@ -5177,7 +5230,7 @@ describe("POST /api/v1/admin/semantic/entities/:name/reconcile (#2462)", () => {
     mockHasInternalDB = true;
     mockGetEntityAdmin.mockReset();
     mockUpsertDraftEntityAdmin.mockReset();
-    mockUpsertDraftEntityAdmin.mockResolvedValue(undefined);
+    mockUpsertDraftEntityAdmin.mockResolvedValue(null);
     mockUpsertTombstoneAdmin.mockReset();
     mockUpsertTombstoneAdmin.mockResolvedValue(undefined);
     mockDeleteDraftEntityAdmin.mockReset();

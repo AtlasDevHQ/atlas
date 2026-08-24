@@ -74676,7 +74676,7 @@
             }
           },
           "409": {
-            "description": "The entity name exists in more than one connection group and the request named none. Nothing was written (#5412). `groups` carries the candidates and `disambiguateWith` says where to send the one you pick — retry with it in the query string or the body.",
+            "description": "The entity name exists in more than one connection group and the request named none. Nothing was written (#5412) — the ambiguity is resolved before any persistence. `groups` carries the candidates and `disambiguateWith` says where to send the one you pick — for this verb, `?connectionGroupId=<group>` in the query string or `connectionGroupId` in the JSON body (#5413).",
             "content": {
               "application/json": {
                 "schema": {
@@ -74942,7 +74942,7 @@
             }
           },
           "409": {
-            "description": "The entity name exists in more than one connection group and the request named none. `groups` carries the candidates and `disambiguateWith` says where to send the one you pick — for this verb, the query string (#5413).",
+            "description": "The entity name exists in more than one connection group and the request named none. Nothing was written (#5412) — the ambiguity is resolved before any persistence. `groups` carries the candidates and `disambiguateWith` says where to send the one you pick — for this verb, `?connectionGroupId=<group>` in the query string (#5413).",
             "content": {
               "application/json": {
                 "schema": {
@@ -75771,7 +75771,7 @@
             }
           },
           "409": {
-            "description": "The entity name exists in more than one connection group and the request named none. Nothing was written (#5412). `disambiguateWith` says where to send the group you pick — for this verb, the JSON body.",
+            "description": "The entity name exists in more than one connection group and the request named none. Nothing was written (#5412) — the ambiguity is resolved before any persistence. `groups` carries the candidates and `disambiguateWith` says where to send the one you pick — for this verb, `connectionGroupId` in the JSON body (#5413).",
             "content": {
               "application/json": {
                 "schema": {

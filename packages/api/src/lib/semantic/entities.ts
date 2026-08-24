@@ -303,6 +303,21 @@ export async function upsertEntityForGroup(
  * Used for developer-mode writes. The published row (if any) is left
  * untouched. ON CONFLICT on the partial draft unique index updates an
  * existing draft in place.
+ *
+ * ## Returns the group the row actually landed in
+ *
+ * `connection_group_id` is resolved INSIDE the statement by
+ * {@link inlineConnectionGroupSql}, so it is the only place that value exists
+ * without a race. A caller that needs to read its own row back — the editor
+ * PUT does, for the version snapshot and the disk sync (#5412) — used to call
+ * {@link resolveGroupIdForConnection} afterwards, which is a *second*
+ * resolution of the same question and can disagree with the first: delete the
+ * connection between the two and the follow-up read answers `null` while the
+ * row carries a real group, so the scoped read finds nothing, the version
+ * snapshot is silently skipped and the disk sync writes the wrong namespace.
+ * `RETURNING` closes that window by construction — the answer comes from the
+ * statement that made it. `ON CONFLICT … DO UPDATE` always produces a row, so
+ * the result is never empty on a successful write.
  */
 export async function upsertDraftEntity(
   orgId: string,
@@ -314,20 +329,22 @@ export async function upsertDraftEntity(
   // atomically with its caller (the /use-demo seed, #3683). Defaults to the
   // pooled `internalQuery` — one connection per call, the standalone path.
   exec: InternalQueryExecutor = internalQuery,
-): Promise<void> {
+): Promise<string | null> {
   if (!hasInternalDB()) {
     throw new Error("Internal DB required for org-scoped semantic entities");
   }
-  await exec(
+  const rows = await exec<{ connection_group_id: string | null }>(
     `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
      VALUES ($1, $2, $3, $4, ${inlineConnectionGroupSql("$5", "$1")}, 'draft')
      ON CONFLICT (org_id, entity_type, name, ${coalescedScopeColumn(GROUP_COLUMN)}) WHERE status = 'draft'
      DO UPDATE SET yaml_content = EXCLUDED.yaml_content,
                    entity_type = EXCLUDED.entity_type,
                    connection_group_id = EXCLUDED.connection_group_id,
-                   updated_at = now()`,
+                   updated_at = now()
+     RETURNING connection_group_id`,
     [orgId, entityType, name, yamlContent, connectionId ?? null],
   );
+  return rows[0]?.connection_group_id ?? null;
 }
 
 /**

@@ -13,8 +13,8 @@
  *   1. **plugin vs plugin** — the later plugin in `buildPlugins()` wins, and
  *      the earlier one's path is never registered.
  *   2. **plugin vs core** — a plugin key equal to one of the 29 core keys
- *      replaces the CORE route, on paths like `/list-sessions` and
- *      `/revoke-session`.
+ *      replaces the CORE route, on session-management keys like `listSessions`
+ *      and `revokeSession`.
  *   3. **plugin vs `ok`/`error`** — those two are spread AFTER plugins, so the
  *      collision runs the other way and the PLUGIN's endpoint is dropped.
  *

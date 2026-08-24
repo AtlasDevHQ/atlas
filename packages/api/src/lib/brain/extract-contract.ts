@@ -38,6 +38,7 @@ import type { LanguageModel } from "ai";
 import { createLogger } from "@atlas/api/lib/logger";
 import { PREDICATE_CARDINALITIES } from "@atlas/api/lib/brain/types";
 import type { FactCandidate, ReconcileEpisodeRef } from "@atlas/api/lib/brain/reconcile";
+import { strippedForExtraction } from "@atlas/api/lib/brain/quoted-reply";
 
 const log = createLogger("brain.extract");
 
@@ -165,19 +166,41 @@ export const EXTRACTION_SYSTEM_PROMPT = [
  * must send the model the SAME text, or a batched re-extraction of a
  * synchronously-extracted episode paraphrases itself into a second draft — the
  * cost the module header prices, arriving from a divergence nobody would see.
+ *
+ * ## Strip, then truncate (#5354)
+ *
+ * Mail bodies lose their quoted reply chains and signatures here, BEFORE the
+ * cap is applied — see `quoted-reply.ts`. The order is the point: with the cap
+ * first, a deep thread spends its whole 8k budget on history the model has
+ * already been shown, and the newest message — the only part that says
+ * anything new — is what falls off the end. Reversing them means the cap is
+ * reached by real content, and a truncation warning becomes evidence about a
+ * genuinely long message rather than about thread depth.
+ *
+ * This is a VIEW. The stored episode keeps its full body; nothing here edits
+ * evidence at rest.
  */
 export function extractionExcerpt(episode: ReconcileEpisodeRef, body: string): string {
-  if (body.length <= MAX_BODY_CHARS) return body;
+  const text = strippedForExtraction(episode.source, body, {
+    workspaceId: episode.workspaceId,
+    episodeId: episode.id,
+  });
+  if (text.length <= MAX_BODY_CHARS) return text;
   log.warn(
     {
       workspaceId: episode.workspaceId,
       episodeId: episode.id,
+      // BOTH, since #5354: `bodyChars` alone can no longer be reconciled
+      // against the stored episode, and the gap between them is the only
+      // signal that says whether a truncation was caused by real content or by
+      // quoted history the strip failed to remove.
       bodyChars: body.length,
+      extractedChars: text.length,
       cap: MAX_BODY_CHARS,
     },
     "brain extraction: episode body exceeds the per-call cap — extracting from the leading portion only, the remainder is not revisited",
   );
-  return `${body.slice(0, MAX_BODY_CHARS)}\n[truncated at ${MAX_BODY_CHARS} characters]`;
+  return `${text.slice(0, MAX_BODY_CHARS)}\n[truncated at ${MAX_BODY_CHARS} characters]`;
 }
 
 /** The user turn, shared with the batch path for {@link extractionExcerpt}'s reason. */

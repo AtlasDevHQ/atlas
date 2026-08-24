@@ -83,6 +83,7 @@
     "domhandler": "^6.0.1",
     "drizzle-orm": "^0.45.2",
     "effect": "^3.22.0",
+    "email-reply-parser": "^2.3.9",
     "entities": "^8.0.0",
     "fflate": "^0.8.2",
     "hono": "^4.12.34",

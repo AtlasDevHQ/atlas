@@ -634,8 +634,22 @@ export async function loadFactOversight(
       // superseded import lands in the delta honestly because "publish still
       // reaches it", and publish never reaches an observation.
       //
-      // Tracked as its own ticket off #5411's AC4 sweep. Until then this
-      // comment is the disclosure.
+      // ⚠️ And STATE_COUNTERS must NOT move uniformly, which is the part that
+      // makes this a ticket rather than a line. Three of its five arms lose
+      // observations (`awaiting_review`, `provisional`, `in_tension` — nobody
+      // will ever review one); the other two must KEEP counting them
+      // (`published` and `retracted` are the ADR-0042 stragglers `GET
+      // /retirable` exists to enumerate, and hiding them strands the retirement
+      // flow).
+      //
+      // ⭐ The rule that falls out, and the reason a sweep would have been
+      // wrong: an exclusion is a property of a QUESTION, not of a table. "What
+      // is awaiting review" and "what does this workspace hold" are different
+      // questions over the same rows, and `notAnObservationSql` is right on one
+      // and wrong on the other.
+      //
+      // Tracked in #5416, off #5411's AC4 sweep. Until it lands, this comment
+      // is the disclosure.
       `SELECT COUNT(*)::int AS n
          FROM brain_facts f
         WHERE ${acl.sql}

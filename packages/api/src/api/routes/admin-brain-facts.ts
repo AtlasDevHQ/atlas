@@ -7,6 +7,7 @@
  *   GET  /          — the review queue, paginated and filterable
  *   GET  /summary   — queue vitals for the stats bar
  *   GET  /oversight — per-audience counts, workspace-wide, with no content
+ *   GET  /retirable — published warehouse-derived facts + their ids (#5403)
  *   POST /:id/retract — reject a candidate (the `retract` correction verb)
  *   POST /:id/correct — apply a `correct_fact` verb (#4915)
  *   POST /tension-sweep — mint advisory tension edges over EXISTING rows (#5029)
@@ -32,6 +33,27 @@
  * and opens the shared publish modal — which already renders `refusedDrafts[]`
  * with their prose `detail`, so a publish that half-worked is never reported as
  * an unqualified success.
+ *
+ * ## `/retirable` is a SECOND listing, and the split is the design (#5403)
+ *
+ * `GET /` excludes warehouse-derived observations at every `?status=`,
+ * including `all` — `lib/brain/candidates.ts` puts that exclusion ABOVE its
+ * status arm on purpose, so `?status=published` cannot reach the rows ADR-0042
+ * strands. That is right for a REVIEW queue: an observation is not a candidate
+ * for review, and a reviewer has no trust call to make on one.
+ *
+ * But `retract` IS admitted on those rows, and it needs an id. Once #5341
+ * closed the last surface that emitted one, the verb shipped with no way to
+ * name its own population — the arc closed every path to the identifiers it
+ * consumes, in the same milestone that shipped it.
+ *
+ * `GET /retirable` is the answer, and it is a separate surface rather than a
+ * filter BECAUSE retirement is not review. A `?source=` parameter on `GET /`
+ * would have been cheaper and would have re-opened `?status=published` on the
+ * review queue to do it. The two listings are complementary by construction —
+ * one composes `notAnObservationSql`, the other `observationSql` — and
+ * `retirable-vs-review.test.ts` pins both directions so they cannot drift back
+ * together.
  *
  * ## Reads are per-reviewer, not per-admin
  *
@@ -87,6 +109,10 @@ import {
   loadFactCandidates,
 } from "@atlas/api/lib/brain/candidates";
 import {
+  RETIRABLE_PAGE_MAX,
+  loadRetirableObservations,
+} from "@atlas/api/lib/brain/retirable";
+import {
   CORRECTION_REFUSAL_REASONS,
   correctFact,
   type CorrectionOutcome,
@@ -121,6 +147,7 @@ import {
   BrainFactCorrectRequestSchema,
   BrainFactCorrectionResponseSchema,
   BrainFactOversightSchema,
+  BrainFactRetirableListResponseSchema,
   BrainFactRetractResponseSchema,
   BrainFactTensionSweepResponseSchema,
   isBrainFactStatusFilter,
@@ -263,6 +290,36 @@ const listRoute = createRoute({
   },
 });
 
+const retirableRoute = createRoute({
+  method: "get",
+  path: "/retirable",
+  tags: ["Admin — Brain Facts"],
+  summary: "List published warehouse-derived facts awaiting retirement",
+  description:
+    "Enumerates PUBLISHED, warehouse-derived facts — the population ADR-0042 stranded — with the fact `id` that `POST /{id}/retract` consumes. It exists because no other surface could produce that id (#5403): `searchBrain` excludes observations from both content-mode arms (#5341), `/admin/brain-coverage` emits predicates without ids, `executeSQL` is whitelist-scoped and `brain_facts` is not a whitelisted entity, and the review queue excludes them at every `?status=` including `all`. " +
+    "⚠️ This is NOT the review queue with a filter, and it does not weaken one. An observation is not a candidate for REVIEW — a reviewer has no trust call to make on it — and `lib/brain/candidates.ts` still excludes these rows at every status. What this surface serves is a different question with a different verb: RETIREMENT, for a closed legacy population that can only shrink (the publish gate has refused warehouse-derived promotions since #5342). " +
+    "Retracting a warehouse-derived fact is admitted and says only that the row should not have been blessed — it asserts no belief about the warehouse, which is why `supersede`, `re-authority` and `pin` remain refused on these rows. " +
+    "Reader-scoped like every read on this router: `total` is what THIS reviewer can see, not what exists, and the audit override is deliberately not wired up. Retracted rows are excluded, so an empty page after a clearing is the confirmation that it worked. " +
+    "Rows whose `validTo` has passed ARE listed, unlike on every serving surface: this is a discovery listing, not a belief, and a superseded observation is reachable by no other path, so filtering it out would strand it exactly as this endpoint exists to prevent. `validTo` is in the projection, so an already-inert row is visibly inert. " +
+    "⚠️ A workspace-admin session authenticates against exactly ONE region (ADR-0024). Facts stranded on `eu-prod` / `apac-prod` need a session PER REGION — a `200` here says nothing about the other two.",
+  request: {
+    query: z.object({
+      limit: z
+        .string()
+        .optional()
+        .openapi({ description: `Maximum results (default ${DEFAULT_LIMIT}, max ${RETIRABLE_PAGE_MAX})` }),
+      offset: z.string().optional().openapi({ description: "Pagination offset (default 0)" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Published warehouse-derived facts, with their ids",
+      content: { "application/json": { schema: BrainFactRetirableListResponseSchema } },
+    },
+    ...commonResponses,
+  },
+});
+
 const summaryRoute = createRoute({
   method: "get",
   path: "/summary",
@@ -329,7 +386,9 @@ const retractRoute = createRoute({
     },
     409: {
       description:
-        "The fact cannot be retracted — either it is warehouse-derived (tier-1), which has no correction path, so fix the data or the semantic layer instead; or its source kind is one this deployment does not recognise, so its tier cannot be determined and corrections are refused until the deployment knows the kind. The message says which",
+        "The fact cannot be retracted because its source kind is one this deployment does not recognise, so its tier cannot be determined and every correction verb is refused until the deployment knows the kind (#4964). " +
+        "⚠️ Warehouse-derived (tier-1) facts are NOT refused here: `retract` is the one verb admitted on them (#5331), because it asserts only that the row should not have been blessed rather than a belief ABOUT a warehouse value. `supersede`, `re-authority` and `pin` remain refused on those rows — see `/correct`. Discover their ids at `GET /retirable` (#5403). " +
+        "This copy previously claimed tier-1 had no correction path at all, which `lib/brain/correction.ts` has not done since #5331 and which would have told the operator clearing the ADR-0042 stragglers that their one available verb was unavailable",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
@@ -520,6 +579,34 @@ adminBrainFacts.openapi(listRoute, async (c) => {
       return c.json(checked(BrainFactCandidateListResponseSchema, page), 200);
     }),
     { label: "list brain fact candidates" },
+  );
+});
+
+adminBrainFacts.openapi(retirableRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
+      const { mode, user, orgId } = yield* AuthContext;
+      if (!orgId) return c.json(noActiveOrgBody(requestId), 400);
+
+      const { limit, offset } = parsePagination(c);
+
+      const ctx = yield* reviewerContext(mode, user, orgId, requestId);
+      const page = yield* Effect.tryPromise({
+        try: () =>
+          loadRetirableObservations(getInternalDB(), {
+            ctx,
+            limit: Math.min(limit || DEFAULT_LIMIT, RETIRABLE_PAGE_MAX),
+            offset,
+            requestId,
+          }),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      });
+
+      return c.json(checked(BrainFactRetirableListResponseSchema, page), 200);
+    }),
+    { label: "list retirable brain observations" },
   );
 });
 

@@ -25628,6 +25628,211 @@
         "operationId": "getAdminBrainFacts"
       }
     },
+    "/api/v1/admin/brain-facts/retirable": {
+      "get": {
+        "tags": [
+          "Admin — Brain Facts"
+        ],
+        "summary": "List published warehouse-derived facts awaiting retirement",
+        "description": "Enumerates PUBLISHED, warehouse-derived facts — the population ADR-0042 stranded — with the fact `id` that `POST /{id}/retract` consumes. It exists because no other surface could produce that id (#5403): `searchBrain` excludes observations from both content-mode arms (#5341), `/admin/brain-coverage` emits predicates without ids, `executeSQL` is whitelist-scoped and `brain_facts` is not a whitelisted entity, and the review queue excludes them at every `?status=` including `all`. ⚠️ This is NOT the review queue with a filter, and it does not weaken one. An observation is not a candidate for REVIEW — a reviewer has no trust call to make on it — and `lib/brain/candidates.ts` still excludes these rows at every status. What this surface serves is a different question with a different verb: RETIREMENT, for a closed legacy population that can only shrink (the publish gate has refused warehouse-derived promotions since #5342). Retracting a warehouse-derived fact is admitted and says only that the row should not have been blessed — it asserts no belief about the warehouse, which is why `supersede`, `re-authority` and `pin` remain refused on these rows. Reader-scoped like every read on this router: `total` is what THIS reviewer can see, not what exists, and the audit override is deliberately not wired up. Retracted rows are excluded, so an empty page after a clearing is the confirmation that it worked. Rows whose `validTo` has passed ARE listed, unlike on every serving surface: this is a discovery listing, not a belief, and a superseded observation is reachable by no other path, so filtering it out would strand it exactly as this endpoint exists to prevent. `validTo` is in the projection, so an already-inert row is visibly inert. ⚠️ A workspace-admin session authenticates against exactly ONE region (ADR-0024). Facts stranded on `eu-prod` / `apac-prod` need a session PER REGION — a `200` here says nothing about the other two.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Maximum results (default 50, max 200)"
+            },
+            "required": false,
+            "description": "Maximum results (default 50, max 200)",
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Pagination offset (default 0)"
+            },
+            "required": false,
+            "description": "Pagination offset (default 0)",
+            "name": "offset",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Published warehouse-derived facts, with their ids",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "observations": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "subject": {
+                            "type": "string"
+                          },
+                          "predicate": {
+                            "type": "string"
+                          },
+                          "object": {
+                            "type": "string"
+                          },
+                          "source": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "validFrom": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "validTo": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "ingestedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "subject",
+                          "predicate",
+                          "object",
+                          "source",
+                          "validFrom",
+                          "validTo",
+                          "ingestedAt"
+                        ]
+                      }
+                    },
+                    "total": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "observations",
+                    "total"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request — bad filter value or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminBrainFactsRetirable"
+      }
+    },
     "/api/v1/admin/brain-facts/summary": {
       "get": {
         "tags": [
@@ -26356,7 +26561,7 @@
             }
           },
           "409": {
-            "description": "The fact cannot be retracted — either it is warehouse-derived (tier-1), which has no correction path, so fix the data or the semantic layer instead; or its source kind is one this deployment does not recognise, so its tier cannot be determined and corrections are refused until the deployment knows the kind. The message says which",
+            "description": "The fact cannot be retracted because its source kind is one this deployment does not recognise, so its tier cannot be determined and every correction verb is refused until the deployment knows the kind (#4964). ⚠️ Warehouse-derived (tier-1) facts are NOT refused here: `retract` is the one verb admitted on them (#5331), because it asserts only that the row should not have been blessed rather than a belief ABOUT a warehouse value. `supersede`, `re-authority` and `pin` remain refused on those rows — see `/correct`. Discover their ids at `GET /retirable` (#5403). This copy previously claimed tier-1 had no correction path at all, which `lib/brain/correction.ts` has not done since #5331 and which would have told the operator clearing the ADR-0042 stragglers that their one available verb was unavailable",
             "content": {
               "application/json": {
                 "schema": {

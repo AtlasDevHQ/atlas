@@ -758,5 +758,82 @@ export function buildAgentAuthPlugin(
     },
     "agent-auth: resolved enterprise approval posture (WebAuthn step-up + CIBA)",
   );
-  return agentAuth(buildAgentAuthPluginOptions(deps));
+  return renameCollidingDeviceCodeKey(agentAuth(buildAgentAuthPluginOptions(deps)));
+}
+
+/**
+ * The endpoint-key this plugin must NOT export, and the key it exports instead.
+ *
+ * ⚠️ Better Auth merges every plugin's `endpoints` into ONE FLAT MAP keyed by
+ * the endpoint's OBJECT KEY, not by its path, and the router is built from that
+ * merged map. Two plugins exporting the same key is therefore not a warning and
+ * not a duplicate route — the later plugin in the `buildPlugins()` array simply
+ * REPLACES the earlier one, and the earlier one's path is never registered at
+ * all.
+ *
+ * `@better-auth/agent-auth` 0.6.2 exports `deviceCode` → `/agent/device/code`.
+ * Better Auth's own `deviceAuthorization` exports `deviceCode` → `/device/code`
+ * — the RFC 8628 endpoint that `atlas login` posts to (ADR-0026, #4043). This
+ * plugin is pushed AFTER `deviceAuthorization`, so it won: from #4417
+ * (2026-07-07) until #5404, `POST /api/auth/device/code` returned **404 on
+ * every deployed environment** and `atlas login` could not authenticate
+ * anywhere. The other four device routes (`/device/token`, `/device`,
+ * `/device/approve`, `/device/deny`) were unaffected because agent-auth exports
+ * no key colliding with them — which is exactly why the failure read as "one
+ * broken route" rather than "the device plugin is missing", and why it survived
+ * five weeks. It cost nothing to notice and everything to not notice.
+ *
+ * The insult on top: `/agent/device/code` was ALSO unreachable throughout,
+ * because the agent-auth surface is platform-gated off by default
+ * (`agent-auth-gate.ts`). The colliding key took the slot and then served
+ * nothing through it.
+ *
+ * Renaming happens HERE, on agent-auth's side, deliberately:
+ *   - `deviceAuthorization` is upstream, and `deviceCode` is the key its own
+ *     RFC 8628 contract and `auth.api.deviceCode` callers name. Renaming that
+ *     one would move a public contract to dodge a private conflict.
+ *   - Nothing in Atlas calls agent-auth's `deviceCode` server-side; the agent
+ *     device flow is reached over HTTP by path, and the PATH is preserved
+ *     untouched below. This renames the map key only.
+ *
+ * Reordering `buildPlugins()` was rejected: it would restore `/device/code` by
+ * displacing `/agent/device/code` instead. Same defect, different victim.
+ *
+ * `auth-endpoint-key-collisions.test.ts` fails on ANY future collision across
+ * every registered plugin, so the next one is caught at the seam rather than by
+ * someone discovering they cannot log in.
+ */
+const AGENT_AUTH_COLLIDING_KEY = "deviceCode";
+const AGENT_AUTH_DEVICE_CODE_KEY = "agentDeviceCode";
+
+/**
+ * Re-key agent-auth's `deviceCode` endpoint so it stops shadowing Better Auth's
+ * `/device/code`. The endpoint OBJECT is moved by reference — its path, handler
+ * and options are untouched — so `/agent/device/code` keeps working exactly as
+ * before under the new key.
+ *
+ * Mutates the endpoints map IN PLACE and returns the same plugin, rather than
+ * building a re-keyed copy. Both work at runtime; this one keeps the plugin's
+ * declared type honest. `agentAuth`'s return type spells `endpoints` as a
+ * closed record of `StrictEndpoint`s, so a spread-and-rename produces an object
+ * TypeScript can only accept via `as unknown as` — a cast wide enough to hide a
+ * genuine upstream shape change on the next dependency bump. The object is
+ * freshly built by the `agentAuth(...)` call one line above and nothing else
+ * holds a reference to it, so mutating it is local.
+ *
+ * A no-op when the upstream plugin stops exporting the colliding key — it fixed
+ * the clash, or renamed its own endpoint — so a dependency bump that resolves
+ * this cannot break on a rename that no longer applies.
+ */
+function renameCollidingDeviceCodeKey(
+  plugin: ReturnType<typeof agentAuth>,
+): ReturnType<typeof agentAuth> {
+  // The endpoints map, viewed as the string-keyed record it is at runtime. The
+  // cast reinterprets only this view; the plugin's own type is left alone.
+  const endpoints = (plugin as { endpoints?: Record<string, unknown> }).endpoints;
+  if (!endpoints || !(AGENT_AUTH_COLLIDING_KEY in endpoints)) return plugin;
+
+  endpoints[AGENT_AUTH_DEVICE_CODE_KEY] = endpoints[AGENT_AUTH_COLLIDING_KEY];
+  delete endpoints[AGENT_AUTH_COLLIDING_KEY];
+  return plugin;
 }

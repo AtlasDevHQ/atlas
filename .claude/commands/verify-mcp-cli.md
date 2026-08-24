@@ -140,7 +140,11 @@ From there, the **token mint needs an authenticated session** — discover the a
 
 The account is now claimed (real password set in Phase B). Keep `ATLAS_API_URL=https://api.staging.useatlas.dev` exported.
 
-1. **Device-flow login** (`atlas login`, RFC 8628; `commands/login.ts`, `lib/device-flow.ts`, client_id `atlas-cli`). The endpoint is **verified live**:
+1. **Device-flow login** (`atlas login`, RFC 8628; `commands/login.ts`, `lib/device-flow.ts`, client_id `atlas-cli`).
+
+   > ⚠️ **This step went un-run for five weeks and the endpoint was dead the whole time (#5404).** `POST /api/auth/device/code` returned `404` on all four prod hosts and staging from #4417 (2026-07-07) until #5403/#5404 — eight days after the "verified live" transcript below was recorded (2026-06-29). The cause was a Better Auth plugin endpoint-key collision, not a route change, so nothing in the source read as broken. The step itself was NOT at fault: its own instruction ("if `device/code` 404s, CLI login is dead — file it") is exactly the right check and would have caught this on the first run after the regression. **The lesson is about CADENCE, not wording** — a correct verification that nobody runs is indistinguishable from one that cannot fail. `auth-endpoint-key-collisions.test.ts` now fails in CI on any future collision, so this runbook is no longer the only thing standing between a plugin bump and a dead `atlas login`.
+
+   The endpoint is **verified live** (transcript below re-verified 2026-08-23 after the #5404 fix):
    ```bash
    curl -sS "$API/api/auth/device/code" -H 'content-type: application/json' -d '{"client_id":"atlas-cli"}'
    # → {"device_code":…,"user_code":"8KZL5Q4V","verification_uri":"https://api.staging.useatlas.dev/device",

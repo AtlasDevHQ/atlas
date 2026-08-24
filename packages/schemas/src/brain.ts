@@ -32,6 +32,8 @@ import type {
   BrainFactDecayLevel,
   BrainFactDecayView,
   BrainFactCandidateListResponse,
+  BrainFactRetirableListResponse,
+  BrainFactRetirableObservation,
   BrainFactCandidateSummary,
   BrainFactCorrectionResponse,
   BrainFactEpisodeView,
@@ -2629,3 +2631,30 @@ export const BrainWarehouseRunResponseSchema = z.discriminatedUnion("reportCompl
     message: z.string(),
   }),
 ]);
+
+/**
+ * The retirement surface's row (#5403) — a published warehouse-derived fact,
+ * with the id that `POST /{id}/retract` consumes.
+ *
+ * Deliberately a DIFFERENT schema from `BrainFactCandidateSchema` rather than a
+ * `.pick()` of it. The two surfaces answer different questions and must be free
+ * to diverge: sharing a projection is exactly how the review queue and the
+ * retirement listing would drift back into one thing, which is the failure
+ * `#5403` exists to prevent and the reason its acceptance criteria pin both
+ * surfaces with one test.
+ */
+export const BrainFactRetirableObservationSchema = z.object({
+  id: z.string(),
+  subject: z.string(),
+  predicate: z.string(),
+  object: z.string(),
+  source: z.string().nullable(),
+  validFrom: z.string().nullable(),
+  validTo: z.string().nullable(),
+  ingestedAt: z.string().nullable(),
+}) satisfies z.ZodType<BrainFactRetirableObservation, unknown>;
+
+export const BrainFactRetirableListResponseSchema = z.object({
+  observations: z.array(BrainFactRetirableObservationSchema),
+  total: z.number().int().nonnegative(),
+}) satisfies z.ZodType<BrainFactRetirableListResponse, unknown>;

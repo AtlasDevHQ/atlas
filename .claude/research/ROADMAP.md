@@ -20,6 +20,49 @@ The codebase is Hono + Next.js + TypeScript + Effect.ts + Vercel AI SDK + bun, o
 
 ## Next
 
+**Shipped 2026-08-24 — the pg-suite 60s timeout is EXPLAINED: 47 of 87 suites put `public` on their search_path, migration 0020 then takes `AccessExclusiveLock` on the ONE shared `public.organization`, and the convoy is the missing 55s** ([#5430](https://github.com/AtlasDevHQ/atlas/issues/5430)) — the open half of #5410, closed with evidence rather than inference. All five acceptance criteria met.
+
+⚠️ **THE INSTRUMENT HAD TO BE SHAPED AROUND THE FAILURE, NOT AROUND THE CODE.** #5430's whole warning is that this failure decays before instrumentation lands (55 → 15 → 0 → 0 → 0 on an unchanged tree), so anything switched on after it is seen will never see it. Two consequences drove the design in `packages/api/src/lib/db/migration-breadcrumb.ts`:
+
+- **A completion-time log is the one shape that cannot work.** A hook killed at 60,000ms never returns from the call holding the budget, so an "elapsed Nms" line written after the await is precisely the line the failing run does not produce. The report is therefore driven by a **watchdog timer** that names whichever phase is open *while* it is open.
+- **Armed by default wherever the failure lives** — on whenever `TEST_DATABASE_URL` is set, off in production. An instrument that must be enabled by someone who already suspects the answer is not armed.
+
+### The measurement
+
+Measured 2026-08-24, WSL2 / 32 cores / bun 1.4.0, stock Postgres 16.12, 87 `-pg` suites at `--parallel=32`. Three sweeps of the SAME tree:
+
+| run | antagonist | wall | 60,000ms hook failures |
+|---|---|---|---|
+| 1 (control) | none | 116s | **5** |
+| 2 (control, re-run) | none | 165s | **0** |
+| 3 | 32 busy loops on 32 cores | 119s | **23** |
+
+Run 3 is the acceptance criterion that mattered: the failure is now **produced on demand** rather than waited for, and run 2 reproduces the decay in the same sitting.
+
+### What the breadcrumb said, from runs that actually timed out
+
+Every timed-out hook left a full tick trail — 10s, 20s, 30s, 40s, 50s, 60s — and **all 252 ticks read `STILL IN apply`**. Not one landed in `pool.connect` or `advisory-lock`. Two numbers settle what five hypotheses could not:
+
+- `phase_ms ≈ total_ms` on every failing run, so taking a connection and taking the advisory lock together cost **~9ms**. The connection cap and the advisory lock are refuted from *inside* the process, matching #5410's refutation of each from outside.
+- `drift_ms` — scheduled versus actual tick — stayed at **9–22ms on the control and ≤40ms under a 32-way CPU antagonist**. The event loop was free the entire 60s, so **the test process was never CPU-starved**. It was waiting on Postgres. That distinction is what the drift field exists for and it is what removes starvation from the list.
+
+### The blocking call, named
+
+Sampling `pg_stat_activity` every 1s across a failing sweep, then the blocked→blocker graph via `pg_blocking_pids()`:
+
+- **1,451 of 1,504 blocked-lock samples are on `public.organization`** — 1,090 `AccessExclusiveLock`, 361 `AccessShareLock`. Not a scratch schema. **One shared table.**
+- Only **3 samples on `advisory`**, and peak connections **44 of 300** — the two refuted hypotheses, re-refuted from the server side.
+- The waiting statements are migrations **0020** (499 samples), **0000_baseline** (476) and **0106** (173).
+- Second-largest wait class is `IO/DataFileImmediateSync` (904 samples): ~190 relations × 87 schemas of `CREATE TABLE`/`CREATE INDEX`, each fsync'd immediately — an fsync storm on a WSL2 filesystem.
+
+**The mechanism.** 47 of the 87 suites connect with `options: -c search_path="<scratch>",public`. `organization` is Better-Auth-managed and therefore among the 18 of 208 migrations skipped, so it does **not** exist in the scratch schema — and `0020_plan_tier_rename.sql`'s `to_regclass('organization')` guard, which exists precisely to scope that lookup to the caller's search_path (#2820), resolves it down the path to `public.organization`. The migration then runs nine `ALTER TABLE … ADD COLUMN`, a `CREATE INDEX`, two `ALTER TABLE … CONSTRAINT` and two `UPDATE`s against it, holding `AccessExclusiveLock` until that suite's migration transaction commits. Forty-seven suites doing that against one table is a convoy, and the convoy is the missing 55s.
+
+⚠️ **AND THIS IS THE DECAY, WHICH WAS THE THING THAT WAS NOT A MECHANISM.** On a database where `public.organization` has not yet been through 0020, every one of those statements does real work under an exclusive lock. Once it has, `ADD COLUMN IF NOT EXISTS`, `DROP CONSTRAINT IF EXISTS` and `UPDATE … WHERE plan_tier = 'team'` are all no-ops that take the same lock and release it immediately. So the first sweep after a fresh database convoys and later ones do not — until enough extra load re-lengthens the hold, which is exactly what run 3's antagonist did. *"It decays"* now has a cause.
+
+### Recorded as NOT done
+
+**No fix is attempted here, deliberately.** The repair is to stop 47 test suites putting `public` on their search_path — a behavioural change across 47 files where some may depend on the fallthrough, and folding it into the diagnosis is how a 47-file change gets reviewed as a footnote. #5430 asked for the mechanism; the mechanism is what is delivered. The follow-up is scoped by this entry, and the breadcrumb is left armed so the fix can be verified against run 3's reproduction rather than against a green run that was already green.
+
 **Shipped 2026-08-24 — the mandatory local release gate is demoted to advisory, the silently-hollow default path is made loud, and the reported failure does not reproduce** ([#5410](https://github.com/AtlasDevHQ/atlas/issues/5410)) — all four acceptance criteria met, with AC1 met *as written* — it required the migration-cost hypothesis be **measured before being written down as the answer**, and the measurement refuted it as sufficient, so the cause is recorded as partly open rather than closed. The headline defect could not be reproduced on the machine that filed it; four hypotheses were tested and refuted, **one of them generated and nearly shipped during this very investigation**.
 
 ⚠️ **THE REPORTED FAILURE DOES NOT REPRODUCE, AND IT WAS CHECKED ON BOTH TAGS THE ISSUE NAMES.** Full `bun test --parallel` for `@atlas/api` with `TEST_DATABASE_URL` set, stock Postgres, same box, 2026-08-24:

@@ -20,6 +20,21 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.16",
+    title: "Only the Rows You Still Care About",
+    date: "2026-08-23",
+    summary:
+      "The companion release to v0.2.15. Having stopped serving warehouse readings as beliefs, Atlas now stops collecting the ones it should never have collected. The warehouse producer was reading every row of an enrolled table \u2014 including the churned, the archived and the long-inactive \u2014 so customers who left years ago still sat in the comparison surface, still generating conflicts against what your colleagues say today. An entity can now declare which rows count, and everything Atlas already learned about the rows outside that line is retired rather than left behind.",
+    highlights: [
+      "An entity can declare the rows it covers, and the warehouse producer reads only those. Churned and archived records stop entering the comparison surface \u2014 and stop raising conflicts against current statements",
+      "Observations of rows that fall outside the line are reaped, along with the conflict edges they minted. Narrowing what Atlas reads now also cleans up what it already read, instead of leaving the old readings to argue with the new ones",
+      "The reaper stands down when a run could not represent its cells. A source that fails to report is not the same as a source reporting nothing, and only one of those is a reason to delete \u2014 so an incomplete run leaves the corpus alone rather than treating its own blind spot as evidence of absence",
+      "Agreeing with Atlas now counts. Previously, a colleague confirming a warehouse reading had their testimony swallowed \u2014 the agreement was recorded against the reading and produced nothing reviewable. It now becomes their own draft belief, which is the thing a person can actually vouch for",
+      "Warehouse readings published before v0.2.15 can be retracted. They predate the refusal that stops new ones, so they needed a way out rather than a way to hide \u2014 retraction leaves the tombstone and the audit trail a correction should",
+      "Security: the undici and nanoid advisories are cleared by parent bump",
+    ],
+  },
+  {
     version: "v0.2.15",
     title: "The Producer Stops Publishing",
     date: "2026-08-22",

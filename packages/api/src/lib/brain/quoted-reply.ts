@@ -52,6 +52,16 @@
  *      This is the one half of #5354's criteria left undone, so it is tracked in
  *      #5420 rather than only here — first criterion there is to MEASURE the
  *      token share before choosing a fix, since linear is not the same as free.
+ *
+ *      ⚠️ STILL OPEN, and the entry stays until a reading closes it. What
+ *      exists now is only the INSTRUMENT: `boilerplate-tail.ts` plus
+ *      `scripts/measure-disclaimer-share.ts`, which measure the repeated-tail
+ *      share without matching a word of English. **No reading has been taken.**
+ *      No workspace in this repo has ingested mail and ADR-0044 bars the one
+ *      public corpus from ever being committed, so the number has to come from
+ *      a human running that script against a local corpus or a live workspace.
+ *      Do not read "the instrument is written" as "the cost is known" — the
+ *      whole point of #5420's first criterion is that nobody has measured this.
  *   2. A `---------- Forwarded message ---------` header block survives (the
  *      quoted body beneath it is still stripped). Small, per-forward, and mildly
  *      attribution-confusing — the one gap worth revisiting first.

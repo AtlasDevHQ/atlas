@@ -29,20 +29,52 @@
  * ## Direction of authority: this join only ever runs INWARD
  *
  * Atlas matches source emails against users it ALREADY has. It never creates a
- * user, never writes an email, never persists the vendor roster, and never
+ * user, never grants anything on the strength of a directory row, and never
  * renders channel membership as a list of people. A source principal with no
- * Atlas account gets NO ROW and is reported — the acceptance criterion "logged,
- * never guessed", which this module satisfies by having no branch that could
- * guess: {@link resolvePrincipals} returns matches, and non-matches exist only
- * as counts and bounded per-reason samples in one line per pass. (Per pass, not
- * per principal — a 5,000-person directory would otherwise be a log flood, and
- * the counts are what an operator acts on.)
+ * Atlas account gets NO ROW here and is reported — the acceptance criterion
+ * "logged, never guessed", which this module satisfies by having no branch that
+ * could guess: {@link resolvePrincipals} returns matches, and non-matches exist
+ * only as counts and bounded per-reason samples in one line per pass. (Per
+ * pass, not per principal — a 5,000-person directory would otherwise be a log
+ * flood, and the counts are what an operator acts on.)
  *
- * So the information gained is exactly *"which of my existing users are in
+ * So the information gained here is exactly *"which of my existing users are in
  * which channel"*, which is the feature. Under the B2B framing Atlas already
  * applies to identity (#2757 — a work email belongs to the org, not the
  * person), that is an org-scoped directory join rather than personal-data
  * correlation. Stated here because it is a decision, not a default.
+ *
+ * ## ⚠️ THE POSTURE MOVED (2026-08-25, #5440) — read this before citing the
+ * ## paragraph above
+ *
+ * This header used to say Atlas *"never writes an email, never persists the
+ * vendor roster"*. **That is no longer true without qualification**, and the
+ * sentence has been edited rather than left standing, because a promise a
+ * reader can still quote is worse than no promise.
+ *
+ * Atlas now persists a **directory snapshot** — display name, email, vendor id,
+ * and the date it was taken — for source principals who **authored an ingested
+ * episode**. Not for the roster. The bound is authorship, and it is the whole
+ * of the reversal: what is stored beyond the old sentence is the name of
+ * someone whose WORDS ARE ALREADY IN THE RECORD.
+ *
+ * Why, in one line: finish condition 2 requires a human NAME on every
+ * authoritative claim, `provenance.actor` holds an opaque handle
+ * (`slack:U0AQW6KF2EM`), and resolving it to an Atlas user id attributes only
+ * the minority — measured in us prod, 4 Atlas users against 2 distinct source
+ * actors already producing claims, with the SSO narrowing above REFUSING to
+ * resolve a guest rather than guess. The full argument, including the three
+ * states and what this does not license, is the `Amendment (2026-08-25, #5440)`
+ * in ADR-0036 §T5. Do not re-derive it from this file.
+ *
+ * **What did NOT move, so this module's other guarantees still hold as
+ * written:** the join above still runs INWARD only; a snapshot confers no
+ * membership, no grant and no entitlement; revocation is still a DELETE
+ * licensed by complete-or-abort vendor reads; freshness is still clock-driven.
+ * A snapshot is a display name attached to a handle, and nothing may query
+ * these rows to FIND a person — they are readable only as the rendering of a
+ * specific claim's `actor`, under that claim's own attribution gate
+ * (ADR-0036's `Amendment (2026-07-27, #4836)`).
  *
  * ## Why the workspace scope is on the SQL, not on the caller
  *

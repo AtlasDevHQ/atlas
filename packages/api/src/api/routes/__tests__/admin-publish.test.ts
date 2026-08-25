@@ -14,6 +14,7 @@ import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { Effect } from "effect";
 import {
+  collectPromotedRows,
   collectRefusals,
   collectSupersessions,
   collectWidenings,
@@ -106,6 +107,14 @@ void mock.module("@atlas/api/lib/content-mode", () => ({
   collectWidenings,
   collectSupersessions,
   countSupersessionsHeldBack,
+  // ⚠️ THIS MOCK REPLACES THE BARREL WHOLESALE. An export the route imports and
+  // this object omits is not a missing stub — it is a `SyntaxError: Export named
+  // 'x' not found`, thrown at module load, which takes the WHOLE FILE down
+  // before a single test runs. That reads in CI as one nameless failure with no
+  // assertion attached (#5424 added `collectPromotedRows` and hit exactly this).
+  // Add every new barrel export the route consumes, and prefer the real
+  // implementation over a stub for the same reason the two above give.
+  collectPromotedRows,
   makeService: () => ({
     runPublishPhases: () =>
       Effect.try({
@@ -209,6 +218,46 @@ describe("POST /api/v1/admin/publish — promoted counts projection", () => {
       promotedConnections: 0,
       promotedPrompts: 0,
       promotedStarterPrompts: 0,
+    });
+  });
+
+  it("records WHICH rows were promoted, not just how many (#5424)", async () => {
+    REPORTS = [
+      { table: "brain_facts", promoted: 2, promotedIds: ["fact-a", "fact-b"] },
+      { table: "knowledge_documents", promoted: 1, promotedIds: ["doc-1"] },
+    ];
+    await publish();
+
+    // The count and the ids are DIFFERENT facts and both belong in the row.
+    // Until #5424 only the count was here, so the person who made a given claim
+    // authoritative was recoverable only by joining `brain_facts.updated_at` to
+    // this row's timestamp — and `updated_at` is last-write-wins, so a later
+    // retraction or widening erased the link. Two published us-prod facts had
+    // already lost it.
+    expect(auditCalls[0].metadata).toMatchObject({
+      promotedBrainFacts: 2,
+      promotedRows: [
+        { surface: "brain_facts", id: "fact-a" },
+        { surface: "brain_facts", id: "fact-b" },
+        { surface: "knowledge_documents", id: "doc-1" },
+      ],
+    });
+  });
+
+  it("omits an adapter that does not name its rows, rather than inventing an entry", async () => {
+    // `promotedIds` absent means "this surface has no id concept", which must
+    // not render as a promoted-zero entry. Same distinguishability rule the
+    // `refused` / `widened` fields carry, and the reason `collectPromotedRows`
+    // spreads `?? []` instead of pushing a placeholder.
+    REPORTS = [
+      { table: "workspace_plugins", promoted: 3 },
+      { table: "brain_facts", promoted: 1, promotedIds: ["fact-a"] },
+    ];
+    await publish();
+
+    expect(auditCalls[0].metadata).toMatchObject({
+      promotedConnections: 3,
+      promotedRows: [{ surface: "brain_facts", id: "fact-a" }],
     });
   });
 });

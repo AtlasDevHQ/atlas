@@ -227,6 +227,29 @@ export interface PromotionReport {
    */
   readonly superseded?: readonly FactSupersession[];
   /**
+   * The ids this publish actually promoted (#5424). Absent for every adapter
+   * that does not report them, on the same distinguishability grounds as
+   * {@link PromotionReport.refused}: "this table does not name its rows" and
+   * "this table promoted nothing today" must stay apart.
+   *
+   * ⚠️ NOT redundant with {@link PromotionReport.promoted}, and the count is not
+   * a summary of this. `promoted` is the authoritative number — it comes from
+   * the UPDATEs' own `rowCount` and is what the divergence check compares
+   * against. This is the id list the adapter passed IN, which is the same set on
+   * every path that does not log a divergence. Read the count for how many, and
+   * this for which; if they ever disagree the adapter has already said so.
+   *
+   * It exists because the audit row was the only durable record of who made a
+   * claim authoritative, and it carried a bare count. `widened` and `refused`
+   * both name rows for the same reason — a permanent change to a row deserves a
+   * record that names it — and promotion is the most permanent of the three: it
+   * is what makes a claim answer as-of-now reads. Recovering the promoter from
+   * `brain_facts.updated_at` was the only alternative, and `updated_at` is
+   * last-write-wins: a later retraction or widening destroys it. Two published
+   * facts in us prod had already lost it when this was written.
+   */
+  readonly promotedIds?: readonly string[];
+  /**
    * Provable collisions this publish DECLINED to supersede on trust-tier
    * grounds (#5033) — one side warehouse-derived, or carrying a source kind
    * the region cannot classify.

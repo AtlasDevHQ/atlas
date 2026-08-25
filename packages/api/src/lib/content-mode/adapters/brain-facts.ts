@@ -2399,6 +2399,17 @@ export function promoteBrainFacts(
     return {
       table: BRAIN_FACTS_TABLE,
       promoted,
+      // WHICH rows, beside how many (#5424). `promotable` is exactly the id set
+      // the two promote UPDATEs were given, and the divergence check above
+      // fires when they did not all land — so this is the promoted set on every
+      // path that did not already warn. Always present (possibly empty) for the
+      // same reason `refused` is: this adapter names its rows, and `[]` means
+      // "nothing was promoted this run".
+      //
+      // The audit row is the only durable record naming the human who made
+      // these claims authoritative, and until now it carried a count. See
+      // `PromotionReport.promotedIds`.
+      promotedIds: promotable.map((row) => row.id),
       // Always present (possibly empty) for this adapter: the fact class HAS a
       // refusal concept, and `[]` is the meaningful "nothing was refused this
       // run" answer, distinct from a table that cannot refuse at all.

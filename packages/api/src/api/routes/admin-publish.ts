@@ -45,6 +45,8 @@ import {
   collectSupersessions,
   countSupersessionsHeldBack,
   collectWidenings,
+  collectPromotedRows,
+  type PromotedRowRecord,
   type SupersessionRecord,
   type WidenedGrantRecord,
   makeService,
@@ -269,6 +271,7 @@ adminPublish.openapi(publishRoute, async (c) =>
     let promoted: PublishPromotedCounts;
     let refusals: RefusalSweep;
     let widenedGrants: readonly WidenedGrantRecord[];
+    let promotedRows: readonly PromotedRowRecord[];
     let supersededFacts: readonly SupersessionRecord[];
     let supersessionsHeldBack: number | null;
     let deletedEntityCount: number;
@@ -362,6 +365,7 @@ adminPublish.openapi(publishRoute, async (c) =>
       // action from the admin, and the reason to record it is that "why can the
       // whole org see this?" is asked months later.
       widenedGrants = collectWidenings(tx.reports);
+      promotedRows = collectPromotedRows(tx.reports);
       // Published facts this publish SUPERSEDED (#4912, `brain_facts` only
       // today). Swept with the shared helper for the same anti-drift reason,
       // and collected for `logAdminAction` alone — like a widening it needs no
@@ -417,6 +421,16 @@ adminPublish.openapi(publishRoute, async (c) =>
         promotedStarterPrompts: promoted.starterPrompts,
         promotedKnowledgeDocuments: promoted.knowledgeDocuments,
         promotedBrainFacts: promoted.brainFacts,
+        // WHICH facts, not just how many (#5424). Until this existed the audit
+        // row was the only durable record naming the person who made a claim
+        // authoritative, and it named a COUNT — so the only way back to the
+        // publisher of a given fact was joining `brain_facts.updated_at` to this
+        // row's timestamp. `updated_at` is last-write-wins: a later retraction,
+        // widening or marker overwrites it and the link is gone for good. Two
+        // published facts in us prod had already lost it (#5424's condition-2
+        // evidence). Sits beside `widenedGrants` and `refusedDrafts`, which name
+        // rows for the same reason, and is uncapped for the same reason.
+        promotedRows,
         // ids + reasons, not just a count: the audit_log row is the DURABLE
         // record, and `log.warn` rotates. "3 drafts were refused" six months
         // later is unactionable. `detail` is deliberately dropped — it is

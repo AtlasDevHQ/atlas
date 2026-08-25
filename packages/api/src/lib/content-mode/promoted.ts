@@ -139,6 +139,33 @@ export function collectWidenings(
   );
 }
 
+/** One promoted row, attributed to the surface it was promoted on. */
+export interface PromotedRowRecord {
+  readonly surface: string;
+  readonly id: string;
+}
+
+/**
+ * Every row this publish promoted, attributed to its surface (#5424).
+ *
+ * Uncapped, on `collectWidenings`' grounds and one sharper: this list is what
+ * makes the `mode.publish` audit row able to answer *"who made THIS claim
+ * authoritative"*. Capping it would leave exactly the rows past the cap in the
+ * state the field exists to fix — recoverable only by joining
+ * `brain_facts.updated_at` to the audit timestamp, which any later write
+ * destroys.
+ *
+ * Adapters that do not report ids contribute nothing rather than an empty
+ * entry, so a surface with no id concept never appears here as "promoted zero".
+ */
+export function collectPromotedRows(
+  reports: ReadonlyArray<PromotionReport>,
+): readonly PromotedRowRecord[] {
+  return reports.flatMap((report) =>
+    (report.promotedIds ?? []).map((id) => ({ surface: report.table, id })),
+  );
+}
+
 /** One promoted row that superseded published rows, attributed to its table. */
 export interface SupersessionRecord {
   readonly surface: string;

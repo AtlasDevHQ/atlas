@@ -327,6 +327,12 @@ describe("promoteBrainFacts", () => {
     expect(report).toEqual({
       table: "brain_facts",
       promoted: 2,
+      // WHICH rows, beside how many (#5424). The audit row is the only durable
+      // record naming the human who made these claims authoritative, and it
+      // carried a bare count until this existed — so the publisher of a given
+      // fact was recoverable only by joining `updated_at`, which any later
+      // write destroys.
+      promotedIds: ["fact-a", "fact-b"],
       refused: [],
       widened: [],
       superseded: [],
@@ -392,6 +398,9 @@ describe("promoteBrainFacts", () => {
     expect(report).toEqual({
       table: "brain_facts",
       promoted: 0,
+      // `[]`, not absent — same distinguishability rule as `refused` below.
+      // This table names its rows; today it named none.
+      promotedIds: [],
       refused: [],
       widened: [],
       superseded: [],

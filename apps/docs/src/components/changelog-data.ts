@@ -20,6 +20,21 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.2.19",
+    title: "Recognizing the Disagreement",
+    date: "2026-08-25",
+    summary:
+      "Two people wrote down different numbers for the same thing, and Atlas did not notice. Surviving a disagreement was never the hard part \u2014 recognizing one is, and a contradiction that goes unrecognized reads exactly like agreement. The reason was narrow and worth stating plainly: the two sentences were split into subject and relation differently, so the claims never met at the point where rivals are looked for. This release widens that lookup, and is careful about the cost.",
+    highlights: [
+      "A contradiction split across differently-worded sentences is now recognized. The rival lookup keeps its exact match and adds a second reach \u2014 the same subject, from a different message \u2014 so two people disagreeing about one number are flagged for review even when neither phrased it the same way",
+      "Recognition stays deterministic, and that is a commitment rather than a gap. No similarity scoring, no embeddings, no model judging whether two statements mean the same thing: the record contains genuinely opposite relations that any resemblance metric ranks as the closest pair there is, and merging those would retire beliefs nobody retired",
+      "The widening is licensed for flagging and for nothing else. A flag is advisory \u2014 both claims stay, attributed, with neither picked \u2014 so a wrong flag costs a reviewer a glance. The paths that merge claims or retire them keep the strict match, because their mistakes are not recoverable",
+      "The wider search was stopped from quietly dropping flags it used to raise. Rival lookups are capped per claim, so searching more broadly can push an older, exact match out of the cap \u2014 and a missing flag is indistinguishable from agreement, which is the very failure being fixed. Exact matches are now ranked first inside the cap",
+      "Inviting a teammate no longer reports failure after succeeding. The invite was created and the email sent, then the request returned an error \u2014 so the recipient got a working invite while the admin saw \u201cFailed to send invitation\u201d and retried, stacking duplicate pending invites against the seat limit. The message you see now distinguishes a request that never arrived from one that may already have worked",
+      "Every authoritative claim keeps a name on it across two paths that had lost one: importing a workspace into another region no longer restores an unattributed claim as published, and publishing now records which claims it promoted rather than only how many",
+    ],
+  },
+  {
     version: "v0.2.18",
     title: "Half-Enforced Is Not Enforced",
     date: "2026-08-25",

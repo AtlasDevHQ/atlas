@@ -47,7 +47,7 @@
 #   TEST_DATABASE_URL=...  If set, the real-Postgres *-pg.test.ts run. If UNSET,
 #                          they self-skip AND the `test` gate is recorded
 #                          DECLINED (exit 3) rather than PASS — a run that
-#                          exercised none of the 87 real-Postgres suites is not
+#                          exercised none of the 88 real-Postgres suites is not
 #                          pre-PR pass (#5410). There is no opt-out; use
 #                          CI_LOCAL_NO_TEST=1 for a deliberate gates-only run.
 #
@@ -169,7 +169,8 @@ g_unpublished()      { bun scripts/check-unpublished-versions.ts; }
 #     TEST_DATABASE_URL set    22266 pass, 10 skip   147s
 #     TEST_DATABASE_URL unset  20834 pass, 10 skip    27s
 #
-# 1,432 assertions across 87 real-Postgres suites silently not run, and the
+# 1,432 assertions across every real-Postgres suite silently not run (87 of
+# them at that SHA), and the
 # is the one an operator gets by default — `/release` step 3 then reads that
 # green as a release gate. A gate that cannot tell "verified" from "did not run"
 # is the defect this whole file's SKIP/DECLINED vocabulary exists to refuse, so

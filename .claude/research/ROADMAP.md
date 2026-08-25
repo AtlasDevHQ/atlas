@@ -20,7 +20,7 @@ The codebase is Hono + Next.js + TypeScript + Effect.ts + Vercel AI SDK + bun, o
 
 ## Next
 
-**Shipped 2026-08-25 — finish condition 2 demonstrated, and the snapshot named the wrong two edges** ([#5424](https://github.com/AtlasDevHQ/atlas/issues/5424), [#5439](https://github.com/AtlasDevHQ/atlas/pull/5439)) — *"Every authoritative claim has a human name on it… no exceptions, including for claims that arrived by import, correction, or migration."*
+**Shipped 2026-08-25 — condition 2's two real edges fixed; the condition itself is NOT met, and now says why** ([#5424](https://github.com/AtlasDevHQ/atlas/issues/5424), [#5439](https://github.com/AtlasDevHQ/atlas/pull/5439)) — *"Every authoritative claim has a human name on it… no exceptions, including for claims that arrived by import, correction, or migration."*
 
 **The gate holds.** A census of every claim in us prod — 34 facts, 31 episodes, not a sample — found **zero** missing `actor`, `source`, `sourceId`, `episodeId` or `occurredAt`. Plus a seeded random draw (`setseed(0.5424)`), because the condition says *pick any claim at random* and an exhaustive count does not answer that question in its own words. `classifyEpisodeForReconcile`'s `SOURCE_PRINCIPAL_UNRESOLVED` is why: an episode naming nobody produces no row at all.
 
@@ -35,7 +35,8 @@ The codebase is Hono + Next.js + TypeScript + Effect.ts + Vercel AI SDK + bun, o
 
 ### Recorded as NOT established
 
-- **The stored actor is an opaque vendor id.** 12 of 34 prod claims attribute to `slack:U0AQW6KF2EM`; the record holds no mapping to a person and the audience resolver *"never persists the vendor roster"* by design. Resolution needs a live Slack call on a valid token. Whether a stable vendor handle satisfies *"a human name"* is a question for the PRD, not a defect — it is written up as a named qualification rather than fixed.
+- ⚠️ **THE CONDITION IS NOT MET, and this is the reason.** The stored actor is an opaque vendor id: 12 of 34 prod claims attribute to `slack:U0AQW6KF2EM`, the record holds no mapping to a person, and the audience resolver *"never persists the vendor roster"* by design. This was filed as a question for the PRD — does a resolvable handle satisfy *"a human name"*? — and **answered the same day: no, a human-readable name is required.** The board row went to `Done` on that reading and was moved back to `Todo` when the answer arrived. [#5440](https://github.com/AtlasDevHQ/atlas/issues/5440) is the work; condition 2 is open until it lands.
+- **Resolving to an Atlas user id is NOT the fix, and the measurement says why.** It attributes the minority and leaves the majority where they started: Atlas users are a small subset of a Slack workspace, and the SSO-domain narrowing *refuses* to resolve a guest on a personal address rather than guess. Measured in us prod — 4 Atlas users, 1 resolved audience member, 2 distinct Slack actors already producing claims. #5440 carries the three-state shape (`atlas` / `directory` / `opaque`) and the privacy-posture amendment it requires.
 - **Only `us` was read.** Nothing here speaks to eu or apac.
 - **34 facts, one workspace, two producers.** An exhaustive census at 34 says nothing about 34,000.
 - **Presence, not truth.** Nobody verified that `slack:U0AQW6KF2EM` said what the claim says.

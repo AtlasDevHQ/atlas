@@ -100,7 +100,7 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 
 | Mutation | producer | logging | bypass | mint | pg | record | reap |
 |---|---|---|---|---|---|---|---|
-| `predicate: dim.name` -> `dim.sql` — the qualified column expression emitted as the predicate | 6 | 0 | 0 | 0 | 2 | 0 | 2 |
+| `predicate: dim.name` -> `dim.sql` — the qualified column expression emitted as the predicate | 6 | 0 | 0 | 0 | 2 | 0 | 0 |
 | `buildSnapshotSql` selects the bare NAME instead of the dimension's `sql:` expression | 2 | 2 | 0 | 0 | 1 | 0 | 0 |
 | `buildSnapshotSql` selects the bare primary-key NAME as the subject column | 1 | 0 | 0 | 0 | 1 | 0 | 0 |
 | the cardinality proposal is keyed by the dimension's `sql:` rather than its name | 2 | 1 | 0 | 0 | 1 | 0 | 0 |

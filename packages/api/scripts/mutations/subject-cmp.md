@@ -54,14 +54,14 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | the subject arm neutralized in CORROBORATION_LOOKUP_SQL (arity-preserving) | 3 | 1 | 0 | 0 |
 | the subject arm neutralized in TENSION_CANDIDATES_SQL (arity-preserving) | 1 | 1 | 0 | 0 |
 | the subject arm deleted from collisionCorePredicate | 1 | 0 | 0 | 2 |
-| the polarity MIRRORED — the arm becomes a positive difference test | 37 | 0 | 1 | 0 |
-| `IS NOT TRUE` weakened to `NOT (…)` in subjectNotDifferentSql | 29 | 1 | 1 | 0 |
+| the polarity MIRRORED — the arm becomes a positive difference test | 39 | 0 | 1 | 0 |
+| `IS NOT TRUE` weakened to `NOT (…)` in subjectNotDifferentSql | 31 | 1 | 1 | 0 |
 | suppression widened to `both sides non-null` | 3 | 1 | 4 | 1 |
 | the subject's comparable value PARSED from the surface | 0 | 1 | 0 | 0 |
-| the subject's comparable value built by BYPASSING the guarded seam | 20 | 5 | 0 | 0 |
-| the tension scan's trailing placeholders left un-renumbered | 66 | 1 | 0 | 0 |
+| the subject's comparable value built by BYPASSING the guarded seam | 21 | 5 | 0 | 0 |
+| the tension scan's trailing placeholders left un-renumbered | 75 | 1 | 0 | 0 |
 
-Suite sizes: **identity-consumers-pg.test.ts** 76 tests (`src/lib/brain/__tests__/identity-consumers-pg.test.ts`) · **reconcile.test.ts** 79 tests (`src/lib/brain/__tests__/reconcile.test.ts`) · **subject-cmp.test.ts** 9 tests (`src/lib/brain/__tests__/subject-cmp.test.ts`) · **brain-facts.test.ts** 63 tests (`src/lib/content-mode/adapters/__tests__/brain-facts.test.ts`).
+Suite sizes: **identity-consumers-pg.test.ts** 85 tests (`src/lib/brain/__tests__/identity-consumers-pg.test.ts`) · **reconcile.test.ts** 79 tests (`src/lib/brain/__tests__/reconcile.test.ts`) · **subject-cmp.test.ts** 9 tests (`src/lib/brain/__tests__/subject-cmp.test.ts`) · **brain-facts.test.ts** 63 tests (`src/lib/content-mode/adapters/__tests__/brain-facts.test.ts`).
 
 ## Notes
 

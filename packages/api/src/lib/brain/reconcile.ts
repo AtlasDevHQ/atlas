@@ -267,6 +267,12 @@ import {
   type ClaimVocabulary,
   type InheritedSlot,
 } from "@atlas/api/lib/brain/identity";
+// The tension scan's REACH, imported for the same reason the two `_cmp` builders
+// are: `TENSION_SWEEP_SQL` replays this rule and a second spelling is how the
+// sweep and the ingest path drift into flagging different pairs. #5438's whole
+// argument for why the predicate may be dropped HERE and at no other consumer
+// lives in that module's header.
+import { exactSlotFirstSql, tensionReachSql } from "@atlas/api/lib/brain/segmentation";
 // The comparable value, on the same terms: `comparableValue` is the ONE place a
 // surface becomes a typed canonical form, and `comparableSameSql` the ONE place
 // *provably same* is spelled — the two statements below negate each other and
@@ -334,8 +340,16 @@ export const RECONCILE_LOCK_NAMESPACE = 4771;
  * in tension with. The edges are ADVISORY — `lib/brain/tensions.ts` is the
  * clustering that reads them (#4913), and arbitration stays with the human
  * gate — so a subject/predicate that somehow accumulated hundreds of live
- * objects should surface the newest few for a reviewer rather than write a fan
+ * objects should surface a few for a reviewer rather than write a fan
  * of edges nobody reads.
+ *
+ * ⚠️ *"the newest few"* until #5438, and the order is what changed rather than
+ * the bound: both statements now rank exact-slot rivals ahead of anchor-only
+ * ones (`exactSlotFirstSql`) and only then by recency. The widened reach makes
+ * the candidate set strictly larger, so without that head term this cap would
+ * silently DROP a true slot rival in favour of a newer anchor-only one — a
+ * widening that subtracts edges, invisible because a missing advisory edge looks
+ * exactly like agreement.
  *
  * Exported since #5029 so `lib/brain/tension-sweep.ts` applies THIS bound rather
  * than declaring its own. Two constants would let the ingest path and the sweep
@@ -1125,18 +1139,48 @@ export const INSERT_PROVENANCE_EDGE_SQL = `INSERT INTO brain_edges
  * without renumbering hands the slot declared `::uuid` a tagged comparable
  * value; `INSERT_FACT_SQL` would at least raise an arity error, this would not.
  * `reconcile.test.ts` pins both numbers lexically and positionally.
+ *
+ * ## The slot arm is now a REACH, and it is two arms (#5438)
+ *
+ * `subject_key = $2 AND predicate_key = $3` is still here, byte for byte, as the
+ * first arm of {@link tensionReachSql} — nothing that earned an edge before
+ * stops earning one. Beside it is an ANCHOR arm: same subject anchor, from a
+ * different episode, with **no predicate test at all**.
+ *
+ * It exists because the strictness above was inherited from the SLOT and buys
+ * nothing at THIS consumer. Two people contradicted each other in prod and Atlas
+ * did not notice, because the extractor absorbed a word into one side's SUBJECT
+ * and the pair diverged at both arms before any matching rule ran (`Series B` /
+ * `target raise` against `Series B fundraise` / `has goal of`). `segmentation.ts`
+ * carries the measurement, the three mechanisms that were falsified against the
+ * shipped code first, and the argument for why an ADVISORY edge may drop the
+ * predicate where corroboration and supersession may not.
+ *
+ * ⚠️ **`$9` is the new claim's episode, and it is bound LAST for the reason the
+ * paragraph above gives.** Appended after the cap rather than inserted anywhere
+ * nearer the spread, so it cannot push `$7`/`$8` along. A tenth bind goes after
+ * it, on the same rule.
  */
 export const TENSION_CANDIDATES_SQL = `SELECT id
      FROM brain_facts
     WHERE workspace_id = $1
-      AND subject_key = $2
-      AND predicate_key = $3
+      AND ${tensionReachSql(
+        {
+          subjectKeyExpr: "subject_key",
+          predicateKeyExpr: "predicate_key",
+          episodeIdExpr: "source_episode_id",
+        },
+        { subjectKeyExpr: "$2", predicateKeyExpr: "$3", episodeIdExpr: "$9::uuid" },
+      )}
       AND ${objectNotSameSql("object_key", "$4", "object_cmp", "$5")}
       AND ${subjectNotDifferentSql("subject_cmp", "$6")}
       AND invalidated_at IS NULL
       AND valid_to IS NULL
       AND id <> $7::uuid
-    ORDER BY ingested_at DESC
+    ORDER BY ${exactSlotFirstSql(
+      { subjectKeyExpr: "subject_key", predicateKeyExpr: "predicate_key" },
+      { subjectKeyExpr: "$2", predicateKeyExpr: "$3" },
+    )}, ingested_at DESC
     LIMIT $8`;
 
 /**
@@ -2606,6 +2650,14 @@ async function writeCandidate(
       ...agreementBinds(item.keys, item.comparableForLookups, item.subjectComparable),
       factId,
       TENSION_EDGE_CAP,
+      // #5438's anchor arm, and it is deliberately LAST. `agreementBinds` is
+      // spread in the MIDDLE of this list, so every placeholder after it moves
+      // when that tuple widens; appending here adds a bind that cannot push the
+      // `::uuid` slots along. This is the episode the NEW claim came from — the
+      // anchor arm flags a rival only from a DIFFERENT one, because one message
+      // routinely yields several claims about one subject and they are not
+      // contradictions.
+      episode.id,
     ]);
     for (const row of rivals.rows) {
       const rivalId = rowId(row);

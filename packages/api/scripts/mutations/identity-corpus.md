@@ -33,17 +33,17 @@ Every number is the count of tests that FAIL in that suite under that mutation, 
 | `CORROBORATION_LOOKUP_SQL`'s `object_cmp = $5` arm neutralized (arity-preserving) | 3 | 1 |
 | `objectSameSql` loses its difference VETO | 3 | 1 |
 | `objectNotSameSql` loses its `OR comparableDifferentSql(…)` disjunct | 1 | 1 |
-| `objectNotSameSql`'s `IS NOT TRUE` weakened to `NOT (…)` | 1 | 1 |
-| `TENSION_CANDIDATES_SQL` repointed at the surface columns | 7 | 1 |
-| the tension call site binds raw surfaces | 7 | 1 |
-| `INSERT_TENSION_EDGE_SQL`'s endpoints swapped | 10 | 0 |
+| `objectNotSameSql`'s `IS NOT TRUE` weakened to `NOT (…)` | 2 | 1 |
+| `TENSION_CANDIDATES_SQL` repointed at the surface columns | 8 | 1 |
+| the tension call site binds raw surfaces | 2 | 1 |
+| `INSERT_TENSION_EDGE_SQL`'s endpoints swapped | 12 | 0 |
 | `supersessionCollisionJoin` repointed at the surface columns | 1 | 0 |
 | `supersessionCollisionPredicate` back on `object_key <> object_key` | 3 | 0 |
 | `subject_key =` dropped from the collision join | 1 | 0 |
 | `predicate_key =` dropped from the collision join | 1 | 0 |
 | `comparableDifferentSql` loses its `split_part` tag equality arm | 1 | 0 |
 
-Suite sizes: **identity-consumers-pg.test.ts** 76 tests (`src/lib/brain/__tests__/identity-consumers-pg.test.ts`) · **reconcile.test.ts** 79 tests (`src/lib/brain/__tests__/reconcile.test.ts`).
+Suite sizes: **identity-consumers-pg.test.ts** 85 tests (`src/lib/brain/__tests__/identity-consumers-pg.test.ts`) · **reconcile.test.ts** 79 tests (`src/lib/brain/__tests__/reconcile.test.ts`).
 
 ## Notes
 
@@ -57,7 +57,7 @@ Suite sizes: **identity-consumers-pg.test.ts** 76 tests (`src/lib/brain/__tests_
 - **`objectSameSql` loses its difference VETO** — ⚠️ `lexicalNorm` strips a leading `-`, so `-499` and `499` key IDENTICALLY. Without the veto corroboration MERGES a margin with its own negation — no new row, no tension edge, and no marker to find it by. Dies on `sign-flip-rival`.
 - **`objectNotSameSql` loses its `OR comparableDifferentSql(…)` disjunct** — The least obvious arm in the slice and the one a reader would delete as redundant: it is what carries a key-equal, provably-different pair into TENSION once the veto has kept it out of corroboration. Without it `sign-flip-rival` mints a second row and then earns no edge — worse than either verdict alone.
 - **`objectNotSameSql`'s `IS NOT TRUE` weakened to `NOT (…)`** — Reads identically and silently deletes the entire abstain band — `NOT NULL` is NULL and a WHERE treats that as false. The exact distinction `subjectNotDifferentSql` inherits one slice later.
-- **`TENSION_CANDIDATES_SQL` repointed at the surface columns** — The rival scan's half of the #5020 pivot. On the surfaces a `Ships On` / `ships_on` disagreement matched nothing and the reviewer saw two uncontested facts where there was a contradiction.
+- **`TENSION_CANDIDATES_SQL` repointed at the surface columns** — The rival scan's half of the #5020 pivot. On the surfaces a `Ships On` / `ships_on` disagreement matched nothing and the reviewer saw two uncontested facts where there was a contradiction. Since #5438 the two slot arms reach the statement through `tensionReachSql`, so the mutation repoints the builder's ARGUMENTS; the anchor deliberately does not span the ORDER BY, whose `exactSlotFirstSql` term is a ranking rather than a matching arm.
 - **the tension call site binds raw surfaces** — The bind half of the same revert.
 - **`INSERT_TENSION_EDGE_SQL`'s endpoints swapped** — The edge DIRECTION is what the review queue renders as *this new claim contradicts that one*. Reversed, the queue says the settled incumbent contradicts the arrival. Nothing else in the repo asserts the direction — every other site counts.
 - **`supersessionCollisionJoin` repointed at the surface columns** — On the surfaces the publish gate silently no-op'd on a phrasing mismatch: a draft saying `Ships On` never collided with a published `ships_on`, so publish left two current `single` values standing and the disclosure showed nothing to disclose.
